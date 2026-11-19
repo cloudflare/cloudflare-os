@@ -37,11 +37,13 @@ through logs and errors, then everything else.
   deliberately env-var driven in `auth/config.ts` and must **not** move into `AdminConfig`, so a
   compromised admin session cannot change it. Reject changes that relocate it.
 - `AdminSettings` is the only writer of the authoritative `AdminConfig`. Other code reads through
-  `readAdminConfig(env)`, except `AdminApiImpl`, which deliberately reads the authoritative config
-  in two places: where a view is minted, for `inspectWorkspace()` and `inspectUser()` alike, so
-  that a KV mirror still holding a higher access level never mints a view at it, and the audit
-  log's retention in `listAdminAudit()` and `getAdminAuditStats()`. The admin-settings conventions
-  are in `packages/workshop-backend/AGENTS.md`.
+  `readAdminConfig(env)`, except these, which deliberately read the authoritative config
+  (`committedAdminConfig()`): in `AdminApiImpl`, where a view is minted, for `inspectWorkspace()`
+  and `inspectUser()` alike, so that a KV mirror still holding a higher access level never mints a
+  view at it, a content view included; the audit log's retention in `listAdminAudit()` and
+  `getAdminAuditStats()`; `requestContentAccess()`, and `AdminSettings.claimContentAccess()` for
+  an approval, so that content is never requested or approved at a level the mirror alone still
+  shows. The admin-settings conventions are in `packages/workshop-backend/AGENTS.md`.
 - `OverseerDurableObject.openForAdmin()` stays reachable only over the Durable Object binding, never
   through a capability a user holds, and refuses an uninitialised workspace without writing.
   `UserDurableObject.openForAdmin()` is held to the same, for an account never created. Both views
@@ -52,9 +54,15 @@ through logs and errors, then everything else.
   whose record cannot be written returns nothing. An `AdminWorkspaceView` never reaches a
   connection (an admin's reads of trees and history never pull). An `AdminUserView` reads only
   the account's own store, writes nothing to it, and returns no token, hash, API key, API URL or
-  header value. No view method returns what the `"metadata"` level withholds (see
-  docs/admin-access.md). Flag a path that returns a workspace's or an account's data to an admin
-  without these, a method that returns content, or a `withhold*` helper applied conditionally.
+  header value. An `AdminWorkspaceView` method returns what the `"metadata"` level withholds (see
+  docs/admin-access.md) only when its `#call()` found, on that call, a view opened for content,
+  the level in force `"content"` and a live grant (`contentGrant()`), and it records the grant's
+  id; an `AdminUserView` method never does. The one condition a `withhold*` helper may hang on is
+  the `content` flag `#call()` hands the read, and every workspace method has its entry in
+  `ADMIN_METHOD_ANSWERS`. Flag a path that returns a workspace's or an account's data to an admin
+  without `adminViewCall()`; a content read whose condition is anything but that flag; a method
+  missing from the table or classified by a second list; a liveness test for a grant that is not
+  `isAdminGrantLive()`; and a content read that holds a file or an attachment whole.
 - That an `AdminUserView` never calls a gatekeeper is a type, so check the diff, not a call graph:
   `AdminUserViewImpl` reaches the account only through `AdminUserViewHost`, whose `UserStoreReads`
   leaves out the collections that hold gatekeeper stubs and whose `connectedAccounts()` yields
@@ -71,6 +79,26 @@ through logs and errors, then everything else.
   effect, so that a write whose record cannot be written does not happen. Flag a path that changes
   a workspace for an admin without these, and any code that reads `ADMIN_WORKSPACE_WRITES` other
   than through `adminWorkspaceWritesEnabled()`.
+- `OverseerDurableObject.grantAdminContent()` stays reachable only over the Durable Object binding
+  and is called only by `AdminApiImpl.approveContentAccess()`, after `AdminSettings` has claimed a
+  pending content access request for an admin other than its requester. It checks again that the
+  two are admins and not one admin, the level and the owner, appends its record before it stores
+  the grant, and enters nothing in the workspace's action log. Flag an approver compared with the
+  requester other than through `sameDeploymentAdmin()`; a content access request gated on
+  `ADMIN_WORKSPACE_WRITES`; a member-facing path that writes, deletes or returns a grant with
+  source `"admins"`, or that asks the owner's account for the account-wide grant; and an owner's
+  grant call that appends to the admin audit log.
+- Two more entry points stay reachable only over the Durable Object binding, never through a
+  capability a user or a member's session holds. `OverseerDurableObject.endAdminGrant()` is called
+  only by `AdminApiImpl.endWorkspaceGrant()`; it ends only a live grant with source `"admins"`, and
+  appends its record to the deployment-wide log before the grant is ended, so that an ending whose
+  record cannot be written does not happen. `UserDurableObject.liveAccountAdminGrant()` is reached
+  over the binding only by `OverseerImpl.contentGrant()`, that is, only when an admin's call needs
+  content and the workspace's own storage holds no live grant (the account's own
+  `grantAccountAdminAccess()` reads it too); it reads one value and writes nothing. Flag either
+  exposed through a capability; a second caller of either; an `endAdminGrant()` that ends an owner's
+  grant or ends before its record is appended; and a path other than `contentGrant()` (a listing, a
+  metadata call, any member-facing method) that asks an account for its account-wide grant.
 - `ADMIN_WORKSPACE_ACCESS_MAX`, `ADMIN_AUDIT_RETENTION_MIN_DAYS` and `ADMIN_WORKSPACE_WRITES` are
   env-driven, like auth config, and the cap and the writes switch fail closed. Flag code that
   enforces `adminWorkspaceAccess`, or enforces or prunes with `adminAuditRetentionDays`, without

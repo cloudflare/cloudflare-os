@@ -3,10 +3,13 @@
 A deployment's admins (the canonical user ids its backend Worker's `ADMINS` variable lists) need to
 operate, debug and investigate the instance: find a user or a workspace, look inside a workspace
 that misbehaves or at what a user's account holds, and know afterwards who looked at what and who
-changed which setting. Where the deployment's environment allows it, they can also change a
-workspace (see [Writes](#writes)). This
-document is the design record for that surface. The API itself is documented on `AdminApi`,
-`AdminWorkspaceView` and `AdminUserView` in `packages/workshop-shared/src/api.ts`; the pieces are:
+changed which setting. What they see of a workspace or of an account is its metadata. A
+workspace's content (chats, files, attachments) is read only where the deployment's environment
+allows it and only under a grant: a record, lasting 72 hours, given by the workspace's owner or by
+a second admin's approval (see [Grants](#grants)). Where the environment allows it, they can also
+change a workspace (see [Writes](#writes)). This document is the design record for that surface.
+The API itself is documented on `AdminApi`, `AdminWorkspaceView` and `AdminUserView` in
+`packages/workshop-shared/src/api.ts`; the pieces are:
 
 | Concern | Location |
 | --- | --- |
@@ -26,24 +29,35 @@ document is the design record for that surface. The API itself is documented on 
 | What a write is computed from alone: the arguments each action takes (`adminWriteArgs`) | `packages/workshop-backend/src/admin-writes.ts` |
 | Calling a write (`AdminApiImpl.writeWorkspace`) | `packages/workshop-backend/src/admin-settings.ts` |
 | Running a write (`applyAdminWrite`, `runAdminWrite`) | `packages/workshop-backend/src/overseer.ts` |
+| What a grant is computed from alone: whether it is live, whether it can be deleted, a fresh one (`isAdminGrantLive`, `isLiveAccountGrant`, `isAdminGrantPrunable`, `newAdminGrant`) | `packages/workshop-backend/src/admin-grants.ts` |
+| What each view method's answer can hold (`ADMIN_METHOD_ANSWERS`), why a call may return no content (`adminContentRefusal`), a user as a grant names them (`namedUser`) | `packages/workshop-backend/src/admin-access.ts` |
+| The owner's grant methods, the grant a content call runs under (`contentGrant`), ending an approval's grant (`endAdminGrant`) | `packages/workshop-backend/src/overseer.ts` |
+| The account-wide grant | `packages/workshop-backend/src/user.ts` |
+| Who counts as one admin where two are required (`sameDeploymentAdmin`) | `packages/workshop-backend/src/auth/config.ts` |
+| Requests to read a workspace's content without its owner (`AdminSettings`, `AdminApiImpl`) | `packages/workshop-backend/src/admin-settings.ts` |
+| The grant an approval gives (`grantAdminContent`) | `packages/workshop-backend/src/overseer.ts` |
+| The Audit tab's Pending filter, and Approve and Deny on a pending request's record | `packages/workshop-frontend/src/features/admin-audit/` |
 
 ## Entry points
 
 Everything goes through `AuthenticatedApi.getAdminApi()`, which returns null unless the
 caller is an admin. The admin check runs once, when the capability is minted, for every `AdminApi`
 method except inspection, which checks again, of a workspace (see [Inspection](#inspection)) and of
-a user's account (see [User inspection](#user-inspection)) alike, and `writeWorkspace()`, which
-checks on every call (see [Writes](#writes)).
+a user's account (see [User inspection](#user-inspection)) alike, and `writeWorkspace()` and the
+content access and grant methods, which check on every call (see [Writes](#writes)).
 
 - **Settings**: the setters (signups, user search, view-only gadget sharing, site name and logo,
   instructions, resource and gatekeeper availability, models, update checks, ...), plus
   `setAdminWorkspaceAccess()` and `setAdminAuditRetentionDays()`. Every setter is audited.
 - **The directory**: `listUsers()` and `listWorkspaces()`.
-- **Inspection**: `inspectWorkspace(workspaceId, reason, { lifetimeSeconds })`, which returns an
-  `AdminWorkspaceView` of the workspace's metadata.
+- **Inspection**: `inspectWorkspace(workspaceId, reason, { lifetimeSeconds, access })`, which
+  returns an `AdminWorkspaceView` of the workspace's metadata, or, when `access` asks for
+  `"content"`, a view that also reads its content while a grant is live.
 - **User inspection**: `inspectUser(userId, reason, { lifetimeSeconds })`, which returns an
   `AdminUserView` of the metadata of the user's account, on the same terms: the same reason and
   lifetime, under the deployment's one level.
+- **Grants**: `endWorkspaceGrant(workspaceId, grantId, reason)` ends a grant a second admin
+  approved (see [Grants](#grants)). It answers whatever the level and while writes are off.
 - **The audit log**: `listAdminAudit()` and `getAdminAuditStats()`.
 - **Writes**, while the deployment's `ADMIN_WORKSPACE_WRITES` is `on`:
   `writeWorkspace(workspaceId, action, args, reason)`.
@@ -130,17 +144,22 @@ never empty while rows remain), and cursors and owner filters take any length.
 
 ## Inspection
 
-`AdminApi.inspectWorkspace()` validates the reason and the lifetime, re-checks that the caller is an
-admin, reads the access policy from the authoritative `AdminSettings` config (not the KV mirror: a
-mirror still saying `"metadata"` after an admin turned access off must not mint a view), and then
-calls `OverseerDurableObject.openForAdmin(adminId, reason, sessionId, terms)`. The terms carry the
-session's `via` and the view's expiry (`expiresAt`).
+`AdminApi.inspectWorkspace()` validates the reason, the lifetime and what the view is asked for,
+re-checks that the caller is an admin, reads the access policy from the authoritative
+`AdminSettings` config (not the KV mirror: a mirror still saying `"metadata"` after an admin turned
+access off, or `"content"` after an admin lowered the level, must not mint a view above the level
+in force), and then calls `OverseerDurableObject.openForAdmin(adminId, reason, sessionId, terms)`.
+The terms carry the session's `via`, what the view was opened for (`access`: `"metadata"`, or
+`"content"` when the open asked for it, see [Opening for content](#opening-for-content)) and the
+view's expiry (`expiresAt`).
 
 `AdminApiImpl` checks an open of either kind, `inspectWorkspace()` or `inspectUser()`, with
 `#openTerms()`, in the order the API documents: the reason and the lifetime, that the caller is
 still an admin, the method's own check of the id it was given, and only then the deployment's
 level, against the committed config. While that level is `"off"`, each method records its own
-refused open and refuses (see [Which refusals are recorded](#which-refusals-are-recorded)).
+refused open and refuses, and so does `inspectWorkspace()` for an open that asks for content
+while the level is below `"content"` (see
+[Which refusals are recorded](#which-refusals-are-recorded)).
 
 `openForAdmin()`:
 
@@ -166,6 +185,8 @@ shaped as the matching `Overseer` reads are where there is one:
 - **The workspace**: `describe()` and `getDiagnostics()`, whose counts come with the size of the
   workspace's storage and who has it open. Its `sessions` count what collaborators hold on the
   workspace, by role: holds, not people, and never the owner's sessions or an admin view.
+  `describe()` also says what the view was opened for (`access`) and lists the live grants the
+  workspace stores (`grants`, see [Grants](#grants)).
 - **Chats**: `listChats()`, `getChatState()` and `listChatAttachments()`. `getChatState()` is the
   state behind a chat that looks stuck: the agent turn recorded for it, running or paused, when its
   newest entry was written, the calls queued for its agent, and the actions it submitted that still
@@ -176,6 +197,9 @@ shaped as the matching `Overseer` reads are where there is one:
   `listFilesAtCommit()` and `listChangedPaths()` list a gadget's history, the files of any version
   of its code and the paths that differ between two versions. `listPendingChanges()` lists the
   paths a chat changed on top of each pin's base and has not had accepted.
+- **Content**, each refused unless a grant is live when it is called (see
+  [The five content reads](#the-five-content-reads)): `getChat()`, `readChatAttachment()`,
+  `readFile()`, `readFileAtCommit()` and `readPendingFile()`.
 - **Connections and sharing**: `listGatekeepers()`, `listObservers()`,
   `listObserverRequirements()`, `listShareLinks()`, `listAutoApprovals()` and `listBlueprints()`.
   `listObservers()` lists which collaborators hold an observer record, and the account each chose
@@ -205,42 +229,51 @@ Three of these give less than their names promise:
 
 An admin read never reaches a connection, and reads only what the workspace stores:
 
-- **Commits.** `listFiles()` reads a permanent gadget's committed head. `listFilesAtCommit()`,
-  `getCommitLog()` and `listChangedPaths()` take any commit the workspace stores (a gadget's
-  history, a worktree's commits, a chat pin's base) and refuse anything else. All of them read
-  only stored objects, through the local readers of `git-cache.ts`: `readLocalCommitTree` and
+- **Commits.** `listFiles()` and `readFile()` read a permanent gadget's committed head.
+  `listFilesAtCommit()`, `readFileAtCommit()`, `getCommitLog()` and `listChangedPaths()` take any
+  commit the workspace stores (a gadget's history, a worktree's commits, a chat pin's base) and
+  refuse anything else. All of them read only stored objects, through the local readers of
+  `git-cache.ts`: `readLocalCommitTree`, `readLocalFileAtCommit` and
   `changedLocalFilePathsBetween`, which read only the objects the store holds, and `readCommitLog`,
   which reads only the commits the store holds. The ordinary reads pull a missing object through the workspace's
   connections; these never do. A missing object is an error, not a fetch. `getCommitLog()` stops
   at a parent that is not stored (`stopAtMissing`), which is how a worktree checked out without
   its history lists.
 - **Commits a connection supplied.** A stored commit can be one a connection supplied. A worktree
-  checked out through a connection holds that repository's commits
-  (`WorktreeRecord.sourceGatekeeperId` names the connection; a worktree made from a commit that no
+  checked out through a connection holds that repository's commits (the workspace records, for
+  each object, the connections that are its sources, in `gitObjectMetadata`; a commit that no
   connection is recorded as a source of, such as one in a gadget's history that was never pushed,
-  names none), and the workspace stores what it pulled. The commit reads treat those commits as
+  has none), and the workspace stores what it pulled. The commit reads treat those commits as
   any other: they show the repository's file names, commit ids, authors and times, and the paths
-  that differ between two of its commits, and never its files or its commit messages. The
+  that differ between two of its commits; under a live grant, on a view opened for content, they
+  also return its files and its commit messages, as far as the workspace stores them. The
   connection is never asked, so the admin is not verified against the repository, and reads no
   more of it than the workspace already holds. This is the part of the
   [admin exception](observers.md#admin-access-a-deliberate-exception) that these reads widen.
-- **A chat's pending content.** `listPendingChanges()` uses the fold the members' sessions use
-  (`getCurrentChatContent()`), given a base reader that reads stored objects only
-  (`readLocalFileAtCommitIfExists`), where the sessions' reader pulls. The fold's cache stays
+- **A chat's pending content.** `listPendingChanges()` and `readPendingFile()` use the fold the
+  members' sessions use (`getCurrentChatContent()`), given a base reader that reads stored objects
+  only (`readLocalFileAtCommitIfExists`), where the sessions' reader pulls. The fold's cache stays
   valid whichever reader filled it, because a commit is immutable: a reader that succeeds returns
   the same text, and one that cannot read a base throws. A base that cannot be read fails the call
   with the read's error, and that reader's errors name a path or an object id and never quote a
   file: it names a symlink without its target, which the members' reader includes.
   `listPendingChanges()` tells a worktree's paths apart by what its base holds at each
   (`localPathEntryAtCommit`), reading no blob.
+- **Attachments.** `readChatAttachment()` reads an attachment from what its record stores
+  (`openChatAttachment()`): the record's own bytes, else its stored blob, else, for a record that
+  holds only a commit and a path, the file there. A member's read of that last kind can pull the
+  object through a connection; this one fails when the object is not stored.
 - **What a connection could answer** is read from the workspace's records instead: observer
   requirements from the connections' records and the action log's index, auto-approvals from the
   stored rules (never `listPreApprovableActions()`, which asks each connection), and connections
   from their records.
 
-Beyond the workspace's own storage, a view reads only its owner's profile, from their account: in
-`describe()`, and in `listShareLinks()`, which uses the same lookup and only when the owner created
-a link.
+Beyond the workspace's own storage, a view asks only its owner's account, for two things. One is
+the owner's profile: in `describe()`, and in `listShareLinks()`, which uses the same lookup and
+only when the owner created a link. The other is the owner's account-wide grant, asked for only
+when a call that would return content finds no live grant in the workspace's own storage (see
+[The account-wide grant](#the-account-wide-grant)). That question is the one outward call content
+reads add.
 
 ### Who created a connection
 
@@ -257,11 +290,49 @@ Two kinds of connection have none:
 - **A connection whose creator was not recorded**: one written before creators were recorded, or a
   resource created in a turn that has no record.
 
+### Opening for content
+
+An inspection opens a view for `"metadata"` unless it asks for `"content"`
+(`AdminWorkspaceInspectOptions.access`). Content must be asked for, so that a view opened to look at
+metadata never reads a chat because a grant happened to be live: on a metadata view the five
+content reads are refused (`contentNotRequested`) and every other method answers as the
+`"metadata"` level does, whatever grants the workspace holds.
+
+- **Opening for content needs the level in force to be `"content"`**, by the authoritative config.
+  Below it the open is recorded and refused (`contentOff`) before any workspace is reached, as an
+  open is while the level is `"off"` (`accessOff`).
+- **It needs no grant yet.** The open looks for none and asks no account: its record says
+  `requested: "content"` and `exposed: "metadata"`, with no `grantId`. Each call of the view then
+  looks for a grant itself (see [Each call](#each-call)), so a view opened before a grant is given
+  reads content once one is, and stops when it ends.
+- **A value that is neither is rejected** with a `TypeError` before the open runs, by
+  `AdminApiImpl`'s RPC validation.
+
+What a view was opened for is fixed for its life and is on every record it makes (`requested`).
+An investigation therefore starts on a metadata view and moves to content deliberately, in a
+second `inspectWorkspace()` call with a reason of its own, and the log shows when it did.
+
+The Workshop never opens a view for content, and has no page for one workspace: content is read,
+a workspace's live grants listed (`describe().grants`), content access requested and a grant ended
+through the API and `cf-os api`:
+
+```sh
+pnpm cf-os api get-admin-api inspect-workspace <workspaceId> "<reason>" \
+  --options '{"access": "content"}' get-chat <chatId>
+pnpm cf-os api get-admin-api inspect-workspace <workspaceId> "<reason>" \
+  --options '{"access": "content"}' read-file <gadgetId> <path> --out <file>
+```
+
+`--out <file>` saves the bytes of a file the answer streams (see
+[The five content reads](#the-five-content-reads)); the JSON around them is printed as without it.
+
 ### Each call
 
 Every view method, the open included, runs through `adminViewCall()` (`admin-view.ts`), which each
 view's `#call()` hands its call to. Both views run it, a workspace's and a user account's, and it
-also appends the record each view builds:
+also appends the record each view builds. Steps 5 and 8 are a workspace view's alone: its `#call()`
+runs them inside the read it hands over, which is told the level in force. A user account's view
+answers with metadata alone, so it has neither:
 
 1. The view's checks: it has not expired (`viewExpired`), its admin is still an admin (`notAdmin`),
    and the workspace or the account still exists (`workspaceNotFound`, `userNotFound`). A call
@@ -274,29 +345,105 @@ also appends the record each view builds:
    refused (`accessOff`) without reading anything. Its record is sent with nothing awaited after
    step 3's check. Turning the setting off reaches live views within about a minute (the KV
    mirror's propagation), and a view still within its lifetime answers again once the level is
-   back at `"metadata"`.
-5. The read, on the server and never through a connection. A read that throws is recorded as an
-   attempt, once the checks pass again, and the call fails with the read's error: a missing
-   object, a gadget whose code is pending, a commit that is not stored, a chat that does not
-   exist. `listObserverRequirements()` throws, as the members' call does, for a legacy connection
+   back at `"metadata"` or `"content"`.
+5. Whether the call may return content. `ADMIN_METHOD_ANSWERS` says what the method's answer can
+   hold: `"metadata"` (metadata alone), `"mixed"` (content under a grant, metadata without one) or
+   `"content"` (content alone). A `"metadata"` method, the open among them, skips this step: it
+   never looks for a grant. For the others, three things are checked, in this order:
+   1. the view was opened for content (`contentNotRequested` otherwise);
+   2. the level in force is `"content"` (`contentOff` otherwise). The level is read on every
+      call, before any grant, so a grant never widens it: lowering the admin setting below
+      `"content"` reaches open views within about a minute (the KV mirror's propagation), and a
+      lowered cap takes effect when the deployment that carries it is live;
+   3. a grant is live for the workspace (`grantRequired` otherwise): in its own storage, or, as
+      its owner's account said within the last `ADMIN_GRANT_ACCOUNT_CACHE_SECONDS` (60),
+      account-wide (`contentGrant()`, see [Grants](#grants)). The view's checks run again after
+      it, since the question to the account may have awaited.
+
+   A `"content"` method lacking one of the three is recorded with `refused` set, exposing
+   `"metadata"`, and then refused with that code, having read nothing. A `"mixed"` method is not
+   refused: it goes on and answers as the `"metadata"` level does.
+6. The read, on the server and never through a connection. It is told whether the call may return
+   content, which is the one thing a withholding helper hangs on. A read that throws is recorded
+   as an attempt exposing `"metadata"` (with the grant's id when the call ran under one), once the
+   checks pass again, and the call fails with the read's error: a missing object, a gadget whose
+   code is pending, an invalid path, a commit that is not stored, a chat that does not exist. `listObserverRequirements()` throws, as the members' call does, for a legacy connection
    (one made before connections could verify collaborators) in the scope of the grant it was asked
    about: any such connection for `"workspace"`, and for a gadget only one the gadget reaches. A
-   malformed commit id is checked inside the read, so it is recorded this way. A number out of
-   range is not: `getCommitLog()`'s `depth` outside 1 to `MAX_ADMIN_COMMIT_LOG_DEPTH`, like
-   `listActions()`'s invalid `beforeId`, is rejected before the call starts, and is not recorded.
-6. The checks again, with nothing awaited before the record is sent, since the read may have
+   malformed string argument (a commit id, a path, an attachment id) is checked inside the read,
+   so it is recorded this way. A number out of range is not: `getCommitLog()`'s `depth` outside 1
+   to `MAX_ADMIN_COMMIT_LOG_DEPTH`, like `listActions()`'s invalid `beforeId`, is rejected before
+   the call starts, and is not recorded.
+7. The checks again, with nothing awaited before the record is sent, since the read may have
    awaited. If the view expired, its admin was demoted or the workspace was deleted while the
    call was reading, the call writes nothing, appends nothing for the workspace and returns
    nothing.
-7. The record, in the deployment-wide log.
-8. The answer.
+8. What the call exposed (`exposed`), from the answer it read: `"content"` only when the call ran
+   under a grant and its answer held something the `"metadata"` level withholds, `"metadata"`
+   otherwise (see [What a call exposed](#what-a-call-exposed)).
+9. The record, in the deployment-wide log, with the grant's id (`grantId`) when the call ran
+   under one, whether or not its answer held content.
+10. The answer.
 
-The record follows the read so that a call the view stops while it reads (expiry, a demotion, the
-workspace's deletion) writes nothing. The point a record must precede is the answer leaving the
-server, since that is what an admin sees. Holding the answer until its record exists means that
-nothing reaches an admin unrecorded and that a call whose record cannot be written returns
-nothing, and a call refused while the level is `"off"` is still recorded without reading anything.
-No check follows the append: the answer was read while the view was live, and its record exists.
+The record follows the read because it says what the call returned, which only the answer can
+tell, and so that a call the view stops while it reads (expiry, a demotion, the workspace's
+deletion) writes nothing. The point a record must precede is the answer leaving the server, since
+that is what an admin sees. Holding the answer until its record exists means that nothing reaches
+an admin unrecorded and that a call whose record cannot be written returns nothing, and a call
+refused by the level or for want of a grant is still recorded without reading anything. No check
+follows the append: the answer was read while the view was live, and its record exists.
+
+**A grant that ends while a view is open ends content on the view's next call.** Step 5 runs on
+every call, so nothing a view learnt earlier carries over: an owner ending their workspace's own
+grant, and an admin ending an approval's (`endWorkspaceGrant()`), are seen by the very next call,
+since both change the workspace's own storage; the end of an account-wide grant is seen within
+`ADMIN_GRANT_ACCOUNT_CACHE_SECONDS`. A grant given while a content view is open is found the same
+way, by the view's next call.
+
+**When the owner's account cannot answer**, the call is one with no grant: `contentGrant()` never
+throws, so a content method is recorded and refused `grantRequired`, and a mixed method answers
+withheld and is recorded as exposing `"metadata"`. A call never fails unrecorded because an
+account could not be reached.
+
+### The five content reads
+
+Each returns only content, so each is refused, and the refusal recorded, unless all three checks
+of step 5 pass. Each reads only what the workspace stores:
+
+| Call | Returns |
+| --- | --- |
+| `getChat(chatId, beforeSequence?)` | One page of a chat's messages, paged as a member's `getChatHistory()` pages it, with the compaction summary when the page starts at one. |
+| `readChatAttachment(chatId, id)` | The bytes of one attachment `listChatAttachments()` lists, as a stream. |
+| `readFile(gadgetId, path)` | One file at a permanent gadget's committed head. |
+| `readFileAtCommit(commitId, path)` | One file at any commit the workspace stores. |
+| `readPendingFile(chatId, gadgetId, path)` | One file of a chat's current content for a workpiece it holds changes to (`listPendingChanges()` names the paths). |
+
+**An admin's chat page carries no inline image.** A member's page inlines the bytes of its image
+attachments. An admin's returns every attachment as its reference alone, an image included, so
+that a page never holds an image whole on the server: its bytes are read with
+`readChatAttachment()`, which streams them.
+
+**A file is an `AdminFileContent`**: `text` for a text file of at most `MAX_BUFFERED_BLOB_SIZE`
+(1 MiB); `stream`, with its length, for a larger file or one that is not text; `absent` for a path
+that names nothing or a directory; `unreadable` for a symlink or a submodule, with a message that
+can quote the link's target. From `readPendingFile()` a file the chat holds as bytes is a `stream`
+whatever its size, and a pending text is one when its UTF-8 encoding is over the same bound.
+
+**Large files and attachments are streamed, never held whole.** A `stream` is read from the stored
+blob as the caller pulls it, and an attachment the same way. What is in memory is only what a
+stored record already holds whole: a pending text, which the chat's folded content holds as a
+string, and an attachment whose record keeps its own bytes. The stream is returned at step 10,
+after the record, and an answer in flight is not another use of the view, so:
+
+- **The stream is part of the recorded answer.** Its record, exposing `"content"`, exists before
+  the first byte leaves, and counts the file whole, whether or not the caller reads it to the end.
+- **Nothing checks the view again while the bytes flow.** A stream that has started runs to its
+  end after the view expires, its admin is demoted, the level is lowered or the grant ends: those
+  stop the next call, not an answer already recorded. A workspace restart ends it, as it ends
+  every session's streams.
+
+This matters most for `readFileAtCommit()`, which reads any stored commit, a repository a worktree
+checked out included, where a file can be far larger than a gadget's.
 
 A view lasts `DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS` (15 minutes) unless the open asks for up to
 `MAX_ADMIN_VIEW_LIFETIME_SECONDS` (an hour). A workspace restart (a revocation, a deletion, a
@@ -307,7 +454,9 @@ redeploy) ends every view along with every other session on it; inspect again.
 `AdminApi.inspectUser(userId, reason, { lifetimeSeconds })` opens an `AdminUserView` of one user's
 account as `inspectWorkspace()` opens a view of a workspace: the reason and the lifetime follow the
 same rules, the deployment's one level governs both, and every call runs as a workspace view's
-does (see [Each call](#each-call)). `userId` is the user's canonical id, exactly as `listUsers()`
+does (see [Each call](#each-call)), without its grant step: an account's view has no level to
+ask for (the options of `inspectUser()` declare no `access`), and at the `"content"` level it
+shows what it shows at `"metadata"`. `userId` is the user's canonical id, exactly as `listUsers()`
 lists it. The method's own check refuses an empty id (`userNotFound`); any other names the
 account's Durable Object, on which it calls
 `UserDurableObject.openForAdmin(adminId, reason, sessionId, terms)`.
@@ -386,6 +535,250 @@ A connected account whose gatekeeper is no longer bound is left out, of the list
 `describe()`'s count, as the user's own listing leaves it out. A restart of the account's Durable
 Object ends the view; inspect again.
 
+## Grants
+
+A grant is one record that makes a workspace's content readable by the deployment's admins for 72
+hours (`ADMIN_GRANT_LIFETIME_SECONDS`). It comes from the workspace's owner, for that workspace or
+for all of their workspaces, or from a second admin who approves another admin's request (see
+[Asking for content without the owner](#asking-for-content-without-the-owner)). No level shows
+content without one.
+
+### The record
+
+An `AdminAccessGrant` holds:
+
+| Field | What it is |
+| --- | --- |
+| `id` | Random and opaque. It is on the audit record of every call made under the grant. |
+| `level` | What it lets admins read: `"content"`. A field, so that another level needs no migration. |
+| `source` | `"owner"`, or `"admins"` for a second admin's approval. |
+| `scope` | `"workspace"`: the one workspace it is stored in. `"account"` (an owner's only): every workspace its giver owns. |
+| `grantedBy` | The owner, or the approving admin. |
+| `requestedBy`, `requestId`, `reason` | For `"admins"`: the admin who asked, the content access request it was approved through, and why, as the requester gave it. |
+| `grantedAt`, `expiresAt` | When it was given, and when it stops being live unless ended sooner: 72 hours after it was given or last renewed. |
+| `revokedAt`, `revokedBy` | When it was ended early and by whom. Set once, never cleared. |
+
+A workspace's grants are a collection of its own storage (`adminGrants`, by id). The account-wide
+grant is one value in its owner's account. A workspace can hold several live grants, and a content
+call needs any one.
+
+**One rule says whether a grant is live** (`isAdminGrantLive()`): its level is `"content"`, it is
+not revoked, and the time is before its end. It fails closed: a record whose end is not a valid
+time, or whose level is not one this server reads content under, is not live. The per-call check,
+the owner's methods, the admins' and the account's answer all decide through it.
+
+**A grant never widens the level.** While the level in force is below `"content"` a live grant
+reads nothing, new grants are refused (`contentOff`), and a grant still live when the level
+returns to `"content"` reads again (see [Access levels and their bounds](#access-levels-and-their-bounds)).
+
+**Who gave and who ended a grant is kept as an id and a display name** (`NamedUser`, made by
+`namedUser()`), each at most 256 characters, never a profile: a longer name is cut and marked, and
+a longer id is kept as the audit log keeps an owner's, as its start and a digest of the whole.
+
+**An ended grant is kept at least as long as the audit log keeps its records**, and deleted when
+its workspace or account next handles grants of that source after that (`isAdminGrantPrunable()`):
+the owner's methods delete the owner's, and the admins' grant writes delete either kind, except
+that ending a grant, the owner's revoke or an admin's `endWorkspaceGrant()`, reads no retention
+and deletes nothing, so that nothing it depends on can stop it. Nothing else prunes, so a
+workspace nobody gives, renews or lists a grant on again keeps its ended grants until it is
+deleted. The account-wide grant is the one exception to "at least": the account keeps one
+record, so an ended one is kept only until its owner gives the next, which replaces it whatever
+its age. Every grant of a workspace is deleted with it.
+
+### The owner's grant
+
+Only the workspace's owner grants. Four methods on `Overseer`, refused for anyone else as
+`deleteSelf()` is and denied in a `use` session:
+
+- `grantAdminAccess()` stores a grant for 72 hours and returns it;
+- `renewAdminAccess(grantId)` moves a live grant's end to 72 hours from now, any number of times;
+- `revokeAdminAccess(grantId)` ends it, and works whatever the deployment's level;
+- `listAdminGrants()` lists the owner's grants, live and recently ended.
+
+A collaborator cannot grant. Giving and renewing are refused `contentOff` while the level in force
+is below `"content"`.
+
+**The four methods see only the owner's own grants.** They never write, delete or return a grant
+whose source is `"admins"`: such a grant is absent from `listAdminGrants()`, and renewing or
+ending its id is refused `notFound` by the same lookup and the same throw as an id that names
+nothing, so an owner cannot learn by probing that one exists (see
+[Who sees a write in the workspace](#who-sees-a-write-in-the-workspace)).
+
+### The account-wide grant
+
+"All my workspaces" is one record in the owner's account, given, renewed and ended through the
+owner's own `AuthenticatedApi`: `grantAccountAdminAccess()` gives it, in place of an
+ended one, or moves the live one's end to 72 hours from now, `revokeAccountAdminAccess()` ends it,
+and `getAccountAdminGrant()` returns it. It is never copied into a workspace, and it covers
+workspaces made after it was given.
+
+A workspace asks its owner's account for it (`liveAccountAdminGrant()`) only when an admin's call
+needs content and the workspace's own storage holds no live grant (`contentGrant()`). No
+member-facing path, no listing and no metadata call ever asks.
+
+- **A live answer is kept for 60 seconds** (`ADMIN_GRANT_ACCOUNT_CACHE_SECONDS`), in memory,
+  counted from when the question was sent and for the owner it was asked of. An answer that
+  takes that long to arrive is neither used nor kept, so the call that waited for it is one with
+  no grant. A revocation of the account-wide grant is therefore seen by content calls within a
+  minute, where the end of a workspace's own grant is seen by the very next call.
+- **"No grant" is not kept**, so a grant given a moment later is found by the next content call.
+- **The workspace checks the answer itself** (`isLiveAccountGrant()`), each time it uses it: the
+  account's word is not taken for the grant's liveness, scope or source.
+- **An account that cannot answer counts as no grant.** The failure is logged, never kept, and
+  the call is still recorded (see [Each call](#each-call)).
+
+### Asking for content without the owner
+
+Any admin can ask to read a workspace's content without its owner's grant, and an admin other than
+the one who asked approves or denies the request. It is not a write: `ADMIN_WORKSPACE_WRITES`
+does not bound it. The level does: below `"content"` a request, an approval and the grant it gives
+are refused `contentOff`.
+
+- **The request.** `requestContentAccess(workspaceId, reason)`
+  (`cf-os api get-admin-api request-content-access <workspaceId> <reason>`) checks that the
+  caller is still an admin (`notAdmin`), the reason, as an inspection's is checked, the workspace
+  id's form (`workspaceNotFound`), the level in force by the authoritative config (`contentOff`:
+  a request is never made at a level the KV mirror alone still shows), and that the directory
+  lists the workspace (`workspaceUnlisted`): whoever approves must see whose workspace it opens.
+  It never reaches the workspace: the title and the owner it carries are the directory's, as
+  for an open refused before it reaches a workspace. `AdminSettings` then refuses a second
+  request while one for the workspace is pending (`requestPending`) and one more than
+  `MAX_PENDING_CONTENT_REQUESTS` (50) pending across the deployment (`tooManyRequests`), records
+  the request, and only once its record exists stores it. It stays pending for a day
+  (`ADMIN_CONTENT_REQUEST_LIFETIME_SECONDS`), and ends sooner when its requester stops being an
+  admin.
+- **The list.** `listContentAccessRequests()` returns every admin's requests, the pending ones
+  first, and `listAdminAudit({ pending: true })` the records of the pending ones. In the Audit tab,
+  **Pending requests only**, offered while the level in force is Content, lists those records; a
+  pending request's record carries a Pending badge, and its details offer Approve and Deny on
+  another admin's request, or Withdraw alone on the signed-in admin's own. Below Content, where an
+  approval is refused, only Deny is offered, so a request left from before the level was lowered
+  can be cleared. If the requests cannot be listed while the page holds some, the tab says so and
+  offers Retry. Each decision loads the log again, so its record shows and the request loses its
+  badge. The Workshop does not make requests: an admin makes one through the
+  API or `cf-os api`.
+- **The approval.** `approveContentAccess(requestId)`. `AdminSettings` claims the pending request
+  for the caller, refusing its requester (`secondAdminRequired`, which leaves it pending), a
+  request that is no longer pending (`requestNotPending`) and a level below `"content"`. The claim
+  is the request's one way out of `"pending"`. `AdminApiImpl` then asks the workspace for the
+  grant (`grantAdminContent()`), which checks again, in its own environment, that the two are
+  admins and not one admin, that the request gave it no grant already (`requestNotPending`), the
+  level, and that it still has the owner the request named (`workspaceChanged`: a deleted
+  workspace's id can be initialised again for someone else). It appends the approval's record,
+  naming the grant, and only then stores the grant: source `"admins"`, on that workspace, for 72
+  hours, never renewed. The workspace's answer is stored with the request: the grant's id, or the
+  refusal (`"failed"`). The call goes on under `waitUntil()` if the client hangs up; an approval
+  whose answer never arrives is failed after fifteen minutes, and never asked again.
+- **The denial.** `denyContentAccess(requestId)`, by any admin, its requester included, who so
+  withdraws it, at any level. It is recorded before it is stored.
+- **The end of a request.** One that runs out records nothing: no admin did anything. There is
+  no alarm: every method sweeps the requests before it reads one, ending those that have run out,
+  failing approvals whose answer never arrived and forgetting a request a day after it was
+  resolved.
+
+**Who counts as the requester.** Admin names match the `ADMINS` list regardless of the case of
+ASCII letters, while an account is named by its email as the identity provider spelled it, so two
+accounts that differ only by case are one entry of the list and one admin, and the approval
+compares names the way the list does (`sameDeploymentAdmin()`), never with `===`.
+
+**What it proves, and what it does not.** It proves that two admin accounts took part: one asked,
+and another approved. It does not prove two people: one person who holds two admins' sessions can
+ask with one and approve with the other. Against that stands the record: the request's and the
+approval's records name both accounts and their sessions.
+
+**A deployment with one admin cannot approve new requests**: nobody can approve its admin's
+request, so new access comes only from the owner's grant. Removing an admin from `ADMINS` does not
+end a grant an approval already gave, whether the removed admin asked for it or approved it: the
+grant is checked by its level, expiry and revocation, not by who took part, so it stays live until
+it expires or an admin ends it.
+
+**The grant is given once per request.** The workspace draws the grant's id before it appends the
+approval's record, which names it (`grantId`): every read made under the grant carries the same
+id, so it leads back to the approval. A request handed to the workspace a second time is refused
+(`requestNotPending`): the workspace finds the grant that names it.
+
+**One at a time.** An approval ends the workspace's live grant with source `"admins"`, if there is
+one, as ended by the approver, in the step that stores its own, and its record names the grant it
+ends (`replacedGrantId`). A workspace holds one, unless two approvals ran at once, each of which
+ends only the grant its record names.
+
+**Only admins end it.** `endWorkspaceGrant(workspaceId, grantId, reason)` ends a live grant with
+source `"admins"`, and nothing else: an owner's grant is the owner's to end (`notFound`, as for an
+id that names no grant). It asks only for an admin, whatever the level, since it only takes access
+away. The workspace (`endAdminGrant()`) appends the ending's record, with the grant's id, the
+admin who ended it and why (`endReason`), before it ends the grant: an ending whose record cannot
+be written does not happen. A grant another admin ended while the record was appended is refused
+`notFound`, and the record stands for the attempt.
+
+**A grant that runs out is recorded by nothing.** The grant says when it ends.
+
+**What does not end an approval's grant.** Removing its requester or its approver from `ADMINS`
+does not, nor does turning `ADMIN_WORKSPACE_WRITES` off. The grant stays live until it runs out
+or an admin ends it with `endWorkspaceGrant()`.
+
+What stops content for every grant, an approval's included, is the level: below `"content"` a
+live grant reads nothing, and it reads again if the level returns to `"content"` before the
+grant's end. To stop content reads, in this order:
+
+1. **Lower the level**: the admin setting, which reaches open views within about a minute (the
+   KV mirror's propagation), or `ADMIN_WORKSPACE_ACCESS_MAX`, which takes effect when the
+   deployment that carries it is live.
+2. **End the grant** with `endWorkspaceGrant()`, or let it run out, before raising the level
+   again.
+
+Ending a grant in the workspace's own storage is seen by the very next call: an owner ending
+their workspace's grant, and an admin's `endWorkspaceGrant()`. The end of an account-wide grant
+is seen within `ADMIN_GRANT_ACCOUNT_CACHE_SECONDS`.
+
+**The owner is not told.** The workspace shows nobody a request, its approval or the grant it
+gives:
+
+- nothing is entered in the action log, and no event is raised to the workspace's sessions, no
+  notification and no unread count, by the approval or by an admin's ending of its grant;
+- the grant is absent from every member-facing method. The owner's grant methods never write,
+  delete or return an approval's grant and append nothing because one exists: it is not in
+  `listAdminGrants()`, and `renewAdminAccess()` and `revokeAdminAccess()` on its id are refused
+  exactly as an unknown id is, so the owner cannot learn by probing that it exists;
+- nothing a member can call, see or subscribe to changes because such a grant exists or because
+  content was read, under any grant. An owner's own grant is theirs to list and to end, and the
+  reads made under it are in the admins' audit log, not in the workspace;
+- one thing is not hidden: an admin's call starts an idle workspace's Durable Object as any
+  call does, and a chat subscriber is sent the time that instance started
+  (`streamGeneration`). A member can therefore see that something woke the workspace, and
+  when. It does not say what: a scheduled task, a hook, a collaborator and an admin's metadata
+  inspection wake it the same way.
+
+What stands in for the owner's knowledge is a second admin's approval, the reason, and the audit
+records of the request, the approval and every read made under the grant.
+
+### An owner's grant is the owner's own record
+
+Giving, renewing and ending an owner's grant, and its expiry, on one workspace or account-wide,
+write no record to the admin audit log. The log records what admins do. So nothing bounds how
+often an owner grants or renews. Admins learn of an owner's grant where they work:
+
+- among the workspace's live grants on the admin view (`describe().grants`);
+- by its id (`grantId`) on the record of every content call made under it, which is all the audit
+  log says of it.
+
+What admins do about a grant is recorded, as grant records: a request to read content without
+the owner, its denial, its approval and an admin's ending of its grant; and every call made under
+any grant is an access record that names it.
+
+### What the listings return
+
+An owner gives grants without limit and a display name has no bound of its own, so the answers
+are bounded, not the owner: each listing returns at most `MAX_ADMIN_GRANTS_LISTED` (20).
+
+- `listAdminGrants()` puts the owner's live grants first, newest first, then the ended ones still
+  kept, so that while a grant the owner can still end exists, one is listed. An owner with more
+  than 20 live grants is shown the newest 20; ending one makes room for the next.
+- `describe().grants` lists live grants only: the one a second admin approved first, then the
+  owner's newest, so that the owner's grants never crowd out the one kind of grant only an admin
+  can end. The owner's listing is not the whole set once it holds 20.
+  The account-wide grant is not among them, since the workspace asks for it only when a call
+  needs content.
+
 ## Writes
 
 An admin can also change a workspace, in two ways: stop an agent, or restart the workspace.
@@ -434,10 +827,11 @@ Audit tab, never by the workspace's members.
 
 As for an inspection, by explicit policy the admin is not checked by `authorizeCollaborator()` or
 observer verification, and joins no session, presence or outputs fan-out. Unlike an inspection,
-which starts nothing, a write does what its operation does for a member.
+which starts nothing, a write that changes a workspace does what its operation does for a member.
 
-Each action runs an `OverseerImpl` operation of its own, the one a member's session runs for it
-or close to it:
+Each of the two actions that change a workspace runs an `OverseerImpl` operation of its own, the
+one a member's session runs for it or close to it; the third stores a record and runs nothing a
+member can run:
 
 | Action | Arguments | Operation |
 | --- | --- | --- |
@@ -471,8 +865,9 @@ workspace about 100 ms after it answers, and an operation can throw partway.
 
 ### The levels
 
-`adminWorkspaceAccess` is `"off"` or `"metadata"` (the default). One setting and one cap govern
-both inspections, of a workspace and of a user's account:
+`adminWorkspaceAccess` is `"off"`, `"metadata"` (the default) or `"content"`, in increasing order
+(`ADMIN_WORKSPACE_ACCESS_LEVELS`). One setting and one cap govern both inspections, of a workspace
+and of a user's account:
 
 - **off**: `inspectWorkspace()` and `inspectUser()` are refused.
 - **metadata**: the workspace's structure. Withheld: chat messages and queued steers, chat
@@ -504,13 +899,39 @@ both inspections, of a workspace and of a user's account:
     names, avatar, granted resource types and what it provides) and blueprints' ids (an id is a
     share link to the blueprint's code, as a workspace's is). What an account stores as a
     credential is never returned (see [User inspection](#user-inspection)).
+- **content**: what `"metadata"` shows, and what it withholds of a workspace too, but only under a
+  live grant on that workspace (see [Grants](#grants)) and only through a view opened for content.
+  Without a grant, `"content"` shows what `"metadata"` shows, and of a user's account it never
+  shows more. No level shows content without a grant.
 
-Content reads are not offered: no level and no method returns what `"metadata"` withholds.
-[What the metadata level withholds](#what-the-metadata-level-withholds) lists it per method.
+[What the metadata level withholds](#what-the-metadata-level-withholds) lists per method what
+`"metadata"` withholds, which is what a grant adds at `"content"`.
 
-A deployment whose admins never chose a level is at `"metadata"`. A stored level that is not
-`"off"` or `"metadata"` counts as `"off"` until an admin chooses one, and `getSettings()` reports
-it as `chosen: "off"`.
+**Content is off by default.** A deployment whose admins never chose a level is at `"metadata"`,
+and with `ADMIN_WORKSPACE_ACCESS_MAX` unset the cap is `"metadata"` too. Content can be granted
+and read only where the level in force (the admins' choice held to the cap, as
+`adminAccessPolicy()` computes it) is `"content"`, which takes two decisions: the operator raises
+the cap, and an admin chooses Content in the admin panel. Raising the cap alone changes nothing an
+admin can read; choosing Content alone is refused while the cap is below it.
+
+Below `"content"`:
+
+- `grantAdminAccess()`, `renewAdminAccess()` and the account-wide grant are refused
+  (`contentOff`);
+- no content access can be requested or approved (`contentOff`);
+- a view cannot be opened for content (`contentOff`);
+- a grant that is already live reads nothing until the level is `"content"` again: the level is
+  checked on every call, before the grant.
+
+A value that is not a level, wherever it is stored or configured, reads as `"off"`: a stored one
+until an admin chooses a level (`getSettings()` reports it as `chosen: "off"`), a configured one
+until the variable is corrected.
+
+**What a member's client learns.** A member's client must know whether content can be granted, to
+show or hide the option, and nothing else about the admin configuration. It reads one fact from
+the channel the Workshop already reads deployment-wide facts from: `ServerConfig.adminContentGrants`,
+present while the level in force is `"content"`. The server decides all the same: a grant asked
+for while it is absent is refused.
 
 ### The environment's bounds
 
@@ -521,13 +942,14 @@ environment variable for the same reason.
 
 | Variable | Values | Default | Effect |
 | --- | --- | --- | --- |
-| `ADMIN_WORKSPACE_ACCESS_MAX` | `off`, `metadata` (any case, trimmed) | `metadata` (unset or blank) | The highest level admins may choose. `metadata` is also the default and the highest level there is, so the variable is the operator's off switch: `off` turns inspection off whatever admins choose. Any other value is `off`, logged as an error: it bounds a security setting, so `none`, `false` or a typo of `off` must fail closed, never grant the default. |
+| `ADMIN_WORKSPACE_ACCESS_MAX` | `off`, `metadata`, `content` (any case, trimmed) | `metadata` (unset or blank) | The highest level admins may choose. `off` turns inspection off whatever admins choose. `content` is needed before any grant can be given or used: it lets admins choose Content, at which a workspace's content is read only under a live grant. A value that is not a level is `off`, logged as an error: it bounds a security setting, so `none`, `false` or a typo of `off` must fail closed, never grant the default. |
 | `ADMIN_AUDIT_RETENTION_MIN_DAYS` | a positive whole number of days, at most 3650 (`MAX_ADMIN_AUDIT_RETENTION_DAYS`); a larger value counts as 3650 | 90 (unset, blank or invalid; an invalid value is logged) | The fewest days the audit log keeps a record, whatever admins choose. |
 | `ADMIN_WORKSPACE_WRITES` | `on`, `off` (any case, trimmed) | `off` (unset or blank) | Whether admins may make [writes](#writes) to workspaces. Any other value is off, logged as an error, so `true`, `1` or a typo of `on` never enables them. |
 
 The admins' choice is kept in `AdminConfig` as they set it, and `adminAccessPolicy()` holds it within
 the bounds wherever it is enforced: `inspectWorkspace()`, `inspectUser()`, every view call, the
-settings audit and the audit log's own floor. `getSettings()` reports `chosen`, the bound
+grant methods, a content access request, its approval and its grant, the settings audit and the audit
+log's own floor. `getSettings()` reports `chosen`, the bound
 (`max` or `min`), and `effective`, which is what is enforced. The setters refuse a value outside the
 bounds, naming the variable; a choice stored before a bound tightened is kept but not enforced.
 `setAdminWorkspaceAccess()` refuses a value that is not a level, storing and recording nothing.
@@ -538,7 +960,8 @@ before a write reaches the workspace, and the workspace asks it again before the
 asks its own environment, and each checks that the caller is still in `ADMINS` the same way, so a
 session whose Worker started with an older config is held to the current one. The access level
 does not bound writes: where it is `off`, no inspection can show what a chat id names, and a write
-still runs.
+still runs. Nor does the switch bound a request to read a workspace's content, which is not a
+write: the level does (see [Asking for content without the owner](#asking-for-content-without-the-owner)).
 
 ### Setting the bounds
 
@@ -546,7 +969,11 @@ All three are variables of the backend Worker (`workshop-backend`):
 
 - **Locally** (`pnpm run-local`, `pnpm dev-server`): set them in the shell or in the root
   `.dev.vars`; `scripts/run-dev-server.ts` passes all three through to the backend, for example
-  `ADMIN_WORKSPACE_ACCESS_MAX=off pnpm dev-server` or `ADMIN_WORKSPACE_WRITES=on pnpm dev-server`.
+  `ADMIN_WORKSPACE_ACCESS_MAX=content pnpm dev-server` or
+  `ADMIN_WORKSPACE_WRITES=on pnpm dev-server`. A local instance has one admin, `admin`, and an
+  approval of content access needs two: `ADMINS` in the shell (comma-separated usernames)
+  replaces that list, so `ADMINS=admin,grace pnpm dev-server` gives a second admin. That is for
+  local development only; no deployment path reads the shell's `ADMINS`.
 - **Your own `wrangler deploy` or workerd config**: the backend Worker's `vars`.
 - **Deploy tools that write the backend's variables themselves** (the online deploy flow and the
   deployment starter's `cf-os deploy`, both linked from the [README](../README.md#get-started)):
@@ -555,13 +982,17 @@ All three are variables of the backend Worker (`workshop-backend`):
   deployments run with the defaults. Any redeploy that writes its own variables must carry all
   three.
 - **Pull request previews** (`scripts/preview/staging-config.ts`): `ADMIN_WORKSPACE_WRITES` is `on`
-  in each preview, so that writes can be tried there, and off in the shared baseline the previews
-  branch from. The other two keep their defaults.
+  and `ADMIN_WORKSPACE_ACCESS_MAX` is `content` in each preview, so that writes, grants and content
+  reads can be tried there, and both keep their defaults in the shared baseline the previews branch
+  from. The retention floor keeps its default.
 
 ### When a variable is dropped
 
 - The cap falls back to `metadata`. A deploy that drops `ADMIN_WORKSPACE_ACCESS_MAX=off` therefore
-  turns inspection back on, at the level the admins chose: `metadata`, unless they chose Off.
+  turns inspection back on, at the level the admins chose: `metadata`, unless they chose Off. A
+  deploy that drops `ADMIN_WORKSPACE_ACCESS_MAX=content` puts the level in force back at
+  `metadata` once it is live: no grant can be given or used, and a grant still live reads nothing
+  unless the cap returns before the grant's end.
 - The floor falls back to 90 days, and with it the retention actually kept wherever the admins
   chose less, which prunes the older records.
 - Writes go off.
@@ -577,23 +1008,28 @@ settings across deploys, while a variable only bounds what an admin session can 
 
 ## The audit
 
-### Four kinds of record
+### Five kinds of record
 
 - **`AdminAccessRecord`** (`kind: "workspace"`): one admin call into a workspace, the open or a view
   method. It holds `at` (when the record was written), `admin`, `sessionId`, `via`, `workspaceId`,
   the workspace's owner (`workspaceOwner`, resolved when the view opens; from the directory for an
   open refused before it reaches the workspace; a username is unbounded, so a long one keeps its
   start and a digest of the whole id, which keeps long ids apart), the workspace's title at the
-  time, `method`, the call's arguments by name, the `reason` given at the open, the deployment's
-  `access` level when the call ran (`"metadata"`, or `"off"` for a call refused for that), and
-  `refused` when the level refused it.
+  time, `method`, the call's arguments by name, the `reason` given at the open, what the view was
+  opened for (`requested`), the deployment's `access` level when the call ran (`"off"` for a call
+  refused for that), what the call's answer exposed (`exposed`, see
+  [What a call exposed](#what-a-call-exposed)), the grant the call was made under (`grantId`,
+  whatever the grant's source: present when the call was allowed content, whether or not its
+  answer held any), and `refused`, the code a refused call was refused with: `accessOff`,
+  `contentOff`, `contentNotRequested` or `grantRequired`.
 - **`AdminUserAccessRecord`** (`kind: "user"`): one admin call into a user's account, the open or a
   view method. It holds `at`, `admin`, `sessionId`, `via`, the user whose account it is (`userId`,
   by canonical user id, kept as `workspaceOwner` is: a long one keeps its start and a digest of the
   whole id; for an open refused before it reaches the account, the id the admin gave), `method`,
-  the `reason` given at the open, `access` and `refused`, each as an `AdminAccessRecord` holds it,
-  and its own `args`: only the open records one (`expiresAt`), since no user view method takes an
-  argument.
+  the `reason` given at the open, its own `access` (`"metadata"`, or `"off"` for a call refused
+  for that: a view of an account answers with metadata alone, whatever level is in force) and
+  `refused` (`accessOff` alone), and its own `args`: only the open records one (`expiresAt`),
+  since no user view method takes an argument. It carries no `requested`, `exposed` or `grantId`.
 - **`AdminSettingRecord`** (`kind: "setting"`): one `AdminApi` setter's change. It holds `at`,
   `admin`, `sessionId`, `via`, `method`, and `changes`, each naming a setting, an entry `key` for a
   map or list setting, and its value `before` and `after`.
@@ -603,11 +1039,39 @@ settings across deploys, while a variable only bounds what an admin session can 
   them), `method` (the action, named as on the other records so that one filter covers every
   kind), the write's `args` by name and its `reason`. It says what was asked for, not what came of
   it (see [When a write fails](#when-a-write-fails)).
+- **`AdminGrantRecord`** (`kind: "grant"`): one step of admins' access to a workspace's content
+  without its owner. It holds `at`, `admin` (whose step it is), `sessionId`, `via`, `workspaceId`,
+  the workspace's owner and title, the request's `reason`, `method` (the step), the `requestId` its
+  steps share, `requestedBy`, and, where the step has one, the `grantId` or the `endReason`. The
+  four steps:
+
+  | Method | Step | Whose (`admin`) | Recorded |
   | --- | --- | --- | --- |
+  | `requestContentAccess` | An admin asked to read the workspace's content. | The requester | By `AdminSettings`, before the request is stored, with the directory's owner and title. |
+  | `denyContentAccess` | An admin denied it, or its requester withdrew it. | The denier | By `AdminSettings`, before the denial is stored. |
+  | `approveContentAccess` | A second admin approved it (`grantId`: the grant it gives). | The approver | By the workspace, with its own owner and title, before the grant is stored. |
+  | `endWorkspaceGrant` | An admin ended the grant before its time (`grantId`, `endReason`; `reason` stays the requester's). | The admin who ended it | By the workspace, before the grant is ended. |
+
+  A request that runs out, and a grant that runs out, record nothing: no admin did anything.
+
+**An owner's grant has no record.** The log records what admins do, and an owner's grant is the
+owner's own record (see
+[An owner's grant is the owner's own record](#an-owners-grant-is-the-owners-own-record)): giving,
+renewing and ending one, and its expiry, append nothing. Every call made under a grant, of either
+source, is an access record with the grant's id.
 
 `listAdminAudit()` filters by kind, admin, method, workspace, the user a call's or a write's target
-belongs to (`owner`) and time; `getAdminAuditStats()` by kind. The method and that user stay in a
-record's JSON, each read through an index on its `json_extract()`. The owner filter covers a
+belongs to (`owner`), what a call exposed (`exposed`), the requests still pending (`pending`) and
+time; `getAdminAuditStats()` by kind. `pending: true` lists the `requestContentAccess` records of
+the requests `listContentAccessRequests()` gives as pending, the ones an admin can approve or
+deny: `AdminApiImpl` reads their ids (at most `MAX_PENDING_CONTENT_REQUESTS`) and passes them to
+the store as one JSON parameter, matched through `json_each()`, so no count of ids meets the limit
+on bound parameters; with none pending the page is empty and the store is not asked.
+`exposed: "content"` lists the content reads, which only calls into a workspace can be;
+`exposed: "metadata"` lists every other call into a workspace and every call into a user's
+account, which answers with metadata alone; no setting or write record matches either. The method
+and that user stay in a record's JSON, each read through an index on its `json_extract()`. The
+owner filter covers a
 workspace's owner and an inspected user through one index, on the record's `userId` or else its
 `workspaceOwner` (`admin_audit_target`), so it lists the calls into a user's account together with
 the calls into, and the writes to, the workspaces they own. The two views share three method names
@@ -618,8 +1082,8 @@ of it and nothing else. A method no record type names is refused
 empty page.
 
 The store's table admits exactly these kinds, by a CHECK on its `kind` column, and its `exposed`
-column holds `'metadata'` for every access record, of either kind, and nothing for a setting or a
-write record. SQLite cannot alter a CHECK, so
+column holds what an access record's answer exposed (`'metadata'` for every call into a user's
+account) and nothing for a setting or a write record. SQLite cannot alter a CHECK, so
 a table whose stored definition differs from the current one is rebuilt once, when the log's
 Durable Object next starts: its rows are copied into a table of the current definition, each
 keeping its `seq`, and the table goes on numbering from the highest `seq` it ever issued, a pruned
@@ -630,13 +1094,18 @@ and the log goes on appending the kinds that table admits.
 
 ### What the metadata level withholds
 
-Every answer is what the `"metadata"` level shows (see [The levels](#the-levels)). The methods
-that read a record holding content return it with that content left out or emptied, and the others
-read nothing the level withholds:
+Without a grant, every answer is what the `"metadata"` level shows (see
+[The levels](#the-levels)). The methods that read a record holding content return it with that
+content left out or emptied, and the others read nothing the level withholds. What the last
+column lists is what a live grant adds, on a view opened for content while the level in force is
+`"content"`: the seven mixed methods (`describe()`, `listChats()`, `getChatState()`,
+`listActions()`, `getCommitLog()`, `listGatekeepers()`, `listBlueprints()`) then return it in
+place, and the rest (messages, an attachment's bytes, files) comes from
+[the five content reads](#the-five-content-reads):
 
 | Call | Returns | Withholds |
 | --- | --- | --- |
-| `describe()` | The workspace's id, title, cost, restricted-data flag, sharing policy and default gadget, its owner's profile, its workpieces and its collaborators, with the view's expiry | Each gadget's `upstream`, which names the blueprint it follows |
+| `describe()` | The workspace's id, title, cost, restricted-data flag, sharing policy and default gadget, its owner's profile, its workpieces and its collaborators, with what the view was opened for (`access`), the live grants the workspace stores (`grants`) and the view's expiry | Each gadget's `upstream`, which names the blueprint it follows |
 | `listChats()` | The chats as a member's `listChats()` lists them, titles included | `queuedSteers`, which hold message text |
 | `getChatState()` | The recorded agent turn, the time of the chat's newest entry, the ids of its pending actions, and each queued call's id, method and model | Each queued call's arguments |
 | `listChatAttachments()` | Each attachment's id, name, type, size and `oid`, with its message's sequence | The bytes, which a stored reference can hold |
@@ -657,31 +1126,71 @@ read nothing the level withholds:
 The open (`inspectWorkspace`) returns the view and nothing of the workspace.
 
 The withholding helpers (`withholdChatContent()` and its siblings in `admin-access.ts`) are
-applied to every answer unconditionally: no setting and no option skips one. What is kept can
-still echo content, as [The levels](#the-levels) says of titles, names, notes and blueprint
-descriptions.
+applied to every answer unless `#call()` told the read that the call may return content. That
+flag is the one condition a helper hangs on: no setting, no option and no test of the read's own
+skips one. What is kept can still echo content, as [The levels](#the-levels) says of titles,
+names, notes and blueprint descriptions.
 
 [User inspection](#user-inspection) lists the same for each call into a user's account.
+
+### What a call exposed
+
+`ADMIN_METHOD_ANSWERS` (`admin-access.ts`) classifies every view method by what its answer can
+hold: `"metadata"`, `"mixed"` or `"content"`. It is one table over every method of
+`ADMIN_WORKSPACE_METHODS`, the open included, and `#call()` reads a method's kind from it and
+from nowhere else, so a method added to the view does not compile until it is classified, and no
+second list can disagree with it.
+
+Each access record says what its call exposed:
+
+| Call | `exposed` | `grantId` |
+| --- | --- | --- |
+| A `"metadata"` method, on any view | `"metadata"` | Absent: it never looks for a grant. |
+| A `"mixed"` method without a grant (a metadata view, a level below `"content"`, or no live grant) | `"metadata"`: it answered withheld | Absent |
+| A `"mixed"` method under a grant | `"content"` when the answer held something the `"metadata"` level withholds (a queued steer, a commit message, an action's description), `"metadata"` when it held none | Present |
+| A `"content"` method under a grant | `"content"`, or `"metadata"` for an answer that holds none (an `absent` file) | Present |
+| A `"content"` method without a grant | `"metadata"`, with `refused`: it read nothing | Absent |
+| A call whose read failed | `"metadata"` | Present when it ran under a grant |
+
+`exposed` is computed from the answer (the `...HoldsContent` predicates beside the withholding
+helpers), not from the method's name, so a mixed call that returned no content under a grant is
+not counted as a content read, and its `grantId` still shows that it was allowed one. A stream
+counts as content whole, whether or not it is read to its end.
+
+The store keeps `exposed` in a column of its table, for the filter and the statistics, and
+returns it on every access record. `requested` is kept in the record's JSON; a record stored
+without it reads `"metadata"`, which is what a view is opened for unless content is asked for. So
+every access record the API returns carries both. A record of a call into a user's account
+carries neither: its row holds `'metadata'` in the column, which is what the `exposed` filter
+matches.
 
 ### Recorded before anything leaves
 
 An access record is written to the deployment-wide `AdminAuditDurableObject`, and only then is the
 answer returned. Nothing is written to the workspace, so `listActions()`, `subscribeToActions()`
-and everything else a member reads can never show an inspection. Nor is anything written to an
-inspected account. If the write fails, the call fails and returns nothing.
+and everything else a member reads can never show an inspection, a content read included. Nor is
+anything written to an inspected account. If the write fails, the call fails and returns nothing.
+A call refused for want of a grant, or because content was not asked for or is off, is recorded
+the same way before it is refused.
 
 A setting record is written to the deployment-wide log before the change is stored: a change whose
 record cannot be written is refused.
 
 A write record is written by the workspace before it changes anything, so a write whose record
 cannot be written does not happen. The workspace keeps no note of the write (see
-[Who sees a write in the workspace](#who-sees-a-write-in-the-workspace)).
+[Who sees a write in the workspace](#who-sees-a-write-in-the-workspace)). A grant record precedes
+its step the same way: a request, a denial, an approval or an ending whose record cannot be
+written is not taken. A grant step writes nothing to the workspace a member can see.
+
+An owner's grant calls append nothing to the log.
 
 ### Which refusals are recorded
 
 | Refusal | Recorded | Why |
 | --- | --- | --- |
 | A live view's call refused while the level is `"off"` (`accessOff`) | Yes, with `refused` | The admin reached the workspace or the account and asked for something. |
+| A content read refused on a view opened for metadata (`contentNotRequested`), while the level in force is below `"content"` (`contentOff`), or without a live grant (`grantRequired`) | Yes, with `refused`, exposing `"metadata"` | The admin asked a workspace for its content. That includes a call refused because the owner's account could not be asked for its grant. |
+| An open asking for content while the authoritative level is below `"content"` (`contentOff`) | Yes, titled from the directory (cut) or `""` | As for an open refused while the level is `"off"`: no workspace is reached. |
 | A live view's call whose read throws (a missing object, a pending gadget, a malformed commit id, a commit that is not stored, a chat that does not exist, a legacy connection in a grant's scope) | Yes | The admin reached the workspace or the account and asked for something; the call returned only its error. A commit id is checked inside the read, so a malformed one is a failed read. |
 | An open refused because the authoritative setting or the cap is `"off"` | Yes, titled from the directory (cut) or `""` | No workspace is reached, so its title comes from the directory. |
 | An open refused because only the workspace's KV mirror still says `"off"` | Yes | The workspace's own check refused it. |
@@ -693,10 +1202,16 @@ cannot be written does not happen. The workspace keeps no note of the write (see
 | A write refused `notAdmin`, `writesOff` or `workspaceNotFound` before its record is appended, or whose reason, `via` or arguments are rejected | No | `AdminApiImpl` or the workspace refuses it before its record is appended: nothing changed. |
 | A write whose workspace is deleted while its record is appended (`workspaceNotFound`) | Already recorded | The record stands for the attempt, and the workspace runs nothing. |
 | A write that fails once recorded (its operation throws) | Already recorded | The record precedes the write; the failure is the caller's error. |
+| A content access request refused before it is stored (`notAdmin`, a rejected reason, `contentOff`, `workspaceNotFound`, `workspaceUnlisted`, `requestPending`, `tooManyRequests`) | No | Nothing was stored, and no workspace was reached. |
+| An approval refused when it is claimed (`notAdmin`, `secondAdminRequired`, `requestNotFound`, `requestNotPending`, `contentOff`), and a denial of a request that is no longer pending | No | Nothing was claimed or granted. A requester's own approval leaves the request pending for another admin. |
+| An approval the workspace refuses (`notAdmin`, `secondAdminRequired`, `requestNotPending`, `contentOff`, `workspaceChanged`, `workspaceNotFound`) | No | No grant was given; the request is stored as `"failed"` with the refusal. |
+| An `endWorkspaceGrant()` refused `notAdmin`, `workspaceNotFound` or `notFound` (an id naming no live grant with source `"admins"`) | No. One refused `notFound` only after its record was appended, because another admin ended the grant meanwhile, leaves that record | No grant changed. A record left behind is of the attempt. |
+| An owner's grant call, refused or not (`grantAdminAccess()` and its siblings, the account-wide grant) | No | An owner's grant is the owner's own record: the log records what admins do. |
 
 ### Setting records
 
-Every setter is recorded before its change takes effect. `AdminSettings.#mutateAdminConfig()`, which
+Every setter of a setting is recorded before its
+change takes effect. `AdminSettings.#mutateAdminConfig()`, which
 serializes every `AdminConfig` write, is the chokepoint: each admin-facing mutator takes a
 trailing `AdminSettingActor` (who, which session, `via`, and the `AdminApi` method), and the
 chokepoint records `diffAdminConfig(current, next)` before `storage.adminConfig.put(next)`.
@@ -721,9 +1236,11 @@ chokepoint records `diffAdminConfig(current, next)` before `storage.adminConfig.
   repairing the KV mirror). A record is kept if the change then fails, for example when the KV
   mirror write fails and the config is rolled back: it records the attempt.
 
-Not recorded: reads (`getSettings`, `isBlueprintFeatured`, `getUpdateStatus`, the listings and the
-audit log itself), the gateway tests, `checkForUpdates`, and the deployment's own promotion of its
-bundled formats, which no admin made.
+Not recorded: reads (`getSettings`, `isBlueprintFeatured`, `getUpdateStatus`,
+`listContentAccessRequests`, `getContentAccessRequest`, the listings and the audit log itself), the
+gateway tests, `checkForUpdates`, and the deployment's own promotion of its bundled formats, which
+no admin made. The content access requests and `endWorkspaceGrant` are recorded, as grant records and not
+setting records.
 
 ### Text bounds
 
@@ -741,9 +1258,18 @@ limit of its own: kept whole, an over-long title would overflow the row (the pla
 8 MiB), failing every audit write and so refusing every investigation of that workspace, or push a
 listing past the RPC size limit.
 
-The store's table also has an `exposed` column with an index (`admin_audit_exposed`): `append()`
-writes `metadata` there for every access record and nothing for a setting or a write record. The column is not
-part of a record the API returns, and no query filters by it.
+The store's table keeps `exposed` in a column with an index (`admin_audit_exposed`): `append()`
+writes an access record's `exposed` there, leaving it out of the JSON so that the field is stored
+once, `metadata` for a record of a call into a user's account, and nothing for a setting, a write
+or a grant record. The column is what the `exposed` filter and
+`contentReads` read, and it is returned on every access record. An access record handed to
+`append()` without `exposed` is stored as `metadata`: the log is one deployment-wide object, and a
+workspace whose isolate still runs code that sends no such field, during a rollout, must have its
+record kept; such a caller returns metadata only, so `metadata` is what its answer held. A value
+that is neither is a `TypeError`, as for any malformed record.
+
+A grant's `grantedBy` and `revokedBy` are bounded the same way before they are stored (`namedUser()`): the id as a long owner id is, the name cut to 256
+characters.
 
 ### Retention and pruning
 
@@ -752,7 +1278,13 @@ never below the floor). It deletes up to 1000 expired rows at the start of each 
 committed retention, and never lists or counts one, and it holds the floor itself whatever retention
 a caller passes. A view call's record passes none, since a view reads the KV mirror, whose retention
 may be one an admin has since raised; the next listing, statistics read or settings change prunes.
-The write record a workspace appends passes none either.
+The write, approval and ending records a workspace appends pass none either; a content access
+request's and a denial's pass the committed retention.
+
+Grants lean on the same retention: an ended grant is kept at least that long before it is deleted
+(see [The record](#the-record), with its one exception), by the retention its workspace or account
+last read, which can trail a change an admin has just made. Nothing checks access against an ended
+grant, so that is enough.
 
 ### Statistics
 
@@ -765,12 +1297,23 @@ window reaching past the retention counts nothing there.
 The statistics also count the writes in the window (`writes`: its write records). Only write
 records are writes, so `writes` is 0 for the other kinds.
 
-The Audit tab shows the week's total, its count per day, its most active admins and its writes,
-each record's kind (Workspace access, User access, Workspace write, Setting change), and each
-call's or write's target user (a workspace's owner, or the user whose account was inspected) in a
-column of its own. It filters its log by admin, action, kind, workspace and target user. A write
-record, opened, shows its workspace, reason, arguments and `via`. Its access setting offers Off
-and Metadata, and says what Metadata withholds of a workspace and of a user's account.
+They count the content reads in the window too (`contentReads`: the access records whose `exposed`
+is `"content"`), which is 0 for the other kinds for the same reason.
+
+The Audit tab shows the week's total, its count per day, its most active admins, its writes and
+its content reads, each record's kind (Workspace access, User access, Workspace write, Content
+grant, Setting change), and each call's or write's target user (a workspace's owner, or the user whose
+account was inspected) in a column of its own. A workspace access record carries a badge for what
+it exposed, colored only for a content read, and, opened, what its view was opened for, the grant
+it ran under and the refusal it carries. The tab filters its log by admin, action, kind,
+workspace, target user, what a call exposed and the requests still pending; the count of content
+reads opens the log filtered to them. A write record, opened, shows its workspace, reason,
+arguments and `via`; a grant record its workspace, request, reason, who requested it, and the
+grant or end reason it carries, and a pending request's record Approve and Deny (see
+[Asking for content without the owner](#asking-for-content-without-the-owner)).
+Its access setting offers Off, Metadata and Content, says what Metadata withholds of a workspace and
+of a user's account and that Content is read only under a live grant, and, where the deployment's
+cap is below it, that only `ADMIN_WORKSPACE_ACCESS_MAX` can allow Content.
 
 ## Error codes
 
@@ -784,7 +1327,24 @@ Expected refusals carry a code from `ADMIN_ACCESS_ERROR_CODES` (read with
 | `ADMIN_USER_NOT_FOUND` | An empty user id, or one naming no account; a user view's call once its account is gone. |
 | `ADMIN_WORKSPACE_ACCESS_OFF` | The level is `"off"`: by the setting, by the cap, or because either holds a value that is not a level. |
 | `ADMIN_VIEW_EXPIRED` | The view's lifetime has run out. |
+| `ADMIN_WORKSPACE_CONTENT_OFF` | The level in force is below `"content"`: an open asking for content, a content read on a view opened for it, an owner's grant or renewal, the account-wide grant, and a content access request, its approval or its grant. |
 | `ADMIN_WORKSPACE_WRITES_OFF` | `ADMIN_WORKSPACE_WRITES` is not `on`: a write, refused by `AdminApiImpl` or by its workspace. |
+| `ADMIN_CONTENT_NOT_REQUESTED` | A content read on a view opened for metadata. Inspect again, asking for content. |
+| `ADMIN_GRANT_REQUIRED` | A content read with no live grant for the workspace: its owner can give one, or a second admin can approve a request for one. |
+
+The grant methods refuse with a code from `ADMIN_GRANT_ERROR_CODES` (read with
+`getAdminGrantErrorCode()`):
+
+| Code | When |
+| --- | --- |
+| `ADMIN_GRANT_NOT_FOUND` | `renewAdminAccess()` for an id that names no live grant of the owner's on the workspace; `revokeAdminAccess()` for one that names no grant of the owner's there; `endWorkspaceGrant()` for one that names no live grant with source `"admins"`. An approval's grant is not the owner's, and an owner's is not an admin's to end. |
+| `ADMIN_GRANT_REQUEST_NOT_FOUND` | No content access request has that id. A request is forgotten a day after it is resolved. |
+| `ADMIN_GRANT_REQUEST_NOT_PENDING` | The request was approved, denied or has expired, or the workspace already gave its grant. |
+| `ADMIN_GRANT_REQUEST_PENDING` | A request for the same workspace is pending. |
+| `ADMIN_GRANT_TOO_MANY_REQUESTS` | `MAX_PENDING_CONTENT_REQUESTS` (50) requests are pending across the deployment. |
+| `ADMIN_GRANT_WORKSPACE_UNLISTED` | A request for a workspace the directory does not list: whoever approves must see its owner. |
+| `ADMIN_GRANT_WORKSPACE_CHANGED` | An approval reached a workspace whose owner is not the one the request named, so no grant was given. |
+| `ADMIN_GRANT_SECOND_ADMIN_REQUIRED` | The admin who made a request tried to approve it, or the workspace was handed such an approval: another admin must approve it. |
 
 ## Tests
 
@@ -797,15 +1357,18 @@ Unit suites, in `packages/workshop-backend/__tests__/`:
   records, before which write, and the setters' bounds: a value that is not a level refused,
   nothing stored or recorded, and a stored one reported as `"off"` until an admin chooses.
 - `admin-audit.test.ts`: the deployment-wide log's listing, filters, cursors, schema (the CHECKs
-  tying the workspace columns to records of access to a workspace, and `exposed` stored as
-  `metadata` for every access record, of a workspace or of a user's account, and null for a
-  setting record), retention, stats (per day, the top admins, by kind), the method and target
-  indexes (a workspace's owner and an inspected user through one), and multi-MiB titles. Records
-  of access to users' accounts are listed by kind and by a method name both views share, keep a
-  long user id as a long owner is kept, and are counted. The table's rebuild: a table that knows
-  no user records, one that indexes the workspace owner alone, a current one left alone, and a
-  later one kept, logged and still appended to; across it, the numbering goes on from the highest
-  sequence number issued, whatever was pruned.
+  tying the workspace columns to records of access to a workspace, and `exposed` stored in its
+  column for every access record, `metadata` for one handed over without it and for every call
+  into a user's account, and null for the other kinds), retention, stats (per day, the top
+  admins, by kind, the content reads), the method and target indexes (a workspace's owner and an
+  inspected user through one), the `exposed` filter, multi-MiB titles, and `requested` reading
+  `"metadata"` for a row stored without it. Records of access to users' accounts are listed by
+  kind and by a method name both views share, keep a long user id as a long owner is kept, and
+  are counted. The table's rebuild: a table that knows no user records, one that indexes the
+  workspace owner alone, a current one left alone, the log of a build without content reads or
+  grant records rebuilt row for row and given a content read, and a later one kept, logged and
+  still appended to; across it, the numbering goes on from the highest sequence number issued,
+  whatever was pruned.
 - `admin-api-impl.test.ts`: `AdminApiImpl`'s inspection path, opens refused while access is off (by
   the setting or by a cap), the setter's validator refusing a value that is not a level with a
   `TypeError`, listings and forwarding. For `inspectUser()`: the order of its checks, an empty
@@ -814,14 +1377,15 @@ Unit suites, in `packages/workshop-backend/__tests__/`:
 - `cli-admins-only.test.ts`: the `via` a session's User-Agent gives its records.
 - `admin-view.test.ts`: `adminViewCall()`, the call discipline both views share: the order of its
   checks, its read of the setting, the read and the record before the answer; each call recorded
-  with no retention; a call refused and recorded while the setting or the cap is off or not a
-  level, and answered again once the level is back at `"metadata"`; a refused call and a failed
+  with no retention, its read handed the level in force; a call refused and recorded while the
+  setting or the cap is off or not a level, and answered again once the level is back at
+  `"metadata"`; a refused call and a failed
   read recorded with nothing awaited since the last check; nothing recorded for a view no longer
   live; a record that cannot be written failing the call, with the method alone logged; and the
   environment read at each use.
 - `admin-workspace-view.test.ts`: the view, from an uninitialised id that stays uninitialised to the
-  per-call checks; every method recorded and none refused, each record stored with `exposed`
-  `metadata` in the table; what every answer withholds, beside the structure it keeps; a call
+  per-call checks; every method recorded, each record stored with what it exposed in the table;
+  what every answer withholds on a metadata view, beside the structure it keeps; a call
   refused and recorded while the setting is off, answered again once it is back at `"metadata"`,
   and refused while the cap or a stored level is not a level; the reads that fail recorded, and a
   depth out of range refused unrecorded; a failed record returning nothing; the races with
@@ -832,9 +1396,16 @@ Unit suites, in `packages/workshop-backend/__tests__/`:
   naming its target); the sharing reads never reaching a connection, a link to several gadgets
   among them; an inspection calling every method leaving the workspace's storage, presence and
   alarm as they were; and the view's surface being exactly what the audit names: every method in
-  `ADMIN_WORKSPACE_METHODS` is recorded, and the view class exposes no other member over RPC, and
-  none that reads content (a helper must be `#private`: the class's public members, not its
-  interface, are its RPC surface).
+  `ADMIN_WORKSPACE_METHODS` is recorded and classified in `ADMIN_METHOD_ANSWERS`, and the view
+  class exposes no other member over RPC (a helper must be `#private`: the class's public
+  members, not its interface, are its RPC surface). It also covers the grant step: the five
+  content reads refused and recorded on a metadata view, below `"content"` and without a live
+  grant, in that order; each mixed method answering withheld without a grant and with content
+  under one, its record carrying the grant's id; a grant that ends while a view is open ending
+  content on the next call; the account-wide grant asked for only by a call that would return
+  content, its answer kept for a minute and checked by the workspace, and an account that cannot
+  answer counting as no grant; files and attachments streamed; and a chat page with no inline
+  image.
 - `admin-user-view.test.ts`: the user view, from an id that names no account and creates none to
   the per-call checks; every method recorded and none refused, each record stored with `exposed`
   `metadata` in the table; what the answers withhold, shown first in what the user is served
@@ -885,13 +1456,52 @@ Writes add these, in the same directory:
   and the rebuild of a table that knows no write records, which keeps every row, kind and
   sequence number.
 
+Grants and content reads add these, in the same directory:
+
+- `admin-grants.test.ts`: the pure parts. The one liveness rule (live until its end and not at
+  it, not once revoked, not with an end that is not a valid time, not at another level), what
+  counts as a live account-wide answer, a fresh grant keeping an id and a bounded name of its
+  giver and nothing else of a profile, and when an ended grant can be deleted.
+- `admin-owner-grants.test.ts`: the owner's four methods on a real workspace. Who may call them;
+  giving, renewing any number of times and ending; each refused below `"content"` except ending
+  and listing; the listing's order and bound; ended grants deleted after the retention; no admin
+  audit record and nothing else of the workspace written; an approval's grant never touched,
+  listed or revealed; and a workspace deleted meanwhile.
+- `admin-account-grant.test.ts`: the account-wide grant. One record, renewed under its id without
+  a bound, replaced once ended; refused below `"content"` while ending still works; what a
+  workspace is answered; and no admin audit record.
+- `admin-access.test.ts` also covers the cap's third level and what is not a level, the content
+  refusal (`adminContentRefusal()`), `namedUser()` and the `...HoldsContent` predicates.
+- `admin-content-requests.test.ts`: the store of content access requests. A request and a denial
+  recorded before they are stored; one pending request per workspace and the deployment-wide cap;
+  the claim of an approval, once, refused to the requester (two casings of one admin included)
+  and below `"content"`; the settling of the workspace's answer; and the sweep that expires,
+  fails and forgets requests, recording nothing.
+- `admin-write-apply.test.ts` also covers `grantAdminContent()`: the grant stored after its
+  record, with no action log entry, event or notification; the requester, an admin no longer one,
+  another owner, a request given twice and a level below `"content"` refused before any record;
+  and `endAdminGrant()`, its record before the effect, and an owner's grant refused.
+- `admin-api-impl.test.ts` also covers an open for content, refused and recorded below
+  `"content"`; the content access methods: a request refused below `"content"` or for a workspace
+  the directory does not list, nothing stored, the directory's title and owner stored, an
+  approval that claims, has the workspace give the grant and settles it; `endWorkspaceGrant()`;
+  and `listAdminAudit({ pending })` forwarding only the pending requests' ids, and asking the log
+  nothing when none is pending.
+- `admin-audit.test.ts` also covers grant records in the listing, and `requestIds` finding only
+  those requests' `requestContentAccess` records, with the other filters and a cursor.
+- `deployment-admins.test.ts`: how a name matches the `ADMINS` list, and `sameDeploymentAdmin()`:
+  names that differ only by the case of ASCII letters are one admin.
+- `git-cache.test.ts` also covers `readLocalFileAtCommit()`: text, a stream for a large file or
+  one that is not text, a symlink and a submodule, and never a pull.
+
 Integration suites, in `packages/integration-tests/__tests__/`:
 
 - `workshop-admin-inspection.test.ts`: every admin method this surface adds refused to a non-admin;
   the directory; an inspection recorded apart from the workspace and absent from the owner's
   `listActions()` and `subscribeToActions()`; what the view withholds of what the owner reads, and
-  inspection turned off; attachments, commits and a draft's paths listed without their content; no
-  level above `"metadata"` to ask for or to set, and no method that reads content; every call
+  inspection turned off; attachments, commits and a draft's paths listed without their content; a
+  view being a metadata view unless content is asked for, an option or a level that is not one
+  rejected, and the five content reads refused and recorded on a metadata view; every call
   recorded end to end; the creator of a connection made through `newGatekeeper()`, and none on an
   ambient one; who holds an observer record, with what was verified for each; a deleted id refused
   without being written; an audit write failure, where a call returns nothing; expiry; and long
@@ -911,7 +1521,20 @@ Integration suites, in `packages/integration-tests/__tests__/`:
   invalid cap failing closed) and demotes an admin. The redeploy ends every session, the demoted
   admin's view among them, so the per-call re-check that stops a live view once its admin is demoted
   is covered by `admin-workspace-view.test.ts`. It also covers writes refused, recording nothing,
-  while `ADMIN_WORKSPACE_WRITES` is unset and after a redeploy that sets it to `true`.
+  while `ADMIN_WORKSPACE_WRITES` is unset and after a redeploy that sets it to `true`, and
+  Content chosen only once a redeploy raises the cap to it.
+- `workshop-admin-grants.test.ts`: grants and content reads end to end. Only a workspace's owner
+  giving, renewing, listing and ending a grant, none of it in the audit log; answers about the
+  grants of an owner with a very long name staying bounded; content read only through a view
+  opened for it, under a live grant, each read recorded with the grant's id; a mixed method
+  answering as metadata without a grant and with content under one; the account-wide grant, never
+  copied into a workspace, and reads under it stopping within a minute of its revocation; a chat
+  page with no inline image and the image's bytes as a stream; a grant given by a second admin's
+  approval of another admin's request, which only an admin ends; a request denied, withdrawn and
+  refused below level content; an approved and a denied request listed by `pending` only while
+  they wait; an owner shown nothing of an approval's grant; and, after a
+  redeploy removes an admin, the grants approvals gave still read under, whichever part the
+  removed admin took, and no new request approved, which leaves the owner's grant.
 - `workshop-admin-writes.test.ts`: writes end to end. A write refused to a non-admin, whose
   capabilities run none; a write recorded once, before the effect, with nothing entered in the
   workspace's action log; a stopped turn that reads as any stop; a failed write's record kept;
@@ -927,4 +1550,18 @@ nothing by reading the account's `total_changes()` before and after it.
 
 Frontend suites, in `packages/workshop-frontend/src/`:
 
-- The suites beside the Audit tab cover the write kind, its filter and a write record's details.
+- The suites beside the Audit tab cover the write and grant kinds, their filters and their records'
+  details, and, for content, the badge for what a call exposed, its filter, the count of content
+  reads, the grant and the refusal a record carries, and the access setting's Content option under
+  each cap.
+- `features/admin-audit/AdminAuditPanel.test.tsx` and `auditFilter.test.ts`: the Pending filter in
+  the URL and the query, offered only at Content or while set, the badge on pending requests'
+  records alone, Approve and Deny on another admin's request, Withdraw alone on one's own and Deny
+  alone below Content, a refusal's and a failed approval's message, the log loading again with the
+  decided row kept and focused, an open request's row kept by its request, the log shown before the
+  requests are listed, which waits for the page, a failed listing said with Retry when the page
+  holds requests and not otherwise, Retry keeping focus while it lists them again, and the count of
+  content reads leaving the Pending filter.
+
+The CLI's suites, in `packages/api-cli/`, pin the `cf-os api` commands for grants and content
+reads, and `--out <file>` saving the byte stream a result holds inside it.
