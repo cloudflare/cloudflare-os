@@ -94,7 +94,7 @@ export const SettingsSidebar = ({ groups, current, onSelect, onClose, collapsed 
           <RailDivider />
         </header>
         {/* Scrolled with no scrollbar, with room at its sides for the buttons' rings. */}
-        <nav ref={scrollRef} aria-label="Settings" className="chat-fade sidebar-fade -mx-1 flex min-h-0 flex-1 flex-col items-center overflow-y-auto px-1 py-px [scrollbar-width:none]">
+        <nav ref={scrollRef} aria-label="Settings" className="chat-fade sidebar-fade -mx-1 flex min-h-0 flex-1 flex-col items-center overflow-y-auto px-1 py-1 -my-1 [scrollbar-width:none]">
           {groups.map((group, index) => (
             <Fragment key={group.label}>
               {index > 0 && <RailDivider />}
@@ -129,7 +129,7 @@ export const SettingsSidebar = ({ groups, current, onSelect, onClose, collapsed 
         {back}
         <h2 className="min-w-0 truncate text-(length:--control-text) font-medium text-kumo-default">Settings</h2>
       </header>
-      <nav ref={scrollRef} aria-label="Settings" className="chat-fade sidebar-fade flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto pt-1 [scrollbar-width:none]">
+      <nav ref={scrollRef} aria-label="Settings" className="chat-fade sidebar-fade -mx-1 -mb-1 flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto p-1 [scrollbar-width:none]">
         {groups.map((group) => <PartGroup key={group.label} group={group} current={current} onSelect={onSelect} />)}
       </nav>
       {onSignOut && (

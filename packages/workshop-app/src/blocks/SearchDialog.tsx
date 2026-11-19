@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { Dialog as BaseDialog } from '@cloudflare/kumo/primitives/dialog'
 import { cn } from '@cloudflare/kumo/utils'
 import { ArrowLeftIcon, MagnifyingGlassIcon } from '@phosphor-icons/react'
@@ -116,6 +116,11 @@ export const SearchDialog = ({ open, onOpenChange, entries, suggested, placehold
   const inputRef = useRef<HTMLInputElement>(null)
   // Whether it is still open when something that took a while is done: it may have been put away.
   const isOpen = useHandler(() => open)
+  // What had the focus before it opened, which has it back once it is put away.
+  const openedFrom = useRef<Element | null>(null)
+  useLayoutEffect(() => {
+    if (open) openedFrom.current = document.activeElement
+  }, [open])
 
   const page = trail.at(-1)?.page
   const list = page?.kind === 'list' ? page : undefined
@@ -202,6 +207,8 @@ export const SearchDialog = ({ open, onOpenChange, entries, suggested, placehold
         <BaseDialog.Backdrop className="fixed inset-0 z-50 bg-kumo-canvas/80 transition-opacity duration-150 data-ending-style:opacity-0 data-starting-style:opacity-0 motion-reduce:transition-none" />
         <BaseDialog.Viewport className="fixed inset-0 z-50 flex justify-center p-4 pt-[max(12vh,env(safe-area-inset-top))]">
           <BaseDialog.Popup
+            // Not back to a scrolling region the pointer had focused: keys put away would draw its focus ring on it, as though it had been tabbed to.
+            finalFocus={() => !(openedFrom.current instanceof HTMLElement && openedFrom.current.hasAttribute('data-scroll-focus'))}
             className={cn(
               'flex h-fit max-h-full w-full max-w-xl flex-col overflow-hidden rounded-3xl bg-kumo-base text-base/5 text-kumo-default ring-1 ring-kumo-contrast/6 outline-none',
               'transition-[opacity,scale] duration-150 data-ending-style:scale-95 data-ending-style:opacity-0 data-starting-style:scale-95 data-starting-style:opacity-0 motion-reduce:transition-none',

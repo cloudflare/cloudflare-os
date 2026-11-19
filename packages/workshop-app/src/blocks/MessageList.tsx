@@ -130,8 +130,10 @@ export const MessageList = ({ messages, children, history, streaming, ref }: Mes
         role="region"
         aria-label="Conversation messages"
         tabIndex={0}
+        // Focus is shown on the whole card around the conversation (`PANE` in `SplitLayout`), not on this, which stops halfway down the composer.
+        data-scroll-focus=""
         // Made room in at its end, by the page, for something open there: the scrollbar stays at the edge.
-        className="chat-fade h-full overflow-x-hidden overflow-y-auto overscroll-y-contain pe-[var(--end-shift,0px)] [overflow-anchor:none]"
+        className="chat-fade h-full outline-none overflow-x-hidden overflow-y-auto overscroll-y-contain pe-[var(--end-shift,0px)] [overflow-anchor:none]"
       >
         <div
           ref={contentRef}

@@ -66,7 +66,8 @@ const CLOSES_AT = 0.6
 const EXPANDS_AT = 0.6
 // Pulled out of the edge by at least this many pixels, the aside opens when let go.
 const OPENS_AT = 48
-const PANE = 'flex min-w-0 basis-0 flex-col overflow-hidden rounded-3xl bg-kumo-base ring ring-kumo-line'
+// A scroller marked `data-scroll-focus` shows that it has the keyboard's focus on the card, in the browser's own focus ring as the rest of the app's are, which follows the card's corners.
+const PANE = 'flex min-w-0 basis-0 flex-col overflow-hidden rounded-3xl bg-kumo-base ring ring-kumo-line has-[[data-scroll-focus]:focus-visible]:[outline:auto_1px_-webkit-focus-ring-color]'
 // The card's corners beside the page (`rounded-3xl`). Filling the window it has none, nor any
 // room around it: its ring is then past the window's edges.
 const CORNER = 24

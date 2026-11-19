@@ -33,8 +33,8 @@ export const WorkspaceNav = ({ workspaces, selectedWorkspaceId, onSelectWorkspac
   const underlay = cn('pointer-events-none absolute inset-x-0 top-0 -z-10 h-0', rail ? 'rounded-xl bg-kumo-contrast/8' : 'rounded-2xl bg-kumo-fill')
 
   return (
-    // Scrolled with no scrollbar, expanded or on the rail.
-    <nav ref={scrollRef} aria-label="Workspaces" className={cn('flex min-h-0 flex-1 flex-col gap-0 overflow-y-auto [scrollbar-width:none]', fades && 'chat-fade sidebar-fade')}>
+    // Scrolled with no scrollbar, expanded or on the rail, with room around it for the rows' focus rings, which scrolling would clip.
+    <nav ref={scrollRef} aria-label="Workspaces" className={cn('-mx-1 -my-1 flex min-h-0 flex-1 flex-col gap-0 overflow-y-auto p-1 [scrollbar-width:none]', fades && 'chat-fade sidebar-fade')}>
       <div ref={listRef} className="relative isolate flex shrink-0 flex-col">
         <div ref={underlayRef} aria-hidden="true" className={underlay} />
         <div ref={hoverUnderlayRef} aria-hidden="true" className={underlay} />
