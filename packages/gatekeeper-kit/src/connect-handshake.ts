@@ -18,6 +18,13 @@ export const NONCE_KEY = "nonce";
 // Unchanged from the gatekeepers that already record the attempt.
 const CONNECT_ATTEMPTED_KEY = "connectAttempted";
 
+/**
+ * Names the one claim `reofferOAuth` may give back: the nonce of the latest retryable claim. An
+ * empty nonce slot cannot say this, since a newer attempt that has itself been claimed leaves the
+ * slot as empty as the older one did.
+ */
+const RETRYABLE_CLAIM_KEY = "nonceRetryableClaim";
+
 /** Stages in the two-step connect handshake. */
 export type ConnectStage = "initiation" | "oauth";
 
@@ -55,6 +62,8 @@ export function putInitiation<Meta extends object>(
   meta?: Meta & NonceExtra,
 ): void {
   if (meta) rejectReservedKeys(meta);
+  // A new link ends any attempt before it, a claimed one that might be retried included.
+  kv.delete(RETRYABLE_CLAIM_KEY);
   kv.put(NONCE_KEY, {
     ...meta,
     value: initiationNonce,
@@ -118,17 +127,21 @@ export function advanceToOAuth<Extra extends object>(
  * @param kv Durable Object nonce storage.
  * @param oauthNonce Provider-returned nonce.
  * @param now Current Unix time in milliseconds.
+ * @param options `retryable` lets `reofferOAuth` give this claim back, for a flow whose user may
+ * try again; an OAuth callback, which the provider makes once, leaves it unset.
  * @returns Stored provider metadata, or `null` when invalid.
  */
 export function claimOAuth<Extra extends object = Record<never, never>>(
   kv: ConnectNonceKv,
   oauthNonce: string,
   now: number,
+  options?: { retryable?: boolean },
 ): StoredNonce<Extra> | null {
   const stored = kv.get<StoredNonce<Extra>>(NONCE_KEY);
   if (stored?.stage !== "oauth" || !isLiveNonce(stored, oauthNonce, now)) return null;
 
   kv.delete(NONCE_KEY);
+  if (options?.retryable) kv.put(RETRYABLE_CLAIM_KEY, stored.value);
   return stored;
 }
 
@@ -138,14 +151,15 @@ export function claimOAuth<Extra extends object = Record<never, never>>(
  * so retrying never extends it. Call it only for a submission that changed nothing, and not after
  * `complete()`.
  * @param kv Durable Object nonce storage.
- * @param claim What `claimOAuth` returned.
+ * @param claim What `claimOAuth` returned when called with `retryable`.
  * @param now Current Unix time in milliseconds.
- * @returns The new nonce, or `null` when the attempt has expired or another connect link or
- * attempt has been stored since the claim, which wins.
+ * @returns The new nonce, or `null` when the claim was not retryable, the attempt has expired, or
+ * a connect link has been stored since the claim: the newer link wins, whether it is waiting,
+ * has been opened, or has been claimed in its turn.
  *
  * @example
  * ```ts
- * const attempt = claimOAuth<ConnectAttempt>(kv, formNonce, Date.now());
+ * const attempt = claimOAuth<ConnectAttempt>(kv, formNonce, Date.now(), { retryable: true });
  * if (attempt === null) return null;
  * if (!(await providerAccepts(key))) {
  *   const retryNonce = reofferOAuth(kv, attempt, Date.now());
@@ -159,7 +173,9 @@ export function reofferOAuth<Extra extends object>(
   now: number,
 ): string | null {
   if (claim.stage !== "oauth" || !Number.isFinite(now) || !(now < claim.expiresAt)) return null;
-  if (kv.get(NONCE_KEY) !== undefined) return null;
+  // The latest retryable claim, with no link stored since: `putInitiation` deletes the marker.
+  if (kv.get(NONCE_KEY) !== undefined || kv.get<string>(RETRYABLE_CLAIM_KEY) !== claim.value) return null;
+  kv.delete(RETRYABLE_CLAIM_KEY);
   const oauthNonce = generateNonce();
   kv.put(NONCE_KEY, { ...claim, value: oauthNonce } satisfies StoredNonce);
   return oauthNonce;

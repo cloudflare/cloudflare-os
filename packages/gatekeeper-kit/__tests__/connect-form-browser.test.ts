@@ -57,6 +57,10 @@ async function respond(req: Request): Promise<Response> {
   if (pathname === "/form-without-referrer") return htmlResponse(form());
   // Another site's copy of the form, served as a site that wants its origin sent would serve it.
   if (pathname === "/copied-form") return new Response(form(), { headers: { "Content-Type": "text/html" } });
+  // The gatekeeper's own page with a mistaken `action`, which names another origin.
+  if (pathname === "/misdirected-form") {
+    return formPageResponse(form().replace(`action="${baseUrl}/key"`, `action="${otherSite}/key"`));
+  }
   if (pathname === "/key") {
     const read = await readConnectForm(req, { origin: baseUrl });
     const refused = read instanceof Response;
@@ -144,6 +148,29 @@ describe("the connect form in Chromium", () => {
       { origin: baseUrl, fields: { [CONNECT_FORM_NONCE_FIELD]: NONCE, key: WRONG_KEY } },
       { origin: baseUrl, fields: { [CONNECT_FORM_NONCE_FIELD]: RETRY_NONCE, key: "right" } },
     ]);
+  });
+
+  // `form-action 'self'`: the key never leaves the browser for another origin.
+  it("does not post the key to another origin, whatever the form's action", async () => {
+    page = await browser.newPage();
+    page.setDefaultTimeout(5_000);
+    await page.goto(`${baseUrl}/misdirected-form`);
+    expect(await page.locator("form").getAttribute("action")).toBe(`${otherSite}/key`);
+    const posts: string[] = [];
+    page.on("request", request => {
+      if (request.method() === "POST") posts.push(request.url());
+    });
+    // A string, because this package's sources are not typed against the DOM.
+    const violated = page.evaluate(`new Promise(resolve => document.addEventListener(
+      "securitypolicyviolation", event => resolve(event.effectiveDirective)))`);
+    await page.getByLabel("API key").fill("s3cret");
+    // The click starts no navigation to wait for.
+    await page.getByRole("button", { name: "Connect" }).click({ noWaitAfter: true });
+    expect(await violated).toBe("form-action");
+
+    expect(posts).toEqual([]);
+    expect(submissions).toEqual([]);
+    expect(page.url()).toBe(`${baseUrl}/misdirected-form`);
   });
 
   it("masks the key and focuses it", async () => {

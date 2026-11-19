@@ -138,7 +138,8 @@ describe("reoffering a claimed attempt", () => {
   function claimed(kv: ConnectNonceKv) {
     putInitiation(kv, "init", 100, { firstConnect: true });
     const first = advanceToOAuth(kv, "init", 101, { startedUnder: "g1" })!;
-    return { first, claim: claimOAuth<{ firstConnect: true; startedUnder: string }>(kv, first, 102)! };
+    const claim = claimOAuth<{ firstConnect: true; startedUnder: string }>(kv, first, 102, { retryable: true })!;
+    return { first, claim };
   }
 
   it("mints a new nonce that claims the same attempt once, and leaves the old one dead", () => {
@@ -159,7 +160,7 @@ describe("reoffering a claimed attempt", () => {
     for (let now = 200; now < 205; now++) {
       const nonce = reofferOAuth(kv, claim, now)!;
       expect(kv.get<StoredNonce>(NONCE_KEY)?.expiresAt).toBe(OAUTH_STAGE_EXPIRY);
-      claim = claimOAuth(kv, nonce, now)!;
+      claim = claimOAuth(kv, nonce, now, { retryable: true })!;
     }
     const last = reofferOAuth(kv, claim, OAUTH_STAGE_EXPIRY - 1)!;
     expect(claimOAuth(kv, last, OAUTH_STAGE_EXPIRY)).toBeNull();
@@ -180,6 +181,40 @@ describe("reoffering a claimed attempt", () => {
 
     expect(reofferOAuth(kv, claim, 104)).toBeNull();
     expect(advanceToOAuth(kv, "newer", 105)).not.toBeNull();
+  });
+
+  // The slot is empty after the newer attempt's own claim, as it was after the older one's.
+  it("gives way to a newer attempt that has itself been claimed", () => {
+    const kv = makeKv();
+    const { claim: older } = claimed(kv);
+    putInitiation(kv, "newer", 103);
+    const newer = claimOAuth(kv, advanceToOAuth(kv, "newer", 104)!, 105, { retryable: true })!;
+
+    expect(reofferOAuth(kv, older, 106)).toBeNull();
+    const again = reofferOAuth(kv, newer, 106);
+    expect(again).not.toBeNull();
+    expect(claimOAuth(kv, again!, 107)).not.toBeNull();
+  });
+
+  it("gives way to a newer attempt whose claim was not retryable", () => {
+    const kv = makeKv();
+    const { claim: older } = claimed(kv);
+    putInitiation(kv, "newer", 103);
+    expect(claimOAuth(kv, advanceToOAuth(kv, "newer", 104)!, 105)).not.toBeNull();
+
+    expect(reofferOAuth(kv, older, 106)).toBeNull();
+  });
+
+  it("refuses a claim that was not made retryable, or is reoffered twice", () => {
+    const kv = makeKv();
+    putInitiation(kv, "init", 100);
+    const plain = claimOAuth(kv, advanceToOAuth(kv, "init", 101)!, 102)!;
+    expect(reofferOAuth(kv, plain, 103)).toBeNull();
+
+    const { claim } = claimed(kv);
+    expect(reofferOAuth(kv, claim, 104)).not.toBeNull();
+    kv.delete(NONCE_KEY);
+    expect(reofferOAuth(kv, claim, 105)).toBeNull();
   });
 
   it("refuses a record that is not a claimed attempt", () => {

@@ -130,7 +130,7 @@ claimed the form's nonce, so it gives the attempt back under a new one with `reo
 the route shows the form again, with `error` saying why:
 
 ```ts
-const attempt = claimOAuth<ConnectAttempt>(kv, formNonce, Date.now());
+const attempt = claimOAuth<ConnectAttempt>(kv, formNonce, Date.now(), { retryable: true });
 if (attempt === null) return null;
 if (!(await providerAccepts(key))) {
   const retryNonce = reofferOAuth(kv, attempt, Date.now());
@@ -139,11 +139,13 @@ if (!(await providerAccepts(key))) {
 ```
 
 The attempt keeps its original expiry, so retrying never extends it, and `reofferOAuth()` returns
-`null` once it has run out or a newer connect link has been stored. Reoffer only a submission that
+`null` once it has run out or a newer connect link has been made, whether or not that link has
+been used yet. Only a claim made with `retryable` can be reoffered. Reoffer only a submission that
 changed nothing: not after credentials were written or `complete()` was called.
 
 Serve the form with `formPageResponse()`, never `htmlResponse()`: a page that sends no referrer
-posts its forms with `Origin: null`, and `readConnectForm()` refuses that as cross-site.
+posts its forms with `Origin: null`, and `readConnectForm()` refuses that as cross-site. The page
+may post only to its own origin, so `action` must be on the deployment's.
 `readConnectForm()` checks the method, origin, encoding and size and nothing else, and the origin
 is the whole deployment's, not this gatekeeper's alone. The account
 checks the nonce, in the step that spends it, and validates the key against the provider before it

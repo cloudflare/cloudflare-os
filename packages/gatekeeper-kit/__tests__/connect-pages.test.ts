@@ -201,7 +201,7 @@ describe("connect forms", () => {
     const response = formPageResponse(form());
     expect(response.headers.get("Referrer-Policy")).toBe("same-origin");
     expect(response.headers.get("Cache-Control")).toBe("no-store");
-    expect(response.headers.get("Content-Security-Policy")).toBe("frame-ancestors 'none'");
+    expect(response.headers.get("Content-Security-Policy")).toBe("frame-ancestors 'none'; form-action 'self'");
     expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
     expect(htmlResponse(form()).headers.get("Referrer-Policy")).toBe("no-referrer");
   });

@@ -46,7 +46,8 @@ export function htmlResponse(body: string, status = 200): Response {
  * `htmlResponse`, but with `Referrer-Policy: same-origin`. Under `no-referrer` a browser posts the
  * page's forms with `Origin: null`, which the guard refuses, so the form could never be submitted.
  * `same-origin` still keeps the page's URL, a bearer capability, out of every cross-origin
- * `Referer`.
+ * `Referer`. The page may also post only to its own origin (`form-action 'self'`), so a
+ * credential typed into it cannot be sent anywhere else.
  * @param body HTML response body.
  * @param status HTTP status.
  * @returns A hardened HTML response whose forms name their origin.
@@ -54,6 +55,9 @@ export function htmlResponse(body: string, status = 200): Response {
 export function formPageResponse(body: string, status = 200): Response {
   const response = htmlResponse(body, status);
   response.headers.set("Referrer-Policy", "same-origin");
+  // What is typed into the page is a credential: the browser refuses to post it to another
+  // origin, whatever `action` a mistaken base URL produced.
+  response.headers.set("Content-Security-Policy", "frame-ancestors 'none'; form-action 'self'");
   return response;
 }
 
