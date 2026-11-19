@@ -21,7 +21,7 @@ export const CapturedLogsChip = ({ count, severity, preview, onAdd, onDiscard }:
   return (
     <div className="flex justify-center">
       <div className="flex max-w-full items-center gap-1 rounded-full bg-kumo-elevated py-1 ps-3 pe-1 text-sm text-kumo-subtle shadow-sm ring ring-kumo-hairline">
-        <button type="button" title={preview} onClick={onAdd} className="flex min-w-0 items-center gap-2 rounded-full outline-offset-2 hover:text-kumo-default">
+        <button type="button" title={preview} onClick={onAdd} className="flex min-w-0 cursor-pointer items-center gap-2 rounded-full outline-offset-2 hover:text-kumo-default">
           <span
             aria-hidden="true"
             className={cn('size-1.5 shrink-0 rounded-full', severity === 'error' ? 'bg-kumo-danger' : severity === 'warning' ? 'bg-kumo-warning' : 'bg-kumo-line')}
@@ -32,7 +32,7 @@ export const CapturedLogsChip = ({ count, severity, preview, onAdd, onDiscard }:
           type="button"
           aria-label={`Put away the gadget’s ${noun}`}
           onClick={onDiscard}
-          className="grid size-6 shrink-0 place-items-center rounded-full hover:bg-kumo-tint hover:text-kumo-default"
+          className="grid size-6 shrink-0 cursor-pointer place-items-center rounded-full hover:bg-kumo-tint hover:text-kumo-default"
         >
           <XIcon aria-hidden="true" className="size-3" />
         </button>

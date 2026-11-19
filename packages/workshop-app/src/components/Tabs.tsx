@@ -48,7 +48,7 @@ export type TabsProps<Value extends string> = {
   className?: string
 }
 
-const TAB = 'h-(--control-size) rounded-full px-(--control-pad) text-(length:--control-text) font-medium text-kumo-subtle hover:text-kumo-default data-active:text-kumo-default'
+const TAB = 'h-(--control-size) cursor-pointer rounded-full px-(--control-pad) text-(length:--control-text) font-medium text-kumo-subtle hover:text-kumo-default data-active:text-kumo-default'
 
 /**
  * A row of tabs, centred over what they choose between: plain text, with the chosen one on a pill.

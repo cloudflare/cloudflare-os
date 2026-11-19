@@ -41,7 +41,7 @@ export const AutomationsEmpty = ({ examples, onTry }: AutomationsEmptyProps) => 
               key={prompt}
               type="button"
               onClick={() => onTry(prompt)}
-              className="group flex items-center gap-3 rounded-2xl p-3 text-left text-base text-kumo-default hover:bg-kumo-contrast/5 focus-visible:bg-kumo-contrast/5 focus-visible:outline-none"
+              className="group flex cursor-pointer items-center gap-3 rounded-2xl p-3 text-left text-base text-kumo-default hover:bg-kumo-contrast/5 focus-visible:bg-kumo-contrast/5 focus-visible:outline-none"
             >
               <span aria-hidden="true" className="grid size-10 shrink-0 place-items-center rounded-xl bg-kumo-fill text-kumo-subtle">
                 <Glyph className="size-5" />

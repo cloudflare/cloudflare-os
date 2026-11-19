@@ -50,7 +50,7 @@ export const Button = ({ icon, children, variant = 'secondary', className, ...pr
       type="button"
       className={cn(
         'inline-flex h-(--control-size) shrink-0 items-center justify-center gap-2 rounded-full text-(length:--control-text) leading-normal font-medium whitespace-nowrap',
-        'data-disabled:opacity-50',
+        'cursor-pointer data-disabled:cursor-default data-disabled:opacity-50',
         VARIANT[variant],
         '[&>svg]:size-[1.125em] [&>svg]:shrink-0',
         iconOnly ? 'w-(--control-size) p-0' : iconNode ? 'pr-(--control-pad) pl-(--control-pad-icon)' : 'px-(--control-pad)',

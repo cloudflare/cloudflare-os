@@ -79,7 +79,7 @@ export const WorkbookPreview = ({ bytes }: FilePreviewProps) => {
               type="button"
               {...tabProps(index)}
               className={cn(
-                'h-7 shrink-0 rounded-full px-3 text-sm font-medium whitespace-nowrap text-kumo-subtle',
+                'h-7 shrink-0 cursor-pointer rounded-full px-3 text-sm font-medium whitespace-nowrap text-kumo-subtle',
                 'hover:text-kumo-default aria-selected:bg-kumo-contrast/5 aria-selected:text-kumo-default',
               )}
             >

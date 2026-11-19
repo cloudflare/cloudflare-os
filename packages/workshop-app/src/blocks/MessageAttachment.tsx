@@ -36,7 +36,7 @@ export const MessageAttachment = ({ name, mimeType, content, load, onOpen }: Mes
       title={name}
       aria-label={`Open ${name}`}
       className={cn(
-        'relative size-22 shrink-0 overflow-hidden rounded-2xl bg-kumo-base text-left',
+        'relative size-22 shrink-0 cursor-pointer overflow-hidden rounded-2xl bg-kumo-base text-left',
         // Laid over what is shown, so a picture darkens on hover as a tile does.
         "after:pointer-events-none after:absolute after:inset-0 after:rounded-[inherit] after:content-[''] after:transition-colors motion-reduce:after:transition-none hover:after:bg-kumo-contrast/8",
         // The ring is laid over what is shown, which would otherwise cover it.

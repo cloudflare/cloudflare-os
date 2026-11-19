@@ -115,7 +115,7 @@ const Group = ({ group, restricted, transition, onAllow, onAllowOnce, onDeny }: 
             aria-expanded={open}
             aria-controls={`${id}-requests`}
             onClick={() => setOpen(!open)}
-            className="flex shrink-0 items-center gap-1 rounded-lg px-1.5 py-1 text-sm font-medium text-kumo-default outline-none hover:bg-kumo-fill focus-visible:ring-2 focus-visible:ring-kumo-ring"
+            className="flex shrink-0 cursor-pointer items-center gap-1 rounded-lg px-1.5 py-1 text-sm font-medium text-kumo-default outline-none hover:bg-kumo-fill focus-visible:ring-2 focus-visible:ring-kumo-ring"
           >
             {open ? 'Hide' : 'Details'}
             <CaretRightIcon aria-hidden="true" weight="bold" className={cn('size-3 text-kumo-subtle transition-transform duration-200 motion-reduce:transition-none', open && 'rotate-90')} />
@@ -232,7 +232,7 @@ export const GadgetAsk = ({ gadgetTitle, groups, restricted = false, folded, onF
                 <p role="alert" className={cn('mx-1.5 flex items-start gap-2 rounded-2xl bg-kumo-danger-tint px-3 py-2 text-sm text-kumo-danger', asking ? 'mb-1.5' : 'my-1.5')}>
                   <WarningCircleIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
                   <span className="min-w-0 flex-1 wrap-break-word">{problem}</span>
-                  {onDismissProblem && <button type="button" className="shrink-0 font-medium hover:underline" onClick={onDismissProblem}>Dismiss</button>}
+                  {onDismissProblem && <button type="button" className="shrink-0 cursor-pointer font-medium hover:underline" onClick={onDismissProblem}>Dismiss</button>}
                 </p>
               </motion.div>
             )}

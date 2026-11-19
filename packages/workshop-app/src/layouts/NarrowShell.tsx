@@ -179,13 +179,13 @@ export const NarrowShell = ({ children, sidebar, status, aside, onOpenAside }: N
             aria-label="Hide the sidebar"
             style={{ translate: page }}
             onClick={() => sidebar.onOpenChange(false)}
-            className="absolute inset-0 z-40 outline-none"
+            className="absolute inset-0 z-40 cursor-pointer outline-none"
           />
         )}
         {!shown && !sidebarOpen && onOpenAside && (
           // Down the far edge, below the header so as not to be in the way of its buttons, and
           // under the aside, which uncovers it as it goes.
-          <button type="button" aria-label="Show the side pane" onClick={onOpenAside} className="group absolute top-16 right-0 bottom-0 z-20 w-6 outline-none">
+          <button type="button" aria-label="Show the side pane" onClick={onOpenAside} className="group absolute top-16 right-0 bottom-0 z-20 w-6 cursor-pointer outline-none">
             {/* In the middle of the window: the strip starts below the header, 4rem down. */}
             <span aria-hidden="true" className="absolute top-[calc(50%-2rem)] right-1.5 h-12 w-1.5 -translate-y-1/2 rounded-full bg-kumo-contrast opacity-25 transition-opacity group-focus-visible:opacity-70" />
           </button>

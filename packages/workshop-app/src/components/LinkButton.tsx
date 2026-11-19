@@ -1,4 +1,5 @@
 import type { HTMLAttributes, MouseEvent, Ref } from 'react'
+import { cn } from '@cloudflare/kumo/utils'
 
 export type LinkButtonProps = Omit<HTMLAttributes<HTMLElement>, 'onClick'> & {
   /** Where it goes, as an address: it is then a link, which can be opened in another tab or copied. */
@@ -19,13 +20,14 @@ const plain = (event: MouseEvent) => event.button === 0 && !event.metaKey && !ev
  * another tab as any link does, and a plain click goes there in place through `onClick`. Without
  * one it is a button.
  */
-export const LinkButton = ({ href, onClick, ref, ...props }: LinkButtonProps) =>
+export const LinkButton = ({ href, onClick, ref, className, ...props }: LinkButtonProps) =>
   href === undefined ? (
-    <button type="button" ref={ref as Ref<HTMLButtonElement>} onClick={onClick} {...props} />
+    <button type="button" ref={ref as Ref<HTMLButtonElement>} onClick={onClick} className={cn('cursor-pointer', className)} {...props} />
   ) : (
     <a
       href={href}
       ref={ref as Ref<HTMLAnchorElement>}
+      className={className}
       onClick={(event) => {
         if (!plain(event)) return
         event.preventDefault()

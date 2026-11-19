@@ -92,14 +92,14 @@ const Row = ({ row, onChoose }: { row: ConfirmAccessRow; onChoose: ConfirmAccess
               type="button"
               disabled={fix.pending}
               onClick={fix.onSelect}
-              className={cn('flex items-center gap-1.5 text-sm hover:underline disabled:opacity-60', fix.worthATry ? 'text-kumo-subtle' : 'text-kumo-warning')}
+              className={cn('flex cursor-pointer items-center gap-1.5 text-sm hover:underline disabled:cursor-default disabled:opacity-60', fix.worthATry ? 'text-kumo-subtle' : 'text-kumo-warning')}
             >
               {fix.pending ? <ArrowClockwiseIcon aria-hidden="true" className="size-3.5 motion-safe:animate-spin" /> : <WarningIcon aria-hidden="true" className="size-3.5" />}
               {fix.pending ? FIX_WORDS[fix.kind].pending : FIX_WORDS[fix.kind].idle}
             </button>
           )}
           {accounts.length > 0 && connect && (
-            <button type="button" disabled={connect.pending} onClick={connect.onSelect} className="text-sm text-kumo-subtle hover:text-kumo-default disabled:opacity-60">
+            <button type="button" disabled={connect.pending} onClick={connect.onSelect} className="cursor-pointer text-sm text-kumo-subtle hover:text-kumo-default disabled:cursor-default disabled:opacity-60">
               {connect.pending ? 'Connecting…' : 'Use another account'}
             </button>
           )}

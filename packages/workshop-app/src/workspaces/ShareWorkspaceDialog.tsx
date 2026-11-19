@@ -229,7 +229,7 @@ const ShareContent = ({ workspaceId, title: knownTitle, page, target }: ContentP
             <button
               type="button"
               onClick={() => setShowingResources(true)}
-              className="inline-flex h-(--control-size) min-w-0 items-center gap-1.5 rounded-full bg-kumo-info-tint px-(--control-pad) text-(length:--control-text) font-medium text-kumo-info hover:brightness-95 focus-visible:ring-2 focus-visible:ring-kumo-focus focus-visible:outline-none"
+              className="inline-flex h-(--control-size) min-w-0 cursor-pointer items-center gap-1.5 rounded-full bg-kumo-info-tint px-(--control-pad) text-(length:--control-text) font-medium text-kumo-info hover:brightness-95 focus-visible:ring-2 focus-visible:ring-kumo-focus focus-visible:outline-none"
             >
               <LockSimpleIcon aria-hidden="true" weight="bold" className="size-[1.125em] shrink-0" />
               <span className="truncate">Protected resources</span>

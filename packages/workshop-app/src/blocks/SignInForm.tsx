@@ -214,7 +214,7 @@ const SignInChoicesPage = ({ siteName, ...choices }: SignInChoices & { siteName:
             type="button"
             disabled={busy}
             onClick={() => choices.onModeChange(signingUp ? 'signIn' : 'signUp')}
-            className="font-medium text-kumo-default underline underline-offset-2 disabled:opacity-50"
+            className="cursor-pointer font-medium text-kumo-default underline underline-offset-2 disabled:cursor-default disabled:opacity-50"
           >
             {signingUp ? 'Sign in' : 'Create one'}
           </button>
