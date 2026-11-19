@@ -1905,7 +1905,11 @@ export type OverrideShift = {
  */
 export type Api = {
   get: [
-    /** List escalation policies (`listEscalationPolicies`) */
+    /**
+     * List escalation policies (`listEscalationPolicies`)
+     *
+     * Scopes the description declares: `escalation_policies.read`
+     */
     {
       path: "/escalation_policies";
       query: {
@@ -1934,7 +1938,11 @@ export type Api = {
         escalation_policies: EscalationPolicy[];
       };
     },
-    /** Get an escalation policy (`getEscalationPolicy`) */
+    /**
+     * Get an escalation policy (`getEscalationPolicy`)
+     *
+     * Scopes the description declares: `escalation_policies.read`
+     */
     {
       path: "/escalation_policies/{id}";
       query: {
@@ -1945,7 +1953,11 @@ export type Api = {
         escalation_policy: EscalationPolicy;
       };
     },
-    /** List incidents (`listIncidents`) */
+    /**
+     * List incidents (`listIncidents`)
+     *
+     * Scopes the description declares: `incidents.read`
+     */
     {
       path: "/incidents";
       query: {
@@ -1988,7 +2000,11 @@ export type Api = {
         incidents: Incident[];
       };
     },
-    /** Get an incident (`getIncident`) */
+    /**
+     * Get an incident (`getIncident`)
+     *
+     * Scopes the description declares: `incidents.read`
+     */
     {
       path: "/incidents/{id}";
       query: {
@@ -1999,7 +2015,11 @@ export type Api = {
         incident: Incident;
       };
     },
-    /** List alerts for an incident (`listIncidentAlerts`) */
+    /**
+     * List alerts for an incident (`listIncidentAlerts`)
+     *
+     * Scopes the description declares: `incidents.read`
+     */
     {
       path: "/incidents/{id}/alerts";
       query: {
@@ -2026,7 +2046,11 @@ export type Api = {
         alerts: Alert[];
       };
     },
-    /** List log entries for an incident (`listIncidentLogEntries`) */
+    /**
+     * List log entries for an incident (`listIncidentLogEntries`)
+     *
+     * Scopes the description declares: `incidents.read`
+     */
     {
       path: "/incidents/{id}/log_entries";
       query: {
@@ -2055,14 +2079,22 @@ export type Api = {
         log_entries: (AcknowledgeLogEntry | AnnotateLogEntry | AssignLogEntry | DelegateLogEntry | EscalateLogEntry | ExhaustEscalationPathLogEntry | NotifyLogEntry | ReachAckLimitLogEntry | ReachTriggerLimitLogEntry | RepeatEscalationPathLogEntry | ResolveLogEntry | SnoozeLogEntry | TriggerLogEntry | UnacknowledgeLogEntry | UrgencyChangeLogEntry | FieldValueChangeLogEntry | CustomFieldValueChangeLogEntry)[];
       };
     },
-    /** List notes for an incident (`listIncidentNotes`) */
+    /**
+     * List notes for an incident (`listIncidentNotes`)
+     *
+     * Scopes the description declares: `incidents.read`
+     */
     {
       path: "/incidents/{id}/notes";
       response: {
         notes: IncidentNote[];
       };
     },
-    /** List all of the on-calls (`listOnCalls`) */
+    /**
+     * List all of the on-calls (`listOnCalls`)
+     *
+     * Scopes the description declares: `oncalls.read`
+     */
     {
       path: "/oncalls";
       query: {
@@ -2097,7 +2129,11 @@ export type Api = {
         oncalls: Oncall[];
       };
     },
-    /** List priorities (`listPriorities`) */
+    /**
+     * List priorities (`listPriorities`)
+     *
+     * Scopes the description declares: `priorities.read`
+     */
     {
       path: "/priorities";
       query: {
@@ -2116,7 +2152,11 @@ export type Api = {
         priorities: Priority[];
       };
     },
-    /** List schedules (`listSchedules`) */
+    /**
+     * List schedules (`listSchedules`)
+     *
+     * Scopes the description declares: `schedules.read`
+     */
     {
       path: "/schedules";
       query: {
@@ -2149,7 +2189,11 @@ export type Api = {
         schedules: Schedule[];
       };
     },
-    /** Get a schedule (`getSchedule`) */
+    /**
+     * Get a schedule (`getSchedule`)
+     *
+     * Scopes the description declares: `schedules.read`
+     */
     {
       path: "/schedules/{id}";
       query: {
@@ -2175,7 +2219,11 @@ export type Api = {
         schedule: Schedule;
       };
     },
-    /** List overrides (`listScheduleOverrides`) */
+    /**
+     * List overrides (`listScheduleOverrides`)
+     *
+     * Scopes the description declares: `schedules.read`
+     */
     {
       path: "/schedules/{id}/overrides";
       query: {
@@ -2192,7 +2240,11 @@ export type Api = {
         overrides: Override[];
       };
     },
-    /** List services (`listServices`) */
+    /**
+     * List services (`listServices`)
+     *
+     * Scopes the description declares: `services.read`
+     */
     {
       path: "/services";
       query: {
@@ -2223,7 +2275,11 @@ export type Api = {
         services: Service[];
       };
     },
-    /** Get a service (`getService`) */
+    /**
+     * Get a service (`getService`)
+     *
+     * Scopes the description declares: `services.read`
+     */
     {
       path: "/services/{id}";
       query: {
@@ -2234,7 +2290,11 @@ export type Api = {
         service: Service;
       };
     },
-    /** List teams (`listTeams`) */
+    /**
+     * List teams (`listTeams`)
+     *
+     * Scopes the description declares: `teams.read`
+     */
     {
       path: "/teams";
       query: {
@@ -2255,7 +2315,11 @@ export type Api = {
         teams: Team[];
       };
     },
-    /** Get a team (`getTeam`) */
+    /**
+     * Get a team (`getTeam`)
+     *
+     * Scopes the description declares: `teams.read`
+     */
     {
       path: "/teams/{id}";
       query: {
@@ -2266,7 +2330,11 @@ export type Api = {
         team: Team;
       };
     },
-    /** List members of a team (`listTeamUsers`) */
+    /**
+     * List members of a team (`listTeamUsers`)
+     *
+     * Scopes the description declares: `teams.read`
+     */
     {
       path: "/teams/{id}/members";
       query: {
@@ -2290,7 +2358,11 @@ export type Api = {
         }[];
       };
     },
-    /** List users (`listUsers`) */
+    /**
+     * List users (`listUsers`)
+     *
+     * Scopes the description declares: `users.read`
+     */
     {
       path: "/users";
       query: {
@@ -2326,7 +2398,11 @@ export type Api = {
         user: User;
       };
     },
-    /** Get a user (`getUser`) */
+    /**
+     * Get a user (`getUser`)
+     *
+     * Scopes the description declares: `users.read`
+     */
     {
       path: "/users/{id}";
       query: {
@@ -2421,7 +2497,11 @@ export type Api = {
     },
   ];
   post: [
-    /** Create an Incident (`createIncident`) */
+    /**
+     * Create an Incident (`createIncident`)
+     *
+     * Scopes the description declares: `incidents.write`
+     */
     {
       path: "/incidents";
       body?: {
@@ -2450,7 +2530,11 @@ export type Api = {
         incident: Incident;
       };
     },
-    /** Create a note on an incident (`createIncidentNote`) */
+    /**
+     * Create a note on an incident (`createIncidentNote`)
+     *
+     * Scopes the description declares: `incidents.write`
+     */
     {
       path: "/incidents/{id}/notes";
       body?: {
@@ -2463,7 +2547,11 @@ export type Api = {
         note: IncidentNote;
       };
     },
-    /** Create a responder request for an incident (`createIncidentResponderRequest`) */
+    /**
+     * Create a responder request for an incident (`createIncidentResponderRequest`)
+     *
+     * Scopes the description declares: `incidents.write`
+     */
     {
       path: "/incidents/{id}/responder_requests";
       body?: {
@@ -2478,7 +2566,11 @@ export type Api = {
         responder_request: ResponderRequest;
       };
     },
-    /** Snooze an incident (`createIncidentSnooze`) */
+    /**
+     * Snooze an incident (`createIncidentSnooze`)
+     *
+     * Scopes the description declares: `incidents.write`
+     */
     {
       path: "/incidents/{id}/snooze";
       body?: {
@@ -2489,7 +2581,11 @@ export type Api = {
         incident: Incident;
       };
     },
-    /** Create a status update on an incident (`createIncidentStatusUpdate`) */
+    /**
+     * Create a status update on an incident (`createIncidentStatusUpdate`)
+     *
+     * Scopes the description declares: `incidents.write`
+     */
     {
       path: "/incidents/{id}/status_updates";
       body?: {
@@ -2504,7 +2600,11 @@ export type Api = {
         status_update: StatusUpdate;
       };
     },
-    /** Create one or more overrides (`createScheduleOverride`) */
+    /**
+     * Create one or more overrides (`createScheduleOverride`)
+     *
+     * Scopes the description declares: `schedules.write`
+     */
     {
       path: "/schedules/{id}/overrides";
       body: {
@@ -2520,7 +2620,11 @@ export type Api = {
     },
   ];
   put: [
-    /** Update an incident (`updateIncident`) */
+    /**
+     * Update an incident (`updateIncident`)
+     *
+     * Scopes the description declares: `incidents.write`
+     */
     {
       path: "/incidents/{id}";
       body?: {
@@ -2572,7 +2676,11 @@ export type Api = {
     },
   ];
   delete: [
-    /** Delete an override (`deleteScheduleOverride`) */
+    /**
+     * Delete an override (`deleteScheduleOverride`)
+     *
+     * Scopes the description declares: `schedules.write`
+     */
     {
       path: "/schedules/{id}/overrides/{override_id}";
       response: undefined;
