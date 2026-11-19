@@ -167,6 +167,12 @@ describe('toChatFeed', () => {
       expect(result.work).toEqual([])
     })
 
+    it('says how long a reply took from the message before it, the person’s or the agent’s', () => {
+      const result = feed(user('go'), agent({ toolCalls: [read('a.ts')] }), agent({ text: 'Found it' }), agent({ text: 'And more' }))
+      expect(only(result, 'assistant').map(({ workedFor }) => workedFor)).toEqual([120_000, 60_000])
+      expect(only(feed(agent({ text: 'Hello' })), 'assistant')[0].workedFor).toBeUndefined()
+    })
+
     it('says when a person’s message was sent', () => {
       const messages = history([user('hi'), slashCommand({ name: 'review', args: 'the intro', commandPosition: 0 })])
       expect(only(toChatFeed(messages, viewer), 'user').map(({ sentAt }) => sentAt)).toEqual([messages[0].timestamp, messages[1].timestamp])

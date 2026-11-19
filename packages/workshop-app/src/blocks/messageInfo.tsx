@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
-import { CalendarBlankIcon, CpuIcon, UserIcon, type Icon } from '@phosphor-icons/react'
+import { CalendarBlankIcon, CpuIcon, TimerIcon, UserIcon, type Icon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
+import { formatDuration } from '@/components/usageFormat'
 import type { ToolStepEntry } from './ToolStep'
 import { WorkLog } from './WorkLog'
 
@@ -19,6 +20,8 @@ export type MessageInfo = {
     openSteps: ReadonlySet<string>
     onToggleStep: (key: string) => void
   }
+  /** For developer mode: how long a reply took to make, in milliseconds. */
+  workedFor?: number
 }
 
 const WHEN = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' })
@@ -35,7 +38,7 @@ const Line = ({ icon: LineIcon, name, children }: { icon: Icon; name: string; ch
  * What there is to know about a message, as the two parts a message's details show it in (see
  * `MessageBubble`): their first line, and the rest, when there is more.
  */
-export const messageInfo = ({ sender, sentAt, trace }: MessageInfo): { summary: ReactNode; more?: ReactNode } => {
+export const messageInfo = ({ sender, sentAt, trace, workedFor }: MessageInfo): { summary: ReactNode; more?: ReactNode } => {
   const from = sender && <Line icon={trace ? CpuIcon : UserIcon} name="From">{sender}</Line>
   const sent = (
     <Line icon={CalendarBlankIcon} name="Sent">
@@ -51,13 +54,16 @@ export const messageInfo = ({ sender, sentAt, trace }: MessageInfo): { summary: 
     </section>
   )
 
-  if (!from && !steps) return { summary: sent }
+  const took = workedFor !== undefined && <Line icon={TimerIcon} name="Took">{formatDuration(workedFor)}</Line>
+
+  if (!from && !steps && !took) return { summary: sent }
   return {
     summary: from || sent,
     // The space above is part of it, so that folded away it leaves exactly the one line.
     more: (
       <div className={cn('flex flex-col gap-3', from ? 'pt-2' : 'pt-3')}>
         {from && sent}
+        {took}
         {steps}
       </div>
     ),

@@ -3,7 +3,7 @@ import { cn } from '@cloudflare/kumo/utils'
 import { Chip } from '@/components/Chip'
 import { FormatIcon, type FormatIconName } from '@/components/FormatIcon'
 import { MessageAttachment } from './MessageAttachment'
-import { MessageBubble, type MessageDetails, type MessageJoins } from './MessageBubble'
+import { MessageBubble, type MessageBubbleProps, type MessageDetails, type MessageJoins } from './MessageBubble'
 
 /** A stretch of the message: plain text, or something the user mentioned. */
 export type UserMessagePart =
@@ -34,6 +34,8 @@ export type UserMessageProps = {
   onReply?: () => void
   /** Marks the chat unread from the message on. */
   onMarkUnread?: () => void
+  /** In developer mode, what else its more menu can copy. */
+  developerCopies?: MessageBubbleProps['developerCopies']
   /** What there is to know about the message (see `messageInfo`), shown under it while open. */
   details?: MessageDetails
 }
@@ -61,7 +63,7 @@ const written = (part: UserMessagePart) =>
  * replying to. The two bubbles join as a run does, and what can be done with the message is on
  * the last. Copied, it is what they wrote, without the quote.
  */
-export const UserMessage = ({ parts, quote, onShowQuoted, attachments = [], from, unread, onOpenAttachment, loadAttachment, joins, onReply, onMarkUnread, details }: UserMessageProps) => (
+export const UserMessage = ({ parts, quote, onShowQuoted, attachments = [], from, unread, onOpenAttachment, loadAttachment, joins, onReply, onMarkUnread, developerCopies, details }: UserMessageProps) => (
   <div className={cn('flex flex-col gap-1 transition-opacity duration-300 motion-reduce:transition-none', unread && 'opacity-60')}>
     {from && <span className="px-2 text-end text-xs text-kumo-subtle">{from}</span>}
     {/* Spaced as the conversation is, so the bubbles find each other and tuck together as a run. */}
@@ -73,6 +75,7 @@ export const UserMessage = ({ parts, quote, onShowQuoted, attachments = [], from
           joins={{ above: joins?.above, below: parts.length === 0 && joins?.below }}
           onReply={parts.length === 0 ? onReply : undefined}
           onMarkUnread={parts.length === 0 ? onMarkUnread : undefined}
+          developerCopies={parts.length === 0 ? developerCopies : undefined}
           details={parts.length === 0 ? details : undefined}
         >
           <ul aria-label="Attachments" className="flex flex-wrap justify-end gap-[5px]">
@@ -90,6 +93,7 @@ export const UserMessage = ({ parts, quote, onShowQuoted, attachments = [], from
           joins={{ above: attachments.length === 0 && joins?.above, below: joins?.below }}
           onReply={onReply}
           onMarkUnread={onMarkUnread}
+          developerCopies={developerCopies}
           copyText={parts.map(written).join('')}
           details={details}
         >

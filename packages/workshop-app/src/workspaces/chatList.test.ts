@@ -32,4 +32,12 @@ describe('chatList', () => {
     expect(order('active')).toEqual([1, 2, 3])
     expect(order('name')).toEqual([2, 1, 3])
   })
+
+  it('orders by cost only where costs are shown, dearest first and the unknown last', () => {
+    expect(spec.orders.map(({ id }) => id)).not.toContain('cost')
+    const costly = chatList(new Set(), () => false, true)
+    const chats = [{ ...CHATS[0], totalCost: 0.02 }, { ...CHATS[1], totalCost: 1.5 }, CHATS[2]]
+    const byCost = costly.orders.find(({ id }) => id === 'cost')!
+    expect(byCost.arrange(chats, 1).flatMap(({ entries }) => entries.map(({ value }) => value.id))).toEqual([2, 1, 3])
+  })
 })

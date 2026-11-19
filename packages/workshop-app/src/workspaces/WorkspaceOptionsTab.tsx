@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { DeveloperIds, type DeveloperId } from '@/blocks/DeveloperIds'
 import { REMOVAL_WORDS } from '@/blocks/RemoveWorkspaceDialog'
 import { SettingRow } from '@/blocks/SettingRow'
 import { SettingsCard } from '@/blocks/SettingsGroup'
@@ -18,6 +19,8 @@ export type WorkspaceOptionsTabProps = {
    * `others` is how many besides the viewer have access to it, once known. Left out where the viewer may not.
    */
   removal?: { kind: WorkspaceRemoval; others?: number; onConfirm: () => Promise<void> }
+  /** Its IDs, to copy, in developer mode. */
+  ids?: readonly DeveloperId[]
 }
 
 const ROW: Record<WorkspaceRemoval, { title: string; description: string; label: string }> = {
@@ -38,7 +41,7 @@ const ROW: Record<WorkspaceRemoval, { title: string; description: string; label:
  * while anything is unread, and deleting it, as its owner, or removing it from their list, as
  * someone it was shared with, which asks first.
  */
-export const WorkspaceOptionsTab = ({ title, onMarkRead, removal }: WorkspaceOptionsTabProps) => {
+export const WorkspaceOptionsTab = ({ title, onMarkRead, removal, ids = [] }: WorkspaceOptionsTabProps) => {
   const connection = useConnectionNotice()
   // Why the last change was not made.
   const [problem, setProblem] = useState<string>()
@@ -71,6 +74,7 @@ export const WorkspaceOptionsTab = ({ title, onMarkRead, removal }: WorkspaceOpt
           </SettingRow>
         )}
       </SettingsCard>
+      <DeveloperIds ids={ids} />
     </>
   )
 }

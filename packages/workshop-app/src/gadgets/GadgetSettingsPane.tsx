@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useRouter } from '@tanstack/react-router'
 import { agentByKey, agentKeyOf, attentionWords } from '@/automations/agents'
 import { useWorkspaceAgents } from '@/automations/useWorkspaceAgents'
+import { useDevMode } from '@/hooks/useDevMode'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { CreateTemplate } from '@/library/CreateTemplate'
 import { useMadeTemplates } from '@/library/useMadeTemplates'
@@ -57,6 +58,7 @@ export const GadgetSettingsPane = ({ workspaceId, workpieceId, initialTitle, tab
   const services = useServices()
   const models = useBindableModels()
   const connection = useConnectionNotice()
+  const devMode = useDevMode()
   const gadget = snapshot.status === 'ready' ? snapshot.gadget : undefined
   const title = gadget?.title ?? initialTitle
   const blueprintId = gadget?.upstream?.blueprintId
@@ -142,6 +144,13 @@ export const GadgetSettingsPane = ({ workspaceId, workpieceId, initialTitle, tab
         onOpenAgent={onOpenAgent}
         agentAttention={agentAttention}
         agentHref={agentHref}
+        ids={devMode ? [
+          { title: 'Gadget ID', value: String(workpieceId) },
+          { title: 'Workspace ID', value: workspaceId },
+          ...(chatId === undefined ? [] : [{ title: 'Chat ID', value: String(chatId) }]),
+          ...(gadget?.commitId === undefined ? [] : [{ title: 'Commit', value: gadget.commitId }]),
+          ...(blueprintId === undefined ? [] : [{ title: 'Template ID', value: blueprintId }]),
+        ] : undefined}
       />
       {exports.dialogs}
       {gadget && creating !== undefined && (

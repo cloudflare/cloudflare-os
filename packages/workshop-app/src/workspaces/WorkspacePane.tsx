@@ -8,6 +8,7 @@ import { AgentsTab } from '@/automations/AgentsTab'
 import { AutomationsTab } from '@/automations/AutomationsTab'
 import { useWorkspaceAgents } from '@/automations/useWorkspaceAgents'
 import { AgentMark } from '@/blocks/AgentMark'
+import { WorkspaceCost } from '@/blocks/WorkspaceCost'
 import { WorkspaceCrumb } from '@/blocks/WorkspaceCrumb'
 import { WorkspaceIconPicker } from '@/blocks/WorkspaceIconPicker'
 import { AvatarStack } from '@/components/AvatarStack'
@@ -17,6 +18,7 @@ import { EditableTitle } from '@/components/EditableTitle'
 import { HeaderBubble } from '@/components/HeaderBubble'
 import { Tabs } from '@/components/Tabs'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
+import { useDevMode } from '@/hooks/useDevMode'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { useHandler } from '@/hooks/useHandler'
 import { useNarrowScreen } from '@/hooks/useNarrowScreen'
@@ -98,6 +100,7 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
   const title = workspace?.title
   useDocumentTitle(title || 'Workspace')
   const narrow = useNarrowScreen()
+  const devMode = useDevMode()
   const look = useWorkspaceLooks()[workspaceId]
   const setLook = useSetWorkspaceLook()
 
@@ -166,6 +169,7 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
             {workspace && <WorkspaceCrumb id={workspaceId} title={workspace.title} label={workspaceLabel(workspace.title)} look={look} expanded />}
           </nav>
           <span className="ms-auto flex shrink-0 items-center gap-1.5">
+            {devMode && workspace?.totalCost !== undefined && <WorkspaceCost cost={workspace.totalCost} />}
             {/* Only once there is someone besides the viewer: it goes to the members. */}
             {people.length > 1 && (
               <HeaderBubble origin="end">
@@ -247,6 +251,7 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
             <WorkspaceOptionsTab
               title={title ?? ''}
               onMarkRead={markRead}
+              ids={devMode ? [{ title: 'Workspace ID', value: workspaceId }] : undefined}
               removal={removal && {
                 kind: removal,
                 others: standing ? people.length - 1 : undefined,

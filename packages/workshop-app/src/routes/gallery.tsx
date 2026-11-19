@@ -37,6 +37,7 @@ import { AutomationsPreview } from '@/gallery/AutomationsPreview'
 import { CardBlocksPreview } from '@/gallery/CardBlocksPreview'
 import { ChatMenuPreview } from '@/gallery/ChatMenuPreview'
 import { CodePreview } from '@/gallery/CodePreview'
+import { DeveloperPreview } from '@/gallery/DeveloperPreview'
 import { ExportPreview } from '@/gallery/ExportPreview'
 import { GadgetAskPreview } from '@/gallery/GadgetAskPreview'
 import { GadgetPagePreview } from '@/gallery/GadgetPagePreview'
@@ -382,6 +383,7 @@ function Gallery() {
         </div>
       </Section>
       <ChatMenuPreview />
+      <DeveloperPreview />
       <Section title="MemberListItem (the owner, the viewer, a collaborator who can only use it, one with no picture)">
         <div className="flex w-96 flex-col rounded-3xl bg-kumo-tint p-1.5">
           <MemberListItem name="Ada Lovelace" role="Owner" />

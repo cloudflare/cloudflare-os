@@ -40,6 +40,7 @@ export const useSettingsSearchEntries = (
     preferences.theme,
     preferences.motion,
     preferences.autoOpenOutputs,
+    preferences.developerMode,
   ]
   // What is reached for most, and what bothers someone enough to look for it: the model, the
   // theme, the animations. The model is there before its value is read.

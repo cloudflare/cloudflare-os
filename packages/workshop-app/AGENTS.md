@@ -759,6 +759,27 @@ length is saved or discarded by hand (`SettingText`), as Enter is a new line the
 Inspecting a workspace or a user's account (`inspectWorkspace`, `inspectUser`) has no page, as
 main has none. The gallery draws every part over a fake capability (`gallery/adminPreview.ts`).
 
+### Developer mode
+
+Advanced's Developer mode (`prefs/devMode.ts`, kept on this device and read by `useDevMode`; defined
+once in `usePreferenceSettings`, so ⌘K flips it too) shows what is for those who build on the app,
+and nothing else changes while it is off. A chat has, under its composer, `ChatStatusLine`
+(`ComposerStatusLine` block): the model on the left, which is the default model, so choosing another
+there is choosing it in the settings (`setPreferred`, which tells `useDefaultModel`), and on the
+right what the context holds with its share of the window in brackets (`83.3K (42%)`), and what the chat has cost, in short figures with
+the exact ones in a tooltip. The usage is the chat's metadata (`ChatSnapshot.usage`: `totalTokens`,
+`totalCost`, the cache counts). The window is only what the client knows: the model's own from
+`modelOptionsOf`, or what the user held a model of theirs to (`useModelConfig`), which can be
+changed there as in the settings (`contextWindow.ts`, plain and tested) and applies to every chat on
+the model; a deployment's model has no window to change. A workspace's page shows its total cost in
+the header (`LiveWorkspaceFields.totalCost` keeps it live), the chat list has each chat's cost and
+a Cost order, and a message's details say how long a reply took (`AssistantItem.workedFor`, from
+the message before it), its more menu copies the message's ID and raw JSON, and the chat's, the
+workspace's and the gadget's settings pages list their IDs (`DeveloperIds`), each copied by pressing it. Per-message tokens and cost are not on the
+wire (the server keeps the step's usage only in the chat's totals), so they are not shown. Turning it
+on also opens what the agent is doing while it works (`prefs/liveWork.ts`): that is kept for every
+chat and is the viewer's to put away by a click, as it is for anyone.
+
 ## Skills
 
 A skill is instructions the assistant loads when a task calls for them, with the files they refer

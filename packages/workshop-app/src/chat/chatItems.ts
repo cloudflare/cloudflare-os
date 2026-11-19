@@ -86,6 +86,11 @@ export type AssistantItem = Row & {
   sender: string
   sentAt: Date
   /**
+   * How long, in milliseconds, since the message before it that a person sent or the agent said: what
+   * it took to make it, give or take the wait to be read. Absent where there is no such message.
+   */
+  workedFor?: number
+  /**
    * How it came about: the steps taken since the message before it, then what was thought just
    * before it was said. Not part of the conversation; there for whoever asks about the message.
    */
@@ -505,6 +510,8 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
   let acts: DividerItem[] = []
   // The steps since the last message. They are never rows: the next message leaves them behind.
   let work: ToolEntry[] = []
+  // When a person last sent something, or the agent last said something: where its next reply's work began.
+  let workBegan: number | undefined
 
   /**
    * Puts the approvals decided before `time` into the conversation. Each lands after everything
@@ -582,6 +589,7 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
 
       case 'slashCommand': {
         closeTurn(id)
+        workBegan = message.timestamp.getTime()
         const next = messages[index + 1]
         const generated = next?.type === 'message' && next.generatedBySlashCommandSequence === id ? next : undefined
         if (generated) index++
@@ -595,7 +603,10 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
         if (message.author.type !== 'agent') {
           // A steer joins the answer it was sent into; any other prompt starts the next turn.
           if (message.steered) carryOn()
-          else closeTurn(id)
+          else {
+            closeTurn(id)
+            workBegan = message.timestamp.getTime()
+          }
           if (message.message || message.attachments?.length) {
             const key = message.steered ? steerKey() : `user:${id}`
             items.push(emit<UserItem>(key, [message, viewerId], () => userItem(message, viewerId)))
@@ -615,15 +626,18 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
           const trace: TraceEntry[] = thought
             ? [...work, emitStep<ThinkingEntry>(`thinking:${id}`, [thought], () => ({ type: 'thinking', text: thought }))]
             : work
-          items.push(emit<AssistantItem>(`assistant:${id}`, [message, ...trace], () => ({
+          const began = workBegan
+          items.push(emit<AssistantItem>(`assistant:${id}`, [message, began, ...trace], () => ({
             kind: 'assistant',
             id,
             text,
             parts: answerParts(text),
             sender: message.author.name,
             sentAt: message.timestamp,
+            workedFor: began === undefined ? undefined : Math.max(0, message.timestamp.getTime() - began),
             trace,
           })))
+          workBegan = message.timestamp.getTime()
           work = []
         }
         // The thinking behind a step that said nothing is kept with the first thing it did.
@@ -743,6 +757,7 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
       case 'agentCallback': {
         // A call delivered to the agent prompts it, as a message would.
         closeTurn(id)
+        workBegan = message.timestamp.getTime()
         const { methodName, bindingName, argsSummary } = message
         notice(message, 'callback', `${methodName}()${bindingName ? ` with env.${bindingName}` : ''}`, argsSummary || undefined)
         break

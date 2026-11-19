@@ -6,11 +6,11 @@ import type { Overseer, WorkspaceMetadata } from '@gadgets/workshop-shared/api'
  * is open: its title, the viewer's role in it, whose it is and what its data allows. Whether the
  * viewer starred or muted it is their own, which the workspace does not say.
  */
-export type LiveWorkspaceFields = Pick<WorkspaceMetadata, 'title' | 'role' | 'owner' | 'containsRestrictedData' | 'ownerInvitesOnly'>
+export type LiveWorkspaceFields = Pick<WorkspaceMetadata, 'title' | 'role' | 'owner' | 'containsRestrictedData' | 'ownerInvitesOnly' | 'totalCost'>
 
 /** The fields the list takes from what the workspace says of itself, each as it says it (absent too). */
-export const liveFieldsOf = ({ title, role, owner, containsRestrictedData, ownerInvitesOnly }: WorkspaceMetadata): LiveWorkspaceFields =>
-  ({ title, role, owner, containsRestrictedData, ownerInvitesOnly })
+export const liveFieldsOf = ({ title, role, owner, containsRestrictedData, ownerInvitesOnly, totalCost }: WorkspaceMetadata): LiveWorkspaceFields =>
+  ({ title, role, owner, containsRestrictedData, ownerInvitesOnly, totalCost })
 
 /** Whether `workspace` already shows `fields`, as far as the list keeps them. */
 export const sameLiveFields = (workspace: LiveWorkspaceFields, fields: LiveWorkspaceFields) =>
@@ -20,6 +20,7 @@ export const sameLiveFields = (workspace: LiveWorkspaceFields, fields: LiveWorks
   && workspace.owner?.name === fields.owner?.name
   && Boolean(workspace.containsRestrictedData) === Boolean(fields.containsRestrictedData)
   && Boolean(workspace.ownerInvitesOnly) === Boolean(fields.ownerInvitesOnly)
+  && workspace.totalCost === fields.totalCost
 
 /**
  * The part of a workspace's Overseer that says what it is, and the lease that must be disposed. The

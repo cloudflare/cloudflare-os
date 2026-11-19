@@ -19,6 +19,7 @@ import { quotedBy } from './replyQuote'
 import { liveToolLabel, liveToolSections, toolIcon } from './toolCalls'
 import { uploadAttachments } from './uploadAttachments'
 import { ActionUpdates, ChatSubscriber, type ChatEvents } from './ChatSubscriber'
+import { NO_USAGE, sameUsage, usageOf, type ChatUsage } from './chatUsage'
 
 /**
  * The chat's changes are waiting for the user to keep or discard them: they could not be kept on
@@ -66,6 +67,8 @@ export type ChatSnapshot =
        * steps behind it are then gone. Empty while the assistant is not working.
        */
       work: WorkEntry[]
+      /** What the chat has used so far: unchanged until it is, so that it can be compared. Empty until its metadata arrives. */
+      usage: ChatUsage
       /** An assistant turn is running. */
       agentActive: boolean
       /**
@@ -239,6 +242,7 @@ export class ChatSession {
   #early: Array<() => void> = []
 
   #title: string | undefined
+  #usage = NO_USAGE
   #agent: { key: string; name: string } | undefined
   #requiresParticipation = false
   // Set once the workspace says the chat was deleted: nothing it does after that is shown, and it
@@ -562,6 +566,12 @@ export class ChatSession {
     }
   }
 
+  /** A message as the server sent it, written out in full, for someone looking into what happened. Nothing for one not loaded. */
+  rawMessage = (sequence: number): string | undefined => {
+    const message = this.#messages.get(sequence)
+    return message && JSON.stringify(message, null, 2)
+  }
+
   /**
    * Tells the account the viewer has read the chat through its latest message, which clears its
    * unread marks. Said once for each message: asked again before another arrives, it does nothing.
@@ -742,6 +752,7 @@ export class ChatSession {
     this.#loaded = false
     this.#early = []
     this.#title = undefined
+    this.#usage = NO_USAGE
     this.#requiresParticipation = false
     this.#deleted = false
     this.#agentActive = false
@@ -798,6 +809,7 @@ export class ChatSession {
       title: this.#title,
       notificationsRequireParticipation: this.#requiresParticipation,
       agent: this.#agent,
+      usage: this.#usage,
       items: this.#feed.items,
       activity: working ? this.#activity() : undefined,
       work: working ? this.#liveWork() : EMPTY_FEED.work,
@@ -1026,6 +1038,8 @@ export class ChatSession {
 
   #readMetadata(chat: AiChatMetadata) {
     this.#title = chat.title
+    const usage = usageOf(chat)
+    if (!sameUsage(this.#usage, usage)) this.#usage = usage
     this.#proposes = (chat.proposedChangeWorkpieces?.length ?? 0) > 0
     const agentName = chat.spawnerName || 'Agent'
     this.#agent = chat.spawnerId !== undefined ? { key: agentKeyOf(chat.spawnerId), name: agentName }

@@ -5,6 +5,7 @@ import { useChatNotifications } from '@/chat/useChatNotifications'
 import { isAgentRun } from '@/automations/agents'
 import { NotePencilIcon } from '@phosphor-icons/react'
 import { Button } from '@/components/Button'
+import { useDevMode } from '@/hooks/useDevMode'
 import { useListView } from '@/hooks/useListView'
 import { chatList, chatTitle } from './chatList'
 import { formatActivity } from './formatActivity'
@@ -31,11 +32,12 @@ export type WorkspaceChatListProps = {
  */
 export const WorkspaceChatList = ({ workspaceId, onOpenChat, chatHref, builds = false, waiting, onNewChat }: WorkspaceChatListProps) => {
   const chats = useWorkspaceChats(workspaceId)
+  const devMode = useDevMode()
   const notifications = useChatNotifications(workspaceId, builds)
   const listed = chats.status === 'ready' ? chats.chats.filter((chat) => !isAgentRun(chat)) : []
   const unreadOf = ({ id }: { id: number }) => (builds ? notifications.rows.get(id)?.unreadMessageCount ?? 0 : 0)
   const isWaiting = ({ id, awaitingDecision }: { id: number; awaitingDecision?: true }) => waiting?.has(id) || awaitingDecision === true
-  const list = useListView('workspace-chats', chatList(new Set(listed.filter((chat) => unreadOf(chat) > 0).map(({ id }) => id)), isWaiting))
+  const list = useListView('workspace-chats', chatList(new Set(listed.filter((chat) => unreadOf(chat) > 0).map(({ id }) => id)), isWaiting, devMode))
   const shown = list.narrow(listed)
   const groups = list.arrange(shown)
 
@@ -66,6 +68,7 @@ export const WorkspaceChatList = ({ workspaceId, onOpenChat, chatHref, builds = 
                 time={formatActivity(chat.lastActive)}
                 unread={unreadOf(chat)}
                 waiting={isWaiting(chat)}
+                cost={devMode ? chat.totalCost : undefined}
                 href={chatHref?.(chat.id)}
                 onSelect={() => onOpenChat({ id: chat.id, title: chat.title })}
               />

@@ -1,7 +1,9 @@
 import { useReducer } from 'react'
-import { DesktopIcon, MoonIcon, PaletteIcon, SidebarSimpleIcon, SparkleIcon, SunIcon } from '@phosphor-icons/react'
+import { CodeIcon, DesktopIcon, MoonIcon, PaletteIcon, SidebarSimpleIcon, SparkleIcon, SunIcon } from '@phosphor-icons/react'
+import { useDevMode } from '@/hooks/useDevMode'
 import { useMotionLevel } from '@/hooks/useMotionLevel'
 import { readTheme, writeTheme, type Theme } from '@/prefs/appearance'
+import { writeDevMode } from '@/prefs/devMode'
 import { readLayoutPrefs, writeLayoutPrefs } from '@/prefs/layoutPrefs'
 import { writeMotionLevel, type MotionLevel } from '@/prefs/motion'
 import { MOTION_OPTIONS, THEME_OPTIONS } from './preferenceOptions'
@@ -12,6 +14,7 @@ export const usePreferenceSettings = () => {
   // The layout is read as it stands, so it is read again once changed here.
   const [, changed] = useReducer((count: number) => count + 1, 0)
   const motion = useMotionLevel()
+  const devMode = useDevMode()
   const theme = readTheme()
   const opensNewOutputs = readLayoutPrefs().opensNewOutputs !== false
 
@@ -56,5 +59,15 @@ export const usePreferenceSettings = () => {
       changed()
     },
   }
-  return { theme: themeSetting, motion: motionSetting, autoOpenOutputs }
+  const developerMode: ToggleSetting = {
+    kind: 'toggle',
+    section: 'advanced',
+    title: 'Developer mode',
+    description: 'Show the model, context size and cost under the composer, what each workspace and chat has cost, and technical details of messages.',
+    keywords: ['developer', 'debug', 'cost', 'tokens', 'context', 'model', 'thinking', 'technical'],
+    icon: CodeIcon,
+    checked: devMode,
+    set: writeDevMode,
+  }
+  return { theme: themeSetting, motion: motionSetting, autoOpenOutputs, developerMode }
 }

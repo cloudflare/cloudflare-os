@@ -280,6 +280,23 @@ describe('ChatSession', () => {
       expect(ready(session)).toMatchObject({ title: 'Renamed', activity: 'Thinking…' })
     })
 
+    it('reports what the chat has used as its metadata says, the same object while it has not changed', async () => {
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]), { 0: page(userMessage(0, 'hello')) })
+      const session = new ChatSession(() => fake.overseer, 0)
+      session.start()
+      await settled(session)
+      expect(ready(session).usage).toEqual({})
+
+      fake.server().metadata({ ...chat(0, 'Chat', 1), totalTokens: 83_312, totalCost: 0.04 })
+      await flush()
+      const usage = ready(session).usage
+      expect(usage).toMatchObject({ tokens: 83_312, cost: 0.04 })
+
+      fake.server().metadata({ ...chat(0, 'Renamed', 1), totalTokens: 83_312, totalCost: 0.04 })
+      await flush()
+      expect(ready(session).usage).toBe(usage)
+    })
+
     it('reports why loading failed', async () => {
       const fake = fakeOverseer(Promise.reject(new Error("You don't have access to this workspace.")))
       const session = await started(fake)

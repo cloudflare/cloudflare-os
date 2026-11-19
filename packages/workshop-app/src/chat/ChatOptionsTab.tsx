@@ -1,9 +1,11 @@
 import { useState } from 'react'
+import { DeveloperIds } from '@/blocks/DeveloperIds'
 import { SettingRow } from '@/blocks/SettingRow'
 import { SettingsCard } from '@/blocks/SettingsGroup'
 import { Button } from '@/components/Button'
 import { ConfirmMenu } from '@/components/ConfirmMenu'
 import { Switch } from '@/components/Switch'
+import { useDevMode } from '@/hooks/useDevMode'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { messageOf } from '@/settings/useAttempt'
 import { notificationsOf } from './ChatNotifications'
@@ -29,6 +31,7 @@ export const ChatOptionsTab = ({ workspaceId, chatId, title, onDeleted }: ChatOp
   const notifications = useChatNotifications(workspaceId, true)
   const deleteChat = useDeleteChat(workspaceId)
   const connection = useConnectionNotice()
+  const devMode = useDevMode()
   // Why the last change was not made.
   const [problem, setProblem] = useState<string>()
 
@@ -87,6 +90,7 @@ export const ChatOptionsTab = ({ workspaceId, chatId, title, onDeleted }: ChatOp
           />
         </SettingRow>
       </SettingsCard>
+      {devMode && <DeveloperIds ids={[{ title: 'Chat ID', value: String(chatId) }, { title: 'Workspace ID', value: workspaceId }]} />}
     </>
   )
 }

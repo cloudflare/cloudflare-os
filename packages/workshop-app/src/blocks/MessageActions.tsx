@@ -1,4 +1,4 @@
-import { ArrowBendUpLeftIcon, CopyIcon, DotsThreeIcon, EyeSlashIcon, InfoIcon } from '@phosphor-icons/react'
+import { ArrowBendUpLeftIcon, BracketsCurlyIcon, CopyIcon, DotsThreeIcon, EyeSlashIcon, HashIcon, InfoIcon } from '@phosphor-icons/react'
 import { Button } from '@/components/Button'
 import { DropdownMenu } from '@/components/DropdownMenu'
 
@@ -7,6 +7,11 @@ export type MessageActionsProps = {
   onReply?: () => void
   /** What copying the message puts on the clipboard. Without it there is nothing to copy, and no Copy in more. */
   copyText?: string
+  /**
+   * What else can be copied, in developer mode: the message's ID, and the message as the server
+   * sent it, which is made when it is copied and is nothing for one that is not loaded.
+   */
+  developerCopies?: { id: string; json: () => string | undefined }
   /** Marks the chat unread from this message on. Left out where it is not the viewer's to mark. */
   onMarkUnread?: () => void
   /** The message's details can be shown under it: whether they are, and the way to switch. */
@@ -20,8 +25,8 @@ export const MESSAGE_ACTION_STYLE = 'size-7 text-sm text-kumo-subtle hover:text-
 // securely: either way nothing is copied, which there is no more to say of.
 const copy = (text: string) => void navigator.clipboard.writeText(text).catch(() => {})
 
-/** What can be done with a message: reply to it, see more about it, and in more, copy it or mark the chat unread from it. */
-export const MessageActions = ({ onReply, copyText, onMarkUnread, details }: MessageActionsProps) => (
+/** What can be done with a message: reply to it, see more about it, and in more, copy it (and in developer mode its ID and raw JSON) or mark the chat unread from it. */
+export const MessageActions = ({ onReply, copyText, developerCopies, onMarkUnread, details }: MessageActionsProps) => (
   <div className="flex items-center">
     <Button variant="ghost" icon={ArrowBendUpLeftIcon} aria-label="Reply" title="Reply" className={MESSAGE_ACTION_STYLE} onClick={onReply} />
     <Button
@@ -34,9 +39,11 @@ export const MessageActions = ({ onReply, copyText, onMarkUnread, details }: Mes
       className={MESSAGE_ACTION_STYLE}
       onClick={details?.onToggle}
     />
-    {(copyText !== undefined || onMarkUnread) && (
+    {(copyText !== undefined || developerCopies || onMarkUnread) && (
       <DropdownMenu icon={DotsThreeIcon} aria-label="More" triggerVariant="ghost" triggerClassName={MESSAGE_ACTION_STYLE}>
         {copyText !== undefined && <DropdownMenu.Item icon={CopyIcon} onSelect={() => copy(copyText)}>Copy</DropdownMenu.Item>}
+        {developerCopies && <DropdownMenu.Item icon={HashIcon} onSelect={() => copy(developerCopies.id)}>Copy message ID</DropdownMenu.Item>}
+        {developerCopies && <DropdownMenu.Item icon={BracketsCurlyIcon} onSelect={() => { const json = developerCopies.json(); if (json !== undefined) copy(json) }}>Copy raw JSON</DropdownMenu.Item>}
         {onMarkUnread && <DropdownMenu.Item icon={EyeSlashIcon} onSelect={onMarkUnread}>Mark as unread</DropdownMenu.Item>}
       </DropdownMenu>
     )}

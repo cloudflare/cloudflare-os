@@ -12,11 +12,14 @@ import { OutputCard } from '@/blocks/OutputCard'
 import { SystemRow, type SystemRowProps } from '@/blocks/SystemRow'
 import { UserMessage } from '@/blocks/UserMessage'
 import type { ActionResult } from '@/blocks/usePending'
+import { useDevMode } from '@/hooks/useDevMode'
 import type { ActionItem, AssistantItem, ChatAttachment, ChatItem, ConnectionItem, NoticeItem, OutputItem, UserItem } from './chatItems'
 import { useOpenKeys, type DisclosureStore } from './DisclosureStore'
 
 /** What the rows of a chat can ask for. One object for the whole chat, so rows are not rendered again for it. */
 export type ChatItemHandlers = {
+  /** A message as the server sent it, written out in full, where it can be. */
+  rawMessage: (sequence: number) => string | undefined
   /** Start a reply to a message. */
   onReply: (item: UserItem | AssistantItem) => void
   /** Marks the chat unread from a message on. Left out where that is not the viewer's to do. */
@@ -72,6 +75,9 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
   const isOpen = open.has(item.key)
   const toggle = () => disclosure.toggle(item.key)
   const joins = { above: joinsAbove, below: joinsBelow }
+  const devMode = useDevMode()
+  // In developer mode, what else a message's more menu copies.
+  const developerCopies = devMode ? { id: String(item.id), json: () => handlers.rawMessage(item.id) } : undefined
 
   switch (item.kind) {
     case 'user':
@@ -91,6 +97,7 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
           joins={joins}
           onReply={() => handlers.onReply(item)}
           onMarkUnread={handlers.onMarkUnread && (() => handlers.onMarkUnread?.(item))}
+          developerCopies={developerCopies}
           details={{ open: isOpen, onToggle: toggle, ...messageInfo({ sender: item.from, sentAt: item.sentAt }) }}
         />
       )
@@ -103,6 +110,7 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
           joins={joins}
           onReply={() => handlers.onReply(item)}
           onMarkUnread={handlers.onMarkUnread && (() => handlers.onMarkUnread?.(item))}
+          developerCopies={developerCopies}
           details={{
             open: isOpen,
             onToggle: toggle,
@@ -110,6 +118,7 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
               sender: item.sender,
               sentAt: item.sentAt,
               trace: { steps: item.trace, openSteps: open, onToggleStep: disclosure.toggle },
+              workedFor: devMode ? item.workedFor : undefined,
             }),
           }}
         />

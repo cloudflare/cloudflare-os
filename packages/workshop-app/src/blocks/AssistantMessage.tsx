@@ -1,6 +1,6 @@
 import { Markdown } from '@/components/Markdown'
 import { InlineView } from './InlineView'
-import { MessageBubble, type MessageDetails, type MessageJoins } from './MessageBubble'
+import { MessageBubble, type MessageBubbleProps, type MessageDetails, type MessageJoins } from './MessageBubble'
 
 /** A stretch of what the agent said: prose, or a live view it drew between `<inline-html>` tags. */
 export type AnswerPart =
@@ -25,6 +25,8 @@ export type AssistantMessageProps = {
   onReply?: () => void
   /** Marks the chat unread from the message on. */
   onMarkUnread?: () => void
+  /** In developer mode, what else its more menu can copy. */
+  developerCopies?: MessageBubbleProps['developerCopies']
   /** What there is to know about the message (see `messageInfo`), shown under it while open. */
   details?: MessageDetails
   /** Sends what one of its views suggested, as the viewer's own message (`InlineView`'s `onSend`). */
@@ -36,10 +38,10 @@ export type AssistantMessageProps = {
  * (`MessageBubble`'s `view`), live, in order; what can be done with the message is on the last.
  * Copied, it is the Markdown it was written in.
  */
-export const AssistantMessage = ({ text, parts, joins, onReply, onMarkUnread, details, onSendSuggestion }: AssistantMessageProps) => {
+export const AssistantMessage = ({ text, parts, joins, onReply, onMarkUnread, developerCopies, details, onSendSuggestion }: AssistantMessageProps) => {
   if (!parts || (parts.length === 1 && parts[0].type === 'text')) {
     return (
-      <MessageBubble role="assistant" joins={joins} onReply={onReply} onMarkUnread={onMarkUnread} copyText={text} details={details}>
+      <MessageBubble role="assistant" joins={joins} onReply={onReply} onMarkUnread={onMarkUnread} copyText={text} developerCopies={developerCopies} details={details}>
         <Markdown>{parts?.[0]?.type === 'text' ? parts[0].text : text}</Markdown>
       </MessageBubble>
     )
@@ -55,6 +57,7 @@ export const AssistantMessage = ({ text, parts, joins, onReply, onMarkUnread, de
           joins: { above: index === 0 && joins?.above, below: ends && joins?.below },
           onReply: ends ? onReply : undefined,
           onMarkUnread: ends ? onMarkUnread : undefined,
+          developerCopies: ends ? developerCopies : undefined,
           copyText: ends ? text : undefined,
           details: ends ? details : undefined,
         } as const

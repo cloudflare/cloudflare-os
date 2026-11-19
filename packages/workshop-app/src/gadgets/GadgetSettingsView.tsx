@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from 'react'
 import { CaretLeftIcon, FileArrowDownIcon, ShareNetworkIcon, WarningCircleIcon } from '@phosphor-icons/react'
 import { BindingRow } from '@/blocks/BindingRow'
+import { DeveloperIds, type DeveloperId } from '@/blocks/DeveloperIds'
 import type { MadeTemplate } from '@/blocks/CreateTemplateDialog'
 import { ExportItems, type ExportItemsProps } from '@/blocks/ExportItems'
 import { ListGroup } from '@/blocks/ListGroup'
@@ -114,6 +115,8 @@ export type GadgetSettingsViewProps = {
   onOpenAgent?: (spawnerId: number) => void
   /** Where an agent's page is, so that it can be opened in another tab. */
   agentHref?: (spawnerId: number) => string
+  /** Its IDs, to copy, in developer mode. */
+  ids?: readonly DeveloperId[]
   /** What an agent it starts wants of the user, by its spawner's id: a run waiting on them, or a latest run that failed. */
   agentAttention?: (spawnerId: number) => { words: string; tone: 'warning' | 'danger' } | undefined
 }
@@ -129,7 +132,7 @@ const Message = ({ children }: { children: string }) => <p className="appears px
  * gets here: anyone it was shared with to use is told that its settings are not theirs.
  */
 export const GadgetSettingsView = ({
-  state, title, icon, description, templateUpdate, template, exports, status: exported, workspace, tab, onTabChange, onRename, problem, bindings, services, onUnbind, onRenameBinding, models, onChangeModel, onDelete, onBack, onOpenWorkspace, onOpenAgent, agentHref, agentAttention,
+  state, title, icon, description, templateUpdate, template, exports, status: exported, workspace, tab, onTabChange, onRename, problem, bindings, services, onUnbind, onRenameBinding, models, onChangeModel, onDelete, onBack, onOpenWorkspace, onOpenAgent, agentHref, agentAttention, ids = [],
 }: GadgetSettingsViewProps) => {
   const made = template?.made ?? []
   const offersCreate = template !== undefined && made.length === 0
@@ -286,6 +289,7 @@ export const GadgetSettingsView = ({
                   />
                 </SettingRow>
               </SettingsCard>
+              <DeveloperIds ids={ids} />
               {template && made.length > 0 && (
                 // Its own section, after the rest, once there is a template to look after.
                 <div className="mt-8 flex flex-col gap-8">

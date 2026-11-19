@@ -3,7 +3,7 @@ import { CaretUpIcon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
 import '@/components/Arrival.css'
 import { Button } from '@/components/Button'
-import { MessageActions, MESSAGE_ACTION_STYLE } from './MessageActions'
+import { MessageActions, MESSAGE_ACTION_STYLE, type MessageActionsProps } from './MessageActions'
 import './MessageBubble.css'
 import { useDetailsStage } from './useDetailsStage'
 
@@ -33,6 +33,8 @@ export type MessageBubbleProps = {
   onReply?: () => void
   /** What copying the message puts on the clipboard. */
   copyText?: string
+  /** In developer mode, what else more can copy (see `MessageActions`). */
+  developerCopies?: MessageActionsProps['developerCopies']
   /** Marks the chat unread from this message on, from more. Left out where it is not the viewer's to mark. */
   onMarkUnread?: () => void
   /**
@@ -119,12 +121,12 @@ const OWN_TAP = 'a, button, input, textarea, summary, label, [role="button"]'
  * Neighbouring messages from the same sender tuck together (see `RUN`). One that has just arrived
  * grows in (see Arrival.css), settling into the run it joins (see MessageBubble.css).
  */
-export const MessageBubble = ({ role, children, media, view, joins, onReply, copyText, onMarkUnread, details }: MessageBubbleProps) => {
+export const MessageBubble = ({ role, children, media, view, joins, onReply, copyText, developerCopies, onMarkUnread, details }: MessageBubbleProps) => {
   const detailsId = useId()
   const open = details?.open ?? false
   // A bubble with nothing to offer, such as one of a message's files above its words, has no actions.
-  const actions = (onReply || copyText !== undefined || onMarkUnread || details) &&
-    <MessageActions onReply={onReply} copyText={copyText} onMarkUnread={onMarkUnread} details={details && { open, onToggle: details.onToggle, controls: detailsId }} />
+  const actions = (onReply || copyText !== undefined || developerCopies || onMarkUnread || details) &&
+    <MessageActions onReply={onReply} copyText={copyText} developerCopies={developerCopies} onMarkUnread={onMarkUnread} details={details && { open, onToggle: details.onToggle, controls: detailsId }} />
 
   // Shown by a tap, rather than by a pointer that is there, until the message is tapped again or
   // anything else is.

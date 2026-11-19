@@ -22,6 +22,11 @@ export type SelectProps<Value extends string> = {
   /** A field to find one by, for more options than are easily read through. */
   searchable?: boolean
   /**
+   * Quiet and small, for a line of figures rather than a form: no surface until pointed at, and
+   * what it says is `shown` where that is not the label of the option chosen.
+   */
+  compact?: { shown?: string; align?: 'start' | 'end'; medium?: boolean }
+  /**
    * The value is one of the user's own, typed where the button would say which, while the one
    * chosen is the option that stands for that ("Custom"). The options are still under the chevron.
    */
@@ -42,15 +47,16 @@ export type SelectTyped = Omit<ComponentProps<'input'>, 'value' | 'onChange' | '
 // something is fully round.
 // The menu grows out of the same corners, which it reads from the button.
 const FIELD_SHAPE = 'rounded-xl px-3 font-normal'
+const COMPACT_SHAPE = 'h-7 gap-1 rounded-full px-2.5 text-xs font-normal text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default max-sm:h-10 max-sm:text-sm'
 
 /**
  * One of a few things, chosen from a menu: a field that says which, as wide as what it says and
  * no wider than the room it has, and opens in place to them all, the chosen one ticked. Choosing
  * closes it. With `typed`, what it says is a field to write a value of the user's own in.
  */
-export const Select = <Value extends string>({ value, onValueChange, options, 'aria-label': label, placeholder = 'Choose…', searchable = false, typed }: SelectProps<Value>) => {
+export const Select = <Value extends string>({ value, onValueChange, options, 'aria-label': label, placeholder = 'Choose…', searchable = false, compact, typed }: SelectProps<Value>) => {
   const chosen = options.find(({ id }) => id === value)
-  const said = chosen?.label ?? placeholder
+  const said = compact?.shown ?? chosen?.label ?? placeholder
 
   const menu = (
     <DropdownMenu
@@ -64,9 +70,10 @@ export const Select = <Value extends string>({ value, onValueChange, options, 'a
         </>
       )}
       aria-label={`${label}: ${said}`}
-      triggerClassName={`max-w-full min-w-0 shrink ${FIELD_SHAPE}`}
+      triggerClassName={`max-w-full min-w-0 shrink ${compact ? `${COMPACT_SHAPE}${compact.medium ? ' font-medium' : ''}` : FIELD_SHAPE}`}
+      triggerVariant={compact ? 'ghost' : undefined}
       picker={searchable}
-      align="end"
+      align={compact?.align ?? 'end'}
       inPlace
     >
       {(close) =>

@@ -13,6 +13,7 @@ import { UserMessage } from '@/blocks/UserMessage'
 import { WorkLog } from '@/blocks/WorkLog'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { useHandler } from '@/hooks/useHandler'
+import { useLiveWorkOpen } from '@/hooks/useLiveWorkOpen'
 import { ChatLayout } from '@/layouts/ChatLayout'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { OutOfCredits } from '@/settings/OutOfCredits'
@@ -31,6 +32,7 @@ import { DisclosureStore, useOpenKeys } from './DisclosureStore'
 import { keepChangeLines, keepReason } from './keepChanges'
 import { bindingKey, useBindingTitles } from './useBindingTitles'
 import { quoteLine, withQuote } from './replyQuote'
+import { ChatStatusLine } from './ChatStatusLine'
 import { describeModelProblem, useDefaultModel } from './useDefaultModel'
 import { slashRequestFor, missingCommand } from './slashCommands'
 import { useChatCommands } from './useChatCommands'
@@ -81,8 +83,6 @@ export type ChatPaneProps = {
   onDeleted: () => void
 }
 
-const LIVE_WORK = 'live:work'
-
 // A gadget by the title the chat shows its output under, where it shows one.
 const outputTitle = (items: readonly ChatItem[], gadgetId: number) =>
   items.find((item): item is OutputItem => item.kind === 'output' && item.workpieceId === gadgetId)?.title
@@ -108,7 +108,9 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   const list = useRef<MessageListHandle>(null)
   const [sentFirst] = useState(() => firstMessageOf(workspaceId, chatId))
   const work = chat.status === 'ready' ? chat.work : EMPTY_FEED.work
-  const openWork = useOpenKeys(disclosure, [LIVE_WORK, ...work.map(({ key }) => key)])
+  // Shown or put away for every chat at once, and kept: developer mode turns it on (`writeDevMode`).
+  const [liveWorkOpen, setLiveWorkOpen] = useLiveWorkOpen()
+  const openWork = useOpenKeys(disclosure, work.map(({ key }) => key))
   const title = (chat.status === 'ready' ? chat.title : undefined) ?? initialTitle
   const items = chat.status === 'ready' ? chat.items : undefined
   // What the chat's cards show it set up to run by itself and was not deleted, for the header's clock.
@@ -195,6 +197,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   const handlers = useMemo((): ChatItemHandlers => {
     const unavailable = (what: string) => () => setNotice(`${what} isn’t available in this app yet.`)
     return {
+      rawMessage: actions.rawMessage,
       onMarkUnread: builds ? (item) => {
         setNotice(undefined)
         if (connection?.blocked()) return
@@ -384,6 +387,8 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   const showReplied = useHandler(() => {
     if (reply) list.current?.scrollToMessage(reply.key)
   })
+  const usage = ready ? chat.usage : undefined
+  const modelId = model.status === 'ready' ? model.id : undefined
   const agentActive = ready && chat.agentActive
   const waiting = ready ? chat.waiting : undefined
   const composerCommands = commands.commands
@@ -413,8 +418,9 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
       problem={sendProblem === undefined ? undefined : { message: sendProblem, onDismiss: dismissProblem }}
       reply={reply && { quote: reply.quote, onShow: showReplied, onCancel: () => setReply(undefined) }}
     />
+    <ChatStatusLine usage={usage} modelId={modelId} />
     </div>
-  ), [logged, peekLogs, discardLogs, addLogs, sendMessage, composerCommands, commandsLoading, hasPasteLinks, onPasteLinks, builds, agentActive, waiting, stopAgent, sendProblem, dismissProblem, reply, showReplied])
+  ), [usage, modelId, logged, peekLogs, discardLogs, addLogs, sendMessage, composerCommands, commandsLoading, hasPasteLinks, onPasteLinks, builds, agentActive, waiting, stopAgent, sendProblem, dismissProblem, reply, showReplied])
 
   const hasEarlier = ready && chat.hasEarlier
   const loadingEarlier = ready && chat.loadingEarlier
@@ -466,8 +472,8 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
             working={chat.activity !== undefined}
             status={chat.activity}
             details={{
-              open: openWork.has(LIVE_WORK),
-              onToggle: () => disclosure.toggle(LIVE_WORK),
+              open: liveWorkOpen,
+              onToggle: () => setLiveWorkOpen(!liveWorkOpen),
               content: (
                 <WorkLog steps={work} openSteps={openWork} onToggleStep={disclosure.toggle} />
               ),

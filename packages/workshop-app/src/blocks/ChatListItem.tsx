@@ -1,6 +1,7 @@
 import { ChatCircleIcon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
 import { LinkButton } from '@/components/LinkButton'
+import { formatCost } from '@/components/usageFormat'
 import { UnreadDot } from './UnreadDot'
 
 export type ChatListItemProps = {
@@ -11,6 +12,8 @@ export type ChatListItemProps = {
   unread?: number
   /** It stopped on a decision only a person can make, or with an action waiting to be approved. */
   waiting?: boolean
+  /** What the chat has cost, in dollars, shown after the time where it is given. */
+  cost?: number
   /** The chat's address, so that it can be opened in another tab. */
   href?: string
   onSelect: () => void
@@ -19,9 +22,9 @@ export type ChatListItemProps = {
 /**
  * One chat in a workspace's list of chats, on one line: its title, and when it was last active,
  * after a dot while it has anything the viewer has not read, and after that it is waiting on
- * them, in the colour of something to look at, where it is.
+ * them, in the colour of something to look at, where it is. What it cost comes last, where asked for.
  */
-export const ChatListItem = ({ title, time, unread = 0, waiting = false, href, onSelect }: ChatListItemProps) => (
+export const ChatListItem = ({ title, time, unread = 0, waiting = false, cost, href, onSelect }: ChatListItemProps) => (
   <div className="flex items-center rounded-2xl hover:bg-kumo-contrast/5 has-focus-visible:bg-kumo-contrast/5">
     <LinkButton
       href={href}
@@ -33,6 +36,7 @@ export const ChatListItem = ({ title, time, unread = 0, waiting = false, href, o
       {unread > 0 && <UnreadDot count={unread} />}
       {waiting && <span className="shrink-0 text-kumo-warning">Waiting on you</span>}
       {time && <span className={cn('shrink-0 text-kumo-subtle', waiting && 'max-md:hidden')}>{time}</span>}
+      {cost !== undefined && <span className="shrink-0 font-mono text-sm text-kumo-subtle">{formatCost(cost)}</span>}
     </LinkButton>
   </div>
 )
