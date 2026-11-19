@@ -23,12 +23,17 @@ async function step(impl: Impl, chatId: number, change: CodeChange) {
   await impl.commitAgentStep(chatId, AUTHOR, [], {changes: [{change}], createdGadgets: [],
     createdWorktrees: [], addedBindings: [], worktreeCommits: [], blueprintMerges: []});
 }
-async function scriptedTurn(impl: Impl, chatId: number, calls: ReturnType<typeof fauxToolCall>[], api?: Api) {
+// `summary` answers a compaction the turn runs first.
+async function scriptedTurn(impl: Impl, chatId: number, calls: ReturnType<typeof fauxToolCall>[], api?: Api,
+                            summary?: string) {
   const faux = createFauxCore({models: [{id: "faux-model"}]});
   const requests: Message[][] = [];
-  faux.setResponses(calls.length
-    ? [fauxAssistantMessage(calls, {stopReason: "toolUse"}), fauxAssistantMessage(fauxText("Done"))]
-    : [fauxAssistantMessage(fauxText("Done"))]);
+  faux.setResponses([
+    ...summary === undefined ? [] : [fauxAssistantMessage(fauxText(summary))],
+    ...calls.length
+      ? [fauxAssistantMessage(calls, {stopReason: "toolUse"}), fauxAssistantMessage(fauxText("Done"))]
+      : [fauxAssistantMessage(fauxText("Done"))],
+  ]);
   await runAgent(impl, {model: {...faux.getModel(), ...(api ? {api} : {})}, stream: (model, context, options) => {
     requests.push(structuredClone(context.messages));
     return faux.stream(model, context, options);
@@ -748,7 +753,7 @@ describe("attachment worktree ingress", () => {
   }));
 
   it.each(["image/png", "application/pdf"])(
-    "inlines only the newest 20 images and PDFs once a later %s passes that many", mimeType => inKernel(crypto.randomUUID(), async impl => {
+    "compacts before a later %s takes the chat past 20 inline images and PDFs", mimeType => inKernel(crypto.randomUUID(), async impl => {
       // Header fixtures exercise projection without decoding pixels or altering original bytes.
       const large = new Uint8Array(24), small = new Uint8Array(24);
       for (const [bytes, width] of [[large, 4000], [small, 2000]] as const) {
@@ -770,16 +775,19 @@ describe("attachment worktree ingress", () => {
       const last = await impl.gitCache.writeBlob(lastBytes);
       await impl.sendChatMessage(user, {profile: USER}, chatId, "One more", undefined,
         [{oid: last.oid, mimeType, name: "last"}]);
-      for (let turn = 0; turn < 2; ++turn) {
-        if (turn) await impl.sendChatMessage(user, {profile: USER}, chatId, "Replay again");
-        const request = (await scriptedTurn(impl, chatId, [], "anthropic-messages"))[0];
-        const parts = imageParts(request);
-        expect(parts).toHaveLength(20);
-        expect(parts.at(-1)).toMatchObject({type: "image", mimeType, data: lastBytes.toBase64()});
-        // The oldest is named instead; those still inline keep their full 4000 pixels.
-        expect(JSON.stringify(request)).toContain("workspace file env.ATTACHMENTS/0.png; 24 bytes, not shown to you");
-        expect(parts.filter(part => part.type === "image" && part.data === large.toBase64())).toHaveLength(19);
-      }
+      // The summary request carries none of them, and the turn keeps the messages whose
+      // attachments fit, as earlier requests showed them, at their full 4000 pixels.
+      const [summary, compacted] = await scriptedTurn(impl, chatId, [], "anthropic-messages", "Summary of the first five.");
+      expect(imageParts(summary)).toHaveLength(0);
+      const parts = imageParts(compacted);
+      expect(parts).toHaveLength(16);
+      expect(parts.at(-1)).toMatchObject({type: "image", mimeType, data: lastBytes.toBase64()});
+      expect(parts.filter(part => part.type === "image" && part.data === large.toBase64())).toHaveLength(15);
+      expect(JSON.stringify(compacted)).toContain("Summary of the first five.");
+      expect(JSON.stringify(compacted)).not.toContain("First five");
+      // A later turn extends that request rather than rewriting it.
+      await impl.sendChatMessage(user, {profile: USER}, chatId, "Replay again");
+      expect(imageParts((await scriptedTurn(impl, chatId, [], "anthropic-messages"))[0])).toEqual(parts);
       const originals = [...impl.storage.chats.list()].flatMap(message =>
         message.type === "message" ? message.attachments ?? [] : []);
       expect(originals).toHaveLength(21);
@@ -789,9 +797,9 @@ describe("attachment worktree ingress", () => {
     }),
   );
 
-  // Every request resends the chat's images and PDFs, so the newest that fit go inline, and the
-  // rest are named by workspace path without their bytes being read.
-  it("inlines only the newest images within the per-file and per-request limits", () => inKernel(crypto.randomUUID(), async impl => {
+  // Whether an image is inline depends only on its own message, so later messages never change
+  // how an earlier one is shown. One past the limits is named by workspace path, unread.
+  it("decides each image within its own message, and compacts once the chat's pass the byte limit", () => inKernel(crypto.randomUUID(), async impl => {
     const png = (size: number, width: number) => {
       const bytes = new Uint8Array(size);
       bytes.set([137, 80, 78, 71, 13, 10, 26, 10]);
@@ -804,27 +812,38 @@ describe("attachment worktree ingress", () => {
       ({oid: impl.gitCache.writeBlob(bytes).oid, mimeType: "image/png", name});
     const share = Math.floor(MAX_INLINE_ATTACHMENTS_TOTAL_BYTES / 2.5);
     const user = env.TEST_USER.getByName(crypto.randomUUID());
-    const chatId = await impl.newChat(user, {profile: USER}, "Oldest", undefined,
-      [await upload("oldest.png", png(share, 1))]);
-    await impl.sendChatMessage(user, {profile: USER}, chatId, "Middle", undefined,
-      [await upload("middle.png", png(share, 2))]);
-    await impl.sendChatMessage(user, {profile: USER}, chatId, "Newest", undefined,
-      [await upload("newest.png", png(share, 3)), await upload("huge.png", png(MAX_INLINE_ATTACHMENT_BYTES + 1, 4))]);
+    // The third of these passes the message's byte limit; the last passes the per-file one.
+    const chatId = await impl.newChat(user, {profile: USER}, "Photos", undefined, [
+      await upload("a.png", png(share, 1)), await upload("b.png", png(share, 2)),
+      await upload("c.png", png(share, 3)), await upload("huge.png", png(MAX_INLINE_ATTACHMENT_BYTES + 1, 4))]);
+    const attachmentName = (id: string) => [...impl.storage.chats.list()].flatMap(message =>
+      message.type === "message" ? message.attachments ?? [] : []).find(attachment => attachment.id === id)?.name;
     const read = vi.spyOn(impl, "getChatAttachmentData");
-    const request = (await scriptedTurn(impl, chatId, []))[0];
-    const parts = request.flatMap(message => Array.isArray(message.content) ? message.content : []);
-    expect(parts.filter(part => part.type === "image")).toHaveLength(2);
-    const text = parts.flatMap(part => part.type === "text" ? [part.text] : []).join("");
-    expect(text).toContain("[Attached image (middle.png); workspace file env.ATTACHMENTS/middle.png]");
-    expect(text).toContain("[Attached image (newest.png); workspace file env.ATTACHMENTS/newest.png]");
-    for (const [name, size] of [["oldest.png", share], ["huge.png", MAX_INLINE_ATTACHMENT_BYTES + 1]] as const) {
+    const userParts = (messages: Message[]) => messages.filter(message => message.role === "user")
+      .map(message => typeof message.content === "string" ? message.content : message.content);
+    const first = (await scriptedTurn(impl, chatId, []))[0];
+    expect(first.flatMap(message => Array.isArray(message.content) ? message.content : [])
+      .filter(part => part.type === "image")).toHaveLength(2);
+    const text = JSON.stringify(first);
+    for (const [name, size] of [["c.png", share], ["huge.png", MAX_INLINE_ATTACHMENT_BYTES + 1]] as const) {
       expect(text).toContain(`[Attached image (${name}); workspace file env.ATTACHMENTS/${name}; ${size} ` +
         "bytes, not shown to you: past the limits on the images and PDFs one request can carry.]");
     }
-    const attachments = [...impl.storage.chats.list()].flatMap(message =>
-      message.type === "message" ? message.attachments ?? [] : []);
-    const readNames = read.mock.calls.map(([, id]) => attachments.find(attachment => attachment.id === id)?.name);
-    expect(readNames.toSorted()).toEqual(["middle.png", "newest.png"]);
+    expect(read.mock.calls.map(([, id]) => attachmentName(id)).toSorted()).toEqual(["a.png", "b.png"]);
+
+    // A small image fits beside them, and the first message is shown as before.
+    await impl.sendChatMessage(user, {profile: USER}, chatId, "And this", undefined, [await upload("d.png", png(1000, 5))]);
+    const second = (await scriptedTurn(impl, chatId, []))[0];
+    expect(userParts(second)[0]).toEqual(userParts(first)[0]);
+
+    // One more large image takes the chat past the byte limit, so the turn compacts the first
+    // message away first.
+    await impl.sendChatMessage(user, {profile: USER}, chatId, "And this", undefined, [await upload("e.png", png(share, 6))]);
+    const [, compacted] = await scriptedTurn(impl, chatId, [], undefined, "Summary of the photos.");
+    expect(JSON.stringify(compacted)).toContain("Summary of the photos.");
+    expect(JSON.stringify(compacted)).not.toContain("a.png");
+    expect(compacted.flatMap(message => Array.isArray(message.content) ? message.content : [])
+      .filter(part => part.type === "image")).toHaveLength(2);
   }));
 
   it("never scans attachment payloads on text-only sends or namespace allocation", () => inKernel(crypto.randomUUID(), async impl => {
