@@ -79,11 +79,11 @@ export class PagerDutyScheduleImpl extends RpcTarget implements PagerDutySchedul
     schedule ??= await this.#read({ users: true });
     const id = this.#id;
     const layered = (query: { since: string; until: string; editable?: boolean }) => host.read(async api =>
-      (await api.rest.schedules.get("/schedules/{id}/overrides", { path: { id }, query })).overrides);
+      (await api.rest.get("/schedules/{id}/overrides", { path: { id }, query })).overrides);
     const [rows, editable] = await Promise.all([
       schedule.shiftBased
         ? host.read(async api =>
-          (await api.rest.schedulesV3.get("/v3/schedules/{id}/overrides", { path: { id }, query: span })).overrides)
+          (await api.rest.get("/v3/schedules/{id}/overrides", { path: { id }, query: span })).overrides)
         : layered(span),
       schedule.shiftBased ? [] : layered({ ...span, editable: true }),
     ]);

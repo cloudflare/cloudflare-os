@@ -100,7 +100,7 @@ export class PagerDutyIncidentImpl extends RpcTarget implements PagerDutyInciden
     let details: PagerDutyIncidentDetails;
     if (loaded.wire) {
       const id = loaded.wire.id;
-      const { alerts } = await host.read(api => api.rest.incidents.get("/incidents/{id}/alerts",
+      const { alerts } = await host.read(api => api.rest.get("/incidents/{id}/alerts",
         { path: { id }, query: { limit: 1, sort_by: "created_at:asc" } }));
       details = toIncidentDetails(loaded.wire, alerts[0] ?? null);
     } else {
@@ -116,7 +116,7 @@ export class PagerDutyIncidentImpl extends RpcTarget implements PagerDutyInciden
     // PagerDuty lists an incident's log oldest first: its first entry is the trigger (see
     // https://docs.pagerduty.com/developer/retrieve-incident-details).
     return await this.#listing<PagerDutyTimelineEntry>(options, listed("Read a PagerDuty incident's log", "log entry"),
-      id => listing((api, page) => api.rest.incidents.get("/incidents/{id}/log_entries", { path: { id }, query: page }),
+      id => listing((api, page) => api.rest.get("/incidents/{id}/log_entries", { path: { id }, query: page }),
         reply => reply.log_entries, toTimelineEntry));
   }
 
@@ -124,7 +124,7 @@ export class PagerDutyIncidentImpl extends RpcTarget implements PagerDutyInciden
     const { host } = this.#ctx;
     const loaded = await this.#load();
     const rows = loaded.wire
-      ? (await host.read(api => api.rest.incidents.get("/incidents/{id}/notes", { path: { id: loaded.wire!.id } })))
+      ? (await host.read(api => api.rest.get("/incidents/{id}/notes", { path: { id: loaded.wire!.id } })))
         .notes.map(toNote)
       : [];
     const id = loaded.wire ? loaded.wire.id : loaded.pending.ref;
@@ -138,7 +138,7 @@ export class PagerDutyIncidentImpl extends RpcTarget implements PagerDutyInciden
   async listAlerts(options?: PagerDutyPageOptions): Promise<Cursor<PagerDutyAlert>> {
     const { host } = this.#ctx;
     return await this.#listing<PagerDutyAlert>(options, listed("Listed a PagerDuty incident's alerts", "alert"),
-      id => listing((api, page) => api.rest.incidents.get("/incidents/{id}/alerts", {
+      id => listing((api, page) => api.rest.get("/incidents/{id}/alerts", {
         path: { id }, query: { sort_by: "created_at:desc", ...page },
       }), reply => reply.alerts, toAlert),
       (alert, id, pending) => overlayAlert(alert, id, pending, host.resolve));

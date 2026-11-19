@@ -126,7 +126,7 @@ export class PagerDutyTeamImpl extends PagerDutyScopeImpl implements PagerDutyTe
   }
 
   async getMetadata(): Promise<PagerDutyTeamMetadata> {
-    const { team: wire } = await this.ctx.host.read(api => api.rest.teams.get("/teams/{id}", { path: { id: this.#id } }));
+    const { team: wire } = await this.ctx.host.read(api => api.rest.get("/teams/{id}", { path: { id: this.#id } }));
     const me = await this.ctx.host.me();
     await this.ctx.authorize({ title: "Read a PagerDuty team", description: "Read the team's name and description." });
     return { ...toTeam(wire), you: youOf(me) };
@@ -134,7 +134,7 @@ export class PagerDutyTeamImpl extends PagerDutyScopeImpl implements PagerDutyTe
 
   async listMembers(): Promise<PagerDutyTeamMember[]> {
     const rows = await this.ctx.host.read(api =>
-      api.all(page => api.rest.teams.get("/teams/{id}/members", { path: { id: this.#id }, query: { "include[]": ["users"], ...page } }),
+      api.all(page => api.rest.get("/teams/{id}/members", { path: { id: this.#id }, query: { "include[]": ["users"], ...page } }),
         reply => reply.members));
     await this.ctx.authorize({ title: "Listed a PagerDuty team's members", description: `Read ${countOf(rows.length, "member")}.` });
     return rows.map(toMember);
@@ -161,7 +161,7 @@ export class PagerDutyTeamImpl extends PagerDutyScopeImpl implements PagerDutyTe
   async listOnCalls(window?: PagerDutyOnCallWindow): Promise<Cursor<PagerDutyOnCall>> {
     return listOnCalls(this.ctx, window, {
       policies: () => this.ctx.host.cached(`policies:${this.#id}`, CATALOG_TTL_MS, async () =>
-        (await this.ctx.host.read(api => api.all(page => api.rest.escalationPolicies.get("/escalation_policies", {
+        (await this.ctx.host.read(api => api.all(page => api.rest.get("/escalation_policies", {
           query: { "team_ids[]": [this.#id], ...page },
         }), reply => reply.escalation_policies)))
           .map(({ id }) => id)),

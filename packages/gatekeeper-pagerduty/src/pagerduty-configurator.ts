@@ -8,9 +8,6 @@
 import { RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import { isCredentialsExpired, type CredentialSource } from "@gadgets/gatekeeper-kit/credentials";
-import type { IncidentsApi } from "./openapi/incidents";
-import type { ServicesApi } from "./openapi/services";
-import type { TeamsApi } from "./openapi/teams";
 import {
   PagerDutyApi, chainedPage, isDenial, listing, scheduleListings, type OffsetSource, type QueryOf,
   type ScheduleFilters,
@@ -74,15 +71,15 @@ function incidentNode(wire: WireIncident): PagerDutyNode {
   };
 }
 
-const teams = (query: QueryOf<TeamsApi, "/teams">) => listing(
-  (api, page) => api.rest.teams.get("/teams", { query: { ...query, ...page } }), reply => reply.teams, teamNode);
-const services = (query: QueryOf<ServicesApi, "/services">) => listing(
-  (api, page) => api.rest.services.get("/services", { query: { sort_by: "name", ...query, ...page } }),
+const teams = (query: QueryOf<"/teams">) => listing(
+  (api, page) => api.rest.get("/teams", { query: { ...query, ...page } }), reply => reply.teams, teamNode);
+const services = (query: QueryOf<"/services">) => listing(
+  (api, page) => api.rest.get("/services", { query: { sort_by: "name", ...query, ...page } }),
   reply => reply.services, serviceNode);
 const schedules = (query: ScheduleFilters) => scheduleListings(query, scheduleNode);
 // PagerDuty lists the last month by default; an incident open longer is still open.
-const incidents = (query: QueryOf<IncidentsApi, "/incidents">) => listing(
-  (api, page) => api.rest.incidents.get("/incidents", {
+const incidents = (query: QueryOf<"/incidents">) => listing(
+  (api, page) => api.rest.get("/incidents", {
     query: { "statuses[]": OPEN_STATUSES, date_range: "all", sort_by: "created_at:desc", ...query, ...page },
   }),
   reply => reply.incidents, incidentNode);
@@ -188,11 +185,11 @@ export class PagerDutyConfiguratorUI extends RpcTarget implements PagerDutyConfi
       const { id } = ref;
       switch (ref.kind) {
         case "team":
-          return teamNode((await this.#read(api => api.rest.teams.get("/teams/{id}", { path: { id } }))).team);
+          return teamNode((await this.#read(api => api.rest.get("/teams/{id}", { path: { id } }))).team);
         case "service":
-          return serviceNode((await this.#read(api => api.rest.services.get("/services/{id}", { path: { id } }))).service);
+          return serviceNode((await this.#read(api => api.rest.get("/services/{id}", { path: { id } }))).service);
         case "incident":
-          return incidentNode((await this.#read(api => api.rest.incidents.get("/incidents/{id}", { path: { id } }))).incident);
+          return incidentNode((await this.#read(api => api.rest.get("/incidents/{id}", { path: { id } }))).incident);
         case "schedule":
           return scheduleNode((await this.#read(api => api.schedule(id))).schedule);
       }
