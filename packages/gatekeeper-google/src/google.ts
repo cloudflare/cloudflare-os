@@ -969,7 +969,14 @@ export class UserAccount extends DurableObject<Env> {
         // let go first, and the new one is named before its registry lists this object, so that
         // the registry this object names is the only one it tells it holds a grant in.
         kv.put<AccountSubject>(ACCOUNT_SUBJECT_KEY, { credentialsId: installed, subject: sub });
-        if (kv.get<string>(GRANT_SUBJECT_KEY) !== sub) await this.#dropGrant();
+        // Best effort, as at a reconnect: the old registry drops this object when it next asks it.
+        if (kv.get<string>(GRANT_SUBJECT_KEY) !== sub) {
+          await this.#dropGrant().catch(error => {
+            logger.warn("failed to stop holding the Google grant a reconnect replaced", {
+              event: "google.grant.forget.failed", error,
+            });
+          });
+        }
         await this.#recordHolder(sub, installed);
       });
     } catch (error) {

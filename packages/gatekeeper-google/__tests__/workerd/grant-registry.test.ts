@@ -609,8 +609,12 @@ describe("Google grants shared by several connections", () => {
     google.profileFails = true;
     await reconnect(google, moved, "moved-again", grace, false);
     google.profileFails = false;
+    // Taking it out of the first account's registry fails, which drops it when it next asks.
+    vi.spyOn(GoogleGrantRegistry.prototype, "drop").mockImplementationOnce(async () => {
+      throw new Error("registry unavailable");
+    });
     await moved.describe();
-    expect(await moved.stored("grantSubject")).toBe(grace);
+    await moved.holds(grace);
 
     const graces = await connection(google, "graces", grace);
     await graces.disconnect();
