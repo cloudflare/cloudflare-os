@@ -7,6 +7,9 @@ import type { ApprovalQueue } from "@gadgets/workshop-shared/gatekeeper";
 import type { AcmeAction, AcmeActions } from "./acme-actions";
 import type { Rest, WireItem } from "./acme-api";
 import { itemSubresourceId } from "./acme-credentials";
+// #if hooks
+import type { AcmeEventHookTarget } from "./acme-hooks";
+// #endif
 import { itemUrl } from "./acme-urls";
 import type { AcmeItem, AcmeItemInfo } from "./types";
 
@@ -18,9 +21,14 @@ export type SessionHost = {
   pending(): AcmeAction[];
   /** Stages an action for the user's approval. */
   submit<K extends keyof AcmeActions>(queue: RpcStub<ApprovalQueue>, kind: K, payload: AcmeActions[K]): Promise<void>;
+  // #if hooks
+  /** Asks the user to approve a hook on the binding's item. */
+  subscribe(queue: RpcStub<ApprovalQueue>, hook: RpcStub<AcmeEventHookTarget>): Promise<void>;
+  // #endif
 };
 
-function toItem(wire: WireItem): AcmeItemInfo {
+/** An item as gadgets see it. */
+export function toItem(wire: WireItem): AcmeItemInfo {
   return { id: wire.id, title: wire.title, updatedAt: wire.updated_at, url: itemUrl(wire.id) };
 }
 
@@ -64,4 +72,12 @@ export class AcmeItemImpl extends RpcTarget implements AcmeItem {
     // Nothing read here is returned to the caller, so nothing is reported as an observation.
     await this.#host.submit(this.#queue, "rename", { itemId: this.#itemId, title, stagedAt: new Date().toISOString() });
   }
+  // #if hooks
+
+  async subscribe(hook: RpcStub<AcmeEventHookTarget>): Promise<void> {
+    // The hook is not stored here: it is bound to this session, and the overseer hands it back,
+    // bound to a new one, for each delivery.
+    await this.#host.subscribe(this.#queue, hook);
+  }
+  // #endif
 }

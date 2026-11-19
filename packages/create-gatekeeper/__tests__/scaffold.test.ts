@@ -3,7 +3,7 @@ import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { AUTH_KINDS, namesFor, scaffold, stops } from "../src/scaffold.ts";
+import { AUTH_KINDS, namesFor, resolveBlocks, scaffold, stops } from "../src/scaffold.ts";
 
 const pkg = join(import.meta.dirname, "..");
 const repo = join(pkg, "..", "..");
@@ -36,14 +36,36 @@ describe("namesFor", () => {
   });
 });
 
-describe.each(AUTH_KINDS)("scaffold with --auth %s", auth => {
-  const files = scaffold({ name: "home-assistant", display: "Home Assistant", auth });
+describe("resolveBlocks", () => {
+  const text = "a\n  // #if hooks\nb\n  // #else\nc\n  // #endif\nd";
+
+  it("keeps a block's first half with the feature and its second without", () => {
+    expect(resolveBlocks(text, new Set(["hooks"]))).toBe("a\nb\nd");
+    expect(resolveBlocks(text, new Set())).toBe("a\nc\nd");
+  });
+
+  it.each(["// #if hooks\na", "a\n// #endif", "// #else", "// #if hooks\n// #if hooks\n// #endif", "// #if\n// #endif"])(
+    "refuses the malformed template %j", malformed => {
+      expect(() => resolveBlocks(malformed, new Set())).toThrow();
+    });
+});
+
+const VARIANTS = AUTH_KINDS.flatMap(auth => [{ auth, hooks: false }, { auth, hooks: true }]);
+
+describe.each(VARIANTS)("scaffold with --auth $auth, hooks $hooks", ({ auth, hooks }) => {
+  const files = scaffold({ name: "home-assistant", display: "Home Assistant", auth, hooks });
 
   it("renames the template's provider everywhere", () => {
     for (const [path, file] of files) {
-      expect(`${path}\n${"text" in file ? file.text : file.symlink}`).not.toMatch(/acme/i);
+      expect(`${path}\n${"text" in file ? file.text : file.symlink}`).not.toMatch(/acme|\/\/ #(if|else|endif)/i);
     }
     expect([...files.keys()]).toContain("src/home-assistant.ts");
+  });
+
+  it(hooks ? "writes the hooks module" : "writes nothing about hooks", () => {
+    expect(files.has("src/home-assistant-hooks.ts")).toBe(hooks);
+    const text = [...files.values()].map(file => "text" in file ? file.text : "").join("\n");
+    expect(/hook/i.test(text.replaceAll("webhook", ""))).toBe(hooks);
   });
 
   it("marks what is left to decide", () => {
@@ -66,7 +88,8 @@ describe.each(AUTH_KINDS)("scaffold with --auth %s", auth => {
       for (const name of ["configurator-ui", "gatekeeper-kit", "workshop-shared"]) {
         symlinkSync(join(repo, "packages", name), join(root, "packages", name));
       }
-      run(repo, process.execPath, bin, "home-assistant", "--display", "Home Assistant", "--auth", auth, "--out", dir);
+      run(repo, process.execPath, bin, "home-assistant", "--display", "Home Assistant", "--auth", auth, "--out", dir,
+        ...(hooks ? ["--hooks"] : []));
       // This package depends on what a generated one does, so the generated one resolves from it.
       symlinkSync(join(pkg, "node_modules"), join(dir, "node_modules"));
 
@@ -76,7 +99,12 @@ describe.each(AUTH_KINDS)("scaffold with --auth %s", auth => {
         join(repo, "scripts", "generate-worker-configs.ts"), dir));
       run(dir, join(pkg, "node_modules", ".bin", "wrangler"), "types", "worker-configuration.d.ts");
       const types = join(dir, "worker-configuration.d.ts");
-      writeFileSync(types, readFileSync(types, "utf8").replace("./.wrangler/validate/src/", "./src/"));
+      // And as its post-processing does: the main module where the sources are, and the `restore`
+      // export wrangler's types lack, which the command lists a package with hooks to be given.
+      const restore = "export const tracing: Tracing;\n";
+      const generated = readFileSync(types, "utf8").replace("./.wrangler/validate/src/", "./src/");
+      expect(generated).toContain(restore);
+      writeFileSync(types, hooks ? generated.replace(restore, `${restore}    export const restore: symbol;\n`) : generated);
 
       run(dir, join(pkg, "node_modules", ".bin", "tsc"), "-p", dir);
     } finally {

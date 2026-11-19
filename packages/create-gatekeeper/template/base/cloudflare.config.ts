@@ -13,5 +13,9 @@ export const wrangler = DEFAULT_GATEKEEPER_WRANGLER;
 
 /** Only Durable Object classes are listed. Once this has shipped, add a new tag for each change. */
 export const migrations: DurableObjectMigration[] = [
+  // #if hooks
+  { tag: "v0", new_sqlite_classes: ["UserAccount", "AcmeGatekeeperImpl", "AcmeHookDriver"] },
+  // #else
   { tag: "v0", new_sqlite_classes: ["UserAccount", "AcmeGatekeeperImpl"] },
+  // #endif
 ];

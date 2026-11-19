@@ -32,6 +32,9 @@ import {
   RECONNECT_MESSAGE, accountStub, identityOf, parseSubresource, type Identity, type PublicGrant,
 } from "./acme-credentials";
 import { VENDOR_ID, getBaseUrl, type Env } from "./acme-env";
+// #if hooks
+import { forgetHooks } from "./acme-hooks";
+// #endif
 import { obsContext } from "./observability";
 
 const logger = obsContext.createLogger({ component: "gatekeeper.acme", vendorId: VENDOR_ID });
@@ -414,6 +417,12 @@ export class UserAccount extends DurableObject<Env> {
   async revoke(): Promise<void> {
     // Before any await, so no credential read or OAuth completion gets in.
     this.#creds.clear();
+    // #if hooks
+    // Best effort: should it fail, nothing retries it, and the hooks' firings fail without a grant.
+    await forgetHooks(this.ctx.exports, this.ctx.id.toString()).catch((error: unknown) => {
+      logger.warn("failed to drop the hooks of a disconnected connection", { event: "acme.hooks.forget.failed", error });
+    });
+    // #endif
     await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.deleteAll();
   }

@@ -3,13 +3,15 @@
 A new gatekeeper starts from a command, not from copied code:
 
 ```bash
-pnpm create-gatekeeper <name> --auth <oauth|api-key> --display "<Provider Name>"
+pnpm create-gatekeeper <name> --auth <oauth|api-key> [--hooks] --display "<Provider Name>"
 ```
 
 `--auth oauth` is an authorization-code grant with PKCE; `--auth api-key` is a key the user pastes
-into the connect page, for a provider with no OAuth. The command writes
+into the connect page, for a provider with no OAuth. `--hooks` adds event hooks fed by a webhook
+the provider delivers to. The command writes
 `packages/gatekeeper-<name>`, adds it to the gatekeeper list in `README.md` and, for OAuth, to the
-credential map in `scripts/run-dev-server.ts`, and runs `pnpm install` and `pnpm types:generate`. The package builds, lints and bundles as written. The template is
+credential map in `scripts/run-dev-server.ts` (with hooks, also to that script's passed-through
+variables and to the `restore` list in `scripts/generate-worker-types.ts`), and runs `pnpm install` and `pnpm types:generate`. The package builds, lints and bundles as written. The template is
 `packages/create-gatekeeper/template/`; a test generates a package from it and compiles that, so
 read the template rather than an older gatekeeper for the current shape.
 
@@ -19,7 +21,8 @@ The package is written for an invented provider with one resource type, an item 
 `https://<name>.example/items/:itemId`, one read and one action. Everything the kit already has an
 answer for is real: the connect handshake and its nonces, PKCE and the preview-deployment callback
 relay (or the key form and its cross-site check), staged reconnects, credential refresh and rejection handling, the action journal and its
-fence, per-read observer reporting, and the observer verifier with its cache.
+fence, per-read observer reporting, the observer verifier with its cache, and with `--hooks` the
+hook registry, its delivery queue and retries, and dropping a disconnected connection's hooks.
 
 Wherever only the provider's documentation or a design decision can say what is right, the
 command wrote an invented answer and marked it `STOP(<id>)`. `__tests__/scaffold-stops.test.ts`
@@ -39,6 +42,7 @@ and subresource model come first and need the operator's review (Step 3) before 
 | `src/<name>-gatekeeper.ts` | the per-binding Durable Object | |
 | `src/<name>-session.ts` | the capability a gadget holds | |
 | `src/<name>-actions.ts`, `action-table.json` | actions and their committed table | `actions` |
+| `src/<name>-hooks.ts` (`--hooks`) | webhook route, hook driver, controller and delivery | `webhook-signature`, `webhook-payload`, `webhook-limits` |
 | `src/<name>.ts` | HTTP entrypoint, vendor, account entrypoint, verifier | `vendor-description` |
 | `src/configurator/` | the resource configurator frame | `configurator` |
 
@@ -90,86 +94,15 @@ state and expose only narrow read-only helper methods.
 
 ## Hooks
 
-The command does not write hooks yet. For a gatekeeper that pushes events, add the following to
-the generated package, with `hookTsType` in `describe()` and the hook interface in `types.d.ts`.
-`gatekeeper-pagerduty/src/pagerduty-hooks.ts` is a complete one built on the kit's
-`hook-registry` and `hook-delivery-queue`.
+`--hooks` writes `src/<name>-hooks.ts`, modelled on `gatekeeper-pagerduty`: one webhook for the
+deployment, delivering to `POST {BASE_URL}/webhook` and signed with the `<NAME>_WEBHOOK_SECRET`
+secret, which is set outside the deploy wizard; while it is unset, subscribing is refused and the
+route answers 404. The session's `subscribe()` binds a controller whose props carry a persistent
+stub back to the binding's facet; the driver queues each verified event for the hooks that may
+watch it; and the facet re-reads what the event names as the hook's owner, authorizes the
+observation with its subresources, and only then calls the hook. Keep that order when you replace
+the invented event: take identifiers from the webhook and nothing else.
 
-The hook interface from `types.d.ts` is implemented by the gadget as an `RpcTarget`. Intersect it
-with `RpcTarget` so it satisfies the `HookController`/`HookInitiator` generic constraints. A plain
-function also works as a hook type, e.g. `RpcStub<() => Promise<void>>`, and needs no merge.
-
-```typescript
-type MyHook = RpcTarget & MyHookIface;
-
-// Bind-time details for a single hook registration, baked into the controller's props.
-type MyHookProps = {
-  // TODO: e.g. an event kind, a filter, a sub-resource id, etc. — whatever the registration
-  // method received and the controller/event source will need later.
-  filter?: string;
-};
-
-type MyHookControllerImplProps = MyGatekeeperImplProps & MyHookProps;
-
-export class MyHookControllerImpl extends WorkerEntrypoint<Env, MyHookControllerImplProps>
-    implements HookController<MyHook> {
-  // Called when the user enables the hook. Store `initiator` somewhere it can be reached when an
-  // event arrives — typically an event-source DO. Don't store other state until now; everything
-  // else is already in `this.ctx.props`. If already enabled, replace the previous initiator.
-  //
-  // `target` identifies where the hook delivers (workspace, and gadget when pinned to one). Store
-  // it too if you display or link to the target; otherwise ignore it, but keep the parameter
-  // declared — RPC argument validation rejects arguments the receiver doesn't declare.
-  async enable(initiator: Fetcher<HookInitiator<MyHook>>, target: HookTargetMetadata): Promise<void> {
-    // TODO: persist `initiator` (e.g. forward it to an event-source DO keyed by props).
-  }
-
-  // Called when the hook is disabled or deleted. Forget the stored initiator and clean up all
-  // related state. May never be called again, though the overseer may later call enable() afresh.
-  async disable(): Promise<void> {
-    // TODO: forget the stored initiator.
-  }
-}
-
-// Event delivery (sketch). When the external event arrives — e.g. in the event-source DO that
-// holds the `initiator` — invoke the hook like so. The resource ID comes from the enabled
-// registration's props, never an untrusted event field; events reveal only that resource:
-//
-//   async onEvent(initiator: Fetcher<HookInitiator<MyHook>>, resourceId: string, event: MyEvent) {
-//     // startHook() begins a fresh session and returns the callback (re-bound to it) plus an
-//     // ApprovalQueue. Await the disposable result so `using` releases its stubs even on denial.
-//     using result = await initiator.startHook();
-//
-//     // A hook event is almost always an observation. (Register actions too if invoking the
-//     // callback can cause side effects.) Authorize before delivering any event data.
-//     await result.approvalQueue.authorizeObservation({
-//       title: "Resource event",
-//       description: "Delivered an event from the bound resource.",
-//       subresources: [itemSubresourceId(resourceId)],
-//     });
-//
-//     // Deliver the event to the Gadget's callback.
-//     await result.callback.onMyEvent(event);
-//   }
-```
-
-Hook registration, on the session. `callback` is a persistent stub the gadget created with
-`ctx.restore()`. Do not store it: it is bound to this session and is revoked when the session ends.
-
-```typescript
-  // Example: hook registration — remove if the gatekeeper doesn't push events.
-  // `callback` is a persistent stub the Gadget created with ctx.restore(). Construct a controller
-  // whose props capture the specifics of THIS registration (e.g. `filter`), then hand it, the
-  // callback, and a user-facing description to the overseer via bindHook(). For multiple hook
-  // kinds, pick the appropriate controller class here. Do NOT store the callback yourself — it is
-  // bound to this session and would be revoked when the session ends.
-  async subscribe(callback: RpcStub<MyHook>, filter?: string): Promise<void> {
-    let controller = this.#ctx.exports.MyHookControllerImpl({
-      props: { ...this.#ctx.props, filter },
-    });
-    await this.#approvalQueue.bindHook(controller, callback, {
-      title: "TODO: short hook title",
-      description: `TODO: what events this hook delivers${filter ? ` (filter: ${filter})` : ""}`,
-    });
-  }
-```
+A provider that has no deployment-wide webhook (one that needs a subscription per resource, or
+polling) needs a different event source; keep the controller, registry and delivery, and replace
+`handleWebhook`.
