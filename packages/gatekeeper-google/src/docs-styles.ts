@@ -9,18 +9,19 @@ import type { GoogleDocCell, GoogleDocLook as DocLook, GoogleDocStyles } from ".
 
 const ALIGNMENT = { START: "start", CENTER: "center", END: "end", JUSTIFIED: "justify" } as const;
 
-// Google leaves a zero out of its JSON, so a length or color channel that is absent is zero.
-const points = (length: Dimension | undefined) => length && (length.magnitude ?? 0);
+/** A length in points. Google leaves a zero out of its JSON, so one that is absent is zero. */
+export const points = (length: Dimension | undefined) => length && (length.magnitude ?? 0);
 
-function cssColor(color: Color | undefined): string | undefined {
+/** A color as `#rrggbb`, a channel Google leaves out being zero. */
+export function cssColor(color: Color | undefined): string | undefined {
   let rgb = color?.color?.rgbColor;
   if (!rgb) return undefined;
   let channel = (value = 0) => Math.round(value * 255).toString(16).padStart(2, "0");
   return `#${channel(rgb.red)}${channel(rgb.green)}${channel(rgb.blue)}`;
 }
 
-// White behind text on a white page is no highlight, though pasted text often carries one.
-const fill = (color: Color | undefined) => {
+/** White behind text on a white page is no highlight, though pasted text often carries one. */
+export const fill = (color: Color | undefined) => {
   let css = cssColor(color);
   return css === "#ffffff" ? undefined : css;
 };
@@ -122,7 +123,7 @@ function cellLook(cell: TableCell, named: Record<string, DocLook>, base: DocLook
 }
 
 /** Counts the lines of `markdown` before each position asked for, which must not go backwards. */
-function lineCounter(markdown: string): (position: number) => number {
+export function lineCounter(markdown: string): (position: number) => number {
   let line = 0;
   let scanned = 0;
   return position => {

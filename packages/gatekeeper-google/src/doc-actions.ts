@@ -12,6 +12,7 @@ import {
   blankDocsTab, docsWriteFailure, GoogleDocsApi, type DocsBatchReply, type GoogleDocReader,
   type GoogleDocsDocument, type GoogleDocsTab,
 } from "./docs-api";
+import { DOC_DRAWING_VERSION } from "./docs-drawing";
 import { insertDocTab, type DocTabPlacement } from "./docs-tabs";
 import {
   applyMarkdownEdit, assertMarkdownWriteComplexity, canonicalizeMarkdownForWrite,
@@ -183,6 +184,8 @@ export type GoogleDocTabSnapshot = DocTabSnapshot & { committedWriteIds: string[
 export type GoogleDocSnapshot = {
   /** Rendering schema of `tabs`; bumped by the converter that produced them. */
   formatVersion: typeof MARKDOWN_RENDERING_VERSION;
+  /** Schema of each tab's `drawing`. */
+  drawingVersion: typeof DOC_DRAWING_VERSION;
   title: string;
   /** Absent unless the caller can edit the document; see `GoogleDocsDocument.revisionId`. */
   revisionId?: string;
@@ -194,6 +197,7 @@ export type GoogleDocSnapshot = {
 export function googleDocSnapshot(document: GoogleDocsDocument): GoogleDocSnapshot {
   return {
     formatVersion: MARKDOWN_RENDERING_VERSION,
+    drawingVersion: DOC_DRAWING_VERSION,
     title: document.title,
     revisionId: document.revisionId,
     tabs: document.tabs.map(tab => ({
@@ -207,8 +211,10 @@ export function googleDocSnapshot(document: GoogleDocsDocument): GoogleDocSnapsh
 /** Accept a cached snapshot only if it predates nothing this code depends on. */
 export function isGoogleDocSnapshot(value: unknown): value is GoogleDocSnapshot {
   if (!value || typeof value !== "object") return false;
-  let {formatVersion, title, tabs, revisionId, fetchedAt} = value as Partial<GoogleDocSnapshot>;
-  return formatVersion === MARKDOWN_RENDERING_VERSION && typeof title === "string" &&
+  let {formatVersion, drawingVersion, title, tabs, revisionId, fetchedAt} =
+    value as Partial<GoogleDocSnapshot>;
+  return formatVersion === MARKDOWN_RENDERING_VERSION && drawingVersion === DOC_DRAWING_VERSION &&
+      typeof title === "string" &&
       Array.isArray(tabs) && (revisionId === undefined || typeof revisionId === "string") &&
       typeof fetchedAt === "number" && Number.isFinite(fetchedAt);
 }
@@ -239,8 +245,8 @@ export function resolveGoogleDocTab(
   snapshot: GoogleDocSnapshot,
   tabId: string | undefined,
   operation:
-    "getContent" | "getPendingChanges" | "getStyles" | "listImages" | "readImage" | "replaceText" |
-    "appendText",
+    "getContent" | "getPendingChanges" | "getStyles" | "readDrawing" | "listImages" | "readImage" |
+    "replaceText" | "appendText",
 ): GoogleDocTabSnapshot {
   if (tabId === undefined) {
     if (snapshot.tabs.length !== 1) {

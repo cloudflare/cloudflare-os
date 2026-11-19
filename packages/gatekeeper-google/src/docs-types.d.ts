@@ -178,10 +178,17 @@ export interface GoogleDocSession extends GoogleDocEditSession {
   listImages(tabId: string): Promise<GoogleDocImage[]>;
 
   /**
-   * Read one image `listImages()` returned for tab `tabId`. Throws if the image is not readable
-   * or is larger than 10 MB.
+   * Read one image `listImages()` returned for tab `tabId`, or one its drawing names. Throws if
+   * the image is not readable or is larger than 10 MB.
    */
   readImage(imageId: string, tabId: string): Promise<GoogleDocImageBytes>;
+
+  /**
+   * Return the declarations of the read that these types leave out, as TypeScript: `readDrawing()`,
+   * which gives what it takes to render a tab as Google Docs draws it, with its pages, headers,
+   * footers and wrapped images. Call it before writing or changing code that renders the document.
+   */
+  getRenderingTypes(): Promise<string>;
 }
 
 /** How a paragraph's text is drawn. Lengths are in points and colors are `#rrggbb`. */

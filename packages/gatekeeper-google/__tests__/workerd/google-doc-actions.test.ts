@@ -2,10 +2,11 @@ import { abortAllDurableObjects, env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ActionField } from "@gadgets/workshop-shared/gatekeeper";
 import { googleDocActionTab } from "../../src/doc-actions";
-import { MARKDOWN_RENDERING_VERSION } from "../../src/markdown-converter";
+import { docTabToMarkdown, MARKDOWN_RENDERING_VERSION } from "../../src/markdown-converter";
+import { DOC_DRAWING_VERSION } from "../../src/docs-drawing";
 import { officeFileError } from "../../src/office-conversion";
 import { DRIVE_WRITES_GRANT, GOOGLE_DRIVE_RESOURCE } from "../../src/resources";
-import type { GoogleDocsTab } from "../../src/docs-api";
+import { blankDocsTab, type GoogleDocsTab } from "../../src/docs-api";
 import type { GoogleDocSession } from "../../src/docs-types";
 import { buildTab } from "../doc-fixture";
 import { DriveFiles, DOC_MIME as DRIVE_DOC_MIME, FOLDER_MIME } from "../drive-files";
@@ -2274,6 +2275,45 @@ describe("Google Doc with no revision ID", () => {
   });
 });
 
+describe("Google Doc drawing", () => {
+  let call = (facet: string, method: string, ...args: unknown[]) =>
+    hooks().callDoc(facet, method as keyof GoogleDocSession, args);
+
+  it("reads a tab as Google Docs draws it, under one observation", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "Draft");
+    docs.install();
+
+    let { value, observations } = await call("drawing-read", "readDrawing", MAIN_TAB);
+
+    expect(value).toMatchObject({
+      page: { width: 612, height: 792 },
+      sections: [{ margins: { top: 72, left: 72 } }],
+      blocks: [{ type: "paragraph", line: 0, style: "NORMAL_TEXT", runs: [{ text: "Draft", at: 0 }] }],
+      headers: {}, footers: {},
+    });
+    expect(observations).toEqual([`Read tab "Main" (${MAIN_TAB}) as Google Docs draws it.`]);
+  });
+
+  it("refuses a tab the document does not have", async () => {
+    nestedDocs();
+
+    let { error, observations } = await call("drawing-no-tab", "readDrawing", "nope");
+
+    expect(error).toContain('readDrawing: no tab with ID "nope"');
+    expect(observations).toEqual(["Read one tab of the document as Google Docs draws it."]);
+  });
+
+  it("declares the read apart from the document's other types, and reports no read of it", async () => {
+    new DocsModel().install();
+
+    let { value, observations } = await call("drawing-types", "getRenderingTypes");
+
+    expect(value).toContain("readDrawing(tabId: string): Promise<GoogleDocDrawing>;");
+    expect(observations).toEqual([]);
+  });
+});
+
 describe("Google Doc styles", () => {
   it("reads a tab's styles under one observation", async () => {
     let docs = new DocsModel();
@@ -2704,6 +2744,7 @@ function tabSnapshot(tabId: string, title: string) {
     tabId, title, index: 0, nestingLevel: 0,
     markdown: "shared\n", sourceMap: { blocks: [], protectedRanges: [] }, bodyEndIndex: 8,
     images: [], styles: { named: {}, paragraphs: [], runLooks: [], tables: [] }, committedWriteIds: [],
+    drawing: docTabToMarkdown(blankDocsTab(tabId, title)).drawing, imageUris: {},
   };
 }
 
@@ -2712,6 +2753,7 @@ function tabSnapshot(tabId: string, title: string) {
 describe("Google Doc edits stored before tab support", () => {
   const snapshot = {
     formatVersion: MARKDOWN_RENDERING_VERSION as typeof MARKDOWN_RENDERING_VERSION,
+    drawingVersion: DOC_DRAWING_VERSION as typeof DOC_DRAWING_VERSION,
     title: "Test document",
     revisionId: "revision-1",
     tabs: [tabSnapshot(MAIN_TAB, "Main")],
