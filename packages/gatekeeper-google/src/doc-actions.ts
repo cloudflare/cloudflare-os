@@ -889,6 +889,26 @@ async function applyDocEdit(action: GoogleDocAction, host: DocHost, id: number):
     ? { provisionalTabId: action.provisionalTabId, tabId: addedTabId } : undefined);
 }
 
+// Whether `requested` is `rendered` but for numbering its lists' items as they will read. The
+// document numbers them itself, so its Markdown writes each `1.`: such an edit asks for nothing else.
+function numbersListsAs(requested: string, rendered: string): boolean {
+  // The last number at each depth of the list being read.
+  let counted: number[] = [];
+  return requested.split("\n").map(line => {
+    let item = /^( *)(\d+)\. /.exec(line);
+    if (!item) {
+      if (line.trim() && !/^ *- /.test(line)) counted = [];
+      return line;
+    }
+    let depth = item[1].length >> 1;
+    counted.length = depth + 1;
+    // Only a list counted up from one reads as it is numbered.
+    if (Number(item[2]) !== (counted[depth] ?? 0) + 1) return line;
+    counted[depth] = Number(item[2]);
+    return `${item[1]}1. ${line.slice(item[0].length)}`;
+  }).join("\n") === rendered;
+}
+
 /** An edit's card, built from what the edit and its display fields hold. */
 export function describeDocEdit(action: GoogleDocAction): ActionPresentation {
   switch (action.type) {
@@ -897,10 +917,11 @@ export function describeDocEdit(action: GoogleDocAction): ActionPresentation {
       let rendered = display.rendered ?? action.newMarkdown;
       let description = buildDescription(`Replace text in tab ${display.tab}.`)
         .verbatim("Old", action.oldMarkdown, "markdown");
-      if (rendered !== action.newMarkdown) {
-        description.verbatim("Requested New", action.newMarkdown, "markdown");
+      if (numbersListsAs(action.newMarkdown, rendered)) {
+        description.verbatim("New", action.newMarkdown, "markdown");
+      } else {
+        description.verbatim("Requested New", action.newMarkdown, "markdown").verbatim("New", rendered, "markdown");
       }
-      description.verbatim("New", rendered, "markdown");
       return { title: "Edit Google Doc", ...description.finish(), implementsRevert: false };
     }
     case "appendText": {
@@ -908,8 +929,8 @@ export function describeDocEdit(action: GoogleDocAction): ActionPresentation {
       let renderedMarkdown = canonicalizeMarkdownForWrite(action.markdown);
       let description =
         buildDescription(`Append content to the end of tab ${display.tab}.`);
-      if (action.markdown === renderedMarkdown) {
-        description.verbatim("Content", renderedMarkdown, "markdown");
+      if (numbersListsAs(action.markdown, renderedMarkdown)) {
+        description.verbatim("Content", action.markdown, "markdown");
       } else {
         description
           .verbatim("Requested", action.markdown, "markdown")

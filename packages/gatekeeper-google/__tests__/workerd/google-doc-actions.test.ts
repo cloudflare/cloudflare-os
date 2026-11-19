@@ -1932,6 +1932,19 @@ describe.each(RUNS)("Google Doc write receipts, $name", r => {
     expect(await hooks().lastActionDescription).toBe("");
   });
 
+  // The document numbers a list itself, so its Markdown writes every item `1.`: that is no change to what was asked.
+  it("shows a list an append numbers from one as it was asked for, and one numbered otherwise as it will read", async () => {
+    let docs = new DocsModel();
+    docs.install();
+    await hooks().submitAppend("numbered-append", "1. one\n2. two");
+    expect(await hooks().lastActionFields).toEqual([markdownField("Content", "1. one\n2. two")]);
+
+    await hooks().submitAppend("numbered-append", "3. three\n4. four");
+    expect(await hooks().lastActionFields).toEqual([
+      markdownField("Requested", "3. three\n4. four"), markdownField("Resulting", "1. three\n1. four"),
+    ]);
+  });
+
   it("shows literal Markdown escapes in the append approval", async () => {
     let docs = new DocsModel();
     docs.install();
