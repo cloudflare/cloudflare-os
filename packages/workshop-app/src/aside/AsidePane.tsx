@@ -28,7 +28,7 @@ import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { formatActivity } from '@/workspaces/formatActivity'
 import { useWorkspaceChats } from '@/workspaces/useWorkspaceChats'
 import { asideItemIcon } from './asideItemIcon'
-import type { AsideFile, AsideItem, AsideOutput } from './asideItems'
+import { isApp, type AsideFile, type AsideItem, type AsideOutput } from './asideItems'
 import type { GadgetUi } from './GadgetConnection'
 import { GadgetAskDock } from './GadgetAskDock'
 import { itemChats } from './itemChats'
@@ -42,6 +42,8 @@ export type AsidePaneProps = {
   item: AsideItem
   /** An address for it, to copy. */
   link?: string
+  /** It fills the window, beside the page or as the page. */
+  fullScreen?: boolean
   /**
    * Has it fill the window, or go back. Stable: a gadget's page asks to leave full screen with
    * Escape, through the connection it was made with.
@@ -58,8 +60,11 @@ export type AsidePaneProps = {
       /** Beside the page: one of what can be shown beside the chat. */
       placement: 'beside'
       onHide: () => void
-      /** Has it take the page's place, when it can. */
-      onExpand?: () => void
+      /** Goes to its own page, where it is as it is kept, without the changes of the chat beside it. */
+      onOpenPage?: () => void
+      /** It takes all of the page's room, and `onShrink` has it back beside the page (see `SidePane`). */
+      expanded?: boolean
+      onShrink?: () => void
     }
   | {
       /** The page itself. */
@@ -70,15 +75,16 @@ export type AsidePaneProps = {
        * place instead, for whoever builds in its workspace.
        */
       onOpenSettings?: (output: AsideOutput, title: string) => void
-      fullScreen: boolean
-      /** Back beside the chat it was expanded from, when it was. */
-      onCollapse?: () => void
+      /** On a narrow screen, up to what it is in. */
+      onBack?: () => void
       /**
        * Goes to a chat in its workspace with it beside it, and `onNewChat` starts one there, greeted
-       * by its name. Left out where there is a way back to a chat already, which leaves out Chat.
+       * by its name.
        */
       onOpenChat?: (chat: { id: number; title?: string }) => void
       onNewChat?: (title: string) => void
+      /** The chat it was opened from, which Chat offers first, as the way back to it. */
+      fromChat?: { chatId: number; onBack: () => void }
     }
 )
 
@@ -86,13 +92,14 @@ const paneItem = (item: AsideItem, title = item.title): SidePaneItem => ({ key: 
 
 /**
  * A file or an output, as the card that shows it: beside the page, or as the page. A gadget runs
- * live in it, and keeps running from one placement to the other: what is shown is keyed by the item
- * alone.
+ * live in it, and keeps running from one placement to the other where both show it alike, as
+ * beside a workspace's page: what is shown is keyed by the item alone. Beside a chat it has the
+ * chat's changes, which its own page does not, so going there loads it as it is kept.
  */
 export const AsidePane = (props: AsidePaneProps) => {
   const { item, link, onFullScreenChange, narrow, onUpdateProposed, onDeleted } = props
   const onOpenSettingsPage = props.placement === 'page' ? props.onOpenSettings : undefined
-  const fullScreen = props.placement === 'page' && props.fullScreen
+  const fullScreen = !narrow && props.fullScreen === true
   const askAccessAgain = useAskAccessAgain()
   const frame = useRef<HTMLIFrameElement>(null)
   // Full screen, the bar that brings the header back shows as the pointer nears the top, over the
@@ -233,15 +240,22 @@ export const AsidePane = (props: AsidePaneProps) => {
   const home = ownPage && readsCode ? listed : undefined
   const chatsWith = home && ownPage?.onOpenChat && ownPage.onNewChat ? { onOpenChat: ownPage.onOpenChat, onNewChat: ownPage.onNewChat } : undefined
   const workspaceChats = useWorkspaceChats(chatsWith && home?.id)
+  const fromChat = ownPage?.fromChat
+  const readChats = workspaceChats.status === 'ready' ? workspaceChats.chats : []
+  // The one it came from is the way back, first, and not offered again among the rest.
   const chats = home && workspaceChats.status !== 'loading'
     // Where they could not be read, there are none to offer, and Chat starts a new one.
-    ? itemChats(workspaceChats.status === 'ready' ? workspaceChats.chats : [], home.id, item.key, lastShown)
+    ? itemChats(readChats.filter(({ id }) => id !== fromChat?.chatId), home.id, item.key, lastShown)
     : undefined
   const pageParts = home && {
     chat: chatsWith && {
       chats: chats?.map(({ chatId, title: chatTitle, at, showing }) => ({ key: String(chatId), title: chatTitle, time: formatActivity(at), showing })),
       onOpenChat: (key: string) => chatsWith.onOpenChat({ id: Number(key), title: chats?.find(({ chatId }) => String(chatId) === key)?.title }),
       onNewChat: () => chatsWith.onNewChat(title),
+      back: fromChat && {
+        title: workspaceChats.status === 'ready' ? readChats.find(({ id }) => id === fromChat.chatId)?.title || 'Untitled chat' : undefined,
+        onBack: fromChat.onBack,
+      },
     },
   }
   // The agents it starts, beside its title, as it has kept them.
@@ -262,6 +276,9 @@ export const AsidePane = (props: AsidePaneProps) => {
     people: snapshot.people,
     link,
     onReload: connection?.reload,
+    fullScreen,
+    onFullScreenChange: narrow ? undefined : onFullScreenChange,
+    pointerNearTop: pointer.near,
     onDownload: fileState.status === 'ready' ? fileState.download : undefined,
     exports: exports.menu,
     onOpenSettings: openSettings,
@@ -286,13 +303,16 @@ export const AsidePane = (props: AsidePaneProps) => {
       {...shared}
       placement="beside"
       onHide={props.onHide}
-      onExpand={props.onExpand}
+      expanded={props.expanded}
+      onShrink={props.onShrink}
+      // An app has a page of its own, and what else was made is the library's.
+      openPage={props.onOpenPage && { label: item.kind === 'file' ? 'Open on its own' : isApp(item.output) ? 'Open app' : 'Open in Library', onOpen: props.onOpenPage }}
     >
       {content}
       {exported}
     </SidePane>
   ) : (
-    <SidePane {...shared} {...pageParts} placement="page" onCollapse={props.onCollapse} fullScreen={props.fullScreen} onFullScreenChange={onFullScreenChange} pointerNearTop={pointer.near}>
+    <SidePane {...shared} {...pageParts} placement="page" onBack={props.onBack}>
       {content}
       {exported}
     </SidePane>

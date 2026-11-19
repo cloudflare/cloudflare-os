@@ -939,19 +939,20 @@ gallery has each block in each state (`AgentsPreview`, over `exampleAgents.ts`).
 
 ## A gadget's own page
 
-A gadget's page (`/app/<id>`, the side pane as the page) leads to a chat
+A gadget's page (`/app/<id>`, the side pane as the page) shows it as it is kept, which is what
+everyone sees: a chat's changes are only beside that chat (`keptVersion`). It leads to a chat
 with it, as using it with the agent (a slides gadget whose agent builds the deck with you) and
 carrying on building it both happen in a chat. For whoever builds in its workspace (not
 `role === 'use'`), its header ends in Chat (`GadgetChatMenu`), the one labelled control, and its one
-primary button, last of all after the full-screen button (but where the page was expanded from
-beside a chat, the step down is last, where the arrow that puts the pane away was, with full screen
-before it and Chat before that): New chat (`/?workspace=<id>&open=`, greeted "what
-should we do with Slides?" through the `gadgetTitle` history state), then up to four of the
-workspace's chats to carry on in (`aside/itemChats.ts`, tested, over `useWorkspaceChats`), those
-that last had it beside them in this browser (`lastShown`) first and saying so, agents' runs left
-out. Opening one remembers it there. With no chats, Chat starts a new one at once. It is left out
-where Collapse already goes back beside the chat the page came from, and in full screen; on a
-phone it is its icon alone and the crumb gives way to the back arrow. The backend does not record
+primary button, last of all after the full-screen button, however the page was come to. It opens
+to the chat the page was opened from, first, as the way back (`?chat=`, which More's Open app
+beside a chat names: back in the history when it was the step before, else to that chat with it
+beside it), then New chat (`/?workspace=<id>&open=`, greeted "what should we do with Slides?"
+through the `gadgetTitle` history state), then up to four of the workspace's other chats to carry
+on in (`aside/itemChats.ts`, tested, over `useWorkspaceChats`), those that last had it beside them
+in this browser (`lastShown`) first and saying so, agents' runs left out. Opening one remembers it
+there. With no chats and none to go back to, Chat starts a new one at once. It is left out in full
+screen; on a phone it is its icon alone and the crumb gives way to the back arrow. The backend does not record
 which chat made a gadget, so nothing claims to know it. The design record is
 `plans/gadget-to-chat.md`; the gallery has it as "SidePane as a gadget's page".
 
@@ -979,10 +980,11 @@ phone it is not in the header but in more, as Show the code or Show the app, fir
 Switching to the code shows it in the gadget's place in the pane (`GadgetCodeView`), at once and
 with nothing of the gadget showing, which is hidden rather than gone, so that it keeps running. The
 title says nothing of it: the switch is the one place that shows which is on. The code opened again
-is at the file it was left at. The pull tab only has the header to do with. The menu is only Reload,
-Export (a submenu of `ExportItems`, for whoever can use it, as in the settings) and, beside a chat,
-Expand, then after a separator, at its foot, App settings for whoever may build there (a file has
-Download in place of Export and the settings). That goes to its settings page
+is at the file it was left at. The pull tab only has the header to do with. The menu is, beside the
+page, the way to its own page first (Open app, Open in Library for what else was made, Open on its
+own for a file), then Reload and Export (a submenu of `ExportItems`, for whoever can use it, as in
+the settings), then after a separator, at its foot, App settings for whoever may build there (a
+file has Download in place of Export and the settings). That goes to its settings page
 (`/app/<id>/settings`, `GadgetSettingsPane`), as does the title's bubble, a button ending in a
 chevron as a chat's title is, beside a chat as much as on the gadget's own page. Everything else done to a gadget, such as renaming, exporting (which more has too), making a template of it,
 updating and deleting it, is on that page, and copying its link is in Share.
@@ -1196,9 +1198,13 @@ to make room for. Opening something shows the pane too. Closing the last thing o
 away with it.
 
 Dragged the other way, until the page is all but gone, the page dims to say that letting go expands
-the pane, as its Expand does (`SplitLayout`'s `onExpandAside`, given where something is open beside
-a chat), and so does a step wider than its widest from the keyboard. It is as wide when it comes
-back beside the page as before it was dragged over.
+the pane (`SplitLayout`'s `onExpandAside`, given where something is open beside a chat or a
+workspace's page), and so does a step wider than its widest from the keyboard. That is the only
+way there: it is a size, not a place, so the address stays the page's and the pane has the page's
+version still, a chat's changes and all, with the page kept under it (`asideAlone`). Left behind
+with the page, as full screen is. Expanded, the arrow at the end of the header is Side by side,
+which puts the page back first, and only then Hide. It is as wide when it comes back beside the
+page as before it was dragged over.
 
 A pane that was put away can also be had back from the page's far edge, empty or not. As it goes,
 the page stops a little short of the edge and the handle stays out there for a moment, to show
@@ -1226,8 +1232,9 @@ is shown as before.
 The card (`SidePane`) is a header, then what is shown on a tinted surface that fills the rest of the
 card out to its sides and bottom, with rounded top corners and a line along its top only. The header
 starts with the name of the one shown (`SidePaneTitle`). At its far end: who else has the workspace
-open, more (reload, expand, its settings), the Share menu where the one shown can be shared, or else a link
-to copy, full screen, and the arrow. Where the header is crammed (narrower than `CRAMPED_BELOW`,
+open, more (its own page, reload, its settings), the Share menu where the one shown can be shared, or else a link
+to copy, full screen, and the arrow. Each of the last two is one thing, in the same place wherever
+the pane is; going to its own page goes somewhere, so it is in more. Where the header is crammed (narrower than `CRAMPED_BELOW`,
 measured, as the menu is drawn outside it) Invite user and Create template are in more instead, first in it, and the name is
 left the room. The bar at the top of the surface, in the middle, pushes the
 header up out of the way and pulls it back down (`Grabber`); clicking it does the same. People
@@ -1243,8 +1250,9 @@ code is loaded into a page for a sandboxed frame with no origin (`gadgetSandbox.
 the page is connected once it asks, with a port it posts, to a `GadgetFrameRoot`: the gadget's
 server side and the app as its host (`GadgetHost`), and what the page's runtime reports, its
 console and Escape. A UI of modules is started by `main(gadget, host)`, and a legacy one gets
-`gadget` as a global. Only messages from the pane's own frame are listened to. Opened from a
-chat, a gadget shows that chat's proposed changes. It is loaded again when its code changes: a
+`gadget` as a global. Only messages from the pane's own frame are listened to. Beside a chat, a
+gadget shows that chat's proposed changes; anywhere else, as it is kept, so that its own page loads
+it again. It is loaded again when its code changes: a
 change to its files in that chat, the chat's changes being accepted or thrown away, or its head
 moving. A burst of edits loads it once, and the page shown stays until the new one replaces it. Only
 the one shown is connected: going to another tab and back starts it over.
@@ -1327,16 +1335,15 @@ its own would run as the app, so it is given from a `data:` URL, which has no or
 (`hooks/useImageUrl.ts`). Downloads are typed as plain bytes, so they are saved rather than opened.
 
 Full screen has the pane fill the window to its very edges, with no frame or corners, over the
-sidebar and the page, which are made inert. The card leaves its place beside the page (which is
+sidebar and the page, which are made inert: beside the page, expanded or not, as much as as the
+page, with the same button, and left behind with the page. The card leaves its place (which is
 kept, to go back to) and grows to the window's edges by animating the edges themselves, not a scale,
 so the gadget is laid out at each size rather than stretched, and its frame is never moved in the
 document, which would reload it. Escape leaves full screen, also from inside the gadget, whose page
 passes the key on.
 
-The header then has the app's mark, the name (which closes nothing there), who else is there, more
-(only reload), the link, and the way back. The mark, a button as in the sidebar, leaves full screen
-for the output's workspace's latest chat, with the output beside it (`latestChat`). The header is
-put away and had back by the bar as beside the page; doing so squares off the surface's top corners
+The header then has what it has out of full screen but for Hide and Chat: the way out is the
+button full screen was gone into by. The header is put away and had back by the bar as beside the page; doing so squares off the surface's top corners
 as it goes, so they are square at the window's top. Gone into full screen, it goes away by itself
 after a second, the once: brought back, it stays, and leaving full screen brings it back if it went
 by itself and nobody has taken hold of the bar since. Taking hold of the bar in that second is
@@ -1404,7 +1411,7 @@ own after a tap (the sidebar, the page, the aside) is the browser's own animatio
 (`NarrowShell`'s `useSlide`), never a value moved from script each frame, which Chrome on Android
 plays at 60 Hz once the finger has lifted, whatever the display's rate. Going to a chat does not bring
 back what was last shown beside it, which would cover the chat. `SidePane` (`narrow`) is then as
-big as it gets: no Expand, Collapse or full screen, and the step down is that back button. It
+big as it gets: it does not expand or go full screen, and the step down is that back button. It
 fills the window, so the bar squares off its surface's corners as in full screen. The scripted
 chats (`/mock/*`) are laid out the same way on a narrow screen.
 

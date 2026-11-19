@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { createFileRoute, notFound, useNavigate } from '@tanstack/react-router'
-import { asideItemFor, formatAsideRef, parseAsideRef } from '@/aside/asideItems'
+import { asideItemFor, formatAsideRef, keptVersion, parseAsideRef } from '@/aside/asideItems'
 import { AsidePane, EmptyAsidePane } from '@/aside/AsidePane'
 import { useChatLibrary } from '@/aside/useChatLibrary'
 import { ConnectionIsland } from '@/blocks/ConnectionIsland'
@@ -158,13 +158,29 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, statu
   }
   // What is beside the chat, as a page of its own: the chat is gone meanwhile, as it is in the app.
   const [expanded, setExpanded] = useState(false)
+  // Filling the window, beside the chat or as the page, and taking all of the chat's room beside
+  // it, until another is gone to, as in the app.
+  const [fullScreen, setFullScreen] = useState(false)
+  const [filling, setFilling] = useState(false)
+  if ((fullScreen || filling) && !named) {
+    setFullScreen(false)
+    setFilling(false)
+  }
+  const toPage = (asPage: boolean) => {
+    setFullScreen(false)
+    setFilling(false)
+    setExpanded(asPage)
+  }
   // Made once, so the chat's rows are not rendered again for them.
   const [handlers] = useState(() => ({
     onOpenAttachment: (file: { id: string }) => setOpen(formatAsideRef({ kind: 'file', fileId: file.id })),
     onOpenOutput: (output: { workpieceId: number }) => setOpen(formatAsideRef({ kind: 'output', workpieceId: output.workpieceId })),
-    onFullScreenChange: () => {},
     // The scenario's chat is the one the update is proposed in: back to it from the gadget's page.
-    onUpdateProposed: () => setExpanded(false),
+    onUpdateProposed: () => {
+      setFullScreen(false)
+      setFilling(false)
+      setExpanded(false)
+    },
     // Gone, there is nothing to show beside the chat, nor as its page.
     onDeleted: () => {
       setExpanded(false)
@@ -180,10 +196,13 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, statu
   ) : named && !settings && (asPage ? (
     <AsidePane
       placement="page"
-      item={asideItemFor(CHAT.workspaceId, named, CHAT.chatId, known)}
-      fullScreen={false}
-      onFullScreenChange={handlers.onFullScreenChange}
-      onCollapse={() => setExpanded(false)}
+      item={keptVersion(asideItemFor(CHAT.workspaceId, named, CHAT.chatId, known))}
+      fullScreen={fullScreen}
+      onFullScreenChange={setFullScreen}
+      // Its Chat goes back to the scenario's chat, which is the only one there is.
+      fromChat={{ chatId: CHAT.chatId, onBack: () => toPage(false) }}
+      onOpenChat={() => toPage(false)}
+      onNewChat={() => toPage(false)}
       onUpdateProposed={handlers.onUpdateProposed}
       onDeleted={handlers.onDeleted}
     />
@@ -192,8 +211,11 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, statu
       placement="beside"
       item={asideItemFor(CHAT.workspaceId, named, CHAT.chatId, known)}
       onHide={() => setOpen(undefined)}
-      onExpand={() => setExpanded(true)}
-      onFullScreenChange={handlers.onFullScreenChange}
+      onOpenPage={() => toPage(true)}
+      expanded={filling}
+      onShrink={() => setFilling(false)}
+      fullScreen={fullScreen}
+      onFullScreenChange={setFullScreen}
       onUpdateProposed={handlers.onUpdateProposed}
       onDeleted={handlers.onDeleted}
       narrow={narrow}
@@ -263,10 +285,12 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, statu
   return (
     <div className="flex h-full p-2">
       <SplitLayout
-        asideAlone={asPage}
+        asideAlone={asPage || (filling && !narrow)}
+        asideFullScreen={fullScreen && !narrow}
         aside={aside}
         onOpenAside={openAside}
         onCloseAside={closeAside}
+        onExpandAside={named && !asPage ? () => setFilling(true) : undefined}
         edgeInset={8}
         status={status}
       >

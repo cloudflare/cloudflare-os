@@ -121,6 +121,13 @@ export const asideItemFor = (workspaceId: string, ref: AsideRef, chatId: number 
 }
 
 /**
+ * `item` as its own page shows it: an output as it is kept, which is what everyone else sees, as
+ * a chat's changes are only for beside that chat. A file is fetched through its chat all the same.
+ */
+export const keptVersion = (item: AsideItem): AsideItem =>
+  item.kind === 'output' && item.output.chatId !== undefined ? { ...item, output: { ...item.output, chatId: undefined } } : item
+
+/**
  * What a chat has to show beside it, most recently made or changed first: the outputs it made or
  * worked on, and the files sent in it. Only what has been loaded of the conversation is known.
  */

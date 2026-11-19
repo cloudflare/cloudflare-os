@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { ChatSnapshot } from '@/chat/ChatSession'
 import type { ChatItem, OutputItem, UserItem } from '@/chat/chatItems'
 import type { OutputSummary } from '@gadgets/workshop-shared/api'
-import { asideItemFor, carriedOpen, chatAsideItems, formatAsideRef, itemPageId, parseAsideRef, parseItemPageId, validateAsideParam, workspaceAsideItems } from './asideItems'
+import { asideItemFor, carriedOpen, chatAsideItems, formatAsideRef, itemPageId, keptVersion, parseAsideRef, parseItemPageId, validateAsideParam, workspaceAsideItems } from './asideItems'
 
 const output = (id: number, workpieceId: number, title: string): OutputItem => ({
   kind: 'output', id, key: `output:${id}`, workpieceId, title, type: 'gadget', draft: false,
@@ -120,5 +120,17 @@ describe('asideItemFor', () => {
     expect(asideItemFor('w', { kind: 'output', workpieceId: 7 }, undefined)).toMatchObject({
       key: '7', kind: 'output', output: { workspaceId: 'w', workpieceId: 7, chatId: undefined },
     })
+  })
+})
+
+describe('keptVersion', () => {
+  it('shows an output without the changes of the chat it came from', () => {
+    const [shown] = chatAsideItems('w', 3, ready([output(1, 7, 'Report')]))
+    expect(keptVersion(shown!)).toMatchObject({ key: '7', title: 'Report', output: { workpieceId: 7, chatId: undefined } })
+  })
+
+  it('leaves a file fetched through its chat', () => {
+    const file = asideItemFor('w', { kind: 'file', fileId: 'f' }, 3)
+    expect(keptVersion(file)).toBe(file)
   })
 })

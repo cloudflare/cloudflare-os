@@ -1,4 +1,4 @@
-import { ChatCircleIcon, PlusIcon } from '@phosphor-icons/react'
+import { ArrowUUpLeftIcon, ChatCircleIcon, PlusIcon } from '@phosphor-icons/react'
 import { Button } from '@/components/Button'
 import { DropdownMenu } from '@/components/DropdownMenu'
 
@@ -23,6 +23,11 @@ export type GadgetChatMenuProps = {
   onOpenChat: (key: string) => void
   /** Starts a new chat in its workspace, with it beside it. */
   onNewChat: () => void
+  /**
+   * The chat the page was opened from, first of all, as the way back to it; left out of `chats`.
+   * Its title is left out while it is not known.
+   */
+  back?: { title?: string; onBack: () => void }
   /** The button is its icon alone, as on a phone. */
   compact?: boolean
 }
@@ -31,12 +36,13 @@ const TRIGGER = 'px-3'
 
 /**
  * The way from an item's own page to a chat with it open beside it: a Chat button, the header's
- * one primary action, at its end, which opens a menu of a new chat in its workspace and the chats there to carry on in, those that
- * last had it open first. With no chats there to choose between, the button starts a new one.
+ * one primary action, at its end, which opens a menu of the chat the page was opened from, as the
+ * way back, then a new chat in its workspace and the chats there to carry on in, those that last
+ * had it open first. With no chats there to choose between, the button starts a new one.
  */
-export const GadgetChatMenu = ({ title, chats, onOpenChat, onNewChat, compact = false }: GadgetChatMenuProps) => {
+export const GadgetChatMenu = ({ title, chats, onOpenChat, onNewChat, back, compact = false }: GadgetChatMenuProps) => {
   const label = compact ? undefined : 'Chat'
-  if (chats?.length === 0) {
+  if (chats?.length === 0 && !back) {
     return (
       <Button variant="primary" icon={ChatCircleIcon} aria-label={`New chat with ${title} beside it`} title="New chat" onClick={onNewChat} className={compact ? undefined : TRIGGER}>
         {label}
@@ -53,10 +59,18 @@ export const GadgetChatMenu = ({ title, chats, onOpenChat, onNewChat, compact = 
       inPlace
       triggerClassName={compact ? undefined : TRIGGER}
     >
+      {back && (
+        <>
+          <DropdownMenu.Item icon={ArrowUUpLeftIcon} label={back.title ?? 'Back to the chat'} onSelect={back.onBack}>
+            <ChatRow title={back.title ?? 'The chat'} detail="Back to where you were" />
+          </DropdownMenu.Item>
+          <DropdownMenu.Separator />
+        </>
+      )}
       <DropdownMenu.Item icon={PlusIcon} label="New chat" onSelect={onNewChat}>
         <ChatRow title="New chat" detail={`With ${title} beside it`} />
       </DropdownMenu.Item>
-      <DropdownMenu.Separator />
+      {chats?.length !== 0 && <DropdownMenu.Separator />}
       {chats === undefined ? (
         <DropdownMenu.Item icon={ChatCircleIcon} disabled>Loading chats…</DropdownMenu.Item>
       ) : chats.map((chat) => (

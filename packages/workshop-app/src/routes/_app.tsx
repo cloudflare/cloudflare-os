@@ -1,6 +1,6 @@
 import { useEffect, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { createFileRoute, Outlet, useLocation, useMatch, useNavigate, useParams, useRouter } from '@tanstack/react-router'
-import { asideItemFor, carriedOpen, formatAsideRef, itemPageId, pageOf, parseAsideRef, parseItemPageId, type AsideItem, type AsideOutput } from '@/aside/asideItems'
+import { asideItemFor, carriedOpen, formatAsideRef, itemPageId, keptVersion, pageOf, parseAsideRef, parseItemPageId, type AsideItem, type AsideOutput } from '@/aside/asideItems'
 import { AsidePane, EmptyAsidePane } from '@/aside/AsidePane'
 import { lastShown, rememberShown } from '@/aside/lastShown'
 import { carryAside, useAsideNavigation, type BesideRef } from '@/aside/useAsideNavigation'
@@ -179,12 +179,22 @@ const AppFrame = () => {
     setOpenedEmptyAt(undefined)
   }
 
-  // Full screen belongs to the page it was asked for on, so it is left behind with it.
+  // Full screen belongs to the page it was asked for on, so it is left behind with it, and with
+  // what it filled the window with: an item's page, or what is shown beside a chat or a workspace.
   const [fullScreenAt, setFullScreenAt] = useState<string>()
   const [setFullScreen] = useState(() => (on: boolean) => setFullScreenAt(on ? router.state.location.pathname : undefined))
   const pathname = useLocation({ select: (location) => location.pathname })
   // A narrow screen is filled already.
-  const fullScreen = !narrow && pageItem !== undefined && fullScreenAt === pathname
+  const fillable = !narrow && (pageItem !== undefined || (besideOf !== undefined && named !== undefined))
+  if (fullScreenAt !== undefined && (fullScreenAt !== pathname || !fillable)) setFullScreenAt(undefined)
+  const fullScreen = fillable && fullScreenAt === pathname
+  // What is shown beside a chat or a workspace taking all of the page's room, from the divider
+  // dragged all the way over, as the chat has it still. Left behind with the page, as full screen is.
+  const [expandedAt, setExpandedAt] = useState<string>()
+  const [setExpanded] = useState(() => (on: boolean) => setExpandedAt(on ? router.state.location.pathname : undefined))
+  const expandable = !narrow && besideOf !== undefined && named !== undefined
+  if (expandedAt !== undefined && (expandedAt !== pathname || !expandable)) setExpandedAt(undefined)
+  const expanded = expandable && expandedAt === pathname
   // The sidebar out over a narrow screen, which, like full screen, is left behind with the page:
   // going anywhere puts it away.
   const [sidebarAt, setSidebarAt] = useState<string>()
@@ -201,9 +211,10 @@ const AppFrame = () => {
     void navigate({ to: '/workspace/$workspaceId', params: { workspaceId: pageItem.workspaceId }, search: { tab: 'library' } })
   }
 
-  // Its own page, shown with the changes proposed in the chat it is shown from.
+  // Its own page, as everyone sees it: a file names the chat it was sent in, which its bytes are
+  // fetched through, and an output names none, as a chat's changes are only beside that chat.
   const linkTo = (inWorkspace: string, item: AsideItem, fromChat: number | undefined) =>
-    absolute(router.buildLocation({ ...pageOf(inWorkspace, item), search: { chat: fromChat } }).href)
+    absolute(router.buildLocation({ ...pageOf(inWorkspace, item), search: { chat: item.kind === 'file' ? fromChat : undefined } }).href)
 
   // A gadget's own settings, which the way back from comes back to. Only for whoever may build in
   // its workspace, which they are about; the server checks again.
@@ -225,16 +236,21 @@ const AppFrame = () => {
     })
 
   let asideElement: ReactNode = null
-  // Takes the aside's item to a page of its own, from its Expand and from dragging the divider all the way over.
+  // What is shown beside the page takes all of its room from the divider dragged all the way over.
   let expandAside: (() => void) | undefined
   if (itemPage && pageItem) {
     const { workspaceId: pageWorkspaceId, ref } = pageItem
     const { chat: fromChat } = itemPage.search
-    const item = asideItemFor(pageWorkspaceId, ref, fromChat, known)
+    // As it is kept: the chat it was opened from is only the way back to it.
+    const item = keptVersion(asideItemFor(pageWorkspaceId, ref, fromChat, known))
     const open = formatAsideRef(ref)
-    const expandedHere = router.state.location.state.fromChat === true
-    // Collapse goes back beside the chat it came from, so no other chat is offered.
-    const backToChat = !narrow && (expandedHere || fromChat !== undefined)
+    // Opened from beside the chat, going back is back there as it was; opened with a chat named
+    // otherwise, such as by a link, it is going to that chat with it beside it.
+    const openedHere = router.state.location.state.fromChat === true
+    const toChat = (chat: { id: number; title?: string }) => {
+      rememberShown(pageWorkspaceId, chat.id, open)
+      void navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId: pageWorkspaceId, chatId: chat.id }, search: { open }, state: { chatTitle: chat.title } })
+    }
     asideElement = (
       <AsidePane
         placement="page"
@@ -247,37 +263,32 @@ const AppFrame = () => {
         onUpdateProposed={openUpdate}
         // Its workspace's library, which it was one of; in place, as it is no longer there to go back to.
         onDeleted={() => navigate({ to: '/workspace/$workspaceId', params: { workspaceId: pageWorkspaceId }, search: { tab: 'library' }, replace: true })}
-        // Expanded from beside a page, it goes back there; opened with a chat named, beside that.
-        // Opened otherwise, such as from the library, there is nothing to collapse into. On a
-        // narrow screen, where it is beside nothing, it goes up.
-        onCollapse={narrow ? up : expandedHere
-          ? () => router.history.back()
-          : fromChat !== undefined
-            ? () => navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId: pageWorkspaceId, chatId: fromChat }, search: { open } })
-            : undefined}
-        onOpenChat={backToChat ? undefined : (toChat) => {
-          rememberShown(pageWorkspaceId, toChat.id, open)
-          void navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId: pageWorkspaceId, chatId: toChat.id }, search: { open }, state: { chatTitle: toChat.title } })
-        }}
-        onNewChat={backToChat ? undefined : (gadgetTitle) =>
-          navigate({ to: '/', search: { workspace: pageWorkspaceId, open }, state: { gadgetTitle } })}
+        // On a narrow screen, where it is beside nothing, it goes up.
+        onBack={narrow ? up : undefined}
+        fromChat={fromChat === undefined ? undefined : { chatId: fromChat, onBack: openedHere ? () => router.history.back() : () => toChat({ id: fromChat }) }}
+        onOpenChat={toChat}
+        onNewChat={(gadgetTitle) => navigate({ to: '/', search: { workspace: pageWorkspaceId, open }, state: { gadgetTitle } })}
       />
     )
   } else if (besideOf && named) {
     const item = asideItemFor(besideOf.workspaceId, named, chatId, known)
     const { workspaceId: besideWorkspaceId } = besideOf
-    expandAside = () => navigate({ ...pageOf(besideWorkspaceId, item), search: { chat: chatId }, state: { fromChat: true } })
+    expandAside = () => setExpanded(true)
     asideElement = (
       <AsidePane
         placement="beside"
         item={item}
         link={linkTo(besideWorkspaceId, item, chatId)}
+        fullScreen={fullScreen}
         onFullScreenChange={setFullScreen}
         narrow={narrow}
         onUpdateProposed={openUpdate}
         onDeleted={aside.hide}
         onHide={aside.hide}
-        onExpand={expandAside}
+        expanded={expanded}
+        onShrink={() => setExpanded(false)}
+        // Its page names the chat, which it goes back to, and a file is fetched through.
+        onOpenPage={() => navigate({ ...pageOf(besideWorkspaceId, item), search: { chat: chatId }, state: { fromChat: true } })}
       />
     )
   } else if (openedEmpty) {
@@ -494,7 +505,7 @@ const AppFrame = () => {
       initialAsideShare={prefs.asideShare}
       onAsideShareChange={(asideShare) => writeLayoutPrefs({ asideShare })}
       aside={asideElement}
-      asideAlone={pageItem !== undefined}
+      asideAlone={pageItem !== undefined || expanded}
       asideFullScreen={fullScreen}
       onOpenAside={openAside}
       onCloseAside={closeAside}
