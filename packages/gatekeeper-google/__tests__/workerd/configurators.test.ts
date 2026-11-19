@@ -1330,7 +1330,9 @@ describe("Google Group check", () => {
 
   /** Cloud Identity and Gmail for one group whose newest mail is `mail`. */
   function mockGroup(
-      { mail, membership }: { mail: Array<Array<[string, string]>>; membership: "member" | "none" | "hidden" }) {
+      { mail, membership, primary = GROUP }: {
+        mail: Array<Array<[string, string]>>; membership: "member" | "manager" | "none" | "hidden"; primary?: string;
+      }) {
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
       let url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
       if (url.href === "https://www.googleapis.com/oauth2/v3/userinfo") {
@@ -1339,15 +1341,23 @@ describe("Google Group check", () => {
       if (url.pathname === "/v1/groups:lookup") return Response.json({ name: "groups/0team" });
       if (url.pathname === "/v1/groups/0team") {
         return Response.json({
-          name: "groups/0team", groupKey: { id: GROUP },
+          name: "groups/0team", groupKey: { id: primary },
           labels: { "cloudidentity.googleapis.com/groups.discussion_forum": "" },
           createTime: "2020-01-01T00:00:00Z",
         });
       }
       if (url.pathname === "/v1/groups/0team/memberships:lookup") {
-        if (membership === "member") return Response.json({ name: "groups/0team/memberships/owner" });
+        if (membership === "member" || membership === "manager") {
+          return Response.json({ name: "groups/0team/memberships/owner" });
+        }
         let code = membership === "hidden" ? 403 : 404;
         return Response.json({ error: { code, details: [{ reason: "PERMISSION_DENIED" }] } }, { status: code });
+      }
+      if (url.pathname === "/v1/groups/0team/memberships/owner") {
+        return Response.json({
+          name: "groups/0team/memberships/owner",
+          roles: [{ name: "MEMBER" }, ...(membership === "manager" ? [{ name: "MANAGER" }] : [])],
+        });
       }
       if (url.pathname === "/gmail/v1/users/me/messages") {
         return Response.json({ messages: mail.map((_, n) => ({ id: `a${n}`, threadId: `f${n}` })) });
@@ -1440,6 +1450,16 @@ describe("Google Group check", () => {
       await expect(groups.listGroups("")).rejects.toThrow("Google won't let this account look up its groups.");
       expect(searches()).toBe(2);
     });
+  });
+
+  it("says a manager's own lookup can't speak for the group's other members", async () => {
+    mockGroup({ mail: [authenticated], membership: "manager" });
+    await expect(check()).resolves.toEqual({ mail: "ready", membership: "manager" });
+  });
+
+  it("refuses an address that is another group's alias, naming the group's own", async () => {
+    mockGroup({ mail: [authenticated], membership: "member", primary: "crew@example.com" });
+    await expect(check()).rejects.toThrow("That is another address of crew@example.com.");
   });
 
   it("says so when the account isn't in the group directly", async () => {

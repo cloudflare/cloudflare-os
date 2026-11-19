@@ -66,7 +66,14 @@ can. Everything lives in `gatekeeper-google`, but for the `screen` option on the
 
 The group's Cloud Identity name (`groups/<id>`) is resolved on first use and persisted in the
 facet, so a group recreated under the same address is not silently trusted; a mismatch refuses
-reads until the owner reconnects. A new binding to a recreated group shows nothing that arrived
+reads until the owner reconnects. A session asks again, at most every five seconds and before
+each page of a cursor, whether the group still answers at the addresses it was opened with, and
+stops if not: an address the group gave up may be another group's by now. The dialog refuses an
+address that is a group's alias, since a binding is pinned and matched by the main one. The
+group's name is not carried in the binding's URL, so a group renamed between the dialog's check
+and the binding's first read is pinned as whatever then answers at the address. Once Cloud
+Identity says the pinned group is deleted, hook screening stops taking any mail for it and a
+delivery already queued ends without being tried again. A new binding to a recreated group shows nothing that arrived
 before Cloud Identity says the group was created (`createTime`), which is an earlier group's
 mail.
 
@@ -99,13 +106,17 @@ A message is `own` when one of these holds:
      the `From` domain, or `dkim=pass` from that domain (or a parent of it) with a signature that
      signs `From`, the test DMARC applies, which Gmail may not report behind an inbound gateway;
    - the `From` domain is exactly the domain of the group's address;
-   - and it has no `List-ID`. A copy another list delivered is not a colleague's: a list on the
-     group's domain resends an outsider's mail under its own address, authenticated as the
-     domain's, so it is a `reply` at most.
+   - and it has no `List-ID`.
 
-A message that meets the first two tests of 3 from any other `From` domain, a subdomain or
-another of the organization's domains included, is a `reply`, or `own` on a binding that takes
-outside mail (`?senders=anyone`).
+A message that meets the first two tests of 3 and has no `List-ID`, from any other `From`
+domain, a subdomain or another of the organization's domains included, is a `reply`, or `own` on
+a binding that takes outside mail (`?senders=anyone`).
+
+A message with a `List-ID` that this group didn't deliver is `none` on every binding: some other
+list delivered that copy. A list resends an outsider's mail under its own address, so what Gmail
+authenticated is the list and nothing says who wrote it, and the bound group may have refused
+the same post. The cost: when a message goes to two lists the owner is on, Gmail may keep the
+other list's copy alone, and it is then not shown.
 
 Only headers Gmail itself prepends are trusted: the topmost of each, never a later copy a sender
 could have written. An admitted message is returned whole; others in its thread are dropped
@@ -164,7 +175,9 @@ reads pinned it. `verifyObserverAccess(observers, subresources)` on a group bind
    mailbox, label or search binding reports.
 2. Asks each observer's `UserAccount` (`checkSubresourceAccess`), which reads the observer's
    address from userinfo with the observer's token (throwing unless `email_verified`) and looks
-   it up among the group's direct members with the same token. A member is allowed; a
+   it up among the group's direct members with that very token, so a reconnect between the two
+   can't have one account answer for another's address; a token Google refuses is replaced
+   once and both are asked again. A member is allowed; a
    non-member (404) or an account the group won't show its members to (403: the group's "Who can
    view members" setting excludes it) is not; a token without the scope throws, naming the
    grant; any other failure throws, which fails the check for the whole call. No refusal names

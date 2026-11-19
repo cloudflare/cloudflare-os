@@ -19,9 +19,11 @@ export type GoogleGroupConfiguratorGroupCheck = {
   /**
    * Whether the account is in the group directly, as its own lookup answers: `hidden` when the
    * group won't show it its members. A member's own account makes the same lookup once the gadget
-   * is shared, so a group that hides its members from them admits none of them.
+   * is shared, so a group that hides its members from them admits none of them. `manager` when
+   * the account manages or owns the group: its lookup succeeds whatever the group shows ordinary
+   * members, so it says nothing of theirs.
    */
-  membership: "member" | "none" | "hidden";
+  membership: "member" | "manager" | "none" | "hidden";
 };
 
 export interface GoogleGroupConfiguratorRpc {

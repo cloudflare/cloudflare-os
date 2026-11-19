@@ -42,6 +42,14 @@ const NOT_THE_GROUPS = "This isn't one of the group's messages.";
 // -- state ---------------------------------------------------------------------------------------
 
 const GROUP_KEY = "gmailGroup:group";
+const GONE_KEY = "gmailGroup:gone";
+
+/** The group a binding was connected to has been deleted: nothing will ever be its mail again. */
+export class GmailGroupGone extends Error {
+  constructor() {
+    super("The connected Google Group no longer exists. Remove this connection.");
+  }
+}
 
 /** What a group binding remembers: its group. */
 export class GmailGroupState {
@@ -61,6 +69,16 @@ export class GmailGroupState {
 
   pinGroup(group: CloudIdentityGroup): void {
     this.#kv.put(GROUP_KEY, group);
+    this.#kv.delete(GONE_KEY);
+  }
+
+  /** Whether Cloud Identity last said the pinned group no longer exists. */
+  get gone(): boolean {
+    return this.#kv.get<boolean>(GONE_KEY) === true;
+  }
+
+  markGone(): void {
+    this.#kv.put(GONE_KEY, true);
   }
 }
 
@@ -72,6 +90,12 @@ export type GmailGroupReadContext = {
   api: GmailApi;
   /** The group, and whether the binding takes it to receive mail from outside its domain. */
   group: CloudIdentityGroup & Pick<GmailGroupIdentity, "outsideSenders">;
+  /**
+   * Throws unless the group still answers at the addresses in `group`, which the mailbox is
+   * searched and its mail matched by: an address the group gave up may be another group's by now.
+   * Asked of Cloud Identity at most every few seconds, or now with `force`.
+   */
+  revalidate(force?: boolean): Promise<void>;
 };
 
 export type GmailGroupContext = GmailGroupReadContext & {
@@ -159,6 +183,7 @@ function observation(title: string, description: string) {
 
 /** The messages members may see in a thread, oldest first; none when the thread isn't the group's. */
 async function threadMessages(ctx: GmailGroupReadContext, threadId: string): Promise<GmailMessageFull[]> {
+  await ctx.revalidate();
   const messages = await ctx.api.getThreadHeaders(threadId, GMAIL_GROUP_ADMISSION_HEADERS);
   const shown = admitted(ctx, messages);
   // Only after admission, so a thread that isn't the group's can't be told apart by how it fails.
@@ -220,6 +245,7 @@ export class GmailGroupSessionImpl extends ApprovalQueueRpcTarget implements Gma
 
   async getMessage(id: string): Promise<GmailGroupMessageStub> {
     validateGmailId(id);
+    await this.#ctx.revalidate();
     const message = await notTheGroupsIfMissing(
       this.#ctx.api.getMessageHeaders(id, GMAIL_GROUP_ADMISSION_HEADERS));
     if (message.id !== id || !await notTheGroupsIfMissing(admits(this.#ctx, message))) {
@@ -255,6 +281,8 @@ function groupThreadCursor(ctx: GmailGroupContext, caller?: string): RpcCursor<G
     provider: "Gmail",
     maxProviderPagesPerCall: MAX_PROVIDER_PAGES_PER_CALL,
     fetchPage: async pageToken => {
+      // A cursor outlives the read that opened it, and searches by the addresses it was opened with.
+      await ctx.revalidate(true);
       const page = await ctx.api.listMessages(MESSAGES_PER_PAGE, query, pageToken);
       return {items: page.messages, ...(page.nextPageToken ? {nextPageToken: page.nextPageToken} : {})};
     },
@@ -353,6 +381,7 @@ class GmailGroupMessageStub extends ApprovalQueueRpcTarget implements GmailGroup
    * spam or trash.
    */
   async #shown(full: boolean): Promise<GmailMessageFull> {
+    await this.#ctx.revalidate();
     const message = full
       ? await this.#ctx.api.getMessageFull(this.#messageId)
       : await this.#ctx.api.getMessageHeaders(this.#messageId, GMAIL_GROUP_ADMISSION_HEADERS);
@@ -452,6 +481,15 @@ async function newMessage(read: GmailGroupReadContext, messageId: string): Promi
   return message;
 }
 
+async function goneAsNothing<T>(context: Promise<T>): Promise<T | undefined> {
+  try {
+    return await context;
+  } catch (error) {
+    if (error instanceof GmailGroupGone) return undefined;
+    throw error;
+  }
+}
+
 /** What a group binding's hook delivers: each new message, when it is the group's. */
 @validateRpc()
 export class GmailGroupHookDelivery extends RpcTarget implements GmailScreenedHookDelivery {
@@ -470,14 +508,17 @@ export class GmailGroupHookDelivery extends RpcTarget implements GmailScreenedHo
    * to an alias added since is left for reads to show.
    */
   async screen(messageId: string): Promise<boolean> {
-    const read = await this.screenContext();
+    const read = await goneAsNothing(this.screenContext());
+    if (!read) return false;
     const message = await newMessage(read, messageId);
     return message !== undefined && await admits(read, message);
   }
 
   async deliver(callback: RpcStub<GmailMessageHookTarget>, approvalQueue: RpcStub<ApprovalQueue>,
                 messageId: string): Promise<void> {
-    const read = await this.readContext();
+    // A deleted group has no new mail, however often the message is tried again.
+    const read = await goneAsNothing(this.readContext());
+    if (!read) return;
     const shown = await newMessage(read, messageId);
     if (!shown || !await admits(read, shown)) return;
 

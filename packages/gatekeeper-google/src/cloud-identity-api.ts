@@ -12,6 +12,7 @@ const DISCUSSION_FORUM = "cloudidentity.googleapis.com/groups.discussion_forum";
 /** What every group's resource name starts with, before the id Google gave it. */
 export const GROUP_NAME_PREFIX = "groups/";
 const GROUP_NAME_RE = /^groups\/[A-Za-z0-9]{1,128}$/;
+const MEMBERSHIP_NAME_RE = /^groups\/[A-Za-z0-9]{1,128}\/memberships\/[A-Za-z0-9]{1,128}$/;
 // Strict enough to quote inside a double-quoted CEL string literal without escaping. Workspace
 // allows an apostrophe in a username.
 const ADDRESS_RE = /^[a-z0-9._%+'-]{1,64}@[a-z0-9.-]{1,253}$/;
@@ -100,6 +101,31 @@ export class CloudIdentityApi {
       if (error instanceof CloudIdentityApiError && error.status === 404) return false;
       throw error;
     }
+  }
+
+  /**
+   * The roles `address` holds in the group named `name` as a direct member (`MEMBER`, `MANAGER`,
+   * `OWNER`), or nothing when it isn't one. Throws a 403 as {@link isDirectMember} does.
+   */
+  async directRoles(name: string, address: string): Promise<string[] | undefined> {
+    validateGroupMemberAddress(address);
+    const lookup = new URL(`${BASE}/${validateGroupName(name)}/memberships:lookup`);
+    lookup.searchParams.set("memberKey.id", address);
+    let membership: unknown;
+    try {
+      ({name: membership} = await this.#get(lookup, "memberships.lookup") as {name?: unknown});
+    } catch (error) {
+      if (error instanceof CloudIdentityApiError && error.status === 404) return undefined;
+      throw error;
+    }
+    if (typeof membership !== "string" || !MEMBERSHIP_NAME_RE.test(membership) ||
+        !membership.startsWith(`${name}/memberships/`)) {
+      throw new Error("Cloud Identity returned an unexpected membership.");
+    }
+    const {roles} = await this.#get(new URL(`${BASE}/${membership}`), "memberships.get") as {
+      roles?: Array<{name?: unknown}>;
+    };
+    return (roles ?? []).flatMap(role => typeof role.name === "string" ? [role.name] : []);
   }
 
   /**

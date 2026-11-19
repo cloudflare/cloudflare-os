@@ -72,7 +72,7 @@ import {
 } from "./drive-pdf";
 import {forwardRangeReader, type PdfOpener} from "./pdf-forward-reader";
 import {
-  GmailGroupHookDelivery, GmailGroupSessionImpl, GmailGroupState, type GmailGroupContext,
+  GmailGroupGone, GmailGroupHookDelivery, GmailGroupSessionImpl, GmailGroupState, type GmailGroupContext,
   type GmailGroupReadContext,
 } from "./gmail-group";
 import {
@@ -110,6 +110,9 @@ export type GmailGatekeeperImplProps = {
   /** With `groupAddress`: the group takes mail from outside its domain (see gmail-group-admission.ts). */
   groupOutsideSenders?: true;
 };
+
+/** How long a group binding's session reads on before asking again whether the group's addresses still stand. */
+const GROUP_REVALIDATE_MS = 5_000;
 
 /** The namespace of the subresource IDs Gmail reads report. */
 export const GMAIL_SUBRESOURCE_NAMESPACE = "gmail";
@@ -5213,6 +5216,12 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
       if (error instanceof CloudIdentityApiError && error.reason === "ACCESS_TOKEN_SCOPE_INSUFFICIENT") {
         throw new Error("This account no longer lets this app see its groups. Connect the group again.", {cause: error});
       }
+      // The pinned group's own name answers 404 only once the group is deleted. Remembered, so
+      // hook screening stops taking the owner's mail for its.
+      if (pinned && error instanceof CloudIdentityApiError && error.status === 404) {
+        state.markGone();
+        throw new GmailGroupGone();
+      }
       throw error;
     }
     if (group.address !== address) {
@@ -5220,7 +5229,18 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
     }
     // Kept current for hook screening, which reads the group from here.
     state.pinGroup(group);
-    return {api: new GmailApi(selfEmail, opts => this.#getAccessToken(opts)), group: this.#bound(group)};
+    let checked = Date.now();
+    const revalidate = async (force = false) => {
+      if (!force && Date.now() - checked < GROUP_REVALIDATE_MS) return;
+      const now = await identity.getGroup(group.name);
+      if (now.address !== group.address || now.aliases.toSorted().join() !== group.aliases.toSorted().join()) {
+        throw new Error("The connected Google Group's addresses have changed. Start again.");
+      }
+      checked = Date.now();
+    };
+    return {
+      api: new GmailApi(selfEmail, opts => this.#getAccessToken(opts)), group: this.#bound(group), revalidate,
+    };
   }
 
   /**
@@ -5228,10 +5248,16 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
    * last verified it, with no Google request. For screening, which `deliver` re-checks in full.
    */
   async #pinnedGroupReadContext(): Promise<GmailGroupReadContext> {
-    const group = new GmailGroupState(this.ctx.storage).pinnedGroup;
+    const state = new GmailGroupState(this.ctx.storage);
+    if (state.gone) throw new GmailGroupGone();
+    const group = state.pinnedGroup;
     const selfEmail = this.ctx.storage.kv.get<string>("selfEmail");
     if (!group || !selfEmail) return await this.#groupReadContext();
-    return {api: new GmailApi(selfEmail, opts => this.#getAccessToken(opts)), group: this.#bound(group)};
+    return {
+      api: new GmailApi(selfEmail, opts => this.#getAccessToken(opts)), group: this.#bound(group),
+      // Screening decides only whether to start a firing; the delivery resolves the group again.
+      revalidate: async () => {},
+    };
   }
 
   /** `group` with what this binding's own URL says of it. */

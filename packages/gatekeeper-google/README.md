@@ -357,7 +357,9 @@ design record.
   collaborator's own Google account, whether that account is a direct member, refusing otherwise
   or when the check fails. A member sees all of the group's mail the owner has, including mail
   from before they joined. An account's answer is reused for up to 15 minutes, so someone removed
-  from the group can keep access that long.
+  from the group can still open the gadget for that long. Membership is checked when a gadget is
+  opened, not while it is open: someone removed keeps a session they already have, new group mail
+  included, until they reopen it.
 - **Searches test only what a message says.** `label:`, `is:`, `in:`, `category:`, `deliveredto:`,
   `bcc:` and most `has:` terms are refused, since they would reveal the owner's own mailbox through
   what matches, and a message with a Bcc never counts as the match.
@@ -370,6 +372,11 @@ Things to know:
 - Workspace groups only, and direct members only; people in it through another group are refused.
 - The group's "Who can view members" setting must include its members, or every member is refused.
   The dialog doesn't offer a group that hides its members from the owner, and warns when it can.
+  An owner who manages the group sees its members whatever the setting, so the dialog can't check
+  it for them and says so.
+- A copy of a message that some other mailing list delivered is never shown, even when it names
+  the group: when one message goes to two lists the owner is on, Gmail may keep only the other
+  list's copy.
 - The group's domain must sign with its own DKIM key (Workspace's default `gappssmtp.com` key
   doesn't count), and an inbound gateway Workspace doesn't trust can leave mail unvouched for too.
   Either way none of it is shown; the dialog checks the group's recent mail and says so.

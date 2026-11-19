@@ -12,7 +12,7 @@ import {
   type PreviewOAuthState,
 } from "@gadgets/gatekeeper-kit/preview-oauth";
 import { formatSubresourceId, parseSubresourceId } from "@gadgets/gatekeeper-kit/subresource-ids";
-import { exchangeAuthCode, getAccessToken, getGoogleAccountDescription, getGoogleAccountProfile, getGoogleVerifiedEmail, GoogleAccessToken, revokeGoogleToken } from "./google-api";
+import { exchangeAuthCode, getAccessToken, getGoogleAccountDescription, getGoogleAccountProfile, getGoogleVerifiedEmail, GoogleAccessToken, GoogleUserInfoError, revokeGoogleToken } from "./google-api";
 import type { GoogleDocEditSession, GoogleDocReadSession } from "./docs-types";
 import { GoogleDocsApi } from "./docs-api";
 import { GoogleSheetsApi } from "./sheets-api";
@@ -148,7 +148,7 @@ import DRIVE_CONFIGURATOR_HTML from "./generated/drive-configurator-ui.txt";
 import CREATION_LOCATION_CONFIGURATOR_HTML from "./generated/creation-location-configurator-ui.txt";
 import GOOGLE_LOGO_SVG from "./google-logo.svg";
 import { obsContext } from "./observability.js";
-import { AccessTokenCache, AccessTokenRequest, ACCESS_TOKEN_EXPIRY_SAFETY_MS } from "./auth-retry";
+import { AccessTokenCache, AccessTokenRequest, ACCESS_TOKEN_EXPIRY_SAFETY_MS, type AccessTokenProvider } from "./auth-retry";
 import { Mutex } from "./mutex";
 import { PendingActionStore } from "./pending-actions";
 import {
@@ -863,10 +863,9 @@ export class UserAccount extends DurableObject<Env> {
       entries.forEach(([subresource], index) => access.set(subresource, answers[index]));
     }
     if (groups.size > 0) {
-      let identity = new CloudIdentityApi(getToken);
       for (let [subresource, groupName] of groups) {
         access.set(subresource, await this.#access.cached(subresource, ttl,
-            () => hasGoogleGroupMembership(identity, getToken, groupName)));
+            () => hasGoogleGroupMembership(getToken, groupName)));
       }
     }
     if (owners.size > 0) {
@@ -1464,12 +1463,26 @@ async function hasChatAccess(api: ChatApi, spaceName: string, members: boolean):
  * throw for any other failure. Two 403s say nothing about membership, and throw: the account never
  * let this app see its groups, or the deployment's project lacks the API.
  */
-async function hasGoogleGroupMembership(
-    identity: CloudIdentityApi, getToken: () => Promise<string>, groupName: string): Promise<boolean> {
-  let email = await getGoogleVerifiedEmail(await getToken());
-  if (!email) throw new Error("This Google account has no verified email address.");
+async function hasGoogleGroupMembership(getToken: AccessTokenProvider, groupName: string): Promise<boolean> {
+  // The address and the membership are asked with one token, so both are one account's: a
+  // reconnect between two tokens would have one account answer for another's address. A token
+  // Google refuses (401) is replaced once, and both are asked again with the new one.
+  let token = await getToken();
+  let ask = async () => {
+    let email = await getGoogleVerifiedEmail(token);
+    if (!email) throw new Error("This Google account has no verified email address.");
+    return await new CloudIdentityApi(async () => token).isDirectMember(groupName, email.toLowerCase());
+  };
+  let refused = (error: unknown) =>
+    (error instanceof CloudIdentityApiError || error instanceof GoogleUserInfoError) && error.status === 401;
   try {
-    return await identity.isDirectMember(groupName, email.toLowerCase());
+    try {
+      return await ask();
+    } catch (error) {
+      if (!refused(error)) throw error;
+      token = await getToken({forceRefresh: true, staleToken: token});
+      return await ask();
+    }
   } catch (error) {
     if (!(error instanceof CloudIdentityApiError) || error.status !== 403) throw error;
     if (error.reason === "ACCESS_TOKEN_SCOPE_INSUFFICIENT") {

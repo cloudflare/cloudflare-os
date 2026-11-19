@@ -105,6 +105,10 @@ type Backend = {
   groupAddress: string;
   /** When Cloud Identity says the group was created. */
   groupCreated: string;
+  /** Addresses the group also answers at. */
+  groupAliases: string[];
+  /** Whether the group has been deleted since. */
+  groupDeleted?: boolean;
   /** Requests made to Cloud Identity, and to Google's account endpoints. */
   identityRequests: number;
   accountRequests: number;
@@ -126,7 +130,7 @@ type Backend = {
 
 function harness(binding: Pick<GmailGatekeeperImplProps, "groupOutsideSenders"> = {}) {
   const backend: Backend = {
-    members: new Set(), groupAddress: GROUP, groupCreated: "2020-01-01T00:00:00Z", identityRequests: 0, accountRequests: 0,
+    members: new Set(), groupAddress: GROUP, groupCreated: "2020-01-01T00:00:00Z", groupAliases: [], identityRequests: 0, accountRequests: 0,
     extra: [], threads: new Map(), observerVerified: true, queries: [], attachmentReads: 0,
   };
   const mailbox = () => [...MAILBOX, ...backend.extra];
@@ -170,8 +174,10 @@ function harness(binding: Pick<GmailGatekeeperImplProps, "groupOutsideSenders"> 
           : json({error: {code: 404}}, 404);
       }
       if (path === GROUP_NAME) {
+        if (backend.groupDeleted) return json({error: {code: 404}}, 404);
         return json({
           name: GROUP_NAME, groupKey: {id: backend.groupAddress}, displayName: "Team",
+          additionalGroupKeys: backend.groupAliases.map(alias => ({id: alias})),
           labels: {"cloudidentity.googleapis.com/groups.discussion_forum": ""},
           createTime: backend.groupCreated,
         });
@@ -500,6 +506,36 @@ describe("Gmail group binding", () => {
     (await gmail.session())[Symbol.dispose]();
     gmail.backend.groupAddress = "renamed@example.com";
     await expect(gmail.session()).rejects.toThrow("The connected Google Group now answers at another address.");
+  });
+
+  it("stops a cursor and a capability opened before the group's addresses changed", async () => {
+    const gmail = harness();
+    using session = await gmail.session();
+    using cursor = await session.listThreads() as never as Cursor<GmailGroupThreadEntry> & Disposable;
+    using message = await session.getMessage("a1") as GmailGroupMessage & Disposable;
+
+    // The group is renamed, and its old address may be another group's by now.
+    gmail.backend.groupAddress = "renamed@example.com";
+    await expect(Promise.resolve(cursor.next())).rejects.toThrow("The connected Google Group's addresses have changed.");
+
+    gmail.backend.groupAddress = GROUP;
+    gmail.backend.groupAliases = ["crew@example.com"];
+    using again = await session.listThreads() as never as Cursor<GmailGroupThreadEntry> & Disposable;
+    await expect(Promise.resolve(again.next())).rejects.toThrow("The connected Google Group's addresses have changed.");
+    void message;
+  });
+
+  it("starts no firing, and retries nothing, for a group that has been deleted", async () => {
+    const gmail = harness();
+    (await gmail.session())[Symbol.dispose]();
+    gmail.backend.groupDeleted = true;
+
+    // The delivery finds the group gone and takes the message as nobody's, rather than failing to be tried again.
+    expect(await gmail.deliver("a1")).toEqual([]);
+    const {identityRequests} = gmail.backend;
+    expect(await gmail.screen("a1")).toBe(false);
+    expect(gmail.backend.identityRequests).toBe(identityRequests);
+    await expect(gmail.session()).rejects.toThrow("The connected Google Group no longer exists.");
   });
 });
 

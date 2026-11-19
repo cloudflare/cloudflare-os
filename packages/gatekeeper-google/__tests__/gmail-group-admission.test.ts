@@ -247,7 +247,7 @@ describe("Gmail group admission: who may start a conversation", () => {
     expect(groupStanding(open, { ...outside("m1"), labelIds: ["SPAM"] })).toBe("none");
   });
 
-  it("doesn't take another list's copy for a colleague's, though it is authenticated as the group's domain", () => {
+  it("never takes another list's copy for the group's, though it is authenticated as the group's domain", () => {
     // An outsider wrote to an outward-facing list on the same domain and named this group too: the
     // list resent it under its own address, signed by the domain.
     const relisted = message([
@@ -260,8 +260,15 @@ describe("Gmail group admission: who may start a conversation", () => {
       ["To", "feedback@example.com"], ["Cc", "team@example.com"],
       ["List-ID", "<feedback.example.com>"],
     ]);
-    expect(groupStanding(GROUP, relisted)).toBe("reply");
-    expect(admittedGroupMessages(GROUP, [relisted])).toEqual([]);
+    expect(groupStanding(GROUP, relisted)).toBe("none");
+    // Not as a reply in one of the group's conversations either, nor on a binding that takes anyone's mail.
+    expect(admittedGroupMessages(GROUP, [{ ...delivered(), id: "m0" }, relisted]).map(shown => shown.id))
+      .toEqual(["m0"]);
+    expect(groupStanding({ ...GROUP, outsideSenders: true }, relisted)).toBe("none");
+    // Another organization's list, with the author's own address kept.
+    const elsewhere = { ...addressed("team@example.com", DMARC_PASS) };
+    elsewhere.payload = { headers: [...elsewhere.payload!.headers!, { name: "List-ID", value: "<news.example.org>" }] };
+    expect(groupStanding({ ...GROUP, outsideSenders: true }, elsewhere)).toBe("none");
   });
 
   it("takes nothing from before the group was created, when its address was another group's", () => {

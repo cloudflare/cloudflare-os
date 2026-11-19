@@ -3,7 +3,8 @@
  *
  * Decided from headers Gmail itself writes. A message is the group's on its own when it reached
  * the owner through the group, when the owner sent it to the group, or when it names the group as
- * a recipient and is authenticated as from the group's own domain. One that names the group and
+ * a recipient, came straight from its sender rather than through some other list, and is
+ * authenticated as from the group's own domain. One that names the group and
  * is authenticated as from anywhere else is the group's only in a conversation that holds one of
  * those: nobody outside the group's domain can start a conversation members see without the
  * group delivering it. A binding whose owner said the group takes outside mail
@@ -100,6 +101,9 @@ function standing(group: GmailGroupIdentity, message: GmailMessageFull): GroupSt
   const results = gmailAuthenticationResults(headers);
   if (!results) return "none";
   if (deliveredThroughGroup(group.address, headers, results)) return "own";
+  // A copy some other list delivered says nothing of who wrote it: a list resends an outsider's
+  // mail under its own address, and what Gmail then authenticates is the list.
+  if (topmost(headers, "List-ID") !== undefined) return "none";
   if (!(names(info.to) || names(info.cc)) || !senderAuthenticated(info.from.address, headers, results)) {
     return "none";
   }
@@ -107,12 +111,7 @@ function standing(group: GmailGroupIdentity, message: GmailMessageFull): GroupSt
   // group's own domain it is a colleague's; from anywhere else, anyone could have sent it to the
   // owner alone, so it counts only as part of a conversation that is already the group's, unless
   // the group takes outside mail, when the same sender could have written to it anyway.
-  if (group.outsideSenders) return "own";
-  // A copy some other list delivered is no colleague's, whatever its From: a list on the group's
-  // domain resends an outsider's mail under its own address, authenticated as the domain's.
-  const colleague = domainOf(info.from.address) === domainOf(group.address) &&
-    topmost(headers, "List-ID") === undefined;
-  return colleague ? "own" : "reply";
+  return group.outsideSenders || domainOf(info.from.address) === domainOf(group.address) ? "own" : "reply";
 }
 
 function domainOf(address: string): string {

@@ -238,6 +238,10 @@ export class GoogleGroupConfiguratorUI extends RpcTarget implements GoogleGroupC
   async checkGroup(address: string, outsideSenders: boolean): Promise<GoogleGroupConfiguratorGroupCheck> {
     let identity = new CloudIdentityApi(googleTokenProvider(this));
     let group = await identity.lookupGroup(address);
+    // A binding is to a group's main address, which is what it is pinned and matched by.
+    if (group.address !== address) {
+      throw new Error(`That is another address of ${group.address}. Connect the group by that address.`);
+    }
     let [mail, membership] = await Promise.all([
       this.#checkGroupMail({ ...group, outsideSenders }), this.#membership(identity, group),
     ]);
@@ -260,7 +264,9 @@ export class GoogleGroupConfiguratorUI extends RpcTarget implements GoogleGroupC
   async #membership(
       identity: CloudIdentityApi, group: CloudIdentityGroup): Promise<GoogleGroupConfiguratorGroupCheck["membership"]> {
     try {
-      return await identity.isDirectMember(group.name, await this.#email()) ? "member" : "none";
+      let roles = await identity.directRoles(group.name, await this.#email());
+      if (!roles) return "none";
+      return roles.some(role => role === "MANAGER" || role === "OWNER") ? "manager" : "member";
     } catch (error) {
       if (error instanceof CloudIdentityApiError && error.status === 403) return "hidden";
       throw error;

@@ -133,6 +133,11 @@ function groupNotices(context: Context, address: string) {
     return <Notice tone="error">You're not a direct member of this group, so it can't be connected.</Notice>;
   }
   return <Fragment>
+    {membership === "manager" && <Notice>
+      You manage this group, so this can't tell whether its other members can see the member list.
+      Sharing with them only works if the group's "Who can view members" setting includes group
+      members.
+    </Notice>}
     {membership === "hidden" && <Notice>
       This group hides its member list, so sharing with its members won't work until a group
       manager lets members view it.
