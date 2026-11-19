@@ -1536,13 +1536,14 @@ describe("sharing", () => {
     };
 
     try {
-      // Its attempt was on record before the token was asked for, so the send is held in doubt.
-      expect(await drive.apply(actionId)).toBe(UNCONFIRMED);
+      // Refused before the send is recorded, so nothing is held in doubt.
+      expect(await drive.apply(actionId)).toBe(DISCONNECTED);
     } finally {
       vi.restoreAllMocks();
     }
     expect(provider.writes).toEqual([]);
     expect(await drive.waiting()).toEqual([actionId]);
+    expect(await drive.attempts()).toEqual({});
     // The next approval asks the account first, and goes no further.
     provider.forget();
     expect(await drive.apply(actionId)).toBe(DISCONNECTED);

@@ -234,6 +234,11 @@ export type DriveWritesHost = {
   writeRefusal(): Promise<string | undefined>;
   /** The attempt markers a handler reads and writes. Sweeping them is the gatekeeper's. */
   attempts: Pick<ReturnType<typeof writeAttempts>, "get" | "put" | "delete">;
+  /**
+   * Called just before a send is recorded, and throws when the connection cannot send now, as
+   * once it is disconnected: the write then fails with that, nothing sent and nothing in doubt.
+   */
+  ready?(): Promise<void>;
 };
 
 /** What a Drive session needs of its gatekeeper to show and queue the writes of action map `M`. */
@@ -417,7 +422,7 @@ const RATE_LIMITED =
  * @returns What the send made, or what a look found an earlier send had made.
  */
 export async function sendOnce<Sent>(
-  host: Pick<DriveWritesHost, "attempts">, id: number, step: WriteStep<Sent>,
+  host: Pick<DriveWritesHost, "attempts" | "ready">, id: number, step: WriteStep<Sent>,
 ): Promise<Sent> {
   let { log, events } = step;
   let prior = host.attempts.get(id);
@@ -449,6 +454,7 @@ export async function sendOnce<Sent>(
     if (error instanceof ActionApplyError) host.attempts.delete(id);
     throw error;
   }
+  await host.ready?.()
   host.attempts.put(id, {
     at: Date.now(), ...(noted.existing?.length ? { existing: noted.existing } : {}),
     // Counted only for a write with a limit: a repeatable one is sent again as often as approved.

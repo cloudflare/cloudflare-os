@@ -2993,6 +2993,8 @@ export class GoogleDriveGatekeeperImpl
     docs: new GoogleDocsApi(opts => this.#applyToken(opts)),
     scope: () => this.#scope, writeRefusal: () => this.#writeRefusal(),
     attempts: this.#attempts,
+    // The connection answers for its token, as before every request (see #applyToken).
+    ready: async () => { await this.#getAccessToken() },
     // An edit is not tied to an account, so it is sent under the connection's own token.
     editors: {
       slides: (fileId: string) => ({ api: this.#editApis.slides, presentationId: fileId }),
