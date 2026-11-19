@@ -14,7 +14,7 @@ import {
   type PreviewOAuthState,
 } from "@gadgets/gatekeeper-kit/preview-oauth";
 import { formatSubresourceId, parseSubresourceId } from "@gadgets/gatekeeper-kit/subresource-ids";
-import { exchangeAuthCode, getAccessToken, getGoogleAccountDescription, getGoogleAccountProfile, getGoogleVerifiedEmail, GoogleAccessToken, GoogleUserInfoError, RefreshFailure, revokeGoogleToken } from "./google-api";
+import { exchangeAuthCode, getAccessToken, getGoogleAccountProfile, getGoogleVerifiedEmail, GoogleAccessToken, googleAccountDescription, GoogleUserInfoError, RefreshFailure, revokeGoogleToken } from "./google-api";
 import type { GoogleDocEditSession, GoogleDocReadSession } from "./docs-types";
 import { GoogleDocsApi } from "./docs-api";
 import { GoogleSheetsApi } from "./sheets-api";
@@ -276,6 +276,13 @@ const GRANT_SUBJECT_KEY = "grantSubject";
 // installs others, perhaps another Google account's, and until this names them the record says
 // nothing about the grant held now.
 const GRANT_CREDENTIALS_KEY = "grantCredentialsId";
+
+// Storage key holding which Google account (`sub`) the credentials with a `credentialsId` belong
+// to, as read when they were staged, described or recorded: apart from whether the registry has
+// listed this object, so that what is known of the account survives a registry that failed.
+const ACCOUNT_SUBJECT_KEY = "accountSubject";
+
+type AccountSubject = { credentialsId: string; subject: string };
 
 // Storage key set while the installed refresh token is one Google has refused for good, with a
 // plain `invalid_grant`. Such credentials hold no grant, whatever was started before the refusal:
@@ -841,6 +848,9 @@ export class UserAccount extends DurableObject<Env> {
       kv.put<string>("refreshToken", staged.refreshToken);
       kv.put<GoogleAccessToken>("accessToken", staged.accessToken);
       kv.put<string>("credentialsId", credentialsId);
+      if (staged.subject !== undefined) {
+        kv.put<AccountSubject>(ACCOUNT_SUBJECT_KEY, { credentialsId, subject: staged.subject });
+      }
       this.#forgetRefusal();
       kv.put<string[]>("grantedScopes", staged.grantedScopes);
       mergeGrantedResources(kv, staged.requestedResources);
@@ -925,10 +935,10 @@ export class UserAccount extends DurableObject<Env> {
           shouldDeleteCredentialsOnAlarm(kv) || kv.get<boolean>(REFRESH_TOKEN_DEAD_KEY) === true;
       if (installed === undefined || holdsNothing()) return;
       if (kv.get<string>(GRANT_CREDENTIALS_KEY) === installed) return;
-      // Read outside the lock, which a token refresh needs.
-      let { sub } = await getGoogleAccountProfile(
+      // Asked of Google only when not known already, outside the lock, which a token refresh needs.
+      let sub = this.#accountSubject(installed) ?? (await getGoogleAccountProfile(
           async opts => (await this.getAccessToken(opts)).token,
-          AbortSignal.timeout(GRANT_SUBJECT_TIMEOUT_MS));
+          AbortSignal.timeout(GRANT_SUBJECT_TIMEOUT_MS))).sub;
       // Recorded under the lock, so that a disconnect either finds this object recorded or has
       // already left nothing to record.
       await this.#credentials.run(async () => {
@@ -938,6 +948,7 @@ export class UserAccount extends DurableObject<Env> {
         // A reconnect may have signed in as another Google account. The grant recorded before is
         // let go first, and the new one is named before its registry lists this object, so that
         // the registry this object names is the only one it tells it holds a grant in.
+        kv.put<AccountSubject>(ACCOUNT_SUBJECT_KEY, { credentialsId: installed, subject: sub });
         if (kv.get<string>(GRANT_SUBJECT_KEY) !== sub) await this.#dropGrant();
         await this.#recordHolder(sub, installed);
       });
@@ -962,6 +973,26 @@ export class UserAccount extends DurableObject<Env> {
     kv.put<string>(GRANT_SUBJECT_KEY, subject);
     await this.#grantRegistry(subject).add(this.ctx.id.toString());
     kv.put<string>(GRANT_CREDENTIALS_KEY, installed);
+  }
+
+  /** The Google account the credentials `credentialsId` names belong to, when that was read. */
+  #accountSubject(credentialsId: string | undefined): string | undefined {
+    let known = this.ctx.storage.kv.get<AccountSubject>(ACCOUNT_SUBJECT_KEY);
+    return known !== undefined && known.credentialsId === credentialsId ? known.subject : undefined;
+  }
+
+  /**
+   * Notes that `accessToken`, while it is the access token stored, belongs to the Google account
+   * `subject`, as describing the account read: recording this object as a holder of that
+   * account's grant then needn't ask Google again.
+   */
+  async noteAccountSubject(accessToken: string, subject: string): Promise<void> {
+    let kv = this.ctx.storage.kv;
+    let installed = this.#credentialsId();
+    if (installed === undefined || kv.get<GoogleAccessToken>("accessToken")?.token !== accessToken) {
+      return;
+    }
+    kv.put<AccountSubject>(ACCOUNT_SUBJECT_KEY, { credentialsId: installed, subject });
   }
 
   /**
@@ -1017,10 +1048,22 @@ export class UserAccount extends DurableObject<Env> {
   async #releaseGrant(): Promise<boolean> {
     let kv = this.ctx.storage.kv;
     try {
+      let installed = this.#credentialsId();
+      let known = this.#accountSubject(installed);
       let recordedFor = kv.get<string>(GRANT_CREDENTIALS_KEY);
+      let recordedSubject = kv.get<string>(GRANT_SUBJECT_KEY);
       let recorded = await this.#forgetGrant();
-      if (recorded !== undefined && recordedFor === this.#credentialsId()) return recorded.last;
-      // Not recorded for these credentials: a sign-in, a connection older than the registry that
+      // The registry asked is the one of the grant held now when the record was made for these
+      // credentials, or names the account they are known to belong to, though listing this
+      // object there failed.
+      if (recorded !== undefined &&
+          (recordedFor === installed || (known !== undefined && recordedSubject === known))) {
+        return recorded.last;
+      }
+      if (known !== undefined) {
+        return (await this.#grantRegistry(known).remove(this.ctx.id.toString())).last;
+      }
+      // Not known for these credentials: a sign-in, a connection older than the registry that
       // has not refreshed a token since, or one whose recording failed or has not finished, as
       // after a reconnect, whose earlier record may name another Google account. Its stored access
       // token, while it lasts, says which account it is; minting another would need the mutex this
@@ -1434,8 +1477,18 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     let token = await tokenPromise;
     // Bounded: the Workshop reads it while it handles a credential notice, which the notices after
     // it, and a reconnect waiting on them, wait for.
-    let description = await getGoogleAccountDescription(
+    let profile = await getGoogleAccountProfile(
         token.token, AbortSignal.timeout(GRANT_SUBJECT_TIMEOUT_MS));
+    // The Workshop describes a new connection before it completes, so the account need not ask
+    // Google again which account it is to record itself as its grant's holder. Best effort.
+    try {
+      await obj.noteAccountSubject(token.token, profile.sub);
+    } catch (error) {
+      logger.warn("failed to note which Google account a connection is", {
+        event: "google.grant.subject.note.failed", error,
+      });
+    }
+    let description = googleAccountDescription(profile);
 
     // A private grant is the gatekeeper's own business, never a resource the Workshop can bind.
     description.grantedResourceUrlPatterns =

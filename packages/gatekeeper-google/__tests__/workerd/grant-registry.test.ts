@@ -5,7 +5,7 @@ import type {GatekeeperConnectCallback} from "@gadgets/workshop-shared/gatekeepe
 import {afterEach, describe, expect, it, vi} from "vitest";
 import type {UserAccount} from "../../src/google";
 import {GoogleGrantRegistry} from "../../src/grant-registry";
-import {connectCallbackEvents} from "./worker";
+import {connectCallbackEvents, describingConnectCallbacks} from "./worker";
 
 // Google revokes a grant for every client of a Google Cloud project at once, so an account that is
 // disconnected revokes it only when no other connection of the same Google account is left.
@@ -41,6 +41,8 @@ function fakeGoogle() {
     revocationFails: false,
     /** Whether Google refuses to say which account an access token belongs to. */
     profileFails: false,
+    /** How many more times Google says which account an access token belongs to, before it refuses. */
+    profileAnswers: Infinity,
     /** Whether Google holds back its answer about which account an access token belongs to. */
     profileHeld: false,
     /** How many of those answers are being held back. */
@@ -75,7 +77,8 @@ function fakeGoogle() {
     }
     if (url.href === "https://www.googleapis.com/oauth2/v3/userinfo") {
       const token = new Headers(init.headers).get("Authorization")?.replace(/^Bearer /, "") ?? "";
-      if (google.profileFails) return json({error: "access_denied"}, 403);
+      if (google.profileFails || google.profileAnswers <= 0) return json({error: "access_denied"}, 403);
+      google.profileAnswers--;
       if (google.profileHeld) {
         google.profilesWaiting++;
         while (google.profileHeld) await new Promise(resolve => setTimeout(resolve, 1));
@@ -154,9 +157,14 @@ async function connection(google: Google, name: string, subject: string) {
   return account;
 }
 
-/** Runs the OAuth flow for a new account the way the gatekeeper's `/oauth` route does. */
-async function connectThroughOAuth(google: Google, name: string, subject: string, mode: "connect" | "auth") {
+/**
+ * Runs the OAuth flow for a new account the way the gatekeeper's `/oauth` route does. `describe`
+ * has the Workshop describe the account before it completes, as it does.
+ */
+async function connectThroughOAuth(
+    google: Google, name: string, subject: string, mode: "connect" | "auth", describe = false) {
   google.subjects.set(`access-${name}`, subject);
+  if (describe) describingConnectCallbacks.add(name);
   const account = accountHandle(testEnv.UserAccount.newUniqueId());
   const recordedAtReturn = await account.run(async (instance, state) => {
     await instance.setCallback(
@@ -222,6 +230,22 @@ describe("Google grants shared by several connections", () => {
     expect(first.recordedAtReturn).toBe(ada);
 
     // The Workshop drops a second connection of an account it already lists, straight away.
+    const duplicate = await connectThroughOAuth(google, "duplicate", ada, "connect");
+    await duplicate.disconnect();
+    expect(google.revoked).toEqual([]);
+  });
+
+  // The Workshop's description of a new connection read which Google account it is, so a second
+  // read that fails cannot leave it unrecorded.
+  it("records a new connection under the account its description read", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const google = fakeGoogle();
+    const {ada} = googleAccounts();
+    google.profileAnswers = 1;
+    const first = await connectThroughOAuth(google, "first", ada, "connect", true);
+    expect(first.recordedAtReturn).toBe(ada);
+    google.profileAnswers = Infinity;
+
     const duplicate = await connectThroughOAuth(google, "duplicate", ada, "connect");
     await duplicate.disconnect();
     expect(google.revoked).toEqual([]);
@@ -672,6 +696,26 @@ describe("Google grants shared by several connections", () => {
     // Neither is listed any more: the first connection is the Google account's last.
     await slow.disconnect();
     expect(google.revoked).toEqual(["refresh-slow"]);
+  });
+
+  // Which Google account the credentials are is known apart from whether the registry listed
+  // the account, so its answer counts though listing failed and Google cannot be asked again.
+  it("goes by the registry of the Google account it is known to be, though listing it there failed", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const google = fakeGoogle();
+    const {ada} = googleAccounts();
+    await connection(google, "other", ada);
+    const renewed = await storedAccount(google, "renewed", ada);
+    const add = vi.spyOn(GoogleGrantRegistry.prototype, "add").mockImplementation(async () => {
+      throw new Error("registry unavailable");
+    });
+    await reconnect(google, renewed, "renewed-again", ada);
+    add.mockRestore();
+    expect(await renewed.stored("grantCredentialsId")).toBeUndefined();
+
+    google.profileFails = true;
+    await renewed.disconnect();
+    expect(google.revoked).toEqual([]);
   });
 
   it("stops counting a refused connection whose removal the registry never received", async () => {

@@ -18,7 +18,7 @@ import type { GoogleSpreadsheetSession } from "../../src/sheets-types";
 import type { GoogleSlidesGatekeeperImplProps } from "../../src/slides";
 import type { GooglePresentationSession } from "../../src/slides-types";
 import type {
-  ActionKind, ConnectHandoff, HookController, ResourceDescription,
+  ActionKind, ConnectHandoff, GatekeeperUser, HookController, ResourceDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {TestGitCache} from "../test-git-cache";
 import type {
@@ -408,6 +408,12 @@ export const unreachableConnectCallbacks = new Set<string>();
  */
 export const heldConnectCallbacks = new Set<string>();
 
+/**
+ * The names of the `TestConnectCallback`s that describe the account before they complete, as the
+ * Workshop does before it hands out the connection's ticket.
+ */
+export const describingConnectCallbacks = new Set<string>();
+
 /** Stands in for the Workshop's connect callback, recording each notice that reaches it. */
 export class TestConnectCallback extends WorkerEntrypoint<Cloudflare.Env, { name: string }> {
   #record(event: string): void {
@@ -416,7 +422,8 @@ export class TestConnectCallback extends WorkerEntrypoint<Cloudflare.Env, { name
     connectCallbackEvents.set(name, [...connectCallbackEvents.get(name) ?? [], event]);
   }
 
-  async complete(): Promise<ConnectHandoff> {
+  async complete(user: GatekeeperUser): Promise<ConnectHandoff> {
+    if (describingConnectCallbacks.has(this.ctx.props.name)) await user.describe();
     this.#record("complete");
     return { targetOrigin: "https://workshop.example", ticket: "ticket" };
   }
