@@ -80,6 +80,17 @@ const FORM_STYLE = `
          color: var(--on-contrast); background: var(--contrast); border: 0; border-radius: 6px; }
 `;
 
+/**
+ * Serves the key form. `htmlResponse` pages send no referrer, which makes a browser post their
+ * forms with `Origin: null`; this one must name its origin, since the submission is refused
+ * unless it does (see `connectMutationError`).
+ */
+function formResponse(html: string): Response {
+  const response = htmlResponse(html);
+  response.headers.set("Referrer-Policy", "same-origin");
+  return response;
+}
+
 /** The page a connect link opens: a form that posts the key, with this attempt's nonce, to `action`. */
 function keyFormHtml(action: string, formNonce: string): string {
   return `<!DOCTYPE html>
@@ -96,8 +107,10 @@ function keyFormHtml(action: string, formNonce: string): string {
 </form></main></body></html>`;
 }
 
-// STOP(identity): How the provider says whose key this is. A key that belongs to an organization
-// or a service account rather than a person still needs a stable ID to pin the connection to.
+// STOP(identity): How the provider says whose key this is. `userId` is what the connection and
+// every binding are pinned to, so make it name the user AND the tenant (organization, workspace)
+// the key acts in, where a user can belong to several. A key that belongs to an organization or a
+// service account rather than a person still needs a stable ID to pin the connection to.
 /** Reads the user a key belongs to. */
 async function fetchUser(accessToken: string): Promise<Identity> {
   return identityOf(await createApi(accessToken).get("/me"));
@@ -140,7 +153,7 @@ export async function handleConnect(
     // The link is spent here: the form carries a second nonce, which only this page holds.
     const formNonce = await accountFor(ctx, path[0])?.beginKeyForm(path[1]);
     if (!formNonce) return htmlResponse(INVALID_LINK_HTML);
-    return htmlResponse(keyFormHtml(`${getBaseUrl(env)}/${path[0]}/key`, formNonce));
+    return formResponse(keyFormHtml(`${getBaseUrl(env)}/${path[0]}/key`, formNonce));
   }
 
   if (req.method === "POST" && path[1] === "key") {
@@ -334,7 +347,6 @@ export class UserAccount extends DurableObject<Env> {
     if (Date.now() - stored.fetchedAt < IDENTITY_TTL_MS) return stored;
     try {
       const fresh = await this.#source.run(creds => fetchUser(creds.accessToken), { replayable: true });
-      if (fresh.userId !== stored.userId) throw new Error("The connection now belongs to another user.");
       this.ctx.storage.kv.put<Identity>("identity", fresh);
       return fresh;
     } catch (error) {
@@ -370,6 +382,7 @@ export class UserAccount extends DurableObject<Env> {
     if (!this.#creds.stored()) await this.ctx.storage.deleteAll();
   }
 
+  // STOP(revoke): If the provider can revoke a key by API, do it here; say so to the user if not.
   /** Disconnects: the key is forgotten here, and stays valid at the provider until the user deletes it there. */
   async revoke(): Promise<void> {
     // Before any await, so no credential read or connect completion gets in.

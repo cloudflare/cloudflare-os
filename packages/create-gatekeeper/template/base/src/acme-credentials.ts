@@ -56,8 +56,11 @@ export function accountSource(exports: Cloudflare.Exports, userObjectId: string)
 // Subresources
 
 // STOP(subresources): What a read depends on, as IDs an observer's own connection can be asked
-// about. Report every dependency on every read: the tenant or workspace too, where membership in
-// it is required besides the object's own permissions. `[]` means "nothing restricts this", never
+// about. Qualify every ID with its tenant (organization, workspace, instance) unless the deployed
+// Worker's configuration fixes one: `item/<id>` alone lets an observer in another tenant be
+// allowed for a different item with the same ID. Refuse another tenant's IDs in
+// `verifyObserverAccess()`. Report every dependency on every read: the tenant too, where
+// membership in it is required besides the object's own permissions. `[]` means "nothing restricts this", never
 // "the binding already checked".
 /** The subresource ID of one item, `item/<id>`. */
 export function itemSubresourceId(itemId: string): string {
