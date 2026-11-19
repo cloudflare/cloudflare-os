@@ -1,31 +1,40 @@
 // The one membrane between the admin gatekeeper and AdminApi. The gatekeeper Worker holds no
-// power of its own: a workspace lends it the Admin API of its owner, for a session's reads
-// (OverseerImpl.lendAdminApi()), and every call the Worker makes through what it was lent is
-// decided here, before AdminApi's own checks run. No Durable
+// power of its own: a workspace lends it the Admin API of its owner, for a session's reads or for
+// the one call of an approved action (OverseerImpl.lendAdminApi()), and every call the Worker
+// makes through what it was lent is decided here, before AdminApi's own checks run. No Durable
 // Object is in this file: what is lent, to whom and from where is the workspace's to say.
 
 import { RpcStub, RpcTarget } from "cloudflare:workers";
 import {
-  ADMIN_ACCESS_ERROR_CODES, ADMIN_USER_METHODS, ADMIN_WORKSPACE_METHODS,
+  ADMIN_ACCESS_ERROR_CODES, ADMIN_USER_METHODS,
   DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS, MAX_ADMIN_VIEW_LIFETIME_SECONDS, createAdminAccessError,
   type AdminApi,
 } from "@gadgets/workshop-shared/api";
-import { ADMIN_AGENT_KINDS } from "@gadgets/workshop-shared/admin-agent";
+import {
+  ADMIN_AGENT_ACTIONS, ADMIN_AGENT_KINDS, type AdminAgentAction,
+} from "@gadgets/workshop-shared/admin-agent";
 import type { AdminAgentApi, AdminAgentMethod } from "@gadgets/workshop-shared/admin-gatekeeper";
+import { ADMIN_METHOD_ANSWERS } from "./admin-access";
 import { isDeploymentAdmin } from "./auth/config";
 import { createWorkshopLogger } from "./observability";
 
 const logger = createWorkshopLogger("workshop.admin.agent");
 
 /**
- * What a lent Admin API is for: a session's "read" methods, until `until` (a time in
- * milliseconds: the session's queue fixes it when it is made) and while `live()` does not throw
- * (the queue says whether the session is over). `opener` is the profile id of the collaborator
- * who opened the session directly from the connection, outside any chat: such a session is lent
- * nothing unless the opener is the owner, because its records would name the owner and leave no
- * trace of who called.
+ * What a lent Admin API is for:
+ *   - a session: its "read" methods, until `until` (a time in milliseconds: the session's
+ *     queue fixes it when it is made) and while `live()` does not throw (the queue says
+ *     whether the session is over). `opener` is the profile id of the collaborator who opened
+ *     the session directly from the connection, outside any chat: such a session is lent
+ *     nothing unless the opener is the owner, because its records would name the owner and
+ *     leave no trace of who called;
+ *   - an approved action of `kind`: ONE call, of the method ADMIN_AGENT_ACTIONS names for it.
+ *     `autoApproved` says the approval was a rule's, not a person's,
+ *     and `decidedBy` is the profile id of whoever approved (the rule's enabler for a rule).
  */
-export type AdminAgentUse = { for: "session"; until: number; live(): void; opener?: string };
+export type AdminAgentUse =
+  | { for: "session"; until: number; live(): void; opener?: string }
+  | { for: "action"; kind: AdminAgentAction; autoApproved: boolean; decidedBy: string };
 
 /** A lent Admin API and the switch that ends it: after `end()`, every call through `api`, and
  * through any view `api` returned, is refused. A view is only ever handed out behind the same
@@ -33,17 +42,23 @@ export type AdminAgentUse = { for: "session"; until: number; live(): void; opene
 export type AdminAgentLend = { api: RpcStub<AdminAgentApi>; end(): void };
 
 /**
- * Why `method` may not run through a lend, or undefined when it may. Pure: no clock, no
- * environment. A name that is not an AdminApi method and an "omitted" method each have a message
- * that names the method.
+ * Why `method` may not run under `use`, or undefined when it may. Pure: no clock, no
+ * environment. A name that is not an AdminApi method, an "omitted" method, an "act" method in a
+ * session, anything but the action's own method in an action, each has a message that names the
+ * method and says what to do instead.
  */
-export function adminAgentRefusal(method: string): string | undefined {
+export function adminAgentRefusal(use: AdminAgentUse, method: string): string | undefined {
   // An own key only: "constructor", "toString" and "__proto__" are not methods of the API.
   if (!Object.hasOwn(ADMIN_AGENT_KINDS, method)) return `AdminApi has no method ${method}.`;
   let kind = ADMIN_AGENT_KINDS[method as keyof typeof ADMIN_AGENT_KINDS];
   if (kind === "omitted") {
     return `AdminApi.${method}() is not available through the admin gatekeeper.`;
   }
+  if (use.for === "session") {
+    return kind === "act" ? `AdminApi.${method}() runs only as an approved action.` : undefined;
+  }
+  let action = ADMIN_AGENT_ACTIONS[use.kind];
+  if (method !== action.method) return `This action may only call AdminApi.${action.method}().`;
   return undefined;
 }
 
@@ -99,10 +114,9 @@ type AdminAgentViewTable = {
  */
 export const ADMIN_AGENT_VIEWS = {
   inspectWorkspace: {
-    // ADMIN_WORKSPACE_METHODS names the open, which is not a method of the view, and every
-    // AdminWorkspaceView method: a view of a workspace answers with metadata alone.
-    answers: name => name !== "inspectWorkspace" &&
-        (ADMIN_WORKSPACE_METHODS as readonly string[]).includes(name),
+    // ADMIN_METHOD_ANSWERS does not compile until it names every AdminWorkspaceView method;
+    // "inspectWorkspace" is its entry for the open, which is not a method of the view.
+    answers: name => Object.hasOwn(ADMIN_METHOD_ANSWERS, name) && name !== "inspectWorkspace",
     cap: capViewLifetime,
   },
   inspectUser: {
@@ -149,8 +163,8 @@ type Method = (...args: unknown[]) => unknown;
 /**
  * `api` as the admin gatekeeper may use it under `use`: a target that answers only AdminApi's
  * method names and, before each call, checks in this order that the lend has not ended or run
- * out (the session's `until`), that `admin` is still a deployment admin (refused `notAdmin`),
- * that the session is still live, that the deployment has
+ * out (a session's `until`; an action's one call already made), that `admin` is still a
+ * deployment admin (refused `notAdmin`), that a session is still live, that the deployment has
  * not turned the gatekeeper off (`off()` resolves to whether it has), and that
  * adminAgentRefusal() allows the call; then makes the call on `api`, whose own validation and
  * checks run as for any caller. A capability the call returns (a view) is returned behind the
@@ -158,38 +172,50 @@ type Method = (...args: unknown[]) => unknown;
  * answers the names that entry allows and no other, so nothing of the stub underneath (`dup`
  * least of all) can be reached and the view ends with the lend. A capability returned by a
  * method that has no entry, or by a view call, answers no name at all. The lend, the admin and
- * the session are checked again after `off()` and once each call has settled, so a call that
- * spans the lend's end returns nothing (a view it returned is let go). A call of a method that
+ * a session are checked again after `off()` and once each call has settled, so a call that spans
+ * the lend's end returns nothing (a view it returned is let go). A session's call of a method that
  * has an entry is given at most the time the lend has left as the view's life (the entry's
  * `cap`), so the view itself does not outlive the lend either.
- * Throws at once, lending nothing, when the session's time has passed. It holds no state but
- * whether it has ended and the views it returned, which `end()` releases. It logs the lend,
- * never a call.
+ * Throws at once, lending nothing, when `use` is an auto-approved action of a kind whose
+ * verdict is false, or a session whose time has passed. It holds no state but whether it has
+ * ended, for an action whether its call was made, and the views it returned, which `end()`
+ * releases. It logs the lend, never a call.
  */
 export function restrictAdminApi(api: AdminApi, env: Cloudflare.Env, admin: string,
     use: AdminAgentUse, off: () => Promise<boolean>, now: () => number = () => Date.now())
     : AdminAgentLend {
+  if (use.for === "action" && use.autoApproved && !ADMIN_AGENT_ACTIONS[use.kind].autoApprovable) {
+    throw new Error("This kind of action is never auto-approved.");
+  }
   const SESSION_ENDED = "This Admin API session has ended. Open a new one.";
-  if (now() >= use.until) throw new Error(SESSION_ENDED);
+  if (use.for === "session" && now() >= use.until) throw new Error(SESSION_ENDED);
   let ended = false;
+  let called = false;
   // What releases each view handed out and still held.
   let views = new Set<() => void>();
 
-  // The checks that await nothing: the lend has not ended or run out, its admin is still one,
-  // and the session is still live.
+  // The checks that await nothing: the lend has not ended or (a session's) run out, its admin is
+  // still one, and a session is still live.
   let assertLive = () => {
-    if (ended || now() >= use.until) throw new Error(SESSION_ENDED);
+    if (ended || (use.for === "session" && now() >= use.until)) throw new Error(SESSION_ENDED);
     if (!isDeploymentAdmin(env, admin)) {
       throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.notAdmin);
     }
-    use.live();
+    if (use.for === "session") use.live();
   };
 
-  // What every call passes first, through the API and through a view alike. Checked again after
-  // off(): the lend may have ended, run out or lost its admin while that was read.
+  // What every call passes first, through the API and through a view alike. It runs up to its
+  // one await synchronously, so of two calls an action's holder starts together only the first
+  // finds `called` unset; a call refused further down has spent the action's lend all the same.
+  // Checked again after off(): the lend may have ended, run out or lost its admin while that was
+  // read.
   let check = async () => {
+    if (use.for === "action") {
+      if (called) throw new Error("This action has made its one call.");
+      called = true;
+    }
     assertLive();
-    if (await off()) throw new Error("Gatekeeper is disabled.");
+    if (await off()) throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.gatekeeperOff);
     assertLive();
   };
 
@@ -213,6 +239,10 @@ export function restrictAdminApi(api: AdminApi, env: Cloudflare.Env, admin: stri
     } catch (err) {
       if (isCapability(result)) (result as Partial<Disposable>)[Symbol.dispose]?.();
       else if (result instanceof ReadableStream) result.cancel().catch(() => {});
+      // A file a view streams (AdminFileContent) holds its stream as `content`.
+      else if ((result as { content?: unknown } | null)?.content instanceof ReadableStream) {
+        (result as { content: ReadableStream }).content.cancel().catch(() => {});
+      }
       throw err;
     }
     return result;
@@ -241,17 +271,17 @@ export function restrictAdminApi(api: AdminApi, env: Cloudflare.Env, admin: stri
 
   let lent = answerBy(async (name, args) => {
     await check();
-    let refusal = adminAgentRefusal(name);
+    let refusal = adminAgentRefusal(use, name);
     if (refusal !== undefined) throw new Error(refusal);
     let view = Object.hasOwn(ADMIN_AGENT_VIEWS, name)
         ? ADMIN_AGENT_VIEWS[name as AdminAgentViewMethod] : undefined;
-    if (view) args = view.cap(args, use.until - now());
+    if (view && use.for === "session") args = view.cap(args, use.until - now());
     let result = await forward(() => Reflect.apply(api[name as AdminAgentMethod], api, args));
     return handOver(result, view?.answers ?? NO_METHOD);
   });
 
   logger.info("admin API lent to the admin gatekeeper", {
-    event: "admin.agent.lent", operation: use.for,
+    event: "admin.agent.lent", operation: use.for === "action" ? use.kind : use.for,
   });
   return {
     // The Proxy answers any name, so no type describes it: this one says what the checks above

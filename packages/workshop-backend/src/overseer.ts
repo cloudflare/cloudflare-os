@@ -20,8 +20,11 @@ import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeC
 import { type AgentCatalog, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, matchesResourceUrlPattern, HookController, HookDescription, ActionKind, GitCache, GitPullHints, MAX_BUFFERED_BLOB_SIZE, type GitPullTransfer, type GitShallowInfo, getResourceTypeId } from "@gadgets/workshop-shared/gatekeeper";
 import {
   ADMIN_AGENT_LEND_SECONDS, ADMIN_BINDING_SUBRESOURCE, ADMIN_GATEKEEPER_VENDOR_ID,
+  adminAgentAction,
 } from "@gadgets/workshop-shared/admin-agent";
-import type { AdminAgentApi, AdminAgentQueue } from "@gadgets/workshop-shared/admin-gatekeeper";
+import type {
+  AdminAgentApi, AdminAgentQueue, AdminGatekeeper,
+} from "@gadgets/workshop-shared/admin-gatekeeper";
 import {
   DurableObject, WorkerEntrypoint, RpcStub as NativeRpcStub,
   RpcTarget as NativeRpcTarget, restore,
@@ -5892,6 +5895,23 @@ class OverseerImpl implements AgentHooks {
       created = await (gatekeeper as unknown as Fetcher<Gatekeeper<any> &
           Required<Pick<Gatekeeper<any>, "applyCreation">>>)
           .applyCreation(creation.creator, creation.configuration);
+    } else if (isAdminGatekeeper(this.storage.gatekeepers.get(id))) {
+      // The admin gatekeeper holds no power of its own: it is lent the one call this action's
+      // kind names, for as long as it applies the action (see lendAdminApi()).
+      let kind = adminAgentAction(record.description.actionKind?.tag);
+      if (!kind) throw new Error("This is not an action of the admin gatekeeper.");
+      let lend = await this.lendAdminApi(id, record.caller,
+          {for: "action", kind, autoApproved, decidedBy: resolvedBy.id});
+      try {
+        await (gatekeeper as unknown as Fetcher<AdminGatekeeper<unknown>>).applyAdminAction(
+            record.action,
+            // @ts-expect-error The stub types take a parameter's stub for its target, which a
+            //     stub whose methods return stubs is not assignable to.
+            lend.api);
+      } finally {
+        // What revokes: disposing the stub would not stop a copy the facet kept.
+        lend.end();
+      }
     } else {
       // The apply-time cache stub is scoped to the gatekeeper AND to this action (approval can
       // happen long after the session that queued it, so the queue-time stub is gone) -- the
@@ -7671,13 +7691,24 @@ class OverseerImpl implements AgentHooks {
     let off = async () =>
         gatekeeperOff(await readAdminConfig(this.env), ADMIN_GATEKEEPER_VENDOR_ID);
     let admin = await this.adminConnectionOwner(gatekeeperId);
-    // Every call is recorded as the owner's. A chat keeps who prompted its agent; a session
-    // another member opened from the connection itself would leave nobody, so it is lent nothing.
-    if (use.opener !== undefined && use.opener !== admin) {
+    // Every call is recorded as the owner's. A chat keeps who prompted its agent and an action
+    // who decided it; a session another member opened from the connection itself would leave
+    // nobody, so it is lent nothing here and queues nothing (AdminAgentQueueImpl.submitAction()).
+    if (use.for === "session" && use.opener !== undefined && use.opener !== admin) {
       throw new Error(ADMIN_CONNECTION_OWNER_ONLY);
     }
+    if (use.for === "action") {
+      // A member who was demoted cannot decide, and a rule such a member enabled applies nothing.
+      if (!isDeploymentAdmin(this.env, use.decidedBy)) {
+        throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.notAdmin);
+      }
+      // The latch autoApprovalRule() reads, read once more where the power is handed over.
+      if (use.autoApproved && this.storage.containsRestrictedData.get()) {
+        throw new Error("This workspace holds restricted data: this action waits for a person.");
+      }
+    }
 
-    // The connection may have been removed across the await. Nothing is awaited from here on.
+    // The connection may have been removed across the awaits. Nothing is awaited from here on.
     assertAdminGatekeeper();
     let chatId = "chatId" in caller ? caller.chatId : undefined;
     let agent = {workspaceId: this.ctx.id.toString(), ...(chatId !== undefined && {chatId})};
@@ -7688,13 +7719,14 @@ class OverseerImpl implements AgentHooks {
 
   // Throws unless connection `gatekeeperId` is the admin gatekeeper's, the deployment has not
   // turned that gatekeeper off, and the owner is a deployment admin who still holds an account of
-  // it: what lendAdminApi() asks before it lends anything. Resolves the owner's profile id.
+  // it: what lendAdminApi() asks before it lends anything, and AdminAgentQueueImpl.submitAction()
+  // before it queues. Resolves the owner's profile id.
   async adminConnectionOwner(gatekeeperId: number): Promise<string> {
     if (!isAdminGatekeeper(this.storage.gatekeepers.get(gatekeeperId))) {
       throw new Error("This connection is not the admin gatekeeper's.");
     }
     if (gatekeeperOff(await readAdminConfig(this.env), ADMIN_GATEKEEPER_VENDOR_ID)) {
-      throw new Error("Gatekeeper is disabled.");
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.gatekeeperOff);
     }
     let admin = await this.getOwnerProfileId();
     if (!isDeploymentAdmin(this.env, admin)) {
@@ -16521,7 +16553,8 @@ class AgentSpawnerQueueImpl extends ApprovalQueueImpl implements AgentSpawnerQue
  * `opener` is the profile id of the collaborator whose session this queue was minted into, if
  * any. It counts only for a session a member opened from the connection itself, the one
  * `{from: "user"}` caller a queue is made for: that session has no chat to say who called, so
- * unless its opener is the owner it is lent nothing (see OverseerImpl.lendAdminApi()).
+ * unless its opener is the owner it is lent nothing (see OverseerImpl.lendAdminApi()) and
+ * queues nothing.
  */
 @validateRpc()
 class AdminAgentQueueImpl extends ApprovalQueueImpl implements AdminAgentQueue {
@@ -16555,6 +16588,21 @@ class AdminAgentQueueImpl extends ApprovalQueueImpl implements AdminAgentQueue {
     if (this.#released) lend.end();
     this.#lends.push(lend);
     return lend.api;
+  }
+
+  // A rule may apply a queued action with no person deciding it, and the record would then
+  // name the owner and the rule's enabler, never the member who queued it. So nothing is queued
+  // for a member's direct session, nor once the session is over, as after its turn was stopped,
+  // nor while the connection would lend nothing (lendAdminApi()): the gatekeeper turned off, or
+  // the owner no longer an admin or without the account.
+  async submitAction(action: number, description: ActionDescription): Promise<void> {
+    let ended = this.ended();
+    if (ended !== undefined) throw new Error(ended);
+    let owner = await this.impl.adminConnectionOwner(this.gatekeeperId);
+    if (this.caller.from === "user" && this.opener !== undefined && this.opener !== owner) {
+      throw new Error(ADMIN_CONNECTION_OWNER_ONLY);
+    }
+    return super.submitAction(action, description);
   }
 
   [Symbol.dispose](): void {

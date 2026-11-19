@@ -1,5 +1,5 @@
 // What an admin's agent may do with the Admin API through the admin gatekeeper: the kind of every
-// AdminApi method.
+// AdminApi method, and the gatekeeper's action kinds.
 //
 // This module imports nothing, not even a type, and uses erasable syntax only (no enum, namespace
 // or parameter property): the API schema generator loads it by relative path under plain `node`,
@@ -41,9 +41,13 @@ export const ADMIN_BINDING_SUBRESOURCE = "admin:deployment";
  *                A "read" method that returns a view needs more than this kind: the Workshop
  *                answers a returned view's methods only by a table it keeps for the method that
  *                returned it, and does not compile while that table lacks the method.
+ *   - "act":     never runs when called: it is queued as an action of the gatekeeper (see
+ *                ADMIN_AGENT_ACTIONS) and runs only once that action is approved. A write to a
+ *                workspace is one, and so is a request for content access, which a second admin
+ *                must still approve once it is filed.
  *   - "omitted": absent from the agent's declarations and refused.
  */
-export type AdminAgentKind = "read" | "omitted";
+export type AdminAgentKind = "read" | "act" | "omitted";
 
 /**
  * The kind of every AdminApi method. THE one table: the Workshop refuses and routes each lent
@@ -55,7 +59,8 @@ export type AdminAgentKind = "read" | "omitted";
  * Omitted, by rule: every setter and every other method that changes a deployment setting; the
  * gateway tests, which send requests the deployment pays for; checkForUpdates(), which calls out
  * and stores what it learns, and getUpdateStatus(), whose answer holds the link that opens the
- * deploy flow; isBlueprintFeatured(), which repairs the featured catalog's mirror as it reads.
+ * deploy flow; isBlueprintFeatured(), which repairs the featured catalog's mirror as it reads;
+ * approving or denying a content access request and ending an admins' grant.
  *
  * A "read" method that returns a view (inspectWorkspace(), inspectUser()) also needs the
  * Workshop's table of what its view answers: see AdminAgentKind. A view of a user's account is a
@@ -66,7 +71,10 @@ export const ADMIN_AGENT_KINDS = {
   // Reads.
   getSettings: "read",
   listUsers: "read", listWorkspaces: "read", inspectWorkspace: "read", inspectUser: "read",
-  listAdminAudit: "read", getAdminAuditStats: "read",
+  listAdminAudit: "read", getAdminAuditStats: "read", listContentAccessRequests: "read",
+  getContentAccessRequest: "read",
+  // Actions of the gatekeeper.
+  writeWorkspace: "act", requestContentAccess: "act",
   // Omitted.
   getUpdateStatus: "omitted", isBlueprintFeatured: "omitted",
   setSignupsEnabled: "omitted", setUserSearchEnabled: "omitted",
@@ -85,9 +93,58 @@ export const ADMIN_AGENT_KINDS = {
   checkForUpdates: "omitted", setUpdateChecksEnabled: "omitted",
   setUpdateCheckIntervalMinutes: "omitted", setUpdateMinimumAgeHours: "omitted",
   setUpdateNoticeSnoozeHours: "omitted", setAdminWorkspaceAccess: "omitted",
-  setAdminAuditRetentionDays: "omitted",
-  // Writes and content access: an agent reads the requests and changes nothing.
-  listContentAccessRequests: "read", getContentAccessRequest: "read",
-  writeWorkspace: "omitted", requestContentAccess: "omitted", approveContentAccess: "omitted",
+  setAdminAuditRetentionDays: "omitted", approveContentAccess: "omitted",
   denyContentAccess: "omitted", endWorkspaceGrant: "omitted",
 } as const satisfies Record<string, AdminAgentKind>;
+
+/**
+ * The gatekeeper's action kinds: each "act" call is queued as one of them, and the Workshop lends
+ * the gatekeeper the power to run an approved action of a kind only for that kind's call.
+ *   - `method`: the one AdminApi method an approved action of the kind may call:
+ *     writeWorkspace() or requestContentAccess().
+ *   - `autoApprovable`: the verdict every action of the kind carries
+ *     (ActionDescription.autoApprovable). The Workshop refuses to lend to an auto-approval of
+ *     an action whose TAG is that of a kind whose verdict is false, whatever verdict the
+ *     action's own description claims.
+ *   - `kind`: what the action carries as ActionDescription.actionKind. Auto-approval rules are
+ *     stored under the tag, so a tag is never renamed or reused, and a kind added here takes a
+ *     tag no other kind has.
+ *
+ * A write to a workspace ("workspaceWriteRequest") and a request for content access
+ * ("contentAccessRequest") always wait for a person. The write runs as soon as its action is
+ * approved, as the owner's, with no other admin deciding: the person who approves the action is
+ * the one check between an agent and another workspace. Whoever approves a content request's
+ * filing is counted among the people who may not approve the request itself, which only a person
+ * present can be.
+ */
+export const ADMIN_AGENT_ACTIONS = {
+  workspaceWriteRequest: {
+    method: "writeWorkspace",
+    // Runs a deployment admin's write in another workspace once approved, with no second check:
+    // a person decides each one.
+    autoApprovable: false,
+    kind: { tag: "workspace-write-request", label: "Write to a workspace as a deployment admin" },
+  },
+  contentAccessRequest: {
+    method: "requestContentAccess",
+    // Rule 7: asks for access to a workspace's content, and the person who approves the filing
+    // is one of those who may not approve the request.
+    autoApprovable: false,
+    kind: {
+      tag: "content-access-request",
+      label: "Ask the admins for access to a workspace's content",
+    },
+  },
+} as const;
+
+/** One of the gatekeeper's action kinds, by its name in ADMIN_AGENT_ACTIONS. */
+export type AdminAgentAction = keyof typeof ADMIN_AGENT_ACTIONS;
+
+/** The action kind an ActionKind tag names, or undefined for any other tag. */
+export function adminAgentAction(tag: string | undefined): AdminAgentAction | undefined {
+  // Each kind has a tag of its own (see ADMIN_AGENT_ACTIONS), so the first match is the only one.
+  for (let name of Object.keys(ADMIN_AGENT_ACTIONS) as AdminAgentAction[]) {
+    if (ADMIN_AGENT_ACTIONS[name].kind.tag === tag) return name;
+  }
+  return undefined;
+}

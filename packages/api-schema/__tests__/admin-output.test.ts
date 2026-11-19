@@ -120,6 +120,13 @@ describe("the admin schema", () => {
     }
   });
 
+  test("keeps the true result of a method the gatekeeper queues", () => {
+    // The gatekeeper, not the generator, tells an agent that such a call is queued.
+    expect(kinds.requestContentAccess).toBe("act");
+    expect(admin.services.AdminApi!.methods.find((method) => method.name === "requestContentAccess")!.returns)
+      .toEqual({ kind: "ref", name: "AdminContentRequest" });
+  });
+
   test("declares what the whole schema declares from AdminApi less the omitted methods", () => {
     const header = "Header.";
     const fromAdmin = emitDeclarations(admin, { root: ADMIN_ROOT, header });
