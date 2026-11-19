@@ -7,6 +7,7 @@ import { useSetWorkspaceMuted, useWorkspaces } from '@/workspaces/WorkspacesCont
 import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
 import { workspaceTitle } from '@/workspaces/workspaceList'
+import { isWorkspaceMuted } from '@/workspaces/workspaceMute'
 import { useAttempt } from './useAttempt'
 import { SoonSelect, SoonSwitch } from './SoonControls'
 
@@ -26,8 +27,6 @@ export const NotificationSettings = () => {
   const pushAttempt = useAttempt()
 
   const workspaces = workspacesState.status === 'ready' ? workspacesState.workspaces : []
-  // A mute that has run out is no longer one.
-  const isMuted = ({ notificationMute: mute }: (typeof workspaces)[number]) => mute !== undefined && (mute.indefinite === true || mute.until.getTime() > Date.now())
   // As it is drawn everywhere else.
   const listed = ({ id, title }: { id: string; title: string }) => ({ id, title: workspaceTitle({ title }), label: workspaceLabel(title), look: looks[id] })
 
@@ -63,8 +62,8 @@ export const NotificationSettings = () => {
       <MutedWorkspaces
         title="Muted workspaces"
         description="A muted workspace doesn’t notify you when tasks finish. Approval requests still come through."
-        muted={workspaces.filter(isMuted).map(({ notificationMute: mute, ...workspace }) => ({ ...listed(workspace), until: mute?.until && `Until ${UNTIL.format(mute.until)}` }))}
-        others={workspaces.filter((workspace) => !isMuted(workspace)).map(listed)}
+        muted={workspaces.filter(isWorkspaceMuted).map(({ notificationMute: mute, ...workspace }) => ({ ...listed(workspace), until: mute?.until && `Until ${UNTIL.format(mute.until)}` }))}
+        others={workspaces.filter((workspace) => !isWorkspaceMuted(workspace)).map(listed)}
         loading={workspacesState.status === 'loading'}
         failure={workspacesState.status === 'failed' ? workspacesState.message : undefined}
         problem={problem}

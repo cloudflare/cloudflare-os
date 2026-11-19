@@ -38,3 +38,11 @@ export const searchMatches = <T extends Searchable>(query: string, entries: read
     .toSorted((a, b) => b.score - a.score || a.index - b.index)
     .map(({ entry }) => entry)
 }
+
+/**
+ * What was typed, where it goes on with the entries of a page: kept if it still finds some of them
+ * (found by "dark", a theme goes on to Dark alone), else nothing, as it was only what led there
+ * (found by "theme", it would leave no option to choose).
+ */
+export const carriedInto = (query: string, entries: readonly Searchable[]) =>
+  query.trim() !== '' && searchMatches(query, entries).length > 0 ? query : ''

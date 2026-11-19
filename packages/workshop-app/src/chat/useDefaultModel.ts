@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useApi } from '@/rpc/ApiContext'
 import { defaultModelOf } from './defaultModel'
+import { subscribePreferredModelChanges } from './preferredModelChanges'
 
 export type DefaultModel =
   | { status: 'loading' }
@@ -22,12 +23,16 @@ export const describeModelProblem = (model: Exclude<DefaultModel, { status: 'rea
 
 /**
  * The model the user's messages are answered by: the one they chose in the settings, or the first
- * of their models (`defaultModelOf`). Read as the page is opened, so a choice made since holds
- * from the next page on.
+ * of their models (`defaultModelOf`). Read as the page is opened, and again whenever another is
+ * chosen (`preferredModelChanged`), with the one that was read up meanwhile.
  */
 export const useDefaultModel = (): DefaultModel => {
   const { api, reconnecting } = useApi()
   const [model, setModel] = useState<DefaultModel>({ status: 'loading' })
+  // Counts the models chosen since, each of which is read again.
+  const [changes, setChanges] = useState(0)
+
+  useEffect(() => subscribePreferredModelChanges(() => setChanges((count) => count + 1)), [])
 
   useEffect(() => {
     // Over a lost connection it could only fail; the new connection's `api` loads it.
@@ -46,7 +51,7 @@ export const useDefaultModel = (): DefaultModel => {
     return () => {
       cancelled = true
     }
-  }, [api, reconnecting])
+  }, [api, reconnecting, changes])
 
   return model
 }

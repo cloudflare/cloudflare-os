@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { AiChatAuthorInfo, AiModelProvider } from '@gadgets/workshop-shared/api'
+import { preferredModelChanged } from '@/chat/preferredModelChanges'
 import { useApi } from '@/rpc/ApiContext'
 import { providerChoices, userModelsAllowed, type ModelSave } from './modelForm'
 import { messageOf } from './useAttempt'
@@ -28,16 +29,17 @@ export type ModelSettingsState =
 
 /**
  * The user's models and which of them are used by default, with the ways to change that. Each
- * change is shown at once and undone if the server refuses, rejecting with why.
+ * change is shown at once and undone if the server refuses, rejecting with why. Nothing is read
+ * while it is not `enabled`, and what was read is read again each time it becomes so.
  */
-export const useModelSettings = () => {
+export const useModelSettings = (enabled = true) => {
   const { api, reconnecting } = useApi()
   const [state, setState] = useState<ModelSettingsState>({ status: 'loading' })
   const [attempts, setAttempts] = useState(0)
 
   useEffect(() => {
     // Over a lost connection it could only fail; the new connection's `api` loads it.
-    if (reconnecting) return
+    if (reconnecting || !enabled) return
     let cancelled = false
     Promise.all([api.listModels(), api.getPreferredModel(), api.getQuickModel(), api.getAiConfig()]).then(
       ([models, preferred, quick, config]) => {
@@ -63,7 +65,7 @@ export const useModelSettings = () => {
     return () => {
       cancelled = true
     }
-  }, [api, reconnecting, attempts])
+  }, [api, reconnecting, attempts, enabled])
 
   const change = async (shown: Partial<ModelSettings>, undone: (before: ModelSettings) => Partial<ModelSettings>, action: () => Promise<unknown>) => {
     if (state.status !== 'ready') return
@@ -79,7 +81,12 @@ export const useModelSettings = () => {
 
   return {
     state,
-    setPreferred: (id: string) => change({ preferred: id }, ({ preferred }) => ({ preferred }), () => api.setPreferredModel(id)),
+    setPreferred: (id: string) =>
+      change({ preferred: id }, ({ preferred }) => ({ preferred }), async () => {
+        await api.setPreferredModel(id)
+        // A chat that is open sends its next message with it.
+        preferredModelChanged()
+      }),
     setQuick: (id: string | null) => change({ quick: id }, ({ quick }) => ({ quick }), () => api.setQuickModel(id)),
     /** Removes a model the user added. What named it by default is the server's to sort out, so it is read again. */
     remove: async (id: string) => {

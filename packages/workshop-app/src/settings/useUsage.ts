@@ -16,23 +16,25 @@ export type UsageState =
 /**
  * What the user has used of their allowance, and the Cloudflare account that pays for the rest.
  * Read again when the window is come back to, as connecting an account and adding credits both
- * happen in another, and whenever `refresh` is called.
+ * happen in another, and whenever `refresh` is called. Nothing is read while it is not `enabled`,
+ * and what was read is read again each time it becomes so.
  */
-export const useUsage = () => {
+export const useUsage = (enabled = true) => {
   const { api, reconnecting } = useApi()
   const [state, setState] = useState<UsageState>({ status: 'loading' })
   const [reads, setReads] = useState(0)
   const refresh = () => setReads((count) => count + 1)
 
   useEffect(() => {
+    if (!enabled) return
     const onFocus = () => setReads((count) => count + 1)
     window.addEventListener('focus', onFocus)
     return () => window.removeEventListener('focus', onFocus)
-  }, [])
+  }, [enabled])
 
   useEffect(() => {
     // Over a lost connection it could only fail; the new connection's `api` loads it.
-    if (reconnecting) return
+    if (reconnecting || !enabled) return
     let cancelled = false
     const read = async (): Promise<UsageState> => {
       const usage = await api.getCloudflareUsage()
@@ -52,7 +54,7 @@ export const useUsage = () => {
     return () => {
       cancelled = true
     }
-  }, [api, reconnecting, reads])
+  }, [api, reconnecting, reads, enabled])
 
   return { state, refresh }
 }

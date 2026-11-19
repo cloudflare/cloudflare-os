@@ -5,20 +5,18 @@ import { SettingPresets } from '@/blocks/SettingPresets'
 import { SettingRow } from '@/blocks/SettingRow'
 import { SettingsCard, SettingsGroup } from '@/blocks/SettingsGroup'
 import { Button } from '@/components/Button'
-import { Select } from '@/components/Select'
 import { TextField } from '@/components/TextField'
 import { defaultModelOf } from '@/chat/defaultModel'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { ModelDialog } from './ModelDialog'
 import type { ModelSave } from './modelForm'
+import { modelChoiceSettings } from './modelChoiceSettings'
 import { contextWindowPresets, modelOptionsOf } from './modelOptions'
+import { SettingDefinitionRow } from './SettingDefinitionRow'
 import { SoonSelect } from './SoonControls'
 import { messageOf, useAttempt } from './useAttempt'
 import { useModelConfig } from './useModelConfig'
 import { useModelSettings } from './useModelSettings'
-
-// Chosen for no model. No model is called this.
-const NONE = '::none'
 
 const REASONING_LABEL: Record<ReasoningLevel, string> = {
   off: 'Off',
@@ -198,38 +196,19 @@ export const ModelSettings = () => {
       return true
     },
   }
-  const options = models.map(({ id, name }) => ({ id, label: name }))
   const answering = defaultModelOf(models, preferred)
+  const { defaultModel, quickModel } = modelChoiceSettings(state, { setPreferred, setQuick })
 
   return (
     <>
       {problem && <p role="alert" className="px-5 text-base text-kumo-danger">{problem}</p>}
       <SettingsGroup title="Defaults" plain>
         <SettingsCard>
-          <SettingRow title="Default model" description="Used for new chats. Existing chats keep the model they started with.">
-            <Select
-              aria-label="Default model"
-              value={answering?.id ?? ''}
-              options={options}
-              placeholder="No models"
-              searchable
-              onValueChange={(id) => void attempt('change the default model', () => setPreferred(id))}
-            />
-          </SettingRow>
+          <SettingDefinitionRow setting={defaultModel} attempt={attempt} />
           {answering && <DefaultModelOptions key={`${answering.id}:${saves}`} modelId={answering.id} own={!builtIn.has(answering.id)} />}
         </SettingsCard>
         <SettingsCard>
-          <SettingRow title="Quick model" description="Used for small tasks, such as naming chats. With none, chats stay untitled.">
-            <Select
-              aria-label="Quick model"
-              value={quick ?? NONE}
-              options={[{ id: NONE, label: 'None' }, ...options]}
-              // One chosen that is no longer offered.
-              placeholder={quick ?? 'None'}
-              searchable
-              onValueChange={(id) => void attempt('change the quick model', () => setQuick(id === NONE ? null : id))}
-            />
-          </SettingRow>
+          <SettingDefinitionRow setting={quickModel} attempt={attempt} />
         </SettingsCard>
       </SettingsGroup>
       <CustomInstructions />

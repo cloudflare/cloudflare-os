@@ -1,6 +1,7 @@
 import { useId, type ReactNode } from 'react'
 import { Switch as BaseSwitch } from '@cloudflare/kumo/primitives/switch'
 import { cn } from '@cloudflare/kumo/utils'
+import { SWITCH_THUMB, SWITCH_TRACK } from './switchStyle'
 
 type SwitchLabel =
   | { label: ReactNode; 'aria-label'?: undefined }
@@ -40,22 +41,14 @@ export const Switch = ({ label, checked, onCheckedChange, disabled = false, busy
       nativeButton
       render={<button type="button" />}
       className={cn(
-        'relative inline-flex h-5 w-8.5 shrink-0 cursor-pointer items-center rounded-full p-0.5',
-        // On in Kumo's own switch's blue, which is its `info`, as the brand here is orange.
-        'bg-kumo-contrast/12 data-checked:bg-kumo-info',
-        'transition-colors duration-150 ease-out motion-reduce:transition-none',
+        SWITCH_TRACK,
+        'cursor-pointer',
         'outline-none focus-visible:ring-2 focus-visible:ring-kumo-focus focus-visible:ring-offset-2 focus-visible:ring-offset-kumo-base',
         'data-disabled:cursor-default data-disabled:opacity-50 aria-busy:cursor-progress',
         className,
       )}
     >
-      <BaseSwitch.Thumb
-        className={cn(
-          // The light theme's surface in either, so it is white on the track whatever it is on.
-          'block size-4 rounded-full bg-kumo-base scheme-light shadow-[0_1px_2px_rgb(0_0_0/0.15)]',
-          'transition-transform duration-150 ease-out data-checked:translate-x-3.5 motion-reduce:transition-none',
-        )}
-      />
+      <BaseSwitch.Thumb className={SWITCH_THUMB} />
     </BaseSwitch.Root>
   )
   if (label === undefined) return control

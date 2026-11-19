@@ -2,7 +2,7 @@ import { SettingRow } from '@/blocks/SettingRow'
 import { SettingsGroup } from '@/blocks/SettingsGroup'
 import { Button } from '@/components/Button'
 import { ConfirmMenu } from '@/components/ConfirmMenu'
-import { forgetPrefs } from '@/prefs/forgetPrefs'
+import { resetLocalPreferences } from './resetLocalPreferences'
 import { SoonSwitch } from './SoonControls'
 
 /** Tools for those who build on the app, and what is kept on this device. */
@@ -26,11 +26,7 @@ export const AdvancedSettings = () => (
           title="Reset local preferences?"
           description="Stars and workspace icons are saved only in this browser, so they’ll be lost for good."
           confirmLabel="Reset"
-          onConfirm={() => {
-            forgetPrefs()
-            // What is on the page still has what it read.
-            window.location.reload()
-          }}
+          onConfirm={resetLocalPreferences}
         />
       </SettingRow>
     </SettingsGroup>

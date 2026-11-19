@@ -1,5 +1,4 @@
 import { useState } from 'react'
-import { validateCommitEmail } from '@gadgets/workshop-shared/api'
 import { ProfilePicture } from '@/blocks/ProfilePicture'
 import { SettingField, type SaveOutcome } from '@/blocks/SettingField'
 import { SettingRow } from '@/blocks/SettingRow'
@@ -12,10 +11,12 @@ import { avatarImage } from './avatarImage'
 import { ownAvatar } from './OwnAvatar'
 import { messageOf, useAttempt } from './useAttempt'
 import { useOwnAvatar } from './useOwnAvatar'
+import { useProfileSettings } from './useProfileSettings'
 
 /** Who the user is to others: their picture and their name, changed where they are shown, and the addresses that go with them. */
 export const ProfileSettings = () => {
-  const { api, user, userChanged } = useApi()
+  const { api, user } = useApi()
+  const { displayName, commitEmail } = useProfileSettings()
   const notice = useConnectionNotice()
   const avatarUrl = useOwnAvatar()
   const [busy, setBusy] = useState(false)
@@ -55,14 +56,11 @@ export const ProfileSettings = () => {
         />
         <div className="flex max-w-full justify-center text-xl font-medium text-kumo-default">
           <EditableTitle
-            value={user.name}
-            aria-label="Display name"
-            placeholder="Display name"
+            value={displayName.value}
+            aria-label={displayName.title}
+            placeholder={displayName.placeholder}
             className="text-center"
-            onRename={(name) => void attempt('change your display name', async () => {
-              await api.setOwnDisplayName(name)
-              userChanged({ ...user, name })
-            })}
+            onRename={(name) => void attempt('change your display name', () => displayName.set(name))}
           />
         </div>
         {problem && <p role="alert" className="text-base text-kumo-danger">{problem}</p>}
@@ -75,18 +73,14 @@ export const ProfileSettings = () => {
           <Button>Change</Button>
         </SettingRow>
         <SettingField
-          title="Commit email"
-          description="The author email on your changes. Leave empty to use one generated from your user ID."
-          value={user.commitEmail ?? ''}
-          optional
-          type="email"
-          placeholder="name@example.com"
+          title={commitEmail.title}
+          description={commitEmail.description}
+          value={commitEmail.value}
+          optional={commitEmail.optional}
+          type={commitEmail.type}
+          placeholder={commitEmail.placeholder}
           autoComplete="email"
-          onSave={(email) => save(async () => {
-            if (email) validateCommitEmail(email)
-            await api.setOwnCommitEmail(email || null)
-            userChanged({ ...user, commitEmail: email || undefined })
-          })}
+          onSave={(email) => save(() => commitEmail.set(email))}
         />
       </SettingsGroup>
       <SettingsGroup title="Your data" soon>

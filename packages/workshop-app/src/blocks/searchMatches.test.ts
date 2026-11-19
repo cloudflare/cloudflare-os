@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { searchMatches } from './searchMatches'
+import { carriedInto, searchMatches } from './searchMatches'
 
 const entries = [
   { title: 'Garden planning' },
@@ -39,5 +39,23 @@ describe('searchMatches', () => {
   it('keeps the order equals came in', () => {
     const same = [{ title: 'Notes b' }, { title: 'Notes a' }]
     expect(searchMatches('notes', same)).toEqual(same)
+  })
+})
+
+describe('carriedInto', () => {
+  const options = [{ title: 'Light' }, { title: 'Dark' }, { title: 'System' }]
+
+  it('keeps what still finds some of the entries, so that it goes on narrowing them', () => {
+    expect(carriedInto('dark', options)).toBe('dark')
+  })
+
+  it('drops what only led there and finds none of them', () => {
+    expect(carriedInto('theme', options)).toBe('')
+    // Every word has to be found, as in search itself.
+    expect(carriedInto('dark theme', options)).toBe('')
+  })
+
+  it('carries nothing when nothing was typed', () => {
+    expect(carriedInto('  ', options)).toBe('')
   })
 })
