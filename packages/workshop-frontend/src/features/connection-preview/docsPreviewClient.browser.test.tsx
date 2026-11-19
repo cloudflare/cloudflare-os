@@ -301,6 +301,25 @@ it('draws a tab from its Markdown when its drawing is of another document', asyn
   expect(look(run(body, 'plain code plain')).color).not.toBe(RED)
 })
 
+it('draws a paragraph that starts as a heading is written as the text it is, and the tab from its drawing', async () => {
+  const savedMarkdown = ['# Report', '', '- # of rows', '', ...SAVED.split('\n').slice(4)].join('\n')
+  const set = { ...DRAWN, blocks: [DRAWN.blocks[0], paragraph(2, [{ text: '# of rows', look: CODE, at: 2 }]), DRAWN.blocks[2]] }
+  const { blocks, look, refresh } = await draw({ savedMarkdown, drawing: set })
+  const [, item, table] = blocks()
+
+  expect(text(item)).toBe('# of rows')
+  expect(look(run(item, '# of rows')).color).toBe(RED)
+  expect(table.matches('table')).toBe(true)
+  const entries = () => [...frame!.contentDocument!.querySelectorAll('#rail .entry')].map(text)
+  expect(entries()).toEqual(['Report'])
+
+  // A pending change leaves the line as it is: it is not one the change wrote.
+  await refresh({ markdown: `${savedMarkdown}\nMore\n` })
+  await expect.poll(() => blocks().length).toBe(4)
+  expect(blocks()[1].classList.contains('changed')).toBe(false)
+  expect(entries()).toEqual(['Report'])
+})
+
 it('draws a tab in Google\'s own styles when its drawing cannot be read', async () => {
   const { blocks, look } = await draw({ savedMarkdown: '# Report\n\nWords\n' })
   const [title, body] = blocks()

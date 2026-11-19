@@ -791,7 +791,12 @@ async function load() {
       return void status('');
     }
 
-    const saved = parseBlocks(savedMarkdown);
+    // The Markdown does not escape the document's text, so a paragraph whose text starts "# "
+    // reads in it as a heading: the drawing says which lines are that.
+    const lines = savedMarkdown.split('\n');
+    const plain = new Set(drawing.blocks.filter(block => block.type === 'paragraph' && !headingLevel(block.style) &&
+      /^#{1,6} /.test(block.runs.map(run => run.text ?? '').join(''))).map(block => lines[block.line]));
+    const saved = parseBlocks(savedMarkdown, undefined, plain);
     const byLine = new Map(drawing.blocks.map(block => [block.line, block]));
     // An empty line is an empty paragraph, whatever its style.
     const drawnOf = block => {
@@ -799,7 +804,7 @@ async function load() {
       return block.text || drawn?.type === 'paragraph' && !drawn.runs.length ? drawn : undefined;
     };
     const fits = saved.every(block => !block.text || !drawnOf(block) || sameKind(block, drawnOf(block)));
-    const rows = pairEdits(diff(saved, markdown === savedMarkdown ? saved : parseBlocks(markdown, tablesOf(saved)), blockKey));
+    const rows = pairEdits(diff(saved, markdown === savedMarkdown ? saved : parseBlocks(markdown, tablesOf(saved), plain), blockKey));
     tab = { drawing, savedMarkdown, markdown, rows, drawnOf: fits ? drawnOf : () => undefined, changed: rows.some(row => row.mark) };
     if (!tab.changed) view = 'after';
 
