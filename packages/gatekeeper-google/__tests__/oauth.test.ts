@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   exchangeAuthCode, getAccessToken, getGoogleAccountDescription, getGoogleAccountProfile,
+  revokeGoogleToken,
 } from "../src/google-api";
 
 const OAUTH_REDIRECT_URI = "https://gatekeeper-google.gadgets-staging.workers.dev/oauth";
@@ -85,7 +86,6 @@ describe("Google access token refresh", () => {
 });
 
 describe("Google user info", () => {
-  // A JSON parse error quotes the body, and this one is logged when a grant's holder is recorded.
   it("ends a description's round trip that Google never answers when the caller's signal does", async () => {
     // Google never answers, until the request is aborted.
     const fetch = vi.fn((_input: RequestInfo | URL, init?: RequestInit) =>
@@ -107,9 +107,48 @@ describe("Google user info", () => {
       .rejects.toThrow(/^Failed to fetch user info \[http=503\]$/);
   });
 
+  // A JSON parse error quotes the body, and this one is logged when a grant's holder is recorded.
   it("says a malformed answer was not JSON, without quoting it", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("sub=ada token=abc", { status: 200 })));
     await expect(getGoogleAccountProfile("access-token"))
       .rejects.toThrow(/^Google user info was not JSON\.$/);
+  });
+
+  // Only a parse error says nothing true of the answer: a read the caller gave up on says so.
+  it("gives the caller's reason for a read of the answer it gave up on", async () => {
+    const controller = new AbortController();
+    // The answer's head arrives; its body never does, until the read is given up.
+    const fetch = vi.fn(async () => new Response(new ReadableStream({
+      start: stream => controller.signal.addEventListener("abort", () => stream.error(controller.signal.reason)),
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetch);
+    const profile = getGoogleAccountProfile("access-token", controller.signal);
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalled());
+    controller.abort(new Error("timed out"));
+    await expect(profile).rejects.toThrow("timed out");
+  });
+});
+
+describe("Google token revocation", () => {
+  const answer = (body: string, init: ResponseInit) =>
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(body, init)));
+  const json = { "Content-Type": "application/json" };
+
+  // A failed revocation is logged, so its error carries Google's code and none of what Google wrote.
+  it("keeps Google's words and any other body out of a failure's error", async () => {
+    answer(JSON.stringify({ error: "token=abc was refused" }), { status: 400, headers: json });
+    await expect(revokeGoogleToken("refresh-token")).rejects.toThrow(/^Failed to revoke token \[http=400\]$/);
+    answer(JSON.stringify({ error: "unsupported_token_type" }), { status: 400, headers: json });
+    await expect(revokeGoogleToken("refresh-token"))
+      .rejects.toThrow(/^Failed to revoke token \[http=400 error=unsupported_token_type\]$/);
+    answer("{ token=abc", { status: 503, headers: json });
+    await expect(revokeGoogleToken("refresh-token")).rejects.toThrow(/^Failed to revoke token \[http=503\]$/);
+    answer("upstream said token=abc", { status: 503, statusText: "token=abc" });
+    await expect(revokeGoogleToken("refresh-token")).rejects.toThrow(/^Failed to revoke token \[http=503\]$/);
+  });
+
+  it("takes a token Google already does not know as revoked", async () => {
+    answer(JSON.stringify({ error: "invalid_token" }), { status: 400, headers: json });
+    await expect(revokeGoogleToken("refresh-token")).resolves.toBeUndefined();
   });
 });

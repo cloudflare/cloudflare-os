@@ -225,14 +225,18 @@ export type GoogleAccountProfile = {
 };
 
 /**
- * `response`'s JSON body, or a throw of `message` alone: a parse error can quote the body, and these
- * errors are logged.
+ * `response`'s JSON body, or for one that is not JSON a throw of `message` alone: a parse error can
+ * quote the body, and these errors are logged. Any other failure to read it, such as the caller
+ * giving up, is thrown as it is.
  */
 async function readJsonOr<T>(response: Response, message: string): Promise<T> {
   try {
     return await response.json<T>();
-  } catch {
-    throw new Error(message);
+  } catch (error) {
+    // Without the parse error as its cause, which would carry the body into the logs.
+    // eslint-disable-next-line preserve-caught-error
+    if (error instanceof SyntaxError) throw new Error(message);
+    throw error;
   }
 }
 
@@ -334,15 +338,20 @@ export async function revokeGoogleToken(
     // Read response body to be polite, but we don't really need it.
     await response.text();
   } else if (isJson) {
-    let body = await response.json<{error: string}>();
+    let body = await readJsonOr<{error?: unknown}>(
+        response, `Failed to revoke token [http=${response.status}]`);
     if (response.status === 400 && body.error === "invalid_token") {
       // Token may have been revoked previously, or may have never been valid. We don't really
       // know. But for the sake of idempotency, treat this as success.
     } else {
-      throw new Error(`Failed to revoke token: ${body.error}`);
+      // Google's code only, and no reason phrase: these errors are logged.
+      let code = safeProviderCode(body.error);
+      throw new Error(`Failed to revoke token [http=${response.status}` +
+          `${code !== undefined ? ` error=${code}` : ""}]`);
     }
   } else {
-    throw new Error(`Failed to revoke token: ${response.status} ${response.statusText}`);
+    await response.body?.cancel();
+    throw new Error(`Failed to revoke token [http=${response.status}]`);
   }
 }
 
