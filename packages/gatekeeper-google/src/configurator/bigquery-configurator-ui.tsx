@@ -1,5 +1,5 @@
 import {
-  Autocomplete, Field, h, HierarchyPicker, Section,
+  Autocomplete, Button, Field, h, HierarchyPicker, Section,
   type ConfiguratorUIHierarchyAncestor, type ConfiguratorUIHierarchyItem, type ConfiguratorUIRenderContext,
   type ConfiguratorUISpec,
 } from "@gadgets/configurator-ui";
@@ -68,14 +68,14 @@ const CHOICES: Partial<Record<BigQueryNodeKind, { subtitle: string }>> = {
   dataset: { subtitle: "Every table in it, including ones added later" },
 };
 
-/** A project's badge, when the account holds no role in it and so reaches it only by its datasets. */
+/** A project's badge when the account can't run query jobs in it, as when only datasets in it were shared. */
 const SHARED = "Shared";
 
 /**
- * Whether each project seen is one the account holds a role in, from the nodes listed or looked up,
- * keyed by project id. Module state, as the runtime keeps none for a module.
+ * Whether query jobs can run in each project seen, from the nodes listed or looked up, keyed by
+ * project id. Module state, as the runtime keeps none for a module.
  */
-const listed = new Map<string, boolean>();
+const runsQueries = new Map<string, boolean>();
 
 /**
  * Nodes looked up by id, for a location that then cannot be listed: a table shared on its own can be
@@ -88,14 +88,14 @@ const toAncestor = ({ id, kind, title }: BigQueryCrumb): ConfiguratorUIHierarchy
 
 function toItem(node: BigQueryNode): ConfiguratorUIHierarchyItem {
   const ref = refOf(node.id);
-  if (ref) listed.set(ref.projectId, node.listed);
+  if (ref) runsQueries.set(ref.projectId, node.runsQueries);
   return {
     id: node.id,
     title: node.title,
     kind: node.kind === "table" ? "leaf" : "container",
     icon: node.view ? "view" : node.kind,
     subtitle: node.subtitle,
-    badge: node.kind === "project" && !node.listed ? SHARED : undefined,
+    badge: node.kind === "project" && !node.runsQueries ? SHARED : undefined,
     selectable: true,
     choice: CHOICES[node.kind],
     path: node.path?.map(toAncestor),
@@ -104,38 +104,70 @@ function toItem(node: BigQueryNode): ConfiguratorUIHierarchyItem {
 
 type Context = ConfiguratorUIRenderContext<BigQueryConfiguratorRpc, BigQueryConfiguratorValues>;
 
-/** The project of the chosen node when the account holds no role in it, so its queries need another. */
-function unlistedProject(target: string | null | undefined): string | undefined {
+/** The project of the chosen node when query jobs cannot run in it, so its queries need another. */
+function sharedProject(target: string | null | undefined): string | undefined {
   const ref = target ? refOf(target) : undefined;
-  return ref && listed.get(ref.projectId) === false ? ref.projectId : undefined;
+  return ref && runsQueries.get(ref.projectId) === false ? ref.projectId : undefined;
 }
 
 /** The account's one project, offered as the query project before the user has to look for it. */
 let onlyProject: Promise<string | null> | undefined;
-/**
- * The choice a suggestion is pending for; the field waits, disabled, until the answer lands, so
- * nothing typed meanwhile can be overridden. Cleared by the answer or by a later choice.
- */
-let suggestedFor: string | null = null;
-/**
- * A pre-filled choice that arrived with a query project it did not need: the field stays in view,
- * while that choice stands, until the user clears it, so it does not vanish mid-edit.
- */
-let overrideFor: string | null = null;
 
-/** Fills in the query project a choice in a shared project needs, when the account has only one. */
-function suggestQueryProject({ ui, setValues }: Context, target: string | null): void {
-  suggestedFor = unlistedProject(target) === undefined ? null : target;
-  if (suggestedFor === null) return;
+/**
+ * The query project's state, which belongs to the latest choice's data project: a choice within the
+ * same project keeps it, as does a moment with nothing chosen (while the user opens a location or
+ * searches), and a choice in another project starts over. Seeded from the URL.
+ */
+type Billing = {
+  dataProject: string;
+  /** The URL named a query project, which stands until dropped, though queries could run in `dataProject`. */
+  override: boolean;
+  /**
+   * The field was filled in, by the URL or the user, or a suggestion was asked for, whatever it
+   * answered. A suggestion is asked for only before that, so what the user is replacing is never
+   * replaced for them.
+   */
+  asked: boolean;
+  /** A suggestion is on its way: the field waits, disabled, so nothing typed meanwhile is overwritten. */
+  suggesting: boolean;
+};
+let billing: Billing | null = null;
+
+/** {@link billing} when `target` is in its data project, else undefined. */
+function billingOf(target: string | null | undefined): Billing | undefined {
+  const ref = target ? refOf(target) : undefined;
+  return ref && billing?.dataProject === ref.projectId ? billing : undefined;
+}
+
+/** The data project of `target` while the URL's query project stands for it and queries could run there. */
+function overriddenProject(target: string | null | undefined): string | undefined {
+  const state = billingOf(target);
+  return state?.override && sharedProject(target) === undefined ? state.dataProject : undefined;
+}
+
+/**
+ * Fills in the account's one project, once, for a choice in a shared project whose field is still
+ * untouched. The answer lands only while that data project's state stands.
+ */
+function suggestQueryProject({ ui, setValues }: Context, target: string): void {
+  const state = billingOf(target);
+  if (!state || state.asked || sharedProject(target) === undefined) return;
+  state.asked = state.suggesting = true;
   onlyProject ??= ui.listProjects("").then(
     options => options.length === 1 ? options[0]!.value : null,
     () => { onlyProject = undefined; return null; });
-  // Every answer is the same project, so any pending suggestion takes the first to arrive.
   void onlyProject.then(project => {
-    if (suggestedFor === null) return;
-    suggestedFor = null;
+    if (billing !== state) return;
+    state.suggesting = false;
     setValues(project ? { queryProject: project } : {});
   });
+}
+
+/** Empties the field; for the URL's query project, queries then run in, and are billed to, the data project. */
+function dropQueryProject({ setValues, clearFields }: Context): void {
+  if (billing) billing.override = false;
+  clearFields("queryProject");
+  setValues({ queryProject: null });
 }
 
 export default {
@@ -148,19 +180,24 @@ export default {
     if (!projectId) return {};
     const kind = tableId ? "table" : datasetId ? "dataset" : "project";
     const queryProject = url.searchParams.get(QUERY_PROJECT_PARAM);
-    return {
-      target: idOf({ kind, projectId, datasetId, tableId }),
-      queryProject: queryProject && queryProject !== projectId ? queryProject : null,
-    };
+    const target = idOf({ kind, projectId, datasetId, tableId });
+    const prefilled = queryProject && queryProject !== projectId ? queryProject : null;
+    // Recorded now, not when the lookup answers, so a choice made before then keeps it too.
+    billing = { dataProject: projectId, override: prefilled !== null, asked: prefilled !== null, suggesting: false };
+    return { target, queryProject: prefilled };
   },
 
   isReady({ values: { target, queryProject } }) {
     const ref = target ? refOf(target) : undefined;
     if (!ref) return false;
-    // Until the picker's lookup of a pre-filled choice says whether the account holds a role in its
-    // project, the form is not ready: a connection made before then might not be able to query.
-    const held = listed.get(ref.projectId);
-    return held === true || (held === false && typeof queryProject === "string" && queryProject.length > 0);
+    // Until the picker's lookup of a pre-filled choice says whether queries can run in its project,
+    // the form is not ready: a connection made before then might not be able to query.
+    const runs = runsQueries.get(ref.projectId);
+    if (runs === undefined) return false;
+    // A query project is needed where queries can't run, and where the URL's one stands, until it is
+    // replaced or dropped: typing over it bills nothing new.
+    const chosen = typeof queryProject === "string" && queryProject.length > 0;
+    return chosen || (runs && overriddenProject(target) === undefined);
   },
 
   resourceUrl({ values: { target, queryProject } }) {
@@ -178,8 +215,8 @@ export default {
 
   render(context) {
     const { values: { target = null, queryProject = null }, setValues, clearFields, ui } = context;
-    const shared = unlistedProject(target);
-    const override = shared === undefined && target !== null && overrideFor === target ? refOf(target)?.projectId : undefined;
+    const shared = sharedProject(target);
+    const override = overriddenProject(target);
     return <Section>
       <Field label="What to connect">
         <HierarchyPicker
@@ -202,30 +239,33 @@ export default {
           loadItem={async id => {
             const node = await ui.getNode(id);
             if (!node) return null;
-            const known = listed.has(refOf(id)?.projectId ?? "");
+            const known = runsQueries.has(refOf(id)?.projectId ?? "");
             const item = toItem(node);
             lookedUp.set(id, item);
-            // Whether a pre-filled choice can be connected is known only now.
-            if (!known) {
+            // Whether a pre-filled choice can be connected is known only now, which matters only while
+            // the choice is still in its data project.
+            if (!known && billingOf(id)) {
               setValues({});
-              if (queryProject === null) suggestQueryProject(context, id);
-              else if (listed.get(refOf(id)?.projectId ?? "") === true) overrideFor = id;
+              suggestQueryProject(context, id);
             }
             return item;
           }}
           onChange={next => {
-            // A choice in a project the account holds a role in needs no query project; the one
-            // picked for a shared project stays while the choice moves within it.
-            const nextShared = unlistedProject(next);
-            const keep = nextShared !== undefined && nextShared === shared;
-            if (!keep) {
-              clearFields("queryProject");
-              overrideFor = null;
-            } else if (suggestedFor !== null) {
-              suggestedFor = next;
+            // Opening a location or searching lets go of the choice; the query project waits for the next.
+            if (next === null) {
+              setValues({ target: null });
+              return;
             }
-            setValues({ target: next, queryProject: keep ? queryProject : null });
-            if (!keep) suggestQueryProject(context, next);
+            if (billingOf(next)) {
+              setValues({ target: next });
+            } else {
+              const ref = refOf(next);
+              billing = ref ? { dataProject: ref.projectId, override: false, asked: false, suggesting: false } : null;
+              clearFields("queryProject");
+              setValues({ target: next, queryProject: null });
+            }
+            // Also within the project, which a search result can say is shared before a lookup does.
+            suggestQueryProject(context, next);
           }}
           icons={ICONS}
           searchPlaceholder="Search here, or paste a link or project ID"
@@ -234,24 +274,27 @@ export default {
       {(shared !== undefined || override !== undefined) && <Field
         label="Run queries in"
         description={shared !== undefined
-          ? `You have no role in "${shared}", so its queries run in, and are billed to, a project of yours. They still read only what is chosen above.`
-          : `Queries run in, and are billed to, this project rather than "${override}". Clear it to use "${override}".`}
+          ? `This account can't run query jobs in "${shared}", so its queries run in, and are billed to, a project of yours. They still read only what is chosen above.`
+          : `Queries run in, and are billed to, the project picked here rather than "${override}".`}
       >
         <Autocomplete
           name="queryProject"
           value={queryProject}
           placeholder="Search your projects..."
           loadOptions={query => ui.listProjects(query)}
-          onChange={next => setValues({ queryProject: next })}
-          disabled={suggestedFor !== null && suggestedFor === target && queryProject === null}
-          optional={override !== undefined}
-          onClear={() => {
-            overrideFor = null;
-            clearFields("queryProject");
-            setValues({ queryProject: null });
+          onChange={next => {
+            if (billing) billing.asked = true;
+            setValues({ queryProject: next });
           }}
+          disabled={billingOf(target)?.suggesting === true}
+          optional={override !== undefined}
+          onClear={() => dropQueryProject(context)}
         />
       </Field>}
+      {/* Clear shows only while a project is picked, and Tab skips it, so dropping the override has its own control. */}
+      {override !== undefined && <div>
+        <Button variant="secondary" onClick={() => dropQueryProject(context)}>{`Run queries in "${override}"`}</Button>
+      </div>}
     </Section>;
   },
 } satisfies ConfiguratorUISpec<BigQueryConfiguratorRpc, BigQueryConfiguratorValues>;

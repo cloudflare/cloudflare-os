@@ -55,6 +55,8 @@ const BIGQUERY_CONFIGURATOR_CACHE_MAX_ENTRIES = 200;
 const BIGQUERY_CONFIGURATOR_LIST_OPTIONS = { maxPages: 5, maxResults: 1000 };
 /** Nodes per picker page, within the hierarchy picker's limit of 200. */
 const BIGQUERY_PICKER_PAGE_SIZE = 100;
+/** How long the picker waits on a dry run, so a stalled one doesn't hold up browsing. */
+const BIGQUERY_PROBE_TIMEOUT_MS = 10_000;
 /** Must equal `ROOT_ID` in configurator/bigquery-configurator-ui.tsx. */
 const BIGQUERY_ROOT_ID = "bigquery";
 
@@ -306,25 +308,25 @@ const bigQueryProjectCrumb = (projectId: string) =>
 const bigQueryDatasetCrumb = (projectId: string, datasetId: string) =>
   ({ id: bigQueryNodeId({ kind: "dataset", projectId, datasetId }), kind: "dataset" as const, title: datasetId });
 
-function bigQueryProjectNode(project: BigQueryProject, listed: boolean): BigQueryNode {
+function bigQueryProjectNode(project: BigQueryProject, runsQueries: boolean): BigQueryNode {
   return {
     id: bigQueryNodeId({ kind: "project", projectId: project.projectId }), kind: "project",
-    title: project.projectId, subtitle: project.friendlyName, listed,
+    title: project.projectId, subtitle: project.friendlyName, runsQueries,
   };
 }
 
-function bigQueryDatasetNode(dataset: BigQueryDataset, listed: boolean): BigQueryNode {
+function bigQueryDatasetNode(dataset: BigQueryDataset, runsQueries: boolean): BigQueryNode {
   return {
     id: bigQueryNodeId({ kind: "dataset", projectId: dataset.projectId, datasetId: dataset.datasetId }), kind: "dataset",
-    title: dataset.datasetId, subtitle: dataset.friendlyName ?? dataset.description, listed,
+    title: dataset.datasetId, subtitle: dataset.friendlyName ?? dataset.description, runsQueries,
     path: [bigQueryProjectCrumb(dataset.projectId)],
   };
 }
 
-function bigQueryTableNode(table: BigQueryTable, listed: boolean): BigQueryNode {
+function bigQueryTableNode(table: BigQueryTable, runsQueries: boolean): BigQueryNode {
   return {
     id: bigQueryNodeId({ kind: "table", projectId: table.projectId, datasetId: table.datasetId, tableId: table.tableId }),
-    kind: "table", title: table.tableId, subtitle: table.friendlyName ?? BIGQUERY_TABLE_KINDS[table.type], listed,
+    kind: "table", title: table.tableId, subtitle: table.friendlyName ?? BIGQUERY_TABLE_KINDS[table.type], runsQueries,
     view: BIGQUERY_VIEW_TYPES.has(table.type) || undefined,
     path: [bigQueryProjectCrumb(table.projectId), bigQueryDatasetCrumb(table.projectId, table.datasetId)],
   };
@@ -346,6 +348,26 @@ export class BigQueryConfiguratorUI extends RpcTarget implements BigQueryConfigu
       let api = await bigQueryApi(this);
       let projects = await api.listProjects(BIGQUERY_CONFIGURATOR_LIST_OPTIONS);
       return new Map(projects.map(project => [project.projectId, project]));
+    });
+  }
+
+  /**
+   * Whether this account may run query jobs in `projectId`, which BigQuery requires of every query.
+   * A project BigQuery lists is taken to allow them. The list can omit a project that does, so any
+   * other is asked with a dry-run job, which is free, and the answer kept in the picker's cache. A
+   * dry run that fails for any reason, or has no answer within BIGQUERY_PROBE_TIMEOUT_MS, answers
+   * no, as before the check, rather than failing or holding up the lookup. The deadline covers the
+   * whole dry run: its signal ends a request in flight, and the race gives up on a token still being
+   * refreshed.
+   */
+  async #runsQueries(projectId: string): Promise<boolean> {
+    if ((await this.#heldProjects()).has(projectId)) return true;
+    return cachedBigQuery(this, `runsQueries:${projectId}`, async () => {
+      let deadline = AbortSignal.timeout(BIGQUERY_PROBE_TIMEOUT_MS);
+      let { promise: late, resolve } = Promise.withResolvers<boolean>();
+      deadline.addEventListener("abort", () => resolve(false), { once: true });
+      let probe = (await bigQueryApi(this)).dryRun(projectId, "SELECT 1", { signal: deadline });
+      return Promise.race([probe.then(() => true, () => false), late]);
     });
   }
 
@@ -395,36 +417,37 @@ export class BigQueryConfiguratorUI extends RpcTarget implements BigQueryConfigu
       let ref = parseBigQueryNodeId(parentId);
       if (!ref || ref.kind === "table") throw new Error("Unknown BigQuery location.");
       let api = await bigQueryApi(this);
-      let listed = (await this.#heldProjects()).has(ref.projectId);
+      let runsQueries = await this.#runsQueries(ref.projectId);
       if (ref.kind === "project") {
         let datasets = await api.listDatasets(ref.projectId, BIGQUERY_CONFIGURATOR_LIST_OPTIONS);
-        return datasets.map(dataset => bigQueryDatasetNode(dataset, listed)).toSorted(byTitle);
+        return datasets.map(dataset => bigQueryDatasetNode(dataset, runsQueries)).toSorted(byTitle);
       }
       let tables = await api.listTables(ref.projectId, ref.datasetId!, BIGQUERY_CONFIGURATOR_LIST_OPTIONS);
-      return tables.map(table => bigQueryTableNode(table, listed)).toSorted(byTitle);
+      return tables.map(table => bigQueryTableNode(table, runsQueries)).toSorted(byTitle);
     });
   }
 
   /** The node `ref` names, asked of BigQuery, or null when this account cannot see it. */
   #node(ref: BigQueryNodeRef): Promise<BigQueryNode | null> {
     return cachedBigQuery(this, `node:${bigQueryNodeId(ref)}`, async () => {
+      // Asked outside the catch below, which takes a refusal for a node this account can't see: a
+      // failed project list is not one, and must fail the lookup so that it is asked again.
       let held = await this.#heldProjects();
-      let listed = held.has(ref.projectId);
       let api = await bigQueryApi(this);
       try {
         if (ref.kind === "project") {
           let project = held.get(ref.projectId);
-          if (project) return bigQueryProjectNode(project, true);
           // Listing a project's datasets needs no role in it: one that was shared a dataset sees that
           // dataset, and a project the account cannot see at all refuses.
-          await api.listDatasets(ref.projectId, { maxPages: 1, maxResults: 1 });
-          return bigQueryProjectNode({ projectId: ref.projectId }, false);
+          if (!project) await api.listDatasets(ref.projectId, { maxPages: 1, maxResults: 1 });
+          return bigQueryProjectNode(project ?? { projectId: ref.projectId }, await this.#runsQueries(ref.projectId));
         }
         if (ref.kind === "dataset") {
-          return bigQueryDatasetNode(await api.getDataset(ref.projectId, ref.datasetId!), listed);
+          let dataset = await api.getDataset(ref.projectId, ref.datasetId!);
+          return bigQueryDatasetNode(dataset, await this.#runsQueries(ref.projectId));
         }
         let { table } = await api.getTable(ref.projectId, ref.datasetId!, ref.tableId!);
-        return bigQueryTableNode(table, listed);
+        return bigQueryTableNode(table, await this.#runsQueries(ref.projectId));
       } catch (error) {
         if (isBigQueryNotVisible(error)) return null;
         throw error;
