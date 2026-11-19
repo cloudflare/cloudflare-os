@@ -12833,8 +12833,19 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     if (gatekeeperOff(await readAdminConfig(this.env), vendorId)) {
       throw new Error("Gatekeeper is disabled.");
     }
+    // The admin gatekeeper's hooks deliver only while the workspace's owner is a deployment admin.
+    if (vendorId === ADMIN_GATEKEEPER_VENDOR_ID &&
+        !isDeploymentAdmin(this.env, await this.impl.getOwnerProfileId())) {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.notAdmin);
+    }
+    // Nor once that owner holds no account of it, as for a lend (lendAdminApi()).
+    if (vendorId === ADMIN_GATEKEEPER_VENDOR_ID &&
+        !await retryOnDoReset(() => this.impl.ownerUserDo().holdsGatekeeperAccount(
+            ADMIN_GATEKEEPER_VENDOR_ID), this.impl.logger)) {
+      throw new Error(ADMIN_ACCOUNT_REMOVED);
+    }
 
-    // Re-read after the await: the KV read leaves the input gate open, so a disable/delete may
+    // Re-read after the awaits: the KV read leaves the input gate open, so a disable/delete may
     // have landed while it was in flight, and issuing from the captured record would hand out a
     // firing on a dead hook (the enableHookRecord/disableHook idiom).
     record = requireLiveHook(this.impl, hookId);

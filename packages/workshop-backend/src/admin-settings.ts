@@ -2160,24 +2160,24 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
       visibility: IssueReportEntry["visibility"]): Promise<IssueReportEntry> {
     this.#requireAdmin();
     return await this.issueReports.getByName("").addEntry(
-        await this.#profile(), this.caller.via, reportId, text, visibility);
+        await this.#profile(), this.#label(), reportId, text, visibility);
   }
 
   async setIssueReportStatus(reportId: string, status: IssueReportStatus): Promise<void> {
     this.#requireAdmin();
     await this.issueReports.getByName("").setStatus(
-        await this.#profile(), this.caller.via, reportId, status);
+        await this.#profile(), this.#label(), reportId, status);
   }
 
   async claimIssueReport(reportId: string, options: IssueReportClaimOptions = {}): Promise<void> {
     this.#requireAdmin();
     await this.issueReports.getByName("").claim(
-        await this.#profile(), this.caller.via, reportId, options.takeOverFrom);
+        await this.#profile(), this.#label(), reportId, options.takeOverFrom);
   }
 
   async releaseIssueReport(reportId: string): Promise<void> {
     this.#requireAdmin();
-    await this.issueReports.getByName("").release(await this.#profile(), this.caller.via, reportId);
+    await this.issueReports.getByName("").release(await this.#profile(), this.#label(), reportId);
   }
 
   async setIssueReportLinks(reportId: string, links: string[]): Promise<void> {

@@ -3,12 +3,15 @@ import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import {
   ADMIN_ACCESS_ERROR_CODES, ADMIN_CONTENT_REQUEST_LIFETIME_SECONDS, ADMIN_GRANT_ERROR_CODES,
-  DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS, MAX_ADMIN_AUDIT_ARG_LENGTH, createAdminAccessError,
-  createAdminGrantError, getAdminAccessErrorCode, getAdminGrantErrorCode,
+  DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS, ISSUE_REPORT_ERROR_CODES, MAX_ADMIN_AUDIT_ARG_LENGTH,
+  createAdminAccessError, createAdminGrantError, createIssueReportError, getAdminAccessErrorCode,
+  getAdminGrantErrorCode, getIssueReportErrorCode,
   type AdminAccessRecord, type AdminAgentOrigin, type AdminContentRequest,
   type AdminUserAccessRecord, type AdminVia,
 } from "@gadgets/workshop-shared/api";
-import type { AdminCaller, AdminViewTerms, AdminWorkspaceViewTerms } from "../src/admin-access.js";
+import type {
+  AdminCaller, AdminViewTerms, AdminWorkspaceViewTerms,
+} from "../src/admin-access.js";
 import { AdminApiImpl } from "../src/admin-settings.js";
 import type { IssueReportsDurableObject } from "../src/issue-reports.js";
 import type { OverseerDurableObject } from "../src/overseer.js";
@@ -19,6 +22,7 @@ import {
 declare module "cloudflare:workers" {
   interface ProvidedEnv {
     TEST_OVERSEER: DurableObjectNamespace<OverseerDurableObject>;
+    TEST_ISSUE_REPORTS: DurableObjectNamespace<IssueReportsDurableObject>;
   }
 }
 
@@ -323,6 +327,60 @@ describe("AdminApiImpl.inspectWorkspace", () => {
     const error = await rejection(mint().inspectWorkspace(workspaceId(), REASON));
     expect(getAdminAccessErrorCode(error)).toBe(ADMIN_ACCESS_ERROR_CODES.viewExpired);
     expect(calls.filter(call => call.target.startsWith("director"))).toEqual([]);
+  });
+
+  it("opens a view for one issue report, naming the report in the view's terms", async () => {
+    const { mint, callsTo } = deployment({
+      ...CONTENT, handlers: { overseer: { openForAdmin: () => ({}) } },
+    });
+    const api = mint(ADMIN, { via: "api" });
+    await api.inspectWorkspace(
+        workspaceId(), REASON, { access: "content", forIssueReport: "report-1" });
+    await api.inspectWorkspace(workspaceId(), REASON, { forIssueReport: "report-2" });
+    const terms = callsTo("overseer", "openForAdmin")
+        .map(call => call.args[3] as AdminWorkspaceViewTerms);
+    expect(terms).toStrictEqual([
+      { via: "api", access: "content", expiresAt: terms[0]!.expiresAt,
+        forIssueReport: "report-1" },
+      { via: "api", access: "metadata", expiresAt: terms[1]!.expiresAt,
+        forIssueReport: "report-2" },
+    ]);
+  });
+
+  it("takes no issue report that is not a non-empty string of at most 128 characters, and " +
+      "reaches nothing", async () => {
+    const { mint, calls, callsTo } = deployment({
+      ...CONTENT, handlers: { overseer: { openForAdmin: () => ({}) } },
+    });
+    const api = mint();
+    // The method's validator throws before the method runs.
+    for (const forIssueReport of [true, 1, null, {}]) {
+      expect(() => api.inspectWorkspace(workspaceId(), REASON, { forIssueReport } as never))
+          .toThrow(TypeError);
+    }
+    // The workspace checks no terms, so an id no report has is refused before it is reached.
+    for (const forIssueReport of ["", "r".repeat(129)]) {
+      expect(await rejection(api.inspectWorkspace(workspaceId(), REASON, { forIssueReport })))
+          .toBeInstanceOf(TypeError);
+    }
+    expect(calls).toEqual([]);
+
+    const longest = "r".repeat(128);
+    await api.inspectWorkspace(workspaceId(), REASON, { forIssueReport: longest });
+    expect(callsTo("overseer", "openForAdmin")[0]!.args[3])
+        .toMatchObject({ forIssueReport: longest });
+  });
+
+  it("passes on the refusal of a report that is not the workspace's owner's, leaving the " +
+      "workspace in the directory and recording nothing", async () => {
+    const { mint, calls, callsTo } = deployment({ ...CONTENT, handlers: { overseer: {
+      openForAdmin: () => { throw createIssueReportError(ISSUE_REPORT_ERROR_CODES.notFound); },
+    } } });
+    const error = await rejection(mint().inspectWorkspace(
+        workspaceId(), REASON, { access: "content", forIssueReport: "report-1" }));
+    expect(getIssueReportErrorCode(error)).toBe(ISSUE_REPORT_ERROR_CODES.notFound);
+    expect(calls.filter(call => call.target.startsWith("director"))).toEqual([]);
+    expect(callsTo("audit", "append")).toEqual([]);
   });
 });
 
@@ -1138,6 +1196,49 @@ describe("AdminApiImpl lent to the admin gatekeeper", () => {
           .toEqual([]);
     }
   });
+
+  it("writes an issue report entry and a status line that admins read with the origin",
+      async () => {
+    // The store is the real one, so what comes back is what an admin reads.
+    const reports = env.TEST_ISSUE_REPORTS.getByName(crypto.randomUUID());
+    const onStore = <T>(call: (store: IssueReportsDurableObject) => T | Promise<T>) =>
+        runInDurableObject(reports, call);
+    const report = await onStore(store => store.submit(
+        { id: "ada", name: "Ada" }, { text: "The export fails.", priority: "low" }, false));
+    const profile = { type: "user", id: ADMIN, name: "Grace (admin)" };
+    type Store = IssueReportsDurableObject;
+    const deploymentOf = () => deployment({ handlers: {
+      user: { whoamiIfExists: () => profile },
+      report: {
+        addEntry: (...args: Parameters<Store["addEntry"]>) =>
+            onStore(store => store.addEntry(...args)),
+        setStatus: (...args: Parameters<Store["setStatus"]>) =>
+            onStore(store => store.setStatus(...args)),
+        get: (id: string) => onStore(store => store.get(id)),
+      },
+    } });
+
+    const lent = deploymentOf().mint(ADMIN, GATEKEEPER);
+    const entry = await lent.addIssueReportEntry(report.id, "Looks like the quota.", "admins");
+    expect(entry).toMatchObject({ via: "gatekeeper", agent: AGENT, visibility: "admins" });
+    await lent.setIssueReportStatus(report.id, "investigating");
+    const person = deploymentOf().mint(ADMIN, { via: "cli" });
+    await person.addIssueReportEntry(report.id, "Confirmed.", "admins");
+
+    const read = await person.getIssueReport(report.id);
+    expect(read.entries.map(({ via, agent, text, status }) => ({ via, agent, text, status })))
+        .toStrictEqual([
+          { via: "gatekeeper", agent: AGENT, text: "Looks like the quota.", status: undefined },
+          { via: "gatekeeper", agent: AGENT, text: "", status: "investigating" },
+          { via: "cli", agent: undefined, text: "Confirmed.", status: undefined },
+        ]);
+    expect(read.entries[2]).not.toHaveProperty("agent");
+    // The reporter reads the status line as an agent's, without where it came from.
+    const own = await onStore(store => store.getOwn("ada", report.id));
+    expect(own.entries).toHaveLength(1);
+    expect(own.entries[0]).toMatchObject({ via: "gatekeeper", status: "investigating" });
+    expect(own.entries[0]).not.toHaveProperty("agent");
+  });
 });
 
 describe("AdminApiImpl issue reports", () => {
@@ -1171,13 +1272,13 @@ describe("AdminApiImpl issue reports", () => {
          assignee: undefined, unassigned: undefined, cursor: undefined, limit: 3 }]],
     ["getIssueReport", api => api.getIssueReport("report"), "get", ["report"]],
     ["addIssueReportEntry", api => api.addIssueReportEntry("report", "Which chart?", "public"),
-      "addEntry", [PROFILE, "cli", "report", "Which chart?", "public"]],
+      "addEntry", [PROFILE, { via: "cli" }, "report", "Which chart?", "public"]],
     ["setIssueReportStatus", api => api.setIssueReportStatus("report", "closed"), "setStatus",
-      [PROFILE, "cli", "report", "closed"]],
+      [PROFILE, { via: "cli" }, "report", "closed"]],
     ["claimIssueReport", api => api.claimIssueReport("report"), "claim",
-      [PROFILE, "cli", "report", undefined]],
+      [PROFILE, { via: "cli" }, "report", undefined]],
     ["releaseIssueReport", api => api.releaseIssueReport("report"), "release",
-      [PROFILE, "cli", "report"]],
+      [PROFILE, { via: "cli" }, "report"]],
     ["setIssueReportLinks", api => api.setIssueReportLinks("report", ["https://example.com/1"]),
       "setLinks", ["report", ["https://example.com/1"]]],
     ["readIssueReportImage", api => api.readIssueReportImage("report", "image"), "readImage",
@@ -1214,15 +1315,15 @@ describe("AdminApiImpl issue reports", () => {
     expect(callsTo("users", "getByName").map(call => call.args))
         .toStrictEqual(Array.from({ length: 6 }, () => [ADMIN]));
     expect(callsTo("report", "addEntry")[0].args)
-        .toStrictEqual([byId, "api", "report", "A note", "admins"]);
+        .toStrictEqual([byId, { via: "api" }, "report", "A note", "admins"]);
     expect(callsTo("report", "setStatus")[0].args)
-        .toStrictEqual([byId, "api", "report", "investigating"]);
+        .toStrictEqual([byId, { via: "api" }, "report", "investigating"]);
     // The holder a take-over names is the caller's own word, passed as it was given.
     expect(callsTo("report", "claim").map(call => call.args)).toStrictEqual([
-      [byId, "api", "report", "grace@example.test"],
-      [byId, "api", "report", undefined], [byId, "api", "report", undefined],
+      [byId, { via: "api" }, "report", "grace@example.test"],
+      [byId, { via: "api" }, "report", undefined], [byId, { via: "api" }, "report", undefined],
     ]);
-    expect(callsTo("report", "release")[0].args).toStrictEqual([byId, "api", "report"]);
+    expect(callsTo("report", "release")[0].args).toStrictEqual([byId, { via: "api" }, "report"]);
   });
 
   it("lists with the default page size, the query passed field by field",

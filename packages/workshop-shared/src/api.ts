@@ -1924,8 +1924,8 @@ export type AdminAgentOrigin = {
   /** The chat the workspace ties the caller to, by AiChatMetadata.id, when it ties it to one:
    * the chat whose agent made the call, or the chat whose unmerged changes the calling gadget
    * code runs. Absent for merged gadget code (a stub a gadget handed to a spawned agent
-   * included) and for a session the owner opened directly from the connection (no other member
-   * is lent one). */
+   * included), for a hook's firing and for a session the owner opened directly from the
+   * connection (no other member is lent one). */
   chatId?: number;
 };
 
@@ -2707,10 +2707,10 @@ export type IssueReportPriority = typeof ISSUE_REPORT_PRIORITIES[number];
  *   - "fixInProgress":     a change to the code is being made;
  *   - "fixProposed":       a change to the code was proposed, and waits for review;
  *   - "closed":            done. The reporter can no longer reply.
- * Admins set any status. A reporter sets none, except that their reply moves "answered" and
- * "waitingOnReporter" to "withAdmin"; it moves no other status. "fixSuggested" and
- * "fixInProgress" are the admins' own: the reporter reads both as "withAdmin" (see
- * issueReportStatusForReporter()).
+ * Admins set any status, themselves or through an agent acting for them. A reporter sets none,
+ * except that their reply moves "answered" and "waitingOnReporter" to "withAdmin"; it moves no
+ * other status. "fixSuggested" and "fixInProgress" are the admins' own: the reporter reads both
+ * as "withAdmin" (see issueReportStatusForReporter()).
  */
 export const ISSUE_REPORT_STATUSES = [
   "new", "investigating", "answered", "waitingOnReporter", "withAdmin", "fixSuggested",
@@ -2754,8 +2754,12 @@ export const MAX_ISSUE_REPORTS_PER_DAY = 20;
 /** The most entries of each of three kinds one issue report's thread holds: the reporter's
  * replies, the admins' public entries, and the admins-only ones. Each kind is counted apart, so
  * that a reporter who fills their side cannot stop the admins answering, and a full thread
- * tells a reporter nothing of the admins' notes. A bare change of status or of assignee is not
- * counted, so a full thread can always be closed and its report taken. */
+ * tells a reporter nothing of the admins' notes. A person's bare change of status or of
+ * assignee is not counted, so a full thread can always be closed and its report taken. What is written through the admin gatekeeper, which a
+ * workspace's rule can do with no person deciding, is counted apart from what people write: its
+ * public entries, its admins-only ones, its changes of status and its changes of assignee are
+ * four more kinds, each bounded like the others, so that an agent can fill no part of a thread
+ * that people write in. */
 export const MAX_ISSUE_REPORT_THREAD_ENTRIES = 200;
 
 /** The most replies one user may write in the threads of their issue reports in a UTC day. */
@@ -2926,8 +2930,12 @@ export type IssueReportAssignee = {
   name: string;
   /** Since when they hold it. */
   at: Date;
-  /** How their claim reached the deployment (see AdminVia). */
+  /** How their claim reached the deployment (see AdminVia): "gatekeeper" for one an agent or a
+   * gadget made for them. */
   via: AdminVia;
+  /** For a claim made through the admin gatekeeper: where it came from (see AdminAgentOrigin).
+   * Present exactly when `via` is "gatekeeper". */
+  agent?: AdminAgentOrigin;
 };
 
 /** Options for AdminApi.claimIssueReport(). */
@@ -2935,8 +2943,10 @@ export type IssueReportClaimOptions = {
   /** Take the report from this admin, by the id a report shows for its assignee
    * (IssueReportAssignee.id): the holder the caller confirmed. It takes the report only from
    * them. Once another admin holds the report the claim is refused `assigned` as one without
-   * it is, and once nobody does it is a claim like any other. A client sets it after asking,
-   * naming the holder. */
+   * it is, and once nobody does it is a claim like any other. Only a person takes a report
+   * over: a call made through the admin gatekeeper is refused with it set, so that no agent
+   * and no gadget takes a report from a person. A client sets it after asking, naming the
+   * holder. */
   takeOverFrom?: string;
 };
 
@@ -2964,8 +2974,13 @@ export type IssueReportEntry = {
   /** Who reads it: "public" for the reporter and the admins, "admins" for the admins alone. */
   visibility: "public" | "admins";
   /** For an admin's entry: how their calls reached the deployment (see AdminVia). Absent on the
-   * reporter's entries. */
+   * reporter's entries. "gatekeeper" marks an entry or a change of status an agent wrote for
+   * that admin: the reporter reads it too, so a client can say so. */
   via?: AdminVia;
+  /** For an entry written through the admin gatekeeper (`via` is "gatekeeper"): where the call
+   * came from (see AdminAgentOrigin), as admins read it. Never returned to the reporter, who
+   * reads `via` alone. */
+  agent?: AdminAgentOrigin;
   /** Its text: at most MAX_ISSUE_REPORT_TEXT_LENGTH characters; "" for a bare change of status
    * or of assignee. */
   text: string;
@@ -3626,7 +3641,8 @@ export interface AdminApi {
   /** The calling admin as issue reports name them: the `id` a thread entry they wrote carries
    * as its author's and a report they hold as its assignee's, with their display name as it
    * is now. What code compares an assignee or an author with to tell its own admin from
-   * another. */
+   * another. Through the admin gatekeeper it is the workspace's owner, in whose name
+   * everything written through that connection is. */
   whoami(): Promise<NamedUser>;
 
   /** One page of the deployment's issue reports, newest first, filtered as `options` says.
@@ -3641,7 +3657,8 @@ export interface AdminApi {
    * admins alone ("admins"). Non-blank text of at most MAX_ISSUE_REPORT_TEXT_LENGTH characters.
    * It changes no status. Refused `notFound`, and `threadFull` once the admins have written
    * MAX_ISSUE_REPORT_THREAD_ENTRIES entries of that visibility (the reporter's replies do not
-   * count). */
+   * count, and the entries written through the admin gatekeeper are counted apart from
+   * people's). */
   addIssueReportEntry(reportId: string, text: string, visibility: IssueReportEntry["visibility"])
       : Promise<IssueReportEntry>;
 
@@ -3649,20 +3666,24 @@ export interface AdminApi {
    * IssueReportEntry): public, or for admins alone when the reporter reads the old status and
    * the new one as the same. It does not raise the reporter's count of unseen reports, and a
    * full thread does not refuse it. Setting the status it already has changes nothing. Refused
-   * `notFound`. */
+   * `notFound`, and `threadFull` for a call made through the admin gatekeeper once
+   * MAX_ISSUE_REPORT_THREAD_ENTRIES changes of the report's status were made through it. */
   setIssueReportStatus(reportId: string, status: IssueReportStatus): Promise<void>;
 
   /** Claim an issue report: make the caller its assignee (see IssueReportAssignee). Entered in
    * its thread as a line only admins read, which names the caller. It changes no status. A
    * report the caller already holds is left as it is. Refused `notFound`, and `assigned` when
    * another admin holds the report, unless `options.takeOverFrom` is that admin's id, which
-   * takes it from them. */
+   * takes it from them. A call made through the admin gatekeeper is refused with
+   * `takeOverFrom` set, and `threadFull` once MAX_ISSUE_REPORT_THREAD_ENTRIES changes of the
+   * report's assignee were made through it. */
   claimIssueReport(reportId: string, options?: IssueReportClaimOptions): Promise<void>;
 
   /** Release an issue report the caller holds, which then has no assignee. Entered in its
    * thread as a line only admins read. It changes no status. A report nobody holds is left as
    * it is. Refused `notFound`; `assigned` when another admin holds the report, who alone
-   * releases it (an admin who is to hold it instead takes it over). */
+   * releases it (an admin who is to hold it instead takes it over); and `threadFull` as
+   * claimIssueReport() is. */
   releaseIssueReport(reportId: string): Promise<void>;
 
   /** Replace the links attached to an issue report: at most MAX_ISSUE_REPORT_LINKS, each an http

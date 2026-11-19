@@ -2,7 +2,7 @@
 // (OverseerImpl.adminsOnly() and admitsNonOwner()): beside its owner, only users who are deployment
 // admins at that moment, at every gate a non-owner passes. A workspace without the connection
 // admits whoever it is shared with, and one that had the connection and read nothing through the
-// admin binding does so again once the connection is removed.
+// whole admin binding does so again once the connection is removed.
 //
 // Runs against a real OverseerDurableObject with its real sharing manager, opened through
 // OverseerDurableObject.open() as each user, over the fixture facet that stands for the admin
@@ -16,15 +16,17 @@ import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import {
-  OPEN_WORKSPACE_ERROR_CODES, getOpenWorkspaceErrorCode,
-  type AiChatAuthorInfo, type CollaboratorGrant, type Overseer,
+  ISSUE_REPORT_ERROR_CODES, OPEN_WORKSPACE_ERROR_CODES, getIssueReportErrorCode,
+  getOpenWorkspaceErrorCode,
+  type AiChatAuthorInfo, type CollaboratorGrant, type IssueReportContext, type Overseer,
 } from "@gadgets/workshop-shared/api";
 import {
-  ADMIN_BINDING_SUBRESOURCE, ADMIN_GATEKEEPER_VENDOR_ID,
+  ADMIN_AGENT_ACTIONS, ADMIN_BINDING_SUBRESOURCE, ADMIN_GATEKEEPER_VENDOR_ID,
+  type AdminAgentAction,
 } from "@gadgets/workshop-shared/admin-agent";
 import type { OverseerDurableObject } from "../src/overseer.js";
 import {
-  ADMIN, NOT_ADMIN, OTHER_ADMIN, adminWorkspace, type AdminWorkspace,
+  ADMIN, NOT_ADMIN, OTHER_ADMIN, adminWorkspace, type AdminWorkspace, type FakeAdminFacet,
   type FakeAdminSessionStub,
 } from "./admin-agent-helpers.js";
 // Load the whole backend (the pool's `main`) up front, so its slow load does not count against the
@@ -41,10 +43,12 @@ const OMAR: AiChatAuthorInfo = { type: "user", id: "omar@example.test", name: "O
 const RESOURCE_URL = "https://workshop.example/admin";
 const CHAT_ID = 7;
 const GADGET = 100;
-// A subresource id other than ADMIN_BINDING_SUBRESOURCE, which is all the workspace reads.
-const OTHER_SUBRESOURCE = "admin:other";
+// The subresource id a session limited to one report puts on what it reads of the reporter's
+// workspace: any id other than ADMIN_BINDING_SUBRESOURCE, which is all the workspace reads.
+const REPORT_SUBRESOURCE = "admin:report";
 // What createAdminAccessError(notAdmin) says.
-const NOT_ADMIN_MESSAGE = "Only a deployment admin can inspect a workspace or a user, or change a workspace.";
+const NOT_ADMIN_MESSAGE =
+    "Only a deployment admin can inspect a workspace or a user, or change a workspace.";
 const CONNECTION_REFUSAL = "This workspace has the deployment admin connection, so only " +
     "deployment admins can be added to it. Remove the connection to share it with others.";
 const READS_REFUSAL = "This workspace has read through the deployment admin connection and its " +
@@ -192,7 +196,7 @@ async function observe(ws: Workspace, claims: object, id = ws.gatekeeperId): Pro
 }
 
 // What the workspace keeps of what was read: the restricted-data latch, the mark of a read through
-// the admin binding, and the rule that follows.
+// the whole admin binding, and the rule that follows.
 function marks(ws: Workspace) {
   return {
     restricted: ws.impl.storage.containsRestrictedData.get(),
@@ -228,6 +232,36 @@ async function chatHeadRecipients(ws: Workspace, chatId: number): Promise<string
   return [...new Set(ws.arrivals)].toSorted();
 }
 
+// What the workspace answers `user` for a report naming `context`: whether they own it, or
+// "refused" for `contextNotFound`.
+async function reportContext(ws: Workspace, user: AiChatAuthorInfo,
+    context: Pick<IssueReportContext, "chatId" | "gadgetId"> = {})
+    : Promise<{ owner: boolean } | "refused"> {
+  let userId = user.id === ws.owner.id ? ws.impl.ownerId : userIdOf(user);
+  try {
+    return await ws.instance.issueReportContext(userId, context);
+  } catch (error) {
+    expect(getIssueReportErrorCode(error)).toBe(ISSUE_REPORT_ERROR_CODES.contextNotFound);
+    return "refused";
+  }
+}
+
+// Queues action number `action` of `kind` on the admin connection, planned to make `calls`, and
+// returns its record's id.
+async function queueAction(ws: Workspace, action: number, kind: AdminAgentAction,
+    calls: { method: string; args?: unknown[] }[] = []): Promise<number> {
+  let facet: FakeAdminFacet = await ws.impl.getGatekeeperFacet(ws.gatekeeperId);
+  await facet.plan(action, calls);
+  using session = await sessionOf(ws);
+  await session.submit(action, {
+    title: ADMIN_AGENT_ACTIONS[kind].kind.label, description: "What will be posted or set.",
+    implementsRevert: false, autoApprovable: ADMIN_AGENT_ACTIONS[kind].autoApprovable,
+    actionKind: ADMIN_AGENT_ACTIONS[kind].kind,
+  });
+  return [...ws.impl.storage.actions.list()]
+      .filter((record: any) => record.type === "action" && record.action === action).at(-1).id;
+}
+
 describe("a workspace without the admin connection", () => {
   it("admits whoever it is shared with, in either role and by a share link",
       () => withWorkspace(async ws => {
@@ -243,6 +277,9 @@ describe("a workspace without the admin connection", () => {
     }
     expect(await readsChatState(ws, NELL)).toBe(true);
     expect(await chatHeadRecipients(ws, 20)).toEqual([userIdOf(NELL)]);
+
+    expect(await reportContext(ws, NELL, { chatId: CHAT_ID })).toEqual({ owner: false });
+    expect(await reportContext(ws, NELL, { chatId: CHAT_ID + 1 })).toBe("refused");
 
     // A share link opens for a non-admin, who is then a collaborator, and so does an invitation.
     let key: string;
@@ -349,6 +386,20 @@ describe("a workspace that has the admin connection", () => {
     expect(await readsChatState(ws, GRACE)).toBe(true);
   }));
 
+  it("answers a collaborator who is not an admin, for a report that names it, as a stranger",
+      () => withWorkspace(async ws => {
+    await share(ws, NELL);
+    await share(ws, GRACE);
+    for (let context of [{}, { chatId: CHAT_ID }, { gadgetId: GADGET },
+        { chatId: CHAT_ID + 1 }]) {
+      expect(await reportContext(ws, NELL, context)).toBe("refused");
+      expect(await reportContext(ws, MAYA, context)).toBe("refused");
+    }
+    expect(await reportContext(ws, GRACE, { chatId: CHAT_ID })).toEqual({ owner: false });
+    expect(await reportContext(ws, GRACE, { gadgetId: GADGET })).toEqual({ owner: false });
+    expect(await reportContext(ws, ws.owner, { chatId: CHAT_ID })).toEqual({ owner: true });
+  }));
+
   it("is added by the workspace's owner alone, while they are an admin",
       () => withWorkspace(async ws => {
     await share(ws, GRACE);
@@ -371,6 +422,24 @@ describe("a workspace that has the admin connection", () => {
     expect(ws.impl.adminsOnly()).toBe("connection");
   }, { connection: false }));
 
+  it("lets an admin who collaborates decide its actions, which stay the owner's",
+      () => withWorkspace(async ws => {
+    await share(ws, GRACE);
+    let report = await ws.impl.issueReports.getByName("").submit(
+        NELL, { text: "The export button does nothing.", priority: "medium" }, false);
+    let id = await queueAction(ws, 1, "issueReportNote",
+        [{ method: "addIssueReportEntry", args: [report.id, "A note.", "admins"] }]);
+    {
+      using theirs = await open(ws, GRACE);
+      await theirs.approveAction(id);
+    }
+    expect(ws.impl.storage.actions.get(id)).toMatchObject(
+        { state: "approved", resolvedBy: { id: GRACE.id } });
+    let { entries } = await ws.impl.issueReports.getByName("").get(report.id);
+    expect(entries).toMatchObject([{
+      visibility: "admins", text: "A note.", author: { id: ADMIN.id }, via: "gatekeeper",
+    }]);
+  }));
 });
 
 // Narrows NELL's access from two gadgets to one, as the owner does, and returns whose index of the
@@ -406,19 +475,21 @@ async function refusedEverywhere(ws: Workspace, user: AiChatAuthorInfo): Promise
     await ws.impl.authorizeCollaborator(user.id, account) === null,
     await ws.impl.authorizeGadget(user.id, account, GADGET) === false,
     await readsChatState(ws, user) === false,
+    await reportContext(ws, user, { chatId: CHAT_ID }) === "refused",
   ];
   expect(new Set(answers).size).toBe(1);
   return answers[0]!;
 }
 
 describe("removing the admin connection", () => {
-  it("restores ordinary sharing in a workspace that read nothing through the binding",
+  it("restores ordinary sharing in a workspace that read nothing through the whole binding",
       () => withWorkspace(async ws => {
     await share(ws, NELL);
     chooseAccounts(ws, NELL);
-    // Observations of the connection that read nothing restricted.
-    await observe(ws, { subresources: [OTHER_SUBRESOURCE] });
+    // What a session limited to one report reads of an ordinary report, and a queued action.
+    await observe(ws, { subresources: [REPORT_SUBRESOURCE] });
     await observe(ws, {});
+    await queueAction(ws, 1, "issueReportStatus");
     expect(marks(ws)).toEqual({ restricted: false, adminReads: false, adminsOnly: "connection" });
     expect(await refusedEverywhere(ws, NELL)).toBe(true);
 
@@ -431,7 +502,7 @@ describe("removing the admin connection", () => {
     expect(await collaborators(ws)).toEqual([MAYA.id, NELL.id].toSorted());
   }));
 
-  it("lifts nothing in a workspace that read through the binding, for good", async () => {
+  it("lifts nothing in a workspace that read through the whole binding, for good", async () => {
     let workspaceId = "";
     await withWorkspace(async ws => {
       workspaceId = ws.id;
@@ -458,8 +529,9 @@ describe("removing the admin connection", () => {
       using client = await open(ws, ws.owner);
       expect(await refusal(client.addCollaborator(MAYA.id, "workspace"))).toBe(READS_REFUSAL);
       expect(await collaborators(ws)).toEqual([GRACE.id, NELL.id].toSorted());
-      // Another admin is still admitted.
+      // Another admin is still admitted, and still answered.
       expect(await opening(ws, GRACE)).toBe("admitted");
+      expect(await reportContext(ws, GRACE, { chatId: CHAT_ID })).toEqual({ owner: false });
       // Removing every chat lifts nothing either.
       let chats: { id: number }[] = Array.from(ws.impl.storage.chatMeta.list());
       for (let chat of chats) ws.impl.storage.chatMeta.delete(chat.id);
@@ -503,12 +575,21 @@ describe("removing the admin connection", () => {
         { profile: { id: MAYA.id } });
   }));
 
-  it("restores ordinary sharing in a workspace marked as restricted without the binding's id",
+  it("restores ordinary sharing in a workspace a report session marked as restricted",
       () => withWorkspace(async ws => {
     await share(ws, NELL);
-    // An observation of the connection that says it read restricted data, under another id.
-    await observe(ws, { containsRestrictedData: true, subresources: [OTHER_SUBRESOURCE] });
+    // What a report session reads of a reporter's workspace that itself holds restricted data.
+    await observe(ws, { containsRestrictedData: true, subresources: [REPORT_SUBRESOURCE] });
     expect(marks(ws)).toEqual({ restricted: true, adminReads: false, adminsOnly: "connection" });
+
+    // The latch holds: a rule applies nothing from here on.
+    ws.impl.storage.autoApproveTags.put({
+      gatekeeperId: ws.gatekeeperId, actionKind: ADMIN_AGENT_ACTIONS.issueReportNote.kind,
+      enabledBy: ADMIN,
+    });
+    let id = await queueAction(ws, 1, "issueReportNote");
+    await ws.impl.drainAutoApprovals(ws.gatekeeperId);
+    expect(ws.impl.storage.actions.get(id).state).toBe("pending");
 
     await removeConnection(ws);
     expect(marks(ws)).toEqual({ restricted: true, adminReads: false, adminsOnly: undefined });
@@ -518,17 +599,17 @@ describe("removing the admin connection", () => {
         { profile: { id: MAYA.id } });
   }));
 
-  // The binding's id is the one subresource the workspace reads, and only on an observation
+  // The whole binding's id is the one subresource the workspace reads, and only on an observation
   // of the admin connection that says its read holds restricted data.
   it.each([
     { claims: { containsRestrictedData: true, subresources: [ADMIN_BINDING_SUBRESOURCE] },
       restricted: true, adminReads: true },
-    { claims: { containsRestrictedData: true, subresources: [OTHER_SUBRESOURCE] },
+    { claims: { containsRestrictedData: true, subresources: [REPORT_SUBRESOURCE] },
       restricted: true, adminReads: false },
     { claims: { containsRestrictedData: true, subresources: [] },
       restricted: true, adminReads: false },
     { claims: { containsRestrictedData: true }, restricted: true, adminReads: false },
-    // The binding's id, and nothing restricted read.
+    // A hook's delivery: the whole binding's id, and nothing read.
     { claims: { subresources: [ADMIN_BINDING_SUBRESOURCE] }, restricted: false, adminReads: false },
   ])("marks an observation that claims $claims as restricted: $restricted, admin reads: " +
       "$adminReads", ({ claims, restricted, adminReads }) => withWorkspace(async ws => {
