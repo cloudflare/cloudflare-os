@@ -123,8 +123,9 @@ type Billing = {
   /** The URL named a query project, which stands until dropped, though queries could run in `dataProject`. */
   override: boolean;
   /**
-   * The field was filled in here, by the URL, a suggestion or the user. A suggestion comes only before
-   * that, so what the user is replacing is never replaced for them.
+   * The field was filled in, by the URL or the user, or a suggestion was asked for, whatever it
+   * answered. A suggestion is asked for only before that, so what the user is replacing is never
+   * replaced for them.
    */
   asked: boolean;
   /** A suggestion is on its way: the field waits, disabled, so nothing typed meanwhile is overwritten. */

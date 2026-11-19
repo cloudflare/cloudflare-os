@@ -354,10 +354,11 @@ export class BigQueryConfiguratorUI extends RpcTarget implements BigQueryConfigu
   /**
    * Whether this account may run query jobs in `projectId`, which BigQuery requires of every query.
    * A project BigQuery lists is taken to allow them. The list can omit a project that does, so any
-   * other is asked once per picker with a dry-run job, which is free. A dry run that fails for any
-   * reason, or has no answer within BIGQUERY_PROBE_TIMEOUT_MS, answers no, as before the check,
-   * rather than failing or holding up the lookup. The deadline covers the whole dry run: its
-   * signal ends a request in flight, and the race gives up on a token still being refreshed.
+   * other is asked with a dry-run job, which is free, and the answer kept in the picker's cache. A
+   * dry run that fails for any reason, or has no answer within BIGQUERY_PROBE_TIMEOUT_MS, answers
+   * no, as before the check, rather than failing or holding up the lookup. The deadline covers the
+   * whole dry run: its signal ends a request in flight, and the race gives up on a token still being
+   * refreshed.
    */
   async #runsQueries(projectId: string): Promise<boolean> {
     if ((await this.#heldProjects()).has(projectId)) return true;
