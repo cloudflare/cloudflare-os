@@ -211,6 +211,17 @@ describe("fetchWithAuthRetry", () => {
     expect(asked).toBe(1);
   });
 
+  // A caller that holds a lock while it waits bounds the wait with its signal, which must end a
+  // retry's backoff too, not only a request.
+  it("gives up during a retry's backoff once the caller's signal aborts", async () => {
+    vi.stubGlobal("fetch", async () => new Response(null, { status: 503, headers: { "Retry-After": "10" } }));
+    let started = Date.now();
+    await expect(fetchWithAuthRetry(
+      "https://www.googleapis.com/oauth2/v3/userinfo", { signal: AbortSignal.timeout(50) },
+      async () => "token")).rejects.toThrow(/timed out|TimeoutError|aborted/i);
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
   it("does not replay a 401 when the provider cannot refresh its token", async () => {
     let requests = 0;
     vi.stubGlobal("fetch", async () => { requests++; return new Response(null, { status: 401 }); });

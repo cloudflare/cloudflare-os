@@ -180,8 +180,7 @@ export async function fetchWithAuthRetry(
       // Network error or timeout: ambiguous, so retry only when the request is safe to replay,
       // and never once the caller's own signal has aborted it.
       if (replayable && idempotent && attempt < retries - 1 && !init.signal?.aborted) {
-        await new Promise(resolve => setTimeout(resolve, backoffDelayMs(attempt, null)));
-        init.signal?.throwIfAborted();
+        await backoff(backoffDelayMs(attempt, null), init.signal);
         token = await getAccessToken();
         attempt++;
         continue;
@@ -221,10 +220,9 @@ export async function fetchWithAuthRetry(
     if (replayable && canRetry(response.status, idempotent) && attempt < retries - 1) {
       let delay = backoffDelayMs(attempt, response.headers.get("Retry-After"));
       await response.body?.cancel();
-      await new Promise(resolve => setTimeout(resolve, delay));
+      await backoff(delay, init.signal);
       // Asked again, so that a provider that stops serving a connection disconnected meanwhile
-      // (see AccessTokenCache) stops its retries too; not once the caller has given up.
-      init.signal?.throwIfAborted();
+      // (see AccessTokenCache) stops its retries too.
       token = await getAccessToken();
       attempt++;
       continue;
@@ -232,6 +230,28 @@ export async function fetchWithAuthRetry(
 
     return response;
   }
+}
+
+/**
+ * Waits `ms` before a retry, or throws the reason `signal` aborted with, as soon as it does: a
+ * caller's deadline covers the waits as well as the requests.
+ */
+function backoff(ms: number, signal: AbortSignal | null | undefined): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    let abort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason);
+    };
+    let timer = setTimeout(() => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", abort, { once: true });
+  });
 }
 
 /** Await `token`, cancelling the rejected response's body if it fails. */
