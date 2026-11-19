@@ -38,8 +38,8 @@ export class GoogleGrantRegistry extends DurableObject<Env> {
    * A recorded holder is believed only while its account says it still holds the grant. An account
    * whose removal never arrived here, because the call failed or the account's storage was deleted
    * some other way, is dropped when it is asked, so it cannot keep the grant from being revoked.
-   * `unsure` says no holder answered that it holds the grant, but one could not be asked, and so
-   * was counted as holding it.
+   * `unsure` says no holder answered that it holds the grant, but one could not be asked, or could
+   * not yet say, and so was counted as holding it.
    */
   async remove(userObjectId: string): Promise<{ last: boolean; unsure?: true }> {
     let kv = this.ctx.storage.kv;
@@ -62,8 +62,8 @@ export class GoogleGrantRegistry extends DurableObject<Env> {
 
   /**
    * Whether the account with this id says it holds this grant, or `"unknown"` when it cannot be
-   * asked, which counts as holding it: revoking under a connection that is in use is the worse
-   * mistake, and it is asked again the next time a holder lets go.
+   * asked or cannot yet say, which counts as holding it: revoking under a connection that is in use
+   * is the worse mistake, and it is asked again the next time a holder lets go.
    */
   async #stillHolds(userObjectId: string): Promise<boolean | "unknown"> {
     try {

@@ -400,6 +400,26 @@ describe("Google grants shared by several connections", () => {
   });
 
   // Sparing a holder that could not be asked must not lose the last token that can revoke.
+  // A reconnect not yet known to be the same Google account's may hold another's grant now.
+  it("puts off a disconnect's revocation while a reconnect's Google account is not known", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const google = fakeGoogle();
+    const {ada, grace} = googleAccounts();
+    const moved = await connection(google, "moved", ada);
+    const last = await connection(google, "last", ada);
+    google.profileFails = true;
+    await reconnect(google, moved, "moved-again", grace, false);
+    await last.disconnect();
+    expect(google.revoked).toEqual([]);
+
+    // Read as another account's, it lets go of the first account's grant, which is then revoked.
+    google.profileFails = false;
+    await moved.refresh();
+    await moved.holds(grace);
+    expect(await last.alarm()).toBe(true);
+    expect(google.revoked).toEqual(["refresh-last"]);
+  });
+
   it("puts off a disconnect's revocation while a holder of the grant cannot be asked", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const google = fakeGoogle();
@@ -1120,7 +1140,9 @@ describe("GoogleGrantRegistry", () => {
     // afresh: the registry must not drop the new record on the strength of that answer.
     await account.run((_instance, state) => {
       state.storage.kv.put("refreshToken", "refresh-again");
+      state.storage.kv.put("credentialsId", "credentials-again");
       state.storage.kv.put("grantSubject", ada);
+      state.storage.kv.put("grantCredentialsId", "credentials-again");
     });
     await registry.add(account.id);
     await account.run((_instance, state) => { state.storage.kv.delete("test:holdGrantCheck"); });

@@ -83,7 +83,7 @@ export class ChatHookDriver extends GoogleChatHookDriver {
  * `test:grantCheckHeld`.
  */
 export class UserAccount extends GoogleUserAccount {
-  override async holdsGrantIn(registryId: string): Promise<boolean> {
+  override async holdsGrantIn(registryId: string): Promise<boolean | "unknown"> {
     const kv = this.ctx.storage.kv;
     // Decided before it is held, as an answer on its way back is.
     const answer = await super.holdsGrantIn(registryId);

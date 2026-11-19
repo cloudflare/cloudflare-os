@@ -1036,11 +1036,12 @@ export class UserAccount extends DurableObject<Env> {
 
   /**
    * Whether this object holds credentials and is recorded as a holder in the grant registry with
-   * this id, with a refresh token Google still honours. The registry asks before it believes a
+   * this id, with a refresh token Google still honours; `"unknown"` when it cannot yet say, which
+   * the registry counts as holding but reports as unsure. The registry asks before it believes a
    * holder it lists. Without the credentials mutex: the registry asks while another account's
    * disconnect waits on it.
    */
-  async holdsGrantIn(registryId: string): Promise<boolean> {
+  async holdsGrantIn(registryId: string): Promise<boolean | "unknown"> {
     let kv = this.ctx.storage.kv;
     let subject = kv.get<string>(GRANT_SUBJECT_KEY);
     let refreshToken = kv.get<string>("refreshToken");
@@ -1048,6 +1049,13 @@ export class UserAccount extends DurableObject<Env> {
         subject === undefined ||
         this.ctx.exports.GoogleGrantRegistry.idFromName(subject).toString() !== registryId) {
       return false;
+    }
+    // Listed under this grant for credentials a reconnect replaced, not yet known to be the same
+    // Google account's, it may hold another's: it cannot say until that is read.
+    let installed = this.#credentialsId();
+    if (kv.get<string>(GRANT_CREDENTIALS_KEY) !== installed &&
+        this.#accountSubject(installed) !== subject) {
+      return "unknown";
     }
     // An access token that has not expired was minted within the hour, so Google honoured the
     // refresh token then. One that has, as on a connection left unused, says nothing: Google may
