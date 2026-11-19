@@ -76,6 +76,8 @@ export class ChatHookController extends WorkerEntrypoint<Env, ChatHookProps>
 const RENEW_INTERVAL_MS = 3 * HOUR_MS;
 /** Leaves several retries of a failed renewal within the hour before the subscription lapses. */
 const RENEW_RETRY_MS = 15 * MINUTE_MS;
+/** How long one alarm goes on starting renewals, so that it ends well before it would be killed. */
+const RENEW_BUDGET_MS = 2 * MINUTE_MS;
 /**
  * How often each account with hooks here is asked again whether it knows of this driver: hooks its
  * disconnect failed to drop stay until then, when it answers no.
@@ -165,31 +167,60 @@ export class ChatHookDriver extends DurableObject<Env> {
    * - dropping expired subscriptions no hook uses any more.
    */
   async alarm(): Promise<void> {
-    await this.#trackAccounts();
-    const now = Date.now();
-    await this.#hooks.run(now);
-    // Listed up front: a request handled while a renewal awaits may list too, which would
-    // invalidate a live iterator. Each is read again in its turn, as an enable handled meanwhile
-    // may have subscribed again, or come to use it.
-    const keys = [...this.ctx.storage.kv.list<Subscription>({ prefix: "sub:" })].map(([key]) => key);
-    for (const key of keys) {
-      const subscription = this.ctx.storage.kv.get<Subscription>(key);
-      if (!subscription) continue;
-      const authority = key.slice("sub:".length);
-      const registration = this.#hooks.entries().find(([, candidate]) => candidate.authority === authority)?.[1];
-      if (!registration) {
-        // Unused subscriptions simply lapse.
-        if (subscription.expireTime <= now) this.ctx.storage.kv.delete(key);
-      } else if (subscription.renewAt <= now) {
-        await this.#renew(registration, subscription).catch(error => {
-          logger.warn("failed to renew a Chat subscription", { event: "chat.hooks.renew.failed", error });
-          // An enable may have replaced the subscription meanwhile, which this must not overwrite.
-          if (this.ctx.storage.kv.get<Subscription>(key)?.name !== subscription.name) return;
-          this.ctx.storage.kv.put(key, { ...subscription, renewAt: now + RENEW_RETRY_MS });
-        });
+    await this.ctx.storage.setAlarm(Date.now() + MINUTE_MS); // the retry if this handler fails or is killed
+    try {
+      await this.#trackAccounts();
+      try {
+        await this.#hooks.run(Date.now());
+      } finally {
+        await this.#renewDue(); // even when run() threw
       }
+      await this.#reschedule(); // skipped after a failure, so the fallback is the floor
+    } catch (error) {
+      logger.error("Chat hook driver alarm failed", { event: "chat.hooks.alarm.failed", error }); // the fallback alarm stands
     }
-    await this.#reschedule();
+  }
+
+  /**
+   * Renew each due subscription some hook uses, most overdue first, and drop expired ones no hook
+   * uses. Renewals start for RENEW_BUDGET_MS only; #reschedule() wakes the driver at once for the rest.
+   */
+  async #renewDue(): Promise<void> {
+    const kv = this.ctx.storage.kv;
+    let starting = true;
+    const budget = setTimeout(() => { starting = false; }, RENEW_BUDGET_MS);
+    try {
+      // Listed up front: a request handled while a renewal awaits may list too, which would
+      // invalidate a live iterator. Most overdue first: a renewal a kill cut off was put off before
+      // it started, so everything already due then goes ahead of it.
+      const keys = [...kv.list<Subscription>({ prefix: "sub:" })]
+        .toSorted(([, a], [, b]) => a.renewAt - b.renewAt).map(([key]) => key);
+      for (const key of keys) {
+        if (!starting) return;
+        // Each is read again in its turn, as an enable handled meanwhile may have subscribed again,
+        // or come to use it.
+        const now = Date.now();
+        const subscription = kv.get<Subscription>(key);
+        if (!subscription) continue;
+        const authority = key.slice("sub:".length);
+        const registration = this.#hooks.entries().find(([, candidate]) => candidate.authority === authority)?.[1];
+        if (!registration) {
+          // Unused subscriptions simply lapse.
+          if (subscription.expireTime <= now) kv.delete(key);
+        } else if (subscription.renewAt <= now) {
+          // Put off in the same turn as the read, so a kill mid-renewal leaves it behind the rest.
+          kv.put(key, { ...subscription, renewAt: now + RENEW_RETRY_MS });
+          await this.#renew(registration, subscription).catch(error => {
+            logger.warn("failed to renew a Chat subscription", { event: "chat.hooks.renew.failed", error });
+            // An enable may have replaced the subscription meanwhile, which this must not overwrite.
+            if (kv.get<Subscription>(key)?.name !== subscription.name) return;
+            kv.put(key, { ...subscription, renewAt: Date.now() + RENEW_RETRY_MS });
+          });
+        }
+      }
+    } finally {
+      clearTimeout(budget);
+    }
   }
 
   /**
@@ -283,6 +314,7 @@ export class ChatHookDriver extends DurableObject<Env> {
       times.push(authorities.has(key.slice("sub:".length)) ? subscription.renewAt : subscription.expireTime);
     }
     if (times.length > 0) await this.ctx.storage.setAlarm(Math.min(...times));
+    else await this.ctx.storage.deleteAlarm();
   }
 }
 

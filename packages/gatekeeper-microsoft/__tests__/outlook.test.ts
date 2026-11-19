@@ -4,6 +4,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ActionApplyError, ActionOutcomeUnknownError } from "@gadgets/gatekeeper-kit/actions";
+import { HookRegistry } from "@gadgets/gatekeeper-kit/hook-registry";
 import { GraphApi, GraphApiError } from "../src/graph-api";
 import {
   definitions, replaceOwnPart, requiredAccess, revert, submit, type Composed, type DraftVersion, type MessageTarget, type OutlookAction, type OutlookActions,
@@ -770,7 +771,7 @@ describe("reading new mail by cursor", () => {
       if (alarm !== null && alarm > Date.now()) vi.setSystemTime(alarm);
       await instance.alarm();
     };
-    return { instance, capabilities, run, delivered, reads, watch: () => store.get(`watch:${INBOX}`) as { cursor: string; continueAt?: string } };
+    return { instance, capabilities, run, delivered, reads, alarm: () => alarm, watch: () => store.get(`watch:${INBOX}`) as { cursor: string; continueAt?: string } };
   }
 
   it("goes on from where a read cut short stopped, so a burst of mail bigger than one read all arrives", async () => {
@@ -793,6 +794,35 @@ describe("reading new mail by cursor", () => {
     // The continuation started a read at the cut, not the first five pages again; the 250th message, read twice, was delivered once.
     expect(reads.filter(search => !search.includes("%24skip=")).map(search => new URLSearchParams(search).get("$filter")))
       .toEqual([expect.stringContaining("receivedDateTime ge "), `receivedDateTime ge ${messages[249 - 40]!.receivedDateTime}`]);
+  });
+
+  it("leaves its alarm at its next read, and none once it has no hooks", async () => {
+    vi.useFakeTimers({ now: NOW });
+    const { instance, capabilities, run, alarm } = driver([]);
+    await instance.register("hook1", { userObjectId: USER, mailboxUser: MAILBOX, folderId: INBOX }, capabilities as never);
+    await run();
+    // Polling every two minutes, not the fallback one minute out.
+    expect(alarm()).toBe(NOW + 2 * 60_000);
+
+    await instance.unregister("hook1");
+    await run();
+    expect(alarm()).toBeNull();
+  });
+
+  it("logs an alarm that fails, and runs it again a minute later", async () => {
+    vi.useFakeTimers({ now: NOW });
+    const failing = vi.spyOn(HookRegistry.prototype, "run").mockRejectedValue(new Error("Storage is full."));
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { instance, capabilities, run, alarm } = driver([]);
+      await instance.register("hook1", { userObjectId: USER, mailboxUser: MAILBOX, folderId: INBOX }, capabilities as never);
+      await run();
+      expect(alarm()).toBe(NOW + 60_000);
+      expect(logged.mock.calls.map(([entry]) => entry)).toContainEqual(expect.objectContaining({ event: "outlook.hooks.alarm.failed" }));
+    } finally {
+      failing.mockRestore();
+      logged.mockRestore();
+    }
   });
 });
 

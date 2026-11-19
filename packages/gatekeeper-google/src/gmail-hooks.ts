@@ -196,30 +196,35 @@ export class GmailHookDriver extends DurableObject<Env> {
    */
   async alarm(): Promise<void> {
     const kv = this.ctx.storage.kv;
-    await this.#trackAccounts();
-    if (this.#registrations().length > 0 && (kv.get<number>("syncAt") ?? 0) <= Date.now()) await this.#sync();
+    await this.ctx.storage.setAlarm(Date.now() + MINUTE_MS); // the retry if this handler fails or is killed
+    try {
+      await this.#trackAccounts();
+      if (this.#registrations().length > 0 && (kv.get<number>("syncAt") ?? 0) <= Date.now()) await this.#sync();
 
-    const watch = kv.get<Watch>("watch");
-    if (this.#registrations().length > 0) {
-      if (!watch || watch.renewAt <= Date.now()) {
-        try {
-          await this.#watch((await this.#mailboxApi()).api);
-        } catch (error) {
-          logger.warn("failed to renew a Gmail watch", { event: "gmail.hooks.watch.failed", error });
-          // An enable may have stored a fresh watch meanwhile, which this must not overwrite.
-          const current = kv.get<Watch>("watch");
-          if (current?.expiration === watch?.expiration && current?.renewAt === watch?.renewAt) {
-            kv.put<Watch>("watch", { expiration: watch?.expiration ?? 0, renewAt: Date.now() + WATCH_RENEW_RETRY_MS });
+      const watch = kv.get<Watch>("watch");
+      if (this.#registrations().length > 0) {
+        if (!watch || watch.renewAt <= Date.now()) {
+          try {
+            await this.#watch((await this.#mailboxApi()).api);
+          } catch (error) {
+            logger.warn("failed to renew a Gmail watch", { event: "gmail.hooks.watch.failed", error });
+            // An enable may have stored a fresh watch meanwhile, which this must not overwrite.
+            const current = kv.get<Watch>("watch");
+            if (current?.expiration === watch?.expiration && current?.renewAt === watch?.renewAt) {
+              kv.put<Watch>("watch", { expiration: watch?.expiration ?? 0, renewAt: Date.now() + WATCH_RENEW_RETRY_MS });
+            }
           }
         }
+      } else if (watch && watch.expiration <= Date.now()) {
+        kv.delete("watch");
       }
-    } else if (watch && watch.expiration <= Date.now()) {
-      kv.delete("watch");
-    }
 
-    // After the sync, so the rows it just queued are due in this same run.
-    await this.#hooks.run(Date.now());
-    await this.#reschedule();
+      // After the sync, so the rows it just queued are due in this same run.
+      await this.#hooks.run(Date.now());
+      await this.#reschedule();
+    } catch (error) {
+      logger.error("Gmail hook driver alarm failed", { event: "gmail.hooks.alarm.failed", error }); // the fallback alarm stands
+    }
   }
 
   /**
@@ -425,6 +430,7 @@ export class GmailHookDriver extends DurableObject<Env> {
       times.push(watch.expiration);
     }
     if (times.length > 0) await this.ctx.storage.setAlarm(Math.min(...times));
+    else await this.ctx.storage.deleteAlarm();
   }
 }
 

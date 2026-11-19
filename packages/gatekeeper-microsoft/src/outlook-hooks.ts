@@ -213,12 +213,17 @@ export class OutlookHookDriver extends DurableObject<Env> {
 
   async alarm(): Promise<void> {
     const kv = this.ctx.storage.kv;
-    if (this.#registrations().length > 0) {
-      await this.#ensureSubscriptions();
-      if ((kv.get<number>(SYNC_AT_KEY) ?? 0) <= Date.now()) await this.#sync();
+    await this.ctx.storage.setAlarm(Date.now() + MINUTE_MS); // the retry if this handler fails or is killed
+    try {
+      if (this.#registrations().length > 0) {
+        await this.#ensureSubscriptions();
+        if ((kv.get<number>(SYNC_AT_KEY) ?? 0) <= Date.now()) await this.#sync();
+      }
+      await this.#hooks.run(Date.now());
+      await this.#reschedule();
+    } catch (error) {
+      logger.error("Outlook hook driver alarm failed", { event: "outlook.hooks.alarm.failed", error }); // the fallback alarm stands
     }
-    await this.#hooks.run(Date.now());
-    await this.#reschedule();
   }
 
   /** Reads what each watched folder received since its cursor, queues it, and advances the cursor. */
