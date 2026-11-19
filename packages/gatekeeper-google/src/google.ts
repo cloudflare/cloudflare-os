@@ -1032,13 +1032,17 @@ export class UserAccount extends DurableObject<Env> {
     // the last working connection from revoking it.
     let stored = kv.get<GoogleAccessToken>("accessToken");
     if (stored !== undefined && stored.expires.valueOf() > Date.now()) return true;
-    return await this.#refreshTokenLives(refreshToken);
+    let lives = await this.#refreshTokenLives(refreshToken);
+    // A reconnect replaced the credentials while Google was asked: the answer is about them now.
+    if (kv.get<string>("refreshToken") !== refreshToken) return await this.holdsGrantIn(registryId);
+    return lives;
   }
 
   /**
    * Whether Google still honours `refreshToken`, asked with a refresh whose token is dropped.
    * Without the credentials mutex, which a disconnect asking the registry may hold; the answer is
-   * recorded only while `refreshToken` is still the installed one. Throws when Google gives none,
+   * recorded only while `refreshToken` is still the installed one, and holdsGrantIn() gives it
+   * only then. Throws when Google gives none,
    * which the registry counts as holding.
    */
   async #refreshTokenLives(refreshToken: string): Promise<boolean> {
@@ -1093,9 +1097,9 @@ export class UserAccount extends DurableObject<Env> {
    */
   async #releaseGrant(): Promise<GrantRelease> {
     let kv = this.ctx.storage.kv;
+    let installed = this.#credentialsId();
+    let known = this.#accountSubject(installed);
     try {
-      let installed = this.#credentialsId();
-      let known = this.#accountSubject(installed);
       let recordedFor = kv.get<string>(GRANT_CREDENTIALS_KEY);
       let recordedSubject = kv.get<string>(GRANT_SUBJECT_KEY);
       let recorded = await this.#forgetGrant();
@@ -1123,7 +1127,9 @@ export class UserAccount extends DurableObject<Env> {
       logger.warn("failed to release a Google grant; revoking it", {
         event: "google.grant.release.failed", error,
       });
-      return { revoke: true };
+      // The account still goes by, should Google not take the revocation, so that trying it again
+      // can find a connection of the account made since.
+      return { revoke: true, ...(known === undefined ? {} : { subject: known }) };
     }
   }
 
@@ -1464,6 +1470,9 @@ export class UserAccount extends DurableObject<Env> {
   async revoke(): Promise<void> {
     await this.#credentials.run(async () => {
       let refreshToken = this.ctx.storage.kv.get<string>("refreshToken");
+      // Disconnected already, by a call whose revocation Google did not take: that one is kept,
+      // and tried again as scheduled.
+      if (!refreshToken && this.ctx.storage.kv.get(PENDING_REVOCATION_KEY) !== undefined) return;
       let pending: PendingRevocation | undefined;
       if (refreshToken) {
         let release = await this.#releaseGrant();
@@ -1506,21 +1515,19 @@ export class UserAccount extends DurableObject<Env> {
    * credentials mutex held.
    */
   async #retryRevocation(pending: PendingRevocation): Promise<void> {
-    if (pending.subject !== undefined) {
-      // A registry that cannot be asked says nothing of another holder, as at the disconnect.
-      let held = await this.#grantRegistry(pending.subject).remove(this.ctx.id.toString())
-          .then(({ last }) => !last, () => false);
-      if (held) {
+    try {
+      if (pending.subject !== undefined &&
+          !(await this.#grantRegistry(pending.subject).remove(this.ctx.id.toString())).last) {
         logger.info("dropped a revocation a later connection's grant would undo", {
           event: "google.grant.revoke.dropped",
         });
         this.ctx.storage.deleteAll();
         return;
       }
-    }
-    try {
       await revokeGoogleToken(pending.refreshToken, AbortSignal.timeout(TOKEN_REVOKE_TIMEOUT_MS));
     } catch (error) {
+      // Google did not take it, or the registry could not say whether a connection made since
+      // holds the grant: both are asked again later.
       let attempts = pending.attempts + 1;
       if (attempts < REVOCATION_ATTEMPTS) {
         this.#scheduleRevocation({ ...pending, attempts });
