@@ -41,6 +41,9 @@ import DOCS_RENDERING_TYPES_CODE from "./docs-rendering-types.txt";
 import type { GoogleDocDrawing, GoogleDocRenderingReads } from "./docs-rendering-types";
 import COMMENT_TYPES_CODE from "./comment-types.txt";
 import DOCS_PREVIEW_CLIENT from "./previews/docs/client.txt";
+import DOCS_PREVIEW_DRAW from "./previews/docs/draw.txt";
+import DOCS_PREVIEW_PAGES from "./previews/docs/pages.txt";
+import DOCS_PREVIEW_TEXT from "./previews/docs/text.txt";
 import { SHARED_PREVIEW_FILES } from "./previews/shared-files";
 import { obsContext } from "./observability.js";
 import { AccessTokenCache, AccessTokenRequest } from "./auth-retry";
@@ -262,7 +265,13 @@ export class GoogleDocGatekeeperImpl
   }
 
   async getPreviewUi(): Promise<UiFile[]> {
-    return [{ path: "client.js", code: DOCS_PREVIEW_CLIENT }, ...SHARED_PREVIEW_FILES];
+    return [
+      { path: "client.js", code: DOCS_PREVIEW_CLIENT },
+      { path: "draw.js", code: DOCS_PREVIEW_DRAW },
+      { path: "pages.js", code: DOCS_PREVIEW_PAGES },
+      { path: "text.js", code: DOCS_PREVIEW_TEXT },
+      ...SHARED_PREVIEW_FILES,
+    ];
   }
 
   async getAutoApprovableActions(): Promise<ActionKind[]> {

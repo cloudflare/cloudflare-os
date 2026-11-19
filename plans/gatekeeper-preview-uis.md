@@ -310,53 +310,169 @@ document only because callers older than tabs exist, and these reads are new.
 
 ```ts
 getPendingChanges(tabId: string): Promise<GoogleDocPendingChanges>;  // { savedMarkdown, markdown, changes }
-getStyles(tabId: string): Promise<GoogleDocStyles>;      // page, named styles, per-paragraph/run/table overrides, heading IDs
-listImages(tabId: string): Promise<GoogleDocImage[]>;    // one per [Image] placeholder, in order
+readDrawing(tabId: string): Promise<GoogleDocDrawing>;   // the saved tab as Google Docs lays it out
 readImage(imageId: string, tabId: string): Promise<GoogleDocImageBytes>;  // at most 10 MB
+getRenderingTypes(): Promise<string>;                    // the declarations of readDrawing()
+getStyles(tabId: string): Promise<GoogleDocStyles>;      // superseded by readDrawing()
+listImages(tabId: string): Promise<GoogleDocImage[]>;    // superseded by readDrawing()
 ```
 
 - `getPendingChanges()` follows section 2: the changes are `replaceText` and `appendText`, and
   the two copies are Markdown. It is on the read-write session only; a Doc opened through Drive
   has no pending changes and no preview. A tab still to be added reads as saved and empty, with
   every edit to it listed.
-- Styles are keyed by the line of `savedMarkdown` they belong to, so a caller lays them over the
-  Markdown it already has. They say nothing about pending text, which takes the look of what it
-  replaces or follows.
+- `readDrawing()` (`docs-drawing.ts`) is the saved tab resolved to what a renderer needs and no
+  more: the page, its sections with their margins, columns and the headers and footers each
+  names, every paragraph, table and list with its look in full (inheritance from the named style
+  already applied), every image with its size, crop and, when it is positioned, its offsets and
+  how text wraps it, and footnotes. Looks are held once and named by index. Each block of the
+  body names its line of `savedMarkdown`, and each run where it starts in that line, so a caller
+  lays the drawing over the Markdown diff it already has. It says nothing about pending text.
+- Its types are apart, in `docs-rendering-types.d.ts`, and `getRenderingTypes()` returns them:
+  they would nearly double the session's declarations, and an agent that only reads and edits a
+  Doc never needs them. An agent editing a forked preview is told by `getRenderingTypes()`'s
+  comment to fetch them first. Sheets and Slides keep their reads that only render apart the
+  same way.
+- The drawing is cached with the tab's snapshot and has a version of its own
+  (`DOC_DRAWING_VERSION`), so a change to it discards cached snapshots without marking queued
+  edits stale as a change to the Markdown rendering would.
+- `getStyles()` and `listImages()` are what the preview read before the drawing. Nothing in the
+  repository calls them now; they are still to be removed, with the first Docs commit, rather
+  than shipped.
 - Image bytes are returned whole, not streamed: a stream from the backend session does not reach
   the UI frame (capnweb 0.12.0). Google's image addresses lapse; a read that finds one lapsed
   reads the document again. Any other failure to fetch an image is reported as it is: only a
-  lapsed address (403 or 404) is mended by another read.
+  lapsed address (403 or 404) is mended by another read. Images in headers and footers, and
+  positioned ones, are read the same way.
+
+#### What the Docs API withholds
+
+Found against real documents, and each is drawn as near as the API allows:
+
+- **A header or footer of "every other page" can be missing.** A document with a different
+  first page returned its first-page header and footer and nothing for the rest, although Google
+  Docs draws one on every page. The positioned images tethered in the missing ones are still in
+  `positionedObjects`, tethered to no paragraph returned. The drawing gives such a section a
+  header and footer with the ID `unreturned`, holding those images, split between the two by
+  which returned part each lies nearest. Their text, a page number included, and their true
+  height cannot be recovered.
+- **Where a header sits when the document does not say.** Unless
+  `documentStyle.useCustomHeaderFooterMargins` is set, Google Docs ignores `marginHeader` and
+  `marginFooter`. Measured in the editor, the header then starts 5pt from the top of the sheet,
+  the footer ends 3.6pt *below* the bottom margin's edge, and a header deeper than the top margin
+  keeps 6pt between itself and the body (`headerGap`). All three are measured, not documented,
+  and the last two rest on one document each.
+- **Font metrics.** Google Docs sets a line as tall as the font's ascent plus descent, rounded
+  up to a whole pixel at 100%, times the line spacing, with the extra below the text. For Roboto
+  Slab it uses Roboto's ascent and descent, not the font file's. The client holds such
+  exceptions in one table (`DOCS_MEASURES` in `draw.js`), which has that one entry.
 
 ### Client
 
-`gatekeeper-google/src/previews/docs/client.js`, a linted `.js` file that is not type-checked.
+`gatekeeper-google/src/previews/docs/`, linted `.js` files that are not type-checked:
+
+- `client.js`: reads the tab, composes what to draw from the drawing and the Markdown diff, and
+  owns the views, the outline and the change navigator.
+- `draw.js`: one block (a paragraph, a table, a list item, an image) as DOM, and the stylesheet.
+- `pages.js`: lays composed blocks out on sheets.
+- `text.js`: the Markdown the diff works on, as lines, words and inline pieces.
+
 What any preview of this gatekeeper needs is a module of its own, `previews/shared/chrome.js`,
 imported as `./ui/chrome.js`: the theme, the outline sheet, the change navigator, the stale
 banner, the loading, updating and error states, and the refresh handling. `getPreviewUi()`
-returns both files. The gatekeeper's bundler imports only `.txt` and `.svg` as text, so each file
-is imported through a `.txt` symlink beside it, and `previews/docs/ui` links to `previews/shared`
-so the import resolves on disk too. The frame calls `main(gadget)` on the client's default export.
+returns all of them, listed once in `previews/files.ts`. The gatekeeper's bundler imports only
+`.txt` and `.svg` as text, so each file is imported through a `.txt` symlink beside it, and
+`previews/docs/ui` links to `previews/shared` so the import resolves on disk too. The frame calls
+`main(gadget)` on the client's default export.
 
-It draws a tab in the document's own page, fonts, colors, tables and images, marks insertions and
-deletions, lists the tabs and the tab's headings in an outline, and steps through the changes in
-the tab shown. A tab still to be added is marked in the outline; the client knows it by the
-provisional ID `addTab()` returns. It only reads.
+It draws a tab on its own pages, in the document's fonts, colors, tables and images, marks
+insertions and deletions, lists the tabs and the tab's headings in an outline, and steps through
+the changes in the tab shown. A tab still to be added is marked in the outline; the client knows
+it by the provisional ID `addTab()` returns. It only reads.
+
+**Composing.** The Markdown diff says which lines changed. A line that did not is drawn from the
+drawing's block for it, exactly as saved. A line that changed or was added is drawn from the
+Markdown's words, each taking the look of the saved run it came from, so that an edit in the
+middle of a sentence keeps the bold beside it. A paragraph a change adds takes the look of the
+paragraph it is written into when their named styles agree and the named style's own otherwise,
+which is what `markdownToDocRequests` will ask Google for. A changed paragraph keeps the images
+and page breaks of the saved one. This is the simulation: what is drawn "with changes" is laid
+out by the same rules as what is saved, so text a change adds pushes the rest down the page and
+onto the next.
+
+**Paging.** `pages.js` sets the blocks in a column as wide as the section's and splits it where
+a sheet's body ends: between lines of a paragraph (keeping `keepLinesTogether`,
+`keepWithNext` and two lines either side of a break), between rows of a table, and at page and
+section breaks, pending ones included. Each sheet gets the section's header and footer (the
+first page's and even pages' where the section has them), with page numbers filled in, and
+footnotes at the foot of the page their reference lands on. Positioned images are placed from
+their paragraph by their offsets; text wraps one by a float with a spacer above it, and those
+in front of or behind text are layered. Splitting works on the laid-out DOM, so the browser
+breaks lines and the client only decides where a sheet ends. A pageless document is one sheet.
+
+**Views.** Three, on a control in the bar shown only while the tab has changes waiting, and
+opening on the first:
+
+- *With changes*: the tab as it will be once every change is applied, paged, with what changed
+  tinted. Nothing removed is drawn.
+- *Inline*: a redline on one endless sheet, removed text struck through beside what replaces
+  it. It is not paged, because text that is both there and not has no true page.
+- *As saved*: the tab as Google Docs has it now, paged, unmarked.
+
+Slides has two of these; a document needs the third because a reader checking an edit wants to
+see the words that went, and a reader checking layout must not have them take up room. The
+tint of a change follows the lines of its text, not the paragraph's box, so it goes around a
+wrapped image rather than across it.
+
+**Stepping through pages.** A navigator at the foot of the frame, right, the twin of the change
+navigator at its head: "Page", the page read of how many ("3 / 21"), and an arrow each way
+(`stepper()` in `chrome.js` builds both). It steps to the top of the next or the previous sheet,
+counts steps made while one is still under way, dims the arrow there is nothing past, and names
+the page read ("Page 3 of 21") to assistive technology. It is hidden where there is one sheet: a one-page tab, a
+pageless document, and the Inline view. The Workshop's card for a change waiting lies across
+the foot of a frame narrower than 900px, so there the navigator stands above it while the tab
+has changes.
+
+**Refreshing.** The tab list and the pending changes are asked for together. A refresh that
+finds the tab's drawing and both copies of its Markdown as they were, as when a change is made
+to another tab, leaves what is drawn alone. Bold and italic faces are read beyond the saved
+looks' only where a pending change writes them.
+
+**Falling back.** When `readDrawing()` fails, or its blocks do not match `savedMarkdown`'s
+lines, the tab is drawn from its Markdown alone, on one sheet.
+
+**Paper.** A sheet is the document's own color, white unless it says otherwise, in both themes:
+a document's colors are chosen against its paper.
 
 ### Verification
 
 - Docs actions suite (workerd): pending changes in order with their arguments, one observation,
   stale changes, tab filtering, the unknown-tab error, a tab still to be added, applied and
-  rejected changes, the lost-response case, styles, and images (listing, refusals, the size
-  limit, a lapsed address).
-- The client in a same-origin frame in real Chromium, where its drawing can be read.
+  rejected changes, the lost-response case, styles, images (listing, refusals, the size
+  limit, a lapsed address), and the drawing (its observation, the unknown-tab error, and the
+  declarations `getRenderingTypes()` returns).
+- The drawing itself (`docs-drawing.test.ts`): each block's line and each run's place in the
+  Markdown, header and footer margins with and without `useCustomHeaderFooterMargins`, a header
+  with a tethered image, the `unreturned` header and footer, and an image tethered nowhere.
+- The client in a same-origin frame in real Chromium, where its drawing can be read: the three
+  views, sheets with their headers, footers and page numbers, saved and pending page breaks,
+  images kept through an edit, the looks pending words take, and the Markdown fallback.
+- Against Google Docs itself. A harness draws a captured drawing beside a screenshot of the
+  same document in the editor at 100%, and the baselines of matching lines are compared. A
+  brochure (first-page header and footer, positioned and wrapped images) is within 2px down
+  its first page; class notes in Roboto Slab with inline images are exact on the second page
+  and within 5px at the foot of the first, where each inline image sits about 1.7px lower in
+  Google Docs than here, for a reason not found. A 21-page A4 design document paginates
+  without overflow and was not compared line by line.
 - Live, against a real Google Doc on a local instance: styles, tables, images, several tabs, a
   pending tab add, the outline, heading links, replacements, appends and a stale change; refresh
   on queue and discard; auto-open, dismissal and reopen. Opening a preview logs the tab list,
-  the pending changes, the styles and, for a tab with images, the image list. Each change event
-  logs the tab list and the pending changes again.
+  the pending changes, the drawing and one read per image drawn. Each change event logs the tab
+  list and the pending changes again.
 - Not verified live: a web link opened from the real frame, a Doc that has not been created yet,
   and an agent queuing edits from a chat (the local instance had no model; edits were queued
-  through the API).
+  through the API). Not compared against Google Docs: tables that cross a page, columns,
+  footnotes, even-page headers, landscape sections and right-to-left text.
 
 ### Watch-fors
 
@@ -373,8 +489,15 @@ provisional ID `addTab()` returns. It only reads.
   line of its description, so the frame keeps the room; "More detail" opens everything the action
   sends, scrolling inside half the pane. What a change adds at the very end of a document can lie
   under the closed card until it is scrolled up.
-- **Large documents.** The client fetches and diffs the whole tab. Nothing caps a tab's size or
-  keeps only the text around each edit.
+- **Large documents.** The client fetches, diffs and pages the whole tab. Nothing caps a tab's
+  size or keeps only the text around each edit.
+- **Page breaks are close, not Google's.** A sheet ends where the browser's line breaking and
+  the measured rules above put it. A line that fits by a pixel in one and not the other moves a
+  paragraph across a page, so a break can differ from the editor's by a line, and more in a
+  font whose measures Google Docs overrides and `DOCS_MEASURES` does not know.
+- **Text wraps an image on one side.** Google Docs runs text down both sides of an image set in
+  the middle of a column; here it keeps to the wider side.
+- **Tab stops** are drawn at the default spacing, not at the stops a paragraph sets.
 - **The Docs rendering version moved from 6 to 7.** Snapshots cached and edits queued under 6
   are discarded or marked stale once, as for any rendering change.
 
@@ -416,4 +539,24 @@ provisional ID `addTab()` returns. It only reads.
 - **One read per refresh.** A preview that lists its scopes and then reads one logs two reads
   per refresh. A combined read would halve that and widen the session API.
 - **Mobile.** Auto-open and the reopen button are desktop-only.
-- **Google Docs:** comments and suggestions in the preview; bookmark links.
+- **Google Docs:** comments and suggestions in the preview; bookmark links; text on both sides
+  of a wrapped image; a paragraph's own tab stops; more families in `DOCS_MEASURES` as documents
+  that need them turn up; removing `getStyles()` and `listImages()`, and `docs-styles.ts` with
+  them but for the helpers the drawing shares.
+- **Google Docs, found by review and left:**
+  - *The drawing is stored inside the tab's snapshot*, which it grows by about two thirds
+    (measured: 313 KB to 530 KB for an 83,000-character tab), and is built on every snapshot
+    whether or not a preview is open. Storing each tab's drawing under its own key, read only by
+    `readDrawing()` and `readImage()`, would keep the snapshot's size and its per-read cost.
+  - *The drawing and the Markdown are two reads* matched by block kind, and the client keeps a
+    drawing for as long as `savedMarkdown` is unchanged, so an edit to styles alone in Google
+    Docs is not seen until the frame reloads. One revision stamp on both reads would settle both.
+  - *Runs that are not text have no place in the Markdown.* A changed paragraph finds its images
+    by counting `[Image]` placeholders, and its footnote marks, fields and chips fall back to
+    text. The converter could record where it writes each.
+  - *The column a block is drawn for is the first section's.* Unsized table columns and the side
+    text wraps an image on use it; the paginator works each section's out properly.
+  - *List spacing is collapsed on the server* from the saved neighbours, so an item beside one a
+    pending change adds or removes keeps the spacing it had.
+  - *An empty paragraph a change removes or adds is not marked*, so the "As saved" copy can be a
+    blank line out.

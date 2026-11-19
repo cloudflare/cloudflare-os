@@ -75,14 +75,19 @@ class DocSession extends RpcTarget {
     return { savedMarkdown: saved, markdown, changes }
   }
 
-  getStyles() {
-    this.doc.calls.push('getStyles')
-    return { named: { HEADING_1: { color: '#4a86e8', alignment: 'center' } }, paragraphs: [{ line: 0, style: 'TITLE' }] }
-  }
-
-  listImages() {
-    this.doc.calls.push('listImages')
-    return [{ id: 'photo', width: 120, height: 80, readable: true }]
+  // The tab as Google Docs draws it: here only its last paragraph, which holds an image.
+  readDrawing() {
+    this.doc.calls.push('readDrawing')
+    return {
+      page: { width: 612, height: 792 },
+      sections: [{ margins: { top: 72, right: 72, bottom: 72, left: 72, header: 36, footer: 36 } }],
+      blocks: [{ type: 'paragraph', line: 11, style: 'NORMAL_TEXT', look: 0, end: 0, runs: [{ object: 'photo', look: 0 }] }],
+      headers: {}, footers: {}, footnotes: {}, lists: {},
+      objects: { photo: { width: 120, height: 80, readable: true } },
+      paragraphLooks: [{ lineSpacing: 1.15 }],
+      textLooks: [{ fontFamily: 'Arial', fontSize: 11, weight: 400 }],
+      named: { NORMAL_TEXT: { paragraph: 0, text: 0 } },
+    }
   }
 
   readImage(id: string) {
@@ -167,8 +172,8 @@ it('reads the document through the connection session and redraws when an action
   const { doc, resolved, emit } = renderPane([action(1)])
 
   // One read gives the frame the saved tab, the tab with its pending changes, and the changes.
-  // The tab's styles and images are read once, through the session.
-  const opened = ['listTabs', 'getPendingChanges', 'getStyles', 'listImages', 'readImage photo']
+  // The tab's drawing and images are read once, through the session.
+  const opened = ['listTabs', 'getPendingChanges', 'readDrawing', 'readImage photo']
   await expect.poll(() => doc.calls).toEqual(opened)
   await expect.element(page.getByText('1 change waiting')).toBeVisible()
 
