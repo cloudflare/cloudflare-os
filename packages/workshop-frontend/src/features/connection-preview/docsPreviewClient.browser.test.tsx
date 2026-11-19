@@ -329,7 +329,7 @@ it('keeps the images of a paragraph a pending change edits, and wraps its text r
 
 it('asks for the fonts the drawing is set in, each once, and none the browser has', async () => {
   const set = drawing([paragraph(0, 'Words')], {
-    textLooks: [{ ...ARIAL, fontFamily: 'Open Sans' }, { ...ARIAL, fontFamily: 'Open Sans', weight: 700 }, { ...ARIAL, fontFamily: 'Consolas' }],
+    textLooks: [{ ...ARIAL, fontFamily: 'Open Sans' }, { ...ARIAL, fontFamily: 'Open Sans', weight: 700 }, ARIAL],
   })
   const { fonts } = await draw({ savedMarkdown: 'Words\n', drawing: set })
 

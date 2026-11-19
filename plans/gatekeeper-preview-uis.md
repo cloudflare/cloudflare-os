@@ -514,10 +514,10 @@ a document's colors are chosen against its paper.
   not return the header Google draws there (see above).
 - Two documents that are mostly table, each one page in the editor and one here. A form
   brought in from Word (merged cells, shaded cells, no stated padding) has its table's columns
-  on the editor's pixels and its text where the editor has it in every row that wraps as the
-  editor's does. It is set in Cambria, which the browser stood another serif in for, so 34 of
-  its 79 lines end at another word and the table is seven lines shorter; with a font as wide
-  as Cambria in its place, every line between two rows was on the editor's pixel. A rubric
+  on the editor's pixels, each of its 79 lines ending at the editor's word and within half a
+  pixel of where the editor draws it, and every line between two rows on the editor's pixel.
+  It is set in Cambria, read from Google Fonts; in the serif a browser without Cambria draws
+  instead, 34 of the 79 lines ended at another word and the table was seven lines shorter. A rubric
   made in Google Docs has its rows within a pixel: its table is centered in the editor and
   starts 2px further left here, and its first and last rows are a pixel taller here.
 - Live, against a real Google Doc on a local instance: styles, tables, images, several tabs, a
@@ -559,8 +559,14 @@ a document's colors are chosen against its paper.
   are each a pixel shorter in the editor than 1.18 times the size rounded up makes them, where
   20pt and 21pt Roboto are not: the factor differs between fonts in its third digit, which
   shows only where a line comes within a tenth of a pixel of a whole one.
-- **Cambria and Calibri** are in no browser without Office, so a document brought in from
-  Word wraps as whatever serif or sans the browser has.
+- **Fonts that are not Google's.** Google Fonts serves the families an editor offers that are
+  Microsoft's or Apple's (Cambria, Calibri, Consolas, Georgia, Times New Roman, Verdana,
+  Trebuchet MS, Courier New, Tahoma, Helvetica and others) in the files the editor draws with,
+  though its catalog does not list them, and they are read as any other family is, also where
+  the browser has its own. It refuses Arial, which is left to the browser, and weights a
+  family lacks (Calibri Light). Most are under 150KB a face; Times New Roman and Tahoma are
+  600KB to 800KB. A family made to stand in for one is not as wide: Caladea sets a line about
+  5% narrower than Cambria.
 - **Text wraps an image on one side.** Google Docs runs text down both sides of an image set in
   the middle of a column; here it keeps to the wider side.
 - **Tab stops** are drawn at the default spacing, not at the stops a paragraph sets.
