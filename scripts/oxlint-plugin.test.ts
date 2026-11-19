@@ -155,3 +155,58 @@ ruleTester.run("self-contained-agent-types", plugin.rules["self-contained-agent-
     },
   ],
 });
+
+const gatekeeper = (members: string) => `class GatekeeperImpl {\n  async startSession() {}\n${members}\n}`;
+const contract = "  async getHistoricalSubresources() { return []; }\n" +
+  "  async addObserver(_id: string) {}\n  async removeObserver(_id: string) {}";
+
+ruleTester.run("new-gatekeeper-observer-contract", plugin.rules["new-gatekeeper-observer-contract"], {
+  valid: [
+    gatekeeper(contract),
+    gatekeeper(`${contract}\n  async verifyObserverAccess(observers, ids) { return check(observers, ids); }`),
+    // Not a gatekeeper: it starts no session.
+    "class Roster {\n  async addObserver(id: string) { this.ids.add(id); }\n}",
+    "await queue.authorizeObservation({ title, subresources: [] });",
+    "await queue.authorizeObservation({ ...observation, subresources: [id] });",
+    "await queue.authorizeObservation({ title, subresources });",
+    // A description built elsewhere is checked by its helper's type, not here.
+    "await queue.authorizeObservation(observation);",
+  ],
+  invalid: [
+    {
+      code: gatekeeper("  async addObserver(_id: string) {}\n  async removeObserver(_id: string) {}"),
+      errors: [{ messageId: "missingHistory" }],
+    },
+    {
+      code: gatekeeper("  async getHistoricalSubresources() { return this.tracker.ids(); }\n" +
+        "  async addObserver(_id: string) {}\n  async removeObserver(_id: string) {}"),
+      errors: [{ messageId: "history" }],
+    },
+    {
+      code: gatekeeper("  async getHistoricalSubresources() { return [this.id]; }\n" +
+        "  async addObserver(_id: string) {}\n  async removeObserver(_id: string) {}"),
+      errors: [{ messageId: "history" }],
+    },
+    {
+      code: gatekeeper("  async getHistoricalSubresources() { return []; }\n" +
+        "  async addObserver(id: string, user) { await this.verify(user); }\n" +
+        "  async removeObserver(id: string) { this.observers.delete(id); }"),
+      errors: [
+        { messageId: "observerState", data: { name: "addObserver" } },
+        { messageId: "observerState", data: { name: "removeObserver" } },
+      ],
+    },
+    {
+      code: "await this.queue.authorizeObservation({ title: \"Read inbox\" });",
+      errors: [{ messageId: "unreported" }],
+    },
+    {
+      code: "await queue.authorizeObservation({ ...observation });",
+      errors: [{ messageId: "unreported" }],
+    },
+    {
+      code: "await queue.authorizeObservation({ title, subresources: [], excludeObservers: [id] });",
+      errors: [{ messageId: "excludeObservers" }],
+    },
+  ],
+});
