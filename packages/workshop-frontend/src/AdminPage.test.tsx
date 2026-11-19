@@ -6,6 +6,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type * as Kumo from '@cloudflare/kumo'
 import type * as Router from '@tanstack/react-router'
+import { ADMIN_GATEKEEPER_VENDOR_ID } from '@gadgets/workshop-shared/admin-agent'
 import { type AdminApi, type AdminResourceVendor, type AdminSettingsView, type AiChatAuthorInfo } from '@gadgets/workshop-shared/api'
 import type * as ServerConfigContext from './ServerConfigContext'
 import type * as PendingApprovals from './features/admin-grants/PendingApprovalsCard'
@@ -228,32 +229,50 @@ it.each([
   }
 })
 
-it.each([
-  { vendorId: 'admin', optional: 'Deployment admins can add it themselves', enabled: 'On for every deployment admin automatically' },
-  { vendorId: 'library', optional: 'Users can add it themselves', enabled: 'On for everyone automatically' },
-])('says who receives the $vendorId account in each mode', async ({ vendorId, optional, enabled }) => {
-  vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
-  const vendor = { vendorId, displayName: vendorId, autoProvisions: true, ambientMode: 'optional' } satisfies AdminResourceVendor
-  const settings: AdminSettingsView = {
-    signupsEnabled: true, userSearchEnabled: false, snapshotSharingEnabled: true, siteName: '',
-    instanceInstructions: '',
-    announcement: '', banner: { text: '', color: 'neutral' }, accentColor: '', formats: [],
-    restrictedWebFetchHosts: [], restrictedWebFetchApprovals: false,
-    adminWorkspaceAccess: { effective: 'metadata', chosen: 'metadata', max: 'metadata' },
-    adminAuditRetentionDays: { effective: 30, chosen: 30, min: 30 },
-    resourceVendors: [vendor],
-  }
-  getAdminApi.mockResolvedValue({ getSettings: async () => settings, getUpdateStatus: async () => null })
-  const container = document.createElement('div')
-  document.body.append(container)
-  const root = createRoot(container)
-  try {
-    await act(async () => { root.render(<AdminPage />) })
-    expect(container.textContent).toContain(optional)
-    expect(container.textContent).toContain(enabled)
-  } finally {
-    await act(async () => { root.unmount() })
-    container.remove()
-    vi.unstubAllGlobals()
-  }
+// An auto-provisioned vendor's block of the Gatekeepers tab: its name, its mode buttons and
+// whatever is said between.
+const vendorBlock = (page: HTMLElement, name: string) =>
+  [...page.querySelectorAll('h3')].find((heading) => heading.textContent === name)!.parentElement!.parentElement!
+
+// The label and the hint of each mode button, in order.
+const modeOptions = (block: HTMLElement) =>
+  [...block.querySelectorAll('button')].map((option) => [...option.querySelectorAll('span')].map((line) => line.textContent))
+
+// The Gatekeepers tab of a deployment with two auto-provisioned gatekeepers, the admin
+// gatekeeper among them.
+const renderGatekeepers = () => {
+  mocks.search = { tab: 'gatekeepers' }
+  return renderPage(settingsView({
+    resourceVendors: [
+      { vendorId: 'context', displayName: 'Context Library', autoProvisions: true, ambientMode: 'optional' },
+      { vendorId: ADMIN_GATEKEEPER_VENDOR_ID, displayName: 'Deployment admin', autoProvisions: true, ambientMode: 'disabled' },
+    ],
+  }))
+}
+
+describe('AdminPage Gatekeepers tab', () => {
+  const ADMINS_ONLY_LINE = 'An admin adds it to a workspace as a connection. Only deployment admins can open a '
+    + 'workspace that has it, or that has read through it.'
+
+  it('says of the admin gatekeeper’s modes that they reach admins alone, and how a workspace gets it', async () => {
+    const block = vendorBlock(await renderGatekeepers(), 'Deployment admin')
+
+    expect(modeOptions(block)).toEqual([
+      ['Disabled', 'Off for everyone'],
+      ['Optional', 'Deployment admins can add it themselves'],
+      ['Enabled', 'On for every deployment admin automatically'],
+    ])
+    expect([...block.querySelectorAll('p')].map((line) => line.textContent)).toEqual([ADMINS_ONLY_LINE])
+  })
+
+  it('words another auto-provisioned gatekeeper’s modes for every user, with no such line', async () => {
+    const block = vendorBlock(await renderGatekeepers(), 'Context Library')
+
+    expect(modeOptions(block)).toEqual([
+      ['Disabled', 'Off for everyone'],
+      ['Optional', 'Users can add it themselves'],
+      ['Enabled', 'On for everyone automatically'],
+    ])
+    expect(block.querySelector('p')).toBeNull()
+  })
 })

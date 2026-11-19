@@ -42,6 +42,20 @@ const BANNER_SWATCH: Record<BannerColor, string> = {
   brand: 'var(--color-accent-100)',
 }
 
+// What each mode of an auto-provisioned gatekeeper means for its users.
+const AMBIENT_MODE_HINTS: Record<AmbientGatekeeperMode, string> = {
+  disabled: 'Off for everyone',
+  optional: 'Users can add it themselves',
+  enabled: 'On for everyone automatically',
+}
+
+// The same for the admin gatekeeper, whose account only deployment admins hold, in every mode.
+const ADMIN_GATEKEEPER_MODE_HINTS: Record<AmbientGatekeeperMode, string> = {
+  disabled: 'Off for everyone',
+  optional: 'Deployment admins can add it themselves',
+  enabled: 'On for every deployment admin automatically',
+}
+
 export default function AdminPage() {
   const { authenticatedApi, isAdmin, currentUser, isCurrentUserConfirmed } = useAuthenticatedApi()
   const toasts = useKumoToastManager()
@@ -1045,10 +1059,11 @@ export default function AdminPage() {
                 const mode = vendor.ambientMode ?? 'optional'
                 // The admin gatekeeper's account is offered and provisioned to deployment admins only.
                 const adminsOnly = vendor.vendorId === ADMIN_GATEKEEPER_VENDOR_ID
+                const hints = adminsOnly ? ADMIN_GATEKEEPER_MODE_HINTS : AMBIENT_MODE_HINTS
                 const options: { value: AmbientGatekeeperMode; label: string; hint: string }[] = [
-                  { value: 'disabled', label: 'Disabled', hint: 'Off for everyone' },
-                  { value: 'optional', label: 'Optional', hint: adminsOnly ? 'Deployment admins can add it themselves' : 'Users can add it themselves' },
-                  { value: 'enabled', label: 'Enabled', hint: adminsOnly ? 'On for every deployment admin automatically' : 'On for everyone automatically' },
+                  { value: 'disabled', label: 'Disabled', hint: hints.disabled },
+                  { value: 'optional', label: 'Optional', hint: hints.optional },
+                  { value: 'enabled', label: 'Enabled', hint: hints.enabled },
                 ]
                 return (
                   <div key={vendor.vendorId}>
@@ -1067,6 +1082,12 @@ export default function AdminPage() {
                         auto-provisioned
                       </span>
                     </div>
+                    {adminsOnly && (
+                      <p className="px-3 pb-1 text-xs text-kumo-subtle">
+                        An admin adds it to a workspace as a connection. Only deployment admins can
+                        open a workspace that has it, or that has read through it.
+                      </p>
+                    )}
                     <div className="flex gap-2 px-3 py-1">
                       {options.map((opt) => (
                         <button

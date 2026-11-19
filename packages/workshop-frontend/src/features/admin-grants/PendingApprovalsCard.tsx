@@ -72,8 +72,11 @@ const reduce = (state: State, action: Action): State => {
 /**
  * Every admin's pending requests to read a workspace's content without its owner, deployment-wide,
  * with Approve and Deny. A request is approved by an admin other than the one who made it, so the
- * signed-in admin's own requests read as waiting for another admin, and can only be denied. An
- * approval has the workspace give the grant at once; nothing is shown to the workspace's members.
+ * signed-in admin's own requests read as waiting for another admin, and can only be denied. A
+ * request filed through the admin connection (by an agent, gadget code or the owner's own session
+ * of it) is its workspace owner's, shown with the workspace and the chat it came from: nobody who was in that workspace may approve it, which
+ * the server alone knows, and says when it refuses them. An approval has the workspace give the
+ * grant at once; nothing is shown to the workspace's members.
  */
 export const PendingApprovalsCard = ({ admin, userId, refreshes = 0, onDecided }: {
   admin: RpcStub<AdminApi>
@@ -217,9 +220,24 @@ export const PendingApprovalsCard = ({ admin, userId, refreshes = 0, onDecided }
                 </div>
                 <p className="text-sm text-kumo-default whitespace-pre-wrap break-words">{request.reason}</p>
                 <p className="text-xs text-kumo-subtle">
-                  Asked for by {request.requestedBy}. Open until{' '}
+                  Asked for by {request.requestedBy}{request.agent && ' via the admin connection'}.
+                  Open until{' '}
                   <time dateTime={request.expiresAt.toISOString()}>{formatFullTimestamp(request.expiresAt)}</time>.
                 </p>
+                {request.agent && (
+                  <p className="text-xs text-kumo-subtle">
+                    From workspace{' '}
+                    <Link
+                      to="/admin/workspace/$workspaceId"
+                      params={{ workspaceId: request.agent.workspaceId }}
+                      className="font-mono break-all text-kumo-brand hover:underline"
+                    >
+                      {request.agent.workspaceId}
+                    </Link>
+                    {request.agent.chatId !== undefined && `, chat ${request.agent.chatId}`}. An admin
+                    who was not in that workspace must approve it.
+                  </p>
+                )}
                 {problem?.id === request.id && (
                   <p role="alert" className="text-sm text-kumo-danger">{problem.text}</p>
                 )}
