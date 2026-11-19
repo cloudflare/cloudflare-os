@@ -10,6 +10,15 @@ const TEMPLATE = join(import.meta.dirname, "..", "template");
 /** How a user connects an account: an OAuth authorization-code grant, or a key they paste. */
 export const AUTH_KINDS = ["oauth", "api-key"] as const;
 
+/** The optional parts a template block can name. */
+const FEATURES = ["hooks"];
+
+/**
+ * The decisions that shape everything else, in the order the write-gatekeeper skill takes them.
+ * The first three need the operator's review before the rest is filled in.
+ */
+const FIRST_STOPS = ["session-api", "resources", "subresources", "origins", "identity", "actions"];
+
 /** What to generate. */
 export type ScaffoldOptions = {
   /** The vendor id: the package is `gatekeeper-<name>`, served under `/gatekeeper/<name>`. */
@@ -42,29 +51,32 @@ export type Names = {
  * no identifier can be made from.
  */
 export function namesFor({ name, display }: Pick<ScaffoldOptions, "name" | "display">): Names {
-  if (!/^[a-z][a-z0-9]*(-[a-z0-9]+)*$/.test(name)) {
-    throw new Error(`"${name}" is not a gatekeeper name: use lowercase letters and digits, with single hyphens between words.`);
+  // The release's install slug rule (`releaseShortName`): the name is a binding and a route.
+  if (!/^[a-z][a-z0-9]{0,19}$/.test(name)) {
+    throw new Error(`"${name}" is not a gatekeeper name: use 1-20 lowercase letters and digits, starting with a letter.`);
   }
-  const shown = display ?? name.split("-").map(word => word[0].toUpperCase() + word.slice(1)).join(" ");
-  if ([...shown].some(char => char < " " || "\"\\`$".includes(char))) throw new Error("The display name can't contain quotes, backslashes, backticks, \"$\" or control characters.");
+  const shown = display ?? name[0].toUpperCase() + name.slice(1);
+  if (!/^[A-Za-z0-9][A-Za-z0-9 .&+-]*$/.test(shown)) {
+    throw new Error("The display name can have only letters, digits, spaces and . & + -, and starts with a letter or digit.");
+  }
   const pascal = shown.split(/[^A-Za-z0-9]+/).filter(Boolean).map(word => word[0].toUpperCase() + word.slice(1)).join("");
   if (!/^[A-Z]/.test(pascal)) throw new Error(`No class name can be made from the display name "${shown}".`);
-  return { name, pascal, constant: name.replaceAll("-", "_").toUpperCase(), display: shown };
+  return { name, pascal, constant: name.toUpperCase(), display: shown };
 }
 
 /** `text` with the template's provider renamed. */
 function rename(text: string, names: Names): string {
-  return text
-    .replaceAll("Acme Service", names.display)
-    .replaceAll("Acme", names.pascal)
-    .replaceAll("ACME", names.constant)
-    .replaceAll("acme", names.name);
+  const spellings: Record<string, string> = {
+    "Acme Service": names.display, Acme: names.pascal, ACME: names.constant, acme: names.name,
+  };
+  // One pass, so a name that itself contains "Acme" is not renamed again.
+  return text.replace(/Acme Service|Acme|ACME|acme/g, spelling => spellings[spelling]);
 }
 
 /**
  * `text` with its conditional blocks resolved. A block is the lines between `// #if <feature>` and
  * `// #endif`, each alone on a line, with an optional `// #else`; blocks do not nest.
- * @throws Error for a block that is not closed, or a directive outside one.
+ * @throws Error for a block that is not closed, a directive outside one, or an unknown feature.
  */
 export function resolveBlocks(text: string, features: ReadonlySet<string>): string {
   let keep: boolean | undefined;
@@ -75,6 +87,7 @@ export function resolveBlocks(text: string, features: ReadonlySet<string>): stri
     if ((word === "if") !== (keep === undefined) || (word === "if") !== (feature !== undefined)) {
       throw new Error(`Misplaced template directive: ${line.trim()}`);
     }
+    if (word === "if" && !FEATURES.includes(feature)) throw new Error(`Unknown template feature: ${feature}`);
     keep = word === "if" ? features.has(feature) : word === "else" ? !keep : undefined;
     return false;
   });
@@ -116,7 +129,9 @@ export function scaffold(options: ScaffoldOptions): Map<string, ScaffoldFile> {
 
 /** The `STOP(<id>)` marks in generated files: what is left for a person or agent to decide. */
 export function stops(files: Map<string, ScaffoldFile>): { path: string; id: string }[] {
-  return [...files].flatMap(([path, file]) => "text" in file
+  const found = [...files].flatMap(([path, file]) => "text" in file
     ? [...file.text.matchAll(/\bSTOP\(([a-z-]+)\)/g)].map(match => ({ path, id: match[1] }))
     : []);
+  const rank = ({ id }: { id: string }) => (FIRST_STOPS.indexOf(id) + 1) || FIRST_STOPS.length + 1;
+  return found.toSorted((a, b) => rank(a) - rank(b));
 }

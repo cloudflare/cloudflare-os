@@ -85,7 +85,9 @@ function toGrant(tokens: OAuthTokens): Grant {
 }
 
 // STOP(identity): How the provider says which user a grant belongs to. Prefer a signed ID token
-// where the provider issues one; otherwise its "current user" endpoint.
+// where the provider issues one; otherwise its "current user" endpoint. `userId` is what the
+// connection and every binding are pinned to, so make it name the user AND the tenant
+// (organization, workspace) the grant acts in, where a user can belong to several.
 /** Reads the user a grant belongs to. */
 async function fetchUser(accessToken: string): Promise<Identity> {
   return identityOf(await createApi(accessToken).get("/me"));
@@ -377,7 +379,6 @@ export class UserAccount extends DurableObject<Env> {
     if (Date.now() - stored.fetchedAt < IDENTITY_TTL_MS) return stored;
     try {
       const fresh = await this.#source.run(creds => fetchUser(creds.accessToken), { replayable: true });
-      if (fresh.userId !== stored.userId) throw new Error("The connection now belongs to another user.");
       this.ctx.storage.kv.put<Identity>("identity", fresh);
       return fresh;
     } catch (error) {

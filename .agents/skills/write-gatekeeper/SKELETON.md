@@ -11,7 +11,15 @@ into the connect page, for a provider with no OAuth. `--hooks` adds event hooks 
 the provider delivers to. The command writes
 `packages/gatekeeper-<name>`, adds it to the gatekeeper list in `README.md` and, for OAuth, to the
 credential map in `scripts/run-dev-server.ts` (with hooks, also to that script's passed-through
-variables and to the `restore` list in `scripts/generate-worker-types.ts`), and runs `pnpm install` and `pnpm types:generate`. The package builds, lints and bundles as written. The template is
+variables and to the `restore` list in `scripts/generate-worker-types.ts`), and runs `pnpm install` and `pnpm types:generate`. It also writes the stand-in bundle the release manifest's test needs. The
+package builds, lints and bundles as written, but its own tests fail by design (below), and the
+release manifest's test fails until its golden file is updated
+(`UPDATE_GOLDEN=1 node --test scripts/release/manifest-lib.test.ts`). A pasted-key gatekeeper takes
+no deploy inputs, so that test also asks for it to be added to `SINGLETON` in
+`scripts/release/manifest-lib.ts`: decide that deliberately.
+
+`<name>` is 1-20 lowercase letters and digits, the release's install slug rule: it becomes a
+`GATEKEEPER_<NAME>` binding and the `/gatekeeper/<name>` route. The template is
 `packages/create-gatekeeper/template/`; a test generates a package from it and compiles that, so
 read the template rather than an older gatekeeper for the current shape.
 
@@ -27,8 +35,22 @@ hook registry, its delivery queue and retries, and dropping a disconnected conne
 Wherever only the provider's documentation or a design decision can say what is right, the
 command wrote an invented answer and marked it `STOP(<id>)`. `__tests__/scaffold-stops.test.ts`
 fails, listing the marks, until none is left: replace what a mark is on, then delete the mark.
-The command prints the same list. Take them in the skill's order: the session API, resource types
-and subresource model come first and need the operator's review (Step 3) before the rest.
+Deleting a mark alone does not pass, since the test also looks for the invented values. The
+command prints the marks in the skill's order: the session API, resource types and subresource
+model come first and need the operator's review (Step 3) before the rest. A package that compiles
+is not a reviewed design; nothing in it is approved until the operator has seen those three.
+
+The invented provider is the **B — One access-controlled unit** example: one atomic resource per
+link, whose own read endpoint answers for its hook events too, with `403` or `404` a definite "no
+access" and `401`, network failures and other errors indeterminate, so they propagate. That is
+not a requirement that a binding have one resource kind or one permission level. Account discovery
+can be private while item reads are shareable; a broad binding can report several independently
+checked resources; one provider object can have different audiences for metadata, content and
+availability. Choose the strategy for each disclosure before adapting the template; see
+[Choosing a strategy](SKILL.md#choosing-a-strategy-per-resource-type--binding) and the kit's
+[worked Google patterns](../../../packages/gatekeeper-kit/USAGE.md#worked-patterns-from-the-google-migrations).
+The template also pins a connection to one `userId` and reports `item/<id>` with no tenant; both
+are marked, and a provider with organizations or workspaces needs the tenant in each.
 
 | File | Holds | Marks |
 |---|---|---|
@@ -57,8 +79,10 @@ Do not run the command to try it out in a checkout you will commit from: a packa
 
 This template is for a **new gatekeeper with no historical observations**. Explicitly report **all
 access dependencies** on every observation and authorize observers only in
-`verifyObserverAccess()`. The shared `subresources` field is currently optional, so the local typed
-helper below makes it required for reads and hook deliveries. Implement
+`verifyObserverAccess()`. The shared `subresources` field is currently optional; the
+`new-gatekeeper-observer-contract` lint rule refuses an `authorizeObservation({...})` that names
+none, and a gatekeeper with many reads should route them through one helper that takes
+`ObservationDescription & { subresources: string[] }`. Implement
 `getHistoricalSubresources()` returning `[]`: it is required even though the current `Gatekeeper`
 interface does not declare it, so type-checking will not catch its absence. Implement
 `addObserver(id, verifier)` / `removeObserver(id)`, which the current interface requires, as
