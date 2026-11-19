@@ -5,6 +5,7 @@ import type { DriveAccess, GoogleDriveFolderSession } from "../../src/drive-type
 import {
   DRIVE_WRITES_GRANT, GOOGLE_DRIVE_RESOURCE, type DriveAccessLevel,
 } from "../../src/resources";
+import { ACCESS_TOKEN_MEMO_MAX_AGE_MS } from "../../src/auth-retry";
 import { DRIVE_DOCS_KINDS, DRIVE_SHEETS_KINDS, DRIVE_SLIDES_KINDS } from "../drive-edit-kinds";
 
 // Sharing changes and moves through the Drive gatekeeper itself: queued by a session, then applied,
@@ -145,6 +146,8 @@ const MOVE_ACCESS =
   "directly that the new folder also gives is merged into the folder's, and does not come back if " +
   "it is moved out again.";
 const NO_REVERT = "Google Drive changes cannot be reverted automatically.";
+/** What the test user's account refuses with once disconnected (see UserAccount in ../worker). */
+const DISCONNECTED = "The test disconnected this Google account.";
 
 type Role = "reader" | "commenter" | "writer" | "fileOrganizer" | "organizer" | "owner";
 const RANK: Record<Role, number> = {
@@ -230,7 +233,7 @@ class DriveProvider {
   /** Tokens Google no longer accepts, though their recorded expiry has not come: every request answers 401. */
   readonly rejected = new Set<string>();
   /** What a person does in Drive as the next permission list is read, before it is answered. */
-  duringPermissionRead?: () => void;
+  duringPermissionRead?: () => void | Promise<void>;
   #people = new Map<string, string>([
     ["me@example.com", "perm-A"], ["other@partner.example", "perm-B"],
     ["bob@example.com", "perm-bob"], ["carol@example.com", "perm-carol"],
@@ -451,7 +454,7 @@ class DriveProvider {
     if (rawItemId === undefined) {
       if (request.method === "GET") {
         if (!held.canShare) return cannotShare();
-        this.duringPermissionRead?.();
+        await this.duringPermissionRead?.();
         this.duringPermissionRead = undefined;
         return Response.json({
           permissions: this.access(fileId),
@@ -1519,6 +1522,30 @@ describe("sharing", () => {
 
     provider.forget();
     expect(await drive.apply(actionId)).toBe(SHARE_OUT_REFUSED);
+    expect(provider.requests).toEqual([]);
+  });
+
+  // Disconnecting a connection leaves the grant at Google while another connection holds it, so
+  // the approval's token goes on working there: the connection itself must stop the approval.
+  it("sends no change once its connection was disconnected a minute into the approval", async () => {
+    let drive = binding();
+    let { actionId } = await drive.queued("share", "doc-1", BOB, "reader");
+    provider.duringPermissionRead = async () => {
+      await account().disconnectDrive();
+      vi.spyOn(Date, "now").mockReturnValue(Date.now() + ACCESS_TOKEN_MEMO_MAX_AGE_MS);
+    };
+
+    try {
+      // Its attempt was on record before the token was asked for, so the send is held in doubt.
+      expect(await drive.apply(actionId)).toBe(UNCONFIRMED);
+    } finally {
+      vi.restoreAllMocks();
+    }
+    expect(provider.writes).toEqual([]);
+    expect(await drive.waiting()).toEqual([actionId]);
+    // The next approval asks the account first, and goes no further.
+    provider.forget();
+    expect(await drive.apply(actionId)).toBe(DISCONNECTED);
     expect(provider.requests).toEqual([]);
   });
 

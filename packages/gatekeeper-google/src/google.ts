@@ -2667,11 +2667,11 @@ export class GoogleDriveGatekeeperImpl
    * nothing the approval sends after its identity read goes a second time under other credentials. Otherwise it is the connection's own
    * provider, under which a comment is applied.
    */
-  #applyApi = new DriveApi(async opts => this.#approvalToken ?? this.#getAccessToken(opts));
+  #applyApi = new DriveApi(opts => this.#applyToken(opts));
   #host = {
     api: this.#applyApi,
     // Comments that quote a Doc and suggested edits are sent through Docs, under the same token.
-    docs: new GoogleDocsApi(async opts => this.#approvalToken ?? this.#getAccessToken(opts)),
+    docs: new GoogleDocsApi(opts => this.#applyToken(opts)),
     scope: () => this.#scope, writeRefusal: () => this.#writeRefusal(),
     attempts: this.#attempts,
     // An edit is not tied to an account, so it is sent under the connection's own token.
@@ -2744,6 +2744,19 @@ export class GoogleDriveGatekeeperImpl
 
   #getAccessToken(opts?: AccessTokenRequest): Promise<string> {
     return this.#tokens.get(opts);
+  }
+
+  /**
+   * The token the action handlers send under: the approval's while one runs, once the connection
+   * has answered for its own as every other request does (see AccessTokenCache), so that an
+   * approval goes on no longer than a minute after its connection was disconnected.
+   */
+  async #applyToken(opts?: AccessTokenRequest): Promise<string> {
+    let approval = this.#approvalToken;
+    if (approval === undefined) return this.#getAccessToken(opts);
+    // Asked plainly: a refresh or a reload is the approval's to refuse, not the connection's.
+    await this.#getAccessToken();
+    return approval;
   }
 
   /** The account, scope and access this binding has, which a folder not yet created has not. */
