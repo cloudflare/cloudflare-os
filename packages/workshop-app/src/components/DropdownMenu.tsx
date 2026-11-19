@@ -50,19 +50,9 @@ export type DropdownMenuProps = TriggerContent & {
   duration?: number
   /** Lifted off what it covers by a faint shadow, for one that stands apart from a surface like its own. */
   raised?: boolean
-  /**
-   * It does not morph out of the trigger: it fades in at its full size over where it opens and
-   * out again, as the trigger fades out and back, for one that is not a menu of actions.
-   */
-  fade?: boolean
   /** Whether it is open, for whoever keeps that, such as for a menu left open. With `onOpenChange`; otherwise it opens and closes itself. */
   open?: boolean
   onOpenChange?: (open: boolean) => void
-  /**
-   * It stays open until it is closed from its button or with Escape, rather than by going
-   * elsewhere, which leaves the rest of the page usable meanwhile: for a card that is left open.
-   */
-  persistent?: boolean
 }
 
 /** The opening morph's duration that the timings in DropdownMenu.css are written for. */
@@ -96,10 +86,8 @@ const DropdownMenuRoot = ({
   keepTrigger = false,
   duration = 360,
   raised = false,
-  fade: fadeOnly = false,
   open,
   onOpenChange,
-  persistent = false,
 }: DropdownMenuProps) => {
   const { triggerRef, popupRef } = useMenuMorph()
   const actionsRef = useRef<Menu.Root.Actions>(null)
@@ -112,8 +100,8 @@ const DropdownMenuRoot = ({
   // Only at full motion does the surface morph out of the trigger. Otherwise the trigger stays
   // as it is, or fades out under a menu that opens over it, and the menu fades in.
   const morphs = useMotionLevel() === 'full'
-  const fade = fadeOnly || (inPlace && !morphs)
-  const keepsTrigger = (keepTrigger || (!morphs && !fadeOnly)) && !inPlace
+  const fade = inPlace && !morphs
+  const keepsTrigger = (keepTrigger || !morphs) && !inPlace
   const closesFromTrigger = !inPlace && !keepsTrigger
   // Stays mounted: the × must persist while it fades out during the closing morph,
   // after Kumo has already reported the menu as closed.
@@ -128,11 +116,7 @@ const DropdownMenuRoot = ({
     <Menu.Root
       actionsRef={actionsRef}
       open={open}
-      modal={persistent ? false : undefined}
-      onOpenChange={(next, details) => {
-        if (persistent && !next && (details.reason === 'outside-press' || details.reason === 'focus-out')) return details.cancel()
-        onOpenChange?.(next)
-      }}
+      onOpenChange={onOpenChange}
     >
       <Menu.Trigger
         ref={triggerRef}

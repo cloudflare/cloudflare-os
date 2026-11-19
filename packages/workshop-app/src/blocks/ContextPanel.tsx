@@ -1,6 +1,5 @@
-import type { ReactNode } from 'react'
+import type { ReactNode, Ref } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
-import { CaretDoubleRightIcon } from '@phosphor-icons/react'
 import { Button } from '@/components/Button'
 import { DropdownMenu } from '@/components/DropdownMenu'
 import { HeaderBubble } from '@/components/HeaderBubble'
@@ -23,71 +22,71 @@ export type ContextPanelProps = {
   open: boolean
   onOpenChange: (open: boolean) => void
   /**
-   * It floats over what is under it, for want of room beside: it has a surface of its own, an edge
-   * and a faint shadow to lift it off, is inset in it, and goes when something else is clicked, as
-   * a menu does. Otherwise it is beside the page, as quiet text with no surface, which stays until
-   * its minimize button is pressed.
+   * There is no room beside the page for the card, so it floats over it, from the button, and goes
+   * when something else is clicked, as a menu does. Otherwise the button only opens it, and the
+   * page lays it out (`ContextSide`), which the button then gives way to until it is put away.
    */
   floating?: boolean
-  /** It is open from the start, as it was left, so it is there at once instead of opening. */
-  instant?: boolean
-  /** What the card holds (`ContextSection`), each of which scrolls once it is taller than it should be. */
-  children: ReactNode
+  /** The button beside the page, to bring focus back to when the card is put away. */
+  triggerRef?: Ref<HTMLButtonElement>
+  /** What the card holds (`ContextSection`), for the card that floats: each of which scrolls once it is taller than it should be. */
+  children?: ReactNode
 }
+
+// More room after the numbers than before the icons, which a card opening over it is not moved by: it keeps to the same right edge.
+const TRIGGER_CLASS = 'gap-3 ps-2.5 pe-4 text-[0.8125rem] text-kumo-subtle not-data-disabled:hover:bg-transparent hover:text-kumo-default'
+
+// What is drawn in place of another comes in over it, rather than replacing it at once.
+const COMES_IN = 'inline-flex transition-opacity duration-200 starting:opacity-0 motion-reduce:transition-none'
 
 /**
  * What a page has, as a button over its top corner that says what there is: an icon and a number
- * for each kind, quiet text that is pointed at, and pressed, as one. It morphs into a
- * card that lists each kind, over where the button was, with a small minimize button in the same
- * corner, level with the first section's title, that morphs it back (`DropdownMenu`, in place). The
- * card is beside the page, with no surface of its own, and all quiet text, which what can be opened
- * in it turns to the main colour as it is pointed at. It takes no room of its own: whoever lays
- * the page out makes room for it.
+ * for each kind, quiet text that is pointed at, and pressed, as one. Where the page has room for it,
+ * it opens to a card that the page lays out beside its content, and the button fades away until
+ * the card is put away. Where it has not, it morphs into a card over the page that lists each
+ * kind, over where the button was (`DropdownMenu`, in place). It takes no room of its own: whoever
+ * lays the page out makes room for the card.
  */
-export const ContextPanel = ({ stats, summary, open, onOpenChange, floating = false, instant = false, children }: ContextPanelProps) => (
-  <HeaderBubble origin="end">
-    <DropdownMenu
-      // Going between beside and floating is not opening or closing, which would play the menu's animation for what is only the room the page has changing, such as when something opens beside the chat: it is another menu, which is there at once.
-      key={floating ? 'floating' : 'beside'}
-      triggerVariant="ghost"
-      // More room after the numbers than before the icons, which the card opening over it is not moved by: it keeps to the same right edge.
-      triggerClassName="gap-3 ps-2.5 pe-4 text-[0.8125rem] text-kumo-subtle not-data-disabled:hover:bg-transparent hover:text-kumo-default"
-      label={stats.map(({ key, icon, count, tight }) => (
-        <span key={key} className={cn('flex items-center gap-1 tabular-nums [&>svg]:size-3.5', tight && 'gap-0.5')}>
-          {icon}
-          {count}
+export const ContextPanel = ({ stats, summary, open, onOpenChange, floating = false, triggerRef, children }: ContextPanelProps) => {
+  const label = stats.map(({ key, icon, count, tight }) => (
+    <span key={key} className={cn('flex items-center gap-1 tabular-nums [&>svg]:size-3.5', tight && 'gap-0.5')}>
+      {icon}
+      {count}
+    </span>
+  ))
+  const name = `What this chat has: ${summary}`
+
+  return (
+    <HeaderBubble origin="end">
+      {floating ? (
+        <span key="floating" className={cn(COMES_IN, 'pointer-events-auto')}>
+          <DropdownMenu
+            triggerVariant="ghost"
+            triggerClassName={TRIGGER_CLASS}
+            label={label}
+            aria-label={name}
+            align="end"
+            inPlace
+            open={open}
+            onOpenChange={onOpenChange}
+            raised
+            popupClassName="w-[min(17rem,calc(100vw-1.5rem))] max-h-[min(var(--available-height),calc(100dvh-14rem))]"
+          >
+            {/* Inset in its surface, with the card's rows read as ordinary text on it (`ContextRow`). */}
+            <div data-floating="" className="relative p-2.5">
+              {/* Sections alone in what holds them, so that the first and last of them are the first and last of it. */}
+              <div className="flex flex-col">{children}</div>
+            </div>
+          </DropdownMenu>
         </span>
-      ))}
-      aria-label={`What this chat has: ${summary}`}
-      align="end"
-      inPlace
-      open={open}
-      onOpenChange={onOpenChange}
-      persistent={!floating}
-      fade={!floating}
-      duration={instant ? 1 : undefined}
-      surfaceClassName={floating ? undefined : 'bg-transparent ring-0'}
-      raised={floating}
-      popupClassName="w-[min(17rem,calc(100vw-1.5rem))] max-h-[min(var(--available-height),calc(100dvh-14rem))]"
-    >
-      {(close) => (
-        // Beside the page it has no surface to be inset in, so it sits at the corner, in line with the buttons in the header: the first title level with them, and the minimize button's glyph as far in from the right as the rows' ends are. Floating, it is inset in its surface.
-        <div data-floating={floating || undefined} className={cn('relative', floating && 'p-2.5')}>
-          {/* Sections alone in what holds them, so that the first and last of them are the first and last of it. */}
-          <div className="flex flex-col">{children}</div>
-          {/* Floating, it is put away by going elsewhere, as a menu is. */}
-          {!floating && (
-            <Button
-              variant="ghost"
-              icon={<CaretDoubleRightIcon aria-hidden="true" weight="bold" className="size-3.5!" />}
-              aria-label="Minimize"
-              title="Minimize"
-              onClick={close}
-              className="absolute top-0 end-0.75 z-10 size-7 text-kumo-subtle not-data-disabled:hover:bg-transparent hover:text-kumo-default"
-            />
-          )}
-        </div>
+      ) : (
+        // Out of reach as well as out of sight while the card is open, which has its own way to be put away.
+        <span key="beside" inert={open} className={cn(COMES_IN, open ? 'opacity-0' : 'pointer-events-auto')}>
+          <Button ref={triggerRef} variant="ghost" aria-label={name} aria-expanded={open} onClick={() => onOpenChange(true)} className={TRIGGER_CLASS}>
+            {label}
+          </Button>
+        </span>
       )}
-    </DropdownMenu>
-  </HeaderBubble>
-)
+    </HeaderBubble>
+  )
+}

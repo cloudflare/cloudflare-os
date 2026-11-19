@@ -21,6 +21,7 @@ import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
 import { ChatContextPanel } from './ChatContextPanel'
+import { ChatContextSide } from './ChatContextSide'
 import { chatContextOf, contextCount } from './chatContext'
 import { useContextOpen } from './useContextOpen'
 import { useNarrowScreen } from '@/hooks/useNarrowScreen'
@@ -319,7 +320,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   // What the chat has, at the end of its header while it has any, where there is room for it beside the conversation.
   const context = useMemo(() => chatContextOf([...(items ?? []), ...(pinned ?? [])]), [items, pinned])
   const hasContext = contextCount(context) > 0
-  const [contextOpen, changeContextOpen, contextRestored] = useContextOpen()
+  const [contextOpen, changeContextOpen] = useContextOpen()
   // Not on a phone, where the conversation has the screen to itself.
   const narrow = useNarrowScreen()
   const openOutput = useHandler((output: OutputItem) => handlers.onOpenOutput(output))
@@ -328,21 +329,42 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   const hrefOfAutomation = useHandler((hook: HookItem) => automationHref?.(hook) ?? '')
   const linksAutomations = automationHref !== undefined
   const opensAutomations = onOpenAutomation !== undefined
+  // Beside the conversation, the button and the card take turns being there: focus goes from one to the other.
+  const contextButton = useRef<HTMLButtonElement>(null)
+  const contextMinimize = useRef<HTMLButtonElement>(null)
+  const changeContext = useHandler((open: boolean) => {
+    changeContextOpen(open)
+    requestAnimationFrame(() => (open ? contextMinimize : contextButton).current?.focus({ preventScroll: true }))
+  })
+  const minimizeContext = useHandler(() => changeContext(false))
   const headerEnd = useCallback((room: 'beside' | 'floating') => (
     <ChatContextPanel
       workspaceId={workspaceId}
       context={context}
       open={contextOpen}
-      onOpenChange={changeContextOpen}
+      onOpenChange={changeContext}
       floating={room === 'floating'}
-      instant={contextRestored}
+      triggerRef={contextButton}
       onOpenOutput={openOutput}
       onOpenAttachment={openAttachment}
       outputHref={outputHref}
       onOpenAutomation={opensAutomations ? openAutomation : undefined}
       automationHref={linksAutomations ? hrefOfAutomation : undefined}
     />
-  ), [workspaceId, context, contextOpen, changeContextOpen, contextRestored, openOutput, openAttachment, outputHref, opensAutomations, openAutomation, linksAutomations, hrefOfAutomation])
+  ), [workspaceId, context, contextOpen, changeContext, openOutput, openAttachment, outputHref, opensAutomations, openAutomation, linksAutomations, hrefOfAutomation])
+  const contextSide = useMemo(() => (
+    <ChatContextSide
+      workspaceId={workspaceId}
+      context={context}
+      onMinimize={minimizeContext}
+      minimizeRef={contextMinimize}
+      onOpenOutput={openOutput}
+      onOpenAttachment={openAttachment}
+      outputHref={outputHref}
+      onOpenAutomation={opensAutomations ? openAutomation : undefined}
+      automationHref={linksAutomations ? hrefOfAutomation : undefined}
+    />
+  ), [workspaceId, context, minimizeContext, openOutput, openAttachment, outputHref, opensAutomations, openAutomation, linksAutomations, hrefOfAutomation])
 
   const onPasteLinks = useHandler((urls: string[]) => pasteLinks?.(urls))
   const hasPasteLinks = pasteLinks !== undefined
@@ -406,7 +428,8 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
     <ChatLayout
       header={header}
       headerEnd={hasContext && !narrow ? headerEnd : undefined}
-      headerEndOpen={hasContext && contextOpen && !narrow}
+      side={hasContext && !narrow ? contextSide : undefined}
+      sideOpen={hasContext && contextOpen && !narrow}
       composer={composerElement}
     >
       {chat.status === 'ready' && (

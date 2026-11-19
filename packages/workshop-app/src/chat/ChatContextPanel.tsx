@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type Ref } from 'react'
 import { ContextPanel, type ContextStat } from '@/blocks/ContextPanel'
 import { ChatContextCard, type ChatContextCardProps } from './ChatContextCard'
 import { contextSummary, type ChatContext } from './chatContext'
@@ -14,7 +14,7 @@ const statsOf = ({ outputs, hooks, files, connectors }: ChatContext): ContextSta
   ].filter(({ count }) => count > 0)
 
 export type ChatContextPanelProps = ChatContextCardProps & {
-  /** Whether it is open, as it was left: beside the conversation. */
+  /** Whether it is open, as it was left: beside the conversation, where `ChatContextSide` is its card. */
   open: boolean
   onOpenChange: (open: boolean) => void
   /**
@@ -22,16 +22,16 @@ export type ChatContextPanelProps = ChatContextCardProps & {
    * with, whatever was left, goes when something else is clicked, and what is done to it is not kept.
    */
   floating: boolean
-  /** It is open as it was left, so it is there at once. */
-  instant: boolean
+  /** The button beside the conversation, to bring focus back to when the card is put away. */
+  triggerRef?: Ref<HTMLButtonElement>
 }
 
 /**
- * What a chat has, as a button at the end of its header that says what there is, and opens to a
- * card that lists each kind (`useContextOpen` keeps whether it is open). Where there is room it is
- * beside the conversation; where there is not it floats over it, shut until it is opened.
+ * What a chat has, as a button at the end of its header that says what there is. Where there is
+ * room it opens the card beside the conversation (`ChatContextSide`; `useContextOpen` keeps whether
+ * it is open); where there is not, it floats over it, shut until it is opened.
  */
-export const ChatContextPanel = ({ open, onOpenChange, floating, instant, ...props }: ChatContextPanelProps) => {
+export const ChatContextPanel = ({ open, onOpenChange, floating, triggerRef, ...props }: ChatContextPanelProps) => {
   // Open over the conversation, which is only for as long as it floats: it is shut again each time it comes to.
   const [floatOpen, setFloatOpen] = useState(false)
   const [wasFloating, setWasFloating] = useState(floating)
@@ -47,9 +47,9 @@ export const ChatContextPanel = ({ open, onOpenChange, floating, instant, ...pro
       open={floating ? floatOpen : open}
       onOpenChange={floating ? setFloatOpen : onOpenChange}
       floating={floating}
-      instant={instant && !floating}
+      triggerRef={triggerRef}
     >
-      <ChatContextCard {...props} />
+      {floating && <ChatContextCard {...props} />}
     </ContextPanel>
   )
 }

@@ -1,68 +1,35 @@
-import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
-import { animate, useMotionValue, type MotionValue } from 'motion/react'
+import { useCallback, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { animate, useMotionValue } from 'motion/react'
 import { useReducedMotion } from '@/hooks/useReducedMotion'
 import { publishHeight } from './publishHeight'
+import { OPENING_TIMING } from './useEdgeHint'
 
-// The card at the header's end, open, is 17rem wide, 0.75rem in from the edge (the header's padding),
-// and is kept at least 2rem from the column. It has no surface, so what is seen of it starts 0.875rem
-// in from its edge (its padding and its rows'), which counts as part of the way from the column.
-// The column is `max-w-4xl` wide, and no narrower than it is worth making room for the card
-// beside it. All in rem.
-const CARD_EDGE = 17.75 - 0.875
-const MIN_GAP = 2
-const COLUMN = 56
+// The column at the end, open, is 19rem wide: a 17rem card, 0.75rem in from the edge (the header's
+// padding), with room before it. The conversation is no narrower than it is worth making room for
+// it beside. All in rem.
+const SIDE = 19
 const MIN_COLUMN = 28
-const SLIDE = { type: 'spring', duration: 0.36, bounce: 0 } as const
 
-/**
- * How much room to leave at the end of `root` for an open card, in pixels. The column is centred
- * in the width up to the card, so that it is as far from the card as it is from the other edge, and
- * where that is less than `MIN_GAP`, it is moved over until it is that far. None where what is left
- * of the column would be too narrow to read.
- */
-const endShift = (root: HTMLElement) => {
-  if (tooNarrow(root)) return 0
-  const rem = Number.parseFloat(getComputedStyle(root).fontSize)
-  const room = CARD_EDGE * rem
-  const gap = MIN_GAP * rem
-  return Math.min(room + gap, Math.max(room, 2 * (room + gap) - (root.clientWidth - COLUMN * rem)))
-}
+const remOf = (root: HTMLElement) => Number.parseFloat(getComputedStyle(root).fontSize)
 
-/**
- * Puts the room at the end at `to`, in pixels, at once, which is where the column is laid out. With
- * `slides` the column is not seen to jump there: it is drawn where it was (`--end-slide`, which what
- * is in the column moves by) and glides to where it is. The column is centred in what is left of the
- * width, so it moves by half of the room that changes, whatever width it has, and gliding by that
- * moves nothing that is laid out, which sliding the room itself would at every step.
- */
-const moveTo = (shift: MotionValue<number>, slide: MotionValue<number>, to: number, slides: boolean) => {
-  const from = shift.get()
-  if (to === from) return
-  shift.jump(to)
-  if (!slides) return
-  slide.jump(slide.get() + (to - from) / 2)
-  animate(slide, 0, SLIDE)
-}
-
-/** Whether `root` is too narrow to make room beside the column for the card at the end. */
-const tooNarrow = (root: HTMLElement) => {
-  const rem = Number.parseFloat(getComputedStyle(root).fontSize)
-  return root.clientWidth < (CARD_EDGE + MIN_GAP + MIN_COLUMN) * rem
-}
+/** Whether `root` is too narrow to make room beside the conversation for the column at the end. */
+const tooNarrow = (root: HTMLElement) => root.clientWidth < (SIDE + MIN_COLUMN) * remOf(root)
 
 export type ChatLayoutProps = {
   header?: ReactNode
   /**
-   * At the far end of the header's line, such as what the chat has. As a function, it is told
-   * whether what is opened there has room beside the messages (`headerEndOpen`) or floats over
-   * them, for where there is not.
+   * At the far end of the header's line, such as the button for what the chat has. As a function, it
+   * is told whether the column at the end has room beside the messages (`side`) or what it opens
+   * floats over them, for where there is not. It takes the pointer itself, as the header's gaps let it through.
    */
   headerEnd?: ReactNode | ((room: 'beside' | 'floating') => ReactNode)
   /**
-   * What `headerEnd` has opened is out under it, beside the messages: they and the composer are
-   * centred in the width that is left, instead of the whole of it.
+   * A column at the end, beside the messages and the composer, under the header's end, where there
+   * is room for it. It is drawn only while it is open and as it opens or closes, which it does by
+   * taking its room from the conversation, which stays centred in what is left.
    */
-  headerEndOpen?: boolean
+  side?: ReactNode
+  sideOpen?: boolean
   composer: ReactNode
   /** The message list, which owns its scrolling. */
   children?: ReactNode
@@ -71,17 +38,20 @@ export type ChatLayoutProps = {
 /**
  * A conversation screen: the messages scroll the full height, with the header and the composer
  * floating over them, unfilled. Messages and composer share one centered column, so wide screens
- * keep a readable line length.
+ * keep a readable line length. An open column at the end takes its width from it, as a second
+ * column beside it, over the end of the page the conversation keeps clear.
  */
-export const ChatLayout = ({ header, headerEnd, headerEndOpen = false, composer, children }: ChatLayoutProps) => {
+export const ChatLayout = ({ header, headerEnd, side, sideOpen = false, composer, children }: ChatLayoutProps) => {
   const rootRef = useRef<HTMLDivElement>(null)
   const headerRef = useRef<HTMLElement>(null)
   const composerRef = useRef<HTMLDivElement>(null)
-  // Whether there is room for what is opened at the end beside the column, measured before it is drawn.
+  // Whether there is room for the column at the end beside the conversation, measured before it is drawn.
   const [room, setRoom] = useState<'floating' | 'beside'>('floating')
+  // Drawn while it has any width, so that what it holds is not made while it is shut.
+  const [sideShown, setSideShown] = useState(false)
   const end = typeof headerEnd === 'function' ? headerEnd(room) : headerEnd
-  const hasEnd = Boolean(end)
   const hasHeader = Boolean(header || end)
+  const hasSide = Boolean(side)
 
   // The bars are out of flow, so their heights are measured to keep the messages clear of them.
   // Variables on the root, not React state, so an animating composer does not re-render the chat.
@@ -95,33 +65,52 @@ export const ChatLayout = ({ header, headerEnd, headerEndOpen = false, composer,
     }
   }, [hasHeader])
 
-  // The room left at the end for what is opened there, in pixels, as a variable on the root like the
-  // bars' heights, which the column is laid out with at once. It glides to where it is when what is
-  // opened at the end opens or closes, and follows the window when that is resized (`moveTo`).
-  const shift = useMotionValue(0)
-  const slide = useMotionValue(0)
-  const reduceMotion = useReducedMotion() ?? false
+  // The column's width in pixels, and how far open it is, as variables on the root like the bars'
+  // heights, so that what it opens at is not rendered again at each step. The conversation is laid
+  // out beside it at each step: it grows into the room the column gives up, and narrows as it takes it.
+  const width = useMotionValue(0)
+  const full = useRef(0)
+  const goal = useRef(0)
   const wanted = useRef(false)
-  // Whether there was something at the end when the column was last placed: it is placed where it
-  // is when that arrives, rather than sliding there, as when the conversation is only now loaded.
+  // Whether there was something at the end when it was last placed: it is placed where it is when
+  // that arrives, rather than opening, as when the conversation is only now loaded.
   const placed = useRef(false)
-  useLayoutEffect(() => shift.on('change', (value) => rootRef.current!.style.setProperty('--end-shift', `${value}px`)), [shift])
-  // None at rest, as even a translation of nothing would make what is moved the place that what is fixed in it is fixed to.
-  useLayoutEffect(() => slide.on('change', (value) => rootRef.current!.style.setProperty('--end-slide', value === 0 ? 'none' : `${value}px`)), [slide])
+  const reduceMotion = useReducedMotion()
+  useLayoutEffect(() => width.on('change', (px) => {
+    const root = rootRef.current!
+    root.style.setProperty('--side-width', `${px}px`)
+    root.style.setProperty('--side-progress', full.current > 0 ? String(px / full.current) : '0')
+  }), [width])
+  useLayoutEffect(() => () => width.stop(), [width])
+
+  // Open where it is wanted and there is room, else shut: at once, or as a glide that an open or shut one in the way is carried on from.
+  const settle = useCallback((glides: boolean) => {
+    const root = rootRef.current!
+    full.current = SIDE * remOf(root)
+    const to = wanted.current && !tooNarrow(root) ? full.current : 0
+    if (to === goal.current) return
+    goal.current = to
+    if (to > 0) setSideShown(true)
+    if (!glides) {
+      width.jump(to)
+      if (to === 0) setSideShown(false)
+      return
+    }
+    animate(width, to, { ...OPENING_TIMING, onComplete: () => goal.current === 0 && setSideShown(false) })
+  }, [width])
+
   useLayoutEffect(() => {
-    wanted.current = headerEndOpen
-    moveTo(shift, slide, headerEndOpen ? endShift(rootRef.current!) : 0, placed.current && !reduceMotion)
-    placed.current = hasEnd
-  }, [headerEndOpen, hasEnd, reduceMotion, shift, slide])
+    wanted.current = sideOpen
+    settle(placed.current && !reduceMotion)
+    placed.current = hasSide
+  }, [sideOpen, hasSide, reduceMotion, settle])
   useLayoutEffect(() => {
     const root = rootRef.current!
     let was: 'floating' | 'beside' | undefined
     const update = () => {
       const now = tooNarrow(root) ? 'floating' : 'beside'
-      const to = wanted.current ? endShift(root) : 0
-      // Going between beside and floating moves the column all of the card's room at once, when
-      // the window is narrowed past what it needs, such as by what opens beside the chat: it glides.
-      moveTo(shift, slide, to, was !== undefined && was !== now && !reduceMotion)
+      // Going between beside and floating gives the room back or takes it, such as when the window is narrowed or something opens beside the chat: it glides.
+      settle(was !== undefined && was !== now && !reduceMotion)
       was = now
       setRoom(now)
     }
@@ -129,7 +118,7 @@ export const ChatLayout = ({ header, headerEnd, headerEndOpen = false, composer,
     const observer = new ResizeObserver(update)
     observer.observe(root)
     return () => observer.disconnect()
-  }, [shift, slide, reduceMotion])
+  }, [settle, reduceMotion])
 
   return (
     <div ref={rootRef} className="relative min-h-0 flex-1">
@@ -137,17 +126,23 @@ export const ChatLayout = ({ header, headerEnd, headerEndOpen = false, composer,
       <div className="absolute inset-x-0 top-0 bottom-[var(--composer-half,0px)]">
         {children}
       </div>
+      <div ref={composerRef} className="pointer-events-none absolute inset-x-0 bottom-0 z-10 pe-(--side-width,0px)">
+        <div className="pointer-events-auto mx-auto w-full max-w-4xl p-3">{composer}</div>
+      </div>
+      {sideShown && side && (
+        // Over the room the conversation leaves at its end, which it keeps by its own padding (`MessageList`), so that its scrollbar stays at the window's edge. Cut to the room it has been given, with what is in it kept at its own width and place from its start, so that it slides in from the edge as the room opens. Only what is in it takes the pointer, not the gap by the edge, which is the scrollbar's.
+        <div inert={!sideOpen} className="pointer-events-none absolute inset-y-0 end-0 w-(--side-width,0px) overflow-x-clip">
+          <div style={{ width: `${SIDE}rem` }} className="flex h-full flex-col pt-3 pe-3 pb-3 ps-5 opacity-(--side-progress,0) *:pointer-events-auto">{side}</div>
+        </div>
+      )}
       {/* Only the bars' own content takes the pointer; the gaps around it let it through. The
           header starts clear of what the frame puts there (`--header-lead`), such as a back button. */}
       {hasHeader && (
         <header ref={headerRef} className="pointer-events-none absolute inset-x-0 top-0 z-10 flex gap-1.5 p-3 ps-[calc(0.75rem+var(--header-lead,0px))]">
           {header && <div className="pointer-events-auto min-w-0">{header}</div>}
-          {end && <div className="pointer-events-auto ms-auto shrink-0">{end}</div>}
+          {end && <div className="ms-auto shrink-0">{end}</div>}
         </header>
       )}
-      <div ref={composerRef} className="pointer-events-none absolute inset-x-0 bottom-0 z-10 pe-[var(--end-shift,0px)]">
-        <div className="pointer-events-auto mx-auto w-full max-w-4xl [translate:var(--end-slide,none)] p-3">{composer}</div>
-      </div>
     </div>
   )
 }

@@ -3,17 +3,13 @@ import { readLayoutPrefs, writeLayoutPrefs } from '@/prefs/layoutPrefs'
 
 /**
  * Whether the card of what a chat has is open, and the way to open and close it. Left open, it is
- * open in every chat until it is put away. Open as the chat was, before anyone has changed it
- * here, it is `restored`: it is simply there, as it was left, rather than opening.
+ * open in every chat until it is put away.
  */
 export const useContextOpen = () => {
-  const [state, setState] = useState(() => {
-    const open = readLayoutPrefs().contextOpen === true
-    return { open, restored: open }
-  })
+  const [open, setOpen] = useState(() => readLayoutPrefs().contextOpen === true)
   const change = (next: boolean) => {
-    setState({ open: next, restored: false })
+    setOpen(next)
     writeLayoutPrefs({ contextOpen: next })
   }
-  return [state.open, change, state.restored] as const
+  return [open, change] as const
 }
