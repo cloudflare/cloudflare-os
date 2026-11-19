@@ -37,7 +37,7 @@ const LINE_CATEGORIES: Record<string, NonNullable<LineElement["category"]>> = {
 };
 const VIDEO_SOURCES: Record<string, "youtube" | "drive"> = { YOUTUBE: "youtube", DRIVE: "drive" };
 
-function textOf(text: RestText | undefined): string {
+export function textOf(text: RestText | undefined): string {
   let content = (text?.textElements ?? [])
     .map(element => element.textRun?.content ?? element.autoText?.content ?? "")
     .join("");

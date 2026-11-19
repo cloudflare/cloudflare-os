@@ -34,7 +34,7 @@ import { DRAWN_SLIDE_FIELDS } from "./slides-fields";
 import { emu, points } from "./slides-geometry";
 import { downloadFont, downloadPicture, isFontRequest, picturePixels } from "./slides-media";
 import {
-  layoutNames, mastersOf, presentationInfo, slideIds, slideOf, themePagesOf, titleOf,
+  layoutNames, mastersOf, presentationInfo, slideIds, slideOf, textOf, themePagesOf, titleOf,
 } from "./slides-model";
 import type {
   PresentationInfo, Slide, SlideThumbnail, SlideThumbnailSize,
@@ -46,7 +46,7 @@ import {
   newSlidePlace, replayChanges, slidesToFetch, type Deck, type QueuedChange, type SlideLabel,
   type SlidesAction, type SlidesActions, type ThemeLabel,
 } from "./slides-simulation";
-import { elementIdsOf } from "./slides-target";
+import { elementIdsOf, locate } from "./slides-target";
 import { ChangeConflict } from "./slides-text";
 import type { GooglePresentationReadSession } from "./slides-read-types";
 import type {
@@ -356,6 +356,16 @@ function labelOf(deck: Deck, id: string): SlideLabel {
   let slide = deck.slides.get(id);
   let title = slide && titleOf(slide);
   return { number: deck.order.indexOf(id) + 1, ...(title ? { title } : {}) };
+}
+
+/** The start of the text of each element `changes` name that has any, for the approver. */
+function elementTexts(deck: Deck, changes: DesignChange[]): Record<string, string> {
+  return Object.fromEntries(changes.flatMap(change => {
+    if (!("elementId" in change) || change.elementId === undefined) return [];
+    let elements = deck.slides.get(change.slideId)?.pageElements;
+    let text = textOf(locate(elements, change.elementId)?.element.shape?.text).trim().replace(/\s+/g, " ");
+    return text ? [[change.elementId, text.slice(0, 60)]] : [];
+  }));
 }
 
 /** One master's or layout's name, and a layout's master's, for the approver. */
@@ -809,9 +819,11 @@ export class GooglePresentationSessionImpl extends RpcTarget
           change.op === "editText" && change.find === undefined;
         return guarded ? { ...change, before: previous } : change;
       });
+      let elements = elementTexts(deck, queued);
       return {
         payload: {
           changes: queued,
+          ...(Object.keys(elements).length > 0 ? { elements } : {}),
           slides: Object.fromEntries(ids.map(id => [id, labelOf(deck, id)])),
           ...(themePages.length > 0
             ? { themes: Object.fromEntries(themePages.map(id => [id, themeLabelOf(deck, id)])) }

@@ -277,6 +277,9 @@ describe.each(RUNS)("Google Slides changes ($name)", run => {
         { label: "Replace with", kind: "inline", value: "Revenue: $12M" },
       ],
     });
+    // The shape is named by the text it held, which its ID would not tell the approver.
+    expect(action!.description).toContain('shape "Revenue: $10M Margin: 20%"');
+    expect(action!.description).not.toContain("b2");
     expect(shapeText((await slides.slides("s2"))[0], "b2")).toBe("Revenue: $12M\nMargin: 20%");
     expect(provider.text("s2", "b2")).toBe("Revenue: $10M\nMargin: 20%\n");
 
@@ -1384,6 +1387,8 @@ describe("Google Slides stored layout", () => {
         kind: "editText",
         payload: {
           changes: [{ op: "editText", ...EDIT }], slides: { s2: { number: 2, title: "Revenue" } },
+          // What the approver is told the shape is, in place of its ID.
+          elements: { b2: "Revenue: $10M Margin: 20%" },
         },
       },
     });
