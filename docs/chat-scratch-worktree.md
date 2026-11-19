@@ -1,14 +1,42 @@
-# Chat scratch worktree
+# Chat attachment worktree
 
-Every new upload becomes a file in a chat-private `SCRATCH` worktree, independent of
+Every new upload becomes a file in a chat-private `ATTACHMENTS` worktree, independent of
 MIME type or the selected model's input support. Images, PDFs, archives, spreadsheets,
 unknown formats, empty binary files, and invalid UTF-8 are supported. Upload preparation
 preserves the original bytes, including images; it does not resize or transcode them.
 This intentionally removes the old image-only path that accepted source images up to 25 MiB
 and resized them to fit: source images, like every other upload, must now fit the 100 MiB limit,
 and the model sees only those within the inline limits below.
-The scratch worktree is created on the first upload and reused for later uploads, plans,
-and other agent working files.
+Chats without uploads do not acquire an automatic attachment worktree. For generated files,
+reuse a suitable existing worktree or call `createWorktree({title: "Mandelbrot", bindingName:
+"OUTPUTS"})` without `commitId` to create an empty one. Uploads create the attachment worktree
+lazily; each attachment's transcript note identifies its actual binding name (which may be
+`ATTACHMENTS_2` on collision), without changing the system prompt.
+Existing chats retain their original binding, such as `SCRATCH`. Keep this worktree for uploads;
+use a separate worktree for generated files and working notes.
+Spawned agents retain only their configured bindings.
+
+Any file can be offered for download as a Markdown link, such as
+`[Download CSV](worktree://OUTPUTS/results.csv)` or `[Download archive](worktree://OUTPUTS/build.zip)`.
+Clicking downloads the original bytes with their filename through the authenticated blob RPC.
+No bytes are fetched until the viewer clicks. Downloads use `application/octet-stream`, including
+HTML and SVG, so saved files do not run in the Workshop origin.
+
+Generated images can appear directly in an answer as Markdown:
+`![Mandelbrot set](worktree://OUTPUTS/mandelbrot.png)`. The same scheme works in literal
+`<img src="worktree://OUTPUTS/mandelbrot.png">` tags inside `<inline-html>` for custom layouts.
+Inline views load these images in the ordinary document, including images cloned from HTML
+templates. Worktree images inside Shadow DOM are not supported; use ordinary image tags or Markdown.
+Use any worktree binding available to the chat, including `ATTACHMENTS`, and percent-encode special
+characters in paths. The host parser resolves the path once as the answer streams and records
+its immutable Git blob OID in the message's `embeds` map. Rendering reads that saved OID through the
+existing authenticated raw-byte blob RPC. Editing or deleting the path, reopening the chat,
+accepting changes, or resetting the DO never changes the file linked or pictured in an existing reply.
+A later reply resolves the path again for a new snapshot. Missing images stay unavailable in the
+old reply rather than silently resolving to a later file. The agent does not look up OIDs or
+choose between live and pinned references; both links and images use `worktree://`.
+Container outputs must have returned successfully through a mounted worktree before the agent
+references them. Files outside mounts and ignored files stay in the container.
 
 `Overseer.uploadBlob(bytes)` durably stores a raw Git blob and returns its OID; the composer
 sends `{stream, byteLength}` instead, which the backend stores as it arrives and checks
@@ -46,14 +74,14 @@ Ordinary worktree bindings expose `readBytes()` and `writeBytes(path, rawBytes)`
 the blob before appending its whole-file OT. Both stream: `readBytes()` reads a blob (or a byte
 range of it) a chunk at a time, and `writeBytes()` also accepts a `ReadableStream`. There is no
 staged/resumable upload protocol. Containers consume the same canonical worktree rather than
-needing a separate attachment download path: a container gatekeeper clones the scratch worktree
+needing a separate attachment download path: a container gatekeeper clones the attachment worktree
 with native Git through `WorktreeReplicator.gitPull()` and gatekeeper-kit's `serveGitUploadPack()` (see
 [`worktree-replicas.md`](worktree-replicas.md)), which streams files without decoding them as
 text. This attachment ingress does not require a container.
 
 Download/replay reads the original upload's immutable Git blob, not a subsequently edited
 workspace file. On the next message or agent turn, legacy attachments are migrated lazily,
-one payload at a time, into the same scratch worktree. Each original blob reference and file
+one payload at a time, into the same attachment worktree. Each original blob reference and file
 projection publish atomically; a reset resumes without duplicate files. Previously projected
 files are not overwritten, even if the agent has edited or renamed them. Original payload
 copies are dropped only after their immutable blob is durable. Compatibility readers remain
@@ -67,7 +95,7 @@ provider content part. Text is inlined only up to `MAX_TOOL_RESULT_CHARS` (32K c
 most `readFile` returns whole. Larger text is also identified by workspace path, for the agent to
 read by window or grep: inlined, it would be resent on every turn, and a single upload can exceed
 the model's context window, which compaction cannot repair. A later upload into an existing
-scratch worktree also reaches the agent as a user change, whose diff is shown only within the same
+attachment worktree also reaches the agent as a user change, whose diff is shown only within the same
 limit. Images with an edge above 8000 pixels or unrecognized dimension headers stay
 workspace-only on every model replay; no resize/transcode changes their original bytes.
 Every request resends the chat's images and PDFs, so replay chooses which go inline across the
@@ -78,10 +106,10 @@ request limit once encoded). The rest are named by workspace path, and replay re
 attachment's bytes unless it could inline them, so no upload can make a provider refuse a request
 for its attachments. Choosing newest first means a new attachment that overflows these limits
 changes the prompt from an older message on, so that turn misses the provider's cache from there.
-A PDF's page count is not checked. Originals remain unchanged. New images are read from the same immutable blob for previews; there is no
-separate payload copy in attachment records, and a chat message carries the bytes only of images
-up to 4 MiB to clients, which stream larger attachments with `readBlob()`. Uploads are limited to
-100 MiB per file and five files per message.
+A PDF's page count is not checked. Originals remain unchanged. New images are read from the same
+immutable blob for previews; there is no separate payload copy in attachment records, and a chat
+message carries the bytes only of images up to 4 MiB to clients, which stream larger attachments
+with `readBlob()`. Uploads are limited to 100 MiB per file and five files per message.
 
 Uploads count toward the workspace's storage quota. A workspace is one Durable Object, which holds
 at most 10 GB and refuses every write when full, so the git store refuses new blobs over 1 MiB

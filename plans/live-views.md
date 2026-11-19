@@ -2,6 +2,28 @@
 
 ## Goal
 
+Reference any worktree file with a Markdown link, e.g.
+`[Download CSV](worktree://BINDING/results.csv)`. Clicking reads the pinned blob through the
+authenticated RPC and downloads its exact bytes with its filename, regardless of format.
+Files are fetched on click, not when the message renders. Downloads use octet-stream so HTML
+and SVG files are saved rather than opened in the Workshop origin.
+
+For a picture without a custom HTML view, use Markdown directly:
+`![Description](worktree://BINDING/path)`. The same URL works in a literal `<img>` in an HTML
+view. Only `worktree://` is supported; there is no live/pinned choice or agent OID-lookup method.
+The host parser pins each emitted link or image path once, before publishing its completed syntax to
+clients. `AiChatMessageBody.embeds` stores its immutable blob OID alongside the original
+model text, and `textDelta.embeds` delivers new pins while streaming. Unavailable files are
+recorded as null so later viewers cannot silently fill an old reply with a newer file.
+
+Markdown renders the saved blob without an iframe. SVGs use originless data URLs, as attachment
+previews do, so opening one separately does not run its scripts in the Workshop's origin.
+HTML views receive only a narrow Cap'n Web image reader limited to their message's saved
+references. Their object URLs are created inside the opaque-origin frame and released when
+images change or leave the document. The host parses literal HTML image tags, not code that
+constructs new file references dynamically. No path polling, change subscription, or file
+refresh exists; an old reply stays fixed even when the worktree changes or the DO resets.
+
 The agent can draw a live view inside its answer. It writes HTML, CSS and JS between
 `<inline-html>` tags in the answer text, with no tool call. The Workshop runs each block in a
 sandboxed frame built the same way as a gadget's UI frame. A view shows what the agent writes into
@@ -56,14 +78,15 @@ Acceptance criteria:
 
 ## Locked decisions
 
-- **A view has no `env`.** It cannot reach the chat's gadgets or connections. The agent reads data
+- **A view has no `env`.** It cannot reach the chat's gadgets or connections. File images have
+  only the narrow read capability described above. The agent reads other data
   with `executeCode` and writes the values into the view's code. Giving a view the chat's `env` was
-  built and deferred on 2026-10-28 (#930 holds that design), so this feature needs no kernel API:
-  the frontend, a parser in `workshop-shared` that the frontend and the evals use, and the agent
-  instructions.
+  built and deferred on 2026-10-28 (#930 holds that design). Views use the frontend, a parser in
+  `workshop-shared` that the frontend and the evals use, and the agent instructions. Image paths are snapshotted by the host parser; bytes use the existing blob RPC.
 - **No chat gateway text.** A chat gateway gets the agent's answer as stored, tags and all.
   Nothing calls the gateway yet, and its removal is planned, so a note in place of each view was
-  built, then dropped on review on 2026-11-06. The kernel then does not import the parser.
+  built, then dropped on review on 2026-11-06. That gateway path does not use the parser;
+  the kernel does use it to snapshot image references.
 - **A block runs in a gadget-style frame.** The frame is an opaque-origin srcDoc document with
   the gadget UI CSP. A block's HTML never goes into the Workshop document, and `MarkdownMessage`
   keeps `skipHtml`. The block frame is stricter than a gadget frame in one way: its sandbox is
@@ -388,8 +411,8 @@ Three commits, so reviewers can read the kernel lines alone:
 
 ## Known edge cases
 
-- **Old messages.** A block's code and data stay fixed in its message, so an old view shows the
-  data of the moment the agent wrote it.
+- **Old messages.** A block's code, literal data and host-pinned image OIDs stay fixed in its
+  message. Editing or deleting an image's original worktree path cannot change an old reply.
 - **A running agent.** Send while the agent runs steers that turn, as a typed message does.
 - **An answer that is never stored.** A stopped or failed model request stores nothing, so its
   views go away with its text. A retried request runs its views again.

@@ -23,7 +23,7 @@ import {
   type GatekeeperCaller, type GatekeeperRecord, type ObserverContext, type ObserverRecord,
   type OverseerStorage,
 } from "./storage-schema/overseer-storage";
-import { accessIncludesGadget, type SharingManager } from "./sharing";
+import { accessIncludesLiveGadget, type SharingManager } from "./sharing";
 import type { UserDurableObject } from "./user";
 import type { WorkshopLogger } from "./observability";
 
@@ -309,10 +309,14 @@ export class ObserverLedger {
       let observer = this.#storage.observers.get(profileId);
       let accountId = observer?.accountChoices[gatekeeperId];
       if (access === undefined || observer === undefined || accountId === undefined) continue;
-      if (access.role !== "build" && context.type !== "workspace") {
-        if (context.type === "chat") continue;
-        readers ??= this.host.gadgetsReaching(context.gadgetId);
-        if (!readers.some(gadgetId => accessIncludesGadget(access, gadgetId))) continue;
+      if (access.role !== "build") {
+        // A collaborator with only snapshots opens nothing that sees new reads of any context.
+        if (!access.gadgetIds.some(gadgetId => accessIncludesLiveGadget(access, gadgetId))) continue;
+        if (context.type !== "workspace") {
+          if (context.type === "chat") continue;
+          readers ??= this.host.gadgetsReaching(context.gadgetId);
+          if (!readers.some(gadgetId => accessIncludesLiveGadget(access, gadgetId))) continue;
+        }
       }
       let {observerId} = observer;
       audience.push({

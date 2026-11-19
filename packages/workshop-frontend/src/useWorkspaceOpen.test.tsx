@@ -260,7 +260,7 @@ describe('useWorkspaceOpen', () => {
 
   describe('account prompts for opening gadgets', () => {
     let observerConfig: { needs: ObserverBindingNeed[]; resolve: (choices: ObserverAccountChoice[]) => void } | null
-    let createObserverConfigCallback: (signal: AbortSignal) => RpcStub<ObserverConfigCallback>
+    let createObserverConfigCallback: (signal: AbortSignal, subject: 'gadget') => RpcStub<ObserverConfigCallback>
 
     async function renderHook() {
       const overseer = disposableStub({
@@ -287,7 +287,7 @@ describe('useWorkspaceOpen', () => {
 
     // Wrapped, since an async function returning the pending answer would wait for it.
     async function prompt(signal: AbortSignal, needs: ObserverBindingNeed[]) {
-      const callback = createObserverConfigCallback(signal)
+      const callback = createObserverConfigCallback(signal, 'gadget')
       let answer!: Promise<unknown>
       await act(async () => { answer = Promise.resolve(callback.configure(needs)) })
       answer.catch(() => {})
