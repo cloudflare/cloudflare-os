@@ -1137,9 +1137,9 @@ export type ShareLinkRecord = {
   mode?: "view";
 
   /**
-   * Set on its creator's default link for what it grants (see Overseer.createShareLink). Each
-   * creator has at most one non-revoked default link per grant; links created before default
-   * links existed have none.
+   * Set on its creator's default link for its target, a gadget or the workspace (see
+   * Overseer.createShareLink). Each creator has at most one non-revoked default link per target;
+   * links created before default links existed have none.
    */
   default?: true;
 
