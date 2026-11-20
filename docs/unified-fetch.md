@@ -50,7 +50,8 @@ All four are minted by `OverseerImpl.makeFetchLoopback()`. Nothing else can fetc
   not what travels with it.
 - **User-agent.** Always `Cloudflare-OS/1.0`.
 - **Content signals.** A response with `Content-Signal: ai-input=no` is refused, for every caller,
-  since any of them may be feeding an AI agent.
+  since any of them may be feeding an AI agent. A redirect that goes back to the caller is not
+  judged by its own signal, since it carries no content; the page it leads to is.
 - **SSRF.** `FetchLoopback` runs in `workshop-backend`, so its `fetch()` keeps
   `global_fetch_strictly_public`, which rejects non-public addresses after DNS resolution.
   `wrangler dev` permits private addresses, so locally that protection is absent.
@@ -73,7 +74,8 @@ type FetchPolicy = {
 - **Unrestricted.** A workspace that has not observed restricted data
   (`storage.containsRestrictedData`, which latches and is never cleared) may fetch any public host.
   This path reads no admin config, so the common case costs no KV read.
-- **Restricted.** A workspace that has may fetch only the hosts an admin trusts with that data,
+- **Restricted.** A workspace that has observed restricted data may fetch only the hosts an admin
+  trusts with that data,
   `AdminConfig.restrictedWebFetchHosts` (none by default), and on those hosts only URLs with no
   query string and no `/cdn-cgi/` path segment.
 - **Approvals.** Where `AdminConfig.restrictedWebFetchApprovals` is on, a user may approve a URL
@@ -129,7 +131,7 @@ gatekeeper. So the gatekeeper takes a new Fetcher before new data from the works
 code it hosts, and installs it in place of the old one. A long-running container that has received
 nothing new needs no update. An admin's change to the trusted hosts likewise reaches a gatekeeper's
 hosted code at the gatekeeper's next call. The full contract, including serializing overlapping
-calls, is in the `write-gatekeeper` skill.
+calls and keeping each environment to one workspace, is in the `write-gatekeeper` skill.
 
 ## Redirects
 
@@ -143,7 +145,9 @@ The exception is a URL that a user's approval allowed. The site picked its redir
 the URL the user approved, so the approval covers them, and the loopback follows them itself. Each
 hop still has to pass `validateWebFetchUrl()` with no host list. The response then carries
 `Cloudflare-OS-Fetch-Url`, naming the URL it came from. The `webFetch` tool reports that as its
-`finalUrl` and resolves converted HTML's links against it.
+`finalUrl` and resolves converted HTML's links against it. Any other caller must read it too: the
+response's `url` and `redirected` describe only the request the caller sent, so they name the
+approved URL and say it was not redirected.
 
 ## Refusals
 
