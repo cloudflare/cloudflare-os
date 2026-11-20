@@ -26,6 +26,13 @@ let server = await createViteServer({
   logLevel: "error",
   server: { middlewareMode: true, hmr: false, ws: false, watch: null },
   optimizeDeps: { noDiscovery: true },
+  // As the Node tests do (`vitest.config.ts`): modules that read the Worker's bindings import a
+  // module only workerd has.
+  resolve: {
+    alias: {
+      "cloudflare:workers": fileURLToPath(new URL("../__tests__/stubs/cloudflare-workers.ts", import.meta.url)),
+    },
+  },
 });
 try {
   let recorder = await server.ssrLoadModule("/__tests__/docs-live-recorder.ts") as {
