@@ -286,7 +286,8 @@ describe("GitHubApi redirects", () => {
     const requests: Array<[string | undefined, string, unknown]> = [];
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       requests.push([init?.method, String(input), init?.body]);
-      return Response.json({});
+      // A listing of issues is answered as a list.
+      return Response.json(init?.method === "GET" ? [] : {});
     }));
     const api = new GitHubApi(async () => "test-token", { repo: pin });
     await api.addLabels("octo", "repo", 5, ["bug"]);
@@ -383,7 +384,7 @@ describe("GitHubApi redirects", () => {
   it("refuses a redirected git push", async () => {
     const requests = redirectOnce(301, "https://github.com/octo/other.git/git-receive-pack");
     const api = new GitHubApi(async () => "test-token", { repo: pin });
-    expect(await rejection(api.fetchGitReceivePack("octo", "repo", new Blob(["x"]).stream())))
+    expect(await rejection(api.fetchGitReceivePack("octo", "repo", "main", new Blob(["x"]).stream())))
       .toMatchObject({ status: 301 });
     expect(requests).toHaveLength(1);
   });

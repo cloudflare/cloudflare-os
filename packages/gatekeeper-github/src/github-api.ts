@@ -1,9 +1,16 @@
 import { CredentialsExpiredError, isCredentialsExpired, type RefreshCredentials } from "@gadgets/gatekeeper-kit/credentials";
-import { validateBranchName } from "@gadgets/gatekeeper-kit/git-transport";
+import {
+  GitRefUpdateRejectedError, MAX_RECEIVE_PACK_RESPONSE_BYTES, parseReceivePackResponse, validateBranchName,
+} from "@gadgets/gatekeeper-kit/git-transport";
 import {
   isInvalidGrant, mergeOAuthTokens, OAuthClient, oauthRefresh,
 } from "@gadgets/gatekeeper-kit/oauth-client";
+import { readBytesCapped, ResponseTooLargeError } from "@gadgets/gatekeeper-kit/response-body";
+import type { AnsweredWith, CallAnswer } from "@gadgets/gatekeeper-kit/upstream";
 import type { UserAccount } from "./github";
+import {
+  API_BASE_URL, githubUpstream, namesWait, type GitHubGraphqlOperation, type GitHubOperation,
+} from "./github-upstream";
 
 /**
  * A GitHub OAuth grant. An expiring grant -- the default for OAuth apps registered since August
@@ -189,6 +196,11 @@ export type GitHubWebhookDeliveryResponse = {
   /** The HTTP status the attempt was answered with. */
   status_code: number;
 };
+
+/** The query of an issue search, which asks for GitHub's advanced search parsing. */
+function issueSearch(query: string, page: number, perPage: number, sort?: string, order?: string) {
+  return { q: query, advanced_search: true, page, per_page: perPage, sort, order };
+}
 
 function webhookBody({ url, secret, events }: GitHubRepoWebhookConfig) {
   return { active: true, events, config: { url, secret, content_type: "json", insecure_ssl: "0" } };
@@ -394,12 +406,17 @@ export class GitHubApiError extends Error {
   }
 }
 
-type RequestOptions = {
+type RequestOptions<T = unknown, B = T> = {
   query?: Record<string, string | number | boolean | undefined>;
   body?: unknown;
   auth?: "bearer" | "basic" | "none";
   headers?: Record<string, string | undefined>;
   okStatuses?: number[];
+  /**
+   * The caller throws on a 304, though it is among `okStatuses`: a 304 is then counted by its
+   * status, an error.
+   */
+  refusesUnchanged?: boolean;
   /**
    * Answer a redirect to an https location off the API host with the redirect itself, unfollowed,
    * as for a download GitHub hands off to its blob storage.
@@ -409,6 +426,21 @@ type RequestOptions = {
     username: string;
     password: string;
   };
+  /** The name the request is counted under, where its path names none (see GitHubOperation). */
+  operation?: GitHubOperation;
+  /**
+   * Reads what the request was sent for out of the parsed body of an answer with a 2xx status,
+   * within the request, so that a body it throws on is counted an error with the reason `api`: a
+   * body that was read and is not what the request was sent for. What it returns is the
+   * result's `data`, and what it throws is what the request throws.
+   */
+  read?: (body: B) => T;
+  /**
+   * How an answer that is no error by its status is counted where its status does not say: from
+   * its `data`, its status and its headers. It answers for an answer that is neither a redirect
+   * nor a 304.
+   */
+  counted?: (data: unknown, answered: AnsweredWith) => CallAnswer | undefined;
 };
 
 /**
@@ -434,12 +466,17 @@ export type ConditionalRequestOptions = {
   ifNoneMatch?: string;
 };
 
-const API_BASE_URL = "https://api.github.com";
+/**
+ * The options of a read that takes no 304 for an answer, known by identity: each unconditional
+ * read asks through its conditional twin with these and throws on a 304, which is so counted by
+ * its status and not as the success a 304 is to a conditional read.
+ */
+const UNCONDITIONAL: ConditionalRequestOptions = Object.freeze({});
+
 const LOGIN_BASE_URL = "https://github.com";
 const API_VERSION = "2022-11-28";
 const DEFAULT_ACCEPT = "application/vnd.github+json";
 const USER_AGENT = "Cloudflare-Gadgets";
-const REQUEST_TIMEOUT_MS = 30_000;
 const GIT_UPLOAD_PACK_TIMEOUT_MS = 120_000;
 /** Also covers streaming the log body, which may run to tens of megabytes. */
 const LOG_DOWNLOAD_TIMEOUT_MS = 120_000;
@@ -497,10 +534,10 @@ function redirectTarget(url: URL, location: string | null, pin: PinnedRepo | und
     ? new URL(`${moved.pathname}${url.search}`, API_BASE_URL) : undefined;
 }
 
-async function request<T>(
+async function request<T, B = T>(
   method: string,
   path: string,
-  options: RequestOptions = {},
+  options: RequestOptions<T, B> = {},
   getToken?: () => Promise<string>,
   pin?: PinnedRepo,
 ): Promise<RequestResult<T>> {
@@ -553,44 +590,232 @@ async function request<T>(
     return options.externalRedirect === true && isRedirect(r.status) &&
       location?.protocol === "https:" && location.origin !== API_BASE_URL;
   };
-  let response = await fetch(url, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
-  if (isRedirect(response.status) && !handedOff(response)) {
-    const target = redirectTarget(url, response.headers.get("location"), pin);
-    if (target) {
-      response = await fetch(target, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
-    }
-    if (!target || (isRedirect(response.status) && !handedOff(response))) {
-      // The destination is withheld: it may name a repository the binding's observers cannot read.
-      throw new GitHubApiError(response.status,
-        `GitHub moved ${url.pathname} out of the bound repository; it was not followed.`);
-    }
+  // Sends to `to` and reads the answer. `reissued` is the request a redirect was re-issued as,
+  // which follows no redirect of its own.
+  const send = (to: URL, reissued: boolean) => githubUpstream.read<Answered<T>>(
+    to, { ...init, operation: options.operation },
+    async response => {
+      if (isRedirect(response.status)) {
+        if (handedOff(response)) return { response, handedOff: true };
+        const target = reissued ? undefined : redirectTarget(url, response.headers.get("location"), pin);
+        return { response, target };
+      }
+      if (!response.ok && !(options.okStatuses ?? []).includes(response.status)) {
+        return { response, error: await apiError(response) };
+      }
+      let parsed: unknown;
+      try {
+        parsed = await parseBody(response);
+      } catch (thrown) {
+        // A body that could not be read is the client's to count and, where its attempt's
+        // timeout cut it off, to ask for again. Not so one whose answer names a wait: a request
+        // sent before that wait is over is refused, and its refusal would be thrown in place of
+        // this failure. It is handed on, counted as the client would count it, and thrown.
+        if (!namesWait(response.headers)) throw thrown;
+        void response.body?.cancel().catch(() => undefined);
+        return { response, lost: { thrown } };
+      }
+      if (!response.ok || !options.read) return { response, data: parsed as T };
+      try {
+        return { response, data: options.read(parsed as B) };
+      } catch (thrown) {
+        return { response, unread: { thrown } };
+      }
+    },
+    (answered, answer) => {
+      // A redirect that is acted on is what its request was sent for; one that is refused is
+      // counted by its status, an error.
+      if (answered.handedOff || answered.target) return { outcome: "success" };
+      // A 403 that GitHub marks as a rate limit is a refusal, as a 429 is.
+      if (answered.error) return answered.error.rateLimited ? { outcome: "refused", reason: "rate" } : undefined;
+      if (isRedirect(answer.status)) return undefined;
+      // A 304 says that nothing changed, which a conditional read takes for its answer. A read
+      // whose caller throws on one is counted by its status.
+      if (answer.status === 304) return options.refusesUnchanged ? undefined : { outcome: "success" };
+      if (answered.lost) return { outcome: "error", reason: isTimeout(answered.lost.thrown) ? "timeout" : "parse" };
+      // A body that was parsed and that the method's reading throws on is not what was asked for.
+      if (answered.unread) return { outcome: "error", reason: "api" };
+      return options.counted?.(answered.data, answer);
+    },
+  );
+  let answered = await send(url, false);
+  if (answered.target) answered = await send(answered.target, true);
+  const { response } = answered;
+  if (isRedirect(response.status) && !answered.handedOff) {
+    // The destination is withheld: it may name a repository the binding's observers cannot read.
+    throw new GitHubApiError(response.status,
+      `GitHub moved ${url.pathname} out of the bound repository; it was not followed.`);
   }
-  if (isRedirect(response.status)) {
+  if (answered.handedOff) {
     await response.body?.cancel();
     return { data: undefined as T, headers: response.headers, status: response.status };
   }
-
-  if (!response.ok && !(options.okStatuses ?? []).includes(response.status)) {
-    const parsed = await parseBody(response);
-    let message = `${response.status} ${response.statusText}`;
-    if (typeof parsed === "string" && parsed.length > 0) {
-      message = parsed;
-    } else if (parsed && typeof parsed === "object") {
-      const errorMessage = (parsed as { message?: string; error?: string }).message
-        ?? (parsed as { message?: string; error?: string }).error;
-      if (errorMessage) {
-        message = errorMessage;
-      }
-    }
-    throw new GitHubApiError(response.status, message, parsed, response.headers);
-  }
-
-  const parsed = await parseBody(response);
+  if (answered.error) throw answered.error;
+  if (answered.lost) throw answered.lost.thrown;
+  if (answered.unread) throw answered.unread.thrown;
   return {
-    data: parsed as T,
+    data: answered.data as T,
     headers: response.headers,
     status: response.status,
   };
+}
+
+// One answer of the API, read: a redirect that is handed to the caller or re-issued to `target`,
+// the error an unsuccessful status is thrown as, what the reading of a body threw whose answer
+// names a wait, what the method's reading of the parsed body threw, or what was read of that
+// body.
+type Answered<T> = {
+  response: Response;
+  handedOff?: true;
+  target?: URL;
+  error?: GitHubApiError;
+  lost?: { thrown: unknown };
+  unread?: { thrown: unknown };
+  data?: T;
+};
+
+// The body of a GraphQL answer: `data` may be partial, or absent, where `errors` is set.
+type GraphqlBody<T> = { data?: T | null; errors?: GitHubGraphqlError[] };
+
+// Whether a GraphQL answer holds no data, which fails the query whatever else the answer holds.
+function withoutData(data: unknown): data is null | undefined {
+  return data === undefined || data === null;
+}
+
+// How a GraphQL answer is counted: GitHub reports a failed query, and a spent rate limit, inside a
+// 200. An answer with no data is an error whether it names one or not, a body that is no object
+// included. `partial` marks errors that came with data. Data that came with no error is an error
+// where `refusal` gives one for it or throws on it: data that was read and is not what the query
+// was sent for.
+function graphqlAnswer<T>(
+  body: unknown, refusal: ((data: T) => GitHubApiError | undefined) | undefined,
+): CallAnswer | undefined {
+  const { data, errors } = (typeof body === "object" && body !== null ? body : {}) as GraphqlBody<T>;
+  // An entry that is no error names no rate limit.
+  const failed: (GitHubGraphqlError | undefined)[] = Array.isArray(errors) ? errors : [];
+  if (failed.some(error => error?.type === "RATE_LIMITED")) return { outcome: "refused", reason: "rate" };
+  if (withoutData(data)) return { outcome: "error", reason: "api" };
+  if (failed.length > 0) return { outcome: "error", reason: "api", detail: "partial" };
+  try {
+    return refusal?.(data) && { outcome: "error", reason: "api" };
+  } catch {
+    return { outcome: "error", reason: "api" };
+  }
+}
+
+// Where an answer hands its request off to: the `location` of a redirect, and null for an answer
+// that is none or names none.
+function handOff(status: number, headers: Headers): string | null {
+  return isRedirect(status) ? headers.get("location") : null;
+}
+
+// Whether an answer says that what was asked for is gone.
+function gone(status: number): boolean {
+  return status === 404 || status === 410;
+}
+
+// Whether `error` is what a timeout aborts with: the reason of an `AbortSignal.timeout`, which a
+// body that the signal cut off fails its reading with.
+function isTimeout(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "name" in error && error.name === "TimeoutError";
+}
+
+// The rows of a page of a listing that GitHub answers as an object: a count of all there is to
+// list, and the rows of the page in a list beside it. A page with no rows holds an empty list. An
+// answer that holds no list is no page of the listing, whatever it counts, and is thrown here, so
+// that the request it answered is the one that fails.
+function listedRows<R>(rows: R[] | undefined, what: string): R[] {
+  if (!Array.isArray(rows)) throw new GitHubApiError(502, `GitHub answered a listing of ${what} with no list.`);
+  return rows;
+}
+
+// A log's download, read: what its reader read of the log, or what the reader threw.
+type Downloaded<T> = { log: T; unread?: undefined } | { unread: { thrown: unknown } };
+
+// The media types of the results git's smart-HTTP endpoints answer with: the pack of a fetch, and
+// the report of a push.
+const UPLOAD_PACK_RESULT = "application/x-git-upload-pack-result";
+const RECEIVE_PACK_RESULT = "application/x-git-receive-pack-result";
+
+// Whether an answer says it is the git result `expected`. A success that does not is a page
+// answered in place of the result, by GitHub or by a proxy before it.
+function isGitResult(answered: Headers, expected: string): boolean {
+  return (answered.get("content-type") ?? "").trim().toLowerCase().startsWith(expected);
+}
+
+// Whether a fetch's answer holds a pack for the transport to stream: it says it is one, and has a
+// body. Neither its body nor its stream is read for this.
+function holdsPack(answered: Response): boolean {
+  return answered.body !== null && isGitResult(answered.headers, UPLOAD_PACK_RESULT);
+}
+
+// The error that a success which does not say it is the git result `expected` is thrown as. It
+// says whether the answer named a content type and not which: nothing of an answer's headers is
+// put into an error, which may be logged.
+function notGitResult(verb: "fetch" | "push", expected: string, answered: Headers): GitHubApiError {
+  const named = answered.has("content-type") ? "another content type" : "no content type";
+  return new GitHubApiError(502,
+    `git ${verb} failed: expected ${expected} but GitHub answered ${named}; ` +
+    "this usually means an error page or a proxy answered instead of the git endpoint.");
+}
+
+// A push's answer, read: the answer to hand the transport and, where it is a git result of a
+// successful status, the report-status body that answer holds.
+type Pushed = { response: Response; report?: Uint8Array };
+
+// Reads the report-status body of a push's answer as the transport reads one: up to the size it
+// takes, and refused beyond that in the transport's words.
+async function readPushReport(answer: Response): Promise<Uint8Array> {
+  return await readBytesCapped(answer, MAX_RECEIVE_PACK_RESPONSE_BYTES).catch((error: unknown) => {
+    if (error instanceof ResponseTooLargeError) {
+      throw new Error(`git push response exceeded the ${MAX_RECEIVE_PACK_RESPONSE_BYTES}-byte limit`);
+    }
+    throw error;
+  });
+}
+
+// How a push that GitHub answered with a success is counted: git reports a ref update it refused
+// inside that answer, in the report the transport's parser reads. An update the parser reads as
+// refused is an error of the API inside a success, and one it reads as applied is counted by its
+// status. A body the parser throws on for any other reason (one that is no report, that does not
+// mention `refName`, or that says the pack did not unpack) is counted as one that could not be
+// parsed: the parser gives none of them a class of its own.
+function pushAnswer(report: Uint8Array, refName: string): CallAnswer | undefined {
+  try {
+    parseReceivePackResponse(report, refName);
+    return undefined;
+  } catch (error) {
+    return { outcome: "error", reason: error instanceof GitRefUpdateRejectedError ? "api" : "parse" };
+  }
+}
+
+// The error an unsuccessful answer is thrown as, with the message its body gives where it has one.
+// Whether an answer's status and headers alone say it is a rate limit: a 429, or a 403 with none of
+// the primary limit left or a wait named.
+function throttledByHeaders(response: Response): boolean {
+  return response.status === 429 || (response.status === 403 &&
+    (response.headers.get("x-ratelimit-remaining") === "0" || response.headers.has("retry-after")));
+}
+
+async function apiError(response: Response): Promise<GitHubApiError> {
+  // A body that cannot be read leaves the error to its status and headers where those say on their
+  // own that it is a rate limit. Otherwise its reading's failure is thrown: a 403 may be a limit
+  // told by its body alone, and is no denial while that body is unread.
+  const parsed = await parseBody(response).catch((error: unknown) => {
+    if (throttledByHeaders(response)) return undefined;
+    throw error;
+  });
+  let message = `${response.status} ${response.statusText}`;
+  if (typeof parsed === "string" && parsed.length > 0) {
+    message = parsed;
+  } else if (parsed && typeof parsed === "object") {
+    const errorMessage = (parsed as { message?: string; error?: string }).message
+      ?? (parsed as { message?: string; error?: string }).error;
+    if (errorMessage) {
+      message = errorMessage;
+    }
+  }
+  return new GitHubApiError(response.status, message, parsed, response.headers);
 }
 
 function oauthClient(clientId: string, clientSecret: string): OAuthClient {
@@ -600,7 +825,7 @@ function oauthClient(clientId: string, clientSecret: string): OAuthClient {
     tokenEndpoint: `${LOGIN_BASE_URL}/login/oauth/access_token`,
     headers: { "User-Agent": USER_AGENT },
     scopeSeparator: ",",
-    timeoutMs: REQUEST_TIMEOUT_MS,
+    upstream: githubUpstream,
   });
 }
 
@@ -663,6 +888,7 @@ export async function revokeOAuthToken(
       body: {
         access_token: accessToken,
       },
+      operation: "token.revoke",
     },
   );
 }
@@ -681,27 +907,30 @@ export class GitHubApi {
     this.#repo = options.repo;
   }
 
-  async #request<T>(
+  async #request<T, B = T>(
     method: string,
     path: string,
-    options: RequestOptions = {},
+    options: RequestOptions<T, B> = {},
   ): Promise<RequestResult<T>> {
-    return await request<T>(method, path, options, this.#getToken, this.#repo);
+    return await request<T, B>(method, path, options, this.#getToken, this.#repo);
   }
 
-  async #conditionalGet<T>(
+  async #conditionalGet<T, B = T>(
     path: string,
     query: Record<string, string | number | boolean | undefined> | undefined,
     options: ConditionalRequestOptions = {},
     accept?: string,
+    read?: (body: B) => T,
   ): Promise<ConditionalRequestResult<T>> {
-    const result = await this.#request<T>("GET", path, {
+    const result = await this.#request<T, B>("GET", path, {
       query,
       headers: {
         ...(options.ifNoneMatch ? { "If-None-Match": options.ifNoneMatch } : undefined),
         ...(accept ? { Accept: accept } : undefined),
       },
       okStatuses: [304],
+      refusesUnchanged: options === UNCONDITIONAL,
+      read,
     });
     if (result.status === 304) {
       return {
@@ -718,7 +947,7 @@ export class GitHubApi {
   }
 
   async getViewer(): Promise<{ user: GitHubSimpleUser; scopes: string[] }> {
-    const result = await this.getViewerConditional();
+    const result = await this.getViewerConditional(UNCONDITIONAL);
     if (result.status === 304) {
       throw new Error("GitHub unexpectedly returned 304 for an unconditional viewer request.");
     }
@@ -746,17 +975,20 @@ export class GitHubApi {
    * account has no verified email. Requires the `user:email` scope.
    */
   async getPrimaryVerifiedEmail(): Promise<string | null> {
-    const result = await this.#request<Array<{
+    return (await this.#request<string | null, Array<{
       email: string; primary: boolean; verified: boolean;
-    }>>("GET", "/user/emails", {});
-    const emails = result.data ?? [];
-    const primary = emails.find(e => e.primary && e.verified);
-    const verified = primary ?? emails.find(e => e.verified);
-    return verified?.email ?? null;
+    }> | undefined>("GET", "/user/emails", {
+      read: body => {
+        const emails = body ?? [];
+        const primary = emails.find(e => e.primary && e.verified);
+        const verified = primary ?? emails.find(e => e.verified);
+        return verified?.email ?? null;
+      },
+    })).data;
   }
 
   async getRepo(owner: string, repo: string): Promise<GitHubRepoResponse> {
-    const result = await this.getRepoConditional(owner, repo);
+    const result = await this.getRepoConditional(owner, repo, UNCONDITIONAL);
     if (result.status === 304) {
       throw new Error("GitHub unexpectedly returned 304 for an unconditional repo request.");
     }
@@ -793,7 +1025,9 @@ export class GitHubApi {
     per_page: number;
     page: number;
   }): Promise<GitHubRepoResponse[]> {
-    const result = await this.#request<GitHubRepoResponse[]>("GET", "/user/repos", { query: options });
+    const result = await this.#request<GitHubRepoResponse[]>("GET", "/user/repos", {
+      query: options, read: rows => listedRows(rows, "repositories"),
+    });
     return result.data;
   }
 
@@ -809,8 +1043,8 @@ export class GitHubApi {
     sort?: "stars" | "forks" | "help-wanted-issues" | "updated";
     order?: "asc" | "desc";
   }): Promise<GitHubRepoResponse[]> {
-    const result = await this.#request<{ items: GitHubRepoResponse[] }>("GET", "/search/repositories", { query: options });
-    return result.data.items;
+    return (await this.#request<GitHubRepoResponse[], { items: GitHubRepoResponse[] }>(
+      "GET", "/search/repositories", { query: options, read: body => listedRows(body.items, "repositories") })).data;
   }
 
   // A repository's webhooks are addressed by its id, as `/repositories/<id>` is where GitHub
@@ -818,15 +1052,23 @@ export class GitHubApi {
 
   /** The repository's webhooks, every page of them. GitHub answers only a repository admin. */
   async listRepoWebhooks(repoId: number): Promise<GitHubRepoWebhookResponse[]> {
-    const webhooks: GitHubRepoWebhookResponse[] = [];
-    // A short page is the last.
-    for (let page = 1; page <= MAX_WEBHOOK_PAGES; page++) {
-      const { data } = await this.#request<GitHubRepoWebhookResponse[]>(
-        "GET", `/repositories/${repoId}/hooks`, { query: { per_page: 100, page } });
-      webhooks.push(...data);
-      if (data.length < 100) return webhooks;
-    }
-    throw new Error(`Repository ${repoId} has more webhooks than can be listed.`);
+    return await githubUpstream.summed(async () => {
+      const webhooks: GitHubRepoWebhookResponse[] = [];
+      // A short page is the last.
+      for (let page = 1; page <= MAX_WEBHOOK_PAGES; page++) {
+        // The page is added to the list as its answer is read, and its length is what is read of it.
+        const { data: listed } = await this.#request<number, GitHubRepoWebhookResponse[]>(
+          "GET", `/repositories/${repoId}/hooks`, {
+            query: { per_page: 100, page },
+            read: data => {
+              webhooks.push(...data);
+              return data.length;
+            },
+          });
+        if (listed < 100) return webhooks;
+      }
+      throw new Error(`Repository ${repoId} has more webhooks than can be listed.`);
+    });
   }
 
   /** Adds an active webhook to the repository. GitHub allows only a repository admin to. */
@@ -856,17 +1098,26 @@ export class GitHubApi {
    */
   async listRepoWebhookDeliveries(repoId: number, hookId: number, since: number): Promise<GitHubWebhookDeliveryResponse[]> {
     const path = `/repositories/${repoId}/hooks/${hookId}/deliveries`;
-    const deliveries: GitHubWebhookDeliveryResponse[] = [];
-    let cursor: string | undefined;
-    for (let page = 0; page < MAX_DELIVERY_PAGES; page++) {
-      const { data, headers } = await this.#request<GitHubWebhookDeliveryResponse[]>(
-        "GET", path, { query: { per_page: 100, cursor } });
-      const recent = data.filter(delivery => Date.parse(delivery.delivered_at) >= since);
-      deliveries.push(...recent);
-      cursor = nextCursor(headers);
-      if (cursor === undefined || recent.length < data.length) break;
-    }
-    return deliveries;
+    return await githubUpstream.summed(async () => {
+      const deliveries: GitHubWebhookDeliveryResponse[] = [];
+      let cursor: string | undefined;
+      for (let page = 0; page < MAX_DELIVERY_PAGES; page++) {
+        // What is read of a page: its recent deliveries, and how many it lists.
+        const { data: { recent, listed }, headers } = await this.#request<
+          { recent: GitHubWebhookDeliveryResponse[]; listed: number }, GitHubWebhookDeliveryResponse[]
+        >("GET", path, {
+          query: { per_page: 100, cursor },
+          read: data => ({
+            recent: data.filter(delivery => Date.parse(delivery.delivered_at) >= since),
+            listed: data.length,
+          }),
+        });
+        deliveries.push(...recent);
+        cursor = nextCursor(headers);
+        if (cursor === undefined || recent.length < listed) break;
+      }
+      return deliveries;
+    });
   }
 
   /** Asks GitHub to make a webhook delivery again, which it does in its own time. */
@@ -883,7 +1134,7 @@ export class GitHubApi {
   }
 
   async getIssue(owner: string, repo: string, issueNumber: number): Promise<GitHubIssueResponse> {
-    const result = await this.getIssueConditional(owner, repo, issueNumber);
+    const result = await this.getIssueConditional(owner, repo, issueNumber, UNCONDITIONAL);
     if (result.status === 304) {
       throw new Error("GitHub unexpectedly returned 304 for an unconditional issue request.");
     }
@@ -908,7 +1159,7 @@ export class GitHubApi {
     repo: string,
     pullNumber: number,
   ): Promise<GitHubPullRequestResponse> {
-    const result = await this.getPullRequestConditional(owner, repo, pullNumber);
+    const result = await this.getPullRequestConditional(owner, repo, pullNumber, UNCONDITIONAL);
     if (result.status === 304) {
       throw new Error("GitHub unexpectedly returned 304 for an unconditional pull request request.");
     }
@@ -942,7 +1193,7 @@ export class GitHubApi {
       page: number;
     },
   ): Promise<GitHubIssueResponse[]> {
-    const result = await this.listIssuesConditional(owner, repo, options);
+    const result = await this.listIssuesConditional(owner, repo, options, UNCONDITIONAL);
     if (result.status === 304) {
       throw new Error("GitHub unexpectedly returned 304 for an unconditional issue list request.");
     }
@@ -964,10 +1215,12 @@ export class GitHubApi {
     },
     options: ConditionalRequestOptions = {},
   ): Promise<ConditionalRequestResult<GitHubIssueResponse[]>> {
-    return await this.#conditionalGet<GitHubIssueResponse[]>(
+    return await this.#conditionalGet<GitHubIssueResponse[], GitHubIssueResponse[]>(
       `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues`,
       query,
       options,
+      undefined,
+      rows => listedRows(rows, "issues"),
     );
   }
 
@@ -978,11 +1231,13 @@ export class GitHubApi {
     sort?: string,
     order?: string,
   ): Promise<GitHubIssueResponse[]> {
-    const result = await this.searchIssuesConditional(query, page, perPage, sort, order);
+    const result = await this.#conditionalGet<GitHubIssueResponse[], { items: GitHubIssueResponse[] }>(
+      "/search/issues", issueSearch(query, page, perPage, sort, order), UNCONDITIONAL, undefined,
+      body => listedRows(body.items, "issues"));
     if (result.status === 304) {
       throw new Error("GitHub unexpectedly returned 304 for an unconditional issue search request.");
     }
-    return result.data.items;
+    return result.data;
   }
 
   async searchIssuesConditional(
@@ -993,18 +1248,10 @@ export class GitHubApi {
     order?: string,
     options: ConditionalRequestOptions = {},
   ): Promise<ConditionalRequestResult<{ items: GitHubIssueResponse[] }>> {
+    // A 304 holds no page, and is not read.
     return await this.#conditionalGet<{ items: GitHubIssueResponse[] }>(
-      "/search/issues",
-      {
-        q: query,
-        advanced_search: true,
-        page,
-        per_page: perPage,
-        sort,
-        order,
-      },
-      options,
-    );
+      "/search/issues", issueSearch(query, page, perPage, sort, order), options, undefined,
+      body => ({ ...body, items: listedRows(body.items, "issues") }));
   }
 
   async listPullRequests(
@@ -1020,7 +1267,7 @@ export class GitHubApi {
       page: number;
     },
   ): Promise<GitHubPullRequestResponse[]> {
-    const result = await this.listPullRequestsConditional(owner, repo, options);
+    const result = await this.listPullRequestsConditional(owner, repo, options, UNCONDITIONAL);
     if (result.status === 304) {
       throw new Error("GitHub unexpectedly returned 304 for an unconditional pull request list request.");
     }
@@ -1041,10 +1288,12 @@ export class GitHubApi {
     },
     options: ConditionalRequestOptions = {},
   ): Promise<ConditionalRequestResult<GitHubPullRequestResponse[]>> {
-    return await this.#conditionalGet<GitHubPullRequestResponse[]>(
+    return await this.#conditionalGet<GitHubPullRequestResponse[], GitHubPullRequestResponse[]>(
       `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls`,
       query,
       options,
+      undefined,
+      rows => listedRows(rows, "pull requests"),
     );
   }
 
@@ -1060,6 +1309,7 @@ export class GitHubApi {
       "GET",
       `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${issueNumber}/comments`,
       {
+        read: rows => listedRows(rows, "comments"),
         query: {
           page,
           per_page: perPage,
@@ -1208,7 +1458,7 @@ export class GitHubApi {
     page: number,
     perPage: number,
   ): Promise<GitHubPullRequestReviewResponse[]> {
-    const result = await this.listPullRequestReviewsConditional(owner, repo, pullNumber, page, perPage);
+    const result = await this.listPullRequestReviewsConditional(owner, repo, pullNumber, page, perPage, UNCONDITIONAL);
     if (result.status === 304) {
       throw new Error("GitHub unexpectedly returned 304 for an unconditional pull request review list request.");
     }
@@ -1223,13 +1473,15 @@ export class GitHubApi {
     perPage: number,
     options: ConditionalRequestOptions = {},
   ): Promise<ConditionalRequestResult<GitHubPullRequestReviewResponse[]>> {
-    return await this.#conditionalGet<GitHubPullRequestReviewResponse[]>(
+    return await this.#conditionalGet<GitHubPullRequestReviewResponse[], GitHubPullRequestReviewResponse[]>(
       `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${pullNumber}/reviews`,
       {
         page,
         per_page: perPage,
       },
       options,
+      undefined,
+      rows => listedRows(rows, "reviews"),
     );
   }
 
@@ -1245,6 +1497,7 @@ export class GitHubApi {
       "GET",
       `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${pullNumber}/comments`,
       {
+        read: rows => listedRows(rows, "review comments"),
         query: {
           page,
           per_page: perPage,
@@ -1259,7 +1512,7 @@ export class GitHubApi {
     repo: string,
     commentId: number,
   ): Promise<GitHubPullRequestReviewCommentResponse> {
-    const result = await this.getPullRequestReviewCommentConditional(owner, repo, commentId);
+    const result = await this.getPullRequestReviewCommentConditional(owner, repo, commentId, UNCONDITIONAL);
     if (result.status === 304) {
       throw new Error("GitHub unexpectedly returned 304 for an unconditional review comment request.");
     }
@@ -1372,7 +1625,7 @@ export class GitHubApi {
     page: number,
     perPage: number,
   ): Promise<GitHubPullFileResponse[]> {
-    const result = await this.listPullRequestFilesConditional(owner, repo, pullNumber, page, perPage);
+    const result = await this.listPullRequestFilesConditional(owner, repo, pullNumber, page, perPage, UNCONDITIONAL);
     if (result.status === 304) {
       throw new Error("GitHub unexpectedly returned 304 for an unconditional pull request files request.");
     }
@@ -1387,13 +1640,15 @@ export class GitHubApi {
     perPage: number,
     options: ConditionalRequestOptions = {},
   ): Promise<ConditionalRequestResult<GitHubPullFileResponse[]>> {
-    return await this.#conditionalGet<GitHubPullFileResponse[]>(
+    return await this.#conditionalGet<GitHubPullFileResponse[], GitHubPullFileResponse[]>(
       `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${pullNumber}/files`,
       {
         page,
         per_page: perPage,
       },
       options,
+      undefined,
+      rows => listedRows(rows, "files"),
     );
   }
 
@@ -1430,7 +1685,7 @@ export class GitHubApi {
     head: string,
     paging?: { perPage: number; page: number },
   ): Promise<GitHubCompareResponse> {
-    const result = await this.compareBranchesConditional(owner, repo, base, head, {}, paging);
+    const result = await this.compareBranchesConditional(owner, repo, base, head, UNCONDITIONAL, paging);
     if (result.status === 304) {
       throw new Error("GitHub unexpectedly returned 304 for an unconditional branch compare request.");
     }
@@ -1462,10 +1717,12 @@ export class GitHubApi {
     },
     options: ConditionalRequestOptions = {},
   ): Promise<ConditionalRequestResult<GitHubBranchResponse[]>> {
-    return await this.#conditionalGet<GitHubBranchResponse[]>(
+    return await this.#conditionalGet<GitHubBranchResponse[], GitHubBranchResponse[]>(
       `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches`,
       query,
       options,
+      undefined,
+      rows => listedRows(rows, "branches"),
     );
   }
 
@@ -1479,12 +1736,13 @@ export class GitHubApi {
    */
   async getBranchHead(owner: string, repo: string, branch: string): Promise<string | null> {
     try {
-      const result = await this.#request<{ object: { sha: string } }>(
+      const result = await this.#request<string, { object: { sha: string } }>(
         "GET",
         `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/ref/heads/${
           validateBranchName(branch).split("/").map(encodeURIComponent).join("/")}`,
+        { read: body => body.object.sha },
       );
-      return result.data.object.sha;
+      return result.data;
     } catch (error) {
       // 409 is GitHub's answer for an empty repository, which has no branches at all.
       if (error instanceof GitHubApiError && (error.status === 404 || error.status === 409)) {
@@ -1502,12 +1760,13 @@ export class GitHubApi {
    */
   async isBranchProtected(owner: string, repo: string, branch: string): Promise<boolean> {
     try {
-      const result = await this.#request<GitHubBranchResponse>(
+      const result = await this.#request<boolean, GitHubBranchResponse>(
         "GET",
         `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches/${
           validateBranchName(branch).split("/").map(encodeURIComponent).join("/")}`,
+        { read: body => body.protected === true },
       );
-      return result.data.protected === true;
+      return result.data;
     } catch (error) {
       if (!(error instanceof GitHubApiError)) throw error;
       if (isRedirect(error.status)) return true;
@@ -1526,10 +1785,12 @@ export class GitHubApi {
     },
     options: ConditionalRequestOptions = {},
   ): Promise<ConditionalRequestResult<GitHubTagResponse[]>> {
-    return await this.#conditionalGet<GitHubTagResponse[]>(
+    return await this.#conditionalGet<GitHubTagResponse[], GitHubTagResponse[]>(
       `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/tags`,
       query,
       options,
+      undefined,
+      rows => listedRows(rows, "tags"),
     );
   }
 
@@ -1600,11 +1861,18 @@ export class GitHubApi {
     sha: string,
     maxBytes: number,
   ): Promise<Uint8Array | "oversized" | null> {
-    let response: GitHubGitBlobResponse;
     try {
-      response = (await this.#request<GitHubGitBlobResponse>(
+      return (await this.#request<Uint8Array | "oversized", GitHubGitBlobResponse>(
         "GET",
         `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/blobs/${encodeURIComponent(sha)}`,
+        {
+          read: response => {
+            if (response.size > maxBytes || response.encoding !== "base64") {
+              return "oversized";
+            }
+            return Uint8Array.from(atob(response.content.replace(/\s+/g, "")), char => char.charCodeAt(0));
+          },
+        },
       )).data;
     } catch (error) {
       if (error instanceof GitHubApiError && error.status === 404) {
@@ -1612,10 +1880,6 @@ export class GitHubApi {
       }
       throw error;
     }
-    if (response.size > maxBytes || response.encoding !== "base64") {
-      return "oversized";
-    }
-    return Uint8Array.from(atob(response.content.replace(/\s+/g, "")), char => char.charCodeAt(0));
   }
 
   async listCommitsConditional(
@@ -1633,10 +1897,12 @@ export class GitHubApi {
     },
     options: ConditionalRequestOptions = {},
   ): Promise<ConditionalRequestResult<GitHubCommitResponse[]>> {
-    return await this.#conditionalGet<GitHubCommitResponse[]>(
+    return await this.#conditionalGet<GitHubCommitResponse[], GitHubCommitResponse[]>(
       `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits`,
       query,
       options,
+      undefined,
+      rows => listedRows(rows, "commits"),
     );
   }
 
@@ -1648,47 +1914,74 @@ export class GitHubApi {
     perPage: number,
     options: ConditionalRequestOptions = {},
   ): Promise<ConditionalRequestResult<GitHubCommitResponse[]>> {
-    return await this.#conditionalGet<GitHubCommitResponse[]>(
+    return await this.#conditionalGet<GitHubCommitResponse[], GitHubCommitResponse[]>(
       `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${pullNumber}/commits`,
       {
         page,
         per_page: perPage,
       },
       options,
+      undefined,
+      rows => listedRows(rows, "commits"),
     );
   }
 
   /**
-   * A GraphQL query. Throws when GitHub answers with errors and no data; with partial data, the
-   * fields that failed are null and `errors` says why.
+   * A GraphQL query, counted under `operation`. Throws when GitHub answers with errors and no data;
+   * with partial data, the fields that failed are null and `errors` says why.
    */
-  async graphql<T>(query: string, variables: Record<string, unknown>): Promise<GitHubGraphqlResult<T>> {
-    const { data } = await this.#request<{ data?: T | null; errors?: GitHubGraphqlError[] }>(
-      "POST", "/graphql", { body: { query, variables } });
+  async graphql<T>(
+    operation: GitHubGraphqlOperation, query: string, variables: Record<string, unknown>,
+  ): Promise<GitHubGraphqlResult<T>> {
+    return await this.#graphql<T>(operation, query, variables);
+  }
+
+  // Sends a GraphQL query. `refusal` gives the error that an answer's data is thrown as, where
+  // the data is not what the query was sent for. Every answer that is thrown here is counted an
+  // error, by the checks it is thrown on (see `graphqlAnswer`).
+  async #graphql<T>(
+    operation: GitHubGraphqlOperation, query: string, variables: Record<string, unknown>,
+    refusal?: (data: T) => GitHubApiError | undefined,
+  ): Promise<GitHubGraphqlResult<T>> {
+    const { data } = await this.#request<GraphqlBody<T>>("POST", "/graphql", {
+      body: { query, variables }, operation, counted: body => graphqlAnswer(body, refusal),
+    });
     const errors = data.errors ?? [];
-    if (data.data === undefined || data.data === null) {
+    if (withoutData(data.data)) {
       const type = errors[0]?.type;
       throw new GitHubApiError(type === "NOT_FOUND" ? 404 : type === "FORBIDDEN" ? 403 : 502,
         `GitHub GraphQL query failed: ${errors.map(error => error.message).join("; ") || "no data"}`, errors);
     }
+    const refused = refusal?.(data.data);
+    if (refused) throw refused;
     return { data: data.data, errors };
   }
 
   /**
    * A GraphQL query that reads `repository(owner: $owner, name: $name, followRenames:
-   * $followRenames) { databaseId ... }`, with those variables supplied here. A renamed or
-   * transferred repository is followed only while it is still the pinned one, by id, as REST
-   * redirects are; without a pin, renames are not followed.
+   * $followRenames) { databaseId ... }`, with those variables supplied here, counted under
+   * `operation`. A renamed or transferred repository is followed only while it is still the pinned
+   * one, by id, as REST redirects are; without a pin, renames are not followed.
    */
   async queryRepository<T extends { repository: { databaseId: number | null } | null }>(
-    owner: string, repo: string, query: string, variables: Record<string, unknown>,
+    operation: GitHubGraphqlOperation, owner: string, repo: string, query: string,
+    variables: Record<string, unknown>,
   ): Promise<GitHubGraphqlResult<T>> {
-    const result = await this.graphql<T>(query, {
-      ...variables, owner, name: repo, followRenames: this.#repo !== undefined,
+    const pin = this.#repo;
+    // Whether the repository GitHub answered about is another than the pinned one. The answer
+    // is read for it within the request, which so counts one that names no repository an error.
+    let moved = false;
+    const result = await this.#graphql<T>(operation, query, {
+      ...variables, owner, name: repo, followRenames: pin !== undefined,
+    }, data => {
+      const found = data.repository;
+      if (found === null) return new GitHubApiError(404, `Repository ${owner}/${repo} was not found.`);
+      moved = pin !== undefined && found.databaseId !== pin.id;
+      return undefined;
     });
-    const found = result.data.repository;
-    if (found === null) throw new GitHubApiError(404, `Repository ${owner}/${repo} was not found.`);
-    if (this.#repo !== undefined && found.databaseId !== this.#repo.id) {
+    // The pin is the binding's rule about an answer that holds the repository at that name: the
+    // request is counted by its status.
+    if (moved) {
       throw new GitHubApiError(404, `GitHub moved ${owner}/${repo} out of the bound repository; it was not followed.`);
     }
     return result;
@@ -1704,7 +1997,7 @@ export class GitHubApi {
   ): Promise<GitHubCheckAnnotationResponse[]> {
     return (await this.#request<GitHubCheckAnnotationResponse[]>(
       "GET", `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/check-runs/${checkRunId}/annotations`,
-      { query: { page, per_page: perPage } })).data;
+      { query: { page, per_page: perPage }, read: rows => listedRows(rows, "annotations") })).data;
   }
 
   async getWorkflowJob(owner: string, repo: string, jobId: number): Promise<GitHubWorkflowJobResponse> {
@@ -1719,38 +2012,77 @@ export class GitHubApi {
   async getWorkflowJobLogLocation(owner: string, repo: string, jobId: number): Promise<string | null> {
     const result = await this.#request<unknown>(
       "GET", `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/jobs/${jobId}/logs`,
-      { externalRedirect: true, okStatuses: [404, 410] });
-    if (result.status === 404 || result.status === 410) return null;
-    const location = result.headers.get("location");
-    if (!isRedirect(result.status) || location === null) {
+      {
+        externalRedirect: true,
+        okStatuses: [404, 410],
+        // An answer that neither hands the log off nor says that it is gone is no answer to this
+        // request, whatever its status. A redirect is counted before this is asked.
+        counted: (_data, { status }) => gone(status) ? undefined : { outcome: "error", reason: "api" },
+      });
+    if (gone(result.status)) return null;
+    const location = handOff(result.status, result.headers);
+    if (location === null) {
       throw new GitHubApiError(result.status, `GitHub did not hand off the log of job ${jobId} for download.`);
     }
     return location;
   }
 
   /**
-   * Downloads a log from the location `getWorkflowJobLogLocation()` returned. The location is
-   * signed and off GitHub's API host, so the request carries no `Authorization`: the token must
-   * never reach blob storage.
+   * Downloads a log from the location `getWorkflowJobLogLocation()` returned, and returns what
+   * `read` reads of it. The location is signed and off GitHub's API host, so the request carries
+   * no `Authorization`: the token must never reach blob storage. A redirect from there is not
+   * followed, and fails the download.
+   *
+   * The log is read within the request, as it arrives, so that the request is counted by whether
+   * its log arrived and not by the status that came ahead of it: what `read` throws is thrown
+   * here, with the request counted an error, a timeout where that is what `read` threw. The
+   * download is sent once, whatever it is answered and whether it is answered at all: GitHub
+   * signs the location for a minute, so a later send may be for a location whose signature has
+   * run out, and its refusal would be thrown in place of the failure that was met.
+   * @param location The signed location of the log.
+   * @param read Reads the log from the stream of an answer, which it releases or cancels itself.
+   * It is asked once at most, and reads the log from its start.
+   * @returns What `read` returned of the log.
    */
-  async downloadJobLog(location: string): Promise<ReadableStream<Uint8Array>> {
-    const response = await fetch(location, {
+  async downloadJobLog<T>(location: string, read: (log: ReadableStream<Uint8Array>) => Promise<T>): Promise<T> {
+    const downloaded = await githubUpstream.read<Downloaded<T>>(location, {
+      operation: "logs.download" satisfies GitHubOperation,
       headers: { "User-Agent": USER_AGENT },
-      signal: AbortSignal.timeout(LOG_DOWNLOAD_TIMEOUT_MS),
-    });
-    if (!response.ok || response.body === null) {
-      await response.body?.cancel();
-      throw new GitHubApiError(response.status, `Downloading the log failed: ${response.status} ${response.statusText}`);
-    }
-    return response.body;
+      timeoutMs: LOG_DOWNLOAD_TIMEOUT_MS,
+      // The location's signature runs out within a minute: it is asked once.
+      retry: null,
+    }, async response => {
+      // The answer is checked within the request, so that one with no log to read is no success.
+      const { body } = response;
+      if (!response.ok || body === null) {
+        await body?.cancel();
+        throw new GitHubApiError(response.status, `Downloading the log failed: ${response.status} ${response.statusText}`);
+      }
+      try {
+        return { log: await read(body) };
+      } catch (thrown) {
+        // Handed on and not thrown, so that the count says how the reading failed. What is left
+        // of a body that no reader holds is let go, as the client lets go of one whose reading
+        // threw.
+        void body.cancel().catch(() => undefined);
+        return { unread: { thrown } };
+      }
+    },
+    // A log that did not arrive is no success: cut off by the timeout where its reading failed
+    // as a timeout fails one, and not read otherwise, which is how the client counts each.
+    ({ unread }) => unread && { outcome: "error", reason: isTimeout(unread.thrown) ? "timeout" : "parse" });
+    if (downloaded.unread) throw downloaded.unread.thrown;
+    return downloaded.log;
   }
 
   async listWorkflowRuns(owner: string, repo: string, query: {
     branch?: string; head_sha?: string; event?: string; status?: string; page: number; per_page: number;
   }): Promise<GitHubWorkflowRunResponse[]> {
-    return (await this.#request<{ workflow_runs: GitHubWorkflowRunResponse[] }>(
-      "GET", `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs`,
-      { query: { ...query, exclude_pull_requests: true } })).data.workflow_runs;
+    return (await this.#request<GitHubWorkflowRunResponse[], { workflow_runs?: GitHubWorkflowRunResponse[] }>(
+      "GET", `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs`, {
+        query: { ...query, exclude_pull_requests: true },
+        read: body => listedRows(body.workflow_runs, "workflow runs"),
+      })).data;
   }
 
   async getWorkflowRun(owner: string, repo: string, runId: number): Promise<GitHubWorkflowRunResponse> {
@@ -1764,9 +2096,11 @@ export class GitHubApi {
     owner: string, repo: string, runId: number, attempt: number | undefined, page: number, perPage: number,
   ): Promise<GitHubWorkflowJobResponse[]> {
     const run = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs/${runId}`;
-    return (await this.#request<{ jobs: GitHubWorkflowJobResponse[] }>(
-      "GET", attempt === undefined ? `${run}/jobs` : `${run}/attempts/${attempt}/jobs`,
-      { query: { page, per_page: perPage, filter: attempt === undefined ? "latest" : undefined } })).data.jobs;
+    return (await this.#request<GitHubWorkflowJobResponse[], { jobs?: GitHubWorkflowJobResponse[] }>(
+      "GET", attempt === undefined ? `${run}/jobs` : `${run}/attempts/${attempt}/jobs`, {
+        query: { page, per_page: perPage, filter: attempt === undefined ? "latest" : undefined },
+        read: body => listedRows(body.jobs, "a workflow run's jobs"),
+      })).data;
   }
 
   /**
@@ -1776,7 +2110,10 @@ export class GitHubApi {
   async listBranchActivity(owner: string, repo: string, branch: string): Promise<GitHubActivityResponse[]> {
     return (await this.#request<GitHubActivityResponse[]>(
       "GET", `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/activity`,
-      { query: { ref: `refs/heads/${branch}`, direction: "desc", per_page: 30 } })).data;
+      {
+        query: { ref: `refs/heads/${branch}`, direction: "desc", per_page: 30 },
+        read: rows => listedRows(rows, "branch activity"),
+      })).data;
   }
 
   /** The rules every ruleset applies to `branch`. */
@@ -1784,7 +2121,7 @@ export class GitHubApi {
     return (await this.#request<GitHubBranchRuleResponse[]>(
       "GET", `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/rules/branches/${
         validateBranchName(branch).split("/").map(encodeURIComponent).join("/")}`,
-      { query: { per_page: 100 } })).data;
+      { query: { per_page: 100 }, read: rows => listedRows(rows, "branch rules") })).data;
   }
 
   /**
@@ -1794,10 +2131,14 @@ export class GitHubApi {
   async getBranchProtectionChecks(
     owner: string, repo: string, branch: string,
   ): Promise<GitHubBranchProtectionChecksResponse | undefined> {
-    return (await this.#request<{ protection?: { required_status_checks?: GitHubBranchProtectionChecksResponse } }>(
+    return (await this.#request<
+      GitHubBranchProtectionChecksResponse | undefined,
+      { protection?: { required_status_checks?: GitHubBranchProtectionChecksResponse } }
+    >(
       "GET", `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches/${
         validateBranchName(branch).split("/").map(encodeURIComponent).join("/")}`,
-    )).data.protection?.required_status_checks;
+      { read: body => body.protection?.required_status_checks },
+    )).data;
   }
 
   /**
@@ -1807,14 +2148,20 @@ export class GitHubApi {
    * specifies for token-authenticated git operations. Throws `GitHubApiError` on a non-OK
    * status (401 marks it an auth error, like every other method here), so callers get the same
    * credential-expiry handling as REST calls.
+   *
+   * A success that holds no pack (one of another content type, which is a page answered in place
+   * of the result, or one with no body) is thrown as a `GitHubApiError` of status 502, its body
+   * cancelled unread, and the request is counted as that error. What holds a pack is told by the
+   * answer's headers and by whether it has a body, so the pack is handed on as it came: unread.
    */
   async fetchGitUploadPack(owner: string, repo: string, requestBody: Uint8Array): Promise<Response> {
     const url = `${LOGIN_BASE_URL}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}.git/git-upload-pack`;
-    const response = await fetch(url, {
+    const response = await githubUpstream.read(url, {
+      operation: "git.upload-pack" satisfies GitHubOperation,
       method: "POST",
       headers: {
         "Content-Type": "application/x-git-upload-pack-request",
-        Accept: "application/x-git-upload-pack-result",
+        Accept: UPLOAD_PACK_RESULT,
         "Git-Protocol": "version=2",
         "User-Agent": USER_AGENT,
         Authorization: `Basic ${encodeBasicAuth("x-access-token", await this.#getToken())}`,
@@ -1823,10 +2170,14 @@ export class GitHubApi {
       // GitHub serves a renamed repo over smart-HTTP without redirecting, so any redirect is
       // refused (as a non-OK status) rather than followed somewhere unbound.
       redirect: "manual",
-      // Longer than REQUEST_TIMEOUT_MS: the signal also covers streaming the response body,
+      // Longer than a request's 30 seconds: the timeout also covers streaming the response body,
       // which may be a pack of tens of megabytes.
-      signal: AbortSignal.timeout(GIT_UPLOAD_PACK_TIMEOUT_MS),
-    });
+      timeoutMs: GIT_UPLOAD_PACK_TIMEOUT_MS,
+    },
+    // The pack is the transport's to stream: the answer is handed on with its body unread.
+    answered => answered,
+    // A success that holds no pack is thrown below, and is counted as the error it is thrown as.
+    answered => answered.ok && !holdsPack(answered) ? { outcome: "error", reason: "parse" } : undefined);
     if (!response.ok) {
       // The error body is short prose (e.g. "Repository not found"); a truncated copy makes the
       // failure actionable without trusting its size.
@@ -1836,31 +2187,62 @@ export class GitHubApi {
         `git fetch failed: ${response.status} ${response.statusText}${detail ? `: ${detail}` : ""}`,
       );
     }
+    if (!holdsPack(response)) {
+      await response.body?.cancel().catch(() => {});
+      throw isGitResult(response.headers, UPLOAD_PACK_RESULT)
+        ? new GitHubApiError(502, "git fetch failed: response had no body")
+        : notGitResult("fetch", UPLOAD_PACK_RESULT, response.headers);
+    }
     return response;
   }
 
   /**
    * POST a git smart-HTTP `receive-pack` request (the git push endpoint; classic protocol -- there
-   * is no v2 for receive-pack) and return the raw `Response`, whose report-status body the caller
-   * parses -- see `@gadgets/gatekeeper-kit/git-transport`. The request body streams (the pack may be large), so it is
-   * sent chunked. Auth and error handling mirror `fetchGitUploadPack`.
+   * is no v2 for receive-pack) that updates `branch`, and return its answer, whose report-status
+   * body the caller parses -- see `@gadgets/gatekeeper-kit/git-transport`. The request body streams (the pack may be
+   * large), so it is sent chunked. Auth and error handling mirror `fetchGitUploadPack`.
+   *
+   * Git answers a ref update it refused with a 200 and says so in that report, so the request is
+   * counted by what the report says of `branch` (see `pushAnswer`). The report is read for that
+   * within the request, so that one whose transfer is cut off is no success either, and what is
+   * returned is an answer of the status GitHub gave over the report that was read.
+   *
+   * A success of another content type holds no report: it is a page answered in place of the
+   * result. It is thrown as a `GitHubApiError` of status 502, its body cancelled unread, and the
+   * request is counted as that error.
    */
   async fetchGitReceivePack(
-    owner: string, repo: string, requestBody: ReadableStream<Uint8Array>,
+    owner: string, repo: string, branch: string, requestBody: ReadableStream<Uint8Array>,
   ): Promise<Response> {
     const url = `${LOGIN_BASE_URL}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}.git/git-receive-pack`;
-    const response = await fetch(url, {
+    const { response, report: reported } = await githubUpstream.read<Pushed>(url, {
+      operation: "git.receive-pack" satisfies GitHubOperation,
       method: "POST",
       headers: {
         "Content-Type": "application/x-git-receive-pack-request",
-        Accept: "application/x-git-receive-pack-result",
+        Accept: RECEIVE_PACK_RESULT,
         "User-Agent": USER_AGENT,
         Authorization: `Basic ${encodeBasicAuth("x-access-token", await this.#getToken())}`,
       },
       body: requestBody,
       redirect: "manual",
-      // Same generous budget as fetch: the signal also covers streaming the pack up.
-      signal: AbortSignal.timeout(GIT_UPLOAD_PACK_TIMEOUT_MS),
+      // Same generous budget as fetch: the timeout also covers streaming the pack up.
+      timeoutMs: GIT_UPLOAD_PACK_TIMEOUT_MS,
+      // A push is never sent twice.
+      retry: null,
+    }, async answered => {
+      // Only a git result holds a report: any other answer is thrown below, its body unread.
+      if (!answered.ok || !isGitResult(answered.headers, RECEIVE_PACK_RESULT)) return { response: answered };
+      const report = await readPushReport(answered);
+      // The transport is handed the report to parse, and no body where GitHub sent none, which
+      // it refuses in its own words.
+      const body = answered.body === null ? null : report;
+      return { response: new Response(body, { status: answered.status }), report };
+    }, ({ response: answered, report }) => {
+      if (report) return pushAnswer(report, `refs/heads/${branch}`);
+      // A success with no report read of it is no git result, and is counted as the error it is
+      // thrown as below.
+      return answered.ok ? { outcome: "error", reason: "parse" } : undefined;
     });
     if (!response.ok) {
       const detail = (await response.text().catch(() => "")).trim().slice(0, 200);
@@ -1868,6 +2250,10 @@ export class GitHubApi {
         response.status,
         `git push failed: ${response.status} ${response.statusText}${detail ? `: ${detail}` : ""}`,
       );
+    }
+    if (reported === undefined) {
+      await response.body?.cancel().catch(() => {});
+      throw notGitResult("push", RECEIVE_PACK_RESULT, response.headers);
     }
     return response;
   }

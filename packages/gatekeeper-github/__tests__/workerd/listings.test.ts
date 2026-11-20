@@ -62,8 +62,11 @@ class FakeGitHub {
   readonly pulls = new Map<number, Row>();
   /** Listing pages by path (`/issues`, `/pulls`, `/search/issues`), 1-based. */
   readonly pages = new Map<string, unknown[][]>();
-  /** `"<path> p<page>"` listing fetches that fail once with a 502. */
-  readonly failing = new Set<string>();
+  /**
+   * `"<path> p<page>"` listing fetches that fail with a 502, with how many more times each does:
+   * three fail one read at every attempt, since a GET answered 502 is sent three times.
+   */
+  readonly failing = new Map<string, number>();
   readonly requests: string[] = [];
   /**
    * While set, a `GET /issues/{n}` stalls (answering with what it read on arrival) and is logged
@@ -92,7 +95,10 @@ class FakeGitHub {
       });
     }
     if (path === "/user") return Response.json({ login: "ada" });
-    if (this.failing.delete(`${path} p${page}`)) {
+    const failures = this.failing.get(`${path} p${page}`);
+    if (failures !== undefined) {
+      if (failures > 1) this.failing.set(`${path} p${page}`, failures - 1);
+      else this.failing.delete(`${path} p${page}`);
       return Response.json({ message: "Bad Gateway" }, { status: 502 });
     }
     const listing = this.pages.get(path);
@@ -203,7 +209,7 @@ describe("listing walks", () => {
   it("loses no rows when a fetch fails partway through a page", async () => {
     const github = new FakeGitHub();
     github.pages.set("/issues", [range(1, 100).map(n => issue(n)), range(101, 100).map(n => issue(n))]);
-    github.failing.add("/issues p2");
+    github.failing.set("/issues p2", 3);
     const gk = await repoGatekeeper();
 
     // The second call holds rows 61-100 when page 2's fetch fails; the retry still serves them.

@@ -4,11 +4,13 @@
 // agent sequence: push a branch (queued), immediately create a pull request against it (queued),
 // then keep reading the pull request -- details, diff, commit list -- which must reflect the
 // pushed state even though nothing has reached GitHub yet. Also covered: queue-time branch
-// validation, the out-of-order-approval guard, and the push-rejection cascade.
+// validation, the out-of-order-approval guard, the push-rejection cascade, and the one subservice
+// point that each loop of requests over queued actions is written as.
 
-import { RpcStub, RpcTarget } from "cloudflare:workers";
+import { RpcStub, RpcTarget, env as bindings } from "cloudflare:workers";
 import { env, runInDurableObject } from "cloudflare:test";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { COMMON_SLOTS, SUBSERVICE_V1_SLOTS, type BlobSlot, type DoubleSlot } from "@gadgets/observability/metrics";
 import type { ActionDescription, GitObjectType, GitOid }
   from "@gadgets/workshop-shared/gatekeeper";
 import { FLUSH_PKT, encodePktLine } from "@gadgets/gatekeeper-kit/git-transport";
@@ -16,8 +18,8 @@ import type {
   GitHubCommitFilter, GitHubCreatePullRequestOptions, GitHubPullRequestMergeOptions,
 } from "../../src/types";
 import type {
-  CreatePullRequestActionData, GatekeeperProps, MergePullRequestActionData, Outcome,
-  PushActionData,
+  CreatePullRequestActionData, GatekeeperProps, GitHubActionData, ListingMethod,
+  MergePullRequestActionData, Outcome, PushActionData,
 } from "./worker";
 
 const OWNER = "acme";
@@ -196,10 +198,14 @@ function pullResponse(
  * Fakes GitHub at the fetch boundary: branches (none protected), single commits (404 for pending ids -- the
  * anchor probe), commit listings, compares, the pulls API (create fails 422 while the head
  * branch is missing, and merge checks `sha` and answers 405 once merged, exactly like GitHub),
- * the viewer, and git-receive-pack.
+ * empty issue listings and searches, git trees and blobs, the viewer, and git-receive-pack.
  */
 class FakeGitHub {
   readonly branches = new Map<string, string>();
+  /** One level of each git tree GitHub has, by its oid. */
+  readonly gitTrees = new Map<string, { mode: string, path: string, sha: string }[]>();
+  /** The text of each git blob GitHub has, by its oid. */
+  readonly gitBlobs = new Map<string, string>();
   readonly restCommits = new Map<string, FakeCommit>();
   readonly compares = new Map<string, FakeCompare>();
   readonly commitListings = new Map<string, FakeCommit[]>();  // sha → listing (no path filter)
@@ -208,8 +214,9 @@ class FakeGitHub {
   readonly requests: URL[] = [];
   /** The `sha` of every merge request, in order. */
   readonly merges: (string | undefined)[] = [];
-  /** Branches whose next read fails with a 502. */
+  /** Branches whose next read fails with a 502, at each of the three attempts a GET is sent. */
   readonly failingBranchReads = new Set<string>();
+  readonly #failedBranchReads = new Map<string, number>();
   /**
    * Branches whose next read is held until `heldReadsReleased`, counted in `heldReads`. Polled
    * rather than awaited: a promise settled from the test would carry the test's I/O context into
@@ -272,7 +279,13 @@ class FakeGitHub {
         while (!this.heldReadsReleased) await scheduler.wait(1);
       }
       const head = this.branches.get(name);
-      if (this.failingBranchReads.delete(name)) {
+      if (this.failingBranchReads.has(name)) {
+        const failed = (this.#failedBranchReads.get(name) ?? 0) + 1;
+        this.#failedBranchReads.set(name, failed);
+        if (failed === 3) {
+          this.failingBranchReads.delete(name);
+          this.#failedBranchReads.delete(name);
+        }
         return Response.json({ message: "Bad Gateway" }, { status: 502 });
       }
       if (head === undefined) {
@@ -280,6 +293,34 @@ class FakeGitHub {
       }
       return Response.json({ ref: `refs/heads/${name}`, object: { sha: head, type: "commit" } });
     }
+
+    if (path.startsWith(`${API_BASE}/rules/branches/`)) {
+      // This fake holds no rulesets: their read fails with a status that is not sent again, which
+      // leaves the branch a push names gated.
+      return Response.json({ message: "Server Error" }, { status: 500 });
+    }
+
+    if (path === `${API_BASE}/branches`) {
+      return Response.json([...this.branches].map(([name, sha]) => ({ name, commit: { sha }, protected: false })));
+    }
+
+    if (path.startsWith(`${API_BASE}/git/trees/`)) {
+      const sha = path.slice(`${API_BASE}/git/trees/`.length);
+      const tree = this.gitTrees.get(sha);
+      if (tree === undefined) return Response.json({ message: "Not Found" }, { status: 404 });
+      return Response.json({ sha, tree: tree.map(entry => ({ ...entry, type: "blob" })), truncated: false });
+    }
+
+    if (path.startsWith(`${API_BASE}/git/blobs/`)) {
+      const sha = path.slice(`${API_BASE}/git/blobs/`.length);
+      const text = this.gitBlobs.get(sha);
+      if (text === undefined) return Response.json({ message: "Not Found" }, { status: 404 });
+      return Response.json({ sha, size: text.length, encoding: "base64", content: btoa(text) });
+    }
+
+    if (path === `${API_BASE}/issues`) return Response.json([]);
+
+    if (path === "https://api.github.com/search/issues") return Response.json({ total_count: 0, items: [] });
 
     if (path.startsWith(`${API_BASE}/branches/`)) {
       const name = decodeURIComponent(path.slice(`${API_BASE}/branches/`.length));
@@ -333,6 +374,8 @@ class FakeGitHub {
         number, { ref: body.head, sha: headSha }, { ref: body.base, sha: baseSha }));
       return Response.json({ number }, { status: 201 });
     }
+
+    if (path === `${API_BASE}/pulls`) return Response.json([...this.pulls.values()]);
 
     if (path.startsWith(`${API_BASE}/pulls/`)) {
       const rest = path.slice(`${API_BASE}/pulls/`.length);
@@ -445,6 +488,16 @@ async function repoGatekeeper() {
       unwrap(hooks.pullMergeBase(scenario, props, id, cache === undefined ? undefined : stubOf(cache))),
     isSimulatedCommitId: (commitId: string) =>
       unwrap(hooks.isSimulatedCommitId(scenario, props, commitId)),
+    listBranchesFirstPage: () => unwrap(hooks.listBranchesFirstPage(scenario, props, 50)),
+    /** Every row of one issue or pull request listing, read with no git cache. */
+    listing: async (method: ListingMethod, query: unknown) =>
+      (await unwrap(hooks.listingPages(scenario, props, method, query, 50)) as ({ id: string }[] | null)[])
+        .flatMap(page => page ?? []),
+    /** Submits a hand-built `action`, as a session does once it has prepared one. */
+    submitAction: (action: GitHubActionData) =>
+      unwrap(hooks.submitAction(scenario, props, stubOf(new TestApprovalQueue()), action, {
+        title: action.type, description: action.type, implementsRevert: false,
+      })),
     restart: () => hooks.restartGatekeeper(scenario),
     /** Writes storage directly; must precede every other call on this gatekeeper. */
     seed: (entries: Record<string, unknown>) => hooks.seedGatekeeper(scenario, props, entries),
@@ -1049,4 +1102,159 @@ describe("pending commit walk", () => {
     expect(page?.map(commit => commit.id)).toEqual([HEAD3, HEAD1, OLD]);
     expect(github.requests.some(url => url.searchParams.get("sha") === HEAD1)).toBe(false);
   });
+});
+
+/** A written subservice point's value in one column. */
+function column(point: AnalyticsEngineDataPoint, slot: BlobSlot | DoubleSlot) {
+  const values = slot.startsWith("blob") ? point.blobs : point.doubles;
+  return values?.[Number(slot.replace(/\D+/, "")) - 1];
+}
+
+/** How many requests GitHub was sent for a path under the repository that starts with `prefix`. */
+function requested(github: FakeGitHub, prefix: string) {
+  return github.requests.filter(url => (url.origin + url.pathname).startsWith(`${API_BASE}${prefix}`)).length;
+}
+
+/** The standard fake, which also has the trees and blobs of main's history and the agent commits. */
+function gitHubWithObjects(): FakeGitHub {
+  const github = scenarioGitHub();
+  github.gitTrees.set(TREE_BASE, [{ mode: "100644", path: "hello.txt", sha: BLOB_HELLO_V1 }]);
+  github.gitTrees.set(TREE_1, [
+    { mode: "100644", path: "hello.txt", sha: BLOB_HELLO_V2 },
+    { mode: "100644", path: "new.txt", sha: BLOB_NEW },
+  ]);
+  github.gitTrees.set(TREE_2, [
+    { mode: "100644", path: "extra.txt", sha: BLOB_EXTRA },
+    { mode: "100644", path: "hello.txt", sha: BLOB_HELLO_V2 },
+    { mode: "100644", path: "new.txt", sha: BLOB_NEW },
+  ]);
+  github.gitBlobs.set(BLOB_HELLO_V1, "hello\nworld\n");
+  github.gitBlobs.set(BLOB_HELLO_V2, "hello\nthere\nworld\n");
+  github.gitBlobs.set(BLOB_NEW, "fresh\n");
+  return github;
+}
+
+/** A cache that holds the commits and none of their trees or blobs, as after a pull that left them out. */
+function commitsOnlyCache(): TestGitCache {
+  return new TestGitCache()
+    .withObject(BASE, "commit", commitPayload(TREE_BASE, [], "base"))
+    .withObject(HEAD1, "commit", commitPayload(TREE_1, [BASE], "feat: add new.txt"))
+    .withObject(HEAD2, "commit", commitPayload(TREE_2, [HEAD1], "feat: add extra.txt"))
+    .withAncestry(BASE, HEAD1)
+    .withAncestry(HEAD1, HEAD2);
+}
+
+describe("requests summed into one point", () => {
+  // The metrics read the Worker's bindings from `cloudflare:workers`, whose `env` this suite
+  // shares with the gatekeeper, so a dataset set on it here records what the gatekeeper writes.
+  const ambient = bindings as { METRICS?: AnalyticsEngineDataset; SUBSERVICE_METRICS?: string };
+  let points: AnalyticsEngineDataPoint[];
+
+  beforeEach(() => {
+    points = [];
+    ambient.METRICS = { writeDataPoint: point => { if (point) points.push(point); } };
+    ambient.SUBSERVICE_METRICS = "true";
+  });
+
+  afterEach(() => {
+    delete ambient.METRICS;
+    delete ambient.SUBSERVICE_METRICS;
+  });
+
+  /** The points written for `operation`, as each one's outcome, HTTP status and count of calls. */
+  function counted(operation: string) {
+    return points
+      .filter(point => column(point, SUBSERVICE_V1_SLOTS.operation) === operation)
+      .map(point => [COMMON_SLOTS.outcome, SUBSERVICE_V1_SLOTS.httpStatus, SUBSERVICE_V1_SLOTS.calls].map(slot => column(point, slot)));
+  }
+
+  it("reads the trees and blobs the cache lacks from GitHub for a simulated diff, as one point of each", async () => {
+    const github = gitHubWithObjects();
+    const gk = await repoGatekeeper();
+    const cache = commitsOnlyCache();
+    await queuePush(gk, cache, "feature", HEAD1);
+    const pr = await queuePullRequest(gk, { title: "Add new.txt", head: "feature", base: "main" });
+    points.length = 0;
+
+    const diff = await gk.pullDiffAll(pr.provisionalId, cache);
+
+    expect(diff.files.map(file => [file.path, file.status, file.additions, file.deletions]))
+      .toEqual([["hello.txt", "modified", 1, 0], ["new.txt", "added", 1, 0]]);
+    expect(requested(github, "/git/trees/")).toBe(2);
+    expect(requested(github, "/git/blobs/")).toBe(3);
+    expect(counted("trees.get")).toEqual([["success", 200, 2]]);
+    expect(counted("blobs.get")).toEqual([["success", 200, 3]]);
+  });
+
+  it("reads the trees a path filter compares from GitHub for each queued commit, as one point", async () => {
+    const github = gitHubWithObjects();
+    const gk = await repoGatekeeper();
+    const cache = commitsOnlyCache();
+    await queuePush(gk, cache, "feature", HEAD1);
+    await queuePush(gk, cache, "feature", HEAD2);
+    points.length = 0;
+
+    const page = await gk.listCommitsFirstPage({ ref: "feature", path: "new.txt" }, cache);
+
+    // Only the first queued commit touches the path; each is compared with its parent, tree by tree.
+    expect(page?.map(commit => commit.id)).toEqual([HEAD1]);
+    expect(requested(github, "/git/trees/")).toBe(4);
+    expect(counted("trees.get")).toEqual([["success", 200, 4]]);
+  });
+
+  it("asks GitHub about each branch a queued push creates, as one point", async () => {
+    const github = scenarioGitHub();
+    const gk = await repoGatekeeper();
+    const cache = scenarioCache();
+    await queuePush(gk, cache, "feature", HEAD1);
+    await queuePush(gk, cache, "topic", HEAD1);
+    const asked = requested(github, "/git/ref/heads/");
+    points.length = 0;
+
+    const page = await gk.listBranchesFirstPage();
+
+    expect(page?.map(branch => [branch.name, branch.headCommit]))
+      .toEqual(expect.arrayContaining([["feature", HEAD1], ["topic", HEAD1], ["main", BASE]]));
+    expect(requested(github, "/git/ref/heads/") - asked).toBe(2);
+    expect(counted("ref.get")).toEqual([["error", 404, 2]]);
+  });
+
+  it.each([
+    ["listIssues", undefined, "user.get"],
+    ["searchIssues", { text: "bug" }, "user.get"],
+    ["listPullRequests", undefined, "compare.get"],
+    ["searchPullRequests", { text: "fix" }, "compare.get"],
+  ] satisfies [ListingMethod, unknown, string][])(
+    "builds each issue or pull request queued for creation for %s, as one point",
+    async (method, query, operation) => {
+      const github = scenarioGitHub();
+      for (const branch of ["topic-a", "topic-b"]) {
+        github.branches.set(branch, OLD);
+        github.compares.set(`main...${branch}`, {
+          base_commit: { sha: BASE },
+          merge_base_commit: { sha: BASE },
+          commits: [{ sha: OLD, message: "old head", parents: [BASE] }],
+          total_commits: 1,
+          files: [],
+        });
+      }
+      const gk = await repoGatekeeper();
+      for (const [index, title] of ["Bug one", "Bug two"].entries()) {
+        await gk.submitAction({
+          type: "createIssue", approvalId: 900 + index, submittedAt: Date.now(), owner: OWNER, repo: REPO,
+          provisionalId: `~90${index}`, options: { title },
+        });
+      }
+      const pulls = [
+        await queuePullRequest(gk, { title: "Fix one", head: "topic-a", base: "main" }),
+        await queuePullRequest(gk, { title: "Fix two", head: "topic-b", base: "main" }),
+      ];
+      const wanted = method.endsWith("Issues") ? ["~900", "~901"] : pulls.map(pull => pull.provisionalId);
+      points.length = 0;
+
+      const rows = await gk.listing(method, query);
+
+      expect(rows.map(row => row.id).toSorted()).toEqual(wanted.toSorted());
+      expect(counted(operation)).toEqual([["success", 200, 2]]);
+    });
 });

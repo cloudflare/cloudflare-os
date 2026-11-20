@@ -10,14 +10,16 @@
 // - Apply is a send-pack whose old-sha is the queue-time expectation (CAS for force and non-force
 //   alike), with desired-state idempotency: the branch already being at `newSha` is success.
 // - Revert rolls the ref back (or deletes a created branch), CAS'd from the pushed commit.
+// - Apply and revert count their push by what git's report says of the branch they update.
 
-import { RpcStub, RpcTarget } from "cloudflare:workers";
+import { RpcStub, RpcTarget, env as bindings } from "cloudflare:workers";
 import { env, runInDurableObject } from "cloudflare:test";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ActionDescription, GitObjectType, GitOid }
   from "@gadgets/workshop-shared/gatekeeper";
 import type { ActionPresentation } from "@gadgets/gatekeeper-kit/actions";
 import { FLUSH_PKT, ZERO_OID, encodePktLine, pktText } from "@gadgets/gatekeeper-kit/git-transport";
+import { COMMON_SLOTS, SUBSERVICE_V1_SLOTS, type BlobSlot, type DoubleSlot } from "@gadgets/observability/metrics";
 import type { GatekeeperProps, Outcome, PushActionData } from "./worker";
 
 const OWNER = "acme";
@@ -991,5 +993,77 @@ describe("revert", () => {
     const result = await gk.revertAction(action.approvalId);
     expect(result).toMatchObject({ canRetry: false });
     expect((result as { message: string }).message).toMatch(/no longer at the pushed commit/);
+  });
+});
+
+/** A written point's value in one column. */
+function column(point: AnalyticsEngineDataPoint, slot: BlobSlot | DoubleSlot) {
+  const values = slot.startsWith("blob") ? point.blobs : point.doubles;
+  return values?.[Number(slot.replace(/\D+/, "")) - 1];
+}
+
+/** A gatekeeper with a push of HEAD1 to `feature` queued, which is at BASE. */
+async function queued() {
+  const github = new FakeGitHub();
+  github.branches.set("main", BASE);
+  github.branches.set("feature", BASE);
+  github.install();
+  const gk = await repoGatekeeper();
+  const cache = new TestGitCache().withAncestry(BASE, HEAD1);
+  const action = await queuePush(gk, cache, new TestApprovalQueue(), "feature", HEAD1);
+  if (action === null) throw new Error("test: the push was not queued");
+  return { github, gk, cache, action };
+}
+
+describe("how a push is counted", () => {
+  // The metrics read the Worker's bindings from `cloudflare:workers`, whose `env` this suite
+  // shares with the gatekeeper, so a dataset set on it here records what the gatekeeper writes.
+  const ambient = bindings as { METRICS?: AnalyticsEngineDataset; SUBSERVICE_METRICS?: string };
+  let points: AnalyticsEngineDataPoint[];
+
+  beforeEach(() => {
+    points = [];
+    ambient.METRICS = { writeDataPoint: point => { if (point) points.push(point); } };
+    ambient.SUBSERVICE_METRICS = "true";
+  });
+
+  afterEach(() => {
+    delete ambient.METRICS;
+    delete ambient.SUBSERVICE_METRICS;
+  });
+
+  /** The pushes counted since the last look, as each one's outcome, reason and HTTP status. */
+  function pushesCounted() {
+    return points.splice(0)
+      .filter(point => column(point, SUBSERVICE_V1_SLOTS.operation) === "git.receive-pack")
+      .map(point => [COMMON_SLOTS.outcome, SUBSERVICE_V1_SLOTS.reason, SUBSERVICE_V1_SLOTS.httpStatus].map(slot => column(point, slot)));
+  }
+
+  it("counts an applied push, and its rollback, as a success by the report on the pushed branch", async () => {
+    const { github, gk, cache, action } = await queued();
+
+    github.respondToPush("unpack ok", "ok refs/heads/feature");
+    await gk.applyAction(action.approvalId, cache);
+    expect(pushesCounted()).toEqual([["success", "", 200]]);
+
+    github.respondToPush("unpack ok", "ok refs/heads/feature");
+    expect(await gk.revertAction(action.approvalId)).toBeUndefined();
+    expect(pushesCounted()).toEqual([["success", "", 200]]);
+  });
+
+  it("counts a push, and a rollback, that git refuses for the pushed branch as an error inside a success", async () => {
+    const { github, gk, cache, action } = await queued();
+
+    github.respondToPush("unpack ok", "ng refs/heads/feature protected branch hook declined");
+    await expect(gk.applyAction(action.approvalId, cache))
+      .rejects.toThrow("GitHub refused the push: protected branch hook declined");
+    expect(pushesCounted()).toEqual([["error", "api", 200]]);
+
+    github.respondToPush("unpack ok", "ok refs/heads/feature");
+    await gk.applyAction(action.approvalId, cache);
+    expect(pushesCounted()).toEqual([["success", "", 200]]);
+    github.respondToPush("unpack ok", "ng refs/heads/feature fetch first");
+    expect(await gk.revertAction(action.approvalId)).toMatchObject({ canRetry: false });
+    expect(pushesCounted()).toEqual([["error", "api", 200]]);
   });
 });

@@ -63,6 +63,7 @@ import {
   type PinnedRepo,
 } from "./github-api";
 import { getBasePath, getBaseUrl, webhookOrigin, type Env } from "./github-env";
+import { githubUpstream } from "./github-upstream";
 import {
   ACTIONS_APP_SLUG,
   MAX_CHECK_ENTRIES,
@@ -1299,29 +1300,32 @@ class StreamingCursor<T, R = T> extends RpcTarget implements Cursor<T> {
 
   /** @returns The next page, `[]` when the fetch window ran out before a match, or `null` at the end. */
   async next(): Promise<T[] | null> {
-    // Fill the page from the buffer, loading more when it runs dry. Injected rows re-validate
-    // at the moment they are *served*, not when they were buffered: #loadMore buffers a whole
-    // remote page at once, so with a small page size a row can sit in the buffer across many
-    // next() calls -- plenty of time for the state that justified it to change underneath.
-    // Consumed rows leave the buffer only once the page is returned, so a fetch that throws
-    // leaves them for the retry.
-    const page: T[] = [];
-    let consumed = 0;
-    let fetches = 0;
-    while (page.length < this.#pageSize) {
-      const entry = this.#buffer[consumed];
-      if (entry === undefined) {
-        if (this.#fullyExhausted()) break;
-        if (!this.#remoteExhausted && fetches++ === MAX_REMOTE_PAGES_PER_NEXT) break;
-        await this.#loadMore();
-        continue;
+    // One page can take several fetches, and a fetch several requests: their calls are summed.
+    return await githubUpstream.summed(async () => {
+      // Fill the page from the buffer, loading more when it runs dry. Injected rows re-validate
+      // at the moment they are *served*, not when they were buffered: #loadMore buffers a whole
+      // remote page at once, so with a small page size a row can sit in the buffer across many
+      // next() calls -- plenty of time for the state that justified it to change underneath.
+      // Consumed rows leave the buffer only once the page is returned, so a fetch that throws
+      // leaves them for the retry.
+      const page: T[] = [];
+      let consumed = 0;
+      let fetches = 0;
+      while (page.length < this.#pageSize) {
+        const entry = this.#buffer[consumed];
+        if (entry === undefined) {
+          if (this.#fullyExhausted()) break;
+          if (!this.#remoteExhausted && fetches++ === MAX_REMOTE_PAGES_PER_NEXT) break;
+          await this.#loadMore();
+          continue;
+        }
+        consumed++;
+        const item = entry.injected ? this.#revalidateInjected(entry.item) : entry.item;
+        if (item !== null) page.push(item);
       }
-      consumed++;
-      const item = entry.injected ? this.#revalidateInjected(entry.item) : entry.item;
-      if (item !== null) page.push(item);
-    }
-    this.#buffer.splice(0, consumed);
-    return page.length === 0 && this.#fullyExhausted() ? null : page;
+      this.#buffer.splice(0, consumed);
+      return page.length === 0 && this.#fullyExhausted() ? null : page;
+    });
   }
 
   #fullyExhausted(): boolean {
@@ -1682,18 +1686,21 @@ export class UserAccount extends DurableObject<Env> {
    * is never reused.
    */
   async checkSubresourceAccess(subresources: string[]): Promise<boolean[]> {
-    // Parsed before anything is asked, so an ID this account can't check is refused outright.
-    const repoIds = subresources.map(parseRepoSubresource);
-    // GitHub answers for one repository per request, so each is cached on its own, and a later
-    // failure keeps what earlier requests learned. One at a time, though a binding's reads all
-    // report the same one repository.
-    const answers: boolean[] = [];
-    for (const [index, subresource] of subresources.entries()) {
-      answers.push(await this.#access.cached(subresource,
-        allowed => allowed ? REPO_ACCESS_ALLOWED_TTL_MS : REPO_ACCESS_DENIED_TTL_MS,
-        () => withAccountApi(this, api => hasRepoIdAccess(api, repoIds[index]), { replayable: true })));
-    }
-    return answers;
+    // One request for each repository asked about: their calls are summed.
+    return await githubUpstream.summed(async () => {
+      // Parsed before anything is asked, so an ID this account can't check is refused outright.
+      const repoIds = subresources.map(parseRepoSubresource);
+      // GitHub answers for one repository per request, so each is cached on its own, and a later
+      // failure keeps what earlier requests learned. One at a time, though a binding's reads all
+      // report the same one repository.
+      const answers: boolean[] = [];
+      for (const [index, subresource] of subresources.entries()) {
+        answers.push(await this.#access.cached(subresource,
+          allowed => allowed ? REPO_ACCESS_ALLOWED_TTL_MS : REPO_ACCESS_DENIED_TTL_MS,
+          () => withAccountApi(this, api => hasRepoIdAccess(api, repoIds[index]), { replayable: true })));
+      }
+      return answers;
+    });
   }
 
   /**
@@ -2370,69 +2377,72 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
   }
 
   async #syncDiscussionComments(realId: string, commentCount?: number): Promise<StoredDiscussionCommentState> {
-    let state = this.#ensureDiscussionCommentState(realId, commentCount);
-    if (commentCount !== undefined && state.depth > commentCount) {
-      state = this.#resetDiscussionCommentState(realId, commentCount);
-    }
-    if (Date.now() - state.freshness < ENTITY_CACHE_TTL_MS) {
-      return state;
-    }
-
-    const since = new Date(Math.max(0, state.freshness - DISCUSSION_SYNC_OVERLAP_MS)).toISOString();
-    const knownIds = new Set(state.ids);
-    const updates = new Map<string, GitHubDiscussionCommentEntry>();
-    const appended: GitHubDiscussionCommentEntry[] = [];
-    let changedCount = 0;
-
-    for (let page = 1; ; page += 1) {
-      const batch = await this.#withApi(api =>
-        api.listIssueComments(
-          this.ctx.props.owner,
-          this.ctx.props.repo,
-          Number(realId),
-          page,
-          100,
-          since,
-        ));
-      changedCount += batch.length;
-      if (changedCount > DISCUSSION_SYNC_BAIL_LIMIT) {
-        return this.#resetDiscussionCommentState(realId, commentCount);
+    // Pages until GitHub has no more: the calls are summed.
+    return await githubUpstream.summed(async () => {
+      let state = this.#ensureDiscussionCommentState(realId, commentCount);
+      if (commentCount !== undefined && state.depth > commentCount) {
+        state = this.#resetDiscussionCommentState(realId, commentCount);
+      }
+      if (Date.now() - state.freshness < ENTITY_CACHE_TTL_MS) {
+        return state;
       }
 
-      for (const comment of batch) {
-        const normalized = discussionCommentFromResponse(comment);
-        if (knownIds.has(normalized.id)) {
-          updates.set(normalized.id, normalized);
-        } else if (state.exhausted) {
-          appended.push(normalized);
-          knownIds.add(normalized.id);
+      const since = new Date(Math.max(0, state.freshness - DISCUSSION_SYNC_OVERLAP_MS)).toISOString();
+      const knownIds = new Set(state.ids);
+      const updates = new Map<string, GitHubDiscussionCommentEntry>();
+      const appended: GitHubDiscussionCommentEntry[] = [];
+      let changedCount = 0;
+
+      for (let page = 1; ; page += 1) {
+        const batch = await this.#withApi(api =>
+          api.listIssueComments(
+            this.ctx.props.owner,
+            this.ctx.props.repo,
+            Number(realId),
+            page,
+            100,
+            since,
+          ));
+        changedCount += batch.length;
+        if (changedCount > DISCUSSION_SYNC_BAIL_LIMIT) {
+          return this.#resetDiscussionCommentState(realId, commentCount);
+        }
+
+        for (const comment of batch) {
+          const normalized = discussionCommentFromResponse(comment);
+          if (knownIds.has(normalized.id)) {
+            updates.set(normalized.id, normalized);
+          } else if (state.exhausted) {
+            appended.push(normalized);
+            knownIds.add(normalized.id);
+          }
+        }
+
+        if (batch.length < 100) {
+          break;
         }
       }
 
-      if (batch.length < 100) {
-        break;
+      for (const [commentId, comment] of updates) {
+        this.ctx.storage.kv.put(this.#discussionCommentEntryKey(realId, commentId), comment);
       }
-    }
 
-    for (const [commentId, comment] of updates) {
-      this.ctx.storage.kv.put(this.#discussionCommentEntryKey(realId, commentId), comment);
-    }
-
-    if (appended.length > 0) {
-      appended.sort((a, b) => {
-        const delta = a.createdAt.getTime() - b.createdAt.getTime();
-        return delta === 0 ? a.id.localeCompare(b.id) : delta;
-      });
-      for (const comment of appended) {
-        this.ctx.storage.kv.put(this.#discussionCommentEntryKey(realId, comment.id), comment);
-        state.ids.push(comment.id);
+      if (appended.length > 0) {
+        appended.sort((a, b) => {
+          const delta = a.createdAt.getTime() - b.createdAt.getTime();
+          return delta === 0 ? a.id.localeCompare(b.id) : delta;
+        });
+        for (const comment of appended) {
+          this.ctx.storage.kv.put(this.#discussionCommentEntryKey(realId, comment.id), comment);
+          state.ids.push(comment.id);
+        }
+        state.depth = state.ids.length;
       }
-      state.depth = state.ids.length;
-    }
 
-    state.freshness = Date.now();
-    this.#putDiscussionCommentState(realId, state);
-    return state;
+      state.freshness = Date.now();
+      this.#putDiscussionCommentState(realId, state);
+      return state;
+    });
   }
 
   async #materializeDiscussionCommentDepth(
@@ -2440,55 +2450,58 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     targetDepth: number,
     chunkHint: number,
   ): Promise<StoredDiscussionCommentState> {
-    let state = this.#ensureDiscussionCommentState(realId);
-    if (targetDepth <= state.depth || state.exhausted) {
-      return state;
-    }
+    // Pages until the depth is reached: the calls are summed.
+    return await githubUpstream.summed(async () => {
+      let state = this.#ensureDiscussionCommentState(realId);
+      if (targetDepth <= state.depth || state.exhausted) {
+        return state;
+      }
 
-    const chunkSize = Math.max(1, Math.min(100, state.chunkSize ?? chunkHint));
-    state.chunkSize = chunkSize;
-    let restarted = false;
+      const chunkSize = Math.max(1, Math.min(100, state.chunkSize ?? chunkHint));
+      state.chunkSize = chunkSize;
+      let restarted = false;
 
-    while (state.depth < targetDepth && !state.exhausted) {
-      const knownIds = new Set(state.ids);
-      const page = Math.floor(state.depth / chunkSize) + 1;
-      const batch = await this.#withApi(api =>
-        api.listIssueComments(
-          this.ctx.props.owner,
-          this.ctx.props.repo,
-          Number(realId),
-          page,
-          chunkSize,
-        ));
-      const normalized = batch.map(discussionCommentFromResponse);
+      while (state.depth < targetDepth && !state.exhausted) {
+        const knownIds = new Set(state.ids);
+        const page = Math.floor(state.depth / chunkSize) + 1;
+        const batch = await this.#withApi(api =>
+          api.listIssueComments(
+            this.ctx.props.owner,
+            this.ctx.props.repo,
+            Number(realId),
+            page,
+            chunkSize,
+          ));
+        const normalized = batch.map(discussionCommentFromResponse);
 
-      if (state.depth > 0 && normalized.some(comment => knownIds.has(comment.id))) {
-        if (restarted) {
-          throw new Error(`GitHub discussion pagination shifted while loading #${realId}. Retry the request.`);
+        if (state.depth > 0 && normalized.some(comment => knownIds.has(comment.id))) {
+          if (restarted) {
+            throw new Error(`GitHub discussion pagination shifted while loading #${realId}. Retry the request.`);
+          }
+          state = this.#resetDiscussionCommentState(realId);
+          state.chunkSize = chunkSize;
+          restarted = true;
+          continue;
         }
-        state = this.#resetDiscussionCommentState(realId);
-        state.chunkSize = chunkSize;
-        restarted = true;
-        continue;
+
+        restarted = false;
+        for (const comment of normalized) {
+          if (knownIds.has(comment.id)) continue;
+          this.ctx.storage.kv.put(this.#discussionCommentEntryKey(realId, comment.id), comment);
+          state.ids.push(comment.id);
+          knownIds.add(comment.id);
+        }
+
+        state.depth = state.ids.length;
+        if (batch.length < chunkSize) {
+          state.exhausted = true;
+          state.freshness = Date.now();
+        }
+        this.#putDiscussionCommentState(realId, state);
       }
 
-      restarted = false;
-      for (const comment of normalized) {
-        if (knownIds.has(comment.id)) continue;
-        this.ctx.storage.kv.put(this.#discussionCommentEntryKey(realId, comment.id), comment);
-        state.ids.push(comment.id);
-        knownIds.add(comment.id);
-      }
-
-      state.depth = state.ids.length;
-      if (batch.length < chunkSize) {
-        state.exhausted = true;
-        state.freshness = Date.now();
-      }
-      this.#putDiscussionCommentState(realId, state);
-    }
-
-    return state;
+      return state;
+    });
   }
 
   #pullReviewCommentStateKey(realId: string): string {
@@ -2555,115 +2568,121 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
   }
 
   async #syncPullReviewComments(realId: string): Promise<StoredPullReviewCommentState> {
-    const state = this.#ensurePullReviewCommentState(realId);
-    if (Date.now() - state.freshness < ENTITY_CACHE_TTL_MS) {
-      return state;
-    }
-
-    const since = new Date(Math.max(0, state.freshness - DISCUSSION_SYNC_OVERLAP_MS)).toISOString();
-    const knownIds = new Set(state.ids);
-    const updates = new Map<string, GitHubPullRequestReviewCommentResponse>();
-    const appended: GitHubPullRequestReviewCommentResponse[] = [];
-    let changedCount = 0;
-
-    for (let page = 1; ; page += 1) {
-      const batch = await this.#readApi(api =>
-        api.listPullRequestReviewComments(
-          this.ctx.props.owner,
-          this.ctx.props.repo,
-          Number(realId),
-          page,
-          100,
-          since,
-        ));
-      changedCount += batch.length;
-      if (changedCount > DISCUSSION_SYNC_BAIL_LIMIT) {
-        return this.#resetPullReviewCommentState(realId);
+    // Pages until GitHub has no more: the calls are summed.
+    return await githubUpstream.summed(async () => {
+      const state = this.#ensurePullReviewCommentState(realId);
+      if (Date.now() - state.freshness < ENTITY_CACHE_TTL_MS) {
+        return state;
       }
 
-      for (const comment of batch) {
-        const commentId = String(comment.id);
-        if (knownIds.has(commentId)) {
-          updates.set(commentId, comment);
-        } else if (state.exhausted) {
-          appended.push(comment);
-          knownIds.add(commentId);
+      const since = new Date(Math.max(0, state.freshness - DISCUSSION_SYNC_OVERLAP_MS)).toISOString();
+      const knownIds = new Set(state.ids);
+      const updates = new Map<string, GitHubPullRequestReviewCommentResponse>();
+      const appended: GitHubPullRequestReviewCommentResponse[] = [];
+      let changedCount = 0;
+
+      for (let page = 1; ; page += 1) {
+        const batch = await this.#readApi(api =>
+          api.listPullRequestReviewComments(
+            this.ctx.props.owner,
+            this.ctx.props.repo,
+            Number(realId),
+            page,
+            100,
+            since,
+          ));
+        changedCount += batch.length;
+        if (changedCount > DISCUSSION_SYNC_BAIL_LIMIT) {
+          return this.#resetPullReviewCommentState(realId);
+        }
+
+        for (const comment of batch) {
+          const commentId = String(comment.id);
+          if (knownIds.has(commentId)) {
+            updates.set(commentId, comment);
+          } else if (state.exhausted) {
+            appended.push(comment);
+            knownIds.add(commentId);
+          }
+        }
+
+        if (batch.length < 100) {
+          break;
         }
       }
 
-      if (batch.length < 100) {
-        break;
-      }
-    }
-
-    for (const [commentId, comment] of updates) {
-      this.ctx.storage.kv.put(this.#pullReviewCommentEntryKey(realId, commentId), comment);
-    }
-
-    if (appended.length > 0) {
-      appended.sort((a, b) => {
-        const delta = new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
-        return delta === 0 ? a.id - b.id : delta;
-      });
-      for (const comment of appended) {
-        const commentId = String(comment.id);
+      for (const [commentId, comment] of updates) {
         this.ctx.storage.kv.put(this.#pullReviewCommentEntryKey(realId, commentId), comment);
-        state.ids.push(commentId);
       }
-      state.depth = state.ids.length;
-    }
 
-    state.freshness = Date.now();
-    this.#putPullReviewCommentState(realId, state);
-    return state;
+      if (appended.length > 0) {
+        appended.sort((a, b) => {
+          const delta = new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+          return delta === 0 ? a.id - b.id : delta;
+        });
+        for (const comment of appended) {
+          const commentId = String(comment.id);
+          this.ctx.storage.kv.put(this.#pullReviewCommentEntryKey(realId, commentId), comment);
+          state.ids.push(commentId);
+        }
+        state.depth = state.ids.length;
+      }
+
+      state.freshness = Date.now();
+      this.#putPullReviewCommentState(realId, state);
+      return state;
+    });
   }
 
   async #materializeAllPullReviewComments(realId: string): Promise<GitHubPullRequestReviewCommentResponse[]> {
-    let state = this.#ensurePullReviewCommentState(realId);
-    const chunkSize = Math.max(1, Math.min(100, state.chunkSize ?? 100));
-    state.chunkSize = chunkSize;
-    let restarted = false;
+    // Pages until GitHub has no more: the calls are summed.
+    return await githubUpstream.summed(async () => {
+      let state = this.#ensurePullReviewCommentState(realId);
+      const chunkSize = Math.max(1, Math.min(100, state.chunkSize ?? 100));
+      state.chunkSize = chunkSize;
+      let restarted = false;
 
-    while (!state.exhausted) {
-      const knownIds = new Set(state.ids);
-      const page = Math.floor(state.depth / chunkSize) + 1;
-      const batch = await this.#withApi(api =>
-        api.listPullRequestReviewComments(
-          this.ctx.props.owner,
-          this.ctx.props.repo,
-          Number(realId),
-          page,
-          chunkSize,
-        ));
+      while (!state.exhausted) {
+        const knownIds = new Set(state.ids);
+        const page = Math.floor(state.depth / chunkSize) + 1;
+        const batch = await this.#withApi(api =>
+          api.listPullRequestReviewComments(
+            this.ctx.props.owner,
+            this.ctx.props.repo,
+            Number(realId),
+            page,
+            chunkSize,
+          ));
 
-      if (state.depth > 0 && batch.some(comment => knownIds.has(String(comment.id)))) {
-        if (restarted) {
-          throw new Error(`GitHub pull review comment pagination shifted while loading #${realId}. Retry the request.`);
+        if (state.depth > 0 && batch.some(comment => knownIds.has(String(comment.id)))) {
+          if (restarted) {
+            throw new Error(`GitHub pull review comment pagination shifted while loading #${realId}. Retry the request.`);
+          }
+          state = this.#resetPullReviewCommentState(realId);
+          state.chunkSize = chunkSize;
+          restarted = true;
+          continue;
         }
-        state = this.#resetPullReviewCommentState(realId);
-        state.chunkSize = chunkSize;
-        restarted = true;
-        continue;
+
+        restarted = false;
+        for (const comment of batch) {
+          const commentId = String(comment.id);
+          if (knownIds.has(commentId)) continue;
+          this.ctx.storage.kv.put(this.#pullReviewCommentEntryKey(realId, commentId), comment);
+          state.ids.push(commentId);
+          knownIds.add(commentId);
+        }
+
+        state.depth = state.ids.length;
+        if (batch.length < chunkSize) {
+          state.exhausted = true;
+          state.freshness = Date.now();
+        }
+        this.#putPullReviewCommentState(realId, state);
       }
 
-      restarted = false;
-      for (const comment of batch) {
-        const commentId = String(comment.id);
-        if (knownIds.has(commentId)) continue;
-        this.ctx.storage.kv.put(this.#pullReviewCommentEntryKey(realId, commentId), comment);
-        state.ids.push(commentId);
-        knownIds.add(commentId);
-      }
-
-      state.depth = state.ids.length;
-      if (batch.length < chunkSize) {
-        state.exhausted = true;
-        state.freshness = Date.now();
-      }
-      this.#putPullReviewCommentState(realId, state);
-    }
-
-    return this.#readAllPullReviewComments(realId);
+      return this.#readAllPullReviewComments(realId);
+    });
   }
 
   #actionRecordKey(approvalId: number): string {
@@ -3401,33 +3420,40 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     predicate: (item: GitHubIssueDetails) => boolean,
     compare: (a: GitHubIssueSummary, b: GitHubIssueSummary) => number,
   ): Promise<{ ids: Set<string>; items: GitHubIssueSummary[] }> {
-    const ids = this.#pendingExistingEntityIds("issue");
-    const items = (await Promise.all([...ids].map(async id => this.#getIssueDetails(id))))
-      .filter(predicate)
-      .map(details => summarizeIssueDetails(details))
-      .toSorted(compare);
-    return { ids, items };
+    // One read for each issue a queued action touches: their calls are summed.
+    return await githubUpstream.summed(async () => {
+      const ids = this.#pendingExistingEntityIds("issue");
+      const items = (await Promise.all([...ids].map(async id => this.#getIssueDetails(id))))
+        .filter(predicate)
+        .map(details => summarizeIssueDetails(details))
+        .toSorted(compare);
+      return { ids, items };
+    });
   }
 
   async #buildTouchedPullSummaries(
     predicate: (item: GitHubPullRequestDetails) => boolean,
     compare: (a: GitHubPullRequestSummary, b: GitHubPullRequestSummary) => number,
   ): Promise<{ ids: Set<string>; items: GitHubPullRequestSummary[] }> {
-    const ids = this.#pendingExistingEntityIds("pull");
-    const items = (await Promise.all([...ids].map(async id => this.#getPullRequestDetails(id))))
-      .filter(predicate)
-      .map(details => summarizePullDetails(details))
-      .toSorted(compare);
-    return { ids, items };
+    // One read for each pull request a queued action touches: their calls are summed.
+    return await githubUpstream.summed(async () => {
+      const ids = this.#pendingExistingEntityIds("pull");
+      const items = (await Promise.all([...ids].map(async id => this.#getPullRequestDetails(id))))
+        .filter(predicate)
+        .map(details => summarizePullDetails(details))
+        .toSorted(compare);
+      return { ids, items };
+    });
   }
 
   async #listIssueSummaries(filter: GitHubIssueFilter | undefined, pageSize: number): Promise<Cursor<GitHubIssueSummary>> {
     const compare = issueComparator(filter?.sort, filter?.direction);
     const touched = await this.#buildTouchedIssueSummaries(item => issueMatchesFilter(item, filter), compare);
 
-    const provisionals = (await Promise.all(this.#listPendingActions()
+    // Each issue queued for creation is built from reads of its own: their calls are summed.
+    const provisionals = (await githubUpstream.summed(() => Promise.all(this.#listPendingActions()
       .filter((action): action is CreateIssueAction => action.type === "createIssue")
-      .map(action => this.#buildProvisionalIssueDetails(action).then(issue => this.#overlayIssueLike(issue, "issue", action.provisionalId, true)))))
+      .map(action => this.#buildProvisionalIssueDetails(action).then(issue => this.#overlayIssueLike(issue, "issue", action.provisionalId, true))))))
       .filter(item => issueMatchesFilter(item, filter))
       .toSorted(compare);
     const injectedItems = [...touched.items, ...provisionals].toSorted(compare);
@@ -3477,9 +3503,10 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     const remoteDirection = query.direction ?? "desc";
     const compare = issueComparator(remoteSort, remoteDirection);
 
-    const provisionals = (await Promise.all(this.#listPendingActions()
+    // Each issue queued for creation is built from reads of its own: their calls are summed.
+    const provisionals = (await githubUpstream.summed(() => Promise.all(this.#listPendingActions()
       .filter((action): action is CreateIssueAction => action.type === "createIssue")
-      .map(action => this.#buildProvisionalIssueDetails(action).then(issue => this.#overlayIssueLike(issue, "issue", action.provisionalId, true)))))
+      .map(action => this.#buildProvisionalIssueDetails(action).then(issue => this.#overlayIssueLike(issue, "issue", action.provisionalId, true))))))
       .filter(item => issueMatchesSearch(item, query))
       .toSorted(compare);
 
@@ -3539,9 +3566,10 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     const compare = pullComparator(filter?.sort, filter?.direction);
     const touched = await this.#buildTouchedPullSummaries(item => pullMatchesFilter(item, filter), compare);
 
-    const provisionals = (await Promise.all(this.#listPendingActions()
+    // One comparison for each pull request queued for creation: their calls are summed.
+    const provisionals = (await githubUpstream.summed(() => Promise.all(this.#listPendingActions()
       .filter((action): action is CreatePullRequestAction => action.type === "createPullRequest")
-      .map(action => this.#buildProvisionalPullRequestDetails(action, gitCache).then(pull => this.#overlayIssueLike(pull, "pull", action.provisionalId, true)))))
+      .map(action => this.#buildProvisionalPullRequestDetails(action, gitCache).then(pull => this.#overlayIssueLike(pull, "pull", action.provisionalId, true))))))
       .filter(item => pullMatchesFilter(item, filter))
       .toSorted(compare);
     const injectedItems = [...touched.items.map(item => this.#overlayPullSummaryHead(item)), ...provisionals]
@@ -3594,9 +3622,10 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
   ): Promise<Cursor<GitHubPullRequestSummary>> {
     const compare = pullComparator("updated", "desc");
 
-    const provisionals = (await Promise.all(this.#listPendingActions()
+    // One comparison for each pull request queued for creation: their calls are summed.
+    const provisionals = (await githubUpstream.summed(() => Promise.all(this.#listPendingActions()
       .filter((action): action is CreatePullRequestAction => action.type === "createPullRequest")
-      .map(action => this.#buildProvisionalPullRequestDetails(action, gitCache).then(pull => this.#overlayIssueLike(pull, "pull", action.provisionalId, true)))))
+      .map(action => this.#buildProvisionalPullRequestDetails(action, gitCache).then(pull => this.#overlayIssueLike(pull, "pull", action.provisionalId, true))))))
       .filter(item => pullMatchesSearch(item, query))
       .toSorted(compare);
 
@@ -4578,7 +4607,8 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
         try {
           const pack = await cache.buildPack();
           await this.#withApi(api => pushGitRefUpdate(
-            body => this.#gitRequest((owner, repo) => api.fetchGitReceivePack(owner, repo, body), { confirm: false }),
+            body => this.#gitRequest(
+              (owner, repo) => api.fetchGitReceivePack(owner, repo, action.branch, body), { confirm: false }),
             { branch: action.branch, oldSha: action.expectedOldSha, newSha: action.newSha },
             pack));
         } catch (error) {
@@ -4817,7 +4847,8 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
         const deleting = action.expectedOldSha === ZERO_OID;
         try {
           await this.#withApi(async api => pushGitRefUpdate(
-            body => this.#gitRequest((owner, repo) => api.fetchGitReceivePack(owner, repo, body), { confirm: false }),
+            body => this.#gitRequest(
+              (owner, repo) => api.fetchGitReceivePack(owner, repo, action.branch, body), { confirm: false }),
             {
               branch: action.branch,
               oldSha: action.newSha,
@@ -5064,43 +5095,46 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     anchor: GitOid;
     pending: GitOid[];
   }> {
-    const commits: { summary: GitHubCommitSummary; tree: GitOid }[] = [];
-    const pending: GitOid[] = [];
-    const seen = new Set<GitOid>();
-    let anchor: GitOid | undefined;
-    // Depth-first with first parents on top: the walk descends the first-parent chain until the
-    // anchor, then drains the side parents stacked along the way.
-    const stack = [head];
-    for (let current = stack.pop(); current !== undefined; current = stack.pop()) {
-      if (seen.has(current)) continue;
-      seen.add(current);
-      if (current === realHead || await this.#isCommitOnGitHub(current)) {
-        anchor ??= current;
-        continue;
-      }
-      if (pending.length === MAX_PENDING_CHAIN_COMMITS) {
-        throw new Error(`More than ${MAX_PENDING_CHAIN_COMMITS} commits are queued for push.`);
-      }
-      const payload = await gitObjectBytes(await gitCache.get(current), "commit");
-      if (payload === null) {
-        throw new Error(`Commit ${current} is not available from the workspace git cache.`);
-      }
-      const parsed = parseGitCommitPayload(payload, current);
-      this.#servedSimulatedCommitIds.add(current);
-      pending.push(current);
-      if (anchor === undefined) {
-        if (parsed.parents.length === 0) {
-          throw new Error(`Commit ${current} has no ancestor known to GitHub.`);
+    // One probe for each commit walked: their calls are summed.
+    return await githubUpstream.summed(async () => {
+      const commits: { summary: GitHubCommitSummary; tree: GitOid }[] = [];
+      const pending: GitOid[] = [];
+      const seen = new Set<GitOid>();
+      let anchor: GitOid | undefined;
+      // Depth-first with first parents on top: the walk descends the first-parent chain until the
+      // anchor, then drains the side parents stacked along the way.
+      const stack = [head];
+      for (let current = stack.pop(); current !== undefined; current = stack.pop()) {
+        if (seen.has(current)) continue;
+        seen.add(current);
+        if (current === realHead || await this.#isCommitOnGitHub(current)) {
+          anchor ??= current;
+          continue;
         }
-        commits.push({
-          summary: commitDetailsFromGitObject(
-            current, payload, canonicalRepoUrl(this.ctx.props.owner, this.ctx.props.repo)),
-          tree: parsed.tree,
-        });
+        if (pending.length === MAX_PENDING_CHAIN_COMMITS) {
+          throw new Error(`More than ${MAX_PENDING_CHAIN_COMMITS} commits are queued for push.`);
+        }
+        const payload = await gitObjectBytes(await gitCache.get(current), "commit");
+        if (payload === null) {
+          throw new Error(`Commit ${current} is not available from the workspace git cache.`);
+        }
+        const parsed = parseGitCommitPayload(payload, current);
+        this.#servedSimulatedCommitIds.add(current);
+        pending.push(current);
+        if (anchor === undefined) {
+          if (parsed.parents.length === 0) {
+            throw new Error(`Commit ${current} has no ancestor known to GitHub.`);
+          }
+          commits.push({
+            summary: commitDetailsFromGitObject(
+              current, payload, canonicalRepoUrl(this.ctx.props.owner, this.ctx.props.repo)),
+            tree: parsed.tree,
+          });
+        }
+        stack.push(...parsed.parents.toReversed());
       }
-      stack.push(...parsed.parents.toReversed());
-    }
-    return { commits, anchor: anchor!, pending };
+      return { commits, anchor: anchor!, pending };
+    });
   }
 
   /** The tree oid of a commit, from cached bytes when available, else GitHub's commit API. */
@@ -5193,8 +5227,10 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     const newTree = chain.commits.length > 0
       ? chain.commits[0].tree
       : await this.#treeOidOfCommit(gitCache, simulatedHead);
-    const files = await diffGitTrees(
-      this.#treeDiffSource(gitCache), await this.#treeOidOfCommit(gitCache, mergeBase), newTree);
+    // A tree or a blob the cache lacks is one request to GitHub, for either side of every changed
+    // directory and file: the requests of the diff are counted as one sum.
+    const files = await githubUpstream.summed(async () => diffGitTrees(
+      this.#treeDiffSource(gitCache), await this.#treeOidOfCommit(gitCache, mergeBase), newTree));
 
     const result: SimulatedPullComparison = {
       // The pending chain descends from the anchor without touching the base branch, so the
@@ -5324,23 +5360,26 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     const injectedNames = new Set<string>();
     const injectedItems: GitHubBranchSummary[] = [];
     const creationsChecked = new Set<string>();
-    for (const action of this.#pendingPushActions()) {
-      if (action.expectedOldSha !== ZERO_OID || creationsChecked.has(action.branch)) continue;
-      creationsChecked.add(action.branch);
-      const realHead = await this.#withApi(api =>
-        api.getBranchHead(this.ctx.props.owner, this.ctx.props.repo, action.branch));
-      if (realHead !== null) continue;
-      const head = this.#simulateBranchHead(action.branch, null);
-      if (head === null) continue;
-      injectedNames.add(action.branch);
-      if (filter?.protected !== true) {
-        // Served-simulated recording (not just isCommitPendingPush coverage): the page carrying
-        // this row may be drained after the push is rejected, and the advertising callback must
-        // still withhold a head that never reached the remote.
-        this.#servedSimulatedCommitIds.add(head);
-        injectedItems.push({ name: action.branch, headCommit: head, protected: false });
+    // One read for each branch a queued push creates: their calls are summed.
+    await githubUpstream.summed(async () => {
+      for (const action of this.#pendingPushActions()) {
+        if (action.expectedOldSha !== ZERO_OID || creationsChecked.has(action.branch)) continue;
+        creationsChecked.add(action.branch);
+        const realHead = await this.#withApi(api =>
+          api.getBranchHead(this.ctx.props.owner, this.ctx.props.repo, action.branch));
+        if (realHead !== null) continue;
+        const head = this.#simulateBranchHead(action.branch, null);
+        if (head === null) continue;
+        injectedNames.add(action.branch);
+        if (filter?.protected !== true) {
+          // Served-simulated recording (not just isCommitPendingPush coverage): the page carrying
+          // this row may be drained after the push is rejected, and the advertising callback must
+          // still withhold a head that never reached the remote.
+          this.#servedSimulatedCommitIds.add(head);
+          injectedItems.push({ name: action.branch, headCommit: head, protected: false });
+        }
       }
-    }
+    });
 
     return new StreamingCursor<GitHubBranchSummary>({
       fetchPage: async (page, perPage) => {
@@ -5640,30 +5679,34 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     chain: { commits: { summary: GitHubCommitSummary; tree: GitOid }[]; anchor: GitOid },
     filter: GitHubCommitFilter | undefined,
   ): Promise<GitHubCommitSummary[]> {
-    const results: GitHubCommitSummary[] = [];
-    const path = filter?.path === undefined ? undefined : stripTrailingSlashes(filter.path);
-    for (let index = 0; index < chain.commits.length; index++) {
-      const { summary, tree } = chain.commits[index];
-      if (filter?.author !== undefined &&
-          summary.author.email !== filter.author && summary.author.name !== filter.author) {
-        continue;
-      }
-      const date = summary.committer.date ?? summary.author.date;
-      if (filter?.since !== undefined && (date === undefined || date < filter.since)) continue;
-      if (filter?.until !== undefined && (date === undefined || date > filter.until)) continue;
-      if (path !== undefined) {
-        const parentTree = index + 1 < chain.commits.length
-          ? chain.commits[index + 1].tree
-          : await this.#treeOidOfCommit(gitCache, chain.anchor);
-        const changed =
-          await changedPathsBetweenTrees(this.#treeDiffSource(gitCache), parentTree, tree);
-        if (!changed.some(candidate => candidate === path || candidate.startsWith(`${path}/`))) {
+    // A tree the cache lacks is one request to GitHub, for either side of every directory a
+    // commit changed: the requests of the path filter are counted as one sum.
+    return await githubUpstream.summed(async () => {
+      const results: GitHubCommitSummary[] = [];
+      const path = filter?.path === undefined ? undefined : stripTrailingSlashes(filter.path);
+      for (let index = 0; index < chain.commits.length; index++) {
+        const { summary, tree } = chain.commits[index];
+        if (filter?.author !== undefined &&
+            summary.author.email !== filter.author && summary.author.name !== filter.author) {
           continue;
         }
+        const date = summary.committer.date ?? summary.author.date;
+        if (filter?.since !== undefined && (date === undefined || date < filter.since)) continue;
+        if (filter?.until !== undefined && (date === undefined || date > filter.until)) continue;
+        if (path !== undefined) {
+          const parentTree = index + 1 < chain.commits.length
+            ? chain.commits[index + 1].tree
+            : await this.#treeOidOfCommit(gitCache, chain.anchor);
+          const changed =
+            await changedPathsBetweenTrees(this.#treeDiffSource(gitCache), parentTree, tree);
+          if (!changed.some(candidate => candidate === path || candidate.startsWith(`${path}/`))) {
+            continue;
+          }
+        }
+        results.push(summary);
       }
-      results.push(summary);
-    }
-    return results;
+      return results;
+    });
   }
 
   async pullCommits(
@@ -5805,66 +5848,69 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     committedAt: number | undefined;
     ciExpected: boolean;
   } | undefined> {
-    const { owner, repo } = this.ctx.props;
-    const entries: RollupEntry[] = [];
-    let first: {
-      state: GitHubCommitChecks["state"];
-      counts: Partial<Record<GitHubCheckState, number>> | undefined;
-      committedAt: number | undefined;
-      ciExpected: boolean;
-    } | undefined;
-    let after: string | null = null;
-    let dropped = false;
-    for (;;) {
-      const result: GitHubGraphqlResult<GqlRollupData> = await this.#readApi(api =>
-        api.queryRepository<GqlRollupData>(owner, repo, ROLLUP_QUERY, {
-          oid: sha, workflows: `${sha}:.github/workflows`, after, first: first === undefined,
-          withPull: pullNumber !== undefined, pull: pullNumber ?? null,
-        }));
-      if (result.errors.length > 0) {
-        logger.warn("GitHub answered a CI query with partial data", {
-          event: "ci.graphql.partial", graphqlErrorCount: result.errors.length,
-        });
+    // One query for each page of entries: their calls are summed.
+    return await githubUpstream.summed(async () => {
+      const { owner, repo } = this.ctx.props;
+      const entries: RollupEntry[] = [];
+      let first: {
+        state: GitHubCommitChecks["state"];
+        counts: Partial<Record<GitHubCheckState, number>> | undefined;
+        committedAt: number | undefined;
+        ciExpected: boolean;
+      } | undefined;
+      let after: string | null = null;
+      let dropped = false;
+      for (;;) {
+        const result: GitHubGraphqlResult<GqlRollupData> = await this.#readApi(api =>
+          api.queryRepository<GqlRollupData>("graphql.checks.list", owner, repo, ROLLUP_QUERY, {
+            oid: sha, workflows: `${sha}:.github/workflows`, after, first: first === undefined,
+            withPull: pullNumber !== undefined, pull: pullNumber ?? null,
+          }));
+        if (result.errors.length > 0) {
+          logger.warn("GitHub answered a CI query with partial data", {
+            event: "ci.graphql.partial", graphqlErrorCount: result.errors.length,
+          });
+        }
+        const commit = result.data.repository?.object;
+        // A field GitHub nulled with an error was not read, which is not absence: no commit, no CI,
+        // or no more entries would each mislead. Only the side fields the absence policy reads (the
+        // parent's rollup, the workflows tree) may fail without failing the read.
+        const unread = result.errors.some(error => !error.path?.some(key => key === "parents" || key === "workflows"));
+        if (unread && !commit?.statusCheckRollup?.contexts) {
+          throw new Error("GitHub could not read this commit's CI just now; read again shortly.");
+        }
+        if (!commit?.committedDate) return undefined;
+        const rollup = commit.statusCheckRollup ?? null;
+        if (first === undefined) {
+          const checkRuns = rollup?.contexts.checkRunCountsByState;
+          const statuses = rollup?.contexts.statusContextCountsByState;
+          const committedAt = Date.parse(commit.committedDate);
+          first = {
+            state: rollupStateOf(rollup?.state),
+            counts: rollup === null ? {}
+              : checkRuns && statuses ? countsFromRollup(checkRuns, statuses) : undefined,
+            committedAt: Number.isNaN(committedAt) ? undefined : committedAt,
+            ciExpected: hasWorkflowFiles(result.data.repository?.workflows?.entries) ||
+              commit.parents?.nodes?.[0]?.statusCheckRollup != null,
+          };
+        }
+        // GitHub's schema lets the list be null without an error: entries were left out, not absent.
+        if (rollup !== null && !rollup.contexts.nodes) dropped = true;
+        for (const node of rollup?.contexts.nodes ?? []) {
+          if (node === null || entries.length >= MAX_CHECK_ENTRIES) dropped = true;
+          else entries.push(rollupEntryOf(node));
+        }
+        const page = rollup?.contexts.pageInfo;
+        if (!page?.hasNextPage || page.endCursor === null || entries.length >= MAX_CHECK_ENTRIES) {
+          return {
+            ...first,
+            entries,
+            truncated: dropped || page?.hasNextPage === true,
+          };
+        }
+        after = page.endCursor;
       }
-      const commit = result.data.repository?.object;
-      // A field GitHub nulled with an error was not read, which is not absence: no commit, no CI,
-      // or no more entries would each mislead. Only the side fields the absence policy reads (the
-      // parent's rollup, the workflows tree) may fail without failing the read.
-      const unread = result.errors.some(error => !error.path?.some(key => key === "parents" || key === "workflows"));
-      if (unread && !commit?.statusCheckRollup?.contexts) {
-        throw new Error("GitHub could not read this commit's CI just now; read again shortly.");
-      }
-      if (!commit?.committedDate) return undefined;
-      const rollup = commit.statusCheckRollup ?? null;
-      if (first === undefined) {
-        const checkRuns = rollup?.contexts.checkRunCountsByState;
-        const statuses = rollup?.contexts.statusContextCountsByState;
-        const committedAt = Date.parse(commit.committedDate);
-        first = {
-          state: rollupStateOf(rollup?.state),
-          counts: rollup === null ? {}
-            : checkRuns && statuses ? countsFromRollup(checkRuns, statuses) : undefined,
-          committedAt: Number.isNaN(committedAt) ? undefined : committedAt,
-          ciExpected: hasWorkflowFiles(result.data.repository?.workflows?.entries) ||
-            commit.parents?.nodes?.[0]?.statusCheckRollup != null,
-        };
-      }
-      // GitHub's schema lets the list be null without an error: entries were left out, not absent.
-      if (rollup !== null && !rollup.contexts.nodes) dropped = true;
-      for (const node of rollup?.contexts.nodes ?? []) {
-        if (node === null || entries.length >= MAX_CHECK_ENTRIES) dropped = true;
-        else entries.push(rollupEntryOf(node));
-      }
-      const page = rollup?.contexts.pageInfo;
-      if (!page?.hasNextPage || page.endCursor === null || entries.length >= MAX_CHECK_ENTRIES) {
-        return {
-          ...first,
-          entries,
-          truncated: dropped || page?.hasNextPage === true,
-        };
-      }
-      after = page.endCursor;
-    }
+    });
   }
 
   /**
@@ -6071,7 +6117,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
       // A waiting job is held by a deployment environment, which only GraphQL describes.
       run.status === "waiting"
         ? this.#readApi(api => api.graphql<{ node: { pendingDeploymentRequest?: GqlDeploymentRequest | null } | null }>(
-          PENDING_DEPLOYMENT_QUERY, { id: run.node_id })).then(result => result.data.node?.pendingDeploymentRequest)
+          "graphql.deployment.get", PENDING_DEPLOYMENT_QUERY, { id: run.node_id })).then(result => result.data.node?.pendingDeploymentRequest)
         : undefined,
     ]);
     return checkRunDetailsOf(run, job, pendingDeploymentOf(pending));
@@ -6121,7 +6167,9 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     let log = cache.get(cacheKey);
     if (log === undefined) {
       try {
-        log = await readCiLog(await this.#withApi(api => api.downloadJobLog(location)), normalizeGitHubLogLine);
+        // The log is read within its download, which is so counted by whether the log arrived.
+        log = await this.#withApi(api =>
+          api.downloadJobLog(location, body => readCiLog(body, normalizeGitHubLogLine)));
       } catch (error) {
         if (!(error instanceof CiLogTooLargeError)) throw error;
         throw new Error("This job's log is too large to read here; open it on GitHub at getDetails().url.",

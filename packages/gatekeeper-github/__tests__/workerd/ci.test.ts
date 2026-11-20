@@ -1,14 +1,16 @@
 // CI reads (checks, check runs, logs, workflow runs) through real sessions on the real
 // `GitHubGatekeeperImpl` Durable Object, with GitHub faked at the `fetch` boundary -- REST, GraphQL,
 // and the blob storage job logs are downloaded from -- and the overseer's approval queue and
-// workspace git cache faked at their stub boundaries.
+// workspace git cache faked at their stub boundaries. A log's download is counted by how the
+// gatekeeper's reading of it ends.
 
-import { RpcStub, RpcTarget } from "cloudflare:workers";
+import { RpcStub, RpcTarget, env as bindings } from "cloudflare:workers";
 import { env, runInDurableObject } from "cloudflare:test";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GitObjectType, GitOid } from "@gadgets/workshop-shared/gatekeeper";
 import type { ActionPresentation } from "@gadgets/gatekeeper-kit/actions";
 import { FLUSH_PKT, encodePktLine } from "@gadgets/gatekeeper-kit/git-transport";
+import { COMMON_SLOTS, SUBSERVICE_V1_SLOTS, type BlobSlot, type DoubleSlot } from "@gadgets/observability/metrics";
 import type {
   GitHubCheckRunDetails, GitHubCommitChecks, GitHubLogPage, GitHubPullRequestChecks,
 } from "../../src/types";
@@ -165,8 +167,13 @@ class FakeGitHub {
   readonly rollups = new Map<string, FakeRollup>();
   readonly checkRuns = new Map<number, ReturnType<typeof checkRun>>();
   readonly jobs = new Map<number, ReturnType<typeof job>>();
-  /** Each job's log: downloadable, or the status the logs endpoint answers instead. */
-  readonly logs = new Map<number, string | 404 | 410>();
+  /**
+   * Each job's log: downloadable as text or as the answer blob storage gives for it, or the status
+   * the logs endpoint answers instead.
+   */
+  readonly logs = new Map<number, string | 404 | 410 | (() => Response)>();
+  /** How many of the next listings of workflow runs, or of a run's jobs, hold a count and no list. */
+  listingsWithoutList = 0;
   readonly runs = new Map<number, ReturnType<typeof workflowRun>>();
   readonly pulls = new Map<number, ReturnType<typeof pullResponse>>();
   readonly pullCommits = new Map<number, string[]>();
@@ -200,6 +207,13 @@ class FakeGitHub {
     this.#receivePackResponses.push(out);
   }
 
+  /** Whether the listing being answered is one of those that hold no list. */
+  #listsNothing(): boolean {
+    if (this.listingsWithoutList === 0) return false;
+    this.listingsWithoutList--;
+    return true;
+  }
+
   requestsTo(prefix: string): { url: URL; authorization: string | null }[] {
     return this.requests.filter(request => (request.url.origin + request.url.pathname).startsWith(prefix));
   }
@@ -218,6 +232,7 @@ class FakeGitHub {
     }
     if (path.startsWith(`${BLOB_ORIGIN}/logs/`)) {
       const log = this.logs.get(Number(path.slice(`${BLOB_ORIGIN}/logs/`.length)));
+      if (typeof log === "function") return log();
       return typeof log === "string" ? new Response(log) : new Response("gone", { status: 404 });
     }
     if (path === "https://api.github.com/graphql") {
@@ -286,6 +301,7 @@ class FakeGitHub {
       return new Response(null, { status: 302, headers: { Location: `${BLOB_ORIGIN}/logs/${id}?sig=signed` } });
     }
     if (rest === "/actions/runs") {
+      if (this.#listsNothing()) return Response.json({ total_count: 0 });
       const sha = url.searchParams.get("head_sha"), status = url.searchParams.get("status");
       return Response.json({
         workflow_runs: [...this.runs.values()].filter(run => (sha === null || run.head_sha === sha) &&
@@ -295,7 +311,9 @@ class FakeGitHub {
     if ((match = rest.match(/^\/actions\/runs\/(\d+)(\/jobs|\/attempts\/\d+\/jobs)?$/))) {
       const run = this.runs.get(Number(match[1]));
       if (run === undefined) return notFound();
-      return match[2] === undefined ? Response.json(run) : Response.json({ jobs: [...this.jobs.values()] });
+      if (match[2] === undefined) return Response.json(run);
+      if (this.#listsNothing()) return Response.json({ total_count: 0 });
+      return Response.json({ jobs: [...this.jobs.values()] });
     }
     if (rest.startsWith("/rules/branches/")) {
       if (this.requiredByRules === "rateLimited") {
@@ -468,6 +486,9 @@ async function gatekeeper(pull?: number) {
   return {
     queue,
     read,
+    /** The pages of the cursor a chain of session calls ends in; a page that threw is its message, and is asked for again. */
+    pages: (calls: SessionCall[]) =>
+      unwrap(hooks.sessionPages(scenario, props, new RpcStub(queue) as never, calls)),
     /** Queues a push of PUSHED creating `branch`; returns its action id. */
     async queuePush(branch: string): Promise<number> {
       const action = await unwrap(hooks.preparePush(
@@ -496,6 +517,17 @@ function fakeGitHub(): FakeGitHub {
   const github = new FakeGitHub();
   github.install();
   return github;
+}
+
+/** A written point's value in one column. */
+function column(point: AnalyticsEngineDataPoint, slot: BlobSlot | DoubleSlot) {
+  const values = slot.startsWith("blob") ? point.blobs : point.doubles;
+  return values?.[Number(slot.replace(/\D+/, "")) - 1];
+}
+
+/** The `page` each request for a listing asked for, in order. */
+function pagesAsked(github: FakeGitHub, listing: string): (string | null)[] {
+  return github.requestsTo(`${API_BASE}${listing}`).map(request => request.url.searchParams.get("page"));
 }
 
 afterEach(() => {
@@ -608,7 +640,8 @@ describe("getChecks: a commit nothing has reported on", () => {
 
     expect(await gk.read([{ method: "getChecks", args: ["main"] }]))
       .toMatchObject({ commitId: HEAD, state: "none", phase: "done", checks: [] });
-    expect(github.requestsTo(`${API_BASE}/activity`)).toHaveLength(1);
+    // One read, sent three times: a GET that is refused or goes unanswered is sent again.
+    expect(github.requestsTo(`${API_BASE}/activity`)).toHaveLength(3);
   });
 
   it("is done at once when no CI is expected, and not when the first parent had CI", async () => {
@@ -670,6 +703,18 @@ describe("getChecks: a run its concurrency group holds", () => {
     // Pending for over an hour, it is taken as stuck.
     github.runs.set(900, pendingRun(900, 61));
     expect(await gk.read([{ method: "getChecks", args: [HEAD] }])).toMatchObject({ phase: "done" });
+  });
+
+  it("takes a listing of pending runs that holds no list for a read that failed, and reports the commit as its checks say", async () => {
+    const github = fakeGitHub();
+    github.rollups.set(HEAD, { state: "SUCCESS", nodes: [checkRunNode("build", "COMPLETED", "SUCCESS")],
+      committedAt: Date.now() - 60 * MINUTE, workflows: true, parentHasCi: true });
+    github.runs.set(900, pendingRun(900, 5));
+    github.listingsWithoutList = 1;
+    const gk = await gatekeeper();
+
+    expect(await gk.read([{ method: "getChecks", args: [HEAD] }])).toMatchObject({ state: "success", phase: "done" });
+    expect(github.requestsTo(`${API_BASE}/actions/runs`)).toHaveLength(1);
   });
 
   it("keeps an old commit nothing has reported on active rather than done", async () => {
@@ -1113,6 +1158,130 @@ describe("check runs", () => {
     github.logs.set(70, RAW_LOG);
     expect((await gk.read<GitHubLogPage>(readLog())).totalLines).toBe(6);
     expect(github.requestsTo(BLOB_ORIGIN)).toHaveLength(2);
+  });
+
+  describe("how a log's download is counted", () => {
+    // The metrics read the Worker's bindings from `cloudflare:workers`, whose `env` this suite
+    // shares with the gatekeeper, so a dataset set on it here records what the gatekeeper writes.
+    const ambient = bindings as { METRICS?: AnalyticsEngineDataset; SUBSERVICE_METRICS?: string };
+    let points: AnalyticsEngineDataPoint[];
+
+    beforeEach(() => {
+      points = [];
+      ambient.METRICS = { writeDataPoint: point => { if (point) points.push(point); } };
+      ambient.SUBSERVICE_METRICS = "true";
+    });
+
+    afterEach(() => {
+      delete ambient.METRICS;
+      delete ambient.SUBSERVICE_METRICS;
+    });
+
+    /** The downloads of a log counted since the last look, as each one's outcome, reason and HTTP status. */
+    function downloadsCounted() {
+      return points.splice(0)
+        .filter(point => column(point, SUBSERVICE_V1_SLOTS.operation) === "logs.download")
+        .map(point => [COMMON_SLOTS.outcome, SUBSERVICE_V1_SLOTS.reason, SUBSERVICE_V1_SLOTS.httpStatus].map(slot => column(point, slot)));
+    }
+
+    it("throws what cut a log's download off, counted an error, keeps nothing of that log, and downloads it afresh for the next read", async () => {
+      const github = checkRunScenario();
+      // The log arrives up to the end of its second line, and then its connection is lost.
+      github.logs.set(70, () => new Response(new ReadableStream<Uint8Array>({
+        start: controller => controller.enqueue(encoder.encode(RAW_LOG.split("\n").slice(0, 2).join("\n") + "\n")),
+        pull: controller => controller.error(new Error("connection reset")),
+      })));
+      const gk = await gatekeeper();
+
+      await expect(gk.read(readLog())).rejects.toThrow("connection reset");
+      expect(github.requestsTo(BLOB_ORIGIN)).toHaveLength(1);
+      // The status came ahead of the log: the download is counted by the log that did not arrive.
+      expect(downloadsCounted()).toEqual([["error", "parse", 200]]);
+
+      github.logs.set(70, RAW_LOG);
+      expect(await gk.read<GitHubLogPage>(readLog())).toMatchObject({
+        lines: [{ number: 1, text: "▶ Run npm test" }, { number: 2, text: "> test" }, { number: 3, text: "ok 1 parses" },
+          { number: 4, text: "error: not ok 2 renders" }, { number: 5, text: "Error: expected 1, got 2" }, { number: 6, text: "done" }],
+        totalLines: 6, firstAvailableLine: 1, complete: true,
+      });
+      expect(github.requestsTo(BLOB_ORIGIN)).toHaveLength(2);
+      expect(downloadsCounted()).toEqual([["success", "", 200]]);
+
+      // A log served from the cache is not downloaded, and nothing is counted for it.
+      await gk.read(readLog({ maxLines: 2 }));
+      expect(github.requestsTo(BLOB_ORIGIN)).toHaveLength(2);
+      expect(downloadsCounted()).toEqual([]);
+    });
+
+    it("counts a log whose reading a timeout cut off as a timeout, downloads it once, and throws the timeout", async () => {
+      const github = checkRunScenario();
+      // The log arrives up to the end of its first line, and its reading then fails as a timeout's does.
+      github.logs.set(70, () => new Response(new ReadableStream<Uint8Array>({
+        start: controller => controller.enqueue(encoder.encode(RAW_LOG.slice(0, RAW_LOG.indexOf("\n") + 1))),
+        pull: controller => controller.error(new DOMException("The operation timed out.", "TimeoutError")),
+      })));
+      const gk = await gatekeeper();
+
+      await expect(gk.read(readLog())).rejects.toThrow("The operation timed out.");
+      expect(github.requestsTo(BLOB_ORIGIN)).toHaveLength(1);
+      expect(downloadsCounted()).toEqual([["error", "timeout", 200]]);
+    });
+
+    it("counts a log that is too large to read as an error, and throws where to open it", async () => {
+      const github = checkRunScenario();
+      // A mebibyte of lines, handed over again for as long as more is asked for.
+      const chunk = encoder.encode(`${"x".repeat(1023)}\n`.repeat(1024));
+      github.logs.set(70, () => new Response(new ReadableStream<Uint8Array>({
+        pull: controller => controller.enqueue(chunk),
+      }, { highWaterMark: 0 })));
+      const gk = await gatekeeper();
+
+      await expect(gk.read(readLog())).rejects.toThrow(
+        "This job's log is too large to read here; open it on GitHub at getDetails().url.");
+      expect(github.requestsTo(BLOB_ORIGIN)).toHaveLength(1);
+      expect(downloadsCounted()).toEqual([["error", "parse", 200]]);
+    });
+  });
+});
+
+describe("a listing that GitHub answers with a count and no list", () => {
+  it("fails the page of workflow runs it was asked for, and reads that page when the cursor is asked again", async () => {
+    const github = fakeGitHub();
+    github.runs.set(900, workflowRun(900, HEAD));
+    github.listingsWithoutList = 1;
+    const gk = await gatekeeper();
+
+    expect(await gk.pages([{ method: "listWorkflowRuns" }])).toEqual([
+      expect.stringContaining("GitHub answered a listing of workflow runs with no list."),
+      [expect.objectContaining({ id: "900", commitId: HEAD })],
+      null,
+    ]);
+    expect(pagesAsked(github, "/actions/runs")).toEqual(["1", "1"]);
+  });
+
+  it("fails the page of a run's jobs it was asked for, and reads that page when the cursor is asked again", async () => {
+    const github = fakeGitHub();
+    github.runs.set(900, workflowRun(900, HEAD));
+    github.jobs.set(70, job(70));
+    const gk = await gatekeeper();
+    // The run is opened, which lists nothing, before its jobs are asked for.
+    const jobs: SessionCall[] = [{ method: "getWorkflowRun", args: ["900"] }, { method: "listJobs" }];
+    github.listingsWithoutList = 1;
+
+    expect(await gk.pages(jobs)).toEqual([
+      expect.stringContaining("GitHub answered a listing of a workflow run's jobs with no list."),
+      [expect.objectContaining({ id: "70", name: "test" })],
+      null,
+    ]);
+    expect(pagesAsked(github, "/actions/runs/900/jobs")).toEqual(["1", "1"]);
+  });
+
+  it("reads a page with an empty list as a listing that has nothing on it", async () => {
+    const github = fakeGitHub();
+    const gk = await gatekeeper();
+
+    expect(await gk.pages([{ method: "listWorkflowRuns" }])).toEqual([null]);
+    expect(pagesAsked(github, "/actions/runs")).toEqual(["1"]);
   });
 });
 
