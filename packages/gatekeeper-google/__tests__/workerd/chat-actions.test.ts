@@ -419,8 +419,8 @@ function chatHarness(
       runHook(hook, instance => instance.chatRevertAction(facetName, id, props, actionId))),
     rejectAction: (actionId: number) => ready.then(() =>
       runHook(hook, instance => instance.chatRejectAction(facetName, id, props, actionId))),
-    /** Hold the next matching request; resolves once it is reached, returning its release. */
     userObjectId: props.userObjectId,
+    /** Hold the next matching request; resolves once it is reached, returning its release. */
     holdNextRequest: async (match: (url: URL, method: string) => boolean): Promise<() => void> => {
       gate.match = match;
       while (!gate.reached) await tick();
