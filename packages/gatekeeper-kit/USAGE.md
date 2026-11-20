@@ -104,6 +104,50 @@ must decide locally when the flow is dead, clear it only if the credential ident
 still current, and apply provider cleanup only when that cannot invalidate an alias or successor.
 Workshop revokes a staged connect whose ticket is never redeemed.
 
+### A pasted key instead of OAuth
+
+Where the provider has no OAuth flow, the connect link opens a form. Spend the link's nonce when
+the form is shown and give the form a second one:
+
+```ts
+// GET /<account>/<linkNonce>
+const formNonce = advanceToOAuth(kv, linkNonce, Date.now(), {
+  startedUnder: this.#creds.connectionGeneration(),
+});
+if (formNonce === null) throw new Error("This connect link has expired. Start again.");
+return formPageResponse(connectFormHtml({
+  title: "Connect Vendor",
+  intro: "Create an API key in Vendor, under Settings, and paste it here.",
+  action: `${baseUrl}/${accountId}/key`,
+  nonce: formNonce,
+  fields: [{ name: "key", label: "API key", secret: true }],
+}));
+
+// POST /<account>/key
+const form = await readConnectForm(req, { origin: baseUrl });
+if (form instanceof Response) return form;
+const submittedNonce = form.get(CONNECT_FORM_NONCE_FIELD) ?? "";
+const key = form.get("key") ?? "";
+
+// In the account: check the submitted nonce, ask the provider, and only then claim.
+if (peekOAuth(kv, submittedNonce, Date.now()) === null) return null;
+if (!(await providerAccepts(key))) {
+  // The attempt may have ended meanwhile, and a form shown for it could not be posted.
+  return peekOAuth(kv, submittedNonce, Date.now()) === null ? null : { retry: "Vendor refused that key." };
+}
+const attempt = claimOAuth<ConnectAttempt>(kv, submittedNonce, Date.now());
+if (attempt === null) return null;
+```
+
+- Serve the form with `formPageResponse()`, never `htmlResponse()`: a page that sends no referrer
+  posts its forms with `Origin: null`, which `readConnectForm()` refuses.
+- `action` is the handler that reads the key, on the deployment's own origin. Answer the POST with
+  a page: a 307 or 308 to another origin carries the body, and not every browser stops it.
+- A refused key spends nothing, so show the form again with the same nonce and an `error`, once a
+  second check finds the attempt still open. Take the attempt's metadata from the claim, not from
+  the check: a newer link, a disconnect or the
+  attempt's expiry while the provider was asked makes the claim fail.
+
 ### Reconnect and `ensureResources`
 
 A reconnect or resource expansion must not write the new grant live. Stage the complete canonical

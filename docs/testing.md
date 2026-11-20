@@ -33,7 +33,9 @@ Workshop's browser tests need Chromium installed once with
 `pnpm --filter @gadgets/workshop-frontend exec playwright install chromium` (CI adds
 `--with-deps` for the system libraries). Run them separately with
 `pnpm --filter @gadgets/workshop-frontend test:run:browser`. The `workshop-evals` unit tests run
-views in that Chromium too, through Playwright, so they need the same install.
+views in that Chromium too, through Playwright, so they need the same install. So does `gatekeeper-kit`'s
+connect-form test (`connect-form-browser.test.ts`), which submits the pasted-key form from a real
+page, because what a browser sends as `Origin` depends on the page's `Referrer-Policy`.
 
 ## Watchdog policy
 
