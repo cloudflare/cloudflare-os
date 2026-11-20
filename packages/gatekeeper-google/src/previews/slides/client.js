@@ -606,6 +606,8 @@ function renderFilmstrip() {
     const film = make('button', 'film');
     film.dataset.slide = row.id;
     film.title = [row.title, ...row.tags.map(({ text }) => text)].join(' · ');
+    // Named by its slide, not by every word of the miniature drawn in it.
+    film.ariaLabel = `${row.slide ? `${number + 1} ` : ''}${film.title}`;
     film.classList.add(...new Set(row.tags.map(({ kind }) => kind)));
     const tags = make('span', 'tags');
     tags.append(...row.tags.filter(({ short }) => short !== 'Changed').slice(0, 2).map(found => tagNode(found, true)));
