@@ -551,6 +551,23 @@ it('draws a table\'s rows as tall as Slides does, whatever its borders weigh, an
   expect(getComputedStyle(upright).fontStyle).toBe('normal')
 })
 
+it('rings a connector as far as its turns go', async () => {
+  // Its ends are one above the other, and it runs out to the side between them.
+  const jut = { id: 'jut', bounds: { x: 100, y: 50, width: 72, height: 100 }, kind: 'line', category: 'bent',
+    start: { x: 100, y: 50 }, end: { x: 100, y: 150 }, via: [{ x: 172, y: 50 }, { x: 172, y: 150 }], stroke: { color: '#000000', weight: 1 } }
+  const { card } = await draw({
+    saved: listed('Lines'),
+    changes: [edit(1, 's1', 'jut')],
+    drawings: { s1: { drawing: slide([{ ...jut, changes: [{ id: 1, op: 'updateLine' }] }]), saved: slide([jut]) } },
+  })
+
+  const [ring, sheet] = ['.marks .spot', '.sheet'].map(found => card('s1').querySelector(found)!.getBoundingClientRect())
+  // In the slide's points, of which it is 720 wide.
+  const at = (edge: number) => (edge - sheet.left) * 720 / sheet.width
+  expect(at(ring.left)).toBeLessThan(100)
+  expect(at(ring.right)).toBeGreaterThan(172)
+})
+
 it('keeps its floating buttons off the slides in a narrow pane', async () => {
   const { card, doc } = await draw({
     saved: listed('One', 'Two'),

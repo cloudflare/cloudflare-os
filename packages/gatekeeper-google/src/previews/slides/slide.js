@@ -277,13 +277,14 @@ function drawLine(stage, element) {
   stroke(drawing.insertBefore(path, drawing.firstChild), line);
 }
 
-/** The upright box an element fills on its slide, in points: a line's from its ends. */
+/** The upright box an element fills on its slide, in points: a line's from its ends and its turns. */
 export function boxOf(element) {
   if (element.kind === 'line') {
-    const { start, end } = element;
+    const { start, end, via = [] } = element;
     const pad = (element.stroke?.weight ?? 1) / 2 + 2;
-    return { x: Math.min(start.x, end.x) - pad, y: Math.min(start.y, end.y) - pad,
-      width: Math.abs(end.x - start.x) + 2 * pad, height: Math.abs(end.y - start.y) + 2 * pad };
+    const [[left, right], [top, bottom]] = ['x', 'y'].map(axis =>
+      (at => [Math.min(...at), Math.max(...at)])([start, ...via, end].map(point => point[axis])));
+    return { x: left - pad, y: top - pad, width: right - left + 2 * pad, height: bottom - top + 2 * pad };
   }
   const { x, y, width, height } = element.bounds;
   const turn = (element.rotation ?? 0) * Math.PI / 180;
