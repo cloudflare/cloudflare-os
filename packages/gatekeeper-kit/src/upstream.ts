@@ -415,10 +415,6 @@ const DEFAULT_RETRY: Required<RetryPolicy> = {
 const MAX_REPLAYS = 2;
 // The longest wait a timer takes: a longer one fires at once.
 const LONGEST_TIMER_MS = 2 ** 31 - 1;
-// A request's own options, which are not `fetch`'s: `send` hands none of them on.
-const OWN_OPTIONS: ReadonlySet<string> = new Set([
-  "operation", "service", "idempotent", "timeoutMs", "retry", "authorize", "replay", "answer",
-] satisfies (keyof UpstreamRequestInit)[]);
 // The members `fetch` reads of its init: those the Fetch standard gives a `RequestInit`, and the
 // Workers runtime's own.
 const FETCH_MEMBERS = [
