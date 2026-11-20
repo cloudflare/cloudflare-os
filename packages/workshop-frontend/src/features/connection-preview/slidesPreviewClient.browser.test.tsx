@@ -479,6 +479,28 @@ it('asks for a font a pending change names only once the change is saved, when t
   expect(called('readFont')).toContainEqual(['Poppins', 400, false])
 })
 
+it('asks again, after a while, for a font that could not be read, on a slide read again or not', async () => {
+  const set = slide([{ ...box('t', 20, 20), text: [{ runs: [run('Words', { fontFamily: 'Poppins' })] }] }])
+  const { called, refresh } = await draw({
+    saved: listed('Fonts'),
+    changes: [edit(1, 's1', 't')],
+    drawings: { s1: { drawing: set, saved: slide([box('t', 20, 20, 'old')]) } },
+  })
+  // The frame's wait of a minute is held, to be ended here.
+  const later: (() => void)[] = []
+  const { setTimeout: wait } = frame!.contentWindow!
+  frame!.contentWindow!.setTimeout = ((run: () => void, ms?: number) =>
+    ms === 60_000 ? later.push(run) : wait(run, ms)) as typeof setTimeout
+  await refresh({ changes: [], fonts: ['Poppins'], drawings: { s1: { drawing: set } } })
+  expect(called('readFont')).toEqual([['Poppins', 400, false]])
+
+  // A refresh that finds the deck as it was reads no slide again.
+  for (const run of later.splice(0)) run()
+  await refresh({})
+  await expect.poll(() => called('readFont')).toHaveLength(2)
+  expect(called('readSlideDrawings')).toHaveLength(2)
+})
+
 it('asks which fonts there are once for a deck read in parts, and counts only fonts that arrive against its limit', async () => {
   const families = Array.from({ length: 30 }, (_, n) => `Family ${'abcdefghijklmnopqrstuvwxyzABCD'[n]}`)
   const { called } = await draw({
