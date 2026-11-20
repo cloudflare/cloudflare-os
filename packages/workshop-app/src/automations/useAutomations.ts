@@ -48,6 +48,7 @@ export const readSchedules = async (open: () => RpcPromise<unknown>): Promise<Ma
  * One workspace's automations (`listHooks()`), each scheduled task with when it runs, read once
  * mounted and again on a new connection, keeping what is shown meanwhile. `setEnabled` turns one
  * on or off: it shows at once, and is put back, rejecting with why, when the workspace refuses.
+ * `remove` deletes one for good.
  * Give the calling component a `key` of the workspace.
  */
 export const useAutomations = (workspaceId: string) => {
@@ -101,5 +102,19 @@ export const useAutomations = (workspaceId: string) => {
     if (kind === 'schedule') setAttempt((current) => current + 1)
   }
 
-  return { state, setEnabled }
+  /** Deletes one for good: gone from the list once the workspace has done it, rejecting with why where it refuses. */
+  const remove = async ({ hook }: Automation) => {
+    const overseer = api.openWorkspace(workspaceId)
+    try {
+      await overseer.deleteHook(hook.id)
+    } finally {
+      overseer[Symbol.dispose]()
+    }
+    setState((current) => current.status !== 'ready' ? current : {
+      status: 'ready',
+      automations: current.automations.filter((each) => each.hook.id !== hook.id),
+    })
+  }
+
+  return { state, setEnabled, remove }
 }

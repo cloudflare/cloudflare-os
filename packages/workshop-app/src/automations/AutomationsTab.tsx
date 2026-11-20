@@ -8,7 +8,7 @@ import { useNow } from '@/hooks/useNow'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import type { Automation } from './automations'
-import { cadenceWords, scheduleStanding } from './cadence'
+import { cadenceWords, scheduleState } from './cadence'
 import { useAutomations } from './useAutomations'
 
 export type AutomationsTabProps = {
@@ -35,11 +35,11 @@ const messageOf = (error: unknown) => (error instanceof Error ? error.message : 
 /**
  * What runs by itself in a workspace, as a tab of a page: the scheduled tasks, then what an event
  * sets off, each saying when it runs and when next or why it stopped, what it does and the gadget
- * it runs, with its switch for whoever builds there. The agents those gadgets start have a tab of
+ * it runs, with its switch and its deletion for whoever builds there. The agents those gadgets start have a tab of
  * their own (`AgentsTab`). The clock moves on while it is shown, so "next in 5 minutes" stays true.
  */
 export const AutomationsTab = ({ workspaceId, chatId, filter, onOpenItem, itemHref, empty }: AutomationsTabProps) => {
-  const { state, setEnabled } = useAutomations(workspaceId)
+  const { state, setEnabled, remove } = useAutomations(workspaceId)
   const library = useChatLibrary({ workspaceId, chatId })
   const workspaces = useWorkspaces()
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
@@ -66,6 +66,11 @@ export const AutomationsTab = ({ workspaceId, chatId, filter, onOpenItem, itemHr
     return setEnabled(automation, enabled).catch((error: unknown) => {
       setProblems((current) => ({ ...current, [automation.key]: `Couldn’t turn it ${enabled ? 'on' : 'off'}: ${messageOf(error)}` }))
     })
+  }
+  // Refused while the connection is down, which the island says; anything else is said where it was asked.
+  const removeOne = async (automation: Automation) => {
+    if (connection?.blocked()) return
+    await remove(automation)
   }
 
   if (state.status === 'loading') return <p role="status" className="appears-late px-4 text-center text-base text-kumo-subtle">Loading automations…</p>
@@ -97,13 +102,14 @@ export const AutomationsTab = ({ workspaceId, chatId, filter, onOpenItem, itemHr
                     kind={automation.kind}
                     title={hook.description.title}
                     when={schedule && cadenceWords(schedule.cadence)}
-                    standing={schedule && scheduleStanding(schedule, now)}
+                    {...(schedule && scheduleState(schedule, now))}
                     description={hook.description.description || undefined}
                     // A schedule's resource is the scheduler itself, which says nothing.
                     resource={automation.kind === 'event' && hook.resourceTitle ? { title: hook.resourceTitle, url: hook.resourceUrl } : undefined}
                     gadget={{ title, href: itemHref?.(item), onOpen: () => onOpenItem(item) }}
                     enabled={hook.enabled}
                     onEnabledChange={canChange ? (enabled) => change(automation, enabled) : undefined}
+                    onDelete={canChange ? () => removeOne(automation) : undefined}
                     problem={problems[automation.key]}
                   />
                 )

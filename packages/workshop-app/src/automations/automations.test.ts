@@ -4,7 +4,7 @@ import type { ScheduleCadence, Weekday } from '@gadgets/gatekeeper-scheduler/src
 import type { BoundHookInfo } from '@gadgets/workshop-shared/api'
 import type { ChatItem } from '@/chat/chatItems'
 import { automationsOf, hooksShownIn, setUpIn, type Automation } from './automations'
-import { cadenceWords, nextWords, scheduleStanding } from './cadence'
+import { cadenceWords, nextWords, scheduleState, soonWords } from './cadence'
 
 const zone = { locale: 'en-US', viewerZone: 'America/New_York' }
 const weekly = (byDay: Weekday[], interval = 1): ScheduleCadence =>
@@ -36,16 +36,26 @@ describe('cadenceWords', () => {
   })
 })
 
-describe('nextWords and scheduleStanding', () => {
+describe('nextWords, soonWords and scheduleState', () => {
   const now = new Date(2026, 10, 14, 10, 0).getTime()
 
   it('says soon, today, tomorrow, this week and later differently', () => {
     expect(nextWords(now + 20_000, now, { locale: 'en-US' })).toBe('in a moment')
     expect(nextWords(now + 5 * 60_000, now, { locale: 'en-US' })).toBe('in 5 minutes')
-    expect(nextWords(new Date(2026, 10, 14, 15, 0).getTime(), now, { locale: 'en-US' })).toBe('at 3:00 PM')
+    expect(nextWords(new Date(2026, 10, 14, 15, 0).getTime(), now, { locale: 'en-US' })).toBe('today at 3:00 PM')
     expect(nextWords(new Date(2026, 10, 15, 9, 0).getTime(), now, { locale: 'en-US' })).toBe('tomorrow at 9:00 AM')
     expect(nextWords(new Date(2026, 10, 18, 9, 0).getTime(), now, { locale: 'en-US' })).toBe('Wednesday at 9:00 AM')
-    expect(nextWords(new Date(2026, 11, 2, 9, 0).getTime(), now, { locale: 'en-US' })).toBe('Dec 2')
+    expect(nextWords(new Date(2026, 11, 2, 9, 0).getTime(), now, { locale: 'en-US' })).toBe('Dec 2 at 9:00 AM')
+  })
+
+  it('says how soon in a few words, by calendar day past today', () => {
+    expect(soonWords(now + 20_000, now, { locale: 'en-US' })).toBe('now')
+    expect(soonWords(now + 5 * 60_000, now, { locale: 'en-US' })).toBe('in 5 min')
+    expect(soonWords(new Date(2026, 10, 14, 15, 0).getTime(), now, { locale: 'en-US' })).toBe('in 5 hr')
+    // Under a day away, but tomorrow all the same.
+    expect(soonWords(new Date(2026, 10, 15, 9, 0).getTime(), now, { locale: 'en-US' })).toBe('tomorrow')
+    expect(soonWords(new Date(2026, 10, 18, 9, 0).getTime(), now, { locale: 'en-US' })).toBe('in 4 days')
+    expect(soonWords(new Date(2026, 11, 2, 9, 0).getTime(), now, { locale: 'en-US' })).toBe('Dec 2')
   })
 
   it('says the next time on the schedule’s own clock when its cadence names it', () => {
@@ -53,15 +63,16 @@ describe('nextWords and scheduleStanding', () => {
     const cadence = { kind: 'calendar', timeZone: 'America/New_York', rule: { freq: 'daily', interval: 1, hour: 9, minute: 0, anchorMs: 0 } } as const
     const schedule = { scheduleId: 's', title: 't', description: 'd', workspaceId: 'w', cadence, status: 'active', nextFire: at } as const
     const sunday = Date.UTC(2026, 10, 15, 18, 0)
-    expect(scheduleStanding(schedule, sunday, { locale: 'en-US', viewerZone: 'America/Los_Angeles' })?.words).toBe('next tomorrow at 9:00 AM')
+    expect(scheduleState(schedule, sunday, { locale: 'en-US', viewerZone: 'America/Los_Angeles' })).toEqual({ next: { soon: 'tomorrow', at: 'tomorrow at 9:00 AM' } })
   })
 
-  it('says why one stopped, and warns of a retry', () => {
+  it('says why one stopped, and warns of a retry in place of when it runs next', () => {
     const base = { scheduleId: 's', title: 't', description: 'd', workspaceId: 'w', cadence: { kind: 'interval', everyMs: 60_000, anchorMs: 0 } } as const
-    expect(scheduleStanding({ ...base, status: 'active', nextFire: now + 5 * 60_000, retrying: true }, now, { locale: 'en-US' }))
-      .toEqual({ words: 'trying again in 5 minutes', tone: 'warning' })
-    expect(scheduleStanding({ ...base, status: 'dead', failedAt: now, failureCode: 'authorization_failed' }, now)?.words).toBe('Stopped: it no longer had access')
-    expect(scheduleStanding({ ...base, status: 'completed', completedAt: now }, now)?.words).toBe('Done')
+    expect(scheduleState({ ...base, status: 'active', nextFire: now + 5 * 60_000, retrying: true }, now, { locale: 'en-US' }))
+      .toEqual({ note: { words: 'Failed, trying again in 5 minutes', tone: 'warning' } })
+    expect(scheduleState({ ...base, status: 'dead', failedAt: now, failureCode: 'authorization_failed' }, now).note?.words).toBe('Stopped: it no longer had access')
+    expect(scheduleState({ ...base, status: 'completed', completedAt: now }, now).note).toEqual({ words: 'Done', tone: 'quiet' })
+    expect(scheduleState({ ...base, status: 'active' }, now)).toEqual({})
   })
 })
 

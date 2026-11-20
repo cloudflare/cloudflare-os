@@ -866,12 +866,20 @@ them, a tab each (`?tab=`):
 ## Automations
 
 What runs by itself is a workspace's hooks (`listHooks()`): a scheduled task, which the scheduler
-gatekeeper delivers, or something an event a service delivers sets off. They are listed, read only
-but for each one's switch (`enableHook`/`disableHook`, for whoever may build there), on a tab of
+gatekeeper delivers, or something an event a service delivers sets off. They are listed on a tab of
 the workspace's page and of a chat's settings page (`?tab=automations`), which the chat header's
 clock opens with how many the chat has (`AutomationsTab`, `AutomationRow`): the scheduled first,
-then the rest, each with when it runs and when next or why it stopped, what it does, what it
-watches and the gadget it runs, which opens beside the page.
+then the rest. A row is two lines, as the Library's and the Connections page's are: its name over
+when it runs (or what it watches) and, on the Automations page, its workspace, with why it stopped
+first where it did; at its end how soon it runs next ("in 3 days", the exact time in a tooltip,
+`soonWords`), its switch (`enableHook`/`disableHook`) and more (`AutomationMoreMenu`), which is
+always there rather than slid out when pointed at, as it is the way to delete. All of the
+row opens the rest (`AutomationDialog`): what it does, when it runs and runs next, what it watches,
+the app it runs and its workspace, each going there, its switch, and Delete at its foot, asked
+first by a `ConfirmMenu`, as Disconnect is. More deletes it too, asking in `DeleteAutomationDialog`.
+Deleting is `deleteHook()`, which
+removes a schedule for good: the row goes once the workspace has done it, and a refusal is said
+where it was asked. The switch and Delete are for whoever may build there.
 
 Every workspace's are on a page of their own too (`/automations`, `AutomationsPane` over
 `AutomationsView`), between Library and Connections in the sidebar: under the list's controls

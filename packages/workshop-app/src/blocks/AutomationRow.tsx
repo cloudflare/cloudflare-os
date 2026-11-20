@@ -1,91 +1,83 @@
-import type { ReactNode } from 'react'
-import { ClockIcon, LightningIcon } from '@phosphor-icons/react'
+import { useState } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
-import { LinkButton } from '@/components/LinkButton'
-import { Markdown } from '@/components/Markdown'
 import { Switch } from '@/components/Switch'
-import { ResourceLink, type ResourceLinkProps } from './ResourceLink'
-import { usePending, type ActionResult } from './usePending'
+import { Tooltip } from '@/components/Tooltip'
+import { AutomationDialog } from './AutomationDialog'
+import { AutomationGlyph } from './AutomationGlyph'
+import type { AutomationDetails } from './automationDetails'
+import { AutomationMoreMenu } from './AutomationMoreMenu'
+import { DeleteAutomationDialog } from './DeleteAutomationDialog'
+import { LIST_ACTION } from './StarButton'
+import { usePending } from './usePending'
 
-export type AutomationRowProps = {
-  /** A scheduled task (a clock), or something an event a service delivers sets off (a bolt). */
-  kind: 'schedule' | 'event'
-  title: string
-  /** When it runs, in words: "Every weekday at 9:00 AM". Absent where that is not known. */
-  when?: string
-  /** How it stands, after `when`: "next tomorrow at 9:00 AM", or why it stopped, as a warning. */
-  standing?: { words: string; tone: 'quiet' | 'warning' }
-  /** What it does each time, as it was set up to, in Markdown. */
-  description?: string
-  /** What an event comes from, such as a board or an inbox. */
-  resource?: ResourceLinkProps
-  /** The gadget whose code it runs, which opens it. */
-  gadget?: { title: string; href?: string; onOpen: () => void }
-  /** The workspace it is in, under its icon, where it is listed among others': it opens the workspace. */
-  workspace?: { title: string; icon: ReactNode; href?: string; onOpen: () => void }
-  enabled: boolean
-  /** Absent for whoever may not change it, who sees whether it is on. */
-  onEnabledChange?: (enabled: boolean) => ActionResult
-  /** Why the last change to it was refused. */
-  problem?: string
-}
+export type AutomationRowProps = AutomationDetails
 
 /**
- * One automation in a list of them: a clock or a bolt, its name, when it runs and when next (or
- * Paused, or why it stopped), what it does, what it watches and the gadget it runs, which opens
- * it, and, among other workspaces', the workspace it is in. Its switch is at the end, held while
- * the workspace answers.
+ * One automation in a list of them, on a row of two lines: a clock or a bolt, its name over when
+ * it runs (or what it watches) and the workspace it is in where it is listed among others', with
+ * why it stopped first where it did; and at the far end how soon it runs next, then its switch,
+ * held while the workspace answers, or Off for whoever has no switch, and more, always there,
+ * which also deletes it, asking first. The row itself opens all of it (`AutomationDialog`),
+ * Delete included.
  */
-export const AutomationRow = ({ kind, title, when, standing, description, resource, gadget, workspace, enabled, onEnabledChange, problem }: AutomationRowProps) => {
+export const AutomationRow = (automation: AutomationRowProps) => {
+  const { kind, title, when, next, note, resource, gadget, workspace, enabled, onEnabledChange, onDelete, problem } = automation
   const [pending, run] = usePending()
-  const Glyph = kind === 'schedule' ? ClockIcon : LightningIcon
-  // Paused says so in place of when it runs next, which it no longer does.
-  const state = enabled ? standing : { words: 'Paused', tone: 'quiet' as const }
+  const [open, setOpen] = useState<'details' | 'delete'>()
+  const detail = [
+    when ?? (kind === 'event' ? resource?.title : undefined) ?? (kind === 'schedule' ? 'Scheduled' : 'When something happens'),
+    workspace?.title,
+  ].filter(Boolean).join(' · ')
+  const shownNote = enabled ? note : undefined
 
   return (
-    <div className="flex items-start gap-3 rounded-2xl p-3 text-base">
-      <span className={cn('grid size-10 shrink-0 place-items-center rounded-xl bg-kumo-fill', enabled ? 'text-kumo-default' : 'text-kumo-inactive')}>
-        <Glyph aria-hidden="true" className="size-5" />
-      </span>
-      <div className="flex min-w-0 flex-1 flex-col gap-0.5 leading-snug">
-        <span className={cn('truncate font-medium', enabled ? 'text-kumo-default' : 'text-kumo-subtle')}>{title}</span>
-        {(when || state) && (
-          <span className="text-kumo-subtle">
-            {when}
-            {when && state && ' · '}
-            {state && <span className={cn(state.tone === 'warning' && 'text-kumo-warning')}>{state.words}</span>}
+    <div className="group relative flex items-center rounded-2xl pr-1.5 hover:bg-kumo-contrast/5 has-focus-visible:bg-kumo-contrast/5 has-data-popup-open:bg-kumo-contrast/5">
+      <button
+        type="button"
+        onClick={() => setOpen('details')}
+        // The whole row opens it, apart from the controls over it.
+        className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-2xl py-3 pr-2.5 pl-3 text-left text-base outline-none after:absolute after:inset-0 after:content-['']"
+      >
+        <AutomationGlyph kind={kind} enabled={enabled} />
+        <span className="min-w-0 flex-1 leading-snug">
+          <span className={cn('block truncate font-medium', enabled ? 'text-kumo-default' : 'text-kumo-subtle')}>{title}</span>
+          <span className="block truncate text-kumo-subtle">
+            {shownNote && <span className={cn(shownNote.tone === 'warning' && 'text-kumo-warning')}>{shownNote.words} · </span>}
+            {detail}
           </span>
+          {problem && <span role="alert" className="block text-sm text-kumo-danger">{problem}</span>}
+        </span>
+        {/* Its switch says so, for whoever has one. */}
+        {!enabled && !onEnabledChange && <span className="shrink-0 text-kumo-subtle">Off</span>}
+        {enabled && next && !shownNote && (
+          <Tooltip content={`Next run ${next.at}`} delay={300}>
+            {/* On a narrow screen the name has the room, and the dialog says when. */}
+            <span className="relative shrink-0 text-kumo-subtle max-md:hidden">
+              <span className="sr-only">Next run </span>
+              {next.soon}
+            </span>
+          </Tooltip>
         )}
-        {description && <div className="line-clamp-2 text-sm text-kumo-subtle"><Markdown>{description}</Markdown></div>}
-        {(resource || gadget || workspace) && (
-          <span className="mt-1 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
-            {workspace && (
-              <LinkButton href={workspace.href} onClick={workspace.onOpen} className="flex min-w-0 items-center gap-1.5 text-sm text-kumo-default hover:underline underline-offset-2 [&>svg]:shrink-0">
-                {workspace.icon}
-                <span className="truncate">{workspace.title}</span>
-              </LinkButton>
-            )}
-            {resource && <ResourceLink {...resource} />}
-            {gadget && (
-              <LinkButton href={gadget.href} onClick={gadget.onOpen} className="min-w-0 truncate text-sm text-kumo-default underline underline-offset-2">
-                Runs {gadget.title}
-              </LinkButton>
-            )}
-          </span>
-        )}
-        {problem && <span role="alert" className="mt-1 text-sm text-kumo-danger">{problem}</span>}
-      </div>
-      {/* On a line with the title, as a setting's switch is. */}
+      </button>
       {onEnabledChange && (
-        <Switch
-          aria-label={title}
-          checked={enabled}
-          busy={pending}
-          onCheckedChange={(checked) => run(() => onEnabledChange(checked))}
-          className="mt-0.5"
-        />
+        <span className="relative flex shrink-0 px-1.5">
+          <Switch aria-label={`Run ${title}`} checked={enabled} busy={pending} onCheckedChange={(checked) => run(() => onEnabledChange(checked))} />
+        </span>
       )}
-      {!onEnabledChange && <span className="shrink-0 text-kumo-subtle">{enabled ? 'On' : 'Off'}</span>}
+      <span className="relative flex shrink-0">
+        <AutomationMoreMenu
+          title={title}
+          gadget={gadget}
+          workspace={workspace}
+          onShowDetails={() => setOpen('details')}
+          onDelete={onDelete && (() => setOpen('delete'))}
+          triggerClassName={LIST_ACTION}
+        />
+      </span>
+      <AutomationDialog {...automation} open={open === 'details'} onOpenChange={(shown) => setOpen(shown ? 'details' : undefined)} />
+      {onDelete && (
+        <DeleteAutomationDialog title={title} gadget={gadget} open={open === 'delete'} onOpenChange={(shown) => setOpen(shown ? 'delete' : undefined)} onConfirm={onDelete} />
+      )}
     </div>
   )
 }

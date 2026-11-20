@@ -15,7 +15,7 @@ import { workspaceLabel } from '@/workspaces/workspaceLabel'
 import { workspaceTitle } from '@/workspaces/workspaceList'
 import { automationList, type ListedAutomation } from './automationList'
 import { AutomationsView } from './AutomationsView'
-import { cadenceWords, scheduleStanding } from './cadence'
+import { cadenceWords, scheduleState } from './cadence'
 import { useAllAutomations } from './useAllAutomations'
 
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
@@ -23,12 +23,12 @@ const messageOf = (error: unknown) => (error instanceof Error ? error.message : 
 /**
  * The Automations page (`AutomationsView`) over what it lists: every workspace's automations
  * (`useAllAutomations`), each named with its workspace and the gadget it runs, from the library,
- * which open them; its switch for whoever builds there, as on a workspace's tab; and, with none,
+ * which open them; its switch and its deletion for whoever builds there, as on a workspace's tab; and, with none,
  * a chat started from one of the things to ask for. The clock moves on while it is shown, so
  * "next in 5 minutes" stays true. It starts searched for `query` where a link to it asks for one.
  */
 export const AutomationsPane = ({ query }: { query?: string }) => {
-  const { state, setEnabled } = useAllAutomations()
+  const { state, setEnabled, remove } = useAllAutomations()
   const workspaces = useWorkspaces()
   const library = useLibrary()
   const looks = useWorkspaceLooks()
@@ -61,6 +61,11 @@ export const AutomationsPane = ({ query }: { query?: string }) => {
       setProblems((current) => ({ ...current, [automation.key]: `Couldn’t turn it ${enabled ? 'on' : 'off'}: ${messageOf(error)}` }))
     })
   }
+  // Refused while the connection is down, which the island says; anything else is said where it was asked.
+  const removeOne = async (automation: ListedAutomation) => {
+    if (connection?.blocked()) return
+    await remove(automation)
+  }
 
   const rowOf = (automation: ListedAutomation) => {
     const { hook, schedule, workspaceId } = automation
@@ -72,7 +77,7 @@ export const AutomationsPane = ({ query }: { query?: string }) => {
       kind: automation.kind,
       title: hook.description.title,
       when: schedule && cadenceWords(schedule.cadence),
-      standing: schedule && scheduleStanding(schedule, now),
+      ...(schedule && scheduleState(schedule, now)),
       description: hook.description.description || undefined,
       // A schedule's resource is the scheduler itself, which says nothing.
       resource: automation.kind === 'event' && hook.resourceTitle ? { title: hook.resourceTitle, url: hook.resourceUrl } : undefined,
@@ -91,6 +96,7 @@ export const AutomationsPane = ({ query }: { query?: string }) => {
       },
       enabled: hook.enabled,
       onEnabledChange: canChange ? (enabled: boolean) => change(automation, enabled) : undefined,
+      onDelete: canChange ? () => removeOne(automation) : undefined,
       problem: problems[automation.key],
     }
   }

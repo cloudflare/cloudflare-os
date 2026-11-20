@@ -28,7 +28,8 @@ const messageOf = (error: unknown) => (error instanceof Error ? error.message : 
  * (`listHooks()`), a few workspaces at a time, the most recently active first, each shown as it
  * answers. Nothing lists hooks across workspaces, so each is opened to ask. A workspace shared with
  * the user whose access they have not confirmed is left out, as it is not on screen to ask.
- * Read again on a new connection. `setEnabled` turns one on or off as a workspace's tab does.
+ * Read again on a new connection. `setEnabled` turns one on or off as a workspace's tab does, and
+ * `remove` deletes one for good.
  */
 export const useAllAutomations = () => {
   const { api, reconnecting } = useApi()
@@ -121,5 +122,21 @@ export const useAllAutomations = () => {
     if (kind === 'schedule') setScheduleRead((current) => current + 1)
   }
 
-  return { state, setEnabled }
+  /** Deletes one for good: gone from the list once its workspace has done it, rejecting with why where it refuses. */
+  const remove = async ({ workspaceId, hook, kind }: Automation) => {
+    const overseer = api.openWorkspace(workspaceId)
+    try {
+      await overseer.deleteHook(hook.id)
+    } finally {
+      overseer[Symbol.dispose]()
+    }
+    setHooks((current) => {
+      const listed = current.get(workspaceId)
+      return listed ? new Map(current).set(workspaceId, listed.filter(({ id }) => id !== hook.id)) : current
+    })
+    // Its schedule went with it, and would otherwise be matched to another of the same name.
+    if (kind === 'schedule') setScheduleRead((current) => current + 1)
+  }
+
+  return { state, setEnabled, remove }
 }

@@ -68,9 +68,9 @@ const dayOf = (time: number, timeZone?: string) => {
 }
 
 /**
- * When something comes next, in words: "in 5 minutes", "at 3:00 PM" (today), "tomorrow at 9:00 AM",
- * "Friday at 9:00 AM" (this week), "Nov 20" (later). On the clock of `timeZone`, a schedule's own,
- * so that it agrees with how its cadence is said; the viewer's when absent.
+ * When something comes next, in words: "in 5 minutes", "today at 3:00 PM", "tomorrow at 9:00 AM",
+ * "Friday at 9:00 AM" (this week), "Nov 20 at 9:00 AM" (later). On the clock of `timeZone`, a
+ * schedule's own, so that it agrees with how its cadence is said; the viewer's when absent.
  */
 export const nextWords = (at: number, now: number, { locale, timeZone }: { locale?: string; timeZone?: string } = {}): string => {
   const until = at - now
@@ -78,38 +78,66 @@ export const nextWords = (at: number, now: number, { locale, timeZone }: { local
   if (until < HOUR) return `in ${plural(Math.round(until / MINUTE), 'minute')}`
   const time = new Intl.DateTimeFormat(locale, { hour: 'numeric', minute: '2-digit', timeZone }).format(at)
   const days = dayOf(at, timeZone) - dayOf(now, timeZone)
-  if (days === 0) return `at ${time}`
+  if (days === 0) return `today at ${time}`
   if (days === 1) return `tomorrow at ${time}`
   if (days < 7) return `${new Intl.DateTimeFormat(locale, { weekday: 'long', timeZone }).format(at)} at ${time}`
-  return new Intl.DateTimeFormat(locale, { month: 'short', day: 'numeric', timeZone }).format(at)
+  return `${new Intl.DateTimeFormat(locale, { month: 'short', day: 'numeric', timeZone }).format(at)} at ${time}`
 }
 
 /**
- * How a schedule stands, in a few words for after its cadence: "next tomorrow at 9:00 AM", "trying
- * again at 3:00 PM", "Done", or why it stopped. Nothing for a running one with no time known yet.
+ * How soon something comes, in as few words as a list's end has room for: "now", "in 5 min",
+ * "in 3 hr", "tomorrow", "in 4 days", "Dec 2". By calendar days on the clock of `timeZone`.
  */
-export const scheduleStanding = (
+export const soonWords = (at: number, now: number, { locale, timeZone }: { locale?: string; timeZone?: string } = {}): string => {
+  const until = at - now
+  if (until < MINUTE) return 'now'
+  if (until < HOUR) return `in ${Math.round(until / MINUTE)} min`
+  const days = dayOf(at, timeZone) - dayOf(now, timeZone)
+  if (days === 0) return `in ${Math.max(1, Math.round(until / HOUR))} hr`
+  if (days === 1) return 'tomorrow'
+  if (days < 7) return `in ${days} days`
+  return new Intl.DateTimeFormat(locale, { month: 'short', day: 'numeric', timeZone }).format(at)
+}
+
+/** How a schedule stands: when it runs next while on course, or else what there is to know of it. */
+export type ScheduleState = {
+  /** When it runs next, how soon ("in 3 days") and when exactly ("Monday at 8:00 AM"). */
+  next?: { soon: string; at: string }
+  /** Said in place of when it runs: why it stopped, that it is trying again, or that it is done. */
+  note?: { words: string; tone: 'quiet' | 'warning' }
+}
+
+/**
+ * How a schedule stands (`ScheduleState`): when it runs next, or that it is trying again after a
+ * failure, why it stopped, that it is done or that its time passed. Nothing for a running one with
+ * no time known yet.
+ */
+export const scheduleState = (
   schedule: ManagementSchedule,
   now: number,
   { locale, viewerZone = here() }: { locale?: string; viewerZone?: string } = {},
-): { words: string; tone: 'quiet' | 'warning' } | undefined => {
+): ScheduleState => {
   switch (schedule.status) {
     case 'active': {
-      if (schedule.nextFire === undefined) return undefined
+      if (schedule.nextFire === undefined) return {}
       // On the schedule's own clock when its cadence says it is kept on one other than the viewer's.
       const kept = schedule.cadence.kind === 'interval' ? undefined : schedule.cadence.timeZone
       const timeZone = kept && zoneWords(kept, viewerZone) ? kept : undefined
-      const next = nextWords(schedule.nextFire, now, { locale, timeZone })
-      return schedule.retrying ? { words: `trying again ${next}`, tone: 'warning' } : { words: `next ${next}`, tone: 'quiet' }
+      const at = nextWords(schedule.nextFire, now, { locale, timeZone })
+      return schedule.retrying
+        ? { note: { words: `Failed, trying again ${at}`, tone: 'warning' } }
+        : { next: { soon: soonWords(schedule.nextFire, now, { locale, timeZone }), at } }
     }
     case 'dead':
       return {
-        words: schedule.failureCode === 'authorization_failed' ? 'Stopped: it no longer had access' : 'Stopped: it kept failing',
-        tone: 'warning',
+        note: {
+          words: schedule.failureCode === 'authorization_failed' ? 'Stopped: it no longer had access' : 'Stopped: it kept failing',
+          tone: 'warning',
+        },
       }
     case 'completed':
-      return { words: 'Done', tone: 'quiet' }
+      return { note: { words: 'Done', tone: 'quiet' } }
     case 'expired':
-      return { words: 'Its time passed while it was off', tone: 'quiet' }
+      return { note: { words: 'Its time passed while it was off', tone: 'quiet' } }
   }
 }
