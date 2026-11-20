@@ -7,14 +7,14 @@
 // ties the table to AdminApi is in admin-gatekeeper.ts, which may import.
 
 /**
- * The vendor id of the admin gatekeeper: the Gatekeeper bound as GATEKEEPER_INSTANCEADMIN, which
- * is packages/gatekeeper-instanceadmin wherever this repository's tooling builds the bindings (a
+ * The vendor id of the admin gatekeeper: the Gatekeeper bound as GATEKEEPER_ADMIN, which
+ * is packages/gatekeeper-admin wherever this repository's tooling builds the bindings (a
  * dev server, a release, the integration harness). A workspace lends its owner's Admin API to
  * whatever Worker answers to that binding, so the binding is trusted as the backend's own
  * configuration is, and the release build refuses any other package whose install slug folds to
  * this id.
  */
-export const ADMIN_GATEKEEPER_VENDOR_ID = "instanceadmin";
+export const ADMIN_GATEKEEPER_VENDOR_ID = "admin";
 
 /**
  * How long a workspace lends the admin gatekeeper its owner's Admin API for one session, in
@@ -31,7 +31,7 @@ export const ADMIN_AGENT_LEND_SECONDS = 15 * 60;
  * reads: an observation that names it and says its read holds restricted data keeps the
  * workspace to deployment admins for good.
  */
-export const ADMIN_BINDING_SUBRESOURCE = "instanceadmin:deployment";
+export const ADMIN_BINDING_SUBRESOURCE = "admin:deployment";
 
 /**
  * What an admin's agent may do with one AdminApi method through the admin gatekeeper:

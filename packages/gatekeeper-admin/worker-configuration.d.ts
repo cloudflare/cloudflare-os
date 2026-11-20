@@ -6,7 +6,7 @@ interface __BaseEnv_Env {
 declare namespace Cloudflare {
 	interface GlobalProps {
 		mainModule: typeof import("./src/worker");
-		durableNamespaces: "InstanceAdminGatekeeper" | "IssueReportHookDriver";
+		durableNamespaces: "AdminGatekeeperImpl" | "IssueReportHookDriver";
 	}
 	interface Env extends __BaseEnv_Env {}
 }

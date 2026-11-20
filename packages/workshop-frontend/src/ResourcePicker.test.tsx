@@ -230,10 +230,10 @@ describe('ResourcePicker', () => {
 
     // The admin gatekeeper as it describes itself.
     const deployment: SupportedResource = {
-      id: 'deployment', urlPattern: 'instanceadmin://deployment', title: 'Deployment admin', description: '',
+      id: 'deployment', urlPattern: 'admin://deployment', title: 'Deployment admin', description: '',
     }
-    const instanceadmin: GatekeeperVendorInfo = {
-      id: 'instanceadmin',
+    const admin: GatekeeperVendorInfo = {
+      id: 'admin',
       description: { displayName: 'Deployment admin', url: 'https://example.com/admin', autoProvisionsAccount: true },
       supportedResources: [deployment],
     }
@@ -380,14 +380,14 @@ describe('ResourcePicker', () => {
     // The admin gatekeeper's resource is not a web URL, so no link names it: the composer finds
     // only `http(s)://` text and sends what was typed on as an `https://` URL.
     it.each([
-      'https://', 'https://d', 'https://deployment', 'https://instanceadmin://deployment',
+      'https://', 'https://d', 'https://deployment', 'https://admin://deployment',
       'https://example.com/admin',
     ])('offers no row for a resource that no link names for %j', async link => {
       const account: FeedAccount = {
         id: 3, description: { displayName: 'Deployment admin', uniqueName: 'ada', avatar: { url: '' } },
-        vendor: instanceadmin, forced: true,
+        vendor: admin, forced: true,
       }
-      const { picker, onRefine, activateRef, itemTypes } = await renderOffer([instanceadmin], link, [account])
+      const { picker, onRefine, activateRef, itemTypes } = await renderOffer([admin], link, [account])
 
       expect(itemTypes()).toEqual([])
       expect(picker.textContent).toBe('No matching resources.')

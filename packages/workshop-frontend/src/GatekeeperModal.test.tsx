@@ -796,10 +796,10 @@ const button = (label: string) => Array.from(document.body.querySelectorAll<HTML
 describe('GatekeeperModal with a vendor that provisions its own account', () => {
   // The admin gatekeeper as it describes itself: no connect flow, and one resource that is not a
   // web URL.
-  const DEPLOYMENT = { id: 'deployment', urlPattern: 'instanceadmin://deployment', title: 'Deployment admin', description: '' }
+  const DEPLOYMENT = { id: 'deployment', urlPattern: 'admin://deployment', title: 'Deployment admin', description: '' }
   const ADMIN_VENDOR = { displayName: 'Deployment admin', url: 'https://example.com/admin', autoProvisionsAccount: true }
   const ADMIN_ACCOUNT = { displayName: 'Deployment admin', uniqueName: 'ada', avatar: { url: '' } }
-  const OPEN_ON_DEPLOYMENT = { initialVendorId: 'instanceadmin', initialResourceUrlPattern: DEPLOYMENT.urlPattern }
+  const OPEN_ON_DEPLOYMENT = { initialVendorId: 'admin', initialResourceUrlPattern: DEPLOYMENT.urlPattern }
 
   // Renders the modal over a feed that sends the account as the backend does: one the deployment
   // forces goes only to a subscriber that asked for forced accounts.
@@ -815,13 +815,13 @@ describe('GatekeeperModal with a vendor that provisions its own account', () => 
     }
     testState.authenticatedApi = {
       listModels: async () => [CHAT_MODEL],
-      listGatekeeperVendors: async () => [{ id: 'instanceadmin', description: ADMIN_VENDOR, supportedResources: [DEPLOYMENT] }],
+      listGatekeeperVendors: async () => [{ id: 'admin', description: ADMIN_VENDOR, supportedResources: [DEPLOYMENT] }],
       subscribeConnectedAccounts: (
         subscriber: ConnectedAccountsSubscriber, filter?: { includeForcedAutoProvisionedAccounts?: boolean },
       ) => {
         api.subscriber = subscriber
         if (account === 'forced' && filter?.includeForcedAutoProvisionedAccounts) {
-          subscriber.add(3, ADMIN_ACCOUNT, ADMIN_VENDOR, [DEPLOYMENT], true, 'instanceadmin')
+          subscriber.add(3, ADMIN_ACCOUNT, ADMIN_VENDOR, [DEPLOYMENT], true, 'admin')
         }
         subscriber.ready()
         return subscription()
@@ -883,11 +883,11 @@ describe('GatekeeperModal with a vendor that provisions its own account', () => 
     expect(api.startResourceConfigurator).not.toHaveBeenCalled()
 
     await act(async () => connect.click())
-    expect(calls.provisionAmbientAccount).toHaveBeenCalledExactlyOnceWith('instanceadmin')
+    expect(calls.provisionAmbientAccount).toHaveBeenCalledExactlyOnceWith('admin')
     expect(calls.connectAccount).not.toHaveBeenCalled()
     expect(openConnectWindow).not.toHaveBeenCalled()
 
-    await act(async () => api.subscriber!.add(3, ADMIN_ACCOUNT, ADMIN_VENDOR, [DEPLOYMENT], true, 'instanceadmin'))
+    await act(async () => api.subscriber!.add(3, ADMIN_ACCOUNT, ADMIN_VENDOR, [DEPLOYMENT], true, 'admin'))
     await vi.waitFor(() =>
       expect(api.startResourceConfigurator).toHaveBeenCalledExactlyOnceWith(3, DEPLOYMENT.id))
   })

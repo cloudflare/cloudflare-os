@@ -157,7 +157,7 @@ export function workshop(answer?: Answer) {
 }
 
 /** A facet of its own. */
-export const facet = () => env.INSTANCE_ADMIN_GATEKEEPER.getByName(crypto.randomUUID());
+export const facet = () => env.ADMIN_GATEKEEPER.getByName(crypto.randomUUID());
 
 /** A facet with a session of the whole binding over `queue`. */
 export async function openBinding(queue: RpcTarget) {

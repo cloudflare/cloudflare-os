@@ -17,7 +17,7 @@ import { ADMIN_SCHEMA, SERVICES } from "./surface.js";
 // Event names only: a call's arguments, its result and the Admin API's errors (which can quote an
 // argument) are deployment admin data, kept in the workspace's activity and the audit log.
 const logger = createLogger<{ vendorId: string }>({
-  component: "gatekeeper.instanceadmin", vendorId: ADMIN_GATEKEEPER_VENDOR_ID,
+  component: "gatekeeper.admin", vendorId: ADMIN_GATEKEEPER_VENDOR_ID,
 });
 
 /**

@@ -23,7 +23,7 @@ documented on `AdminApi`, `AdminWorkspaceView` and `AdminUserView` in
 | The admin panel's Audit tab | `packages/workshop-frontend/src/features/admin-audit/` |
 | What an agent may do with each `AdminApi` method (`ADMIN_AGENT_KINDS`) | `packages/workshop-shared/src/admin-agent.ts` |
 | Lending a workspace owner's Admin API to the admin gatekeeper (`lendAdminApi`, `restrictAdminApi`) | `packages/workshop-backend/src/overseer.ts`, `packages/workshop-backend/src/admin-agent.ts` |
-| The admin gatekeeper | `packages/gatekeeper-instanceadmin/` |
+| The admin gatekeeper | `packages/gatekeeper-admin/` |
 
 ## Entry points
 
@@ -398,14 +398,14 @@ Object ends the view; inspect again.
 ## Through an agent
 
 A deployment admin can give the agents of a workspace they own this API, through the admin
-gatekeeper (`packages/gatekeeper-instanceadmin`, vendor `instanceadmin`). The gatekeeper is part
+gatekeeper (`packages/gatekeeper-admin`, vendor `admin`). The gatekeeper is part
 of every deployment, with its mode Disabled until an admin chooses another; only deployment
 admins hold its account, and its holder adds its connection ("Deployment admin") to the
 workspaces that need it. Its design record is
-[the package's README](../packages/gatekeeper-instanceadmin/README.md).
+[the package's README](../packages/gatekeeper-admin/README.md).
 
 **What an agent can do.** Every `AdminApi` method has one kind (`ADMIN_AGENT_KINDS`; the
-[README's table](../packages/gatekeeper-instanceadmin/README.md#what-each-kind-does) lists
+[README's table](../packages/gatekeeper-admin/README.md#what-each-kind-does) lists
 them):
 
 - **Read**: the listings, the settings getters, the audit log and its statistics, and
@@ -455,10 +455,10 @@ again restores them. In mode Enabled it cannot be removed.
 **Limits**, each described in the README:
 
 - [The restricted-data mark is the gatekeeper Worker's own
-  declaration](../packages/gatekeeper-instanceadmin/README.md#what-a-worker-that-keeps-everything-could-do):
+  declaration](../packages/gatekeeper-admin/README.md#what-a-worker-that-keeps-everything-could-do):
   it holds against agents and gadgets, not against the Worker.
 - [The latch does not hold back reads through the workspace's other
-  connections](../packages/gatekeeper-instanceadmin/README.md#what-the-latch-does-not-hold-back).
+  connections](../packages/gatekeeper-admin/README.md#what-the-latch-does-not-hold-back).
 
 ## Access levels and their bounds
 
@@ -587,7 +587,7 @@ gatekeeper its owner's Admin API (`OverseerImpl.lendAdminApi()`): no client, hea
 gatekeeper Worker can claim the value or set the workspace or the chat. They name the lend the
 call was made on; that the gatekeeper used each lend for the caller it was made for is the
 gatekeeper's word (see
-[its README](../packages/gatekeeper-instanceadmin/README.md#what-a-worker-that-keeps-everything-could-do)).
+[its README](../packages/gatekeeper-admin/README.md#what-a-worker-that-keeps-everything-could-do)).
 An access record, of a workspace or of a user's account, can carry them. A setting record never
 says `"gatekeeper"`: no setter is open to an agent. The Audit tab names such a record's `via`
 "Admin connection", since the record says the call came through the connection, not that an
@@ -843,7 +843,7 @@ Unit suites, in `packages/workshop-backend/__tests__/`:
   Durable Object and checks that the deletion still completes.
 
 The admin gatekeeper adds these, in the same directory (its own suites are listed in
-[its README](../packages/gatekeeper-instanceadmin/README.md#tests)):
+[its README](../packages/gatekeeper-admin/README.md#tests)):
 
 - `admin-agent-kinds.test.ts`: every `AdminApi` method classified, and the constants.
 - `admin-agent.test.ts`: the membrane. What `adminAgentRefusal()` refuses; `restrictAdminApi()`'s

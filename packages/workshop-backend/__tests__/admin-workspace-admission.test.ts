@@ -42,7 +42,7 @@ const RESOURCE_URL = "https://workshop.example/admin";
 const CHAT_ID = 7;
 const GADGET = 100;
 // A subresource id other than ADMIN_BINDING_SUBRESOURCE, which is all the workspace reads.
-const OTHER_SUBRESOURCE = "instanceadmin:other";
+const OTHER_SUBRESOURCE = "admin:other";
 // What createAdminAccessError(notAdmin) says.
 const NOT_ADMIN_MESSAGE = "Only a deployment admin can inspect a workspace or a user.";
 const CONNECTION_REFUSAL = "This workspace has the deployment admin connection, so only " +

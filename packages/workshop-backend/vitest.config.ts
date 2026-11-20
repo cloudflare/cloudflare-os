@@ -83,7 +83,7 @@ export default defineConfig({
           // Two vendors every user object finds among its `GATEKEEPER_*` bindings (see
           // __tests__/test-worker.ts): the admin gatekeeper's stand-in, and one more that
           // auto-provisions its account.
-          GATEKEEPER_INSTANCEADMIN: { name: kCurrentWorker, entrypoint: 'FakeAdminVendor' },
+          GATEKEEPER_ADMIN: { name: kCurrentWorker, entrypoint: 'FakeAdminVendor' },
           GATEKEEPER_AMBIENTFIXTURE: { name: kCurrentWorker, entrypoint: 'FakeAmbientVendor' },
         },
         workers: [{

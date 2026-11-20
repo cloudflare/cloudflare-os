@@ -94,7 +94,7 @@ Run just these cases with `pnpm --filter @gadgets/integration-tests test:run __t
 
 ### The real admin gatekeeper
 
-`__tests__/admin-gatekeeper.test.ts` boots the real `gatekeeper-instanceadmin` beside the
+`__tests__/admin-gatekeeper.test.ts` boots the real `gatekeeper-admin` beside the
 Workshop, on a deployment with three admins, and drives both through the public RPC API and
 scripted agent turns whose code uses the connection. It covers who is offered the gatekeeper and
 admitted to a workspace that has its connection, how each read is recorded, and what an agent is
@@ -105,7 +105,7 @@ refused. Nothing of the gatekeeper or of the Admin API is faked.
 order requests arrive in. Every workspace is opened on a connection of its own, because a
 workspace that restarts ends each session that held it.
 
-Both test entrypoints build `@gadgets/gatekeeper-instanceadmin#build:integration-worker`, which
+Both test entrypoints build `@gadgets/gatekeeper-admin#build:integration-worker`, which
 generates the Admin API's schema first, and `src/worker-inputs.ts` tracks the gatekeeper's source
 and config for watch reruns. Run it alone with
 `pnpm --filter @gadgets/integration-tests test:run __tests__/admin-gatekeeper.test.ts`.

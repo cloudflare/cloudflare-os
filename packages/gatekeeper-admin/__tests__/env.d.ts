@@ -6,7 +6,7 @@
 
 declare namespace Cloudflare {
   interface Env {
-    INSTANCE_ADMIN_GATEKEEPER: DurableObjectNamespace<import("../src/worker.js").InstanceAdminGatekeeper>;
+    ADMIN_GATEKEEPER: DurableObjectNamespace<import("../src/worker.js").AdminGatekeeperImpl>;
   }
 }
 

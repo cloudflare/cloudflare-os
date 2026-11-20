@@ -72,7 +72,7 @@ through logs and errors, then everything else.
   that admits a non-owner, sends one a workspace's state or answers one from its sharing records
   without asking `admitsNonOwner()`; and `adminReads` written anywhere but where the
   restricted-data latch is set. The gatekeeper's own rules are in
-  `packages/gatekeeper-instanceadmin/README.md` (Reviewing a change here).
+  `packages/gatekeeper-admin/README.md` (Reviewing a change here).
 - `ADMIN_WORKSPACE_ACCESS_MAX` and `ADMIN_AUDIT_RETENTION_MIN_DAYS` are env-driven, like auth
   config, and the cap fails closed. Flag code that enforces `adminWorkspaceAccess`, or enforces or
   prunes with `adminAuditRetentionDays`, without `adminAccessPolicy()`.
