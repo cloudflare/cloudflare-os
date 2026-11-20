@@ -127,11 +127,13 @@ export function scaffold(options: ScaffoldOptions): Map<string, ScaffoldFile> {
   return files;
 }
 
+/** Where a stop comes in review order: the `FIRST_STOPS` in turn, then the rest. */
+const rank = ({ id }: { id: string }): number => (FIRST_STOPS.indexOf(id) + 1) || FIRST_STOPS.length + 1;
+
 /** The `STOP(<id>)` marks in generated files: what is left for a person or agent to decide. */
 export function stops(files: Map<string, ScaffoldFile>): { path: string; id: string }[] {
   const found = [...files].flatMap(([path, file]) => "text" in file
     ? [...file.text.matchAll(/\bSTOP\(([a-z-]+)\)/g)].map(match => ({ path, id: match[1] }))
     : []);
-  const rank = ({ id }: { id: string }) => (FIRST_STOPS.indexOf(id) + 1) || FIRST_STOPS.length + 1;
   return found.toSorted((a, b) => rank(a) - rank(b));
 }

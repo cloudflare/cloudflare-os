@@ -9,9 +9,12 @@ import { DurableObject } from "cloudflare:workers";
 import type { ConnectHandoff, GatekeeperConnectCallback } from "@gadgets/workshop-shared/gatekeeper";
 import { KvTtlCache } from "@gadgets/gatekeeper-kit/cache";
 import {
-  PAGE_STYLE, connectHandoffPageHtml, connectMutationError, errorPageHtml, escapeHtml, htmlResponse, INVALID_LINK_HTML,
+  CONNECT_FORM_NONCE_FIELD, INVALID_LINK_HTML, connectFormHtml, connectHandoffPageHtml, errorPageHtml,
+  formPageResponse, htmlResponse, readConnectForm,
 } from "@gadgets/gatekeeper-kit/connect-pages";
-import { NONCE_KEY, advanceToOAuth, claimOAuth, putInitiation } from "@gadgets/gatekeeper-kit/connect-handshake";
+import {
+  NONCE_KEY, advanceToOAuth, claimOAuth, peekOAuth, putInitiation,
+} from "@gadgets/gatekeeper-kit/connect-handshake";
 import { CONNECT_TIMEOUT_MS, NONCE_BYTES } from "@gadgets/gatekeeper-kit/connect-nonce";
 import {
   CredentialCoordinator,
@@ -24,7 +27,6 @@ import {
 } from "@gadgets/gatekeeper-kit/credentials";
 import { notifyCredentialsExpiredOnce } from "@gadgets/gatekeeper-kit/credential-expiry";
 import { commitStagedCredentials, discardStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
-import { readTextCapped } from "@gadgets/gatekeeper-kit/response-body";
 import { createApi, isAuthError, isDenial } from "./acme-api";
 import { KEY_HELP, MAX_KEY_LENGTH } from "./acme-auth";
 import {
@@ -63,49 +65,14 @@ type ConnectAttempt = {
 /** A reconnect's key, staged until the Workshop confirms the browser that finished it. */
 type ReconnectStage = { grant: Grant; identity: Identity; startedUnder: string };
 
-/** How a submission ended: a handoff for the browser, or a refusal to show it. */
-type CallbackResult = { handoff: ConnectHandoff } | { refused: { title: string; detail: string } };
-
-/** A refusal of the key the form posted. */
-const refused = (detail: string): CallbackResult => ({ refused: { title: "That key didn't work", detail } });
-
-/** The most a form submission may be: the key, the nonce and their names. */
-const MAX_FORM_BYTES = 4 * 1024;
-
-const FORM_STYLE = `
-  label { display: block; font-size: 13px; font-weight: 500; margin: 0 0 6px; }
-  input[type=password] { width: 100%; box-sizing: border-box; padding: 8px 10px; font: inherit;
-         color: var(--text); background: var(--control); border: 1px solid var(--line); border-radius: 6px; }
-  button { margin-top: 16px; padding: 8px 14px; font: inherit; font-weight: 500; cursor: pointer;
-         color: var(--on-contrast); background: var(--contrast); border: 0; border-radius: 6px; }
-`;
-
 /**
- * Serves the key form. `htmlResponse` pages send no referrer, which makes a browser post their
- * forms with `Origin: null`; this one must name its origin, since the submission is refused
- * unless it does (see `connectMutationError`).
+ * How a submission ended: a handoff for the browser, the form again with what was wrong with a
+ * key the user may correct, or a refusal to show it.
  */
-function formResponse(html: string): Response {
-  const response = htmlResponse(html);
-  response.headers.set("Referrer-Policy", "same-origin");
-  return response;
-}
-
-/** The page a connect link opens: a form that posts the key, with this attempt's nonce, to `action`. */
-function keyFormHtml(action: string, formNonce: string): string {
-  return `<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Connect Acme Service</title><style>${PAGE_STYLE}${FORM_STYLE}</style></head>
-<body><main><h1>Connect Acme Service</h1>
-<p class="sub">${escapeHtml(KEY_HELP)}</p>
-<form method="post" action="${escapeHtml(action)}">
-<input type="hidden" name="nonce" value="${escapeHtml(formNonce)}">
-<label for="key">API key</label>
-<input id="key" name="key" type="password" required autocomplete="off" autofocus>
-<button type="submit">Connect</button>
-</form></main></body></html>`;
-}
+type CallbackResult =
+  | { handoff: ConnectHandoff }
+  | { retry: string }
+  | { refused: { title: string; detail: string } };
 
 // STOP(identity): How the provider says whose key this is. `userId` is what the connection and
 // every binding are pinned to, so make it name the user AND the tenant (organization, workspace)
@@ -138,6 +105,19 @@ function accountFor(ctx: ExecutionContext, doId: string): DurableObjectStub<User
   }
 }
 
+/** The page that asks for the key, with `error` when it is shown again after a refused one. */
+function keyFormResponse(env: Env, accountId: string, formNonce: string, error?: string): Response {
+  // `formPageResponse`, not `htmlResponse`: a page that sends no referrer can't post its form.
+  return formPageResponse(connectFormHtml({
+    title: "Connect Acme Service",
+    intro: KEY_HELP,
+    action: `${getBaseUrl(env)}/${accountId}/key`,
+    nonce: formNonce,
+    fields: [{ name: "key", label: "API key", secret: true }],
+    error,
+  }), error === undefined ? 200 : 422);
+}
+
 /**
  * Serves the connect flow's routes: `GET /<account>/<nonce>`, the connect link, which shows the
  * form, and `POST /<account>/key`, its submission. `relPath` is the request path below the
@@ -153,25 +133,19 @@ export async function handleConnect(
     // The link is spent here: the form carries a second nonce, which only this page holds.
     const formNonce = await accountFor(ctx, path[0])?.beginKeyForm(path[1]);
     if (!formNonce) return htmlResponse(INVALID_LINK_HTML);
-    return formResponse(keyFormHtml(`${getBaseUrl(env)}/${path[0]}/key`, formNonce));
+    return keyFormResponse(env, path[0], formNonce);
   }
 
   if (req.method === "POST" && path[1] === "key") {
     // A form only this Worker's own page may post, so no other site can submit a key of its choosing.
-    const mutationError = connectMutationError(req, { origin: getBaseUrl(env), contentType: "application/x-www-form-urlencoded" });
-    if (mutationError) {
-      return htmlResponse(errorPageHtml("Connection failed", "Start the connection again from the Workshop."),
-        mutationError === "cross-origin" ? 403 : 415);
-    }
-    let form: URLSearchParams;
-    try {
-      form = new URLSearchParams(await readTextCapped(req, MAX_FORM_BYTES));
-    } catch {
-      return new Response("Invalid form submission.", { status: 400 });
-    }
+    const form = await readConnectForm(req, { origin: getBaseUrl(env) });
+    if (form instanceof Response) return form;
+    const formNonce = form.get(CONNECT_FORM_NONCE_FIELD) ?? "";
     const key = (form.get("key") ?? "").trim();
-    const result = await accountFor(ctx, path[0])?.acceptKey(form.get("nonce") ?? "", key);
+    const result = await accountFor(ctx, path[0])?.acceptKey(formNonce, key);
     if (!result) return htmlResponse(INVALID_LINK_HTML);
+    // A refused key spent nothing, so the form goes out again with the nonce it came with.
+    if ("retry" in result) return keyFormResponse(env, path[0], formNonce, result.retry);
     if ("refused" in result) return htmlResponse(errorPageHtml(result.refused.title, result.refused.detail), 409);
     return htmlResponse(connectHandoffPageHtml(result.handoff));
   }
@@ -235,28 +209,33 @@ export class UserAccount extends DurableObject<Env> {
   }
 
   /**
-   * Finishes the flow with the key the form posted. The form's nonce is spent whatever the key
-   * turns out to be, so a refused key means starting again from the Workshop.
-   * @returns The handoff, a refusal to show, or null when the form's nonce doesn't match.
+   * Finishes the flow with the key the form posted. The form's nonce is checked first and spent
+   * only once the provider has taken the key, so one it refuses gets the same form again. Two
+   * submissions of one form may both reach the provider; only one of them can finish.
+   * @returns The handoff, the form again, a refusal to show, or null when the form's nonce
+   * doesn't match.
    */
   async acceptKey(formNonce: string, key: string): Promise<CallbackResult | null> {
     const kv = this.ctx.storage.kv;
-    const attempt = claimOAuth<ConnectAttempt>(kv, formNonce, Date.now());
-    if (attempt === null) return null;
-    if (key === "" || key.length > MAX_KEY_LENGTH) {
-      return refused("That isn't an Acme Service API key. Start the connection again from the Workshop.");
-    }
+    if (peekOAuth(kv, formNonce, Date.now()) === null) return null;
+    if (key === "" || key.length > MAX_KEY_LENGTH) return { retry: "That isn't an Acme Service API key." };
     const grant: Grant = { accessToken: key };
     let identity: Identity;
     try {
       identity = await fetchUser(key);
     } catch (error) {
       if (isAuthError(error)) {
-        return refused("Acme Service refused the key. Start the connection again from the Workshop and paste a current one.");
+        // The attempt may have ended meanwhile, and a form shown for it could not be posted.
+        return peekOAuth(kv, formNonce, Date.now()) === null
+          ? null : { retry: "Acme Service refused that key. Check it and paste it again." };
       }
       logger.error("could not read whose key an Acme Service connection was given", { event: "acme.connect.identity.failed", error });
       throw new Error("Could not read which Acme Service user the key belongs to. Please try again.", { cause: error });
     }
+
+    // A newer link, a disconnect or the attempt's expiry while the provider was asked ends it here.
+    const attempt = claimOAuth<ConnectAttempt>(kv, formNonce, Date.now());
+    if (attempt === null) return null;
 
     const callback = kv.get<Fetcher<GatekeeperConnectCallback>>("callback");
     if (callback === undefined) {

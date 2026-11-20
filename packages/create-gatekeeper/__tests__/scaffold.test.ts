@@ -56,9 +56,21 @@ describe("scaffold", () => {
   it("serves the key form so that its submission names its origin", () => {
     const account = scaffold({ name: "acme", auth: "api-key" }).get("src/acme-account.ts");
     const text = account && "text" in account ? account.text : "";
-    expect(text).toContain('response.headers.set("Referrer-Policy", "same-origin")');
-    expect(text).toMatch(/return formResponse\(keyFormHtml\(/);
-    expect(text).not.toMatch(/htmlResponse\(keyFormHtml\(/);
+    expect(text).toMatch(/return formPageResponse\(connectFormHtml\(/);
+    expect(text).not.toMatch(/htmlResponse\(connectFormHtml\(/);
+  });
+
+  // A typo must not send the user back to the Workshop: a refused key gets the form again.
+  it("shows the key form again for a key the provider refuses", () => {
+    const account = scaffold({ name: "acme", auth: "api-key" }).get("src/acme-account.ts");
+    const text = account && "text" in account ? account.text : "";
+    // Checked before the provider is asked, and claimed only after it takes the key.
+    const [check, ask, claim] = ["if (peekOAuth(kv, formNonce", "await fetchUser(key)", "claimOAuth<ConnectAttempt>(kv, formNonce"]
+      .map(step => text.indexOf(step));
+    expect(check).toBeGreaterThan(-1);
+    expect(ask).toBeGreaterThan(check);
+    expect(claim).toBeGreaterThan(ask);
+    expect(text).toContain('if ("retry" in result) return keyFormResponse(env, path[0], formNonce, result.retry);');
   });
 });
 
