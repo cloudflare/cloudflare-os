@@ -170,6 +170,7 @@ ruleTester.run("new-gatekeeper-observer-contract", plugin.rules["new-gatekeeper-
     "await queue.authorizeObservation({ ...observation, subresources: [id] });",
     "await queue.authorizeObservation({ title, subresources });",
     "await queue.authorizeObservation({ title, \"subresources\": [id] });",
+    "await queue.authorizeObservation({ title, subresources: [id] } satisfies ObservationDescription);",
     // A base class may supply the session and the history; what this one defines is still checked.
     "class Facet extends Base implements Gatekeeper<Session> {\n  async addObserver(_id: string) {}\n}",
     // A description built elsewhere is checked by its helper's type, not here.
@@ -207,6 +208,24 @@ ruleTester.run("new-gatekeeper-observer-contract", plugin.rules["new-gatekeeper-
     {
       code: "class Facet implements Gatekeeper<Session> {\n  async addObserver(_id: string) {}\n}",
       errors: [{ messageId: "missingHistory" }],
+    },
+    // The shape the skeleton writes: Cloudflare's base class supplies no history.
+    {
+      code: "class Facet extends DurableObject<Env> implements Gatekeeper<Session> {\n  async addObserver(_id: string) {}\n}",
+      errors: [{ messageId: "missingHistory" }],
+    },
+    {
+      code: "await queue.authorizeObservation({ title } satisfies ObservationDescription);",
+      errors: [{ messageId: "unreported" }],
+    },
+    {
+      code: "await queue.authorizeObservation({ title } as ObservationDescription);",
+      errors: [{ messageId: "unreported" }],
+    },
+    // The spread comes last, and can carry `subresources: undefined`.
+    {
+      code: "await queue.authorizeObservation({ subresources: [id], ...observation });",
+      errors: [{ messageId: "unreported" }],
     },
     {
       code: "await queue.authorizeObservation({ title, subresources: undefined });",

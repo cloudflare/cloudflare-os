@@ -259,11 +259,11 @@ const newGatekeeperObserverContract: Rule = {
         const statements = history?.value.body?.body;
         const returned = statements?.length === 1 && statements[0].type === "ReturnStatement"
           ? statements[0].argument : undefined;
+        // A facet base of the gatekeeper's own may supply it, as it may supply `startSession()`.
+        // Cloudflare's `DurableObject` supplies neither.
+        const inherits = superClass && !(superClass.type === "Identifier" && superClass.name === "DurableObject");
         if (!history) {
-          // A base class may supply it, as it may supply `startSession()`.
-          if (!superClass) {
-            context.report({ node: addObserver?.key ?? id ?? body, messageId: "missingHistory" });
-          }
+          if (!inherits) context.report({ node: addObserver?.key ?? id ?? body, messageId: "missingHistory" });
         } else if (returned?.type !== "ArrayExpression" || returned.elements.length > 0) {
           context.report({ node: history.key, messageId: "history" });
         }
@@ -277,14 +277,21 @@ const newGatekeeperObserverContract: Rule = {
       },
       CallExpression(node) {
         const { callee } = node;
-        const [description] = node.arguments;
+        let [description] = node.arguments;
+        // What `satisfies` and `as` wrap is the object that is sent.
+        while (description?.type === "TSSatisfiesExpression" || description?.type === "TSAsExpression") {
+          description = description.expression;
+        }
         if (callee.type !== "MemberExpression" || callee.computed ||
             callee.property.name !== "authorizeObservation" || description?.type !== "ObjectExpression") {
           return;
         }
-        // The kernel reads `subresources: undefined` as the field left out.
-        const reported = description.properties.some(property => property.type === "Property" &&
-          keyName(property) === "subresources" && !(property.value.type === "Identifier" && property.value.name === "undefined"));
+        // The last word on the field: a spread after it can replace it, and the kernel reads
+        // `subresources: undefined` as the field left out.
+        const last = description.properties.findLast(property =>
+          property.type === "SpreadElement" || keyName(property) === "subresources");
+        const reported = last?.type === "Property" &&
+          !(last.value.type === "Identifier" && last.value.name === "undefined");
         if (!reported) context.report({ node: description, messageId: "unreported" });
       },
       Property(node) {
