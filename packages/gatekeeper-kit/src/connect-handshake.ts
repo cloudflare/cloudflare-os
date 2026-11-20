@@ -111,6 +111,39 @@ export function advanceToOAuth<Extra extends object>(
 }
 
 /**
+ * Reads a valid OAuth-stage attempt without claiming it, for a flow whose user may try again: a
+ * form whose pasted key is checked with the provider before anything is spent. Check the nonce
+ * with this, ask the provider, then `claimOAuth()` and go on only if that claim succeeds, taking
+ * the attempt's metadata from the claim. A refused key leaves the attempt as it was, so the form
+ * can be shown again with the same nonce, once a second check finds it still open; a newer link,
+ * a disconnect or the attempt's expiry while the provider was asked makes the claim fail. Two
+ * submissions may both reach the provider, and only one can claim.
+ * @param kv Durable Object nonce storage.
+ * @param oauthNonce Nonce the form or provider returned.
+ * @param now Current Unix time in milliseconds.
+ * @returns Stored provider metadata, or `null` when invalid.
+ *
+ * @example
+ * ```ts
+ * if (peekOAuth(kv, submittedNonce, Date.now()) === null) return null;
+ * if (!(await providerAccepts(key))) {
+ *   // The attempt may have ended meanwhile, and a form shown for it could not be posted.
+ *   return peekOAuth(kv, submittedNonce, Date.now()) === null ? null : { retry: "The provider refused that key." };
+ * }
+ * const attempt = claimOAuth<ConnectAttempt>(kv, submittedNonce, Date.now());
+ * if (attempt === null) return null;
+ * ```
+ */
+export function peekOAuth<Extra extends object = Record<never, never>>(
+  kv: ConnectNonceKv,
+  oauthNonce: string,
+  now: number,
+): StoredNonce<Extra> | null {
+  const stored = kv.get<StoredNonce<Extra>>(NONCE_KEY);
+  return stored?.stage === "oauth" && isLiveNonce(stored, oauthNonce, now) ? stored : null;
+}
+
+/**
  * Claims a valid OAuth callback. The claim is irrevocable: the nonce is consumed whatever happens
  * next, so a consumer whose `complete()` or credential persistence fails after the provider
  * exchange must roll back anything it just persisted itself — the storage shape is provider-owned,
@@ -125,10 +158,8 @@ export function claimOAuth<Extra extends object = Record<never, never>>(
   oauthNonce: string,
   now: number,
 ): StoredNonce<Extra> | null {
-  const stored = kv.get<StoredNonce<Extra>>(NONCE_KEY);
-  if (stored?.stage !== "oauth" || !isLiveNonce(stored, oauthNonce, now)) return null;
-
-  kv.delete(NONCE_KEY);
+  const stored = peekOAuth<Extra>(kv, oauthNonce, now);
+  if (stored !== null) kv.delete(NONCE_KEY);
   return stored;
 }
 

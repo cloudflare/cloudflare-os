@@ -286,9 +286,9 @@ describe('CreationAccountModal', () => {
 
   it('approves with the configuration from the selected account\'s configurator', async () => {
     const { startCreationConfigurator, onChoose } = await renderModal()
-    expect(startCreationConfigurator).toHaveBeenLastCalledWith(5, 'document')
+    expect(startCreationConfigurator).toHaveBeenLastCalledWith(5, 'document', 'create')
     await act(async () => accountButton('home').click())
-    expect(startCreationConfigurator).toHaveBeenLastCalledWith(6, 'document')
+    expect(startCreationConfigurator).toHaveBeenLastCalledWith(6, 'document', 'create')
     await resolveStart(0)
     await resolveStart(1)
     reportReady()
@@ -439,7 +439,7 @@ describe('CreationAccountModal configurator access requests', () => {
     await resolveStart(0)
     await resolveStart(1)
 
-    expect(startCreationConfigurator).toHaveBeenLastCalledWith(6, 'document')
+    expect(startCreationConfigurator).toHaveBeenLastCalledWith(6, 'document', 'create')
     await testState.ensureResources!([IMPORT_GRANT])
     expect(ensureAccountResources).toHaveBeenCalledExactlyOnceWith(6, [IMPORT_GRANT])
   })
@@ -453,7 +453,7 @@ describe('CreationAccountModal configurator access requests', () => {
       { uniqueName: 'work', grantedResourceUrlPatterns: [IMPORT_GRANT] } as AccountDescription,
       {} as VendorDescription, [], true, 'google'))
 
-    expect(startCreationConfigurator).toHaveBeenCalledExactlyOnceWith(5, 'document')
+    expect(startCreationConfigurator).toHaveBeenCalledExactlyOnceWith(5, 'document', 'create')
     expect(starts[0].disposed).toBe(0)
     expect(testState.mounts).toBe(1)
     reportReady()

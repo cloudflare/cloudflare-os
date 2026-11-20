@@ -31,11 +31,12 @@ const WORKING_CHAT = 2;
 const AGENT_CHAT = 5;
 const agent = {type: "agent" as const, id: "model", name: "Test agent"};
 const chat = (id: number, over: Partial<AiChatMetadata> = {}): AiChatMetadata => ({
-  id, title: `Chat ${id}`, started: new Date(), lastActive: new Date(), ...over,
+  id, title: `Chat ${id}`, started: new Date(0), lastActive: new Date(0), ...over,
 });
+// Fixed, distinct times, since the list comes back most recently active first.
 const CHATS = [
-  chat(WORKING_CHAT, {proposedChangeWorkpieces: [3]}),
-  chat(AGENT_CHAT, {spawnerName: "Researcher"}),
+  chat(WORKING_CHAT, {lastActive: new Date(2000), proposedChangeWorkpieces: [3]}),
+  chat(AGENT_CHAT, {lastActive: new Date(1000), spawnerName: "Researcher"}),
 ];
 
 const setup = () => {

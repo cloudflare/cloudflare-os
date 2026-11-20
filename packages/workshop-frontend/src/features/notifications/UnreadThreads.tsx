@@ -86,7 +86,7 @@ export const UnreadThreads = () => {
                       {chat.latestActivityAt.toLocaleDateString(undefined, { month: "short", day: "numeric" })}
                     </time>
                   )}
-                  <UnreadBadge count={chat.unreadMessageCount} />
+                  {chat.notificationsEnabled !== false && <UnreadBadge count={chat.unreadMessageCount} />}
                 </div>
               </Link>
             </li>

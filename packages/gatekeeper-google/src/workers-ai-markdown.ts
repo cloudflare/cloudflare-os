@@ -63,7 +63,10 @@ export type MarkdownConversion = {
 export async function convertToMarkdown(
   ai: AiFetcher, source: MarkdownSource, options: object,
 ): Promise<MarkdownConversion> {
-  let { body, sent, cancelSource } = requestBody(source, options);
+  // {"files":[{name, mimeType, data}],"options":…}
+  let file = `"name":${JSON.stringify(source.name)},"mimeType":${JSON.stringify(source.mimeType)}`;
+  let { body, sent, cancelSource } = base64JsonBody(
+    `{"files":[{${file},"data":"`, source.body, `"}],"options":${JSON.stringify(options)}}`);
   let fail = async (failure: ConversionFailure): Promise<never> => {
     // A fetch holds the body locked, so the source is released through its reader instead.
     await cancelSource();
@@ -103,27 +106,34 @@ export async function convertToMarkdown(
   };
 }
 
-/**
- * The conversion request's JSON body, `{"files":[{name, mimeType, data}],"options":…}`, with `data`
- * base64-encoded from the source one chunk at a time as the request is sent. `sent` counts the
- * source's bytes read and keeps the error the source itself failed with, if any. Cancelling the
- * body cancels the source; `cancelSource` does so too while the body is locked to a request, and
- * does nothing once the source has been read to its end.
- */
-function requestBody(source: MarkdownSource, options: object): {
+/** A request body that streams its source, and what has become of that source. */
+export type StreamedBody = {
   body: ReadableStream<Uint8Array>;
+  /** The source's bytes read so far, and the error the source itself failed with, if any. */
   sent: { bytes: number; error?: { error: unknown } };
+  /**
+   * Cancels the source while the body is locked to a request; cancelling the body does so too.
+   * Does nothing once the source has been read to its end.
+   */
   cancelSource(): Promise<void>;
-} {
+};
+
+/**
+ * A JSON request body holding `source` as one base64 string: `prefix`, which ends inside the
+ * string's opening quote, then the source base64-encoded one chunk at a time as the request is
+ * sent, then `suffix`, which begins with the closing quote.
+ */
+export function base64JsonBody(
+  prefix: string, source: ReadableStream<Uint8Array>, suffix: string,
+): StreamedBody {
   let encoder = new TextEncoder();
-  let reader = source.body.getReader();
-  let sent: { bytes: number; error?: { error: unknown } } = { bytes: 0 };
+  let reader = source.getReader();
+  let sent: StreamedBody["sent"] = { bytes: 0 };
   // The 0-2 bytes left over from the previous chunk, since base64 encodes whole 3-byte groups.
   let carry = new Uint8Array(0);
   let body = new ReadableStream<Uint8Array>({
     start(controller) {
-      let file = `"name":${JSON.stringify(source.name)},"mimeType":${JSON.stringify(source.mimeType)}`;
-      controller.enqueue(encoder.encode(`{"files":[{${file},"data":"`));
+      controller.enqueue(encoder.encode(prefix));
     },
     async pull(controller) {
       // A pull that enqueues nothing is not called again, so read until there is something to
@@ -137,7 +147,7 @@ function requestBody(source: MarkdownSource, options: object): {
           throw error;
         }
         if (chunk.done) {
-          controller.enqueue(encoder.encode(`${carry.toBase64()}"}],"options":${JSON.stringify(options)}}`));
+          controller.enqueue(encoder.encode(`${carry.toBase64()}${suffix}`));
           controller.close();
           return;
         }

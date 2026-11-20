@@ -27,7 +27,7 @@ type Spec = {
 };
 
 /** A fresh module, since it keeps what it learned of grants at module level, opened for `pattern`. */
-async function open(pattern: string, held: boolean) {
+async function open(pattern: string, held: boolean, purpose: "create" | "save" = "create") {
   vi.resetModules();
   const spec = (await import("../src/configurator/creation-location-configurator-ui")).default as unknown as Spec;
   let values: Values = { ...spec.initial };
@@ -37,6 +37,7 @@ async function open(pattern: string, held: boolean) {
     getFolder: vi.fn(async (_id: string): Promise<unknown> => null),
     folderForUrl: vi.fn(async (_url: string): Promise<string | null> => null),
     hasCreationAccess: vi.fn(async () => held),
+    purpose: vi.fn(async () => purpose),
   };
   const ensureResources = vi.fn(async (_patterns: string[]) => true);
   const context = () => ({
@@ -47,6 +48,7 @@ async function open(pattern: string, held: boolean) {
   const notices = () => nodes(spec.render(context())).filter(node => node.component === "Notice");
   return {
     ui, ensureResources, notices,
+    label: () => nodes(spec.render(context())).find(node => node.component === "Field")!.props.label,
     ready: () => spec.isReady({ values, acceptedResourceUrlPatterns: accepted }),
     location: () => parseResourceUrl(spec.resourceUrl({ values })),
     list: (parentId: string) => picker().loadItems({ parentId, query: "", cursor: null }),
@@ -109,6 +111,25 @@ describe("the creation location picker", () => {
     expect(text(without.notices()[0])).toMatch(/only the specific Google Drive files you use with this app/);
 
     const held = await open(GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern, true);
+    await held.list("folder:root");
+    expect(held.ready()).toBe(true);
+    expect(held.notices()).toEqual([]);
+  });
+
+  // A saved file is uploaded, which Drive takes only with the grant, wherever it goes.
+  it("needs the grant to save a file even in My Drive, and speaks of saving", async () => {
+    const without = await open(GOOGLE_SHEETS_RESOURCE.urlPattern, false, "save");
+    await without.list("folder:root");
+    expect(without.ready()).toBe(false);
+    expect(without.label()).toBe("Where to save it");
+    expect(text(without.notices()[0])).toMatch(/It is used only to put what you save where you choose\.$/);
+
+    await without.notices()[0].props.action.onClick();
+    expect(without.ensureResources).toHaveBeenCalledWith([CREATED_FILES_GRANT]);
+    expect(without.ready()).toBe(true);
+    expect(without.location()).toEqual({ kind: "driveFolder", folderId: "root" });
+
+    const held = await open(GOOGLE_SHEETS_RESOURCE.urlPattern, true, "save");
     await held.list("folder:root");
     expect(held.ready()).toBe(true);
     expect(held.notices()).toEqual([]);

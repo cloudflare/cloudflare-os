@@ -383,8 +383,9 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
   async resolve(userObjectId: string, url: string): Promise<Outcome<unknown>> {
     return await outcome(async () => {
       const account = this.ctx.exports.UserAccount.get(this.ctx.exports.UserAccount.idFromString(userObjectId));
-      const tenant = (await account.getIdentity()).sharePointTenant;
-      if (tenant === undefined) throw new Error("no SharePoint");
+      const identity = await account.getIdentity();
+      if (identity.sharePointTenant === undefined) throw new Error("no SharePoint");
+      const tenant = { name: identity.sharePointTenant, id: identity.tenantId };
       return await accountSource(this.ctx.exports, userObjectId)
         .run(creds => resolveSharePointUrl(new GraphApi(creds.accessToken), url, tenant), { replayable: true });
     });

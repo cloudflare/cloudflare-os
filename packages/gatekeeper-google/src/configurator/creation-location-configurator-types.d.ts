@@ -10,7 +10,12 @@ export type CreationLocationConfiguratorValues = {
   suggested?: string | null;
 };
 
+/** What the folder is picked for (see GatekeeperUser.startCreationConfigurator()). */
+export type CreationPurpose = "create" | "save";
+
 export interface CreationLocationConfiguratorRpc {
+  /** What this picker was opened for. Saving a file needs the grant in every folder, My Drive too. */
+  purpose(): Promise<CreationPurpose>;
   /**
    * One page of the folders at a location (`folder:root` for My Drive, `shared-drives`,
    * `shared-with-me`, or a folder), or, when `query` is not empty, of every folder anywhere whose
