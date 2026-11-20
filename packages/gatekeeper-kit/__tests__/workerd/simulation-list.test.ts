@@ -790,6 +790,8 @@ describe("the folds of one walk", () => {
   ];
   const targets = (action: Change): string[] =>
     action.kind === "open" ? [action.ref] : [action.row];
+  /** The refusal of the first page, which a walk retries once. */
+  const REFUSED = new Error("refused");
 
   /**
    * One listing over `QUEUE`, walked to its end: every `next()` counted, the one that rejects
@@ -837,7 +839,7 @@ describe("the folds of one walk", () => {
       overlay: list.overlay,
       inject: { ...list.inject, authorize: true, identity: row => row.id },
       authorizePage: async () => {
-        if (authorized++ === 0 && refuseFirstPage) throw new Error("refused");
+        if (authorized++ === 0 && refuseFirstPage) throw REFUSED;
       },
     });
 
@@ -849,7 +851,9 @@ describe("the folds of one walk", () => {
       let page: Row[] | null;
       try {
         page = await cursor.next();
-      } catch {
+      } catch (error) {
+        // The one refusal this walk makes is retried; anything else fails the test.
+        if (error !== REFUSED || refusedCalls > 0) throw error;
         refusedCalls++;
         continue;
       }
