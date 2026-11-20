@@ -1548,16 +1548,26 @@ describe("counting", () => {
     ]);
   });
 
-  it("hands a Request input the request's or the upstream's redirect mode, whatever its own", async () => {
-    const fetch = answering(302, 302, 302);
+  it("takes of a Request input a mode that follows no redirect, and not its `follow`", async () => {
+    const fetch = answering(302, 302, 302, 302, 302);
+    const following = untimed.with({ redirect: "follow" });
 
+    // The `follow` a Request holds where it was given no mode is no word to follow.
     await untimed.request(new Request(THREAD, { redirect: "follow" }));
     await untimed.request(new Request(THREAD), { redirect: "follow" });
-    await untimed.with({ redirect: "follow" }).request(new Request(THREAD, { redirect: "manual" }));
+    await following.request(new Request(THREAD));
+    // Its `manual` stands over the upstream's mode, and the request's own over both.
+    await following.request(new Request(THREAD, { redirect: "manual" }));
+    await following.request(new Request(THREAD, { redirect: "manual" }), { redirect: "follow" });
 
-    expect(fetch.mock.calls.map(([, init]) => init))
-        .toEqual([{ redirect: "manual" }, { redirect: "follow" }, { redirect: "follow" }]);
-    expect(outcomes()).toEqual([["error", "http", 302], ["success", "", 302], ["success", "", 302]]);
+    expect(fetch.mock.calls.map(([, init]) => init)).toEqual([
+      { redirect: "manual" }, { redirect: "follow" }, { redirect: "follow" }, { redirect: "manual" },
+      { redirect: "follow" },
+    ]);
+    expect(outcomes()).toEqual([
+      ["error", "http", 302], ["success", "", 302], ["success", "", 302], ["error", "http", 302],
+      ["success", "", 302],
+    ]);
   });
 
   it("counts by the default, of the request's redirect mode, a status its `succeeded` has no rule for", async () => {
@@ -2806,9 +2816,13 @@ describe("fetcher", () => {
     ]);
   });
 
-  it("sends a call whose init holds an option of a request's own that throws on being read", async () => {
+  it("sends a call whose init holds a member fetch does not take that throws on being read", async () => {
     const fetch = answering(200);
-    const init = { method: "POST", body: "{}", get retry(): never { throw new Error("unread"); } };
+    const init = {
+      method: "POST", body: "{}",
+      get retry(): never { throw new Error("unread"); },
+      get sdkContext(): never { throw new Error("unread"); },
+    };
 
     expect((await upstream.fetcher()(THREAD, init)).status).toBe(200);
     expect(Object.keys(initOf(fetch))).toEqual(["method", "body", "signal", "redirect"]);

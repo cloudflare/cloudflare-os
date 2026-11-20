@@ -261,8 +261,8 @@ export type UpstreamRequestInit = RequestInit & {
  * - **What is sent.** The input goes to `fetch` as given. The init is the caller's without the
  *   options of `UpstreamRequestInit`, with `headers` replaced by a `Headers` only where
  *   `authorize` is given, `signal` set where there is a timeout or a caller's signal, and
- *   `redirect` always set: the request's mode, else the upstream's, else `"manual"`, whatever
- *   the mode of a `Request` input. The caller's init is read by property: the enumerable
+ *   `redirect` always set: the request's mode, else a mode other than `"follow"` that a
+ *   `Request` input holds, else the upstream's, else `"manual"`. The caller's init is read by property: the enumerable
  *   properties it has of its own are handed on as they are, and so is each further member of a
  *   `fetch` init that it holds any other way and that is not undefined, behind a prototype's
  *   getter for one. A `Request` given for the init so sends its method, headers, body and
@@ -326,8 +326,9 @@ export interface Upstream {
    * alone are: whatever `parse` throws once the attempt's timeout has fired is taken for a
    * reading that the timeout cut off.
    * @param answer How the parsed answer is counted, which is how an attempt is counted by what
-   * its body says: the request's own `answer` reads no body. It is given what `parse` returned
-   * and, as that hook is, the answer's status and a copy of its headers. Undefined, a throw or
+   * its body says: the request's own `answer` reads no body. It is given what `parse` returned,
+   * which is what `read` returns and so is read here and not changed, and, as that hook is, the
+   * answer's status and a copy of its headers. Undefined, a throw or
    * what is no answer (a promise is not awaited) counts it as `request` counts its answer. By
    * convention an error inside a success is an `error` with the reason `api`.
    * @returns What `parse` returned of the last answer.
@@ -374,9 +375,9 @@ export interface Upstream {
   /**
    * A fetch-shaped function for code that takes one, such as a remote key set, an SDK or a git
    * transport: each call is `request(input, { ...init, ...defaults })`. Of a call's own init
-   * only what `fetch` takes is read, by property as `request` reads its own: a member named as
-   * one of a request's own options is dropped, so that the code handed the function sets none of
-   * them.
+   * only the members `fetch` takes are read, by property as `request` reads its own, and no
+   * other is looked at: the code handed the function sets none of a request's own options, and
+   * a member of its own that `fetch` would not read cannot fail the call.
    * @param defaults Options of every request it sends. A `redirect` in a call's own init is used
    * where `defaults` has none.
    * @returns The function. It never throws: a call that fails rejects the promise it returned,
@@ -557,8 +558,11 @@ export function defineUpstream(options: UpstreamOptions): Upstream {
     const idempotent = method === "GET" || method === "HEAD" || marked === true;
     const timeoutMs = timeoutOf(ownTimeoutMs, upstreamTimeoutMs);
     const retry = retryOf(ownRetry, upstreamRetry);
-    // No redirect is followed unless the request or the upstream says so.
-    const redirect = rest.redirect ?? options.redirect ?? "manual";
+    // No redirect is followed unless the request or the upstream says so. A `Request` input
+    // says so no more than one given for the init does: it holds `follow` where it was given no
+    // mode. Any other mode it holds is its own word, and stands over the upstream's.
+    const held = request && request.redirect !== "follow" ? request.redirect : undefined;
+    const redirect = rest.redirect ?? held ?? options.redirect ?? "manual";
     const manual = redirect === "manual";
     // The signal of a `Request` input is the caller's only where the init gives none: a `null`
     // there clears it, as it does for `fetch`.
@@ -798,10 +802,8 @@ type Sent = {
 // The init of a `fetcher`'s caller, read by property, without what is named as one of a
 // request's own options.
 function fetchInit(init: RequestInit | undefined): RequestInit {
-  const given = init ?? {};
-  // The names are sifted before a value is read: an option that is dropped is never looked at.
-  const own = Object.keys(given).filter(name => !OWN_OPTIONS.has(name));
-  return asFetchReads(Object.fromEntries(own.map(name => [name, Reflect.get(given, name)])), given);
+  // Only the members `fetch` reads are read: no other is looked at, a request's own included.
+  return asFetchReads({}, init ?? {});
 }
 
 // An init read by property: `own`, a copy of the enumerable properties that `init` has of its
