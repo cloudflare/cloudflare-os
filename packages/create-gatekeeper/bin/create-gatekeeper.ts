@@ -27,9 +27,10 @@ Writes packages/gatekeeper-<name>, a gatekeeper built on gatekeeper-kit.
   --openapi <file>   The provider's OpenAPI description, a JSON file. The package keeps a copy,
                      pinned by its hash, and a script that generates the typed client's schema
                      from it. Nothing is fetched.
-  --operations <ids> With --openapi, the operationIds the gatekeeper calls, separated by commas:
-                     their schema is generated now. Without it, the description's operations
-                     are printed to choose from, and none is generated.
+  --operations <ids> With --openapi, the operationIds the gatekeeper calls, separated by commas,
+                     or a file of the lines printed for them: their schema is generated now.
+                     Without it, the description's operations are printed to choose from, and
+                     none is generated.
   --out <dir>        Write the package here instead, and register nothing.
   --no-install       Don't run "pnpm install" and "pnpm types:generate" afterwards.
 
@@ -87,41 +88,51 @@ function register(names: Names, auth: ScaffoldOptions["auth"], hooks: boolean): 
 }
 
 /**
- * Runs the kit's schema generator, and returns what it printed. A failure is reported in its own
- * words, with `scratch`, a file of this command's that it was given, named as `shown` instead.
+ * Runs the kit's schema generator, and returns what it printed, however long: a large
+ * description lists more than the megabyte a child is allowed by default.
+ * @throws Error in the generator's own words, with `scratch`, a file of this command's that it
+ * was given, named as `shown` instead.
  */
 function openapiSchema(args: string[], scratch?: string, shown?: string): string {
-  const result = spawnSync(process.execPath, [OPENAPI_SCHEMA_BIN, ...args], { encoding: "utf8" });
+  const result = spawnSync(process.execPath, [OPENAPI_SCHEMA_BIN, ...args], { encoding: "utf8", maxBuffer: Infinity });
   if (result.status !== 0) {
     const said = result.stderr.trim() || "gatekeeper-openapi-schema failed.";
-    fail(scratch === undefined || shown === undefined ? said : said.replaceAll(scratch, shown));
+    throw new Error(scratch === undefined || shown === undefined ? said : said.replaceAll(scratch, shown));
   }
   return result.stdout;
 }
 
+/** The lines of `listed` for the operationIds in `ids`, which commas separate. */
+function chosenLines(listed: string[], ids: string): string {
+  const chosen = new Set(ids.split(",").map(id => id.trim()).filter(id => id !== ""));
+  if (chosen.size === 0) throw new Error("--operations names no operation.");
+  const lines = listed.filter(line => chosen.delete((JSON.parse(line) as { operationId: string }).operationId));
+  if (chosen.size > 0) {
+    throw new Error(`The description has no operation ${[...chosen].join(", ")}. Run this without --operations to list the ones it has.`);
+  }
+  return lines.map(line => `${line}\n`).join("");
+}
+
 /**
- * Reads the description at `path`, and with `ids`, the operationIds separated by commas, generates
- * the schema of those operations. Nothing of the package is written yet, so a description or an
- * operation the generator refuses leaves nothing behind.
+ * Reads the description at `path`, and with `ids`, generates the schema of the operations it
+ * names: operationIds, or a file of their lines as listed, which an id with a comma in it needs.
+ * Nothing of the package is written yet, so a description or an operation the generator refuses
+ * leaves nothing behind.
  * @returns What the scaffold needs, and the lines of every operation the description has.
+ * @throws Error for a description or operations that cannot be read or generated from.
  */
 function readOpenApi(path: string, ids: string | undefined): { openapi: OpenApiOptions; listed: string[] } {
   let document: string;
   try {
     document = readFileSync(path, "utf8");
   } catch (error) {
-    fail(`Could not read --openapi ${path}: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`Could not read --openapi ${path}: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
   }
   const listed = openapiSchema([path, "--list"]).split("\n").filter(line => line !== "");
   if (ids === undefined) return { openapi: { document }, listed };
 
-  const chosen = new Set(ids.split(",").map(id => id.trim()).filter(id => id !== ""));
-  if (chosen.size === 0) fail("--operations names no operation.");
-  const lines = listed.filter(line => chosen.delete((JSON.parse(line) as { operationId: string }).operationId));
-  if (chosen.size > 0) {
-    fail(`The description has no operation ${[...chosen].join(", ")}. Run this without --operations to list the ones it has.`);
-  }
-  const operations = lines.map(line => `${line}\n`).join("");
+  // A file's lines are the generator's to check, as they are whenever the schema is generated again.
+  const operations = existsSync(ids) ? readFileSync(ids, "utf8") : chosenLines(listed, ids);
 
   const work = mkdtempSync(join(tmpdir(), "create-gatekeeper-openapi-"));
   try {

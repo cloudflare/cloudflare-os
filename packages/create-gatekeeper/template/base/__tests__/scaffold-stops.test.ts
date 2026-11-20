@@ -15,6 +15,10 @@ it("has no decision left as the scaffold wrote it", () => {
   const src = join(import.meta.dirname, "..", "src");
   const stops = readdirSync(src, { recursive: true, withFileTypes: true })
     .filter(entry => entry.isFile() && /\.(ts|tsx)$/.test(entry.name))
+// #if openapi
+    // Generated from the provider's description, whose own words are not the scaffold's to judge.
+    .filter(entry => !entry.parentPath.startsWith(join(src, "openapi")))
+// #endif
     .flatMap(entry => {
       const path = join(entry.parentPath, entry.name);
       return readFileSync(path, "utf8").split("\n")

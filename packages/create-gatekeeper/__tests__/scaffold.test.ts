@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
-  copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync,
+  copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -143,6 +143,17 @@ describe("scaffold with an OpenAPI description", () => {
     expect(stops(files).map(({ id }) => id)).toContain("api");
   });
 
+  it("refuses the name of the generated schema's directory", () => {
+    expect(() => scaffold({ name: "openapi", auth: "api-key", openapi: { document: "{}" } })).toThrow("use another name");
+  });
+
+  it("leaves the generated schema out of what the package's test reads for invented values", () => {
+    const stopsTest = (openapi: boolean) =>
+      text(scaffold({ name: "acme", auth: "api-key", openapi: openapi ? { document: "{}" } : undefined }), "__tests__/scaffold-stops.test.ts");
+    expect(stopsTest(true)).toContain('startsWith(join(src, "openapi"))');
+    expect(stopsTest(false)).not.toContain("openapi");
+  });
+
   it("writes nothing about a description when there is none", () => {
     const files = scaffold({ name: "acme", auth: "api-key" });
     expect([...files.keys()].filter(path => /openapi/.test(path))).toEqual([]);
@@ -259,6 +270,28 @@ describe("create-gatekeeper", () => {
         ["issues/list", "issues/create", "issues/delete", "issues/upload", "users/get", "users/avatar"]);
       expect(readFileSync(join(dir, "openapi-operations.jsonl"), "utf8")).toBe("");
       expect(existsSync(join(dir, "src", "openapi"))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("takes a file of listed lines for --operations, and leaves no scratch directory behind", () => {
+    const root = mkdtempSync(join(tmpdir(), "create-gatekeeper-"));
+    const scratch = () => readdirSync(tmpdir()).filter(name => name.startsWith("create-gatekeeper-openapi-")).length;
+    try {
+      const dir = join(root, "gatekeeper-acme");
+      const lines = join(root, "lines.jsonl");
+      writeFileSync(lines, '{"operationId":"users/get","method":"GET","path":"/users/{username}"}\n');
+      run(repo, process.execPath, bin, "acme", "--auth", "api-key", "--out", dir, "--openapi", spec, "--operations", lines);
+      expect(readFileSync(join(dir, "openapi-operations.jsonl"), "utf8")).toBe(readFileSync(lines, "utf8"));
+      expect(readFileSync(join(dir, "src", "openapi", "index.d.ts"), "utf8")).toContain('path: "/users/{username}";');
+
+      // A refusal ends the command, which must still clear what it generated into.
+      const before = scratch();
+      writeFileSync(lines, '{"operationId":"users/avatar"}\n');
+      const refused = spawnSync(process.execPath, [bin, "acme", "--auth", "api-key", "--out", join(root, "other"), "--openapi", spec, "--operations", lines], { encoding: "utf8" });
+      expect(refused.status).toBe(1);
+      expect(scratch()).toBe(before);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

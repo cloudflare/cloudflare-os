@@ -4,7 +4,7 @@ A new gatekeeper starts from a command, not from copied code:
 
 ```bash
 pnpm create-gatekeeper <name> --auth <oauth|api-key> [--hooks] --display "<Provider Name>" \
-  [--openapi <description.json> [--operations <operationId>,<operationId>,...]]
+  [--openapi <description.json> [--operations <operationId>,<operationId>,...|<lines.jsonl>]]
 ```
 
 `--auth oauth` is an authorization-code grant with PKCE; `--auth api-key` is a key the user pastes
@@ -14,8 +14,8 @@ file (nothing is fetched): the package keeps a copy as `openapi.json`, a `genera
 that pins it by hash, and `openapi-operations.jsonl`, the list the schema is generated for. With
 `--operations` the list is filled and the schema is generated into `src/openapi/`, and the client
 calls through it; without, the command prints the description's operations, one JSON line each,
-to choose from. To see them before making the package, run
-`gatekeeper-openapi-schema <description.json> --list` in `packages/gatekeeper-kit`. The command writes
+to choose from. `--operations` also takes a file of those lines, which an id with a comma in it needs. To see them before making the package, run
+`node packages/gatekeeper-kit/bin/openapi-schema.ts <description.json> --list`. The command writes
 `packages/gatekeeper-<name>`, adds it to the gatekeeper list in `README.md` and, for OAuth, to the
 credential map in `scripts/run-dev-server.ts` (with hooks, also to that script's passed-through
 variables and to the `restore` list in `scripts/generate-worker-types.ts`), and runs `pnpm install` and, for the new package alone, `pnpm types:generate`. It also writes the stand-in bundle the release manifest's test needs. The
