@@ -244,13 +244,14 @@ export type UpstreamRequestInit = RequestInit & {
  *   `Request` input, which never can be: a request with neither has none to send. An attempt
  *   that threw is sent again under the same conditions when the request is idempotent, unless
  *   the upstream's `thrown` says that nothing was sent. So is, under `read`, an attempt whose
- *   answer `parse` could not read once the attempt's own timeout had fired, after the wait of
- *   one that threw, where the status of that answer is a success: by `succeeded` and the
- *   redirect mode, as under Counting, and whatever the request's `answer` counts it as. An
- *   answer of any other status is not sent again for a body that timed out: this rule decided
- *   on it when it came, by `retryable`, and that stands, as does a `Retry-After` longer than
- *   `maxDelayMs` that kept an answer of any status from being sent again. Nor is an answer sent
- *   again whose body fails as it is read for any reason but that timeout, a connection lost
+ *   answer `parse` could not read once the attempt's own timeout had fired, where the status
+ *   of that answer is a success: by `succeeded` and the redirect mode, as under Counting, and
+ *   whatever the request's `answer` counts it as. Its wait is what the answer's `Retry-After`
+ *   asks for, or that of one that threw where it names none, and `delayMs` is not asked: an
+ *   answer whose `Retry-After` asks for longer than `maxDelayMs` is not sent again for a body
+ *   that timed out either. An answer of any other status is not sent again for a body that
+ *   timed out: this rule decided on it when it came, by `retryable`, and that stands. Nor is
+ *   an answer sent again whose body fails as it is read for any reason but that timeout, a connection lost
  *   after the headers included: `read` cannot tell a transport's failure there from a parser's,
  *   and counts the attempt as `parse` says below. A write is never sent twice unless it is
  *   marked `idempotent`, the gatekeeper's `retryable` says so, or its `replay` hook does: a
@@ -693,15 +694,12 @@ export function defineUpstream(options: UpstreamOptions): Upstream {
         // The wait is settled with the rule, before the body is let go: an answer that asks for
         // a longer wait than is made is returned as it came.
         let wait: number | undefined;
-        // Whether the rule would have sent the answer again and its `Retry-After` kept it from.
-        let asksLonger = false;
         if (resendable && retry && attempt < retry.attempts - 1 && await sendsAgain(() => {
           if (!retry.retryable(response.status, { method, operation, idempotent }, response.headers)) {
             return false;
           }
           wait = waitAfter(retry, attempt, response);
-          asksLonger = wait === undefined;
-          return !asksLonger;
+          return wait !== undefined;
         })) {
           await pause(wait ?? 0, caller);
           attempt++;
@@ -719,13 +717,16 @@ export function defineUpstream(options: UpstreamOptions): Upstream {
           },
           // A success that the attempt's own timeout kept from being read is an attempt that
           // timed out, and is sent again as one that threw is. An answer that is no success was
-          // put to the retry rule when it came, and what the rule said of it stands. So does a
-          // wait it asked for that is longer than is made: no send comes before that time.
+          // put to the retry rule when it came, and what the rule said of it stands. The wait is
+          // what the answer's `Retry-After` asks for, as after any answer: no send comes before
+          // that time, and none at all where it is longer than is waited.
           again: () => {
-            if (asksLonger) return undefined;
             if (!success || !timeout?.aborted || caller?.aborted || !resendable || !idempotent
                 || !retry || attempt >= retry.attempts - 1) return undefined;
-            return pause(jitterMs(retry, attempt++), caller).then(sending);
+            const stalledWait = askedWaitMs(retry, attempt, response);
+            if (stalledWait === undefined) return undefined;
+            attempt++;
+            return pause(stalledWait, caller).then(sending);
           },
         };
       }
@@ -1005,6 +1006,13 @@ function delayOf(label: string, value: number): number {
 function waitAfter(retry: Required<RetryPolicy>, attempt: number, response: Response): number | undefined {
   const own = ownDelayMs(retry, response, attempt + 1);
   if (own !== undefined) return Math.min(Math.max(own, 0), retry.maxDelayMs);
+  return askedWaitMs(retry, attempt, response);
+}
+
+// The wait an answer itself asks for before the attempt after `attempt`: its `Retry-After`,
+// else exponential backoff with full jitter. Undefined where the `Retry-After` asks for longer
+// than the policy's longest delay.
+function askedWaitMs(retry: Required<RetryPolicy>, attempt: number, response: Response): number | undefined {
   const retryAfter = response.headers.get("Retry-After");
   const askedFor = retryAfter === null ? undefined : retryAfterMs(retryAfter);
   if (askedFor !== undefined) return askedFor > retry.maxDelayMs ? undefined : askedFor;

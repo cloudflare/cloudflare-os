@@ -2389,7 +2389,7 @@ describe("read", () => {
     });
 
     it("cancels the body of the answer before it sends again", async () => {
-      const unread = open(200);
+      const unread = open(200, {});
       const times = stalled(unread.response, answer(200, "payload"));
 
       // A reading that fails once the timeout has fired, with the body left as it was.
@@ -2478,15 +2478,28 @@ describe("read", () => {
       expect(outcomes()[0]).toEqual(["error", "timeout", status]);
     });
 
+    it("waits what the Retry-After of a stalled success asks for before it is sent again", async () => {
+      const delayMs = vi.fn(() => 9_000);
+      const times = stalled([200, { "Retry-After": "4" }], answer(200, "payload"));
+
+      const text = upstream.read(THREAD, { retry: { delayMs } }, bodyText);
+      await vi.advanceTimersByTimeAsync(40_000);
+
+      expect(await text).toBe("payload");
+      // The answer's own wait, and no word of the policy's on an answer it did not send again.
+      expect(gaps(times)).toEqual([34_000]);
+      expect(delayMs).not.toHaveBeenCalled();
+    });
+
     it.each<[string, RetryPolicy]>([
-      ["under the default wait", {}],
-      ["where the policy's `delayMs` gives no wait", { delayMs: () => undefined }],
-    ])("sends once a success the rule would send again, whose Retry-After asks for longer than is waited: %s", async (_name, policy) => {
+      ["under the default rule, which sends no 202 again", {}],
+      ["under a rule that would send it again", { retryable: status => status === 202 }],
+      ["where the policy's `delayMs` gives no wait", { retryable: status => status === 202, delayMs: () => undefined }],
+    ])("sends once a stalled success whose Retry-After asks for longer than is waited: %s", async (_name, policy) => {
       const times = stalled([202, { "Retry-After": "60" }], answer(200, "payload"));
 
-      const text = expect(upstream.read(THREAD, {
-        retry: { ...policy, maxDelayMs: 5, retryable: status => status === 202 },
-      }, bodyText)).rejects.toMatchObject({ name: "TimeoutError" });
+      const text = expect(upstream.read(THREAD, { retry: { ...policy, maxDelayMs: 5 } }, bodyText))
+          .rejects.toMatchObject({ name: "TimeoutError" });
       await vi.advanceTimersByTimeAsync(200_000);
 
       await text;
