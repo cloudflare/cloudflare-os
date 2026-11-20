@@ -230,6 +230,20 @@ class ChatStore {
 
   clearAttempt(id: number): void {
     this.#kv.delete(`chat:attempted:${id}`);
+    this.#kv.delete(`chat:edited:${id}`);
+  }
+
+  /**
+   * Record that edit `id` landed, Chat's markup for it unread, with the edit's time when Chat gave
+   * one: its retry never sends it again.
+   */
+  setLandedEdit(id: number, editedAt: Date | undefined): void {
+    this.#kv.put(`chat:edited:${id}`, editedAt ? { editedAt: editedAt.toISOString() } : {});
+  }
+
+  /** What setLandedEdit() recorded of edit `id`, if anything. */
+  landedEdit(id: number): { editedAt?: string } | undefined {
+    return this.#kv.get<{ editedAt?: string }>(`chat:edited:${id}`);
   }
 
   /**
@@ -427,6 +441,14 @@ async function submitChatAction(
     ctx.store.remove(actionId);
     throw error;
   }
+}
+
+/**
+ * Whether a message whose last edit was at `now` is still as an edit at `edited` left it. With
+ * either time unknown it can't be told, and counts as changed.
+ */
+function sameEdit(edited: string | undefined, now: Date | undefined): boolean {
+  return edited !== undefined && now?.toISOString() === edited;
 }
 
 /** Manual approval can run out of order, and an older change applied later would undo this one. */
@@ -1856,18 +1878,31 @@ export class GoogleChatGatekeeperImpl
         const current = await readTarget(target.committed);
         requireMessageInScope(scope, current);
         let text = current.formattedText;
-        if (text === action.text && !retried) return { type: "none" };
-        if (text !== action.text) {
+        const landed = store.landedEdit(actionId);
+        if (landed) {
+          // The edit landed before, only Chat's markup for it unread: never sent again, and the text
+          // is its own only while the message is as that edit left it.
+          if (!sameEdit(landed.editedAt, current.editedAt)) return { type: "none" };
+        } else if (text === action.text && !retried) {
+          return { type: "none" };
+        } else if (text !== action.text) {
           // A retry can't tell Chat's rendering of its own lost write from an outside edit.
           if (!retried && text !== action.previousText) {
             throw new Error(
               "This message was edited in Google Chat after this change was queued, so applying it " +
               "would overwrite that edit. Reject this change and edit the message again.");
           }
-          const stored = await store.attemptWrite(actionId,
+          const updated = await store.attemptWrite(actionId,
             () => api.updateMessageText(target.committed, action.text));
-          // Read once the edit has landed, outside its attempt: a failed read says nothing of it.
-          text = stored ?? (await api.getMessage(target.committed)).formattedText;
+          if (updated.formattedText !== undefined) {
+            text = updated.formattedText;
+          } else {
+            store.setLandedEdit(actionId, updated.editedAt);
+            // Read once the edit has landed, outside its attempt: a failed read says nothing of it.
+            const read = await api.getMessage(target.committed);
+            if (!sameEdit(updated.editedAt?.toISOString(), read.editedAt)) return { type: "none" };
+            text = read.formattedText;
+          }
         }
         store.rebaseEdits(chatActionSpaceName(action), target.committed, action.text, text);
         return {

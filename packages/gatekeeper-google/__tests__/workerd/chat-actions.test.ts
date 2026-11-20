@@ -1170,6 +1170,31 @@ describe("Google Chat gatekeeper behaviors", () => {
     expect(backend.state.messages[0].formattedText).toBe("root\n");
   });
 
+  // Known to have landed, the edit is never sent again: changed by hand since, the message keeps
+  // the newer text.
+  it("never resends an edit that landed when its message was changed by hand before the retry", async () => {
+    const backend = chatBackend();
+    backend.state.storeText = text => text.endsWith("\n") ? text : `${text}\n`;
+    backend.state.editsOmitFormattedText = true;
+    backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using message = (await space.getMessage(messageName("root"))).message;
+    await message.edit("Resolved");
+    backend.state.getStatusAfterEdit = 403;
+    await expect(chat.applyAction(1)).rejects.toThrow(/http=403/);
+
+    backend.state.getStatusAfterEdit = undefined;
+    backend.state.getMessageStatus = 200;
+    Object.assign(backend.state.messages[0], {
+      text: "Changed by hand", formattedText: "Changed by hand",
+      lastUpdateTime: new Date(Date.now() + 60_000).toISOString(),
+    });
+    await chat.applyAction(1);
+    expect(backend.state.edits).toEqual([{name: messageName("root"), text: "Resolved"}]);
+    expect(backend.state.messages[0].formattedText).toBe("Changed by hand");
+  });
+
   it("lets an uncertain edit be rejected once its message is deleted", async () => {
     const backend = chatBackend();
     backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));

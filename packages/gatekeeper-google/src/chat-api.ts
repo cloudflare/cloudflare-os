@@ -985,15 +985,22 @@ export class ChatApi {
 
   /**
    * Returns the text as Chat stored it, in the `formattedText` form a later read compares against,
-   * or undefined when Chat's reply leaves it out. The plain `text` is no substitute for it.
+   * or no `formattedText` when Chat's reply leaves it out (the plain `text` is no substitute for
+   * it), and the edit's time, by which a later read tells whether the message changed since.
    */
-  async updateMessageText(messageName: string, text: string): Promise<string | undefined> {
+  async updateMessageText(
+    messageName: string, text: string,
+  ): Promise<{ formattedText?: string; editedAt?: Date }> {
     const { spaceId, messageId } = chatMessageParts(messageName);
     const updated = await this.#request<ChatMessageRaw>(
       "messages.patch",
       `/spaces/${spaceId}/messages/${messageId}?updateMask=text`,
       { method: "PATCH", body: JSON.stringify({ text }), idempotent: true });
-    return updated.formattedText;
+    const editedAt = chatTime(updated.lastUpdateTime);
+    return {
+      ...(updated.formattedText !== undefined ? { formattedText: updated.formattedText } : {}),
+      ...(editedAt ? { editedAt } : {}),
+    };
   }
 
   async deleteMessage(messageName: string): Promise<void> {
