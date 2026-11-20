@@ -686,6 +686,19 @@ it('makes no link of a web address that is in a pending change', async () => {
   expect(links.map(link => look(link).cursor)).toEqual(['pointer', 'text', 'text'])
 })
 
+it('starts a table whose unsized columns fill the column where the column starts', async () => {
+  // Seven shares of 500pt sum to a hair over it.
+  const cells = Array.from({ length: 7 }, (_, column) => ({ ...CELL, column, blocks: [paragraph(undefined, 'Cell')] }))
+  const markup = ['<table>', '  <tr>', ...cells.map(() => '    <td><p>Cell</p></td>'), '  </tr>', '</table>'].join('\n')
+  const { blocks } = await draw({
+    savedMarkdown: `${markup}\n`,
+    drawing: drawing([{ type: 'table', line: 0, columns: cells.map(() => 0), rows: [{ cells }] }]),
+  })
+
+  const [table] = blocks()
+  expect(table.getBoundingClientRect().left).toBeCloseTo(table.parentElement!.getBoundingClientRect().left, 1)
+})
+
 it('gives a paragraph of raised text alone the line its size makes', async () => {
   const raised = { ...ARIAL, baseline: 'super' }
   const { blocks } = await draw({
