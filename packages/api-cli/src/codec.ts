@@ -2,8 +2,8 @@
 // hands back into JSON on stdout.
 //
 // capnweb carries `bigint`, `Date`, `Uint8Array`, `Error` and capabilities natively; JSON carries
-// none of them. (`Set` and `Map` are revived and encoded as their declared shapes say, though
-// capnweb 0.12 serializes neither, and no method of the API takes or returns one.) Results are
+// none of them. (`Set` and `Map`, which capnweb carries too, are revived and encoded as their
+// declared shapes say, though no method of the API takes or returns one.) Results are
 // encoded one way (`bigint` as a decimal string, bytes as `{"base64": ...}`, a capability as
 // `{"$capability": true}`). JSON arguments and answers are revived against their declared shape from
 // the table, so a `Date` nested in an object argument arrives as a `Date`, and a present value whose
