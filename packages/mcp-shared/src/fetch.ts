@@ -143,6 +143,7 @@ export async function guardedFetch(
   }
 
   for (let hop = 0; ; hop++) {
+    // oxlint-disable-next-line no-restricted-globals -- the transport the MCP upstream sends through
     const response = await fetch(current, {
       ...init, method, body, headers, redirect: "manual", signal,
     });

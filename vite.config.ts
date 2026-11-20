@@ -1,5 +1,16 @@
 import { defineConfig } from 'vite-plus'
 
+/** What the lint rules against the platform `fetch` in gatekeeper source tell the author to do. */
+const UPSTREAM_INSTEAD_OF_FETCH =
+  "Send the request through the gatekeeper's upstream (`defineUpstream` in " +
+  "'@gadgets/gatekeeper-kit/upstream'), which applies its timeout, retry and redirect rules and " +
+  'counts the call. The type of a fetch-shaped value is `UpstreamFetch`, from the same module.'
+
+/** What those rules say of an ambient declaration of a name the global object is reached by. */
+const GLOBAL_OBJECT_STAYS_VISIBLE =
+  'The platform `fetch` is reached through this name, and lint reports that only while no ' +
+  'declaration hides the name.'
+
 /**
  * Repo-wide toolchain config. Today this is the lint ruleset, moved here from `.oxlintrc.json` so
  * there is one place to look: `vp lint` reads it, and `vp check` runs lint without the format step
@@ -160,6 +171,42 @@ export default defineConfig({
                 './sheets-read-types', './sheets-types', './slides-read-types', './slides-types',
               ],
             },
+          ],
+        },
+      },
+      {
+        // Gatekeeper source reaches its provider through the gatekeeper's upstream alone, which
+        // times each attempt out, retries, follows no redirect it was not told to and counts the
+        // call; the platform `fetch` does none of that. `no-restricted-globals` reports the bare
+        // global and its member forms on `globalThis`, `self` and `window`, and resolves scopes,
+        // so a Worker's `fetch` handler, a binding's or a stub's `.fetch()` and a parameter or
+        // property named `fetch` pass. It reports the type query `typeof fetch` too, which sends
+        // nothing: a fetch-shaped value is typed `UpstreamFetch`. The repository's own rules
+        // report the two forms the built-in does not see, each of which hides later uses behind
+        // what scope analysis reads as a local binding: the destructured one
+        // (`const { fetch } = globalThis`) and an ambient declaration (`declare const fetch`, or
+        // one of a name the global object is reached by). The rules are a guard against a plain
+        // use, not a boundary: a reach through an alias of the global object (`const g =
+        // globalThis`, `globalThis.self`), an import alias (`import send = globalThis.fetch`), a
+        // key that is no literal, or `Reflect.get` is not reported. The kit is left out: its
+        // upstream is where the platform `fetch` is called.
+        files: ['packages/gatekeeper-*/src/**/*.{ts,tsx}', 'packages/mcp-shared/src/**/*.ts'],
+        excludeFiles: ['packages/gatekeeper-kit/**', '**/*.test.{ts,tsx}', '**/__tests__/**'],
+        rules: {
+          'no-restricted-globals': [
+            'error',
+            { globals: [{ name: 'fetch', message: UPSTREAM_INSTEAD_OF_FETCH }], checkGlobalObject: true },
+          ],
+          'gadgets/no-restricted-global-destructuring': [
+            'error',
+            { name: 'fetch', message: UPSTREAM_INSTEAD_OF_FETCH },
+          ],
+          'gadgets/no-restricted-global-declaration': [
+            'error',
+            { name: 'fetch', message: UPSTREAM_INSTEAD_OF_FETCH },
+            { name: 'globalThis', message: GLOBAL_OBJECT_STAYS_VISIBLE },
+            { name: 'self', message: GLOBAL_OBJECT_STAYS_VISIBLE },
+            { name: 'window', message: GLOBAL_OBJECT_STAYS_VISIBLE },
           ],
         },
       },
