@@ -117,7 +117,7 @@ function recordAttempt(
 }
 
 // Errors a request failed with before it was first sent: its token could not be had.
-const unsent = new WeakSet<object>();
+const tokenUnavailable = new WeakSet<object>();
 
 /**
  * Whether `error` ended a request before it was sent at all, because the token it was to carry
@@ -125,7 +125,7 @@ const unsent = new WeakSet<object>();
  * not made, whatever its handler records about it.
  */
 export function isUnsentRequest(error: unknown): boolean {
-  return typeof error === "object" && error !== null && unsent.has(error);
+  return typeof error === "object" && error !== null && tokenUnavailable.has(error);
 }
 
 /**
@@ -155,7 +155,7 @@ export async function fetchWithAuthRetry(
   let refreshed = false;
   let reloaded = false;
   let token = await getAccessToken().catch((error: unknown) => {
-    if (typeof error === "object" && error !== null) unsent.add(error);
+    if (typeof error === "object" && error !== null) tokenUnavailable.add(error);
     throw error;
   });
   let attempt = 0;
