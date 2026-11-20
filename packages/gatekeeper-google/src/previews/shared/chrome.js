@@ -158,13 +158,19 @@ export function lineIcon(path, size = 18) {
   return icon;
 }
 
-/** A data: URL of `bytes`, which is the only address the frame may draw a picture from. */
-export const dataUrl = (bytes, type) => new Promise((resolve, reject) => {
-  const reader = new FileReader();
-  reader.addEventListener('load', () => resolve(reader.result));
-  reader.addEventListener('error', () => reject(reader.error));
-  reader.readAsDataURL(new Blob([bytes], { type }));
-});
+/**
+ * A data: URL of the bytes `content` streams, which is the only address the frame may draw a
+ * picture from.
+ */
+export const dataUrl = async (content, type) => {
+  const bytes = await new Response(content).arrayBuffer();
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener('load', () => resolve(reader.result));
+    reader.addEventListener('error', () => reject(reader.error));
+    reader.readAsDataURL(new Blob([bytes], { type }));
+  });
+};
 
 export const motion = () => matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
 

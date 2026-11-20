@@ -10,7 +10,6 @@ import {
   type UiFile,
 } from '@gadgets/workshop-shared/gatekeeper';
 import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
-import { readBytesCapped, ResponseTooLargeError } from "@gadgets/gatekeeper-kit/response-body";
 import {
   GoogleDocSession, DocMetadata, type GoogleDocEditSession, type DocCommentOptions, type DocSuggestEditOptions,
   type GoogleDocImage, type GoogleDocImageBytes,
@@ -45,6 +44,7 @@ import DOCS_PREVIEW_DRAW from "./previews/docs/draw.txt";
 import DOCS_PREVIEW_PAGES from "./previews/docs/pages.txt";
 import DOCS_PREVIEW_TEXT from "./previews/docs/text.txt";
 import { SHARED_PREVIEW_FILES } from "./previews/shared-files";
+import { cappedStream } from "./byte-stream";
 import { obsContext } from "./observability.js";
 import { AccessTokenCache, AccessTokenRequest } from "./auth-retry";
 import { Mutex } from "./mutex";
@@ -661,13 +661,14 @@ async function openGoogleDocImage(contentUri: string): Promise<GoogleDocImageByt
   if (!response.ok) return refuse(`Google did not return this image [http=${response.status}].`);
   let mimeType = response.headers.get("content-type")?.split(";")[0].trim().toLowerCase() ?? "";
   if (!DOC_IMAGE_TYPES.has(mimeType)) return refuse("this image's format cannot be read.");
-  // TODO: return `response.body` as a stream again once capnweb can forward one into the gadget
-  // UI frame (https://github.com/cloudflare/capnweb/pull/296); until then the image is read whole.
-  let bytes = await readBytesCapped(response, MAX_DOC_IMAGE_BYTES).catch((error: unknown) => {
-    if (error instanceof ResponseTooLargeError) throw new Error("readImage: this image is larger than 10 MB.");
-    throw error;
-  });
-  return { mimeType, bytes };
+  let tooLarge = "this image is larger than 10 MB.";
+  // Refused here where Google states the length, and as it is read where it does not.
+  if (Number(response.headers.get("content-length")) > MAX_DOC_IMAGE_BYTES) return refuse(tooLarge);
+  if (!response.body) return refuse("Google returned no image.");
+  return {
+    mimeType,
+    content: cappedStream(response.body.getReader(), MAX_DOC_IMAGE_BYTES, `readImage: ${tooLarge}`),
+  };
 }
 
 /** What a read of the tab list says it read. */

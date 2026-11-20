@@ -733,7 +733,7 @@ it('draws a table a pending change writes as the text it is, and one the documen
 })
 
 const PICTURE = { width: 20, height: 10, readable: true }
-const PNG = { mimeType: 'image/png', bytes: new Uint8Array([137, 80, 78, 71]) }
+const png = () => ({ mimeType: 'image/png', content: new Blob([new Uint8Array([137, 80, 78, 71])]).stream() })
 
 it('asks again on a refresh for a picture that could not be read', async () => {
   let reads = 0
@@ -741,7 +741,7 @@ it('asks again on a refresh for a picture that could not be read', async () => {
   const { page, refresh } = await draw({ savedMarkdown: '[Image]\n', drawing: pictured }, {
     readImage: async () => {
       if (!reads++) throw new Error('not just now')
-      return PNG
+      return png()
     },
   })
   await expect.poll(() => page.querySelector('.obj.wait')).toBeNull()
@@ -763,7 +763,7 @@ it('reads no picture of a tab that was left while the picture waited its turn', 
     readImage: async (object: string, tabId: string) => {
       asked.push(`${tabId} ${object}`)
       await new Promise<void>(resolve => waiting.push(resolve))
-      return PNG
+      return png()
     },
   })
   await expect.poll(() => asked).toEqual(['t.0 first'])

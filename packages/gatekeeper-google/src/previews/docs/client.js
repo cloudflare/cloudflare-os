@@ -556,8 +556,8 @@ function showPictures() {
       url = inFlight.then(async () => {
         // Its turn may come after its tab was left, and then nothing waits for it.
         if (id !== tabId) throw new Error('This tab is no longer shown.');
-        const { mimeType, bytes } = await gadget.readImage(box.dataset.object, id);
-        return dataUrl(bytes, mimeType);
+        const { mimeType, content } = await gadget.readImage(box.dataset.object, id);
+        return dataUrl(content, mimeType);
       });
       inFlight = url.catch(() => {});
       pictures.set(key, url);

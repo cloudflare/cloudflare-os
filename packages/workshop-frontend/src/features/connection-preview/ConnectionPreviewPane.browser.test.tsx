@@ -93,7 +93,7 @@ class DocSession extends RpcTarget {
   readImage(id: string) {
     this.doc.calls.push(`readImage ${id}`)
     const bytes = Uint8Array.from(atob(PIXEL), character => character.charCodeAt(0))
-    return { mimeType: 'image/png', bytes }
+    return { mimeType: 'image/png', content: new Blob([bytes]).stream() }
   }
 
   replaceText() {
