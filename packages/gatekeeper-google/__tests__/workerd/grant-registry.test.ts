@@ -1124,6 +1124,28 @@ describe("Google grants shared by several connections", () => {
     expect(google.revoked).toEqual(["refresh-working"]);
   });
 
+  // Pruned when found dead, an idle holder whose token works after all is listed again.
+  it("lists an idle holder again once a refresh Google refused works after all", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const google = fakeGoogle();
+    const {ada} = googleAccounts();
+    const idle = await connection(google, "idle", ada);
+    await idle.run((_instance, state) => {
+      state.storage.kv.put("accessToken", {token: "access-idle", expires: new Date(Date.now() - 1000)});
+    });
+    google.refused.set("refresh-idle", null);
+    const leaving = await connection(google, "leaving", ada);
+    await leaving.disconnect();
+    expect(google.revoked).toEqual(["refresh-leaving"]);
+
+    google.refused.delete("refresh-idle");
+    await idle.refresh();
+    await idle.holds(ada);
+    const other = await connection(google, "other", ada);
+    await other.disconnect();
+    expect(google.revoked).toEqual(["refresh-leaving"]);
+  });
+
   it("stops counting a refused connection whose removal the registry never received", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const google = fakeGoogle();

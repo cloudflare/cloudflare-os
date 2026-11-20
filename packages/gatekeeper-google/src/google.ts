@@ -1125,11 +1125,23 @@ export class UserAccount extends DurableObject<Env> {
           AbortSignal.timeout(GRANT_SUBJECT_TIMEOUT_MS))).sub;
     } catch (error) {
       if (!dead) throw error;
-      if (kv.get<string>("refreshToken") === refreshToken) kv.put<boolean>(REFRESH_TOKEN_DEAD_KEY, true);
+      this.#markRefreshTokenDead(refreshToken);
       return null;
     }
   }
 
+
+  /**
+   * Records `refreshToken`, while it is the one installed, as one Google refuses for good, which
+   * the registry drops when it asks; and so its record of being listed there goes too, so that a
+   * refresh that works after all lists it again.
+   */
+  #markRefreshTokenDead(refreshToken: string): void {
+    let kv = this.ctx.storage.kv;
+    if (kv.get<string>("refreshToken") !== refreshToken) return;
+    kv.put<boolean>(REFRESH_TOKEN_DEAD_KEY, true);
+    kv.delete(GRANT_CREDENTIALS_KEY);
+  }
 
   /**
    * Whether Google still honours `refreshToken`, asked with a refresh whose token is dropped.
@@ -1146,8 +1158,7 @@ export class UserAccount extends DurableObject<Env> {
     // A Google Cloud session that ran out, or an admin's restriction, leaves the refresh token
     // standing, as at a mint.
     if (result.ok || result.reason !== "revoked" || isCloudSessionExpiry(result)) return true;
-    let kv = this.ctx.storage.kv;
-    if (kv.get<string>("refreshToken") === refreshToken) kv.put<boolean>(REFRESH_TOKEN_DEAD_KEY, true);
+    this.#markRefreshTokenDead(refreshToken);
     return false;
   }
 
