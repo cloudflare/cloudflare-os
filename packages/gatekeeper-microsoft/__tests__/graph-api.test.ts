@@ -148,12 +148,12 @@ describe("GraphApi.request", () => {
 
   it("sends a JSON body, raw bytes, If-Match and Prefer as asked", async () => {
     const { api, calls } = scripted(json({}), json({}));
-    await api.request("PATCH", "/x", { body: { a: 1 }, ifMatch: "\"c:1\"", prefer: ["a", "b"] });
+    await api.request("PATCH", "/me/events/x", { body: { a: 1 }, ifMatch: "\"c:1\"", prefer: ["a", "b"] });
     expect(calls[0].init.body).toBe("{\"a\":1}");
     expect(header(calls[0], "content-type")).toBe("application/json");
     expect(header(calls[0], "if-match")).toBe("\"c:1\"");
     expect(header(calls[0], "prefer")).toBe("a, b");
-    await api.request("PUT", "/y", { rawBody: "text", contentType: "text/plain" });
+    await api.request("PUT", "/drives/d/items/y/content", { rawBody: "text", contentType: "text/plain" });
     expect(calls[1].init.body).toBe("text");
     expect(header(calls[1], "content-type")).toBe("text/plain");
   });
@@ -161,28 +161,28 @@ describe("GraphApi.request", () => {
   it("answers 204 and allowed statuses with null, and find() with null for 403 and 404", async () => {
     const { api } = scripted(new Response(null, { status: 204 }), json({ error: {} }, 404), json({ error: {} }, 403),
       json({ error: {} }, 404), json({ error: {} }, 401));
-    expect(await api.request("DELETE", "/x")).toBeNull();
-    expect(await api.request("GET", "/x", { allow: [404] })).toBeNull();
-    expect(await api.find("/x")).toBeNull();
-    expect(await api.find("/x")).toBeNull();
-    await expect(api.find("/x")).rejects.toMatchObject({ status: 401, isAuthError: true });
+    expect(await api.request("DELETE", "/me/events/x")).toBeNull();
+    expect(await api.request("GET", "/me/events/x", { allow: [404] })).toBeNull();
+    expect(await api.find("/me/events/x")).toBeNull();
+    expect(await api.find("/me/events/x")).toBeNull();
+    await expect(api.find("/me/events/x")).rejects.toMatchObject({ status: 401, isAuthError: true });
   });
 
   it("retries a short throttle, whatever the method, then succeeds", async () => {
     const { api, calls } = scripted(json({}, 429, { "retry-after": "1" }), json({}, 429, { "retry-after": "0" }), json({ done: true }));
-    expect(await settle(api.request("POST", "/x", { body: {} }))).toEqual({ done: true });
+    expect(await settle(api.request("POST", "/me/events/x/accept", { body: {} }))).toEqual({ done: true });
     expect(calls).toHaveLength(3);
   });
 
   it("gives up after three throttled attempts", async () => {
     const { api, calls } = scripted(...[1, 2, 3].map(() => () => json({}, 429, { "retry-after": "0" })));
-    await expect(settle(api.get("/x"))).rejects.toBeInstanceOf(GraphThrottledError);
+    await expect(settle(api.get("/me/events/x"))).rejects.toBeInstanceOf(GraphThrottledError);
     expect(calls).toHaveLength(3);
   });
 
   it("hands a long throttle back to the caller rather than waiting", async () => {
     const { api, calls } = scripted(json({}, 429, { "retry-after": "120" }));
-    const error = await settle(api.get("/x")).catch(caught => caught) as GraphThrottledError;
+    const error = await settle(api.get("/me/events/x")).catch(caught => caught) as GraphThrottledError;
     expect(error).toBeInstanceOf(GraphThrottledError);
     expect(error.retryAt).toBeGreaterThan(Date.now() + 100_000);
     expect(calls).toHaveLength(1);
@@ -190,11 +190,11 @@ describe("GraphApi.request", () => {
 
   it("retries a 503 without Retry-After for a GET, but never for a write that may have landed", async () => {
     const reads = scripted(json({}, 503), json({}, 504), json({ ok: true }));
-    expect(await settle(reads.api.get("/x"))).toEqual({ ok: true });
+    expect(await settle(reads.api.get("/me/events/x"))).toEqual({ ok: true });
     expect(reads.calls).toHaveLength(3);
 
     const writes = scripted(json({}, 503));
-    const error = await settle(writes.api.request("POST", "/x", { body: {} })).catch(caught => caught);
+    const error = await settle(writes.api.request("POST", "/me/events/x/accept", { body: {} })).catch(caught => caught);
     expect(error).toMatchObject({ status: 503 });
     expect(isOutcomeUnknown(error)).toBe(true);
     expect(writes.calls).toHaveLength(1);
@@ -202,12 +202,111 @@ describe("GraphApi.request", () => {
 
   it("reports a dropped connection as an unknown outcome", async () => {
     const { api } = scripted(new TypeError("network"));
-    await expect(api.request("POST", "/x")).rejects.toBeInstanceOf(GraphTransportError);
+    await expect(api.request("POST", "/me/events/x/accept")).rejects.toBeInstanceOf(GraphTransportError);
   });
 
   it("answers a non-JSON error page by its status", async () => {
     const { api } = scripted(new Response("<html>Bad gateway</html>", { status: 400 }));
-    await expect(api.get("/x")).rejects.toMatchObject({ status: 400, message: "Microsoft Graph answered with HTTP 400." });
+    await expect(api.get("/me/events/x")).rejects.toMatchObject({ status: 400, message: "Microsoft Graph answered with HTTP 400." });
+  });
+});
+
+// A client answering from a script, with the clock's time at each send.
+function timed(...answers: ([status: number, headers?: Record<string, string>] | Error)[]) {
+  const times: number[] = [];
+  const fetch = vi.fn(async () => {
+    times.push(Date.now());
+    const next = answers.shift();
+    if (next === undefined) throw new Error("unexpected request");
+    if (next instanceof Error) throw next;
+    return json({}, next[0], next[1]);
+  });
+  return { api: new GraphApi("token-123", { fetch }), times };
+}
+
+// The milliseconds between each send and the one before it.
+const gaps = (times: number[]) => times.slice(1).map((time, at) => time - times[at]);
+
+// What is thrown once a request is given up, as its class and status.
+async function failure(promise: Promise<unknown>): Promise<[string, number | undefined]> {
+  const error = await settle(promise).then(() => undefined, (caught: unknown) => caught);
+  if (!(error instanceof Error)) throw new Error("the request did not fail");
+  return [error.name, error instanceof GraphApiError ? error.status : undefined];
+}
+
+// A `Retry-After` header naming a wait.
+const after = (wait: string) => ({ "retry-after": wait });
+
+describe("GraphApi.request, by what Graph answers", () => {
+  const NOW = Date.parse("2026-01-01T00:00:00Z");
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "Date"], now: NOW });
+  });
+
+  type Answer = [status: number, headers?: Record<string, string>];
+  // The method, each answer in turn, the waits between the sends, and what is thrown at the end.
+  const ROWS: [what: string, method: string, answers: Answer[], waits: number[], thrown: [string, number]][] = [
+    ["a 429 that names no wait waits a second for each send made, whatever the method", "POST",
+      [[429], [429], [429]], [1000, 2000], ["GraphThrottledError", 429]],
+    ["a 429 waits what its Retry-After names", "PATCH",
+      [[429, after("3")], [429, after("10")], [429, after("0")]], [3000, 10_000], ["GraphThrottledError", 429]],
+    ["a 429 whose Retry-After is longer than ten seconds is handed back at once", "GET",
+      [[429, after("11")]], [], ["GraphThrottledError", 429]],
+    ["a 429 on the second send whose Retry-After is too long is handed back then", "GET",
+      [[429, after("1")], [429, after("3600")]], [1000], ["GraphThrottledError", 429]],
+    ["a 429 waits until the date its Retry-After names", "GET",
+      [[429, { "retry-after": new Date(NOW + 4000).toUTCString() }], [429, after("11")]], [4000], ["GraphThrottledError", 429]],
+    ["a 429 whose Retry-After names a date past is sent again at once", "GET",
+      [[429, { "retry-after": new Date(NOW - 60_000).toUTCString() }], [429, after("11")]], [0], ["GraphThrottledError", 429]],
+    ["a 503 that names a wait is a throttle, sent again whatever the method", "DELETE",
+      [[503, after("2")], [503, after("0")], [503, after("0")]], [2000, 0], ["GraphThrottledError", 503]],
+    ["a 503 that names too long a wait is handed back at once", "POST",
+      [[503, after("60")]], [], ["GraphThrottledError", 503]],
+    ["a 503 that names no wait is sent again for a GET, a second later for each send made", "GET",
+      [[503], [503], [503]], [1000, 2000], ["GraphApiError", 503]],
+    ["a 503 that names no wait is not sent again for a write", "PATCH",
+      [[503]], [], ["GraphApiError", 503]],
+    ["a 504 is sent again for a GET by the same wait, whatever Retry-After it carries", "GET",
+      [[504, after("7")], [504], [504]], [1000, 2000], ["GraphApiError", 504]],
+    ["a 504 is not sent again for a write, whatever Retry-After it carries", "POST",
+      [[504, after("1")]], [], ["GraphApiError", 504]],
+    ["a 502 is not sent again, even for a GET", "GET",
+      [[502]], [], ["GraphApiError", 502]],
+    ["a 500 is not sent again", "GET",
+      [[500, after("1")]], [], ["GraphApiError", 500]],
+  ];
+
+  it.each(ROWS)("%s", async (_what, method, answers, waits, thrown) => {
+    const { api, times } = timed(...answers);
+    expect(await failure(api.request(method, "/me/events/x", method === "GET" || method === "DELETE" ? {} : { body: {} }))).toEqual(thrown);
+    expect(times).toHaveLength(answers.length);
+    expect(gaps(times)).toEqual(waits);
+  });
+
+  it("sends three times at most, and answers what the third send got", async () => {
+    const { api, times } = timed([429, after("0")], [503], [200]);
+    expect(await settle(api.get("/me/events/x"))).toEqual({});
+    expect(times).toHaveLength(3);
+  });
+
+  it("never sends again an answer among `allow`, which is answered with null", async () => {
+    const { api, times } = timed([503], [429, after("0")]);
+    expect(await settle(api.request("GET", "/me/events/x", { allow: [503] }))).toBeNull();
+    expect(await settle(api.request("GET", "/me/events/x", { allow: [429] }))).toBeNull();
+    expect(times).toHaveLength(2);
+  });
+
+  it("sends a GET that got no answer three times, and then reports an unknown outcome", async () => {
+    const { api, times } = timed(new TypeError("reset"), new TypeError("reset"), new TypeError("reset"));
+    expect(await failure(api.get("/me/events/x"))).toEqual(["GraphTransportError", undefined]);
+    expect(times).toHaveLength(3);
+  });
+
+  it("sends a write that got no answer once", async () => {
+    const { api, times } = timed(new TypeError("reset"));
+    expect(await failure(api.request("PATCH", "/me/events/x", { body: {} }))).toEqual(["GraphTransportError", undefined]);
+    expect(times).toHaveLength(1);
   });
 });
 
@@ -272,31 +371,33 @@ describe("GraphApi.download", () => {
 
   it("refuses a redirect with no location", async () => {
     const { api } = scripted(new Response(null, { status: 302 }));
-    await expect(api.download("/x/content", 1024)).rejects.toMatchObject({ status: 502 });
+    await expect(api.download("/drives/d/items/x/content", 1024)).rejects.toMatchObject({ status: 502 });
   });
 
   it("follows no second redirect, even to an allowed host", async () => {
     const { api, calls } = scripted(redirect("https://contoso.sharepoint.com/a"), redirect("https://contoso.sharepoint.com/b"));
-    await expect(api.download("/x/content", 1024)).rejects.toBeInstanceOf(GraphApiError);
+    await expect(api.download("/drives/d/items/x/content", 1024)).rejects.toBeInstanceOf(GraphApiError);
     expect(calls).toHaveLength(2);
   });
 
   it("refuses a file declared larger than the cap before reading it", async () => {
     const { api } = scripted(bytes("x".repeat(10), { "content-length": "4096" }));
-    await expect(api.download("/x/content", 1024)).rejects.toBeInstanceOf(DownloadTooLargeError);
+    await expect(api.download("/drives/d/items/x/content", 1024)).rejects.toBeInstanceOf(DownloadTooLargeError);
   });
 
   it("refuses a file that turns out larger than the cap while reading", async () => {
     const { api } = scripted(bytes("x".repeat(2048)));
-    const error = await api.download("/x/content", 1024).catch(caught => caught);
+    const error = await api.download("/drives/d/items/x/content", 1024).catch(caught => caught);
     expect(error).toBeInstanceOf(DownloadTooLargeError);
     expect(error.maxBytes).toBe(1024);
   });
 
   it("maps a refused download onto Graph's errors, and a lost one onto a transport error", async () => {
     const refused = scripted(json({ error: { code: "itemNotFound" } }, 404));
-    await expect(refused.api.download("/x/content", 1024)).rejects.toMatchObject({ status: 404, code: "itemNotFound" });
-    const lost = scripted(new TypeError("reset"));
-    await expect(lost.api.download("/x/content", 1024)).rejects.toBeInstanceOf(GraphTransportError);
+    await expect(refused.api.download("/drives/d/items/x/content", 1024)).rejects.toMatchObject({ status: 404, code: "itemNotFound" });
+    // A download is a GET, so one that gets no answer is sent three times before it is given up.
+    const lost = scripted(new TypeError("reset"), new TypeError("reset"), new TypeError("reset"));
+    await expect(settle(lost.api.download("/drives/d/items/x/content", 1024))).rejects.toBeInstanceOf(GraphTransportError);
+    expect(lost.calls).toHaveLength(3);
   });
 });

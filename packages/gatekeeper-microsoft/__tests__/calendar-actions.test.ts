@@ -8,6 +8,7 @@ import {
   definitions, requiredAccess, revert, type CalendarAction, type CalendarActionHost, type CalendarActions, type CalendarRef, type EventTarget, type EventVersion,
 } from "../src/calendar-actions";
 import { GraphApi } from "../src/graph-api";
+import { countedCalls } from "./points";
 
 const ZONE = "America/Los_Angeles";
 const CALENDAR: CalendarRef = { owner: { kind: "me" }, id: "AAMkCal", name: "Calendar" };
@@ -100,6 +101,24 @@ describe("creating", () => {
     const odd = harness([{ status: 201, body: {} }]);
     const error = await definitions.createEvent.apply(createPayload, odd.host).catch(caught => caught);
     expect(error).not.toBeInstanceOf(ActionApplyError);
+  });
+});
+
+describe("how a creation Outlook answers without an ID is counted", () => {
+  const counted = countedCalls();
+
+  it("counts it as an error of the API, by the status of the answer, sends it once and throws what it threw", async () => {
+    const { host, sent } = harness([{ status: 201, body: {} }, { status: 201, body: { id: "AAMkNew" } }]);
+    const error = await definitions.createEvent.apply(createPayload, host).catch(caught => caught);
+    expect(error).toMatchObject({ name: "GraphApiError", status: 502, message: "Outlook didn't say which event it created." });
+    expect(sent).toHaveLength(1);
+    expect(counted()).toEqual([["events.create", "error", "api", 201]]);
+  });
+
+  it("counts a creation that names its event as the success it is", async () => {
+    const { host } = harness([{ status: 201, body: { id: "AAMkNew" } }]);
+    await definitions.createEvent.apply(createPayload, host);
+    expect(counted()).toEqual([["events.create", "success", "", 201]]);
   });
 });
 

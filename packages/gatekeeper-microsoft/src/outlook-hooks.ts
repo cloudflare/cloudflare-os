@@ -17,7 +17,8 @@ import { HookRegistry, type HookCapabilities, type HookDelivery } from "@gadgets
 import { escapeObservationValue } from "@gadgets/gatekeeper-kit/observers";
 import { ResponseTooLargeError, readTextCapped } from "@gadgets/gatekeeper-kit/response-body";
 import type { ApprovalQueue, HookController, HookInitiator, HookTargetMetadata } from "@gadgets/workshop-shared/gatekeeper";
-import { GraphApi, GraphApiError } from "./graph-api";
+import { GraphApiError, refusesPath, withGraph, type GraphApi } from "./graph-api";
+import { graphUpstream } from "./graph-upstream";
 import { accountSource } from "./microsoft-credentials";
 import { VENDOR_ID, getBaseUrl, type Env } from "./microsoft-env";
 import { obsContext } from "./observability";
@@ -39,6 +40,20 @@ const SYNC_RETRY_MS = 5 * MINUTE_MS;
 /** Bounds one read; the next alarm, set for at once, continues it. */
 const MAX_PAGES_PER_SYNC = 5;
 const PAGE_SIZE = 50;
+
+/** A page of a watched folder's messages, as Graph answers it. */
+type MailPage = { value?: { id?: unknown; receivedDateTime?: unknown; isDraft?: unknown }[]; "@odata.nextLink"?: unknown };
+
+/** A message of such a page that is to be delivered: one that is no draft, with its ID and when it was received. */
+type NewMail = { id: string; receivedDateTime: string };
+
+/** What a page was read as: its messages to deliver, the link to the next, and what reading a row threw, after the rows read before it. */
+type PageRead = { rows: NewMail[]; after?: string; unread?: { thrown: unknown } };
+
+/** The link to the page after `page`, where it holds one. */
+function nextLinkOf(page: MailPage): string | undefined {
+  return typeof page["@odata.nextLink"] === "string" ? page["@odata.nextLink"] : undefined;
+}
 /** Read back this far before the cursor, for mail Exchange stamped with an earlier time than it indexed. */
 const CURSOR_OVERLAP_MS = 2 * MINUTE_MS;
 
@@ -182,14 +197,15 @@ export class OutlookHookDriver extends DurableObject<Env> {
       kv.put<Watch>(watchKey(registration.folderId), { renewAt: Date.now(), cursor: now });
     }
     this.ctx.storage.transactionSync(() => this.#hooks.set(key, { ...registration, since: now }, capabilities));
-    // Subscribe now, so the approval that enabled the hook learns if Graph can't be reached.
-    await this.#ensureSubscriptions();
+    // Subscribe now, so the approval that enabled the hook learns if Graph can't be reached. Every
+    // watched folder that is due is subscribed: the requests are summed.
+    await graphUpstream.summed(() => this.#ensureSubscriptions());
     await this.#reschedule();
   }
 
   async unregister(key: string): Promise<void> {
     this.#hooks.remove(key);
-    await this.#dropUnwatched();
+    await graphUpstream.summed(() => this.#dropUnwatched());
   }
 
   /** Drops every hook here: the account is being disconnected. */
@@ -214,8 +230,11 @@ export class OutlookHookDriver extends DurableObject<Env> {
   async alarm(): Promise<void> {
     const kv = this.ctx.storage.kv;
     if (this.#registrations().length > 0) {
-      await this.#ensureSubscriptions();
-      if ((kv.get<number>(SYNC_AT_KEY) ?? 0) <= Date.now()) await this.#sync();
+      // One alarm reads every watched folder a page at a time: its requests are summed.
+      await graphUpstream.summed(async () => {
+        await this.#ensureSubscriptions();
+        if ((kv.get<number>(SYNC_AT_KEY) ?? 0) <= Date.now()) await this.#sync();
+      });
     }
     await this.#hooks.run(Date.now());
     await this.#reschedule();
@@ -249,18 +268,39 @@ export class OutlookHookDriver extends DurableObject<Env> {
             completed = false;
             break;
           }
-          const page: { value?: { id?: unknown; receivedDateTime?: unknown; isDraft?: unknown }[]; "@odata.nextLink"?: unknown } =
-            await this.#graph(api => api.get(next!, { ...(query ? { query } : {}), prefer: ['IdType="ImmutableId"'] }));
+          // A page is read inside the request for the messages to deliver and the link to the
+          // next, so that one whose rows cannot be read, or whose link the client refuses to
+          // request, is counted as the error it is by the request that answers it. What reading
+          // a row threw is thrown once the rows before it are queued.
+          const link = next;
+          const read: PageRead = await this.#graph(api => api.get(link, { ...(query ? { query } : {}), prefer: ['IdType="ImmutableId"'] },
+            (page: MailPage): PageRead => {
+              const rows: NewMail[] = [];
+              // A page with no collection of messages is none, not an empty page: the cursor must
+              // not move past mail it never listed.
+              if (!Array.isArray(page.value)) {
+                return { rows, unread: { thrown: new GraphApiError(502, "Microsoft Graph sent a malformed page of messages.") } };
+              }
+              try {
+                for (const row of page.value) {
+                  if (typeof row.id !== "string" || typeof row.receivedDateTime !== "string" || row.isDraft === true) continue;
+                  rows.push({ id: row.id, receivedDateTime: row.receivedDateTime });
+                }
+              } catch (thrown) {
+                return { rows, unread: { thrown } };
+              }
+              return { rows, after: nextLinkOf(page) };
+            }, ({ after, unread }) => unread !== undefined || (after !== undefined && refusesPath(after))));
           const registrations = this.#registrations().filter(([, registration]) => registration.folderId === folderId);
-          for (const row of page.value ?? []) {
-            if (typeof row.id !== "string" || typeof row.receivedDateTime !== "string" || row.isDraft === true) continue;
+          for (const row of read.rows) {
             for (const [hookKey, registration] of registrations) {
               if (Date.parse(row.receivedDateTime) < Date.parse(registration.since)) continue;
               this.#hooks.enqueue(hookKey, row.id, row.id, Date.now());
             }
             if (Date.parse(row.receivedDateTime) > Date.parse(newest)) newest = row.receivedDateTime;
           }
-          next = typeof page["@odata.nextLink"] === "string" ? page["@odata.nextLink"] : undefined;
+          if (read.unread) throw read.unread.thrown;
+          next = read.after;
           query = undefined;
         }
         // A finished scan moves the cursor up to when it started (less the overlap), so an idle
@@ -300,14 +340,16 @@ export class OutlookHookDriver extends DurableObject<Env> {
           if (renewed === null) subscriptionId = undefined;
         }
         if (subscriptionId === undefined) {
-          const created = await this.#graph(api => api.request<{ id?: unknown }>("POST", "/subscriptions", {
+          // The answer is read inside the request, so that one that names no subscription is counted as the error it is.
+          subscriptionId = await this.#graph(api => api.request("POST", "/subscriptions", {
             body: {
               changeType: "created", notificationUrl, lifecycleNotificationUrl: notificationUrl,
               resource: `${this.#mailboxPath().slice(1)}/mailFolders('${folderId}')/messages`, expirationDateTime, clientState,
             },
+          }, (created: { id?: unknown } | null) => {
+            if (typeof created?.id !== "string") throw new GraphApiError(502, "Graph didn't say which subscription it created.");
+            return created.id;
           }));
-          if (typeof created?.id !== "string") throw new GraphApiError(502, "Graph didn't say which subscription it created.");
-          subscriptionId = created.id;
         }
         const current = kv.get<Watch>(key);
         if (current) kv.put<Watch>(key, { ...current, subscriptionId, expiresAt: Date.parse(expirationDateTime), renewAt: Date.now() + SUBSCRIPTION_LIFETIME_MS / 2 });
@@ -356,7 +398,7 @@ export class OutlookHookDriver extends DurableObject<Env> {
 
   #graph<T>(op: (api: GraphApi) => Promise<T>): Promise<T> {
     const [userObjectId] = (this.ctx.id.name ?? "").split(".");
-    return accountSource(this.ctx.exports, userObjectId!).run(creds => op(new GraphApi(creds.accessToken)), { replayable: true });
+    return accountSource(this.ctx.exports, userObjectId!).run(creds => withGraph(creds.accessToken, op), { replayable: true });
   }
 
   #registrations(): [string, Registration][] {

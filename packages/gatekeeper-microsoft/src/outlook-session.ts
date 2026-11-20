@@ -18,6 +18,7 @@ import { ObservationGate, escapeObservationValue, type ObserverStrategy } from "
 import type { ApprovalQueue, Cursor } from "@gadgets/workshop-shared/gatekeeper";
 import { authorizeRead, isProvisional, OutsideBindingError, type ReadAuthority } from "./binding";
 import { DownloadTooLargeError, GraphApiError, type GraphApi } from "./graph-api";
+import { graphUpstream } from "./graph-upstream";
 import { graphInstant } from "./calendar-time";
 import { organizationDomains } from "./directory";
 import { MAX_BATCH, replaceOwnPart, type AttachedFile, type AttachmentUpload, type AutomaticRepliesSetting, type Composed, type FolderTarget, type Forwarded, type MessageState, type MessageTarget, type Origin, type OutlookAction, type OutlookActions, type RecipientNote } from "./outlook-actions";
@@ -576,15 +577,17 @@ export class OutlookReaderImpl extends RpcTarget implements OutlookReader {
     } else {
       queue.push(null);
     }
-    while (queue.length > 0 && found.length < MAX_FOLDERS) {
-      const parent = queue.shift()!;
-      const children = await ctx.mail(mail => mail.childFolders(parent, MAX_FOLDERS - found.length));
-      for (const child of children) {
-        if (!(await admitsFolder(ctx.scope, child.id, ctx.folders))) continue;
-        found.push(child);
-        if (child.childCount > 0) queue.push(child.id);
+    await graphUpstream.summed(async () => {
+      while (queue.length > 0 && found.length < MAX_FOLDERS) {
+        const parent = queue.shift()!;
+        const children = await ctx.mail(mail => mail.childFolders(parent, MAX_FOLDERS - found.length));
+        for (const child of children) {
+          if (!(await admitsFolder(ctx.scope, child.id, ctx.folders))) continue;
+          found.push(child);
+          if (child.childCount > 0) queue.push(child.id);
+        }
       }
-    }
+    });
     const paths = new Map<string, string>();
     for (const folder of found) {
       const parentPath = folder.parentId ? paths.get(folder.parentId) : undefined;
@@ -796,12 +799,14 @@ export class OutlookReaderImpl extends RpcTarget implements OutlookReader {
     const infos = await ctx.infos(covered, overlay);
     const messages: ConversationMessage[] = [];
     let budget = maxChars;
-    for (const [index, message] of covered.entries()) {
-      const body = await ctx.mail(mail => mail.body(message.id, true));
-      const converted = mailToMarkdown(body, { maxChars: Math.max(MIN_MAX_CHARS, budget) });
-      budget = Math.max(0, budget - converted.markdown.length);
-      messages.push({ info: infos[index]!, markdown: converted.markdown, truncated: converted.truncated });
-    }
+    await graphUpstream.summed(async () => {
+      for (const [index, message] of covered.entries()) {
+        const body = await ctx.mail(mail => mail.body(message.id, true));
+        const converted = mailToMarkdown(body, { maxChars: Math.max(MIN_MAX_CHARS, budget) });
+        budget = Math.max(0, budget - converted.markdown.length);
+        messages.push({ info: infos[index]!, markdown: converted.markdown, truncated: converted.truncated });
+      }
+    });
     const units = await ctx.units();
     const subject = covered[0]!.subject || "(no subject)";
     await ctx.observe("Read an Outlook conversation",

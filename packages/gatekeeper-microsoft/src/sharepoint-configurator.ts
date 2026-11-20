@@ -12,7 +12,7 @@ import type {
   SharePointBrowserCrumb, SharePointBrowserIcon, SharePointBrowserItem, SharePointBrowserPage, SharePointBrowserRequest,
   SharePointConfiguratorRpc, SharePointConfiguratorStatus, SharePointLocated,
 } from "./configurator/sharepoint-configurator-types";
-import { GraphApi, GraphApiError, MAX_BATCH_REQUESTS, isGraphUrl } from "./graph-api";
+import { GraphApiError, MAX_BATCH_REQUESTS, isGraphUrl, withGraph, type GraphApi } from "./graph-api";
 import {
   DRIVE_SELECT, GUID, SITE_SELECT, parseDrive, parseSite, type GraphDrive, type GraphDriveItem, type GraphList,
   type GraphSite, type GraphSitePage,
@@ -674,7 +674,7 @@ export class SharePointConfiguratorUI extends RpcTarget implements SharePointCon
   /** The user's own OneDrive, or null if they have none, read once while the frame is open. */
   #myOneDrive(api: GraphApi): Promise<GraphDrive | null> {
     if (this.#oneDrive === undefined) {
-      const drive = api.find<unknown>("/me/drive", { query: { $select: DRIVE_SELECT } }).then(body => body === null ? null : parseDrive(body));
+      const drive = api.find("/me/drive", { query: { $select: DRIVE_SELECT } }, (body: unknown) => body === null ? null : parseDrive(body));
       // A failure isn't kept, so the next request asks again.
       drive.catch(() => {
         if (this.#oneDrive === drive) this.#oneDrive = undefined;
@@ -695,6 +695,6 @@ export class SharePointConfiguratorUI extends RpcTarget implements SharePointCon
   }
 
   async #read<T>(op: (api: GraphApi) => Promise<T>): Promise<T> {
-    return await this.#creds.run(creds => op(new GraphApi(creds.accessToken)), { replayable: true });
+    return await this.#creds.run(creds => withGraph(creds.accessToken, op), { replayable: true });
   }
 }

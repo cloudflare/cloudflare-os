@@ -7,7 +7,10 @@ than the user can open themselves, and each binding narrows that further. Every 
 the approval workflow, where the user may let a kind of change be auto-approved, except sending mail
 and anything that mails a meeting's attendees, which are never auto-approved. A change shows to the
 agent as though already made while it waits, so the agent keeps working.
-`plans/microsoft-365-gatekeeper.md` is the design record.
+`plans/microsoft-365-gatekeeper.md` is the design record. Every request to Microsoft is named by the
+route tree and name lists in `src/graph-upstream.ts` and counted as a
+[subservice metric](../observability/README.md#subservice-calls) under the source
+`gatekeeper.microsoft.api`.
 
 ## Setting up the app registration
 

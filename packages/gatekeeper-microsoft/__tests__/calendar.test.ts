@@ -376,7 +376,8 @@ describe("legacy observer units", () => {
 describe("probing free/busy", () => {
   it("counts free/busy as given only when Exchange gave something", async () => {
     const api = {
-      request: async () => ({
+      // The answer is read inside the request, by the reading its caller gives.
+      request: async (_method: string, _path: string, _options: unknown, read: (answer: unknown) => unknown) => read({
         value: [
           { scheduleId: "bob@contoso.com", availabilityView: "0020" },
           { scheduleId: "hidden@contoso.com", availabilityView: "4444" },

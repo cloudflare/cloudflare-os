@@ -18,6 +18,7 @@ import { ObservationGate, escapeObservationValue, type ObserverStrategy } from "
 import type { ApprovalQueue, Cursor } from "@gadgets/workshop-shared/gatekeeper";
 import { authorizeRead, isProvisional, OutsideBindingError, type ReadAuthority } from "./binding";
 import type { GraphApi } from "./graph-api";
+import { graphUpstream } from "./graph-upstream";
 import { organizationDomains } from "./directory";
 import { VENDOR_ID } from "./microsoft-env";
 import { obsContext } from "./observability";
@@ -595,7 +596,7 @@ export class CalendarReaderImpl extends RpcTarget implements CalendarReader {
     // page is confirmed against its calendar and authorized as it is served.
     type Row = { event: GraphEvent; calendar: GraphCalendar };
     let rows: Row[] | undefined;
-    const load = async (): Promise<Row[]> => {
+    const load = (): Promise<Row[]> => graphUpstream.summed(async () => {
       const all: Row[] = [];
       for (const calendar of calendars) {
         const view = views.get(calendar.id)!;
@@ -617,7 +618,7 @@ export class CalendarReaderImpl extends RpcTarget implements CalendarReader {
         all.push({ event: pending.event, calendar });
       }
       return all.toSorted((a, b) => a.event.startMs - b.event.startMs || a.event.endMs - b.event.endMs);
-    };
+    });
 
     const walk = ctx.gate.lease();
     const where = calendars.length === 1 ? `"${md(calendars[0]!.name)}"` : "all calendars";
@@ -634,19 +635,22 @@ export class CalendarReaderImpl extends RpcTarget implements CalendarReader {
         let kept: Row[] = [];
         // Rows that aren't in the calendar they were listed from are dropped for good, so offsets
         // stay true; a page is never empty while rows remain, since an echoed token ends a walk.
-        while (kept.length === 0 && offset < all.length) {
-          const slice = all.slice(offset, offset + perPage);
-          const confirmed = new Set<GraphEvent>();
-          for (const calendar of new Set(slice.map(row => row.calendar))) {
-            const events = slice.filter(row => row.calendar === calendar).map(row => row.event);
-            for (const event of await ctx.confirmed(events, calendar)) confirmed.add(event);
+        // One page confirms its rows calendar by calendar, and again while none is kept: its requests are summed.
+        await graphUpstream.summed(async () => {
+          while (kept.length === 0 && offset < all.length) {
+            const slice = all.slice(offset, offset + perPage);
+            const confirmed = new Set<GraphEvent>();
+            for (const calendar of new Set(slice.map(row => row.calendar))) {
+              const events = slice.filter(row => row.calendar === calendar).map(row => row.event);
+              for (const event of await ctx.confirmed(events, calendar)) confirmed.add(event);
+            }
+            kept = slice.filter(row => confirmed.has(row.event));
+            if (kept.length < slice.length) {
+              logger.error("a calendar listing returned events from another calendar", { event: "calendar.listing.foreign", count: slice.length - kept.length });
+            }
+            all.splice(offset, slice.length, ...kept);
           }
-          kept = slice.filter(row => confirmed.has(row.event));
-          if (kept.length < slice.length) {
-            logger.error("a calendar listing returned events from another calendar", { event: "calendar.listing.foreign", count: slice.length - kept.length });
-          }
-          all.splice(offset, slice.length, ...kept);
-        }
+        });
         for (const row of kept) served.set(row.event.id, row);
         const end = offset + kept.length;
         return {
@@ -741,13 +745,15 @@ export class CalendarReaderImpl extends RpcTarget implements CalendarReader {
       const calendar = (await ctx.calendars())[0]!;
       const overlay = ctx.overlay();
       const events: GraphEvent[] = [];
-      let next: string | undefined;
-      do {
-        const page = await ctx.calendarApi(api => api.view(calendar.id, from.startMs, from.endMs, 100, next));
-        events.push(...page.items.filter(event => !overlay.hides(event) && event.type !== "seriesMaster").map(event => overlay.apply(event).event));
-        if (events.length > MAX_LISTED_EVENTS) throw new Error("That calendar is too full to search over that window. Ask for a shorter one.");
-        next = page.nextLink;
-      } while (next !== undefined);
+      await graphUpstream.summed(async () => {
+        let next: string | undefined;
+        do {
+          const page = await ctx.calendarApi(api => api.view(calendar.id, from.startMs, from.endMs, 100, next));
+          events.push(...page.items.filter(event => !overlay.hides(event) && event.type !== "seriesMaster").map(event => overlay.apply(event).event));
+          if (events.length > MAX_LISTED_EVENTS) throw new Error("That calendar is too full to search over that window. Ask for a shorter one.");
+          next = page.nextLink;
+        } while (next !== undefined);
+      });
       events.push(...overlay.pendingEvents(from, new Set([calendar.id])).map(pending => pending.event));
       const confirmed = await ctx.confirmed(events, calendar);
       const own = await ctx.owns(calendar);

@@ -57,7 +57,8 @@ async function resolveOwner(api: GraphApi, address: string | undefined, me: stri
   const user = await findUser(api, address);
   if (user === null) throw new CalendarUrlError(`There's nobody with the address ${address} in your organization.`);
   // Another of the user's own addresses names the user, whose calendars are checked as their own.
-  const self = await api.get<{ id?: unknown }>("/me", { query: { $select: "id" } });
+  // Asked as what may answer nothing: the address is then taken for another person's.
+  const self = await api.request<{ id?: unknown }>("GET", "/me", { query: { $select: "id" } });
   if (typeof self?.id === "string" && self.id.toLowerCase() === user.id.toLowerCase()) return { kind: "me" };
   return { kind: "shared", id: user.id.toLowerCase(), address: user.mail.toLowerCase() };
 }

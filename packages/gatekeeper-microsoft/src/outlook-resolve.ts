@@ -54,8 +54,14 @@ export async function resolveOutlookUrl(api: GraphApi, url: string, ceiling: Out
 /** The mailbox a URL names: the user's own, or a shared one they can open, by its object ID. */
 async function resolveMailbox(api: GraphApi, address: string | undefined, me: string, meObjectId: string | undefined): Promise<OutlookMailboxRef> {
   if (address === undefined || address === me.toLowerCase()) return { kind: "me" };
-  const user = await api.find<{ id?: unknown; mail?: unknown }>(`/users/${encodeURIComponent(address)}`, { query: { $select: "id,mail" } });
-  if (user === null || typeof user.id !== "string") throw new OutlookUrlError(`There's no mailbox ${address} in your organization that you can open.`);
+  const nobody = () => new OutlookUrlError(`There's no mailbox ${address} in your organization that you can open.`);
+  // The ID is read inside the request, so that a user answered without one is counted as the error it is.
+  const user = await api.find(`/users/${encodeURIComponent(address)}`, { query: { $select: "id,mail" } }, (found: { id?: unknown; mail?: unknown } | null) => {
+    if (found === null) return null;
+    if (typeof found.id !== "string") throw nobody();
+    return { id: found.id, mail: found.mail };
+  });
+  if (user === null) throw nobody();
   // An alias or UPN of the user's own: as "shared", it would need the .Shared scopes for nothing.
   if (user.id === meObjectId) return { kind: "me" };
   const mailbox: OutlookMailboxRef = { kind: "shared", id: user.id, address: typeof user.mail === "string" ? user.mail.toLowerCase() : address };

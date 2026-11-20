@@ -80,7 +80,7 @@ export async function probeMailUnits(api: GraphApi, units: readonly (MailUnit | 
   });
   for (let start = 0; start < requests.length; start += MAX_BATCH_REQUESTS) {
     const chunk = requests.slice(start, start + MAX_BATCH_REQUESTS);
-    const answers = await api.batch(chunk.map(entry => entry.request));
+    const answers = await api.batch(chunk.map(entry => entry.request), { whole: true });
     for (const { index, request } of chunk) {
       const answer = answers.get(request.id);
       if (answer === undefined) throw new AccessProbeError(502);

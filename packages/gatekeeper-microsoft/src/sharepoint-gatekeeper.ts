@@ -22,7 +22,7 @@ import { ProvisionalIds } from "@gadgets/gatekeeper-kit/simulation";
 import { SerialTaskQueue } from "@gadgets/gatekeeper-kit/serial-queue";
 import TYPES_CODE from "./types.txt";
 import { DESCRIPTION_TTL_MS, housekeep, isProvisional, legacyHistory, PinnedUser, provisionalId, revertRefused } from "./binding";
-import { GraphApi, GraphApiError } from "./graph-api";
+import { GraphApiError, withGraph, type GraphApi } from "./graph-api";
 import { accountSource } from "./microsoft-credentials";
 import { effectiveSharePoint, fixedTenant, type Env, type SharePointAccess, type SharePointGatekeeperProps, type SharePointSites } from "./microsoft-env";
 import {
@@ -330,6 +330,6 @@ export class SharePointGatekeeper extends DurableObject<Env, SharePointGatekeepe
   /** Runs a Graph call as the connection; reads are replayed once on a refreshed credential. */
   async #graph<T>(op: (api: GraphApi) => Promise<T>, replayable: boolean): Promise<T> {
     await this.#user.get();
-    return await this.#creds.run(creds => op(new GraphApi(creds.accessToken)), { replayable });
+    return await this.#creds.run(creds => withGraph(creds.accessToken, op), { replayable });
   }
 }
