@@ -204,8 +204,9 @@ class DocsModel {
     this.#recordMarkerCount();
   }
 
-  addTab(id: string, title: string, parentId: string, text = ""): void {
-    this.tabs.push({ id, title, parentId, text, links: [] });
+  /** Adds tab `id` under `parentId`, or at the top level when there is none. */
+  addTab(id: string, title: string, parentId?: string, text = ""): void {
+    this.tabs.push({ id, title, ...parentId === undefined ? {} : { parentId }, text, links: [] });
   }
 
   removeTab(id: string): void {
@@ -2536,7 +2537,7 @@ describe("adding a Google Doc tab", () => {
     }
     // The first send lands after all, and its marker's tab is gone.
     docs.install();
-    docs.addTab("t.late", "Notes", undefined as unknown as string);
+    docs.addTab("t.late", "Notes", undefined);
     docs.externalEdit();
 
     expect(await hooks().applyAction("add-tab-kept", added.actionId))
@@ -2618,7 +2619,7 @@ describe("adding a Google Doc tab", () => {
     await hooks().submitAppend("add-tab-alias-both", "Hello", added.tabId);
     // The add has landed, its reply not yet in: the replay lists Google's tab and the provisional
     // one carrying the queued edit. Then the handoff records Google's ID before the read looks.
-    docs.addTab("t.google", "Notes", undefined as unknown as string);
+    docs.addTab("t.google", "Notes", undefined);
     docs.externalEdit();
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(Date.now() + 60_000);
@@ -2633,7 +2634,7 @@ describe("adding a Google Doc tab", () => {
 
   it("places a tab at an index and nests one under a tab still waiting", async () => {
     let docs = new DocsModel();
-    docs.addTab("tab-2", "Second", undefined as unknown as string);
+    docs.addTab("tab-2", "Second", undefined);
     docs.install();
 
     let first = await addTab("add-tab-place", "First", { index: 0 });
@@ -2750,7 +2751,7 @@ describe("adding a Google Doc tab", () => {
       .toMatch(/content response lost/);
     // The marker stays in the first tab while the tab the add made is replaced.
     docs.removeTab(docs.tabs[1].id);
-    docs.addTab("t.collaborator", "Notes", undefined as unknown as string, "Theirs");
+    docs.addTab("t.collaborator", "Notes", undefined, "Theirs");
     expect(docs.markers.size).toBe(1);
 
     expect(await hooks().applyAction("add-tab-replaced", added.actionId))
@@ -2770,7 +2771,7 @@ describe("adding a Google Doc tab", () => {
     expect(await hooks().applyAction("add-tab-renamed", added.actionId))
       .toMatch(/content response lost/);
     docs.tabs[1].title = "Renamed";
-    docs.addTab("t.collaborator", "Notes", undefined as unknown as string);
+    docs.addTab("t.collaborator", "Notes", undefined);
     docs.externalEdit();
 
     expect(await hooks().applyAction("add-tab-renamed", added.actionId))
@@ -2783,7 +2784,7 @@ describe("adding a Google Doc tab", () => {
   it("refuses a lost add whose marker's tab was deleted, rather than guess or add another",
     async () => {
       let docs = new DocsModel();
-      docs.addTab("tab-2", "Second", undefined as unknown as string);
+      docs.addTab("tab-2", "Second", undefined);
       docs.ambiguousContentResponses = 1;
       docs.install();
       let added = await addTab("add-tab-host-gone", "Notes");
@@ -2807,7 +2808,7 @@ describe("adding a Google Doc tab", () => {
   it("refuses a lost add whose tab was moved under another parent, rather than add another",
     async () => {
       let docs = new DocsModel();
-      docs.addTab("tab-2", "Second", undefined as unknown as string);
+      docs.addTab("tab-2", "Second", undefined);
       docs.ambiguousContentResponses = 1;
       docs.install();
       let added = await addTab("add-tab-moved", "Notes");
@@ -2835,7 +2836,7 @@ describe("adding a Google Doc tab", () => {
     expect(await hooks().applyAction("add-tab-unsent", added.actionId))
       .toMatch(/connection dropped/);
     expect(docs.tabs).toHaveLength(1);
-    docs.addTab("t.collaborator", "Notes", undefined as unknown as string, "Theirs");
+    docs.addTab("t.collaborator", "Notes", undefined, "Theirs");
     docs.externalEdit();
 
     expect(await hooks().applyAction("add-tab-unsent", added.actionId))
@@ -2863,11 +2864,11 @@ describe("adding a Google Doc tab", () => {
   it.each([
     ["an ambiguous adoption", (docs: DocsModel): (() => void) | undefined => {
       docs.ambiguousContentResponses = 1;
-      return () => docs.addTab("t.collaborator", "Notes", undefined as unknown as string);
+      return () => docs.addTab("t.collaborator", "Notes", undefined);
     }],
     ["a send with no known outcome and no marker left", (docs: DocsModel): (() => void) | undefined => {
       docs.unsentContentRequests = 1;
-      return () => docs.addTab("t.collaborator", "Notes", undefined as unknown as string);
+      return () => docs.addTab("t.collaborator", "Notes", undefined);
     }],
     ["a lost reply that is denied instead of retried", (docs: DocsModel): (() => void) | undefined => {
       docs.ambiguousContentResponses = 1;
@@ -2908,7 +2909,7 @@ describe("adding a Google Doc tab", () => {
 
     expect(await hooks().applyAction("add-tab-refused-send", added.actionId)).not.toBeNull();
     docs.refusesEdits = false;
-    docs.addTab("t.collaborator", "Notes", undefined as unknown as string);
+    docs.addTab("t.collaborator", "Notes", undefined);
     docs.externalEdit();
 
     expect(await hooks().applyAction("add-tab-refused-send", added.actionId)).toBeNull();
