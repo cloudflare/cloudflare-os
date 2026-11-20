@@ -1,7 +1,8 @@
 // Where Acme Service events come from: webhooks this gatekeeper adds itself, through the provider's
 // API as the connected user, one per watched item, delivering to
-// `POST {BASE_URL}/webhook/{driver id}`. Hooks need a `BASE_URL` the provider can reach, so an
-// `https` one; in local development, a tunnel's.
+// `POST {BASE_URL}/webhook/{driver id}`. Hooks need an origin the provider can reach, so an
+// `https` one: `BASE_URL`'s, or where that is not one, as in local development, a tunnel's, set
+// as `ACME_WEBHOOK_ORIGIN`.
 //
 // One `AcmeHookDriver` per connection holds its enabled hooks and its webhooks. It adds a webhook
 // to an item when the first hook there is enabled and deletes it with the last, signs them with a
@@ -16,21 +17,31 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import { disposeStubs } from "@gadgets/gatekeeper-kit/hook-delivery-queue";
+import { isCredentialsExpired } from "@gadgets/gatekeeper-kit/credentials";
 import { HookRegistry } from "@gadgets/gatekeeper-kit/hook-registry";
 import { HttpError } from "@gadgets/gatekeeper-kit/http-errors";
 import { ResponseTooLargeError, readBytesCapped } from "@gadgets/gatekeeper-kit/response-body";
 import { SerialTaskQueue } from "@gadgets/gatekeeper-kit/serial-queue";
-import type { HookController, HookInitiator, HookTargetMetadata } from "@gadgets/workshop-shared/gatekeeper";
+import {
+  stripTrailingSlashes, type HookController, type HookInitiator, type HookTargetMetadata,
+} from "@gadgets/workshop-shared/gatekeeper";
 import { createApi, type Rest } from "./acme-api";
 import { accountSource } from "./acme-credentials";
-import { getBaseUrl, type Env } from "./acme-env";
+import { getBasePath, getBaseUrl, type Env } from "./acme-env";
 import {
   DISCONNECTED, HOOKS_NOT_CONFIGURED, MAX_DELIVERY_BYTES, SIGNATURE_HEADER, logger, parseDelivery, signed,
   type AcmeEventHookTarget, type AcmeHookProps, type Capabilities, type Registration, type StoredEvent,
 } from "./acme-hooks";
 
+/** This Worker's base URL as the provider reaches it, or undefined where that is not over `https`. */
+function webhookBase(env: Env): string | undefined {
+  const base = env.ACME_WEBHOOK_ORIGIN
+    ? `${stripTrailingSlashes(env.ACME_WEBHOOK_ORIGIN)}${getBasePath(env)}` : getBaseUrl(env);
+  return base.startsWith("https://") ? base : undefined;
+}
+
 /** Whether the provider can reach this deployment's webhook route. */
-export const hooksConfigured = (env: Env): boolean => getBaseUrl(env).startsWith("https://");
+export const hooksConfigured = (env: Env): boolean => webhookBase(env) !== undefined;
 
 /** The driver of connection `userObjectId`. */
 const driver = (exports: Cloudflare.Exports, userObjectId: string) => exports.AcmeHookDriver.getByName(userObjectId);
@@ -39,12 +50,15 @@ const driver = (exports: Cloudflare.Exports, userObjectId: string) => exports.Ac
  * Drop the hooks of connection `userObjectId`, which is disconnecting, and delete its webhooks
  * while its credential still can.
  * @throws Error while the provider may yet delete one, which keeps the connection: disconnecting
- * again finishes.
+ * again finishes. Where the Workshop disconnects as part of something else and goes on regardless
+ * (replacing a grant on signing in again, removing an account it provisioned), nothing asks
+ * again, and the grant stays until the account is; gatekeeper-github's has the same limit.
  */
 export async function forgetHooks(exports: Cloudflare.Exports, userObjectId: string): Promise<void> {
   let gone = true;
   try {
-    gone = await driver(exports, userObjectId).revoke();
+    // Asked again, of a stub of its own, should the driver restart mid-answer: it takes up where it was.
+    gone = await driver(exports, userObjectId).revoke().catch(() => driver(exports, userObjectId).revoke());
   } catch (error) {
     // A driver that failed must not leave a disconnected connection's grant live.
     logger.warn("failed to drop the hooks of a disconnected connection", { event: "hooks.forget.failed", error });
@@ -79,8 +93,14 @@ type Webhook = { id: string; itemId: string };
 
 const webhookKey = (itemId: string) => `webhook:${itemId}`;
 
-/** Whether a request the provider failed may succeed if made again, rather than being refused. */
-const retryable = (error: unknown) => !(error instanceof HttpError) || error.status >= 500 || error.status === 429;
+/**
+ * Whether a request the provider failed may succeed if made again: it erred, limited it or never
+ * answered rather than refusing, and the credential is not known to be dead. A bare 401 is one
+ * the account could not rule on; a dead credential comes as its own error.
+ */
+const retryable = (error: unknown) => error instanceof HttpError
+  ? error.status >= 500 || error.status === 429 || error.status === 401
+  : !isCredentialsExpired(error);
 
 /**
  * One per connection, named by its `UserAccount` id. Storage: `account` (that id), `secret` (the
@@ -112,8 +132,11 @@ export class AcmeHookDriver extends DurableObject<Env> {
   }
 
   async unregister(key: string): Promise<void> {
-    const registration = this.#hooks.remove(key);
-    if (registration) await this.#changes.run(() => this.#deleteUnwatched(registration.itemId));
+    // In turn, so that it finds a hook whose enabling is still under way.
+    await this.#changes.run(async () => {
+      const registration = this.#hooks.remove(key);
+      if (registration) await this.#deleteUnwatched(registration.itemId);
+    });
     await this.#reschedule();
   }
 
@@ -192,6 +215,8 @@ export class AcmeHookDriver extends DurableObject<Env> {
     this.ctx.storage.kv.put("checkAt", Date.now() + HOUR_MS);
     for (const { id, itemId } of this.#webhooks()) {
       await this.#changes.run(async () => {
+        // Removed or replaced while this check waited its turn.
+        if (this.ctx.storage.kv.get<Webhook>(webhookKey(itemId))?.id !== id) return;
         if (this.#registrations(itemId).length === 0) return await this.#deleteUnwatched(itemId);
         const found = await this.#api(api => api.get("/items/{id}/webhooks/{webhook}", { path: { id: itemId, webhook: id } }))
           .catch((error: unknown) => {
@@ -199,8 +224,8 @@ export class AcmeHookDriver extends DurableObject<Env> {
             throw error;
           });
         if (found !== undefined) return;
-        this.ctx.storage.kv.delete(webhookKey(itemId));
-        await this.#ensureWebhook(itemId);
+        // Its record stays until the new one replaces it, so a failure here is found again.
+        await this.#addWebhook(itemId);
         logger.info("added again an Acme Service webhook that was gone", { event: "hooks.webhook.restored" });
       }).catch((error: unknown) => {
         // Tried again at the next check.
@@ -217,16 +242,21 @@ export class AcmeHookDriver extends DurableObject<Env> {
   // description that enabling it adds a webhook, if the provider shows one to other people.
   /** Give `itemId` this driver's webhook, unless it has one on record. */
   async #ensureWebhook(itemId: string): Promise<void> {
+    if (this.ctx.storage.kv.get("revoked")) throw new Error(DISCONNECTED);
+    if (!this.ctx.storage.kv.get(webhookKey(itemId))) await this.#addWebhook(itemId);
+  }
+
+  /** Add a webhook to `itemId`, and record it as the item's. */
+  async #addWebhook(itemId: string): Promise<void> {
     const kv = this.ctx.storage.kv;
-    if (kv.get("revoked")) throw new Error(DISCONNECTED);
-    if (!hooksConfigured(this.env)) throw new Error(HOOKS_NOT_CONFIGURED);
-    if (kv.get(webhookKey(itemId))) return;
+    const base = webhookBase(this.env);
+    if (base === undefined) throw new Error(HOOKS_NOT_CONFIGURED);
     let secret = kv.get<string>("secret");
     if (secret === undefined) {
       secret = Array.from(crypto.getRandomValues(new Uint8Array(32)), byte => byte.toString(16).padStart(2, "0")).join("");
       kv.put("secret", secret);
     }
-    const url = `${getBaseUrl(this.env)}/webhook/${this.ctx.id}`;
+    const url = `${base}/webhook/${this.ctx.id}`;
     const { id } = await this.#api(api => api.post("/items/{id}/webhooks", { path: { id: itemId }, body: { url, secret } }));
     kv.put<Webhook>(webhookKey(itemId), { id, itemId });
     // Disconnected meanwhile: revoke(), which waits for this change, deletes what it recorded.

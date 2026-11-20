@@ -195,6 +195,7 @@ describe.each(VARIANTS)("scaffold with --auth $auth, hooks $hooks, openapi $open
     // Only a gatekeeper that adds webhooks itself calls the provider to.
     expect(text.includes("/items/{id}/webhooks")).toBe(hooks === "subscription");
     expect(text.includes("WEBHOOK_SECRET")).toBe(hooks === "app");
+    expect(text.includes("WEBHOOK_ORIGIN")).toBe(hooks === "subscription");
   });
 
   it("marks what is left to decide", () => {

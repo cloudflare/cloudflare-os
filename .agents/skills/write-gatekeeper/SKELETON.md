@@ -144,7 +144,9 @@ where its events come from. Pick the kind by how the provider delivers:
   and deletes it with the last. One driver per connection signs its webhooks with a secret of its
   own, receives at `POST {BASE_URL}/webhook/{driver id}`, checks hourly that each webhook is still
   there, and deletes them all on disconnect, before the credential is dropped: a disconnect the
-  provider fails to finish stays connected until it is tried again. `BASE_URL` must be `https`.
+  provider fails to finish stays connected until it is tried again. The provider must reach the
+  route over `https`: at `BASE_URL`, or where that is not `https`, as under `pnpm dev-server`, at
+  the `<NAME>_WEBHOOK_ORIGIN` of a tunnel.
   `STOP(webhook-subscription)` and `STOP(webhook-upkeep)` cover the provider's calls, expiry and
   redelivery; GitHub's driver shows each in full.
 
