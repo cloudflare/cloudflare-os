@@ -1895,7 +1895,7 @@ describe("read", () => {
     expect(columnOf(SUBSERVICE_V1_SLOTS.providerCode)).toEqual([17, 0]);
   });
 
-  it("gives `answer` the parsed value and the answer, and counts once the parsing is done", async () => {
+  it("gives `answer` the parsed value, the status and a copy of the headers, and counts once the parsing is done", async () => {
     const last = answer(200, "payload");
     answering(503, last);
     const seen: unknown[] = [];
@@ -1903,18 +1903,41 @@ describe("read", () => {
     const text = await upstream.read(THREAD, undefined, async response => {
       events.push("parse");
       return response.text();
-    }, (parsed, response) => {
+    }, (parsed, answered) => {
       events.push("answer");
-      seen.push(parsed, response);
+      seen.push(parsed, Reflect.ownKeys(answered).toSorted(), answered.status, [...answered.headers]);
+      // What the hook does to its copy of the headers is nothing to the answer.
+      answered.headers.set("Retry-After", "60");
       return undefined;
     });
 
     expect(text).toBe("payload");
-    expect(seen).toEqual(["payload", last]);
-    expect(seen[1]).toBe(last);
+    expect(seen).toEqual(["payload", ["headers", "status"], 200, [...new Headers(last.headers)]]);
+    expect(last.headers.get("Retry-After")).toBe("0");
     // The attempt before the last is counted as `request` counts it: when it is answered.
     expect(events).toEqual(["fetch", "count", "fetch", "parse", "answer", "count"]);
     expect(outcomes()).toEqual([["error", "http", 503], ["success", "", 200]]);
+  });
+
+  it("fails by what `parse` threw, and cancels the body, where the hook's answer throws on being read again", async () => {
+    const body = answer(200, "payload");
+    const cancel = vi.spyOn(body.body as ReadableStream, "cancel");
+    answering(body);
+    let reads = 0;
+    // An answer that can be read once, as the request's `answer` is asked, and not again.
+    const once = {
+      get outcome(): "success" {
+        if (reads++ > 0) throw new Error("read again");
+        return "success";
+      },
+    };
+
+    await expect(upstream.read(THREAD, { retry: null, answer: () => once }, () => {
+      throw new Error("unparsed");
+    })).rejects.toThrow("unparsed");
+
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(outcomes()).toEqual([["error", "parse", 200]]);
   });
 
   it("counts by its status an answer whose `answer` returns nothing or throws", async () => {
@@ -2763,6 +2786,14 @@ describe("fetcher", () => {
       ["vendor", "threads.create", "error", "http", 503],
       ["vendor", "keys.send", "error", "http", 401],
     ]);
+  });
+
+  it("sends a call whose init holds an option of a request's own that throws on being read", async () => {
+    const fetch = answering(200);
+    const init = { method: "POST", body: "{}", get retry(): never { throw new Error("unread"); } };
+
+    expect((await upstream.fetcher()(THREAD, init)).status).toBe(200);
+    expect(Object.keys(initOf(fetch))).toEqual(["method", "body", "signal", "redirect"]);
   });
 
   it("reads a Request given for a call's init by property", async () => {

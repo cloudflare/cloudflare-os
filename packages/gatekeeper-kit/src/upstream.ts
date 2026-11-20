@@ -325,16 +325,17 @@ export interface Upstream {
    * alone are: whatever `parse` throws once the attempt's timeout has fired is taken for a
    * reading that the timeout cut off.
    * @param answer How the parsed answer is counted, which is how an attempt is counted by what
-   * its body says: the request's own `answer` reads no body. Undefined, a throw or what is no
-   * answer (a promise is not awaited) counts it as `request` counts its answer. By convention an
-   * error inside a success is an `error` with the reason `api`.
+   * its body says: the request's own `answer` reads no body. It is given what `parse` returned
+   * and, as that hook is, the answer's status and a copy of its headers. Undefined, a throw or
+   * what is no answer (a promise is not awaited) counts it as `request` counts its answer. By
+   * convention an error inside a success is an `error` with the reason `api`.
    * @returns What `parse` returned of the last answer.
    */
   read<T>(
     input: string | URL | Request,
     init: UpstreamRequestInit | undefined,
     parse: (response: Response) => T | Promise<T>,
-    answer?: (parsed: T, response: Response) => CallAnswer | undefined,
+    answer?: (parsed: T, answered: AnsweredWith) => CallAnswer | undefined,
   ): Promise<T>;
   /**
    * Counts one call that is no HTTP request, such as an RPC binding's method or a WebSocket
@@ -627,7 +628,7 @@ export function defineUpstream(options: UpstreamOptions): Upstream {
         const success = succeeded(status, operation, manual);
         // The hook answers at once: nothing between an answer and its count is waited for. It is
         // given the status and the headers alone, so that it leaves the body as it came.
-        const verdict = askedNow(() => answer?.({ status, headers: new Headers(response.headers) }))
+        const verdict = askedNow(() => answer?.(answeredWith(response)))
           ?? byStatus(status, success);
         let counted = false;
         const countOnce = (given: CallAnswer) => {
@@ -702,7 +703,7 @@ export function defineUpstream(options: UpstreamOptions): Upstream {
         try {
           // Only `parse` throws here: the asking of `answer` and the counting never do.
           const parsed = await parse(response);
-          countLast(askedNow(() => answer?.(parsed, response)) ?? verdict);
+          countLast(askedNow(() => answer?.(parsed, answeredWith(response))) ?? verdict);
           return parsed;
         } catch (error) {
           // An answer counted a `success` that could not be read is a malformed one only where
@@ -797,8 +798,9 @@ type Sent = {
 // request's own options.
 function fetchInit(init: RequestInit | undefined): RequestInit {
   const given = init ?? {};
-  return asFetchReads(
-    Object.fromEntries(Object.entries(given).filter(([name]) => !OWN_OPTIONS.has(name))), given);
+  // The names are sifted before a value is read: an option that is dropped is never looked at.
+  const own = Object.keys(given).filter(name => !OWN_OPTIONS.has(name));
+  return asFetchReads(Object.fromEntries(own.map(name => [name, Reflect.get(given, name)])), given);
 }
 
 // An init read by property: `own`, a copy of the enumerable properties that `init` has of its
@@ -848,7 +850,9 @@ function byStatus(status: number, success: boolean): CallAnswer {
 
 // What a counting hook answers, or undefined where it answers nothing or throws. Every such
 // hook answers at once. A `null` is passed on: a `thrown` hook answers it.
-function askedNow<A extends CallAnswer | null | undefined>(hook: () => A): A | undefined {
+function askedNow<A extends CallAnswer | null | undefined>(
+  hook: () => A,
+): CallAnswer | (A & null) | undefined {
   try {
     const given = hook();
     return given === null ? given : answerOf(given);
@@ -857,15 +861,23 @@ function askedNow<A extends CallAnswer | null | undefined>(hook: () => A): A | u
   }
 }
 
-// A hook's answer, where it is one: an object with an outcome. A promise is none, whatever it
-// holds: it is not awaited, and its rejection is handled here so that none is left unhandled.
-function answerOf<A>(given: A): A | undefined {
+// What a counting hook is given of an answer: its status and a copy of its headers.
+function answeredWith(response: Response): AnsweredWith {
+  return { status: response.status, headers: new Headers(response.headers) };
+}
+
+// A hook's answer, where it is one: an object with an outcome. Its four members are read here,
+// once, into an object of this module's own, so that nothing the hook's object does when it is
+// read later (a getter that throws) reaches the request. A promise is none, whatever it holds: it
+// is not awaited, and its rejection is handled here so that none is left unhandled.
+function answerOf(given: unknown): CallAnswer | undefined {
   if (given instanceof Promise) {
     given.catch(() => undefined);
     return undefined;
   }
-  return typeof given === "object" && given !== null && "outcome" in given
-    && typeof given.outcome === "string" ? given : undefined;
+  if (typeof given !== "object" || given === null || !("outcome" in given)) return undefined;
+  const { outcome, reason, detail, providerCode } = given as CallAnswer;
+  return typeof outcome === "string" ? { outcome, reason, detail, providerCode } : undefined;
 }
 
 // The promise of what `work` returns or throws, a throw before its first await included.
