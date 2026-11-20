@@ -58,7 +58,7 @@ import {
   ActionDescriptionBuilder, buildDescription, plainInline, RenderedDescription, sanitizeTitle,
 } from "@gadgets/gatekeeper-kit/action-description";
 import {formatSubresourceId, parseSubresourceId} from "@gadgets/gatekeeper-kit/subresource-ids";
-import {AccessTokenCache, AccessTokenRequest} from "./auth-retry";
+import {AccessTokenCache, AccessTokenRequest, isUnsentRequest} from "./auth-retry";
 import {CursorPager} from "./cursor";
 import {ApprovalQueueRpcTarget, RpcCursor, SharedApprovalQueue} from "./shared-approval-queue";
 import {verifyGoogleSubresourceAccess} from "./google-verifier-types";
@@ -4829,13 +4829,17 @@ function isDefinitiveWriteRejection(error: unknown): boolean {
 
 async function applyUncertainWrite<T>(
     store: GmailStore, actionId: number, write: () => Promise<T>): Promise<T> {
+  const first = !store.isApplying(actionId);
   store.markApplying(actionId);
   try {
     return await write();
   } catch (error) {
-    // A definitive rejection proves this invocation did not mutate Gmail. Read/reconciliation
-    // failures must never reach this path or erase an earlier invocation's uncertain outcome.
-    if (isDefinitiveWriteRejection(error)) store.clearApplying(actionId);
+    // A definitive rejection proves this invocation did not mutate Gmail, as does a first write
+    // never sent because its token could not be had. Read/reconciliation failures must never reach
+    // this path or erase an earlier invocation's uncertain outcome.
+    if (isDefinitiveWriteRejection(error) || (first && isUnsentRequest(error))) {
+      store.clearApplying(actionId);
+    }
     throw error;
   }
 }

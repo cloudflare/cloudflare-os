@@ -1,4 +1,5 @@
 import {env} from "cloudflare:workers";
+import {ACCESS_TOKEN_EXPIRY_SAFETY_MS} from "../../src/auth-retry";
 import {runInDurableObject} from "cloudflare:test";
 import {afterEach, describe, expect, it, vi} from "vitest";
 import type {
@@ -596,7 +597,7 @@ function actionHarness(
         instance.restartGatekeeper(facetName)));
     },
   };
-  return {calls, gatekeeper, storage, values: storageValues(storage)};
+  return {calls, gatekeeper, storage, values: storageValues(storage), account: userStorage};
 }
 
 type ApprovalQueueHandle = {
@@ -997,6 +998,55 @@ describe("Gmail session API surface", () => {
     expect(await values.has("gmail:applying:1")).toBe(false);
     await expect(gatekeeper.applyAction(1)).rejects.toThrow(/Unknown pending Gmail action/);
     expect(writes).toBe(1);
+  });
+
+  // A reply whose token could not be had was not sent, so approving it again sends it, not
+  // refuses it as one that may have been sent.
+  it("sends a reply again whose earlier approval could not get its token", async () => {
+    const sourceId = "abc123";
+    let sends = 0;
+    const {gatekeeper, account, values} = actionHarness(async (url, init) => {
+      if (url.pathname === `/gmail/v1/users/me/messages/${sourceId}` && !init.method) {
+        return json(messageMetadata(sourceId, "source-thread", "<source@example.com>"));
+      }
+      if (url.pathname === "/gmail/v1/users/me/threads/source-thread" && !init.method) {
+        return json(threadMinimal("source-thread", [sourceId]));
+      }
+      if (url.pathname === "/gmail/v1/users/me/messages/send" && init.method === "POST") {
+        sends++;
+        return json({id: "def789", threadId: "source-thread"});
+      }
+      if (url.pathname === "/gmail/v1/users/me/labels" && !init.method) return json({labels: []});
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    // A token the memo serves for the reply's queueing, and no longer a moment later: the send
+    // then asks the account, whose refresh fails, so nothing is sent.
+    account.kv.put("accessToken", {
+      token: "access-token", expires: new Date(Date.now() + ACCESS_TOKEN_EXPIRY_SAFETY_MS + 800),
+    });
+    const session = await gatekeeper.startSession(approvalQueue());
+    const source = await session.getMessage(sourceId);
+    await source.reply("Reply body");
+    // The approval checks whose account it is first, under the memoized token, and the send comes
+    // after that answer has waited.
+    const inner = globalThis.fetch;
+    let held = false;
+    vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
+      if (url.pathname === "/oauth2/v3/userinfo" && !held) {
+        held = true;
+        await new Promise(resolve => setTimeout(resolve, 1500));
+      }
+      return inner(input, init);
+    });
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow();
+    expect(held).toBe(true);
+    expect(sends).toBe(0);
+    expect(await values.has("gmail:applying:1")).toBe(false);
+
+    account.kv.put("accessToken", {token: "access-token", expires: new Date(Date.now() + 3_600_000)});
+    await gatekeeper.applyAction(1);
+    expect(sends).toBe(1);
   });
 
   it("admits a sent message created through a restricted binding", async () => {
