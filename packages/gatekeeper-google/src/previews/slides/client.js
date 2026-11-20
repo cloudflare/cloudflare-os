@@ -721,23 +721,30 @@ async function awaitOutlines(now, ids) {
     if (ids.length === 0) return;
     await pause(wait);
     if (now !== generation) return;
-    // A read that fails leaves them waiting for the next.
-    const answer = await gadget.readSlideDrawings(ids).catch(() => undefined);
-    if (now !== generation) return;
-    if (!answer) continue;
-    ids = answer.slides.filter(slide => slide.outlinesPending).map(slide => slide.slideId);
-    for (const slide of wholeSlides(answer)) {
-      const card = cards.get(slide.slideId);
-      if (!card || card.listed || ids.includes(slide.slideId)) continue;
-      drawings.set(slide.slideId, { ...slide, seen: drawings.get(slide.slideId)?.seen });
-      card.pending = false;
-      // What changes on it is what it was: were it not, the slide is taken as one read afresh.
-      if ((slide.saved !== undefined) !== card.differs) fill(card, slide);
-      else {
-        take(card, slide);
-        paint(card);
+    const waiting = new Set(ids);
+    try {
+      for await (const { answer } of drawingsOf(ids)) {
+        if (now !== generation) return;
+        if (!answer) continue;
+        for (const [n, slide] of wholeSlides(answer).entries()) {
+          if (answer.slides[n].outlinesPending) continue;
+          waiting.delete(slide.slideId);
+          const card = cards.get(slide.slideId);
+          if (!card || card.listed) continue;
+          drawings.set(slide.slideId, { ...slide, seen: drawings.get(slide.slideId)?.seen });
+          card.pending = false;
+          // What changes on it is what it was: were it not, the slide is taken as one read afresh.
+          if ((slide.saved !== undefined) !== card.differs) fill(card, slide);
+          else {
+            take(card, slide);
+            paint(card);
+          }
+        }
       }
+    } catch {
+      // A read that fails leaves its slides, and those not yet read, waiting for the next.
     }
+    ids = [...waiting];
     showPictures();
   }
   for (const id of ids) {
@@ -749,31 +756,35 @@ async function awaitOutlines(now, ids) {
   showPictures();
 }
 
-// Reads the drawings of `stale`, rows of the listing, a few at a time, and fills their cards.
-// Returns the slides whose shapes' outlines are still on their way, or nothing when a load since
-// `now` has taken over.
+// Reads the drawings of the slides `ids`, as many at a time as a read takes, and gives each
+// answer. Slides that are more than one read returns are read again in halves, down to the one
+// that is too large by itself, which comes with no answer.
+async function* drawingsOf(ids) {
+  const batches = [];
+  for (let at = 0; at < ids.length; at += BATCH) batches.push(ids.slice(at, at + BATCH));
+  for (let batch = batches.shift(); batch; batch = batches.shift()) {
+    const answer = await gadget.readSlideDrawings(batch).catch(error => {
+      if (!TOO_LARGE.test(error?.message)) throw error;
+    });
+    if (answer || batch.length === 1) yield { batch, answer };
+    else batches.unshift(batch.slice(0, batch.length >> 1), batch.slice(batch.length >> 1));
+  }
+}
+
+// Reads the drawings of `stale`, rows of the listing, and fills their cards: one too large to
+// read is then only named. Returns the slides whose shapes' outlines are still on their way, or
+// nothing when a load since `now` has taken over.
 async function readDrawings(now, stale, drawn) {
   const waiting = [];
-  const batches = [];
-  for (let at = 0; at < stale.length; at += BATCH) batches.push(stale.slice(at, at + BATCH));
-  for (let batch = batches.shift(); batch; batch = batches.shift()) {
-    let answer;
-    try {
-      answer = await gadget.readSlideDrawings(batch.map(row => row.id));
-    } catch (error) {
-      if (now !== generation) return;
-      // More than one read returns: the slides are read again in halves, down to the one that
-      // is too large by itself, which is then only named.
-      if (!TOO_LARGE.test(error?.message)) throw error;
-      if (batch.length > 1) batches.unshift(batch.slice(0, batch.length >> 1), batch.slice(batch.length >> 1));
-      else {
-        drawings.set(batch[0].id, { large: true, seen: batch[0].seen });
-        layOut(drawn);
-        renderFilmstrip();
-      }
+  const seen = new Map(stale.map(row => [row.id, row.seen]));
+  for await (const { batch: [id], answer } of drawingsOf([...seen.keys()])) {
+    if (now !== generation) return;
+    if (!answer) {
+      drawings.set(id, { large: true, seen: seen.get(id) });
+      layOut(drawn);
+      renderFilmstrip();
       continue;
     }
-    if (now !== generation) return;
     const read = wholeSlides(answer);
     waiting.push(...answer.slides.filter(slide => slide.outlinesPending).map(slide => slide.slideId));
     const fonts = readFonts(read.flatMap(({ drawing, saved }) => [drawing, saved])).catch(() => false)
@@ -784,10 +795,10 @@ async function readDrawings(now, stale, drawn) {
       });
     await Promise.race([fonts, pause(FONT_WAIT_MS)]);
     if (now !== generation) return;
-    for (const [n, slide] of read.entries()) {
+    for (const slide of read) {
       const before = drawings.get(slide.slideId);
       if (JSON.stringify([before?.drawing, before?.saved]) !== JSON.stringify([slide.drawing, slide.saved])) forgetPictures(slide.slideId);
-      drawings.set(slide.slideId, { ...slide, seen: batch[n].seen });
+      drawings.set(slide.slideId, { ...slide, seen: seen.get(slide.slideId) });
       cards.get(slide.slideId).pending = waiting.includes(slide.slideId);
       fill(cards.get(slide.slideId), slide);
     }

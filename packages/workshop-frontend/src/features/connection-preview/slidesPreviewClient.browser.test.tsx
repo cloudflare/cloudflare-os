@@ -65,6 +65,8 @@ async function draw(deck: Deck, width = 1100) {
     },
     readSlideDrawings: async (ids: string[]) => {
       calls.push(['readSlideDrawings', ids])
+      // As the session refuses them.
+      if (ids.length > 10) throw new Error('Request between 1 and 10 slides at a time.')
       if (deck.weights && ids.reduce((sum, id) => sum + (deck.weights![id] ?? 1), 0) > 3) {
         throw new Error(`These ${ids.length} slides are too large to read at once. Request fewer.`)
       }
@@ -652,6 +654,21 @@ describe('shapes whose outlines are still on their way', () => {
     expect(reads(called)).toEqual(['s1,s2', 's1', 's1', 's1'])
     expect([shape().classList.contains('wait'), shape().title]).toEqual([false, 'A freeform shape, which is not drawn here'])
   }, 30_000)
+
+  it('reads them again as few at a time as it first read them, however many wait', async () => {
+    const ids = Array.from({ length: 12 }, (_slide, n) => `s${n + 1}`)
+    const all = (paths?: object[]) => Object.fromEntries(ids.map(id =>
+      [id, { drawing: slide([freeform(paths)]), ...(paths ? {} : { outlinesPending: true as const }) }]))
+    const deck: Deck = { saved: listed(...ids), drawings: all() }
+    const { card, called } = await draw(deck)
+
+    deck.drawings = all([PATH])
+    await expect.poll(() => card('s12').querySelector('.sheet [data-id="f"] path'), { timeout: 6000 }).not.toBeNull()
+
+    const [first, rest] = [ids.slice(0, 10).join(), ids.slice(10).join()]
+    expect(reads(called)).toEqual([first, rest, first, rest])
+    expect(card('s1').querySelector('.sheet [data-id="f"] path')).not.toBeNull()
+  })
 
   it('leaves off asking when the presentation is read afresh, which reads them itself', async () => {
     const deck = waiting()
