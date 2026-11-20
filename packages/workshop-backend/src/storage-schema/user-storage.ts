@@ -135,6 +135,15 @@ export type GadgetRecord = WorkspaceMetadata & {
 export type ChatReadCursor = {
   workspaceId: string;
   chatId: number;
+  /** Explicit user preference; absent means use the workspace-provided default. */
+  notificationsEnabled?: boolean;
+  /** Participation default for new chats; absent on existing chats, which stay subscribed by default. */
+  hasParticipated?: boolean;
+  /**
+   * False after one-off approvals until enrolled fanout or a full read command catches up. Once
+   * true it stays true; absent on legacy cursors, which are already enrolled.
+   */
+  fanoutEnrolled?: boolean;
   /** Sequence of the last record the user has read, inclusive; -1 if they haven't read anything. */
   readThroughSequence: number;
   /**
@@ -164,7 +173,8 @@ export type ChatReadCursor = {
   notifiedEventIds?: string[];
   /**
    * The chat's title and latest-message preview, copied from the workspace so the inbox can show it
-   * without asking the workspace. Always present, except on rows for deleted chats.
+   * without asking the workspace. Absent on deleted chats and preference-only rows whose read
+   * tracking has not started.
    */
   head?: ChatTimelineHead;
   /**
@@ -340,6 +350,11 @@ export function makeUserStorage(storage: DurableObjectStorage) {
       // (-1 = never, which also lazily backfills users created before the
       // directory existed). See #syncDirectory().
       directoryRev: -1,
+      // When the account was created (see #syncDirectory()); null for one created before this
+      // was recorded.
+      createdAt: <Date | null>null,
+      // Epoch ms of the session start the directory last took (0 = none). See #syncDirectory().
+      directoryLoginAt: 0,
     }
   });
 }

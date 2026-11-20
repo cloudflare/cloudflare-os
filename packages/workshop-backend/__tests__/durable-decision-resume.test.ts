@@ -135,6 +135,7 @@ function decisionClient(impl: Impl, profile = USER, overrides: object = {}) {
         getChatContext: async () => ({profile: USER, aiModel: MODEL}), recordSharedWorkspaceOpen: async () => {}})},
     nextChatSequencePeek: impl.nextChatSequencePeek.bind(impl),
     chatHead: impl.chatHead.bind(impl),
+    chatParticipationDefault: impl.chatParticipationDefault.bind(impl),
     rememberDecisionInitiator: impl.rememberDecisionInitiator.bind(impl),
     resumeAgentAfterDecision: impl.resumeAgentAfterDecision.bind(impl),
     getChatTimestamp: impl.getChatTimestamp.bind(impl),
@@ -152,6 +153,7 @@ function modelLookup(impl: Impl, lookup: () => Promise<{profile: typeof USER, ai
   impl.users = new Proxy(impl.users, {
     get(target, key) {
       if (key === "idFromString") return (id: string) => target.idFromString(id);
+      if (key === "idFromName") return (name: string) => target.idFromName(name);
       if (key === "get") return (id: DurableObjectId) => new Proxy(target.get(id), {
         get(user, method) {
           if (method === "getChatContext") return lookup;
@@ -723,6 +725,38 @@ describe("decision handoff using the existing execution row", () => {
       gate.resolve();
       await alarm;
       expect(lookup).toHaveBeenCalledTimes(2);
+      expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
+    });
+  });
+
+  it("hands a long run off to an immediate next alarm, which joins it", async () => {
+    const s = await scenario(), requests = inference(), gate = Promise.withResolvers<void>();
+    await s.visit(async impl => {
+      modelLookup(impl, async () => { await gate.promise; return {profile: USER, aiModel: MODEL}; });
+      decide(impl, "connection"); impl.resumeAgentAfterDecision(CHAT);
+      await impl.deliverDirtyChats();
+      const deliveries = vi.spyOn(impl, "deliverReadyExternalMessageResponses");
+      vi.useFakeTimers({toFake: ["setTimeout", "clearTimeout"]});
+      try {
+        let settled = false;
+        const alarm = impl.runAlarmTasks(0).then(() => { settled = true; });
+        await vi.advanceTimersByTimeAsync(10 * 60_000 - 1_000);
+        expect(settled).toBe(false);
+        await vi.advanceTimersByTimeAsync(1_000);
+        await alarm;
+      } finally {
+        vi.useRealTimers();
+      }
+      // The turn is still running, and the next invocation is due at once.
+      expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeDefined();
+      expect(await impl.ctx.storage.getAlarm()).toBeLessThanOrEqual(Date.now());
+      // The next invocation joins the same run rather than starting its concerns again.
+      const next = impl.runAlarmTasks(0);
+      gate.resolve();
+      await next;
+      expect(deliveries).toHaveBeenCalledTimes(1);
+      expect(requests()).toBe(1);
+      expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeUndefined();
       expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
     });
   });

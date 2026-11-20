@@ -941,7 +941,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     let resolved;
     try {
       resolved = await source.run(creds => resolveSharePointUrl(new GraphApi(creds.accessToken), url,
-        identity.sharePointTenant!, { selected }), { replayable: true });
+        { name: identity.sharePointTenant!, id: identity.tenantId }, { selected }), { replayable: true });
     } catch (error) {
       if (error instanceof UnresolvableUrlError) throw new Error(error.message, { cause: error });
       throw error;

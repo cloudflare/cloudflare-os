@@ -248,6 +248,7 @@ function render(
   closePdf = true,
   contentType = "application/pdf",
   bundle: UiBundle = {jsCode: "export default {}"},
+  renderMode?: "snapshot",
 ) {
   let { gadget, harness } = makeHarness(pdfChunks, closePdf);
   let stream = renderGadgetInBrowser(
@@ -262,6 +263,7 @@ function render(
       contentType,
       fileExtension: ".test",
     },
+    renderMode,
   );
   return { stream, harness };
 }
@@ -370,6 +372,17 @@ describe("renderGadgetInBrowser", () => {
     expect(harness.blobRequestContinued()).toBe(true);
   });
 
+  it("tells a snapshot's client it is one, and leaves gadgetRenderMode unset for a live gadget", async () => {
+    let live = render();
+    await collect(await live.stream);
+    expect(live.harness.exportDocument()).not.toContain("gadgetRenderMode");
+
+    let snapshot = render(undefined, true, "application/pdf", undefined, "snapshot");
+    await collect(await snapshot.stream);
+    expect(snapshot.harness.exportDocument())
+        .toContain("globalThis.gadgetRenderMode%20%3D%20%22snapshot%22");
+  });
+
   it("lets the page copy and dispose its gadget stub, then releases the stub", async () => {
     let released = 0;
     class TestGadget extends NativeRpcTarget {
@@ -398,6 +411,25 @@ describe("renderGadgetInBrowser", () => {
     expect(reads).toEqual(["from the server", "from the server"]);
     expect(harness.browserClosed()).toBe(true);
     await vi.waitFor(() => expect(released).toBe(1));
+  });
+
+  it("gives the page a host whose openAgentChat() does nothing, with no sidebar to open", async () => {
+    let opened: unknown[] = [];
+    let { harness } = makeHarness(undefined, true, async root => {
+      opened.push(await root.host.openAgentChat("some-chat-token"));
+    });
+
+    let stream = renderGadgetInBrowser(
+      {} as BrowserRun,
+      {jsCode: ""},
+      "Test Gadget",
+      new NativeRpcStub(new NativeRpcTarget()) as never,
+      {id: "pdf", label: "PDF", mode: "browser", contentType: "application/pdf", fileExtension: ".pdf"},
+    );
+
+    expect(await collect(await stream)).toBe("%PDF-1.4");
+    expect(opened).toEqual([undefined]);
+    expect(harness.browserClosed()).toBe(true);
   });
 
   it("starts a UI sent as modules by calling main(), mapping capnweb for its modules", async () => {

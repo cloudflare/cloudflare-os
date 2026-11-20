@@ -1180,7 +1180,6 @@ The kit supplies defaults where they apply across consumers:
 | --- | ---: |
 | `maxPending` | 50 |
 | `maxTrackedCollections` | 1000 |
-| `maxObservers` | 10 |
 | `remotePageSize` | 100 |
 | cursor `maxProviderPagesPerCall` | 10 |
 | `OAuthClient` `timeoutMs` | 30 000 ms |
@@ -1196,8 +1195,12 @@ The kit requires values where no general default is safe:
 Size limits from the provider and the disclosure shape. `maxTrackedCollections` is a cumulative budget: it
 bounds the distinct collections this binding has *ever* disclosed, including markers a fail-closed read
 left behind, so size it from the whole resource rather than one page — a per-page value starts
-refusing valid reads once later pages reveal new collections. `maxObservers` must account for the Workers
-subrequest ceiling because every observer costs a verifier call on each read. `remotePageSize`
+refusing valid reads once later pages reveal new collections. Observers are not capped: each costs a verifier call on a
+`collections` read, throttled by `concurrency`. The fan-out adds no call depth. A check that opens a
+request to another Worker or Durable Object spends one of the calling invocation's subrequests,
+whose limit depends on the plan and the Worker's `limits.subrequests`; what the verifier does to
+answer runs under its own invocation's budget. A check that fails for that reason excludes its
+observer, as any failed check does. `remotePageSize`
 cannot exceed the provider's page cap. Lower `maxProviderPagesPerCall` for a provider that bills
 each row it returns: a filter that drops whole pages otherwise pays for up to ten per `next()`, and
 `1` with a `pageSize` no provider page exceeds makes each `next()` one provider request.
@@ -1311,7 +1314,9 @@ The API is
   `nextDue()` and its own deadlines. `remove()` only forgets the hook, so provider teardown stays
   in the driver's `unregister`. Delete a hook's records directly only when clearing all of the
   driver's storage: on their own, its queued messages outlive them and are delivered if the hook
-  is enabled again.
+  is enabled again. Where the provider can't narrow what it pushes to what a hook watches for, pass
+  `screen`, which is asked before each firing is started, so that an event no hook wants wakes no
+  workspace; the binding's `deliver` still decides.
 - Every callback the kit invokes must throw display-safe errors. `discardMint`, the rejection heal,
   and the expiry notification all log what they catch, so a thrown token, header, or response body
   lands in the deployment's logs.

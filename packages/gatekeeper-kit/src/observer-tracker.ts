@@ -71,9 +71,6 @@ export const OBSERVER_ATTEMPT_LIFETIME_MS = 10 * 60 * 1000;
 
 const DEFAULT_MAX_TRACKED_COLLECTIONS = 1000;
 
-// Keep verifier fan-out below the Workers subrequest ceiling.
-const DEFAULT_MAX_OBSERVERS = 10;
-
 /** Internal: default concurrent verifier round trips, for the tracker and `observerAccessVerifier`. */
 export const DEFAULT_CONCURRENCY = 6;
 
@@ -212,8 +209,6 @@ export type ObserverTrackerOptions<V> = {
    * a crash is kept permanently, since a lost reply may still have recorded the observation.
    */
   maxTrackedCollections?: number;
-  /** Caps fan-out before reads can exceed Worker invocation limits. */
-  maxObservers?: number;
   /** Concurrent verifier round trips. */
   concurrency?: number;
   /** Vendor id for log attribution. */
@@ -241,7 +236,6 @@ export class ObserverTracker<V> {
   readonly #collectionPrefix: string;
   readonly #canonicalCollectionId: (collectionId: string) => CanonicalCollectionId;
   readonly #maxTrackedCollections: number;
-  readonly #maxObservers: number;
   readonly #concurrency: number;
   readonly #logger: typeof logger;
 
@@ -260,8 +254,6 @@ export class ObserverTracker<V> {
     // A cap of zero refuses every read, and a window of zero never advances.
     this.#maxTrackedCollections = requirePositiveInt(
       "maxTrackedCollections", options.maxTrackedCollections ?? DEFAULT_MAX_TRACKED_COLLECTIONS);
-    this.#maxObservers = requirePositiveInt(
-      "maxObservers", options.maxObservers ?? DEFAULT_MAX_OBSERVERS);
     this.#concurrency = requirePositiveInt(
       "concurrency", options.concurrency ?? DEFAULT_CONCURRENCY);
 
@@ -291,13 +283,6 @@ export class ObserverTracker<V> {
     }
     this.#sweepStaleAttempts();
 
-    // Re-admission of one already here is free; a new one costs a verifier call on every read.
-    const existing = this.observerIds();
-    if (!existing.includes(id) && existing.length >= this.#maxObservers) {
-      throw new Error(
-        `This binding already answers for ${existing.length} collaborators, the most it can ` +
-        "verify on every read. Remove one before adding another.");
-    }
     const attemptKey = `${OBSERVER_ATTEMPT_PREFIX}${id}`;
     const nonceKey = `${OBSERVER_NONCE_PREFIX}${id}`;
     const nonce = generateNonce();
@@ -463,6 +448,9 @@ export class ObserverTracker<V> {
     const claimed = canonical.map(collectionId => this.#collectionKey(collectionId));
     claimSets(claims, claimed, new Set(untracked.map(collectionId => this.#collectionKey(collectionId))));
 
+    // Not capped: the fan-out adds no call depth. A check that opens a request spends one of this
+    // invocation's subrequests, and one that fails is an exclusion below. `concurrency` only
+    // throttles.
     const observers = [...this.#observers()];
     const access = await mapLimit(observers, this.#concurrency, async ([id, verifier]) => {
       try {

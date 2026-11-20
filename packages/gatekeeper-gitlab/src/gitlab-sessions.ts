@@ -77,28 +77,28 @@ function pageSize(options: GitLabPageOptions | undefined, fallback = 50): number
 
 /**
  * `cursor`, a listing the gatekeeper built, with each page authorized as `observation` describes
- * the listing (see GitLabGatekeeperImpl.authorizeRead and ObservedCursor), reporting `subresource`
- * when the listing chose one as it fetched its data, and then, with `advertising`, the commit ids
- * on it advertised, withholding simulated ones as SessionGitCache does. The cursor holds its own
- * duplicates of the session's stubs, so it keeps working if the session is disposed before it is
- * drained.
+ * the listing (see GitLabGatekeeperImpl.authorizeRead and ObservedCursor), reporting
+ * `subresources` when the listing named what it disclosed as it fetched its data, and then, with
+ * `advertising`, the commit ids on it advertised, withholding simulated ones as SessionGitCache
+ * does. The cursor holds its own duplicates of the session's stubs, so it keeps working if the
+ * session is disposed before it is drained.
  */
 async function observedListing<T>(
   gatekeeper: Pick<GitLabGatekeeperImpl, "authorizeRead" | "isSimulatedCommitId">,
   approvalQueue: RpcStub<ApprovalQueue>, cursor: Cursor<T>,
   observation: Omit<ObservationDescription, "subresources">,
   options: {
-    subresource?: string;
+    subresources?: string[];
     advertising?: { gitCache: SessionGitCache; commitIds: (item: T) => readonly GitOid[] };
   } = {},
 ): Promise<Cursor<T>> {
-  const { subresource, advertising } = options;
+  const { subresources, advertising } = options;
   const cache = advertising && (await advertising.gitCache.stub()).dup();
   const queue = approvalQueue.dup();
   return new ObservedCursor(cursor, {
     authorize: page => gatekeeper.authorizeRead(queue, page === 1
       ? observation
-      : { ...observation, title: `${observation.title} (page ${page})` }, subresource),
+      : { ...observation, title: `${observation.title} (page ${page})` }, subresources),
     advertise: cache && advertisePages(cache, advertising.commitIds,
       { withhold: id => gatekeeper.isSimulatedCommitId(id) }),
     release: () => {
@@ -547,7 +547,7 @@ export class GitLabMergeRequestImpl extends GitLabIssuableImpl implements GitLab
 /**
  * A pipeline of the bound project, opened by a project or merge request session (which checked
  * it may be opened), over its own duplicate of that session's approval queue. Its test reports
- * report the subresource the gatekeeper chose as it fetched them.
+ * report the jobs whose artifacts they hold.
  */
 @validateRpc()
 export class GitLabPipelineImpl extends RpcTarget implements GitLabPipeline {
@@ -590,21 +590,21 @@ export class GitLabPipelineImpl extends RpcTarget implements GitLabPipeline {
   }
 
   async getTestReport(): Promise<GitLabTestReportSummary> {
-    const { subresource, report } = await this.#gatekeeper.pipelineTestReport(this.#pipelineId);
+    const { subresources, report } = await this.#gatekeeper.pipelineTestReport(this.#pipelineId);
     await this.#gatekeeper.authorizeRead(this.#approvalQueue, {
       title: `Read test report of pipeline #${this.#pipelineId}`,
       description: `Read the unit test totals of CI pipeline #${this.#pipelineId}: ` +
         `${report.total} tests, ${report.failed} failed, ${report.errored} errored.`,
-    }, subresource);
+    }, subresources);
     return report;
   }
 
   async listFailedTests(options?: GitLabPageOptions): Promise<Cursor<GitLabTestCase>> {
-    const { subresource, cases } = await this.#gatekeeper.pipelineFailedTests(this.#pipelineId, pageSize(options));
+    const { subresources, cases } = await this.#gatekeeper.pipelineFailedTests(this.#pipelineId, pageSize(options));
     return await observedListing(this.#gatekeeper, this.#approvalQueue, cases, {
       title: `Read failed tests of pipeline #${this.#pipelineId}`,
       description: `Read the failed and errored test cases, with their output, from CI pipeline #${this.#pipelineId}'s test reports.`,
-    }, { subresource });
+    }, { subresources });
   }
 }
 
@@ -639,7 +639,7 @@ export class GitLabJobImpl extends RpcTarget implements GitLabJob {
   }
 
   async readLog(options?: GitLabLogOptions): Promise<GitLabLogPage> {
-    const { jobName, page, subresource } = await this.#gatekeeper.readJobLog(this.#jobId, options);
+    const { jobName, page, subresources } = await this.#gatekeeper.readJobLog(this.#jobId, options);
     const first = page.lines[0]?.number;
     const last = page.lines.at(-1)?.number;
     const range = first === undefined ? "no lines" : `lines ${first}–${last}`;
@@ -647,7 +647,7 @@ export class GitLabJobImpl extends RpcTarget implements GitLabJob {
     await this.#gatekeeper.authorizeRead(this.#approvalQueue, {
       title: `Read log of job \`${jobName}\` #${this.#jobId}, ${range}`,
       description: `Read ${range}${search} of the log of CI job \`${jobName}\` #${this.#jobId} (${page.totalLines} lines in all).`,
-    }, subresource);
+    }, subresources);
     return page;
   }
 }

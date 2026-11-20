@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { Text, Loader, Banner } from '@cloudflare/kumo'
 import { Sparkle } from '@phosphor-icons/react'
 import { RpcStub, RpcTarget, newMessagePortRpcSession } from 'capnweb'
-import { GadgetClient, ConsoleLogEvent, type GadgetHost } from '@gadgets/workshop-shared/api'
+import { GadgetClient, GadgetSnapshotClient, ConsoleLogEvent, type GadgetHost } from '@gadgets/workshop-shared/api'
 import { prepareUiPage, uiModuleKey, type UiPage } from '@gadgets/workshop-shared/ui-page'
 import { CAPNWEB_MODULE_URL, SANDBOX_HEAD } from './sandboxDocument'
 
@@ -126,8 +126,32 @@ import(${JSON.stringify(uiModuleKey('client.js'))}).then(entry => {
 const LEGACY_RUNTIME_URL = runtimeUrl(false)
 const MAIN_RUNTIME_URL = runtimeUrl(true)
 
+/** How the frame runs the gadget, as `globalThis.gadgetRenderMode` tells its code; unset live. */
+export type GadgetRenderMode = 'snapshot'
+
+// A module script of its own, ahead of the runtime and so of every gadget module, which keeps the
+// runtime's URLs, embedding Cap'n Web, encoded once at load rather than per mode on each render.
+const RENDER_MODE_URLS: Record<GadgetRenderMode, string> = {
+  snapshot: `data:text/javascript;charset=utf-8,${encodeURIComponent('globalThis.gadgetRenderMode = "snapshot";')}`,
+}
+
+type OpenAgentChat = (chatToken: string) => Promise<void>
+
 // The Workshop as a gadget UI's host.
-class WorkshopGadgetHost extends RpcTarget implements GadgetHost {}
+class WorkshopGadgetHost extends RpcTarget implements GadgetHost {
+  readonly #openAgentChat: OpenAgentChat
+
+  constructor(openAgentChat: OpenAgentChat) {
+    super()
+    this.#openAgentChat = openAgentChat
+  }
+
+  async openAgentChat(chatToken: string): Promise<void> {
+    // The frame is untrusted, and nothing generates RPC validation in the frontend.
+    if (typeof chatToken !== 'string') throw new TypeError('chatToken must be a string.')
+    await this.#openAgentChat(chatToken)
+  }
+}
 
 // Where a console call or uncaught error happened in the frame, as the browser reported it.
 type ConsoleLocation = { url?: string; line?: number; column?: number }
@@ -170,7 +194,7 @@ class GadgetFrameRoot extends RpcTarget {
   }
 }
 
-const createSandboxedHtml = (page: UiPage): string => {
+const createSandboxedHtml = (page: UiPage, renderMode: GadgetRenderMode | undefined): string => {
   return `<!DOCTYPE html>
 <html>
 <head>
@@ -178,6 +202,7 @@ const createSandboxedHtml = (page: UiPage): string => {
   <script type="importmap">${page.importMap}</script>
 </head>
 <body>
+    ${renderMode ? `<script type="module" src="${RENDER_MODE_URLS[renderMode]}"></script>` : ''}
     <script type="module" src="${page.callsMain ? MAIN_RUNTIME_URL : LEGACY_RUNTIME_URL}"></script>
     <script type="module" src="${page.entryUrl}"></script>
 </body>
@@ -185,11 +210,13 @@ const createSandboxedHtml = (page: UiPage): string => {
 }
 
 interface GadgetUIProps {
-  gadget: RpcStub<GadgetClient>
+  gadget: RpcStub<GadgetClient> | RpcStub<GadgetSnapshotClient>
   height: string
   reloadTrigger?: number
   isVisible?: boolean
   chatId?: number
+  // Set for a snapshot, which the gadget's code reads as `globalThis.gadgetRenderMode`.
+  renderMode?: GadgetRenderMode
   onConsoleLog?: (log: ConsoleLogEvent) => void
   // Fires when the user presses Escape while the gadget iframe has focus. Sandboxed iframes
   // capture keydown events, so we forward Escape explicitly from inside the iframe.
@@ -197,6 +224,10 @@ interface GadgetUIProps {
   // Reports whether the "No gadget UI yet" placeholder is showing: true only once a load has
   // confirmed the gadget has no UI, so a spinner or a not-yet-loaded view never counts.
   onNoUiChange?: (showsNoUi: boolean) => void
+  // Shows the user the chat the gadget names (GadgetHost.openAgentChat). Without it, the request
+  // does nothing. `signal` aborts once the frame's RPC session ends, so a request still in
+  // progress can be dropped rather than act for a view that's gone.
+  onOpenAgentChat?: (chatToken: string, signal: AbortSignal) => Promise<void>
 }
 
 // How long to wait for a UI bundle before offering a retry instead of a spinner. Not a latency
@@ -208,11 +239,11 @@ export default function GadgetUI(props: GadgetUIProps) {
   return <GadgetUISession key={props.chatId} {...props} />
 }
 
-function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chatId, onConsoleLog, onIframeEscape, onNoUiChange }: GadgetUIProps) {
+function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chatId, renderMode, onConsoleLog, onIframeEscape, onNoUiChange, onOpenAgentChat }: GadgetUIProps) {
   const [sandboxedHtml, setSandboxedHtml] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   // A connection failure is tied to the client it was tried on, so a replacement gets its own try.
-  const [error, setError] = useState<{ message: string; stub?: RpcStub<GadgetClient> } | null>(null)
+  const [error, setError] = useState<{ message: string; stub?: GadgetUIProps['gadget'] } | null>(null)
   const errorMessage = error && (error.stub ?? gadget) === gadget ? error.message : null
   const [hasLoaded, setHasLoaded] = useState(false)
   const [isInvalidated, setIsInvalidated] = useState(false)
@@ -235,6 +266,8 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
     reject: (reason: unknown) => void
   } | null>(null)
   const rpcSessionRef = useRef<any>(null)
+  // Aborted when rpcSessionRef's session ends, dropping the host requests it made.
+  const rpcSessionAbortRef = useRef<AbortController | null>(null)
   // Each module's path by its data: URL, for naming the file in errors the iframe forwards.
   const pathsByUrlRef = useRef(new Map<string, string>())
   // Keep latest callbacks in refs so the message-handler effect never tears down the RPC session.
@@ -244,6 +277,8 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
   onConsoleLogRef.current = onConsoleLog
   const onNoUiChangeRef = useRef(onNoUiChange)
   onNoUiChangeRef.current = onNoUiChange
+  const onOpenAgentChatRef = useRef(onOpenAgentChat)
+  onOpenAgentChatRef.current = onOpenAgentChat
 
   // A code change invalidates the view without clearing `hasLoaded`, so the previous load's "no UI"
   // result must not keep counting while the replacement load is pending.
@@ -284,6 +319,8 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
     gadgetStubRef.current = null
     rpcSessionRef.current?.[Symbol.dispose]?.()
     rpcSessionRef.current = null
+    rpcSessionAbortRef.current?.abort(reason)
+    rpcSessionAbortRef.current = null
   }
 
   const reloadIframe = (reason: unknown) => {
@@ -388,7 +425,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
         if (bundle) {
           const page = prepareUiPage(bundle, CAPNWEB_MODULE_URL)
           pathsByUrlRef.current = page.pathsByUrl
-          setSandboxedHtml(createSandboxedHtml(page))
+          setSandboxedHtml(createSandboxedHtml(page, renderMode))
         } else {
           setSandboxedHtml(null)
         }
@@ -418,7 +455,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
     }
   // LSP reports an error here, but tsc does not.
   // The LSP error is due to bugs that need to be fixed in Cap'n Web.
-  }, [gadget, isVisible, hasLoaded, isInvalidated, chatId, retryNonce])
+  }, [gadget, isVisible, hasLoaded, isInvalidated, chatId, renderMode, retryNonce])
 
   // Reads its callbacks through refs, so the handshake effect never tears down the RPC session.
   const frameEvents: FrameEvents = {
@@ -485,8 +522,14 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
                 : gadgetStubRef.current[property]
             },
           })
+          const sessionAbort = new AbortController()
+          const host = new WorkshopGadgetHost(async chatToken => {
+            await onOpenAgentChatRef.current?.(chatToken, sessionAbort.signal)
+          })
           rpcSessionRef.current = newMessagePortRpcSession(
-              port, new GadgetFrameRoot(forwardingTarget, new WorkshopGadgetHost(), frameEvents))
+              port, new GadgetFrameRoot(forwardingTarget, host, frameEvents))
+          rpcSessionRef.current.onRpcBroken((reason: unknown) => sessionAbort.abort(reason))
+          rpcSessionAbortRef.current = sessionAbort
         } catch (caught) {
           gadgetStub?.[Symbol.dispose]?.()
           port.close()
@@ -506,6 +549,14 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
       resetConnection(new Error('Gadget RPC session was closed.'))
     }
   }, [])
+
+  // A new key or document replaces the frame, whose session lingers until the next handshake (or
+  // never comes, with no UI to show); its host requests mustn't outlive the frame.
+  const frameKey = `${reloadTrigger}:${iframeGeneration}`
+  useEffect(() => () => {
+    rpcSessionAbortRef.current?.abort(new Error('Gadget iframe was replaced.'))
+    rpcSessionAbortRef.current = null
+  }, [frameKey, sandboxedHtml])
 
   if (!isVisible && !hasLoaded) {
     // Don't render anything if not visible and never loaded
@@ -602,7 +653,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
   return (
     <div style={{ height, width: '100%' }}>
       <iframe
-        key={`${reloadTrigger}:${iframeGeneration}`}
+        key={frameKey}
         ref={iframeRef}
         srcDoc={sandboxedHtml}
         style={{

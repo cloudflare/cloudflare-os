@@ -6,7 +6,7 @@ import type {
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
   base64UrlDecodedByteLength, buildEncodedEmail, decodeBase64UrlToBytes,
-  GmailApi, GmailOutboundSpec, parseGmailDraft, parseMimeMessage,
+  GmailApi, GmailApiError, GmailOutboundSpec, parseGmailDraft, parseMimeMessage,
 } from "../../src/google-api";
 import {
   GmailDraftState, GmailForwardSnapshotReference,
@@ -15,6 +15,7 @@ import {
 import type {GmailGatekeeperImpl, GmailGatekeeperImplProps} from "../../src/gmail";
 import type {
   EmailContent, GmailAttachmentInfo, GmailAttachmentInput, GmailComposeOptions, GmailCustomLabel, GmailDraftInfo,
+  GmailLabel,
   GmailDraftInput, GmailDraftPatch, GmailMessageInfo, GmailReplyOptions, GmailThreadInfo,
 } from "../../src/types";
 import {containsBytes} from "../gmail-test-utils";
@@ -380,8 +381,8 @@ class TestSession {
       private readonly call: SessionCall, private readonly restricted: boolean,
   ) {}
 
-  hasMailboxMethods(): Promise<boolean> {
-    return this.call("session.hasMailboxMethods") as Promise<boolean>;
+  listLabels(): Promise<GmailLabel[]> {
+    return this.call("session.listLabels") as Promise<GmailLabel[]>;
   }
 
   getMailboxAddress(): Promise<{address: string; name?: string}> {
@@ -791,10 +792,40 @@ describe("Gmail session API surface", () => {
       tsType: "GmailScopedSession",
     });
 
-    const mailboxSession = await mailbox.gatekeeper.startSession(approvalQueue());
-    const searchSession = await search.gatekeeper.startSession(approvalQueue());
-    await expect(mailboxSession.hasMailboxMethods()).resolves.toBe(true);
-    await expect(searchSession.hasMailboxMethods()).resolves.toBe(false);
+  });
+
+  // An agent used to a whole-mailbox binding calls its methods on a narrower one all the same.
+  it.each([
+    ["search", {searchQuery: "is:unread"}],
+    ["label", {labelName: "Important"}],
+  ] as const)("refuses each whole-mailbox method on a %s binding, saying which connection has it", async (_kind, scope) => {
+    const {gatekeeper} = actionHarness(url => {
+      // A label binding resolves its label to open a session; nothing else is asked of Gmail.
+      if (url.pathname === "/gmail/v1/users/me/labels") {
+        return json({labels: [{id: "Label_9", name: "Important", type: "user"}]});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    }, scope);
+    const queue = approvalQueue();
+    const session = await gatekeeper.startSession(queue);
+    const label: GmailCustomLabel = {id: "Label_1", name: "Label", type: "custom"};
+    const refusals: Array<[string, () => Promise<unknown>]> = [
+      ["send", () => session.send(["to@example.com"], "Subject", "Body")],
+      ["createDraft", () => session.createDraft({to: ["to@example.com"], subject: "Subject", text: "Body"})],
+      ["listLabels", () => session.listLabels()],
+      ["createLabel", () => session.createLabel("Label")],
+      ["renameLabel", () => session.renameLabel(label, "Renamed")],
+      ["deleteLabel", () => session.deleteLabel(label)],
+    ];
+    for (const [method, call] of refusals) {
+      await expect(call()).rejects.toThrow(
+        `${method}() needs a whole-mailbox Gmail connection, and this one is limited to a search or a label.`);
+      await expect(call()).rejects.toThrow(
+        `To use ${method}(), connect Gmail again with "All Gmail" as its mailbox scope (https://mail.google.com/mail/).`);
+    }
+    await expect(refusals[0][1]()).rejects.toThrow(/use that message's reply\(\) or replyAll\(\)/);
+    await expect(refusals[1][1]()).rejects.toThrow(/use that message's createReplyDraft\(\)/);
+    await expect(queue.read!()).resolves.toMatchObject({observations: [], submissions: []});
   });
 
   it("authorizes and returns the connected mailbox address through a restricted binding", async () => {
@@ -2870,6 +2901,27 @@ describe("Gmail draft lookup", () => {
 
     await expect(session.getDraft("not/a/draft")).rejects.toThrow(/Invalid Gmail draft ID/);
     await expect(session.getDraft("unknown-draft")).rejects.toThrow(/Unknown Gmail draft ID/);
+  });
+});
+
+describe("Gmail request failures", () => {
+  // On real timers: workerd ends a read that waits on a body only when its reader is cancelled.
+  it("gives up on an error body that never ends, cancelling it, and still reports Gmail's status", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const cancel = vi.fn();
+    vi.stubGlobal("fetch", async () => new Response(new ReadableStream({cancel}), {status: 400}));
+    try {
+      const started = Date.now();
+      const error = await new GmailApi("me@example.com", async () => "token")
+        .listMessages(20).catch(value => value);
+      expect(error).toBeInstanceOf(GmailApiError);
+      expect(error.status).toBe(400);
+      expect(error.reasons).toEqual([]);
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(Date.now() - started).toBeLessThan(5000);
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 });
 

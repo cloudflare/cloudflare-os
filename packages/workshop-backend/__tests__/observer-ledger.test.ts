@@ -1902,6 +1902,49 @@ describe("direct context authorization", () => {
     expect(rows(impl, WORKSPACE)).toEqual([]);
   }));
 
+  it("never checks a gadget's read against someone who may only view that gadget", () =>
+      withWorld(async world => {
+    let { impl } = world;
+    seedConnection(impl);
+    seedGadget(impl, GADGET, { C: CONN });
+    seedGadget(impl, GADGET + 1, { C: CONN });
+    // Carol was verified for A live, so she has an account choice for the connection B reads too.
+    world.roles.set("carol",
+        { role: "use", gadgetIds: [GADGET, GADGET + 1], viewOnly: [GADGET + 1] });
+    impl.storage.observers.put(
+        { profileId: "carol", observerId: "obs-carol", accountChoices: { [CONN]: 20 } });
+    world.verifiers.set("carol", observerVerifier(() => world, "carol", ids => ids));
+
+    await impl.authorizeObservation(CONN, withSubresources(["b"]),
+        { from: "gadget", gadgetId: GADGET + 1 });
+    expect(world.checks).toEqual([]);
+    expect(rows(impl, gadget(GADGET + 1))).toEqual(["2:b"]);
+
+    // A's reads still answer to her.
+    await expect(impl.authorizeObservation(CONN, withSubresources(["a"]),
+        { from: "gadget", gadgetId: GADGET })).rejects.toThrow(/could not be confirmed/);
+  }));
+
+  it("never checks any read against someone who may only view every gadget they hold", () =>
+      withWorld(async world => {
+    let { impl } = world;
+    seedConnection(impl);
+    seedGadget(impl, GADGET, { C: CONN });
+    // Carol was narrowed to the snapshot after verifying, so her account choice survives.
+    world.roles.set("carol", { role: "use", gadgetIds: [GADGET], viewOnly: [GADGET] });
+    world.roles.set("dave", { role: "use", gadgetIds: [GADGET] });
+    for (let profileId of ["carol", "dave"]) {
+      impl.storage.observers.put(
+          { profileId, observerId: `obs-${profileId}`, accountChoices: { [CONN]: 20 } });
+    }
+    world.verifiers.set("carol", observerVerifier(() => world, "carol", ids => ids));
+
+    // A workspace read is in every gadget's scope, so Dave, who uses one, is still checked.
+    await impl.authorizeObservation(CONN, withSubresources(["w"]), { from: "user" });
+    expect(world.checks.map(check => check.profileId)).toEqual(["dave"]);
+    expect(rows(impl, WORKSPACE)).toEqual(["2:w"]);
+  }));
+
   it.each(["build", "use"] as const)(
       "does not commit a gadget read refused by a %s collaborator", role =>
       withWorld(async world => {

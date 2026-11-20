@@ -137,6 +137,7 @@ export function pendingMessageInfo(
     isReply: action.threadName !== undefined,
     attachments: [],
     cards: [],
+    buttons: [],
     reactions: [],
     pending: true,
   };
