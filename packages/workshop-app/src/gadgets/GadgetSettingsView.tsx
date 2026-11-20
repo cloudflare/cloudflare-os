@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { CaretLeftIcon, FileArrowDownIcon, ShareNetworkIcon, WarningCircleIcon } from '@phosphor-icons/react'
+import { CaretLeftIcon, FileArrowDownIcon, PlugIcon, PlusIcon, ShareNetworkIcon, WarningCircleIcon } from '@phosphor-icons/react'
 import { BindingRow } from '@/blocks/BindingRow'
 import { DeveloperIds, type DeveloperId } from '@/blocks/DeveloperIds'
 import type { MadeTemplate } from '@/blocks/CreateTemplateDialog'
@@ -17,6 +17,7 @@ import { Button } from '@/components/Button'
 import { ConfirmMenu } from '@/components/ConfirmMenu'
 import { DropdownMenu } from '@/components/DropdownMenu'
 import { EditableTitle } from '@/components/EditableTitle'
+import { EmptyState } from '@/components/EmptyState'
 import { FormatIcon, type FormatIconName } from '@/components/FormatIcon'
 import { HeaderBubble } from '@/components/HeaderBubble'
 import { Tabs } from '@/components/Tabs'
@@ -94,6 +95,11 @@ export type GadgetSettingsViewProps = {
   bindings: Listed<GadgetBinding>
   /** The services it can be bound through, by id, for their names and logos. */
   services: ReadonlyMap<string, BindingService>
+  /**
+   * Starts a chat beside it with the start of asking for a connection written in its composer,
+   * where it has none. Left out beside a chat, which is where to ask.
+   */
+  onConnect?: () => void
   /** Takes a binding away from it, by the name its code knows it by. */
   onUnbind: (name: string) => void
   /** Gives a binding another name in its code: how that went, and why where it did not. */
@@ -123,8 +129,6 @@ export type GadgetSettingsViewProps = {
   agentAttention?: (spawnerId: number) => { words: string; tone: 'warning' | 'danger' } | undefined
 }
 
-const Message = ({ children }: { children: string }) => <p className="appears px-5 text-base text-kumo-subtle">{children}</p>
-
 /**
  * A gadget's settings page, laid out as a skill's is: what it is drawn as, its title, renamed
  * where it is, and what its template says it is for, then a tab each (`?tab=`): what it is
@@ -134,7 +138,7 @@ const Message = ({ children }: { children: string }) => <p className="appears px
  * gets here: anyone it was shared with to use is told that its settings are not theirs.
  */
 export const GadgetSettingsView = ({
-  state, title, icon, description, templateUpdate, template, exports, status: exported, workspace, tab, onTabChange, onRename, problem, bindings, services, onUnbind, onRenameBinding, models, onChangeModel, onDelete, onBack, onOpenWorkspace, onOpenAgent, agentHref, agentAttention, ids = [], showsCodeNames = false,
+  state, title, icon, description, templateUpdate, template, exports, status: exported, workspace, tab, onTabChange, onRename, problem, bindings, services, onConnect, onUnbind, onRenameBinding, models, onChangeModel, onDelete, onBack, onOpenWorkspace, onOpenAgent, agentHref, agentAttention, ids = [], showsCodeNames = false,
 }: GadgetSettingsViewProps) => {
   const made = template?.made ?? []
   const offersCreate = template !== undefined && made.length === 0
@@ -228,23 +232,25 @@ export const GadgetSettingsView = ({
         {state.status === 'ready' && (
           <Tabs value={tab} onValueChange={onTabChange} tabs={GADGET_SETTINGS_TABS} aria-label="Gadget" className="gap-6">
             <Tabs.Panel value="connections" className="flex flex-col gap-12">
-              <SettingsGroup
-                title="Connected to"
-                description={showsCodeNames
-                  ? 'What its code can reach, by the name it knows each by. Click a name to change it.'
-                  : 'What it can use on your behalf.'}
-                plain
-              >
-                {bindings.status === 'loading' && <p role="status" className="appears-late px-5 text-base text-kumo-subtle">Loading its connections…</p>}
-                {bindings.status === 'failed' && <Message>{`Couldn’t load its connections: ${bindings.message}`}</Message>}
-                {bindings.status === 'ready' && (connections.length === 0
-                  ? <Message>Nothing yet. Ask the agent in a chat to connect it to something.</Message>
-                  : (
-                      <ListGroup label="Connected to">
-                        <ul className="flex flex-col">{connections.map(row)}</ul>
-                      </ListGroup>
-                    ))}
-              </SettingsGroup>
+              {/* The tab says what they are, so they have no heading of their own; the agents, after them, do. */}
+              {bindings.status === 'loading' && <p role="status" className="appears-late px-5 text-base text-kumo-subtle">Loading its connections…</p>}
+              {bindings.status === 'failed' && <p role="alert" className="px-5 text-base text-kumo-subtle">Couldn’t load its connections: {bindings.message}</p>}
+              {bindings.status === 'ready' && (connections.length === 0
+                ? (
+                    <EmptyState
+                      size="section"
+                      tinted
+                      icon={PlugIcon}
+                      title="No connections yet"
+                      description="The services and models it uses on your behalf show here. Ask the agent in a chat to connect it to something."
+                      actions={onConnect && [{ label: 'Add connection', icon: PlusIcon, variant: 'primary', onClick: onConnect }]}
+                    />
+                  )
+                : (
+                    <ListGroup label="Connections">
+                      <ul className="flex flex-col">{connections.map(row)}</ul>
+                    </ListGroup>
+                  ))}
               {/* Only once it has any: most gadgets start none. */}
               {agents.length > 0 && (
                 <SettingsGroup title="Agents" description="Agents its code can start, each with a conversation of its own." plain>

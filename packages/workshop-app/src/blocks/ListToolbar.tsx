@@ -76,7 +76,7 @@ const FilterMenu = ({ value, options, facetMenus = {}, choices = [], onChange, s
         const ids = menu.options.map(({ id }) => id)
         const on = value.filter((id) => ids.includes(id))
         return (
-          <DropdownMenu.Submenu key={menu.facet} label={menu.label} detail={on.length > 0 ? on.length : undefined}>
+          <DropdownMenu.Submenu picker key={menu.facet} label={menu.label} detail={on.length > 0 ? on.length : undefined}>
             <OptionPicker
               aria-label={menu.label}
               options={menu.options}

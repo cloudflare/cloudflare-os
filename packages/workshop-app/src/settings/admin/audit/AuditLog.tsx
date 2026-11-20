@@ -58,13 +58,13 @@ const FilterMenu = ({ filter, admins, targets, onFilterChange }: FilterMenuProps
         {AUDIT_KINDS.map((kind) => <DropdownMenu.RadioItem key={kind} value={kind}>{KIND_NAMES[kind]}</DropdownMenu.RadioItem>)}
       </DropdownMenu.RadioGroup>
       <DropdownMenu.Separator />
-      <DropdownMenu.Submenu label="Admin" detail={filter.admin ? 1 : undefined}>
+      <DropdownMenu.Submenu picker label="Admin" detail={filter.admin ? 1 : undefined}>
         <OptionPicker single aria-label="Admin" options={peopleOptions(admins, filter.admin)} value={filter.admin ?? ''} onValueChange={pick('admin')} />
       </DropdownMenu.Submenu>
-      <DropdownMenu.Submenu label="Action" detail={filter.method ? 1 : undefined}>
+      <DropdownMenu.Submenu picker label="Action" detail={filter.method ? 1 : undefined}>
         <OptionPicker single aria-label="Action" options={METHOD_OPTIONS} value={filter.method ?? ''} onValueChange={pick('method')} />
       </DropdownMenu.Submenu>
-      <DropdownMenu.Submenu label="User reached" detail={filter.owner ? 1 : undefined}>
+      <DropdownMenu.Submenu picker label="User reached" detail={filter.owner ? 1 : undefined}>
         <OptionPicker single aria-label="User reached" options={peopleOptions(targets, filter.owner)} value={filter.owner ?? ''} onValueChange={pick('owner')} />
       </DropdownMenu.Submenu>
       <DropdownMenu.Separator />

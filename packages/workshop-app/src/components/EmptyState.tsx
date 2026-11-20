@@ -64,7 +64,7 @@ export const EmptyState = ({ icon: Glyph, badge: Badge, title, description, acti
   const sized = SIZE[size]
   const Heading = size === 'page' ? 'h2' : 'h3'
   return (
-    <div className={cn('appears mx-auto flex w-full flex-col items-center text-center', sized.root, tinted && 'rounded-3xl bg-kumo-tint py-10', className)}>
+    <div className={cn('mx-auto flex w-full flex-col items-center text-center', sized.root, tinted && 'rounded-3xl bg-kumo-tint py-10', className)}>
       <span aria-hidden="true" className={cn('relative grid shrink-0 place-items-center rounded-2xl text-kumo-subtle', onTint ? 'bg-kumo-fill' : 'bg-kumo-base ring-1 ring-kumo-line', sized.tile)}>
         <Glyph className={sized.glyph} />
         {Badge && (

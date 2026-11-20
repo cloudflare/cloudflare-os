@@ -328,6 +328,8 @@ type DropdownMenuSubmenuProps = {
   detail?: ReactNode
   /** What the menu holds: items, or something of its own to choose with, such as an `OptionPicker`. */
   children: ReactNode
+  /** It holds something of its own to choose with rather than items, as `DropdownMenu`'s `picker`. */
+  picker?: boolean
 }
 
 /**
@@ -335,7 +337,7 @@ type DropdownMenuSubmenuProps = {
  * list in place. It opens when pointed at or with the arrow key towards it, and is simply there:
  * only the menu it opens from morphs out of a button.
  */
-const DropdownMenuSubmenu = ({ label, icon: Icon, detail, children }: DropdownMenuSubmenuProps) => (
+const DropdownMenuSubmenu = ({ label, icon: Icon, detail, children, picker = false }: DropdownMenuSubmenuProps) => (
   <Menu.SubmenuRoot>
     <Menu.SubmenuTrigger className={cn(ITEM_CLASS, 'data-popup-open:bg-kumo-tint')}>
       {Icon && <Icon aria-hidden="true" className="shrink-0" />}
@@ -349,9 +351,13 @@ const DropdownMenuSubmenu = ({ label, icon: Icon, detail, children }: DropdownMe
       <Menu.Positioner sideOffset={10} alignOffset={-6} collisionPadding={12} className="z-50">
         <Menu.Popup
           aria-label={label}
-          className="flex max-h-[min(var(--available-height),24rem)] w-64 max-w-[var(--available-width)] origin-[var(--transform-origin)] flex-col overflow-hidden rounded-[21px] bg-kumo-base text-kumo-default ring-1 ring-kumo-contrast/6 outline-none transition-[opacity,scale] duration-150 data-ending-style:scale-95 data-ending-style:opacity-0 data-starting-style:scale-95 data-starting-style:opacity-0 motion-reduce:transition-none"
+          className={cn(
+            'flex max-h-[min(var(--available-height),24rem)] origin-[var(--transform-origin)] flex-col overflow-hidden rounded-[21px] bg-kumo-base text-kumo-default ring-1 ring-kumo-contrast/6 outline-none transition-[opacity,scale] duration-150 data-ending-style:scale-95 data-ending-style:opacity-0 data-starting-style:scale-95 data-starting-style:opacity-0 motion-reduce:transition-none',
+            // As the menu it opens from: a picker a width of its own, items as wide as they are.
+            picker ? 'w-64 max-w-(--available-width)' : 'w-max max-w-[min(var(--available-width),28rem)]',
+          )}
         >
-          {children}
+          {picker ? children : <div className="overflow-y-auto overscroll-contain p-1.5">{children}</div>}
         </Menu.Popup>
       </Menu.Positioner>
     </Menu.Portal>

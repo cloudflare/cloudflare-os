@@ -68,8 +68,7 @@ const PILLS: Record<Exclude<ChatState['kind'], 'working'>, Pick<StatusPillProps,
  * by owner, under headings, or not at all; each group in the order chosen, the latest first unless
  * another is. An agent's run is
  * only listed while it needs someone or is starred, unless a search looks for it or the filters
- * ask for all of them (Agent runs: Action needed, All, None); how many that leaves out is said under
- * the list, with the way to show them. Each row says how it stands, or its latest message. Over
+ * ask for all of them (Agent runs: Action needed, All, None). Each row says how it stands, or its latest message. Over
  * them, a search, the grouping and the order, the filters, marking all read, and a new chat.
  */
 export const ChatListView = (props: ChatListViewProps) => {
@@ -91,7 +90,6 @@ export const ChatListView = (props: ChatListViewProps) => {
   const found = list.narrow([...all])
   const searching = list.controls.search.value.trim() !== ''
   const shown = runs === 'none' ? found.filter((chat) => !isAgentRun(chat)) : runs === 'needing' && !searching ? found.filter((chat) => !quiet(chat)) : found
-  const hiddenRuns = runs === 'needing' ? found.length - shown.length : 0
   // The order chosen, then the grouping, each group in that order.
   const grouping = (list.grouping ?? 'status') as ChatGrouping
   const arrange = (chats: AiChatMetadata[]) => groupChats(grouping, list.arrange(chats).flatMap(({ entries }) => entries.map(({ value }) => value)), {
@@ -205,12 +203,6 @@ export const ChatListView = (props: ChatListViewProps) => {
             : group
         })}
       </div>
-      {hiddenRuns > 0 && (
-        <p className="flex items-center justify-center gap-3 px-4 text-base text-kumo-subtle">
-          {hiddenRuns === 1 ? '1 more agent run' : `${hiddenRuns} more agent runs`}
-          <Button variant="ghost" onClick={() => setRuns('all')}>Show all</Button>
-        </p>
-      )}
     </div>
   )
 }

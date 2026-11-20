@@ -51,6 +51,8 @@ function GadgetSettings() {
       onOpenWorkspace={() => navigate({ to: '/workspace/$workspaceId', params: { workspaceId } })}
       // The chat that holds the update, with the gadget beside it, showing it.
       onUpdateProposed={(chatId) => navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId, chatId }, search: { open: formatAsideRef(ref) } })}
+      // A new chat in its workspace, beside it, with the start of the request written for the user to finish.
+      onConnect={(title) => navigate({ to: '/', search: { workspace: workspaceId, open: formatAsideRef(ref) }, state: { gadgetTitle: title, draft: title ? `Connect “${title}” to ` : 'Connect this app to ' } })}
       onOpenAgent={(spawnerId) => navigate({ to: '/workspace/$workspaceId/agent/$agentKey', params: { workspaceId, agentKey: agentKeyOf(spawnerId) } })}
       agentHref={(spawnerId) => router.buildLocation({ to: '/workspace/$workspaceId/agent/$agentKey', params: { workspaceId, agentKey: agentKeyOf(spawnerId) } }).href}
     />

@@ -38,6 +38,8 @@ export type GadgetSettingsPaneProps = {
   chatId?: number
   /** An update from its template was proposed in this chat, which is where it is tried: go there. */
   onUpdateProposed: (chatId: number) => void
+  /** Starts a chat beside it to connect it to something, by its title where it is known. Left out beside a chat, which is where to ask. */
+  onConnect?: (title?: string) => void
   /** Goes to the page of an agent it starts, by its spawner's id. */
   onOpenAgent?: (spawnerId: number) => void
   agentHref?: (spawnerId: number) => string
@@ -50,7 +52,7 @@ const messageOf = (error: unknown) => (error instanceof Error ? error.message : 
  * bound to, the user's models its code can be given, its code as it was last kept, read once the Code tab is shown, and what its template
  * says of it, with whether it has a newer version to update it from (`UpdateFromTemplate`).
  */
-export const GadgetSettingsPane = ({ workspaceId, workpieceId, initialTitle, tab, onTabChange, onBack, onDeleted, onOpenWorkspace, namesTab = true, chatId, onUpdateProposed, onOpenAgent, agentHref }: GadgetSettingsPaneProps) => {
+export const GadgetSettingsPane = ({ workspaceId, workpieceId, initialTitle, tab, onTabChange, onBack, onDeleted, onOpenWorkspace, namesTab = true, chatId, onUpdateProposed, onConnect, onOpenAgent, agentHref }: GadgetSettingsPaneProps) => {
   const { settings, snapshot } = useGadgetSettings(workspaceId, workpieceId)
   const workspaces = useWorkspaces()
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
@@ -118,6 +120,7 @@ export const GadgetSettingsPane = ({ workspaceId, workpieceId, initialTitle, tab
         problem={problem}
         bindings={snapshot.status === 'ready' ? snapshot.bindings : { status: 'loading' }}
         services={services}
+        onConnect={onConnect && (() => onConnect(title))}
         onUnbind={(name) => attempt(`remove env.${name}`, () => settings.unbind(name))}
         // Said under the name, which keeps what was typed until it is put right.
         onRenameBinding={async (name, next) => {

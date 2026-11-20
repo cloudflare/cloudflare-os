@@ -157,8 +157,8 @@ const AWAY_AFTER = 1000
  * more, as it goes somewhere rather than growing. Before those are who else is looking at it, more
  * (its own page, reloading it, downloading a file, exporting it, its code on a phone, and its
  * settings, which is where it is made into a template, updated, renamed and deleted), and sharing
- * it where it can be shared (a menu of Invite user and Create template), which goes into more
- * where the header has no room for it, or else a button to copy the link. The header starts with
+ * it where it can be shared (a menu of Invite user and Create template), which goes into more as a
+ * submenu of its own where the header has no room for it, or else a button to copy the link. The header starts with
  * the name of the one shown, which for a gadget goes to its settings.
  *
  * What is shown fills the card under the header, out to its sides and bottom, with rounded top
@@ -299,16 +299,18 @@ export const SidePane = (props: SidePaneProps) => {
                   {codeInMore && (viewingCode
                     ? <DropdownMenu.Item icon={EyeIcon} onSelect={onViewCode}>Show the app</DropdownMenu.Item>
                     : <DropdownMenu.Item icon={CodeIcon} onSelect={onViewCode}>Show the code</DropdownMenu.Item>)}
-                  {shareInMore && <ShareItems onInvite={onInvite} template={template} />}
+                  {shareInMore && (
+                    <DropdownMenu.Submenu label="Share" icon={ShareNetworkIcon}>
+                      <ShareItems onInvite={onInvite} template={template} />
+                    </DropdownMenu.Submenu>
+                  )}
                   {openPage && <DropdownMenu.Item icon={ArrowSquareOutIcon} onSelect={openPage.onOpen}>{openPage.label}</DropdownMenu.Item>}
                   {onReload && <DropdownMenu.Item icon={ArrowClockwiseIcon} onSelect={onReload}>Reload</DropdownMenu.Item>}
                   {onDownload && <DropdownMenu.Item icon={DownloadSimpleIcon} onSelect={onDownload}>Download</DropdownMenu.Item>}
                   {exports && (
                     // Its items are only there while it is open, so that each opening reads what there is again.
                     <DropdownMenu.Submenu label="Export" icon={FileArrowDownIcon}>
-                      <div className="overflow-y-auto overscroll-contain p-1.5">
-                        <ExportItems {...exports} />
-                      </div>
+                      <ExportItems {...exports} />
                     </DropdownMenu.Submenu>
                   )}
                   {onOpenSettings && (openPage || onReload || onDownload || exports || shareInMore || codeInMore) && <DropdownMenu.Separator />}

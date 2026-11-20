@@ -950,9 +950,7 @@ pill, the status groups and the filter have it.
 The filters show only the viewer's
 own (Yours), what needs them, the unread, or their favorites (`chatList.ts`); and which agent runs
 (`ListToolbar`'s `choices`): Action needed, the default, lists a run while it needs someone or is
-starred (one at work does not), and a search looks through them all; All; or None. Under the list,
-"8 more agent runs · Show all" says what Action needed leaves out of what the filters leave, and
-chooses All. Yours is by the starter, so a chat whose first
+starred (one at work does not), and a search looks through them all; All; or None. Yours is by the starter, so a chat whose first
 messages were not read (past the latest 40) is not counted among the viewer's.
 
 Each row (`ChatListItem`) has who it is by: the agent a run is of, in the Workshop's static cloud,
@@ -1379,7 +1377,7 @@ starts with the name of the one shown (`SidePaneTitle`). At its far end: who els
 open, more (its own page, reload, its settings), the Share menu where the one shown can be shared, or else a link
 to copy, full screen, and the arrow. Each of the last two is one thing, in the same place wherever
 the pane is; going to its own page goes somewhere, so it is in more. Where the header is crammed (narrower than `CRAMPED_BELOW`,
-measured, as the menu is drawn outside it) Invite user and Create template are in more instead, first in it, and the name is
+measured, as the menu is drawn outside it) Share is in more instead, first in it as a submenu of Invite user and Create template, and the name is
 left the room. The bar at the top of the surface, in the middle, pushes the
 header up out of the way and pulls it back down (`Grabber`); clicking it does the same. People
 pull down on it whatever it does, so with the header all the way out a tug down stretches the
