@@ -271,14 +271,19 @@ class Printer {
       lines.push(...wrapObject("  headers: ", fields, ";"));
     }
 
-    if (method.body) {
-      const json = method.body.json;
+    // A request cannot be made with a GET's body, so an optional one is left out.
+    const { body } = method;
+    if (body && method.httpMethod.toUpperCase() === "GET") {
+      if (body.required) return { reason: "it requires a request body, which a GET cannot send" };
+    } else if (body) {
+      // Exactly this type, which is the one the client sends: Forge's `json` also takes `+json`.
+      const json = body.contents.find(({ mediaType }) =>
+        mediaType.split(";")[0].trim().toLowerCase() === "application/json");
       if (!json) {
-        const types = method.body.contents.map(content => content.mediaType).join(", ");
-        return { reason: `its request body is not JSON (${types})` };
+        const types = body.contents.map(content => content.mediaType).join(", ");
+        return { reason: `its request body is not \`application/json\` (${types})` };
       }
-      lines.push(...indent(wrap(method.body.required ? "body: " : "body?: ",
-        this.type(json.type, "request"), ";")));
+      lines.push(...indent(wrap(body.required ? "body: " : "body?: ", this.type(json.type, "request"), ";")));
     }
 
     if (method.responses.length === 0) return { reason: "it documents no 2xx response" };

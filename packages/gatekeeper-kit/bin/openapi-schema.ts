@@ -106,19 +106,12 @@ async function list(spec: string, sha256: string | undefined, patchFile: string 
   const doc = await readDocument(spec, sha256);
   if (patchFile !== undefined) applyPatch(doc, JSON.parse(readFileSync(patchFile, "utf8")) as Json, patchFile);
   const text = (value: Json | undefined) => (typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "");
-  const lines: string[] = [];
-  for (const [path, item] of Object.entries(doc.paths as JsonObject).toSorted(([a], [b]) => (a < b ? -1 : 1))) {
-    if (!isObject(item)) continue;
-    for (const method of HTTP_METHODS) {
-      const operation = item[method];
-      if (!isObject(operation)) continue;
-      const tag = Array.isArray(operation.tags) ? operation.tags[0] : undefined;
-      lines.push(JSON.stringify({
-        operationId: text(operation.operationId), method: method.toUpperCase(), path,
-        tag: text(tag), summary: text(operation.summary),
-      }));
-    }
-  }
+  const lines = [...operations(doc)]
+    .toSorted(([, , , a], [, , , b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([, method, operation, path]) => JSON.stringify({
+      operationId: text(operation.operationId), method: method.toUpperCase(), path,
+      tag: text(Array.isArray(operation.tags) ? operation.tags[0] : undefined), summary: text(operation.summary),
+    }));
   process.stdout.write(`${lines.join("\n")}\n`);
 }
 
@@ -166,7 +159,33 @@ async function readDocument(spec: string, sha256: string | undefined): Promise<J
   }
   const parsed = JSON.parse(text) as Json;
   if (!isObject(parsed) || !isObject(parsed.paths)) fail(`${spec} is not an OpenAPI document`);
+  inlinePathItems(parsed);
   return parsed;
+}
+
+/** What the JSON Pointer of `ref`, a `$ref` into `document`, names. */
+function pointee(document: JsonObject, ref: string): Json | undefined {
+  let value: Json | undefined = document;
+  for (const segment of ref.slice(2).split("/")) {
+    const key = segment.replaceAll("~1", "/").replaceAll("~0", "~");
+    value = Array.isArray(value) ? value[Number(key)] : isObject(value) ? value[key] : undefined;
+  }
+  return value;
+}
+
+/**
+ * Replaces each path item that is a `$ref` with a copy of the one it names, so that every step
+ * that reads a path's operations finds them. Forge follows such a `$ref`; nothing here would.
+ */
+function inlinePathItems(document: JsonObject): void {
+  const paths = document.paths as JsonObject;
+  for (const [path, item] of Object.entries(paths)) {
+    if (!isObject(item) || typeof item.$ref !== "string") continue;
+    const { $ref, ...own } = item;
+    const named = $ref.startsWith("#/") ? pointee(document, $ref) : undefined;
+    if (!isObject(named) || "$ref" in named) fail(`${path} is a $ref to "${$ref}", which is not a path item of the document`);
+    paths[path] = { ...structuredClone(named), ...own };
+  }
 }
 
 /**
@@ -370,21 +389,13 @@ function isInnerRef(ref: string): boolean {
  * points to. Forge follows `$ref`s to whole components and into `components.schemas` only.
  */
 function inlineInnerRefs(document: JsonObject): void {
-  const target = (ref: string): Json | undefined => {
-    let value: Json | undefined = document;
-    for (const segment of ref.slice(2).split("/")) {
-      const key = segment.replaceAll("~1", "/").replaceAll("~0", "~");
-      value = Array.isArray(value) ? value[Number(key)] : isObject(value) ? value[key] : undefined;
-    }
-    return value;
-  };
   const inline = (value: Json, inlining: readonly string[]): Json => {
     if (Array.isArray(value)) return value.map(item => inline(item, inlining));
     if (!isObject(value)) return value;
     const ref = value.$ref;
     if (typeof ref === "string" && isInnerRef(ref)) {
       if (inlining.includes(ref)) fail(`$ref "${ref}" refers to itself`);
-      const resolved = target(ref);
+      const resolved = pointee(document, ref);
       if (resolved === undefined) fail(`$ref "${ref}" points to nothing`);
       return inline(structuredClone(resolved), [...inlining, ref]);
     }
@@ -502,8 +513,11 @@ function checkOperations(document: JsonObject, dir: string, operationsFile: stri
 /** Replaces the generated files in `out` with those in `staging`. */
 function replaceOutput(staging: string, out: string): void {
   if (existsSync(out)) {
-    for (const path of filesIn(out)) {
-      if (!readFileSync(path, "utf8").startsWith(GENERATED_PREAMBLE)) {
+    // Every entry the removal below deletes: a link or a socket is no more generated than a file.
+    for (const entry of readdirSync(out, { recursive: true, withFileTypes: true })) {
+      if (entry.isDirectory()) continue;
+      const path = join(entry.parentPath, entry.name);
+      if (!entry.isFile() || !readFileSync(path, "utf8").startsWith(GENERATED_PREAMBLE)) {
         fail(`${relative(process.cwd(), path)} was not generated; the output directory must hold ` +
           "only generated files");
       }
