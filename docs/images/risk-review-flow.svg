@@ -13,8 +13,8 @@
   <!-- Column labels -->
   <g font-size="12" font-weight="600" fill="#64748B">
     <text x="40" y="104">Pull request</text>
-    <text x="240" y="104">Producers: one JSON artifact each, they post nothing</text>
-    <text x="600" y="104">The gate (this PR)</text>
+    <text x="240" y="104">Producers: JSON artifacts only, they post nothing</text>
+    <text x="600" y="104">The gate</text>
   </g>
 
   <!-- Pull request -->
@@ -26,19 +26,15 @@
   <g font-size="13" fill="#334155">
     <rect x="240" y="116" width="310" height="58" rx="10" fill="#F5F3FF" stroke="#7C3AED" stroke-width="1.5"/>
     <text x="256" y="140" font-size="14" font-weight="600" fill="#4C1D95">Review verdicts</text>
-    <text x="256" y="160">Bonk (Sol) and Opus score it 0 to 10 (#972)</text>
+    <text x="256" y="160">Bonk and Opus each score it 0 to 10</text>
 
-    <rect x="240" y="186" width="310" height="58" rx="10" fill="#FFFBEB" stroke="#D97706" stroke-width="1.5"/>
-    <text x="256" y="210" font-size="14" font-weight="600" fill="#78350F">Automerge proofs</text>
-    <text x="256" y="230">Rung 1 checks that run no PR code (#987)</text>
+    <rect x="240" y="209" width="310" height="58" rx="10" fill="#FFFBEB" stroke="#D97706" stroke-width="1.5"/>
+    <text x="256" y="233" font-size="14" font-weight="600" fill="#78350F">Automerge proofs</text>
+    <text x="256" y="253">The dependency proof; runs no PR code</text>
 
-    <rect x="240" y="256" width="310" height="58" rx="10" fill="#FFFBEB" stroke="#D97706" stroke-width="1.5"/>
-    <text x="256" y="280" font-size="14" font-weight="600" fill="#78350F">Automerge evidence</text>
-    <text x="256" y="300">Builds the PR, holds no secret (#987)</text>
-
-    <rect x="240" y="326" width="310" height="58" rx="10" fill="#F8FAFC" stroke="#64748B" stroke-width="1.5"/>
-    <text x="256" y="350" font-size="14" font-weight="600">Workshop eval comparison</text>
-    <text x="256" y="370">Eval results, report-only for now</text>
+    <rect x="240" y="302" width="310" height="58" rx="10" fill="#FFFBEB" stroke="#D97706" stroke-width="1.5"/>
+    <text x="256" y="326" font-size="14" font-weight="600" fill="#78350F">Automerge evidence</text>
+    <text x="256" y="346">Builds and tests the PR, holds no secret</text>
 
     <rect x="240" y="396" width="310" height="58" rx="10" fill="#FFFFFF" stroke="#94A3B8" stroke-width="1.5" stroke-dasharray="5 4"/>
     <text x="256" y="420" font-size="14" font-weight="600">Wake-ups</text>
@@ -48,19 +44,17 @@
   <!-- Pull request to producers -->
   <g stroke="#64748B" stroke-width="1.5" fill="none" marker-end="url(#arrow)">
     <path d="M190,286 C214,286 214,145 238,145"/>
-    <path d="M190,286 C214,286 214,215 238,215"/>
-    <path d="M190,286 C214,286 214,285 238,285"/>
-    <path d="M190,286 C214,286 214,355 238,355"/>
+    <path d="M190,286 C214,286 214,238 238,238"/>
+    <path d="M190,286 C214,286 214,331 238,331"/>
     <path d="M190,286 C214,286 214,425 238,425" stroke-dasharray="4 3"/>
   </g>
 
   <!-- Producers to gate -->
   <g stroke="#64748B" stroke-width="1.5" fill="none" marker-end="url(#arrow)">
     <path d="M550,145 C575,145 575,268 598,268"/>
-    <path d="M550,215 C575,215 575,276 598,276"/>
-    <path d="M550,285 C575,285 575,284 598,284"/>
-    <path d="M550,355 C575,355 575,292 598,292"/>
-    <path d="M550,425 C575,425 575,300 598,300" stroke-dasharray="4 3"/>
+    <path d="M550,238 C575,238 575,279 598,279"/>
+    <path d="M550,331 C575,331 575,290 598,290"/>
+    <path d="M550,425 C575,425 575,301 598,301" stroke-dasharray="4 3"/>
   </g>
 
   <!-- Gate -->
@@ -70,7 +64,7 @@
   <g font-size="13" fill="#334155">
     <rect x="616" y="172" width="288" height="62" rx="8" fill="#FFFFFF" stroke="#93C5FD" stroke-width="1.5"/>
     <text x="630" y="195" font-weight="600">1  Read policy at the base commit</text>
-    <text x="648" y="215" fill="#64748B">maintainers, bands, recent escapes</text>
+    <text x="648" y="215" fill="#64748B">maintainers, rung switches, recent escapes</text>
 
     <rect x="616" y="242" width="288" height="62" rx="8" fill="#FFFFFF" stroke="#93C5FD" stroke-width="1.5"/>
     <text x="630" y="265" font-weight="600">2  Rate the change</text>
@@ -82,7 +76,7 @@
 
     <rect x="616" y="382" width="288" height="62" rx="8" fill="#FFFFFF" stroke="#93C5FD" stroke-width="1.5"/>
     <text x="630" y="405" font-weight="600">4  Decide: could it merge alone?</text>
-    <text x="648" y="425" fill="#64748B">CI, gate, auth, release: always a person</text>
+    <text x="648" y="425" fill="#64748B">a proof, or both reviewers on low risk</text>
   </g>
 
   <!-- Gate to results -->
@@ -100,7 +94,7 @@
   </g>
 
   <rect x="765" y="492" width="155" height="104" rx="10" fill="#FFFFFF" stroke="#94A3B8" stroke-width="1.5" stroke-dasharray="5 4"/>
-  <text x="842" y="516" font-size="13" font-weight="600" fill="#64748B" text-anchor="middle">Later, per band</text>
+  <text x="842" y="516" font-size="13" font-weight="600" fill="#64748B" text-anchor="middle">Later: a rung on</text>
   <g font-size="12" fill="#64748B" text-anchor="middle">
     <text x="842" y="538">The App approves and</text>
     <text x="842" y="555">queues the PR; the</text>
