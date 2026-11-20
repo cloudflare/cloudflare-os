@@ -496,8 +496,9 @@ export class TestHooks extends DurableObject<Env> {
 
   /** In one session: read the tab's drawing, then a font of `family`. Returns why it was refused. */
   async readFont(facetName: string, tabId: string, family: string): Promise<string | undefined> {
-    return this.#withSession(facetName, async session => {
-      await (session as GoogleDocSession & GoogleDocRenderingReads).readDrawing(tabId);
+    return this.#withSession(facetName, async opened => {
+      let session = opened as GoogleDocSession & GoogleDocRenderingReads;
+      await session.readDrawing(tabId);
       return session.readFont(family, 400, false).then(() => undefined, (error: Error) => error.message);
     });
   }
