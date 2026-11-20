@@ -1651,7 +1651,7 @@ export async function runAgent(
     }
     if (outcome.type === "compacted") hooks.commitChatCompaction(chatId, outcome.checkpoint);
     if (outcome.type === "finished") return outcome.lastRequest;
-    if (isCompactionTurn(history.chatMessages)) return undefined;
+    if (isCompactionTurn(history.chatMessages.toReversed())) return undefined;
     abortSignal.throwIfAborted();
   }
 }
@@ -2977,8 +2977,11 @@ async function runAgentPass(
       }
 
       case "agentNudge":
-        // A decision resume's durable handoff, without impersonating a new user prompt.
-        modelMessages.push({ role: "user", content: msg.text, timestamp: msgTimestamp });
+        // A decision resume's durable handoff, without impersonating a new user prompt. A nudge
+        // without text only marks a recovery boundary.
+        if (msg.text !== undefined) {
+          modelMessages.push({ role: "user", content: msg.text, timestamp: msgTimestamp });
+        }
         break;
 
       case "connectionRequest": {
@@ -4525,7 +4528,7 @@ async function runAgentPass(
 
   // Compaction runs once the tools exist, because Anthropic summarizes the request a turn would
   // send. Defining the tools has no effects, so nothing has acted when a `/compact` turn returns.
-  let compactionTurn = isCompactionTurn(chatMessages);
+  let compactionTurn = isCompactionTurn(chatMessages.toReversed());
   if (compactionTurn || shouldCompactChat(contextTokens, inputBudget)) {
     let compactedTo = findCompactionBoundary(
         projection, inputBudget, contextTokens,
