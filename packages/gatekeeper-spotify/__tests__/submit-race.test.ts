@@ -3,7 +3,9 @@
 // before it returns, as the overseer's auto-approval drain may.
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("cloudflare:workers", () => ({
+vi.mock("cloudflare:workers", async importOriginal => ({
+  // The shared stub's `env`, which the metrics read their bindings from.
+  ...await importOriginal<typeof import("cloudflare:workers")>(),
   DurableObject: class { constructor(public ctx: unknown, public env: unknown) {} },
   RpcTarget: class {},
   WorkerEntrypoint: class {},
@@ -123,5 +125,119 @@ describe("submitActionForApproval when the action is applied before the reply", 
     const queue = { submitAction: async () => { throw new Error("queue gone"); } } as never;
     await expect(gk.submitActionForApproval(queue, action, presentation)).rejects.toThrow("queue gone");
     expect(kv.has(`action:${action.approvalId}`)).toBe(false);
+  });
+});
+
+// The requests that create a playlist, of those a stubbed fetch was handed.
+const creations = (fetch: { mock: { calls: unknown[][] } }) =>
+  fetch.mock.calls.filter(([url, init]) =>
+    String(url) === "https://api.spotify.com/v1/me/playlists" && (init as RequestInit).method === "POST");
+
+describe("applying a playlist's creation that Spotify answers without naming the playlist", () => {
+  const UNKNOWN = "Spotify answered this playlist's creation without naming the playlist, so the playlist may or " +
+    "may not have been created. This action is not sent again, which could create a second one: " +
+    "check Spotify, then discard this action.";
+  const waiting = { submitAction: async () => {} } as never;
+  const creation = { title: "Create playlist", implementsRevert: true };
+
+  it.each<[string, () => Response]>([
+    ["a body cut short", () => new Response('{"id":', { status: 201, headers: { "Content-Type": "application/json" } })],
+    ["a body whose stream fails", () => new Response(new ReadableStream({
+      start(controller) { controller.error(new Error("connection reset")); },
+    }), { status: 201, headers: { "Content-Type": "application/json" } })],
+  ])("fails the action with an unknown outcome where its success holds %s, and never sends the creation again", async (_what, answer) => {
+    const fetch = vi.fn(async (_url: string, _init: RequestInit) => answer());
+    vi.stubGlobal("fetch", fetch);
+    const { gk, kv } = gatekeeper();
+    const action = gk.preparePlaylistCreate("Mix");
+    await gk.submitActionForApproval(waiting, action, creation);
+
+    await expect(gk.applyAction(action.approvalId)).rejects.toThrow(UNKNOWN);
+    await expect(gk.applyAction(action.approvalId)).rejects.toThrow(UNKNOWN);
+    expect(creations(fetch)).toHaveLength(1);
+    expect(kv.get(`action:${action.approvalId}`)).toMatchObject({ state: "failed", outcomeUnknown: UNKNOWN });
+  });
+
+  it.each([["no id", {}], ["an empty id", { id: "" }]])(
+    "fails the action with an unknown outcome where the answer holds %s, and never sends the creation again", async (_what, body) => {
+      const fetch = vi.fn(async (_url: string, _init: RequestInit) => Response.json(body));
+      vi.stubGlobal("fetch", fetch);
+      const { gk, kv } = gatekeeper();
+      const action = gk.preparePlaylistCreate("Mix");
+      await gk.submitActionForApproval(waiting, action, creation);
+
+      await expect(gk.applyAction(action.approvalId)).rejects.toThrow(UNKNOWN);
+      expect(kv.get(`action:${action.approvalId}`)).toMatchObject({ state: "failed", outcomeUnknown: UNKNOWN });
+      // No playlist is bound to the provisional id: none was named.
+      expect(kv.has(`provisional:${action.provisionalId}`)).toBe(false);
+      expect(creations(fetch)).toHaveLength(1);
+
+      // A failed apply is retried by applying it again, which sends nothing for this one.
+      await expect(gk.applyAction(action.approvalId)).rejects.toThrow(UNKNOWN);
+      await expect(gk.applyAction(action.approvalId)).rejects.toThrow(UNKNOWN);
+      expect(creations(fetch)).toHaveLength(1);
+      expect(kv.get(`action:${action.approvalId}`)).toMatchObject({ state: "failed", outcomeUnknown: UNKNOWN });
+
+      // Discarding it is the way out.
+      await expect(gk.rejectAction(action.approvalId)).resolves.toEqual({ restart: true });
+      expect(kv.has(`action:${action.approvalId}`)).toBe(false);
+      expect(kv.get(`retiredAction:${action.approvalId}`)).toMatchObject({ state: "rejected" });
+      expect(creations(fetch)).toHaveLength(1);
+    });
+
+  it("refuses an action on the playlist once its creation's outcome is unknown, and submits nothing", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({})));
+    const { gk, kv } = gatekeeper();
+    const create = gk.preparePlaylistCreate("Mix");
+    await gk.submitActionForApproval(waiting, create, creation);
+    await expect(gk.applyAction(create.approvalId)).rejects.toThrow(UNKNOWN);
+    const submitted: number[] = [];
+    const queue = { submitAction: async (id: number) => void submitted.push(id) } as never;
+
+    for (const action of [
+      gk.preparePlaylistAdd(create.provisionalId, ["spotify:track:1"]),
+      gk.preparePlaylistFollow(create.provisionalId),
+      gk.preparePlaylistUnfollow(create.provisionalId),
+    ]) {
+      await expect(gk.submitActionForApproval(queue, action, { title: "On it", implementsRevert: true }))
+        .rejects.toThrow("whether it exists is unknown");
+      expect(kv.has(`action:${action.approvalId}`)).toBe(false);
+    }
+    expect(submitted).toEqual([]);
+    // The creation's record is kept for its discard.
+    expect(kv.get(`action:${create.approvalId}`)).toMatchObject({ state: "failed", outcomeUnknown: UNKNOWN });
+  });
+
+  it("binds the playlist Spotify names, and records it for the undo", async () => {
+    const fetch = vi.fn(async (_url: string, _init: RequestInit) => Response.json({ id: "p1" }));
+    vi.stubGlobal("fetch", fetch);
+    const { gk, kv } = gatekeeper();
+    const action = gk.preparePlaylistCreate("Mix");
+    await gk.submitActionForApproval(waiting, action, creation);
+
+    await expect(gk.applyAction(action.approvalId)).resolves.toBeUndefined();
+    expect(kv.get(`provisional:${action.provisionalId}`)).toEqual({ realId: "p1" });
+    expect(kv.get(`retiredAction:${action.approvalId}`))
+      .toMatchObject({ state: "approved", revert: { kind: "playlistCreate", realId: "p1" } });
+    expect(creations(fetch)).toHaveLength(1);
+  });
+
+  it("keeps a creation that Spotify refused retryable: a refusal creates nothing", async () => {
+    let down = true;
+    const fetch = vi.fn(async (_url: string, _init: RequestInit) =>
+      down ? new Response("down", { status: 503 }) : Response.json({ id: "p1" }));
+    vi.stubGlobal("fetch", fetch);
+    const { gk, kv } = gatekeeper();
+    const action = gk.preparePlaylistCreate("Mix");
+    await gk.submitActionForApproval(waiting, action, creation);
+
+    await expect(gk.applyAction(action.approvalId)).rejects.toThrow("down");
+    const failed = kv.get(`action:${action.approvalId}`);
+    expect(failed).toMatchObject({ state: "failed" });
+    expect(failed).not.toHaveProperty("outcomeUnknown");
+
+    down = false;
+    await expect(gk.applyAction(action.approvalId)).resolves.toBeUndefined();
+    expect(creations(fetch)).toHaveLength(2);
   });
 });

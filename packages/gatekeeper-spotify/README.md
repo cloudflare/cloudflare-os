@@ -98,6 +98,7 @@ You can see and manage connected accounts in settings (via the account menu in t
 - **Spotify Connect quirks.** Some third-party Connect endpoints (e.g. Music Assistant) can be
   invisible to `getDevices()` and `getState().device` may misidentify the active device; confirm
   device transfers with a follow-up `getState()`.
+- **Upstream calls.** `src/spotify-api.ts` sends every request through one upstream client, whose calls are counted as [subservice metrics](../observability/README.md#subservice-calls) under the source `gatekeeper.spotify.api`, each under a name from the route tree and name lists in `src/spotify-upstream.ts`. A code's exchange answered a success without a refresh token is counted an error.
 
 ## Troubleshooting
 

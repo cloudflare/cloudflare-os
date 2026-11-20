@@ -27,7 +27,9 @@ import { clearCredentialExpiryLatch, notifyCredentialsExpiredOnce } from "@gadge
 import {
   SpotifyApi,
   SpotifyApiError,
+  SpotifyUnnamedCreationError,
   exchangeAuthCode,
+  isRefreshToken,
   refreshAccessToken,
   type SpotifyAlbumResponse,
   type SpotifyArtistResponse,
@@ -38,6 +40,7 @@ import {
   type SpotifyTrackResponse,
   type SpotifyUserResponse,
 } from "./spotify-api";
+import { spotifyUpstream } from "./spotify-upstream";
 import type {
   SpotifyAccountSession,
   SpotifyAlbumRef,
@@ -583,7 +586,7 @@ export class UserAccount extends DurableObject<Env> {
     }
 
     const grant = await exchangeAuthCode(code, this.env.CLIENT_ID, this.env.CLIENT_SECRET, `${getBaseUrl(this.env)}/oauth`);
-    if (!grant.refreshToken) {
+    if (!isRefreshToken(grant.refreshToken)) {
       throw new Error("Spotify did not return a refresh token.");
     }
 
@@ -985,7 +988,25 @@ type StoredActionRecord = {
   appliedAt?: number;
   rejectedAt?: number;
   revert?: RevertInfo;
+  /**
+   * Set on a failed record whose write Spotify answered in a way that leaves unknown whether it
+   * took effect: what applying it threw. Such a record is not applied again, which could repeat
+   * the write. It stays failed, and every later apply throws this, until the user discards it.
+   */
+  outcomeUnknown?: string;
 };
+
+// What applying a playlist's creation throws where Spotify's answer named no playlist.
+// What submitting an action throws where its playlist is one whose creation's outcome is unknown.
+const DEPENDS_ON_UNKNOWN_PLAYLIST =
+  "This playlist's creation was answered without naming the playlist, so whether it exists is " +
+  "unknown and nothing more can be queued on it: check Spotify, discard that creation, and work " +
+  "on the playlist it made, if it made one.";
+
+const PLAYLIST_CREATE_OUTCOME_UNKNOWN =
+  "Spotify answered this playlist's creation without naming the playlist, so the playlist may or " +
+  "may not have been created. This action is not sent again, which could create a second one: " +
+  "check Spotify, then discard this action.";
 
 // A track as it sits in a (possibly simulated) playlist.
 type PlaylistEntry = {
@@ -1293,6 +1314,16 @@ export class SpotifyGatekeeperImpl extends DurableObject<Env, SpotifyGatekeeperI
 
   #provisionalKey(provisionalId: string): string { return `provisional:${provisionalId}`; }
 
+  // Whether `playlistId` is the provisional playlist of a creation whose outcome is unknown. Its
+  // record is kept, failed, for its discard.
+  #creationOutcomeUnknown(playlistId: string): boolean {
+    for (const [, record] of this.ctx.storage.kv.list<StoredActionRecord>({ prefix: "action:" })) {
+      if (record.outcomeUnknown !== undefined && record.action.type === "playlistCreate" &&
+          record.action.provisionalId === playlistId) return true;
+    }
+    return false;
+  }
+
   // Resolve a logical playlist id (real, or a "~N" provisional) to its real Spotify id, or
   // undefined if it is a provisional playlist whose create action hasn't been applied yet.
   #resolveRealPlaylistId(logicalId: string): string | undefined {
@@ -1341,31 +1372,34 @@ export class SpotifyGatekeeperImpl extends DurableObject<Env, SpotifyGatekeeperI
   }
 
   async #materializePlaylistEntries(realId: string): Promise<PlaylistEntry[]> {
-    // Fetch the first page to learn the total, then fetch the remaining pages with bounded
-    // concurrency (rather than one-at-a-time) to cut latency on large playlists.
-    let first;
-    try {
-      first = await this.#withApi(api => api.listPlaylistItems(realId, 50, 0));
-    } catch (error) {
-      // Spotify withholds contents (403) for playlists the user doesn't own/collaborate on.
-      if (error instanceof SpotifyApiError && error.status === 403) return [];
-      throw error;
-    }
-    const entries = (first.items ?? []).map(item => this.#toPlaylistEntry(item));
-    const total = Math.min(first.total ?? entries.length, PLAYLIST_MATERIALIZE_CAP);
-
-    const offsets: number[] = [];
-    for (let offset = 50; offset < total; offset += 50) offsets.push(offset);
-
-    for (let i = 0; i < offsets.length; i += PLAYLIST_FETCH_CONCURRENCY) {
-      const batch = offsets.slice(i, i + PLAYLIST_FETCH_CONCURRENCY);
-      const pages = await Promise.all(
-        batch.map(offset => this.#withApi(api => api.listPlaylistItems(realId, 50, offset))));
-      for (const page of pages) {
-        for (const item of page.items ?? []) entries.push(this.#toPlaylistEntry(item));
+    // One request for each page of the playlist: their calls are summed.
+    return await spotifyUpstream.summed(async () => {
+      // Fetch the first page to learn the total, then fetch the remaining pages with bounded
+      // concurrency (rather than one-at-a-time) to cut latency on large playlists.
+      let first;
+      try {
+        first = await this.#withApi(api => api.listPlaylistItems(realId, 50, 0));
+      } catch (error) {
+        // Spotify withholds contents (403) for playlists the user doesn't own/collaborate on.
+        if (error instanceof SpotifyApiError && error.status === 403) return [];
+        throw error;
       }
-    }
-    return entries;
+      const entries = (first.items ?? []).map(item => this.#toPlaylistEntry(item));
+      const total = Math.min(first.total ?? entries.length, PLAYLIST_MATERIALIZE_CAP);
+
+      const offsets: number[] = [];
+      for (let offset = 50; offset < total; offset += 50) offsets.push(offset);
+
+      for (let i = 0; i < offsets.length; i += PLAYLIST_FETCH_CONCURRENCY) {
+        const batch = offsets.slice(i, i + PLAYLIST_FETCH_CONCURRENCY);
+        const pages = await Promise.all(
+          batch.map(offset => this.#withApi(api => api.listPlaylistItems(realId, 50, offset))));
+        for (const page of pages) {
+          for (const item of page.items ?? []) entries.push(this.#toPlaylistEntry(item));
+        }
+      }
+      return entries;
+    });
   }
 
   #pendingPlaylistTrackActions(logicalId: string): PlaylistTrackAction[] {
@@ -1415,6 +1449,8 @@ export class SpotifyGatekeeperImpl extends DurableObject<Env, SpotifyGatekeeperI
 
   #playlistCountKey(realId: string): string { return `plcount:${realId}`; }
 
+  // One request for each track or album resolved, here and in the two methods below: their calls
+  // are summed.
   async #resolveTrackMetaByUri(uris: Iterable<string>): Promise<Map<string, SpotifyTrack>> {
     const meta = new Map<string, SpotifyTrack>();
     const ids: string[] = [];
@@ -1423,28 +1459,34 @@ export class SpotifyGatekeeperImpl extends DurableObject<Env, SpotifyGatekeeperI
       const id = trackUriToId(uri);
       if (id && !seen.has(id)) { seen.add(id); ids.push(id); }
     }
-    for (let i = 0; i < ids.length; i += METADATA_CHUNK) {
-      const tracks = await this.#withApi(api => api.getTracks(ids.slice(i, i + METADATA_CHUNK)));
-      for (const track of tracks) if (track) meta.set(track.uri, normalizeTrack(track));
-    }
+    await spotifyUpstream.summed(async () => {
+      for (let i = 0; i < ids.length; i += METADATA_CHUNK) {
+        const tracks = await this.#withApi(api => api.getTracks(ids.slice(i, i + METADATA_CHUNK)));
+        for (const track of tracks) if (track) meta.set(track.uri, normalizeTrack(track));
+      }
+    });
     return meta;
   }
 
   async #resolveTracksById(ids: string[]): Promise<Map<string, SpotifyTrack>> {
     const meta = new Map<string, SpotifyTrack>();
-    for (let i = 0; i < ids.length; i += METADATA_CHUNK) {
-      const tracks = await this.#withApi(api => api.getTracks(ids.slice(i, i + METADATA_CHUNK)));
-      for (const track of tracks) if (track) meta.set(track.id, normalizeTrack(track));
-    }
+    await spotifyUpstream.summed(async () => {
+      for (let i = 0; i < ids.length; i += METADATA_CHUNK) {
+        const tracks = await this.#withApi(api => api.getTracks(ids.slice(i, i + METADATA_CHUNK)));
+        for (const track of tracks) if (track) meta.set(track.id, normalizeTrack(track));
+      }
+    });
     return meta;
   }
 
   async #resolveAlbumsById(ids: string[]): Promise<Map<string, SpotifyAlbumRef>> {
     const meta = new Map<string, SpotifyAlbumRef>();
-    for (let i = 0; i < ids.length; i += METADATA_CHUNK) {
-      const albums = await this.#withApi(api => api.getAlbums(ids.slice(i, i + METADATA_CHUNK)));
-      for (const album of albums) if (album) meta.set(album.id, normalizeAlbumRef(album));
-    }
+    await spotifyUpstream.summed(async () => {
+      for (let i = 0; i < ids.length; i += METADATA_CHUNK) {
+        const albums = await this.#withApi(api => api.getAlbums(ids.slice(i, i + METADATA_CHUNK)));
+        for (const album of albums) if (album) meta.set(album.id, normalizeAlbumRef(album));
+      }
+    });
     return meta;
   }
 
@@ -1655,11 +1697,14 @@ export class SpotifyGatekeeperImpl extends DurableObject<Env, SpotifyGatekeeperI
     // all queued edits on the provisional playlist (not just the initial adds).
     const owner = await this.#currentUserRef();
     const synth: SpotifyPlaylistSummary[] = [];
-    for (const create of creates) {
-      const summary = this.#applyDetailsOverlay(create.provisionalId, this.#synthCreatedSummary(create));
-      const entries = await this.#effectivePlaylistEntries(create.provisionalId, undefined);
-      synth.push({ ...summary, owner, trackCount: entries.length });
-    }
+    // One lookup of tracks for each pending create with queued adds: their calls are summed.
+    await spotifyUpstream.summed(async () => {
+      for (const create of creates) {
+        const summary = this.#applyDetailsOverlay(create.provisionalId, this.#synthCreatedSummary(create));
+        const entries = await this.#effectivePlaylistEntries(create.provisionalId, undefined);
+        synth.push({ ...summary, owner, trackCount: entries.length });
+      }
+    });
     synth.reverse();
     // Prepend pending creates on the first page WITHOUT slicing — slicing here would silently drop
     // the tail real playlists (they'd never reappear, since page 2 starts at real offset = lim).
@@ -1834,6 +1879,11 @@ export class SpotifyGatekeeperImpl extends DurableObject<Env, SpotifyGatekeeperI
     action: SpotifyAction,
     presentation: { title: string; implementsRevert: boolean },
   ): Promise<void> {
+    // A playlist whose creation's outcome is unknown never gets a real id here, so an action on it
+    // could never be applied: it is refused before anything is written or submitted.
+    if ("playlistId" in action && this.#creationOutcomeUnknown(action.playlistId)) {
+      throw new Error(DEPENDS_ON_UNKNOWN_PLAYLIST);
+    }
     this.ctx.storage.kv.put<StoredActionRecord>(this.#actionKey(action.approvalId), { action, state: "staged" });
     try {
       // The text comes from the prepared payload, not the caller, so it always shows what applies.
@@ -1861,20 +1911,26 @@ export class SpotifyGatekeeperImpl extends DurableObject<Env, SpotifyGatekeeperI
   // -------------------------------------------------------------------------
   // Action lifecycle (apply / reject / revert)
 
+  // One request for each chunk of tracks written, here and in the method below: their calls are
+  // summed.
   async #applyAddTracks(realId: string, uris: string[], position?: number): Promise<void> {
-    let pos = position;
-    for (let i = 0; i < uris.length; i += PLAYLIST_WRITE_CHUNK) {
-      const chunk = uris.slice(i, i + PLAYLIST_WRITE_CHUNK);
-      await this.#withApi(api => api.addPlaylistItems(realId, chunk, pos));
-      if (pos !== undefined) pos += chunk.length;
-    }
+    await spotifyUpstream.summed(async () => {
+      let pos = position;
+      for (let i = 0; i < uris.length; i += PLAYLIST_WRITE_CHUNK) {
+        const chunk = uris.slice(i, i + PLAYLIST_WRITE_CHUNK);
+        await this.#withApi(api => api.addPlaylistItems(realId, chunk, pos));
+        if (pos !== undefined) pos += chunk.length;
+      }
+    });
   }
 
   async #setPlaylistTracks(realId: string, uris: string[]): Promise<void> {
-    await this.#withApi(api => api.replacePlaylistItems(realId, uris.slice(0, PLAYLIST_WRITE_CHUNK)));
-    for (let i = PLAYLIST_WRITE_CHUNK; i < uris.length; i += PLAYLIST_WRITE_CHUNK) {
-      await this.#withApi(api => api.addPlaylistItems(realId, uris.slice(i, i + PLAYLIST_WRITE_CHUNK)));
-    }
+    await spotifyUpstream.summed(async () => {
+      await this.#withApi(api => api.replacePlaylistItems(realId, uris.slice(0, PLAYLIST_WRITE_CHUNK)));
+      for (let i = PLAYLIST_WRITE_CHUNK; i < uris.length; i += PLAYLIST_WRITE_CHUNK) {
+        await this.#withApi(api => api.addPlaylistItems(realId, uris.slice(i, i + PLAYLIST_WRITE_CHUNK)));
+      }
+    });
   }
 
   async #applyPlayerCommand(command: PlayerCommand): Promise<void> {
@@ -1910,6 +1966,9 @@ export class SpotifyGatekeeperImpl extends DurableObject<Env, SpotifyGatekeeperI
     // The overseer records completion only after this returns, so an apply that already ran can be
     // delivered again after a lost reply or a restart; it has nothing left to do.
     if (record.state === "approved") return;
+    // An apply that left its outcome unknown is the exception to the retry below: its write may
+    // have taken effect, and applying it again could repeat it.
+    if (record.state === "failed" && record.outcomeUnknown !== undefined) throw new Error(record.outcomeUnknown);
     // "failed" is retryable (a prior apply threw); the overseer may call applyAction again.
     if (record.state !== "pending" && record.state !== "staged" && record.state !== "failed") {
       throw new Error(`Spotify action ${actionId} is no longer pending.`);
@@ -1926,6 +1985,7 @@ export class SpotifyGatekeeperImpl extends DurableObject<Env, SpotifyGatekeeperI
     } catch (error) {
       // Apply failed (and won't take effect on Spotify). Mark it failed so its simulated effect
       // stops masking real library/follow/playlist state, while keeping it retryable/discardable.
+      // One whose handler marked its outcome unknown is kept discardable alone.
       record.state = "failed";
       this.ctx.storage.kv.put(this.#actionKey(actionId), record);
       this.#invalidatePendingCache();
@@ -1950,7 +2010,13 @@ export class SpotifyGatekeeperImpl extends DurableObject<Env, SpotifyGatekeeperI
           description: action.description,
           public: action.public,
           collaborative: action.collaborative,
-        }));
+        })).catch((error: unknown) => {
+          if (!(error instanceof SpotifyUnnamedCreationError)) throw error;
+          // The creation was sent and answered a success that names no playlist: one may exist.
+          // The record is marked so that no later apply sends the creation a second time.
+          record.outcomeUnknown = PLAYLIST_CREATE_OUTCOME_UNKNOWN;
+          throw new Error(PLAYLIST_CREATE_OUTCOME_UNKNOWN, { cause: error });
+        });
         this.ctx.storage.kv.put(this.#provisionalKey(action.provisionalId), { realId: created.id });
         record.revert = { kind: "playlistCreate", realId: created.id };
         break;
