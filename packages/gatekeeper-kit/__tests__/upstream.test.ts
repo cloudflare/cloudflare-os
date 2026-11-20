@@ -748,9 +748,7 @@ describe("retry", () => {
       ["2", {}, 2_000],
       [" 3 ", {}, 3_000],
       ["0", {}, 0],
-      ["60", {}, 10_000],
-      ["60", { maxDelayMs: 300 }, 300],
-      ["9".repeat(400), {}, 10_000],
+      ["10", {}, 10_000],
       // What is neither a count of seconds nor a date leaves the backoff: half of 500 ms.
       ["-5", {}, 250],
       ["1.5", {}, 250],
@@ -771,19 +769,15 @@ describe("retry", () => {
     it.each<[string, string, RetryPolicy, number]>([
       ["a date to come", "Wed, 21 Oct 2026 07:28:04 GMT", {}, 4_000],
       ["a date to come, in spaces", "  Wed, 21 Oct 2026 07:28:04 GMT ", {}, 4_000],
-      ["a date past the longest delay", "Wed, 21 Oct 2026 08:28:00 GMT", {}, 10_000],
-      ["a date past a policy's longest delay", "Thu, 22 Oct 2026 07:28:00 GMT", { maxDelayMs: 300 }, 300],
+      ["a date at the longest delay", "Wed, 21 Oct 2026 07:28:10 GMT", {}, 10_000],
       ["the date of the moment", "Wed, 21 Oct 2026 07:28:00 GMT", {}, 0],
       ["a date that is past", "Wed, 21 Oct 2026 07:27:59 GMT", {}, 0],
       ["a date long past", "Sun, 06 Nov 1994 08:49:37 GMT", {}, 0],
-      ["a leap day", "Tue, 29 Feb 2028 07:28:04 GMT", {}, 10_000],
       // The two obsolete forms of an HTTP date.
       ["a date in the RFC 850 form", "Wednesday, 21-Oct-26 07:28:04 GMT", {}, 4_000],
-      ["an RFC 850 date of a later year of the century", "Monday, 21-Oct-30 07:28:04 GMT", {}, 10_000],
       ["an RFC 850 date of a year more than 50 on, read in the century before",
         "Friday, 21-Oct-77 07:28:04 GMT", {}, 0],
       ["a date in the asctime form", "Wed Oct 21 07:28:04 2026", {}, 4_000],
-      ["an asctime date whose day has one digit", "Sun Nov  1 07:28:00 2026", {}, 10_000],
       // The day of the week is not read.
       ["a date under another day of the week", "Mon, 21 Oct 2026 07:28:04 GMT", {}, 4_000],
       // What is no HTTP date leaves the backoff, whatever date it may spell: half of 500 ms.
@@ -858,6 +852,41 @@ describe("retry", () => {
       await vi.advanceTimersByTimeAsync(60_000);
       await thrown;
       expect(gaps(failed)).toEqual([50, 75, 75]);
+    });
+
+    it.each<[string, string, RetryPolicy]>([
+      ["a count of seconds", "60", {}],
+      ["a count under a policy's longest delay", "60", { maxDelayMs: 300 }],
+      ["a count of 400 digits", "9".repeat(400), {}],
+      ["a date past the longest delay", "Wed, 21 Oct 2026 08:28:00 GMT", {}],
+      ["a date past a policy's longest delay", "Thu, 22 Oct 2026 07:28:00 GMT", { maxDelayMs: 300 }],
+      ["a leap day to come", "Tue, 29 Feb 2028 07:28:04 GMT", {}],
+      ["an RFC 850 date of a later year of the century", "Monday, 21-Oct-30 07:28:04 GMT", {}],
+      ["an asctime date whose day has one digit", "Sun Nov  1 07:28:00 2026", {}],
+    ])("sends nothing again where a Retry-After asks for longer than the longest wait: %s", async (_name, retryAfter, retry) => {
+      vi.useFakeTimers({ now: Date.parse("2026-10-21T07:28:00Z") });
+      const refused = new Response(null, { status: 503, headers: { "Retry-After": retryAfter } });
+      const times = sendTimes(() => refused);
+
+      const response = untimed.request(THREAD, { retry });
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      // The answer is the caller's, with its body left to it.
+      expect(await response).toBe(refused);
+      expect(times).toHaveLength(1);
+      expect(outcomes()).toEqual([["error", "http", 503]]);
+    });
+
+    it("leaves a longer Retry-After to a policy that gives its own wait, cut to the longest", async () => {
+      vi.useFakeTimers();
+      const times = sendTimes(send => send === 1
+        ? new Response(null, { status: 503, headers: { "Retry-After": "60" } }) : answer(200));
+
+      const response = untimed.request(THREAD, { retry: { delayMs: () => 30_000 } });
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect((await response).status).toBe(200);
+      expect(gaps(times)).toEqual([10_000]);
     });
 
     it("waits at most as long as a timer takes, whatever the policy and the answer ask for", async () => {
@@ -2355,7 +2384,7 @@ describe("read", () => {
     });
 
     it("leaves unsent a 429 that `retryable` would not send again, whatever wait the answer names", async () => {
-      const times = stalled([429, { "Retry-After": "120" }], answer(200, "payload"));
+      const times = stalled([429, { "Retry-After": "5" }], answer(200, "payload"));
       const retryable = vi.fn(() => false);
 
       const text = expect(upstream.read(THREAD, { retry: { retryable } }, bodyText))
