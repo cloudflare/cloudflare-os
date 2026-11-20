@@ -336,6 +336,27 @@ it('asks for the fonts the drawing is set in, each once, and none the browser ha
   await expect.poll(() => fonts).toEqual([['Open Sans', 400, false], ['Open Sans', 700, false]])
 })
 
+it('asks again, after a while, for a font that could not be read', async () => {
+  const set = drawing([paragraph(0, 'Words')], { textLooks: [{ ...ARIAL, fontFamily: 'Open Sans' }] })
+  const later: (() => void)[] = []
+  let asked = 0
+  const { refresh } = await draw({ savedMarkdown: 'Words\n', drawing: set }, {
+    readFont: async () => {
+      asked++
+      // The frame's wait of a minute is held, to be ended here.
+      const { setTimeout: wait } = frame!.contentWindow!
+      frame!.contentWindow!.setTimeout = ((run: () => void, ms?: number) =>
+        ms === 60_000 ? later.push(run) : wait(run, ms)) as typeof setTimeout
+      throw new Error('Google is busy')
+    },
+  })
+  expect(asked).toBe(1)
+
+  for (const run of later) run()
+  await refresh({ markdown: 'Words\n\nMore\n' })
+  await expect.poll(() => asked).toBe(2)
+})
+
 it('draws a tab again once it is saved anew, though its Markdown reads the same', async () => {
   const set = (fontSize: number) => drawing([paragraph(0, 'Words')], { textLooks: [{ ...ARIAL, fontSize }] })
   const { blocks, look, refresh } = await draw({ savedMarkdown: 'Words\n', drawing: set(11), revisionId: 'a' })
