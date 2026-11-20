@@ -387,8 +387,7 @@ export class ObserverLedger {
         connection, [{id: observerId, verifier}], subresources);
     if (denied.length > 0) {
       throw new Error(
-          "This account can't access some of the data this workspace read through this " +
-          "service.");
+          "Your account can't access some of the data read from this resource.");
     }
   }
 
