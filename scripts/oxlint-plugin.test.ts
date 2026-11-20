@@ -169,6 +169,9 @@ ruleTester.run("new-gatekeeper-observer-contract", plugin.rules["new-gatekeeper-
     "await queue.authorizeObservation({ title, subresources: [] });",
     "await queue.authorizeObservation({ ...observation, subresources: [id] });",
     "await queue.authorizeObservation({ title, subresources });",
+    "await queue.authorizeObservation({ title, \"subresources\": [id] });",
+    // A base class may supply the session and the history; what this one defines is still checked.
+    "class Facet extends Base implements Gatekeeper<Session> {\n  async addObserver(_id: string) {}\n}",
     // A description built elsewhere is checked by its helper's type, not here.
     "await queue.authorizeObservation(observation);",
   ],
@@ -195,6 +198,23 @@ ruleTester.run("new-gatekeeper-observer-contract", plugin.rules["new-gatekeeper-
         { messageId: "observerState", data: { name: "addObserver" } },
         { messageId: "observerState", data: { name: "removeObserver" } },
       ],
+    },
+    {
+      code: "class Facet extends Base implements Gatekeeper<Session> {\n" +
+        "  async addObserver(id: string) { this.observers.add(id); }\n}",
+      errors: [{ messageId: "observerState", data: { name: "addObserver" } }],
+    },
+    {
+      code: "class Facet implements Gatekeeper<Session> {\n  async addObserver(_id: string) {}\n}",
+      errors: [{ messageId: "missingHistory" }],
+    },
+    {
+      code: "await queue.authorizeObservation({ title, subresources: undefined });",
+      errors: [{ messageId: "unreported" }],
+    },
+    {
+      code: "await queue.authorizeObservation({ title, subresources: [], \"excludeObservers\": [id] });",
+      errors: [{ messageId: "excludeObservers" }],
     },
     {
       code: "await this.queue.authorizeObservation({ title: \"Read inbox\" });",

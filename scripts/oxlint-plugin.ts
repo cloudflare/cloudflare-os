@@ -218,6 +218,14 @@ function methodNamed(body: ESTree.ClassBody, name: string): ESTree.MethodDefinit
     member.key.type === "Identifier" && member.key.name === name);
 }
 
+/** The name a property is written under, quoted or not; undefined for a spread or a computed key. */
+function keyName(property: ESTree.Node): string | undefined {
+  if (property.type !== "Property" || property.computed) return undefined;
+  const { key } = property;
+  if (key.type === "Identifier") return key.name;
+  return key.type === "Literal" && typeof key.value === "string" ? key.value : undefined;
+}
+
 const newGatekeeperObserverContract: Rule = {
   meta: {
     type: "problem",
@@ -241,16 +249,21 @@ const newGatekeeperObserverContract: Rule = {
   },
   create(context) {
     return {
-      ClassBody(body) {
+      "ClassDeclaration, ClassExpression"({ body, id, implements: interfaces, superClass }: ESTree.Class) {
         const addObserver = methodNamed(body, "addObserver");
-        if (!methodNamed(body, "startSession") || !addObserver) return;
+        const declared = interfaces?.some(({ expression }) =>
+          expression.type === "Identifier" && expression.name === "Gatekeeper");
+        if (!declared && !(methodNamed(body, "startSession") && addObserver)) return;
 
         const history = methodNamed(body, "getHistoricalSubresources");
         const statements = history?.value.body?.body;
         const returned = statements?.length === 1 && statements[0].type === "ReturnStatement"
           ? statements[0].argument : undefined;
         if (!history) {
-          context.report({ node: addObserver.key, messageId: "missingHistory" });
+          // A base class may supply it, as it may supply `startSession()`.
+          if (!superClass) {
+            context.report({ node: addObserver?.key ?? id ?? body, messageId: "missingHistory" });
+          }
         } else if (returned?.type !== "ArrayExpression" || returned.elements.length > 0) {
           context.report({ node: history.key, messageId: "history" });
         }
@@ -269,12 +282,13 @@ const newGatekeeperObserverContract: Rule = {
             callee.property.name !== "authorizeObservation" || description?.type !== "ObjectExpression") {
           return;
         }
+        // The kernel reads `subresources: undefined` as the field left out.
         const reported = description.properties.some(property => property.type === "Property" &&
-          !property.computed && property.key.type === "Identifier" && property.key.name === "subresources");
+          keyName(property) === "subresources" && !(property.value.type === "Identifier" && property.value.name === "undefined"));
         if (!reported) context.report({ node: description, messageId: "unreported" });
       },
-      "Property[key.name='excludeObservers']"(node: ESTree.Node) {
-        context.report({ node, messageId: "excludeObservers" });
+      Property(node) {
+        if (keyName(node) === "excludeObservers") context.report({ node, messageId: "excludeObservers" });
       },
     };
   },
