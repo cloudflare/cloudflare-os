@@ -138,10 +138,10 @@ export default function SignupPage({ rpcStub }: SignupPageProps) {
               <Hexagon size={20} className="text-white" weight="bold" />
             </div>
           </SiteLogo>
-          <h1 className="text-xl font-semibold text-kumo-default">
+          <p className="text-xl font-semibold text-kumo-default">
             {siteName}
-          </h1>
-          <p className="text-sm text-kumo-subtle mt-1">Create your account</p>
+          </p>
+          <h1 className="text-sm text-kumo-subtle mt-1">Create your account</h1>
         </div>
 
         {!signupsEnabled && (
