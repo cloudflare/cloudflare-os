@@ -81,6 +81,12 @@ type InitArgs<O extends Operation, Scope extends string> =
 type OperationAt<Ops extends Operation, P> = Extract<Ops, { readonly path: P }>;
 
 /**
+ * `P`, or `never` when it is a union. A call names one operation: over several, an argument only
+ * some of them need would no longer be required.
+ */
+type One<P, All = P> = P extends unknown ? [All] extends [P] ? P : never : never;
+
+/**
  * A client for schema `S`, with one method per HTTP method `S` declares. Each takes an operation's
  * path, written as in the schema, and its {@link OperationInit}, and resolves to its `response`.
  * `Scope` is the path prefixes whose parameters the client fills itself; see {@link scopeTo}.
@@ -88,7 +94,7 @@ type OperationAt<Ops extends Operation, P> = Extract<Ops, { readonly path: P }>;
 export type Client<S extends Schema, Scope extends string = never> = {
   readonly [M in keyof S as S[M] extends readonly Operation[] ? M : never]:
     S[M] extends readonly (infer Ops extends Operation)[]
-      ? <P extends Ops["path"]>(path: P, ...init: InitArgs<OperationAt<Ops, P>, Scope>)
+      ? <P extends Ops["path"]>(path: P & One<P>, ...init: InitArgs<OperationAt<Ops, P>, Scope>)
           => Promise<OperationAt<Ops, P>["response"]>
       : never;
 };
@@ -177,8 +183,12 @@ const METHODS: readonly Method[] = ["get", "post", "put", "delete", "patch"];
  */
 export function createOpenAPIClient<const S extends Schema>(options: OpenAPIClientOptions): Client<S> {
   const client: Partial<Record<Method, (path: string, init?: AnyInit) => Promise<unknown>>> = {};
+  // Trimmed once, and by hand: a regular expression is slow on a long run of slashes.
+  let end = options.baseUrl.length;
+  while (options.baseUrl[end - 1] === "/") end--;
+  const trimmed = { ...options, baseUrl: options.baseUrl.slice(0, end) };
   for (const method of METHODS) {
-    client[method] = (path, init) => send(options, method, path, init ?? {});
+    client[method] = (path, init) => send(trimmed, method, path, init ?? {});
   }
   return client as Client<S>;
 }
@@ -259,7 +269,7 @@ async function send(
   if (/[\0-\x20]/.test(path) || /(^|[/\\])(\.|%2e){1,2}([/\\?#]|$)/i.test(path)) {
     throw new Error(`The operation path "${template}" must not have a "." or ".." segment or whitespace.`);
   }
-  const url = new URL(options.baseUrl.replace(/\/+$/, "") + path);
+  const url = new URL(options.baseUrl + path);
   for (const [name, value] of Object.entries(init.query ?? {})) {
     if (value === undefined) continue;
     for (const element of Array.isArray(value) ? value : [value]) {
