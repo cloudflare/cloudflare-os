@@ -13,6 +13,8 @@ const DOC = 7
 const PLAIN = 8
 // Cannot be asked the first time.
 const BUSY = 9
+// Answers only once the test lets it.
+const SLOW = 10
 const onDoc = { gatekeeperId: DOC, resourceTitle: 'Notes', resourceUrl: 'https://docs.example/notes' }
 const read = (id: number, over = {}) => entry(id, { type: 'observation', state: 'approved', ...over })
 
@@ -22,12 +24,15 @@ afterEach(() => view.cleanup())
 const mount = async () => {
   const server = makeOverseer()
   const described: WorkpieceId[] = []
+  let answer = () => {}
+  const slow = new Promise<void>(resolve => { answer = resolve })
   const overseer = Object.assign(server.overseer, {
     getGatekeeperById: (id: WorkpieceId) => ({
       describe: async () => {
         described.push(id)
         if (id === BUSY && described.length === 1) throw new Error('Google is busy')
-        return { hasPreview: id === DOC || id === BUSY ? true : undefined }
+        if (id === SLOW) await slow
+        return { hasPreview: [DOC, BUSY, SLOW].includes(id) ? true : undefined }
       },
       getCreationSpec: async () => (
         { type: 'gatekeeper', vendorId: 'google', resourceUrl: 'https://docs.google.com/document/d/1/edit' }),
@@ -43,7 +48,7 @@ const mount = async () => {
   }
   const enter = (workspace: string) => view.render(<Probe workspace={workspace} />)
   await enter('a')
-  return { server, opened, described, enter, dismiss: (id: WorkpieceId) => dismiss(id) }
+  return { server, opened, described, enter, answer, dismiss: (id: WorkpieceId) => dismiss(id) }
 }
 
 it('opens a connection at its first read and at each change queued after', async () => {
@@ -93,6 +98,18 @@ it('keeps a dismissed connection closed', async () => {
   await server.emit(entry(2, onDoc))
 
   expect(opened).toHaveLength(1)
+})
+
+it('leaves closed a draft that is discarded while it is asked for its preview', async () => {
+  const { server, opened, answer } = await mount()
+  const draft = { gatekeeperId: SLOW, creation: true }
+
+  await server.emit(entry(1, draft))
+  await server.emit(entry(1, { ...draft, state: 'rejected' }))
+  answer()
+  await server.emit(entry(2))
+
+  expect(opened).toEqual([])
 })
 
 it('starts afresh in another workspace, where the same numbers name other things', async () => {

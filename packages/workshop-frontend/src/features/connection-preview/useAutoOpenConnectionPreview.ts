@@ -30,7 +30,10 @@ export const useAutoOpenConnectionPreview = (
     const here = seen.current
     const { entries, started, dismissed } = here
     const { gatekeeperId } = entry
-    if (gatekeeperId === undefined || dismissed.has(gatekeeperId)) return
+    if (gatekeeperId === undefined) return
+    // A draft discarded is gone with its connection: a preview still being asked for stays closed.
+    if (entry.type === 'action' && entry.creation && entry.state === 'rejected') dismissed.add(gatekeeperId)
+    if (dismissed.has(gatekeeperId)) return
     // An entry is delivered again when it changes, and a change resolved is not one queued.
     if (entries.has(entry.id)) return
     entries.add(entry.id)
