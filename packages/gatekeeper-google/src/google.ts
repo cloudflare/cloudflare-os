@@ -235,7 +235,7 @@ import {
 
 export { GmailGatekeeperImpl } from "./gmail";
 export { GoogleGrantRegistry } from "./grant-registry";
-import { grantRegistryName, type GoogleGrantRegistry } from "./grant-registry";
+import type { GoogleGrantRegistry } from "./grant-registry";
 export { GoogleChatGatekeeperImpl } from "./chat";
 export { ChatHookController, ChatHookDriver } from "./chat-hooks";
 export { GmailHookController, GmailHookDriver } from "./gmail-hooks";
@@ -272,21 +272,13 @@ const MINT_FAILURE_COOLDOWN_MS = 60 * 1000;
 const REFRESH_REFUSED_KEY = "refreshRefused";
 
 // Storage key holding the Google account (`sub`) whose grant this object is recorded as holding,
-// in the GoogleGrantRegistry of that account and GRANT_CLIENT_KEY's client. No other registry lists
-// this object.
+// in that account's GoogleGrantRegistry. No other registry lists this object.
 const GRANT_SUBJECT_KEY = "grantSubject";
 
 // Storage key holding the `credentialsId` of the credentials that record was made for. A reconnect
 // installs others, perhaps another Google account's, and until this names them the record says
 // nothing about the grant held now.
 const GRANT_CREDENTIALS_KEY = "grantCredentialsId";
-
-// Storage key holding the OAuth client the grant recorded under GRANT_SUBJECT_KEY was issued to,
-// which with that account names the grant's registry (see grantRegistryName).
-const GRANT_CLIENT_KEY = "grantClientId";
-
-// Storage key holding the OAuth client the installed credentials were issued to.
-const CREDENTIALS_CLIENT_KEY = "credentialsClientId";
 
 // Storage key holding which Google account (`sub`) the credentials with a `credentialsId` belong
 // to, as read when they were staged, described or recorded: apart from whether the registry has
@@ -305,11 +297,8 @@ const REFRESH_TOKEN_DEAD_KEY = "refreshTokenDead";
 // refresh token, and the Google account whose registry it rechecks.
 const PENDING_REVOCATION_KEY = "pendingRevocation";
 
-/**
- * `attempts` counts the tries made so far, the disconnect's included. `clientId` is the OAuth
- * client the refresh token was issued to, whose registry of the account's grant is rechecked.
- */
-type PendingRevocation = { refreshToken: string; clientId?: string; subject?: string; attempts: number };
+/** `attempts` counts the tries made so far, the disconnect's included. */
+type PendingRevocation = { refreshToken: string; subject?: string; attempts: number };
 
 /**
  * Whether a disconnect revokes the grant at Google, and the Google account it went by, if known.
@@ -613,8 +602,6 @@ type StagedGoogleCredentials = {
   requestedResources: string[];
   /** The Google account (`sub`) that signed in, when Google said which. */
   subject?: string;
-  /** The OAuth client the credentials were issued to. */
-  clientId?: string;
 };
 
 // How long an account reuses an answer about its access to a subresource, counted from when it
@@ -732,28 +719,6 @@ export class UserAccount extends DurableObject<Env> {
     return id;
   }
 
-  // The OAuth client the installed credentials were issued to, or undefined while there are none.
-  // Credentials installed before it was recorded are taken, on first use, for the configured
-  // client's.
-  #issuingClient(): string | undefined {
-    let kv = this.ctx.storage.kv;
-    if (!kv.get<string>("refreshToken")) return undefined;
-    let client = kv.get<string>(CREDENTIALS_CLIENT_KEY);
-    if (client === undefined) {
-      client = this.env.CLIENT_ID ?? "";
-      kv.put<string>(CREDENTIALS_CLIENT_KEY, client);
-    }
-    return client;
-  }
-
-  /** The grant this object is recorded as holding: the OAuth client's and the Google account's. */
-  #heldGrant(): { clientId: string; subject: string } | undefined {
-    let kv = this.ctx.storage.kv;
-    let subject = kv.get<string>(GRANT_SUBJECT_KEY);
-    if (subject === undefined) return undefined;
-    return { clientId: kv.get<string>(GRANT_CLIENT_KEY) ?? this.env.CLIENT_ID ?? "", subject };
-  }
-
   async setCallback(
       callback: Fetcher<GatekeeperConnectCallback>, initiationNonce: string,
       requestedResources: string[], mode: OAuthFlowMode) {
@@ -861,7 +826,6 @@ export class UserAccount extends DurableObject<Env> {
           refreshToken: response.refreshToken, accessToken: response.accessToken,
           grantedScopes: response.grantedScopes, requestedResources: flow.requestedResources,
           ...(subject !== undefined ? { subject } : {}),
-          clientId,
         };
         let stageId = stageCredentials(this.ctx.storage.kv, staged, Date.now());
         return { callback, mode: flow.mode, stageId };
@@ -870,7 +834,6 @@ export class UserAccount extends DurableObject<Env> {
       this.ctx.storage.kv.put<string>("refreshToken", response.refreshToken);
       this.ctx.storage.kv.put<GoogleAccessToken>("accessToken", response.accessToken);
       this.ctx.storage.kv.put<string>("credentialsId", crypto.randomUUID());
-      this.ctx.storage.kv.put<string>(CREDENTIALS_CLIENT_KEY, clientId);
       this.#forgetRefusal();
       this.ctx.storage.kv.put<string[]>("grantedScopes", response.grantedScopes);
       mergeGrantedResources(this.ctx.storage.kv, flow.requestedResources);
@@ -921,8 +884,6 @@ export class UserAccount extends DurableObject<Env> {
       kv.put<string>("refreshToken", staged.refreshToken);
       kv.put<GoogleAccessToken>("accessToken", staged.accessToken);
       kv.put<string>("credentialsId", credentialsId);
-      let clientId = staged.clientId ?? this.env.CLIENT_ID ?? "";
-      kv.put<string>(CREDENTIALS_CLIENT_KEY, clientId);
       if (staged.subject !== undefined) {
         kv.put<AccountSubject>(ACCOUNT_SUBJECT_KEY, { credentialsId, subject: staged.subject });
       }
@@ -938,9 +899,8 @@ export class UserAccount extends DurableObject<Env> {
       // that grant no longer counts. While it is not known which account they are, it goes on
       // holding that grant until #holdGrant learns, since revoking under a connection in use is
       // the worse mistake.
-      let recordedGrant = this.#heldGrant();
-      let sameAccount = staged.subject !== undefined && staged.subject === recordedGrant?.subject &&
-          clientId === recordedGrant.clientId;
+      let recordedSubject = kv.get<string>(GRANT_SUBJECT_KEY);
+      let sameAccount = staged.subject !== undefined && staged.subject === recordedSubject;
       if (sameAccount && recorded) {
         kv.put<string>(GRANT_CREDENTIALS_KEY, credentialsId);
         return;
@@ -951,8 +911,8 @@ export class UserAccount extends DurableObject<Env> {
         kv.delete(GRANT_CREDENTIALS_KEY);
         // Listed again, so that an answer it gave the registry about the credentials replaced
         // here, on its way back, is not believed: asked again, it says it cannot yet say.
-        if (recordedGrant !== undefined) {
-          await this.#grantRegistry(recordedGrant).add(this.ctx.id.toString()).catch(error => {
+        if (recordedSubject !== undefined) {
+          await this.#grantRegistry(recordedSubject).add(this.ctx.id.toString()).catch(error => {
             logger.warn("failed to record a Google grant's holder", {
               event: "google.grant.hold.failed", error,
             });
@@ -1001,10 +961,8 @@ export class UserAccount extends DurableObject<Env> {
   // How many recordings of this object as a grant holder are under way (see #holdGrant).
   #holdingGrant = 0;
 
-  #grantRegistry(
-    { clientId, subject }: { clientId: string; subject: string },
-  ): DurableObjectStub<GoogleGrantRegistry> {
-    return this.ctx.exports.GoogleGrantRegistry.getByName(grantRegistryName(clientId, subject));
+  #grantRegistry(subject: string): DurableObjectStub<GoogleGrantRegistry> {
+    return this.ctx.exports.GoogleGrantRegistry.getByName(subject);
   }
 
   /**
@@ -1039,8 +997,7 @@ export class UserAccount extends DurableObject<Env> {
         // the registry this object names is the only one it tells it holds a grant in.
         kv.put<AccountSubject>(ACCOUNT_SUBJECT_KEY, { credentialsId: installed, subject: sub });
         // Best effort, as at a reconnect: the old registry drops this object when it next asks it.
-        let recorded = this.#heldGrant();
-        if (recorded?.subject !== sub || recorded.clientId !== this.#issuingClient()) {
+        if (kv.get<string>(GRANT_SUBJECT_KEY) !== sub) {
           await this.#dropGrant().catch(error => {
             logger.warn("failed to stop holding the Google grant a reconnect replaced", {
               event: "google.grant.forget.failed", error,
@@ -1067,10 +1024,8 @@ export class UserAccount extends DurableObject<Env> {
    */
   async #recordHolder(subject: string, installed: string): Promise<void> {
     let kv = this.ctx.storage.kv;
-    let clientId = this.#issuingClient() ?? "";
     kv.put<string>(GRANT_SUBJECT_KEY, subject);
-    kv.put<string>(GRANT_CLIENT_KEY, clientId);
-    await this.#grantRegistry({ clientId, subject }).add(this.ctx.id.toString());
+    await this.#grantRegistry(subject).add(this.ctx.id.toString());
     kv.put<string>(GRANT_CREDENTIALS_KEY, installed);
   }
 
@@ -1106,14 +1061,13 @@ export class UserAccount extends DurableObject<Env> {
    */
   async holdsGrantIn(registryId: string): Promise<boolean | "unknown"> {
     let kv = this.ctx.storage.kv;
-    let recorded = this.#heldGrant();
+    let subject = kv.get<string>(GRANT_SUBJECT_KEY);
     let refreshToken = kv.get<string>("refreshToken");
     if (refreshToken === undefined || kv.get<boolean>(REFRESH_TOKEN_DEAD_KEY) === true ||
-        recorded === undefined || this.ctx.exports.GoogleGrantRegistry.idFromName(
-          grantRegistryName(recorded.clientId, recorded.subject)).toString() !== registryId) {
+        subject === undefined ||
+        this.ctx.exports.GoogleGrantRegistry.idFromName(subject).toString() !== registryId) {
       return false;
     }
-    let { subject } = recorded;
     // Listed under this grant for credentials a reconnect replaced, not yet known to be the same
     // Google account's, it may hold another's: which it is is read now, and when it cannot be,
     // it cannot say.
@@ -1129,7 +1083,7 @@ export class UserAccount extends DurableObject<Env> {
         // Recorded as it is now: kept, or moved to the account read.
         void this.#holdGrant();
       }
-      return read === subject && recorded.clientId === this.#issuingClient();
+      return read === subject;
     }
     // An access token that has not expired was minted within the hour, so Google honoured the
     // refresh token then. One that has, as on a connection left unused, says nothing: Google may
@@ -1226,9 +1180,9 @@ export class UserAccount extends DurableObject<Env> {
    * Called with the credentials mutex held.
    */
   async #forgetGrant(): Promise<{ last: boolean; unsure?: true } | undefined> {
-    let grant = this.#unrecordGrant();
-    if (grant === undefined) return undefined;
-    return await this.#grantRegistry(grant).remove(this.ctx.id.toString());
+    let subject = this.#unrecordGrant();
+    if (subject === undefined) return undefined;
+    return await this.#grantRegistry(subject).remove(this.ctx.id.toString());
   }
 
   /**
@@ -1236,18 +1190,17 @@ export class UserAccount extends DurableObject<Env> {
    * asks the other holders whether any is left.
    */
   async #dropGrant(): Promise<void> {
-    let grant = this.#unrecordGrant();
-    if (grant !== undefined) await this.#grantRegistry(grant).drop(this.ctx.id.toString());
+    let subject = this.#unrecordGrant();
+    if (subject !== undefined) await this.#grantRegistry(subject).drop(this.ctx.id.toString());
   }
 
   /** Deletes this object's record of the grant it holds, and says whose grant that was. */
-  #unrecordGrant(): { clientId: string; subject: string } | undefined {
+  #unrecordGrant(): string | undefined {
     let kv = this.ctx.storage.kv;
-    let grant = this.#heldGrant();
+    let subject = kv.get<string>(GRANT_SUBJECT_KEY);
     kv.delete(GRANT_SUBJECT_KEY);
-    kv.delete(GRANT_CLIENT_KEY);
     kv.delete(GRANT_CREDENTIALS_KEY);
-    return grant;
+    return subject;
   }
 
   /**
@@ -1259,19 +1212,18 @@ export class UserAccount extends DurableObject<Env> {
   async #releaseGrant(refreshToken: string): Promise<GrantRelease> {
     let kv = this.ctx.storage.kv;
     let installed = this.#credentialsId();
-    let clientId = this.#issuingClient() ?? "";
     let known = this.#accountSubject(installed);
     // The account the release went by, however it was learned, kept should it fail.
     let subject = known;
     try {
       let recordedFor = kv.get<string>(GRANT_CREDENTIALS_KEY);
-      let recorded = this.#heldGrant();
+      let recordedSubject = kv.get<string>(GRANT_SUBJECT_KEY);
       // The registry this object is listed in is the one of the grant held now when the record was
-      // made for these credentials, or names the account and client they are known to belong to,
-      // though listing this object there failed. Only that registry's answer decides.
-      if (recorded !== undefined && (recordedFor === installed ||
-          (recorded.subject === known && recorded.clientId === clientId))) {
-        subject = recorded.subject;
+      // made for these credentials, or names the account they are known to belong to, though
+      // listing this object there failed. Only that registry's answer decides.
+      if (recordedSubject !== undefined &&
+          (recordedFor === installed || recordedSubject === known)) {
+        subject = recordedSubject;
         return released(await this.#forgetGrant() ?? { last: true }, subject);
       }
       // Otherwise it is a former listing, as a reconnect that could not read which account it
@@ -1283,8 +1235,7 @@ export class UserAccount extends DurableObject<Env> {
         });
       });
       if (known !== undefined) {
-        return released(
-            await this.#grantRegistry({ clientId, subject: known }).remove(this.ctx.id.toString()), known);
+        return released(await this.#grantRegistry(known).remove(this.ctx.id.toString()), known);
       }
       // Not known for these credentials: a sign-in, a connection older than the registry that
       // has not refreshed a token since, or one whose recording failed or has not finished, as
@@ -1294,8 +1245,7 @@ export class UserAccount extends DurableObject<Env> {
       let read = await this.#readAccountSubject(refreshToken);
       if (read === null) return { revoke: true };
       subject = read;
-      return released(
-          await this.#grantRegistry({ clientId, subject }).remove(this.ctx.id.toString()), subject);
+      return released(await this.#grantRegistry(subject).remove(this.ctx.id.toString()), subject);
     } catch (error) {
       logger.warn("failed to release a Google grant; revoking it", {
         event: "google.grant.release.failed", error,
@@ -1649,13 +1599,12 @@ export class UserAccount extends DurableObject<Env> {
       if (!refreshToken && this.ctx.storage.kv.get(PENDING_REVOCATION_KEY) !== undefined) return;
       let pending: PendingRevocation | undefined;
       if (refreshToken) {
-        let clientId = this.#issuingClient();
         let release = await this.#releaseGrant(refreshToken);
         // Not revoked for a holder that could not be asked, which may hold nothing: the grant's
         // registry is asked again later, as for a revocation Google did not take.
         if (release.unsure) {
           pending = {
-            refreshToken, clientId, attempts: 1,
+            refreshToken, attempts: 1,
             ...(release.subject === undefined ? {} : { subject: release.subject }),
           };
         }
@@ -1671,7 +1620,7 @@ export class UserAccount extends DurableObject<Env> {
               event: "google.grant.revoke.failed", error,
             });
             pending = {
-              refreshToken, clientId, attempts: 1,
+              refreshToken, attempts: 1,
               ...(release.subject === undefined ? {} : { subject: release.subject }),
             };
           }
@@ -1729,8 +1678,7 @@ export class UserAccount extends DurableObject<Env> {
       }
       pending = { ...pending, subject };
       // Each try starts its ask further along, so a slow holder cannot keep the same ones unasked.
-      let clientId = pending.clientId ?? this.env.CLIENT_ID ?? "";
-      let answer = await this.#grantRegistry({ clientId, subject })
+      let answer = await this.#grantRegistry(subject)
           .remove(this.ctx.id.toString(), undefined, pending.attempts);
       // A holder that could not be asked may be one whose grant is gone: asked again later.
       if (answer.unsure) throw new Error("A holder of the grant could not be asked whether it holds it.");
