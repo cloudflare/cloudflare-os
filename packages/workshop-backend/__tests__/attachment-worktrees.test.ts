@@ -889,12 +889,27 @@ describe("attachment worktree ingress", () => {
     expect(thinking(requests[1])).toHaveLength(1);
     await impl.sendChatMessage(user, {profile: USER}, chatId, "One more", undefined, batch(20, 1));
     // An empty summary fails the compaction, so the turn runs without it.
-    await turn(fauxAssistantMessage(fauxText("")), fauxAssistantMessage(fauxText("Done")));
+    await turn(fauxAssistantMessage(fauxText("")),
+      fauxAssistantMessage([fauxThinking("Thought over the placeholders."), fauxText("Done.")]));
     const request = requests.at(-1)!;
     expect(imageParts(request)).toHaveLength(16);
     expect(JSON.stringify(request)).toContain("workspace file env.ATTACHMENTS/0.png; 24 bytes, not shown to you");
     expect(thinking(request)).toEqual([]);
     expect(JSON.stringify(request)).toContain("Seen.");
+
+    // That reply's thinking, signed over the placeholders, is not stored, so a later compaction of
+    // the original prompt keeps nothing it would invalidate.
+    await impl.sendChatMessage(user, {profile: USER}, chatId, "Again");
+    await turn(fauxAssistantMessage(fauxText("Summary of the first five.")), fauxAssistantMessage(fauxText("Again.")));
+    const compacted = requests.at(-1)!;
+    expect(JSON.stringify(compacted)).toContain("Summary of the first five.");
+    expect(JSON.stringify(compacted)).toContain("Done.");
+    expect(JSON.stringify(compacted)).not.toContain("not shown to you");
+    expect(imageParts(compacted)).toHaveLength(16);
+    // Only thinking signed over the prompt as first sent remains: the first reply's, kept after
+    // the cut.
+    expect(thinking(compacted).map(block => block.type === "thinking" && block.thinking))
+      .toEqual(["Considering the first five."]);
   }));
 
   // The model has answered nothing after the messages it was refused with, so naming their

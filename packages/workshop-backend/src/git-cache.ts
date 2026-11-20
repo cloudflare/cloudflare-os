@@ -184,15 +184,31 @@ export interface GitPullDelegate {
 // Errors
 
 /**
- * A worktree file's *content* cannot be presented as text: it is binary (holds a NUL) or is not
- * valid UTF-8. Never a matter of size. The message is the agent-visible, path-flavored
- * description. Distinct from path-shape errors (symlink/gitlink/directory) and from
- * transient pull failures so callers can tell "fine to overwrite whole, but unreadable and
- * undiffable" apart from errors that must propagate: the Worktree binding's writeFile falls
- * back to a whole-file `set` on this error (and only this error), and its grep/diff render it
- * as a skip note.
+ * A worktree file's *content* cannot be presented as text: it is binary (holds a NUL), is not
+ * valid UTF-8, or is over MAX_WHOLE_TEXT_BYTES, too large to hold as text. The message is the
+ * agent-visible, path-flavored description. Distinct from path-shape errors
+ * (symlink/gitlink/directory) and from transient pull failures so callers can tell "fine to
+ * overwrite whole, but unreadable and undiffable" apart from errors that must propagate: the
+ * Worktree binding's writeFile falls back to a whole-file `set` on this error (and only this
+ * error), and its grep/diff render it as a skip note.
  */
 export class UnreadableContentError extends Error {}
+
+/**
+ * The largest file read whole as text. Its bytes and its decoded text are held together, which
+ * for a larger one, such as a 100 MiB upload, would crowd the Durable Object's 128 MB of memory;
+ * it is read by window or as bytes instead.
+ */
+export const MAX_WHOLE_TEXT_BYTES = 16 * 1024 * 1024;
+
+// Refuses a whole-text read of a file over MAX_WHOLE_TEXT_BYTES, before any of it is read.
+function assertWholeTextSize(size: number, path: string): void {
+  if (size > MAX_WHOLE_TEXT_BYTES) {
+    throw new UnreadableContentError(`${path} is ${size} bytes, too large to read or edit as ` +
+        "whole text. Read it by window (readFile with startLine and lineCount), search it with " +
+        "grep, or read its bytes.");
+  }
+}
 
 /** A regular file's tree entry, given as is: its mode and its blob's oid. */
 export interface FileEntry {
@@ -1076,7 +1092,8 @@ export class WorkspaceGitCache {
    * full-tree materialization) and fault-pulling whatever is missing. Regular files only:
    * a symlink or submodule (gitlink) path throws a descriptive error naming its target, a
    * directory path or absent entry throws "no such file", and binary (non-UTF-8 / NUL-bearing)
-   * content throws a clean, path-specific error. A file of any size is read whole.
+   * content throws a clean, path-specific error, as does one over MAX_WHOLE_TEXT_BYTES, which is
+   * never read.
    */
   async readFileAtCommit(commitOid: GitOid, path: string): Promise<string> {
     let text = await this.readFileAtCommitIfExists(commitOid, path);
@@ -1123,6 +1140,7 @@ export class WorkspaceGitCache {
   async readFileAtCommitWithOid(commitOid: GitOid, path: string)
       : Promise<{ text: string, oid: GitOid } | undefined> {
     let file = await this.openFileAtCommit(commitOid, path);
+    if (file) assertWholeTextSize(file.reader.size, path);
     return file && { text: decodeBlobText(file.reader.read(0, file.reader.size), path),
                      oid: file.oid };
   }
@@ -1370,7 +1388,7 @@ export class WorkspaceGitCache {
   /**
    * One file of a commit as text, as readFileAtCommitIfExists() reads it (undefined for a path
    * naming nothing or a directory; a submodule or content that is not text throws its descriptive
-   * error; a file of any size is read whole), read only from objects this store holds: never
+   * error, as does one over MAX_WHOLE_TEXT_BYTES), read only from objects this store holds: never
    * pulls. A symlink throws without naming its target: the target is the link's content, and
    * this reader serves a caller that returns none. The base resolver of a chat's worktree content
    * when it is folded for a reader that must not reach a connection.
@@ -1380,6 +1398,7 @@ export class WorkspaceGitCache {
     if (entry === undefined || entry.mode === "40000") return undefined;
     if (entry.mode === "160000") throw new Error(submoduleMessage(path, entry.oid));
     if (entry.mode === "120000") throw new Error(`${path} is a symlink`);
+    assertWholeTextSize(this.blobSize(entry.oid) ?? 0, path);
     return decodeBlobText(this.#requireHeld(entry.oid, "blob"), path);
   }
 
@@ -1586,6 +1605,8 @@ export class WorkspaceGitCache {
    */
   async readTextBlob(oid: GitOid, referencedBy: GitOid | undefined, path: string)
       : Promise<string> {
+    await this.#faultFileBlob(oid, referencedBy);
+    assertWholeTextSize(this.blobSize(oid) ?? 0, path);
     return decodeBlobText(await this.#ensureFileBlob(oid, referencedBy), path);
   }
 

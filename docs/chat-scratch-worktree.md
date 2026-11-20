@@ -60,7 +60,10 @@ Valid UTF-8 text without NUL bytes retains the existing text OTs, including a pr
 `MAX_BUFFERED_BLOB_SIZE` (1 MiB). A larger upload is named by its immutable blob reference
 without being read or decoded: a text OT is held whole wherever the chat's files are, while
 reads and grep take a blob a window at a time. The same upload size limit therefore applies to
-initial and subsequent messages.
+initial and subsequent messages. No file over 16 MiB (`MAX_WHOLE_TEXT_BYTES`) is read whole as
+text, which would hold its bytes and its text together: editing it, or reading it whole through a
+binding, is refused before anything is read, and the agent reads it by window, greps it, or reads
+its bytes. The grep tool keeps only the matches its output can show and counts the rest.
 Text reads and grep decode those references by content without changing their stored form.
 Text edits over an uncommitted blob replacement remain unsupported; this does not change OT
 composition or introduce binary deltas. Whole-file replacements and edits after committing
@@ -109,7 +112,9 @@ the provider's cache. Every request resends them all, so once the chat's inline 
 allows inline), the turn compacts first. Compaction summarizes the prompt as earlier requests sent
 it, so the request reuses their cache and the thinking it keeps stays valid, and keeps the newest
 messages whose attachments fit. Only if compaction fails or can't cut are the older attachments
-named by workspace path instead, and the thinking after the first of them dropped. A provider that
+named by workspace path instead, and the thinking after the first of them dropped; that turn's
+replies are stored without their thinking, which is signed over the rewritten prompt, so later
+turns replay and compact the prompt as first sent. A provider that
 refuses a turn's first request, say for a PDF of more pages than it takes, has its message's inline
 attachments named by path from then on; the model has answered nothing after them. Replay reads no
 attachment's bytes unless it could inline them. Originals remain unchanged. New images are read from the same

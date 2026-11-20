@@ -13,9 +13,11 @@ import type { WorktreeTurnAccess } from "./agent";
 /**
  * A grep's result: the matching lines, in path order then line order, the files it could not
  * search, and whether it named exactly one file (so output can omit the path prefix, as
- * `grep -n` does).
+ * `grep -n` does). `omitted` counts the matches past a scan's `maxChars`, which it did not keep.
  */
-export type GrepScan = { matches: GrepMatch[], errors: GrepFileError[], single: boolean };
+export type GrepScan = {
+  matches: GrepMatch[], errors: GrepFileError[], single: boolean, omitted?: number,
+};
 
 // One file to search: an overlay path (content in hand) or a base tree entry (blob by oid, in
 // the commit it was found in).
@@ -39,7 +41,8 @@ export async function scanWorkpieceForGrep(
         "pathEntryAtCommit" | "listCommitTreePaths" | "ensureBlobs" | "openBlob">,
     turn: Pick<WorktreeTurnAccess, "getOverlayFiles" | "getRemovedPaths">,
     workpieceId: WorkpieceId, base: string | undefined,
-    pathArg: string | string[] | undefined, pattern: RegExp): Promise<GrepScan> {
+    pathArg: string | string[] | undefined, pattern: RegExp, maxChars = Infinity)
+    : Promise<GrepScan> {
   let overlay = turn.getOverlayFiles(workpieceId);
   let removed = turn.getRemovedPaths(workpieceId);
 
@@ -111,16 +114,34 @@ export async function scanWorkpieceForGrep(
   await gitCache.ensureBlobs(oids);
 
   // Each file is matched as it is read, so only one file's text is ever held at a time, and a
-  // large blob's not even that.
+  // large blob's not even that. Matches are kept while their `grep -n` lines fit `maxChars`;
+  // past that they are only counted, so a broad match over a large file holds no more than the
+  // output can show. A file's own are added once it has been searched whole, since it may still
+  // prove binary.
   let matches: GrepMatch[] = [];
+  let omitted = 0, room = maxChars;
   for (let candidate of [...candidates.values()]
       .toSorted((a, b) => a.path < b.path ? -1 : 1)) {
     try {
       let value = "oid" in candidate ? candidate : overlay.get(candidate.path)!;
-      let found = typeof value === "string" ? matchLines(value, pattern)
-          : matchBlob(await gitCache.openBlob(value.oid, "base" in value ? value.base : undefined),
-                      pattern, candidate.path);
-      for (let match of found) matches.push({ file: candidate.path, ...match });
+      let found = typeof value === "string" ? matchingLines(value, pattern)
+          : matchingBlobLines(
+              await gitCache.openBlob(value.oid, "base" in value ? value.base : undefined),
+              pattern, candidate.path);
+      let kept: GrepMatch[] = [], fileOmitted = 0, fileRoom = room;
+      let prefix = single ? 0 : candidate.path.length + 1;
+      for (let match of found) {
+        let length = prefix + `${match.line}:${match.text}`.length + 1;
+        if (omitted + fileOmitted > 0 || length > fileRoom) {
+          ++fileOmitted;
+          continue;
+        }
+        fileRoom -= length;
+        kept.push({ file: candidate.path, ...match });
+      }
+      matches.push(...kept);
+      omitted += fileOmitted;
+      room = fileRoom;
     } catch (err) {
       if (err instanceof UnreadableContentError) {
         errorByFile.set(candidate.path, err.message);
@@ -146,7 +167,7 @@ export async function scanWorkpieceForGrep(
   let errors = [...errorByFile]
       .map(([file, message]) => ({ file, error: message }))
       .toSorted((a, b) => a.file < b.file ? -1 : 1);
-  return { matches, errors, single };
+  return { matches, errors, single, ...omitted > 0 ? { omitted } : {} };
 }
 
 /**
@@ -156,14 +177,18 @@ export async function scanWorkpieceForGrep(
  * with lastIndex reset per line, so a sticky or global flag can't skip lines.
  */
 export function matchLines(text: string, pattern: RegExp): { line: number, text: string }[] {
+  return [...matchingLines(text, pattern)];
+}
+
+// matchLines, one match at a time.
+function* matchingLines(text: string, pattern: RegExp)
+    : Generator<{ line: number, text: string }> {
   let lines = text.split(/\r?\n/);
   if (lines.at(-1) === "") lines.pop();
   let test = lineMatcher(pattern);
-  let out: { line: number, text: string }[] = [];
   for (let [index, line] of lines.entries()) {
-    if (test(line)) out.push({ line: index + 1, text: line });
+    if (test(line)) yield { line: index + 1, text: line };
   }
-  return out;
 }
 
 function lineMatcher(pattern: RegExp): (line: string) => boolean {
@@ -184,12 +209,18 @@ function lineMatcher(pattern: RegExp): (line: string) => boolean {
  */
 export function matchBlob(reader: BlobReader, pattern: RegExp, path: string)
     : { line: number, text: string }[] {
+  return [...matchingBlobLines(reader, pattern, path)];
+}
+
+// matchBlob, one match at a time.
+function* matchingBlobLines(reader: BlobReader, pattern: RegExp, path: string)
+    : Generator<{ line: number, text: string }> {
   if (reader.size <= MAX_BUFFERED_BLOB_SIZE) {
-    return matchLines(decodeBlobText(reader.read(0, reader.size), path), pattern);
+    yield* matchingLines(decodeBlobText(reader.read(0, reader.size), path), pattern);
+    return;
   }
   let test = lineMatcher(pattern);
   let decoder = new TextDecoder("utf-8", { fatal: false, ignoreBOM: true });
-  let out: { line: number, text: string }[] = [];
   let line = 0;
   let partial = "";
   for (let piece of reader.pieces()) {
@@ -199,13 +230,12 @@ export function matchBlob(reader: BlobReader, pattern: RegExp, path: string)
     for (let text of lines) {
       ++line;
       if (text.endsWith("\r")) text = text.slice(0, -1);
-      if (test(text)) out.push({ line, text });
+      if (test(text)) yield { line, text };
     }
   }
   // A final line without a newline keeps a trailing CR, as matchLines keeps it.
   partial += decoder.decode();
-  if (partial !== "" && test(partial)) out.push({ line: line + 1, text: partial });
-  return out;
+  if (partial !== "" && test(partial)) yield { line: line + 1, text: partial };
 }
 
 /**
@@ -222,23 +252,29 @@ export function formatGrep(scan: GrepScan, maxChars: number): string {
 
   // Whole lines while they fit. Room for a group's "N more" note is reserved before any of its
   // lines are taken, and for both groups before the first, so the notes fit whenever needed.
-  let groups: [string[], (n: number) => string][] = [
-    [matches, n => `(${n} more matches not shown; narrow the pattern or path)`],
-    [skipped, n => `(${n} more files skipped)`],
+  // The scan's omitted matches are always among those not shown.
+  let groups: [string[], number, (n: number) => string][] = [
+    [matches, scan.omitted ?? 0, n => `(${n} more matches not shown; narrow the pattern or path)`],
+    [skipped, 0, n => `(${n} more files skipped)`],
   ];
   let out: string[] = [];
   let left = maxChars;
-  for (let [lines, more] of groups) left -= lines.length > 0 ? more(lines.length).length + 1 : 0;
-  if (matches.length === 0) out.push("(no matches)");
-  for (let [lines, more] of groups) {
+  for (let [lines, omitted, more] of groups) {
+    left -= lines.length + omitted > 0 ? more(lines.length + omitted).length + 1 : 0;
+  }
+  if (matches.length + (scan.omitted ?? 0) === 0) out.push("(no matches)");
+  for (let [lines, omitted, more] of groups) {
     let kept = 0;
     while (kept < lines.length && lines[kept].length + 1 <= left) {
       out.push(lines[kept]);
       left -= lines[kept].length + 1;
       kept++;
     }
-    if (kept < lines.length) out.push(more(lines.length - kept));
-    else if (lines.length > 0) left += more(lines.length).length + 1;  // note not needed after all
+    if (kept < lines.length || omitted > 0) {
+      out.push(more(lines.length - kept + omitted));
+    } else if (lines.length > 0) {
+      left += more(lines.length).length + 1;  // note not needed after all
+    }
   }
   return out.join("\n");
 }
