@@ -147,6 +147,21 @@ describe("the bounds on what is read of an export", () => {
     parse.mockRestore();
   });
 
+  it("reads no page past a deck's worth of text, and lists every slide of a deck it reads only part of", async () => {
+    // 1.8 MB a slide: the seventh takes the deck past what is read of one.
+    let heavy = `<p:sp><p:spPr>${"<a:ln/>".repeat(1100)}</p:spPr></p:sp>`.repeat(240);
+    let { read: counts, lost } = await read(...Array.from({ length: 9 }, () => heavy));
+
+    expect(counts).toEqual([240, 240, 240, 240, 240, 240, undefined, undefined, undefined]);
+    // The slides after it are not inflated to be left out in their turn.
+    expect(lost).toEqual(["page-limit"]);
+
+    let { deck } = await read(...Array.from({ length: 301 }, () => small));
+    // Its slides are paired with the presentation's by their number, which is all of them.
+    expect(deck.slides).toHaveLength(301);
+    expect(deck.pages.size).toBeLessThanOrEqual(300);
+  });
+
   it("leaves out a page with a shape or group of more elements than one may hold", async () => {
     let group = `<p:grpSp>${"<p:sp/>".repeat(60_001)}</p:grpSp>`;
 
