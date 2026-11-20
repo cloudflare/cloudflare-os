@@ -11,9 +11,11 @@ import '../../styles.css'
 const ICON = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg"/>'
 
 let host: HTMLDivElement | undefined, root: Root | undefined
+const VIEWPORT = { width: window.innerWidth, height: window.innerHeight }
 afterEach(async () => {
   await act(async () => root?.unmount())
   host?.remove()
+  await page.viewport(VIEWPORT.width, VIEWPORT.height)
 })
 
 const render = async (count: number) => {
@@ -60,4 +62,16 @@ it('keeps a menu of many previews to a height it scrolls in', async () => {
   expect(menu.scrollHeight).toBeGreaterThan(menu.clientHeight)
   await act(async () => userEvent.click(item('File 40')))
   expect(opened).toEqual(['File 40'])
+})
+
+it('keeps the last of many previews within a window too short for the menu', async () => {
+  await page.viewport(900, 280)
+  await render(40)
+
+  await act(async () => userEvent.click(page.getByRole('button', { name: 'Previews' })))
+  await expect.element(item('File 1')).toBeVisible()
+  // The menu ends inside the window, so scrolling it reaches its last item.
+  const menu = document.querySelector('[role="menu"]')!
+  expect(menu.getBoundingClientRect().bottom).toBeLessThanOrEqual(window.innerHeight)
+  expect(menu.scrollHeight).toBeGreaterThan(menu.clientHeight)
 })
