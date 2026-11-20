@@ -1367,10 +1367,13 @@ return new OffsetCursor<Incident>({
 
 The reducer creates the stand-in: given no entity and the create's record, it returns the row the
 listing shows until the provider has one, as `applied`. A record that deletes a row returns
-`deleted`. `overlay` folds a row when it is served and the stand-ins are folded at each
-`refresh()`, which `revalidate` then looks up, dropping one whose create `created` no longer
-lists, so a create bound while a page is being fetched serves the provider's row. So above, where `refresh` reads the pending
-records before each page, a record staged between two pages shows on every row served after it, a
+`deleted`. A refused record leaves the row as it was, and the hooks mark nothing. A fold that
+stops at `unsupported` would show the row with only the records before the stop, so the hooks
+throw `SimulatedListStopped` instead, from `overlay` or `refresh`. `overlay` folds a row when it
+is served and the stand-ins are folded at each `refresh()`, which `revalidate` then looks up,
+dropping one whose create `created` no longer lists, so a create bound while a page is being
+fetched serves the provider's row. So above, where `refresh` reads the pending records before
+each page, a record staged between two pages shows on every row served after it, a
 buffered one included, and an id bound while a page is being fetched shows on the provider's rows
 of that page, since the view is built on the call. No fold is remembered from one call to the
 next: a row read again (a refused page's retry) is folded again, and so is every stand-in at each

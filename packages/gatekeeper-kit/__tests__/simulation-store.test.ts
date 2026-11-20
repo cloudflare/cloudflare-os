@@ -5,6 +5,7 @@ import type { CursorInjection } from "../src/cursors";
 import { createSimulationView, ProvisionalIds, type SimulationRecord } from "../src/simulation";
 import {
   createSimulationStore,
+  SimulatedListStopped,
   simulatedList,
   type EntityContext,
   type EntityFold,
@@ -934,6 +935,37 @@ function draftListing(staged: Staged[], created: string[] = []) {
 }
 
 describe("simulatedList", () => {
+  it("fails a row whose fold stopped, provider row or stand-in, rather than show part of it", () => {
+    const stuck = (stuckOn: string) => {
+      const store = createSimulationStore<string, Task, Task, Staged>({
+        initial: row => row,
+        reduce: (row, { action }) => {
+          if (action.kind === "finish" && action.task === stuckOn) {
+            return { kind: "unsupported", reason: "it cannot be replayed" };
+          }
+          if (action.kind === "open") return { kind: "applied", value: task(action.ref, action.at) };
+          return action.kind === "discard" ? { kind: "deleted" } : { kind: "known-no-effect" };
+        },
+      });
+      // The record after the stop deletes the row: showing the fold's entity would show it.
+      const staged = [opens(1, "~1", 5), finishes(2, stuckOn), discards(3, stuckOn)];
+      return () => simulatedList({
+        store,
+        view: () => createSimulationView(staged, taskIds),
+        id: row => row.id,
+        compare: newestFirst,
+        created: () => ["~1"],
+      });
+    };
+
+    const onRow = stuck("a")();
+    expect(() => onRow.overlay(task("a", 1))).toThrow(
+      new SimulatedListStopped("a", "it cannot be replayed"));
+    expect(onRow.overlay(task("b", 2))).toEqual([task("b", 2)]);
+    // A stand-in is folded when the hooks are made and at every refresh.
+    expect(stuck("~1")).toThrow(SimulatedListStopped);
+  });
+
   it("folds a provider row and drops one its records delete or the listing no longer keeps", () => {
     const { list } = listing([retitles(1, "renamed", "a"), discards(2, "b"), finishes(3, "c")]);
     const untouched = task("d", 4);
