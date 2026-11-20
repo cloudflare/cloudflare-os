@@ -1,9 +1,9 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
 import { ContextCollectionDurableObject } from "../src/context-collection.js";
-import type { ContextCollectionMetadata } from "../src/context-types.js";
+import { MAX_DOCUMENT_BODY_BYTES, type ContextCollectionMetadata } from "../src/context-types.js";
 import { domainName } from "../src/domain.js";
-import { FakeGitRepo } from "./fake-git-repo.js";
+import { FakeGitRepo, artifactsError } from "./fake-git-repo.js";
 
 const DOMAIN = "workshop.example";
 
@@ -19,6 +19,7 @@ type SyncStorage = {
     list(): Iterable<{ path: string; gitBlobHash?: string }>;
     put(record: object): void;
   };
+  gitStaged: { list(): Iterable<{ path: string }> };
 };
 const storageOf = (instance: ContextCollectionDurableObject) =>
   (instance as unknown as { storage: SyncStorage }).storage;
@@ -114,6 +115,43 @@ describe("git-backed collection sync", () => {
     });
   });
 
+  it("keeps the old documents until a commit is read in full, then resumes where it stopped", async () => {
+    let fake = new FakeGitRepo();
+    let stub = await createGitCollection(fake);
+    await fake.push("main", { "a.md": "# A", "b.md": "# B" });
+    await stub.syncArtifactSource();
+    await fake.push("main", { "a.md": "# A, edited", "b.md": "# B, edited", "c.md": "# C" });
+    fake.blobErrors.set(await fake.hashOf("# C"), artifactsError("INTERNAL_ERROR"));
+
+    await expect(settled(stub.syncArtifactSource())).rejects.toThrow("INTERNAL_ERROR");
+    expect((await stub.listContextDocuments()).map(doc => doc.path)).toEqual(["a.md", "b.md"]);
+    expect((await stub.getContextDocument("a.md"))?.body).toBe("# A");
+
+    fake.blobErrors.clear();
+    fake.blobReads = [];
+    await stub.syncArtifactSource();
+
+    expect(fake.blobReads).toEqual([await fake.hashOf("# C")]);
+    expect((await stub.listContextDocuments()).map(doc => doc.path)).toEqual(["a.md", "b.md", "c.md"]);
+    expect((await stub.getContextDocument("a.md"))?.body).toBe("# A, edited");
+    await runInDurableObject(stub, (instance: ContextCollectionDurableObject) => {
+      expect([...storageOf(instance).gitStaged.list()]).toEqual([]);
+    });
+  });
+
+  it("drops a file that grew too large to keep", async () => {
+    let fake = new FakeGitRepo();
+    let stub = await createGitCollection(fake);
+    await fake.push("main", { "a.md": "# A", "data.bin": "small" });
+    await stub.syncArtifactSource();
+
+    await fake.push("main", { "a.md": "# A", "data.bin": new Uint8Array(MAX_DOCUMENT_BODY_BYTES + 1) });
+    await stub.syncArtifactSource();
+
+    expect((await stub.listContextDocuments()).map(doc => doc.path)).toEqual(["a.md"]);
+    expect((await stub.getMetadata()).documentCount).toBe(1);
+  });
+
   it("backs off after failed syncs, doubling the wait, until one succeeds", async () => {
     let fake = new FakeGitRepo();
     let stub = await createGitCollection(fake);
@@ -147,6 +185,26 @@ describe("git-backed collection sync", () => {
       expect(fake.logRefs).toHaveLength(3);
       expect(attempts()).toBe(0);
       expect((await instance.listContextDocuments()).map(doc => doc.path)).toEqual(["a.md"]);
+    });
+  });
+
+  it("syncs a newly chosen branch without waiting out the old one's failures", async () => {
+    let fake = new FakeGitRepo();
+    let stub = await createGitCollection(fake);
+    await fake.push("main", { "a.md": "# A" });
+    await fake.push("next", { "b.md": "# B" });
+    fake.failNextLog = new Error("Artifacts is unavailable.");
+    await expect(settled(stub.syncArtifactSource())).rejects.toThrow("Artifacts is unavailable.");
+
+    await stub.updateMetadata({ branch: "next" });
+
+    await runInDurableObject(stub, async (instance: ContextCollectionDurableObject) => {
+      expect(storageOf(instance).gitSyncAttempts.get()).toBe(0);
+      makeStale(instance);
+      await instance.listContextDocuments();
+      await settle();
+      expect(fake.logRefs.at(-1)).toBe("refs/heads/next");
+      expect((await instance.listContextDocuments()).map(doc => doc.path)).toEqual(["b.md"]);
     });
   });
 

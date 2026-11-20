@@ -48,6 +48,11 @@ export class FakeGitRepo {
   blobErrors = new Map<string, Error>();
   /** Awaited by every `readTree` call while set, to hold a sync part way through. */
   treeGate?: Promise<void>;
+  /** Awaited by every `readBlob` call while set, so reads in flight overlap. */
+  blobDelay?: () => Promise<void>;
+  /** Most `readBlob` calls that were in flight at once. */
+  maxBlobReadsInFlight = 0;
+  #blobReadsInFlight = 0;
   #commits = 0;
 
   /** Commits `files` as the whole tree of `branch` and returns the commit hash. */
@@ -110,9 +115,15 @@ export class FakeGitRepo {
       },
       readBlob: async (hash: string) => {
         this.blobReads.push(hash);
-        let error = this.blobErrors.get(hash);
-        if (error) throw error;
-        return (this.blobs.get(hash) ?? null) as Blob | null;
+        this.maxBlobReadsInFlight = Math.max(this.maxBlobReadsInFlight, ++this.#blobReadsInFlight);
+        try {
+          await this.blobDelay?.();
+          let error = this.blobErrors.get(hash);
+          if (error) throw error;
+          return (this.blobs.get(hash) ?? null) as Blob | null;
+        } finally {
+          this.#blobReadsInFlight--;
+        }
       },
       // A new collection revokes the repo's initial token.
       revokeToken: async () => true,

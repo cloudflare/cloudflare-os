@@ -169,6 +169,9 @@ function makeContextCollectionStorage(storage: DurableObjectStorage) {
       // Private collections only: every account's role. Authoritative for access.
       grants: collection<GrantRecord>()({ primaryKey: "accountId" }),
       gitTokenIssuers: collection<GitTokenIssuerRecord>()({ primaryKey: "tokenId" }),
+      // Git-backed collections: files a sync has read, held until every file of its commit has been
+      // read and they replace `documents` together. A sync that stops part way keeps what it read.
+      gitStaged: collection<ArtifactContextDocument>()({ primaryKey: "path" }),
     },
     singletons: {
       // Sharing domain for cross-DO references.
@@ -721,6 +724,8 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
       if (branch !== meta.content.branch) {
         meta.content.branch = branch;
         delete meta.content.commit;
+        // Failed syncs of the old branch say nothing about the new one.
+        this.storage.gitSyncAttempts.put(0);
         changed = true;
       }
     }
@@ -1207,47 +1212,58 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
     return promise;
   }
 
-  // Each stored document's git blob hash. A document stored before hashes were kept gets one from
-  // its bytes, which a sync stores verbatim, and is added to `computed` so a sync can keep it.
-  async #storedGitBlobHashes(computed: Map<string, string>): Promise<Map<string, string>> {
-    let hashes = new Map<string, string>();
-    for (let record of Array.from(this.storage.documents.list())) {
-      let hash = record.gitBlobHash;
+  // Each stored document's git blob hash, into `stored`. A document stored before hashes were kept
+  // gets one from its bytes, which a sync stores verbatim, and is added to `computed` as well.
+  async #readStoredGitBlobHashes(stored: Map<string, string>, computed: Map<string, string>): Promise<void> {
+    // Records are read one at a time; only bodies that still need hashing are kept.
+    let unhashed: Array<{ path: string; body: Uint8Array }> = [];
+    for (let record of this.storage.documents.list()) {
+      if (record.gitBlobHash) stored.set(record.path, record.gitBlobHash);
       // Older records with string bodies can't be hashed; the sync reads them again.
-      if (!hash && record.body instanceof Uint8Array) {
-        hash = await gitBlobHash(record.body);
-        computed.set(record.path, hash);
-      }
-      if (hash) hashes.set(record.path, hash);
+      else if (record.body instanceof Uint8Array) unhashed.push({ path: record.path, body: record.body });
     }
-    return hashes;
+    for (let { path, body } of unhashed) {
+      let hash = await gitBlobHash(body);
+      stored.set(path, hash);
+      computed.set(path, hash);
+    }
   }
 
-  // Bring stored documents to `commit`: keep `unchanged`, store `documents`, delete the rest.
-  // `computedHashes` holds hashes worked out for kept documents that had none, to store with them.
-  #applyArtifactSync(
-      commit: string, unchanged: Set<string>, documents: ArtifactContextDocument[],
-      computedHashes: Map<string, string>): void {
+  // Replace the documents with the files of `commit`, all at once. Each file is its staged copy if
+  // that matches, else the stored document if that matches; a file neither holds was too large to
+  // keep. `stored` and `computed` are the stored documents' hashes, as #readStoredGitBlobHashes left
+  // them. Staged files are then cleared.
+  #publishArtifactSync(
+      commit: string, files: Map<string, string>,
+      stored: Map<string, string>, computed: Map<string, string>): void {
     // Kept documents keep their skill entries, so the index must be current before it is patched.
     this.#ensureSkillIndex();
     let invalidSkills: Array<{ filepath: string; reason: string }> = [];
     this.storage.transaction(() => {
-      let incoming = new Set(documents.map(doc => doc.path));
-      // Read the paths before deleting from the same storage collection.
-      let stale = Array.from(this.storage.documents.list(), record => record.path)
-        .filter(path => !unchanged.has(path) && !incoming.has(path));
-      for (let path of stale) this.#deleteDocument(path);
-      for (let [path, gitBlobHash] of computedHashes) {
-        let record = unchanged.has(path) ? this.storage.documents.get(path) : undefined;
-        if (record) this.storage.documents.put({ ...record, gitBlobHash });
+      let published = new Set<string>();
+      for (let [path, hash] of files) {
+        let staged = this.storage.gitStaged.get(path);
+        if (staged?.gitBlobHash === hash) {
+          let skill = this.#putDocument(staged);
+          if (skill && "error" in skill) invalidSkills.push({ filepath: path, reason: skill.error });
+          published.add(path);
+        } else if (stored.get(path) === hash) {
+          // A document stored before hashes were kept keeps the one worked out for it.
+          let record = computed.has(path) ? this.storage.documents.get(path) : undefined;
+          if (record) this.storage.documents.put({ ...record, gitBlobHash: hash });
+          published.add(path);
+        }
       }
-      for (let doc of documents) {
-        let skill = this.#putDocument(doc);
-        if (skill && "error" in skill) invalidSkills.push({ filepath: doc.path, reason: skill.error });
+      // Read the paths before deleting from the same storage collections.
+      for (let path of Array.from(this.storage.documents.list(), record => record.path)) {
+        if (!published.has(path)) this.#deleteDocument(path);
+      }
+      for (let path of Array.from(this.storage.gitStaged.list(), record => record.path)) {
+        this.storage.gitStaged.delete(path);
       }
 
       let meta = this.getMetadata();
-      meta.documentCount = unchanged.size + documents.length;
+      meta.documentCount = published.size;
       meta.lastUpdated = new Date();
       if (meta.content.source !== "git") throw new Error("Collection must be git-based.");
       meta.content.commit = commit;
@@ -1270,10 +1286,19 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
   async #loadArtifactSnapshot(): Promise<void> {
     const meta = this.getMetadata();
     if (meta.content.source !== "git") throw new Error("Collection is not git-based.");
-    const computedHashes = new Map<string, string>();
+    const stored = new Map<string, string>();
+    const computed = new Map<string, string>();
     const result = await readArtifactRepoDocuments(
-        this.#artifacts(), meta.id, meta.content.branch, meta.content.commit,
-        () => this.#storedGitBlobHashes(computedHashes));
+        this.#artifacts(), meta.id, meta.content.branch, meta.content.commit, {
+          heldBlobHashes: async () => {
+            await this.#readStoredGitBlobHashes(stored, computed);
+            // A file staged by an earlier sync that stopped part way is newer than the stored one.
+            let held = new Map(stored);
+            for (let record of this.storage.gitStaged.list()) held.set(record.path, record.gitBlobHash);
+            return held;
+          },
+          stage: document => this.storage.gitStaged.put(document),
+        });
     if (!result.changed) {
       // Nothing changed, just bump the refresh timestamp.
       const latestMeta = this.getMetadata();
@@ -1283,7 +1308,7 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
       return;
     }
 
-    this.#applyArtifactSync(result.commit, result.unchanged, result.documents, computedHashes);
+    this.#publishArtifactSync(result.commit, result.files, stored, computed);
     await this.#propagate();
   }
 

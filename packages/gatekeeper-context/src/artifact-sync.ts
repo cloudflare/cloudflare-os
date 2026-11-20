@@ -11,23 +11,16 @@ const logger = obsContext.createLogger({
   component: "gatekeeper.context", vendorId: VENDOR_ID,
 });
 
-// Artifacts calls in flight at once while walking a commit's tree and reading its files.
-const MAX_READS_IN_FLIGHT = 8;
-
-// Most bytes of new or changed files one sync holds before storing them. A sync that would read
-// more fails with an error instead of running the object out of memory.
-const MAX_SYNC_READ_BYTES = 64 * 1024 * 1024;
+// Folder listings in flight at once while walking a commit's tree.
+const MAX_TREE_READS_IN_FLIGHT = 8;
+// File reads in flight at once. Artifacts holds files of up to 32 MiB and returns each one whole,
+// and a file's size is known only once it arrives, so two reads hold at most 64 MiB of the
+// isolate's 128 MB.
+const MAX_BLOB_READS_IN_FLIGHT = 2;
 
 // Tree entries mirrored as documents, as `git ls-files` lists them: regular and executable files,
 // and symlinks, whose body is the link target. A submodule (gitlink) has no content in this repo.
 const FILE_ENTRY_TYPES: ReadonlySet<ArtifactsTreeEntryType> = new Set(["blob", "exec", "symlink"]);
-
-class GitSyncTooLargeError extends Error {
-  constructor(readonly maxBytes: number) {
-    super(`Repository too large: one sync would read more than ${maxBytes} bytes of changed files.`);
-    this.name = "GitSyncTooLargeError";
-  }
-}
 
 export type ArtifactContextDocument = {
   path: string;
@@ -40,7 +33,7 @@ export type ArtifactContextDocument = {
   gitBlobHash: string;
 };
 
-export function artifactContextDocument(path: string, blob: Uint8Array, gitBlobHash: string): ArtifactContextDocument {
+export function artifactContextDocument(path: string, blob: Uint8Array, blobHash: string): ArtifactContextDocument {
   let contentType = contentTypeFromPath(path);
   let body = isTextContentType(contentType) ? new TextDecoder().decode(blob) : undefined;
   return {
@@ -52,7 +45,7 @@ export function artifactContextDocument(path: string, blob: Uint8Array, gitBlobH
     contentType,
     body: blob,
     lastUpdated: new Date(),
-    gitBlobHash,
+    gitBlobHash: blobHash,
   };
 }
 
@@ -71,30 +64,35 @@ export type ArtifactRepoReadResult =
   | {
     commit: string;
     changed: true;
-    /** Stored files that are identical at `commit`. Stored files not here or in `documents` are gone. */
-    unchanged: Set<string>;
-    /** Files that are new or changed at `commit`. */
-    documents: ArtifactContextDocument[];
+    /** Blob hash of every file at `commit`, by path. Each was held already or has been staged. */
+    files: Map<string, string>;
   };
+
+/** Where a sync finds the files the collection already holds and keeps the ones it reads. */
+export type ArtifactSyncStore = {
+  /** Blob hash of the copy held for each path. Files whose hash matches aren't read again. */
+  heldBlobHashes(): Promise<ReadonlyMap<string, string>>;
+  /** Keeps a file read from the new commit until the whole commit has been read. */
+  stage(document: ArtifactContextDocument): void;
+};
 
 type TreeFile = { path: string; hash: string };
 
 /**
- * Reads the tip of `branch` in the collection's repo, if it differs from `currentCommit`.
- * `storedBlobHashes` maps each stored file's path to its blob hash; files whose hash still matches
- * are reported unchanged without being read.
+ * Reads the tip of `branch` in the collection's repo, if it differs from `currentCommit`, staging
+ * each file whose blob hash differs from the copy `store` holds. Files too large to keep as
+ * documents are skipped.
  */
 export function readArtifactRepoDocuments(
   artifacts: Artifacts,
   repoName: string,
   branch: string,
   currentCommit: string | undefined,
-  storedBlobHashes: () => Promise<ReadonlyMap<string, string>>,
+  store: ArtifactSyncStore,
 ): Promise<ArtifactRepoReadResult> {
   return obsContext.with({
     operation: "artifacts.repo.read", repoName, branch,
-  }, () => readArtifactRepoDocumentsWithContext(
-      artifacts, repoName, branch, currentCommit, storedBlobHashes));
+  }, () => readArtifactRepoDocumentsWithContext(artifacts, repoName, branch, currentCommit, store));
 }
 
 async function readArtifactRepoDocumentsWithContext(
@@ -102,7 +100,7 @@ async function readArtifactRepoDocumentsWithContext(
   repoName: string,
   branch: string,
   currentCommit: string | undefined,
-  storedBlobHashes: () => Promise<ReadonlyMap<string, string>>,
+  store: ArtifactSyncStore,
 ): Promise<ArtifactRepoReadResult> {
   using repo = await artifacts.get(repoName);
   // A full ref name, so a tag named like the branch can't stand in for it.
@@ -110,32 +108,25 @@ async function readArtifactRepoDocumentsWithContext(
   if (!tip) {
     return currentCommit === ""
       ? { commit: "", changed: false }
-      : { commit: "", changed: true, unchanged: new Set<string>(), documents: [] };
+      : { commit: "", changed: true, files: new Map() };
   }
   if (tip.hash === currentCommit) return { commit: tip.hash, changed: false };
 
-  let stored = await storedBlobHashes();
-  let unchanged = new Set<string>();
-  let changed: TreeFile[] = [];
+  let held = await store.heldBlobHashes();
+  let files = new Map<string, string>();
+  let toRead: TreeFile[] = [];
   for (let file of await listTreeFiles(repo, tip.treeHash)) {
-    if (stored.get(file.path) === file.hash) unchanged.add(file.path);
-    else changed.push(file);
+    files.set(file.path, file.hash);
+    if (held.get(file.path) !== file.hash) toRead.push(file);
   }
 
-  let readBytes = 0;
-  let documents = await mapWithConcurrency(changed, MAX_READS_IN_FLIGHT, async (file) => {
+  await mapWithConcurrency(toRead, MAX_BLOB_READS_IN_FLIGHT, async (file) => {
     let blob = await readFileBlob(repo, file);
-    if (!blob) return undefined;
-    readBytes += blob.size;
-    if (readBytes > MAX_SYNC_READ_BYTES) throw new GitSyncTooLargeError(MAX_SYNC_READ_BYTES);
-    return artifactContextDocument(file.path, new Uint8Array(await blob.arrayBuffer()), file.hash);
+    if (!blob) return;
+    let body = new Uint8Array(await blob.arrayBuffer());
+    store.stage(artifactContextDocument(file.path, body, file.hash));
   });
-  return {
-    commit: tip.hash,
-    changed: true,
-    unchanged,
-    documents: documents.filter(document => document !== undefined),
-  };
+  return { commit: tip.hash, changed: true, files };
 }
 
 // Every file in a tree and its subtrees, read one directory level at a time.
@@ -143,7 +134,7 @@ async function listTreeFiles(repo: ArtifactsRepo, rootHash: string): Promise<Tre
   let files: TreeFile[] = [];
   let level: TreeFile[] = [{ path: "", hash: rootHash }];
   while (level.length > 0) {
-    let listings = await mapWithConcurrency(level, MAX_READS_IN_FLIGHT, async (tree) => {
+    let listings = await mapWithConcurrency(level, MAX_TREE_READS_IN_FLIGHT, async (tree) => {
       let entries = await repo.readTree(tree.hash);
       if (!entries) throw new Error(`Git tree ${tree.hash} is missing.`);
       return entries.map(entry => ({
