@@ -129,7 +129,7 @@ describe("GoogleSlidesApi.getSlides", () => {
     expect(await failure).toBe("Google Slides get slide failed [http=404]");
   });
 
-  it("starts no request after one fails, and waits for those running", async () => {
+  it("starts no request after one fails, and fails once every earlier ID has answered", async () => {
     let pages = holdPages();
     let wanted = ids(10);
     let settled = false;
@@ -140,20 +140,38 @@ describe("GoogleSlidesApi.getSlides", () => {
 
     pages.asked[2].answer(404);
     await turns();
+    // The request for s2, before the failed one, could still fail first by the IDs' order.
     expect(settled).toBe(false);
     expect(pages.open(SLIDE_FIELDS)).toBe(3);
 
-    // The three still running answer one by one, and the read fails only after the last.
-    for (let page of [pages.asked[1], pages.asked[3]]) {
-      page.answer();
-      await turns();
-      expect(settled).toBe(false);
-    }
-    pages.asked[4].answer();
-
+    pages.asked[1].answer();
+    await turns();
+    // Those for s4 and s5 come after it and cannot change the error: the read fails while they run.
+    expect(settled).toBe(true);
     expect(await failure).toBe("Google Slides get slide failed [http=404]");
+    expect(pages.open(SLIDE_FIELDS)).toBe(2);
+
+    // Their answers are dropped, and no other request starts.
+    pages.asked[3].answer();
+    pages.asked[4].answer(403);
+    await turns();
     expect(pages.asked.map(page => page.id)).toEqual(wanted.slice(0, 5));
-    expect(pages.open(SLIDE_FIELDS)).toBe(0);
+  });
+
+  it("fails at once on the first ID's failure, whatever is still running", async () => {
+    let pages = holdPages();
+    let wanted = ids(6);
+    let settled = false;
+    let failure = failureOf(api.getSlides("deck-1", wanted, wanted)).finally(() => { settled = true; });
+    await pages.reaches(4);
+
+    pages.asked[0].answer(404);
+    await turns();
+    expect(settled).toBe(true);
+    expect(await failure).toBe("Google Slides get slide failed [http=404]");
+    expect(pages.open(SLIDE_FIELDS)).toBe(3);
+    await pages.answerAll();
+    expect(pages.asked).toHaveLength(4);
   });
 
   it("asks for label fields of the IDs it is told to, and the full page of the others", async () => {
