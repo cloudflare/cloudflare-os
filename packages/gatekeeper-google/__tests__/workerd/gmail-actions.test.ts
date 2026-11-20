@@ -1045,6 +1045,8 @@ describe("Gmail session API surface", () => {
     expect(await values.has("gmail:applying:1")).toBe(false);
 
     account.kv.put("accessToken", {token: "access-token", expires: new Date(Date.now() + 3_600_000)});
+    // Later, so the message built anew carries another Date than the one that never left.
+    await new Promise(resolve => setTimeout(resolve, 1500));
     await gatekeeper.applyAction(1);
     expect(sends).toBe(1);
   });

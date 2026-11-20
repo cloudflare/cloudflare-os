@@ -498,6 +498,9 @@ class GmailStore {
     return this.#kv.get<number>(this.#withdrawnSendKey(rfcMessageId)) !== undefined;
   }
 
+  /** Forgets a send's fingerprint, for a send that never left: its retry builds the message anew. */
+  clearSendFingerprint(id: number): void { this.#kv.delete(this.#sendFingerprintKey(id)); }
+
   markApplying(id: number): void { this.#kv.put(this.#applyingKey(id), Date.now()); }
   isApplying(id: number): boolean { return this.#kv.get<number>(this.#applyingKey(id)) !== undefined; }
   clearApplying(id: number): void { this.#kv.delete(this.#applyingKey(id)); }
@@ -4837,9 +4840,11 @@ async function applyUncertainWrite<T>(
     // A definitive rejection proves this invocation did not mutate Gmail, as does a first write
     // never sent because its token could not be had. Read/reconciliation failures must never reach
     // this path or erase an earlier invocation's uncertain outcome.
-    if (isDefinitiveWriteRejection(error) || (first && isUnsentRequest(error))) {
-      store.clearApplying(actionId);
-    }
+    let unsent = first && isUnsentRequest(error);
+    if (isDefinitiveWriteRejection(error) || unsent) store.clearApplying(actionId);
+    // With nothing sent at all, the fingerprint of what was to be sent goes too: a send's retry
+    // builds the message anew, with a new Date, and would otherwise be refused as changed.
+    if (first && (unsent || isDefinitiveWriteRejection(error))) store.clearSendFingerprint(actionId);
     throw error;
   }
 }
