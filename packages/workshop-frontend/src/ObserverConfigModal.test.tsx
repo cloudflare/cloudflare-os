@@ -66,6 +66,7 @@ const NEED: ObserverBindingNeed = {
   vendorId: 'google',
   resourceTitle: 'Q3 planning',
   resourceUrl: 'https://docs.google.com/document/d/quarterly',
+  creationType: 'gatekeeper',
 }
 
 function account(

@@ -240,6 +240,12 @@ export type GadgetRecord = {
   bindings: Record<string, BindingRecord>;
 
   /**
+   * How many times this gadget has restarted to reload its code or env: surfaced to clients as
+   * GadgetSummary.restartVersion. Absent until the first.
+   */
+  restartVersion?: number;
+
+  /**
    * Present while the gadget is provisional: it was created within the given chat and follows
    * that chat's accept/reject lifecycle exactly like code changes (see mergeChanges() /
    * revertChanges()). `sequence` is the chat-log sequence of the "changes" message whose

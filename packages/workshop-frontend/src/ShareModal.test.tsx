@@ -149,12 +149,14 @@ const DOC_REQUIREMENT: ObserverBindingNeed = {
   vendorId: 'google',
   resourceTitle: 'Q3 planning',
   resourceUrl: 'https://docs.google.com/document/d/quarterly',
+  creationType: 'gatekeeper',
 }
 
 const CRM_REQUIREMENT: ObserverBindingNeed = {
   gatekeeperId: 8,
   vendorId: 'salesforce',
   resourceTitle: 'Pipeline dashboard',
+  creationType: 'gatekeeper',
 }
 
 const SHARE_LINK: ShareLinkInfo = {
@@ -181,6 +183,7 @@ type OverseerOverrides = {
   revokeShareLink?: Overseer['revokeShareLink']
   listModels?: Overseer['listModels']
   newChat?: Overseer['newChat']
+  getGatekeeperById?: Overseer['getGatekeeperById']
 }
 
 function fakeOverseer(overrides: OverseerOverrides = {}): RpcStub<Overseer> {
@@ -204,7 +207,22 @@ function fakeOverseer(overrides: OverseerOverrides = {}): RpcStub<Overseer> {
     // The snapshot page's preview, which these tests leave taking its snapshot.
     getGadgetSnapshot: () =>
       Object.assign(Promise.withResolvers<never>().promise, { [Symbol.dispose]: () => {} }),
+    getGatekeeperById: overrides.getGatekeeperById,
   } as unknown as RpcStub<Overseer>
+}
+
+// Pipelined gatekeeper stubs, recording each removal.
+function connections(removeFailure?: Error) {
+  const removed: number[] = []
+  // The fake stands in for the RpcPromise of a GatekeeperClient, of which it has what is called.
+  const getGatekeeperById = ((id: number) => ({
+    remove: async () => {
+      if (removeFailure) throw removeFailure
+      removed.push(id)
+    },
+    [Symbol.dispose]: () => {},
+  })) as unknown as Overseer['getGatekeeperById']
+  return { removed, getGatekeeperById }
 }
 
 type AuthenticatedApiOverrides = {
@@ -432,8 +450,11 @@ describe('ShareModal', () => {
     overseer: RpcStub<Overseer>,
     authenticatedApi = fakeAuthenticatedApi(),
     metadata: WorkspaceMetadata = METADATA,
-    { userSearchEnabled = true, snapshotSharingEnabled = true,
-      target = { kind: 'workspace' } as ShareTarget } = {},
+    { userSearchEnabled = true, snapshotSharingEnabled = true, target = { kind: 'workspace' } }: {
+      userSearchEnabled?: boolean
+      snapshotSharingEnabled?: boolean
+      target?: ShareTarget
+    } = {},
   ) {
     container = document.createElement('div')
     document.body.append(container)
@@ -1254,6 +1275,72 @@ describe('ShareModal', () => {
 
     await click(rendered.querySelector<HTMLElement>('button[aria-label="Back to sharing"]')!)
     expect(rendered.querySelector('h2')?.textContent).toBe('Share “Itinerary”')
+  })
+
+  describe('deleting workspace connections', () => {
+    const WORKSPACE_TARGET: ShareTarget = { kind: 'workspace' }
+
+    async function openResources(target: ShareTarget,
+      requirements = [DOC_REQUIREMENT, CRM_REQUIREMENT], removeFailure?: Error) {
+      const server = connections(removeFailure)
+      const rendered = await render(fakeOverseer({
+        // A fresh array each call, as from the real RPC, so a refresh changes `requirements`.
+        listObserverRequirements: async () => [...requirements],
+        getGatekeeperById: server.getGatekeeperById,
+      }), fakeAuthenticatedApi(), METADATA, { target })
+      await click(resourcesPill(rendered))
+      return { rendered, removed: server.removed }
+    }
+
+    it('deletes a connection only on a second click, then drops its row', async () => {
+      const { rendered, removed } = await openResources(WORKSPACE_TARGET)
+
+      await click(button(rendered, 'Delete Q3 planning from workspace'))
+      expect(removed).toEqual([])
+      await click(button(rendered, 'Delete'))
+
+      expect(removed).toEqual([7])
+      expect(rendered.textContent).not.toContain('Q3 planning')
+      expect(rendered.textContent).toContain('Pipeline dashboard')
+    })
+
+    it('keeps a connection when the confirmation is cancelled', async () => {
+      const { rendered, removed } = await openResources(WORKSPACE_TARGET)
+
+      await click(button(rendered, 'Delete Q3 planning from workspace'))
+      await click(button(rendered, 'Cancel'))
+
+      expect(removed).toEqual([])
+      expect(button(rendered, 'Delete Q3 planning from workspace')).toBeTruthy()
+    })
+
+    it('keeps the confirmation open and the other rows usable when deletion fails', async () => {
+      toastAdd.mockClear()
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      const { rendered, removed } = await openResources(WORKSPACE_TARGET, undefined, new Error('Connection is busy.'))
+
+      await click(button(rendered, 'Delete Q3 planning from workspace'))
+      await click(button(rendered, 'Delete'))
+
+      expect(removed).toEqual([])
+      expect(toastAdd).toHaveBeenCalledWith({ title: 'Connection is busy.', variant: 'error' })
+      expect(button(rendered, 'Delete').disabled).toBe(false)
+      expect(button(rendered, 'Delete Pipeline dashboard from workspace').disabled).toBe(false)
+    })
+
+    it('offers no deletion for an ambient connection', async () => {
+      const { rendered } = await openResources(WORKSPACE_TARGET,
+        [DOC_REQUIREMENT, { ...CRM_REQUIREMENT, creationType: 'ambient' }])
+
+      expect(button(rendered, 'Pipeline dashboard can’t be deleted')).toBeTruthy()
+      expect(rendered.querySelector('button[aria-label="Delete Pipeline dashboard from workspace"]')).toBeNull()
+    })
+
+    it('offers no deletion when sharing one gadget', async () => {
+      const { rendered } = await openResources(GADGET_TARGET)
+
+      expect(rendered.querySelector('button[aria-label^="Delete "]')).toBeNull()
+    })
   })
 
   it('shows no protected resources pill when recipients have nothing to verify', async () => {

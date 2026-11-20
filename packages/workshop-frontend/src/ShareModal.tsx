@@ -2,7 +2,7 @@ import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef, use
 import { createPortal, flushSync } from 'react-dom'
 import { useNavigate } from '@tanstack/react-router'
 import { Checkbox, Dialog, DropdownMenu, Tooltip, useKumoToastManager } from '@cloudflare/kumo'
-import { CaretDown, CaretLeft, CaretRight, Check, Copy, Eye, Link, LockSimple, PencilSimple, ShieldWarning, Trash, UserPlus, UsersThree, X } from '@phosphor-icons/react'
+import { CaretDown, CaretLeft, CaretRight, Check, Copy, Eye, Info, Link, LockSimple, PencilSimple, ShieldWarning, Trash, UserPlus, UsersThree, X } from '@phosphor-icons/react'
 import { RpcStub } from 'capnweb'
 import {
   Overseer,
@@ -128,6 +128,8 @@ function formatRelativeTime(date: Date): string {
 
 function InlineConfirm({
   label,
+  confirmAriaLabel,
+  describedBy,
   busy,
   busyLabel,
   tone = 'danger',
@@ -135,19 +137,27 @@ function InlineConfirm({
   onCancel,
 }: {
   label: string
+  // Names the confirm button when `label` alone doesn't say what it acts on.
+  confirmAriaLabel?: string
+  // The id of the text explaining the consequence, read with both buttons.
+  describedBy?: string
   busy: boolean
   busyLabel?: string
   tone?: 'danger' | 'brand'
   onConfirm: () => void
   onCancel: () => void
 }) {
+  // Busy buttons stay focusable (aria-disabled, not disabled): disabling the focused one would drop
+  // keyboard focus to the page while the request is in flight.
   return (
     <div className="flex items-center gap-1 share-confirm-in">
       <button
         type="button"
-        onClick={onConfirm}
-        disabled={busy}
-        className={`inline-flex h-7 cursor-pointer items-center rounded-lg px-2.5 text-[12px] leading-4 font-medium tracking-[-0.1px] transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] disabled:opacity-60 ${
+        onClick={() => { if (!busy) onConfirm() }}
+        aria-disabled={busy || undefined}
+        aria-label={confirmAriaLabel}
+        aria-describedby={describedBy}
+        className={`inline-flex h-7 cursor-pointer items-center rounded-lg px-2.5 text-[12px] leading-4 font-medium tracking-[-0.1px] transition-[background-color,transform] duration-150 ease-out active:scale-[0.97] aria-disabled:cursor-default aria-disabled:opacity-60 ${
           tone === 'danger'
             ? 'text-kumo-danger hover:bg-kumo-danger-tint'
             : 'text-kumo-brand hover:bg-kumo-tint'
@@ -157,10 +167,11 @@ function InlineConfirm({
       </button>
       <button
         type="button"
-        onClick={onCancel}
-        disabled={busy}
+        onClick={() => { if (!busy) onCancel() }}
+        aria-disabled={busy || undefined}
+        aria-describedby={describedBy}
         aria-label="Cancel"
-        className="grid h-7 w-7 cursor-pointer place-items-center rounded-lg text-kumo-inactive transition-[background-color,color,transform] duration-150 ease-out hover:bg-kumo-tint hover:text-kumo-default active:scale-[0.96] disabled:opacity-60"
+        className="grid h-7 w-7 cursor-pointer place-items-center rounded-lg text-kumo-inactive transition-[background-color,color,transform] duration-150 ease-out hover:bg-kumo-tint hover:text-kumo-default active:scale-[0.96] aria-disabled:cursor-default aria-disabled:opacity-60"
       >
         <X size={14} />
       </button>
@@ -254,15 +265,169 @@ function DottedDivider() {
 // What a recipient is asked to do before what they were given will open for them. Recipients
 // don't inherit the owner's connections: they must point their own account at each connection in
 // scope, so sharers should know that cost before they invite anyone.
+//
+// Given `deletion`, each connection can be deleted from the workspace after a second click, except
+// an ambient one: the workspace provisions it again from the owner's account on its next open.
 function ProtectedResourceList({
   requirements,
   failed,
   vendorBranding,
+  deletion,
 }: {
   requirements: ObserverBindingNeed[]
   failed: boolean
   vendorBranding: Map<string, VendorBranding>
+  // `placeFocus` asks the dialog to place focus: the deleted connection was the last one listed,
+  // leaving no row to focus, and the user was still working in the list. The dialog also places
+  // focus when the deletion removes the control the user moved to, such as Back.
+  deletion?: {
+    overseer: RpcStub<Overseer>
+    // The connection whose deletion is in flight. The dialog holds it, so leaving this page and
+    // returning before the request settles can't start a second deletion.
+    deletingId: WorkpieceId | null
+    onDeletingIdChange: (gatekeeperId: WorkpieceId | null) => void
+    onDeleted: (gatekeeperId: WorkpieceId, placeFocus: boolean) => void
+  }
 }) {
+  const toasts = useKumoToastManager()
+  const [confirmingId, setConfirmingId] = useState<WorkpieceId | null>(null)
+  const deletingId = deletion?.deletingId ?? null
+  const listRef = useRef<HTMLUListElement>(null)
+  const rowTextId = useId()
+  // The ambient row whose "Always included" status is shown, pinned when tapped open.
+  const [statusTooltip, setStatusTooltip] = useState<{ gatekeeperId: WorkpieceId; pinned: boolean } | null>(null)
+
+  // Each swap replaces the focused control, so focus is handed to its replacement explicitly.
+  // The row is then scrolled whole into the page's panel, which the list is a child of:
+  // scrollIntoView() would also scroll the dialog's ancestor scrollers.
+  const focusInRow = (gatekeeperId: WorkpieceId, selector: string) => {
+    const row = listRef.current?.querySelector<HTMLElement>(`li[data-gatekeeper-id="${gatekeeperId}"]`)
+    const control = row?.querySelector<HTMLElement>(selector)
+    if (!row || !control) return
+    control.focus({ preventScroll: true })
+    const panel = listRef.current?.parentElement
+    if (!panel) return
+    const panelRect = panel.getBoundingClientRect()
+    const rowRect = row.getBoundingClientRect()
+    if (rowRect.top < panelRect.top) {
+      panel.scrollTop -= panelRect.top - rowRect.top
+    } else if (rowRect.bottom > panelRect.bottom) {
+      panel.scrollTop += rowRect.bottom - panelRect.bottom
+    }
+  }
+  const startConfirm = (gatekeeperId: WorkpieceId) => {
+    flushSync(() => setConfirmingId(gatekeeperId))
+    focusInRow(gatekeeperId, 'button[aria-label="Cancel"]')
+  }
+  const cancelConfirm = (gatekeeperId: WorkpieceId) => {
+    flushSync(() => setConfirmingId(null))
+    focusInRow(gatekeeperId, '[data-resource-control]')
+  }
+
+  const handleDelete = async (requirement: ObserverBindingNeed) => {
+    if (!deletion || deletingId !== null) return
+    const { gatekeeperId } = requirement
+    // Where focus goes once the row is gone: the next row, else the previous one. With no row
+    // left the subpage closes and the dialog's onDeleted places focus.
+    const index = requirements.findIndex(candidate => candidate.gatekeeperId === gatekeeperId)
+    const neighbor = requirements[index + 1] ?? requirements[index - 1]
+    deletion.onDeletingIdChange(gatekeeperId)
+    const gatekeeper = deletion.overseer.getGatekeeperById(gatekeeperId)
+    // A slow deletion may finish after the user moved on: to another row, Back, or out of the
+    // dialog. Focus moves only if it is still on this row, or is on nothing at all.
+    const focusStayed = () => {
+      const active = document.activeElement
+      return !active || active === document.body || !!listRef.current
+        ?.querySelector(`li[data-gatekeeper-id="${gatekeeperId}"]`)?.contains(active)
+    }
+    try {
+      await gatekeeper.remove()
+      const placeFocus = focusStayed()
+      flushSync(() => {
+        setConfirmingId(null)
+        deletion.onDeletingIdChange(null)
+      })
+      // Before the row goes, so the dialog sees focus on a control that stays.
+      if (placeFocus && neighbor) focusInRow(neighbor.gatekeeperId, '[data-resource-control]')
+      deletion.onDeleted(gatekeeperId, placeFocus && !neighbor)
+      toasts.add({ title: 'Connection deleted.', variant: 'success' })
+    } catch (err) {
+      console.error('Failed to delete connection:', err)
+      const placeFocus = focusStayed()
+      flushSync(() => deletion.onDeletingIdChange(null))
+      if (placeFocus) focusInRow(gatekeeperId, 'button[aria-label="Cancel"]')
+      toasts.add({ title: (err instanceof Error && err.message) || 'Failed to delete connection.', variant: 'error' })
+    } finally {
+      gatekeeper[Symbol.dispose]()
+    }
+  }
+
+  const renderControl = (requirement: ObserverBindingNeed): ReactNode => {
+    const { gatekeeperId, resourceTitle } = requirement
+    if (!deletion) return null
+    if (requirement.creationType === 'ambient') {
+      const statusId = `${rowTextId}-${gatekeeperId}-status`
+      const shown = statusTooltip?.gatekeeperId === gatekeeperId
+      return (
+        <Tooltip
+          open={shown}
+          onOpenChange={(nextOpen, details) => {
+            // The button owns tap toggling; Kumo otherwise closes on pointerdown.
+            if (details.reason === 'trigger-press') return
+            setStatusTooltip(current => {
+              // Hybrid devices synthesize mouseleave after a tap.
+              if (details.reason === 'trigger-hover' && current?.pinned) return current
+              if (nextOpen) return { gatekeeperId, pinned: false }
+              return current?.gatekeeperId === gatekeeperId ? null : current
+            })
+          }}
+          content={<span role="tooltip" id={statusId} data-share-resource-tooltip>Always included</span>}
+          asChild
+        >
+          <button
+            type="button"
+            data-resource-control
+            aria-label={`${resourceTitle} can’t be deleted`}
+            aria-describedby={shown ? statusId : undefined}
+            onClick={() => setStatusTooltip(current => current?.gatekeeperId === gatekeeperId
+              ? null : { gatekeeperId, pinned: true })}
+            className="grid h-7 w-7 shrink-0 cursor-pointer place-items-center rounded-lg text-kumo-inactive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring"
+          >
+            <Info size={14} />
+          </button>
+        </Tooltip>
+      )
+    }
+    // Fails closed: only a kind known to be removable gets Delete.
+    if (requirement.creationType !== 'gatekeeper') return null
+    if (confirmingId === gatekeeperId) {
+      return (
+        <InlineConfirm
+          label="Delete"
+          confirmAriaLabel={`Delete ${resourceTitle}`}
+          describedBy={`${rowTextId}-${gatekeeperId}-warning`}
+          busy={deletingId === gatekeeperId}
+          onConfirm={() => handleDelete(requirement)}
+          onCancel={() => cancelConfirm(gatekeeperId)}
+        />
+      )
+    }
+    return (
+      <Tooltip content={<span data-share-resource-tooltip>Delete connection</span>} asChild>
+        <WorkshopIconButton
+          danger
+          className="!h-7 !w-7 shrink-0"
+          data-resource-control
+          onClick={() => startConfirm(gatekeeperId)}
+          aria-label={`Delete ${resourceTitle} from workspace`}
+          disabled={deletingId !== null}
+        >
+          <Trash size={13} />
+        </WorkshopIconButton>
+      </Tooltip>
+    )
+  }
+
   if (failed) {
     return (
       <p className="text-[13px] leading-5 tracking-[-0.15px] text-kumo-subtle">
@@ -271,16 +436,34 @@ function ProtectedResourceList({
     )
   }
   return (
-    <ul className="overflow-hidden rounded-2xl border border-kumo-line/80 bg-kumo-base p-2">
-      {requirements.map(requirement => (
-        <li key={requirement.gatekeeperId} className="flex min-w-0 items-center gap-3 rounded-xl px-2 py-2">
-          <GatekeeperIcon
-            vendorId={requirement.vendorId}
-            fallbackText={requirement.resourceTitle}
-            {...vendorBranding.get(requirement.vendorId)}
-            size={20}
-            className="h-10 w-10 rounded-xl"
-          />
+    <ul ref={listRef} className="overflow-hidden rounded-2xl border border-kumo-line/80 bg-kumo-base p-2">
+      {requirements.map(requirement => {
+        const confirming = confirmingId === requirement.gatekeeperId
+        return (
+        <li
+          key={requirement.gatekeeperId}
+          data-gatekeeper-id={requirement.gatekeeperId}
+          // The minimum height is the icon's row height, so the row keeps its size without it.
+          className={`flex min-h-14 min-w-0 items-center gap-3 rounded-xl py-2 pr-2 ${confirming ? 'bg-kumo-danger-tint/40 pl-2.5' : 'pl-2'}`}
+        >
+          {!confirming && (
+            <GatekeeperIcon
+              vendorId={requirement.vendorId}
+              fallbackText={requirement.resourceTitle}
+              {...vendorBranding.get(requirement.vendorId)}
+              size={20}
+              className="h-10 w-10 rounded-xl"
+            />
+          )}
+          {confirming ? (
+            <p
+              id={`${rowTextId}-${requirement.gatekeeperId}-warning`}
+              className="min-w-0 flex-1 text-[12px] leading-4 tracking-[-0.15px] text-kumo-subtle [overflow-wrap:anywhere]"
+            >
+              People you add will no longer need to verify access to this resource. Any existing data
+              will be retained and become visible to everyone in the workspace.
+            </p>
+          ) : (
           <div className="min-w-0 flex-1">
             <p className="truncate text-[14px] leading-5 font-medium tracking-[-0.25px] text-kumo-default">
               {requirement.resourceTitle}
@@ -291,8 +474,11 @@ function ProtectedResourceList({
               </p>
             )}
           </div>
+          )}
+          {renderControl(requirement)}
         </li>
-      ))}
+        )
+      })}
     </ul>
   )
 }
@@ -394,6 +580,8 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
   const [adding, setAdding] = useState(false)
   const [newLinkNote, setNewLinkNote] = useState('')
   const [requirements, setRequirements] = useState<ObserverBindingNeed[] | null>(null)
+  // The connection whose deletion is in flight (see ProtectedResourceList's `deletion`).
+  const [deletingConnectionId, setDeletingConnectionId] = useState<WorkpieceId | null>(null)
   const [requirementsFailed, setRequirementsFailed] = useState(false)
   // A page of the dialog that stands in for the sharing view until its back button.
   const [subpage, setSubpage] = useState<'resources' | 'advanced' | 'snapshot' | null>(null)
@@ -1272,6 +1460,24 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
               requirements={requirements ?? []}
               failed={requirementsFailed}
               vendorBranding={vendorBranding}
+              deletion={gadgetId === undefined ? {
+                overseer,
+                deletingId: deletingConnectionId,
+                onDeletingIdChange: setDeletingConnectionId,
+                onDeleted: (gatekeeperId, placeFocus) => {
+                  const focused = document.activeElement
+                  flushSync(() => setRequirements(current =>
+                    current && current.filter(requirement => requirement.gatekeeperId !== gatekeeperId)))
+                  // The page closes with its last connection. Forget it was open, or a refresh
+                  // that lists a new connection would reopen it unasked.
+                  if (!resourcesButtonRef.current) setSubpage(current => current === 'resources' ? null : current)
+                  // Deleting the last one closes the subpage, and its opener with it: either may
+                  // have held focus, as Back and the pill do once the user has left the list.
+                  if (placeFocus || (focused instanceof HTMLElement && !focused.isConnected)) {
+                    (backButtonRef.current ?? peopleInputRef.current)?.focus({ preventScroll: true })
+                  }
+                },
+              } : undefined}
             />
           </div>
         )}

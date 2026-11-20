@@ -263,29 +263,21 @@ it.concurrent("removing a connection cuts off its pending action, its bindings a
     });
     await waitForIdleChat(ws, pending.chatId);
 
-    expect(await actionState(label)).toEqual({
-      pending: [{ id: expect.any(Number), value: 7 }],
-      applyCount: 0,
-    });
+    const unapplied = { pending: [{ id: expect.any(Number), value: 7 }], applyCount: 0 };
+    expect(await actionState(label)).toEqual(unapplied);
     await thing.remove();
 
     expect((await app.listBindings()).some(binding => binding.target === thingId)).toBe(false);
-    await expect(ws.approveAction(action.id)).rejects.toThrow(/removed from the workspace/);
-    expect((await ws.listActions({ filter: "pending" })).entries.map(entry => entry.id))
-        .toEqual([action.id]);
-    expect(await actionState(label)).toEqual({
-      pending: [{ id: expect.any(Number), value: 7 }],
-      applyCount: 0,
-    });
-
+    expect((await ws.listActions({ filter: "all" })).entries.find(entry => entry.id === action.id))
+        .toMatchObject({ type: "action", state: "rejected", resolvedBy: { type: "user", id: session.username } });
+    await expect(ws.approveAction(action.id)).rejects.toThrow(`Action is not pending: ${action.id}`);
+    // The session went down with its connection, so the write never reached the gatekeeper,
+    // rather than being staged there and refused afterwards.
     await expect(stale.writeValue(8)).rejects.toThrow(
         /^The execution context which hosts this callback is no longer running\.$/);
-    expect((await ws.listActions({ filter: "pending" })).entries.map(entry => entry.id))
-        .toEqual([action.id]);
-    expect(await actionState(label)).toEqual({
-      pending: [{ id: expect.any(Number), value: 7 }],
-      applyCount: 0,
-    });
+    expect((await ws.listActions({ filter: "pending" })).entries).toEqual([]);
+    // Removal rejects in Workshop without calling back into the deleted connection.
+    expect(await actionState(label)).toEqual(unapplied);
 
     const retry = await session.runTurn("Wire the requested connection into APP.");
     expect(retry.outcome).toEqual({ status: "completed" });
