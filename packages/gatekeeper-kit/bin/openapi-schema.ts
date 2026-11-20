@@ -11,9 +11,10 @@
 //                               [--scopes-extension <name>]
 //
 // <spec> is a JSON file or an https URL. --sha256 is the document's SHA-256, which a URL needs, so
-// that a run generates from the same document as the last one. --operations names a file listing
-// the operationIds to keep, one per line (`#` starts a comment); every other operation is left
-// out, and the run fails if the schemas cannot hold one that is listed. --group-by tag
+// that a run generates from the same document as the last one. --operations names a JSON Lines
+// file of the operations to keep, each line an object as --list prints one; every other operation
+// is left out. Only a line's `operationId` chooses. The run fails for a line whose `method` or
+// `path` is no longer the document's, and if the schemas cannot hold one that is listed. --group-by tag
 // groups each operation by its first tag, where one schema of every operation is too large.
 // --omit-header drops a header parameter, by name in any case, from every operation: one the
 // client sends itself, through its `headers` or `fetch` option, so calls need not pass it.
@@ -28,8 +29,9 @@
 //
 //     gatekeeper-openapi-schema <spec> --list [--sha256 <hex>] [--patch <file>]
 //
-// prints every operation of the document instead, one per line, as its operationId, method, path,
-// first tag and summary, separated by tabs: what to choose the --operations file from.
+// prints every operation of the document instead, as JSON Lines: one object per operation with its
+// `operationId`, `method`, `path`, first `tag` and `summary`. The lines chosen from it are the
+// --operations file.
 
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -99,7 +101,7 @@ if (values.out === undefined) {
     values["omit-header"] ?? [], values.writable ?? [], values.patch, values["scopes-extension"]);
 }
 
-/** Prints each operation of the document as a line of tab-separated fields, sorted by path. */
+/** Prints each operation of the document as a line of JSON, sorted by path. */
 async function list(spec: string, sha256: string | undefined, patchFile: string | undefined): Promise<void> {
   const doc = await readDocument(spec, sha256);
   if (patchFile !== undefined) applyPatch(doc, JSON.parse(readFileSync(patchFile, "utf8")) as Json, patchFile);
@@ -111,7 +113,10 @@ async function list(spec: string, sha256: string | undefined, patchFile: string 
       const operation = item[method];
       if (!isObject(operation)) continue;
       const tag = Array.isArray(operation.tags) ? operation.tags[0] : undefined;
-      lines.push([text(operation.operationId), method.toUpperCase(), path, text(tag), text(operation.summary)].join("\t"));
+      lines.push(JSON.stringify({
+        operationId: text(operation.operationId), method: method.toUpperCase(), path,
+        tag: text(tag), summary: text(operation.summary),
+      }));
     }
   }
   process.stdout.write(`${lines.join("\n")}\n`);
@@ -124,7 +129,7 @@ async function main(
 ): Promise<void> {
   const doc = await readDocument(spec, sha256);
   if (patchFile !== undefined) applyPatch(doc, JSON.parse(readFileSync(patchFile, "utf8")) as Json, patchFile);
-  if (operationsFile !== undefined) keepOperations(doc, readOperationIds(operationsFile));
+  if (operationsFile !== undefined) keepOperations(doc, readOperations(operationsFile), operationsFile);
   prepareOperations(doc, byTag, scopesExtension);
   omitHeaders(doc, new Set(omittedHeaders.map(name => name.toLowerCase())));
   inlineInnerRefs(doc);
@@ -205,35 +210,57 @@ function applyPatch(document: JsonObject, patch: Json, file: string): void {
   });
 }
 
-function readOperationIds(path: string): Set<string> {
-  return new Set(readFileSync(path, "utf8").split("\n")
-    .map(line => line.replace(/#.*/, "").trim())
-    .filter(line => line !== ""));
+/** The operations an --operations file lists, by operationId: each line as --list printed it. */
+function readOperations(file: string): Map<string, JsonObject> {
+  const listed = new Map<string, JsonObject>();
+  readFileSync(file, "utf8").split("\n").forEach((line, index) => {
+    if (line.trim() === "") return;
+    let operation: Json;
+    try {
+      operation = JSON.parse(line) as Json;
+    } catch {
+      fail(`${file} line ${index + 1} is not JSON: each line is one operation, as --list prints it`);
+    }
+    if (!isObject(operation) || typeof operation.operationId !== "string" || operation.operationId === "") {
+      fail(`${file} line ${index + 1} needs an operationId`);
+    }
+    listed.set(operation.operationId, operation);
+  });
+  return listed;
 }
 
-/** Each operation in the document, with the path item and method holding it. */
-function* operations(document: JsonObject): Generator<[JsonObject, string, JsonObject]> {
-  for (const item of Object.values(document.paths as JsonObject)) {
+/** Each operation in the document, with the path item and method holding it, and its path. */
+function* operations(document: JsonObject): Generator<[JsonObject, string, JsonObject, string]> {
+  for (const [path, item] of Object.entries(document.paths as JsonObject)) {
     if (!isObject(item)) continue;
     for (const method of HTTP_METHODS) {
       const operation = item[method];
-      if (isObject(operation)) yield [item, method, operation];
+      if (isObject(operation)) yield [item, method, operation, path];
     }
   }
 }
 
-/** Removes every operation `ids` does not name, and fails on an id the document lacks. */
-function keepOperations(document: JsonObject, ids: Set<string>): void {
+/**
+ * Removes every operation `listed` does not name. Fails on an id the document lacks, and on a line
+ * whose `method` or `path` is not the document's: the operation moved since the line was chosen.
+ */
+function keepOperations(document: JsonObject, listed: Map<string, JsonObject>, file: string): void {
   const found = new Set<string>();
-  for (const [item, method, operation] of operations(document)) {
-    const id = operation.operationId;
-    if (typeof id === "string" && ids.has(id)) {
-      found.add(id);
-    } else {
+  const moved: string[] = [];
+  for (const [item, method, operation, path] of operations(document)) {
+    const line = typeof operation.operationId === "string" ? listed.get(operation.operationId) : undefined;
+    if (line === undefined) {
       delete item[method];
+      continue;
+    }
+    found.add(operation.operationId as string);
+    const says = `${line.method ?? method.toUpperCase()} ${line.path ?? path}`;
+    if (says !== `${method.toUpperCase()} ${path}`) {
+      moved.push(`${operation.operationId} is ${method.toUpperCase()} ${path} in the document, not ${says} as ${file} says`);
     }
   }
-  const missing = [...ids].filter(id => !found.has(id));
+  if (moved.length > 0) fail(moved.join("\n"));
+  const missing = [...listed.keys()].filter(id => !found.has(id));
   if (missing.length > 0) fail(`the document has no operation ${missing.join(", ")}`);
   const paths = document.paths as JsonObject;
   for (const [path, item] of Object.entries(paths)) {
