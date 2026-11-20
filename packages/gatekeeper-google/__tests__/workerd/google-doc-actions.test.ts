@@ -2506,6 +2506,44 @@ describe("adding a Google Doc tab", () => {
     expect(await hooks().applyAction("add-tab-gone", added.actionId)).toBeNull();
   });
 
+  // A retry that never left proves nothing about the earlier send, which may still land: its
+  // guard is kept, so a tab that appears later is not added a second time.
+  it("keeps an unknown add's guard through a retry its disconnected connection never sent", async () => {
+    let docs = new DocsModel();
+    docs.unsentContentRequests = 1;
+    docs.setText(MAIN_TAB, "Intro");
+    docs.install();
+    let added = await addTab("add-tab-kept", "Notes");
+    expect(await hooks().applyAction("add-tab-kept", added.actionId)).toMatch(/connection dropped/);
+
+    let inner = globalThis.fetch;
+    let reads = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      let url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
+      let method = init?.method ?? (input instanceof Request ? input.method : "GET");
+      if (method === "GET" && url.pathname === "/v1/documents/doc-1" && ++reads === 1) {
+        await rawHooks().disconnectDrive();
+        vi.spyOn(Date, "now").mockReturnValue(Date.now() + ACCESS_TOKEN_MEMO_MAX_AGE_MS);
+      }
+      return inner(input, init);
+    }));
+    try {
+      expect(await hooks().applyAction("add-tab-kept", added.actionId))
+        .toBe("The test disconnected this Google account.");
+    } finally {
+      vi.restoreAllMocks();
+      await rawHooks().setDriveToken(undefined);
+    }
+    // The first send lands after all, and its marker's tab is gone.
+    docs.install();
+    docs.addTab("t.late", "Notes", undefined as unknown as string);
+    docs.externalEdit();
+
+    expect(await hooks().applyAction("add-tab-kept", added.actionId))
+      .toContain("whether it was added is unknown");
+    expect(docs.tabs.filter(tab => tab.title === "Notes")).toHaveLength(1);
+  });
+
   it("queues an empty tab that edits fill before it is added, and applies them in order", async () => {
     let docs = new DocsModel();
     docs.setText(MAIN_TAB, "Intro");
