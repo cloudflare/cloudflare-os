@@ -547,10 +547,11 @@ export interface AgentHooks {
    * The grep tool's scan: the lines matching `pattern` in the searchable files under `path` in
    * a workpiece's overlay-over-base view, with missing base blobs pulled in one batch (see
    * scanWorkpieceForGrep). `base` is the commit the workpiece's untouched files are read from,
-   * or undefined for a gadget with no committed code.
+   * or undefined for a gadget with no committed code. Matches past `maxChars` of output are
+   * counted rather than kept.
    */
   grepWorkpiece(turn: WorktreeTurnAccess, workpieceId: WorkpieceId, base: string | undefined,
-                pattern: RegExp, path?: string): Promise<GrepScan>;
+                pattern: RegExp, path: string | undefined, maxChars: number): Promise<GrepScan>;
 
   /**
    * Describe a workpiece (a gadget or a gatekeeper) reachable as `envName` in chat `chatId`'s
@@ -3605,7 +3606,8 @@ async function runAgentPass(
           let base = pinnedGadgets.has(workpieceId)
               ? worktreeBase(workpieceId)
               : observeHead(workpieceId) ?? hooks.getWorktreePinBase(workpieceId);
-          let scan = await hooks.grepWorkpiece(worktreeTurnAccess, workpieceId, base, re, path);
+          let scan = await hooks.grepWorkpiece(
+              worktreeTurnAccess, workpieceId, base, re, path, MAX_TOOL_RESULT_CHARS);
           // Recorded as shown: replay reads this text back, and a broad match over several
           // large files could otherwise exceed a storage record.
           let output = formatGrep(scan, MAX_TOOL_RESULT_CHARS);
@@ -4332,6 +4334,9 @@ async function runAgentPass(
   let turnFailure: AssistantMessage | undefined;
   // Whether a step of this pass got a response, so a failure is not this pass's first request.
   let stepFinished = false;
+  // Whether this pass's prompt names older attachments by path where earlier requests showed
+  // them (see `pastLimitParts`).
+  let promptRewritten = false;
 
   // Set when the next provider request would cross the preferred compaction budget. The
   // turn_end barrier persists this step before the caller reloads durable history.
@@ -4510,8 +4515,11 @@ async function runAgentPass(
           }
 
           // The model-facing snapshot rides along for the overseer to persist beside the display
-          // record.
-          msg.modelData = makeStoredAssistantMessage(message);
+          // record. Thinking signed over a rewritten prompt is left out: later turns replay, and
+          // may compact, the prompt earlier requests sent, against which it would be invalid.
+          msg.modelData = makeStoredAssistantMessage(promptRewritten
+              ? {...message, content: message.content.filter(block => block.type !== "thinking")}
+              : message);
           msgs.push(msg);
         }
 
@@ -4667,10 +4675,12 @@ async function runAgentPass(
   if (compactionTurn) return {type: "finished"};
 
   // Past the limits on inline attachments with no compaction: name the older ones by path, and
-  // drop the thinking after the first of them, which that rewrite invalidates.
+  // drop the thinking after the first of them, which that rewrite invalidates. The rewrite lasts
+  // only this pass, whose replies are stored without their thinking.
   let rewrittenFrom = modelMessages.findIndex(message => message.role === "user" &&
       Array.isArray(message.content) && message.content.some(part => pastLimitParts.has(part)));
   if (rewrittenFrom >= 0) {
+    promptRewritten = true;
     modelMessages = modelMessages.flatMap((message, index): Message[] => {
       if (index < rewrittenFrom) return [message];
       if (message.role === "assistant") {
