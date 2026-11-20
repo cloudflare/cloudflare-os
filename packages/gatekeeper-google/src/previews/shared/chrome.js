@@ -213,11 +213,15 @@ export const dataUrl = async (content, type) => {
  */
 export const SYSTEM_FONT = /^(arial|sans)$/i;
 
+// How long a font that could not be read is left alone: the failure may be a busy server's.
+const FONT_RETRY_MS = 60_000;
+
 /**
  * Brings fonts into this frame through `read(family, weight, italic)`, a session's readFont(): at
- * most `most` of them, each asked for once. `measures(bytes, family)` gives what a face sets over
- * its file's own measures. `asked(...font)` says whether a font was asked for, and `read(fonts)`
- * reads those of `[family, weight, italic]` that were not, and says whether any arrived.
+ * most `most` of them, each asked for once, or again a while after it could not be read.
+ * `measures(bytes, family)` gives what a face sets over its file's own measures. `asked(...font)`
+ * says whether a font was asked for, and `read(fonts)` reads those of `[family, weight, italic]`
+ * that were not, and says whether any arrived.
  */
 export function fontReader(read, most, measures = () => ({})) {
   // Each font asked for: whether it arrived. Only one that does, or may yet, counts against the limit.
@@ -236,6 +240,7 @@ export function fontReader(read, most, measures = () => ({})) {
       return true;
     }).catch(() => {
       held--;
+      setTimeout(() => faces.delete(font), FONT_RETRY_MS);
       // Without the weight the browser makes one from the family's regular, when that is there.
       return (weight !== 400 || italic) && face(family, 400, false);
     });
