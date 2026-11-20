@@ -490,11 +490,14 @@ function showViews(card) {
 // of the box is drawn. `frame` itself for an element with no text, or on a stage not laid out.
 function inked(stage, id, frame) {
   const node = stage.querySelector(`.el[data-id="${CSS.escape(id)}"]`);
+  const table = node?.classList.contains('grid');
   const words = node?.querySelector(':scope > .words');
   const sheet = stage.getBoundingClientRect();
-  // Each run's lines, a paragraph's own box being as wide as the element's whatever it holds.
-  const lines = [...words?.querySelectorAll('p > *') ?? []].flatMap(run => [...run.getClientRects()]);
-  if (!words?.textContent.trim() || !sheet.width || !lines.length) return frame;
+  // Each run's lines, a paragraph's own box being as wide as the element's whatever it holds. A
+  // table is its whole box, as tall as its rows have grown: its cells' text is theirs, not its own.
+  const lines = table ? [node.getBoundingClientRect()]
+    : [...words?.querySelectorAll('p > *') ?? []].flatMap(run => [...run.getClientRects()]);
+  if (!(table || words?.textContent.trim()) || !sheet.width || !lines.length) return frame;
   const scale = size.width / sheet.width;
   const edges = lines.map(line => [line.left, line.top, line.right, line.bottom].map((edge, n) => (edge - (n % 2 ? sheet.top : sheet.left)) * scale));
   if (node.querySelector(':scope > svg')) edges.push([frame.x, frame.y, frame.x + frame.width, frame.y + frame.height]);
