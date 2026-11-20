@@ -2,7 +2,7 @@
 // those of each choice made on the command line, which replace a base file of the same path. The
 // template is written for an invented provider, "Acme Service", whose name is replaced throughout.
 
-import { readFileSync, readdirSync, readlinkSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join, relative } from "node:path";
 
 const TEMPLATE = join(import.meta.dirname, "..", "template");
@@ -115,15 +115,17 @@ export function scaffold(options: ScaffoldOptions): Map<string, ScaffoldFile> {
   for (const layer of ["base", `auth-${options.auth}`, ...features]) {
     const root = join(TEMPLATE, layer);
     for (const path of walk(root)) {
-      let file: ScaffoldFile;
-      try {
-        file = { symlink: rename(readlinkSync(path), names) };
-      } catch {
-        file = { text: rename(resolveBlocks(readFileSync(path, "utf8"), features), names) };
+      const module = relative(root, path).replaceAll("\\", "/");
+      // The entrypoint is `src/<name>.ts`, which would replace or shadow a module of that name.
+      if (!/acme/i.test(module) && module.startsWith(`src/${names.name}.`)) {
+        throw new Error(`"${names.name}" is a module every gatekeeper has (${module}): use another name.`);
       }
-      files.set(rename(relative(root, path), names).replaceAll("\\", "/"), file);
+      files.set(rename(module, names), { text: rename(resolveBlocks(readFileSync(path, "utf8"), features), names) });
     }
   }
+  // What an agent is shown is the declarations themselves, so the two cannot differ. Made here and
+  // not kept in the template, where a checkout without symlinks would turn it into a file.
+  files.set("src/types.txt", { symlink: "types.d.ts" });
   return files;
 }
 

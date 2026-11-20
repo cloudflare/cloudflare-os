@@ -9,6 +9,9 @@ const pkg = join(import.meta.dirname, "..");
 const repo = join(pkg, "..", "..");
 const bin = join(pkg, "bin", "create-gatekeeper.ts");
 
+/** A tool's Node entry point. Its `.bin` shim is a `.cmd` file on Windows, which cannot be spawned. */
+const tool = (name: string, entry: string) => join(pkg, "node_modules", name, entry);
+
 function run(cwd: string, command: string, ...args: string[]) {
   const result = spawnSync(command, args, { cwd, encoding: "utf8" });
   expect(result.status, `${command} ${args.join(" ")}\n${result.stdout}\n${result.stderr}`).toBe(0);
@@ -22,6 +25,14 @@ describe("namesFor", () => {
     expect(namesFor({ name: "homeassistant", display: "Home Assistant" }))
       .toEqual({ name: "homeassistant", pascal: "HomeAssistant", constant: "HOMEASSISTANT", display: "Home Assistant" });
     expect(namesFor({ name: "zoominfo" }).display).toBe("Zoominfo");
+  });
+
+  it.each(["observability", "types"])("refuses %j, a module every gatekeeper has", name => {
+    expect(() => scaffold({ name, auth: "oauth" })).toThrow("is a module every gatekeeper has");
+  });
+
+  it("links the types an agent is shown to the declarations", () => {
+    expect(scaffold({ name: "acme", auth: "oauth" }).get("src/types.txt")).toEqual({ symlink: "types.d.ts" });
   });
 
   // The release folds a name to its install slug, so one that would change in the fold is refused.
@@ -135,7 +146,7 @@ describe.each(VARIANTS)("scaffold with --auth $auth, hooks $hooks", ({ auth, hoo
       writeFileSync(join(dir, "wrangler.jsonc"), run(dir, process.execPath, "--input-type=module", "-e",
         "const { renderWorkerConfig } = await import(process.argv[1]); process.stdout.write(await renderWorkerConfig(process.argv[2]));",
         join(repo, "scripts", "generate-worker-configs.ts"), dir));
-      run(dir, join(pkg, "node_modules", ".bin", "wrangler"), "types", "worker-configuration.d.ts");
+      run(dir, process.execPath, tool("wrangler", "bin/wrangler.js"), "types", "worker-configuration.d.ts");
       const types = join(dir, "worker-configuration.d.ts");
       // And as its post-processing does: the main module where the sources are, and the `restore`
       // export wrangler's types lack, which the command lists a package with hooks to be given.
@@ -144,7 +155,7 @@ describe.each(VARIANTS)("scaffold with --auth $auth, hooks $hooks", ({ auth, hoo
       expect(generated).toContain(restore);
       writeFileSync(types, hooks ? generated.replace(restore, `${restore}    export const restore: symbol;\n`) : generated);
 
-      run(dir, join(pkg, "node_modules", ".bin", "tsc"), "-p", dir);
+      run(dir, process.execPath, tool("typescript", "bin/tsc"), "-p", dir);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -152,6 +163,13 @@ describe.each(VARIANTS)("scaffold with --auth $auth, hooks $hooks", ({ auth, hoo
 });
 
 describe("create-gatekeeper", () => {
+  // `gatekeeper-mcp-portal` folds to this name's install slug.
+  it("refuses a name whose install slug another package has", () => {
+    const result = spawnSync(process.execPath, [bin, "mcpportal", "--auth", "oauth"], { encoding: "utf8" });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('packages/gatekeeper-mcp-portal already has the install slug "mcpportal"');
+  });
+
   it("refuses to write over a directory", () => {
     const result = spawnSync(process.execPath, [bin, "acme", "--auth", "oauth", "--out", pkg], { encoding: "utf8" });
     expect(result.status).toBe(1);

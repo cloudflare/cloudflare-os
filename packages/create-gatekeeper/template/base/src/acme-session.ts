@@ -3,7 +3,7 @@
 
 import { RpcTarget, type RpcStub } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
-import type { ApprovalQueue } from "@gadgets/workshop-shared/gatekeeper";
+import type { ApprovalQueue, ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
 import type { AcmeAction, AcmeActions } from "./acme-actions";
 import type { Rest, WireItem } from "./acme-api";
 import { itemSubresourceId } from "./acme-credentials";
@@ -26,6 +26,16 @@ export type SessionHost = {
   subscribe(queue: RpcStub<ApprovalQueue>, hook: RpcStub<AcmeEventHookTarget>): Promise<void>;
   // #endif
 };
+
+/**
+ * Authorizes a read. Every read goes through here, which requires the `subresources` the shared
+ * type leaves optional: a read that names none adds no requirement.
+ */
+export async function authorizeRead(
+  queue: RpcStub<ApprovalQueue>, description: ObservationDescription & { subresources: string[] },
+): Promise<void> {
+  await queue.authorizeObservation(description);
+}
 
 /** An item as gadgets see it. */
 export function toItem(wire: WireItem): AcmeItemInfo {
@@ -52,7 +62,7 @@ export class AcmeItemImpl extends RpcTarget implements AcmeItem {
   async get(): Promise<AcmeItemInfo> {
     const wire = await this.#host.read(api => api.get("/items/{id}", { path: { id: this.#itemId } }));
     // Authorized after the read and before anything is returned, with every dependency named.
-    await this.#queue.authorizeObservation({
+    await authorizeRead(this.#queue, {
       title: "Read an Acme Service item",
       description: `Read item ${this.#itemId}.`,
       subresources: [itemSubresourceId(this.#itemId)],
