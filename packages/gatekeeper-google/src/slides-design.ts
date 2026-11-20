@@ -362,10 +362,22 @@ function formatParagraphs(
       createParagraphBullets: { ...slot.location, textRange, bulletPreset: BULLET_PRESETS[change.bullets] },
     });
     // Its own ID, so replay never takes it for a list the paragraph left, whose items may remain.
-    next = bulleted(next, first, last, `${slot.location.objectId}.${crypto.randomUUID()}`);
+    next = bulleted(next, first, last, newListId(next, `${slot.location.objectId}.${first}`));
   }
   slot.write(restTextOf(next));
   return { requests, previous: text, text: projectedText(next.segments) };
+}
+
+/**
+ * An ID for a list a change makes in `rich`, which no paragraph of it names: `stem` and the first
+ * number from the count of the lists it names that is free. Worked out from the text alone, so a
+ * fold that puts its deck back and applies the same changes again gives the same IDs.
+ */
+function newListId(rich: RichText, stem: string): string {
+  let named = new Set(rich.paragraphs.flatMap(({ bullet }) => bullet?.listId ?? []));
+  let n = named.size;
+  while (named.has(`${stem}.${n}`)) n++;
+  return `${stem}.${n}`;
 }
 
 /**

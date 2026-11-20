@@ -194,9 +194,14 @@ describe("Slides replay store", () => {
   });
 
   it("throws an error that is not a conflict as it is, from a batch that had written", () => {
-    let defect = new Error("no random source");
-    // A paragraph made a list item names its list at random.
-    vi.spyOn(crypto, "randomUUID").mockImplementation(() => { throw defect; });
+    let defect = new Error("a defect");
+    // A paragraph made a list item is read for the tabs it starts with, after the batch's first
+    // change has written the title: a fault there is not a conflict.
+    let match = String.prototype.match;
+    vi.spyOn(String.prototype, "match").mockImplementation(function (this: string, pattern) {
+      if (pattern instanceof RegExp && pattern.source === "^\\t*") throw defect;
+      return match.call(this, pattern as RegExp);
+    });
     let queue = queued([
       batch({ op: "editText", ...TITLE, replace: "Kept" }),
       batch(
@@ -212,6 +217,25 @@ describe("Slides replay store", () => {
     }
 
     expect(thrown).toBe(defect);
+  });
+
+  it("puts back a list an earlier batch made as that batch made it, with no random source mocked", () => {
+    let base = queueDeck();
+    let bullets = batch(
+      { op: "formatParagraphs", slideId: "s1", elementId: "body", find: "First point", bullets: "numbered" });
+    // Writes the title before it reaches a slide the deck does not have, so the fold puts the
+    // deck back and applies the batch before it again.
+    let stops = batch(
+      { op: "editText", ...TITLE, replace: "Dropped" }, { op: "arrange", slideId: "gone", elementId: "title", to: "front" });
+    let folded = createReplay().fold(PRESENTATION, base, queued([bullets, stops]));
+    let prefix = createReplay().fold(PRESENTATION, base, queued([bullets]));
+
+    expect(folded.stopped?.record.id).toBe(2);
+    expect(folded.entity).toEqual(prefix.entity);
+    let listIds = (deck: Deck) => (deck.slides.get("s1")!.pageElements ?? []).flatMap(element =>
+      (element.shape?.text?.textElements ?? []).flatMap(part => part.paragraphMarker?.bullet?.listId ?? []));
+    expect(listIds(folded.entity!).length).toBeGreaterThan(0);
+    expect(listIds(folded.entity!)).toEqual(listIds(prefix.entity!));
   });
 
   it("folds the same queue twice to the same deck", () => {
@@ -238,8 +262,6 @@ describe("Slides replay store", () => {
   // renumbering of a moved slide and the check of a skip have references of their own in the
   // simulation tests.
   it("folds generated queues as applying each change to a copy does", () => {
-    // Google names a list at random, so one name for all of them makes two replays comparable.
-    vi.spyOn(crypto, "randomUUID").mockReturnValue("00000000-0000-4000-8000-000000000000");
     let generated = new Map<string, number>();
     let directed = new Map<string, number>();
     let queues = [
