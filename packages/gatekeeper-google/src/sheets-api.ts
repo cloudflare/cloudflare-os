@@ -237,10 +237,21 @@ function enteredValue(value: RestExtendedValue | undefined): EnteredValue {
   throw new Error("Google Sheets returned an unsupported cell value.");
 }
 
-/** The Google Sheets API, as far as the gatekeeper uses it. */
 /** The one sheet a created spreadsheet gets, named here so it doesn't depend on the account's locale. */
 const BLANK_SHEET = { sheetId: 0, title: "Sheet1", rowCount: 1000, columnCount: 26 } as const;
 
+/** The side, in rows and in columns, of the tiles `readEntered` finds a cell's ranges by. */
+const TILE = 32;
+/** More tiles than a sheet's columns make: Google allows 18,278 columns. */
+const TILE_COLUMNS = 1_024;
+
+/** The tile a row or a column is in. */
+const tileOf = (line: number): number => Math.floor(line / TILE);
+
+/** One number for the tile at `row` and `column`, counted in tiles. */
+const tileKey = (row: number, column: number): number => row * TILE_COLUMNS + column;
+
+/** The Google Sheets API, as far as the gatekeeper uses it. */
 export class GoogleSheetsApi {
   constructor(private getAccessToken: AccessTokenProvider) {}
 
@@ -416,26 +427,32 @@ export class GoogleSheetsApi {
     let padded = areas.map(({ rect }) =>
       Array.from({ length: rect.endRow - rect.startRow }, () =>
         Array.from({ length: rect.endColumn - rect.startColumn }, (): EnteredValue => null)));
-    let areasOn = new Map<number, number[]>();
-    areas.forEach(({ sheetId }, i) => {
-      let on = areasOn.get(sheetId);
-      if (on) on.push(i);
-      else areasOn.set(sheetId, [i]);
+    // The ranges by the tiles of their sheet they reach, so a cell is tried against the few
+    // ranges near it and not every range asked for: a guard can ask for thousands of fragments.
+    let tilesOn = new Map<number, Map<number, number[]>>();
+    areas.forEach(({ sheetId, rect }, i) => {
+      let tiles = tilesOn.get(sheetId);
+      if (!tiles) tilesOn.set(sheetId, tiles = new Map());
+      for (let row = tileOf(rect.startRow); row <= tileOf(rect.endRow - 1); row++) {
+        for (let column = tileOf(rect.startColumn); column <= tileOf(rect.endColumn - 1); column++) {
+          let key = tileKey(row, column);
+          let on = tiles.get(key);
+          if (on) on.push(i);
+          else tiles.set(key, [i]);
+        }
+      }
     });
     let starts = new Set<string>();
     for (let sheet of result.sheets ?? []) {
       let sheetId = sheet.properties?.sheetId ?? 0;
-      let onSheet = areasOn.get(sheetId) ?? [];
+      let tiles = tilesOn.get(sheetId);
       for (let { startRow = 0, startColumn = 0, rowData } of sheet.data ?? []) {
         starts.add(`${sheetId}:${startRow}:${startColumn}`);
-        let endRow = startRow + (rowData?.length ?? 0);
-        // The ranges some row of the block is in: its cells are tried against these alone.
-        let reached = onSheet.filter(i => areas[i].rect.startRow < endRow && startRow < areas[i].rect.endRow);
         rowData?.forEach((row, r) => row.values?.forEach((cell, c) => {
           // Converted wherever it lies: a value of a kind this cannot hold is refused, not dropped.
           let value = enteredValue(cell.userEnteredValue);
           let at = startRow + r, column = startColumn + c;
-          for (let i of reached) {
+          for (let i of tiles?.get(tileKey(tileOf(at), tileOf(column))) ?? []) {
             let { rect } = areas[i];
             if (at >= rect.startRow && at < rect.endRow && column >= rect.startColumn && column < rect.endColumn) {
               padded[i][at - rect.startRow][column - rect.startColumn] = value;
