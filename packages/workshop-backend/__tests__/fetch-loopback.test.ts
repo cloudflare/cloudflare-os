@@ -26,25 +26,26 @@ describe("FetchLoopback's sendFetch", () => {
     vi.restoreAllMocks();
   });
 
-  // Sends `request` with `decision` as the workspace's answer, recording the URLs it was asked about.
-  async function send(request: Request, decision: FetchAuthorization = ALLOW) {
+  // Sends `request` with `decision` as the workspace's answer, recording the URLs it was asked
+  // about. It is agent-driven unless `agentDriven` says otherwise.
+  async function send(request: Request, decision: FetchAuthorization = ALLOW, agentDriven = true) {
     const asked: string[] = [];
     const response = await sendFetch(request, async href => {
       asked.push(href);
       return decision;
-    });
+    }, { agentDriven });
     return { response, asked };
   }
 
   // Sends `request` decided by `snapshot` for `caller`, with `decision` as the workspace's answer
-  // to any URL the snapshot refers to it.
+  // to any URL the snapshot refers to it. A gatekeeper's fetcher, it is not agent-driven.
   async function sendBySnapshot(request: Request, snapshot: FetchPolicy, caller: GatekeeperCaller,
                                 decision: FetchAuthorization = ALLOW) {
     const asked: string[] = [];
     const response = await sendFetch(request, snapshotAuthorizer(snapshot, caller, async href => {
       asked.push(href);
       return decision;
-    }));
+    }), { agentDriven: false });
     return { response, asked };
   }
 
@@ -175,12 +176,16 @@ describe("FetchLoopback's sendFetch", () => {
     expect(await response.text()).toBe("page");
   });
 
-  it("refuses a response that sets Content-Signal: ai-input=no", async () => {
+  it("refuses an agent-driven request's response that sets Content-Signal: ai-input=no", async () => {
     routes["https://example.com/"] = () =>
       new Response("page", { headers: { "content-signal": "search=yes, AI-Input = no" } });
     const { response } = await send(new Request("https://example.com/"));
     await expectRefusal(response, 403, "denied",
         /^The site at https:\/\/example\.com\/ sets Content-Signal: ai-input=no/);
+
+    const notAgentDriven = await send(new Request("https://example.com/"), ALLOW, false);
+    expect(notAgentDriven.response.status).toBe(200);
+    expect(await notAgentDriven.response.text()).toBe("page");
 
     routes["https://example.com/"] = () =>
       new Response("page", { headers: { "content-signal": "ai-train=no, ai-input=yes" } });

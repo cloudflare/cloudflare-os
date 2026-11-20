@@ -21,6 +21,8 @@ const OTHER_HOST = "other.example";
 const PAGE = "The fetched page.";
 // A trusted host's path that redirects to an untrusted host.
 const REDIRECT_PATH = "/redirect-to-other";
+// A path whose page sets `Content-Signal: ai-input=no`.
+const NO_AI_INPUT_PATH = "/no-ai-input";
 
 // What the origin received, per request.
 type Received = { url: string; method: string; headers: Headers };
@@ -31,7 +33,9 @@ const web: Handler = (url, method, headers) => {
   if (url.pathname === REDIRECT_PATH) {
     return new Response(null, { status: 302, headers: { location: `https://${OTHER_HOST}/redirected` } });
   }
-  return new Response(PAGE, { headers: { "content-type": "text/plain" } });
+  const signal: Record<string, string> =
+      url.pathname === NO_AI_INPUT_PATH ? { "content-signal": "ai-input=no" } : {};
+  return new Response(PAGE, { headers: { "content-type": "text/plain", ...signal } });
 };
 const network = new NetworkInterceptor({ handlers: [models.handler, web] });
 const receivedUrls = () => received.map(entry => entry.url);
@@ -253,15 +257,18 @@ it("fetches from a gadget's server code, and refuses the same gadget once restri
     using fetching = await gadget.connectToGadget() as RpcStub<Fetching>;
 
     expect(await fetching.fetchPage(page)).toBe(`200 ${PAGE}`);
-    expect(receivedUrls()).toEqual([page]);
-    expect(await fetchObservations(session)).toEqual([`GET \`${page}\``]);
+    // A gadget's fetches are not agent-driven, so a site's Content-Signal doesn't refuse them.
+    const noAiInput = `https://${OTHER_HOST}${NO_AI_INPUT_PATH}`;
+    expect(await fetching.fetchPage(noAiInput)).toBe(`200 ${PAGE}`);
+    expect(receivedUrls()).toEqual([page, noAiInput]);
+    expect(await fetchObservations(session)).toEqual([`GET \`${page}\``, `GET \`${noAiInput}\``]);
 
     // The gadget's worker stays loaded, but its fetcher asks the workspace about each request.
     expect((await session.runTurn("Read the restricted value.")).outcome)
         .toEqual({ status: "completed" });
     expect(await fetching.fetchPage(page))
         .toMatch(/^403 This workspace has observed sensitive data\./);
-    expect(receivedUrls()).toEqual([page]);
+    expect(receivedUrls()).toEqual([page, noAiInput]);
   });
 });
 
@@ -297,6 +304,22 @@ it("fetches through a gatekeeper's Fetcher, which the workspace does not record"
   // The snapshot allowed it, so only the gatekeeper's audit of its own call records it.
   expect(await fetchObservations(session)).toEqual([]);
   expect(await gatekeeperFetchAudits(session)).toEqual([`Fetched \`${page}\` through the caller's fetch policy.`]);
+});
+
+it("refuses executeCode's own fetch of a page that sets Content-Signal: ai-input=no, not a gatekeeper's", async () => {
+  const page = `https://${OTHER_HOST}${NO_AI_INPUT_PATH}`;
+  const model = models.script([
+    fetchCode("direct", [[page]]),
+    gatekeeperFetchCode("gatekeeper", [["fetchUrl", page]]),
+    { text: "Done." },
+  ]);
+  await using session = await openSession(model);
+  expect((await session.runTurn("Fetch the page twice.")).outcome).toEqual({ status: "completed" });
+
+  expect(model.requests[1]).toMatchObject(toolResult("direct",
+      `GET ${page}: 403 The site at ${page} sets Content-Signal: ai-input=no`));
+  expect(model.requests[2]).toMatchObject(toolResult("gatekeeper", `fetchUrl ${page}: 200 sent ${PAGE}`));
+  expect(receivedUrls()).toEqual([page, page]);
 });
 
 it("refuses a gatekeeper's fetch from an untrusted host once restricted, or with a query string", async () => {

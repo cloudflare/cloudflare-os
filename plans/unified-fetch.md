@@ -111,8 +111,8 @@ type FetchPolicy = {
    a URL allowed by a user's approval: the `Fetcher` follows that one itself
    (`fetchFollowingRedirects()`), because an approval covers its redirects, and names the URL the
    response came from in a `Cloudflare-OS-Fetch-Url` response header.
-5. **Response.** Stream it back unchanged, except that a response with
-   `Content-Signal: ai-input=no` is refused, as `webFetch` does today.
+5. **Response.** Stream it back unchanged, except that the response to an agent-driven request
+   (see Decisions) that sets `Content-Signal: ai-input=no` is refused, as `webFetch` does today.
 
 A refusal is a synthetic response, not a thrown error, so a container's HTTP client and JS code
 see the same thing: status 403 (405 for the method), the reason as a `text/plain` body, and a
@@ -233,7 +233,13 @@ authorization and audit only, and this is an egress capability.
 - **Workspace-decided requests are audited; snapshot-decided ones are not.**
 - **Snapshots do not expire.** A gatekeeper refreshes its `Fetcher` whenever information flows
   into what it filters, and nothing else can make a snapshot too permissive.
-- **`Content-Signal: ai-input=no` is enforced for every caller.**
+- **`Content-Signal: ai-input=no` refuses only agent-driven requests:** the `webFetch` tool's and
+  `fetch()` called directly from `executeCode`. A gadget's requests and a gatekeeper's are not
+  agent-driven, for now, even when an agent's `executeCode` call drives the gatekeeper. The
+  signal is a site's request to comply with, not a boundary: a determined agent can always get
+  around it, and there is no single correct line between an agent's input and other traffic.
+  This line is a reasonable one, and keeps ordinary tooling, such as a container's package
+  manager, working.
 - **The `user-agent` is `Cloudflare-OS/1.0`**, replacing `GadgetsWebFetch/1.0`.
 
 ## Behaviour changes to `webFetch`

@@ -49,9 +49,14 @@ All four are minted by `OverseerImpl.makeFetchLoopback()`. Nothing else can fetc
   header's value can carry the data the policy is holding back, and a user's approval names a URL,
   not what travels with it.
 - **User-agent.** Always `Cloudflare-OS/1.0`.
-- **Content signals.** A response with `Content-Signal: ai-input=no` is refused, for every caller,
-  since any of them may be feeding an AI agent. A redirect that goes back to the caller is not
-  judged by its own signal, since it carries no content; the page it leads to is.
+- **Content signals.** For an agent-driven request, the response is refused if it sets
+  `Content-Signal: ai-input=no`. Agent-driven means the `webFetch` tool's requests and `fetch()`
+  called directly from `executeCode`: `FetchLoopback.fetch()` treats an agent caller's requests as
+  agent-driven unless it has a snapshot. A gadget's requests and a gatekeeper's are not, even when
+  an agent's `executeCode` call drives the gatekeeper. The signal is a site's request to comply
+  with, not a security boundary, and this is a reasonable line rather than the only correct one.
+  A redirect that goes back to the caller is not judged by its own signal, since it carries no
+  content; the page it leads to is.
 - **SSRF.** `FetchLoopback` runs in `workshop-backend`, so its `fetch()` keeps
   `global_fetch_strictly_public`, which rejects non-public addresses after DNS resolution.
   `wrangler dev` permits private addresses, so locally that protection is absent.

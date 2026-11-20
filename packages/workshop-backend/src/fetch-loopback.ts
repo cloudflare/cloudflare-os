@@ -77,7 +77,12 @@ export class FetchLoopback extends WorkerEntrypoint<Cloudflare.Env, FetchLoopbac
     let ns = this.ctx.exports.OverseerDurableObject;
     let ask = (href: string) => ns.get(ns.idFromString(overseerId))
         .authorizeFetch(caller, executionId, request.method, href);
-    return sendFetch(request, snapshot ? snapshotAuthorizer(snapshot, caller, ask) : ask);
+    // An agent's own requests, from the webFetch tool or fetch() in executeCode, are agent-driven.
+    // A gadget's are not, and nor are a gatekeeper's, the only fetchers minted with a snapshot,
+    // even when an agent's executeCode call drives the gatekeeper.
+    let agentDriven = caller.from === "agent" && snapshot === undefined;
+    return sendFetch(request, snapshot ? snapshotAuthorizer(snapshot, caller, ask) : ask,
+                     { agentDriven });
   }
 }
 
@@ -122,10 +127,12 @@ export function snapshotAuthorizer(
 /**
  * The body of FetchLoopback.fetch(), with the workspace's decision behind `authorize`: checks
  * `request`, asks `authorize` about its URL, and sends a request built from the method, the URL
- * and an allowlist of `request`'s headers.
+ * and an allowlist of `request`'s headers. `agentDriven` says whether an agent itself sent it,
+ * which subjects the response to the site's Content-Signal.
  */
 export async function sendFetch(
-    request: Request, authorize: (href: string) => Promise<FetchAuthorization>)
+    request: Request, authorize: (href: string) => Promise<FetchAuthorization>,
+    { agentDriven }: { agentDriven: boolean })
     : Promise<Response> {
   if (request.method !== "GET" && request.method !== "HEAD") {
     return refusal(405, "denied", `Only GET and HEAD requests are allowed, not ${request.method}.`);
@@ -171,10 +178,12 @@ export async function sendFetch(
   }
 
   // Respect the Content-Signal header (https://contentsignals.org/): a site that sets
-  // `ai-input=no` does not want its content fed to an AI agent, which any caller may be. A redirect
+  // `ai-input=no` does not want its content fed to an AI agent. That is a request to comply with,
+  // not a boundary to enforce, so it applies where an agent itself fetched the page. A redirect
   // that goes back to the caller carries no content, so its destination's signal is the one that
   // counts.
-  if (redirectLocation(response) === null && contentSignalDenies(response, "ai-input")) {
+  if (agentDriven && redirectLocation(response) === null &&
+      contentSignalDenies(response, "ai-input")) {
     await response.body?.cancel();
     return refusal(403, "denied",
         `The site at ${(finalUrl ?? url).href} sets Content-Signal: ai-input=no, indicating ` +

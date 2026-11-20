@@ -13,15 +13,16 @@ import { sendFetch, type FetchAuthorization } from "../src/fetch-loopback.js";
 // in webFetch, so the stub mirrors only that branch.
 type ToMarkdownStub = ReturnType<typeof vi.fn>;
 
-// A fetcher that does what a FetchLoopback does, with `authorize` as the workspace's answer for
-// each URL it is asked about (by default, allowing it in an unrestricted workspace).
+// A fetcher that does what the webFetch tool's FetchLoopback does, with `authorize` as the
+// workspace's answer for each URL it is asked about (by default, allowing it in an unrestricted
+// workspace).
 type Authorize = (href: string) => FetchAuthorization;
 const allowAll: Authorize = () => ({ allowed: true, restricted: false, approved: false });
 
 function loopback(authorize: Authorize = allowAll): Fetcher {
   return {
     fetch: (input: RequestInfo | URL, init?: RequestInit) =>
-      sendFetch(new Request(input, init), async href => authorize(href)),
+      sendFetch(new Request(input, init), async href => authorize(href), { agentDriven: true }),
   } as Fetcher;
 }
 
