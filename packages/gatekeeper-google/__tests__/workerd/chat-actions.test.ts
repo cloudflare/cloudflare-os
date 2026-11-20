@@ -1305,26 +1305,33 @@ describe("Google Chat gatekeeper behaviors", () => {
       kv.put("refreshToken", "refresh-token");
       kv.put("accessToken", {token: "access-token", expires: new Date(Date.now() + lifetime)});
     };
-    // A token the memo serves for the read, and no longer once the read has waited a moment, so
-    // the send asks the account for it.
+    // A token the memo serves for the read. While the read is held the connection is disconnected
+    // and the clock moves past the token's life, so the send asks the account for one.
+    const lifetime = ACCESS_TOKEN_EXPIRY_SAFETY_MS + 60_000;
     await runInDurableObject(account, (_instance: unknown, state: DurableObjectState) =>
-      store(state.storage.kv, ACCESS_TOKEN_EXPIRY_SAFETY_MS + 800));
+      store(state.storage.kv, lifetime));
     const held = chat.holdNextRequest((url, method) => method === "GET" && url.pathname.includes("/messages/"));
     const applying = chat.applyAction(1).then(() => "applied", (error: Error) => error.message);
     const release = await held;
     await runInDurableObject(account, (_instance: unknown, state: DurableObjectState) => {
       state.storage.kv.delete("refreshToken");
     });
-    await new Promise(resolve => setTimeout(resolve, 1500));
-    release();
-    expect(await applying).toMatch(/disconnected/);
-    expect(backend.state.edits).toEqual([]);
+    // Moved on for good, never back, so nothing read meanwhile looks newer than it is.
+    const now = Date.now.bind(Date);
+    vi.spyOn(Date, "now").mockImplementation(() => now() + lifetime);
+    try {
+      release();
+      expect(await applying).toMatch(/disconnected/);
+      expect(backend.state.edits).toEqual([]);
 
-    await runInDurableObject(account, (_instance: unknown, state: DurableObjectState) =>
-      store(state.storage.kv, 3_600_000));
-    backend.state.messages[0].text = "Changed by hand";
-    await expect(chat.applyAction(1)).rejects.toThrow(/edited in Google Chat after this change was queued/);
-    expect(backend.state.edits).toEqual([]);
+      await runInDurableObject(account, (_instance: unknown, state: DurableObjectState) =>
+        store(state.storage.kv, 3_600_000));
+      backend.state.messages[0].text = "Changed by hand";
+      await expect(chat.applyAction(1)).rejects.toThrow(/edited in Google Chat after this change was queued/);
+      expect(backend.state.edits).toEqual([]);
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 
   it("refuses to apply an edit over text changed in Google Chat since it was queued", async () => {
