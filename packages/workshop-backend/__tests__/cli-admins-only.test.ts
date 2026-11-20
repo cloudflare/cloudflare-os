@@ -176,6 +176,8 @@ describe("the label on an admin's changes", () => {
     ["cf-os api under pnpm dev-server", CLI, { environment: "development" }, "cli"],
     ["a browser", BROWSER, {}, "api"],
     ["a client sending no User-Agent", undefined, {}, "api"],
+    // No client's claim makes the label "gatekeeper": only a workspace's lend carries it.
+    ["a client whose User-Agent names the admin gatekeeper", "gatekeeper", {}, "api"],
   ] as const) {
     it(`is "${via}" for ${what}`, async () => {
       const admin = unique("admin");

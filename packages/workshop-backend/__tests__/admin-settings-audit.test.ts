@@ -225,6 +225,32 @@ describe("AdminSettings records each admin's change before making it", () => {
     expect((await config()).disabledResourceTypeIds).toEqual({ vendor: ["repository"] });
   });
 
+  it("stores a gatekeeper's mode as absence only when it is that vendor's default", async () => {
+    // Two vendors that auto-provision their accounts: the admin gatekeeper and one more.
+    const ambient = { describe: async () => ({ autoProvisionsAccount: true }) };
+    const { inDo, records, config } = adminSettings(
+        { GATEKEEPER_ADMIN: ambient, GATEKEEPER_CONTEXT: ambient });
+    const modes = async () => (await config()).ambientGatekeeperModes;
+
+    await inDo(admin => admin.setGatekeeperMode("admin", "optional", ACTOR));
+    expect(await modes()).toEqual({ admin: "optional" });
+    expect(records()[0]!.changes).toStrictEqual(
+        [{ setting: "ambientGatekeeperModes", key: "admin", after: "optional" }]);
+
+    await inDo(admin => admin.setGatekeeperMode("Admin", "disabled", ACTOR));
+    expect(await modes()).toEqual({});
+    expect(records()[1]!.changes).toStrictEqual(
+        [{ setting: "ambientGatekeeperModes", key: "admin", before: "optional" }]);
+
+    await inDo(admin => admin.setGatekeeperMode("context", "disabled", ACTOR));
+    expect(await modes()).toEqual({ context: "disabled" });
+    await inDo(admin => admin.setGatekeeperMode("context", "optional", ACTOR));
+    expect(await modes()).toEqual({});
+    // Its default changes nothing, and so records nothing.
+    await inDo(admin => admin.setGatekeeperMode("admin", "disabled", ACTOR));
+    expect(records()).toHaveLength(4);
+  });
+
   it("keeps an excerpt of an over-long value, and cuts an over-long key", async () => {
     const { inDo, records } = adminSettings();
     const pattern = "p".repeat(12_000);

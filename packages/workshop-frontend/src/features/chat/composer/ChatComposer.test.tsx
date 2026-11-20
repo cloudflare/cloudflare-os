@@ -20,6 +20,7 @@ const testState = vi.hoisted(() => ({
   closeToast: vi.fn<(toastId?: string) => void>(),
   gatekeeperModalProps: undefined as undefined | {
     open: boolean;
+    ownsWorkspace?: boolean;
     onCreated: (gatekeeper: unknown) => Promise<void>;
     initialVendorId?: string;
     initialResourceUrl?: string;
@@ -136,6 +137,27 @@ describe("ChatComposer", () => {
     testState.capsuleOverlayProps = undefined;
   });
 
+  // The admin gatekeeper's card is the owner's alone (see GatekeeperModal).
+  it.each([true, false])("tells its connection picker whether the user owns the workspace: %s",
+      async (ownsWorkspace) => {
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => root!.render(
+      <ChatComposer
+        createCapsuleGatekeeper={async () => null}
+        getOverseer={() => ({} as RpcStub<Overseer>)}
+        ownsWorkspace={ownsWorkspace}
+        onSend={() => {}}
+        isAgentActive={false}
+        models={[]}
+        selectedModel={{ id: "model-a" }}
+        onModelChange={() => {}}
+      />,
+    ));
+    expect(testState.gatekeeperModalProps?.ownsWorkspace).toBe(ownsWorkspace);
+  });
+
   const renderDictationComposer = async (props: Partial<Parameters<typeof ChatComposer>[0]> = {}) => {
     if (!container?.isConnected) {
       container = document.createElement("div");
@@ -146,6 +168,7 @@ describe("ChatComposer", () => {
       <ChatComposer
         createCapsuleGatekeeper={async () => null}
         getOverseer={() => ({} as RpcStub<Overseer>)}
+        ownsWorkspace
         onSend={() => {}}
         isAgentActive={false}
         models={[]}
@@ -542,6 +565,7 @@ describe("ChatComposer", () => {
       <ChatComposer
         createCapsuleGatekeeper={async () => null}
         getOverseer={() => overseer}
+        ownsWorkspace
         onSend={onSend}
         isAgentActive={false}
         models={[]}
@@ -601,6 +625,7 @@ describe("ChatComposer", () => {
       <ChatComposer
         createCapsuleGatekeeper={async () => null}
         getOverseer={() => ({} as RpcStub<Overseer>)}
+        ownsWorkspace
         onSend={onSend}
         isAgentActive={false}
         models={[]}
@@ -641,6 +666,7 @@ describe("ChatComposer", () => {
       <ChatComposer
         createCapsuleGatekeeper={async () => null}
         getOverseer={() => ({} as RpcStub<Overseer>)}
+        ownsWorkspace
         onSend={() => {}}
         isAgentActive
         models={[]}
@@ -731,6 +757,7 @@ describe("ChatComposer", () => {
       <ChatComposer
         createCapsuleGatekeeper={async () => null}
         getOverseer={() => overseer}
+        ownsWorkspace
         onSend={() => {}}
         isAgentActive={false}
         models={[]}
@@ -798,6 +825,7 @@ describe("ChatComposer", () => {
       <ChatComposer
         createCapsuleGatekeeper={async () => null}
         getOverseer={() => overseer}
+        ownsWorkspace
         onSend={onSend}
         isAgentActive={false}
         models={[]}
@@ -841,6 +869,7 @@ describe("ChatComposer", () => {
       <ChatComposer
         createCapsuleGatekeeper={async () => null}
         getOverseer={() => overseer}
+        ownsWorkspace
         onSend={onSend}
         isAgentActive={false}
         models={[]}
@@ -888,6 +917,7 @@ describe("ChatComposer", () => {
       <ChatComposer
         createCapsuleGatekeeper={async () => null}
         getOverseer={() => overseer}
+        ownsWorkspace
         onSend={() => {}}
         isAgentActive={false}
         models={[]}
@@ -951,6 +981,7 @@ describe("ChatComposer", () => {
       <ChatComposer
         createCapsuleGatekeeper={createCapsuleGatekeeper}
         getOverseer={() => ({} as RpcStub<Overseer>)}
+        ownsWorkspace
         onSend={() => {}}
         isAgentActive={false}
         models={[]}

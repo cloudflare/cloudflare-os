@@ -567,7 +567,11 @@ function codedErrorFamily<Code extends string>(messages: Record<Code, string>) {
   };
 }
 
-/** Stable error codes attached to expected failures from `AuthenticatedApi.openWorkspace()`. */
+/**
+ * Stable error codes attached to expected failures from `AuthenticatedApi.openWorkspace()`.
+ * `workspaceAccessDenied` is also what someone who is not a deployment admin gets from a
+ * workspace that admits only deployment admins (see `Overseer.newGatekeeper()`).
+ */
 export const OPEN_WORKSPACE_ERROR_CODES = {
   workspaceNotFound: "WORKSPACE_NOT_FOUND",
   workspaceAccessDenied: "WORKSPACE_ACCESS_DENIED",
@@ -656,7 +660,9 @@ export const getSnapshotSharingErrorCode = snapshotSharingErrors.getCode;
  * Stable error codes attached to expected refusals of AdminApi.inspectWorkspace() and
  * AdminApi.inspectUser(), and of AdminWorkspaceView and AdminUserView calls, and of
  * AdminApi.writeWorkspace(). `contentOff` is also what the grant methods and a request for content
- * access are refused with while the level in force is below "content".
+ * access are refused with while the level in force is below "content". `gatekeeperOff` refuses a
+ * call through the Admin API lent to the admin gatekeeper, and that lend itself, while the
+ * deployment has turned that gatekeeper off: the call reached nothing.
  */
 export const ADMIN_ACCESS_ERROR_CODES = {
   workspaceNotFound: "ADMIN_WORKSPACE_NOT_FOUND",
@@ -668,6 +674,7 @@ export const ADMIN_ACCESS_ERROR_CODES = {
   contentNotRequested: "ADMIN_CONTENT_NOT_REQUESTED",
   grantRequired: "ADMIN_GRANT_REQUIRED",
   writesOff: "ADMIN_WORKSPACE_WRITES_OFF",
+  gatekeeperOff: "ADMIN_GATEKEEPER_OFF",
 } as const;
 
 /** An expected refusal code from ADMIN_ACCESS_ERROR_CODES. */
@@ -693,6 +700,7 @@ const adminAccessErrors = codedErrorFamily<AdminAccessErrorCode>({
   [ADMIN_ACCESS_ERROR_CODES.writesOff]:
       "Admin writes to workspaces are turned off on this deployment. Only its " +
       "ADMIN_WORKSPACE_WRITES environment variable can turn them on.",
+  [ADMIN_ACCESS_ERROR_CODES.gatekeeperOff]: "Gatekeeper is disabled.",
 });
 
 /** Creates an expected admin-access refusal with a machine-readable code. */
@@ -742,7 +750,8 @@ const adminGrantErrors = codedErrorFamily<AdminGrantErrorCode>({
       "This workspace no longer belongs to the owner the request named, so no grant was given. " +
       "Request it again.",
   [ADMIN_GRANT_ERROR_CODES.secondAdminRequired]:
-      "This request must be approved by an admin other than the one who made it.",
+      "This request must be approved by an admin other than the one who made it and, for a " +
+      "request an agent filed, other than everyone who was in the workspace it was filed from.",
 });
 
 /** Creates an expected grant refusal with a machine-readable code. */
@@ -1119,7 +1128,8 @@ export interface AuthenticatedApi extends RpcTarget {
    * makes one of that account's resources (a GitHub repository, an MCP server's endpoint) a
    * gatekeeper in a workspace; that is also how a workspace answers an agent's connection request
    * (see Overseer.acceptConnectionRequest()). Ambient gatekeepers need no connecting: see
-   * listAddableGatekeepers().
+   * listAddableGatekeepers(). A vendor that auto-provisions its account is left out while its mode
+   * is 'disabled'.
    */
   listGatekeeperVendors(filter?: GatekeeperVendorFilter): Promise<GatekeeperVendorInfo[]>;
 
@@ -1176,7 +1186,8 @@ export interface AuthenticatedApi extends RpcTarget {
   /**
    * List the auto-provisioning ("ambient") gatekeepers the user can opt into right now. They are
    * those set to 'optional' by the admin that the user hasn't added yet, such as Skills
-   * (`context`), Scheduled Tasks (`scheduler`) or Web Search (`websearch`). Rendered as an
+   * (`context`), Scheduled Tasks (`scheduler`) or Web Search (`websearch`). The admin gatekeeper
+   * (`admin`) is among them only for a user who is a deployment admin now. Rendered as an
    * "Available" section on the Connectors page. ('enabled' ones are already provisioned; 'disabled'
    * ones aren't offered.) Returns the same shape as listGatekeeperVendors (with no resources) so
    * the connect UI handles both identically, routing on `description.autoProvisionsAccount`.
@@ -1188,8 +1199,8 @@ export interface AuthenticatedApi extends RpcTarget {
    * Ambient ones include Skills (`context`), Scheduled Tasks (`scheduler`) and Web Search
    * (`websearch`), and the account is this user's connected account, minted with no OAuth flow.
    * The new account appears via subscribeConnectedAccounts(); if the user already has one, the
-   * call does nothing. Throws for an unknown vendor, one whose mode is 'disabled', or one that
-   * isn't ambient.
+   * call does nothing. Throws for an unknown vendor, one whose mode is 'disabled', one that isn't
+   * ambient, or the admin gatekeeper (`admin`) when the user is not a deployment admin.
    */
   provisionAmbientAccount(vendorId: string): Promise<void>;
 
@@ -1407,9 +1418,9 @@ export interface AuthenticatedApi extends RpcTarget {
    * the caller is not one. The access check happens here, once, for every AdminApi method but
    * inspection: AdminApi.inspectWorkspace(), AdminApi.inspectUser() and each call on the view
    * either mints check again (see AdminWorkspaceView and AdminUserView). Every audit record the
-   * capability makes is labelled with an AdminVia derived from the client's User-Agent.
-   * (Authentication config — sign-in providers, password login — is intentionally not managed
-   * here; it stays env-var driven.)
+   * capability makes is labelled with an AdminVia derived from the client's User-Agent ("api" or
+   * "cli"; "gatekeeper" is never derived from a client). (Authentication config — sign-in
+   * providers, password login — is intentionally not managed here; it stays env-var driven.)
    *
    * @nullWhen the caller is not a deployment admin; amIAdmin() says whether it is
    */
@@ -1493,8 +1504,13 @@ export type AdminResource = {
  * Provisioning mode for an auto-provisioning ("ambient") gatekeeper — one that mints a connected
  * account with no OAuth flow (VendorDescription.autoProvisionsAccount), e.g. the Context Library:
  *   - 'disabled': not available; no account is provisioned and any existing one is dormant.
- *   - 'optional': users opt in from the Connectors page; not forced on anyone (the default).
- *   - 'enabled':  auto-provisioned for every user (forced); they can't remove it.
+ *   - 'optional': users opt in from the Connectors page; not forced on anyone (the default,
+ *                 except for the admin gatekeeper).
+ *   - 'enabled':  auto-provisioned for every user who may hold the account (forced); they can't
+ *                 remove it.
+ * The admin gatekeeper (`admin`) differs in two ways: its account is offered and
+ * provisioned only for users who are deployment admins now, and its mode is 'disabled' until an
+ * admin sets one.
  */
 export const AMBIENT_GATEKEEPER_MODES = ['disabled', 'optional', 'enabled'] as const;
 export type AmbientGatekeeperMode = typeof AMBIENT_GATEKEEPER_MODES[number];
@@ -1799,12 +1815,36 @@ export type DeploymentUpdateStatus = {
 };
 
 /**
- * How an admin's calls reach the deployment, as their audit records say: "cli" when the session's
- * User-Agent is the cf-os CLI's, "api" for any other client of the API (the Workshop's admin panel
- * among them). The User-Agent is the client's own claim, so this is an unverified label that
- * grants nothing.
+ * How an admin's calls reach the deployment, as their records say: "cli" when the session's
+ * User-Agent is the cf-os CLI's, "api" for any other client of the API (the Workshop's admin
+ * panel among them), and "gatekeeper" for a call made through the admin gatekeeper connection
+ * of a workspace that admin owns, by an agent's code, a gadget's code or a session its owner
+ * opened from the connection (see AdminAgentOrigin). "api" and "cli" come from the User-Agent, the
+ * client's own claim: unverified labels that grant nothing. "gatekeeper" is not a claim. Only a
+ * workspace sets it, on the Admin API it lends that gatekeeper, and no client, header or
+ * argument can.
  */
-export type AdminVia = "api" | "cli";
+export type AdminVia = "api" | "cli" | "gatekeeper";
+
+/**
+ * Where a call made through the admin gatekeeper came from. The workspace that lent the
+ * gatekeeper its owner's Admin API sets it when it makes the lend, from what it knows of the
+ * caller the lend is for: neither the gatekeeper nor its caller sets a field. It names the
+ * lend a call was made on. A lend is a capability the gatekeeper holds while it is live, so
+ * that the gatekeeper used it for that caller and no other is the gatekeeper's word. A record
+ * carries it exactly when its `via` is "gatekeeper", and the record's admin is then that
+ * workspace's owner.
+ */
+export type AdminAgentOrigin = {
+  /** The workspace whose admin gatekeeper binding made the call. */
+  workspaceId: string;
+  /** The chat the workspace ties the caller to, by AiChatMetadata.id, when it ties it to one:
+   * the chat whose agent made the call, or the chat whose unmerged changes the calling gadget
+   * code runs. Absent for merged gadget code (a stub a gadget handed to a spawned agent
+   * included) and for a session the owner opened directly from the connection (no other member
+   * is lent one). */
+  chatId?: number;
+};
 
 /** How many records one page of an admin listing (AdminApi.listUsers(), listWorkspaces(),
  * listAdminAudit()) holds when the caller gives no `limit`. */
@@ -2068,6 +2108,9 @@ export type AdminAccessRecord = {
   sessionId: string;
   /** How the admin's calls reached the deployment (see AdminVia). */
   via: AdminVia;
+  /** Where the call came from, when it was made through the admin gatekeeper (see
+   * AdminAgentOrigin): present exactly when `via` is "gatekeeper". */
+  agent?: AdminAgentOrigin;
   /** The workspace. */
   workspaceId: string;
   /** The workspace's owner, by canonical user id, as the workspace knew them when the view opened.
@@ -2124,7 +2167,7 @@ export type AdminAccessRecord = {
  * and the one refusal it carries is `accessOff`.
  */
 export type AdminUserAccessRecord = Pick<AdminAccessRecord,
-    "at" | "admin" | "sessionId" | "via" | "reason" | "access" | "refused"> & {
+    "at" | "admin" | "sessionId" | "via" | "agent" | "reason" | "access" | "refused"> & {
   /** Distinguishes this from an AdminAccessRecord and an AdminSettingRecord. */
   kind: "user";
   /** The user whose account the call was made into, by canonical user id, kept as
@@ -2200,7 +2243,8 @@ export type AdminSettingRecord = {
   /** Opaque. Shared by every record made through one AuthenticatedApi.getAdminApi() capability,
    * so one admin session's records can be read together. */
   sessionId: string;
-  /** How the admin's calls reach the deployment (see AdminVia). */
+  /** How the admin's calls reach the deployment (see AdminVia). No setter is open to the admin
+   * gatekeeper, so a setting record never says "gatekeeper". */
   via: AdminVia;
   /** The AdminApi method called. */
   method: AdminSettingMethod;
@@ -2397,6 +2441,21 @@ export type AdminWriteArgs = {
 };
 
 /**
+ * The arguments each write action takes, as AdminWriteArgs' doc lists them: the `required` ones
+ * and the `optional` ones. AdminApi.writeWorkspace() refuses a write by this table, and a client
+ * reads it to refuse one before it is sent.
+ */
+export const ADMIN_WRITE_ARGS: Record<AdminWriteAction, {
+  /** The arguments a write of the action must carry. */
+  required: (keyof AdminWriteArgs)[];
+  /** The arguments a write of the action may carry. */
+  optional?: (keyof AdminWriteArgs)[];
+}> = {
+  stopAgent: { required: ["chatId"] },
+  restartWorkspace: { required: [] },
+};
+
+/**
  * One admin write to a workspace (AdminApi.writeWorkspace()), in the deployment-wide audit log.
  * The workspace appends it before it changes anything, so that a write whose record cannot be
  * written does not happen; its owner and title are the workspace's own then, kept as an
@@ -2406,8 +2465,8 @@ export type AdminWriteArgs = {
  * members see only what the write did (a stopped turn, ended sessions), as a member's would look.
  */
 export type AdminWriteRecord = Pick<AdminAccessRecord,
-    "at" | "admin" | "sessionId" | "via" | "workspaceId" | "workspaceOwner" | "workspaceTitle" |
-    "args" | "reason"> & {
+    "at" | "admin" | "sessionId" | "via" | "agent" | "workspaceId" | "workspaceOwner" |
+    "workspaceTitle" | "args" | "reason"> & {
   /** Distinguishes this from the other kinds of AdminAuditRecord. */
   kind: "write";
   /** The action. Named `method` as on the other records, so that AdminAuditQuery.method filters
@@ -2422,6 +2481,10 @@ export const ADMIN_CONTENT_REQUEST_LIFETIME_SECONDS = 24 * 60 * 60;
 /** The most requests to read a workspace's content that may be pending at once, across the
  * deployment. A workspace has at most one pending. */
 export const MAX_PENDING_CONTENT_REQUESTS = 50;
+
+/** How many of them may be requests filed through the admin gatekeeper: a workspace's rule can
+ * file one with no person deciding, and those must leave room for the requests people make. */
+export const MAX_PENDING_AGENT_CONTENT_REQUESTS = 10;
 
 /**
  * Where a request to read a workspace's content stands:
@@ -2461,6 +2524,10 @@ export type AdminContentRequest = {
   requestedBy: string;
   /** How the requester's calls reached the deployment (see AdminVia). */
   via: AdminVia;
+  /** Where the request came from, when an agent filed it through the admin gatekeeper (see
+   * AdminAgentOrigin): present exactly when `via` is "gatekeeper". The list of pending approvals
+   * shows it. */
+  agent?: AdminAgentOrigin;
   /** When it was made. */
   requestedAt: Date;
   /** When it stops being approvable: ADMIN_CONTENT_REQUEST_LIFETIME_SECONDS after it was made. */
@@ -2497,8 +2564,8 @@ export type AdminGrantMethod = typeof ADMIN_GRANT_METHODS[number];
  * that runs out records nothing. Nothing of any step is shown in the workspace.
  */
 export type AdminGrantRecord = Pick<AdminAccessRecord,
-    "at" | "admin" | "sessionId" | "via" | "workspaceId" | "workspaceOwner" | "workspaceTitle" |
-    "reason"> & {
+    "at" | "admin" | "sessionId" | "via" | "agent" | "workspaceId" | "workspaceOwner" |
+    "workspaceTitle" | "reason"> & {
   /** Distinguishes this from the other kinds of AdminAuditRecord. */
   kind: "grant";
   /** The step. */
@@ -2591,7 +2658,9 @@ export interface AdminApi {
    * full three-state (disabled / optional / enabled); for an ordinary gatekeeper only 'disabled' /
    * 'enabled' are valid ('optional' is rejected). Soft enforcement: it doesn't revoke a capability a
    * gadget already holds, and 'disabled' leaves an ambient account's data dormant rather than deleting
-   * it.
+   * it. The admin gatekeeper (`admin`) starts 'disabled'; 'optional' offers it to each
+   * deployment admin and 'enabled' provisions it for every deployment admin, and for nobody else in
+   * either mode.
    */
   setGatekeeperMode(vendorId: string, mode: AmbientGatekeeperMode): Promise<void>;
 
@@ -2966,7 +3035,9 @@ export interface AdminApi {
   /**
    * Change a workspace: `action` with `args` (see AdminWriteArgs), for `reason`. Off unless the
    * deployment's ADMIN_WORKSPACE_WRITES environment variable is "on". A reason is required, as for
-   * inspectWorkspace(), and is kept in the admins' log only.
+   * inspectWorkspace(), and is kept in the admins' log only. An agent's write through the admin
+   * gatekeeper is its workspace owner's, made once a member of that workspace approves the action
+   * that asks for it.
    *
    * The workspace records the write (an AdminWriteRecord) in the deployment-wide log and only then
    * runs it, so a write whose record cannot be written does not happen. That record is the write's
@@ -2996,7 +3067,9 @@ export interface AdminApi {
   // re-checks that the caller is still a deployment admin (`notAdmin`). Nothing of a request, its
   // approval or the grant it gives is shown to the workspace's members: the reason stays in the
   // admin audit log. Every admin sees every request: the panel's list of pending approvals is
-  // listContentAccessRequests().
+  // listContentAccessRequests(). A request an agent files through the admin gatekeeper is its
+  // workspace owner's, and neither they nor anyone who was in that workspace when it was filed
+  // may approve it: its owner, its members, and whoever approved the filing.
 
   /**
    * Ask for a grant to read a workspace's content, for `reason` (required, as for
@@ -3009,7 +3082,8 @@ export interface AdminApi {
    * Refused `contentOff` while the level in force is below "content", `workspaceNotFound` for a
    * malformed id, and (ADMIN_GRANT_ERROR_CODES) `workspaceUnlisted` for a workspace the directory
    * does not list (see listWorkspaces()), `requestPending` while a request for the same workspace
-   * is pending, and `tooManyRequests` while MAX_PENDING_CONTENT_REQUESTS are pending.
+   * is pending, and `tooManyRequests` while MAX_PENDING_CONTENT_REQUESTS are pending or, for a
+   * request filed through the admin gatekeeper, MAX_PENDING_AGENT_CONTENT_REQUESTS of those.
    */
   requestContentAccess(workspaceId: string, reason: string): Promise<AdminContentRequest>;
 
@@ -3027,7 +3101,8 @@ export interface AdminApi {
    * it asks for: source "admins", for ADMIN_GRANT_LIFETIME_SECONDS. It replaces the live grant of
    * that source there, if any, which the approval's record names (AdminGrantRecord.replacedGrantId)
    * and which ends as ended by the caller. Refused (ADMIN_GRANT_ERROR_CODES)
-   * `secondAdminRequired` for the request's own requester, which leaves it pending,
+   * `secondAdminRequired` for the request's own requester or, for a request filed through the
+   * admin gatekeeper, anyone who was in the workspace it was filed from, which leaves it pending,
    * `requestNotFound` and `requestNotPending`, and `contentOff` below "content". Once claimed,
    * the request is "approved" and leaves "pending" for good. The workspace then checks again that
    * the requester and the caller are admins and not one admin, the level, and that it still has
@@ -5196,6 +5271,10 @@ export interface Overseer extends RpcTarget {
    * The new gatekeeper is a workspace-level workpiece; it is not bound into any gadget's `env` by
    * default. Use GadgetClient.bind() / bindWithSuggestedName() to expose it to a gadget, or pass
    * its id to acceptConnectionRequest() to hand it to the agent that asked for it.
+   *
+   * The admin gatekeeper's connection can be added only by the workspace's owner, while they are
+   * a deployment admin; a workspace that has it admits, beside its owner, only deployment admins,
+   * and one that has read through it keeps doing so after the connection is removed.
    */
   newGatekeeper(accountId: number, resourceUrl: string): Promise<GatekeeperClient<any> | null>;
 
@@ -5744,6 +5823,8 @@ export interface Overseer extends RpcTarget {
    * gadget, after the live gadget) changes nothing but the note, so sharing never narrows
    * anyone; one that covers the caller's earlier grants to them replaces those. Returns the
    * collaborator's info, or null if the username doesn't correspond to an existing account.
+   * Refused, with the reason, for someone who is not a deployment admin while the workspace
+   * admits only admins (see newGatekeeper()).
    */
   addCollaborator(username: string, grant: CollaboratorGrant,
                   note?: string): Promise<CollaboratorInfo | null>;

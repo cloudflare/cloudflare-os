@@ -239,7 +239,9 @@ describe("refusals that write and record nothing", () => {
 
   it.each([
     ["a blank reason", {}, { reason: "   " }],
-    ["a via that is neither api nor cli", {}, { via: "browser" }],
+    ["a via that is not one", {}, { via: "browser" }],
+    ["a gatekeeper via with no origin", {}, { via: "gatekeeper" }],
+    ["an origin under a client's via", {}, { agent: { workspaceId: "c".repeat(64) } }],
     ["arguments the action does not take", { gadgetId: 3 }, {}],
     ["a missing argument", { chatId: undefined }, {}],
   ])("rejects a call with %s", (_name, args, overrides) => withWorkspace(async ws => {
@@ -425,6 +427,15 @@ describe("the record of a write", () => {
       method: "stopAgent", args: { chatId: CHAT_ID }, reason: REASON,
     }]);
     expect(records[0].at.getTime()).toBeGreaterThanOrEqual(before);
+  }));
+
+  it("says where a write through the admin gatekeeper came from", () => withWorkspace(async ws => {
+    let agent = { workspaceId: "c".repeat(64), chatId: 4 };
+
+    await ws.instance.applyAdminWrite(callOf("restartWorkspace", {}, { via: "gatekeeper", agent }));
+
+    expect(await deploymentRecords(ws)).toMatchObject(
+        [{ kind: "write", admin: ADMIN, via: "gatekeeper", agent, method: "restartWorkspace" }]);
   }));
 
   it("cuts a long title before the record leaves the workspace", () => withWorkspace(async ws => {
@@ -721,6 +732,90 @@ describe("grantAdminContent", () => {
         [{ requestedBy: "alice@example.com", grantedBy: { id: "grace@example.com" } }]);
   }));
 
+  // A request an agent filed through the admin gatekeeper: OWNER_ADMIN's, with a member of the
+  // workspace it was filed from. OUTSIDE_ADMIN had no part in it.
+  const OWNER_ADMIN = "triage-owner@example.test";
+  const MEMBER_ADMIN = "triage-member@example.test";
+  const OUTSIDE_ADMIN = "outside-admin@example.test";
+  const AGENT_ADMINS = { ADMINS: [OWNER_ADMIN, MEMBER_ADMIN, OUTSIDE_ADMIN] };
+  const agentRequest = { requestedBy: OWNER_ADMIN, insiders: [OWNER_ADMIN, MEMBER_ADMIN] };
+
+  it("refuses an approver who was in the workspace the request was filed from, before any record",
+      () => withContentWorkspace(async ws => {
+    setContentLevel(ws, AGENT_ADMINS);
+    let before = stored(ws);
+
+    for (let admin of [MEMBER_ADMIN, OWNER_ADMIN]) {
+      expect(await codeOf(
+          ws.instance.grantAdminContent(contentGrantOf({ ...agentRequest, admin }))))
+          .toBe(ADMIN_GRANT_ERROR_CODES.secondAdminRequired);
+    }
+    expect(stored(ws)).toStrictEqual(before);
+    expect(storedGrants(ws)).toStrictEqual([]);
+    expect(await workspaceRecords(ws)).toStrictEqual([]);
+
+    // An admin from outside that workspace approves. Neither the record nor the stored grant
+    // keeps the list.
+    let grant = contentGrantOf({ ...agentRequest, admin: OUTSIDE_ADMIN });
+    await ws.instance.grantAdminContent(grant);
+    let [kept] = storedGrants(ws);
+    expect(storedGrants(ws)).toStrictEqual([{
+      id: expect.any(String), level: "content", source: "admins", scope: "workspace",
+      grantedBy: { id: OUTSIDE_ADMIN, name: OUTSIDE_ADMIN },
+      requestedBy: OWNER_ADMIN, requestId: grant.requestId, reason: REASON,
+      grantedAt: expect.any(Date), expiresAt: expect.any(Date),
+    }]);
+    expect(await workspaceRecords(ws)).toEqual([{
+      kind: "grant", method: "approveContentAccess", at: expect.any(Date),
+      admin: OUTSIDE_ADMIN, sessionId: SESSION_ID, via: "api", requestId: grant.requestId,
+      workspaceId: ws.id, workspaceOwner: OWNER.id, workspaceTitle: "Quarterly plan",
+      reason: REASON, requestedBy: OWNER_ADMIN, grantId: kept.id,
+    }]);
+  }));
+
+  it("takes an insider spelled in another case for that insider",
+      () => withContentWorkspace(async ws => {
+    setContentLevel(ws, AGENT_ADMINS);
+    let before = stored(ws);
+    expect(await codeOf(ws.instance.grantAdminContent(
+        contentGrantOf({ ...agentRequest, admin: "Triage-Member@Example.test" }))))
+        .toBe(ADMIN_GRANT_ERROR_CODES.secondAdminRequired);
+    expect(stored(ws)).toStrictEqual(before);
+    expect(await workspaceRecords(ws)).toStrictEqual([]);
+  }));
+
+  it("keeps a request with no insiders to its requester alone",
+      () => withContentWorkspace(async ws => {
+    setContentLevel(ws, AGENT_ADMINS);
+    let request = { requestedBy: OWNER_ADMIN };
+    for (let insiders of [undefined, []]) {
+      expect(await codeOf(ws.instance.grantAdminContent(
+          contentGrantOf({ ...request, insiders, admin: OWNER_ADMIN }))))
+          .toBe(ADMIN_GRANT_ERROR_CODES.secondAdminRequired);
+    }
+    expect(await workspaceRecords(ws)).toStrictEqual([]);
+
+    await ws.instance.grantAdminContent(contentGrantOf({ ...request, admin: MEMBER_ADMIN }));
+    expect(storedGrants(ws)).toMatchObject(
+        [{ requestedBy: OWNER_ADMIN, grantedBy: { id: MEMBER_ADMIN } }]);
+  }));
+
+  it.each([
+    ["insiders that are not a list", { insiders: REQUESTER }],
+    ["an insider that is not a name", { insiders: [REQUESTER, 7] }],
+    ["insiders that are null", { insiders: null }],
+    ["an approver who came through the admin gatekeeper",
+      { via: "gatekeeper", agent: { workspaceId: "c".repeat(64), chatId: 4 } }],
+  ])("rejects a call with %s, before any record", (_name, overrides) =>
+      withContentWorkspace(async ws => {
+    let before = stored(ws);
+    await expect(ws.instance.grantAdminContent(
+        contentGrantOf(overrides as unknown as Partial<AdminContentGrantCall>)))
+        .rejects.toBeInstanceOf(TypeError);
+    expect(stored(ws)).toStrictEqual(before);
+    expect(await workspaceRecords(ws)).toStrictEqual([]);
+  }));
+
   it.each([
     ["the admins' choice", { adminWorkspaceAccess: "metadata" }, "content"],
     ["the environment's cap", { adminWorkspaceAccess: "content" }, "metadata"],
@@ -923,8 +1018,14 @@ describe("endAdminGrant", () => {
       await expect(ws.instance.endAdminGrant(ENDER, grant.id, reason))
           .rejects.toBeInstanceOf(TypeError);
     }
-    await expect(ws.instance.endAdminGrant({ ...ENDER, via: "agent" as any }, grant.id, END_REASON))
-        .rejects.toBeInstanceOf(TypeError);
+    let agent = { workspaceId: "c".repeat(64), chatId: 4 };
+    for (let label of [
+      { via: "agent" }, { via: "gatekeeper", agent }, { via: "gatekeeper" }, { via: "cli", agent },
+    ]) {
+      await expect(ws.instance.endAdminGrant(
+          { ...ENDER, ...label } as AdminGrantActor, grant.id, END_REASON), JSON.stringify(label))
+          .rejects.toBeInstanceOf(TypeError);
+    }
     expect(await codeOf(
         ws.instance.endAdminGrant({ ...ENDER, admin: OWNER.id }, grant.id, END_REASON)))
         .toBe(ADMIN_ACCESS_ERROR_CODES.notAdmin);

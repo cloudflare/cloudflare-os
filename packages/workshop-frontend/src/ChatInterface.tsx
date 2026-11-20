@@ -1,3 +1,4 @@
+import { ADMIN_GATEKEEPER_VENDOR_ID } from "@gadgets/workshop-shared/admin-agent";
 import { logRpcFailure, rpcFailureDescription } from "./rpcErrors";
 import { ChatNotificationsMenu } from "./features/notifications/ChatNotificationsMenu";
 import { unreadCountOf, useUnreadState } from "./features/notifications/UnreadStateBridge";
@@ -2396,6 +2397,8 @@ function fallbackToStoredModelSelection(
 interface ChatInterfaceProps {
   workspaceId: string | undefined;
   overseer: RpcStub<Overseer>;
+  // Whether the current user owns the workspace (see GatekeeperModalProps.ownsWorkspace).
+  ownsWorkspace?: boolean;
   // True once the workspace has read restricted data (WorkspaceMetadata.containsRestrictedData).
   // Latched actions are never auto-approved, so the always-approve affordance is hidden.
   restricted?: boolean;
@@ -2629,6 +2632,7 @@ function ChatInterface({
   workspaceId,
   overseer,
   restricted,
+  ownsWorkspace,
   selectedChatId,
   codeChatId: codeChatIdProp,
   returnChatId,
@@ -5170,6 +5174,9 @@ function ChatInterface({
     const isAccepted = msg.state === "accepted";
     const isDenied = msg.state === "denied";
     const isProc = processingConnections.has(msg.requestId);
+    // Only the workspace's owner can add the admin gatekeeper's connection, so only they can set
+    // up a request for it; anyone else would be offered other connections in its place.
+    const ownerOnly = msg.vendorId === ADMIN_GATEKEEPER_VENDOR_ID && ownsWorkspace !== true;
 
     const stateLabel = isAccepted ? "Connected" : isDenied ? "Denied" : null;
     const stateLabelCls = isDenied ? "text-kumo-danger" : "text-kumo-success";
@@ -5205,6 +5212,11 @@ function ChatInterface({
                   {msg.reason}
                 </p>
               )}
+              {isPending && ownerOnly && (
+                <p className="mt-1 text-[13px] leading-[18px] text-kumo-subtle">
+                  Only the workspace&rsquo;s owner can set up this connection.
+                </p>
+              )}
             </div>
             {isPending && (
               <div className="ml-3 flex flex-shrink-0 items-center gap-2 self-center text-[13px] leading-4">
@@ -5219,7 +5231,7 @@ function ChatInterface({
                 <button
                   type="button"
                   onClick={() => handleAcceptConnection(msg)}
-                  disabled={isProc}
+                  disabled={isProc || ownerOnly}
                   className="cursor-pointer rounded-md bg-kumo-brand px-3 py-1 font-medium text-white transition-[opacity,transform] duration-150 ease-out hover:opacity-90 focus-visible:outline-none active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   Set up
@@ -5843,6 +5855,7 @@ function ChatInterface({
               overseer.newGatekeeper(accountId, url)
             }
             getOverseer={getOverseer}
+            ownsWorkspace={ownsWorkspace === true}
             onSend={handleNewChatSend}
             isAgentActive={false}
             models={availableModels}
@@ -6932,6 +6945,7 @@ function ChatInterface({
                       overseer.newGatekeeper(accountId, url)
                     }
                     getOverseer={getOverseer}
+                    ownsWorkspace={ownsWorkspace === true}
                     onSend={handleSend}
                     isAgentActive={isAgentActive}
                     models={availableModels}
@@ -7108,6 +7122,7 @@ function ChatInterface({
         open={connectionAccept !== null}
         onClose={() => setConnectionAccept(null)}
         getOverseer={getOverseer}
+        ownsWorkspace={ownsWorkspace}
         onCreated={handleConnectionCreated}
         initialVendorId={connectionAccept?.vendorId}
         initialResourceUrl={connectionAccept?.resourceUrl}

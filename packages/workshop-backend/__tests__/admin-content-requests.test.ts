@@ -7,12 +7,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ADMIN_ACCESS_ERROR_CODES, ADMIN_CONTENT_REQUEST_LIFETIME_SECONDS, ADMIN_GRANT_ERROR_CODES,
-  MAX_PENDING_CONTENT_REQUESTS, getAdminAccessErrorCode, getAdminGrantErrorCode,
+  MAX_PENDING_AGENT_CONTENT_REQUESTS, MAX_PENDING_CONTENT_REQUESTS, getAdminAccessErrorCode, getAdminGrantErrorCode,
   type AdminContentRequest, type AdminGrantRecord,
 } from "@gadgets/workshop-shared/api";
 import type { AdminGrantActor } from "../src/admin-access.js";
 import type { AdminSettings } from "../src/admin-settings.js";
-import { DEFAULT_ADMIN_CONFIG } from "../src/storage-schema/admin-settings-storage.js";
+import {
+  DEFAULT_ADMIN_CONFIG, type StoredContentRequest,
+} from "../src/storage-schema/admin-settings-storage.js";
 import { ADMIN, OTHER_ADMIN, adminSettingsHarness } from "./admin-settings-harness";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -131,6 +133,24 @@ describe("a request", () => {
     expect(grantRecords()).toStrictEqual([]);
   });
 
+  it("is refused once MAX_PENDING_AGENT_CONTENT_REQUESTS filed through the admin gatekeeper are " +
+      "pending, leaving room for the requests people make", async () => {
+    const AGENT = { via: "gatekeeper" as const, agent: { workspaceId: "c".repeat(64) } };
+    await harness.inDo(admin => {
+      for (let i = 0; i < MAX_PENDING_AGENT_CONTENT_REQUESTS; i++) {
+        harness.storageOf(admin).contentAccessRequests.put(
+            pendingRequest({ workspaceId: i.toString(16).padStart(64, "0"), ...AGENT }));
+      }
+    });
+    expect(await codeOf(harness.inDo(admin =>
+        admin.requestContentAccess(pendingRequest(AGENT), { ...actor(ADMIN), ...AGENT }))))
+        .toBe(ADMIN_GRANT_ERROR_CODES.tooManyRequests);
+    expect(grantRecords()).toStrictEqual([]);
+
+    // A person's request is taken.
+    await request();
+  });
+
   it("is refused to a requester no longer an admin in the object's own environment", async () => {
     expect(await codeOf(harness.inDo(admin =>
         admin.requestContentAccess(pendingRequest(), actor(ADMIN)), { ADMINS: [OTHER_ADMIN] })))
@@ -161,6 +181,26 @@ describe("the claim of an approval", () => {
         { ADMINS: [ADMIN, OTHER_ADMIN, requester] })))
         .toBe(ADMIN_GRANT_ERROR_CODES.secondAdminRequired);
     expect((await stored(made.id))?.state).toBe("pending");
+  });
+
+  it("refuses anyone who was in the workspace an agent's request was filed from, leaving it " +
+      "pending", async () => {
+    const MEMBER = "member-admin@example.test";
+    const OUTSIDE = "outside-admin@example.test";
+    const ADMINS = { ADMINS: [ADMIN, OTHER_ADMIN, MEMBER, OUTSIDE] };
+    const made = await request({ insiders: [ADMIN, MEMBER, OTHER_ADMIN] } as
+        Partial<StoredContentRequest>);
+    for (let insider of [MEMBER, "Member-Admin@Example.test", OTHER_ADMIN]) {
+      expect(await codeOf(harness.inDo(admin =>
+          admin.claimContentAccess(made.id, actor(insider)), ADMINS)), insider)
+          .toBe(ADMIN_GRANT_ERROR_CODES.secondAdminRequired);
+    }
+    expect((await stored(made.id))?.state).toBe("pending");
+
+    // An admin from outside that workspace claims it, and the list goes with the claim.
+    const claimed = await harness.inDo(admin =>
+        admin.claimContentAccess(made.id, actor(OUTSIDE)), ADMINS);
+    expect(claimed).toMatchObject({ state: "approved", insiders: [ADMIN, MEMBER, OTHER_ADMIN] });
   });
 
   it("refuses below level content, leaving the request pending", async () => {

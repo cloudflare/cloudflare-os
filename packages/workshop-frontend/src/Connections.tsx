@@ -26,6 +26,8 @@ import { isImeComposing } from './keyboardEvent'
 
 interface ConnectionsProps {
   overseer: RpcStub<Overseer>
+  // Whether the current user owns the workspace (see GatekeeperModalProps.ownsWorkspace).
+  ownsWorkspace?: boolean
   gadget: RpcStub<GadgetClient>
   // The chat currently open in the editor, if any. Connecting a resource with a chat open makes
   // the new binding provisional to that chat, exactly like a code edit: it works in the chat's
@@ -41,7 +43,7 @@ interface ConnectionsProps {
  * Auto-approval rules live in Activity because they apply across the workspace, while this view is
  * scoped to one gadget.
  */
-export default function Connections({ overseer, gadget, chatId, authenticatedApi, onConnectionsChange, isVisible, onHasGatekeepersChange }: ConnectionsProps) {
+export default function Connections({ overseer, ownsWorkspace, gadget, chatId, authenticatedApi, onConnectionsChange, isVisible, onHasGatekeepersChange }: ConnectionsProps) {
   const [bindings, setBindings] = useState<GadgetBindingInfo[]>([])
   // Identity of the gadget this tab is showing, needed to offer it to agent spawners.
   const [gadgetInfo, setGadgetInfo] = useState<{ id: WorkpieceId; title: string } | null>(null)
@@ -487,6 +489,7 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
         open={isNewConnectionModalVisible}
         onClose={() => setIsNewConnectionModalVisible(false)}
         getOverseer={() => overseer}
+        ownsWorkspace={ownsWorkspace}
         spawnerEnvCandidates={spawnerEnvCandidates}
         onCreated={async (gk, gatekeeperId) => {
           gk[Symbol.dispose]()

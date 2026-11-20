@@ -715,6 +715,35 @@ describe("opening an admin view", () => {
     });
   }));
 
+  it("opens for the admin gatekeeper, and records every call with where it came from",
+      () => withWorkspace(async ws => {
+    let agent = { workspaceId: "c".repeat(64), chatId: 4 };
+    let view = await open(ws, { via: "gatekeeper", agent });
+    await view.describe();
+    await view.listChats();
+    // A refused call is recorded as the others are.
+    ws.config.adminWorkspaceAccess = "off";
+    expect(await codeOf(view.getDiagnostics())).toBe(ADMIN_ACCESS_ERROR_CODES.accessOff);
+    ws.config.adminWorkspaceAccess = "metadata";
+    let records = await deploymentRecords(ws);
+    expect(records.map(r => r.method))
+        .toStrictEqual(["inspectWorkspace", "describe", "listChats", "getDiagnostics"]);
+    for (let record of records) {
+      expect(record, record.method).toMatchObject({ admin: ADMIN, via: "gatekeeper" });
+      expect(record.agent, record.method).toStrictEqual(agent);
+    }
+
+    // An origin with no chat is recorded without one, and a client's view with no origin.
+    let { chatId: _chatId, ...noChat } = agent;
+    await (await open(ws, { via: "gatekeeper", agent: noChat })).describe();
+    await (await open(ws, { via: "cli" })).describe();
+    let later = (await deploymentRecords(ws)).slice(records.length);
+    expect(later.map(r => [r.via, r.agent])).toStrictEqual([
+      ["gatekeeper", noChat], ["gatekeeper", noChat], ["cli", undefined], ["cli", undefined],
+    ]);
+    for (let record of later.slice(2)) expect(record).not.toHaveProperty("agent");
+  }));
+
   it("records an open while the setting is off as refused",
       () => withWorkspace(async ws => {
     ws.config.adminWorkspaceAccess = "off";

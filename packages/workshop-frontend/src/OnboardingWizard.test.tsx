@@ -37,14 +37,14 @@ const tool = (id: string, displayName: string): GatekeeperVendorInfo =>
 const tools = [tool('scheduler', 'Scheduled Tasks'), tool('websearch', 'Web Search')]
 
 // A user API whose built-in tool discovery resolves only when the test says so.
-function fakeApi() {
+function fakeApi(vendors: GatekeeperVendorInfo[] = []) {
   const discovery = deferred<GatekeeperVendorInfo[]>()
   const provisionAmbientAccount = vi.fn<(vendorId: string) => Promise<void>>(async () => {})
   const completeOnboarding = vi.fn<() => Promise<void>>(async () => {})
   auth.authenticatedApi = {
     listModels: async () => [],
     getAiConfig: async () => ({ enabled: false }),
-    listGatekeeperVendors: async () => [],
+    listGatekeeperVendors: async () => vendors,
     listAddableGatekeepers: () => discovery.promise,
     subscribeConnectedAccounts: () =>
       Object.assign(new Promise<never>(() => {}), { [Symbol.dispose]() {} }),
@@ -90,6 +90,22 @@ describe('OnboardingWizard built-in tools', () => {
 
     expect(api.provisionAmbientAccount.mock.calls).toEqual([['scheduler']])
     expect(api.completeOnboarding).toHaveBeenCalledOnce()
+  })
+
+  it('offers an auto-provisioned vendor that has a resource as a tool, with no button to connect it',
+      async () => {
+    const admin: GatekeeperVendorInfo = {
+      id: 'admin',
+      description: { url: 'https://admin.example', displayName: 'Deployment admin', autoProvisionsAccount: true },
+      supportedResources: [],
+    }
+    const api = fakeApi([tool('github', 'GitHub'), admin])
+    await openConnectionsStep()
+    await api.discovery.resolve([admin])
+
+    expect(button(/GitHub/)?.textContent).toContain('Not connected')
+    expect(button(/Deployment admin/)).toBeUndefined()
+    expect(document.querySelector('[role="switch"][aria-label="Deployment admin"]')).not.toBeNull()
   })
 
   it('completes onboarding and names the tool when one fails to turn on', async () => {

@@ -23,6 +23,14 @@
       "types": "./src/cloudflare-gatekeeper.ts",
       "import": "./src/cloudflare-gatekeeper.ts"
     },
+    "./admin-agent": {
+      "types": "./src/admin-agent.ts",
+      "import": "./src/admin-agent.ts"
+    },
+    "./admin-gatekeeper": {
+      "types": "./src/admin-gatekeeper.ts",
+      "import": "./src/admin-gatekeeper.ts"
+    },
     "./limits": {
       "types": "./src/limits.ts",
       "import": "./src/limits.ts"

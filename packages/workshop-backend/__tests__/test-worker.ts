@@ -8,6 +8,8 @@ import type {
   GatekeeperUiFrame,
   GatekeeperUserSelection,
   GatekeeperUserVerifier,
+  SupportedResource,
+  VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { GatekeeperConnectCallbackImpl } from "../src/user.js";
 import { LoginConnectCallbackImpl } from "../src/auth/login-flow.js";
@@ -15,6 +17,10 @@ import { OverseerDurableObject as RealOverseerDurableObject } from "../src/serve
 import {DELIM_PKT, encodePktLine, FLUSH_PKT} from "@gadgets/gatekeeper-kit/git-transport";
 import {startGitPull} from "@gadgets/gatekeeper-kit/git-pull-transfer";
 import type {GitOid, GitPullHints, GitPullTransfer} from "@gadgets/workshop-shared/gatekeeper";
+import type {
+  ActionDescription, ObservationDescription,
+} from "@gadgets/workshop-shared/gatekeeper";
+import type { AdminAgentApi, AdminAgentQueue } from "@gadgets/workshop-shared/admin-gatekeeper";
 
 export * from "../src/server.js";
 export { default } from "../src/server.js";
@@ -134,6 +140,11 @@ export class FakeGatekeeperAccount extends WorkerEntrypoint<Cloudflare.Env, {
     this.#record(`ensureResources(${resourceUrlPatterns.join(",")})`);
     if (resourceUrlPatterns.length === 0) return {};
     return { url: `https://gk.example/expand/${this.ctx.props.name}` };
+  }
+
+  /** No resource to connect, as an account that offers none answers. */
+  async getSupportedResources(): Promise<SupportedResource[]> {
+    return [];
   }
 
   async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {
@@ -295,5 +306,233 @@ export class ReplicaGitSource extends DurableObject<Cloudflare.Env> {
       }
       return new Response(new Blob([...shallow, encodePktLine("packfile"), band, FLUSH_PKT]));
     }, oids, hints);
+  }
+}
+
+/** A call a lend suite asks the fake admin gatekeeper to make: a method and its arguments. */
+export type FakeAdminCall = { method: string; args?: unknown[] };
+
+/** What such a call came to: its answer, the name the capability it returned was kept under, or
+ * the message of its refusal. A refusal is returned rather than rethrown, which the pool would
+ * report as an unhandled rejection inside the Durable Object. */
+export type FakeAdminOutcome = { value?: unknown; kept?: string; error?: string };
+
+/** Everything a FakeAdminGatekeeper was given and kept, by the name the suite gave it. */
+type FakeAdminKept = Map<string, any>;
+
+async function fakeAdminCall(kept: FakeAdminKept, target: any, { method, args = [] }: FakeAdminCall,
+                             keepAs?: string): Promise<FakeAdminOutcome> {
+  try {
+    const value = await target[method](...args);
+    if (keepAs === undefined) return { value };
+    kept.set(keepAs, value);
+    return { kept: keepAs };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * A session of the fake admin gatekeeper: what a lend suite drives in place of an agent's code.
+ * It asks its queue for the lent Admin API on every read, as the real gatekeeper's session does,
+ * and keeps what the suite names.
+ */
+class FakeAdminSession extends RpcTarget {
+  #queue: RpcStub<AdminAgentQueue>;
+  #kept: FakeAdminKept;
+
+  constructor(queue: RpcStub<AdminAgentQueue>, kept: FakeAdminKept) {
+    super();
+    this.#queue = queue;
+    this.#kept = kept;
+  }
+
+  /** Ask the queue for the lent API, keep it as `keep.api`, make `call` on it and keep a
+   * capability it returns as `keep.result`. With `then`, that call is instead pipelined on the
+   * promise of `call`. A refused lend is the outcome's error. */
+  async read(call: FakeAdminCall, keep: { api?: string; result?: string } = {},
+             then?: FakeAdminCall): Promise<FakeAdminOutcome> {
+    let api: any;
+    try {
+      api = await this.#queue.getAdminApi();
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+    if (keep.api !== undefined) this.#kept.set(keep.api, api);
+    if (then === undefined) return fakeAdminCall(this.#kept, api, call, keep.result);
+    const pending = api[call.method](...call.args ?? []);
+    return fakeAdminCall(this.#kept, pending, then, keep.result);
+  }
+
+  /** Queue `action` with `description`, as the gatekeeper queues an "act" call. */
+  async submit(action: number, description: ActionDescription): Promise<void> {
+    await this.#queue.submitAction(action, description);
+  }
+
+  /** Record an observation, as the gatekeeper does before a read. */
+  async observe(description: ObservationDescription): Promise<void> {
+    await this.#queue.authorizeObservation(description);
+  }
+
+  /** Releasing the session releases its queue, which ends what the queue lent. */
+  [Symbol.dispose](): void {
+    this.#queue[Symbol.dispose]();
+  }
+}
+
+/**
+ * Stands for the admin gatekeeper's facet in the lend suites: a Worker that keeps everything it is
+ * given (the lent APIs, the views it opens, a copy of an action's lend) and makes whatever call a
+ * suite asks for, when it asks. What it keeps is held in memory, by name.
+ */
+export class FakeAdminGatekeeper extends DurableObject<Cloudflare.Env> {
+  #kept: FakeAdminKept = new Map();
+  #plans = new Map<number, FakeAdminCall[]>();
+  #outcomes = new Map<number, FakeAdminOutcome[]>();
+
+  async getAgentCatalog() { return null; }
+  async describe() {
+    return {
+      title: "Deployment", snippet: "Admin gatekeeper fixture", suggestedBindingName: "ADMIN",
+      tsType: "Admin",
+    };
+  }
+
+  async startSession(queue: RpcStub<AdminAgentQueue>): Promise<FakeAdminSession> {
+    return new FakeAdminSession(queue.dup(), this.#kept);
+  }
+
+  /** Makes the calls planned for `action` on the lent `admin`, one after the other, and keeps a
+   * copy of `admin` as "action:<action>". Fails, as an apply that could not make its call does,
+   * when the first call is refused. */
+  async applyAdminAction(action: number, admin: RpcStub<AdminAgentApi>): Promise<void> {
+    this.#kept.set(`action:${action}`, admin.dup());
+    const outcomes: FakeAdminOutcome[] = [];
+    this.#outcomes.set(action, outcomes);
+    for (const call of this.#plans.get(action) ?? []) {
+      outcomes.push(await fakeAdminCall(this.#kept, admin, call));
+    }
+    if (outcomes[0]?.error !== undefined) throw new Error(outcomes[0].error);
+  }
+
+  /** The Workshop applies this gatekeeper's actions through applyAdminAction() alone. */
+  async applyAction(): Promise<void> {
+    throw new Error("applyAction() was called on the admin gatekeeper.");
+  }
+
+  async rejectAction(): Promise<void> {}
+
+  /** The calls applyAdminAction() makes for `action`. */
+  async plan(action: number, calls: FakeAdminCall[]): Promise<void> {
+    this.#plans.set(action, calls);
+  }
+
+  /** What each call planned for `action` came to, or undefined if it was never applied. */
+  async outcomes(action: number): Promise<FakeAdminOutcome[] | undefined> {
+    return this.#outcomes.get(action);
+  }
+
+  /** Make `call` on what was kept as `name`, keeping a capability it returns as `keepAs`. */
+  async onKept(name: string, call: FakeAdminCall, keepAs?: string): Promise<FakeAdminOutcome> {
+    if (!this.#kept.has(name)) return { error: `Nothing was kept as ${name}.` };
+    return fakeAdminCall(this.#kept, this.#kept.get(name), call, keepAs);
+  }
+
+  /** The names of everything kept. */
+  async kept(): Promise<string[]> {
+    return [...this.#kept.keys()];
+  }
+}
+
+/** The one resource an account of the fake admin vendor offers to connect. */
+export const FAKE_ADMIN_RESOURCE: SupportedResource = {
+  urlPattern: "admin://deployment", title: "Deployment",
+  description: "The deployment's Admin API",
+};
+
+/** What the fake admin vendor has been asked, whichever instance was asked. */
+const adminVendorCalls = { describe: 0, createAccount: 0 };
+
+/**
+ * Stands for the admin gatekeeper's vendor: bound as GATEKEEPER_ADMIN (vitest.config.ts),
+ * so every user object of the pool finds it. It auto-provisions an account that declares no
+ * singleton and no UI and offers one resource.
+ */
+export class FakeAdminVendor extends WorkerEntrypoint<Cloudflare.Env> {
+  async describe(): Promise<VendorDescription> {
+    adminVendorCalls.describe++;
+    return {
+      displayName: "Deployment admin", url: "https://workshop.example/",
+      autoProvisionsAccount: true,
+    };
+  }
+
+  async getSupportedResources(): Promise<SupportedResource[]> {
+    return [FAKE_ADMIN_RESOURCE];
+  }
+
+  async connectAccount(): Promise<{ url: string }> {
+    throw new Error("The admin gatekeeper has no connect flow.");
+  }
+
+  async createAccount() {
+    adminVendorCalls.createAccount++;
+    return this.ctx.exports.FakeAdminAccount({ props: {} });
+  }
+
+  /** How often describe() and createAccount() were called. */
+  async calls(): Promise<typeof adminVendorCalls> {
+    return { ...adminVendorCalls };
+  }
+}
+
+/** An account of the fake admin vendor, whose one resource is the fake admin gatekeeper. */
+export class FakeAdminAccount extends WorkerEntrypoint<Cloudflare.Env> {
+  async describe(): Promise<AccountDescription> {
+    return { displayName: "Deployment admin", uniqueName: "deployment-admin" };
+  }
+
+  async getSupportedResources(): Promise<SupportedResource[]> {
+    return [FAKE_ADMIN_RESOURCE];
+  }
+
+  async getGatekeeperClassFor(_url: string) {
+    return {
+      class: this.ctx.exports.FakeAdminGatekeeper({ props: {} }), resource: FAKE_ADMIN_RESOURCE,
+    };
+  }
+
+  async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {
+    return this.ctx.exports.FakeGatekeeperVerifier({ props: { name: "deployment-admin" } });
+  }
+
+  /** Reached only through a stored record a test made declare a singleton: describe() declares
+   * none. */
+  async getSingletonGatekeeperClass() {
+    return this.ctx.exports.FakeAdminGatekeeper({ props: {} });
+  }
+
+  async revoke(): Promise<void> {}
+}
+
+/**
+ * A second vendor that auto-provisions its account, bound as GATEKEEPER_AMBIENTFIXTURE: one any
+ * user may hold, and which offers no resource, as the ambient gatekeepers other than the admin
+ * gatekeeper do.
+ */
+export class FakeAmbientVendor extends WorkerEntrypoint<Cloudflare.Env> {
+  async describe(): Promise<VendorDescription> {
+    return {
+      displayName: "Ambient fixture", url: "https://workshop.example/",
+      autoProvisionsAccount: true,
+    };
+  }
+
+  async getSupportedResources(): Promise<SupportedResource[]> {
+    return [];
+  }
+
+  async createAccount() {
+    return this.ctx.exports.FakeGatekeeperAccount({ props: { name: "ambient-fixture" } });
   }
 }
