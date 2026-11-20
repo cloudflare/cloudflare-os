@@ -2,7 +2,7 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -193,7 +193,7 @@ describe("gatekeeper-openapi-schema", { timeout: 120_000 }, () => {
       expect(result.status).toBe(1);
       expect(result.stderr).toContain(
         "issues/upload, POST /repos/{owner}/{repo}/issues/{issue_number}/attachments cannot be in a schema: " +
-        "its request body is not JSON (application/octet-stream). Take it out of");
+        "its request body is not `application/json` (application/octet-stream). Take it out of");
       expect(result.stderr).toContain("users/avatar, GET /users/{username}/avatar cannot be in a schema");
       expect(result.stderr).not.toContain("issues/list");
       expect(readdirSync(dir)).toEqual(["ops.jsonl"]);
@@ -265,6 +265,51 @@ describe("gatekeeper-openapi-schema", { timeout: 120_000 }, () => {
     }
   });
 
+  it("reads a path item that is a $ref, and leaves out an operation the client cannot send", () => {
+    const dir = mkdtempSync(join(tmpdir(), "openapi-schema-"));
+    try {
+      const responses = { 204: { description: "Done." } };
+      const body = (type: string, required: boolean) =>
+        ({ required, content: { [type]: { schema: { type: "object", properties: { q: { type: "string" } } } } } });
+      const spec = {
+        openapi: "3.1.0",
+        info: { title: "Things", version: "1" },
+        paths: {
+          "/status": { $ref: "#/components/pathItems/Status" },
+          "/things": { get: { operationId: "things/find", requestBody: body("application/json", false), responses } },
+          "/things/search": { get: { operationId: "things/search", requestBody: body("application/json", true), responses } },
+          "/things/{id}": {
+            parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+            patch: { operationId: "things/patch", requestBody: body("application/merge-patch+json", true), responses },
+          },
+        },
+        components: { pathItems: { Status: { get: { operationId: "status/get", responses } } } },
+      };
+      const file = join(dir, "spec.json");
+      writeFileSync(file, JSON.stringify(spec));
+      const listed = spawnSync(process.execPath, [bin, file, "--list"], { encoding: "utf8" });
+      expect(listed.stdout).toContain('{"operationId":"status/get","method":"GET","path":"/status"');
+
+      const out = join(dir, "out");
+      const result = generate(file, out);
+      expect(result.status, result.stderr).toBe(0);
+      const schema = readTree(out)["index.d.ts"];
+      expect(schema).toContain('path: "/status";');
+      // An optional body a GET cannot carry is not offered.
+      expect(schema).toMatch(/path: "\/things";\n\s+response: undefined;/);
+      expect(schema).toContain("GET /things/search (things/search): it requires a request body, which a GET cannot send.");
+      expect(schema).toContain("PATCH /things/{id} (things/patch): its request body is not `application/json` " +
+        "(application/merge-patch+json).");
+
+      writeFileSync(file, JSON.stringify({ ...spec, paths: { "/status": { $ref: "other.json#/Status" } } }));
+      const elsewhere = generate(file, out);
+      expect(elsewhere.status).toBe(1);
+      expect(elsewhere.stderr).toContain('/status is a $ref to "other.json#/Status", which is not a path item of the document');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("refuses to replace an output directory holding a file it did not generate", () => {
     const dir = mkdtempSync(join(tmpdir(), "openapi-schema-"));
     try {
@@ -273,6 +318,14 @@ describe("gatekeeper-openapi-schema", { timeout: 120_000 }, () => {
       expect(result.status).toBe(1);
       expect(result.stderr).toContain("handwritten.ts was not generated");
       expect(readFileSync(join(dir, "handwritten.ts"), "utf8")).toBe("export const x = 1;\n");
+
+      // Nor a link, which the replacement would delete unread.
+      rmSync(join(dir, "handwritten.ts"));
+      symlinkSync(join(fixture, "spec.json"), join(dir, "linked.json"));
+      const linked = generate(join(fixture, "spec.json"), dir, "--group-by", "tag");
+      expect(linked.status).toBe(1);
+      expect(linked.stderr).toContain("linked.json was not generated");
+      expect(readdirSync(dir)).toContain("linked.json");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

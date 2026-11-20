@@ -214,7 +214,9 @@ export function scopeTo<S extends Schema, Scope extends string, const P extends 
   scope: { readonly [K in P]: PathParams<K> },
 ): ScopedClient<S, P, Scope> {
   const prefixes = Object.entries<Readonly<Record<string, unknown>>>(scope).map(([prefix, values]) => {
-    const fixed: Record<string, string | number> = {};
+    // Without a prototype, here and for the merged parameters below, so that a parameter named
+    // `__proto__` is kept and checked like any other.
+    const fixed: Record<string, string | number> = Object.create(null);
     for (const [, name] of prefix.matchAll(/\{([^{}]+)\}/g)) {
       const value = values[name];
       if (typeof value !== "string" && typeof value !== "number") {
@@ -231,7 +233,7 @@ export function scopeTo<S extends Schema, Scope extends string, const P extends 
     scoped[method] = async (template, init = {}) => {
       const under = prefixes.filter(({ prefix, below }) => template === prefix || template.startsWith(below));
       if (under.length === 0) throw new Error(`The operation path "${template}" is outside this client's scope.`);
-      const path = { ...init.path };
+      const path: Record<string, string | number> = Object.assign(Object.create(null), init.path);
       for (const { fixed } of under) {
         for (const [name, value] of Object.entries(fixed)) {
           if (Object.hasOwn(path, name) && String(path[name]) !== String(value)) {

@@ -198,6 +198,18 @@ describe("scopeTo", () => {
     ]);
   });
 
+  // An object's own `__proto__`, as `JSON.parse` makes it, is a parameter like any other.
+  it("fixes and checks a parameter named __proto__", async () => {
+    const { api, requests } = harness();
+    const prefix = "/orgs/{__proto__}" as "/orgs/{org}";
+    const users = `${prefix}/users/{id}` as "/orgs/{org}/users/{id}";
+    const org = scopeTo(api, { [prefix]: JSON.parse('{"__proto__":"acme"}') } as { "/orgs/{org}": { org: string } });
+    await org.get(users, { path: { id: 7 } });
+    expect(requests[0].url).toBe("https://api.example.com/v2/orgs/acme/users/7");
+    await expect(org.get(users, { path: JSON.parse('{"__proto__":"rival","id":7}') }))
+      .rejects.toThrow('Path parameter "__proto__" is fixed for this client.');
+  });
+
   it("reads its scope once, and refuses a prefix whose parameter has no usable value", async () => {
     const { api, requests } = harness();
     const values = { org: "acme", id: "unrelated" };
