@@ -392,6 +392,22 @@ it('draws 50 slides, the changed ones and their neighbours first, and lists the 
   expect(text('.limit')).toEqual(['50 of 64 slides are drawn, starting with the ones that change. The others are listed by title.'])
 })
 
+it('draws a slide again in full, notes and all, once it is back among the 50', async () => {
+  const saved = listed(...Array.from({ length: 64 }, (_, n) => `Slide ${n + 1}`))
+  saved[48].hasSpeakerNotes = true
+  const deck: Deck = { saved, drawings: { s49: { drawing: slide([box('s49-title', 20, 20, 's49')], 'Mind the gap') } } }
+  const { card, refresh } = await draw(deck)
+  const notes = () => card('s49').querySelector('.notes')?.textContent
+  expect(notes()).toBe('Speaker notesMind the gap')
+
+  // A change far down the deck takes its place among the slides drawn, and gives it back.
+  await refresh({ changes: [edit(1, 's60', 's60-title')], drawings: { ...deck.drawings, s60: retitled('s60') } })
+  expect(card('s49').classList.contains('listed')).toBe(true)
+  await refresh({ changes: [] })
+  expect(card('s49').classList.contains('listed')).toBe(false)
+  expect(notes()).toBe('Speaker notesMind the gap')
+})
+
 it('asks for the fonts its slides are set in, and draws without one it cannot have', async () => {
   const { called, card } = await draw({
     saved: listed('Fonts'),

@@ -684,6 +684,8 @@ function layOut(drawn) {
     const notes = card.node.querySelector('.notes');
     if (card.listed) notes?.remove();
     if (card.listed) card.changes.hidden = true;
+    // And keeps nothing of its drawing: drawn again, it is read and filled again.
+    if (card.listed && !tooLarge(row)) drawings.delete(row.id);
     // Room for the notes the listing says the slide has, so the slides under it stay put.
     else if (!notes && (row.slide ?? row.was).hasSpeakerNotes) card.node.appendChild(make('div', 'notes same')).append(make('div', 'ghost'));
     showHeader(card, row, row.slide ? String(++number) : '–');
