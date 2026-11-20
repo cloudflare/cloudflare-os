@@ -454,7 +454,7 @@ export async function sendOnce<Sent>(
     if (error instanceof ActionApplyError) host.attempts.delete(id);
     throw error;
   }
-  await host.ready?.()
+  await host.ready?.();
   host.attempts.put(id, {
     at: Date.now(), ...(noted.existing?.length ? { existing: noted.existing } : {}),
     // Counted only for a write with a limit: a repeatable one is sent again as often as approved.
