@@ -297,8 +297,9 @@ export const SHEETS_STATE_PREFIX = "driveSheets:file:";
 export const DOC_RECEIPT_PREFIX = "driveDocs:receipt:";
 
 /**
- * Where the numbers of a document's edits that a replay failed are kept, by its file ID: the
- * journal lists no failed record, and such an edit is shown, as stale, until it is rejected.
+ * Where the numbers of a document's edits that no longer fit it are kept, by its file ID, as a
+ * replay or an approval found: the journal lists no failed record, and such an edit is shown, as
+ * stale, until it is rejected.
  */
 export const DOC_STALE_PREFIX = "driveDocs:stale:";
 
@@ -497,8 +498,9 @@ export class DriveFileEditors {
         cache.current = undefined;
       },
       // The action set fails this edit; the edits behind it are replayed by the next read.
-      unapplyable: async () => {
+      unapplyable: async id => {
         this.#docCache(fileId).current = undefined;
+        this.#noteStale(fileId, id);
       },
     };
   }
@@ -559,12 +561,19 @@ export class DriveFileEditors {
   #docsInvalidator(fileId: string): GoogleDocInvalidator {
     return ({ id }, reason) => {
       this.#options.journal.markFailed(id, reason);
-      this.#options.kv.put(`${DOC_STALE_PREFIX}${fileId}`,
-        [...this.#docsStale(fileId).map(stale => stale.id), id]);
+      this.#noteStale(fileId, id);
     };
   }
 
-  /** Document `fileId`'s edits that a replay failed and no rejection has cleared, each with why. */
+  /** Notes that edit `id` of document `fileId` no longer fits it, beside those still to reject. */
+  #noteStale(fileId: string, id: number): void {
+    let { kv, journal } = this.#options;
+    let key = `${DOC_STALE_PREFIX}${fileId}`;
+    let held = (kv.get<number[]>(key) ?? []).filter(other => other !== id && journal.get(other));
+    kv.put(key, [...held, id]);
+  }
+
+  /** Document `fileId`'s noted edits that the journal holds failed, each with why. */
   #docsStale(fileId: string): GoogleDocPendingAction[] {
     let { kv, journal } = this.#options;
     return (kv.get<number[]>(`${DOC_STALE_PREFIX}${fileId}`) ?? []).flatMap(id => {
@@ -596,7 +605,7 @@ export class DriveFileEditors {
     let { kv, journal } = this.#options;
     // Listed in full first, so that no key is deleted under the list.
     for (let [key, ids] of Array.from(kv.list<number[]>({ prefix: DOC_STALE_PREFIX }))) {
-      if (!ids.some(id => journal.get(id)?.state === "failed")) kv.delete(key);
+      if (!ids.some(id => journal.get(id))) kv.delete(key);
     }
     let now = Date.now();
     let idle: [string, SheetsFileState][] = [];
