@@ -736,3 +736,43 @@ it('reads no picture of a tab that was left while the picture waited its turn', 
   waiting.shift()!()
   await expect.poll(() => page.querySelector('.obj img')).not.toBeNull()
 })
+
+it('steps back from where it opens to the last change', async () => {
+  const savedMarkdown = 'One\n\nTwo\n\nThree\n'
+  const { page } = await draw({ savedMarkdown, markdown: 'One more\n\nTwo\n\nThree more\n' })
+  const [previous, next] = [...frame!.contentDocument!.querySelectorAll<HTMLElement>('#nav button')]
+  const here = () => [...page.querySelectorAll('.here')].map(text)
+
+  previous.click()
+  expect(here()).toEqual(['Three more'])
+  next.click()
+  expect(here()).toEqual(['One more'])
+})
+
+it('counts the page at the head of the frame, where a step puts one, however short its pages', async () => {
+  const lines = Array.from({ length: 30 }, (_, line) => `Line ${line}`)
+  const short = drawing(lines.map((line, index) => paragraph(index * 2, line)), { page: { width: 600, height: 150 } })
+  const { sheets } = await draw({ savedMarkdown: `${lines.join('\n\n')}\n`, drawing: short })
+  const view = frame!.contentDocument!.scrollingElement!
+  const pager = frame!.contentDocument!.getElementById('pager')!
+  const [previous, next] = [...pager.querySelectorAll('button')]
+  const reading = () => pager.getAttribute('aria-label')
+  const count = sheets().length
+
+  // Two pages start in the upper half of the frame, and the first is the one being read.
+  expect(sheets()[1].getBoundingClientRect().top).toBeLessThan(view.clientHeight / 2)
+  await expect.poll(reading).toBe(`Page 1 of ${count}`)
+  expect(previous.disabled).toBe(true)
+  next.click()
+  await expect.poll(reading).toBe(`Page 2 of ${count}`)
+  previous.click()
+  await expect.poll(reading).toBe(`Page 1 of ${count}`)
+
+  // The last page is too short to reach the head of the frame, and is read at the document's foot.
+  await expect.poll(() => {
+    // Asked for until the step back before it has come to rest.
+    view.scrollTo(0, view.scrollHeight)
+    return reading()
+  }).toBe(`Page ${count} of ${count}`)
+  expect(next.disabled).toBe(true)
+})

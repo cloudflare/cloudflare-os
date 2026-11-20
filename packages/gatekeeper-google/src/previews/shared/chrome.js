@@ -304,7 +304,8 @@ let stop = -1;
 
 function showChange(step) {
   for (const element of stops[stop] ?? []) element.classList.remove('here');
-  stop = (stop + step + stops.length) % stops.length;
+  // From before the first, a step back is to the last.
+  stop = stop < 0 && step < 0 ? stops.length - 1 : (stop + step + stops.length) % stops.length;
   stops[stop][0].scrollIntoView({ block: 'center', behavior: motion() });
   for (const element of stops[stop]) {
     element.classList.add('here');

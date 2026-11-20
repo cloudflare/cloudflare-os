@@ -22,6 +22,9 @@ import { BOLD, ITALIC, STRIKE, blockKey, diff, pairEdits, parseBlocks, tablesOf,
 // The session main() is handed, which every read below goes through.
 let gadget;
 
+// How far under the head of the frame a page stepped to stops.
+const HEAD = 52;
+
 const styleSheet = document.createElement('style');
 styleSheet.textContent = `
   /* The scrollbar's room is kept, so a page that grows long does not change the width it is fitted to. */
@@ -43,7 +46,7 @@ styleSheet.textContent = `
   .views button[aria-pressed="true"] { background: color-mix(in srgb, var(--link) 16%, transparent); color: var(--ink); }
   @media (max-width: 560px) { #nav > span { display: none; } #nav { padding-left: 3px; } .views button { padding: 3px 8px; } }
   /* A page the page navigator steps to stops clear of the controls at the head of the frame. */
-  .sheet { scroll-margin-top: 52px; }
+  .sheet { scroll-margin-top: ${HEAD}px; }
 
   /* A changed paragraph carries a bar in the page's margin, and what changed in it is tinted.
      The document's own colors stay, except where every change is read in place. */
@@ -394,11 +397,17 @@ function compose() {
 
 const pager = partNavigator('page');
 
-/** Finds the page the middle of the view is on. */
+/**
+ * Finds the page being read: the one at the head of the view, where stepping to a page puts it,
+ * so that a step always moves the count. At the foot of the document that is the last page,
+ * which may be too short to reach the head.
+ */
 function markPage() {
   const pages = sheets.firstElementChild?.matches('.endless') ? [] : [...sheets.children];
-  const { clientHeight } = document.scrollingElement;
-  pager.show(pages, Math.max(0, pages.findLastIndex(sheet => sheet.getBoundingClientRect().top <= clientHeight / 2)));
+  const { scrollTop, clientHeight, scrollHeight } = document.scrollingElement;
+  const at = scrollTop > 0 && scrollTop + clientHeight >= scrollHeight - 1 ? pages.length - 1
+    : pages.findLastIndex(sheet => sheet.getBoundingClientRect().top <= HEAD + 1);
+  pager.show(pages, Math.max(0, at));
 }
 
 // ---------------------------------------------------------------------------------------------
