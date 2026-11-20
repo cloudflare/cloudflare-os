@@ -1,7 +1,7 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import type { ChatTimelineHead, GadgetSnapshotClient } from "@gadgets/workshop-shared/api";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
-import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, CollaboratorAccess, CollaboratorGrant, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, createGatekeeperError, GATEKEEPER_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
+import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, CollaboratorAccess, CollaboratorGrant, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, ChatMessageOptions, MessageFocus, MAX_FOCUS_ANCHOR_LENGTH, MAX_FOCUS_LABEL_LENGTH, MAX_FOCUS_CONTEXT_LENGTH, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, createGatekeeperError, GATEKEEPER_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
 import {
   ADMIN_ACCESS_ERROR_CODES, MAX_ADMIN_AUDIT_ARG_LENGTH, SNAPSHOT_SHARING_ERROR_CODES,
   createAdminAccessError, createSnapshotSharingError,
@@ -54,7 +54,7 @@ import {
   getAiGatewayLogCost,
   type AiGatewayLogRoute,
 } from "./ai-gateway";
-import { AgentGadgetInfo, AgentHooks, SeedBindingInfo, agentCodeChangeShape, alwaysAvailableResources, formatMissingBlueprintBindings, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type WorktreeTurnAccess, GIT_BINDING_NAME } from "./agent";
+import { AgentGadgetInfo, AgentHooks, SeedBindingInfo, agentCodeChangeShape, alwaysAvailableResources, formatMissingBlueprintBindings, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type WorktreeTurnAccess, type Steer, type StampedMessageFocus, GIT_BINDING_NAME } from "./agent";
 import { WorktreeSessionImpl } from "./worktree-session";
 import { GitImpl } from "./git-binding";
 import type { WorktreeGitPullHints, WorktreeReplicator } from "@gadgets/workshop-shared/worktree-replica";
@@ -7833,14 +7833,41 @@ class OverseerImpl implements AgentHooks {
     }
   }
 
+  // Checks a client-supplied focus (see ChatMessageOptions.focus) and stamps it with the gadget's
+  // current title. Like a capsule, it may name only a gadget of the workspace (not a worktree or
+  // a gatekeeper, nor a gadget still pending in another chat). capnweb-validate has checked its
+  // shape but not its lengths, and passes extra properties through, so the result is rebuilt
+  // from the declared fields.
+  #stampFocus(chatId: number, focus: MessageFocus | undefined)
+      : StampedMessageFocus | undefined {
+    if (!focus) return undefined;
+    let {gadgetId, spot} = focus;
+    let gadget = this.storage.gadgets.get(gadgetId);
+    if (!gadget || gadget.type === "worktree" ||
+        (gadget.pending && gadget.pending.chatId !== chatId)) {
+      throw new Error(`Chat message is focused on ${gadgetId}, which is not a gadget in this ` +
+          `workspace.`);
+    }
+    if (!spot) return {gadgetId, gadgetTitle: gadget.title};
+    let {anchor, label, context} = spot;
+    if (anchor.length > MAX_FOCUS_ANCHOR_LENGTH || label.length > MAX_FOCUS_LABEL_LENGTH ||
+        (context?.length ?? 0) > MAX_FOCUS_CONTEXT_LENGTH) {
+      throw new Error("Chat message's focus is longer than the GadgetFocus limits allow.");
+    }
+    return {gadgetId, gadgetTitle: gadget.title,
+            spot: context === undefined ? {anchor, label} : {anchor, label, context}};
+  }
+
   #commitPreparedChatMessage(
       chatId: number, timestamp: Date, author: AiChatAuthorInfo,
       prepared: PreparedChatMessage, capsules: CapsuleSpecifier[] | undefined,
       attachments: ChatAttachmentRef[] | undefined,
       formats: MessageFormatRef[] | undefined,
+      focus: MessageFocus | undefined,
       scratchWorktree?: PreparedScratchWorktree,
       attachmentSourceCommit?: string): void {
     this.#validateCapsules(chatId, capsules);
+    let stampedFocus = this.#stampFocus(chatId, focus);
     // Format references describe the text the user wrote, which for a slash command is its
     // arguments, what the transcript shows, not the message the provider expanded them into.
     formats = sanitizeMessageFormatRefs(
@@ -7873,6 +7900,7 @@ class OverseerImpl implements AgentHooks {
         capsules,
         attachments,
         formats,
+        focus: stampedFocus,
       });
       return;
     }
@@ -7894,6 +7922,7 @@ class OverseerImpl implements AgentHooks {
       capsules,
       attachments,
       formats,
+      focus: stampedFocus,
     });
   }
 
@@ -7901,12 +7930,10 @@ class OverseerImpl implements AgentHooks {
     clientUser: DurableObjectStub<UserDurableObject>,
     userMeta: UserChatContext,
     initialMessage: string | SlashCommandRequest,
-    capsules?: CapsuleSpecifier[],
-    attachments?: ChatAttachmentHandle[],
-    formats?: MessageFormatRef[],
+    {capsules, attachments, formats, focus}: ChatMessageOptions = {},
   ): Promise<number> {
-    if (typeof initialMessage !== "string" && (capsules?.length || attachments?.length)) {
-      throw new Error("Slash commands cannot include resources or attachments.");
+    if (typeof initialMessage !== "string" && (capsules?.length || attachments?.length || focus)) {
+      throw new Error("Slash commands cannot include resources, attachments or a focus.");
     }
     let canonicalAttachments = this.canonicalizeChatAttachmentRefs(attachments);
     let prepared = await this.#prepareChatMessage(
@@ -7936,7 +7963,7 @@ class OverseerImpl implements AgentHooks {
 
       this.#commitPreparedChatMessage(
           chatId, timestamp, userMeta.profile, prepared, capsules, canonicalAttachments, formats,
-          scratchWorktree, scratchWorktree?.commitId);
+          focus, scratchWorktree, scratchWorktree?.commitId);
     });
 
     if (prepared.message !== undefined && userMeta.aiModel) {
@@ -7965,15 +7992,16 @@ class OverseerImpl implements AgentHooks {
   // #finishAgentTurn, postAgentErrorMessage). A turn being stopped takes none: Stop has handed the
   // queue to whoever stopped it. Returns whether `message` was queued.
   steerRunningTurn(chatId: number, userId: string, author: AiChatAuthorInfo,
-                   message: string | SlashCommandRequest, capsules?: CapsuleSpecifier[],
-                   attachments?: ChatAttachmentHandle[], formats?: MessageFormatRef[]): boolean {
+                   message: string | SlashCommandRequest,
+                   {capsules, attachments, formats, focus}: ChatMessageOptions = {}): boolean {
     const isPlainTextMessage = typeof message === "string" && message.trim() !== "" &&
         !capsules?.length && !attachments?.length && !formats?.length;
     const turnTakesSteers = this.#runningAgents.has(chatId) &&
         !this.#liveChats.get(chatId)?.cancelController.signal.aborted;
     if (!isPlainTextMessage || !turnTakesSteers) return false;
+    let stampedFocus = this.#stampFocus(chatId, focus);
     let meta = this.getChatMetaOrThrow(chatId);
-    meta.queuedSteers = [...meta.queuedSteers ?? [], {text: message, author}];
+    meta.queuedSteers = [...meta.queuedSteers ?? [], {text: message, author, focus: stampedFocus}];
     meta.lastActive = this.getChatTimestamp();
     this.storage.chatMeta.put(meta);
     this.recordGadgetAnalytics({
@@ -7990,12 +8018,10 @@ class OverseerImpl implements AgentHooks {
     userMeta: UserChatContext,
     chatId: number,
     message: string | SlashCommandRequest,
-    capsules?: CapsuleSpecifier[],
-    attachments?: ChatAttachmentHandle[],
-    formats?: MessageFormatRef[],
+    {capsules, attachments, formats, focus}: ChatMessageOptions = {},
   ): Promise<void> {
-    if (typeof message !== "string" && (capsules?.length || attachments?.length)) {
-      throw new Error("Slash commands cannot include resources or attachments.");
+    if (typeof message !== "string" && (capsules?.length || attachments?.length || focus)) {
+      throw new Error("Slash commands cannot include resources, attachments or a focus.");
     }
     let canonicalAttachments = this.canonicalizeChatAttachmentRefs(attachments);
     this.assertChatNotActive(chatId);
@@ -8043,7 +8069,7 @@ class OverseerImpl implements AgentHooks {
         this.storage.chatMeta.put(meta);
         this.#commitPreparedChatMessage(
             chatId, meta.lastActive, userMeta.profile, prepared, capsules, canonicalAttachments,
-            formats, preparedScratchWorktree, attachmentSourceCommit);
+            formats, focus, preparedScratchWorktree, attachmentSourceCommit);
         if (scratchWorktree && attachmentFiles.size) {
           this.#appendWorkspaceAttachments(chatId, scratchWorktree, attachmentChanges, userMeta.profile);
         }
@@ -8102,7 +8128,7 @@ class OverseerImpl implements AgentHooks {
 
   // AgentHooks.takeSteers: logs each queued steer at the step boundary where the agent reads it,
   // so the log keeps the order the model saw.
-  takeSteers(chatId: number): string[] {
+  takeSteers(chatId: number): Steer[] {
     let meta = this.storage.chatMeta.get(chatId);
     return meta?.queuedSteers ? this.#logQueuedSteers(meta, true) : [];
   }
@@ -8110,8 +8136,8 @@ class OverseerImpl implements AgentHooks {
   // Moves the chat's queued steers into its log as user messages, `steered` unless they prompt a
   // turn, then writes `meta` without them. Subscribers thus get the messages before the metadata,
   // as subscribeToChat's catch-up delivers them.
-  #logQueuedSteers(meta: StoredChatMetadata, steered: boolean): string[] {
-    let steers = (meta.queuedSteers ?? []).map(({text, author}) => {
+  #logQueuedSteers(meta: StoredChatMetadata, steered: boolean): Steer[] {
+    let steers = (meta.queuedSteers ?? []).map(({text, author, focus}) => {
       this.storage.chats.put({
         chatId: meta.id,
         sequence: this.nextChatSequence(meta.id),
@@ -8119,9 +8145,10 @@ class OverseerImpl implements AgentHooks {
         author,
         type: "message",
         message: text,
+        focus,
         ...(steered ? {steered: true} : {}),
       });
-      return text;
+      return {text, focus};
     });
     delete meta.queuedSteers;
     meta.lastActive = this.getChatTimestamp();
@@ -13693,30 +13720,25 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async newChat(initialMessage: string | SlashCommandRequest, chosenModelId: string | null,
-                capsules?: CapsuleSpecifier[], attachments?: ChatAttachmentHandle[],
-                formats?: MessageFormatRef[]): Promise<number> {
+                options?: ChatMessageOptions): Promise<number> {
     let userMeta = await retryOnDoReset(
         () => this.#clientUser.getChatContext(chosenModelId), this.impl.logger);
-    return this.impl.newChat(this.#clientUser, userMeta, initialMessage, capsules, attachments,
-                             formats);
+    return this.impl.newChat(this.#clientUser, userMeta, initialMessage, options);
   }
 
   async sendChatMessage(
       chatId: number, message: string | SlashCommandRequest, chosenModelId: string | null,
-      capsules?: CapsuleSpecifier[], attachments?: ChatAttachmentHandle[],
-      formats?: MessageFormatRef[]): Promise<void> {
+      options?: ChatMessageOptions): Promise<void> {
     using _starting = this.#startingTurn(chatId);
     // A steer runs on the running turn's model, so it is queued before the sender's model is
     // looked up: a collaborator need not have that model.
     let author = await this.#getClientProfile();
-    if (this.impl.steerRunningTurn(
-        chatId, this.clientUserId, author, message, capsules, attachments, formats)) {
+    if (this.impl.steerRunningTurn(chatId, this.clientUserId, author, message, options)) {
       return;
     }
     let userMeta = await retryOnDoReset(
         () => this.#clientUser.getChatContext(chosenModelId), this.impl.logger);
-    return this.impl.sendChatMessage(
-        this.#clientUser, userMeta, chatId, message, capsules, attachments, formats);
+    return this.impl.sendChatMessage(this.#clientUser, userMeta, chatId, message, options);
   }
 
   async setChatTitle(chatId: number, title: string): Promise<void> {
@@ -14346,12 +14368,11 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   }
   async viewChat(_chatId: number): Promise<RpcStub<{}>> { this.#deny(); }
   async newChat(_initialMessage: string | SlashCommandRequest, _modelId: string | null,
-                 _capsules?: CapsuleSpecifier[], _attachments?: ChatAttachmentHandle[]): Promise<number> {
+                _options?: ChatMessageOptions): Promise<number> {
     this.#deny();
   }
   async sendChatMessage(_chatId: number, _message: string | SlashCommandRequest,
-                        _modelId: string | null,
-                        _capsules?: CapsuleSpecifier[], _attachments?: ChatAttachmentHandle[]): Promise<void> {
+                        _modelId: string | null, _options?: ChatMessageOptions): Promise<void> {
     this.#deny();
   }
   async uploadBlob(_content: Uint8Array | {stream: ReadableStream<Uint8Array>, byteLength: number})

@@ -4183,8 +4183,32 @@ export type UiBundle = {
  * It travels on the frame's one RPC session with the page, beside `gadget`, so that a capability
  * the host gives the gadget's UI, passed on to the gadget's server (or the reverse), never
  * proxies through the frame.
+ *
+ * Through it the UI tells the host what the user is focused on and lets the host send the user
+ * back to a spot, so the Workshop can restore the spot after a reload and tell the agent what the
+ * user was looking at. It can also ask the host to show the chat of an agent the gadget spawned.
  */
 export interface GadgetHost {
+  /**
+   * Reports the spot the user is focused on, replacing the previous report. Null means nothing
+   * more specific than the gadget itself. Does nothing during an export.
+   */
+  reportFocus(focus: GadgetFocus | null): void;
+
+  /**
+   * Registers how the host sends the user to a spot. The host calls `navigate` with an anchor
+   * this gadget reported earlier: right away if there is a spot to return to, and later when the
+   * user follows a link to one. `navigate` returns false if the anchor no longer resolves, and
+   * otherwise should show the spot, even if the UI is already drawn, and report it with
+   * `reportFocus()`. A second registration replaces the first. Resolves once the call for a spot
+   * to return to, if there is one, has settled, so a UI that awaits this before its first render
+   * never draws the wrong spot first. Never calls `navigate` during an export.
+   *
+   * The anchor can come from outside the gadget (a pasted link, for one), so `navigate` must treat
+   * it as untrusted input that selects what to show and never causes an action.
+   */
+  onNavigate(navigate: (anchor: string) => boolean | Promise<boolean>): Promise<void>;
+
   /**
    * Shows the user the chat of an agent this gadget spawned, named by its
    * `SpawnedAgent.getChatToken()` (see `AiChatMetadata.chatToken`). The Workshop opens the chat in
@@ -4194,6 +4218,37 @@ export interface GadgetHost {
    */
   openAgentChat(chatToken: string): Promise<void>;
 }
+
+/** A spot in a gadget's UI that the user is focused on, as the UI reported it. */
+export type GadgetFocus = {
+  /**
+   * Identifies the spot, in a form only the gadget interprets. Built from stable ids rather than
+   * positions, so it still means the same thing after a reload, a code change or an edit to the
+   * data around it. At most MAX_FOCUS_ANCHOR_LENGTH characters.
+   */
+  anchor: string;
+
+  /**
+   * A short name for the spot, shown to people: "Q3 › cell B7". At most MAX_FOCUS_LABEL_LENGTH
+   * characters.
+   */
+  label: string;
+
+  /**
+   * What is at the spot, as text for the agent: the selected text, a row's values. At most
+   * MAX_FOCUS_CONTEXT_LENGTH characters.
+   */
+  context?: string;
+};
+
+/** The longest `GadgetFocus.anchor` a host accepts, in characters. */
+export const MAX_FOCUS_ANCHOR_LENGTH = 256;
+
+/** The longest `GadgetFocus.label` a host accepts, in characters. */
+export const MAX_FOCUS_LABEL_LENGTH = 120;
+
+/** The longest `GadgetFocus.context` a host accepts, in characters. */
+export const MAX_FOCUS_CONTEXT_LENGTH = 2000;
 
 /** One module of a Gadget UI. */
 export type UiModule = {
@@ -4929,39 +4984,30 @@ export interface Overseer extends RpcTarget {
    * Starts a new chat in this workspace with an initial message or slash-command request.
    * A slash command always creates a visible chat event, even when it does not produce a message
    * for the agent.
-   * Slash-command requests cannot include capsules or attachments.
    *
    * `modelId` is one of the IDs in the result of `listModels()`, or null to inhibit AI response
    * (useful when using chat to talk between humans). Returns the new chat's id without waiting
    * for the agent's turn; `waitForAgent()` waits for it to end.
-   *
-   * `formats` records where the message names one of the deployment's standard output formats, so
-   * the transcript can draw it as a chip. Display only -- what the agent reads is the noun, which
-   * is already in the text.
    */
   newChat(initialMessage: string | SlashCommandRequest, modelId: string | null,
-          capsules?: CapsuleSpecifier[], attachments?: ChatAttachmentHandle[],
-          formats?: MessageFormatRef[]): Promise<number>;
+          options?: ChatMessageOptions): Promise<number>;
 
   /**
    * Send a message to the chat from this client. Sending a message causes the LLM to start
    * running if it isn't already.
-   * While it runs, plain text with no capsules, attachments or formats steers it, on the running
-   * turn's model whatever `modelId` is, even null: it waits in `AiChatMetadata.queuedSteers` until
-   * the agent reads it. Anything else, or anything sent after `stopAgent()`, throws until the
-   * agent finishes.
+   * While it runs, plain text with no capsules, attachments or formats, though possibly a focus,
+   * steers it, on the running turn's model whatever `modelId` is, even null: it waits in
+   * `AiChatMetadata.queuedSteers` until the agent reads it. Anything else, or anything sent after
+   * `stopAgent()`, throws until the agent finishes.
    * If a slash command produces no message, only its visible invocation event is committed and the
    * agent does not run.
-   * Slash-command requests cannot include capsules or attachments.
    *
    * `modelId` is one of the IDs in the result of `listModels()`, or null to inhibit AI response
    * (useful when using chat to talk between humans). Returns without waiting for the agent's
    * turn; `waitForAgent()` waits for it to end.
-   *
    */
   sendChatMessage(chatId: number, message: string | SlashCommandRequest, modelId: string | null,
-                  capsules?: CapsuleSpecifier[], attachments?: ChatAttachmentHandle[],
-                  formats?: MessageFormatRef[]): Promise<void>;
+                  options?: ChatMessageOptions): Promise<void>;
 
   /**
    * Store raw bytes, such as a file to attach, as an immutable Git blob and return its OID. The OID
@@ -5358,9 +5404,11 @@ export type AiChatMetadata = {
    * unless a turn ends without reading it and without failing or waiting on the user's decision:
    * it then prompts the next turn as an ordinary message. Stopping the agent drops them all (see
    * `Overseer.stopAgent`), unless a deployment admin's write stops it, which keeps them as
-   * `steered` messages. Absent when none.
+   * `steered` messages. Absent when none. A `focus` is as the message will carry it (see
+   * AiChatMessageBody.focus).
    */
-  queuedSteers?: {text: string, author: AiChatAuthorInfo}[];
+  queuedSteers?: {text: string, author: AiChatAuthorInfo,
+                  focus?: MessageFocus & {gadgetTitle: string}}[];
 
   /**
    * True when notifications default off until each user's first participation. Absent on
@@ -5813,6 +5861,13 @@ export type AiChatMessageBody = {
 
   /** Attachments that were sent with this message. Actual bytes stored separately. */
   attachments?: ChatAttachmentRef[];
+
+  /**
+   * What the sender was focused on (see `ChatMessageOptions.focus`), with the gadget's title as
+   * it was when the message was sent, so the message still reads the same after the gadget is
+   * renamed or deleted.
+   */
+  focus?: MessageFocus & {gadgetTitle: string};
 
   /**
    * Sequence of the visible slash-command event that generated this agent-visible message.
@@ -6622,6 +6677,39 @@ export type AiToolCall = {
 // TODO: Extend AiToolCall for code-mode tool calls.
 // - Includes inline audit logs from the action.
 // - Actions can be approved or rejected inline.
+
+/** What a chat message carries besides its text. See `Overseer.sendChatMessage()`. */
+export type ChatMessageOptions = {
+  /** Resources embedded inline in the message. A slash-command request cannot include any. */
+  capsules?: CapsuleSpecifier[];
+
+  /** Uploaded blobs attached to the message. A slash-command request cannot include any. */
+  attachments?: ChatAttachmentHandle[];
+
+  /**
+   * Where the message names one of the deployment's standard output formats, so the transcript
+   * can draw it as a chip. Display only -- what the agent reads is the noun, which is already in
+   * the text.
+   */
+  formats?: MessageFormatRef[];
+
+  /**
+   * What the user was focused on when they sent the message, so the agent knows what "this"
+   * refers to. `gadgetId` must name one of the workspace's gadgets, and the spot must be within
+   * the `GadgetFocus` limits, or the message is refused. It grants the agent nothing: the gadget
+   * is not added to the chat's env. A slash-command request cannot carry one.
+   */
+  focus?: MessageFocus;
+};
+
+/** What the user was focused on when they sent a chat message. */
+export type MessageFocus = {
+  /** The gadget they were viewing. */
+  gadgetId: WorkpieceId;
+
+  /** The spot within it, if the gadget's UI had reported one. Absent: the gadget as a whole. */
+  spot?: GadgetFocus;
+};
 
 /**
  * A standard output format named inline in a chat message, recorded so the message can be redrawn

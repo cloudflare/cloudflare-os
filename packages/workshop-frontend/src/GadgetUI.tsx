@@ -2,7 +2,16 @@ import { useState, useEffect, useRef } from 'react'
 import { Text, Loader, Banner } from '@cloudflare/kumo'
 import { Sparkle } from '@phosphor-icons/react'
 import { RpcStub, RpcTarget, newMessagePortRpcSession } from 'capnweb'
-import { GadgetClient, GadgetSnapshotClient, ConsoleLogEvent, type GadgetHost } from '@gadgets/workshop-shared/api'
+import {
+  GadgetClient,
+  GadgetSnapshotClient,
+  ConsoleLogEvent,
+  MAX_FOCUS_ANCHOR_LENGTH,
+  MAX_FOCUS_CONTEXT_LENGTH,
+  MAX_FOCUS_LABEL_LENGTH,
+  type GadgetFocus,
+  type GadgetHost,
+} from '@gadgets/workshop-shared/api'
 import { prepareUiPage, uiModuleKey, type UiPage } from '@gadgets/workshop-shared/ui-page'
 import { CAPNWEB_MODULE_URL, SANDBOX_HEAD } from './sandboxDocument'
 
@@ -135,22 +144,81 @@ const RENDER_MODE_URLS: Record<GadgetRenderMode, string> = {
   snapshot: `data:text/javascript;charset=utf-8,${encodeURIComponent('globalThis.gadgetRenderMode = "snapshot";')}`,
 }
 
-type OpenAgentChat = (chatToken: string) => Promise<void>
+type Navigate = (anchor: string) => boolean | Promise<boolean>
 
-// The Workshop as a gadget UI's host.
+// Why a reported focus is malformed, or undefined if it is well formed.
+const focusProblem = (focus: unknown): string | undefined => {
+  if (focus === null) return undefined
+  if (typeof focus !== 'object' || Array.isArray(focus)) return 'it is not a GadgetFocus object or null'
+  const { anchor, label, context } = focus as Record<string, unknown>
+  if (typeof anchor !== 'string') return 'its anchor is not a string'
+  if (anchor.length > MAX_FOCUS_ANCHOR_LENGTH) {
+    return `its anchor is longer than ${MAX_FOCUS_ANCHOR_LENGTH} characters`
+  }
+  if (typeof label !== 'string') return 'its label is not a string'
+  if (label.length > MAX_FOCUS_LABEL_LENGTH) return `its label is longer than ${MAX_FOCUS_LABEL_LENGTH} characters`
+  if (context !== undefined && typeof context !== 'string') return 'its context is not a string'
+  if (context !== undefined && context.length > MAX_FOCUS_CONTEXT_LENGTH) {
+    return `its context is longer than ${MAX_FOCUS_CONTEXT_LENGTH} characters`
+  }
+  return undefined
+}
+
+// What one frame's host passes on to GadgetUI, once its arguments are checked.
+type HostEvents = {
+  reportFocus(focus: GadgetFocus | null): void
+  // `navigate` is disposed when the call returns; keeping it means dup()ing it.
+  onNavigate(navigate: RpcStub<Navigate>): Promise<void>
+  // Tells the gadget's author (and the agent, which sees the frame's console) why a call was
+  // ignored.
+  reportProblem(message: string): void
+  openAgentChat(chatToken: string): Promise<void>
+}
+
+// The Workshop as a gadget UI's host: one per frame. Gadget code is untrusted and the frontend has
+// no capnweb-validate, so it checks its arguments by hand and drops a call it can't accept.
 class WorkshopGadgetHost extends RpcTarget implements GadgetHost {
-  readonly #openAgentChat: OpenAgentChat
+  readonly #events: HostEvents
 
-  constructor(openAgentChat: OpenAgentChat) {
+  constructor(events: HostEvents) {
     super()
-    this.#openAgentChat = openAgentChat
+    this.#events = events
+  }
+
+  reportFocus(focus: unknown): void {
+    const problem = focusProblem(focus)
+    if (problem !== undefined) {
+      this.#events.reportProblem(`host.reportFocus() ignored a focus because ${problem}.`)
+      return
+    }
+    if (focus === null) {
+      this.#events.reportFocus(null)
+      return
+    }
+    // Copied, so that nothing but the three fields reaches the rest of the Workshop.
+    const { anchor, label, context } = focus as GadgetFocus
+    this.#events.reportFocus(context === undefined ? { anchor, label } : { anchor, label, context })
+  }
+
+  async onNavigate(navigate: unknown): Promise<void> {
+    // A stub is a callable proxy, whatever it points at.
+    if (typeof navigate !== 'function') {
+      this.#events.reportProblem('host.onNavigate() ignored a registration that is not a function.')
+      return
+    }
+    await this.#events.onNavigate(navigate as RpcStub<Navigate>)
   }
 
   async openAgentChat(chatToken: string): Promise<void> {
-    // The frame is untrusted, and nothing generates RPC validation in the frontend.
     if (typeof chatToken !== 'string') throw new TypeError('chatToken must be a string.')
-    await this.#openAgentChat(chatToken)
+    await this.#events.openAgentChat(chatToken)
   }
+}
+
+// What GadgetUI holds of the frame currently showing, through its host.
+type FrameFocus = {
+  // Our duplicate of the frame's registered navigate callback.
+  navigate: RpcStub<Navigate> | null
 }
 
 // Where a console call or uncaught error happened in the frame, as the browser reported it.
@@ -209,12 +277,32 @@ const createSandboxedHtml = (page: UiPage, renderMode: GadgetRenderMode | undefi
 </html>`.trim()
 }
 
+/** The spot in the gadget the user is focused on, kept by the parent across frames. */
+export type GadgetUIFocus = {
+  /** The spot the frame should be showing. A frame is sent to it as it registers. */
+  anchor: string | undefined
+  /**
+   * Changes each time `anchor` is set by anything but the frame's own report (a followed link, a
+   * sent message's chip), which sends the frame to it. The frame's reports change `anchor` alone.
+   */
+  navigation: number
+  /** The frame reported a focus. Null also clears an anchor that no longer resolves. */
+  onFocusChange: (focus: GadgetFocus | null) => void
+  /**
+   * What the frame reported no longer stands: the frame was replaced, or is being sent to the
+   * anchor, which it may never report.
+   */
+  onFocusReset?: () => void
+}
+
 interface GadgetUIProps {
   gadget: RpcStub<GadgetClient> | RpcStub<GadgetSnapshotClient>
   height: string
   reloadTrigger?: number
   isVisible?: boolean
   chatId?: number
+  // Absent: the frame's reports are ignored and it is never navigated.
+  focus?: GadgetUIFocus
   // Set for a snapshot, which the gadget's code reads as `globalThis.gadgetRenderMode`.
   renderMode?: GadgetRenderMode
   onConsoleLog?: (log: ConsoleLogEvent) => void
@@ -239,7 +327,7 @@ export default function GadgetUI(props: GadgetUIProps) {
   return <GadgetUISession key={props.chatId} {...props} />
 }
 
-function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chatId, renderMode, onConsoleLog, onIframeEscape, onNoUiChange, onOpenAgentChat }: GadgetUIProps) {
+function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chatId, renderMode, focus, onConsoleLog, onIframeEscape, onNoUiChange, onOpenAgentChat }: GadgetUIProps) {
   const [sandboxedHtml, setSandboxedHtml] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   // A connection failure is tied to the client it was tried on, so a replacement gets its own try.
@@ -279,6 +367,82 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
   onNoUiChangeRef.current = onNoUiChange
   const onOpenAgentChatRef = useRef(onOpenAgentChat)
   onOpenAgentChatRef.current = onOpenAgentChat
+  const focusRef = useRef(focus)
+  focusRef.current = focus
+  // Null between frames, and until the frame's session opens.
+  const frameFocusRef = useRef<FrameFocus | null>(null)
+  // Bumped by every report, every navigate call and every frame replacement. A navigate that fails
+  // clears the anchor only if nothing has bumped it since: by then the user has moved on, or the
+  // failure is only the replaced frame's session ending.
+  const focusEpochRef = useRef(0)
+
+  const reportFocusProblem = (message: string) => {
+    onConsoleLogRef.current?.({ timestamp: new Date(), level: 'error', message: [message] })
+  }
+
+  // The frame is gone, or about to be: drop what it told us.
+  const endFrameFocus = () => {
+    const frame = frameFocusRef.current
+    if (!frame) return
+    frameFocusRef.current = null
+    ++focusEpochRef.current
+    frame.navigate?.[Symbol.dispose]()
+    focusRef.current?.onFocusReset?.()
+  }
+
+  const sendNavigate = async (navigate: RpcStub<Navigate>, anchor: string) => {
+    const epoch = ++focusEpochRef.current
+    let resolved: boolean
+    try {
+      const result: unknown = await navigate(anchor)
+      // Anything but false counts as resolved: a UI that forgets to return a result shouldn't lose
+      // the user's place.
+      resolved = result !== false
+      // A gadget that returns an object or a stub by mistake mustn't leave it held for the session.
+      if ((typeof result === 'object' && result !== null) || typeof result === 'function') {
+        (result as Partial<Disposable>)[Symbol.dispose]?.()
+      }
+    } catch (caught) {
+      resolved = false
+      if (epoch === focusEpochRef.current) {
+        reportFocusProblem(`host.onNavigate()'s callback failed: ${caught instanceof Error ? caught.message : String(caught)}`)
+      }
+    }
+    if (resolved || epoch !== focusEpochRef.current) return
+    focusRef.current?.onFocusChange(null)
+  }
+
+  const createHost = (frame: FrameFocus, sessionSignal: AbortSignal) => new WorkshopGadgetHost({
+    reportFocus: reported => {
+      const current = focusRef.current
+      if (frameFocusRef.current !== frame || !current) return
+      ++focusEpochRef.current
+      current.onFocusChange(reported)
+    },
+    onNavigate: async navigate => {
+      if (frameFocusRef.current !== frame || !focusRef.current) return
+      frame.navigate?.[Symbol.dispose]()
+      const retained = navigate.dup()
+      frame.navigate = retained
+      const anchor = focusRef.current.anchor
+      if (anchor !== undefined) await sendNavigate(retained, anchor)
+    },
+    reportProblem: reportFocusProblem,
+    openAgentChat: async chatToken => {
+      await onOpenAgentChatRef.current?.(chatToken, sessionSignal)
+    },
+  })
+
+  const navigation = focus?.navigation
+  useEffect(() => {
+    // A new target supersedes a pending navigate, even with no frame to send to it.
+    ++focusEpochRef.current
+    const frame = frameFocusRef.current
+    const anchor = focusRef.current?.anchor
+    if (!frame?.navigate || anchor === undefined) return
+    focusRef.current?.onFocusReset?.()
+    void sendNavigate(frame.navigate, anchor)
+  }, [navigation])
 
   // A code change invalidates the view without clearing `hasLoaded`, so the previous load's "no UI"
   // result must not keep counting while the replacement load is pending.
@@ -311,6 +475,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
   }
 
   const resetConnection = (reason: unknown) => {
+    endFrameFocus()
     ++connectionGenerationRef.current
     handshakePendingRef.current = null
     pendingGadgetStubRef.current?.reject(reason)
@@ -375,6 +540,9 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
   useEffect(() => {
     // Only react if reloadTrigger has actually changed from the previous value
     if (reloadTrigger !== undefined && reloadTrigger !== prevReloadTriggerRef.current && reloadTrigger > 0) {
+      // The frame is replaced (or dropped, if hidden) now, though its session closes only once the
+      // next frame connects.
+      endFrameFocus()
       // Mark as invalidated but don't reload unless visible
       setIsInvalidated(true)
       // After a failed load the view is still invalidated, so the flag alone wouldn't reload it.
@@ -522,12 +690,11 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
                 : gadgetStubRef.current[property]
             },
           })
+          const frame: FrameFocus = { navigate: null }
+          frameFocusRef.current = frame
           const sessionAbort = new AbortController()
-          const host = new WorkshopGadgetHost(async chatToken => {
-            await onOpenAgentChatRef.current?.(chatToken, sessionAbort.signal)
-          })
           rpcSessionRef.current = newMessagePortRpcSession(
-              port, new GadgetFrameRoot(forwardingTarget, host, frameEvents))
+              port, new GadgetFrameRoot(forwardingTarget, createHost(frame, sessionAbort.signal), frameEvents))
           rpcSessionRef.current.onRpcBroken((reason: unknown) => sessionAbort.abort(reason))
           rpcSessionAbortRef.current = sessionAbort
         } catch (caught) {
