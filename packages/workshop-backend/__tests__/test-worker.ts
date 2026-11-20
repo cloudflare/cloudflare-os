@@ -414,7 +414,7 @@ export class FakeAdminGatekeeper extends DurableObject<Cloudflare.Env> {
 
 /** The one resource an account of the fake admin vendor offers to connect. */
 export const FAKE_ADMIN_RESOURCE: SupportedResource = {
-  urlPattern: "instanceadmin://deployment", title: "Deployment",
+  urlPattern: "admin://deployment", title: "Deployment",
   description: "The deployment's Admin API",
 };
 
@@ -422,7 +422,7 @@ export const FAKE_ADMIN_RESOURCE: SupportedResource = {
 const adminVendorCalls = { describe: 0, createAccount: 0 };
 
 /**
- * Stands for the admin gatekeeper's vendor: bound as GATEKEEPER_INSTANCEADMIN (vitest.config.ts),
+ * Stands for the admin gatekeeper's vendor: bound as GATEKEEPER_ADMIN (vitest.config.ts),
  * so every user object of the pool finds it. It auto-provisions an account that declares no
  * singleton and no UI and offers one resource.
  */

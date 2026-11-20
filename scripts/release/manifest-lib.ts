@@ -301,7 +301,7 @@ const ARTIFACTS_CUT_ALLOWED = new Set(["gatekeeper-context"]);
 const NO_DEFAULT_CRED_INPUTS = new Set([
   "gatekeeper-context",       // no third-party service; uses its own storage
   "gatekeeper-homeassistant", // users connect their own Home Assistant URL + token in-app
-  "gatekeeper-instanceadmin", // auto-provisioned; no third-party service
+  "gatekeeper-admin", // auto-provisioned; no third-party service
   "gatekeeper-scheduler",     // auto-provisioned; no third-party OAuth app
   "gatekeeper-websearch",     // auto-provisioned; searches through the account's own AI Gateway
   "gatekeeper-mcp",           // MCP OAuth uses dynamic client registration, not a static app
@@ -314,10 +314,10 @@ const NOT_INSTALLABLE = new Set(["gatekeeper-email"]);
 
 // Gatekeepers the deploy service installs on every fresh core deploy, server-side with no user
 // interaction. Members must take no inputs of any kind (enforced below): a preinstall has nobody
-// to ask. Preinstalled is not offered: gatekeeper-instanceadmin's mode stays "disabled" until an
+// to ask. Preinstalled is not offered: gatekeeper-admin's mode stays "disabled" until an
 // admin chooses one.
 const PREINSTALL = new Set([
-  "gatekeeper-context", "gatekeeper-instanceadmin", "gatekeeper-scheduler", "gatekeeper-websearch",
+  "gatekeeper-context", "gatekeeper-admin", "gatekeeper-scheduler", "gatekeeper-websearch",
 ]);
 
 // Gatekeepers that may be installed at most once per instance; the deploy service enforces this
@@ -337,14 +337,14 @@ const PREINSTALL = new Set([
 // Reason 2 turns on inputs, not on the vendor: google/github/slack take per-install
 // CLIENT_ID/CLIENT_SECRET, so two installs can front two different OAuth apps and must stay
 // multi-install. Independent of PREINSTALL in principle: the reason-1 members are all
-// preinstalled, while a preinstalled gatekeeper need not be ambient (gatekeeper-instanceadmin's
+// preinstalled, while a preinstalled gatekeeper need not be ambient (gatekeeper-admin's
 // account declares no singleton).
 const SINGLETON = new Set([
   "gatekeeper-context",       // (1) ambient ContextLibrary
   "gatekeeper-scheduler",     // (1) ambient ScheduleSession
   "gatekeeper-websearch",     // (1) ambient WebSearchSession
   "gatekeeper-homeassistant", // (2) no inputs; users connect their own URL + token in-app
-  "gatekeeper-instanceadmin", // (2) no inputs; a workspace's owner adds the connection in-app
+  "gatekeeper-admin", // (2) no inputs; a workspace's owner adds the connection in-app
   "gatekeeper-mcp",           // (2) no inputs; users paste their own endpoints in-app
   "gatekeeper-mcp-portal",    // (2) no inputs; the one portal comes from the deployment's vars
 ]);
@@ -414,10 +414,10 @@ const MAX_SLUG_LEN = 20;
 
 /**
  * Install slugs only one package may fold to, by slug. A workspace lends its owner's Admin API to
- * whatever Worker is bound as GATEKEEPER_INSTANCEADMIN (workshop-shared's
+ * whatever Worker is bound as GATEKEEPER_ADMIN (workshop-shared's
  * ADMIN_GATEKEEPER_VENDOR_ID), so no other gatekeeper may take that binding.
  */
-const RESERVED_SLUGS = new Map([["instanceadmin", "gatekeeper-instanceadmin"]]);
+const RESERVED_SLUGS = new Map([["admin", "gatekeeper-admin"]]);
 
 /**
  * The release manifest's shortName. Deployed instances bind gatekeepers as GATEKEEPER_<SLUG> and

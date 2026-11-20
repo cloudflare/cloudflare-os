@@ -77,7 +77,7 @@ them:
   banners/theme, and which gatekeeper connectors/resources are offered (plus the three-state mode for
   auto-provisioning gatekeepers above). Connectors/resources default to enabled and the admin UI
   opts them *out*; auto-provisioning gatekeepers default to *optional*.
-- The admin gatekeeper (`packages/gatekeeper-instanceadmin`) is the exception to that default: its
+- The admin gatekeeper (`packages/gatekeeper-admin`) is the exception to that default: its
   mode starts **disabled** (`defaultAmbientGatekeeperMode()`), its account goes only to deployment
   admins and is injected nowhere, a workspace that has its connection, or has read through it,
   admits only admins, and a workspace lends it its owner's `AdminApi` only through

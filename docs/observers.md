@@ -210,7 +210,7 @@ admits beside its owner only deployment admins, which the Workshop checks at eac
 background read (`OverseerImpl.admitsNonOwner()`). That connection's `verifyObserverAccess()`
 therefore allows every observer it is asked about for the subresource id it reports, and none for
 any other: who may see what it read is decided by admission, not by an account
-(see [the gatekeeper's README](../packages/gatekeeper-instanceadmin/README.md#who-can-use-it-and-where)).
+(see [the gatekeeper's README](../packages/gatekeeper-admin/README.md#who-can-use-it-and-where)).
 
 [admin-access.md](admin-access.md) is the design record.
 
@@ -1064,7 +1064,7 @@ per-connection protocol, flag, or switch: each call to `authorizeObservation()` 
   Worker's configuration fixes. The kernel treats it as an ordinary requirement: every id is
   opaque to it, except `ADMIN_BINDING_SUBRESOURCE`, which a workspace reads on the admin
   gatekeeper's observations
-  ([its README](../packages/gatekeeper-instanceadmin/README.md#after-the-connection-is-removed)).
+  ([its README](../packages/gatekeeper-admin/README.md#after-the-connection-is-removed)).
   See the kit's
   [connection-only recipe](../packages/gatekeeper-kit/USAGE.md#connection-only-access-global).
 

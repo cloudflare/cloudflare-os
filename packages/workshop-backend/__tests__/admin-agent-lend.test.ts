@@ -28,7 +28,7 @@ import "./test-worker.js";
 declare module "cloudflare:workers" {
   interface ProvidedEnv {
     TEST_USER: DurableObjectNamespace<UserDurableObject>;
-    GATEKEEPER_INSTANCEADMIN: Service<FakeAdminVendor>;
+    GATEKEEPER_ADMIN: Service<FakeAdminVendor>;
   }
 }
 
@@ -151,14 +151,14 @@ describe("a session of the admin gatekeeper", () => {
     expect((await session.read({ method: "listUsers" }, { api: "api" })).error).toBeUndefined();
     expect(await session.read(OPEN(ws), { result: "view" })).toEqual({ kept: "view" });
 
-    ws.config.ambientGatekeeperModes.instanceadmin = "disabled";
+    ws.config.ambientGatekeeperModes.admin = "disabled";
     let off = { error: "Gatekeeper is disabled." };
     expect(await ws.facet.onKept("api", { method: "listUsers" })).toEqual(off);
     expect(await ws.facet.onKept("view", { method: "describe" })).toEqual(off);
     expect(await session.read({ method: "listUsers" })).toEqual(off);
 
-    ws.config.ambientGatekeeperModes.instanceadmin = "optional";
-    ws.config.disabledGatekeepers = ["instanceadmin"];
+    ws.config.ambientGatekeeperModes.admin = "optional";
+    ws.config.disabledGatekeepers = ["admin"];
     expect(await ws.facet.onKept("api", { method: "listUsers" })).toEqual(off);
     expect(await session.read({ method: "listUsers" })).toEqual(off);
 
@@ -261,12 +261,12 @@ describe("who is lent the Admin API", () => {
   }, { owner: NOT_ADMIN }));
 
   it("lends nothing while the vendor's mode is disabled", () => adminWorkspace(async ws => {
-    ws.config.ambientGatekeeperModes.instanceadmin = "disabled";
+    ws.config.ambientGatekeeperModes.admin = "disabled";
     using session = await ws.session(AGENT);
     expect(await session.read({ method: "listUsers" }))
         .toEqual({ error: "Gatekeeper is disabled." });
 
-    ws.config.ambientGatekeeperModes.instanceadmin = "enabled";
+    ws.config.ambientGatekeeperModes.admin = "enabled";
     expect((await session.read({ method: "listUsers" })).error).toBeUndefined();
   }));
 
@@ -341,7 +341,7 @@ function ownerAccounts(ws: AdminWorkspace): Promise<number[]> {
     } };
     let ids: number[] = [];
     for (let id = 0; id < storage.nextAccountId.get(); id++) {
-      if (storage.connectedAccounts.get(id)?.vendorId === "instanceadmin") ids.push(id);
+      if (storage.connectedAccounts.get(id)?.vendorId === "admin") ids.push(id);
     }
     return ids;
   });
@@ -370,7 +370,7 @@ describe("the owner's account of the admin gatekeeper", () => {
     // The connection is kept.
     expect(ws.impl.storage.gatekeepers.get(ws.gatekeeperId)).toBeDefined();
 
-    await ws.ownerDo.provisionAmbientAccount("instanceadmin");
+    await ws.ownerDo.provisionAmbientAccount("admin");
     let [addedId] = await ownerAccounts(ws);
     expect(addedId).not.toBe(accountId);
     expect(await session.read(OPEN(ws), { result: "view" })).toEqual({ kept: "view" });
@@ -386,13 +386,13 @@ describe("the owner's account of the admin gatekeeper", () => {
   }, { account: false }));
 
   it("is held only by a user who is an admin now and has it", () => adminWorkspace(async ws => {
-    let holds = (vendorId = "instanceadmin") => ws.ownerDo.holdsGatekeeperAccount(vendorId);
+    let holds = (vendorId = "admin") => ws.ownerDo.holdsGatekeeperAccount(vendorId);
     let accounts = await ownerAccounts(ws);
     expect(accounts).toHaveLength(1);
-    let asked = await env.GATEKEEPER_INSTANCEADMIN.calls();
+    let asked = await env.GATEKEEPER_ADMIN.calls();
 
     expect(await holds()).toBe(true);
-    expect(await holds("InstanceAdmin")).toBe(true);
+    expect(await holds("Admin")).toBe(true);
     expect(await holds("ambientfixture")).toBe(false);
     // A user who is not an admin holds none, whatever their storage keeps.
     ws.env.ADMINS = [OTHER_ADMIN.id];
@@ -402,7 +402,7 @@ describe("the owner's account of the admin gatekeeper", () => {
 
     // The question provisions nothing and asks no vendor.
     expect(await ownerAccounts(ws)).toEqual(accounts);
-    expect(await env.GATEKEEPER_INSTANCEADMIN.calls()).toEqual(asked);
+    expect(await env.GATEKEEPER_ADMIN.calls()).toEqual(asked);
 
     await ws.ownerDo.disconnectAccount(accounts[0]!);
     expect(await holds()).toBe(false);
@@ -418,15 +418,15 @@ describe("the owner's account of the admin gatekeeper", () => {
         nextAccountId: { put(id: number): void }; connectedAccounts: { put(record: unknown): void };
       } };
       Object.assign(user, { env: { ...ws.env, ADMINS: [storage.profile.get().id] } });
-      let account = await env.GATEKEEPER_INSTANCEADMIN.createAccount();
+      let account = await env.GATEKEEPER_ADMIN.createAccount();
       storage.connectedAccounts.put({
-        id: 0, account, description: await account.describe(), vendorId: "instanceadmin",
+        id: 0, account, description: await account.describe(), vendorId: "admin",
         autoProvisioned: true,
       });
       storage.nextAccountId.put(1);
-      let before = [await user.holdsGatekeeperAccount("instanceadmin"), await user.whoamiIfExists()];
+      let before = [await user.holdsGatekeeperAccount("admin"), await user.whoamiIfExists()];
       storage.created.put(true);
-      return [...before, await user.holdsGatekeeperAccount("instanceadmin")];
+      return [...before, await user.holdsGatekeeperAccount("admin")];
     });
     expect(unsigned).toEqual([false, null, true]);
   }));
@@ -437,7 +437,7 @@ describe("the owner's account of the admin gatekeeper", () => {
     let refusal = await runInDurableObject(ws.ownerDo, user => (user as UserDurableObject)
         .disconnectAccount(accountId!).then(() => undefined, error => (error as Error).message));
     expect(refusal).toBe("This account is provided automatically and can't be disconnected.");
-    expect(await ws.ownerDo.holdsGatekeeperAccount("instanceadmin")).toBe(true);
+    expect(await ws.ownerDo.holdsGatekeeperAccount("admin")).toBe(true);
     using session = await ws.session(AGENT);
     expect((await session.read({ method: "listUsers" })).error).toBeUndefined();
   }, { mode: "enabled" }));
@@ -449,7 +449,7 @@ describe("the owner's account of the admin gatekeeper", () => {
     using session = await ws.session(AGENT);
     expect(await session.read({ method: "listUsers" })).toEqual({ error: ACCOUNT_REMOVED });
 
-    ws.config.ambientGatekeeperModes.instanceadmin = "enabled";
+    ws.config.ambientGatekeeperModes.admin = "enabled";
     expect(await session.read({ method: "listUsers" })).toEqual({ error: ACCOUNT_REMOVED });
     await ws.impl.ensureAmbientCapsules();
     expect(await ownerAccounts(ws)).toHaveLength(1);

@@ -19,7 +19,7 @@ Every method it serves is a read, which runs at once. What an admin sees and doe
 ## Who can use it, and where
 
 The gatekeeper is part of every deployment and takes no deploy input. Its vendor
-(`ADMIN_GATEKEEPER_VENDOR_ID`, `instanceadmin`) auto-provisions its account, with no connect
+(`ADMIN_GATEKEEPER_VENDOR_ID`, `admin`) auto-provisions its account, with no connect
 flow, and its mode starts **disabled** (`defaultAmbientGatekeeperMode()`): a deployment offers it
 only once an admin chooses another mode in the admin panel.
 
@@ -38,7 +38,7 @@ one's mode decides is who holds the account. The three modes mean this for it:
 - **Disabled**: the vendor is offered to nobody, and its connections answer nothing.
 
 **Its holder adds the connection to the workspaces that need it**, the same way in both modes:
-pick the resource (`instanceadmin://deployment`, "Deployment admin"), then the account. Only a
+pick the resource (`admin://deployment`, "Deployment admin"), then the account. Only a
 workspace's owner can add it there, and only while they are an admin. An admin's other
 workspaces are untouched.
 
@@ -322,7 +322,7 @@ an account of their own:
 
 ## Tests
 
-`pnpm --filter @gadgets/gatekeeper-instanceadmin test:run` runs both projects, after writing
+`pnpm --filter @gadgets/gatekeeper-admin test:run` runs both projects, after writing
 the schema when it is stale and building the configurator frame.
 
 - `__tests__/surface.test.ts` (Node): the generated surface. The session's methods are exactly

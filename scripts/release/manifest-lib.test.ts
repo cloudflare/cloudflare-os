@@ -196,11 +196,11 @@ test("worker entries carry the deploy contract", () => {
   // So is the admin gatekeeper, for the same reason: it is preinstalled but not ambient (its
   // account declares no agent singleton), and it takes no inputs and no bindings, since the
   // Worker holds no power of its own.
-  const instanceAdmin = workers["gatekeeper-instanceadmin"];
-  assert.equal(instanceAdmin.singleton, true);
-  assert.equal(instanceAdmin.preinstall, true);
-  assert.deepEqual(instanceAdmin.inputs, []);
-  assert.deepEqual(instanceAdmin.bindings, []);
+  const adminGatekeeper = workers["gatekeeper-admin"];
+  assert.equal(adminGatekeeper.singleton, true);
+  assert.equal(adminGatekeeper.preinstall, true);
+  assert.deepEqual(adminGatekeeper.inputs, []);
+  assert.deepEqual(adminGatekeeper.bindings, []);
 
   // Module blobs are content-addressed.
   for (const [name, entry] of Object.entries(workers)) {
@@ -345,13 +345,13 @@ test("releaseShortName rejects names that don't fold to a legal slug", () => {
   assert.equal(releaseShortName(`gatekeeper-${"a".repeat(20)}`), "a".repeat(20));
 });
 
-// A workspace lends its owner's Admin API to whatever Worker is bound as GATEKEEPER_INSTANCEADMIN,
+// A workspace lends its owner's Admin API to whatever Worker is bound as GATEKEEPER_ADMIN,
 // so only the admin gatekeeper's own package may fold to that slug.
 test("releaseShortName reserves the admin gatekeeper's slug for its package", () => {
-  assert.equal(releaseShortName("gatekeeper-instanceadmin"), ADMIN_GATEKEEPER_VENDOR_ID);
-  for (const pkgName of ["gatekeeper-instance-admin", "gatekeeper-instance.admin"]) {
+  assert.equal(releaseShortName("gatekeeper-admin"), ADMIN_GATEKEEPER_VENDOR_ID);
+  for (const pkgName of ["gatekeeper-ad-min", "gatekeeper-ad.min"]) {
     assert.throws(() => releaseShortName(pkgName),
-        /folds to "instanceadmin", which is reserved for gatekeeper-instanceadmin/,
+        /folds to "admin", which is reserved for gatekeeper-admin/,
         `expected ${pkgName} to be rejected`);
   }
 });

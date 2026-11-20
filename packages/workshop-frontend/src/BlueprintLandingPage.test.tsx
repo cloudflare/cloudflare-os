@@ -588,7 +588,7 @@ describe('BlueprintLandingPage gatekeeper configuration', () => {
         getMetadata: async () => { throw new Error('stopped here') },
       }))
     ;(harness.api as unknown as Record<string, unknown>).newWorkspaceFromBlueprint = newWorkspaceFromBlueprint
-    testState.collectResourceUrl = () => Promise.resolve('instanceadmin://deployment')
+    testState.collectResourceUrl = () => Promise.resolve('admin://deployment')
     await render(harness)
     await saveCalendarConnection()
 
@@ -596,7 +596,7 @@ describe('BlueprintLandingPage gatekeeper configuration', () => {
     expect(newWorkspaceFromBlueprint).toHaveBeenCalledTimes(1)
     const assignments = newWorkspaceFromBlueprint.mock.calls[0]![1] as Record<string, { resourceUrl?: string }>
     expect(Object.values(assignments).map(assignment => assignment.resourceUrl))
-      .toEqual(['instanceadmin://deployment'])
+      .toEqual(['admin://deployment'])
   })
 
   it('adds an auto-provisioning vendor\'s account itself, with no connect flow, and lists a forced one', async () => {

@@ -75,10 +75,10 @@ const WORKER_INPUTS: WorkerInput[] = [
   // The real admin gatekeeper, split the same way: its generated configurator module and its
   // validated tree stay out of watch.
   {
-    kind: "dir", path: "packages/gatekeeper-instanceadmin",
+    kind: "dir", path: "packages/gatekeeper-admin",
     excludeDirs: [...BUILT, "src", ".wrangler"],
   },
-  { kind: "dir", path: "packages/gatekeeper-instanceadmin/src", excludeDirs: ["generated"] },
+  { kind: "dir", path: "packages/gatekeeper-admin/src", excludeDirs: ["generated"] },
   // Bundled into the admin gatekeeper: the argument check, the declarations' emitter and the
   // generator of the schema it serves. `generated` is that generator's output, which a rebuild
   // rewrites.

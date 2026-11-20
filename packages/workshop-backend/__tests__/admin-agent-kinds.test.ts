@@ -51,7 +51,7 @@ describe("the admin gatekeeper's constants", () => {
   // Observations already recorded carry the subresource id, and the Gatekeeper binding is named
   // after the vendor id, so neither is ever renamed.
   it("pins the ids stored records carry", () => {
-    expect(ADMIN_BINDING_SUBRESOURCE).toBe("instanceadmin:deployment");
-    expect(ADMIN_GATEKEEPER_VENDOR_ID).toBe("instanceadmin");
+    expect(ADMIN_BINDING_SUBRESOURCE).toBe("admin:deployment");
+    expect(ADMIN_GATEKEEPER_VENDOR_ID).toBe("admin");
   });
 });

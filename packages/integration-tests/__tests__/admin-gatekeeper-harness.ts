@@ -29,7 +29,7 @@ import {
 /** The vendor id the Workshop derives from the gatekeeper's service binding. */
 export const VENDOR = ADMIN_GATEKEEPER_VENDOR_ID;
 /** The one resource of an admin gatekeeper account. */
-export const DEPLOYMENT_URL = "instanceadmin://deployment";
+export const DEPLOYMENT_URL = "admin://deployment";
 /** The admin who owns the triage workspaces. */
 export const OWNER = ADMIN_USERNAME;
 /** A second admin, who collaborates in the owner's workspaces. */
@@ -37,13 +37,13 @@ export const GRACE = "grace";
 /** A third admin, who stays outside them. */
 export const HEIDI = "heidi";
 
-const INSTANCEADMIN_DIR = fileURLToPath(new URL("../../gatekeeper-instanceadmin/", import.meta.url));
+const ADMIN_GATEKEEPER_DIR = fileURLToPath(new URL("../../gatekeeper-admin/", import.meta.url));
 
 /** The real admin gatekeeper, booted from its prebuilt validated tree. */
 export function adminGatekeeper(): GatekeeperSpec {
   return {
-    binding: "INSTANCEADMIN",
-    dir: INSTANCEADMIN_DIR,
+    binding: "ADMIN",
+    dir: ADMIN_GATEKEEPER_DIR,
     // The task graph builds this tree before any test file boots a Worker.
     patch: config => { delete config.build; },
   };

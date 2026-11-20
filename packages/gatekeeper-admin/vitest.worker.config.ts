@@ -43,7 +43,7 @@ export default defineConfig({
         compatibilityFlags,
         durableObjects: {
           // Declared only here; production reaches this class through facets.
-          INSTANCE_ADMIN_GATEKEEPER: { className: "InstanceAdminGatekeeper", useSQLite: true },
+          ADMIN_GATEKEEPER: { className: "AdminGatekeeperImpl", useSQLite: true },
         },
       },
     }),
