@@ -2470,12 +2470,12 @@ async function runAgentPass(
                 // A label and inline part, which the marker replaces if the turn runs uncompacted
                 // past the limits.
                 let inline = (label: string, data: string): (TextContent | ImageContent)[] => {
-                  let parts: [TextContent, ImageContent] = [{type: "text", text: label},
+                  let pair: [TextContent, ImageContent] = [{type: "text", text: label},
                     {type: "image", data, mimeType: attachment.mimeType}];
                   if (attachmentsFitFrom !== undefined && msg.sequence < attachmentsFitFrom) {
-                    pastLimitParts.set(parts[0], notShown(PAST_LIMITS));
+                    pastLimitParts.set(pair[0], notShown(PAST_LIMITS));
                   }
-                  return parts;
+                  return pair;
                 };
                 // Read the bytes only of what may be inlined: an image or PDF chosen above, or text
                 // short enough, since text decodes to at least a character per four bytes.
