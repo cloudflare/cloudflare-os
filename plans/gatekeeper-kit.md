@@ -2811,8 +2811,10 @@ the hooks are made, since a cursor reads it once, and `refresh()` folds the stan
 `refresh()` folded (and `inject.items`, those rows as the hooks were made), for as long as the
 gatekeeper keeps the hooks (a walk), and nothing else. It is the listing's own state and the one
 thing this leaf holds between calls: a cursor asks `inject.revalidate` about a stand-in
-synchronously, so the row must exist when it asks. No fold of a provider row is kept, and the store
-under the hooks has no state.
+synchronously, so the row must exist when it asks. `revalidate` reads `created` as it then is, so a
+create bound after the last `refresh()` (while a page was being fetched) drops its stand-in and the
+provider's row is served. No fold of a provider row is kept, and the store under the hooks has no
+state.
 
 Who uses what:
 

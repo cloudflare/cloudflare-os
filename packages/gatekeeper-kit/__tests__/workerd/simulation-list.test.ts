@@ -388,6 +388,29 @@ describe("an incident listing over an OffsetCursor", () => {
     expect((await drain(cursor)).flat().map(({ id }) => id)).not.toContain(ref);
   });
 
+  it("serves the provider's row of a create bound during the fetch, though its stand-in sorts ahead", async () => {
+    const host = incidentProvider();
+    // The stand-in is newer than every provider row, so it sorts first on the first page.
+    const ref = host.open(99);
+    const real: Incident = {
+      id: "PNEW", status: "triggered", urgency: "high", assignees: [],
+      serviceId: "svc-a", createdAt: at(97),
+    };
+    // The create applies while the first page is being fetched, after that call's refresh ran,
+    // and the provider's row is on that page, between P01 and P02.
+    host.hooks.fetching = () => {
+      host.hooks.fetching = undefined;
+      host.incidents.push(real);
+      host.ids.bind(ref, "PNEW");
+    };
+
+    const { cursor } = listIncidents(host, ["triggered", "acknowledged"]);
+    const first = await cursor.next();
+    expect(idsOf(first)).toEqual(["P01", "PNEW", "P02", "P03"]);
+    expect(first?.[1]).toBe(real);
+    expect((await drain(cursor)).flat().map(({ id }) => id)).not.toContain(ref);
+  });
+
   it("shows an action staged mid-walk on the rows served after it", async () => {
     const host = incidentProvider();
 
