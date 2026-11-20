@@ -1476,10 +1476,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   async listModels(kind: ModelKind = "language"): Promise<AiChatAuthorInfo[]> {
-    return this.#listModels(await getGatewayModels(this.env), kind);
-  }
-
-  #listModels(models: GatewayModels | null, kind: ModelKind): AiChatAuthorInfo[] {
+    let models = await getGatewayModels(this.env);
     let result: AiChatAuthorInfo[] = [];
 
     // When AI Gateway mode is active, include the gateway models the deployment offers.
@@ -1698,10 +1695,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   /** DO NOT MAKE PUBLIC -- returns API keys. Pure read: call sites replay it across DO resets
    * via retryOnDoReset, so it must stay free of writes and side effects. */
   async getChatContext(modelId: string | null): Promise<UserChatContext> {
-    return this.#getChatContext(modelId, await getGatewayModels(this.env));
-  }
-
-  #getChatContext(modelId: string | null, models: GatewayModels | null): UserChatContext {
+    let models = await getGatewayModels(this.env);
     let result: UserChatContext = {
       profile: this.storage.profile.get()
     };
