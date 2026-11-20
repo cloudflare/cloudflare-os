@@ -67,6 +67,14 @@ const RECONNECT_PROBE_TIMEOUT_MS = 20000;
 const WAKE_PROBE_TIMEOUT_MS = 10000;
 const WAKE_PROBE_MIN_IDLE_MS = 15000;
 
+// Cap'n Web refuses an incoming message over 32M UTF-16 code units by default, a guard against
+// untrusted peers, and tears the whole session down when one arrives. Our own backend is the only
+// peer, and replies that grow with user data, such as a chat's history, come from a Durable Object
+// through the Workers RPC limit (32 MiB serialized). A reply under that limit can still exceed 32M
+// code units as JSON (escaped quotes and newlines, base64 bytes): a long chat's history did, and
+// every attempt to open the chat dropped the connection. So allow four times the default.
+const MAX_RPC_MESSAGE_SIZE = 128 * 1024 * 1024;
+
 // Callbacks to call whenever `currentStub` or connection state is updated.
 const subscribers = new Set<() => void>();
 const notifySubscribers = () => subscribers.forEach(cb => cb());
@@ -88,7 +96,8 @@ function startConnection(): RpcStub<PublicApi> {
   lastConnectTime = Date.now();
   const apiHost = getBackendHost();
   const wsUrl = (window.location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + apiHost + '/api';
-  const stub = newWebSocketRpcSession<PublicApi>(wsUrl);
+  const stub = newWebSocketRpcSession<PublicApi>(
+    wsUrl, undefined, { limits: { maxMessageSize: MAX_RPC_MESSAGE_SIZE } });
   stub.onRpcBroken(handleBroken);
   return stub;
 }
