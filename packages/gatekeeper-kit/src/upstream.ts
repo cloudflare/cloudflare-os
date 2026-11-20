@@ -146,7 +146,7 @@ export type UpstreamOptions = {
   /**
    * Whether `status` is the success of the request named `operation`, or undefined for a status
    * the gatekeeper has no rule of its own for, which is read by the default: below 300 for a
-   * request whose redirect mode is `"manual"`, and below 400 for one that follows redirects. It
+   * request that follows no redirect, and below 400 for one whose mode is `"follow"`. It
    * answers at once: a throw, or what is no boolean (a promise is not awaited), is read as the
    * default too. It says how an answer is counted and, under `read`, which answer is asked for again
    * where its body timed out (see `Upstream`, Retry).
@@ -271,7 +271,8 @@ export type UpstreamRequestInit = RequestInit & {
  *   declaration and is handed on. An option that the runtime keeps inside a `Request` and
  *   exposes by no property (the Workers `encodeResponseBody` is one) is so not read from a
  *   `Request` given for the init, though `fetch` itself would read it there: such an option is
- *   passed in a plain init.
+ *   passed in a plain init. Nor does a `Request` given for the init clear what a `Request` input
+ *   holds and it leaves unset, as the runtime's own reading of the two would.
  * - **Counting.** Each attempt is one point (`recordCall`) with the milliseconds from its send
  *   to its answer or throw. An answered attempt is a `success` when `succeeded` says so, else
  *   `refused` with the reason `rate` for a 429, else an `error` with the reason `http`, each with
@@ -415,13 +416,12 @@ const DEFAULT_RETRY: Required<RetryPolicy> = {
 const MAX_REPLAYS = 2;
 // The longest wait a timer takes: a longer one fires at once.
 const LONGEST_TIMER_MS = 2 ** 31 - 1;
-// The members `fetch` reads of its init: those the Fetch standard gives a `RequestInit`, and the
-// Workers runtime's own.
+// The members the Workers runtime's `fetch` reads of its init. It reads no other, a browser's
+// (`duplex`, `mode`, `credentials`) included.
 const FETCH_MEMBERS = [
-  "method", "headers", "body", "referrer", "referrerPolicy", "mode", "credentials", "cache",
-  "redirect", "integrity", "keepalive", "signal", "duplex", "priority", "window", "cf", "fetcher",
+  "method", "headers", "body", "redirect", "fetcher", "cf", "cache", "integrity", "signal",
   "encodeResponseBody",
-];
+] satisfies (keyof RequestInit)[];
 
 // The tally of the work that is running, when `summedInto` or `Upstream.summed` started one.
 const runningTally = new AsyncLocalStorage<SubserviceTally>();
@@ -559,7 +559,9 @@ export function defineUpstream(options: UpstreamOptions): Upstream {
     // mode. Any other mode it holds is its own word, and stands over the upstream's.
     const held = request && request.redirect !== "follow" ? request.redirect : undefined;
     const redirect = rest.redirect ?? held ?? options.redirect ?? "manual";
-    const manual = redirect === "manual";
+    // The runtime reads a mode in any case. Only one that follows is answered what a redirect
+    // leads to: under any other a 3xx is the answer.
+    const manual = String(redirect).toLowerCase() !== "follow";
     // The signal of a `Request` input is the caller's only where the init gives none: a `null`
     // there clears it, as it does for `fetch`.
     const caller = (rest.signal === undefined ? request?.signal : rest.signal) ?? undefined;

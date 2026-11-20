@@ -1341,17 +1341,19 @@ describe("what fetch is handed", () => {
   });
 
   it("takes a `RequestInit` for a request's init, whatever redirect mode it declares", async () => {
-    const fetch = answering(302, 302, 302);
+    const fetch = answering(302, 302, 302, 302, 302);
     const init: RequestInit = { method: "POST", redirect: "manual" };
-    const other: RequestInit = { redirect: "error" };
+    const others: RequestInit[] = [{ redirect: "error" }, { redirect: "MANUAL" }, { redirect: "Follow" }];
 
     await untimed.request(THREAD, init);
     expect(await untimed.read(THREAD, { ...init, idempotent: true }, statusOf)).toBe(302);
-    await untimed.request(THREAD, other);
+    for (const other of others) await untimed.request(THREAD, other);
 
-    expect(fetch.mock.calls.map(([, sent]) => sent)).toEqual([init, init, other]);
-    // Only `"manual"` is a mode that follows no redirects.
-    expect(outcomes()).toEqual([["error", "http", 302], ["error", "http", 302], ["success", "", 302]]);
+    expect(fetch.mock.calls.map(([, sent]) => sent)).toEqual([init, init, ...others]);
+    // Only a mode that follows, in whatever case it is written, is answered no redirect.
+    expect(outcomes()).toEqual([
+      ...rows(4, ["error", "http", 302]), ["success", "", 302],
+    ]);
   });
 
   it("reads a Request given for the init by property", async () => {
@@ -2822,6 +2824,7 @@ describe("fetcher", () => {
       method: "POST", body: "{}",
       get retry(): never { throw new Error("unread"); },
       get sdkContext(): never { throw new Error("unread"); },
+      get duplex(): never { throw new Error("unread"); },
     };
 
     expect((await upstream.fetcher()(THREAD, init)).status).toBe(200);
