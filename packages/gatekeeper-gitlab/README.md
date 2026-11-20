@@ -152,8 +152,9 @@ can still hold confidential issues and internal notes; job logs and test reports
   the job and its `/trace` (a 403 denies); for its artifacts, GraphQL's
   `job.userPermissions.readJobArtifacts`. A job that is erased or gone allows, since it holds
   nothing left to withhold. Their account reuses a grant for up to 15 minutes and a denial for up
-  to 15 seconds, so a removed membership can still admit them for 15 minutes; it asks afresh after
-  a reconnect, which may sign
+  to 15 seconds, so a removed membership can still admit them for 15 minutes; a grant for a job
+  still running is reused only 15 seconds, since its log may yet become a debug trace and its
+  artifacts restricted. It asks afresh after a reconnect, which may sign
   in as another GitLab user, and reuses nothing once disconnected or once GitLab has confirmed its
   grant dead: the check fails. Bindings created since subresource reporting (marked
   `reportsSubresources: true` in their immutable props) have no reads that predate it, so they

@@ -79,6 +79,8 @@ class ObserverGitLab extends FakeGitLab {
   /** Jobs erased, and jobs deleted. */
   readonly erasedJobs = new Set<number>();
   readonly deletedJobs = new Set<number>();
+  /** Jobs still running, with no `finished_at`. */
+  readonly runningJobs = new Set<number>();
   /** Each pipeline's jobs, retried ones included, and whether each has a test report. */
   readonly pipelineJobs = new Map<number, Array<{ id: number; junit: boolean }>>([[6, [{ id: 66004, junit: true }]]]);
   /** Each pipeline's child pipelines in the project. */
@@ -151,7 +153,9 @@ class ObserverGitLab extends FakeGitLab {
       const jobId = Number(job[1]);
       if (this.deletedJobs.has(jobId)) return json({ message: "404 Not found" }, { status: 404 });
       if (job[2] === undefined) {
-        return json({ ...fx.jobResponse.data, id: jobId, status: "success",
+        const running = this.runningJobs.has(jobId);
+        return json({ ...fx.jobResponse.data, id: jobId, status: running ? "running" : "success",
+          finished_at: running ? null : fx.jobResponse.data.finished_at,
           erased_at: this.erasedJobs.has(jobId) ? "2026-01-01T00:00:00Z" : null,
           artifacts: this.archivelessJobs.has(jobId) ? [{ file_type: "junit" }] : [{ file_type: "archive" }, { file_type: "junit" }],
           pipeline: { ...fx.jobResponse.data.pipeline, id: 6, project_id: PROJECT_ID } });
@@ -657,10 +661,13 @@ describe("verifyObserverAccess", () => {
     const [alice, carol] = await Promise.all([account("alice"), account("carol")]);
     gitlab.member("alice", { [PROJECT_ID]: REPORTER });
     gitlab.member("carol", { [PROJECT_ID]: REPORTER });
-    gitlab.refusals.set("carol", () => json({ message: "500 Internal Server Error" }, { status: 500 }));
+    gitlab.refusals.set("carol", () => json({ message: "upstream detail" }, { status: 500 }));
     const gk = await binding();
 
-    expect(await gk.verify({ alice, carol })).toEqual({ error: expect.any(String) });
+    // GitLab's own text stays out of the error, which the Workshop logs and shows.
+    const failed = await gk.verify({ alice, carol });
+    expect(failed).toEqual({ error: expect.stringContaining("GitLab could not check access (500)") });
+    expect(failed).not.toEqual({ error: expect.stringContaining("upstream detail") });
     // Not remembered as a denial: once GitLab answers, carol is allowed.
     gitlab.refusals.delete("carol");
     expect(await gk.verify({ alice, carol })).toEqual({ ok: ["alice", "carol"] });
@@ -692,6 +699,26 @@ describe("verifyObserverAccess", () => {
     at(15 * MINUTE + 1_000);
     expect(await first.verify({ alice, bob })).toEqual({ ok: ["bob"] });
     expect([asked("alice"), asked("bob")]).toEqual([2, 2]);
+  });
+
+  it("reuses an allowed answer for a running job only as long as a denial", async () => {
+    // The runner may yet mark the log a debug trace, which GitLab then shows only to Developers.
+    const gitlab = new ObserverGitLab();
+    gitlab.install();
+    const reporter = await account("reporter");
+    gitlab.member("reporter", { [PROJECT_ID]: REPORTER });
+    gitlab.runningJobs.add(8);
+    const gk = await binding();
+    const start = Date.now();
+    const at = (offset: number) => vi.setSystemTime(start + offset);
+    const trace = [`project/${PROJECT_ID}/jobTrace/8`];
+
+    expect(await gk.verify({ reporter }, trace)).toEqual({ ok: ["reporter"] });
+    gitlab.debugJobs.add(8);
+    at(14_000);
+    expect(await gk.verify({ reporter }, trace)).toEqual({ ok: ["reporter"] });
+    at(16_000);
+    expect(await gk.verify({ reporter }, trace)).toEqual({ ok: [] });
   });
 
   it("serves no remembered answer once the account's credentials are confirmed dead", async () => {

@@ -217,25 +217,33 @@ export async function projectMembershipLevel(
   }
 }
 
+/** A job access answer, and whether the job was still running, which can change it. */
+export type JobDataAccess = { readable: boolean; running: boolean };
+
 /**
  * Whether `account`'s GitLab user may read job `jobId`'s log (`trace`) or artifacts in the project
  * with id `projectId`, asked with the account's own token: a job's log is refused to a member below
  * Developer while it ran with a debug trace, and its artifacts as its `artifacts:access` says.
  * A job that is gone or erased holds nothing left to protect, so it is readable. The caller checks
  * membership of the project first: unlike membership, a public project's job may be readable to
- * anyone. Fenced to one connection as `projectMembershipLevel()` is, `false` if it moved.
+ * anyone. Fenced to one connection as `projectMembershipLevel()` is, unreadable if it moved.
  *
  * GitLab answers `readJobArtifacts` from the job's archive, and a job with no archive reads as
  * public, though it may hold a test report (`junit`) its `artifacts:access` restricts; the report's
  * own access is exposed nowhere, so such a job needs Maintainer, the most it can require.
+ *
+ * A job still running (no `finished_at`) is `running`: its runner may yet mark its log a debug
+ * trace, and it may yet upload a restricted archive, so an answer that allows it can go stale.
  */
 export async function canReadJobData(
   env: Env, account: MemberAccount, projectId: number, data: "trace" | "artifacts", jobId: number,
-): Promise<boolean> {
+): Promise<JobDataAccess> {
   const { generation } = await account.getUser();
+  let running = false;
   const answer = await withAccountApi(env, account, async api => {
     const job = await api.getJob(String(projectId), jobId);
     if (job === null || job.erased_at) return true;
+    running = !job.finished_at;
     if (data === "artifacts") {
       const types = new Set(job.artifacts?.map(artifact => artifact.file_type));
       if (types.has("junit") && !types.has("archive")) return "maintainer";
@@ -252,7 +260,7 @@ export async function canReadJobData(
   const readable = answer === "maintainer"
     ? await hasProjectMembership(env, account, projectId, MAINTAINER_ACCESS_LEVEL)
     : answer;
-  return readable && (await account.getUser()).generation === generation;
+  return { readable: readable && (await account.getUser()).generation === generation, running };
 }
 
 /**

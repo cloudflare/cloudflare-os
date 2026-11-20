@@ -48,6 +48,7 @@ import {
   exchangeAuthCode,
   refreshAccessToken,
   revokeToken,
+  GitLabApiError,
   type GitLabOAuthGrant,
 } from "./gitlab-api";
 import {
@@ -65,6 +66,7 @@ import {
   supportedResources,
   withAccountApi,
   type AccountCredentials,
+  type JobDataAccess,
   type Env,
   type GitLabApiRunner,
   type GitLabGatekeeperImplProps,
@@ -524,10 +526,12 @@ export class UserAccount extends DurableObject<Env> implements AccountCredential
    * jobSubresourceId), in order: whether its GitLab user's effective membership of the project
    * reaches Reporter (see hasProjectMembership), and for a job's log or artifacts, whether GitLab
    * lets it read them too (see canReadJobData). An allowed answer is reused for up to
-   * PROJECT_ACCESS_ALLOWED_TTL_MS and a denial for up to PROJECT_ACCESS_DENIED_TTL_MS, while this
-   * connection lasts; a job's ID reuses its project's membership answer. Throws for an ID it can't
-   * check, or when access can't be determined, which is never reused, including when the connection
-   * moved during the check: its answers may then be two GitLab users' combined.
+   * PROJECT_ACCESS_ALLOWED_TTL_MS, or a running job's for up to PROJECT_ACCESS_DENIED_TTL_MS like
+   * a denial, while this connection lasts; a job's ID reuses its project's membership answer.
+   * Throws for an ID it can't check, or when access can't be determined, which is never reused,
+   * including when the connection moved during the check: its answers may then be two GitLab
+   * users' combined. GitLab's own error text is kept out of what it throws, which the Workshop logs
+   * and shows the collaborator: a GitLab failure reads as its status alone.
    */
   async checkSubresourceAccess(subresources: string[]): Promise<boolean[]> {
     // Parsed before anything is asked, so an ID this account can't check is refused outright.
@@ -536,20 +540,30 @@ export class UserAccount extends DurableObject<Env> implements AccountCredential
     // on its own, and a later failure keeps what earlier requests learned. Each project's membership
     // is asked once, first, then its jobs a few at a time: a test report can name hundreds.
     const generation = this.#creds.connectionGeneration();
-    const members = new Map<number, boolean>();
-    for (const { projectId } of required) {
-      if (members.has(projectId)) continue;
-      members.set(projectId, await this.#access.cached(projectSubresourceId(projectId), projectAccessTtl,
-        () => hasProjectMembership(this.env, this, projectId)));
+    try {
+      const members = new Map<number, boolean>();
+      for (const { projectId } of required) {
+        if (members.has(projectId)) continue;
+        members.set(projectId, await this.#access.cached(projectSubresourceId(projectId), projectAccessTtl,
+          () => hasProjectMembership(this.env, this, projectId)));
+      }
+      // A running job's log may yet become a debug trace, and its artifacts restricted, so an
+      // answer allowing it is kept no longer than a denial.
+      const answers = await mapLimit(subresources.map((subresource, index) => ({ subresource, ...required[index] })),
+        JOB_CHECK_CONCURRENCY, async ({ subresource, projectId, job }) =>
+          members.get(projectId)! && (job === undefined || (await this.#access.cached(subresource,
+            ({ readable, running }: JobDataAccess) =>
+              readable && !running ? PROJECT_ACCESS_ALLOWED_TTL_MS : PROJECT_ACCESS_DENIED_TTL_MS,
+            () => canReadJobData(this.env, this, projectId, job.data, job.jobId))).readable));
+      if (this.#creds.connectionGeneration() !== generation) {
+        throw new Error("GitLab credentials changed while access was being checked. Please try again.");
+      }
+      return answers;
+    } catch (error) {
+      if (!(error instanceof GitLabApiError)) throw error;
+      // oxlint-disable-next-line eslint/preserve-caught-error -- the cause would carry GitLab's text.
+      throw new Error(`GitLab could not check access (${error.status}). Please try again.`);
     }
-    const answers = await mapLimit(subresources.map((subresource, index) => ({ subresource, ...required[index] })),
-      JOB_CHECK_CONCURRENCY, async ({ subresource, projectId, job }) =>
-        members.get(projectId)! && (job === undefined || await this.#access.cached(subresource, projectAccessTtl,
-          () => canReadJobData(this.env, this, projectId, job.data, job.jobId))));
-    if (this.#creds.connectionGeneration() !== generation) {
-      throw new Error("GitLab credentials changed while access was being checked. Please try again.");
-    }
-    return answers;
   }
 
   /**
