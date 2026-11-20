@@ -1,4 +1,5 @@
 import { abortAllDurableObjects, env } from "cloudflare:test";
+import { ACCESS_TOKEN_MEMO_MAX_AGE_MS } from "../../src/auth-retry";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ActionField } from "@gadgets/workshop-shared/gatekeeper";
 import { googleDocActionTab } from "../../src/doc-actions";
@@ -3158,6 +3159,35 @@ describe("Google Doc comments", () => {
     })]);
     // Approving it again posts nothing more.
     expect(await hooks().applyAction("comment-flow", queued.actionId!)).toBeNull();
+    expect(docs.commentWrites).toBe(1);
+  });
+
+  // Disconnected between its last read and its send, a comment fails with that, nothing posted
+  // and nothing left in doubt.
+  it("posts no comment once its connection was disconnected a minute into the approval", async () => {
+    let docs = model();
+    let queued = await call("comment-gone", "comment", "Hi", { quote: "The launch is in May." });
+    let inner = globalThis.fetch;
+    let scopeReads = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      let url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
+      // The scope is read again just before the send.
+      if (url.pathname === "/batch/drive/v3" && ++scopeReads === 2) {
+        await rawHooks().disconnectDrive();
+        vi.spyOn(Date, "now").mockReturnValue(Date.now() + ACCESS_TOKEN_MEMO_MAX_AGE_MS);
+      }
+      return inner(input, init);
+    }));
+    try {
+      expect(await hooks().applyAction("comment-gone", queued.actionId!))
+        .toBe("The test disconnected this Google account.");
+    } finally {
+      vi.restoreAllMocks();
+      await rawHooks().setDriveToken(undefined);
+    }
+    expect(docs.commentWrites).toBe(0);
+    // Nothing is in doubt, so approving it again, connected, posts it once.
+    expect(await hooks().applyAction("comment-gone", queued.actionId!)).toBeNull();
     expect(docs.commentWrites).toBe(1);
   });
 

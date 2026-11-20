@@ -158,6 +158,9 @@ export class GoogleDocGatekeeperImpl
     // Not gated on Drive's read and write choice, as the Doc's edits are not.
     writeRefusal: async () => undefined,
     attempts: this.#commentAttempts,
+    // The connection answers for its token before a send is recorded, so that one disconnected
+    // fails the comment with that, nothing sent and nothing in doubt.
+    ready: async () => { await this.#getAccessToken(); },
   });
   #reads = new ReadGate();
 
