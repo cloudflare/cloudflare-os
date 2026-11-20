@@ -11152,13 +11152,12 @@ class OverseerImpl implements AgentHooks {
   // collaborator as an observer of everything this workspace has read. Returns null for no access;
   // verification failures throw. Collaborators with "use" access are not verified here: what they
   // are admitted to is a workspace shell showing nothing any gadget read, and they are verified for
-  // each gadget as they get it (see authorizeGadget). A caller that requires "build" (e.g.
-  // #resumeAgent) passes `requireBuild` so other access is denied *before* verification
-  // runs -- otherwise the caller would be verified (real addObserver calls, a persisted observer
-  // record) only to be turned away, or worse, told to fix a verification failure that can never
-  // grant them access. `configureCb` is forwarded to ensureObserver to prompt for unconfigured
-  // account choices; without it, verification is non-interactive and an unconfigured binding
-  // denies access.
+  // each gadget as they get it (see authorizeGadget). A caller that requires "build" passes
+  // `requireBuild`, which returns null for any other access: without it, a "use" collaborator's
+  // access comes back unverified and truthy. #resumeAgent relies on this to hold a resumed turn's
+  // initiator to build access. `configureCb` is forwarded to ensureObserver to prompt for
+  // unconfigured account choices; without it, verification is non-interactive and an unconfigured
+  // binding denies access.
   async authorizeCollaborator(
       profileId: string,
       clientUser: DurableObjectStub<UserDurableObject>,
