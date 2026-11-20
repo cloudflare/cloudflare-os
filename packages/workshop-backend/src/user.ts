@@ -1476,10 +1476,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   async listModels(kind: ModelKind = "language"): Promise<AiChatAuthorInfo[]> {
-    return this.#listModels(await getGatewayModels(this.env), kind);
-  }
-
-  #listModels(models: GatewayModels | null, kind: ModelKind): AiChatAuthorInfo[] {
+    let models = await getGatewayModels(this.env);
     let result: AiChatAuthorInfo[] = [];
 
     // When AI Gateway mode is active, include the gateway models the deployment offers.
@@ -1595,7 +1592,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   async setPreferredModel(id: string | null): Promise<void> {
     if (id !== null) {
-      // Any model that resolves is accepted, hidden ones included (see getExternalMessageChatContext()).
+      // Any model that resolves is accepted, hidden ones included (see
+      // AuthenticatedApi.setPreferredModel()).
       if (!this.#resolveModel(id, await getGatewayModels(this.env))) {
         throw new Error(`No such model: ${id}`);
       }
@@ -1697,10 +1695,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   /** DO NOT MAKE PUBLIC -- returns API keys. Pure read: call sites replay it across DO resets
    * via retryOnDoReset, so it must stay free of writes and side effects. */
   async getChatContext(modelId: string | null): Promise<UserChatContext> {
-    return this.#getChatContext(modelId, await getGatewayModels(this.env));
-  }
-
-  #getChatContext(modelId: string | null, models: GatewayModels | null): UserChatContext {
+    let models = await getGatewayModels(this.env);
     let result: UserChatContext = {
       profile: this.storage.profile.get()
     };
@@ -1722,21 +1717,6 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     result.quickModel = this.#chosenQuickModel(models)?.config ??
         models?.gateway.getQuickModelConfig();
     return result;
-  }
-
-  async getExternalMessageChatContext(existingChatModelId: string | null): Promise<UserChatContext> {
-    // An existing chat keeps its model while it still resolves, even once no longer offered. A new
-    // conversation takes the user's preferred model only while it is still offered, as the web
-    // composer does with its stored choice, and otherwise the first available model.
-    let models = await getGatewayModels(this.env);
-    let selectedModelId = existingChatModelId;
-    if (selectedModelId === null || !this.#resolveModel(selectedModelId, models)) {
-      let offered = this.#listModels(models, "language");
-      let preferredModel = this.storage.preferredModel.get();
-      selectedModelId = (offered.find(model => model.id === preferredModel) ?? offered[0])?.id ?? null;
-    }
-
-    return this.#getChatContext(selectedModelId, models);
   }
 
   /**
@@ -1786,11 +1766,6 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   async newWorkspace(id: string, title: string): Promise<void> {
     let created = new Date();
     this.storage.gadgets.put({id, title, created});
-  }
-
-  async ensureWorkspaceRegistered(id: string, title: string): Promise<void> {
-    if (this.storage.gadgets.get(id)) return;
-    await this.newWorkspace(id, title);
   }
 
   async setWorkspaceLastActive(id: string, time: Date, totalCost: number | undefined): Promise<void> {

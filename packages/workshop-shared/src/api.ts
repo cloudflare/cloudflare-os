@@ -924,9 +924,8 @@ export interface AuthenticatedApi extends RpcTarget {
   getPreferredModel(): Promise<string | null>;
 
   /**
-   * Set the user's preferred model. Pass null to indicate "No agent". Any model that resolves is
-   * accepted, including one hidden from pickers, but a new external conversation uses the
-   * preference only while it is offered, and otherwise the first offered model.
+   * Set the user's preferred model: any model ID that resolves, including one hidden from
+   * pickers, or null to clear the saved preference.
    */
   setPreferredModel(id: string | null): Promise<void>;
 
@@ -2659,8 +2658,6 @@ export type AdminWorkspaceDiagnostics = {
   present: PresenceParticipant[];
   /** When the workspace's alarm next fires. Absent while none is set. */
   nextAlarm?: Date;
-  /** Whether an external message created the workspace before its owner's account recorded it. */
-  ownerRegistrationPending: boolean;
 };
 
 /** One call made on a chat's callable agent that is not in the chat yet, as
