@@ -582,7 +582,8 @@ function changeOf({ mark, words, over }) {
 
 let headings = [];
 let entries = [];
-// What has been folded away: a tab by its ID, a heading by its tab, level and text.
+// What has been folded away: a tab by its ID, a heading by its tab, level and text, and by
+// which of the headings that share those it is.
 const folded = new Set();
 const fold = (key, label) => foldArrow(key, label, folded, renderOutline);
 let reading = -1;
@@ -610,6 +611,7 @@ function renderOutline() {
   }
   // The heading whose headings are folded away, while the ones under it are passed.
   let folder;
+  const named = new Map();
   entries = headings.map((heading, index) => {
     const level = levels[index];
     const entry = make('button', level ? 'entry' : 'entry top');
@@ -626,7 +628,10 @@ function renderOutline() {
       heading.scrollIntoView({ block: 'start', behavior: motion() });
       leaveOutline();
     });
-    const key = `${tabId}\u0000${level}\u0000${name}`;
+    const title = `${tabId}\u0000${level}\u0000${name}`;
+    const nth = named.get(title) ?? 0;
+    named.set(title, nth + 1);
+    const key = `${title}\u0000${nth}`;
     const row = make('div', 'row');
     row.style.paddingLeft = `${level * 12}px`;
     row.append(fold(levels[index + 1] > level && key, 'Headings under this one'), entry);
