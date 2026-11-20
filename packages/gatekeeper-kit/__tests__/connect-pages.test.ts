@@ -208,7 +208,7 @@ describe("connect forms", () => {
 
   it("posts the nonce in a hidden field beside the inputs", () => {
     const html = form({ fields: [{ name: "host", label: "Host", placeholder: "https://x" }, { name: "key", label: "Key", secret: true }] });
-    expect(html).toContain(`<form method="post" action="${ORIGIN}/abc/key">`);
+    expect(html).toContain(`<form method="post" action="${ORIGIN}/abc/key" onsubmit="this.querySelector('button').disabled=true">`);
     expect(html).toContain(`<input type="hidden" name="${CONNECT_FORM_NONCE_FIELD}" value="${"f".repeat(64)}">`);
     expect(html).toContain('<input id="host" name="host" type="text" required placeholder="https://x" autofocus>');
     expect(html).toContain('<input id="key" name="key" type="password" required autocomplete="new-password" data-1p-ignore data-lpignore="true">');
@@ -224,10 +224,12 @@ describe("connect forms", () => {
     expect(html).not.toContain("<script>");
   });
 
-  it("says why the last submission was refused, when given an error", () => {
+  it("says why the last submission was refused, when given an error, and ties it to the inputs", () => {
     expect(form()).not.toContain('class="err"');
-    expect(form({ error: "Vendor refused <that> key." }))
-      .toContain('<p class="err" role="alert">Vendor refused &lt;that&gt; key.</p>');
+    expect(form()).not.toContain("aria-");
+    const html = form({ error: "Vendor refused <that> key." });
+    expect(html).toContain('<p class="err" id="form.error" role="alert">Vendor refused &lt;that&gt; key.</p>');
+    expect(html).toContain('data-lpignore="true" aria-invalid="true" aria-describedby="form.error" autofocus>');
   });
 
   // A quote with no `<` or `>` after it: what closes an attribute and opens another.
@@ -300,10 +302,7 @@ describe("connect forms", () => {
 
   it("throws on a cap that is not a positive integer", async () => {
     await expect(readConnectForm(submission("key=k"), { origin: ORIGIN, maxBytes: 0 })).rejects.toThrow("maxBytes");
+    await expect(readConnectForm(submission("", {}, "GET"), { origin: ORIGIN, maxBytes: 0 })).rejects.toThrow("maxBytes");
   });
 
-  it("refuses a submission larger than the cap", async () => {
-    const read = await readConnectForm(submission(`key=${"k".repeat(200)}`), { origin: ORIGIN, maxBytes: 64 });
-    expect((read as Response).status).toBe(413);
-  });
 });

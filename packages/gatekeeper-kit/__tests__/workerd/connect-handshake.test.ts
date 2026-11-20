@@ -5,8 +5,8 @@ import {
   isConnectAttempted,
   markConnectAttempted,
   NONCE_KEY,
+  peekOAuth,
   putInitiation,
-  reofferOAuth,
   type ConnectNonceKv,
   type StoredNonce,
 } from "../../src/connect-handshake";
@@ -133,125 +133,83 @@ describe("once-only complete()", () => {
   });
 });
 
-describe("reoffering a claimed attempt", () => {
-  const OAUTH_STAGE_EXPIRY = 101 + 10 * 60 * 1000;
-  function claimed(kv: ConnectNonceKv) {
+// A pasted-key form checks its nonce, asks the provider, and claims only once the key is good.
+describe("checking an attempt before claiming it", () => {
+  const EXPIRY = 101 + 10 * 60 * 1000;
+  function shown(kv: ConnectNonceKv): string {
     putInitiation(kv, "init", 100, { firstConnect: true });
-    const first = advanceToOAuth(kv, "init", 101, { startedUnder: "g1" })!;
-    const claim = claimOAuth<{ firstConnect: true; startedUnder: string }>(kv, first, 102, { retryable: true })!;
-    return { first, claim };
+    return advanceToOAuth(kv, "init", 101, { startedUnder: "g1" })!;
   }
 
-  it("mints a new nonce that claims the same attempt once, and leaves the old one dead", () => {
+  it("reads the attempt and leaves it claimable, however often", () => {
     const kv = makeKv();
-    const { first, claim } = claimed(kv);
+    const nonce = shown(kv);
+    const before = kv.get(NONCE_KEY);
 
-    const second = reofferOAuth(kv, claim, 103);
-    expect(second).not.toBeNull();
-    expect(second).not.toBe(first);
-    expect(claimOAuth(kv, first, 104)).toBeNull();
-    expect(claimOAuth(kv, second!, 104)).toMatchObject({ firstConnect: true, startedUnder: "g1", stage: "oauth" });
-    expect(claimOAuth(kv, second!, 104)).toBeNull();
+    expect(peekOAuth(kv, nonce, 102)).toMatchObject({ firstConnect: true, startedUnder: "g1", stage: "oauth" });
+    expect(peekOAuth(kv, nonce, 103)).not.toBeNull();
+    expect(kv.get(NONCE_KEY)).toEqual(before);
+    expect(claimOAuth(kv, nonce, 104)).toMatchObject({ firstConnect: true, startedUnder: "g1" });
+    expect(peekOAuth(kv, nonce, 105)).toBeNull();
   });
 
-  it("keeps the attempt's original expiry however often it is reoffered", () => {
+  it("refuses what a claim would refuse", () => {
     const kv = makeKv();
-    let { claim } = claimed(kv);
-    for (let now = 200; now < 205; now++) {
-      const nonce = reofferOAuth(kv, claim, now)!;
-      expect(kv.get<StoredNonce>(NONCE_KEY)?.expiresAt).toBe(OAUTH_STAGE_EXPIRY);
-      claim = claimOAuth(kv, nonce, now, { retryable: true })!;
-    }
-    const last = reofferOAuth(kv, claim, OAUTH_STAGE_EXPIRY - 1)!;
-    expect(claimOAuth(kv, last, OAUTH_STAGE_EXPIRY)).toBeNull();
+    putInitiation(kv, "init", 100);
+    expect(peekOAuth(kv, "init", 101)).toBeNull();
+    const nonce = advanceToOAuth(kv, "init", 101)!;
+    expect(peekOAuth(kv, "wrong", 102)).toBeNull();
+    expect(peekOAuth(kv, "", 102)).toBeNull();
+    expect(peekOAuth(kv, nonce, EXPIRY)).toBeNull();
+    expect(peekOAuth(kv, nonce, Number.NaN)).toBeNull();
+    expect(peekOAuth(makeKv(), nonce, 102)).toBeNull();
   });
 
-  it("refuses an attempt that has expired", () => {
+  // What can happen while the provider is asked: each ends the attempt at the claim.
+  it.each([
+    ["a newer link is made", (kv: ConnectNonceKv) => putInitiation(kv, "newer", 103)],
+    ["a newer link is opened", (kv: ConnectNonceKv) => {
+      putInitiation(kv, "newer", 103);
+      advanceToOAuth(kv, "newer", 104);
+    }],
+    ["a newer attempt is claimed", (kv: ConnectNonceKv) => {
+      putInitiation(kv, "newer", 103);
+      claimOAuth(kv, advanceToOAuth(kv, "newer", 104)!, 105);
+    }],
+    ["the nonce is deleted, as a disconnect does", (kv: ConnectNonceKv) => kv.delete(NONCE_KEY)],
+  ])("fails the claim when %s between the check and the claim", (_name, meanwhile) => {
     const kv = makeKv();
-    const { claim } = claimed(kv);
-    expect(reofferOAuth(kv, claim, OAUTH_STAGE_EXPIRY)).toBeNull();
-    expect(reofferOAuth(kv, claim, Number.NaN)).toBeNull();
-    expect(kv.get<StoredNonce>(NONCE_KEY)?.stage).toBe("claimed");
+    const nonce = shown(kv);
+    expect(peekOAuth(kv, nonce, 102)).not.toBeNull();
+    meanwhile(kv);
+    expect(claimOAuth(kv, nonce, 106)).toBeNull();
   });
 
-  // The claim is the caller's object by then; the deadline that counts is the stored one.
-  it("keeps the stored expiry when the claim it is handed says otherwise", () => {
+  it("fails the claim when the attempt expires between the check and the claim", () => {
     const kv = makeKv();
-    const { claim } = claimed(kv);
-    claim.expiresAt = OAUTH_STAGE_EXPIRY + 60_000;
-
-    expect(reofferOAuth(kv, claim, OAUTH_STAGE_EXPIRY)).toBeNull();
-    const nonce = reofferOAuth(kv, claim, OAUTH_STAGE_EXPIRY - 1);
-    expect(kv.get<StoredNonce>(NONCE_KEY)?.expiresAt).toBe(OAUTH_STAGE_EXPIRY);
-    expect(claimOAuth(kv, nonce!, OAUTH_STAGE_EXPIRY)).toBeNull();
+    const nonce = shown(kv);
+    expect(peekOAuth(kv, nonce, EXPIRY - 1)).not.toBeNull();
+    expect(claimOAuth(kv, nonce, EXPIRY)).toBeNull();
+    expect(kv.get<StoredNonce>(NONCE_KEY)?.expiresAt).toBe(EXPIRY);
   });
 
-  it("leaves nothing a caller can present after a retryable claim, and keeps no metadata", () => {
+  it("lets only one of two submissions that both passed the check claim", () => {
     const kv = makeKv();
-    const { first, claim } = claimed(kv);
-    expect(kv.get(NONCE_KEY)).toEqual({ value: first, expiresAt: OAUTH_STAGE_EXPIRY, stage: "claimed" });
-    expect(claimOAuth(kv, first, 103)).toBeNull();
-    expect(advanceToOAuth(kv, first, 103)).toBeNull();
-    expect(claim).toMatchObject({ firstConnect: true, startedUnder: "g1" });
-  });
-
-  // A disconnect or a cancelled connect deletes the nonce; a submission still waiting on the
-  // provider must not reopen the attempt.
-  it("stays ended once the nonce has been deleted", () => {
-    const kv = makeKv();
-    const { claim } = claimed(kv);
-    kv.delete(NONCE_KEY);
-
-    expect(reofferOAuth(kv, claim, 103)).toBeNull();
+    const nonce = shown(kv);
+    expect(peekOAuth(kv, nonce, 102)).not.toBeNull();
+    expect(peekOAuth(kv, nonce, 102)).not.toBeNull();
+    expect(claimOAuth(kv, nonce, 103)).not.toBeNull();
+    expect(claimOAuth(kv, nonce, 103)).toBeNull();
     expect(kv.get(NONCE_KEY)).toBeUndefined();
   });
 
-  it("gives way to a connect link stored since the claim", () => {
+  it("returns the stored metadata at the claim, whatever was done to the checked copy", () => {
     const kv = makeKv();
-    const { claim } = claimed(kv);
-    putInitiation(kv, "newer", 103);
-
-    expect(reofferOAuth(kv, claim, 104)).toBeNull();
-    expect(advanceToOAuth(kv, "newer", 105)).not.toBeNull();
-  });
-
-  // The slot is empty after the newer attempt's own claim, as it was after the older one's.
-  it("gives way to a newer attempt that has itself been claimed", () => {
-    const kv = makeKv();
-    const { claim: older } = claimed(kv);
-    putInitiation(kv, "newer", 103);
-    const newer = claimOAuth(kv, advanceToOAuth(kv, "newer", 104)!, 105, { retryable: true })!;
-
-    expect(reofferOAuth(kv, older, 106)).toBeNull();
-    const again = reofferOAuth(kv, newer, 106);
-    expect(again).not.toBeNull();
-    expect(claimOAuth(kv, again!, 107)).not.toBeNull();
-  });
-
-  it("gives way to a newer attempt whose claim was not retryable", () => {
-    const kv = makeKv();
-    const { claim: older } = claimed(kv);
-    putInitiation(kv, "newer", 103);
-    expect(claimOAuth(kv, advanceToOAuth(kv, "newer", 104)!, 105)).not.toBeNull();
-
-    expect(reofferOAuth(kv, older, 106)).toBeNull();
-  });
-
-  it("refuses a claim that was not made retryable, or is reoffered twice", () => {
-    const kv = makeKv();
-    putInitiation(kv, "init", 100);
-    const plain = claimOAuth(kv, advanceToOAuth(kv, "init", 101)!, 102)!;
-    expect(reofferOAuth(kv, plain, 103)).toBeNull();
-
-    const { claim } = claimed(kv);
-    expect(reofferOAuth(kv, claim, 104)).not.toBeNull();
-    kv.delete(NONCE_KEY);
-    expect(reofferOAuth(kv, claim, 105)).toBeNull();
-  });
-
-  it("refuses a record that is not a claimed attempt", () => {
-    const kv = makeKv();
-    const { claim } = claimed(kv);
-    expect(reofferOAuth(kv, { ...claim, stage: "initiation" }, 103)).toBeNull();
+    const nonce = shown(kv);
+    const checked = peekOAuth<{ startedUnder: string }>(kv, nonce, 102)!;
+    checked.startedUnder = "forged";
+    checked.expiresAt = EXPIRY + 60_000;
+    expect(claimOAuth(kv, nonce, EXPIRY)).toBeNull();
+    expect(claimOAuth<{ startedUnder: string }>(kv, nonce, EXPIRY - 1)?.startedUnder).toBe("g1");
   });
 });

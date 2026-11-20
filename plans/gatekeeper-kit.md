@@ -196,7 +196,7 @@ The two-stage connect nonce machine that every OAuth gatekeeper currently re-imp
 
 ```ts
 export const NONCE_KEY = "nonce";               // unchanged from every current gatekeeper
-export type ConnectStage = "initiation" | "oauth" | "claimed";
+export type ConnectStage = "initiation" | "oauth";
 export type StoredNonce<Extra extends object = Record<never, never>> =
   TimedNonce & { stage: ConnectStage } & Extra;
 export function putInitiation<Meta extends object>(
@@ -204,9 +204,9 @@ export function putInitiation<Meta extends object>(
 export function advanceToOAuth<Extra extends object>(
   kv, initiationNonce: string, now: number, extra?: Extra & NonceExtra): string | null;
 export function claimOAuth<Extra extends object>(
-  kv, oauthNonce: string, now: number, options?: { retryable?: boolean }): StoredNonce<Extra> | null;
-export function reofferOAuth<Extra extends object>(
-  kv, claim: StoredNonce<Extra>, now: number): string | null;
+  kv, oauthNonce: string, now: number): StoredNonce<Extra> | null;
+export function peekOAuth<Extra extends object>(
+  kv, oauthNonce: string, now: number): StoredNonce<Extra> | null;
 ```
 
 `advanceToOAuth` verifies the initiation nonce (constant time, TTL, stage) and mints the OAuth-stage
@@ -220,19 +220,17 @@ property; the reserved keys (`value`, `expiresAt`, `stage`) are intersected onto
 at runtime. The exclusion lives on the parameter rather than the `Extra` constraint: as a constraint
 it is a weak type, which defeats inference and collapses `StoredNonce<Extra>` to `never`.
 
-`reofferOAuth` gives a claimed attempt back under a new nonce, for a pasted-key form whose key the
-provider refused: without it a typo spends the nonce and the user starts again from the Workshop.
-The claim stays one-shot, so a submission is still exclusive while the provider is asked, and the
-new record keeps the claimed one's metadata and **original expiry**, so retries cannot hold an
-attempt open. It returns `null` for an expired attempt and when a link has been stored since the
-claim, so a newer link wins. An empty slot cannot show that: a newer attempt that has itself been
-claimed leaves the slot as empty as the older one did, and would let the older one back in. So a
-claim made with `retryable` leaves a `"claimed"` record under `NONCE_KEY` that names it, without
-its metadata, and `reofferOAuth` gives back only the claim that record names. It lives under the
-nonce's own key, not beside it, so that everything that already ends an attempt ends the retry
-too: `putInitiation` overwrites it, and a disconnect or a cancelled connect, which delete the
-nonce, delete it. Neither `advanceToOAuth` nor `claimOAuth` accepts a `"claimed"` record. An OAuth callback has no use for it: its provider will not call back
-twice.
+`peekOAuth` is `claimOAuth` without the delete, for a pasted-key form: the account checks the
+form's nonce, asks the provider whether the key is good, and claims only then. A refused key
+spends nothing, so the form is shown again with the same nonce; without this a typo spends the
+nonce and the user starts again from the Workshop. Nothing is written until the claim, so whatever
+ends an attempt while the provider is asked — a newer link, a disconnect, its expiry — makes the
+claim fail with no state of the retry's own to keep in step, and the attempt's metadata and
+deadline are only ever read from storage. An earlier shape claimed first and gave the claim back
+on a refusal, which needed a third stage and a record of the claim, and three review rounds found
+a way for that record to disagree with the slot. The cost of checking first is exclusivity: two
+submissions of one form both reach the provider, though only one can claim. An OAuth callback has
+no use for `peekOAuth`: its provider calls back once.
 
 Initiation metadata records what a link was minted for, so a callback need not infer it: deriving
 "reconnect" from `stored() !== undefined` at callback time (GitLab's and X's original check)
@@ -298,7 +296,7 @@ easily gets wrong: a form served through `htmlResponse` renders and can never be
 submitLabel? })` renders a `PAGE_STYLE` page whose form posts `application/x-www-form-urlencoded`
 to `action`, with the attempt's nonce in the hidden field `CONNECT_FORM_NONCE_FIELD` and one input
 per `{ name, label, secret?, placeholder? }`, and `error?` above them when the form is shown again
-after a refused submission (§4.2, `reofferOAuth`); it escapes every value and throws on no fields, on a
+after a refused submission (§4.2, `peekOAuth`); it escapes every value and throws on no fields, on a
 repeated or malformed field name, and on a field named `nonce`. `formPageResponse` is `htmlResponse` with
 `Referrer-Policy: same-origin` and `form-action 'self'` added to its policy, so the browser will
 not post the credential to another origin whatever `action` says. Browsers differ on applying

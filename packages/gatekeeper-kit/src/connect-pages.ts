@@ -21,6 +21,20 @@ export function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, char => HTML_ESCAPES[char]!);
 }
 
+/** A connect page's response; the two exported builders differ in what they let a form do. */
+function pageResponse(body: string, status: number, referrerPolicy: string, formPolicy = ""): Response {
+  return new Response(body, {
+    status,
+    headers: {
+      "Cache-Control": "no-store",
+      "Content-Type": "text/html; charset=utf-8",
+      "Content-Security-Policy": `frame-ancestors 'none'${formPolicy}`,
+      "Referrer-Policy": referrerPolicy,
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
+}
+
 /**
  * Builds an uncacheable, unframeable HTML response. Connect URLs carry bearer nonces, so responses
  * never cache or send referrers.
@@ -29,16 +43,7 @@ export function escapeHtml(value: string): string {
  * @returns A hardened HTML response.
  */
 export function htmlResponse(body: string, status = 200): Response {
-  return new Response(body, {
-    status,
-    headers: {
-      "Cache-Control": "no-store",
-      "Content-Type": "text/html; charset=utf-8",
-      "Content-Security-Policy": "frame-ancestors 'none'",
-      "Referrer-Policy": "no-referrer",
-      "X-Content-Type-Options": "nosniff",
-    },
-  });
+  return pageResponse(body, status, "no-referrer");
 }
 
 /**
@@ -55,12 +60,7 @@ export function htmlResponse(body: string, status = 200): Response {
  * @returns A hardened HTML response whose forms name their origin.
  */
 export function formPageResponse(body: string, status = 200): Response {
-  const response = htmlResponse(body, status);
-  response.headers.set("Referrer-Policy", "same-origin");
-  // What is typed into the page is a credential: the browser refuses to post it to another
-  // origin, whatever `action` a mistaken base URL produced.
-  response.headers.set("Content-Security-Policy", "frame-ancestors 'none'; form-action 'self'");
-  return response;
+  return pageResponse(body, status, "same-origin", "; form-action 'self'");
 }
 
 /**
@@ -120,8 +120,6 @@ export const PAGE_STYLE = `
     --brand: #ff4801;
     /* Darker than Kumo's danger: small error text on --base needs 4.5:1, and this reaches 6.2:1. */
     --danger: oklch(50.5% 0.213 27.518);
-    /* An input's border, the only cue for where to type: 3:1 or more on --base and --control. */
-    --field-line: oklch(62% 0.006 60);
     /* Kumo's primary button is "contrast": near-black in light mode, the accent in dark. */
     --contrast: #14110f;
     --on-contrast: #ffffff;
@@ -136,7 +134,6 @@ export const PAGE_STYLE = `
       --subtle: oklch(0.66 0.02 285);
       --brand: #b84e00;
       --danger: oklch(70.4% 0.191 22.216);
-      --field-line: oklch(52% 0.022 285);
       --contrast: #b84e00;
     }
   }
@@ -144,7 +141,7 @@ export const PAGE_STYLE = `
   body { font: 15px/1.5 var(--font); margin: 0; padding: 48px 20px; display: flex;
          justify-content: center; background: var(--base); color: var(--text);
          -webkit-font-smoothing: antialiased; }
-  main { width: 100%; max-width: 420px; }
+  main { width: 100%; max-width: 420px; overflow-wrap: anywhere; }
   h1 { font-size: 17px; font-weight: 600; color: var(--strong); margin: 0 0 6px;
        letter-spacing: -0.01em; }
   p.sub { margin: 0 0 24px; color: var(--subtle); font-size: 14px; }
@@ -153,13 +150,27 @@ export const PAGE_STYLE = `
 
 /** Styles for `connectFormHtml`, on top of `PAGE_STYLE`. */
 const FORM_STYLE = `
+  /* An input's border is the only cue for where to type: 3:1 or more on --base and --control. */
+  :root { --field-line: oklch(62% 0.006 60); }
+  @media (prefers-color-scheme: dark) { :root { --field-line: oklch(52% 0.022 285); } }
   label { display: block; font-size: 13px; font-weight: 500; margin: 16px 0 6px; }
+  /* 16px: a phone zooms the page to focus anything smaller. */
   input:not([type=hidden]) { width: 100%; box-sizing: border-box; padding: 8px 10px; font: inherit;
-         color: var(--text); background: var(--control); border: 1px solid var(--field-line);
-         border-radius: 6px; }
+         font-size: 16px; color: var(--text); background: var(--control);
+         border: 1px solid var(--field-line); border-radius: 6px; }
+  input::placeholder { color: var(--subtle); opacity: 1; }
   button { margin-top: 20px; padding: 8px 14px; font: inherit; font-weight: 500; cursor: pointer;
          color: var(--on-contrast); background: var(--contrast); border: 0; border-radius: 6px; }
 `;
+
+/** The error line's id. It has a `.`, which no field name can, so it is never an input's id. */
+const ERROR_ID = "form.error";
+
+/**
+ * Disables the button once the form is submitted. A second click would post the nonce again, and
+ * the browser shows the answer to the last request, which may be the one that lost.
+ */
+const SUBMIT_ONCE = "this.querySelector('button').disabled=true";
 
 /** The name of the hidden field `connectFormHtml` carries the flow's nonce in. */
 export const CONNECT_FORM_NONCE_FIELD = "nonce";
@@ -171,8 +182,8 @@ export type ConnectFormField = {
   /** What the input is labelled. */
   label: string;
   /**
-   * Masks what is typed, for a key or token, and asks password managers neither to fill the
-   * input with a saved password nor to save what is typed. A browser may ignore the request.
+   * Masks what is typed, for a key or token, and asks the browser not to fill the input with a
+   * saved password. A password manager may still offer to save what is typed.
    */
   secret?: boolean;
   /** Example text shown while the input is empty. */
@@ -223,6 +234,8 @@ export function connectFormHtml(options: {
     // "off" is ignored on a password input, and the Workshop's own sign-in is on this origin.
     + (secret ? ' autocomplete="new-password" data-1p-ignore data-lpignore="true"' : "")
     + (placeholder !== undefined ? ` placeholder="${escapeHtml(placeholder)}"` : "")
+    // Tied to the input: an alert already on the page when it loads is not reliably announced.
+    + (options.error !== undefined ? ` aria-invalid="true" aria-describedby="${ERROR_ID}"` : "")
     + (index === 0 ? " autofocus" : "") + ">").join("\n");
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
@@ -230,7 +243,7 @@ export function connectFormHtml(options: {
 <title>${title}</title><style>${PAGE_STYLE}${FORM_STYLE}</style></head>
 <body><main><h1>${title}</h1>
 <p class="sub">${escapeHtml(options.intro)}</p>
-${options.error !== undefined ? `<p class="err" role="alert">${escapeHtml(options.error)}</p>\n` : ""}<form method="post" action="${escapeHtml(options.action)}">
+${options.error !== undefined ? `<p class="err" id="${ERROR_ID}" role="alert">${escapeHtml(options.error)}</p>\n` : ""}<form method="post" action="${escapeHtml(options.action)}" onsubmit="${SUBMIT_ONCE}">
 <input type="hidden" name="${CONNECT_FORM_NONCE_FIELD}" value="${escapeHtml(options.nonce)}">
 ${inputs}
 <button type="submit">${escapeHtml(options.submitLabel ?? "Connect")}</button>
@@ -268,6 +281,8 @@ export async function readConnectForm(
   req: Request,
   options: { origin: string; maxBytes?: number },
 ): Promise<URLSearchParams | Response> {
+  // First, so that the caller's mistake throws on every call, not answered as the browser's.
+  const maxBytes = requirePositiveInt("maxBytes", options.maxBytes ?? MAX_CONNECT_FORM_BYTES);
   if (req.method !== "POST") {
     const response = refuse(405);
     response.headers.set("Allow", "POST");
@@ -277,9 +292,6 @@ export async function readConnectForm(
     origin: options.origin, contentType: "application/x-www-form-urlencoded",
   });
   if (error) return refuse(error === "cross-origin" ? 403 : 415);
-  const maxBytes = options.maxBytes ?? MAX_CONNECT_FORM_BYTES;
-  // Checked here so that the caller's mistake throws, rather than being answered as the browser's.
-  requirePositiveInt("maxBytes", maxBytes);
   try {
     return new URLSearchParams(await readTextCapped(req, maxBytes));
   } catch (caught) {

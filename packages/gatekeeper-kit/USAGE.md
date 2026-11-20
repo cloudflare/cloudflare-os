@@ -106,8 +106,8 @@ Workshop revokes a staged connect whose ticket is never redeemed.
 
 ### A pasted key instead of OAuth
 
-Where the provider has no OAuth flow, the connect link opens a form. Spend the link's nonce when the
-form is shown and give the form a second one, so the link cannot be replayed:
+Where the provider has no OAuth flow, the connect link opens a form. Spend the link's nonce when
+the form is shown and give the form a second one:
 
 ```ts
 // GET /<account>/<linkNonce>
@@ -122,38 +122,21 @@ return formPageResponse(connectFormHtml({
 // POST /<account>/key
 const form = await readConnectForm(req, { origin: baseUrl });
 if (form instanceof Response) return form;
-const result = await account.acceptKey(form.get(CONNECT_FORM_NONCE_FIELD) ?? "", form.get("key") ?? "");
-```
 
-A key the provider refuses need not send the user back to the Workshop. The account has already
-claimed the form's nonce, so it gives the attempt back under a new one with `reofferOAuth()` and
-the route shows the form again, with `error` saying why:
-
-```ts
-const attempt = claimOAuth<ConnectAttempt>(kv, formNonce, Date.now(), { retryable: true });
+// In the account: check the nonce, ask the provider, and only then claim.
+if (peekOAuth(kv, formNonce, Date.now()) === null) return null;
+if (!(await providerAccepts(key))) return { retry: "Vendor refused that key." };
+const attempt = claimOAuth<ConnectAttempt>(kv, formNonce, Date.now());
 if (attempt === null) return null;
-if (!(await providerAccepts(key))) {
-  const retryNonce = reofferOAuth(kv, attempt, Date.now());
-  return retryNonce === null ? { refused } : { retry: retryNonce };
-}
 ```
 
-The attempt keeps its original expiry, so retrying never extends it, and `reofferOAuth()` returns
-`null` once it has run out or a newer connect link has been made, whether or not that link has
-been used yet. Only a claim made with `retryable` can be reoffered. Such a claim leaves a
-`"claimed"` record under `NONCE_KEY` where the nonce was, so the teardown below, which deletes the
-nonce, also ends a retry that a submission still waiting on the provider would otherwise make. Reoffer only a submission that
-changed nothing: not after credentials were written or `complete()` was called.
-
-Serve the form with `formPageResponse()`, never `htmlResponse()`: a page that sends no referrer
-posts its forms with `Origin: null`, and `readConnectForm()` refuses that as cross-site. The page's
-forms may target only its own origin, so `action` must be on the deployment's and must be the
-handler that reads the credential. That handler answers the POST itself, with a page: a 307 or 308
-to another origin carries the body with it, and not every browser stops that redirect.
-`readConnectForm()` checks the method, origin, encoding and size and nothing else, and the origin
-is the whole deployment's, not this gatekeeper's alone. The account
-checks the nonce, in the step that spends it, and validates the key against the provider before it
-stores it. `origin` is the configured base URL, not `req.url`.
+- Serve the form with `formPageResponse()`, never `htmlResponse()`: a page that sends no referrer
+  posts its forms with `Origin: null`, which `readConnectForm()` refuses.
+- `action` is the handler that reads the key, on the deployment's own origin. Answer the POST with
+  a page: a 307 or 308 to another origin carries the body, and not every browser stops it.
+- A refused key spends nothing, so show the form again with the same nonce and an `error`. Take
+  the attempt's metadata from the claim, not from the check: a newer link, a disconnect or the
+  attempt's expiry while the provider was asked makes the claim fail.
 
 ### Reconnect and `ensureResources`
 

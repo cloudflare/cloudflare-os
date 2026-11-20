@@ -12,8 +12,6 @@ import {
 } from "../src/connect-pages";
 
 const NONCE = "f".repeat(64);
-/** The nonce of the form shown again after a refused key. */
-const RETRY_NONCE = "e".repeat(64);
 /** The key the server takes for a typo. */
 const WRONG_KEY = "wrong";
 
@@ -30,11 +28,10 @@ let otherSite: string;
 const submissions: Submission[] = [];
 
 /** The form, posting to the gatekeeper's own `/key` whichever origin serves the page. */
-const form = (retry?: { error: string }): string => connectFormHtml({
-  title: "Connect Vendor", intro: "Paste a key.", action: `${baseUrl}/key`,
-  nonce: retry ? RETRY_NONCE : NONCE,
+const form = (error?: string): string => connectFormHtml({
+  title: "Connect Vendor", intro: "Paste a key.", action: `${baseUrl}/key`, nonce: NONCE,
   fields: [{ name: "key", label: "API key", secret: true }],
-  error: retry?.error,
+  error,
 });
 
 async function toRequest(incoming: IncomingMessage): Promise<Request> {
@@ -69,8 +66,8 @@ async function respond(req: Request): Promise<Response> {
       fields: refused ? undefined : Object.fromEntries(read),
     });
     if (refused) return read;
-    // As an account does with a key the provider refuses: the form again, under a new nonce.
-    if (read.get("key") === WRONG_KEY) return formPageResponse(form({ error: "Vendor refused that key." }), 422);
+    // As an account does with a key the provider refuses: the form again, its nonce unspent.
+    if (read.get("key") === WRONG_KEY) return formPageResponse(form("Vendor refused that key."), 422);
     return htmlResponse("<!DOCTYPE html><title>Accepted</title><h1>Accepted</h1>");
   }
   return new Response("Not found", { status: 404 });
@@ -115,11 +112,16 @@ async function submit(key: string): Promise<{ status: number | undefined; headin
   return { status: response.status(), heading: await page.getByRole("heading").innerText() };
 }
 
-/** Opens `url` and submits its form. */
-async function submitFrom(url: string): Promise<{ status: number | undefined; heading: string }> {
+/** Opens `url` in a new page, which fails a test in seconds, not at the test's timeout. */
+async function open(url: string): Promise<void> {
   page = await browser.newPage();
   page.setDefaultTimeout(5_000);
   await page.goto(url);
+}
+
+/** Opens `url` and submits its form. */
+async function submitFrom(url: string): Promise<{ status: number | undefined; heading: string }> {
+  await open(url);
   return submit("s3cret key&=");
 }
 
@@ -135,9 +137,7 @@ describe("the connect form in Chromium", () => {
 
   // The form shown again is the answer to a POST, and must still name its origin when posted.
   it("shows the form again after a refused key, and submits from it", async () => {
-    page = await browser.newPage();
-    page.setDefaultTimeout(5_000);
-    await page.goto(`${baseUrl}/form`);
+    await open(`${baseUrl}/form`);
 
     expect(await submit(WRONG_KEY)).toEqual({ status: 422, heading: "Connect Vendor" });
     expect(await page.getByRole("alert").innerText()).toBe("Vendor refused that key.");
@@ -146,21 +146,19 @@ describe("the connect form in Chromium", () => {
     expect(await submit("right")).toEqual({ status: 200, heading: "Accepted" });
     expect(submissions).toEqual([
       { origin: baseUrl, fields: { [CONNECT_FORM_NONCE_FIELD]: NONCE, key: WRONG_KEY } },
-      { origin: baseUrl, fields: { [CONNECT_FORM_NONCE_FIELD]: RETRY_NONCE, key: "right" } },
+      { origin: baseUrl, fields: { [CONNECT_FORM_NONCE_FIELD]: NONCE, key: "right" } },
     ]);
   });
 
   // `form-action 'self'`: the key never leaves the browser for another origin.
   it("does not post the key to another origin, whatever the form's action", async () => {
-    page = await browser.newPage();
-    page.setDefaultTimeout(5_000);
-    await page.goto(`${baseUrl}/misdirected-form`);
+    await open(`${baseUrl}/misdirected-form`);
     expect(await page.locator("form").getAttribute("action")).toBe(`${otherSite}/key`);
     const posts: string[] = [];
     page.on("request", request => {
       if (request.method() === "POST") posts.push(request.url());
     });
-    // A string, because this package's sources are not typed against the DOM.
+    // Strings, here and below, because this package's sources are not typed against the DOM.
     const violated = page.evaluate(`new Promise(resolve => document.addEventListener(
       "securitypolicyviolation", event => resolve(event.effectiveDirective)))`);
     await page.getByLabel("API key").fill("s3cret");
@@ -173,12 +171,20 @@ describe("the connect form in Chromium", () => {
     expect(page.url()).toBe(`${baseUrl}/misdirected-form`);
   });
 
+  // A second click would post the nonce again, and the browser shows the last answer.
+  it("disables its button once submitted", async () => {
+    await open(`${baseUrl}/misdirected-form`);
+    const button = page.getByRole("button", { name: "Connect" });
+    expect(await button.isDisabled()).toBe(false);
+    await page.getByLabel("API key").fill("s3cret");
+    await button.click({ noWaitAfter: true });
+    await expect.poll(() => button.isDisabled()).toBe(true);
+  });
+
   it("masks the key and focuses it", async () => {
-    page = await browser.newPage();
-    await page.goto(`${baseUrl}/form`);
+    await open(`${baseUrl}/form`);
     const key = page.getByLabel("API key");
     expect(await key.getAttribute("type")).toBe("password");
-    // A string, because this package's sources are not typed against the DOM.
     expect(await page.evaluate("document.activeElement?.id")).toBe("key");
   });
 
