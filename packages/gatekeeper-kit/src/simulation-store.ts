@@ -239,7 +239,15 @@ export type SimulatedListOptions<
   readonly view: () => SimulationView<R, Id>;
   /** The entity a row is. A folded row is the entity its provider row was. */
   readonly id: (row: Row) => Id;
-  /** The provider's sort order, as `CursorInjection.compare` takes it. */
+  /**
+   * The provider's sort order, as `CursorInjection.compare` takes it. The cursor places a row
+   * by the row as the provider listed it, or a stand-in as the hooks were made, before it folds
+   * it, and a fold never moves it: what the reducer changes must leave a row's place under
+   * `compare` where it was, for as long as the walk lasts (a title-sorted listing whose pending
+   * rename changes the title still serves the row where the old title stood). A listing whose
+   * pending changes reorder its rows sorts by a key they do not change, or is not built on
+   * these hooks.
+   */
   readonly compare: (a: Row, b: Row) => number;
   /**
    * Whether the listing shows a row as folded: the gatekeeper's own filter. Read at serve
