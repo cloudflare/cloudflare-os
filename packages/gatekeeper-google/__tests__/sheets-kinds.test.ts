@@ -12,10 +12,10 @@ type Change = { op: string; values?: SheetCellInput[][] };
 const write = (...values: SheetCellInput[]): Change => ({ op: "writeCells", values: [values] });
 const CLEAR: Change = { op: "clearRange" };
 const FORMAT: Change = { op: "formatCells" };
-const KEEPING: Change[] = [
-  "addSheet", "renameSheet", "duplicateSheet", "insertRows", "insertColumns", "resizeRows", "resizeColumns", "freeze",
-  "unmergeCells",
-].map(op => ({ op }));
+const KEEPING: Change[] =
+  ["addSheet", "renameSheet", "duplicateSheet", "insertRows", "insertColumns"].map(op => ({ op }));
+// None changes what a cell holds, and none is a change an `editSpreadsheet` rule was enabled for.
+const LAYOUT: Change[] = ["resizeRows", "resizeColumns", "freeze", "unmergeCells"].map(op => ({ op }));
 // A merge clears every cell it covers but the top-left.
 const DELETING: Change[] = ["deleteSheet", "deleteRows", "deleteColumns", "mergeCells"].map(op => ({ op }));
 
@@ -36,11 +36,24 @@ describe("Google Sheets batch kinds", () => {
     }
   });
 
+  it("queues a batch that sizes rows or columns, freezes lines or unmerges cells as layoutSpreadsheet, alone or among changes that keep everything", () => {
+    for (let change of LAYOUT) {
+      expect(batchKind([change]), change.op).toBe("layoutSpreadsheet");
+      expect(batchKind([change, write(1, '=IF(A1 > 1, "big", "small")'), CLEAR, FORMAT]), change.op)
+        .toBe("layoutSpreadsheet");
+      expect(batchKind([...KEEPING, change]), change.op).toBe("layoutSpreadsheet");
+      // An unchecked formula or an unclassified change beside it still waits for approval.
+      expect(batchKind([change, write("=MYFETCH(A1)")]), change.op).toBe("updateSpreadsheet");
+      expect(batchKind([change, { op: "sortRange" }]), change.op).toBe("updateSpreadsheet");
+    }
+  });
+
   it("queues a batch deleting a sheet, rows, columns or merged cells' values as deleteSpreadsheetContent, alone or among other changes", () => {
     for (let change of DELETING) {
       expect(batchKind([change]), change.op).toBe("deleteSpreadsheetContent");
       expect(batchKind([write(1), change, FORMAT]), change.op).toBe("deleteSpreadsheetContent");
-      expect(batchKind([...KEEPING, change, write("=SUM(A1:A2)")]), change.op).toBe("deleteSpreadsheetContent");
+      expect(batchKind([...KEEPING, ...LAYOUT, change, write("=SUM(A1:A2)")]), change.op)
+        .toBe("deleteSpreadsheetContent");
     }
   });
 
@@ -93,6 +106,7 @@ describe("Google Sheets auto-approval verdicts", () => {
       { tag: "editSheetValues", label: "Sheet value edits" },
       { tag: "formatSheets", label: "Sheet formatting" },
       { tag: "edit-spreadsheet", label: "Spreadsheet edits that keep every sheet, row and column" },
+      { tag: "layout-spreadsheet", label: "Spreadsheet edits that resize rows or columns, freeze lines or unmerge cells" },
       { tag: "delete-spreadsheet-content", label: "Spreadsheet changes that delete sheets, rows, columns or merged cells' values" },
     ]);
     expect(await described("editSheetValues")).toMatchObject({
@@ -103,6 +117,9 @@ describe("Google Sheets auto-approval verdicts", () => {
     });
     expect(await described("editSpreadsheet")).toMatchObject({
       autoApprovable: true, actionKind: { tag: "edit-spreadsheet" },
+    });
+    expect(await described("layoutSpreadsheet")).toMatchObject({
+      autoApprovable: true, actionKind: { tag: "layout-spreadsheet" },
     });
     expect(await described("deleteSpreadsheetContent")).toMatchObject({
       autoApprovable: true, actionKind: { tag: "delete-spreadsheet-content" },

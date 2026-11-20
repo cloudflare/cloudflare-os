@@ -25,6 +25,10 @@ export const DRIVE_SHEETS_KINDS: ActionKind[] = [
   { tag: "formatSheets", label: "Sheet formatting" },
   { tag: "edit-spreadsheet", label: "Spreadsheet edits that keep every sheet, row and column" },
   {
+    tag: "layout-spreadsheet",
+    label: "Spreadsheet edits that resize rows or columns, freeze lines or unmerge cells",
+  },
+  {
     tag: "delete-spreadsheet-content",
     label: "Spreadsheet changes that delete sheets, rows, columns or merged cells' values",
   },

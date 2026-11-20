@@ -1903,8 +1903,11 @@ renames, so it never needs an ID the spreadsheet has not assigned yet. The gatek
 of each sheet a batch adds. A batch that adds, copies or renames sheets or inserts rows or columns,
 alone or together with values, clears and formatting, is queued as "Spreadsheet edits that keep
 every sheet, row and column", which a user may let apply without asking unless one of its formulas
-calls a function the paragraphs above exclude. A batch that also deletes a sheet, rows or columns, or
-merges cells, is queued as "Spreadsheet changes that delete sheets, rows, columns or merged cells'
+calls a function the paragraphs above exclude. A batch that also resizes rows or columns, freezes
+lines or unmerges cells is queued as "Spreadsheet edits that resize rows or columns, freeze lines
+or unmerge cells", a kind of its own that a user may let apply without asking under the same
+condition, so that a rule enabled for the kind above covers no layout change. A batch that also
+deletes a sheet, rows or columns, or merges cells, is queued as "Spreadsheet changes that delete sheets, rows, columns or merged cells'
 values", which a user may also let apply without asking, since the spreadsheet's version history
 restores what it deletes, unless one of its formulas calls such a function: that batch waits for
 approval as "Spreadsheet changes that run unchecked formulas". Each batch is
@@ -1965,7 +1968,7 @@ edges do not, and deleted lines shrink it, a merge left one cell vanishing. An i
 reads `null` unless a queued resize sets it, since Google takes it from the line beside it. `resizeRows` and `resizeColumns` set
 lines' sizes, a whole number of pixels from 1 to 10,000 (Google accepts any number, negative ones
 included), and `freeze` sets how many leading rows or columns a sheet freezes. Both keep every sheet,
-row and column, and are queued as such. A freeze is refused when queued that would leave no row or
+row and column and every cell's value, and are queued as the layout kind. A freeze is refused when queued that would leave no row or
 column unfrozen, or freeze only part of a merge, as Google refuses both.
 
 `mergeCells` merges a range into one cell, or with `merge: "ROWS"` or `"COLUMNS"` each of its rows
@@ -1978,7 +1981,7 @@ others, as is an unmerge of a range holding part of one and a value written into
 covers, which Google accepts and drops. Since a merge clears cells, a batch with one is queued as
 "Spreadsheet changes that delete sheets, rows, columns or merged cells' values", which a user may
 let apply without asking, and its guard covers the cells it clears; an unmerge keeps every sheet,
-row and column.
+row and column, and is queued as the layout kind.
 
 Sheets has no revision to pin a write to, so each approved batch is planned against a fresh read
 and guarded by a digest of what it overwrites or removes: the cells it writes and the rows,

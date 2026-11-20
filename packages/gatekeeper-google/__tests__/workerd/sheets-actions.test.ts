@@ -72,6 +72,9 @@ const CHANGED = "This change no longer applies: cells it overwrites or deletes, 
   "changed since it was queued.";
 
 const EDIT_SPREADSHEET = { tag: "edit-spreadsheet", label: "Spreadsheet edits that keep every sheet, row and column" };
+const LAYOUT_SPREADSHEET = {
+  tag: "layout-spreadsheet", label: "Spreadsheet edits that resize rows or columns, freeze lines or unmerge cells",
+};
 const DELETE_SPREADSHEET_CONTENT = {
   tag: "delete-spreadsheet-content", label: "Spreadsheet changes that delete sheets, rows, columns or merged cells' values",
 };
@@ -84,6 +87,7 @@ const AUTO_APPROVABLE = [
   { tag: "editSheetValues", label: "Sheet value edits" },
   { tag: "formatSheets", label: "Sheet formatting" },
   EDIT_SPREADSHEET,
+  LAYOUT_SPREADSHEET,
   DELETE_SPREADSHEET_CONTENT,
 ];
 
@@ -2600,7 +2604,7 @@ describe.each(RUNS)("Google Sheets layout ($name)", run => {
       { op: "freeze", sheet: "Sales", rows: 6, columns: 0 },
     ]);
     expect(action).toMatchObject({
-      title: 'Edit "Sales"', autoApprovable: true, actionKind: run.kind(EDIT_SPREADSHEET),
+      title: 'Edit "Sales"', autoApprovable: true, actionKind: run.kind(LAYOUT_SPREADSHEET),
       description: expect.stringContaining(
         "1. In \"Sales\", make rows 1 to 2 30 pixels high\n" +
         "2. In \"Sales\", make column C 60 pixels wide\n" +
@@ -2675,7 +2679,7 @@ describe.each(RUNS)("Google Sheets layout ($name)", run => {
     });
 
     let unmerge = await sheets.queued([{ op: "unmergeCells", range: "Sales!A1:F20" }]);
-    expect(unmerge.action).toMatchObject({ autoApprovable: true, actionKind: run.kind(EDIT_SPREADSHEET) });
+    expect(unmerge.action).toMatchObject({ autoApprovable: true, actionKind: run.kind(LAYOUT_SPREADSHEET) });
     expect((await sheets.formats("Sales!A2:B3")).merges).toBeUndefined();
     expect(await sheets.apply(unmerge.actionId!)).toBeNull();
     expect(provider.sheets[0].merges).toEqual([]);
