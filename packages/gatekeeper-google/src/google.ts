@@ -662,17 +662,30 @@ function isCloudSessionExpiry(failure: RefreshFailure): boolean {
  */
 class RefreshRefusedError extends Error {}
 
+const POLICY_BLOCKED_OPENING = "A Google Workspace admin has restricted access this connection needs";
+
 /** What a caller is told when Google permanently refuses to refresh the account's access token. */
 function refreshFailureMessage(failure: RefreshFailure): string {
   if (failure.reason === "policyBlocked") {
-    return "A Google Workspace admin has restricted access this connection needs " +
-        `(${failure.detail}). Ask your administrator to allow it — re-authenticating will not help.`;
+    return `${POLICY_BLOCKED_OPENING} (${failure.detail}). Ask your administrator to allow it — ` +
+        "re-authenticating will not help.";
   }
   if (isCloudSessionExpiry(failure)) {
     return "Google needs this account to sign in again: its organization requires a new sign-in " +
         "for Google Cloud access (such as BigQuery) every so often. Please re-authenticate.";
   }
   return "Google credentials have expired or been revoked. Please re-authenticate.";
+}
+
+/**
+ * `message` without Google's description of an admin's restriction, which a refusal quotes for its
+ * reader, for an error that is logged; undefined when it quotes none. Read from the message, since
+ * an error that crosses an RPC keeps nothing else.
+ */
+function withoutGoogleWords(message: string): string | undefined {
+  if (!message.startsWith(POLICY_BLOCKED_OPENING)) return undefined;
+  return `${POLICY_BLOCKED_OPENING}. Ask your administrator to allow it — ` +
+      "re-authenticating will not help.";
 }
 
 export class UserAccount extends DurableObject<Env> {
@@ -3003,8 +3016,18 @@ export class GoogleDriveGatekeeperImpl
     docs: new GoogleDocsApi(opts => this.#applyToken(opts)),
     scope: () => this.#scope, writeRefusal: () => this.#writeRefusal(),
     attempts: this.#attempts,
-    // The connection answers for its token, as before every request (see #applyToken).
-    ready: async () => { await this.#getAccessToken() },
+    // The connection answers for its token, as before every request (see #applyToken). A failed
+    // write is logged, so a refusal's Google words are left out.
+    ready: async () => {
+      try {
+        await this.#getAccessToken();
+      } catch (error) {
+        let plain = withoutGoogleWords(error instanceof Error ? error.message : String(error));
+        if (plain === undefined) throw error;
+        // eslint-disable-next-line preserve-caught-error
+        throw new Error(plain);
+      }
+    },
     // An edit is not tied to an account, so it is sent under the connection's own token.
     editors: {
       slides: (fileId: string) => ({ api: this.#editApis.slides, presentationId: fileId }),
