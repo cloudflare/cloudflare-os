@@ -44,10 +44,10 @@ import DOCS_PREVIEW_DRAW from "./previews/docs/draw.txt";
 import DOCS_PREVIEW_PAGES from "./previews/docs/pages.txt";
 import DOCS_PREVIEW_TEXT from "./previews/docs/text.txt";
 import { SHARED_PREVIEW_FILES } from "./previews/shared-files";
-import { cappedStream } from "./byte-stream";
 import { obsContext } from "./observability.js";
 import { AccessTokenCache, AccessTokenRequest } from "./auth-retry";
 import { Mutex } from "./mutex";
+import { cappedStream, chunkedStream } from "./byte-stream";
 import { downloadFont, isFontRequest } from "./slides-media";
 import { ReadGate } from "./read-gate";
 import { nativeFileUrl } from "./resources";
@@ -1091,14 +1091,14 @@ export class GoogleDocSessionImpl extends RpcTarget
     return DOCS_RENDERING_TYPES_CODE;
   }
 
-  async readFont(family: string, weight: number, italic: boolean): Promise<Uint8Array> {
+  async readFont(family: string, weight: number, italic: boolean): Promise<ReadableStream<Uint8Array>> {
     // A font is public, and says nothing of the document but that it names the family, which
     // readDrawing() reports. Only a family so named is fetched, so nothing else reaches Google Fonts.
     if (!this.#fonts.has(family) || !isFontRequest(family, weight)) {
       throw new Error(`readFont: no drawing read names a font "${family}" that Google Fonts ` +
         "could serve at that weight. Pass a `fontFamily` readDrawing() returned.");
     }
-    return downloadFont(family, weight, italic);
+    return chunkedStream(await downloadFont(family, weight, italic));
   }
 
   async listImages(tabId: string): Promise<GoogleDocImage[]> {

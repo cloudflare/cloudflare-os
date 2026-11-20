@@ -5,6 +5,7 @@
  */
 
 import { readBytesCapped } from "@gadgets/gatekeeper-kit/response-body";
+import { cappedStream } from "./byte-stream";
 import type { SlidePictureBytes } from "./slides-rendering-types";
 
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -30,6 +31,8 @@ const PICTURE_TYPES: { mimeType: string; at: number; bytes: number[] }[] = [
   { mimeType: "image/gif", at: 0, bytes: [0x47, 0x49, 0x46, 0x38] },
   { mimeType: "image/webp", at: 8, bytes: [0x57, 0x45, 0x42, 0x50] },
 ];
+/** As much of a picture's start as tells its type. */
+const PICTURE_HEAD_BYTES = 12;
 
 /**
  * How many pixels long to fetch the longer side of a picture whose longer side is drawn `side`
@@ -58,7 +61,7 @@ function sized(url: URL, pixels: number): URL {
 }
 
 /**
- * Downloads the picture Google serves at `contentUrl`, its longer side at most `pixels` where its
+ * Opens the picture Google serves at `contentUrl`, its longer side at most `pixels` where its
  * host can resize it, or returns undefined when the address has lapsed. Throws when Google fails
  * to serve it for any other reason, which a new address would not mend. No credentials are sent,
  * as the address is the authority.
@@ -80,10 +83,28 @@ export async function downloadPicture(
     if (LAPSED.has(response.status)) return undefined;
     throw new Error(`readPicture: Google did not serve this picture [http=${response.status}].`);
   }
-  let bytes = await readBytesCapped(response, MAX_PICTURE_BYTES);
-  let type = PICTURE_TYPES.find(({ at, bytes: magic }) => magic.every((byte, i) => bytes[at + i] === byte));
-  if (!type) throw new Error("readPicture: this picture's format cannot be read.");
-  return { mimeType: type.mimeType, bytes };
+  let tooLarge = "readPicture: this picture is larger than 6 MB.";
+  if (Number(response.headers.get("content-length")) > MAX_PICTURE_BYTES || !response.body) {
+    await response.body?.cancel();
+    throw new Error(response.body ? tooLarge : "readPicture: Google returned no picture.");
+  }
+  // Its start says what the picture is, so that much is read before any of it is handed on.
+  let reader = response.body.getReader();
+  let head = new Uint8Array();
+  while (head.byteLength < PICTURE_HEAD_BYTES) {
+    let { done, value } = await reader.read();
+    if (done) break;
+    let read = new Uint8Array(head.byteLength + value.byteLength);
+    read.set(head);
+    read.set(value, head.byteLength);
+    head = read;
+  }
+  let type = PICTURE_TYPES.find(({ at, bytes: magic }) => magic.every((byte, i) => head[at + i] === byte));
+  if (!type) {
+    await reader.cancel();
+    throw new Error("readPicture: this picture's format cannot be read.");
+  }
+  return { mimeType: type.mimeType, content: cappedStream(reader, MAX_PICTURE_BYTES, tooLarge, head) };
 }
 
 const FONTS_CSS = "https://fonts.googleapis.com/css2";

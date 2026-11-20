@@ -601,8 +601,9 @@ change. One pull request, stacked on the Google Docs one.
   listing or drawing tells of a picture, not its bytes, and skipping the check would also skip a
   Drive folder connection's proof that the file is still in the folder. A picture of a slide
   already drawn asks Google for nothing but the picture.
-- **Bytes travel whole**, as `Uint8Array`: a stream from the backend session does not reach the
-  UI frame (capnweb 0.12.0).
+- **Bytes travel as a stream**, which the frame reads whole into a `data:` URL or a font face: a
+  picture as Google sends it, and a font, which the isolate keeps, in pieces of 64 KiB, so that
+  no one message holds up what else the Workshop's connection carries.
 - **Reads that only render are declared apart.** A spreadsheet's `readDrawing()` and a
   presentation's drawings, pictures and fonts serve nothing but rendering, and their shapes were
   most of what a preview added to the types every agent given the connection is sent. They are

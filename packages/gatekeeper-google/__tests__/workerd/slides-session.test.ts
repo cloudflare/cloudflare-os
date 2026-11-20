@@ -423,7 +423,7 @@ describe("Google Slides preview pictures and fonts", () => {
     let picture = await session.readPicture("pic", "s1");
 
     expect(picture.mimeType).toBe("image/png");
-    expect(picture.bytes.byteLength).toBe(24);
+    expect((await new Response(picture.content).arrayBuffer()).byteLength).toBe(24);
     // A third of the slide's width, so fetched at a third of the pixels a slide is drawn across.
     expect(pictureRequests.map(request => request.url)).toEqual([`${PICTURE_URL}=s600`]);
     expect(pictureRequests[0].headers.get("Authorization")).toBeNull();
@@ -550,7 +550,7 @@ describe("Google Slides preview pictures and fonts", () => {
     let font = await session.readFont("Oxygen", 700, false);
 
     expect(fonts.find(({ family }) => family === "Oxygen")).toMatchObject({ weights: expect.arrayContaining([700]) });
-    expect([...font]).toEqual([...FONT]);
+    expect([...await new Response(font).bytes()]).toEqual([...FONT]);
     expect(fontRequests).toEqual(["Oxygen:ital,wght@0,700"]);
     expect(reads(queue)).toEqual(["Read Google Slides fonts"]);
   });

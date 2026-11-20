@@ -368,7 +368,7 @@ it('sets the text in a font that arrives after a later read has drawn it', async
   const set = (text: string) => drawing([paragraph(0, text)], { textLooks: [{ ...ARIAL, fontFamily: 'Open Sans' }] })
   let arrive!: (bytes: ArrayBuffer) => void
   const { blocks, refresh } = await draw({ savedMarkdown: 'Words\n', drawing: set('Words'), revisionId: 'a' }, {
-    readFont: () => new Promise(resolve => { arrive = resolve }),
+    readFont: () => new Promise<ArrayBuffer>(resolve => { arrive = resolve }).then(bytes => new Blob([bytes]).stream()),
   })
   await refresh({ savedMarkdown: 'Wide words\n', drawing: set('Wide words'), revisionId: 'b' })
   await expect.poll(() => text(blocks()[0])).toBe('Wide words')

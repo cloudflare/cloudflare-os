@@ -32,6 +32,7 @@ import {
 } from "./slides-export";
 import { DRAWN_SLIDE_FIELDS } from "./slides-fields";
 import { emu, points } from "./slides-geometry";
+import { chunkedStream } from "./byte-stream";
 import { downloadFont, downloadPicture, isFontRequest, picturePixels } from "./slides-media";
 import {
   layoutNames, mastersOf, presentationInfo, slideIds, slideOf, textOf, themePagesOf, titleOf,
@@ -775,7 +776,7 @@ export class GooglePresentationSessionImpl extends RpcTarget
     return fonts;
   }
 
-  async readFont(family: string, weight: number, italic: boolean): Promise<Uint8Array> {
+  async readFont(family: string, weight: number, italic: boolean): Promise<ReadableStream<Uint8Array>> {
     // A font is public, and says nothing of the presentation but that it names the family, which
     // the listing reports. Only a family it names is fetched, so nothing else reaches Google Fonts.
     let listed = this.#fonts ?? new Set((await this.listFonts()).map(font => font.family));
@@ -783,7 +784,7 @@ export class GooglePresentationSessionImpl extends RpcTarget
       throw new Error(`readFont: the presentation names no font "${family}" that Google Fonts ` +
         "could serve at that weight. Call listFonts() to see its fonts.");
     }
-    return downloadFont(family, weight, italic);
+    return chunkedStream(await downloadFont(family, weight, italic));
   }
 
   async updateSlides(changes: SlideChange[]): Promise<Record<string, string>> {
