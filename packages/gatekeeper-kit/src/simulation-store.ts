@@ -291,8 +291,8 @@ export type SimulatedList<Row> = {
     readonly compare: (a: Row, b: Row) => number;
     /**
      * A stand-in as the last `refresh()` left it, or `null` once its create is no longer
-     * pending (as `created` answers it now, not as at that refresh), a record deleted it or
-     * `keeps` no longer holds. `null` for any other row: a gatekeeper that injects rows of its
+     * pending (as `created` answers it now, not as at that refresh), a record deleted it, or
+     * `keeps`, asked of it as it is served, no longer holds. `null` for any other row: a gatekeeper that injects rows of its
      * own revalidates those itself.
      */
     readonly revalidate: (row: Row) => Row | null;
@@ -337,7 +337,8 @@ export type SimulatedList<Row> = {
  *   id: row => row.id,
  *   compare: newestFirst,
  *   keeps: row => matchesFilter(row, filter),
- *   created: () => pending.flatMap(({ action }) =>
+ *   // The journal as it is now: a create rejected while a page is fetched drops its stand-in.
+ *   created: () => journal.listPending().flatMap(({ action }) =>
  *     action.kind === "createIncident" && !ids.isResolved(action.ref) ? [action.ref] : []),
  * });
  * return new OffsetCursor<Incident>({
@@ -391,9 +392,10 @@ export function simulatedList<
       revalidate: (row: Row) => {
         const entity = id(row);
         const standIn = standIns.get(entity);
-        // A create that applied since the last refresh: its provider row is served instead.
+        // A create no longer pending since the last refresh, or a filter that changed since:
+        // `created` and `keeps` are asked as the stand-in is served.
         if (standIn === undefined || !(created?.() ?? []).includes(entity)) return null;
-        return standIn;
+        return keeps?.(standIn) ?? true ? standIn : null;
       },
     }),
     refresh,
