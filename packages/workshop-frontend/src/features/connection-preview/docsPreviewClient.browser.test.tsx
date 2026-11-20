@@ -357,6 +357,11 @@ it('asks again, after a while, for a font that could not be read', async () => {
   for (const run of later) run()
   await refresh({ markdown: 'Words\n\nMore\n' })
   await expect.poll(() => asked).toBe(2)
+
+  // And on a refresh that finds the tab as it was.
+  for (const run of later.splice(0)) run()
+  await refresh({})
+  await expect.poll(() => asked).toBe(3)
 })
 
 it('sets the text in a font that arrives after a later read has drawn it', async () => {
