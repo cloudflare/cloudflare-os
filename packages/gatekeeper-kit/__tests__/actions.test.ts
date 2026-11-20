@@ -716,6 +716,16 @@ describe("defineActions", () => {
     ]);
   });
 
+  it("submits the item its describe hook says the action changes", async () => {
+    const previewOf = { id: "part", title: "A part", url: "https://example.com/part" };
+    const { actions } = bind({ describe: () => ({ ...presentation, previewOf }) });
+    const submitAction = submitSpy();
+
+    const id = await actions.submit(fakeQueue(submitAction), "execute", { sql: "one" });
+
+    expect(submitAction).toHaveBeenCalledWith(id, expect.objectContaining({ previewOf }));
+  });
+
   it("journals the payload as submitted, not as the caller mutated it afterwards", async () => {
     // What the approver reads and what apply receives must be the same payload, so submit snapshots
     // it before its first await -- the caller's reference is live until the KV put otherwise.
