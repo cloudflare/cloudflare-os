@@ -106,6 +106,37 @@ describe("createOpenAPIClient", () => {
     await expect(api.get("/users")).rejects.toThrow("GET /users returned a body that is not JSON.");
   });
 
+  it("refuses a path that would change the base URL's origin", async () => {
+    const { api, requests } = harness();
+    // The types allow only the schema's paths; code without them must not reach another origin.
+    const get = api.get as (path: string) => Promise<unknown>;
+    for (const path of [".evil.example/users", ":8443/users", "@evil.example/users", "users"]) {
+      await expect(get(path)).rejects.toThrow('must start with "/"');
+    }
+    expect(requests).toHaveLength(0);
+  });
+
+  it("refuses a path with a dot segment, which the URL would resolve to another route", async () => {
+    const { api, requests } = harness();
+    const get = api.get as (path: string, init?: object) => Promise<unknown>;
+    const paths = [
+      "/users/../orgs", "/users/{id}/..", "/users/./me", "/users/%2e%2e/orgs", "/users/.%2E/orgs",
+      "/users\\..\\orgs", "/users/..?x", "/users/..#x",
+      // The URL parser drops these characters, leaving a dot segment behind.
+      "/users/.\t./orgs", "/users/..\n", "/users/.. ",
+    ];
+    for (const path of paths) {
+      await expect(get(path, { path: { id: "1" } })).rejects.toThrow('must not have a "." or ".." segment');
+    }
+    expect(requests).toHaveLength(0);
+    // A dot inside a segment, or a value that only looks like one once decoded, is an ordinary path.
+    await get("/users/{id}", { path: { id: "%2e%2e" } });
+    await get("/users/{id}", { path: { id: "a..b" } });
+    expect(requests.map(request => request.url)).toEqual([
+      "https://api.example.com/v2/users/%252e%252e", "https://api.example.com/v2/users/a..b",
+    ]);
+  });
+
   it("refuses a reply over the byte cap", async () => {
     const api = createOpenAPIClient<Api>({
       baseUrl: "https://api.example.com",
