@@ -2563,8 +2563,13 @@ describe.each(RUNS)("Google Doc tab isolation, $name", r => {
     let actionId = await hooks().submitAppend("tabs-append", "added", "metrics");
     expect(await hooks().readContent("tabs-append", "metrics")).toContain("added");
     expect(await hooks().readContent("tabs-append", MAIN_TAB)).not.toContain("added");
+    // The listing says which tab the edit waits on, until it is made.
+    let pendingTabs = async () =>
+      (await hooks().listTabs("tabs-append")).filter(tab => tab.pending).map(tab => tab.id);
+    expect(await pendingTabs()).toEqual(["metrics"]);
 
     expect(await hooks().applyAction("tabs-append", actionId)).toBeNull();
+    expect(await pendingTabs()).toEqual([]);
 
     // The marker must be anchored in the tab that was edited: a marker left in another tab is
     // invisible to the retry lookup, which would re-apply the write after a lost response.
@@ -3240,7 +3245,7 @@ describe("creating a Google Doc", () => {
     // Nested under "t.0", the tab replays only if its parent was moved onto the created tab.
     expect(await hooks().listTabs("create-doc-tab")).toEqual([
       { id: MAIN_TAB, title: "Main", index: 0, nestingLevel: 0 },
-      { id: added.tabId, title: "Notes", parentTabId: MAIN_TAB, index: 0, nestingLevel: 1 },
+      { id: added.tabId, title: "Notes", parentTabId: MAIN_TAB, index: 0, nestingLevel: 1, pending: true },
     ]);
     expect(await hooks().applyAction("create-doc-tab", added.actionId)).toBeNull();
     expect(await hooks().applyAction("create-doc-tab", appendId)).toBeNull();
