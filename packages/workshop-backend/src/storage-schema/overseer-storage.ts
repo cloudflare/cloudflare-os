@@ -724,6 +724,12 @@ export type AiChatAgentContext = {
   attachmentsMigrated?: true;
 
   /**
+   * Attachments (`ChatAttachmentRef.id`) a model provider refused a request for, which replay
+   * names by workspace path instead of sending inline again.
+   */
+  refusedInlineAttachments?: string[];
+
+  /**
    * The part of the agent's system prompt that lists the workspace's gadgets, each with its files
    * and bindings, saved when the chat's first turn built it.
    *
