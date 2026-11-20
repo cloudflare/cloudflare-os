@@ -159,7 +159,8 @@ export class GoogleDocGatekeeperImpl
     writeRefusal: async () => undefined,
     attempts: this.#commentAttempts,
     // The connection answers for its token before a send is recorded, so that one disconnected
-    // fails the comment with that, nothing sent and nothing in doubt.
+    // over a minute ago (see AccessTokenCache) fails the comment with that, nothing sent and
+    // nothing in doubt.
     ready: async () => { await this.#getAccessToken(); },
   });
   #reads = new ReadGate();
