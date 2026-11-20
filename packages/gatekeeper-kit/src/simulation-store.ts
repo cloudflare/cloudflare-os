@@ -256,8 +256,10 @@ export type SimulatedListOptions<
   readonly keeps?: (row: Row) => boolean;
   /**
    * The entities pending creates will make that this listing may show, by their provisional
-   * ids, oldest first. Read when the hooks are made and at every `refresh()`; the gatekeeper
-   * leaves out an id whose create has applied (`ProvisionalIds.isResolved`).
+   * ids, oldest first. Read when the hooks are made, at every `refresh()`, and each time a
+   * stand-in is served; the gatekeeper leaves out an id whose create has applied
+   * (`ProvisionalIds.isResolved`), so a create bound while a page was being fetched serves the
+   * provider's row and not its stand-in.
    */
   readonly created?: () => readonly Id[];
 };
@@ -282,8 +284,9 @@ export type SimulatedList<Row> = {
     readonly compare: (a: Row, b: Row) => number;
     /**
      * A stand-in as the last `refresh()` left it, or `null` once its create is no longer
-     * pending, a record deleted it or `keeps` no longer holds. `null` for any other row: a
-     * gatekeeper that injects rows of its own revalidates those itself.
+     * pending (as `created` answers it now, not as at that refresh), a record deleted it or
+     * `keeps` no longer holds. `null` for any other row: a gatekeeper that injects rows of its
+     * own revalidates those itself.
      */
     readonly revalidate: (row: Row) => Row | null;
   };
@@ -376,7 +379,13 @@ export function simulatedList<
     inject: Object.freeze({
       items: Object.freeze([...standIns.values()].toSorted(compare)),
       compare,
-      revalidate: (row: Row) => standIns.get(id(row)) ?? null,
+      revalidate: (row: Row) => {
+        const entity = id(row);
+        const standIn = standIns.get(entity);
+        // A create that applied since the last refresh: its provider row is served instead.
+        if (standIn === undefined || !(created?.() ?? []).includes(entity)) return null;
+        return standIn;
+      },
     }),
     refresh,
   });

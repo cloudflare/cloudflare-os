@@ -983,11 +983,14 @@ describe("simulatedList", () => {
     const { journal, list } = listing([opens(1, "~1", 5)], ["~1"]);
     const [standIn] = list.inject.items;
 
-    // The create applied: its record left the queue, and its id the pending creates.
-    journal.staged = [];
-    journal.created = [];
-    // A stand-in is what the last refresh left.
+    // A later record on it: the stand-in served is what the last refresh folded.
+    journal.staged = [...journal.staged, retitles(2, "later", "~1")];
     expect(list.inject.revalidate(standIn)).toEqual(task("~1", 5));
+
+    // The create applied: its id left the pending creates. The stand-in goes at once, before
+    // the next refresh, so a create bound while a page is fetched serves the provider's row.
+    journal.created = [];
+    expect(list.inject.revalidate(standIn)).toBeNull();
     list.refresh();
     expect(list.inject.revalidate(standIn)).toBeNull();
   });
