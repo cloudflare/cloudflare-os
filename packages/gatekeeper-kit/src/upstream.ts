@@ -67,10 +67,10 @@ export type RetryPolicy = {
   /**
    * Whether an attempt answered with `status` is sent again. The default sends again a request
    * that is idempotent (a GET or HEAD, or one marked `idempotent`) and was answered 429, 502, 503
-   * or 504, so a write is never sent twice unless it is marked or this says so. It is asked only
-   * while attempts remain and the body can be sent again, and is not asked about an attempt that
-   * threw, nor about one whose answer `read` could not read before its timeout: those are sent
-   * again only when the request is idempotent.
+   * or 504, so the policy never sends a write twice unless it is marked or this says so. It is
+   * asked only while attempts remain and the body can be sent again, and is not asked about an
+   * attempt that threw, nor about one whose answer `read` could not read before its timeout:
+   * those are sent again only when the request is idempotent.
    */
   retryable?: (
     status: number, request: { method: string; operation: string; idempotent: boolean },
@@ -104,19 +104,28 @@ export type UpstreamOptions = {
    * `null` for no timeout. Default 30 000.
    */
   timeoutMs?: number | null;
-  /** The retry policy, or `null` to send every request once. Default: see `RetryPolicy`. */
+  /**
+   * The retry policy, or `null` for none: the policy then sends no request again. A request's
+   * `replay` hook is no part of the policy and still sends the request again, a write included.
+   * Default: see `RetryPolicy`.
+   */
   retry?: RetryPolicy | null;
   /**
    * The redirect mode handed to `fetch`. Default `"manual"`: a redirect is answered to the
-   * caller and not followed, because a redirect followed to another origin drops `Authorization`
-   * and carries every other header with it, a cookie or an API key included. `"follow"` is for a
-   * provider whose redirects the gatekeeper has checked are safe to follow.
+   * caller and not followed. A redirect followed to another origin carries the request's other
+   * headers there, a cookie or an API key included, and for a 307 or 308 its method and body.
+   * `Authorization` is dropped, unless the Worker has the
+   * `retain_authorization_on_cross_origin_redirect` compatibility flag or a compatibility date
+   * from before the runtime dropped it. `"follow"` is for a provider whose redirects the
+   * gatekeeper has checked are safe to follow: a gatekeeper that must keep its requests to the
+   * origins it allows uses `"manual"` and checks each hop itself.
    */
   redirect?: "follow" | "manual";
   /**
    * Whether `status` is the success of the request named `operation`. Default: below 300 for a
-   * request whose redirect mode is `"manual"`, and below 400 for one that follows redirects. One
-   * that throws is read as the default.
+   * request whose redirect mode is `"manual"`, and below 400 for one that follows redirects. It
+   * answers at once: a throw, or what is no boolean (a promise is not awaited), is read as the
+   * default.
    */
   succeeded?: (status: number, operation: string) => boolean;
   /** The fetch every attempt is sent with. Default `globalThis.fetch`, read at each attempt. */
@@ -132,8 +141,8 @@ export type UpstreamOptions = {
 
 /**
  * A request's own options, beside those of `fetch`. None of them is handed to `fetch`. The init is
- * any object `fetch` takes for one, a `Request` included: what `fetch` reads of it is read as
- * `fetch` reads it (see `Upstream`, "What is sent").
+ * any object `fetch` takes for one, a `Request` included: the members of a `fetch` init are read
+ * of it by property (see `Upstream`, "What is sent").
  */
 export type UpstreamRequestInit = RequestInit & {
   /**
@@ -149,7 +158,9 @@ export type UpstreamRequestInit = RequestInit & {
   timeoutMs?: number | null;
   /**
    * This request's retry policy: its members replace the upstream's one by one (the default's,
-   * where the upstream has none), and `null` sends the request once.
+   * where the upstream has none), and `null` is no policy for this request. A `replay` hook is
+   * no part of the policy and still sends the request again: a request that must be sent once
+   * gives no `replay`.
    */
   retry?: RetryPolicy | null;
   /**
@@ -164,19 +175,22 @@ export type UpstreamRequestInit = RequestInit & {
    */
   authorize?: () => HeadersInit | Promise<HeadersInit>;
   /**
-   * Asked after an answered attempt is counted and before the retry policy: true sends the
-   * request again, with `authorize` asked anew and no attempt of the retry policy used. It is
-   * asked only while the body can be sent again and fewer than two replays were made. A
-   * rejection cancels the answer's body and fails the request. It reads the body from a clone
-   * only: an answer that is not sent again is the caller's to read.
+   * Asked about an answered attempt before the retry policy is: true sends the request again,
+   * with `authorize` asked anew and no attempt of the retry policy used. The attempt is counted
+   * before the hook is asked, except under `read`, which counts it afterwards. It is asked only
+   * while the body can be sent again and fewer than two replays were made, whatever the
+   * request's method and whether or not it has a retry policy. A rejection cancels the answer's
+   * body and fails the request. It reads the body from a clone only: an answer that is not sent
+   * again is the caller's to read.
    */
   replay?: (response: Response) => boolean | Promise<boolean>;
   /**
-   * How an answered attempt is counted, asked for each before it is counted; undefined, a throw
-   * or what is no answer counts it by its status. It reads the body from a clone only, as the
-   * answer is the caller's to read.
+   * How an answered attempt is counted by what its status and headers say, asked for each before
+   * it is counted. It answers at once and reads no body: undefined, a throw or what is no answer
+   * counts the attempt by its status, and a promise is no answer and is not awaited. An attempt
+   * is counted by what its body says through `read`, whose own `answer` is given the parsed body.
    */
-  answer?: (response: Response) => CallAnswer | undefined | Promise<CallAnswer | undefined>;
+  answer?: (response: Response) => CallAnswer | undefined;
 };
 
 /**
@@ -194,13 +208,17 @@ export type UpstreamRequestInit = RequestInit & {
  *   `signal`, else that of a `Request` input. An init's `signal: null` clears the signal of a
  *   `Request` input, as it does for `fetch`: the request then has no caller's signal.
  * - **Retry.** An answered attempt is sent again while attempts remain, its body can be sent
- *   again (it is absent, a string, bytes, a `Blob`, `URLSearchParams` or `FormData`, and not the
- *   body of a `Request` input) and `retryable` says so. An attempt that threw is sent again under
- *   the same conditions when the request is idempotent, unless the upstream's `thrown` says that
- *   nothing was sent. So is, under `read`, an attempt whose answer `parse` could not read once
- *   the attempt's own timeout had fired, after the wait of one that threw. A write is never sent
- *   twice unless it is marked `idempotent` or the gatekeeper's `retryable` says so, and nothing
- *   is sent again once the caller's signal has aborted. The wait is what the answer's
+ *   again and `retryable` says so. The body that decides is the init's `body` where that is
+ *   neither undefined nor `null`, which can be sent again where it is a string, bytes, a `Blob`,
+ *   `URLSearchParams` or `FormData` and not otherwise, as a stream cannot, and else that of a
+ *   `Request` input, which never can be: a request with neither has none to send. An attempt
+ *   that threw is sent again under the same conditions when the request is idempotent, unless
+ *   the upstream's `thrown` says that nothing was sent. So is, under `read`, an attempt whose
+ *   answer `parse` could not read once the attempt's own timeout had fired, after the wait of
+ *   one that threw. A write is never sent twice unless it is marked `idempotent`, the
+ *   gatekeeper's `retryable` says so, or its `replay` hook does: a `retry` of `null` turns off
+ *   this rule and not the Replay one, so a request that must be sent once gives no `replay`.
+ *   Nothing is sent again once the caller's signal has aborted. The wait is what the answer's
  *   `Retry-After` asks for, capped at `maxDelayMs`: its count of seconds, or the time left until
  *   its HTTP date (in any of the three forms RFC 9110 gives one, as `Sun, 06 Nov 1994 08:49:37
  *   GMT`), which is nothing once the date is past. With no `Retry-After`, or one that is neither
@@ -213,12 +231,16 @@ export type UpstreamRequestInit = RequestInit & {
  *   options of `UpstreamRequestInit`, with `headers` replaced by a `Headers` only where
  *   `authorize` is given, `signal` set where there is a timeout or a caller's signal, and
  *   `redirect` always set: the request's mode, else the upstream's, else `"manual"`, whatever
- *   the mode of a `Request` input. The caller's init is read as `fetch` reads it: the enumerable
+ *   the mode of a `Request` input. The caller's init is read by property: the enumerable
  *   properties it has of its own are handed on as they are, and so is each further member of a
  *   `fetch` init that it holds any other way and that is not undefined, behind a prototype's
  *   getter for one. A `Request` given for the init so sends its method, headers, body and
  *   signal. Its redirect mode is the request's unless it is `"follow"`, which a `Request` holds
- *   where it was given none and so declares nothing.
+ *   where it was given none and so declares nothing; the `"follow"` of any other object is a
+ *   declaration and is handed on. An option that the runtime keeps inside a `Request` and
+ *   exposes by no property (the Workers `encodeResponseBody` is one) is so not read from a
+ *   `Request` given for the init, though `fetch` itself would read it there: such an option is
+ *   passed in a plain init.
  * - **Counting.** Each attempt is one point (`recordCall`) with the milliseconds from its send
  *   to its answer or throw. An answered attempt is a `success` when `succeeded` says so, else
  *   `refused` with the reason `rate` for a 429, else an `error` with the reason `http`, each with
@@ -271,9 +293,10 @@ export interface Upstream {
    * signal has aborted for any other reason. What `parse` threw is read for none of this, and
    * the signals alone are: whatever `parse` throws once the attempt's timeout has fired is taken
    * for a reading that the timeout cut off.
-   * @param answer How the parsed answer is counted; undefined, a throw or what is no answer (a
-   * promise is not awaited) counts it by its status. By convention an error inside a success is
-   * an `error` with the reason `api`.
+   * @param answer How the parsed answer is counted, which is how an attempt is counted by what
+   * its body says: the request's own `answer` reads no body. Undefined, a throw or what is no
+   * answer (a promise is not awaited) counts it by its status. By convention an error inside a
+   * success is an `error` with the reason `api`.
    * @returns What `parse` returned of the last answer.
    */
   read<T>(
@@ -318,8 +341,9 @@ export interface Upstream {
   /**
    * A fetch-shaped function for code that takes one, such as a remote key set, an SDK or a git
    * transport: each call is `request(input, { ...init, ...defaults })`. Of a call's own init
-   * only what `fetch` takes is read, as `fetch` reads it: a member named as one of a request's
-   * own options is dropped, so that the code handed the function sets none of them.
+   * only what `fetch` takes is read, by property as `request` reads its own: a member named as
+   * one of a request's own options is dropped, so that the code handed the function sets none of
+   * them.
    * @param defaults Options of every request it sends. A `redirect` in a call's own init is used
    * where `defaults` has none.
    * @returns The function. It never throws: a call that fails rejects the promise it returned,
@@ -467,10 +491,14 @@ export function defineUpstream(options: UpstreamOptions): Upstream {
     }
   }
 
-  // Whether `status` is the success of `operation`.
+  // Whether `status` is the success of `operation`. The hook answers at once, as every hook that
+  // only counts does: a throw, or what is no boolean, is read as the default.
   function succeeded(status: number, operation: string, manual: boolean): boolean {
     try {
-      if (options.succeeded) return options.succeeded(status, operation);
+      const given: unknown = options.succeeded?.(status, operation);
+      if (typeof given === "boolean") return given;
+      // A promise is not awaited, and its rejection is handled so that none is left unhandled.
+      if (given instanceof Promise) given.catch(() => undefined);
     } catch {
       // Read as the default.
     }
@@ -500,7 +528,10 @@ export function defineUpstream(options: UpstreamOptions): Upstream {
     // The signal of a `Request` input is the caller's only where the init gives none: a `null`
     // there clears it, as it does for `fetch`.
     const caller = (rest.signal === undefined ? request?.signal : rest.signal) ?? undefined;
-    const resendable = canResend(rest.body) && !request?.body;
+    // The body that decides is the one the init gives, and else that of a `Request` input, which
+    // is a stream. A `null` gives none: what `fetch` then sends of the input differs by runtime.
+    const resendable = rest.body === undefined || rest.body === null
+      ? !request?.body : canResend(rest.body);
     const call = { source, service: serviceOf(ownService, url), operation };
 
     let attempt = 0;
@@ -554,7 +585,8 @@ export function defineUpstream(options: UpstreamOptions): Upstream {
         }
 
         const answered = { ...call, durationMs: Date.now() - startedAt, httpStatus: response.status };
-        const verdict = (answer && await asked(() => answer(response)))
+        // The hook answers at once: nothing between an answer and its count is waited for.
+        const verdict = askedNow(() => answer?.(response))
           ?? byStatus(response.status, succeeded(response.status, operation, manual));
         let counted = false;
         const countOnce = (given: CallAnswer) => {
@@ -718,7 +750,7 @@ type Sent = {
   again: () => Promise<Sent> | undefined;
 };
 
-// The init of a `fetcher`'s caller as `fetch` reads it, without what is named as one of a
+// The init of a `fetcher`'s caller, read by property, without what is named as one of a
 // request's own options.
 function fetchInit(init: RequestInit | undefined): RequestInit {
   const given = init ?? {};
@@ -726,17 +758,19 @@ function fetchInit(init: RequestInit | undefined): RequestInit {
     Object.fromEntries(Object.entries(given).filter(([name]) => !OWN_OPTIONS.has(name))), given);
 }
 
-// An init as `fetch` reads it: `own`, a copy of the enumerable properties that `init` has of its
+// An init read by property: `own`, a copy of the enumerable properties that `init` has of its
 // own, with each member of a `fetch` init that `init` holds any other way, where it is not
-// undefined. `fetch` reads its init by property, so it finds the members that a prototype's
-// getters expose, as a `Request` given for an init has them all. A plain init holds none so, and
-// its copy is returned as it is.
+// undefined. `fetch` reads an init that is no `Request` by property, so it finds the members that
+// a prototype's getters expose, as a `Request` given for an init exposes those it has a getter
+// for. A plain init holds none so, and its copy is returned as it is.
 function asFetchReads(own: RequestInit, init: RequestInit): RequestInit {
+  // A `Request` holds `follow` where it was given no mode: that is no word to follow redirects.
+  // Any other object's `follow` is one.
+  const request = init instanceof Request;
   for (const member of FETCH_MEMBERS) {
     if (Object.hasOwn(own, member)) continue;
     const value: unknown = Reflect.get(init, member);
-    // A `Request` holds `follow` where it was given no mode: that is no word to follow redirects.
-    if (member === "redirect" && value === "follow") continue;
+    if (request && member === "redirect" && value === "follow") continue;
     if (value !== undefined) Object.assign(own, { [member]: value });
   }
   return own;
@@ -769,18 +803,8 @@ function byStatus(status: number, success: boolean): CallAnswer {
   return status === 429 ? { outcome: "refused", reason: "rate" } : { outcome: "error", reason: "http" };
 }
 
-// What a counting hook answers, or undefined where it answers nothing or throws.
-async function asked(
-  hook: () => CallAnswer | undefined | Promise<CallAnswer | undefined>,
-): Promise<CallAnswer | undefined> {
-  try {
-    return answerOf(await hook());
-  } catch {
-    return undefined;
-  }
-}
-
-// As `asked`, of a hook that answers at once. A `null` is passed on: a `thrown` hook answers it.
+// What a counting hook answers, or undefined where it answers nothing or throws. Every such
+// hook answers at once. A `null` is passed on: a `thrown` hook answers it.
 function askedNow<A extends CallAnswer | null | undefined>(hook: () => A): A | undefined {
   try {
     const given = hook();
@@ -790,8 +814,13 @@ function askedNow<A extends CallAnswer | null | undefined>(hook: () => A): A | u
   }
 }
 
-// A hook's answer, where it is one: an object with an outcome, which a promise is not.
+// A hook's answer, where it is one: an object with an outcome. A promise is none, whatever it
+// holds: it is not awaited, and its rejection is handled here so that none is left unhandled.
 function answerOf<A>(given: A): A | undefined {
+  if (given instanceof Promise) {
+    given.catch(() => undefined);
+    return undefined;
+  }
   return typeof given === "object" && given !== null && "outcome" in given
     && typeof given.outcome === "string" ? given : undefined;
 }
@@ -835,7 +864,7 @@ function timeoutOf(given: number | null | undefined, inherited: number | null): 
 }
 
 // A retry policy: the members given, validated, over the one inherited (the defaults, where that
-// is none). Null sends once.
+// is none). Null is no policy.
 function retryOf(
   given: RetryPolicy | null | undefined, inherited: Required<RetryPolicy> | null,
 ): Required<RetryPolicy> | null {

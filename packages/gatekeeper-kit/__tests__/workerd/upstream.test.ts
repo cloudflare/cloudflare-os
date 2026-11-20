@@ -46,6 +46,11 @@ function givenForInit(): Request {
   });
 }
 
+// A Request that has a body.
+function putRequest(): Request {
+  return new Request(`${API}/threads/18c2`, { method: "PUT", body: "payload" });
+}
+
 // A Request whose signal has aborted.
 function stoppedRequest(): Request {
   return new Request(`${API}/threads/18c2`, { signal: AbortSignal.abort(new Error("stop")) });
@@ -179,6 +184,33 @@ describe("upstream in workerd", () => {
     expect(requested).toEqual(held);
     expect(fetched).toEqual(held);
     expect(kinds(added)).toEqual([["threads.update", "success"], ["threads.update", "success"]]);
+  });
+
+  it("sends again a Request whose body the init replaces, the replacement each time", async () => {
+    const { tally, added } = keeping();
+    const bodies: string[] = [];
+    // Answers the first request it reads 503 and the next 200, keeping the body each one holds.
+    const busyOnce = upstream.with({
+      retry: { attempts: 2 },
+      fetch: async (input, init) => {
+        bodies.push(await new Request(input, init).text());
+        return new Response("{}", { status: bodies.length === 1 ? 503 : 200, headers: { "Retry-After": "0" } });
+      },
+    });
+    const read = putRequest();
+    const sent = putRequest();
+    const replacing: RequestInit = { body: "replacement" };
+
+    // The runtime's own reading: the init's body is the one sent, and the Request's is left unread.
+    expect(await new Request(read, replacing).text()).toBe("replacement");
+    expect(read.bodyUsed).toBe(false);
+    const response = await summedInto(
+      tally, () => busyOnce.request(sent, { ...replacing, idempotent: true }));
+
+    expect(response.status).toBe(200);
+    expect(bodies).toEqual(["replacement", "replacement"]);
+    expect(sent.bodyUsed).toBe(false);
+    expect(kinds(added)).toEqual([["threads.update", "error"], ["threads.update", "success"]]);
   });
 
   it("sends a Request whose signal has aborted where the init's signal is null, as fetch does", async () => {

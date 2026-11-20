@@ -479,11 +479,14 @@ When a provider does not fit, step down one rung at a time:
 Each attempt has a timeout, 30 seconds by default. A request that is safe to send twice (a GET or
 HEAD, or one marked `idempotent`) is sent again after a 429, 502, 503 or 504, a network failure or
 a timeout. No redirect is followed unless the upstream or a request says `redirect: "follow"`:
-a followed redirect carries every header but `Authorization` to another origin. Every attempt is
-written as one point of the
-[subservice metrics](../observability/README.md#subservice-calls). `Upstream`'s JSDoc holds the
-exact rules. The module keeps its running tally in `AsyncLocalStorage`, so a Worker that imports it
-needs the `nodejs_als` (or `nodejs_compat`) compatibility flag.
+a redirect followed to another origin carries the request's other headers there, a cookie or an
+API key included, and for a 307 or 308 its method and body. `Authorization` is dropped, unless the
+Worker has the `retain_authorization_on_cross_origin_redirect` compatibility flag or a
+compatibility date from before the runtime dropped it. A gatekeeper that must keep its requests to
+the origins it allows uses `"manual"` and checks each hop itself. Every attempt is written as one
+point of the [subservice metrics](../observability/README.md#subservice-calls). `Upstream`'s JSDoc
+holds the exact rules. The module keeps its running tally in `AsyncLocalStorage`, so a Worker that
+imports it needs the `nodejs_als` (or `nodejs_compat`) compatibility flag.
 
 ```ts
 const API = "https://api.vendor.example/v1";
@@ -505,10 +508,11 @@ async function vendorJson<T>(token: string, path: string, init?: UpstreamRequest
 
 - `request` returns the answer and counts it by its status. `read` parses the answer first and
   counts it afterwards, so its `answer` argument can count an error inside a 200, by convention as
-  an `error` with the reason `api`. `call` counts a call that is not an HTTP request, such as an
-  RPC binding's method. Wrap an operation that makes many requests in `summed`: its calls are
-  written as one point per kind when it ends, which keeps a long listing under the 250 points
-  Analytics Engine takes from one invocation.
+  an `error` with the reason `api`. Counting by what a body says is `read`'s: a request's own
+  `answer` hook answers at once, from the status and headers alone. `call` counts a call that is
+  not an HTTP request, such as an RPC binding's method. Wrap an operation that makes many requests
+  in `summed`: its calls are written as one point per kind when it ends, which keeps a long
+  listing under the 250 points Analytics Engine takes from one invocation.
 - Every string of a point is a closed word: a literal in the gatekeeper's code or a key of its
   route tree (`./route-operation`), never a URL, host, id, header or message. A request the tree
   does not name is counted under its HTTP method, or under `OTHER` where its method is not one of

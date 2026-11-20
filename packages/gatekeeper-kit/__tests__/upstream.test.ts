@@ -3,10 +3,12 @@ import {
   COMMON_SLOTS, SUBSERVICE_V1_SLOTS, subserviceTally, type BlobSlot, type DoubleSlot,
   type SubserviceCallInput, type SubserviceTally,
 } from "@gadgets/observability/metrics";
+import process from "node:process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ID, ONE, type Routes } from "../src/route-operation";
 import {
-  defineUpstream, recordCall, summedInto, type CallAnswer, type RetryPolicy, type UpstreamFetch,
+  defineUpstream, recordCall, summedInto, type CallAnswer, type RetryPolicy, type Upstream,
+  type UpstreamFetch,
 } from "../src/upstream";
 
 const API = "https://api.vendor.example/v1";
@@ -21,10 +23,14 @@ const ambient = env as { METRICS?: AnalyticsEngineDataset; SUBSERVICE_METRICS?: 
 let points: AnalyticsEngineDataPoint[];
 // What happened, in order, in the tests that look at it: a point written is a `count`.
 let events: string[];
+// The rejections that nothing handled, in the tests that listen for them (`noteUnhandled`).
+let unhandled: unknown[];
+const noteUnhandled = (reason: unknown) => { unhandled.push(reason); };
 
 beforeEach(() => {
   points = [];
   events = [];
+  unhandled = [];
   ambient.METRICS = {
     writeDataPoint: point => {
       if (point) points.push(point);
@@ -37,6 +43,7 @@ beforeEach(() => {
 afterEach(() => {
   delete ambient.METRICS;
   delete ambient.SUBSERVICE_METRICS;
+  process.off("unhandledRejection", noteUnhandled);
   vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -183,6 +190,16 @@ function givenForInit(method: string): Request {
   return new Request("https://elsewhere.example/", {
     method, headers: { "X-Api": "2" }, body: "payload", redirect: "follow",
   });
+}
+
+// A Request that has a body, which is a stream and so is sent once.
+function putRequest(): Request {
+  return new Request(THREAD, { method: "PUT", body: "payload" });
+}
+
+// An answer whose `X-Vendor-Error` header holds `code`, asking for no wait before a retry.
+function coded(status: number, body: string, code: string): Response {
+  return new Response(body, { status, headers: { "Retry-After": "0", "X-Vendor-Error": code } });
 }
 
 // `times` rows like `row`.
@@ -558,6 +575,30 @@ describe("retry", () => {
     expect(replay).toHaveBeenCalledTimes(2);
   });
 
+  it("sends again a Request whose body the init replaces with one that can be sent again", async () => {
+    const fetch = answering(503, 200, 401, 200, 503, 503);
+    const retried = putRequest();
+    const replayed = putRequest();
+
+    const first = await upstream.request(retried, { body: "replacement", idempotent: true });
+    const second = await upstream.request(replayed, {
+      body: new URLSearchParams({ q: "replacement" }), replay: reply => reply.status === 401,
+    });
+    // A `null` gives no body, so the Request's own decides, and a stream is sent once.
+    const kept = await upstream.request(putRequest(), { body: null, idempotent: true });
+    const streamed = await upstream.request(
+      putRequest(), { body: new Blob(["replacement"]).stream(), idempotent: true });
+
+    expect([first.status, second.status, kept.status, streamed.status]).toEqual([200, 200, 503, 503]);
+    expect(fetch).toHaveBeenCalledTimes(6);
+    expect(fetch.mock.calls.slice(0, 2).map(([input]) => input === retried)).toEqual([true, true]);
+    expect(fetch.mock.calls.slice(0, 2).map(([, init]) => init?.body)).toEqual(rows(2, "replacement"));
+    expect(fetch.mock.calls.slice(2, 4).map(([input]) => input === replayed)).toEqual([true, true]);
+    expect(fetch.mock.calls.slice(2, 4).map(([, init]) => String(init?.body))).toEqual(rows(2, "q=replacement"));
+    // The body of the Request itself is sent by neither.
+    expect([retried.bodyUsed, replayed.bodyUsed]).toEqual([false, false]);
+  });
+
   it("asks the gatekeeper's `retryable` about an answer, a write's included, and not about a throw", async () => {
     const asked: unknown[] = [];
     const lenient = upstream.with({
@@ -620,6 +661,20 @@ describe("retry", () => {
 
     expect(response.status).toBe(200);
     expect(fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it("sends again an attempt whose body never ends, waiting for nothing that its `answer` does", async () => {
+    const endless = open(503);
+    const fetch = answering(endless.response, 200);
+    // What code that is not type-checked may give for the hook: one that reads the body to its end.
+    const reading = vi.fn((reply: Response) => reply.clone().text());
+
+    const response: Response = await Reflect.apply(untimed.request, untimed, [THREAD, { answer: reading }]);
+
+    expect(response.status).toBe(200);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(reading).toHaveBeenCalledTimes(2);
+    expect(outcomes()).toEqual([["error", "http", 503], ["success", "", 200]]);
   });
 
   it("sends again though the body of the answer cannot be cancelled", async () => {
@@ -1047,6 +1102,21 @@ describe("replay", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
+  it("sends twice a write that has no retry policy and whose hook says so once, and once one with no hook", async () => {
+    const fetch = answering(503, 200, 503);
+    const replay = vi.fn<(reply: Response) => boolean>(() => false).mockReturnValueOnce(true);
+    const write = { method: "POST", body: "payload", retry: null };
+
+    const replayed = await upstream.request(THREAD, { ...write, replay });
+    const once = await upstream.request(THREAD, write);
+
+    expect([replayed.status, once.status]).toEqual([200, 503]);
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(replay).toHaveBeenCalledTimes(2);
+    expect(fetch.mock.calls.map(([, init]) => [init?.method, init?.body])).toEqual(rows(3, ["POST", "payload"]));
+    expect(outcomes()).toEqual([["error", "http", 503], ["success", "", 200], ["error", "http", 503]]);
+  });
+
   it("is asked once the answer is counted, and before the retry policy", async () => {
     answering(503, 200);
     const told = upstream.with({
@@ -1154,7 +1224,7 @@ describe("what fetch is handed", () => {
     expect(outcomes()).toEqual([["error", "http", 302], ["error", "http", 302], ["success", "", 302]]);
   });
 
-  it("reads a Request given for the init by property, as fetch does", async () => {
+  it("reads a Request given for the init by property", async () => {
     const fetch = answering(200, 200);
     const given = givenForInit("PUT");
 
@@ -1198,6 +1268,26 @@ describe("what fetch is handed", () => {
     expect(initOf(fetch).headers).toBe(headers);
     expect(calls()).toEqual([
       ["vendor", "threads.create", "error", "http", 302], ["vendor", "threads.delete", "success", "", 200],
+    ]);
+  });
+
+  it("hands on the `follow` that an init declares behind a getter, and not the one a Request holds", async () => {
+    const fetch = answering(302, 302, 302, 302);
+    class Following {
+      get redirect(): RequestInit["redirect"] { return "follow"; }
+    }
+    const held = new Request("https://elsewhere.example/");
+
+    await untimed.request(THREAD, new Following());
+    await untimed.fetcher()(THREAD, new Following());
+    await untimed.request(THREAD, held);
+    await untimed.fetcher()(THREAD, held);
+
+    expect(held.redirect).toBe("follow");
+    expect(fetch.mock.calls.map(([, init]) => init?.redirect)).toEqual(["follow", "follow", "manual", "manual"]);
+    expect(initOf(fetch)).toEqual({ redirect: "follow" });
+    expect(outcomes()).toEqual([
+      ["success", "", 302], ["success", "", 302], ["error", "http", 302], ["error", "http", 302],
     ]);
   });
 
@@ -1368,21 +1458,40 @@ describe("counting", () => {
     expect(outcomes()).toEqual([["success", "", 200], ["error", "http", 404]]);
   });
 
-  it("counts an answer by the request's `answer`, asked for every attempt with a readable body", async () => {
-    answering(answer(503, "busy"), answer(200, "quota"), answer(200, "fine"));
+  it("counts by the default a status whose `succeeded` returns what is no boolean, and leaves no rejection unhandled", async () => {
+    answering(500, 500, 404, 200);
+    process.on("unhandledRejection", noteUnhandled);
+    // What code that is not type-checked may give for the hook: an async function, or one that
+    // returns a word or a number.
+    for (const succeeded of [async () => true, rejecting, () => "yes", () => 0]) {
+      const ruled: Upstream = Reflect.apply(upstream.with, upstream, [{ succeeded }]);
+      await ruled.request(THREAD);
+    }
+    // A rejection that nothing handles is reported once the microtasks have run.
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    expect(unhandled).toEqual([]);
+    expect(outcomes()).toEqual([
+      ["error", "http", 500], ["error", "http", 500], ["error", "http", 404], ["success", "", 200],
+    ]);
+  });
+
+  it("counts an answer by the request's `answer`, asked for every attempt with its status and headers", async () => {
+    answering(coded(503, "busy", "busy"), coded(200, "quota", "quota"), answer(200, "fine"));
     const seen: number[] = [];
-    const quota = async (response: Response): Promise<CallAnswer | undefined> => {
+    const quota = (response: Response): CallAnswer | undefined => {
       seen.push(response.status);
-      const text = await response.clone().text();
-      if (text === "busy") return { outcome: "refused", reason: "busy" };
-      return text === "quota"
+      const code = response.headers.get("X-Vendor-Error");
+      if (code === "busy") return { outcome: "refused", reason: "busy" };
+      return code === "quota"
         ? { outcome: "error", reason: "api", detail: "quota", providerCode: 17 } : undefined;
     };
 
     const over = await upstream.request(THREAD, { answer: quota });
     const fine = await upstream.request(THREAD, { answer: quota });
 
-    // The answer is still the caller's to read.
+    // The hook reads no body: the answer is the caller's to read.
+    expect([over.bodyUsed, fine.bodyUsed]).toEqual([false, false]);
     expect([await over.text(), await fine.text()]).toEqual(["quota", "fine"]);
     expect(seen).toEqual([503, 200, 200]);
     expect(points.map(point => [
@@ -1400,7 +1509,10 @@ describe("counting", () => {
     const extra = { outcome: "error", source: "elsewhere", operation: "other", httpStatus: 599 };
 
     await upstream.request(THREAD, { answer: () => { throw new Error("no rule"); } });
-    await upstream.request(THREAD, { answer: async () => { throw new Error("no rule"); } });
+    // What code that is not type-checked may give for the hook: one that rejects.
+    await Reflect.apply(upstream.request, upstream, [
+      THREAD, { answer: async () => { throw new Error("no rule"); } },
+    ]);
     // Only the members of an answer are read: no other column is the hook's to set.
     await upstream.request(THREAD, { answer: (): CallAnswer => extra as CallAnswer });
 
@@ -1430,6 +1542,28 @@ describe("counting", () => {
     ]);
   });
 
+  it("counts by the status an answer whose hook returns a promise, and leaves no rejection unhandled", async () => {
+    answering(200, 404, 200, 200);
+    process.on("unhandledRejection", noteUnhandled);
+    const error = { outcome: "error", reason: "api" };
+
+    // What code that is not type-checked may give for a hook: an async function.
+    await Reflect.apply(upstream.request, upstream, [THREAD, { answer: async () => error }]);
+    await Reflect.apply(upstream.request, upstream, [THREAD, { answer: rejecting }]);
+    await Reflect.apply(upstream.read, upstream, [THREAD, undefined, statusOf, rejecting]);
+    await Reflect.apply(upstream.call, upstream, ["command", () => "done", { answer: rejecting }]);
+    // A rejection that nothing handles is reported once the microtasks have run.
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    expect(unhandled).toEqual([]);
+    expect(calls()).toEqual([
+      ["vendor", "threads.get", "success", "", 200],
+      ["vendor", "threads.get", "error", "http", 404],
+      ["vendor", "threads.get", "success", "", 200],
+      ["vendor", "command", "success", "", 0],
+    ]);
+  });
+
   it("counts how long the answer took, the asking of `answer` left out", async () => {
     let now = 1_000;
     vi.spyOn(Date, "now").mockImplementation(() => now);
@@ -1439,7 +1573,7 @@ describe("counting", () => {
     });
 
     await upstream.request(THREAD, {
-      answer: async () => {
+      answer: () => {
         now += 4_000;
         return undefined;
       },
@@ -1564,6 +1698,8 @@ const refusedBody = (result: Body): CallAnswer | undefined => result.ok ? undefi
 const statusOf = (response: Response) => response.status;
 const bodyText = (response: Response) => response.text();
 const unparsed = (): never => { throw new Error("rejected"); };
+// A hook that answers with a promise, which rejects.
+const rejecting = async (): Promise<never> => { throw new Error("no rule"); };
 
 describe("read", () => {
   it("counts an error inside a 200 by what was parsed, and returns it", async () => {
@@ -1993,6 +2129,21 @@ describe("read", () => {
     expect(outcomes()).toEqual([["error", "http", 401]]);
   });
 
+  it("counts an answer after its `replay` hook is asked about it", async () => {
+    answering(401, 200);
+
+    await upstream.read(THREAD, {
+      replay: response => {
+        events.push(`replay ${response.status}`);
+        return response.status === 401;
+      },
+    }, response => {
+      events.push(`parse ${response.status}`);
+    });
+
+    expect(events).toEqual(["fetch", "replay 401", "count", "fetch", "replay 200", "parse 200", "count"]);
+  });
+
   it("retries and replays as `request` does, parsing the last answer alone", async () => {
     const fetch = answering(401, 503, 200);
     const parse = vi.fn(statusOf);
@@ -2357,7 +2508,7 @@ describe("fetcher", () => {
     ]);
   });
 
-  it("reads a Request given for a call's init by property, as fetch does", async () => {
+  it("reads a Request given for a call's init by property", async () => {
     const fetch = answering(200, 200);
     const first = givenForInit("POST");
 
