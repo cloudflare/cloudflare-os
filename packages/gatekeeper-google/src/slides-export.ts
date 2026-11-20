@@ -229,7 +229,8 @@ export async function readExport(bytes: Uint8Array, lost: (why: ExportLoss) => v
   let main = await findMainPart(small(), "ppt/presentation.xml");
   let relationships = await readRelationships(small(), main);
   let list = firstChild(parseXml(await small().readText(main), XML), "p:sldIdLst");
-  let slides = childElements(list, "p:sldId").slice(0, MAX_DECK_PAGES).map(slide => {
+  // Every slide in order, however few are read: what pairs the export's slides with the deck's.
+  let slides = childElements(list, "p:sldId").map(slide => {
     let relationship = relationships.get(attribute(slide, "r:id") ?? "");
     return relationship && !relationship.external && relationship.type === "slide" ? relationship.target : "";
   });
@@ -237,6 +238,8 @@ export async function readExport(bytes: Uint8Array, lost: (why: ExportLoss) => v
   let left = { pages: MAX_DECK_PAGES, bytes: MAX_DECK_BYTES, shapes: MAX_DECK_SHAPES, numbers: MAX_DECK_NUMBERS };
   let seen = new Set<string>();
   for (let slide of slides) {
+    // Nothing more is kept once a deck's worth is read, so nothing more is inflated.
+    if (left.pages < 0 || left.bytes < 0) break;
     // The slide, the layout it is over, and the master that is over.
     for (let name: string | undefined = slide, depth = 0; name && depth < 3 && !seen.has(name); depth++) {
       seen.add(name);
