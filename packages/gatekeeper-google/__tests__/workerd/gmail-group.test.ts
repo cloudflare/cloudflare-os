@@ -122,6 +122,11 @@ type Backend = {
   scopeInsufficient?: "owner" | "observer";
   /** Whether Google has verified the observer's address. */
   observerVerified: boolean;
+  /** Whether the observer's user info is held back, and whether a read of it is waiting. */
+  observerUserinfoHeld?: boolean;
+  observerUserinfoWaiting?: boolean;
+  /** How many membership lookups were made. */
+  membershipLookups?: number;
   /** Every Gmail search, as sent. */
   queries: string[];
   /** How many times an attachment's bytes were fetched. */
@@ -157,6 +162,11 @@ function harness(binding: Pick<GmailGatekeeperImplProps, "groupOutsideSenders"> 
     const token = new Headers(init.headers).get("Authorization") ?? "";
     if (url.href === "https://www.googleapis.com/oauth2/v3/userinfo") {
       backend.accountRequests++;
+      if (token.endsWith("observer-token") && backend.observerUserinfoHeld) {
+        backend.observerUserinfoWaiting = true;
+        while (backend.observerUserinfoHeld) await new Promise(resolve => setTimeout(resolve, 1));
+        backend.observerUserinfoWaiting = false;
+      }
       return json(token.endsWith("observer-token")
         ? {sub: "member-subject", email: MEMBER, email_verified: backend.observerVerified}
         : {sub: "owner-subject", email: OWNER, email_verified: true});
@@ -184,6 +194,7 @@ function harness(binding: Pick<GmailGatekeeperImplProps, "groupOutsideSenders"> 
       }
       if (backend.membershipFailure) return json({error: {code: backend.membershipFailure}}, backend.membershipFailure);
       if (path === `${GROUP_NAME}/memberships:lookup`) {
+        backend.membershipLookups = (backend.membershipLookups ?? 0) + 1;
         // A member's own account asks after itself.
         if (who !== "observer") throw new Error("A membership was looked up with the owner's token.");
         const member = url.searchParams.get("memberKey.id")!;
@@ -251,6 +262,9 @@ function harness(binding: Pick<GmailGatekeeperImplProps, "groupOutsideSenders"> 
   return {
     backend,
     session: () => ready.then(() => (hook as unknown as TestHooks).openGmailSession(facetName, id, props, queueId)),
+    /** Disconnects the observer's own account, as the Workshop does when its owner removes it. */
+    disconnectObserver: () => runInDurableObject(testEnv.UserAccount.get(observerId),
+      (_instance: unknown, state: DurableObjectState) => { state.storage.kv.delete("refreshToken"); }),
     /** Whether the observer's own account may read `subresources`, as the Workshop asks. */
     admits: (subresources = [GROUP_SUBRESOURCE]) => ready
       .then(() => (hook as unknown as TestHooks).gmailVerifyObserverAccess(
@@ -551,6 +565,20 @@ describe("Gmail group members", () => {
     expect(await gmail.admits()).toBe(true);
     // A member's own lookup alone: nothing is asked with the owner's token.
     expect(gmail.backend.identityRequests).toBe(identityRequests + 1);
+  });
+
+  // The address and the membership are read with one token, which the account must still serve
+  // when the membership is asked: a connection disconnected between the two vouches for no one.
+  it("asks no membership for a member whose account was disconnected while its address was read", async () => {
+    const gmail = harness();
+    gmail.backend.members.add(MEMBER);
+    gmail.backend.observerUserinfoHeld = true;
+    const admitting = gmail.admits().then(admitted => admitted, () => false);
+    await vi.waitFor(() => expect(gmail.backend.observerUserinfoWaiting).toBe(true), {timeout: 5000});
+    await gmail.disconnectObserver();
+    gmail.backend.observerUserinfoHeld = false;
+    expect(await admitting).toBe(false);
+    expect(gmail.backend.membershipLookups ?? 0).toBe(0);
   });
 
   it("refuses anyone who isn't a direct member", async () => {

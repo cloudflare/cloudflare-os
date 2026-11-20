@@ -2153,6 +2153,9 @@ async function hasChatAccess(api: ChatApi, spaceName: string, members: boolean):
   }
 }
 
+/** The account's token changed between reading an address and asking about its membership. */
+class TokenReplacedError extends Error {}
+
 /**
  * Whether the account behind `getToken` is a direct member of the Google Group named `groupName`,
  * asked of Cloud Identity with that account's own token, about the address Google's userinfo
@@ -2166,10 +2169,28 @@ async function hasGoogleGroupMembership(getToken: AccessTokenProvider, groupName
   // reconnect between two tokens would have one account answer for another's address. A token
   // Google refuses (401) is replaced once, and both are asked again with the new one.
   let token = await getToken();
-  let ask = async () => {
+  // The account answers for its token again before each membership request, so that one
+  // disconnected while the address was read asks no more; and when its token is another now, both
+  // are asked again with that one.
+  let current = async () => {
+    let now = await getToken();
+    if (now === token) return token;
+    token = now;
+    throw new TokenReplacedError();
+  };
+  let askOnce = async () => {
     let email = await getGoogleVerifiedEmail(token);
     if (!email) throw new Error("This Google account has no verified email address.");
-    return await new CloudIdentityApi(async () => token).isDirectMember(groupName, email.toLowerCase());
+    return await new CloudIdentityApi(current).isDirectMember(groupName, email.toLowerCase());
+  };
+  let ask = async () => {
+    for (let tries = 0; ; tries++) {
+      try {
+        return await askOnce();
+      } catch (error) {
+        if (!(error instanceof TokenReplacedError) || tries >= 2) throw error;
+      }
+    }
   };
   let refused = (error: unknown) =>
     (error instanceof CloudIdentityApiError || error instanceof GoogleUserInfoError) && error.status === 401;
