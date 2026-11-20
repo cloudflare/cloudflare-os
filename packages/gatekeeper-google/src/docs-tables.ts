@@ -69,7 +69,7 @@ export type HiddenContent = {
 /** A change to a tab's tables, as stored with its pending action. */
 export type TableChange =
   | { type: "insertTable"; rows: number; columns: number; cells: string[][]; after?: string }
-  | ({ type: "insertTableRows"; at: number; cells: string[][] } & TableRef)
+  | ({ type: "insertTableRows"; at: number; cells: string[][]; copies?: string } & TableRef)
   | ({ type: "insertTableColumns"; at: number; cells: string[][] } & TableRef)
   | ({ type: "deleteTableRows"; at: number; count: number } & TableRef & HiddenContent)
   | ({ type: "deleteTableColumns"; at: number; count: number } & TableRef & HiddenContent)
@@ -148,6 +148,18 @@ export function tableSize(
 // ---------------------------------------------------------------------------
 // The chips a new row copies
 // ---------------------------------------------------------------------------
+
+/**
+ * What Google copies into each cell of a row added beside row `reference` of the table `target`,
+ * one letter a column: `d` a dropdown, `p` a placeholder, `-` nothing. The approval card of a row
+ * insertion says what its rows take, and the queued change records this: it applies only while
+ * the row it takes after copies the same, which the table's HTML does not show (a dropdown reads
+ * as an empty cell).
+ */
+export function chipCopies(target: TableMapping, reference: number): string {
+  return target.rows[reference].cells
+    .map(({ copies }) => copies === "dropdown" ? "d" : copies === "placeholder" ? "p" : "-").join("");
+}
 
 /**
  * What Google copies into each cell of a row added beside row `reference` of a table, refusing
@@ -370,6 +382,16 @@ export function hiddenContent(
 function targetOf(render: DocTabSnapshot, change: ExistingTableChange, number: number): number {
   let op = change.type;
   let table = tablePlace(render, number, change, op);
+  if (change.type === "insertTableRows" && change.copies !== undefined) {
+    let rows = render.sourceMap.tables[table].rows.length;
+    let reference = change.at < rows ? change.at : rows - 1;
+    if (chipCopies(render.sourceMap.tables[table], reference) !== change.copies) {
+      throw new Error(
+        `${op}: the row the new rows take after has come to hold, or no longer holds, a ` +
+        "dropdown or other smart chip that Google Docs copies into them, which getContent() " +
+        "does not show, since this change was queued.");
+    }
+  }
   if (change.type === "insertTableRows" || change.type === "insertTableColumns" ||
       change.type === "mergeTableCells" || change.type === "unmergeTableCells" ||
       isLookChange(change)) return table;

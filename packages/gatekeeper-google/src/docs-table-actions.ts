@@ -14,7 +14,7 @@ import { changedSpan, docEditResult, uniqueMarkdown } from "./docs-replay";
 import { DocRunRenderError, markdownHeld } from "./docs-store";
 import type { DocStore, DocVersion, StoredRun } from "./docs-store";
 import {
-  checkLookTarget, checkTabTableCells, checkTableTarget, hiddenContent, insertedTableNumber,
+  checkLookTarget, checkTabTableCells, checkTableTarget, chipCopies, hiddenContent, insertedTableNumber,
   lineAbove, MAX_TABLE_COLUMNS, replacementPath, tableIdentity, tableShape, tableSize, tabOf,
 } from "./docs-tables";
 import type { HiddenContent, LookChange, TableChange } from "./docs-tables";
@@ -477,7 +477,10 @@ function insertionChange(tab: TabReading, call: InsertionCall): ExistingTableCha
   }
   let expected = tableIdentity(htmlOf(render, target));
   return ofRows
-    ? { type: "insertTableRows", at, cells: storedCells(given, count, columns), expected }
+    ? {
+      type: "insertTableRows", at, cells: storedCells(given, count, columns), expected,
+      copies: chipCopies(target, at < rows ? at : rows - 1),
+    }
     : { type: "insertTableColumns", at, cells: storedCells(given, rows, count), expected };
 }
 

@@ -17,7 +17,7 @@ import {
   changedMarkdown, prepareAppend, prepareTableChange, prepareTextReplacement, tableCallChange,
   type ChangedMarkdown, type TableCall,
 } from "../src/docs-table-actions";
-import { wholeTabReading, type TableChange } from "../src/docs-tables";
+import { chipCopies, resolveTable, wholeTabReading, type TableChange } from "../src/docs-tables";
 import type { MarkdownRange } from "../src/markdown-converter";
 import {
   buildTab, diceOf, grid, item, para, presetLevels, type BlockSpec, type Lists,
@@ -446,6 +446,11 @@ function heldRecording(
     if (made.type === "replaceText" || made.type === "appendText") {
       heldStep(chain, made, tally);
       continue;
+    }
+    // A recorded row insertion records what its reference row copies, as one queued now does.
+    if (made.type === "insertTableRows" && made.copies === undefined) {
+      let target = whole.sourceMap.tables[resolveTable(whole, made, made.type)];
+      made = { ...made, copies: chipCopies(target, Math.min(made.at, target.rows.length - 1)) };
     }
     // A table step is a change by how its table reads: the call that makes it names the
     // table by its number, and is held to give the same change before it is prepared.
