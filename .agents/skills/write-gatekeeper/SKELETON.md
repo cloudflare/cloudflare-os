@@ -35,7 +35,9 @@ hook registry, its delivery queue and retries, and dropping a disconnected conne
 Wherever only the provider's documentation or a design decision can say what is right, the
 command wrote an invented answer and marked it `STOP(<id>)`. `__tests__/scaffold-stops.test.ts`
 fails, listing the marks, until none is left: replace what a mark is on, then delete the mark.
-Deleting a mark alone does not pass, since the test also looks for the invented values. The
+Deleting a mark alone rarely passes, since the test also looks for the invented values it can
+tell from real ones. It cannot tell an invented status classification or cache lifetime, so
+those marks are the only record that the decision is open. The
 command prints the marks in the skill's order: the session API, resource types and subresource
 model come first and need the operator's review (Step 3) before the rest. A package that compiles
 is not a reviewed design; nothing in it is approved until the operator has seen those three.

@@ -24,7 +24,7 @@ import type {
 import { isDenial, type WireItem } from "./acme-api";
 import { itemSubresourceId } from "./acme-credentials";
 import { VENDOR_ID, type Env } from "./acme-env";
-import { toItem, type SessionHost } from "./acme-session";
+import { authorizeRead, toItem, type SessionHost } from "./acme-session";
 import { ITEM_ID } from "./acme-urls";
 import { obsContext } from "./observability";
 import type { AcmeEvent, AcmeEventHook } from "./types";
@@ -96,7 +96,7 @@ export class AcmeHookDeliveryImpl extends RpcTarget implements AcmeHookDelivery 
       return;
     }
     // A hook delivery is a read: authorized, with every dependency named, before the hook is called.
-    await approvalQueue.authorizeObservation({
+    await authorizeRead(approvalQueue, {
       title: "Received an Acme Service item event",
       description: `Received item ${wire.id}'s ${event.kind} event with the item.`,
       subresources: [itemSubresourceId(wire.id)],

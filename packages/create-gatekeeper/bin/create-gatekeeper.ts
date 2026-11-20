@@ -4,7 +4,7 @@
 // repository lists gatekeepers by hand, and generates its Worker config and types.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { parseArgs } from "node:util";
 import { AUTH_KINDS, namesFor, scaffold, stops, type Names, type ScaffoldOptions } from "../src/scaffold.ts";
@@ -112,6 +112,11 @@ try {
 }
 
 const dir = values.out ?? join(ROOT, "packages", `gatekeeper-${names.name}`);
+// A release folds the hyphens out of a package's name to make its install slug, the route and
+// binding this name becomes, so a package with another name can already have it.
+const owner = values.out === undefined ? readdirSync(join(ROOT, "packages")).find(other =>
+  other !== `gatekeeper-${names.name}` && other.replace(/^gatekeeper-/, "").replaceAll("-", "") === names.name) : undefined;
+if (owner !== undefined) fail(`packages/${owner} already has the install slug "${names.name}": use another name.`);
 if (existsSync(dir)) {
   fail(`${dir} already exists.` + (values.out === undefined
     ? " If an earlier run was interrupted, delete it and run this again: registering twice is harmless." : ""));
