@@ -99,7 +99,8 @@ async function draw(book: Book, width = 900) {
     // No font is served unless the book has one: the cells are drawn in what the browser has.
     readFont: async (...font: [string, number, boolean]) => {
       fonts.push(font)
-      return book.font ?? Promise.reject(new Error('readFont: Google Fonts does not serve this font.'))
+      if (!book.font) throw new Error('readFont: Google Fonts does not serve this font.')
+      return new Blob([await book.font]).stream()
     },
     getSpreadsheet: async () => ({ id: 'book', title: 'Book', sheets: book.sheets.map(info) }),
     getPendingChanges: async (title: string) => {

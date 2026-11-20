@@ -29,6 +29,7 @@ import {
 import type { BaseFormats } from "./sheets-format";
 import { isRangeChange, prepareChanges } from "./sheets-input";
 import { findSheet, parseRange, type EnteredValue, type Rect } from "./sheets-model";
+import { chunkedStream } from "./byte-stream";
 import { downloadFont, isFontRequest } from "./slides-media";
 import {
   checkProtections, guardAfter, guardCells, guardDigest, guardOf, resolveChanges, sheetLabels,
@@ -691,14 +692,14 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget
     };
   }
 
-  async readFont(family: string, weight: number, italic: boolean): Promise<Uint8Array> {
+  async readFont(family: string, weight: number, italic: boolean): Promise<ReadableStream<Uint8Array>> {
     // A font is public, and says nothing of the spreadsheet but that it names the family, which
     // a drawing reports. Only a family one named is fetched, so nothing else reaches Google Fonts.
     if (!this.#fonts.has(family) || !isFontRequest(family, weight)) {
       throw new Error(`readFont: no drawing read names a font "${family}" that Google Fonts ` +
         "could serve at that weight. Pass the first family of a `fontFamily` readDrawing() returned.");
     }
-    return downloadFont(family, weight, italic);
+    return chunkedStream(await downloadFont(family, weight, italic));
   }
 
   async updateSpreadsheet(changes: SheetChange[]): Promise<void> {

@@ -20,7 +20,7 @@ export interface GoogleSpreadsheetRenderingReads {
    * as a TrueType file from Google Fonts. Throws for a font Google Fonts does not serve, such as
    * Arial, and for a family only a pending change sets.
    */
-  readFont(family: string, weight: number, italic: boolean): Promise<Uint8Array>;
+  readFont(family: string, weight: number, italic: boolean): Promise<ReadableStream<Uint8Array>>;
 }
 
 /**

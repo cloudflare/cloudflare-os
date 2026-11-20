@@ -27,7 +27,7 @@ export interface GooglePresentationRenderingReads {
    * One font of a family `listFonts()` returns, as a TrueType file from Google
    * Fonts. Throws for a font Google Fonts does not serve, such as Arial.
    */
-  readFont(family: string, weight: number, italic: boolean): Promise<Uint8Array>;
+  readFont(family: string, weight: number, italic: boolean): Promise<ReadableStream<Uint8Array>>;
 }
 
 /** A colour as drawn: `#rrggbb`, a theme colour resolved, with `opacity` when it is under 1. */
@@ -207,8 +207,11 @@ export type SlideDrawings = {
   shared: DrawnElement[][];
 };
 
-/** A picture's bytes: `image/png`, `image/jpeg`, `image/gif` or `image/webp`. */
-export type SlidePictureBytes = { mimeType: string; bytes: Uint8Array };
+/**
+ * A picture: `image/png`, `image/jpeg`, `image/gif` or `image/webp`, and its bytes, read from
+ * Google as you read them. Read it straight away, and cancel it if you will not.
+ */
+export type SlidePictureBytes = { mimeType: string; content: ReadableStream<Uint8Array> };
 
 /** A font family the presentation's text names, and the weights it is drawn at. */
 export type SlideFont = { family: string; weights: number[]; italic: boolean };

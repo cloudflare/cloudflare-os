@@ -49,7 +49,8 @@ describe("a picture's download", () => {
 
     let picture = await downloadPicture(`${PICTURE}=s4000`, 800);
 
-    expect(picture).toEqual({ mimeType: "image/png", bytes: bytes(PNG) });
+    expect(picture?.mimeType).toBe("image/png");
+    expect(new Uint8Array(await new Response(picture!.content).arrayBuffer())).toEqual(bytes(PNG));
     expect(requests).toEqual([{ url: `${PICTURE}=s800`, redirect: "manual", authorization: null }]);
   });
 
@@ -105,10 +106,27 @@ describe("a picture's download", () => {
       .toBe(`readPicture: Google did not serve this picture [http=${status}].`);
   });
 
-  it("refuses a picture larger than a session returns", async () => {
+  it("hands a picture on as it is read, whole", async () => {
+    answer = () => new Response(bytes(PNG, 100_000));
+
+    let picture = await downloadPicture(`${PICTURE}=s4000`, 800);
+
+    expect(new Uint8Array(await new Response(picture!.content).arrayBuffer())).toEqual(bytes(PNG, 100_000));
+  });
+
+  it("refuses a picture Google says is larger than a session returns", async () => {
+    answer = () => new Response(bytes(PNG), { headers: { "Content-Length": String(MAX_PICTURE_BYTES + 1) } });
+
+    expect(await fails(downloadPicture(`${PICTURE}=s4000`, 800))).toBe("readPicture: this picture is larger than 6 MB.");
+  });
+
+  it("fails the read of a picture that turns out larger than a session returns", async () => {
+    // A body of no stated length, as one Google sends in pieces.
     answer = () => new Response(bytes(PNG, MAX_PICTURE_BYTES + 1));
 
-    expect(await fails(downloadPicture(`${PICTURE}=s4000`, 800))).toMatch(/too large|exceed/i);
+    let picture = await downloadPicture(`${PICTURE}=s4000`, 800);
+
+    expect(await fails(new Response(picture!.content).arrayBuffer())).toBe("readPicture: this picture is larger than 6 MB.");
   });
 
   it.each([

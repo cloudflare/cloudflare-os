@@ -378,8 +378,8 @@ function showPictures() {
       // One at a time, so no more than one picture is in flight.
       reading = reading.then(async () => {
         if (pictures.get(id) !== picture) return;
-        const { mimeType, bytes } = await gadget.readPicture(id, slideId);
-        picture.url = await dataUrl(bytes, mimeType);
+        const { mimeType, content } = await gadget.readPicture(id, slideId);
+        picture.url = await dataUrl(content, mimeType);
       }).catch(() => {}).then(() => {
         picture.read = true;
         showPictures();

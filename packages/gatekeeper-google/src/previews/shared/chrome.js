@@ -217,8 +217,9 @@ export const SYSTEM_FONT = /^(arial|sans)$/i;
 const FONT_RETRY_MS = 60_000;
 
 /**
- * Brings fonts into this frame through `read(family, weight, italic)`, a session's readFont(): at
- * most `most` of them, each asked for once, or again a while after it could not be read.
+ * Brings fonts into this frame through `read(family, weight, italic)`, a session's readFont(),
+ * which streams each: at most `most` of them, each asked for once, or again a while after it
+ * could not be read.
  * `measures(bytes, family)` gives what a face sets over its file's own measures. `asked(...font)`
  * says whether a font was asked for, and `read(fonts)` reads those of `[family, weight, italic]`
  * that were not, and says whether any arrived.
@@ -233,7 +234,8 @@ export function fontReader(read, most, measures = () => ({})) {
     if (faces.has(font)) return faces.get(font);
     if (held >= most) return Promise.resolve(false);
     held++;
-    const arrived = Promise.resolve().then(() => read(family, weight, italic)).then(async bytes => {
+    const arrived = Promise.resolve().then(() => read(family, weight, italic)).then(async content => {
+      const bytes = new Uint8Array(await new Response(content).arrayBuffer());
       const loaded = new FontFace(family, bytes, { weight: String(weight), style: italic ? 'italic' : 'normal', ...measures(bytes, family) });
       await loaded.load();
       document.fonts.add(loaded);

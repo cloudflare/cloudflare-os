@@ -671,7 +671,7 @@ describe("Google Sheets fonts", () => {
     let font = await session.readFont("Oxygen", 700, false);
 
     expect(formats).toEqual([{ fontFamily: "Oxygen,sans-serif" }]);
-    expect([...font]).toEqual([...FONT]);
+    expect([...await new Response(font).bytes()]).toEqual([...FONT]);
     expect(fontRequests).toEqual(["Oxygen:ital,wght@0,700"]);
     expect(queue.observations.map(({ title }) => title)).toEqual(["Read a Google Sheets drawing of Sales!A1:B2"]);
   });

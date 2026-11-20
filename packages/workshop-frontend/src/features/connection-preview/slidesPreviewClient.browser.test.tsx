@@ -78,7 +78,7 @@ async function draw(deck: Deck, width = 1100, height = 700) {
     readPicture: async (pictureId: string, slideId: string) => {
       calls.push(['readPicture', pictureId, slideId])
       if (deck.noPictures) throw new Error('Google did not return this picture.')
-      return { mimeType: 'image/png', bytes: PIXEL }
+      return { mimeType: 'image/png', content: new Blob([PIXEL]).stream() }
     },
     listFonts: async () => {
       calls.push(['listFonts'])
