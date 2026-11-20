@@ -59,6 +59,43 @@ const insertRows = (sheetId: number, before: number, count = 1): PlannedChange =
 const deleteRows = (sheetId: number, first: number, count = 1): PlannedChange =>
   ({ op: "deleteRows", sheetId, start: first - 1, count });
 
+
+describe("baseValues", () => {
+  it("answers every lookup as a scan of every piece would, in any order, pieces across bands and overlapping", () => {
+    let seed = 20261120;
+    let next = (below: number) => {
+      seed = (seed * 1103515245 + 12345) % 2147483648;
+      return seed % below;
+    };
+    for (let round = 0; round < 30; round++) {
+      let pieces: SheetArea[] = Array.from({ length: 1 + next(25) }, () => {
+        let startRow = next(1_200), startColumn = next(6);
+        return {
+          sheetId: next(2) * 3,
+          rect: { startRow, endRow: startRow + 1 + next(600), startColumn, endColumn: startColumn + 1 + next(4) },
+        };
+      });
+      let values = pieces.map(({ rect }) => Array.from({ length: rect.endRow - rect.startRow }, () =>
+        Array.from({ length: rect.endColumn - rect.startColumn }, () => (next(3) === 0 ? null : next(100)))));
+      let lookup = baseValues(pieces, values);
+      // The last piece that holds the cell with a value there.
+      let scanned = (sheetId: number, row: number, column: number) => {
+        for (let i = pieces.length - 1; i >= 0; i--) {
+          let { sheetId: on, rect } = pieces[i];
+          if (on !== sheetId || row < rect.startRow || row >= rect.endRow || column < rect.startColumn ||
+            column >= rect.endColumn) continue;
+          let value = values[i][row - rect.startRow][column - rect.startColumn];
+          if (value !== null) return value;
+        }
+        return null;
+      };
+      for (let ask = 0; ask < 400; ask++) {
+        let sheetId = next(2) * 3, row = next(2_000), column = next(10);
+        expect(lookup(sheetId, row, column), `round ${round}`).toBe(scanned(sheetId, row, column));
+      }
+    }
+  });
+});
 describe("Sheets queued changes in reads", () => {
   // B2:E2 enters a formula, a number, text and a clear; F2 is left as Google has it.
   let replayedGrid = applyChange(grid([SALES, COSTS]), queued(1, [
@@ -1013,11 +1050,13 @@ describe("baseValues", () => {
     expect(content).toEqual(enteredContent(g, [area], keyedValues(pieces, values)));
     expect(content[0][479 + 25][99 + 25]).toBe("479:99");
     // Each walk asks for the 480 rows Google holds, 100 cells a row. A row's first cell looks at
-    // each of the 676 pieces once to list the 26 that hold the row. A cell then looks through
-    // that list from its end until its own piece: the columns come in runs of 3, then 24 runs of
-    // 4, then 1, and a cell of run j looks at 26 - j pieces, so a row's cells look at
-    // 3 * 26 + 4 * (25 + 24 + ... + 2) + 1 = 1,375. Two walks of 480 * (676 + 1,375).
-    expect(reads).toBe(1_968_960);
+    // each piece that reaches the row's band of 256 rows once, to list the 26 that hold the row:
+    // the 26 columns of pieces for each run of rows the band reaches, 354 a row on average here
+    // against all 676 of the sheet without the bands. A cell then looks
+    // through that list from its end until its own piece: the columns come in runs of 3, then 24
+    // runs of 4, then 1, and a cell of run j looks at 26 - j pieces, so a row's cells look at
+    // 3 * 26 + 4 * (25 + 24 + ... + 2) + 1 = 1,375. Two walks.
+    expect(reads).toBe(1_659_456);
     // Looking through every piece for every cell would be 48,000 * 676, twice: 64,896,000.
     expect(reads).toBeLessThan(3_000_000);
   });
