@@ -20,8 +20,8 @@ export type SettingsNavItem = {
   href?: string
 }
 
-/** Parts that belong together, under what they have in common. */
-export type SettingsNavGroup = { label: string; items: SettingsNavItem[] }
+/** Parts that belong together, under what they have in common, where that is said: the user's own have no heading. */
+export type SettingsNavGroup = { label?: string; items: SettingsNavItem[] }
 
 export type SettingsSidebarProps = {
   groups: SettingsNavGroup[]
@@ -47,8 +47,8 @@ const underlay = 'pointer-events-none absolute inset-x-0 top-0 -z-10 h-0 rounded
 const PartGroup = ({ group, current, onSelect }: { group: SettingsNavGroup; current?: string; onSelect: (id: string) => void }) => {
   const { listRef, underlayRef, hoverUnderlayRef } = useWorkspaceUnderlay('[data-nav-row]')
   return (
-    <div role="group" aria-label={group.label} className="flex shrink-0 flex-col">
-      <p aria-hidden="true" className="px-3 pb-1.5 text-xs font-medium text-kumo-subtle">{group.label}</p>
+    <div role={group.label ? 'group' : undefined} aria-label={group.label} className="flex shrink-0 flex-col">
+      {group.label && <p aria-hidden="true" className="px-3 pb-1.5 text-xs font-medium text-kumo-subtle">{group.label}</p>}
       <div ref={listRef} className="relative isolate flex flex-col">
         <div ref={underlayRef} aria-hidden="true" className={underlay} />
         <div ref={hoverUnderlayRef} aria-hidden="true" className={underlay} />
@@ -96,9 +96,9 @@ export const SettingsSidebar = ({ groups, current, onSelect, onClose, collapsed 
         {/* Scrolled with no scrollbar, with room at its sides for the buttons' rings. */}
         <nav ref={scrollRef} aria-label="Settings" className="chat-fade sidebar-fade -mx-1 flex min-h-0 flex-1 flex-col items-center overflow-y-auto px-1 py-1 -my-1 [scrollbar-width:none]">
           {groups.map((group, index) => (
-            <Fragment key={group.label}>
+            <Fragment key={group.label ?? index}>
               {index > 0 && <RailDivider />}
-              <div role="group" aria-label={group.label} className="flex shrink-0 flex-col gap-1.5">
+              <div role={group.label ? 'group' : undefined} aria-label={group.label} className="flex shrink-0 flex-col gap-1.5">
                 {group.items.map(({ id, label, icon }) => (
                   <Tooltip key={id} content={label} side="right">
                     <Button
@@ -130,7 +130,7 @@ export const SettingsSidebar = ({ groups, current, onSelect, onClose, collapsed 
         <h2 className="min-w-0 truncate text-(length:--control-text) font-medium text-kumo-default">Settings</h2>
       </header>
       <nav ref={scrollRef} aria-label="Settings" className="chat-fade sidebar-fade -mx-1 -mb-1 flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto p-1 [scrollbar-width:none]">
-        {groups.map((group) => <PartGroup key={group.label} group={group} current={current} onSelect={onSelect} />)}
+        {groups.map((group, index) => <PartGroup key={group.label ?? index} group={group} current={current} onSelect={onSelect} />)}
       </nav>
       {onSignOut && (
         <footer className="flex shrink-0">

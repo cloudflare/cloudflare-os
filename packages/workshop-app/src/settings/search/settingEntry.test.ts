@@ -25,8 +25,7 @@ const down = () => {
 }
 
 describe('settingEntry', () => {
-  it('offers nothing for a setting that is not there yet, or a choice with nothing to choose', () => {
-    expect(settingEntry(toggle({ soon: true }), ok)).toBeUndefined()
+  it('offers nothing for a choice with nothing to choose', () => {
     expect(settingEntry(choice({ options: [] }), ok)).toBeUndefined()
   })
 

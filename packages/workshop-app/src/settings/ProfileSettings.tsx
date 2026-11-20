@@ -3,17 +3,20 @@ import { ProfilePicture } from '@/blocks/ProfilePicture'
 import { SettingField, type SaveOutcome } from '@/blocks/SettingField'
 import { SettingRow } from '@/blocks/SettingRow'
 import { SettingsGroup } from '@/blocks/SettingsGroup'
-import { Button } from '@/components/Button'
 import { EditableTitle } from '@/components/EditableTitle'
 import { useApi } from '@/rpc/ApiContext'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { avatarImage } from './avatarImage'
 import { ownAvatar } from './OwnAvatar'
+import { PasswordSettings } from './PasswordSettings'
 import { messageOf, useAttempt } from './useAttempt'
 import { useOwnAvatar } from './useOwnAvatar'
 import { useProfileSettings } from './useProfileSettings'
 
-/** Who the user is to others: their picture and their name, changed where they are shown, and the addresses that go with them. */
+/**
+ * Who the user is to others: their picture and their name, changed where they are shown, and the
+ * addresses that go with them; then their password.
+ */
 export const ProfileSettings = () => {
   const { api, user } = useApi()
   const { displayName, commitEmail } = useProfileSettings()
@@ -69,9 +72,6 @@ export const ProfileSettings = () => {
         <SettingRow title="User ID" description="Your unique ID on this deployment. Others use it to invite you to a workspace.">
           <span className="max-w-full truncate text-kumo-subtle select-all">{user.id}</span>
         </SettingRow>
-        <SettingRow title="Sign-in email" description="Used to sign in and for emails about your account." soon>
-          <Button>Change</Button>
-        </SettingRow>
         <SettingField
           title={commitEmail.title}
           description={commitEmail.description}
@@ -83,14 +83,7 @@ export const ProfileSettings = () => {
           onSave={(email) => save(() => commitEmail.set(email))}
         />
       </SettingsGroup>
-      <SettingsGroup title="Your data" soon>
-        <SettingRow title="Export data" description="Download everything in your workspaces as files.">
-          <Button>Export</Button>
-        </SettingRow>
-        <SettingRow title="Delete account" description="Permanently delete your account and every workspace you own. This can’t be undone.">
-          <Button variant="danger">Delete account</Button>
-        </SettingRow>
-      </SettingsGroup>
+      <PasswordSettings />
     </>
   )
 }

@@ -14,7 +14,6 @@ import { EditableTitle } from '@/components/EditableTitle'
 import { HeaderBubble } from '@/components/HeaderBubble'
 import { ENOUGH } from '@/components/listView'
 import { Markdown } from '@/components/Markdown'
-import { Switch } from '@/components/Switch'
 import { Tabs, type TabsTab } from '@/components/Tabs'
 import { Tag } from '@/components/Tag'
 import { saveBytes } from '@/files/saveBytes'
@@ -381,35 +380,34 @@ export const SkillPane = ({ skillId, tab, onTabChange, file: showingPath, onOpen
             )}
           </Tabs.Panel>
           <Tabs.Panel value="settings" className="flex flex-col gap-12">
-            <SettingsGroup title="Skill details">
-              {mine && (
-                <SettingField
-                  title="Collection"
-                  description="The collection it’s kept in. Another name moves it there, making that collection if you have none by it."
-                  value={skill.tag ?? ''}
-                  optional
-                  placeholder="My skills"
-                  onSave={async (tag) => {
-                    if (connection?.blocked()) return { saved: false }
-                    try {
-                      await moving(() => skillStore.setTag(skill.id, tag))()
-                      return { saved: true }
-                    } catch (error) {
-                      return { saved: false, problem: messageOf(error) }
-                    }
-                  }}
-                />
-              )}
-              {onOpenCollection && (
-                // Who has it is its collection's to say, which is where it is shared.
-                <SettingRow title="Collection" description={`It’s kept in ${collection?.title ?? 'a collection'}, and shared with whoever that is shared with.`}>
-                  <Button onClick={() => onOpenCollection(skill.collectionId)}>Open collection</Button>
-                </SettingRow>
-              )}
-              <SettingRow title="Auto-use" soon description="Let the assistant load this skill on its own when your request matches what it’s for.">
-                <Switch aria-label="Auto-use" checked={skill.autoUse} onCheckedChange={(autoUse) => skillStore.setAutoUse(skill.id, autoUse)} />
-              </SettingRow>
-            </SettingsGroup>
+            {(mine || onOpenCollection) && (
+              <SettingsGroup title="Skill details">
+                {mine && (
+                  <SettingField
+                    title="Collection"
+                    description="The collection it’s kept in. Another name moves it there, making that collection if you have none by it."
+                    value={skill.tag ?? ''}
+                    optional
+                    placeholder="My skills"
+                    onSave={async (tag) => {
+                      if (connection?.blocked()) return { saved: false }
+                      try {
+                        await moving(() => skillStore.setTag(skill.id, tag))()
+                        return { saved: true }
+                      } catch (error) {
+                        return { saved: false, problem: messageOf(error) }
+                      }
+                    }}
+                  />
+                )}
+                {onOpenCollection && (
+                  // Who has it is its collection's to say, which is where it is shared.
+                  <SettingRow title="Collection" description={`It’s kept in ${collection?.title ?? 'a collection'}, and shared with whoever that is shared with.`}>
+                    <Button onClick={() => onOpenCollection(skill.collectionId)}>Open collection</Button>
+                  </SettingRow>
+                )}
+              </SettingsGroup>
+            )}
             {editable && (
               <SettingsGroup title="Danger zone">
                 <SettingRow title="Delete this skill" description="The skill and its files are deleted for good.">

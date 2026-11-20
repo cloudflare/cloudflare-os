@@ -639,6 +639,8 @@ address, so in development it only finishes when that is this app's.
 `/settings` (Settings in the menu the user's own button in the sidebar opens, which also has Sign
 out, done at once) is one route, with `?section=` naming the part
 that is showing (`settings/settingsSections.ts` has them, in order, with their names and icons).
+The user's own parts are one list with no heading over it (`SETTINGS_GROUP`: Profile, Preferences,
+Notifications, Models, Skills, Usage & billing), and an admin's come after it under Admin.
 Where there is room for a sidebar, the parts are listed there in place of the app's own
 (`SettingsSidebar`, which `_app.tsx` swaps in for as long as the page is a settings one), and
 choosing one replaces the address, so that going back leaves the settings rather than going
@@ -655,12 +657,8 @@ A part is a file in `settings/` (`ProfileSettings`, `ModelSettings`, …) made o
 - `SettingRow` is one setting: what it is, and what it is set by, in a column of one width down
   the group. `SettingField` and `SettingPresets` are rows that are a line of text, kept on Enter or
   on leaving the field (`useEditedField`).
-- What is not there yet is marked `soon` ("Coming soon"), on the group where all of it is, or else
-  on the row. It is drawn fainter, and what it is set by is shown as it will be and is out of use
-  (`inert`): `SettingRow` sees to its own, and to those of a `soon` group it is in
-  (`SoonContext`); what a group holds that is not a row sees to itself, as `SettingsCard`'s field
-  and `ApprovalRules` do. `settings/SoonControls.tsx` has controls to show; replace one with the
-  real control once its setting is there.
+- Only what works is shown. A setting the backend cannot keep yet has no row, placeholder or
+  "Coming soon": add it once it is there, to the part it belongs to.
 - A `ghost` button does not show being pointed at on a `SettingsCard`, which is the colour it
   turns: give a text one `ON_SETTINGS_CARD` and an icon alone `LIST_ACTION`. A row's buttons that
   show only while it is pointed at are in `CardAction`, which keeps their room, so that nothing
@@ -674,8 +672,7 @@ choice or a line of text is defined once (`settings/settingDefinition.ts`: its t
 part of the page, current value and `set`), by a hook or a plain function in `settings/`
 (`usePreferenceSettings`, `useProfileSettings`, `modelChoiceSettings`). The page draws its own row
 for it (`SettingDefinitionRow`, or `SettingField` for text) and search its own entry
-(`settings/search/settingEntry.tsx`), so the two cannot differ; a definition marked `soon` is
-left out of search. Anything that is not one of those three kinds (a form, a dialog, a list, an
+(`settings/search/settingEntry.tsx`), so the two cannot differ. Anything that is not one of those three kinds (a form, a dialog, a list, an
 action) is an entry of its own in `settings/search/`, or a way into its part of the page
 (`sectionEntries`). Search offers none of the admin parts, which hold a capability that audits
 what is done with it. One that is refused says why under the field. An on/off setting shows as a
@@ -726,10 +723,8 @@ leaving it to the next page.
 
 The `add-workshop-setting` skill is the checklist for adding one.
 
-Approvals are the user's own, for every workspace: the defaults ("Permission defaults"), then
-rules that always ask and rules that allow without asking (`ApprovalRules`), in that order of
-precedence, which the groups' descriptions say. `useStandingApprovals` is kept, unused, for when a
-workspace has settings of its own.
+There is no Approvals part: nothing the user sets for every workspace is kept yet.
+`useStandingApprovals` is kept, unused, for when a workspace has settings of its own.
 
 The user's own models are added, edited and duplicated in `settings/ModelDialog` (Edit and
 Duplicate from a row's more menu, Remove beside it), its rules plain and tested in
@@ -784,7 +779,7 @@ main has none. The gallery draws every part over a fake capability (`gallery/adm
 
 ### Developer mode
 
-Advanced's Developer mode (`prefs/devMode.ts`, kept on this device and read by `useDevMode`; defined
+Preferences' Developer mode, under Advanced (`prefs/devMode.ts`, kept on this device and read by `useDevMode`; defined
 once in `usePreferenceSettings`, so ⌘K flips it too) shows what is for those who build on the app,
 and nothing else changes while it is off. A chat has, under its composer, `ChatStatusLine`
 (`ComposerStatusLine` block): the model on the left, which is the default model, so choosing another
@@ -866,7 +861,7 @@ them, a tab each (`?tab=`):
   plain editor (`FileEditor`) in place of how it reads, and kept on Save. The tab is put away by
   going to another, unless something typed in it has not been saved: it then stays, with a dot,
   and the way back to the list asks first.
-- Settings: its tag, whether the assistant may use it on its own (coming soon), and deleting it.
+- Settings: its tag, and deleting it.
 
 ## Automations
 

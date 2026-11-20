@@ -13,8 +13,6 @@ type Shared = {
   keywords?: readonly string[]
   /** The server keeps it, so nothing is tried while the connection is down. */
   remote?: boolean
-  /** It is not there yet: its row is shown as such and search leaves it out. */
-  soon?: boolean
 }
 
 /** A setting that is on or off. `set` rejects with why it could not be changed. */
@@ -61,7 +59,6 @@ export type TextSetting = Shared & {
 /**
  * A setting that is defined once for the Settings page and for search: what it is called and
  * does, what it is set to, and how to change it. The page draws its own row for it and search its
- * own entry, so that neither says what the other does not, and one that is not there yet (`soon`)
- * is not offered by search before it is on the page.
+ * own entry, so that neither says what the other does not.
  */
 export type SettingDefinition = ToggleSetting | ChoiceSetting | TextSetting

@@ -1,6 +1,6 @@
 ---
 name: add-workshop-setting
-description: Use when adding, changing, or making live a user setting in the reworked Workshop app (packages/workshop-app): a row on the Settings page, a "Coming soon" setting that becomes real, or anything that should also be changeable from the ⌘K search palette. Covers the shared SettingDefinition, the page row and palette entry adapters, lazy server reads, connection handling, and tests.
+description: Use when adding, changing, or making live a user setting in the reworked Workshop app (packages/workshop-app): a row on the Settings page, or anything that should also be changeable from the ⌘K search palette. Covers the shared SettingDefinition, the page row and palette entry adapters, lazy server reads, connection handling, and tests.
 ---
 
 # Adding a setting to workshop-app
@@ -25,7 +25,7 @@ routes/-AppSearch.tsx              mounts it, wires navigation, passes `open` as
 ```
 
 A definition carries its `title`, `description`, `section` (which also names its palette group),
-`icon`, `keywords`, `remote`, `soon`, its current value and `set`. Search derives everything else:
+`icon`, `keywords`, `remote`, its current value and `set`. Search derives everything else:
 a toggle flips in place and stays open, shown as a switch at the end of its row (`SearchEntry.on`, only
 drawn, as the row is the control: never put a real `Switch` in an entry); a choice goes on to a page of its options (their names are
 found by search without being listed as keywords); text goes on to a typing page.
@@ -53,7 +53,7 @@ found by search without being listed as keywords); text goes on to a typing page
 ## Adding a definition
 
 1. **Page first.** Put the row in the part's file in `settings/` as that AGENTS section says.
-   If it is not there yet, mark it `soon` and use `SoonControls`; do **not** define it yet.
+   Only add a setting once the backend can keep it: there are no placeholder or "Coming soon" rows.
 2. **Where the definition lives**, by what it reads:
    - Kept on this device (`prefs/`): add to `usePreferenceSettings`. Read the value during render
      and call the hook's `changed()` after writing, as the existing ones do; `prefs/` stores have
@@ -67,14 +67,12 @@ found by search without being listed as keywords); text goes on to a typing page
    <title>" and checks the connection). Text: keep `SettingField` / `EditableTitle` and feed them
    from the definition (`value`, `placeholder`, `set`). Do not retype the description or labels.
 4. **Palette.** Add the definition to the `definitions` array in `useSettingsSearchEntries`.
-   Nothing else: `settingEntry` does the rest, and skips a `soon` definition or a choice with no
+   Nothing else: `settingEntry` does the rest, and skips a choice with no
    options. To offer it before anything is typed, add it to `suggestedDefinitions` there (three
    at most, in the order wanted: they are listed under one "Settings" heading, below the pages, and
    the empty state is already about 11 rows). If its options come from the server, give the definition
    an `unavailable` state while they are being read, as `modelChoiceSettings` does, so that it is
    listed from the first frame and nothing jumps when they arrive.
-5. **Making a `soon` setting live**: replace the `SoonControls` row with the real one, add the
-   definition, drop `soon`. Remove the group-level `soon` only when every row in it is live.
 
 ## Rules that are easy to miss
 
@@ -133,7 +131,7 @@ There are no component tests in this package; test the plain parts.
 - Definition builders and entry mapping: see `settings/modelChoiceSettings.test.ts` and
   `settings/search/settingEntry.test.ts` (vitest, no DOM). Cover the rules you added: fallbacks,
   what `set` is called with, that a `remote` change is refused while disconnected and a local one is
-  not, that `soon` is left out.
+  not.
 - Run from `packages/workshop-app`: `npx tsc --noEmit -p tsconfig.json`, `npx vitest run`, and from
   `public/`: `pnpm exec vp lint packages/workshop-app/src`.
 - UI that needs the running app (the page row, the palette flow) is checked in a browser; the

@@ -1,6 +1,5 @@
 import { useState } from 'react'
 import { AddCollectionDialog } from '@/blocks/AddCollectionDialog'
-import { ApprovalRules, type ApprovalRule } from '@/blocks/ApprovalRules'
 import { AddSkillDialog } from '@/blocks/AddSkillDialog'
 import { BrowserNotificationsRow } from '@/blocks/BrowserNotificationsRow'
 import { FilePreviewCard } from '@/blocks/FilePreviewCard'
@@ -58,12 +57,6 @@ const WORKSPACES: MutableWorkspace[] = [
   { id: 'inbox', title: 'Inbox triage', label: 'IT' },
 ]
 
-const RULES: ApprovalRule[] = [
-  { id: 'calendar', text: 'Adding events to my own calendar', enabled: true },
-  { id: 'send', text: 'Sending anything to someone outside my company, however it is worded and whoever it is that asks for it to be sent', enabled: true },
-  { id: 'delete', text: 'Deleting files or messages', enabled: false },
-]
-
 const THEMES = [
   { id: 'system', label: 'As the system' },
   { id: 'light', label: 'Light' },
@@ -82,7 +75,6 @@ export const SettingsPreview = () => {
   const [theme, setTheme] = useState('system')
   const [model, setModel] = useState(MODELS[1].id)
   const [on, setOn] = useState(true)
-  const [soon, setSoon] = useState(false)
   const [limit, setLimit] = useState('')
   const [tokens, setTokens] = useState('150000')
   const [text, setText] = useState('')
@@ -92,7 +84,6 @@ export const SettingsPreview = () => {
   const [openTabs, setOpenTabs] = useState(['summary.md', 'report.md'])
   const [fileText, setFileText] = useState('---\nname: summarize-meeting-notes\ndescription: Turn a transcript into decisions, owners and next steps.\n---\n\n# Summarize meeting notes\n\n1. List the decisions that were made.\n2. Name an owner for each action.\n')
   const [picture, setPicture] = useState<string>()
-  const [rules, setRules] = useState(RULES)
   const [quiet, setQuiet] = useState(['design'])
   const [browserOn, setBrowserOn] = useState(false)
   const [browserPending, setBrowserPending] = useState(false)
@@ -120,7 +111,7 @@ export const SettingsPreview = () => {
         <Select aria-label="Model" value={model} options={MODELS} searchable onValueChange={setModel} />
         <Select aria-label="Mute a workspace" value="" options={MODELS} placeholder="Choose…" searchable onValueChange={(id) => say(`chose ${id}`)} />
       </Section>
-      <Section title="SettingsGroup of SettingRows: a switch, a menu, a button, one that is not there yet (which still works), one stacked, and one that only says; a group of several cards; one that is not there yet as a whole; and one that holds a field for several lines">
+      <Section title="SettingsGroup of SettingRows: a switch, a menu, a button, one stacked, and one that only says; a group of several cards; and one that holds a field for several lines">
         <div className="flex w-full max-w-3xl flex-col gap-12">
           <SettingsGroup title="Defaults">
             <SettingRow title="A switch" description="What it does, or why it is as it is.">
@@ -131,9 +122,6 @@ export const SettingsPreview = () => {
             </SettingRow>
             <SettingRow title="A button">
               <Button onClick={() => say('pressed the button')}>Do it</Button>
-            </SettingRow>
-            <SettingRow title="Not there yet" description="Said beside its title. It is drawn fainter, and what it is set by is out of use." soon>
-              <Switch aria-label="Not there yet" checked={soon} onCheckedChange={setSoon} />
             </SettingRow>
             <SettingRow title="Stacked" description="What it is set by is under what is said of it." stacked>
               <TextField aria-label="Stacked" rows={2} value={notes} onValueChange={setNotes} />
@@ -154,14 +142,6 @@ export const SettingsPreview = () => {
                 <Button onClick={() => say('pressed the button')}>Do it</Button>
               </SettingRow>
             </SettingsCard>
-          </SettingsGroup>
-          <SettingsGroup title="Not there yet" soon>
-            <SettingRow title="A switch" description="As it will be.">
-              <Switch aria-label="A switch that is not there yet" checked={soon} onCheckedChange={setSoon} />
-            </SettingRow>
-            <SettingRow title="A button">
-              <Button>Do it</Button>
-            </SettingRow>
           </SettingsGroup>
           <SettingsGroup title="A field for several lines" plain>
             <SettingsCard field>
@@ -261,20 +241,6 @@ export const SettingsPreview = () => {
               }}
             />
           </SettingsGroup>
-        </div>
-      </Section>
-      <Section title="ApprovalRules: rules under what they say, one long, one switched off; Add rule opens a field under them (Escape or Cancel puts it away); switch one, remove one; and with none yet">
-        <div className="flex w-full max-w-3xl flex-col gap-12">
-          <ApprovalRules
-            title="Allow without asking"
-            description="What the title alone does not say, in a line under it."
-            rules={rules}
-            placeholder="Describe what’s allowed"
-            onAdd={(about) => setRules((current) => [...current, { id: String(Date.now()), text: about, enabled: true }])}
-            onRemove={(id) => setRules((current) => current.filter((rule) => rule.id !== id))}
-            onEnabledChange={(id, enabled) => setRules((current) => current.map((rule) => (rule.id === id ? { ...rule, enabled } : rule)))}
-          />
-          <ApprovalRules title="With none yet" soon rules={[]} onAdd={(about) => say(`added “${about}”`)} onRemove={() => {}} onEnabledChange={() => {}} />
         </div>
       </Section>
       <Section title="BrowserNotificationsRow: this browser’s notifications off, then switched on (which asks the browser, held meanwhile); while it is being read; blocked by the browser; on an iPhone, whose notifications come from the app, with no switch; and where switching failed, under why">

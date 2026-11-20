@@ -5,12 +5,11 @@ import { sectionInfo } from '../settingsSections'
 /**
  * A setting as search offers it, by its kind: a switch flips in place and stays open to show it, a
  * choice goes on to a page of its options, and a line of text to a page to type it in. Nothing for
- * one that is not there yet, or a choice with nothing to choose from. A choice whose options are
+ * a choice with nothing to choose from. A choice whose options are
  * still being read is listed all the same, and says so if it is chosen. `requireConnection` is
  * called before a change the server keeps.
  */
 export const settingEntry = (setting: SettingDefinition, requireConnection: () => void): SearchEntry | undefined => {
-  if (setting.soon) return undefined
   const guard = () => {
     if (setting.remote) requireConnection()
   }

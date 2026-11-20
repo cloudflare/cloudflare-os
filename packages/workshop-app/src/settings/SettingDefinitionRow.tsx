@@ -20,7 +20,7 @@ export const SettingDefinitionRow = ({ setting, attempt }: SettingDefinitionRowP
     else void set()
   }
   return (
-    <SettingRow title={setting.title} description={setting.description} soon={setting.soon}>
+    <SettingRow title={setting.title} description={setting.description}>
       {setting.kind === 'toggle'
         ? <Switch aria-label={setting.title} checked={setting.checked} onCheckedChange={change} />
         : (

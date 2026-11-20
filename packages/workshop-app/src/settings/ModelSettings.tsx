@@ -1,11 +1,10 @@
 import { useState } from 'react'
-import { COMPACTION_TRIGGER_RATIO, type AiModelProvider, type ReasoningLevel } from '@gadgets/workshop-shared/api'
+import type { AiModelProvider } from '@gadgets/workshop-shared/api'
 import { ModelListItem } from '@/blocks/ModelListItem'
 import { SettingPresets } from '@/blocks/SettingPresets'
 import { SettingRow } from '@/blocks/SettingRow'
 import { SettingsCard, SettingsGroup } from '@/blocks/SettingsGroup'
 import { Button } from '@/components/Button'
-import { TextField } from '@/components/TextField'
 import { defaultModelOf } from '@/chat/defaultModel'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { ModelDialog } from './ModelDialog'
@@ -13,23 +12,9 @@ import type { ModelSave } from './modelForm'
 import { modelChoiceSettings } from './modelChoiceSettings'
 import { contextWindowPresets, modelOptionsOf } from './modelOptions'
 import { SettingDefinitionRow } from './SettingDefinitionRow'
-import { SoonSelect } from './SoonControls'
 import { messageOf, useAttempt } from './useAttempt'
 import { useModelConfig } from './useModelConfig'
 import { useModelSettings } from './useModelSettings'
-
-const REASONING_LABEL: Record<ReasoningLevel, string> = {
-  off: 'Off',
-  minimal: 'Minimal',
-  low: 'Low',
-  medium: 'Medium',
-  high: 'High',
-  xhigh: 'Extra high',
-  max: 'Max',
-}
-
-// When a chat's earlier part is summarised, as shares of its context window, the usual one first.
-const COMPACTION_CHOICES = [COMPACTION_TRIGGER_RATIO, 0.7, 0.5].map((ratio) => ({ id: String(ratio), label: ratio === COMPACTION_TRIGGER_RATIO ? `${Math.round(ratio * 100)}% (default)` : `${Math.round(ratio * 100)}%` }))
 
 const TOKENS = new Intl.NumberFormat('en')
 
@@ -51,17 +36,15 @@ type ContextWindowProps = {
   tokens: number | undefined
   /** Rejects with why it was not kept. */
   onChange: (tokens: number | undefined) => Promise<void>
-  soon?: boolean
 }
 
 /** How much of a conversation a model is given at once: its own, one of the usual sizes under it, or a number of the user's. */
-const ContextWindow = ({ known, tokens, onChange, soon }: ContextWindowProps) => {
+const ContextWindow = ({ known, tokens, onChange }: ContextWindowProps) => {
   const notice = useConnectionNotice()
   return (
     <SettingPresets
       title="Context window"
       description="The maximum tokens sent to the model per request. A smaller window costs less."
-      soon={soon}
       value={tokens === undefined ? '' : String(tokens)}
       presets={contextWindowPresets(known)}
       customLabel="Context window, in tokens"
@@ -69,7 +52,7 @@ const ContextWindow = ({ known, tokens, onChange, soon }: ContextWindowProps) =>
       inputMode="numeric"
       format={formatTyped}
       onSave={async (typed) => {
-        if (!soon && notice?.blocked()) return { saved: false }
+        if (notice?.blocked()) return { saved: false }
         try {
           await onChange(parseTokens(typed))
           return { saved: true }
@@ -88,52 +71,6 @@ const OwnContextWindow = ({ modelId, known }: { modelId: string; known: number |
   if (state.status !== 'ready') return null
   return <ContextWindow known={known} tokens={state.config.contextWindow} onChange={setContextWindow} />
 }
-
-/** The context window of one of the deployment's models, which is not the user's to set yet: shown at the model's own, and out of use. */
-const SoonContextWindow = ({ known }: { known: number }) => <ContextWindow known={known} tokens={undefined} soon onChange={async () => {}} />
-
-/**
- * What there is to set of the model that answers, which depends on the model (`modelOptionsOf`):
- * one that does no reasoning has no effort to set, and one nothing is known of has neither that
- * nor a context window. Keyed by the model, so that what is tried for one is not shown for the next.
- */
-const DefaultModelOptions = ({ modelId, own }: { modelId: string; own: boolean }) => {
-  const { reasoningLevels, contextWindow } = modelOptionsOf(modelId)
-  return (
-    <>
-      {reasoningLevels.length > 0 && (
-        <SettingRow title="Reasoning level" description="How much the model thinks before it answers. Higher levels are slower and cost more." soon>
-          <SoonSelect
-            label="Reasoning level"
-            options={[{ id: 'model', label: 'Model default' }, ...reasoningLevels.map((level) => ({ id: level, label: REASONING_LABEL[level] }))]}
-          />
-        </SettingRow>
-      )}
-      {own ? <OwnContextWindow modelId={modelId} known={contextWindow} /> : contextWindow !== undefined && <SoonContextWindow known={contextWindow} />}
-      {(own || contextWindow !== undefined) && (
-        <SettingRow title="Compaction threshold" description="How full the context window gets before earlier messages are compacted into a summary." soon>
-          <SoonSelect label="Compaction threshold" options={COMPACTION_CHOICES} />
-        </SettingRow>
-      )}
-    </>
-  )
-}
-
-/** What every model is told beyond what it comes with. Not there yet, so it is shown and cannot be written. */
-const CustomInstructions = () => (
-  <SettingsGroup title="Custom instructions" soon plain>
-    <SettingsCard field>
-      <TextField
-        aria-label="Custom instructions"
-        rows={4}
-        value=""
-        placeholder="What the assistant should always know or do, such as “Answer in British English.”"
-        onValueChange={() => {}}
-        className="rounded-2xl"
-      />
-    </SettingsCard>
-  </SettingsGroup>
-)
 
 /** Which of the user's models the model dialog was opened for, and to do what. */
 type ModelDialogFor = { kind: 'add' } | { kind: 'edit' | 'duplicate'; id: string }
@@ -155,7 +92,7 @@ const SourcedModelDialog = ({ kind, id, ...props }: OwnModelDialogProps & { kind
   return <ModelDialog mode={mode} {...props} />
 }
 
-/** Which model answers, how it goes about it and what it is always told, and the models there are. */
+/** Which model answers, and the models there are. */
 export const ModelSettings = () => {
   const { state, setPreferred, setQuick, remove, save } = useModelSettings()
   const { problem, attempt } = useAttempt()
@@ -202,16 +139,12 @@ export const ModelSettings = () => {
   return (
     <>
       {problem && <p role="alert" className="px-5 text-base text-kumo-danger">{problem}</p>}
-      <SettingsGroup title="Defaults" plain>
-        <SettingsCard>
-          <SettingDefinitionRow setting={defaultModel} attempt={attempt} />
-          {answering && <DefaultModelOptions key={`${answering.id}:${saves}`} modelId={answering.id} own={!builtIn.has(answering.id)} />}
-        </SettingsCard>
-        <SettingsCard>
-          <SettingDefinitionRow setting={quickModel} attempt={attempt} />
-        </SettingsCard>
+      <SettingsGroup title="Defaults">
+        <SettingDefinitionRow setting={defaultModel} attempt={attempt} />
+        {/* Under the model it is of. The deployment's models keep their own; the user's are theirs to set. Keyed by the model, so that what is tried for one is not shown for the next. */}
+        {answering && !builtIn.has(answering.id) && <OwnContextWindow key={`${answering.id}:${saves}`} modelId={answering.id} known={modelOptionsOf(answering.id).contextWindow} />}
+        <SettingDefinitionRow setting={quickModel} attempt={attempt} />
       </SettingsGroup>
-      <CustomInstructions />
       <SettingsGroup title="Available models" plain>
         <SettingsCard>
           {models.length === 0

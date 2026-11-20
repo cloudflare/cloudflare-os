@@ -1,9 +1,8 @@
 import type { SearchEntry } from '@/blocks/SearchDialog'
 import { sectionInfo, type SettingsSection } from '../settingsSections'
 
-// The parts with settings in them that are there. What is only coming is not worth going to, and
-// the admin's are not changed from here.
-const SECTIONS: SettingsSection[] = ['profile', 'security', 'usage', 'models', 'skills', 'preferences', 'notifications', 'advanced']
+// The user's own parts. The admin's are not changed from here.
+const SECTIONS: SettingsSection[] = ['profile', 'preferences', 'notifications', 'models', 'skills', 'usage']
 
 /**
  * A way to each of those parts, for what is changed there and not here, such as the password, a

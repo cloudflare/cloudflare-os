@@ -27,8 +27,8 @@ export const SettingsMenu = ({ user, groups, onSelect, onSignOut }: SettingsMenu
         {user.detail && <span className="truncate text-base text-kumo-subtle">{user.detail}</span>}
       </div>
     </div>
-    {groups.map((group) => (
-      <section key={group.label} aria-label={group.label} className="flex flex-col rounded-3xl bg-kumo-tint p-1.5">
+    {groups.map((group, index) => (
+      <section key={group.label ?? index} aria-label={group.label} className="flex flex-col rounded-3xl bg-kumo-tint p-1.5">
         {group.items.map(({ id, label, icon: Glyph, summary, href }) => (
           <LinkButton
             key={id}

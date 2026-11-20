@@ -16,14 +16,10 @@ import { AdminModelSettings } from './admin/AdminModelSettings'
 import { AdminServiceSettings } from './admin/AdminServiceSettings'
 import { AdminUpdateSettings } from './admin/AdminUpdateSettings'
 import { useIsAdmin } from './admin/useIsAdmin'
-import { AdvancedSettings } from './AdvancedSettings'
-import { ApprovalSettings } from './ApprovalSettings'
-import { CollaborationSettings } from './CollaborationSettings'
 import { ModelSettings } from './ModelSettings'
 import { NotificationSettings } from './NotificationSettings'
 import { PreferenceSettings } from './PreferenceSettings'
 import { ProfileSettings } from './ProfileSettings'
-import { SecuritySettings } from './SecuritySettings'
 import { FIRST_SECTION, isAdminSection, sectionInfo, settingsNavGroups, type SettingsSection } from './settingsSections'
 import { SkillSettings } from './SkillSettings'
 import { UsageSettings } from './UsageSettings'
@@ -71,15 +67,11 @@ export const SettingsPane = ({ section, onSectionChange, sectionHref, onOpenSkil
 
   const parts: Record<SettingsSection, ReactNode> = {
     profile: <ProfileSettings />,
-    security: <SecuritySettings />,
     usage: <UsageSettings />,
     models: <ModelSettings />,
-    approvals: <ApprovalSettings />,
     skills: <SkillSettings onOpenSkill={onOpenSkill} skillHref={skillHref} onOpenCollection={onOpenCollection} collectionHref={collectionHref} />,
     preferences: <PreferenceSettings />,
     notifications: <NotificationSettings />,
-    collaboration: <CollaborationSettings />,
-    advanced: <AdvancedSettings />,
     'admin-general': <AdminGeneralSettings />,
     'admin-services': <AdminServiceSettings />,
     'admin-formats': <AdminFormatSettings />,

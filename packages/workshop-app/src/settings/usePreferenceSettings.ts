@@ -61,7 +61,7 @@ export const usePreferenceSettings = () => {
   }
   const developerMode: ToggleSetting = {
     kind: 'toggle',
-    section: 'advanced',
+    section: 'preferences',
     title: 'Developer mode',
     description: 'Show the model, context size and cost under the composer, what each workspace and chat has cost, and technical details of messages.',
     keywords: ['developer', 'debug', 'cost', 'tokens', 'context', 'model', 'thinking', 'technical'],

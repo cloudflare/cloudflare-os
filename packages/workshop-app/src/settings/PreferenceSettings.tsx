@@ -1,31 +1,38 @@
 import { SettingRow } from '@/blocks/SettingRow'
 import { SettingsGroup } from '@/blocks/SettingsGroup'
-import { Button } from '@/components/Button'
+import { ConfirmMenu } from '@/components/ConfirmMenu'
+import { resetLocalPreferences } from './resetLocalPreferences'
 import { SettingDefinitionRow } from './SettingDefinitionRow'
-import { SoonSelect } from './SoonControls'
 import { usePreferenceSettings } from './usePreferenceSettings'
 
-/** How the app looks and behaves on this device. */
+/**
+ * How the app looks and behaves on this device, the tools for those who build on it, and the way
+ * to forget all of it, as it is all kept in this browser.
+ */
 export const PreferenceSettings = () => {
-  const { theme, motion, autoOpenOutputs } = usePreferenceSettings()
+  const { theme, motion, autoOpenOutputs, developerMode } = usePreferenceSettings()
   return (
     <>
       <SettingsGroup title="Appearance">
         <SettingDefinitionRow setting={theme} />
-        <SettingRow title="Accent color" description="The color of selections and primary actions." soon>
-          <SoonSelect label="Accent color" options={[{ id: 'default', label: 'Deployment default' }, { id: 'orange', label: 'Orange' }, { id: 'blue', label: 'Blue' }, { id: 'green', label: 'Green' }, { id: 'purple', label: 'Purple' }]} />
-        </SettingRow>
-        <SettingRow title="Text size" description="The size of text in conversations." soon>
-          <SoonSelect label="Text size" value="default" options={[{ id: 'small', label: 'Small' }, { id: 'default', label: 'Default' }, { id: 'large', label: 'Large' }]} />
-        </SettingRow>
         <SettingDefinitionRow setting={motion} />
       </SettingsGroup>
       <SettingsGroup title="Side pane">
         <SettingDefinitionRow setting={autoOpenOutputs} />
       </SettingsGroup>
-      <SettingsGroup title="Keyboard" soon>
-        <SettingRow title="Keyboard shortcuts" description="View and customize keyboard shortcuts.">
-          <Button>View shortcuts</Button>
+      <SettingsGroup title="Advanced">
+        <SettingDefinitionRow setting={developerMode} />
+        <SettingRow
+          title="Reset local preferences"
+          description="Clear what’s saved in this browser: the layout, list views, stars, workspace icons and theme. Your account isn’t affected and you stay signed in."
+        >
+          <ConfirmMenu
+            label="Reset"
+            title="Reset local preferences?"
+            description="Stars and workspace icons are saved only in this browser, so they’ll be lost for good."
+            confirmLabel="Reset"
+            onConfirm={resetLocalPreferences}
+          />
         </SettingRow>
       </SettingsGroup>
     </>

@@ -1,6 +1,5 @@
-import { useContext, useId, type ReactNode } from 'react'
+import { useId, type ReactNode } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
-import { SOON, SoonBadge, SoonContext } from './SettingRow'
 
 export type SettingsCardProps = {
   /**
@@ -24,23 +23,13 @@ export const ON_SETTINGS_CARD = 'not-data-disabled:hover:bg-kumo-contrast/5'
  * the next that stops short of its sides. A `SettingsGroup` has one by itself; give it several
  * (`plain`) where its settings fall into more than one lot.
  */
-export const SettingsCard = ({ field = false, children }: SettingsCardProps) => {
-  // A field of a group that is not there yet cannot be typed in. Rows see to themselves.
-  const off = useContext(SoonContext) && field
-  return (
-    <div inert={off} className={cn('flex flex-col rounded-3xl bg-kumo-tint text-base', field ? 'p-2' : 'px-5 py-1', off && '*:opacity-50')}>{children}</div>
-  )
-}
+export const SettingsCard = ({ field = false, children }: SettingsCardProps) => (
+  <div className={cn('flex flex-col rounded-3xl bg-kumo-tint text-base', field ? 'p-2' : 'px-5 py-1')}>{children}</div>
+)
 
 export type SettingsGroupProps = {
   /** What its settings have in common: "Defaults". */
   title: string
-  /**
-   * None of it is there yet, which is said once, beside the title, rather than on every row. What
-   * its rows are set by, and what is done to it as a whole, are shown and cannot be used. What it
-   * holds that is not a row sees to that itself (`SoonContext`).
-   */
-  soon?: boolean
   /**
    * What the title alone does not say, in a line under it. Most groups have none: what a setting
    * does is said on its row. It is for a group whose rows are not settings, such as a list.
@@ -61,24 +50,19 @@ export type SettingsGroupProps = {
  * Settings that belong together, under what they have in common: a title, in from the edge as
  * far as what is on the surface under it is, then the surface, or the few it has.
  */
-export const SettingsGroup = ({ title, soon = false, description, action, plain = false, children }: SettingsGroupProps) => {
+export const SettingsGroup = ({ title, description, action, plain = false, children }: SettingsGroupProps) => {
   const id = useId()
   return (
     <section aria-labelledby={id} className="flex flex-col gap-4">
       {/* What is done to it ends where what is on the surface does, and takes none of the title's height: the title is where one alone would be. */}
       <div className="flex items-start justify-between gap-3 px-5">
         <div className="flex min-w-0 flex-col gap-1">
-          <h2 id={id} className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-lg font-medium text-kumo-default">
-            {title}
-            {soon && <SoonBadge />}
-          </h2>
+          <h2 id={id} className="text-lg font-medium text-kumo-default">{title}</h2>
           {description && <p className="text-sm text-kumo-subtle">{description}</p>}
         </div>
-        {action && <div inert={soon} className={cn('-my-1.5 flex shrink-0', soon && SOON)}>{action}</div>}
+        {action && <div className="-my-1.5 flex shrink-0">{action}</div>}
       </div>
-      <SoonContext value={soon}>
-        {plain ? <div className="flex flex-col gap-3">{children}</div> : <SettingsCard>{children}</SettingsCard>}
-      </SoonContext>
+      {plain ? <div className="flex flex-col gap-3">{children}</div> : <SettingsCard>{children}</SettingsCard>}
     </section>
   )
 }

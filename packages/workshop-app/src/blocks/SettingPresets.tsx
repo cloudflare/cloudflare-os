@@ -9,8 +9,6 @@ const CUSTOM = '::custom'
 export type SettingPresetsProps = {
   title: string
   description?: ReactNode
-  /** It is not there yet, which is said beside its title (see `SettingRow`). */
-  soon?: boolean
   /** The value as it is kept: one of the `presets`' ids, or one of the user's own. */
   value: string
   /** The values offered, by what each is kept as. One kept as nothing (`''`) lets the field be left empty. */
@@ -31,7 +29,7 @@ export type SettingPresetsProps = {
  * in Custom, which has the menu written in where it said which. What is typed is kept as a
  * `SettingField`'s is, and starts from the value kept.
  */
-export const SettingPresets = ({ title, description, soon, value, presets, onSave, customLabel, placeholder, inputMode, format }: SettingPresetsProps) => {
+export const SettingPresets = ({ title, description, value, presets, onSave, customLabel, placeholder, inputMode, format }: SettingPresetsProps) => {
   // What the menu was set to, where that is not what is kept: Custom, for as long as the page is
   // up, or a preset on its way to being kept.
   const [picked, setPicked] = useState<string>()
@@ -51,7 +49,7 @@ export const SettingPresets = ({ title, description, soon, value, presets, onSav
   }
 
   return (
-    <SettingRow title={title} soon={soon} description={problem ? <span role="alert" className="text-kumo-danger">{problem}</span> : description}>
+    <SettingRow title={title} description={problem ? <span role="alert" className="text-kumo-danger">{problem}</span> : description}>
       <Select
         aria-label={title}
         value={choice}

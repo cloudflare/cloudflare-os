@@ -8,29 +8,21 @@ import {
   GearSixIcon,
   LightningIcon,
   ListMagnifyingGlassIcon,
-  LockKeyIcon,
   PlugsIcon,
-  ShieldCheckIcon,
   SlidersHorizontalIcon,
   UserIcon,
   UserPlusIcon,
-  UsersIcon,
-  WrenchIcon,
   type Icon,
 } from '@phosphor-icons/react'
 
 /** The parts of the settings, by what each is called in the page's address (`?section=`). */
 export const SETTINGS_SECTION_IDS = [
   'profile',
-  'security',
-  'usage',
-  'models',
-  'approvals',
-  'skills',
   'preferences',
   'notifications',
-  'collaboration',
-  'advanced',
+  'models',
+  'skills',
+  'usage',
   'admin-general',
   'admin-services',
   'admin-formats',
@@ -59,40 +51,29 @@ type SectionInfo = {
   icon: Icon
 }
 
-/** The parts in the order they are listed, grouped by what they are about. */
-export const SETTINGS_GROUPS: { label: string; sections: SectionInfo[] }[] = [
-  {
-    label: 'Account',
-    sections: [
-      { id: 'profile', label: 'Profile', summary: 'Name, picture, identity and your data', icon: UserIcon },
-      { id: 'security', label: 'Security', summary: 'Password, sign-in and sessions', icon: LockKeyIcon },
-      { id: 'usage', label: 'Usage & billing', summary: 'Free requests, billing and spending', icon: ChartBarIcon },
-    ],
-  },
-  {
-    label: 'Assistant',
-    sections: [
-      { id: 'models', label: 'Models', summary: 'Default model, context and custom instructions', icon: CpuIcon },
-      { id: 'approvals', label: 'Approvals', summary: 'What the assistant can do without asking', icon: ShieldCheckIcon },
-      { id: 'skills', label: 'Skills', summary: 'Your skills and how they are used', icon: LightningIcon },
-    ],
-  },
-  {
-    label: 'App',
-    sections: [
-      { id: 'preferences', label: 'Preferences', summary: 'Appearance, side pane and keyboard', icon: SlidersHorizontalIcon },
-      { id: 'notifications', label: 'Notifications', summary: 'Channels, events and muted workspaces', icon: BellIcon },
-      { id: 'collaboration', label: 'Collaboration', summary: 'Invitations and presence', icon: UsersIcon },
-      { id: 'advanced', label: 'Advanced', summary: 'Developer tools and local data', icon: WrenchIcon },
-    ],
-  },
-]
+/** Parts listed together, under what they have in common where it is said. */
+type SectionGroup = { label?: string; sections: SectionInfo[] }
+
+/**
+ * The user's own parts, in the order they are listed: one list, with no heading over it, as there
+ * are few enough to read at a glance.
+ */
+export const SETTINGS_GROUP: SectionGroup = {
+  sections: [
+    { id: 'profile', label: 'Profile', summary: 'Name, picture, identity and password', icon: UserIcon },
+    { id: 'preferences', label: 'Preferences', summary: 'Appearance, side pane and developer mode', icon: SlidersHorizontalIcon },
+    { id: 'notifications', label: 'Notifications', summary: 'This browser and muted workspaces', icon: BellIcon },
+    { id: 'models', label: 'Models', summary: 'Default and quick models, and your own', icon: CpuIcon },
+    { id: 'skills', label: 'Skills', summary: 'Your skills and their collections', icon: LightningIcon },
+    { id: 'usage', label: 'Usage & billing', summary: 'Free requests and billing', icon: ChartBarIcon },
+  ],
+}
 
 /**
  * The deployment's own settings, for everyone on it, which only its admins are shown, after the
  * user's own. Main's Admin page, a tab to a part.
  */
-export const ADMIN_GROUP: { label: string; sections: SectionInfo[] } = {
+export const ADMIN_GROUP: SectionGroup = {
   label: 'Admin',
   sections: [
     { id: 'admin-general', label: 'General', summary: 'Name, logo, notices and agent instructions', icon: GearSixIcon },
@@ -110,10 +91,10 @@ export const ADMIN_GROUP: { label: string; sections: SectionInfo[] } = {
  * address where `href` gives one.
  */
 export const settingsNavGroups = (href?: (section: SettingsSection) => string, admin = false) =>
-  (admin ? [...SETTINGS_GROUPS, ADMIN_GROUP] : SETTINGS_GROUPS).map(({ label, sections }) => ({
+  (admin ? [SETTINGS_GROUP, ADMIN_GROUP] : [SETTINGS_GROUP]).map(({ label, sections }) => ({
     label,
     items: sections.map((section) => ({ ...section, href: href?.(section.id) })),
   }))
 
 export const sectionInfo = (id: SettingsSection): SectionInfo =>
-  [...SETTINGS_GROUPS, ADMIN_GROUP].flatMap(({ sections }) => sections).find((section) => section.id === id)!
+  [SETTINGS_GROUP, ADMIN_GROUP].flatMap(({ sections }) => sections).find((section) => section.id === id)!

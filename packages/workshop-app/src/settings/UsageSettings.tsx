@@ -1,5 +1,4 @@
 import { useState } from 'react'
-import { SettingPresets } from '@/blocks/SettingPresets'
 import { SettingRow } from '@/blocks/SettingRow'
 import { SettingsGroup } from '@/blocks/SettingsGroup'
 import { Button } from '@/components/Button'
@@ -11,43 +10,6 @@ import { useAttempt } from './useAttempt'
 import { useUsage } from './useUsage'
 
 const RESETS = new Intl.DateTimeFormat(undefined, { timeStyle: 'short' })
-
-// Kept as a number of dollars, or as nothing for no limit.
-const LIMITS = [{ id: '', label: 'No limit' }, ...[10, 25, 50, 100].map((dollars) => ({ id: String(dollars), label: `$${dollars}` }))]
-
-/** How much may be spent in a month. Not there yet, so what it is set to is only its own: tried, and not kept. */
-const MonthlyLimit = () => {
-  const [limit, setLimit] = useState('')
-  return (
-    <SettingPresets
-      title="Monthly spending limit"
-      description="Stop using paid models after spending this much in a month."
-      value={limit}
-      presets={LIMITS}
-      customLabel="Monthly spending limit, in dollars"
-      placeholder="$0"
-      inputMode="decimal"
-      format={(dollars) => (dollars === '' ? '' : `$${dollars}`)}
-      onSave={async (typed) => {
-        const dollars = typed.replace(/[$,\s]/g, '')
-        if (dollars !== '' && !/^\d+(\.\d{1,2})?$/.test(dollars)) return { saved: false, problem: 'Enter an amount in dollars, such as 75.' }
-        // As a number is written, so that 25.0 is the $25 on offer.
-        setLimit(dollars === '' ? '' : String(Number(dollars)))
-        return { saved: true }
-      }}
-    />
-  )
-}
-
-/** Things to come, which need nothing read to be shown. */
-const Spending = () => (
-  <SettingsGroup title="Spending" soon>
-    <MonthlyLimit />
-    <SettingRow title="Usage breakdown" description="Cost by workspace and by model.">
-      <Button>View usage</Button>
-    </SettingRow>
-  </SettingsGroup>
-)
 
 /** What the user has used, and what pays for more. */
 export const UsageSettings = () => {
@@ -69,12 +31,9 @@ export const UsageSettings = () => {
   const { usage, accounts } = state
   if (!usage.cloudflareLimitsEnabled || usage.unlimited) {
     return (
-      <>
-        <SettingsGroup title="Free requests">
-          <SettingRow title="Unlimited" description="This deployment doesn’t limit usage, so there’s nothing to pay for." />
-        </SettingsGroup>
-        <Spending />
-      </>
+      <SettingsGroup title="Free requests">
+        <SettingRow title="Unlimited" description="This deployment doesn’t limit usage, so there’s nothing to pay for." />
+      </SettingsGroup>
     )
   }
 
@@ -133,7 +92,6 @@ export const UsageSettings = () => {
           </>
         )}
       </SettingsGroup>
-      <Spending />
     </>
   )
 }
