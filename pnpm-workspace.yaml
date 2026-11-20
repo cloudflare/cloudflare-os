@@ -71,7 +71,7 @@ overrides:
   # pi-agent-core asks for pi-ai by a caret range, which resolves to the newest pi-ai rather than
   # the one workshop-backend pins. The agent loop and the backend's model handles must share one
   # pi-ai (its model registry and types), so the agent core gets the backend's.
-  '@earendil-works/pi-agent-core>@earendil-works/pi-ai': 1.5.2
+  "@earendil-works/pi-agent-core>@earendil-works/pi-ai": 1.6.0
 
 # Reject dependency versions published within this many minutes (24h), matching the
 # CI supply-chain policy so local installs can't commit a too-fresh lockfile.
@@ -82,6 +82,13 @@ minimumReleaseAgeExclude:
   - capnweb-validate
   - workerd
   - "@cloudflare/workerd-*"
+  # One-time exception for pi's 1.6.0 Google custom-fetch release and its
+  # co-released dependencies. Pin the exemption to exact versions so future
+  # releases remain subject to the 24-hour gate.
+  - "@earendil-works/pi-agent-core@1.6.0"
+  - "@earendil-works/pi-ai@1.6.0"
+  - "@earendil-works/pi-schema@1.6.0"
+  - "@earendil-works/pi-telemetry@1.6.0"
 
 allowBuilds:
   '@google/genai': true

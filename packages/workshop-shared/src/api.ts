@@ -3805,19 +3805,12 @@ export function modelKind(provider: string, model: string): ModelKind {
 }
 
 /**
- * Providers whose pi API adapter refuses a custom fetch, so their inference cannot ride the
- * Workers AI binding and needs CF_AI_GATEWAY_API_TOKEN over HTTPS. pi's Google adapter throws
- * "Custom fetch is not supported by the Google Generative AI adapter" whenever the fetch it is
- * given is not globalThis.fetch, and the client it builds on offers no hook to route around that:
- * @google/genai's `GoogleGenAI` takes only `httpOptions`, whose knobs are
- * baseUrl/apiVersion/headers/timeout/extraBody/retryOptions.
- * https://github.com/earendil-works/pi/blob/v0.84.2/packages/ai/src/api/google-generative-ai.ts#L80
- *
- * pi's Vertex adapter throws the same way, so a google-vertex provider would belong here too; it
- * is absent only because this deployment has no such provider.
- * https://github.com/earendil-works/pi/blob/v0.84.2/packages/ai/src/api/google-vertex.ts#L98
+ * Providers whose pi adapter refuses an injected `fetch` and therefore cannot
+ * use the Workers AI binding transport (requiring `CF_AI_GATEWAY_API_TOKEN`
+ * over HTTPS). Currently empty -- pi's Google adapter forwards custom `fetch`
+ * via `httpOptions.fetch` -- and kept as the hook for any future exception.
  */
-export const HTTPS_ONLY_PROVIDERS: ReadonlySet<string> = new Set<AiModelProvider>(["google"]);
+export const HTTPS_ONLY_PROVIDERS: ReadonlySet<string> = new Set<AiModelProvider>([]);
 
 /**
  * Metadata about a workspace (one Overseer DO and everything in it). Includes everything needed
