@@ -2514,6 +2514,20 @@ describe.each(RUNS)("Google Doc pending changes, $name", r => {
     expect((await hooks().readPendingChanges("pending-stale", MAIN_TAB)).changes).toEqual([]);
   });
 
+  it("marks an edit stale that its approval found the document no longer fits", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "target");
+    docs.install();
+    let actionId = await hooks().submitReplace("pending-unapplied", "target", "changed");
+
+    docs.externalEdit(MAIN_TAB, "rewritten");
+    expect(await hooks().applyAction("pending-unapplied", actionId)).toMatch(/oldMarkdown was not found/);
+
+    expect((await hooks().readPendingChanges("pending-unapplied", MAIN_TAB)).changes).toEqual([{
+      id: actionId, stale: true, type: "replaceText", oldMarkdown: "target", newMarkdown: "changed",
+    }]);
+  });
+
   it("lists only the edits of the tab it names", async () => {
     nestedDocs();
     let actionId = await hooks().submitAppend("pending-tabs", "added", "details");
