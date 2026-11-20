@@ -1089,10 +1089,23 @@ describe("pruning by the table", () => {
 // Google confirms is not fetched again, so one pruned by another whitelist would be served
 // under an unchanged version for as long as its document stood. A change to this list is a
 // change to what a stored copy holds, and `DOC_COPY_FORMAT_VERSION` changes with it.
+it("keeps which style changes a row's and a cell's suggestions make, by ID alone", () => {
+  let tab = buildTab([{ table: [["a\n", "b\n"]] }]);
+  let table = tab.body.content.find(element => element.table)!.table!;
+  let row = table.tableRows![0];
+  row.suggestedTableRowStyleChanges = { "suggest.r": { tableRowStyle: { minRowHeight: {} } } };
+  row.tableCells![1].suggestedTableCellStyleChanges = { "suggest.c": { tableCellStyle: {} } };
+  let pruned = pruneTab(tab).body.content.find(element => element.table)!.table!.tableRows![0];
+  expect(pruned.suggestedTableRowStyleChanges).toEqual({ "suggest.r": {} });
+  expect(pruned.tableCells![1].suggestedTableCellStyleChanges).toEqual({ "suggest.c": {} });
+  // Where Google sends none, the copy holds none.
+  expect(pruned.tableCells![0]).not.toHaveProperty("suggestedTableCellStyleChanges");
+});
+
 it("keeps exactly these fields under this format version", () => {
   let tabs = [RICHEST, ...RECORDED.map(({ tab }) => tab)].map(tab => pruneTab(dressed(tab)));
   expect({ version: DOC_COPY_FORMAT_VERSION, fields: keptFields(tabs) }).toStrictEqual({
-    version: 6,
+    version: 7,
     fields: {
       autoText: "textStyle type",
       backgroundColor: "color",

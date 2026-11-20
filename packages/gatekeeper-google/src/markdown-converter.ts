@@ -145,7 +145,8 @@ export type TableMapping = MarkdownRange & {
   pinnedRows?: number;
   /**
    * How many suggestions the table holds that the view does not show: each suggested insertion
-   * or deletion of the table, of a row of it or of a cell of it, and those of a table inside
+   * or deletion of the table, of a row of it or of a cell of it, each suggested change to a row's
+   * or a cell's style, and those of a table inside
    * one of its cells. Absent when it holds none.
    */
   suggested?: number;
@@ -1517,11 +1518,15 @@ type RenderedCell = RenderedHtml &
 /** A rendered table: its HTML, its look, and its rows when it is a table of the tab body. */
 type RenderedTable = { html: string } & Pick<TableMapping, "look" | "rows">;
 
-/** How many suggested insertions and deletions `value` is marked with. */
-function suggestionsOf(
-  value: { suggestedInsertionIds?: string[]; suggestedDeletionIds?: string[] },
-): number {
-  return (value.suggestedInsertionIds?.length ?? 0) + (value.suggestedDeletionIds?.length ?? 0);
+/** How many suggested insertions, deletions and style changes `value` is marked with. */
+function suggestionsOf(value: {
+  suggestedInsertionIds?: string[]; suggestedDeletionIds?: string[];
+  suggestedTableRowStyleChanges?: Record<string, object>;
+  suggestedTableCellStyleChanges?: Record<string, object>;
+}): number {
+  return (value.suggestedInsertionIds?.length ?? 0) + (value.suggestedDeletionIds?.length ?? 0) +
+    Object.keys(value.suggestedTableRowStyleChanges ?? {}).length +
+    Object.keys(value.suggestedTableCellStyleChanges ?? {}).length;
 }
 
 /**

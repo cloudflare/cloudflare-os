@@ -12,17 +12,17 @@ import type { GoogleDocsDocument } from "../src/docs-api";
 export const DOCS_API_FIELD_NAMES: ReadonlySet<string> = new Set([
   "alignment", "autoText", "body", "bold", "bullet", "childTabs", "columnBreak", "content",
   "dateElement", "dateElementProperties", "displayText", "documentId", "documentTab", "dropdown",
-  "dropdownId", "dropdownProperties", "elements", "endIndex", "equation", "fontSize",
-  "footnoteId", "footnoteNumber", "footnoteReference", "foregroundColor", "glyphSymbol",
-  "glyphType", "headingId", "horizontalRule", "indentFirstLine", "indentStart",
-  "inlineObjectElement", "inlineObjectId", "italic", "link", "listId", "listProperties", "lists",
-  "minRowHeight", "name", "namedRangeId", "namedRanges", "namedStyleType", "namedStyles",
-  "nestingLevel", "nestingLevels", "pageBreak", "paragraph", "paragraphStyle", "person",
-  "personProperties", "positionedObjectIds", "revisionId", "richLink", "richLinkProperties",
-  "sectionBreak", "startIndex", "startNumber", "strikethrough", "styles", "suggestedDeletionIds",
-  "suggestedInsertionIds", "tabId", "tabProperties", "table", "tableCellStyle", "tableCells",
-  "tableHeader", "tableOfContents", "tableRowStyle", "tableRows", "tableStyle", "tabs", "textRun",
-  "textStyle", "title", "type", "underline", "uri",
+  "dropdownId", "dropdownProperties", "elements", "endIndex", "equation", "fontSize", "footnoteId",
+  "footnoteNumber", "footnoteReference", "foregroundColor", "glyphSymbol", "glyphType", "headingId",
+  "horizontalRule", "indentFirstLine", "indentStart", "inlineObjectElement", "inlineObjectId",
+  "italic", "link", "listId", "listProperties", "lists", "minRowHeight", "name", "namedRangeId",
+  "namedRanges", "namedStyleType", "namedStyles", "nestingLevel", "nestingLevels", "pageBreak",
+  "paragraph", "paragraphStyle", "person", "personProperties", "positionedObjectIds", "revisionId",
+  "richLink", "richLinkProperties", "sectionBreak", "startIndex", "startNumber", "strikethrough",
+  "styles", "suggestedDeletionIds", "suggestedInsertionIds", "suggestedTableCellStyleChanges",
+  "suggestedTableRowStyleChanges", "tabId", "tabProperties", "table", "tableCellStyle",
+  "tableCells", "tableHeader", "tableOfContents", "tableRowStyle", "tableRows", "tableStyle",
+  "tabs", "textRun", "textStyle", "title", "type", "underline", "uri",
 ]);
 
 /** A parsed field mask: for each field, `null` for the field whole, or the selection inside it. */
