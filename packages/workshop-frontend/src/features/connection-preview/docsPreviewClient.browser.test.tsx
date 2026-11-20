@@ -5,7 +5,11 @@ import { afterEach, expect, it } from 'vitest'
 import { prepareUiPage } from '@gadgets/workshop-shared/ui-page'
 import { DOCS_PREVIEW_BUNDLE } from './docsPreviewBundle'
 
-type Doc = { savedMarkdown: string, markdown?: string, revisionId?: string, drawing?: object, tabs?: string[], titles?: string[] }
+type Doc = {
+  savedMarkdown: string, markdown?: string, revisionId?: string, drawing?: object, tabs?: string[], titles?: string[]
+  /** The tabs that have changes waiting. */
+  edited?: string[]
+}
 
 let frame: HTMLIFrameElement | undefined
 
@@ -21,7 +25,7 @@ const text = (element: Element) => element.textContent!.replaceAll('⁠', '')
 async function draw(doc: Doc, session: { [method: string]: (...given: never[]) => Promise<unknown> } = {}) {
   const gadget = {
     listTabs: async () => (doc.tabs ?? ['t.0']).map((id, index) =>
-      ({ id, title: doc.titles?.[index] ?? `Tab ${index + 1}`, index, nestingLevel: 0 })),
+      ({ id, title: doc.titles?.[index] ?? `Tab ${index + 1}`, index, nestingLevel: 0, ...doc.edited?.includes(id) && { pending: true } })),
     getPendingChanges: async (tabId: string) => {
       if (!(doc.tabs ?? ['t.0']).includes(tabId)) throw new Error(`no tab with ID "${tabId}"`)
       // With several tabs, each reads as its own ID.
@@ -808,4 +812,13 @@ it('folds one of two headings of the same name, and keeps the keyboard on its ar
   expect(rows().map(row => [text(row), row.hidden])).toEqual(
     [['Results', false], ['First', false], ['Results', false], ['Second', true]])
   expect(frame!.contentDocument!.activeElement).toBe(arrows()[1])
+})
+
+it('opens on the first tab with changes waiting, and marks each that has them', async () => {
+  const { page } = await draw({ savedMarkdown: '', tabs: ['t.0', 't.1', 't.2'], edited: ['t.1', 't.2'] })
+  const buttons = [...frame!.contentDocument!.querySelectorAll<HTMLElement>('#outline .tab .name')]
+
+  expect(text(page)).toBe('t.1')
+  expect(buttons.map(button => [button.title, getComputedStyle(button, '::after').content])).toEqual(
+    [['Tab 1', 'none'], ['Tab 2 (has pending edits)', '""'], ['Tab 3 (has pending edits)', '""']])
 })

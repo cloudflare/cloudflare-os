@@ -65,6 +65,7 @@ const TAB_GUIDANCE = [
 const TAB_SHAPE_CHECK = `
 type ExpectedGoogleDocTab = {
   id: string; title: string; parentTabId?: string; index: number; nestingLevel: number;
+  pending?: true;
 };
 type Mutual<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
 const tabShapeIsExact: Mutual<GoogleDocTab, ExpectedGoogleDocTab> = true;

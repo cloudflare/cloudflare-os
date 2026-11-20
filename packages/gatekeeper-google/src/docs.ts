@@ -955,7 +955,17 @@ export class GoogleDocSessionImpl extends RpcTarget
   async listTabs(): Promise<GoogleDocTab[]> {
     await this.#changes.afterTurns();
     return this.#readDocument(
-      snapshot => this.#settled(snapshot, taken => this.#replay(taken).tabs.map(googleDocTabMetadata)),
+      snapshot => this.#settled(snapshot, taken => {
+        let adopted = (id: string | undefined) => this.#changes.adoptedTabId(id);
+        // The tabs getPendingChanges() would list an edit for.
+        let edited = new Set(this.#changes.pending().flatMap(({ action }) =>
+          action.type === "addTab" || googleDocActionCommitted(taken, action)
+            ? [] : [adopted(action.tabId)]));
+        return this.#replay(taken).tabs.map(tab => ({
+          ...googleDocTabMetadata(tab),
+          ...edited.has(adopted(tab.tabId)) ? { pending: true as const } : {},
+        }));
+      }),
       () => DOC_TABS_OBSERVATION);
   }
 

@@ -655,8 +655,8 @@ function renderOutline() {
     name.append(lineIcon('M6 3h5.5L15 6.5V17H6zM11.5 3v3.5H15M8.5 10.5h4M8.5 13.5h4'), make('span', '', listed.title));
     // A tab still to be added goes by an ID of this form until Google has it.
     const added = listed.id.startsWith('pending-tab-');
-    touch(name, added ? ['added'] : []);
-    name.title = added ? `${listed.title} (new, not yet added)` : listed.title;
+    const says = touch(name, added ? ['added'] : listed.pending ? ['changed'] : []);
+    name.title = added ? `${listed.title} (new, not yet added)` : says ? `${listed.title} (${says})` : listed.title;
     name.setAttribute('aria-pressed', String(on));
     name.addEventListener('click', () => {
       if (on) return void document.scrollingElement.scrollTo({ top: 0, behavior: motion() });
@@ -782,7 +782,8 @@ async function load() {
   try {
     // Listed each time: a tab can be added, discarded or renamed between two drawings. An added
     // tab is listed under another ID once Google has it, so the one shown is found by its title,
-    // where it was listed first: titles can repeat.
+    // where it was listed first: titles can repeat. With none to find, as on opening, the one
+    // shown is the first with changes waiting, which are what there is to look at.
     const at = tabs.findIndex(listed => listed.id === tabId);
     const title = tabs[at]?.title;
     const listing = gadget.listTabs();
@@ -794,7 +795,7 @@ async function load() {
     if (current !== generation) return;
     tabs = listed;
     if (!tabs.some(found => found.id === tabId)) {
-      selectTab(([tabs[at], ...tabs].find(found => found?.title === title) ?? tabs[0])?.id);
+      selectTab(([tabs[at], ...tabs].find(found => found?.title === title) ?? tabs.find(found => found.pending) ?? tabs[0])?.id);
       showSkeleton();
       pending = gadget.getPendingChanges(tabId);
     }
