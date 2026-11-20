@@ -763,6 +763,12 @@ export function formatPiecesToFetch(grid: Grid, area: SimulatedArea): SheetArea[
   return lines;
 }
 
+/** The rows of a band, by which `baseValues` finds the pieces that hold a row. */
+const ROW_BAND = 256;
+
+/** The band a row is in. */
+const bandOf = (row: number): number => Math.floor(row / ROW_BAND);
+
 /** Values of cells of the sheets Google holds, by sheet ID and zero-based row and column. */
 export type BaseCells<T> = (sheetId: number, row: number, column: number) => T | null;
 
@@ -779,24 +785,30 @@ export type BaseValues = BaseCells<SpreadsheetCellValue>;
 export function baseValues<T extends EnteredValue = SpreadsheetCellValue>(
   pieces: readonly SheetArea[], values: readonly (readonly (readonly (T | null)[])[])[],
 ): BaseCells<T> {
-  let piecesOn = new Map<number, number[]>();
-  pieces.forEach(({ sheetId }, i) => {
-    let on = piecesOn.get(sheetId);
-    if (on) on.push(i);
-    else piecesOn.set(sheetId, [i]);
+  // The pieces by the bands of `ROW_BAND` rows of their sheet they reach, in piece order, so the
+  // pieces of a row are looked for among those near it and not among every piece of the sheet.
+  let bandsOn = new Map<number, Map<number, number[]>>();
+  pieces.forEach(({ sheetId, rect }, i) => {
+    let bands = bandsOn.get(sheetId);
+    if (!bands) bandsOn.set(sheetId, bands = new Map());
+    for (let band = bandOf(rect.startRow); band <= bandOf(rect.endRow - 1); band++) {
+      let on = bands.get(band);
+      if (on) on.push(i);
+      else bands.set(band, [i]);
+    }
   });
   // The pieces that hold the row last asked for, in piece order. Every caller walks an area a row
   // at a time (`rewriteWork`, `enteredContent` and the simulated read all loop rows, then
   // columns), so a run of lookups shares one list, and a lookup costs the pieces that hold its
   // row, not every piece of its sheet: a guarded area that queued insertions cut up has hundreds.
   // A caller that asked in another order would get the same answers at the cost of a scan of the
-  // sheet's pieces a lookup.
+  // pieces near the row a lookup.
   let heldSheet: number | undefined;
   let heldRow = 0;
   let holding: number[] = [];
   return (sheetId, row, column) => {
     if (sheetId !== heldSheet || row !== heldRow) {
-      holding = (piecesOn.get(sheetId) ?? [])
+      holding = (bandsOn.get(sheetId)?.get(bandOf(row)) ?? [])
         .filter(i => values[i]?.[row - pieces[i].rect.startRow] !== undefined);
       heldSheet = sheetId;
       heldRow = row;
