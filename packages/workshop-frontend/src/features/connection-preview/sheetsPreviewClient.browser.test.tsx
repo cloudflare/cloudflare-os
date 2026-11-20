@@ -489,6 +489,19 @@ it('lists the sheets as tabs, marking the ones added, renamed, moved and deleted
   expect(tabs().map(tab => tab.getAttribute('aria-pressed'))).toEqual(['false', 'false', 'false', 'false', 'true'])
 })
 
+it('opens on a sheet of cells, not a chart that comes first, and opens no chart', async () => {
+  const chart = { id: 7, title: 'Chart', index: 0, rowCount: 0, columnCount: 0, touched: true as const }
+  const { doc, reads, tabs } = await draw({ sheets: [chart, small(1, 'Sales', 1)] }, 1100)
+
+  expect(doc.querySelector('#strip b')!.textContent).toBe('Sales')
+  expect(tabs()[0].title).toBe('Chart (has pending edits; a chart, not drawn in this preview)')
+  expect(tabs()[0].getAttribute('aria-disabled')).toBe('true')
+
+  tabs()[0].click()
+  await pause(50)
+  expect(reads).toEqual(["'Sales'!A1:C4"])
+})
+
 /**
  * The rows a window asks for, and how many cells it draws with the one row, and the `frozen`
  * columns, the sheet keeps in view.
