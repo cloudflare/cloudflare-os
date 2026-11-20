@@ -25,9 +25,13 @@ export type BindingRowProps = {
   model?: string
   /** Proposed in a chat and not accepted yet, so it is only there in that chat. */
   pending?: boolean
+  /** The gadget's title, for what taking it away asks. */
+  gadget?: string
+  /** Shows `env.NAME`, which is for those who build on the app (developer mode). */
+  showsCodeName?: boolean
   /** Takes it away from the gadget, asked for twice. Left out where it cannot be. */
   onRemove?: () => void
-  /** Gives it another name in the gadget's code. Left out where it cannot be. */
+  /** Gives it another name in the gadget's code, where the name is shown. Left out where it cannot be. */
   onRename?: (name: string) => Promise<SaveOutcome>
   /** Has a model reach another of the user's models under the same name. Left out where it cannot. */
   onChangeModel?: () => void
@@ -41,21 +45,43 @@ export type BindingRowProps = {
 
 const NOT_RENAMED = Promise.resolve<SaveOutcome>({ saved: false })
 
+/** What taking one away asks, in the words of whoever uses the app rather than its code's. */
+export const removalWords = ({ title, name, service, kind, gadget, showsCodeName }: Pick<BindingRowProps, 'title' | 'name' | 'service' | 'kind' | 'gadget' | 'showsCodeName'>) => {
+  const app = gadget ? `“${gadget}”` : 'This app'
+  const code = showsCodeName ? ` Its code loses env.${name}.` : ''
+  if (kind === 'agent') {
+    return {
+      label: 'Remove',
+      title: `Remove ${title} from ${gadget ? app : 'this app'}?`,
+      description: `${app} can’t start ${title} any more. What ${title} has already done stays in the workspace.${code}`,
+    }
+  }
+  return {
+    label: 'Disconnect',
+    title: `Disconnect ${title}?`,
+    description: `${app} can’t use ${kind === 'model' ? 'this model' : 'it'} any more, so parts of it may stop working. ${
+      kind === 'model' ? 'The model stays yours, for anything else that uses it.' : `${service ? `Your ${service.name} account` : 'The account'} stays connected, for anything else that uses it.`
+    }${code}`,
+  }
+}
+
 /**
  * One of what a gadget is bound to: the service's logo, an agent's mark or a model's brain, then
  * what it reaches over the name the code has for it and what it goes through, and, while it is pointed at or has the
  * focus, the way to take it away from the gadget, which asks first. Taking it away leaves the
  * connection in the workspace, for whatever else uses it.
  *
- * The name is renamed where it is (`onRename`), as a title is: it reads as the rest of the line
+ * The name the code has for it is only shown in developer mode (`showsCodeName`), and only then
+ * renamed where it is (`onRename`), as a title is: it reads as the rest of the line
  * until pointed at or clicked into, and Enter or leaving it keeps what was typed. It is drawn as
  * the code's name for it, in a token of its own, which a pencil in it says can be edited, and
  * which, clicked into, is a field. A name that could not be kept stays in it, with why under the line, until it is put right or Escape puts
  * the name back.
  */
-export const BindingRow = ({ title, name, service, kind, model, pending = false, onRemove, onRename, onChangeModel, onOpen, href, attention }: BindingRowProps) => {
+export const BindingRow = ({ title, name, service, kind, model, pending = false, gadget, showsCodeName = false, onRemove, onRename, onChangeModel, onOpen, href, attention }: BindingRowProps) => {
   const { field: { onValueChange, invalid, ...field }, problem } = useEditedField({ value: name, onSave: (next) => (onRename ? onRename(next) : NOT_RENAMED) })
   const [greeting, setGreeting] = useState(false)
+  const removal = removalWords({ title, name, service, kind, gadget, showsCodeName })
   const through = kind === 'agent'
     ? (model ? `Agent · thinks with ${model}` : 'Agent')
     : kind === 'model' ? 'AI model' : service?.name
@@ -83,7 +109,7 @@ export const BindingRow = ({ title, name, service, kind, model, pending = false,
             )
           : <span className="block truncate font-medium text-kumo-default">{title}</span>}
         <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-kumo-subtle">
-          {onRename ? (
+          {!showsCodeName ? null : onRename ? (
             // All of `env.NAME` is the token, and the field's surface, as it is all the name the
             // code has for it. Clicked into it is lifted onto the page's base as a field is, its
             // ring the line's rather than the bold focus ring, which would crowd a line this small.
@@ -123,12 +149,12 @@ export const BindingRow = ({ title, name, service, kind, model, pending = false,
           {onRemove && (
             <ConfirmMenu
               icon={LinkBreakIcon}
-              aria-label={`Remove ${title} from the gadget`}
+              aria-label={`${removal.label} ${title}`}
               triggerVariant="ghost"
               triggerClassName={LIST_ACTION}
-              title={`Remove ${title}?`}
-              description={`The gadget’s code loses env.${name}. The connection stays in the workspace, for whatever else uses it.`}
-              confirmLabel="Remove"
+              title={removal.title}
+              description={removal.description}
+              confirmLabel={removal.label}
               onConfirm={onRemove}
             />
           )}

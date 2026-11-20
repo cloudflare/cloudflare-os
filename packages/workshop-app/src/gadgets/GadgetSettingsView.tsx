@@ -117,6 +117,8 @@ export type GadgetSettingsViewProps = {
   agentHref?: (spawnerId: number) => string
   /** Its IDs, to copy, in developer mode. */
   ids?: readonly DeveloperId[]
+  /** Developer mode: each connection shows, and is renamed by, the name its code knows it by. */
+  showsCodeNames?: boolean
   /** What an agent it starts wants of the user, by its spawner's id: a run waiting on them, or a latest run that failed. */
   agentAttention?: (spawnerId: number) => { words: string; tone: 'warning' | 'danger' } | undefined
 }
@@ -132,7 +134,7 @@ const Message = ({ children }: { children: string }) => <p className="appears px
  * gets here: anyone it was shared with to use is told that its settings are not theirs.
  */
 export const GadgetSettingsView = ({
-  state, title, icon, description, templateUpdate, template, exports, status: exported, workspace, tab, onTabChange, onRename, problem, bindings, services, onUnbind, onRenameBinding, models, onChangeModel, onDelete, onBack, onOpenWorkspace, onOpenAgent, agentHref, agentAttention, ids = [],
+  state, title, icon, description, templateUpdate, template, exports, status: exported, workspace, tab, onTabChange, onRename, problem, bindings, services, onUnbind, onRenameBinding, models, onChangeModel, onDelete, onBack, onOpenWorkspace, onOpenAgent, agentHref, agentAttention, ids = [], showsCodeNames = false,
 }: GadgetSettingsViewProps) => {
   const made = template?.made ?? []
   const offersCreate = template !== undefined && made.length === 0
@@ -191,9 +193,11 @@ export const GadgetSettingsView = ({
       kind={binding.kind === 'service' ? undefined : binding.kind}
       model={binding.model}
       pending={binding.chatId !== undefined}
+      gadget={title}
+      showsCodeName={showsCodeNames}
       onRemove={() => onUnbind(binding.name)}
       // One waiting in a chat is that chat's until its changes are kept.
-      onRename={binding.chatId === undefined ? (next) => onRenameBinding(binding.name, next) : undefined}
+      onRename={showsCodeNames && binding.chatId === undefined ? (next) => onRenameBinding(binding.name, next) : undefined}
       // An agent opens its page, where its runs are; one waiting in a chat has none yet.
       onOpen={binding.kind === 'agent' && binding.chatId === undefined && onOpenAgent ? () => onOpenAgent(binding.target) : undefined}
       href={binding.kind === 'agent' && binding.chatId === undefined ? agentHref?.(binding.target) : undefined}
@@ -226,7 +230,9 @@ export const GadgetSettingsView = ({
             <Tabs.Panel value="connections" className="flex flex-col gap-12">
               <SettingsGroup
                 title="Connected to"
-                description="What its code can reach, by the name it knows each by. Click a name to change it."
+                description={showsCodeNames
+                  ? 'What its code can reach, by the name it knows each by. Click a name to change it.'
+                  : 'What it can use on your behalf.'}
                 plain
               >
                 {bindings.status === 'loading' && <p role="status" className="appears-late px-5 text-base text-kumo-subtle">Loading its connections…</p>}

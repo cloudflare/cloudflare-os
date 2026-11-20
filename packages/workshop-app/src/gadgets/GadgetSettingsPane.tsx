@@ -144,6 +144,7 @@ export const GadgetSettingsPane = ({ workspaceId, workpieceId, initialTitle, tab
         onOpenAgent={onOpenAgent}
         agentAttention={agentAttention}
         agentHref={agentHref}
+        showsCodeNames={devMode}
         ids={devMode ? [
           { title: 'Gadget ID', value: String(workpieceId) },
           { title: 'Workspace ID', value: workspaceId },

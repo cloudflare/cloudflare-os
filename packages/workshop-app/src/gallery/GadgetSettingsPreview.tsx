@@ -144,6 +144,7 @@ export const GadgetSettingsPreview = () => {
   const [bindings, setBindings] = useState(BINDINGS)
   const [shownState, setShownState] = useState<keyof typeof STATES>('ready')
   const [shownTemplates, setShownTemplates] = useState<keyof typeof TEMPLATES>('none')
+  const [devMode, setDevMode] = useState(false)
 
   const state: GadgetSettingsState = shownState === 'failed' ? { status: 'failed', message: 'The workspace didn’t answer.', onRetry: () => say('try again') }
     : shownState === 'noBindings' || shownState === 'bindingsFailed' ? { status: 'ready' }
@@ -154,16 +155,24 @@ export const GadgetSettingsPreview = () => {
 
   return (
     <>
-      <Section title="BindingRow (a service’s resource with its logo; one only in the chat that proposed it; a model its code calls, whose model can be changed; an agent it starts, with the model it thinks with; one with no logo, the service’s first letter; pointed at, the way to take it away, which asks first; its name renamed in place, the first refusing what is typed with why)">
-        <div className="w-full max-w-3xl">
+      <Section title="BindingRow (a service’s resource with its logo; one only in the chat that proposed it; a model its code calls, whose model can be changed; an agent it starts, with the model it thinks with; one with no logo, the service’s first letter; pointed at, the way to take it away, which asks first, in the user’s words; and in developer mode, the name its code knows each by, renamed in place, the first refusing what is typed with why)">
+        <div className="flex w-full max-w-3xl flex-col gap-4">
           <ListGroup label="Connected to">
             <ul className="flex flex-col">
-              <BindingRow title="cloudflare/gadgets" name="GITHUB" service={{ name: 'GitHub', logoUrl: '/favicon.svg' }} onRemove={() => say('GITHUB removed')} onRename={async () => ({ saved: false, problem: 'It already has env.CALENDAR. Choose another name.' })} />
-              <BindingRow title="Team calendar" name="CALENDAR" service={{ name: 'Google', color: '#ffffff' }} pending onRemove={() => say('CALENDAR removed')} />
-              <BindingRow title="Claude Haiku" name="SUMMARY_MODEL" kind="model" onRemove={() => say('SUMMARY_MODEL removed')} onChangeModel={() => say('change the model of SUMMARY_MODEL')} />
-              <BindingRow title="Triage" name="TRIAGE" kind="agent" model="Claude Sonnet" onRemove={() => say('TRIAGE removed')} />
+              <BindingRow title="cloudflare/gadgets" name="GITHUB" gadget="Tip jar" service={{ name: 'GitHub', logoUrl: '/favicon.svg' }} onRemove={() => say('GITHUB removed')} />
+              <BindingRow title="Team calendar" name="CALENDAR" gadget="Tip jar" service={{ name: 'Google', color: '#ffffff' }} pending onRemove={() => say('CALENDAR removed')} />
+              <BindingRow title="Claude Haiku" name="SUMMARY_MODEL" gadget="Tip jar" kind="model" onRemove={() => say('SUMMARY_MODEL removed')} onChangeModel={() => say('change the model of SUMMARY_MODEL')} />
+              <BindingRow title="Triage" name="TRIAGE" gadget="Tip jar" kind="agent" model="Claude Sonnet" onRemove={() => say('TRIAGE removed')} />
               <BindingRow title="Inbox" name="INBOX" kind="agent" />
               <BindingRow title="Web Search" name="SEARCH" service={{ name: 'Web Search' }} />
+            </ul>
+          </ListGroup>
+          <ListGroup label="Connected to, in developer mode">
+            <ul className="flex flex-col">
+              <BindingRow showsCodeName title="cloudflare/gadgets" name="GITHUB" gadget="Tip jar" service={{ name: 'GitHub', logoUrl: '/favicon.svg' }} onRemove={() => say('GITHUB removed')} onRename={async () => ({ saved: false, problem: 'It already has env.CALENDAR. Choose another name.' })} />
+              <BindingRow showsCodeName title="Team calendar" name="CALENDAR" gadget="Tip jar" service={{ name: 'Google', color: '#ffffff' }} pending onRemove={() => say('CALENDAR removed')} />
+              <BindingRow showsCodeName title="Claude Haiku" name="SUMMARY_MODEL" gadget="Tip jar" kind="model" onRemove={() => say('SUMMARY_MODEL removed')} onRename={async () => ({ saved: true })} onChangeModel={() => say('change the model of SUMMARY_MODEL')} />
+              <BindingRow showsCodeName title="Triage" name="TRIAGE" gadget="Tip jar" kind="agent" model="Claude Sonnet" onRemove={() => say('TRIAGE removed')} onRename={async () => ({ saved: true })} />
             </ul>
           </ListGroup>
         </div>
@@ -185,6 +194,9 @@ export const GadgetSettingsPreview = () => {
             {Object.entries(TEMPLATES).map(([key, { label }]) => (
               <Button key={key} variant={key === shownTemplates ? 'primary' : 'secondary'} onClick={() => setShownTemplates(key)}>{label}</Button>
             ))}
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            <Button variant={devMode ? 'primary' : 'secondary'} onClick={() => setDevMode((on) => !on)}>Developer mode</Button>
           </div>
           {/* Wider than the gallery's column, as a page is. */}
           <div data-preview="gadget-settings" className="relative left-1/2 flex h-[56rem] w-[min(60rem,100vw-4rem)] shrink-0 -translate-x-1/2 rounded-3xl bg-kumo-base ring-1 ring-kumo-line">
@@ -241,6 +253,7 @@ export const GadgetSettingsPreview = () => {
                   say(`env.${name} removed`)
                 })
               }}
+              showsCodeNames={devMode}
               onDelete={() => say('deleted the gadget')}
               onBack={() => say('back to the gadget')}
               onOpenWorkspace={() => say('open the workspace')}
