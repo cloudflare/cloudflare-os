@@ -433,6 +433,35 @@ it('steps through the changes, and says what one did to the cell pointed at or p
   expect(cell('C2').classList.contains('picked')).toBe(true)
 })
 
+it('names, of a batch that formats several ranges, what it set on the cell pointed at', async () => {
+  const { doc, cell } = await draw({
+    sheets: [{
+      id: 1, title: 'Sales', index: 0, rowCount: 4, columnCount: 3, touched: true,
+      formats: [{ bold: true }, { italic: true }],
+      cells: {
+        A1: { text: 'Region', format: 0, formatted: true }, B2: { text: '5', format: 1, formatted: true },
+        C4: { text: 'Moved', format: 1, formatted: true },
+      },
+    }],
+    pending: { Sales: {
+      changes: [{ id: 3, type: 'updateSpreadsheet', changes: [
+        { op: 'formatCells', range: "'Sales'!A1:C1", format: { bold: true } },
+        { op: 'formatCells', range: 'Sales!B2', format: { italic: true } },
+      ] }],
+      areas: ['A1:C1', 'B2', 'C4'].map(range => ({ change: 3, op: 'formatCells', range })),
+    } },
+  })
+  const set = (name: string) => {
+    cell(name).focus()
+    return doc.querySelector('#peek p')!.textContent
+  }
+
+  expect(set('A1')).toBe('Formatting set: bold')
+  expect(set('B2')).toBe('Formatting set: italic')
+  // A cell that later changes have moved out of every range the batch named is told all it set.
+  expect(set('C4')).toBe('Formatting set: bold, italic')
+})
+
 const small = (id: number, title: string, index: number, more: Partial<Sheet> = {}): Sheet =>
   ({ id, title, index, rowCount: 4, columnCount: 3, cells: { A1: { text: `${title} A1` } }, ...more })
 
