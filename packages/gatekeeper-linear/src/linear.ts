@@ -63,6 +63,7 @@ import {
   exchangeAuthCode,
   refreshAccessToken,
   revokeToken,
+  linearUpstream,
   type LinearOAuthGrant,
   type RawIssue,
   type RawUser,
@@ -749,8 +750,9 @@ export class UserAccount extends DurableObject<Env> {
     // only in the answers it decides.
     const organizations = new Map<string | undefined, Promise<string>>();
     // Linear answers for one resource per request, so each is cached on its own and a few are asked
-    // at a time; a failure starts no more, but keeps what the others learned.
-    const answers = await mapLimit([...subresources.entries()], SUBRESOURCE_ACCESS_CONCURRENCY,
+    // at a time; a failure starts no more, but keeps what the others learned. The requests are
+    // counted summed, there being one per resource.
+    const answers = await linearUpstream.summed(() => mapLimit([...subresources.entries()], SUBRESOURCE_ACCESS_CONCURRENCY,
       ([index, subresource]) => this.#access.cached<boolean>(subresource,
         allowed => allowed ? SUBRESOURCE_ACCESS_ALLOWED_TTL_MS : SUBRESOURCE_ACCESS_DENIED_TTL_MS,
         async () => {
@@ -778,7 +780,7 @@ export class UserAccount extends DurableObject<Env> {
             }
             throw error;
           }
-        }));
+        })));
     if (this.ctx.storage.kv.get<string>("credentialsId") !== installed) {
       throw new Error("This collaborator's Linear connection changed while their access was being checked.");
     }
