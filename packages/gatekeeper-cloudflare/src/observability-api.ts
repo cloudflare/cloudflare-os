@@ -17,6 +17,8 @@ import type {
   CloudflareObservabilityValue,
   CloudflareObservabilityValueType,
 } from "./types.js";
+import type { AnsweredWith, CallAnswer, RetryPolicy } from "@gadgets/gatekeeper-kit/upstream";
+import { CLOUDFLARE_API_BASE, cloudflareUpstream } from "./cloudflare-upstream.js";
 import { obsContext } from "./observability.js";
 import { VENDOR_ID } from "./vendor.js";
 import { assertCloudflareAccountId } from "./resources.js";
@@ -134,16 +136,14 @@ export function scopeObservabilityFilters(
   return filters;
 }
 
-const API_BASE = "https://api.cloudflare.com/client/v4";
 const DATASETS = ["cloudflare-workers"];
 const DEFAULT_TIMEFRAME_MS = 60 * 60 * 1000;
 const MAX_TIMEFRAME_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_RESULT_LIMIT = 1000;
 const DEFAULT_RESULT_LIMIT = 100;
-const REQUEST_TIMEOUT_MS = 30_000;
 const MAX_RETRY_DELAY_MS = 2_000;
-// The default pause before the single retry, used whenever the provider gave no usable `Retry-After`.
+// The pause before the second send, used whenever the provider gave no usable `Retry-After`.
 const RETRY_DELAY_MS = 250;
 const TRACE_PAGE_SIZE = 100;
 const MAX_TRACE_PAGES = 3;
@@ -159,13 +159,11 @@ const logger = obsContext.createLogger({
   component: "gatekeeper.cloudflare.observability-api", vendorId: VENDOR_ID,
 });
 
-type QueryResult = {
-  statistics: CloudflareObservabilityStatistics;
-  events?: unknown;
-  invocations?: unknown;
-  traces?: unknown;
-  calculations?: unknown;
-};
+/** The views of the `query` endpoint, each the member of its result that holds the view. */
+type QueryView = "events" | "invocations" | "traces" | "calculations";
+
+/** One answer of the `query` endpoint: its statistics, and what its view's parser read. */
+type QueryResult<T> = { statistics: CloudflareObservabilityStatistics; view: T };
 
 type QueryOptions = CloudflareObservabilityDiscoveryOptions & {
   cursor?: string;
@@ -272,6 +270,11 @@ function providerError(data: unknown, status: number): CloudflareObservabilityAp
       return new CloudflareObservabilityApiError(status, messages.join("; "), codes, true);
     }
   }
+  return statusError(status);
+}
+
+/** The failure of an answer that names none of its own, or whose body was not read: its status. */
+function statusError(status: number): CloudflareObservabilityApiError {
   return new CloudflareObservabilityApiError(
     status,
     `Cloudflare API request failed with status ${status}.`,
@@ -283,8 +286,8 @@ function providerError(data: unknown, status: number): CloudflareObservabilityAp
  * allows. Retrying a 429 sooner than `Retry-After` only guarantees a second 429, so we fail fast and
  * let the caller decide instead of burning the request.
  */
-function retryDelay(response: Response): number | null {
-  const value = response.headers.get("retry-after");
+function retryDelay(headers: Headers): number | null {
+  const value = headers.get("retry-after");
   if (!value) return RETRY_DELAY_MS;
   const seconds = Number(value);
   const requested = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(value) - Date.now();
@@ -293,9 +296,126 @@ function retryDelay(response: Response): number | null {
   return Math.max(requested, 0);
 }
 
-async function wait(milliseconds: number): Promise<void> {
-  if (milliseconds === 0) return;
-  await new Promise(resolve => setTimeout(resolve, milliseconds));
+/**
+ * When a telemetry request is sent a second time, in place of the upstream's default. Every
+ * request is a read, though a POST, so each is marked `idempotent`, and is sent twice at most:
+ *
+ * | The first send                                                 | Sent again | After         |
+ * |----------------------------------------------------------------|------------|---------------|
+ * | got no answer: a timeout or a transport failure                | yes        | up to 250 ms  |
+ * | timed out while the body of its answer was read, any status    | yes        | up to 250 ms  |
+ * | the same, its `Retry-After` asking for 2 s or less             | yes        | what it asks  |
+ * | the same, its `Retry-After` asking for longer                  | no         |               |
+ * | 429, 502, 503 or 504 with no `Retry-After`, or one unreadable  | yes        | 250 ms        |
+ * | 429, 502, 503 or 504 whose `Retry-After` asks for 2 s or less  | yes        | what it asks  |
+ * | 429, 502, 503 or 504 whose `Retry-After` asks for longer       | no         |               |
+ * | any other status, and a 2xx that reports a failure             | no         |               |
+ *
+ * The timeout rows are the client's own for an idempotent request, the second of them for every
+ * status through `telemetryUpstream`.
+ * @param retried Told the status of an answer the request is sent again after, whose body is not
+ * read.
+ * @returns The policy.
+ */
+function telemetryRetry(retried: (status: number) => void): RetryPolicy {
+  return {
+    attempts: 2,
+    baseDelayMs: RETRY_DELAY_MS,
+    maxDelayMs: MAX_RETRY_DELAY_MS,
+    retryable: (status, _request, headers) => {
+      if (!RETRYABLE_STATUSES.has(status) || retryDelay(headers) === null) return false;
+      retried(status);
+      return true;
+    },
+    delayMs: response => retryDelay(response.headers) ?? undefined,
+  };
+}
+
+/**
+ * `cloudflareUpstream` for the telemetry endpoints. The client asks again for an answer whose body
+ * the attempt's timeout cut off where `succeeded` says its status is a success, and a telemetry
+ * request asks again whatever that status is: so every status is one here, and `countedByStatus`
+ * counts each attempt.
+ */
+const telemetryUpstream = cloudflareUpstream.with({ succeeded: () => true });
+
+/**
+ * How an attempt of a telemetry request is counted by its status, as the client counts one where
+ * `succeeded` is its default: a 429 as a refusal for its rate, and any other status from 300 up as
+ * an error. Undefined, which counts a success, for a status below 300.
+ */
+function countedByStatus({ status }: AnsweredWith): CallAnswer | undefined {
+  if (status < 300) return undefined;
+  return status === 429 ? { outcome: "refused", reason: "rate" } : { outcome: "error", reason: "http" };
+}
+
+/** The telemetry endpoints, each a verb of `CLOUDFLARE_ROUTES`. */
+type TelemetryPath = "query" | "keys" | "values";
+
+// One answer of a telemetry endpoint: its result as `T`, the failure it reports, or what the
+// reading of its result as `T` threw. Neither failure is thrown where it is found, so that the
+// upstream counts the answer by what was read of it.
+type TelemetryAnswer<T> =
+  | { result: T; rejection?: undefined; malformed?: undefined }
+  | { result?: undefined; rejection: CloudflareObservabilityApiError; malformed?: undefined }
+  | { result?: undefined; rejection?: undefined; malformed: { thrown: unknown } };
+
+/** Reads one answer. Throws for a body that cannot be read, and for a success with no result. */
+async function readAnswer(response: Response): Promise<TelemetryAnswer<unknown>> {
+  const data = await readJson(response);
+  if (!response.ok || !isRecord(data) || data.success !== true) {
+    return { rejection: providerError(data, response.status) };
+  }
+  if (!("result" in data) || data.result === undefined || data.result === null) {
+    throw invalidResponse();
+  }
+  return { result: data.result };
+}
+
+/**
+ * How an answer that was read is counted: a failure reported inside a 2xx is an error of the API,
+ * with Cloudflare's first numeric code, and so is a result inside one that the method it was asked
+ * for could not read. Any other answer is counted by its status.
+ */
+function countedAs(answer: TelemetryAnswer<unknown>, { status }: AnsweredWith): CallAnswer | undefined {
+  if (status < 200 || status >= 300) return undefined;
+  if (answer.malformed !== undefined) return { outcome: "error", reason: "api" };
+  if (answer.rejection === undefined) return undefined;
+  return { outcome: "error", reason: "api", providerCode: answer.rejection.codes[0] };
+}
+
+/** The typed failure of a request that got no answer, or whose answer could not be read. */
+function failureOf(caught: unknown): CloudflareObservabilityApiError {
+  if (isTimeout(caught)) {
+    return new CloudflareObservabilityApiError(504, "Cloudflare Workers Observability request timed out.");
+  }
+  // A connection reset or DNS failure is not an `AbortError` and not a typed provider error, so
+  // normalize it here rather than letting a raw TypeError reach callers that switch on status.
+  return caught instanceof CloudflareObservabilityApiError
+    ? caught
+    : new CloudflareObservabilityApiError(502, "Could not reach the Cloudflare Workers Observability API.");
+}
+
+/** Logs the failure of one attempt of a telemetry request, and returns it for the caller to throw. */
+function logged(
+  path: TelemetryPath, error: CloudflareObservabilityApiError,
+): CloudflareObservabilityApiError {
+  // The provider's own message is deliberately absent here: Cloudflare can echo a
+  // caller-supplied filter value back in an error, and filter values are kept out of the audit
+  // trail for exactly that reason (see `summarizeFilter`). Cloudflare's numeric codes identify
+  // the failure without carrying caller text. Our own messages are safe, so a timeout or
+  // transport failure is still logged in full.
+  //
+  // The discriminator is provenance, not `codes.length`: Cloudflare can return a message with
+  // no numeric code at all, and keying on the codes would have logged exactly the text this is
+  // meant to withhold. When a provider error carries no codes, the status is all that is left,
+  // and that is the fail-closed answer.
+  logger.warn("Workers Observability request failed", {
+    event: "observability.request.failed", path, status: error.status,
+    ...(error.codes.length > 0 ? { providerCodes: error.codes.join(",") } : {}),
+    ...(error.fromProvider ? {} : { error }),
+  });
+  return error;
 }
 
 export class CloudflareObservabilityApi {
@@ -309,70 +429,63 @@ export class CloudflareObservabilityApi {
     this.accountId = assertCloudflareAccountId(accountId);
   }
 
-  async #request(path: string, body: unknown): Promise<unknown> {
+  /**
+   * One POST to a telemetry endpoint, through `telemetryUpstream` under `telemetryRetry`. The
+   * token is read once and sent with every attempt. Each attempt that fails is logged where it
+   * fails, so that a failure the second send recovers from leaves its line too: one that got no
+   * answer by the upstream's `thrown`, one whose answer is not read before the second send by the
+   * retry rule, with its status alone, and one whose answer was read, or could not be, here.
+   * `shape` reads the result for the method that asked for it: what it throws is thrown to that
+   * method as it is, unlogged, and the answer is counted an error of the API.
+   */
+  async #request<T>(path: TelemetryPath, body: unknown, shape: (result: unknown) => T): Promise<T> {
     const token = await this.getToken();
     if (!token) throw new CloudflareObservabilityApiError(401, "Cloudflare credentials have expired.");
 
-    const url = `${API_BASE}/accounts/${encodeURIComponent(this.accountId)}` +
+    const url = `${CLOUDFLARE_API_BASE}/accounts/${encodeURIComponent(this.accountId)}` +
       `/workers/observability/telemetry/${path}`;
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      let response: Response | undefined;
-      try {
-        response = await fetch(url, {
-          method: "POST",
-          headers: {
-            "Authorization": `Bearer ${token}`,
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-          },
-          body: JSON.stringify(body),
-          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-        });
-        const data = await readJson(response);
-        if (!response.ok || !isRecord(data) || data.success !== true) {
-          throw providerError(data, response.status);
+    // What the last attempt logged here threw, so that the failure the request ends with is
+    // logged once.
+    let reported: unknown;
+    const report = (caught: unknown) => {
+      reported = caught;
+      return logged(path, failureOf(caught));
+    };
+    let answer: TelemetryAnswer<T>;
+    try {
+      answer = await telemetryUpstream.with({ thrown: error => void report(error) }).read(url, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${token}`,
+          "Content-Type": "application/json",
+          "Accept": "application/json",
+        },
+        body: JSON.stringify(body),
+        // A query changes nothing at the provider, so a second send is safe.
+        idempotent: true,
+        retry: telemetryRetry(status => void logged(path, statusError(status))),
+        answer: countedByStatus,
+      }, async response => {
+        let read: TelemetryAnswer<unknown>;
+        try {
+          read = await readAnswer(response);
+        } catch (caught) {
+          report(caught);
+          throw caught;
         }
-        if (!("result" in data) || data.result === undefined || data.result === null) {
-          throw invalidResponse();
+        if (read.rejection !== undefined || read.malformed !== undefined) return read;
+        try {
+          return { result: shape(read.result) };
+        } catch (thrown) {
+          return { malformed: { thrown } };
         }
-        return data.result;
-      } catch (caught) {
-        const timedOut = isTimeout(caught);
-        // A connection reset or DNS failure is not an `AbortError` and not a typed provider error, so
-        // normalize it here rather than letting a raw TypeError reach callers that switch on status.
-        const error = timedOut
-          ? new CloudflareObservabilityApiError(504, "Cloudflare Workers Observability request timed out.")
-          : caught instanceof CloudflareObservabilityApiError
-            ? caught
-            : new CloudflareObservabilityApiError(
-              502, "Could not reach the Cloudflare Workers Observability API.");
-        // The provider's own message is deliberately absent here: Cloudflare can echo a
-        // caller-supplied filter value back in an error, and filter values are kept out of the audit
-        // trail for exactly that reason (see `summarizeFilter`). Cloudflare's numeric codes identify
-        // the failure without carrying caller text. Our own messages are safe, so a timeout or
-        // transport failure is still logged in full.
-        //
-        // The discriminator is provenance, not `codes.length`: Cloudflare can return a message with
-        // no numeric code at all, and keying on the codes would have logged exactly the text this is
-        // meant to withhold. When a provider error carries no codes, the status is all that is left,
-        // and that is the fail-closed answer.
-        logger.warn("Workers Observability request failed", {
-          event: "observability.request.failed", path, status: error.status, attempt,
-          ...(error.codes.length > 0 ? { providerCodes: error.codes.join(",") } : {}),
-          ...(error.fromProvider ? {} : { error }),
-        });
-        if (attempt === 2) throw error;
-        // A timeout or transport failure gets one fast retry; a provider status only retries when it
-        // is retryable and its own backoff hint fits the budget. Timeouts are checked first because a
-        // body-read timeout arrives with an already-successful status, which is not itself retryable.
-        const delay = timedOut || response === undefined
-          ? RETRY_DELAY_MS
-          : RETRYABLE_STATUSES.has(response.status) ? retryDelay(response) : null;
-        if (delay === null) throw error;
-        await wait(delay);
-      }
+      }, countedAs);
+    } catch (caught) {
+      throw caught === reported ? failureOf(caught) : report(caught);
     }
-    throw new Error("Unreachable Workers Observability retry state.");
+    if (answer.rejection) throw logged(path, answer.rejection);
+    if (answer.malformed) throw answer.malformed.thrown;
+    return answer.result;
   }
 
   /**
@@ -406,13 +519,16 @@ export class CloudflareObservabilityApi {
     return { events: scoped, dropped: scoped.length !== events.length };
   }
 
-  async #query(
-    view: "events" | "invocations" | "traces" | "calculations",
-    options?: QueryOptions,
-  ): Promise<QueryResult> {
+  /**
+   * One query of a view. `parseView` reads the member of the result that holds the view, inside
+   * the request, so that a result it refuses is counted as one the request failed on.
+   */
+  async #query<T>(
+    view: QueryView, options: QueryOptions | undefined, parseView: (value: unknown) => T,
+  ): Promise<QueryResult<T>> {
     const limit = validatedLimit(options?.limit);
     const includeSeries = options?.includeSeries ?? options?.granularity !== undefined;
-    const result = await this.#request("query", {
+    return this.#request("query", {
       queryId: `gadgets-${view}`,
       view,
       // Keeps this query out of the user's saved-query history; it is a read, not a saved view.
@@ -449,15 +565,10 @@ export class CloudflareObservabilityApi {
         },
         limit,
       },
+    }, result => {
+      if (!isRecord(result)) throw invalidResponse();
+      return { statistics: parseStatistics(result.statistics), view: parseView(result[view]) };
     });
-    if (!isRecord(result)) throw invalidResponse();
-    return {
-      statistics: parseStatistics(result.statistics),
-      events: result.events,
-      invocations: result.invocations,
-      traces: result.traces,
-      calculations: result.calculations,
-    };
   }
 
   /**
@@ -482,12 +593,12 @@ export class CloudflareObservabilityApi {
     if (this.#requiresDerivedDiscovery(options)) {
       return deriveKeys(await this.#discoverySample(options), limit);
     }
-    return parseKeys(await this.#request("keys", {
+    return this.#request("keys", {
       ...timeframe(options?.timeframe),
       datasets: DATASETS,
       needle: options?.search,
       limit,
-    }));
+    }, parseKeys);
   }
 
   async listValues(
@@ -500,19 +611,19 @@ export class CloudflareObservabilityApi {
     if (this.#requiresDerivedDiscovery(options)) {
       return deriveValues(await this.#discoverySample(options), field, type, limit);
     }
-    return parseValues(await this.#request("values", {
+    return this.#request("values", {
       timeframe: timeframe(options?.timeframe),
       datasets: DATASETS,
       needle: options?.search,
       key: field,
       type,
       limit,
-    }));
+    }, parseValues);
   }
 
   async #listEventsPage(options?: CloudflareObservabilityEventsQuery): Promise<EventsPageResult> {
-    const result = await this.#query("events", options);
-    const { count, events: rawEvents } = parseEventsContainer(result.events);
+    const result = await this.#query("events", options, parseEventsContainer);
+    const { count, events: rawEvents } = result.view;
     const { events, dropped } = this.#scopeEvents(rawEvents);
     return {
       page: {
@@ -542,8 +653,8 @@ export class CloudflareObservabilityApi {
   async listInvocations(
     options?: CloudflareObservabilityInvocationsQuery,
   ): Promise<CloudflareObservabilityInvocationsPage> {
-    const result = await this.#query("invocations", options);
-    const groups = parseInvocationsContainer(result.invocations);
+    const result = await this.#query("invocations", options, parseInvocationsContainer);
+    const groups = result.view;
     // The provider returns a request-ID map, so iteration order is not a page order. Take the oldest
     // event as the cursor: results run newest-first, so that is the page's continuation point.
     const oldest = groups
@@ -564,8 +675,8 @@ export class CloudflareObservabilityApi {
     if (this.workerName) {
       throw new Error("Trace summaries are available only from an account-scoped observability binding.");
     }
-    const result = await this.#query("traces", options);
-    const traces = parseTraceSummaries(result.traces);
+    const result = await this.#query("traces", options, parseTraceSummaries);
+    const traces = result.view;
     return {
       traces,
       nextCursor: traces.at(-1)?.traceId,
@@ -574,6 +685,15 @@ export class CloudflareObservabilityApi {
   }
 
   async getTrace(
+    traceId: string,
+    options?: CloudflareObservabilityTraceOptions,
+  ): Promise<CloudflareObservabilityTrace> {
+    // The pages of one trace are summed: one metric point per kind of answer.
+    return cloudflareUpstream.summed(() => this.#getTrace(traceId, options));
+  }
+
+  /** Reads a trace's events page by page, to their end, the page cap or the time budget. */
+  async #getTrace(
     traceId: string,
     options?: CloudflareObservabilityTraceOptions,
   ): Promise<CloudflareObservabilityTrace> {
@@ -650,10 +770,7 @@ export class CloudflareObservabilityApi {
   async calculate(
     options: CloudflareObservabilityCalculationQuery,
   ): Promise<CloudflareObservabilityCalculationResult> {
-    const result = await this.#query("calculations", options);
-    return {
-      calculations: parseCalculations(result.calculations),
-      statistics: result.statistics,
-    };
+    const result = await this.#query("calculations", options, parseCalculations);
+    return { calculations: result.view, statistics: result.statistics };
   }
 }

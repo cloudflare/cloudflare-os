@@ -10,7 +10,6 @@ export type CloudflareObservabilityFields = {
   providerCodes: string;
   status: number;
   statusText: string;
-  attempt: number;
   totalCount: number;
   vendorId: string;
 };

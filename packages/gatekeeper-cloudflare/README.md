@@ -120,6 +120,12 @@ account picker's substring match also stays client-side: `name` is the only docu
 filter and whether it matches exactly or by substring is not specified, so pushing it down would trade
 a visible truncation for an invisible one.
 
+Every request to Cloudflare is sent through `cloudflareUpstream` and counted as a
+[subservice metric](../observability/README.md#subservice-calls) under the source
+`gatekeeper.cloudflare.api`, named by the route tree in
+[`src/cloudflare-upstream.ts`](src/cloudflare-upstream.ts). A 2xx whose envelope reports a failure, or
+whose result is missing or not what the request reads, is counted an error with that status.
+
 ## Setting Up Cloudflare OAuth Credentials
 
 You need a Cloudflare dashboard OAuth client (client id + secret). The dashboard OAuth endpoints and

@@ -17,6 +17,7 @@ import {
   AUTH_SCOPES, BILLING_SCOPES, persistentScopesForResources,
 } from "./oauth";
 import { fetchIdentity } from "./cloudflare-api";
+import { cloudflareUpstream } from "./cloudflare-upstream";
 import {
   OBSERVABILITY_RESOURCES,
   ACCOUNT_OBSERVABILITY_RESOURCE,
@@ -401,12 +402,15 @@ export class UserAccount extends DurableObject<Env> {
       allowed.push(...accountIds.map(() => false));
     } else {
       // Asked one at a time, so a long list doesn't trip Cloudflare's per-user rate limit. Each
-      // probe reads the token live, so an answer is stored only under the grant that gave it.
-      for (const accountId of accountIds) {
-        allowed.push(await this.#access.cached(accountId,
-          granted => granted ? TELEMETRY_ACCESS_ALLOWED_TTL_MS : TELEMETRY_ACCESS_DENIED_TTL_MS,
-          () => canReadTelemetry(() => this.getAccessToken(), accountId)));
-      }
+      // probe reads the token live, so an answer is stored only under the grant that gave it. The
+      // probes of one check are summed: one metric point per kind of answer, however long the list.
+      await cloudflareUpstream.summed(async () => {
+        for (const accountId of accountIds) {
+          allowed.push(await this.#access.cached(accountId,
+            granted => granted ? TELEMETRY_ACCESS_ALLOWED_TTL_MS : TELEMETRY_ACCESS_DENIED_TTL_MS,
+            () => canReadTelemetry(() => this.getAccessToken(), accountId)));
+        }
+      });
     }
     if (this.#grantGeneration !== generation) {
       throw new Error("This Cloudflare connection was reconnected while its access was being checked.");
