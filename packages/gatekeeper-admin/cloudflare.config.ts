@@ -20,6 +20,9 @@ export const wrangler = {
     // The Worker bundles the Admin API's schema, which is generated and not committed. Wrangler's
     // build command cannot depend on a task, so it writes the schema itself when it is stale.
     command: `node ../api-schema/scripts/generate.ts --if-stale && ${CAPNWEB_VALIDATE_BUILD.command}`,
+    // The schema's sources (the Admin API and ADMIN_AGENT_KINDS) are workshop-shared's, so an edit
+    // there rebuilds it under `pnpm dev-server`. Not api-schema/generated, which the build writes.
+    watch_dir: ["src", "../workshop-shared/src"],
   },
   rules: textModules(["**/*.txt"]),
 } satisfies WranglerExtras;
