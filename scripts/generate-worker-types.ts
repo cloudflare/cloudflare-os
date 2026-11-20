@@ -14,6 +14,9 @@
  * Cloudflare.Env & { ... }`), not in the generated file.
  *
  * `--check` is non-mutating: writes a sibling temp file, compares, deletes it.
+ *
+ * Names given on the command line limit the run to those packages, by their directory under
+ * packages/: `pnpm types:generate gatekeeper-github`.
  */
 import { spawnSync } from "node:child_process";
 import { readdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -172,11 +175,18 @@ async function generateOne(pkgDir: string): Promise<void> {
   }
 }
 
-const dirs = await packageDirs();
-if (dirs.length === 0) {
+const all = await packageDirs();
+if (all.length === 0) {
   console.error("no packages with wrangler.jsonc found");
   process.exit(1);
 }
+const named = process.argv.slice(2).filter((arg) => !arg.startsWith("--")).map((name) => join(packagesDir, name));
+const unknown = named.filter((dir) => !all.includes(dir));
+if (unknown.length > 0) {
+  console.error(`no wrangler.jsonc in ${unknown.map((dir) => relative(root, dir)).join(", ")}`);
+  process.exit(1);
+}
+const dirs = named.length > 0 ? named : all;
 
 let failed = 0;
 for (const dir of dirs) {
