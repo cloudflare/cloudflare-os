@@ -415,9 +415,9 @@ export function drawer(drawing, width, lists) {
       }
     }
     // The paragraph's end has a look of its own, which only an empty paragraph is the height of:
-    // after anything else it is set as that is.
+    // after anything else it is set as that is, on the line: raised or lowered text holds none.
     const looked = runs.filter(run => run.look);
-    element.append(make('span', lookClass(looked.at(-1)?.look ?? end), '\u2060'));
+    element.append(make('span', lookClass({ ...looked.at(-1)?.look ?? end, baseline: undefined }), '\u2060'));
     // Its first line and its last are taken to be as tall as its first run and its last make them.
     const height = run => {
       const size = (run?.look ?? end).fontSize;

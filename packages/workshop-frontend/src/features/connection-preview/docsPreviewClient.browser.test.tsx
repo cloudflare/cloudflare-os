@@ -686,6 +686,18 @@ it('makes no link of a web address that is in a pending change', async () => {
   expect(links.map(link => look(link).cursor)).toEqual(['pointer', 'text', 'text'])
 })
 
+it('gives a paragraph of raised text alone the line its size makes', async () => {
+  const raised = { ...ARIAL, baseline: 'super' }
+  const { blocks } = await draw({
+    savedMarkdown: '2\n\nplain\n\nplain\n',
+    drawing: drawing([paragraph(0, [{ text: '2', look: 1, at: 0 }]), paragraph(2, 'plain'), paragraph(4, 'plain')],
+      { textLooks: [ARIAL, raised] }),
+  })
+
+  const [first, second, third] = blocks().map(block => block.getBoundingClientRect().top)
+  expect(second - first).toBeCloseTo(third - second, 1)
+})
+
 it('draws a table a pending change writes as the text it is, and one the document holds as a table', async () => {
   const held = ['<table>', '  <tr>', '    <td><p>Held</p></td>', '  </tr>', '</table>'].join('\n')
   const written = held.replace('Held', 'Written')
