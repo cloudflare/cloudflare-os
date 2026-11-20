@@ -6349,8 +6349,8 @@ function ChatInterface({
                               {msg.attachments && msg.attachments.length > 0 && (
                                 <ChatAttachmentGrid
                                   attachments={msg.attachments}
-                                  loadContent={(attachment) =>
-                                    readChatAttachment(overseer, msg.chatId, attachment)}
+                                  loadContent={(attachment, signal) =>
+                                    readChatAttachment(overseer, msg.chatId, attachment, signal)}
                                 />
                               )}
                               {/* A message that is only attachments has no bubble. */}

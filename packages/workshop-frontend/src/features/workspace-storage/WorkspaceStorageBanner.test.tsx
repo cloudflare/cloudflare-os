@@ -29,7 +29,7 @@ const bannerText = (storageBytes: number): string => {
 
 describe("WorkspaceStorageBanner", () => {
   it.each([
-    [WORKSPACE_STORAGE_WARNING_BYTES, "is filling up", "From 8 GB, new files over 1 MB can't be stored."],
+    [WORKSPACE_STORAGE_WARNING_BYTES, "is filling up", "New files over 1 MB are stored only while the workspace stays within 8 GB."],
     [WORKSPACE_FILE_QUOTA_BYTES, "is nearly full", "New files over 1 MB, such as attachments, can't be stored."],
     [WORKSPACE_TURN_QUOTA_BYTES, "is full", "Agents can't run here"],
   ])("says what stops working at %d bytes", (storageBytes, state, consequence) => {

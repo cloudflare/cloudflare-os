@@ -39,8 +39,13 @@ const buildPdf = (text: string, mediaBox = "0 0 612 792"): Uint8Array => {
   return encoder.encode(pdf);
 };
 
-const ref = (name: string, mimeType: string, content?: Uint8Array): ChatAttachmentRef =>
-  ({ id: name, name, mimeType, size: 2048, ...(content ? { content } : {}) });
+const ref = (name: string, mimeType: string, content?: Uint8Array, size = 2048): ChatAttachmentRef =>
+  ({ id: name, name, mimeType, size, ...(content ? { content } : {}) });
+
+/** A 1×1 PNG. */
+const PNG = Uint8Array.from(atob(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg=="),
+  (character) => character.charCodeAt(0));
 
 let host: HTMLDivElement | undefined;
 let root: Root | undefined;
@@ -54,7 +59,7 @@ const mount = async (
   attachments: ChatAttachmentRef[],
   files: Record<string, Uint8Array | Error | Promise<Uint8Array>>,
 ) => {
-  const loadContent = vi.fn<(attachment: ChatAttachmentRef) => Promise<Uint8Array>>(async (attachment) => {
+  const loadContent = vi.fn<(attachment: ChatAttachmentRef, signal: AbortSignal) => Promise<Uint8Array>>(async (attachment) => {
     const file = files[attachment.id];
     if (file instanceof Promise) return file;
     if (!file || file instanceof Error) throw file ?? new Error("missing");
@@ -240,4 +245,30 @@ it("says so when a file cannot be loaded or read, and retries on reopening", asy
   await expect.element(page.getByRole("heading", { name: "Recovered" })).toBeVisible();
   // Each card's thumbnail, the first opening, and the retry; the second file's is shared.
   expect(loadContent).toHaveBeenCalledTimes(4);
+});
+
+// A message carries only small images' bytes; the card of a larger one fetches it to draw.
+it("fetches the image of a card whose message doesn't carry it", async () => {
+  const loadContent = await mount([ref("photo.png", "image/png", undefined, 6 * 1024 * 1024)],
+    { "photo.png": PNG });
+  await expect.poll(() => host!.querySelector("img")?.getAttribute("src")).toMatch(/^blob:/);
+  expect(loadContent).toHaveBeenCalledOnce();
+});
+
+it("offers a file over 25 MB for download instead of fetching it to preview", async () => {
+  const loadContent = await mount([ref("forecast.xlsx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", undefined, 80 * 1024 * 1024)], {});
+  await userEvent.click(page.getByRole("button", { name: "Preview forecast.xlsx" }));
+  await expect.element(page.getByText("This file is too large to preview.")).toBeVisible();
+  expect(loadContent).not.toHaveBeenCalled();
+});
+
+it("aborts its fetches when it goes", async () => {
+  const loadContent = await mount([ref("notes.txt", "text/plain")], { "notes.txt": new Promise(() => {}) });
+  await expect.poll(() => loadContent.mock.calls.length).toBe(1);
+  const [, signal] = loadContent.mock.calls[0];
+  expect(signal.aborted).toBe(false);
+  await act(async () => root!.unmount());
+  root = undefined;
+  expect(signal.aborted).toBe(true);
 });

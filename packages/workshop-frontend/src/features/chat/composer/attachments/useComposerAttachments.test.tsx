@@ -113,6 +113,50 @@ describe("useComposerAttachments", () => {
     expect(attachments).toHaveLength(0);
   });
 
+  it("stops an upload when its card is removed", async () => {
+    const original = testState.uploadBlob;
+    // A file that is still being sent when its card goes.
+    testState.uploadBlob = { size: 4, stream: () => new ReadableStream<Uint8Array>() } as Blob;
+    let streamError: unknown;
+    const uploadBlob = vi.fn<Overseer["uploadBlob"]>(async (upload) => {
+      if (upload instanceof Uint8Array) throw new Error("expected a streamed upload");
+      try {
+        await upload.stream.getReader().read();
+      } catch (error) {
+        streamError = error;
+      }
+      throw new Error("The upload was abandoned.");
+    });
+    const overseer = { uploadBlob } as unknown as RpcStub<Overseer>;
+    const onError = vi.fn<(message: string) => void>();
+    let attachments: ComposerAttachment[] = [];
+    let addFiles: ((files: File[]) => Promise<void>) | undefined;
+    let removeAttachment: ((id: string) => void) | undefined;
+    vi.stubGlobal("crypto", { randomUUID: () => `local-${++testState.nextId}` });
+    const Harness = () => {
+      const attachmentState = useComposerAttachments({ getOverseer: () => overseer, onError });
+      attachments = attachmentState.attachments;
+      addFiles = attachmentState.addFiles;
+      removeAttachment = attachmentState.removeAttachment;
+      return null;
+    };
+    try {
+      container = document.createElement("div");
+      root = createRoot(container);
+      await act(async () => root!.render(<Harness />));
+      await act(async () => addFiles!([new File(["one"], "one.txt", { type: "text/plain" })]));
+      await waitFor(() => uploadBlob.mock.calls.length === 1);
+
+      act(() => removeAttachment!(attachments[0].id));
+      await waitFor(() => streamError !== undefined);
+      expect((streamError as Error).name).toBe("AbortError");
+      expect(attachments).toHaveLength(0);
+      expect(onError).not.toHaveBeenCalled();
+    } finally {
+      testState.uploadBlob = original;
+    }
+  });
+
   it("ignores a blob upload that finishes after the composer unmounts", async () => {
     let finishUpload!: (oid: string) => void;
     const uploadBlob = vi.fn<Overseer["uploadBlob"]>(

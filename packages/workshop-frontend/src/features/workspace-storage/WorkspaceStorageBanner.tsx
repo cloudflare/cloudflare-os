@@ -31,7 +31,8 @@ export const WorkspaceStorageBanner = ({ storageBytes }: { storageBytes: number 
       : {
         variant: "alert" as const,
         title: "This workspace's storage is filling up",
-        description: `${used} From ${WORKSPACE_FILE_QUOTA_BYTES / 1e9} GB, new files over 1 MB can't be stored.`,
+        description: `${used} New files over 1 MB are stored only while the workspace stays within ` +
+          `${WORKSPACE_FILE_QUOTA_BYTES / 1e9} GB.`,
       };
   return <Banner icon={<WarningIcon />} {...notice} />;
 };
