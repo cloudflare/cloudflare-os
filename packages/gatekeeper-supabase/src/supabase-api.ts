@@ -1,15 +1,19 @@
 import "cloudflare:workers";
+import type { CallAnswer, UpstreamRequestInit } from "@gadgets/gatekeeper-kit/upstream";
+import { SUPABASE_API_ORIGIN, supabaseUpstream, type SupabaseTokenOperation } from "./supabase-upstream";
 
 /**
  * Thin wrapper around the Supabase Management API (https://api.supabase.com) plus helpers for the
  * OAuth2 authorization-code flow. All access is performed with an OAuth bearer access token.
+ *
+ * Every request goes through `supabaseUpstream` (`supabase-upstream.ts`), which gives each attempt
+ * its timeout, follows no redirect, sends a GET again after a transient failure (a 429, 502, 503
+ * or 504, a network failure or a timeout) and counts every attempt as a subservice call.
  */
 
-const API_BASE_URL = "https://api.supabase.com";
-const TOKEN_URL = `${API_BASE_URL}/v1/oauth/token`;
-const REVOKE_URL = `${API_BASE_URL}/v1/oauth/revoke`;
+const TOKEN_URL = `${SUPABASE_API_ORIGIN}/v1/oauth/token`;
+const REVOKE_URL = `${SUPABASE_API_ORIGIN}/v1/oauth/revoke`;
 const USER_AGENT = "Cloudflare-Gadgets";
-const REQUEST_TIMEOUT_MS = 30_000;
 // Cap on a single read-only query result, to protect the calling Gadget (and the RPC channel) from
 // unbounded payloads. Measured in characters of the JSON response body. Callers paginate past this.
 const MAX_QUERY_RESULT_BYTES = 16 * 1024 * 1024;
@@ -123,13 +127,32 @@ function basicAuthHeader(clientId: string, clientSecret: string): string {
   return `Basic ${btoa(`${clientId}:${clientSecret}`)}`;
 }
 
+// Throws what Supabase answered in place of a success, as the error callers act on.
+async function throwApiError(response: Response): Promise<never> {
+  const parsed = await parseBody(response);
+  throw new SupabaseApiError(response.status, errorMessage(response.status, response.statusText, parsed), parsed);
+}
+
+// How a token answer with a successful status is counted: one that holds no grant is an error of
+// the API, which the caller throws.
+function countGrant(parsed: unknown): CallAnswer | undefined {
+  const grant = typeof parsed === "object" && parsed !== null
+    && "access_token" in parsed && "refresh_token" in parsed
+    && Boolean(parsed.access_token) && Boolean(parsed.refresh_token);
+  return grant ? undefined : { outcome: "error", reason: "api" };
+}
+
+// Posts a form to the token endpoint, once: a second send would spend a code or a refresh token
+// that the first may have used.
 async function postTokenForm(
+  operation: Extract<SupabaseTokenOperation, "token.exchange" | "token.refresh">,
   body: URLSearchParams,
   clientId: string,
   clientSecret: string,
 ): Promise<SupabaseOAuthGrant> {
-  const response = await fetch(TOKEN_URL, {
+  const parsed = await supabaseUpstream.read(TOKEN_URL, {
     method: "POST",
+    operation,
     headers: {
       Accept: "application/json",
       "Content-Type": "application/x-www-form-urlencoded",
@@ -137,13 +160,10 @@ async function postTokenForm(
       Authorization: basicAuthHeader(clientId, clientSecret),
     },
     body: body.toString(),
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  });
-
-  const parsed = await parseBody(response);
-  if (!response.ok) {
-    throw new SupabaseApiError(response.status, errorMessage(response.status, response.statusText, parsed), parsed);
-  }
+  }, async response => {
+    if (!response.ok) return await throwApiError(response);
+    return await parseBody(response);
+  }, countGrant);
 
   const result = parsed as {
     access_token?: string;
@@ -171,6 +191,7 @@ export async function exchangeAuthCode(
   redirectUri: string,
 ): Promise<SupabaseOAuthGrant> {
   return await postTokenForm(
+    "token.exchange",
     new URLSearchParams({
       grant_type: "authorization_code",
       code,
@@ -188,6 +209,7 @@ export async function refreshAccessToken(
   clientSecret: string,
 ): Promise<SupabaseOAuthGrant> {
   return await postTokenForm(
+    "token.refresh",
     new URLSearchParams({
       grant_type: "refresh_token",
       refresh_token: refreshToken,
@@ -203,19 +225,64 @@ export async function revokeRefreshToken(
   clientId: string,
   clientSecret: string,
 ): Promise<void> {
-  const response = await fetch(REVOKE_URL, {
+  const operation: SupabaseTokenOperation = "token.revoke";
+  const response = await supabaseUpstream.request(REVOKE_URL, {
     method: "POST",
+    operation,
     headers: {
       "Content-Type": "application/json",
       "User-Agent": USER_AGENT,
     },
     body: JSON.stringify({ client_id: clientId, client_secret: clientSecret, refresh_token: refreshToken }),
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    // A token Supabase does not know is one that is revoked already: no failure of the revocation.
+    answer: ({ status }) => status === 404 ? { outcome: "success" } : undefined,
   });
-  if (!response.ok && response.status !== 404) {
-    const parsed = await parseBody(response);
-    throw new SupabaseApiError(response.status, errorMessage(response.status, response.statusText, parsed), parsed);
+  if (!response.ok && response.status !== 404) await throwApiError(response);
+}
+
+// What `SupabaseApi` reads of a successful answer: its value, the refusal of a result over the
+// size cap, or what the method's `read` threw on a body that is not what the method asked for.
+// The refusal is the gatekeeper's own, of an answer Supabase gave, so it is thrown once the call
+// is counted as the success it was. What `read` threw is thrown once the call is counted an error.
+type Answer = { value: unknown } | { refusal: Error } | { unread: unknown };
+
+// A success whose body the method that asked for it refused: an error of the API.
+const UNREAD: CallAnswer = { outcome: "error", reason: "api" };
+
+// The rows of a listing Supabase answers as a list. An answer that is none is refused within the
+// request, so that it is counted an error and no reader of the rows meets it; an empty list is a
+// listing.
+function listedRows(body: unknown): unknown[] {
+  if (!Array.isArray(body)) throw new SupabaseApiError(502, "Supabase answered a listing with no list.");
+  return body;
+}
+
+// The rows of a read-only query's result: a list, which may be empty. A body that is none says
+// nothing of what the query found, and is refused within the request, not taken for zero rows.
+function queryRows(body: unknown): unknown[] {
+  if (!Array.isArray(body)) throw new SupabaseApiError(502, "Supabase answered a query with no list of rows.");
+  return body;
+}
+
+// A count of characters as megabytes, rounded.
+function mb(n: number): number {
+  return Math.round(n / (1024 * 1024));
+}
+
+// The refusal of a query result of more than `maxBytes` characters.
+function tooMuchData(text: string, maxBytes: number): Error {
+  let rowCount = "many";
+  try {
+    const sample = JSON.parse(text);
+    if (Array.isArray(sample)) rowCount = String(sample.length);
+  } catch {
+    // ignore; just report bytes
   }
+  return new Error(
+    `Query returned too much data (~${mb(text.length)} MB across ${rowCount} rows). ` +
+    `Re-run with a LIMIT (and OFFSET to page) or select fewer columns; results must stay ` +
+    `under ${mb(maxBytes)} MB.`,
+  );
 }
 
 /**
@@ -231,6 +298,9 @@ export class SupabaseApi {
     this.#getToken = getToken;
   }
 
+  // Sends one request and answers the body of a success: as it is, or what `read` makes of it
+  // where a method gives one. `read` runs within the request: a body it throws on is counted as
+  // an error of the API, the request is not sent again for it, and what it threw is thrown.
   async #request<T>(
     method: string,
     path: string,
@@ -241,9 +311,12 @@ export class SupabaseApi {
       // When set, reject (without fully deserializing twice) a success body larger than this many
       // characters. Used to bound query result size.
       maxBytes?: number;
+      // The request's retry policy, in place of the upstream's: `null` sends it once.
+      retry?: UpstreamRequestInit["retry"];
     } = {},
+    read?: (body: unknown) => unknown,
   ): Promise<T> {
-    const url = new URL(path, API_BASE_URL);
+    const url = new URL(path, SUPABASE_API_ORIGIN);
     for (const [key, value] of Object.entries(options.query ?? {})) {
       if (value === undefined) continue;
       for (const item of Array.isArray(value) ? value : [value]) {
@@ -251,60 +324,54 @@ export class SupabaseApi {
       }
     }
 
-    const headers = new Headers({
+    const headers: Record<string, string> = {
       Accept: options.acceptText ? "text/plain, application/json" : "application/json",
       "User-Agent": USER_AGENT,
-      Authorization: `Bearer ${await this.#getToken()}`,
-    });
+    };
 
-    let body: BodyInit | undefined;
+    let body: string | undefined;
     if (options.body !== undefined) {
-      headers.set("Content-Type", "application/json");
+      headers["Content-Type"] = "application/json";
       body = JSON.stringify(options.body);
     }
 
-    const response = await fetch(url.toString(), {
+    const { maxBytes } = options;
+    const answer = await supabaseUpstream.read<Answer>(url.toString(), {
       method,
       headers,
       body,
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
-
-    if (!response.ok) {
-      const parsed = await parseBody(response);
-      throw new SupabaseApiError(response.status, errorMessage(response.status, response.statusText, parsed), parsed);
-    }
-
-    if (options.maxBytes !== undefined) {
-      // Read the body as text so we can size-check it without serializing the parsed result twice.
-      const text = await response.text();
-      if (text.length > options.maxBytes) {
-        let rowCount = "many";
-        try {
-          const sample = JSON.parse(text);
-          if (Array.isArray(sample)) rowCount = String(sample.length);
-        } catch {
-          // ignore; just report bytes
-        }
-        const mb = (n: number) => Math.round(n / (1024 * 1024));
-        throw new Error(
-          `Query returned too much data (~${mb(text.length)} MB across ${rowCount} rows). ` +
-          `Re-run with a LIMIT (and OFFSET to page) or select fewer columns; results must stay ` +
-          `under ${mb(options.maxBytes)} MB.`,
-        );
+      retry: options.retry,
+      // Asked before every send, so a request sent again carries the token of that moment.
+      authorize: async () => ({ Authorization: `Bearer ${await this.#getToken()}` }),
+    }, async response => {
+      if (!response.ok) return await throwApiError(response);
+      let value: unknown;
+      if (maxBytes === undefined) {
+        value = await parseBody(response);
+      } else {
+        // Read the body as text so we can size-check it without serializing the parsed result twice.
+        const text = await response.text();
+        if (text.length > maxBytes) return { refusal: tooMuchData(text, maxBytes) };
+        value = text.length === 0 ? undefined : JSON.parse(text);
       }
-      return (text.length === 0 ? undefined : JSON.parse(text)) as T;
-    }
-
-    return (await parseBody(response)) as T;
+      if (!read) return { value };
+      try {
+        return { value: read(value) };
+      } catch (unread) {
+        return { unread };
+      }
+    }, parsed => "unread" in parsed ? UNREAD : undefined);
+    if ("refusal" in answer) throw answer.refusal;
+    if ("unread" in answer) throw answer.unread;
+    return answer.value as T;
   }
 
   async listOrganizations(): Promise<OrganizationResponse[]> {
-    return await this.#request<OrganizationResponse[]>("GET", "/v1/organizations");
+    return await this.#request<OrganizationResponse[]>("GET", "/v1/organizations", {}, listedRows);
   }
 
   async listProjects(): Promise<ProjectResponse[]> {
-    return await this.#request<ProjectResponse[]>("GET", "/v1/projects");
+    return await this.#request<ProjectResponse[]>("GET", "/v1/projects", {}, listedRows);
   }
 
   async getProject(ref: string): Promise<ProjectResponse> {
@@ -323,25 +390,28 @@ export class SupabaseApi {
         body: parameters && parameters.length > 0 ? { query, parameters } : { query },
         maxBytes: MAX_QUERY_RESULT_BYTES,
       },
+      queryRows,
     );
     return toRows(result);
   }
 
   /**
    * Runs a (potentially mutating) SQL statement against the project database and returns any rows
-   * it produces (e.g. from `RETURNING`).
+   * it produces (e.g. from `RETURNING`). The statement is sent once, whatever comes of it: a second
+   * send could apply a write twice.
    */
   async runQuery(ref: string, query: string, parameters?: unknown[]): Promise<SqlRow[]> {
     const result = await this.#request<unknown>(
       "POST",
       `/v1/projects/${encodeURIComponent(ref)}/database/query`,
-      { body: parameters && parameters.length > 0 ? { query, parameters } : { query } },
+      { body: parameters && parameters.length > 0 ? { query, parameters } : { query }, retry: null },
     );
     return toRows(result);
   }
 
   async listFunctions(ref: string): Promise<FunctionResponse[]> {
-    return await this.#request<FunctionResponse[]>("GET", `/v1/projects/${encodeURIComponent(ref)}/functions`);
+    return await this.#request<FunctionResponse[]>(
+      "GET", `/v1/projects/${encodeURIComponent(ref)}/functions`, {}, listedRows);
   }
 
   async getFunctionBody(ref: string, slug: string): Promise<string> {
@@ -357,6 +427,8 @@ export class SupabaseApi {
     return await this.#request<StorageBucketResponse[]>(
       "GET",
       `/v1/projects/${encodeURIComponent(ref)}/storage/buckets`,
+      {},
+      listedRows,
     );
   }
 
@@ -365,6 +437,7 @@ export class SupabaseApi {
       "GET",
       `/v1/projects/${encodeURIComponent(ref)}/health`,
       { query: { services } },
+      listedRows,
     );
   }
 }
