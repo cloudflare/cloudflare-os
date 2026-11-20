@@ -62,17 +62,23 @@ export const ConnectionPreviewPane = (
   const drawn = (entry: ActionLogEntry): entry is Extract<ActionLogEntry, { type: 'action' }> =>
     entry.type === 'action' && entry.gatekeeperId === gatekeeperId && itemOf(entry)?.id === item
 
+  // A change to the connection itself that, once approved, may leave an item out of its pane's
+  // reach, as a move of it does: its next read says so.
+  const displaces = (entry: ActionLogEntry) => item !== undefined && entry.type === 'action' &&
+    entry.gatekeeperId === gatekeeperId && !itemOf(entry) && entry.state === 'approved'
+
   const [refreshSignal, setRefreshSignal] = useState(0)
   const refreshTimer = useRef<number | undefined>(undefined)
   // Entries from before the pane opened are skipped: its first read already shows them.
   useNewActionEntries(overseer, entry => {
     // Actions only: the preview's own reads are logged on this connection as observations, so
     // refreshing on those would never stop.
-    if (!drawn(entry)) return
-    // Creating the resource restarts its connection on the real one, which ends this pane's
-    // session: the pane is opened anew on what was created.
-    if (entry.creation && entry.state === 'approved') return onCreated(previewOf(gatekeeperId, entry, preview))
-    if (entry.creation && entry.state === 'rejected') return onDiscarded()
+    if (drawn(entry)) {
+      // Creating the resource restarts its connection on the real one, which ends this pane's
+      // session: the pane is opened anew on what was created.
+      if (entry.creation && entry.state === 'approved') return onCreated(previewOf(gatekeeperId, entry, preview))
+      if (entry.creation && entry.state === 'rejected') return onDiscarded()
+    } else if (!displaces(entry)) return
     window.clearTimeout(refreshTimer.current)
     refreshTimer.current = window.setTimeout(() => setRefreshSignal(n => n + 1), REFRESH_DEBOUNCE_MS)
   })
