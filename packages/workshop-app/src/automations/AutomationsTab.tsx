@@ -3,7 +3,9 @@ import { asideItemFor, type AsideItem } from '@/aside/asideItems'
 import { useChatLibrary } from '@/aside/useChatLibrary'
 import { AutomationRow } from '@/blocks/AutomationRow'
 import { ListGroup } from '@/blocks/ListGroup'
+import { LightningIcon } from '@phosphor-icons/react'
 import { Button } from '@/components/Button'
+import { EmptyState, type EmptyStateAction } from '@/components/EmptyState'
 import { useNow } from '@/hooks/useNow'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
@@ -21,8 +23,8 @@ export type AutomationsTabProps = {
   onOpenItem: (item: AsideItem) => void
   /** Where an item opens, for its row to link to so that it can be opened in another tab. */
   itemHref?: (item: AsideItem) => string
-  /** What the tab says while there is nothing to list. */
-  empty: string
+  /** What the tab says while there is nothing to list, under its title, and what it offers to do then. */
+  empty: { description: string; action?: EmptyStateAction }
 }
 
 const GROUPS = [
@@ -85,7 +87,16 @@ export const AutomationsTab = ({ workspaceId, chatId, filter, onOpenItem, itemHr
 
   return (
     <>
-      {shown.length === 0 && <p className="px-4 text-center text-base text-pretty text-kumo-subtle">{empty}</p>}
+      {shown.length === 0 && (
+        <EmptyState
+          size="section"
+          tinted
+          icon={LightningIcon}
+          title="Nothing runs by itself yet"
+          description={empty.description}
+          actions={empty.action && [empty.action]}
+        />
+      )}
       {GROUPS.map(({ kind, label }) => {
         const rows = shown.filter((automation) => automation.kind === kind)
         if (rows.length === 0) return null

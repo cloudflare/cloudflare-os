@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
-import { CaretRightIcon, ChatCircleIcon, CirclesFourIcon, UserPlusIcon } from '@phosphor-icons/react'
+import { CaretRightIcon, ChatCircleIcon, CirclesFourIcon, PlusIcon, UserPlusIcon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
 import type { OutputSummary } from '@gadgets/workshop-shared/api'
 import type { AsideItem } from '@/aside/asideItems'
 import { runsWantingAttention, type Agent } from '@/automations/agents'
+import { AGENT_DRAFT, AUTOMATION_DRAFT } from '@/automations/startDrafts'
 import { AgentsTab } from '@/automations/AgentsTab'
 import { AutomationsTab } from '@/automations/AutomationsTab'
 import { useWorkspaceAgents } from '@/automations/useWorkspaceAgents'
@@ -73,7 +74,8 @@ export type WorkspacePaneProps = {
   outputHref?: (output: OutputSummary) => string
   /** Goes to an output's settings, from its row's more menu. */
   onOpenSettings?: (output: OutputSummary) => void
-  onNewChat: () => void
+  /** Starts a chat in the workspace, with `draft` written in its composer where something is to be asked for, to be finished before it is sent. */
+  onNewChat: (draft?: string) => void
   /** The workspace's address, which inviting people copies and its link lets anyone in to. Left out, nobody is invited from here. */
   link?: string
   /** Leaves the page once the workspace has been deleted, or removed from the viewer's list. */
@@ -231,17 +233,21 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
               onOpenRun={openRun}
               runHref={chatHref}
               now={now}
+              onAddAgent={() => onNewChat(AGENT_DRAFT)}
             />
           </Tabs.Panel>
           <Tabs.Panel value="library" className="flex flex-col gap-8">
-            <WorkspaceLibraryList workspaceId={workspaceId} onOpenItem={onOpenItem} itemHref={itemHref} outputHref={outputHref} onOpenSettings={onOpenSettings} />
+            <WorkspaceLibraryList workspaceId={workspaceId} onOpenItem={onOpenItem} itemHref={itemHref} outputHref={outputHref} onOpenSettings={onOpenSettings} onMake={() => onNewChat()} />
           </Tabs.Panel>
           <Tabs.Panel value="automations" className="flex flex-col gap-8">
             <AutomationsTab
               workspaceId={workspaceId}
               onOpenItem={onOpenItem}
               itemHref={itemHref}
-              empty="Nothing runs here by itself yet. Ask in a chat for something to happen on a schedule, or when something arrives."
+              empty={{
+                description: 'Ask in a chat for something to happen on a schedule, like a morning summary, or whenever something arrives, like a new email.',
+                action: { label: 'Add automation', icon: PlusIcon, variant: 'primary', onClick: () => onNewChat(AUTOMATION_DRAFT) },
+              }}
             />
           </Tabs.Panel>
           <Tabs.Panel value="members" className="flex flex-col gap-8">

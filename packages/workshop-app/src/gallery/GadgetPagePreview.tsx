@@ -62,8 +62,8 @@ export const GadgetPagePreview = () => {
           viewingCode={viewingCode}
         >
           {viewingCode
-            ? <PaneNotice icon={CodeIcon} title="Its code" description="What runs Slides shows here, in its place." />
-            : <PaneNotice icon={PresentationIcon} title="Slides" description="The gadget runs here." />}
+            ? <PaneNotice onTint icon={CodeIcon} title="Its code" description="What runs Slides shows here, in its place." />
+            : <PaneNotice onTint icon={PresentationIcon} title="Slides" description="The gadget runs here." />}
         </SidePane>
       </div>
       <p role="status" className="w-full text-sm text-kumo-subtle">{report}</p>

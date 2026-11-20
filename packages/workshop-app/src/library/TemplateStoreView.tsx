@@ -1,10 +1,12 @@
-import { CaretLeftIcon, CompassIcon } from '@phosphor-icons/react'
+import { CaretLeftIcon, CompassIcon, LayoutIcon } from '@phosphor-icons/react'
 import type { OutputSummary } from '@gadgets/workshop-shared/api'
 import { ListToolbar } from '@/blocks/ListToolbar'
+import { NoMatches } from '@/blocks/NoMatches'
 import { PromoCarousel } from '@/blocks/PromoCarousel'
 import { TemplateCard } from '@/blocks/TemplateCard'
 import { Button } from '@/components/Button'
 import { CardGrid } from '@/components/CardGrid'
+import { EmptyState } from '@/components/EmptyState'
 import { HeaderBubble } from '@/components/HeaderBubble'
 import type { ListOrder } from '@/components/listView'
 import { ScrollRow } from '@/components/ScrollRow'
@@ -95,9 +97,13 @@ export const TemplateStoreView = ({ tab, onTabChange, templates, status, list, s
   const { search, order, filter } = list.controls
   const toolbar = <ListToolbar noun="templates" search={search} filter={filter} {...(front ? {} : { order })} searchExpanded={!narrow} at={narrow ? 'bottom' : 'top'} />
 
+  // With none there is nothing to look through: no tabs or controls, and the empty state in the middle.
+  const nothing = !status && templates.length === 0
+
   return (
     <PageLayout
-      footer={narrow ? toolbar : undefined}
+      fill={nothing}
+      footer={narrow && !nothing ? toolbar : undefined}
       header={(
         <>
           {/* The way back to the library, then the templates, which is where this is. */}
@@ -120,101 +126,106 @@ export const TemplateStoreView = ({ tab, onTabChange, templates, status, list, s
         </>
       )}
     >
-      <div className="mx-auto flex w-full max-w-3xl flex-col pt-2 pb-8">
-        {/* Over the tabs, as the page's own rather than one of theirs. */}
-        {templates.length > 0 && (
-          <div className="pb-6">
-            <PromoCarousel
-              title="Start from what your organization already uses"
-              description="Templates your team has made and shared, ready to set up in a workspace of your own."
-              items={promoted(templates).slice(0, PROMOTED).map((template) => ({
-                key: template.id,
-                title: template.metadata.title,
-                kind: templateType(template).noun,
-                icon: templateType(template).icon,
-                href: templateHref?.(template),
-                onSelect: () => onOpenTemplate(template),
-              }))}
-            />
-          </div>
-        )}
-        {/* Over the search, as the library's are: the tab is what is looked through, and the search narrows it. */}
-        <Tabs value={current} onValueChange={onTabChange} tabs={tabs} aria-label="Templates" scrolls align="start" className="gap-4">
-          {/* The one panel, whichever tab it is of, so that what is typed in the search is not let go of from one to the next. */}
-          <Tabs.Panel value={current} className="flex flex-col gap-6">
-            {!narrow && toolbar}
-            {status && 'loading' in status && <p role="status" className="appears-late px-4 text-base text-kumo-subtle">Loading templates…</p>}
-            {status && 'failed' in status && (
-              <p className="flex items-center gap-3 px-4 text-base text-kumo-subtle">
-                Couldn’t load templates: {status.failed}
-                <Button variant="ghost" onClick={status.onRetry}>Try again</Button>
-              </p>
-            )}
-            {!status && templates.length === 0 && <p className="px-4 text-center text-base text-kumo-subtle">No templates yet.</p>}
-            {front && templates.length > 0 && (
-              <div className="flex flex-col gap-8">
-                <Shelf title="Most used" more={{ label: 'See all', 'aria-label': 'See all, the most used first', onSelect: seeAllIn('used') }}>
-                  <ScrollRow aria-label="Most used templates">
-                    {mostUsed(templates).slice(0, HIGHLIGHTS).map((template) => {
-                      const { title, description } = template.metadata
-                      const { noun, icon } = templateType(template)
-                      return (
-                        // Three of them to the page's width, with the start of the next to say there are more.
-                        <div key={template.id} className="flex w-60 flex-col *:flex-1">
-                          <TemplateCard
-                            title={title}
-                            description={description}
-                            kind={noun}
-                            icon={icon}
-                            creator={templateCreator(template)}
-                            connections={templateServices(template).map(({ name }) => name)}
-                            previewUrl={template.screenshotUrl}
-                            starred={starred.has(template.id)}
-                            onStarredChange={(on) => onStarsChange(withStar(stars, template.id, on))}
-                            href={templateHref?.(template)}
-                            onSelect={() => onOpenTemplate(template)}
-                          />
-                        </div>
-                      )
-                    })}
-                  </ScrollRow>
-                </Shelf>
-                <Shelf title="Recently added" more={{ label: 'See all', 'aria-label': 'See all, the latest first', onSelect: seeAllIn('recent') }}>
-                  <TemplateEntries templates={recentlyAdded(templates).slice(0, LATEST)} {...entry} />
-                </Shelf>
-                {kinds.length > 1 && kinds.map(({ type, templates: ofKind }) => (
-                  <Shelf
-                    key={type.id}
-                    title={type.plural}
-                    more={ofKind.length > OF_A_KIND ? { label: 'See all', 'aria-label': `See all ${type.plural.toLowerCase()}`, onSelect: () => onTabChange(type.id) } : undefined}
-                  >
-                    <TemplateEntries templates={ofKind.slice(0, OF_A_KIND)} {...entry} />
+      {nothing ? (
+        <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col pt-2 pb-8">
+          <EmptyState
+            icon={LayoutIcon}
+            title="No templates yet"
+            description="Templates are apps shared to start from, by you or others in this deployment. Make one from an app of yours with Create template."
+            actions={[{ label: 'Back to library', icon: CaretLeftIcon, onClick: onBack }]}
+          />
+        </div>
+      ) : (
+        <div className="mx-auto flex w-full max-w-3xl flex-col pt-2 pb-8">
+          {/* Over the tabs, as the page's own rather than one of theirs. */}
+          {templates.length > 0 && (
+            <div className="pb-6">
+              <PromoCarousel
+                title="Start from what your organization already uses"
+                description="Templates your team has made and shared, ready to set up in a workspace of your own."
+                items={promoted(templates).slice(0, PROMOTED).map((template) => ({
+                  key: template.id,
+                  title: template.metadata.title,
+                  kind: templateType(template).noun,
+                  icon: templateType(template).icon,
+                  href: templateHref?.(template),
+                  onSelect: () => onOpenTemplate(template),
+                }))}
+              />
+            </div>
+          )}
+          {/* Over the search, as the library's are: the tab is what is looked through, and the search narrows it. */}
+          <Tabs value={current} onValueChange={onTabChange} tabs={tabs} aria-label="Templates" scrolls align="start" className="gap-4">
+            {/* The one panel, whichever tab it is of, so that what is typed in the search is not let go of from one to the next. */}
+            <Tabs.Panel value={current} className="flex flex-col gap-6">
+              {!narrow && toolbar}
+              {status && 'loading' in status && <p role="status" className="appears-late px-4 text-base text-kumo-subtle">Loading templates…</p>}
+              {status && 'failed' in status && (
+                <p className="flex items-center gap-3 px-4 text-base text-kumo-subtle">
+                  Couldn’t load templates: {status.failed}
+                  <Button variant="ghost" onClick={status.onRetry}>Try again</Button>
+                </p>
+              )}
+              {front && templates.length > 0 && (
+                <div className="flex flex-col gap-8">
+                  <Shelf title="Most used" more={{ label: 'See all', 'aria-label': 'See all, the most used first', onSelect: seeAllIn('used') }}>
+                    <ScrollRow aria-label="Most used templates">
+                      {mostUsed(templates).slice(0, HIGHLIGHTS).map((template) => {
+                        const { title, description } = template.metadata
+                        const { noun, icon } = templateType(template)
+                        return (
+                          // Three of them to the page's width, with the start of the next to say there are more.
+                          <div key={template.id} className="flex w-60 flex-col *:flex-1">
+                            <TemplateCard
+                              title={title}
+                              description={description}
+                              kind={noun}
+                              icon={icon}
+                              creator={templateCreator(template)}
+                              connections={templateServices(template).map(({ name }) => name)}
+                              previewUrl={template.screenshotUrl}
+                              starred={starred.has(template.id)}
+                              onStarredChange={(on) => onStarsChange(withStar(stars, template.id, on))}
+                              href={templateHref?.(template)}
+                              onSelect={() => onOpenTemplate(template)}
+                            />
+                          </div>
+                        )
+                      })}
+                    </ScrollRow>
                   </Shelf>
-                ))}
-              </div>
-            )}
-            {!front && templates.length > 0 && shown.length === 0 && (
-              <p className="flex flex-wrap items-center justify-center gap-x-3 px-4 text-center text-base text-kumo-subtle">
-                No templates match.
-                <Button variant="ghost" onClick={list.showAll}>Show all</Button>
-              </p>
-            )}
-            {!front && shown.length > 0 && (
-              // Another tab or order is another list, cut to rather than moved to card by card.
-              <div key={`${current}:${list.order.id}`}>
-                <CardGrid
-                  wide
-                  groups={list.arrange(shown).map(({ key, label, entries }) => ({
-                    key,
-                    label,
-                    cards: entries.map(({ value }) => ({ key: value.id, content: <TemplateEntry template={value} {...entry} /> })),
-                  }))}
-                />
-              </div>
-            )}
-          </Tabs.Panel>
-        </Tabs>
-      </div>
+                  <Shelf title="Recently added" more={{ label: 'See all', 'aria-label': 'See all, the latest first', onSelect: seeAllIn('recent') }}>
+                    <TemplateEntries templates={recentlyAdded(templates).slice(0, LATEST)} {...entry} />
+                  </Shelf>
+                  {kinds.length > 1 && kinds.map(({ type, templates: ofKind }) => (
+                    <Shelf
+                      key={type.id}
+                      title={type.plural}
+                      more={ofKind.length > OF_A_KIND ? { label: 'See all', 'aria-label': `See all ${type.plural.toLowerCase()}`, onSelect: () => onTabChange(type.id) } : undefined}
+                    >
+                      <TemplateEntries templates={ofKind.slice(0, OF_A_KIND)} {...entry} />
+                    </Shelf>
+                  ))}
+                </div>
+              )}
+              {!front && templates.length > 0 && shown.length === 0 && <NoMatches noun="templates" onShowAll={list.showAll} />}
+              {!front && shown.length > 0 && (
+                // Another tab or order is another list, cut to rather than moved to card by card.
+                <div key={`${current}:${list.order.id}`}>
+                  <CardGrid
+                    wide
+                    groups={list.arrange(shown).map(({ key, label, entries }) => ({
+                      key,
+                      label,
+                      cards: entries.map(({ value }) => ({ key: value.id, content: <TemplateEntry template={value} {...entry} /> })),
+                    }))}
+                  />
+                </div>
+              )}
+            </Tabs.Panel>
+          </Tabs>
+        </div>
+      )}
     </PageLayout>
   )
 }

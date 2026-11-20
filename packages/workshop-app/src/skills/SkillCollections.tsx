@@ -1,9 +1,10 @@
 import { useState } from 'react'
-import { PlusIcon } from '@phosphor-icons/react'
+import { PlusIcon, StackIcon } from '@phosphor-icons/react'
 import { AddCollectionDialog } from '@/blocks/AddCollectionDialog'
 import { SettingsGroup } from '@/blocks/SettingsGroup'
 import { SkillRow } from '@/blocks/SkillRow'
 import { Button } from '@/components/Button'
+import { EmptyState } from '@/components/EmptyState'
 import { ScrollArea } from '@/components/ScrollArea'
 import { useApi } from '@/rpc/ApiContext'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
@@ -39,10 +40,20 @@ export const SkillCollections = ({ onOpenCollection, collectionHref }: SkillColl
       title="Collections"
       description="Skills kept together. A collection is shared with people as one."
       plain
-      action={<Button icon={PlusIcon} onClick={() => setMaking(true)}>New collection</Button>}
+      // The empty state has it while there are none.
+      action={state.collections.length > 0 ? <Button icon={PlusIcon} onClick={() => setMaking(true)}>New collection</Button> : undefined}
     >
       {state.collections.length === 0
-        ? <p className="px-5 text-center text-base text-kumo-subtle">No collections yet. Your first skill makes one.</p>
+        ? (
+            <EmptyState
+              size="section"
+              tinted
+              icon={StackIcon}
+              title="No collections yet"
+              description="A collection keeps skills together, to share with people as one. Your first skill makes one."
+              actions={[{ label: 'New collection', icon: PlusIcon, onClick: () => setMaking(true) }]}
+            />
+          )
         : (
             <ScrollArea className="max-h-[min(30rem,60dvh)] rounded-3xl bg-kumo-tint">
               <ul aria-label="Collections" className="flex flex-col p-1.5">

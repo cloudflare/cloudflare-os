@@ -1,12 +1,14 @@
-import { CirclesFourIcon, CompassIcon, LayoutIcon, PlusIcon } from '@phosphor-icons/react'
+import { CirclesFourIcon, ClockCounterClockwiseIcon, CompassIcon, LayoutIcon, PlusIcon } from '@phosphor-icons/react'
 import type { BlueprintOutput, OutputSummary } from '@gadgets/workshop-shared/api'
 import { LibraryCard } from '@/blocks/LibraryCard'
 import type { LibraryMoreActions } from '@/blocks/LibraryMoreMenu'
 import { LibraryRow } from '@/blocks/LibraryRow'
 import { ListToolbar } from '@/blocks/ListToolbar'
+import { NoMatches } from '@/blocks/NoMatches'
 import { Button } from '@/components/Button'
 import { CardGrid } from '@/components/CardGrid'
 import { DropdownMenu } from '@/components/DropdownMenu'
+import { EmptyState } from '@/components/EmptyState'
 import { FormatIcon } from '@/components/FormatIcon'
 import { GroupedList } from '@/components/GroupedList'
 import { HeaderBubble } from '@/components/HeaderBubble'
@@ -185,10 +187,13 @@ export const LibraryView = ({
       : <Button variant="primary" onClick={() => onNew()}>New</Button>
 
   const note = 'flex flex-wrap items-center justify-center gap-x-3 px-4 text-center text-base text-kumo-subtle'
+  // With nothing made yet there is nothing to look through, so no tabs or controls: only what to do about it, in the middle.
+  const nothing = library.status === 'ready' && all.length === 0
 
   return (
     <PageLayout
-      footer={narrow ? toolbar : undefined}
+      fill={nothing}
+      footer={narrow && !nothing ? toolbar : undefined}
       header={(
         <>
           <HeaderBubble>
@@ -210,66 +215,76 @@ export const LibraryView = ({
         </>
       )}
     >
-      <div className="mx-auto flex w-full max-w-3xl flex-col pt-2 pb-8">
-        <Tabs value={current} onValueChange={onTabChange} tabs={tabs} aria-label="Library" scrolls align="start" end={narrow ? undefined : toolbar} className="gap-4">
-          {/* The one panel, whichever tab it is of: the list is the same one, of what the tab has. */}
-          <Tabs.Panel value={current} className="flex flex-col gap-4">
-            {problem && <p role="alert" className="px-4 text-center text-base text-kumo-subtle">{problem}</p>}
-            {library.status === 'loading' && <p role="status" className="appears-late px-4 text-center text-base text-kumo-subtle">Loading the library…</p>}
-            {library.status === 'failed' && (
-              <p className={note}>
-                Couldn’t load the library: {library.message}
-                <Button variant="ghost" onClick={library.retry}>Try again</Button>
-              </p>
-            )}
-            {library.status === 'ready' && all.length === 0 && (
-              <p className={note}>
-                Nothing yet. What your chats make shows here.
-                <Button variant="ghost" onClick={onExplore}>Explore templates</Button>
-              </p>
-            )}
-            {all.length > 0 && inTab.length === 0 && (
-              <p className={note}>
-                {onRecent ? 'Nothing here yet. What needs you, and what you open, shows here.' : 'Nothing here yet.'}
-                <Button variant="ghost" onClick={() => onTabChange(ALL_TAB)}>Show all</Button>
-              </p>
-            )}
-            {inTab.length > 0 && shown.length === 0 && (
-              <p className={note}>
-                Nothing matches.
-                <Button variant="ghost" onClick={list.showAll}>Show all</Button>
-              </p>
-            )}
-            {groups.length > 0 && (
-              // Another tab, order or view is another list, cut to rather than moved to row by row.
-              <div key={`${current}:${list.mode}:${list.order.id}`}>
-                {list.mode === 'list'
-                  ? (
-                      <GroupedList
-                        groups={groups.map(({ key, label, entries }) => ({
-                          key,
-                          label,
-                          rows: entries.map(({ value, time }) => ({ key: outputKey(value), content: <LibraryRow {...propsOf(value)} detail={outputDetail(value)} time={time} /> })),
-                          onReorder: key === 'starred' ? reorderStarred : undefined,
-                        }))}
-                      />
-                    )
-                  : (
-                      <CardGrid
-                        large
-                        groups={groups.map(({ key, label, entries }) => ({
-                          key,
-                          label,
-                          cards: entries.map(({ value, time }) => ({ key: outputKey(value), content: <LibraryCard {...propsOf(value)} kind={(value.output ?? APP).noun} workspace={{ ...outputWorkspace(value, looks), href: workspaceHref?.(value), onSelect: () => onOpenWorkspace(value) }} owner={value.owner ?? (me && { ...me, you: true })} time={time} /> })),
-                          onReorder: key === 'starred' ? reorderStarred : undefined,
-                        }))}
-                      />
-                    )}
-              </div>
-            )}
-          </Tabs.Panel>
-        </Tabs>
-      </div>
+      {nothing ? (
+        <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-4 pt-2 pb-8">
+          {problem && <p role="alert" className="px-4 text-center text-base text-kumo-subtle">{problem}</p>}
+          <EmptyState
+            icon={CirclesFourIcon}
+            title="Nothing in your library yet"
+            description="The apps, documents and other things your chats make are kept here, to open, star and share. Ask for something in a chat, or start from a template."
+            actions={[
+              formats.length > 0
+                ? { label: 'Make something', icon: PlusIcon, variant: 'primary', menu: newItems }
+                : { label: 'Make something', icon: PlusIcon, variant: 'primary', onClick: () => onNew() },
+              { label: 'Explore templates', icon: CompassIcon, onClick: onExplore },
+            ]}
+          />
+        </div>
+      ) : (
+        <div className="mx-auto flex w-full max-w-3xl flex-col pt-2 pb-8">
+          <Tabs value={current} onValueChange={onTabChange} tabs={tabs} aria-label="Library" scrolls align="start" end={narrow ? undefined : toolbar} className="gap-4">
+            {/* The one panel, whichever tab it is of: the list is the same one, of what the tab has. */}
+            <Tabs.Panel value={current} className="flex flex-col gap-4">
+              {problem && <p role="alert" className="px-4 text-center text-base text-kumo-subtle">{problem}</p>}
+              {library.status === 'loading' && <p role="status" className="appears-late px-4 text-center text-base text-kumo-subtle">Loading the library…</p>}
+              {library.status === 'failed' && (
+                <p className={note}>
+                  Couldn’t load the library: {library.message}
+                  <Button variant="ghost" onClick={library.retry}>Try again</Button>
+                </p>
+              )}
+              {all.length > 0 && inTab.length === 0 && (
+                <EmptyState
+                  size="section"
+                  tinted
+                  icon={onRecent ? ClockCounterClockwiseIcon : CirclesFourIcon}
+                  title={onRecent ? 'Nothing recent' : 'Nothing here yet'}
+                  description={onRecent ? 'What needs you, and what you open, shows here, so you can find your way back to it.' : undefined}
+                  actions={[{ label: 'Show all', onClick: () => onTabChange(ALL_TAB) }]}
+                />
+              )}
+              {inTab.length > 0 && shown.length === 0 && <NoMatches onShowAll={list.showAll} />}
+              {groups.length > 0 && (
+                // Another tab, order or view is another list, cut to rather than moved to row by row.
+                <div key={`${current}:${list.mode}:${list.order.id}`}>
+                  {list.mode === 'list'
+                    ? (
+                        <GroupedList
+                          groups={groups.map(({ key, label, entries }) => ({
+                            key,
+                            label,
+                            rows: entries.map(({ value, time }) => ({ key: outputKey(value), content: <LibraryRow {...propsOf(value)} detail={outputDetail(value)} time={time} /> })),
+                            onReorder: key === 'starred' ? reorderStarred : undefined,
+                          }))}
+                        />
+                      )
+                    : (
+                        <CardGrid
+                          large
+                          groups={groups.map(({ key, label, entries }) => ({
+                            key,
+                            label,
+                            cards: entries.map(({ value, time }) => ({ key: outputKey(value), content: <LibraryCard {...propsOf(value)} kind={(value.output ?? APP).noun} workspace={{ ...outputWorkspace(value, looks), href: workspaceHref?.(value), onSelect: () => onOpenWorkspace(value) }} owner={value.owner ?? (me && { ...me, you: true })} time={time} /> })),
+                            onReorder: key === 'starred' ? reorderStarred : undefined,
+                          }))}
+                        />
+                      )}
+                </div>
+              )}
+            </Tabs.Panel>
+          </Tabs>
+        </div>
+      )}
     </PageLayout>
   )
 }

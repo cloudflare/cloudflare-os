@@ -38,6 +38,7 @@ import { CardBlocksPreview } from '@/gallery/CardBlocksPreview'
 import { ChatMenuPreview } from '@/gallery/ChatMenuPreview'
 import { CodePreview } from '@/gallery/CodePreview'
 import { DeveloperPreview } from '@/gallery/DeveloperPreview'
+import { EmptyStatePreview } from '@/gallery/EmptyStatePreview'
 import { ExportPreview } from '@/gallery/ExportPreview'
 import { GadgetAskPreview } from '@/gallery/GadgetAskPreview'
 import { GadgetPagePreview } from '@/gallery/GadgetPagePreview'
@@ -393,6 +394,7 @@ function Gallery() {
         </div>
       </Section>
       <TabsPreview />
+      <EmptyStatePreview />
       <ListViewPreview />
       <LibraryListPreview />
       <LibraryMenuPreview />

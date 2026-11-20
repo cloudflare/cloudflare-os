@@ -36,8 +36,10 @@ export type SidebarProps = {
    * logo while there is room for it: not on the rail.
    */
   announcement?: string
-  /** Shown in place of the list when there is nothing to list, e.g. "No workspaces yet." */
+  /** Shown in place of the list when it cannot be, e.g. "Couldn’t load workspaces: …" */
   notice?: string
+  /** There are no workspaces: where the first would be, a row that starts one (`WorkspaceNav`). */
+  empty?: { onNewWorkspace: () => void; href?: string; current?: boolean }
   /** The services whose logos the connect button shows beside its plus: those connected, or a few to start with. */
   connections?: SidebarConnection[]
   /**
@@ -154,6 +156,7 @@ export const Sidebar = ({
   logoUrl,
   announcement,
   notice,
+  empty,
   connections,
   library,
   workspacesPage,
@@ -242,6 +245,7 @@ export const Sidebar = ({
       selectedWorkspaceId={selectedWorkspaceId}
       onSelectWorkspace={onSelectWorkspace}
       notice={notice}
+      empty={empty}
       rail={collapsed}
       fades={rows}
     />

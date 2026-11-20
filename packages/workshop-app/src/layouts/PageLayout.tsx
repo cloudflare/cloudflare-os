@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, type ReactNode } from 'react'
+import { cn } from '@cloudflare/kumo/utils'
 import { useScrollFadeFallback } from '@/blocks/useScrollFadeFallback'
 import { publishHeight } from './publishHeight'
 
@@ -9,6 +10,11 @@ export type PageLayoutProps = {
    * a list's controls on a narrow screen, where they are in reach of a thumb.
    */
   footer?: ReactNode
+  /**
+   * The content is at least as tall as the room under the header, as a column a child can grow
+   * into (`flex-1`): for a page with nothing on it, whose empty state is centred in that room.
+   */
+  fill?: boolean
   children: ReactNode
 }
 
@@ -18,7 +24,7 @@ export type PageLayoutProps = {
  * conversation's does (`.chat-fade`). A footer floats over its end the same way, as a chat's
  * composer does.
  */
-export const PageLayout = ({ header, footer, children }: PageLayoutProps) => {
+export const PageLayout = ({ header, footer, fill = false, children }: PageLayoutProps) => {
   const rootRef = useRef<HTMLDivElement>(null)
   const headerRef = useRef<HTMLElement>(null)
   const footerRef = useRef<HTMLDivElement>(null)
@@ -56,7 +62,7 @@ export const PageLayout = ({ header, footer, children }: PageLayoutProps) => {
     <div ref={rootRef} className="relative min-h-0 flex-1">
       {/* Ends halfway down the footer, so that what has faded out cannot reappear below it. */}
       <div ref={scrollRef} className="chat-fade absolute inset-x-0 top-0 bottom-[var(--composer-half,0px)] overflow-y-auto overscroll-y-contain">
-        <div className="mx-auto w-full max-w-4xl px-3 pt-[var(--header-height,0px)] pb-[calc(0.75rem+var(--composer-half,0px))]">{children}</div>
+        <div className={cn('mx-auto w-full max-w-4xl px-3 pt-[var(--header-height,0px)] pb-[calc(0.75rem+var(--composer-half,0px))]', fill && 'flex min-h-full flex-col')}>{children}</div>
       </div>
       {/* Only the header's bubbles take the pointer; the gaps between them let it through. It
           starts clear of what the frame puts there (`--header-lead`), such as a back button. */}

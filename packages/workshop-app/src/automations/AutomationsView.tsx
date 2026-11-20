@@ -1,12 +1,14 @@
 import { LightningIcon } from '@phosphor-icons/react'
+import { cn } from '@cloudflare/kumo/utils'
 import { AutomationRow, type AutomationRowProps } from '@/blocks/AutomationRow'
 import { AutomationsEmpty, type AutomationExample } from '@/blocks/AutomationsEmpty'
 import { ListGroup } from '@/blocks/ListGroup'
 import { ListToolbar } from '@/blocks/ListToolbar'
-import { Button } from '@/components/Button'
+import { NoMatches } from '@/blocks/NoMatches'
 import { HeaderBubble } from '@/components/HeaderBubble'
 import type { ListControls } from '@/components/listView'
 import { PageLayout } from '@/layouts/PageLayout'
+import { AUTOMATION_DRAFT } from './startDrafts'
 
 /** Things to ask for in a chat that would make an automation, for the page with none. */
 export const AUTOMATION_EXAMPLES: AutomationExample[] = [
@@ -53,6 +55,7 @@ export const AutomationsView = ({ status, groups, total, reading, unreachable, c
 
   return (
     <PageLayout
+      fill={empty}
       footer={narrow && !empty ? toolbar : undefined}
       header={(
         <HeaderBubble>
@@ -63,19 +66,14 @@ export const AutomationsView = ({ status, groups, total, reading, unreachable, c
         </HeaderBubble>
       )}
     >
-      <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 pt-2 pb-8">
+      <div className={cn('mx-auto flex w-full max-w-3xl flex-col gap-4 pt-2 pb-8', empty && 'flex-1')}>
         {empty ? (
-          <AutomationsEmpty examples={AUTOMATION_EXAMPLES} onTry={onTry} />
+          <AutomationsEmpty examples={AUTOMATION_EXAMPLES} onTry={onTry} onAdd={() => onTry(AUTOMATION_DRAFT)} />
         ) : (
           <>
             {!narrow && toolbar}
             {total === 0 && <p role="status" className={`appears-late ${NOTE}`}>Loading automations…</p>}
-            {total > 0 && shown === 0 && (
-              <p className="flex items-center justify-center gap-3 px-4 text-base text-kumo-subtle">
-                No automations match.
-                <Button variant="ghost" onClick={onShowAll}>Show all</Button>
-              </p>
-            )}
+            {total > 0 && shown === 0 && <NoMatches noun="automations" onShowAll={onShowAll} />}
             {shown > 0 && (
               // Another order is another list, cut to rather than moved to row by row.
               <div key={order?.value} className="flex flex-col gap-6">

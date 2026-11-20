@@ -1,12 +1,15 @@
 import { useState } from 'react'
-import { ChecksIcon, FolderIcon } from '@phosphor-icons/react'
+import { ChecksIcon, FolderIcon, PlusIcon } from '@phosphor-icons/react'
 import type { WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
+import { cn } from '@cloudflare/kumo/utils'
 import { ListToolbar } from '@/blocks/ListToolbar'
+import { NoMatches } from '@/blocks/NoMatches'
 import { RemoveWorkspaceDialog } from '@/blocks/RemoveWorkspaceDialog'
 import { WorkspaceCard } from '@/blocks/WorkspaceCard'
 import { WorkspaceRow } from '@/blocks/WorkspaceRow'
 import { Button } from '@/components/Button'
 import { CardGrid } from '@/components/CardGrid'
+import { EmptyState } from '@/components/EmptyState'
 import { GroupedList } from '@/components/GroupedList'
 import { HeaderBubble } from '@/components/HeaderBubble'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
@@ -137,9 +140,13 @@ export const WorkspacesPane = ({ onOpenWorkspace, workspaceHref, onNewWorkspace 
     />
   )
 
+  // With none yet there is nothing to look through: no controls, and the empty state in the middle.
+  const nothing = workspaces.status === 'ready' && all.length === 0
+
   return (
     <PageLayout
-      footer={narrow ? toolbar : undefined}
+      fill={nothing}
+      footer={narrow && !nothing ? toolbar : undefined}
       header={(
         <HeaderBubble>
           <h1 className="flex h-(--control-size) items-center gap-2 rounded-full bg-kumo-base pr-(--control-pad) pl-(--control-pad-icon) text-(length:--control-text) font-medium text-kumo-default ring-1 ring-kumo-line [&>svg]:size-[1.125em]">
@@ -149,19 +156,19 @@ export const WorkspacesPane = ({ onOpenWorkspace, workspaceHref, onNewWorkspace 
         </HeaderBubble>
       )}
     >
-      <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 pt-2 pb-8">
-        {!narrow && toolbar}
+      <div className={cn('mx-auto flex w-full max-w-3xl flex-col gap-4 pt-2 pb-8', nothing && 'flex-1')}>
+        {!narrow && !nothing && toolbar}
         {workspaces.status === 'loading' && <p role="status" className="appears-late px-4 text-base text-kumo-subtle">Loading workspaces…</p>}
         {workspaces.status === 'failed' && <p className="px-4 text-base text-kumo-subtle">Couldn’t load workspaces: {workspaces.message}</p>}
         {workspaces.status === 'ready' && all.length === 0 && (
-          <p className="px-4 text-center text-base text-kumo-subtle">No workspaces yet. Each chat you start makes one.</p>
+          <EmptyState
+            icon={FolderIcon}
+            title="No workspaces yet"
+            description="A workspace keeps chats together with everything they make, for you and whoever you invite. Each chat you start makes one."
+            actions={[{ label: 'New workspace', icon: PlusIcon, variant: 'primary', onClick: onNewWorkspace }]}
+          />
         )}
-        {all.length > 0 && shown.length === 0 && (
-          <p className="flex items-center justify-center gap-3 px-4 text-base text-kumo-subtle">
-            No workspaces match.
-            <Button variant="ghost" onClick={list.showAll}>Show all</Button>
-          </p>
-        )}
+        {all.length > 0 && shown.length === 0 && <NoMatches noun="workspaces" onShowAll={list.showAll} />}
         {starProblem && <p role="alert" className="px-4 text-base text-kumo-subtle">{starProblem}</p>}
         {shown.length > 0 && (
           // Another order or view is another list, cut to rather than moved to row by row.

@@ -3,6 +3,7 @@ import { CaretLeftIcon, FolderSimpleIcon, UploadSimpleIcon } from '@phosphor-ico
 import { FilePreviewCard } from '@/blocks/FilePreviewCard'
 import { ListGroup } from '@/blocks/ListGroup'
 import { ListToolbar } from '@/blocks/ListToolbar'
+import { NoMatches } from '@/blocks/NoMatches'
 import { SettingField } from '@/blocks/SettingField'
 import { SettingRow } from '@/blocks/SettingRow'
 import { SettingsGroup } from '@/blocks/SettingsGroup'
@@ -349,12 +350,7 @@ export const SkillPane = ({ skillId, tab, onTabChange, file: showingPath, onOpen
             {/* A folder is chosen whole, which no standard attribute asks for. */}
             <input ref={folderRef} type="file" multiple hidden onChange={(event) => void upload(event)} {...{ webkitdirectory: '' }} />
             {filesNote}
-            {skill.files !== undefined && shown.length === 0 && (
-              <p className="flex items-center justify-center gap-3 px-5 text-base text-kumo-subtle">
-                Nothing matches.
-                <Button variant="ghost" onClick={list.showAll}>Show all</Button>
-              </p>
-            )}
+            {skill.files !== undefined && shown.length === 0 && <NoMatches noun="files" onShowAll={list.showAll} />}
             {shown.length > 0 && (
               <ListGroup label="Files">
                 <ul className="flex flex-col">

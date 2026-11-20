@@ -71,13 +71,14 @@ export const FileView = (props: FileViewProps) => {
             mimeType={props.mimeType}
             bytes={props.bytes}
             loading={<PaneNotice title="Loading…" />}
-            failed={(message) => <PaneNotice icon={WarningCircleIcon} title={`Couldn’t show ${name}`} description={message} action={{ label: 'Download', onClick: onDownload }} />}
+            failed={(message) => <PaneNotice onTint icon={WarningCircleIcon} title={`Couldn’t show ${name}`} description={message} action={{ label: 'Download', onClick: onDownload }} />}
           />
         </div>
       )
     case 'none':
       return (
         <PaneNotice
+          onTint
           icon={FileIcon}
           title="This file can’t be shown here"
           description={details}

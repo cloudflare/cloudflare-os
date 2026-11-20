@@ -181,6 +181,15 @@ export const Composer = ({ onSend, initialDraft, commands = [], commandsLoading,
     },
   }), [])
 
+  // A draft it opens with is to be finished, such as "Set up an automation that ", so the cursor
+  // starts after it rather than where the browser puts it, which is the start in some.
+  useLayoutEffect(() => {
+    const field = inputRef.current
+    if (!autoFocus || !field || field.value === '') return
+    field.setSelectionRange(field.value.length, field.value.length)
+    // Only as it opens: where the cursor is after that is the user's.
+  }, [])
+
   // Reads the slash at the cursor again, as the draft or the cursor moves.
   const readSlash = (field: HTMLTextAreaElement) => {
     const next = field.selectionStart === field.selectionEnd ? slashTokenAt(field.value, field.selectionStart) : undefined

@@ -1118,6 +1118,23 @@ to a row's and a card's buttons (`RowAction`, `CardAction`, `StarButton`):
   its own block. Cards laid out along a line, as a row is, are `wide`: two to a line, and one
   where two would be too narrow.
 
+A page, tab, group or pane with nothing in it says so with `EmptyState`, as Linear does: an icon on
+a tile, a title for what is missing ("No chats yet"), a sentence on what would be here and how it
+comes to be, and what to do about it, one action `primary` at most (start the first one, go where
+there is some), which may be a menu. It names what is added ("Add automation"), not how: where
+the agent makes it, it starts a chat in the workspace with the start of the request written in the
+composer for the user to finish (`automations/startDrafts.ts`), the cursor after it. With nothing in it there is nothing to look through, so its
+tabs and list controls (`ListToolbar`, a group's action) are left out, and the empty state has
+what they offered to do; a page's header keeps its own. `page` stands in for a page's list,
+centred in the room under the header (`PageLayout`'s `fill`, the column `flex-1`). `section`
+stands in for a tab or a settings group, `tinted` on the surface its list would be on, so that it
+reads as that list's place, or for a pane (`PaneNotice`, which centres it on the pane's own). A
+list whose search and filters left nothing keeps its controls and has `NoMatches`, with Show all.
+The sidebar is quieter than any of them: with no workspaces it has one row where the first would
+be (`NewWorkspaceRow`), which starts a chat. None of them is for loading or failing, which say so
+in a line where the list would be.
+The gallery has each form (`EmptyStatePreview`).
+
 On a narrow screen the controls are under the list, in reach of a thumb: the pane gives them to
 `PageLayout` as its `footer`, which floats over the end of the content as a chat's composer does
 (and, while it has one, keeps the window from being pulled along by a drag with nothing left to

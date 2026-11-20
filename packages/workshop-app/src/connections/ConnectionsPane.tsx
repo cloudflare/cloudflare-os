@@ -1,12 +1,15 @@
 import { useEffect, useState } from 'react'
 import { PuzzlePieceIcon } from '@phosphor-icons/react'
+import { cn } from '@cloudflare/kumo/utils'
 import { ConnectDialog } from '@/blocks/ConnectDialog'
 import { ConnectionCard } from '@/blocks/ConnectionCard'
 import { ConnectionRow } from '@/blocks/ConnectionRow'
 import { ListToolbar } from '@/blocks/ListToolbar'
+import { NoMatches } from '@/blocks/NoMatches'
 import { ManageConnectionDialog } from '@/blocks/ManageConnectionDialog'
 import { Button } from '@/components/Button'
 import { CardGrid } from '@/components/CardGrid'
+import { EmptyState } from '@/components/EmptyState'
 import { GroupedList } from '@/components/GroupedList'
 import { HeaderBubble } from '@/components/HeaderBubble'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
@@ -119,9 +122,13 @@ export const ConnectionsPane = ({ requested, onRequestHandled }: {
   const { search, view, filter } = list.controls
   const toolbar = <ListToolbar noun="connections" search={search} view={view} filter={filter} at={narrow ? 'bottom' : 'top'} />
 
+  // With nothing to connect there is nothing to look through: no controls, and the empty state in the middle.
+  const nothing = state.status === 'ready' && all.length === 0
+
   return (
     <PageLayout
-      footer={narrow ? toolbar : undefined}
+      fill={nothing}
+      footer={narrow && !nothing ? toolbar : undefined}
       header={(
         <HeaderBubble>
           <h1 className="flex h-(--control-size) items-center gap-2 rounded-full bg-kumo-base pr-(--control-pad) pl-(--control-pad-icon) text-(length:--control-text) font-medium text-kumo-default ring-1 ring-kumo-line [&>svg]:size-[1.125em]">
@@ -131,8 +138,8 @@ export const ConnectionsPane = ({ requested, onRequestHandled }: {
         </HeaderBubble>
       )}
     >
-      <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 pt-2 pb-8">
-        {!narrow && toolbar}
+      <div className={cn('mx-auto flex w-full max-w-3xl flex-col gap-4 pt-2 pb-8', nothing && 'flex-1')}>
+        {!narrow && !nothing && toolbar}
         {state.status === 'loading' && <p role="status" className="appears-late px-4 text-base text-kumo-subtle">Loading connections…</p>}
         {state.status === 'failed' && (
           <p className="flex items-center gap-3 px-4 text-base text-kumo-subtle">
@@ -144,14 +151,13 @@ export const ConnectionsPane = ({ requested, onRequestHandled }: {
           <p className="px-4 text-base text-kumo-subtle">Couldn’t reach {new Intl.ListFormat('en').format(state.unreachable)} just now, so {state.unreachable.length === 1 ? 'it is' : 'they are'} not listed.</p>
         )}
         {state.status === 'ready' && all.length === 0 && (
-          <p className="px-4 text-center text-base text-kumo-subtle">Nothing to connect yet. What this deployment can connect to shows here.</p>
+          <EmptyState
+            icon={PuzzlePieceIcon}
+            title="Nothing to connect yet"
+            description="Services like email, calendars and documents show here once this deployment offers them. Connected, your chats and apps can use them on your behalf."
+          />
         )}
-        {all.length > 0 && shown.length === 0 && (
-          <p className="flex items-center justify-center gap-3 px-4 text-base text-kumo-subtle">
-            No connections match.
-            <Button variant="ghost" onClick={list.showAll}>Show all</Button>
-          </p>
-        )}
+        {all.length > 0 && shown.length === 0 && <NoMatches noun="connections" onShowAll={list.showAll} />}
         {/* In the dialog while that is up, which is over this. */}
         {problem && !dialog?.open && <p role="alert" className="px-4 text-base text-kumo-subtle">{problem}</p>}
         {shown.length > 0 && (

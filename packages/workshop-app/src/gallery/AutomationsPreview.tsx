@@ -119,7 +119,7 @@ export const AutomationsPreview = () => {
       </Section>
       <Section title="AutomationsEmpty (the Automations page with nothing on it: what an automation does, and things to ask for, each starting a chat with it written in the composer)">
         <div className="w-full max-w-2xl">
-          <AutomationsEmpty examples={AUTOMATION_EXAMPLES} onTry={(prompt) => say(`started a chat with “${prompt}”`)} />
+          <AutomationsEmpty examples={AUTOMATION_EXAMPLES} onTry={(prompt) => say(`started a chat with “${prompt}”`)} onAdd={() => say('started a chat with “Set up an automation that ”')} />
         </div>
       </Section>
     </>

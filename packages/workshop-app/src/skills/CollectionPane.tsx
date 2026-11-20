@@ -2,10 +2,12 @@ import { useRef, useState, type ChangeEvent } from 'react'
 import { CaretLeftIcon, FolderSimpleIcon, PencilSimpleIcon, StackIcon, UploadSimpleIcon, UserPlusIcon } from '@phosphor-icons/react'
 import { AddSkillDialog } from '@/blocks/AddSkillDialog'
 import { ListToolbar } from '@/blocks/ListToolbar'
+import { NoMatches } from '@/blocks/NoMatches'
 import { SettingRow } from '@/blocks/SettingRow'
 import { SettingsGroup } from '@/blocks/SettingsGroup'
 import { SkillRow } from '@/blocks/SkillRow'
 import { Button } from '@/components/Button'
+import { EmptyState } from '@/components/EmptyState'
 import { ConfirmMenu } from '@/components/ConfirmMenu'
 import { DropdownMenu } from '@/components/DropdownMenu'
 import { EditableTitle } from '@/components/EditableTitle'
@@ -196,34 +198,44 @@ export const CollectionPane = ({ collectionId, tab, onTabChange, onOpenSkill, sk
         </div>
         <Tabs<CollectionTab> value={tab} onValueChange={onTabChange} tabs={COLLECTION_TABS} aria-label="Collection" className="gap-6">
           <Tabs.Panel value="skills" className="flex flex-col gap-4">
-            <div className="px-5">
-              <ListToolbar
-                noun="skills"
-                search={search}
-                order={order}
-                action={editable
-                  ? (
-                      <DropdownMenu label="Add skill" caret triggerVariant="primary" align="end" inPlace>
-                        <DropdownMenu.Item icon={PencilSimpleIcon} onSelect={() => setWriting(true)}>Write a skill</DropdownMenu.Item>
-                        <DropdownMenu.Item icon={UploadSimpleIcon} onSelect={() => filesRef.current?.click()}>Upload files</DropdownMenu.Item>
-                        <DropdownMenu.Item icon={FolderSimpleIcon} onSelect={() => folderRef.current?.click()}>Upload a folder</DropdownMenu.Item>
-                      </DropdownMenu>
-                    )
-                  : undefined}
-              />
-            </div>
+            {/* None with no skills, where the empty state has the ways to add one. */}
+            {skills.length > 0 && (
+              <div className="px-5">
+                <ListToolbar
+                  noun="skills"
+                  search={search}
+                  order={order}
+                  action={editable
+                    ? (
+                        <DropdownMenu label="Add skill" caret triggerVariant="primary" align="end" inPlace>
+                          <DropdownMenu.Item icon={PencilSimpleIcon} onSelect={() => setWriting(true)}>Write a skill</DropdownMenu.Item>
+                          <DropdownMenu.Item icon={UploadSimpleIcon} onSelect={() => filesRef.current?.click()}>Upload files</DropdownMenu.Item>
+                          <DropdownMenu.Item icon={FolderSimpleIcon} onSelect={() => folderRef.current?.click()}>Upload a folder</DropdownMenu.Item>
+                        </DropdownMenu>
+                      )
+                    : undefined}
+                />
+              </div>
+            )}
             <input ref={filesRef} type="file" multiple accept=".md,.markdown,text/markdown" hidden onChange={(event) => void upload(event)} />
             {/* A folder is chosen whole, which no standard attribute asks for. */}
             <input ref={folderRef} type="file" multiple hidden onChange={(event) => void upload(event)} {...{ webkitdirectory: '' }} />
             {skills.length === 0 && (
-              <p className="px-5 text-center text-base text-kumo-subtle">{editable ? 'No skills in it yet. Add one to share it with whoever has this collection.' : 'No skills in it yet.'}</p>
+              <EmptyState
+                size="section"
+                tinted
+                icon={StackIcon}
+                title="No skills in it yet"
+                description={editable ? 'The skills added here are shared with whoever has this collection.' : 'The skills its owner adds show here.'}
+                actions={editable
+                  ? [
+                      { label: 'Write a skill', icon: PencilSimpleIcon, variant: 'primary', onClick: () => setWriting(true) },
+                      { label: 'Upload files', icon: UploadSimpleIcon, onClick: () => filesRef.current?.click() },
+                    ]
+                  : undefined}
+              />
             )}
-            {skills.length > 0 && shown.length === 0 && (
-              <p className="flex items-center justify-center gap-3 px-5 text-base text-kumo-subtle">
-                Nothing matches.
-                <Button variant="ghost" onClick={list.showAll}>Show all</Button>
-              </p>
-            )}
+            {skills.length > 0 && shown.length === 0 && <NoMatches noun="skills" onShowAll={list.showAll} />}
             {shown.length > 0 && (
               <ul key={list.order.id} aria-label="Skills" className="flex flex-col rounded-3xl bg-kumo-tint p-1.5">
                 {shown.map(({ value, time }) => (

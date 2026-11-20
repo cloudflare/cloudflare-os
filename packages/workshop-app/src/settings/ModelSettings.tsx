@@ -4,7 +4,9 @@ import { ModelListItem } from '@/blocks/ModelListItem'
 import { SettingPresets } from '@/blocks/SettingPresets'
 import { SettingRow } from '@/blocks/SettingRow'
 import { SettingsCard, SettingsGroup } from '@/blocks/SettingsGroup'
+import { CpuIcon, PlusIcon } from '@phosphor-icons/react'
 import { Button } from '@/components/Button'
+import { EmptyState } from '@/components/EmptyState'
 import { defaultModelOf } from '@/chat/defaultModel'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { ModelDialog } from './ModelDialog'
@@ -148,7 +150,17 @@ export const ModelSettings = () => {
       <SettingsGroup title="Available models" plain>
         <SettingsCard>
           {models.length === 0
-            ? <p className="py-4 text-kumo-subtle">No models yet. This deployment offers none and you haven’t added any.</p>
+            ? (
+                <EmptyState
+                  size="section"
+                  icon={CpuIcon}
+                  title="No models yet"
+                  description={ownAllowed
+                    ? 'This deployment offers none, and you haven’t added any. Add one to have your chats answered.'
+                    : 'This deployment offers none yet, and your administrator has turned off adding your own.'}
+                  actions={ownAllowed ? [{ label: 'Add model', icon: PlusIcon, variant: 'primary', onClick: () => openDialog({ kind: 'add' }) }] : undefined}
+                />
+              )
             : (
                 <ul aria-label="Models" className="flex flex-col">
                   {models.map(({ id, name }) => (

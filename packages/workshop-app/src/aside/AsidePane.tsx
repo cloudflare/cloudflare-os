@@ -363,6 +363,7 @@ export const EmptyAsidePane = ({ reading, problem, onRetry, onHide, narrow }: Em
   <SidePane placement="beside" onHide={onHide} narrow={narrow}>
     {problem ? (
       <PaneNotice
+        onTint
         icon={WarningCircleIcon}
         title="Couldn’t load the library"
         description={problem}
@@ -371,7 +372,7 @@ export const EmptyAsidePane = ({ reading, problem, onRetry, onHide, narrow }: Em
     ) : reading ? (
       <PaneNotice title="Loading…" />
     ) : (
-      <PaneNotice icon={TrayIcon} title="Nothing here yet" description="What this workspace makes shows here." />
+      <PaneNotice onTint icon={TrayIcon} title="Nothing made here yet" description="The apps, documents and files this workspace’s chats make open here, beside the page." />
     )}
   </SidePane>
 )
@@ -402,6 +403,7 @@ const GadgetView = ({ title, ui, frame, onReload, onAskAccess }: {
       // own accounts can see before it opens: cancelled, it is offered again rather than failed.
       if (onAskAccess && accessNotConfirmed(ui.message)) return (
         <PaneNotice
+          onTint
           icon={LockSimpleIcon}
           title={`Confirm your access to open ${title}`}
           description="It was shared with you and reads things kept in other services, such as a Google doc. Before it opens, confirm that your own accounts can see them too."
@@ -410,6 +412,7 @@ const GadgetView = ({ title, ui, frame, onReload, onAskAccess }: {
       )
       return (
         <PaneNotice
+          onTint
           icon={WarningCircleIcon}
           title={`Couldn’t show ${title}`}
           description={ui.message}
@@ -450,9 +453,9 @@ const FileContent = ({ file, state }: { file: AsideFile; state: FileState }) => 
     case 'loading':
       return <PaneNotice title="Loading…" />
     case 'unreachable':
-      return <PaneNotice icon={FileDashedIcon} title={file.name} description="Open it from the chat it was sent in to see it." />
+      return <PaneNotice onTint icon={FileDashedIcon} title={file.name} description="Open it from the chat it was sent in to see it." />
     case 'failed':
-      return <PaneNotice icon={WarningCircleIcon} title={`Couldn’t load ${file.name}`} description={state.message} />
+      return <PaneNotice onTint icon={WarningCircleIcon} title={`Couldn’t load ${file.name}`} description={state.message} />
     case 'ready': {
       const details = [file.mimeType, file.size > 0 && SIZE.format(file.size)].filter(Boolean).join(' · ')
       const { preview } = state

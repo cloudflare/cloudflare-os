@@ -1,5 +1,6 @@
 import { useRef } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
+import { NewWorkspaceRow } from './NewWorkspaceRow'
 import { WorkspaceListItem, type WorkspaceListItemProps } from './WorkspaceListItem'
 import { WorkspaceRailItem } from './WorkspaceRailItem'
 import { useScrollFadeFallback } from './useScrollFadeFallback'
@@ -13,6 +14,11 @@ export type WorkspaceNavProps = {
   onSelectWorkspace: (id: string) => void
   /** Shown in place of the list when there is nothing to list. Not on the rail, which has no room. */
   notice?: string
+  /**
+   * There are no workspaces: a row where the first would be, which starts a chat, as a chat makes
+   * one (`NewWorkspaceRow`), with where that is (`href`).
+   */
+  empty?: { onNewWorkspace: () => void; href?: string; current?: boolean }
   /** Each workspace is its icon alone, on the collapsed sidebar's rail. */
   rail?: boolean
   /** What scrolls fades out at either end while there is more that way (`.sidebar-fade`). */
@@ -24,7 +30,7 @@ export type WorkspaceNavProps = {
  * pointed at (see `useWorkspaceUnderlay`). Give it a `key` that changes with `rail`: the
  * highlight measures the rows it started with.
  */
-export const WorkspaceNav = ({ workspaces, selectedWorkspaceId, onSelectWorkspace, notice, rail = false, fades = false }: WorkspaceNavProps) => {
+export const WorkspaceNav = ({ workspaces, selectedWorkspaceId, onSelectWorkspace, notice, empty, rail = false, fades = false }: WorkspaceNavProps) => {
   const { listRef, underlayRef, hoverUnderlayRef } = useWorkspaceUnderlay()
   const scrollRef = useRef<HTMLElement>(null)
   useScrollFadeFallback(scrollRef)
@@ -47,6 +53,7 @@ export const WorkspaceNav = ({ workspaces, selectedWorkspaceId, onSelectWorkspac
             onSelect={() => onSelectWorkspace(id)}
           />
         ))}
+        {empty && workspaces.length === 0 && <NewWorkspaceRow rail={rail} href={empty.href} current={empty.current} onSelect={empty.onNewWorkspace} />}
       </div>
       {notice && !rail && <p className="px-3 py-2 text-base text-kumo-subtle">{notice}</p>}
     </nav>

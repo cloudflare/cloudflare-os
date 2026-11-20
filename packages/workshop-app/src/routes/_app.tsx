@@ -310,12 +310,7 @@ const AppFrame = () => {
           href: router.buildLocation({ to: '/workspace/$workspaceId', params: { workspaceId: id } }).href,
         }))
       : []
-  const notice =
-    workspacesState.status === 'failed'
-      ? `Couldn’t load workspaces: ${workspacesState.message}`
-      : workspacesState.status === 'ready' && workspaces.length === 0
-        ? 'No workspaces yet.'
-        : undefined
+  const notice = workspacesState.status === 'failed' ? `Couldn’t load workspaces: ${workspacesState.message}` : undefined
 
   // The user's own menu has the settings, which are only stayed in when already there.
   const openSettingsPage = () => {
@@ -367,6 +362,16 @@ const AppFrame = () => {
       logoUrl={siteLogoUrl(config)}
       announcement={config?.announcement?.trim() || undefined}
       notice={notice}
+      empty={workspacesState.status === 'ready' && workspaces.length === 0
+        ? {
+            href: router.buildLocation({ to: '/' }).href,
+            current: homePage !== undefined,
+            onNewWorkspace: () => {
+              leaveSidebar()
+              void navigate({ to: '/' })
+            },
+          }
+        : undefined}
       connections={connectionLogos}
       library={{
         current: [libraryPage, libraryItemPage, templatesPage, templatePage].some((match) => match !== undefined),

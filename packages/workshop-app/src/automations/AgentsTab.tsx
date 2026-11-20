@@ -1,7 +1,9 @@
 import { AgentRow } from '@/blocks/AgentRow'
 import { AgentRunRow } from '@/blocks/AgentRunRow'
 import { ListGroup } from '@/blocks/ListGroup'
+import { PlusIcon, RobotIcon } from '@phosphor-icons/react'
 import { Button } from '@/components/Button'
+import { EmptyState } from '@/components/EmptyState'
 import { formatActivity } from '@/workspaces/formatActivity'
 import { attentionWords, runsWantingAttention, runsWords, STATUS_WORDS, type Agent } from './agents'
 import type { WorkspaceAgentsSnapshot } from './WorkspaceAgents'
@@ -20,6 +22,8 @@ export type AgentsTabProps = {
   runHref?: (chatId: number) => string
   /** The clock it is shown by, which moves on while it is shown. */
   now: number
+  /** Starts a chat that asks for an agent, offered while there are none. */
+  onAddAgent?: () => void
 }
 
 /** What an agent is and has done, in words, as its row says it: the gadget that starts it, then its runs. */
@@ -32,7 +36,7 @@ export const agentDetail = (agent: Agent, now?: Date) =>
  * look through an agent's runs to find them; then every agent, each opening its page, those that
  * want the user first.
  */
-export const AgentsTab = ({ state, onRetry, onOpenAgent, agentHref, onOpenRun, runHref, now }: AgentsTabProps) => {
+export const AgentsTab = ({ state, onRetry, onOpenAgent, agentHref, onOpenRun, runHref, now, onAddAgent }: AgentsTabProps) => {
   if (state.status === 'loading') return <p role="status" className="appears-late px-4 text-center text-base text-kumo-subtle">Loading agents…</p>
   if (state.status === 'failed') {
     return (
@@ -44,12 +48,16 @@ export const AgentsTab = ({ state, onRetry, onOpenAgent, agentHref, onOpenRun, r
   }
   const { agents } = state
   if (agents.length === 0) {
+    if (!state.setUpRead) return <p role="status" className="appears-late px-4 text-center text-base text-kumo-subtle">Loading agents…</p>
     return (
-      <p className="px-4 text-center text-base text-pretty text-kumo-subtle">
-        {state.setUpRead
-          ? 'No agents here yet. A gadget can have agents of its own, such as one that answers each email that arrives: ask for one in a chat.'
-          : 'Loading agents…'}
-      </p>
+      <EmptyState
+        size="section"
+        tinted
+        icon={RobotIcon}
+        title="No agents yet"
+        description="An app can have agents of its own that work while you’re away, such as one that answers each email that arrives. Ask for one in a chat."
+        actions={onAddAgent && [{ label: 'Add agent', icon: PlusIcon, variant: 'primary', onClick: onAddAgent }]}
+      />
     )
   }
   const date = new Date(now)

@@ -1,11 +1,13 @@
 import { useRef, useState, type ChangeEvent } from 'react'
-import { FolderSimpleIcon, PencilSimpleIcon, UploadSimpleIcon } from '@phosphor-icons/react'
+import { FolderSimpleIcon, LightbulbIcon, PencilSimpleIcon, UploadSimpleIcon } from '@phosphor-icons/react'
 import { AddSkillDialog } from '@/blocks/AddSkillDialog'
 import { Banner } from '@/components/Banner'
 import { ListToolbar } from '@/blocks/ListToolbar'
+import { NoMatches } from '@/blocks/NoMatches'
 import { SettingsGroup } from '@/blocks/SettingsGroup'
 import { SkillRow } from '@/blocks/SkillRow'
 import { Button } from '@/components/Button'
+import { EmptyState } from '@/components/EmptyState'
 import { DropdownMenu } from '@/components/DropdownMenu'
 import { ENOUGH } from '@/components/listView'
 import { ScrollArea } from '@/components/ScrollArea'
@@ -97,22 +99,25 @@ export const SkillLibrary = ({ onOpenSkill, skillHref }: SkillLibraryProps) => {
 
   return (
     <SettingsGroup title="Skill library" description="Reusable instructions the assistant loads when a task calls for them." plain>
-      {/* In from the edge as far as the group's title is, and as what is done to a group across from its title is. */}
-      <div className="px-5">
-        <ListToolbar
-          noun="skills"
-          search={search}
-          order={order}
-          filter={filter}
-          action={(
-            <DropdownMenu label="Add skill" caret triggerVariant="primary" align="end" inPlace>
-              <DropdownMenu.Item icon={PencilSimpleIcon} onSelect={() => setWriting(true)}>Write a skill</DropdownMenu.Item>
-              <DropdownMenu.Item icon={UploadSimpleIcon} onSelect={() => filesRef.current?.click()}>Upload files</DropdownMenu.Item>
-              <DropdownMenu.Item icon={FolderSimpleIcon} onSelect={() => folderRef.current?.click()}>Upload a folder</DropdownMenu.Item>
-            </DropdownMenu>
-          )}
-        />
-      </div>
+      {/* In from the edge as far as the group's title is, and as what is done to a group across from its title is.
+          None with no skills, where there is nothing to look through and the empty state has the ways to add one. */}
+      {!(state.status === 'ready' && skills.length === 0) && (
+        <div className="px-5">
+          <ListToolbar
+            noun="skills"
+            search={search}
+            order={order}
+            filter={filter}
+            action={(
+              <DropdownMenu label="Add skill" caret triggerVariant="primary" align="end" inPlace>
+                <DropdownMenu.Item icon={PencilSimpleIcon} onSelect={() => setWriting(true)}>Write a skill</DropdownMenu.Item>
+                <DropdownMenu.Item icon={UploadSimpleIcon} onSelect={() => filesRef.current?.click()}>Upload files</DropdownMenu.Item>
+                <DropdownMenu.Item icon={FolderSimpleIcon} onSelect={() => folderRef.current?.click()}>Upload a folder</DropdownMenu.Item>
+              </DropdownMenu>
+            )}
+          />
+        </div>
+      )}
       <input ref={filesRef} type="file" multiple accept=".md,.markdown,text/markdown" hidden onChange={(event) => void upload(event)} />
       {/* A folder is chosen whole, which no standard attribute asks for. */}
       <input ref={folderRef} type="file" multiple hidden onChange={(event) => void upload(event)} {...{ webkitdirectory: '' }} />
@@ -134,13 +139,20 @@ export const SkillLibrary = ({ onOpenSkill, skillHref }: SkillLibraryProps) => {
           />
         </div>
       )}
-      {state.status === 'ready' && skills.length === 0 && <p className="px-5 text-center text-base text-kumo-subtle">No skills yet.</p>}
-      {skills.length > 0 && shown.length === 0 && (
-        <p className="flex items-center justify-center gap-3 px-5 text-base text-kumo-subtle">
-          Nothing matches.
-          <Button variant="ghost" onClick={list.showAll}>Show all</Button>
-        </p>
+      {state.status === 'ready' && skills.length === 0 && (
+        <EmptyState
+          size="section"
+          tinted
+          icon={LightbulbIcon}
+          title="No skills yet"
+          description="A skill teaches the assistant how you like something done, such as a writing style or a checklist, and is loaded whenever a task calls for it."
+          actions={[
+            { label: 'Write a skill', icon: PencilSimpleIcon, variant: 'primary', onClick: () => setWriting(true) },
+            { label: 'Upload files', icon: UploadSimpleIcon, onClick: () => filesRef.current?.click() },
+          ]}
+        />
       )}
+      {skills.length > 0 && shown.length === 0 && <NoMatches noun="skills" onShowAll={list.showAll} />}
       {shown.length > 0 && (
         // Another order is another list, cut to rather than moved to row by row. No taller than
         // ten rows or so, or than most of the window: the rest are scrolled to, so that the group

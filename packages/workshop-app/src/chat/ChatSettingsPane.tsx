@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { CaretLeftIcon } from '@phosphor-icons/react'
+import { CaretLeftIcon, TrayIcon } from '@phosphor-icons/react'
 import type { OutputSummary } from '@gadgets/workshop-shared/api'
 import type { AsideItem } from '@/aside/asideItems'
 import { asideItemIcon } from '@/aside/asideItemIcon'
@@ -10,6 +10,7 @@ import { FileListItem } from '@/blocks/FileListItem'
 import { ListGroup } from '@/blocks/ListGroup'
 import { WorkspaceCrumb } from '@/blocks/WorkspaceCrumb'
 import { Button } from '@/components/Button'
+import { EmptyState } from '@/components/EmptyState'
 import { EditableTitle } from '@/components/EditableTitle'
 import { HeaderBubble } from '@/components/HeaderBubble'
 import { Tabs } from '@/components/Tabs'
@@ -130,7 +131,14 @@ export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTab
           <Tabs.Panel value="library" className="flex flex-col gap-8">
             {libraryProblem && <p role="alert" className="px-4 text-center text-base text-kumo-subtle">{libraryProblem}</p>}
             {chat.status === 'ready' && groups.length === 0 && !library.reading && !library.problem && (
-              <p className="px-4 text-center text-base text-kumo-subtle">Nothing here yet. What this workspace makes shows here.</p>
+              <EmptyState
+                size="section"
+                tinted
+                icon={TrayIcon}
+                title="Nothing made here yet"
+                description="The apps, documents and files this workspace’s chats make show here, this chat’s among them."
+                actions={[{ label: 'Back to chat', icon: CaretLeftIcon, onClick: onBack }]}
+              />
             )}
             {groups.map(({ key, label, entries }) => (
               <ListGroup key={key} label={label}>
@@ -163,7 +171,10 @@ export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTab
                 filter={ownAutomations}
                 onOpenItem={onOpenItem}
                 itemHref={itemHref}
-                empty="Nothing runs by itself from this chat yet. Ask here for something to happen on a schedule, or when something arrives."
+                empty={{
+                  description: 'Ask in this chat for something to happen on a schedule, like a morning summary, or whenever something arrives, like a new email.',
+                  action: { label: 'Back to chat', icon: CaretLeftIcon, onClick: onBack },
+                }}
               />
             )}
           </Tabs.Panel>

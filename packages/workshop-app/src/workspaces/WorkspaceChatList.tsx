@@ -1,10 +1,12 @@
 import { ChatListItem } from '@/blocks/ChatListItem'
 import { ListGroup } from '@/blocks/ListGroup'
 import { ListToolbar } from '@/blocks/ListToolbar'
+import { NoMatches } from '@/blocks/NoMatches'
 import { useChatNotifications } from '@/chat/useChatNotifications'
 import { isAgentRun } from '@/automations/agents'
-import { NotePencilIcon } from '@phosphor-icons/react'
+import { ChatsCircleIcon, NotePencilIcon } from '@phosphor-icons/react'
 import { Button } from '@/components/Button'
+import { EmptyState } from '@/components/EmptyState'
 import { useDevMode } from '@/hooks/useDevMode'
 import { useListView } from '@/hooks/useListView'
 import { chatList, chatTitle } from './chatList'
@@ -43,20 +45,27 @@ export const WorkspaceChatList = ({ workspaceId, onOpenChat, chatHref, builds = 
 
   return (
     <div className="flex flex-col gap-4">
-      <ListToolbar
-        noun="chats"
-        {...(listed.length > 0 ? { search: list.controls.search, order: list.controls.order, filter: list.controls.filter } : {})}
-        action={<Button variant="primary" icon={NotePencilIcon} onClick={onNewChat}>New chat</Button>}
-      />
+      {/* None with no chats, where the empty state has the way to start one. */}
+      {!(chats.status === 'ready' && listed.length === 0) && (
+        <ListToolbar
+          noun="chats"
+          {...(listed.length > 0 ? { search: list.controls.search, order: list.controls.order, filter: list.controls.filter } : {})}
+          action={<Button variant="primary" icon={NotePencilIcon} onClick={onNewChat}>New chat</Button>}
+        />
+      )}
       {chats.status === 'loading' && <p role="status" className="appears-late px-4 text-center text-base text-kumo-subtle">Loading chats…</p>}
       {chats.status === 'failed' && <p className="px-4 text-center text-base text-kumo-subtle">Couldn’t load chats: {chats.message}</p>}
-      {chats.status === 'ready' && listed.length === 0 && <p className="px-4 text-center text-base text-kumo-subtle">No chats yet.</p>}
-      {listed.length > 0 && shown.length === 0 && (
-        <p className="flex items-center justify-center gap-3 px-4 text-base text-kumo-subtle">
-          No chats match.
-          <Button variant="ghost" onClick={list.showAll}>Show all</Button>
-        </p>
+      {chats.status === 'ready' && listed.length === 0 && (
+        <EmptyState
+          size="section"
+          tinted
+          icon={ChatsCircleIcon}
+          title="No chats yet"
+          description="Chats in this workspace show here. Ask for an app, a document or something to run by itself, and it’s made here."
+          actions={[{ label: 'New chat', icon: NotePencilIcon, variant: 'primary', onClick: onNewChat }]}
+        />
       )}
+      {listed.length > 0 && shown.length === 0 && <NoMatches noun="chats" onShowAll={list.showAll} />}
       {/* Another order is another list, cut to rather than moved to row by row. */}
       <div key={list.order.id} className="flex flex-col gap-3">
         {groups.map(({ key, label, entries }) => (
