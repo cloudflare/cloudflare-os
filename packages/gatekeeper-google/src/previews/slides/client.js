@@ -394,6 +394,18 @@ function forgetPictures(slideId) {
   }
 }
 
+// Lets go of a card's drawing, and with it of the room its slide's own pictures took among those
+// read, which the slides still drawn then have.
+function letGo(card) {
+  forgetPictures(card.id);
+  drawings.delete(card.id);
+  card.stages = [];
+  for (const node of [card.sheet, card.mini]) {
+    node.replaceChildren();
+    node.classList.add('wait');
+  }
+}
+
 // ---------------------------------------------------------------------------------------------
 // The cards: one for each slide, holding it drawn, what changes on it, and its speaker notes
 
@@ -687,7 +699,7 @@ function layOut(drawn) {
     if (card.listed) notes?.remove();
     if (card.listed) card.changes.hidden = true;
     // And keeps nothing of its drawing: drawn again, it is read and filled again.
-    if (card.listed && !tooLarge(row)) drawings.delete(row.id);
+    if (card.listed && !tooLarge(row)) letGo(card);
     // Room for the notes the listing says the slide has, so the slides under it stay put.
     else if (!notes && (row.slide ?? row.was).hasSpeakerNotes) card.node.appendChild(make('div', 'notes same')).append(make('div', 'ghost'));
     showHeader(card, row, row.slide ? String(++number) : '–');

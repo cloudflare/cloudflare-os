@@ -410,6 +410,23 @@ it('draws a slide again in full, notes and all, once it is back among the 50', a
   expect(notes()).toBe('Speaker notesMind the gap')
 })
 
+it('reads the pictures of a slide newly drawn in the room left by one no longer drawn', async () => {
+  const saved = listed(...Array.from({ length: 64 }, (_, n) => `Slide ${n + 1}`))
+  const photo = (id: string): Piece => ({ id, bounds: { x: 0, y: 0, width: 10, height: 10 }, kind: 'picture', of: 'image', pictureId: id })
+  // As many pictures as are read in all, on a slide that a change far down the deck displaces.
+  const deck: Deck = { saved, drawings: { s49: { drawing: slide(Array.from({ length: 75 }, (_, n) => photo(`p${n}`))) } } }
+  const { called, card, refresh, pictured } = await draw(deck)
+  await expect.poll(() => called('readPicture'), { timeout: 5_000 }).toHaveLength(75)
+
+  const edited = retitled('s60')
+  await refresh({
+    changes: [edit(1, 's60', 's60-title')],
+    drawings: { ...deck.drawings, s60: { ...edited, drawing: slide([...edited.drawing.elements, photo('new')]) } },
+  })
+  await pictured('new')
+  expect(card('s49').querySelectorAll('img')).toHaveLength(0)
+})
+
 it('asks for the fonts its slides are set in, and draws without one it cannot have', async () => {
   const { called, card } = await draw({
     saved: listed('Fonts'),
