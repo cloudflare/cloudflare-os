@@ -1427,6 +1427,9 @@ function digested(value: EnteredValue): unknown {
   return "formula" in value ? ["f", compactFormula(value.formula)] : ["e", value.error];
 }
 
+/** About how many characters of a guard's text `guardDigest` hands the hash at once. */
+const DIGEST_PIECE = 8_192;
+
 /**
  * A hex SHA-256 of what a batch overwrites or removes: the size and title of each sheet in
  * `guard.sheetIds`, the cells of each of `guard.cells` as entered (`entered[i]`, those of
@@ -1446,23 +1449,31 @@ export async function guardDigest(
   // What is digested is the UTF-8 of `JSON.stringify([described, cells, ...order])`, where `cells`
   // holds one flat array of digested values for each area and `order` is absent or one array of
   // IDs. A queued batch stores this digest and its approval compares a fresh one with it, so those
-  // bytes are fixed. They are fed to the hash a row at a time, so that a guard of 50,000 cells
-  // holds the text of one row and never the text of them all.
+  // bytes are fixed. They are fed to the hash in pieces of about `DIGEST_PIECE` characters, so
+  // that a guard of 50,000 cells holds a piece of its text and never the text of them all, and a
+  // guard of many short rows makes a few calls to the hash and not one a row.
   let hash = createHash("sha256");
-  hash.update(`[${JSON.stringify(described)},[`, "utf8");
+  let piece = "";
+  let add = (text: string) => {
+    piece += text;
+    if (piece.length >= DIGEST_PIECE) {
+      hash.update(piece, "utf8");
+      piece = "";
+    }
+  };
+  add(`[${JSON.stringify(described)},[`);
   guard.cells.forEach(({ rect }, i) => {
-    hash.update(i > 0 ? ",[" : "[", "utf8");
+    add(i > 0 ? ",[" : "[");
     // A rectangle of no column has no value, in however many rows.
     for (let row = rect.startRow; row < rect.endRow && rect.startColumn < rect.endColumn; row++) {
-      let values: string[] = [];
       for (let column = rect.startColumn; column < rect.endColumn; column++) {
-        values.push(JSON.stringify(digested(entered[i]?.[row - rect.startRow]?.[column - rect.startColumn] ?? null)));
+        let value = digested(entered[i]?.[row - rect.startRow]?.[column - rect.startColumn] ?? null);
+        add((row > rect.startRow || column > rect.startColumn ? "," : "") + JSON.stringify(value));
       }
-      hash.update((row > rect.startRow ? "," : "") + values.join(","), "utf8");
     }
-    hash.update("]", "utf8");
+    add("]");
   });
   let order = guard.order ? `,${JSON.stringify(sheets.toSorted((a, b) => a.index - b.index).map(({ id }) => id))}` : "";
-  hash.update(`]${order}]`, "utf8");
+  hash.update(`${piece}]${order}]`, "utf8");
   return hash.digest("hex");
 }
