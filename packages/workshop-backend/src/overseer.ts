@@ -15,6 +15,10 @@ import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeC
   requireTextFiles, type FileContent, type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
 import { type AgentCatalog, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, matchesResourceUrlPattern, HookController, HookDescription, ActionKind, GitCache, GitPullHints, type GitPullTransfer, type GitShallowInfo, getResourceTypeId } from "@gadgets/workshop-shared/gatekeeper";
 import {
+  ADMIN_AGENT_LEND_SECONDS, ADMIN_BINDING_SUBRESOURCE, ADMIN_GATEKEEPER_VENDOR_ID,
+} from "@gadgets/workshop-shared/admin-agent";
+import type { AdminAgentApi, AdminAgentQueue } from "@gadgets/workshop-shared/admin-gatekeeper";
+import {
   DurableObject, WorkerEntrypoint, RpcStub as NativeRpcStub,
   RpcTarget as NativeRpcTarget, restore,
 } from "cloudflare:workers";
@@ -73,12 +77,16 @@ import {
   type AdminViewTerms,
 } from "./admin-access";
 import { adminViewCall } from "./admin-view";
+import { restrictAdminApi, type AdminAgentLend, type AdminAgentUse } from "./admin-agent";
 import type { AdminAuditDurableObject } from "./admin-audit";
+import { AdminApiImpl } from "./admin-settings";
+import { isDeploymentAdmin } from "./auth/config";
 import { DIRECTORY_ACTIVITY_INTERVAL_MS, type UserDirectoryDurableObject } from "./user-directory";
 import { chatChangeStatuses, foldCompactedCode, isTurnPrompt } from "./agent-compaction";
 import type { CachedRequest } from "./ai-models";
 import { ChatCacheWarmer } from "./chat-cache-warming";
 import { ambientGatekeeperMode } from "./provisioning-policy";
+import type { AdminConfig } from "./storage-schema/admin-settings-storage";
 import {
   blueprintContentKey, deleteBlueprintContent, readBlueprintRelease, sanitizeBlueprintOutput,
 } from "./blueprint-archive";
@@ -440,6 +448,42 @@ function defaultBlueprintBindingTitle(record: GatekeeperRecord, bindingName?: st
 
 function gatekeeperVendorId(record: GatekeeperRecord | undefined): string | undefined {
   return connectionVendorId(record)?.toLowerCase();
+}
+
+// Whether `record` is a connection of the admin gatekeeper: its vendor is
+// ADMIN_GATEKEEPER_VENDOR_ID (connectionVendorId()).
+function isAdminGatekeeper(record: GatekeeperRecord | undefined): boolean {
+  return connectionVendorId(record) === ADMIN_GATEKEEPER_VENDOR_ID;
+}
+
+// What a connection of the admin gatekeeper is told once its workspace's owner holds no account
+// of that gatekeeper (see OverseerImpl.lendAdminApi()).
+const ADMIN_ACCOUNT_REMOVED = "This workspace's owner has removed the deployment admin account, " +
+    "so this connection reaches nothing. Add the account again from Connectors, or remove the " +
+    "connection.";
+
+// What a member other than the owner is told when they use the admin connection from a session
+// they opened on the connection itself (see OverseerImpl.lendAdminApi()).
+const ADMIN_CONNECTION_OWNER_ONLY = "Only this workspace's owner can open the admin connection " +
+    "directly: its calls are recorded as the owner's. Use it from a chat.";
+
+// What a member is told when adding someone to an admins-only workspace is refused, by
+// OverseerImpl.adminsOnly()'s reason. The Share dialog shows it on the person's chip.
+const ADMINS_ONLY_REFUSALS = {
+  connection: "This workspace has the deployment admin connection, so only deployment admins " +
+      "can be added to it. Remove the connection to share it with others.",
+  reads: "This workspace has read through the deployment admin connection and its chats hold " +
+      "what was read, so only deployment admins can be added to it. Removing the connection " +
+      "does not change that.",
+};
+
+// Whether the deployment has turned the gatekeeper `vendorId` off: an admin disabled the
+// connector, or set its provisioning mode to "disabled". The one test behind every "Gatekeeper is
+// disabled." of this file: a hook's firing (startHook()) and the admin gatekeeper's lend
+// (lendAdminApi()).
+function gatekeeperOff(config: AdminConfig, vendorId: string): boolean {
+  return config.disabledGatekeepers.includes(vendorId) ||
+      ambientGatekeeperMode(config, vendorId) === "disabled";
 }
 
 // Produce a valid, unused binding name from a suggested base name: sanitized to identifier
@@ -1687,6 +1731,7 @@ class OverseerImpl implements AgentHooks {
     if (!this.ownerId) return false;
     if (userId === this.ownerId) return true;
     let sharing = await this.getSharingManager();
+    if (!this.admitsNonOwner(profileId)) return false;
     if (sharing.getEffectiveAccess(profileId)?.role !== "build") return false;
     let observer = this.storage.observers.get(profileId);
     return this.#inScopeGatekeepers("workspace").every(gk =>
@@ -6027,9 +6072,14 @@ class OverseerImpl implements AgentHooks {
     // the reset's response-delivery delay, and nothing else stops them reaching the new id in that
     // window. Publish, restart-check, and mark share one synchronous block, so no request can
     // interleave between the record appearing and the block taking effect.
+    //
+    // The admin gatekeeper's connection severs every collaborator session, "use" ones included:
+    // the workspace admits only deployment admins from here on (see adminsOnly()), so everyone
+    // present is admitted again under that rule, or not.
     if (creationSpec && "vendorId" in creationSpec) {
       if (this.#restartIfSessionsAffected(
-          "Gadget restarted because a new connection was added.", "build")) {
+          "Gadget restarted because a new connection was added.",
+          isAdminGatekeeper(gatekeeperRecord) ? undefined : "build")) {
         this.#gatekeepersPendingRestart.add(id);
       }
     }
@@ -6265,8 +6315,16 @@ class OverseerImpl implements AgentHooks {
       // One transaction: a failed audit write must not leave a policy flag latched without the
       // revocation below, nor an action ID spent.
       let actionId = this.storage.transaction(() => {
+        let gatekeeper = this.storage.gatekeepers.get(gatekeeperId);
         if (description.containsRestrictedData) {
           this.storage.containsRestrictedData.put(true);
+          // ADMIN_BINDING_SUBRESOURCE is the one subresource id the Workshop reads rather than
+          // treats as opaque: only the gatekeeper's own declaration says a read was made through
+          // its admin binding (see adminsOnly()).
+          if (isAdminGatekeeper(gatekeeper) &&
+              description.subresources?.includes(ADMIN_BINDING_SUBRESOURCE)) {
+            this.storage.adminReads.put(true);
+          }
         }
         if (description.ownerInvitesOnly) {
           this.storage.ownerInvitesOnly.put(true);
@@ -6274,8 +6332,6 @@ class OverseerImpl implements AgentHooks {
 
         let actionId = this.storage.nextActionId.get();
         this.storage.nextActionId.put(actionId + 1);
-
-        let gatekeeper = this.storage.gatekeepers.get(gatekeeperId);
 
         // Only an observation whose subresources were verified keeps them, which makes it an
         // observer requirement (see ActionRecord); a pending creation's simulated read must not.
@@ -7441,11 +7497,80 @@ class OverseerImpl implements AgentHooks {
       executionId?: string, holder?: SessionHolder): Promise<RpcStub<Session>> {
     this.assertGatekeeperUsable(id);
     let leave = holder && this.joinSession(holder);
-    let queue = this.storage.gatekeepers.get(id)?.creationSpec?.type === "agentSpawner"
+    let record = this.storage.gatekeepers.get(id);
+    let queue = record?.creationSpec?.type === "agentSpawner"
         ? new AgentSpawnerQueueImpl(this, id, caller, undefined, executionId, leave)
+        : isAdminGatekeeper(record)
+        ? new AdminAgentQueueImpl(this, id, caller, executionId, leave, holder?.profileId)
         : new ApprovalQueueImpl(this, id, caller, undefined, executionId, leave);
     // @ts-expect-error TODO: Remove annotation when Cap'n Web fixes cyclic type issues
     return facet.startSession(queue);
+  }
+
+  /**
+   * Lend connection `gatekeeperId`, the admin gatekeeper's, this workspace's owner's Admin API
+   * for `use` (see AdminAgentUse). Throws, lending nothing, unless the connection is the admin
+   * gatekeeper's, the deployment has not turned that gatekeeper off, the owner is a deployment
+   * admin now and still holds an account of that gatekeeper (the account keeps no credential the
+   * gatekeeper could end, so removing it ends its connections here, where the power is lent), and
+   * a session a member opened directly from the connection was opened by the owner. The origin
+   * recorded with every call is this workspace and the chat `caller` is tied to, if any. THE one
+   * place an AdminApiImpl is made with via "gatekeeper": it hands that AdminApiImpl to
+   * restrictAdminApi() (admin-agent.ts) and returns the result.
+   *
+   * What a lend costs, none of it cached, so that turning the gatekeeper off stops the very next
+   * call and removing the account the next lend: one read of the admin config
+   * (readAdminConfig(), a single KV get) and one call to the owner's user object
+   * (holdsGatekeeperAccount()) when the lend is made, and one more config read before each call
+   * through it and through a view it returned. The first call does not reuse the lend's read: a
+   * lend can be held for its whole life before its first call. A binding in an agent's or a
+   * gadget's code opens a session for each call it makes (GatekeeperLoopback), so each such call
+   * costs two config reads and one call to the owner's user object.
+   */
+  async lendAdminApi(gatekeeperId: number, caller: GatekeeperCaller, use: AdminAgentUse)
+      : Promise<AdminAgentLend> {
+    let assertAdminGatekeeper = () => {
+      if (!isAdminGatekeeper(this.storage.gatekeepers.get(gatekeeperId))) {
+        throw new Error("This connection is not the admin gatekeeper's.");
+      }
+    };
+    let off = async () =>
+        gatekeeperOff(await readAdminConfig(this.env), ADMIN_GATEKEEPER_VENDOR_ID);
+    let admin = await this.adminConnectionOwner(gatekeeperId);
+    // Every call is recorded as the owner's. A chat keeps who prompted its agent; a session
+    // another member opened from the connection itself would leave nobody, so it is lent nothing.
+    if (use.opener !== undefined && use.opener !== admin) {
+      throw new Error(ADMIN_CONNECTION_OWNER_ONLY);
+    }
+
+    // The connection may have been removed across the await. Nothing is awaited from here on.
+    assertAdminGatekeeper();
+    let chatId = "chatId" in caller ? caller.chatId : undefined;
+    let agent = {workspaceId: this.ctx.id.toString(), ...(chatId !== undefined && {chatId})};
+    return restrictAdminApi(
+        new AdminApiImpl(this.ctx, this.env, admin, {via: "gatekeeper", agent}),
+        this.env, admin, use, off);
+  }
+
+  // Throws unless connection `gatekeeperId` is the admin gatekeeper's, the deployment has not
+  // turned that gatekeeper off, and the owner is a deployment admin who still holds an account of
+  // it: what lendAdminApi() asks before it lends anything. Resolves the owner's profile id.
+  async adminConnectionOwner(gatekeeperId: number): Promise<string> {
+    if (!isAdminGatekeeper(this.storage.gatekeepers.get(gatekeeperId))) {
+      throw new Error("This connection is not the admin gatekeeper's.");
+    }
+    if (gatekeeperOff(await readAdminConfig(this.env), ADMIN_GATEKEEPER_VENDOR_ID)) {
+      throw new Error("Gatekeeper is disabled.");
+    }
+    let admin = await this.getOwnerProfileId();
+    if (!isDeploymentAdmin(this.env, admin)) {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.notAdmin);
+    }
+    if (!await retryOnDoReset(() => this.ownerUserDo().holdsGatekeeperAccount(
+        ADMIN_GATEKEEPER_VENDOR_ID), this.logger)) {
+      throw new Error(ADMIN_ACCOUNT_REMOVED);
+    }
+    return admin;
   }
 
   // WorktreeSessionHost: ReplicableWorktree.getReplicator(). The stub is persistent, so a
@@ -11134,8 +11259,10 @@ class OverseerImpl implements AgentHooks {
     this.#updateAlarm();
     let work = this.deliverUserUpdates();
     this.ctx.waitUntil(work);
-    // Preserve the scoped Outputs refresh when access narrows without changing the role.
-    let outputs = await Promise.allSettled(affected.flatMap(entry => entry.newAccess === null ? [] : [
+    // Preserve the scoped Outputs refresh when access narrows without changing the role. A
+    // collaborator the workspace does not admit (admitsNonOwner()) is sent no index of it.
+    let outputs = await Promise.allSettled(affected.flatMap(entry =>
+        entry.newAccess === null || !this.admitsNonOwner(entry.profile.id) ? [] : [
       boundedUserUpdate(this.users.get(this.users.idFromName(entry.profile.id)).syncWorkspaceOutputs(
         this.ctx.id.toString(), this.outputsSnapshot(entry.newAccess))),
     ]));
@@ -11145,6 +11272,34 @@ class OverseerImpl implements AgentHooks {
       });
     }
     await work;
+  }
+
+  // Whether this workspace has an admin gatekeeper connection (isAdminGatekeeper()). Synchronous.
+  hasAdminConnection(): boolean {
+    return [...this.storage.gatekeepers.list()].some(isAdminGatekeeper);
+  }
+
+  // Why this workspace admits, beside its owner, only deployment admins, or undefined when it
+  // admits whoever it is shared with: "reads" once anything was read through the admin binding of
+  // an admin gatekeeper connection (storage.adminReads: for good, whether or not the connection
+  // is still there, since removing it, or every chat, does not remove what was read), else
+  // "connection" while it has one. A workspace that had the connection and read nothing through
+  // it is ordinary again as soon as the connection is removed: the collaborators kept in its
+  // sharing list are admitted at their next open. Synchronous.
+  adminsOnly(): "reads" | "connection" | undefined {
+    return this.storage.adminReads.get() ? "reads"
+        : this.hasAdminConnection() ? "connection" : undefined;
+  }
+
+  // Whether `profileId`, who is not the owner, may be admitted to this workspace in any role:
+  // always, unless the workspace is adminsOnly(), and then only while they are a deployment
+  // admin. Read from the environment at each admission, never stored. EVERY path that lets a
+  // non-owner in, sends them the workspace's state or answers them from its sharing records
+  // asks it: open() before a share key is redeemed, authorizeCollaborator(), gadgetOpenMode()
+  // (a gadget's live open and a snapshot's), mayReadChatState(), addCollaborator(), and the Outputs refreshes of open() and
+  // refreshAffectedCollaboratorListings().
+  admitsNonOwner(profileId: string): boolean {
+    return !this.adminsOnly() || isDeploymentAdmin(this.env, profileId);
   }
 
   // The authorization gate every non-owner entry point (open(), and resumed agent turns in
@@ -11166,6 +11321,9 @@ class OverseerImpl implements AgentHooks {
         requireBuild?: boolean;
       } = {}): Promise<CollaboratorAccess | null> {
     let sharing = await this.getSharingManager();
+    // Read after the await, in the step that counts the session below: adding the admin
+    // connection severs the sessions that are counted then.
+    if (!this.admitsNonOwner(profileId)) return null;
     let access = sharing.getEffectiveAccess(profileId);
     if (!access || (opts.requireBuild && access.role !== "build")) return null;
     if (access.role !== "build") return access;
@@ -11189,12 +11347,13 @@ class OverseerImpl implements AgentHooks {
 
   // How `profileId` may open gadget `gadgetId`: "live", only to "view" it as a snapshot, or not at
   // all (null). Their effective access decides -- re-read live, since the workspace shell they
-  // hold was admitted with whatever access they had then -- and the gadget must be one that can be
-  // opened.
+  // hold was admitted with whatever access they had then -- the workspace must admit them
+  // (admitsNonOwner()), and the gadget must be one that can be opened.
   async gadgetOpenMode(profileId: string, gadgetId: WorkpieceId)
       : Promise<"live" | "view" | null> {
     let access = (await this.getSharingManager()).getEffectiveAccess(profileId);
-    if (!access || !accessIncludesGadget(access, gadgetId) || !this.isShareableGadget(gadgetId)) {
+    if (!this.admitsNonOwner(profileId) || !access || !accessIncludesGadget(access, gadgetId) ||
+        !this.isShareableGadget(gadgetId)) {
       return null;
     }
     return accessIncludesLiveGadget(access, gadgetId) ? "live" : "view";
@@ -11883,6 +12042,13 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     if (!isOwner) {
       let sharing = await this.impl.getSharingManager();
 
+      // Before a share key is redeemed, so that a workspace which admits only deployment admins
+      // spends no key on, and stores as a collaborator, nobody else. The denial is the one an
+      // unauthorized caller gets below.
+      if (!this.impl.admitsNonOwner(profileId)) {
+        throw createOpenWorkspaceError(OPEN_WORKSPACE_ERROR_CODES.workspaceAccessDenied);
+      }
+
       // If a share key was provided, redeem it. The owner already has full access and should not
       // appear in the collaborators table.
       if (shareKey) {
@@ -11946,7 +12112,9 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
           return;
         }
         // Catch up whatever happened while they were away; changes from here on reach them
-        // through the session fan-out (joinOutputsFanout).
+        // through the session fan-out (joinOutputsFanout). Asked again after the awaits: an
+        // admin gatekeeper connection added meanwhile admits only admins.
+        if (!this.impl.admitsNonOwner(profileId)) return;
         await this.impl.syncOutputsTo(clientUser, this.impl.outputsSnapshot(access));
       })();
     }
@@ -12108,9 +12276,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
         gatekeeperVendorId(this.impl.storage.gatekeepers.get(record.gatekeeperId));
     if (!vendorId) throw new Error("Hook vendor is unavailable.");
 
-    let config = await readAdminConfig(this.env);
-    if (config.disabledGatekeepers.includes(vendorId) ||
-        ambientGatekeeperMode(config, vendorId) === "disabled") {
+    if (gatekeeperOff(await readAdminConfig(this.env), vendorId)) {
       throw new Error("Gatekeeper is disabled.");
     }
 
@@ -12898,6 +13064,18 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       : Promise<GatekeeperClient<any> | null> {
     let {class: cls, vendorId, typeUrlPattern, resourceTypeId} =
         await this.#clientUser.getGatekeeperClassFor(accountId, resourceUrl);
+    // Every call through the admin gatekeeper's connection is the owner's, so only the owner
+    // adds it, while they are a deployment admin. Nothing else makes a record of that vendor: its
+    // account declares no singleton for ensureAmbientCapsules() to inject, and it offers no
+    // resource for createExternalResource() to create.
+    if (vendorId === ADMIN_GATEKEEPER_VENDOR_ID) {
+      if (!this.isOwner) {
+        throw new Error("Only this workspace's owner can add the admin connection.");
+      }
+      if (!isDeploymentAdmin(this.impl.env, this.clientProfileId)) {
+        throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.notAdmin);
+      }
+    }
     let creationSpec: GatekeeperCreationSpec = {
       type: "gatekeeper",
       vendorId,
@@ -13895,7 +14073,12 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       return null;
     }
 
-    return (await this.impl.getSharingManager()).addCollaborator({
+    let sharing = await this.impl.getSharingManager();
+    // Nobody is stored: the inviter is shown why on that person's chip.
+    if (!this.impl.admitsNonOwner(profile.id)) {
+      throw new Error(ADMINS_ONLY_REFUSALS[this.impl.adminsOnly()!]);
+    }
+    return sharing.addCollaborator({
       caller: this.#sharingCaller(),
       profile,
       grant,
@@ -14404,6 +14587,7 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
       admin: this.#adminId,
       sessionId: this.#sessionId,
       via: this.#terms.via,
+      ...(this.#terms.agent && {agent: this.#terms.agent}),
       // A title has no length limit of its own, and an uncut one could overflow the
       // deployment-wide row and so refuse every investigation of this workspace.
       workspaceTitle: cutAdminAuditText(impl.storage.title.get(), MAX_ADMIN_AUDIT_ARG_LENGTH),
@@ -15375,7 +15559,7 @@ class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
   readonly #end: SessionEnd;
 
   constructor(protected impl: OverseerImpl, protected gatekeeperId: number,
-              private caller: GatekeeperCaller, private hookId?: number,
+              protected caller: GatekeeperCaller, private hookId?: number,
               private executionId?: string, private leaveSession?: () => void) {
     super();
     this.#end = impl.sessionWatchers.newQueue();
@@ -15404,7 +15588,7 @@ class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
   }
 
   async requireLive(): Promise<void> {
-    let ended = this.#ended();
+    let ended = this.ended();
     if (ended !== undefined) throw new Error(ended);
     // A live hook can still be refused while its connection awaits a restart (retryably).
     if (this.hookId !== undefined) requireLiveHook(this.impl, this.hookId);
@@ -15415,7 +15599,7 @@ class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
     let ends: SessionEnd[] = [this.#end, `gatekeeper:${this.gatekeeperId}`];
     if (this.executionId !== undefined) ends.push(`execution:${this.executionId}`);
     if (this.hookId !== undefined) ends.push(`hook:${this.hookId}`);
-    return this.impl.sessionWatchers.watch(ends, watcher, this.#ended() !== undefined);
+    return this.impl.sessionWatchers.watch(ends, watcher, this.ended() !== undefined);
   }
 
   async getExecutionId(): Promise<string | undefined> {
@@ -15429,7 +15613,7 @@ class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
   }
 
   // Why this session is over, if it is: each of these also releases its watchers.
-  #ended(): string | undefined {
+  protected ended(): string | undefined {
     if (sessionConnectionGone(this.impl, this.gatekeeperId)) return CONNECTION_GONE;
     if (this.hookId !== undefined && !this.impl.storage.boundHooks.get(this.hookId)?.enabled) {
       return "Hook has been deleted or disabled.";
@@ -15633,6 +15817,58 @@ class AgentSpawnerQueueImpl extends ApprovalQueueImpl implements AgentSpawnerQue
 
     let author = this.impl.gadgetAuthorFor(userMeta.profile);
     return {chatId, meta, userMeta, author, initiatorUserId, modelId: config.modelId};
+  }
+}
+
+/**
+ * The queue openGatekeeperSession() gives the admin gatekeeper's sessions. Its lend runs out
+ * ADMIN_AGENT_LEND_SECONDS after the queue was made: the deadline is fixed here, so asking again
+ * does not extend it. That deadline is what bounds the session of a gadget or of the owner, for
+ * which ended() says nothing until the connection is gone.
+ *
+ * `opener` is the profile id of the collaborator whose session this queue was minted into, if
+ * any. It counts only for a session a member opened from the connection itself, the one
+ * `{from: "user"}` caller a queue is made for: that session has no chat to say who called, so
+ * unless its opener is the owner it is lent nothing (see OverseerImpl.lendAdminApi()).
+ */
+@validateRpc()
+class AdminAgentQueueImpl extends ApprovalQueueImpl implements AdminAgentQueue {
+  readonly #until = Date.now() + ADMIN_AGENT_LEND_SECONDS * 1000;
+  // Every lend this queue made, ended when the gatekeeper releases the queue.
+  #lends: AdminAgentLend[] = [];
+  #released = false;
+
+  constructor(impl: OverseerImpl, gatekeeperId: number, caller: GatekeeperCaller,
+              executionId?: string, leaveSession?: () => void, private opener?: string) {
+    super(impl, gatekeeperId, caller, undefined, executionId, leaveSession);
+  }
+
+  /**
+   * Unvalidated: validation would wrap the returned stub in a Proxy, which the runtime exports as
+   * a new capability whose methods it can't find. It takes no arguments, and what the stub
+   * answers is decided call by call in restrictAdminApi(), before AdminApiImpl validates its own.
+   */
+  @skipRpcValidation()
+  async getAdminApi(): Promise<NativeRpcStub<AdminAgentApi>> {
+    let lend = await this.impl.lendAdminApi(this.gatekeeperId, this.caller, {
+      for: "session",
+      until: this.#until,
+      live: () => {
+        let ended = this.ended();
+        if (ended !== undefined) throw new Error(ended);
+      },
+      ...(this.caller.from === "user" && this.opener !== undefined && {opener: this.opener}),
+    });
+    // The gatekeeper may have released the queue while this was being lent.
+    if (this.#released) lend.end();
+    this.#lends.push(lend);
+    return lend.api;
+  }
+
+  [Symbol.dispose](): void {
+    super[Symbol.dispose]();
+    this.#released = true;
+    for (let lend of this.#lends) lend.end();
   }
 }
 

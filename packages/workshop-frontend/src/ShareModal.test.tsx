@@ -1141,6 +1141,26 @@ describe('ShareModal', () => {
     expect(button(rendered, 'Invite').disabled).toBe(false)
   })
 
+  it('keeps the whole reason on the chip of someone an admins-only workspace would not admit', async () => {
+    const refusal = 'This workspace has read through the deployment admin connection and its chats hold '
+      + 'what was read, so only deployment admins can be added to it. Removing the connection does not change '
+      + 'that.'
+    const rendered = await render(
+      fakeOverseer({ addCollaborator: async () => { throw new Error(refusal) } }),
+      fakeAuthenticatedApi({ searchUsers: async () => [] }),
+    )
+    const input = peopleInput(rendered)
+
+    await typeDirectorySearch(rendered, 'nell@example.com')
+    await pressKey(input, 'Enter')
+    await pressKey(input, 'Enter')
+
+    expect(stagedNames(rendered)).toEqual(['nell@example.com'])
+    expect(button(rendered, 'Remove nell@example.com').closest('[title]')?.getAttribute('title')).toBe(refusal)
+    expect(rendered.querySelector('[role="alert"]')?.textContent).toBe(`nell@example.com: ${refusal}`)
+    expect(toastAdd).not.toHaveBeenCalledWith(expect.objectContaining({ variant: 'error' }))
+  })
+
   it('does not expose results from the previous query', async () => {
     const addCollaborator = vi.fn<NonNullable<OverseerOverrides['addCollaborator']>>()
     const rendered = await render(

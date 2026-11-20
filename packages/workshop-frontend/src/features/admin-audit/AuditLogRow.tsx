@@ -3,6 +3,7 @@ import { Badge, Button, Table } from '@cloudflare/kumo'
 import { CaretRight } from '@phosphor-icons/react'
 import type {
   AdminAccessRecord,
+  AdminAgentOrigin,
   AdminAuditRecord,
   AdminSettingChange,
   AdminUserAccessRecord,
@@ -17,7 +18,7 @@ import { KindBadge } from './KindBadge'
 /** How many columns an AuditLogRow fills, for the table's empty and detail rows. */
 export const AUDIT_LOG_COLUMNS = 6
 
-const VIA_NAMES: Record<AdminVia, string> = { api: 'API', cli: 'CLI' }
+const VIA_NAMES: Record<AdminVia, string> = { api: 'API', cli: 'CLI', gatekeeper: 'Admin connection' }
 
 // The settings stored as lists of entries with ids, whose keyless change is a change of order.
 const ORDERED_SETTING_NAMES = new Map([
@@ -93,6 +94,18 @@ const Detail = ({ term, children }: { term: string; children: ReactNode }) => (
   </div>
 )
 
+// Where a call made through the admin gatekeeper came from: the workspace whose connection made
+// it, and the chat, when the workspace tied the call to one. The terms say "from", since the
+// record's own workspace is the one the call reached.
+const AgentOriginDetails = ({ agent }: { agent: AdminAgentOrigin }) => (
+  <>
+    <Detail term="From workspace">
+      <span className="block font-mono text-xs text-kumo-subtle break-all">{agent.workspaceId}</span>
+    </Detail>
+    {agent.chatId !== undefined && <Detail term="From chat">{agent.chatId}</Detail>}
+  </>
+)
+
 const AccessDetails = ({ record, onFilterBy }: {
   record: AdminAccessRecord | AdminUserAccessRecord
   onFilterBy: (filter: AuditFilter) => void
@@ -129,14 +142,16 @@ const AccessDetails = ({ record, onFilterBy }: {
         </Detail>
       )}
       <Detail term="Via">{VIA_NAMES[record.via]}</Detail>
+      {record.agent && <AgentOriginDetails agent={record.agent} />}
     </dl>
   )
 }
 
 /**
  * One record of the Audit tab's log: a summary row (time, admin, action, kind, target user),
- * with a toggle that shows the rest in a row below it: how the call came, and a setting record's
- * changes or an access record's workspace or account, reason, level and arguments. An access
+ * with a toggle that shows the rest in a row below it: how the call came (for one an agent made
+ * through the admin gatekeeper, also the workspace and the chat it came from), and a setting
+ * record's changes or an access record's workspace or account, reason, level and arguments. An access
  * record's target user is the user the call reached: its workspace's owner, or the user whose
  * account it was made into. The admin's name and the target user, and in a workspace record's
  * details its workspace, filter the log by `onFilterBy`. Names are never cut: an action too long

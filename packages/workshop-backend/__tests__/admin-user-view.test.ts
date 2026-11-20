@@ -492,6 +492,36 @@ describe("opening an admin user view", () => {
     expect(records[0]!.at.getTime()).toBeLessThanOrEqual(Date.now());
   }));
 
+  it("opens for the admin gatekeeper, and records every call with where it came from",
+      () => withAccount(async user => {
+    await createAccount(user);
+    let agent = { workspaceId: "c".repeat(64), chatId: 4 };
+    let view = await open(user, { via: "gatekeeper", agent });
+    await view.describe();
+    // A refused call is recorded as the others are.
+    user.config.adminWorkspaceAccess = "off";
+    expect(await codeOf(view.listSessions())).toBe(ADMIN_ACCESS_ERROR_CODES.accessOff);
+    user.config.adminWorkspaceAccess = "metadata";
+    let records = await recordsOf(user.id);
+    expect(records.map(r => [r.method, r.refused])).toStrictEqual([
+      ["inspectUser", undefined], ["describe", undefined],
+      ["listSessions", ADMIN_ACCESS_ERROR_CODES.accessOff],
+    ]);
+    for (let record of records) {
+      expect(record, record.method).toMatchObject({ admin: ADMIN, via: "gatekeeper" });
+      expect(record.agent, record.method).toStrictEqual(agent);
+    }
+
+    // An origin with no chat is recorded without one, and a client's view with no origin.
+    let { chatId: _chatId, ...noChat } = agent;
+    await open(user, { via: "gatekeeper", agent: noChat });
+    await open(user, { via: "cli" });
+    let later = (await recordsOf(user.id)).slice(records.length);
+    expect(later.map(r => [r.via, r.agent])).toStrictEqual(
+        [["gatekeeper", noChat], ["cli", undefined]]);
+    expect(later[1]).not.toHaveProperty("agent");
+  }));
+
   it("exposes no method but the ones the audit names", () => withAccount(async user => {
     await createAccount(user);
     // Called inside the object, the open returns the view itself and not a stub.

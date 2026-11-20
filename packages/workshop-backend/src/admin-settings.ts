@@ -1,4 +1,4 @@
-import { ADMIN_ACCESS_ERROR_CODES, AdminApi, AdminAuditPage, AdminAuditQuery, AdminAuditStats, AdminAuditStatsQuery, AdminFormat, AdminFormatPatch, AdminInspectOptions, AdminModel, AdminResourceVendor, AdminSettingChange, AdminSettingMethod, AdminSettingsView, AdminUserPage, AdminUserQuery, AdminUserView, AdminVia, AdminWorkspaceAccess, AdminWorkspacePage, AdminWorkspaceQuery, AdminWorkspaceView, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, DeploymentUpdateStatus, GatewayModel, GatewayModelLevelTest, GatewayModelMode, GatewayModelSettings, GatewayModelTest, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_SITE_NAME_LENGTH, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, ReasoningLevel, SUGGESTED_MODELS, createAdminAccessError, getAdminAccessErrorCode, isAdminWorkspaceAccess, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
+import { ADMIN_ACCESS_ERROR_CODES, AdminAccessRecord, AdminApi, AdminAuditPage, AdminAuditQuery, AdminAuditStats, AdminAuditStatsQuery, AdminFormat, AdminFormatPatch, AdminInspectOptions, AdminModel, AdminResourceVendor, AdminSettingChange, AdminSettingMethod, AdminSettingsView, AdminUserPage, AdminUserQuery, AdminUserView, AdminWorkspaceAccess, AdminWorkspacePage, AdminWorkspaceQuery, AdminWorkspaceView, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, DeploymentUpdateStatus, GatewayModel, GatewayModelLevelTest, GatewayModelMode, GatewayModelSettings, GatewayModelTest, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_SITE_NAME_LENGTH, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, ReasoningLevel, SUGGESTED_MODELS, createAdminAccessError, getAdminAccessErrorCode, isAdminWorkspaceAccess, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
 import { GatekeeperVendor, getResourceTypeId, findResourceType } from '@gadgets/workshop-shared/gatekeeper';
 import { DurableObject } from 'cloudflare:workers';
 import { RpcTarget, type RpcStub } from 'capnweb';
@@ -13,13 +13,13 @@ import { AUTO_ROUTER_PROVIDER_NAMES, AiGatewayConfig, GatewayModels, assertGatew
 import { AgentTurnError, completeText } from './ai-invoke.js';
 import { gatewayBuiltInReasoning, gatewayReasoningLevels, getModel, isRuntimeModel } from './ai-models.js';
 import { SITE_LOGO_R2_KEY, siteLogoImage, validateSiteLogo } from './site-logo.js';
-import { ambientGatekeeperMode, DEFAULT_AMBIENT_GATEKEEPER_MODE } from './provisioning-policy.js';
+import { ambientGatekeeperMode, defaultAmbientGatekeeperMode } from './provisioning-policy.js';
 import { buildGatekeeperVendorMap } from './auth/auth-vendors.js';
 import { UserDurableObject } from './user.js';
 import type { UserDirectoryDurableObject } from './user-directory.js';
 import type { AdminAuditDurableObject } from './admin-audit.js';
 import type { OverseerDurableObject } from './overseer.js';
-import { type AdminSettingActor, type AdminViewTerms, adminAccessPolicy, adminAuditStatsDays, adminListLimit, adminSettingChange, adminViewLifetimeMs, lowerAdminWorkspaceAccess, maxAdminWorkspaceAccess, minAdminAuditRetentionDays, validateAdminAccessReason } from './admin-access.js';
+import { type AdminCaller, type AdminSettingActor, type AdminViewTerms, adminAccessPolicy, adminAuditStatsDays, adminCallerTerms, adminListLimit, adminSettingChange, adminViewLifetimeMs, lowerAdminWorkspaceAccess, maxAdminWorkspaceAccess, minAdminAuditRetentionDays, validateAdminAccessReason } from './admin-access.js';
 import { isDeploymentAdmin } from './auth/config.js';
 import { bundledBlueprintsManifestVersion, installBundledBlueprints } from './bundled-blueprints.js';
 import { BUNDLED_BLUEPRINTS } from './generated/bundled-blueprints.js';
@@ -1192,7 +1192,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
   /**
    * Set a gatekeeper's availability atomically (read-modify-write within the DO). Routes by kind: an
    * auto-provisioning ("ambient") gatekeeper stores its three-state mode in ambientGatekeeperModes
-   * (default stored as absence); an ordinary gatekeeper stores a binary enabled/disabled in
+   * (the vendor's default stored as absence); an ordinary gatekeeper stores a binary enabled/disabled in
    * disabledGatekeepers and rejects the ambient-only 'optional'.
    */
   async setGatekeeperMode(vendorId: string, mode: AmbientGatekeeperMode, actor: AdminSettingActor)
@@ -1203,7 +1203,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
     if (autoProvisions) {
       await this.#mutateAdminConfig(actor, config => {
         let modes = { ...config.ambientGatekeeperModes };
-        if (mode === DEFAULT_AMBIENT_GATEKEEPER_MODE) delete modes[vendorId]; else modes[vendorId] = mode;
+        if (mode === defaultAmbientGatekeeperMode(vendorId)) delete modes[vendorId]; else modes[vendorId] = mode;
         return { ...config, ambientGatekeeperModes: modes };
       });
     } else {
@@ -1308,14 +1308,15 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
   #sessionId = crypto.randomUUID();
 
   /**
-   * `adminUserId` is the requesting admin's canonical id and `via` the label derived from their
-   * client's User-Agent (AdminVia). The capability's audit `sessionId` is minted here, so there is
-   * one per AuthenticatedApi.getAdminApi() call. Reaches the AdminSettings, UserDirectory,
-   * AdminAudit, Overseer and User namespaces through `ctx.exports`, and reads ADMINS and the admin
-   * access bounds from `env`.
+   * `adminUserId` is the admin's canonical id and `caller` how their calls are labelled (see
+   * AdminCaller). The capability's audit `sessionId` is minted here, so there is one per
+   * capability. Reaches the AdminSettings, UserDirectory, AdminAudit, Overseer and User namespaces
+   * through `ctx.exports`, and reads ADMINS and the admin access bounds from `env`. `ctx` is a
+   * request's ExecutionContext, or the state of the workspace that lends this to the admin
+   * gatekeeper.
    */
-  constructor(ctx: ExecutionContext, private env: Cloudflare.Env, private adminUserId: string,
-              private via: AdminVia) {
+  constructor(ctx: Pick<ExecutionContext, "exports">, private env: Cloudflare.Env,
+              private adminUserId: string, private caller: AdminCaller) {
     super();
     this.admin = ctx.exports.AdminSettings.getByName("");
     this.directories = ctx.exports.UserDirectoryDurableObject;
@@ -1326,7 +1327,13 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
 
   // Who makes a change through `method` of this capability, as its audit record says.
   #actor(method: AdminSettingMethod): AdminSettingActor {
-    return { admin: this.adminUserId, sessionId: this.#sessionId, via: this.via, method };
+    return { admin: this.adminUserId, sessionId: this.#sessionId, via: this.caller.via, method };
+  }
+
+  // How a record or a stored value made through this capability is labelled: the caller's `via`
+  // and, for the admin gatekeeper, where the call came from. Nothing else of the caller is copied.
+  #label(): Pick<AdminAccessRecord, "via" | "agent"> {
+    return adminCallerTerms(this.caller);
   }
 
   getSettings(): Promise<AdminSettingsView> {
@@ -1578,7 +1585,7 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
       let listing = await this.#directoryListing(id.toString());
       await this.audits.getByName("").append({
         kind: "workspace", at: new Date(), admin: this.adminUserId, sessionId: this.#sessionId,
-        via: this.via, workspaceId: id.toString(), workspaceOwner: listing.ownerId,
+        ...this.#label(), workspaceId: id.toString(), workspaceOwner: listing.ownerId,
         workspaceTitle: listing.title, method: "inspectWorkspace",
         args: { expiresAt: expiresAt.toISOString() }, reason: trimmedReason, access: "off",
         refused: ADMIN_ACCESS_ERROR_CODES.accessOff,
@@ -1588,7 +1595,7 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
 
     // @ts-expect-error Cap'n Web RPC stubs and native RPC stubs are compatible but the type
     //     system doesn't know this.
-    return this.#openForAdmin(id, trimmedReason, { via: this.via, expiresAt });
+    return this.#openForAdmin(id, trimmedReason, { ...this.#label(), expiresAt });
   }
 
   // Mint the view. A workspace that turns out not to exist leaves the directory, which lists it
@@ -1637,7 +1644,7 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
       // Appended without a retention, as a view's records are.
       await this.audits.getByName("").append({
         kind: "user", at: new Date(), admin: this.adminUserId, sessionId: this.#sessionId,
-        via: this.via, userId, method: "inspectUser",
+        ...this.#label(), userId, method: "inspectUser",
         args: { expiresAt: expiresAt.toISOString() }, reason: trimmedReason, access: "off",
         refused: ADMIN_ACCESS_ERROR_CODES.accessOff,
       });
@@ -1649,7 +1656,7 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
     // @ts-expect-error Cap'n Web RPC stubs and native RPC stubs are compatible but the type
     //     system doesn't know this.
     return this.users.getByName(userId).openForAdmin(
-        this.adminUserId, trimmedReason, this.#sessionId, { via: this.via, expiresAt });
+        this.adminUserId, trimmedReason, this.#sessionId, { ...this.#label(), expiresAt });
   }
 
   async listAdminAudit(options: AdminAuditQuery = {}): Promise<AdminAuditPage> {

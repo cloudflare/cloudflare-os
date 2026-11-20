@@ -159,6 +159,13 @@ The compensating controls are:
   returning nothing;
 - `ADMIN_AUDIT_RETENTION_MIN_DAYS` sets a floor on how long those records are kept.
 
+A workspace that has the admin gatekeeper's connection, or that has read through its binding,
+admits beside its owner only deployment admins, which the Workshop checks at each open and each
+background read (`OverseerImpl.admitsNonOwner()`). That connection's `verifyObserverAccess()`
+therefore allows every observer it is asked about for the subresource id it reports, and none for
+any other: who may see what it read is decided by admission, not by an account
+(see [the gatekeeper's README](../packages/gatekeeper-admin/README.md#who-can-use-it-and-where)).
+
 [admin-access.md](admin-access.md) is the design record.
 
 ---
@@ -1008,7 +1015,11 @@ per-connection protocol, flag, or switch: each call to `authorizeObservation()` 
 - **`[]`:** an explicit "nothing restricts this read": no check, and no requirement recorded.
 - **`[GLOBAL_SUBRESOURCE_ID]` (`["global"]`):** the gatekeeper verifies that the observer's chosen
   account for the vendor can read everything disclosed on the one service instance the deployed
-  Worker's configuration fixes. The kernel treats it as an ordinary requirement. See the kit's
+  Worker's configuration fixes. The kernel treats it as an ordinary requirement: every id is
+  opaque to it, except `ADMIN_BINDING_SUBRESOURCE`, which a workspace reads on the admin
+  gatekeeper's observations
+  ([its README](../packages/gatekeeper-admin/README.md#after-the-connection-is-removed)).
+  See the kit's
   [connection-only recipe](../packages/gatekeeper-kit/USAGE.md#connection-only-access-global).
 
 `excludeObservers` and `subresources` may appear together; both are enforced (the exclusion check
@@ -1086,7 +1097,8 @@ The gatekeeper's side of the contract (ID rules and limits, `verifyObserverAcces
   reads are audited and enforce workspace policy but record no requirements, even if they report
   subresources.
 - **Removal.** A disconnected connection's audit records stay, but admission ignores them: its
-  checks go with it, even when data it read survives (edge case 8).
+  checks go with it, even when data it read survives (edge case 8), except that a workspace
+  which read through the admin gatekeeper's binding stays closed to non-admins.
 - **Direct contexts only.** A chat binding read records requirements only on that chat, checked
   against "build" collaborators; a gadget binding read only on that gadget, checked against
   "build" collaborators and those holding a gadget that reaches it. Gadget session access, root

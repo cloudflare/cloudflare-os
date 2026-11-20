@@ -85,6 +85,7 @@ const applyStateAction = <T,>(value: T, action: SetStateAction<T>): T =>
 export const ChatComposer = ({
   createCapsuleGatekeeper,
   getOverseer,
+  ownsWorkspace,
   onSend,
   isAgentActive,
   models,
@@ -120,6 +121,8 @@ export const ChatComposer = ({
    * to support lazy provisional-gadget creation on the Home page.
    */
   getOverseer: () => Promise<RpcStub<Overseer>> | RpcStub<Overseer>;
+  /** Whether the current user owns the workspace (see GatekeeperModalProps.ownsWorkspace). */
+  ownsWorkspace: boolean;
   onSend: (
     message: string | SlashCommandRequest,
     modelId: string | null,
@@ -1147,6 +1150,7 @@ export const ChatComposer = ({
         open={attachModalOpen}
         onClose={closeAttachModal}
         getOverseer={getOverseer}
+        ownsWorkspace={ownsWorkspace}
         onCreated={attachCreated}
         initialVendorId={attachModalPrefill?.resolution.vendorId}
         initialResourceUrl={attachModalPrefill?.url}

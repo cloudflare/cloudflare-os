@@ -8,6 +8,10 @@
 // emitters know nothing of this repository; this script is the one place that names the API's file,
 // its entry interface, its constants and the agent's root, and the only part that writes to disk.
 //
+// It also writes the schema the admin gatekeeper serves a deployment admin's agent from,
+// `generated/admin-api.schema.json`: the part of the same schema an `AdminApi` stub reaches, less
+// the methods workshop-shared's ADMIN_AGENT_KINDS keeps from an agent.
+//
 // Neither directory is committed. Whatever reads them generates them first, with --if-stale: the
 // `@gadgets/api-schema#generate` task, which the CLI's `build` and `test` and the integration tests
 // depend on, the CLI's and the integration tests' direct `test:run`, and the `cf-os` bin.
@@ -41,11 +45,16 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 // By relative path, not as a package: `@gadgets/api-cli` type-imports this package, so a dependency
 // back would close a workspace cycle.
 import { type AppApi, generate as renderCliFiles } from "../../api-cli/generator/emit.ts";
+// By relative path as well: plain `node` runs this script and resolves no workspace package for it,
+// which is why that module imports nothing. As a module of this script it is one of --if-stale's
+// inputs, so a method's change of kind regenerates.
+import { ADMIN_AGENT_KINDS } from "../../workshop-shared/src/admin-agent.ts";
 import { emitDeclarations } from "../src/emit/dts.ts";
 import { emitToolCatalog } from "../src/emit/tools.ts";
 // Type-only: the extractor loads TypeScript, which --if-stale skips when nothing is stale.
 import type { ExtractOptions } from "../src/extract.ts";
 import type { Schema } from "../src/schema.ts";
+import { subsetSchema } from "../src/subset.ts";
 
 const PACKAGE = join(import.meta.dirname, "..");
 const ROOT = join(PACKAGE, "..", "..");
@@ -72,6 +81,40 @@ const DTS_HEADER =
   "Generated from packages/workshop-shared/src/api.ts by packages/api-schema/scripts/generate.ts -- do not edit.\n" +
   `The Workshop API as an agent holding an ${AGENT_ROOT} stub sees it, without the credential methods.\n` +
   "Change api.ts and run `pnpm api-schema:generate`.";
+
+/** The service the admin gatekeeper serves its admin's agent: the root of the admin outputs. */
+export const ADMIN_ROOT = "AdminApi";
+
+/**
+ * The AdminApi methods the admin gatekeeper leaves out, as emitDeclarations() takes them: those
+ * ADMIN_AGENT_KINDS (workshop-shared) classifies "omitted".
+ */
+export const ADMIN_OMIT: string[] = Object.entries(ADMIN_AGENT_KINDS)
+  .filter(([, kind]) => kind === "omitted").map(([name]) => `${ADMIN_ROOT}.${name}`).toSorted();
+
+/**
+ * The schema the admin gatekeeper bundles: what a holder of an {@link ADMIN_ROOT} stub reaches, less
+ * {@link ADMIN_OMIT}, each kept method with its true parameters and result. The gatekeeper builds
+ * its sessions and its agent's declarations from it and checks each call's arguments against it.
+ *
+ * Throws, naming each method, when ADMIN_AGENT_KINDS and `schema`'s AdminApi do not name the same
+ * methods. workshop-shared's own type-check holds the two together; this script runs without it.
+ */
+function adminSchema(schema: Schema): Schema {
+  const subset = subsetSchema(schema, { root: ADMIN_ROOT, omit: ADMIN_OMIT });
+  const declared = schema.services[ADMIN_ROOT]!.methods.map((method) => method.name);
+  const classified = Object.keys(ADMIN_AGENT_KINDS);
+  const problems = [
+    ...classified.filter((name) => !declared.includes(name))
+      .map((name) => `ADMIN_AGENT_KINDS names ${name}, which ${ADMIN_ROOT} does not declare`),
+    ...declared.filter((name) => !classified.includes(name))
+      .map((name) => `${ADMIN_ROOT}.${name} has no kind in ADMIN_AGENT_KINDS`),
+  ];
+  if (problems.length > 0) {
+    throw new Error(`${problems.join("; ")} (packages/workshop-shared/src/admin-agent.ts)`);
+  }
+  return subset;
+}
 
 /** Where the gatekeeper app UIs' files go, from the repository root. */
 export const GATEKEEPER_APPS_DIR = "packages/api-schema/generated/gatekeeper-apps";
@@ -128,7 +171,8 @@ const json = (value: unknown) => `${JSON.stringify(value, null, 2)}\n`;
 
 /**
  * Every generated file's path and contents, rendered from `schema` and the gatekeeper app UIs
- * `apps`: api-schema's, the apps', then the CLI's.
+ * `apps`: api-schema's (the Workshop's four, then the admin gatekeeper's schema), the apps', then
+ * the CLI's.
  */
 export function renderApiSchema(schema: Schema, apps: GatekeeperApp[] = []): GeneratedFile[] {
   const agent = { root: AGENT_ROOT, omit: AGENT_OMIT };
@@ -148,6 +192,7 @@ export function renderApiSchema(schema: Schema, apps: GatekeeperApp[] = []): Gen
     { path: "packages/api-schema/generated/workshop-api.agent.d.ts", contents: declarations.full },
     { path: "packages/api-schema/generated/workshop-api.fragments.json", contents: json(fragments) },
     { path: "packages/api-schema/generated/workshop-api.tools.json", contents: json(emitToolCatalog(schema, agent)) },
+    { path: "packages/api-schema/generated/admin-api.schema.json", contents: json(adminSchema(schema)) },
     ...apps.flatMap((app) => [
       { path: `${GATEKEEPER_APPS_DIR}/${app.vendor}.schema.json`, contents: json(app.schema) },
       { path: `${GATEKEEPER_APPS_DIR}/${app.vendor}.d.ts`, contents: appDeclarations[app.vendor]! },
