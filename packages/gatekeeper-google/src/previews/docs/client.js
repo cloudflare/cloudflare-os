@@ -773,6 +773,8 @@ function selectTab(id) {
   tabId = id;
   loaded = false;
   shown = new Set();
+  // The copies offered are of the tab drawn, which is the one left until this one is read.
+  views.hidden = true;
 }
 
 async function load() {
