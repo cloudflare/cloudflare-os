@@ -213,7 +213,7 @@ async function connectThroughOAuth(
  */
 async function reconnect(
     google: Google, account: ReturnType<typeof accountHandle>, name: string, subject: string,
-    staged = true) {
+    staged = true, clientId?: string) {
   google.subjects.set(`access-${name}`, subject);
   await account.run(async (instance, state) => {
     await instance.commitReconnect(stageCredentials(state.storage.kv, {
@@ -221,6 +221,7 @@ async function reconnect(
       accessToken: {token: `access-${name}`, expires: new Date(Date.now() + 3_600_000)},
       grantedScopes: [], requestedResources: [],
       ...(staged ? {subject} : {}),
+      ...(clientId === undefined ? {} : {clientId}),
     }, Date.now()));
   });
 }
@@ -1208,6 +1209,23 @@ describe("Google grants after the deployment moved to another OAuth client", () 
     const current = await connection(google, "current", ada);
     await current.disconnect();
     expect(google.revoked).toEqual(["refresh-current"]);
+  });
+
+  // Dropped by the registry for holding another client's credentials, a connection that reconnects
+  // as the same Google account under the new client is listed again, and so spared.
+  it("lists again a former client's holder that reconnects under the new client", async () => {
+    const google = fakeGoogle();
+    const {ada} = googleAccounts();
+    const former = await formerConnection(google, "former", ada);
+    const other = await connection(google, "other", ada);
+    await other.disconnect();
+    expect(google.revoked).toEqual(["refresh-other"]);
+
+    await reconnect(google, former, "former-again", ada, true, "test-client");
+    const third = await connection(google, "third", ada);
+    await third.disconnect();
+    expect(google.revoked).toEqual(["refresh-other"]);
+    expect(await former.refresh()).toBe("access-former-again");
   });
 
   // Credentials whose client was never shown, as ones from before it was recorded, are not taken for

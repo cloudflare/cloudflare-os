@@ -1085,7 +1085,12 @@ export class UserAccount extends DurableObject<Env> {
     // Credentials another OAuth client issued, as before the deployment moved to the one it has
     // now, cannot be refreshed here: they hold nothing this deployment's connections could lose.
     let issuer = kv.get<string>(CREDENTIALS_CLIENT_KEY);
-    if (issuer !== undefined && issuer !== this.env.CLIENT_ID) return false;
+    if (issuer !== undefined && issuer !== this.env.CLIENT_ID) {
+      // The registry drops this object for the answer, so its record of being listed goes too: a
+      // reconnect under the deployment's client lists it again.
+      kv.delete(GRANT_CREDENTIALS_KEY);
+      return false;
+    }
     // Listed under this grant for credentials a reconnect replaced, not yet known to be the same
     // Google account's, it may hold another's: which it is is read now, and when it cannot be,
     // it cannot say.
