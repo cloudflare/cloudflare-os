@@ -144,7 +144,15 @@ export function createOpenAPIClient<const S extends Schema>(options: OpenAPIClie
 async function send(
   options: OpenAPIClientOptions, method: Method, template: string, init: AnyInit,
 ): Promise<unknown> {
-  const url = new URL(options.baseUrl.replace(/\/+$/, "") + fillPath(template, init.path ?? {}));
+  // Appended to the base URL, a path that does not start with "/" would extend its host or port.
+  if (!template.startsWith("/")) throw new Error(`The operation path "${template}" must start with "/".`);
+  const path = fillPath(template, init.path ?? {});
+  // The URL parser resolves "." and ".." segments, which would move the request to another route.
+  // It also drops tabs, newlines and surrounding spaces, which could otherwise hide such a segment.
+  if (/[\0-\x20]/.test(path) || /(^|[/\\])(\.|%2e){1,2}([/\\?#]|$)/i.test(path)) {
+    throw new Error(`The operation path "${template}" must not have a "." or ".." segment or whitespace.`);
+  }
+  const url = new URL(options.baseUrl.replace(/\/+$/, "") + path);
   for (const [name, value] of Object.entries(init.query ?? {})) {
     if (value === undefined) continue;
     for (const element of Array.isArray(value) ? value : [value]) {
