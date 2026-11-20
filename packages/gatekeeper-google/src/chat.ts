@@ -140,6 +140,8 @@ type ChatRevertInfo =
   | { type: "none" }
   | { type: "sentMessage"; messageName: string }
   | { type: "updatedMessage"; messageName: string; previousText: string; text: string }
+  // An edit that landed, which no read could tell from a later edit of the message.
+  | { type: "unverifiedEdit" }
   | { type: "addedReaction"; reactionName: string }
   | { type: "removedReaction"; messageName: string; emoji: string };
 
@@ -736,6 +738,11 @@ async function undo(api: ChatApi, self: ChatUser, info: ChatRevertInfo): Promise
       }
       return;
     }
+    case "unverifiedEdit":
+      return {
+        message: "This message may have been edited again after this change, so it can't be " +
+          "undone automatically. Edit it in Google Chat.",
+      };
     case "addedReaction":
       return api.deleteReaction(info.reactionName);
     case "removedReaction":
@@ -1885,7 +1892,7 @@ export class GoogleChatGatekeeperImpl
         if (landed) {
           // The edit landed before, only Chat's markup for it unread: never sent again, and the text
           // is its own only while the message is as that edit left it.
-          if (!sameEdit(landed.lastUpdateTime, raw.lastUpdateTime)) return { type: "none" };
+          if (!sameEdit(landed.lastUpdateTime, raw.lastUpdateTime)) return { type: "unverifiedEdit" };
         } else if (text === action.text && !retried) {
           return { type: "none" };
         } else if (text !== action.text) {
@@ -1903,7 +1910,7 @@ export class GoogleChatGatekeeperImpl
             store.setLandedEdit(actionId, updated.lastUpdateTime);
             // Read once the edit has landed, outside its attempt: a failed read says nothing of it.
             const read = await api.getRawMessage(target.committed);
-            if (!sameEdit(updated.lastUpdateTime, read.lastUpdateTime)) return { type: "none" };
+            if (!sameEdit(updated.lastUpdateTime, read.lastUpdateTime)) return { type: "unverifiedEdit" };
             text = chatMessageInfoFromRaw(read).formattedText;
           }
         }

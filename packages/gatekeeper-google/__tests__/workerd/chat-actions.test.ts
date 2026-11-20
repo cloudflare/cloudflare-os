@@ -1195,6 +1195,25 @@ describe("Google Chat gatekeeper behaviors", () => {
     await chat.applyAction(1);
     expect(backend.state.edits).toEqual([{name: messageName("root"), text: "Resolved"}]);
     expect(backend.state.messages[0].formattedText).toBe("Changed by hand");
+    expect(await chat.revertAction(1)).toEqual({message: expect.stringContaining("can't be undone automatically")});
+    expect(backend.state.messages[0].formattedText).toBe("Changed by hand");
+  });
+
+  // With no time for the edit, no read can tell it from a later one: undo is left to the owner.
+  it("leaves undoing an edit Chat gave no time for to the owner", async () => {
+    const backend = chatBackend();
+    backend.state.storeText = text => text.endsWith("\n") ? text : `${text}\n`;
+    backend.state.editsOmitFormattedText = true;
+    backend.state.editTime = "";
+    backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using message = (await space.getMessage(messageName("root"))).message;
+    await message.edit("Resolved");
+    await chat.applyAction(1);
+    expect(await chat.revertAction(1)).toEqual({message: expect.stringContaining("can't be undone automatically")});
+    expect(backend.state.edits).toEqual([{name: messageName("root"), text: "Resolved"}]);
+    expect(backend.state.messages[0].formattedText).toBe("Resolved\n");
   });
 
   // Google times an edit to the nanosecond, and two edits can share a millisecond: the later one
@@ -1219,7 +1238,7 @@ describe("Google Chat gatekeeper behaviors", () => {
       lastUpdateTime: "2026-11-20T06:00:00.123900Z",
     });
     await chat.applyAction(1);
-    await chat.revertAction(1).catch(() => undefined);
+    expect(await chat.revertAction(1)).toEqual({message: expect.stringContaining("can't be undone automatically")});
     expect(backend.state.edits).toEqual([{name: messageName("root"), text: "Resolved"}]);
     expect(backend.state.messages[0].formattedText).toBe("Changed by hand");
   });
