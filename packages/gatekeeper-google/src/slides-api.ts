@@ -1,4 +1,3 @@
-import { mapLimit } from "@gadgets/gatekeeper-kit/observers";
 import { readBytesCapped, ResponseTooLargeError } from "@gadgets/gatekeeper-kit/response-body";
 import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
 import { readGoogleJson } from "./google-response";
@@ -369,23 +368,51 @@ export class GoogleSlidesApi {
     return layout;
   }
 
-  // `getSlide` of each of `ids` with `fields`, at most `limit` at a time, in the order of `ids`,
-  // through the kit's `mapLimit`: once a request fails no other starts and those running are
-  // awaited. Of several failures it throws that of the ID earliest in `ids`, so the error a read
-  // reports does not depend on which answer came first.
-  async #getPages(
+  // `getSlide` of each of `ids` with `fields`, at most `limit` at a time, started in the order
+  // of `ids`. Once a request fails no other starts, and the read fails as soon as every request
+  // for an ID before the failed one has answered: of several failures it throws that of the ID
+  // earliest in `ids`, so the error a read reports does not depend on which answer came first,
+  // and a request for a later ID cannot change it. Those still running then finish unawaited,
+  // their answers dropped.
+  #getPages(
     presentationId: string, ids: readonly string[], limit: number, fields: string,
   ): Promise<RestSlide[]> {
-    let failures = new Map<number, unknown>();
-    try {
-      return await mapLimit(ids.map((id, index) => ({ id, index })), limit, ({ id, index }) =>
-        this.getSlide(presentationId, id, fields).catch((error: unknown) => {
-          failures.set(index, error);
-          throw error;
-        }));
-    } catch {
-      throw failures.get(Math.min(...failures.keys()));
-    }
+    return new Promise((resolve, reject) => {
+      let pages: RestSlide[] = [];
+      let answered: boolean[] = [];
+      let failures = new Map<number, unknown>();
+      let next = 0, settled = 0, done = false;
+      // Settles the read once the IDs answered from the first decide it.
+      let decide = () => {
+        while (settled < ids.length && answered[settled]) {
+          if (failures.has(settled)) {
+            done = true;
+            reject(failures.get(settled));
+            return;
+          }
+          settled++;
+        }
+        if (settled === ids.length) {
+          done = true;
+          resolve(pages);
+        }
+      };
+      let start = () => {
+        if (done || failures.size > 0 || next >= ids.length) return;
+        let index = next++;
+        this.getSlide(presentationId, ids[index], fields).then(
+          page => { pages[index] = page; },
+          (error: unknown) => { failures.set(index, error); },
+        ).finally(() => {
+          answered[index] = true;
+          if (done) return;
+          decide();
+          start();
+        });
+      };
+      for (let i = 0; i < Math.min(limit, ids.length); i++) start();
+      decide();
+    });
   }
 
   /**
