@@ -6,7 +6,7 @@
 
 import { flushSync } from 'react-dom'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { page } from 'vitest/browser'
 import { Toasty } from '@cloudflare/kumo'
 import { RpcStub, RpcTarget } from 'capnweb'
@@ -133,6 +133,7 @@ const renderPane = (pending: ActionLogEntry[]) => {
   }
   const resolved: string[] = []
   const created: ConnectionPreview[] = []
+  const discarded = vi.fn<() => void>()
   let subscriber: ActionsSubscriber | undefined
   const resolve = (decision: string) => async (id: number) => {
     resolved.push(`${decision} ${id}`)
@@ -158,10 +159,11 @@ const renderPane = (pending: ActionLogEntry[]) => {
         preview={{ gatekeeperId: DOC_ID, title: 'Paul Pierce' }}
         restricted={false}
         onCreated={preview => created.push(preview)}
+        onDiscarded={discarded}
       />
     </Toasty>,
   ))
-  return { doc, resolved, created, emit: (entry: ActionLogEntry) => subscriber!.entry(entry) }
+  return { doc, resolved, created, discarded, emit: (entry: ActionLogEntry) => subscriber!.entry(entry) }
 }
 
 // The frame's origin is opaque, so its DOM is out of this page's reach and the session's call log
@@ -273,4 +275,18 @@ it('opens anew on the document a creation made, whose approval ends the session 
 
   emit(action(2, { creation: true, state: 'approved', resourceTitle: 'Made', resourceUrl: url }))
   expect(created).toEqual([{ gatekeeperId: DOC_ID, title: 'Made', url, iconUrl: undefined }])
+})
+
+it('closes when the document it draws is discarded uncreated, which removes its connection', async () => {
+  const { created, discarded, emit } = renderPane([])
+
+  emit(action(2, { creation: true, state: 'pending' }))
+  // A change discarded leaves the document, and its preview, where they were.
+  emit(action(3, { state: 'rejected' }))
+  expect(discarded).not.toHaveBeenCalled()
+
+  // Whoever discarded it: the decision arrives as the log's entry, not from this pane's buttons.
+  emit(action(2, { creation: true, state: 'rejected' }))
+  expect(discarded).toHaveBeenCalledOnce()
+  expect(created).toEqual([])
 })

@@ -2467,6 +2467,7 @@ export default function GadgetEditor() {
                   overseer={overseer.stub}
                   preview={panePreview}
                   onCreated={setConnectionPreview}
+                  onDiscarded={closeWorkspacePane}
                   restricted={metadata?.containsRestrictedData === true}
                 />
               </div>
