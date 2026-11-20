@@ -124,11 +124,17 @@ there so its states can be reviewed in isolation.
 
 A new user is set up before anything else is read for them (`settings/OnboardingGate`, beneath
 `RpcGate`, asked `isOnboardingCompleted()` once a user, and letting them in where it cannot ask):
-in place of the app, laid out as the sign-in page is (`OnboardingFrame`), who they are (the
-picture, kept as it is chosen, and their name), then what the app can use on their behalf
-(`OnboardingServices`: each service to sign in to in a window of its own, and the tools the
-deployment adds as they are, such as the Context Library and Scheduled Tasks, each on unless
-switched off). Finishing keeps the name, turns those on (`provisionAmbientAccount`) and calls
+in place of the app, laid out as the sign-in page is (`OnboardingFrame`: one centred column, the
+way on in the middle of its foot on the first step, then at its end with Back at its start; its
+top and foot stay put and only what is asked between them scrolls, fading under each; a dot for
+each step, which goes to it, swelling on a spring when pointed at; the mascot happy as a step
+opens, then idle, and happy again for as long as it cheers each time it is clicked), who they are (as the profile settings start: the
+picture, kept as it is chosen, over their name, renamed where it is), then what the app can use on
+their behalf (`OnboardingServices`: each service to sign in to in a window of its own, a row as the
+Connections page has, the ones most people use first, in the order `onboardingChoicesOf` gives,
+which a connection does not change, in a surface that scrolls; and the tools the deployment adds as
+they are, such as Web Search and Scheduled Tasks, each on unless switched off).
+Finishing keeps the name, turns those on (`provisionAmbientAccount`) and calls
 `completeOnboarding()` (`settings/onboardingSteps.ts`, plain and tested); a tool that cannot be
 turned on is said and keeps nobody from going on. The connections step is left out once there is
 nothing to offer. There is no model step, as the old wizard had: the model is chosen in the

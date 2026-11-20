@@ -116,6 +116,11 @@ export const Onboarding = ({ onDone }: { onDone: () => void }) => {
   const frame = {
     step: { at: Math.min(at, steps.length - 1), of: steps.length },
     problem,
+    // A dot goes to its step as Back and Continue do, until finishing has begun.
+    onStep: finishing ? undefined : (index: number) => {
+      setProblem(undefined)
+      setAt(index)
+    },
     onBack: at > 0 ? () => {
       setProblem(undefined)
       setAt(at - 1)
@@ -126,7 +131,7 @@ export const Onboarding = ({ onDone }: { onDone: () => void }) => {
 
   if (step === 'profile') {
     return (
-      <OnboardingFrame key="profile" emotion={finishing ? 'thinking' : 'happy'} title={`Welcome to ${siteName}`} subtitle="Let’s set you up. It takes a moment." {...frame}>
+      <OnboardingFrame key="profile" emotion={finishing ? 'thinking' : 'happy'} title={`Welcome to ${siteName}`} subtitle="This is how the people you work with see you." {...frame}>
         <OnboardingProfile
           name={name}
           onNameChange={setName}
@@ -134,7 +139,6 @@ export const Onboarding = ({ onDone }: { onDone: () => void }) => {
           pictureBusy={pictureBusy}
           onChoosePicture={(file) => void setPicture('change your picture', () => avatarImage(file))}
           onRemovePicture={() => void setPicture('remove your picture', async () => null)}
-          disabled={finishing}
         />
       </OnboardingFrame>
     )
@@ -171,8 +175,7 @@ export const Onboarding = ({ onDone }: { onDone: () => void }) => {
       key="connections"
       emotion={finishing ? 'thinking' : problem ? 'sad' : 'idle'}
       title="Connect your services"
-      subtitle="What your gadgets and agents can use for you."
-      note="Optional. You can connect more any time from Connections."
+      subtitle="Sign in to what you use, so your agents can work with it. You can add more later."
       {...frame}
       // The tools' switches are seen before finishing turns any of them on.
       next={choices.status === 'loading' ? { ...frame.next, disabled: true } : frame.next}

@@ -25,15 +25,22 @@ const CONTEXT = vendor('context', 'Context Library', { autoProvisionsAccount: tr
 const SCHEDULER = vendor('scheduler', 'Scheduled Tasks', { autoProvisionsAccount: true })
 
 describe('onboardingChoicesOf', () => {
-  it('offers each service that can be signed in to by name, saying which are connected', () => {
+  it('offers each service that can be signed in to, saying which are connected', () => {
     const { services } = onboardingChoicesOf({ vendors: [SLACK, GITHUB, WIKI, CONTEXT], addable: [], accounts: [account(SLACK)] })
-    expect(services.map(({ name, connected }) => [name, connected])).toEqual([['GitHub', false], ['Slack', true]])
-    expect(services[1]).toMatchObject({ vendorId: 'slack', tagline: 'Messages' })
+    expect(services.map(({ name, connected }) => [name, connected])).toEqual([['Slack', true], ['GitHub', false]])
+    expect(services[0]).toMatchObject({ vendorId: 'slack', tagline: 'Messages' })
   })
 
-  it('offers the tools that are added as they are, but for those the user has', () => {
-    const { tools } = onboardingChoicesOf({ vendors: [], addable: [SCHEDULER, CONTEXT, SLACK], accounts: [account(SCHEDULER)] })
-    expect(tools.map(({ vendorId }) => vendorId)).toEqual(['context'])
+  it('offers the services most people use first, then the rest by name', () => {
+    const vendors = [vendor('zylo', 'Zylo'), vendor('canto', 'Canto'), GITHUB, vendor('google', 'Google'), SLACK, vendor('microsoft', 'Microsoft 365')]
+    const { services } = onboardingChoicesOf({ vendors, addable: [], accounts: [] })
+    expect(services.map(({ name }) => name)).toEqual(['Google', 'Microsoft 365', 'Slack', 'GitHub', 'Canto', 'Zylo'])
+  })
+
+  it('offers the tools that are added as they are, but for those the user has, the most used first', () => {
+    const SEARCH = vendor('websearch', 'Web Search', { autoProvisionsAccount: true })
+    const { tools } = onboardingChoicesOf({ vendors: [], addable: [SCHEDULER, CONTEXT, SLACK, SEARCH], accounts: [account(SCHEDULER)] })
+    expect(tools.map(({ vendorId }) => vendorId)).toEqual(['websearch', 'context'])
   })
 })
 

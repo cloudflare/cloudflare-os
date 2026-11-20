@@ -15,16 +15,23 @@ const Frame = ({ narrow = false, children }: { narrow?: boolean; children: React
   <div className={`relative h-[40rem] overflow-hidden rounded-2xl ring-1 ring-kumo-line ${narrow ? 'w-[22rem]' : 'w-[30rem]'}`}>{children}</div>
 )
 
+// In the order setting up gives them (`onboardingChoicesOf`): the most used first.
 const SERVICES = [
-  { key: 'github', name: 'GitHub', tagline: 'Code, issues and pull requests', logoUrl: undefined },
   { key: 'google', name: 'Google', tagline: 'Mail, calendar, docs and sheets', color: '#ffffff' },
-  { key: 'jira', name: 'Jira', tagline: 'Plan and track your team’s work', color: '#2684ff' },
+  { key: 'microsoft', name: 'Microsoft 365', tagline: 'SharePoint, OneDrive, Outlook mail and calendars' },
   { key: 'slack', name: 'Slack', tagline: 'Read and send messages', color: '#4a154b' },
+  { key: 'github', name: 'GitHub', tagline: 'Code, issues and pull requests', logoUrl: undefined },
+  { key: 'jira', name: 'Jira', tagline: 'Plan and track your team’s work', color: '#2684ff' },
   { key: 'notion', name: 'Notion', tagline: 'Pages and databases' },
+  { key: 'backstage', name: 'Backstage', tagline: 'Find services, teams, and internal docs' },
+  { key: 'canto', name: 'Canto', tagline: 'Search, download and upload brand assets' },
+  { key: 'clickhouse', name: 'ClickHouse', tagline: 'Explore schemas and query analytics data' },
 ]
 const TOOLS = [
-  { key: 'context', name: 'Context Library', tagline: 'Skills and documents your agents can read' },
-  { key: 'scheduler', name: 'Scheduled Tasks', tagline: 'Run gadgets on a schedule' },
+  { key: 'websearch', name: 'Web Search', tagline: 'Search the public web' },
+  { key: 'context', name: 'Skills', tagline: 'Reusable instructions and workflows for agents' },
+  { key: 'scheduler', name: 'Scheduled Tasks', tagline: 'Run workspace tasks on a schedule' },
+  { key: 'container', name: 'Linux Container', tagline: 'Workspace Linux environment' },
 ]
 
 /** The profile step, working: a picture chosen is shown, and the name typed is kept. */
@@ -37,8 +44,9 @@ const ProfileStep = ({ narrow, busy = false, problem }: { narrow?: boolean; busy
       <OnboardingFrame
         emotion={busy ? 'thinking' : 'happy'}
         title="Welcome to Cloudflare OS"
-        subtitle="Let’s set you up. It takes a moment."
+        subtitle="This is how the people you work with see you."
         step={{ at: 0, of: 2 }}
+        onStep={busy ? undefined : (at) => say(`to step ${at + 1}`)}
         problem={problem ? { title: 'Couldn’t change your picture', description: problem } : undefined}
         next={{ label: 'Continue', onSelect: () => say(`continue as ${name}`) }}
       >
@@ -65,9 +73,9 @@ const ServicesStep = ({ narrow, finishing = false, failedTool }: { narrow?: bool
       <OnboardingFrame
         emotion={finishing ? 'thinking' : failedTool ? 'sad' : 'idle'}
         title="Connect your services"
-        subtitle="What your gadgets and agents can use for you."
-        note="Optional. You can connect more any time from Connections."
+        subtitle="Sign in to what you use, so your agents can work with it. You can add more later."
         step={{ at: 1, of: 2 }}
+        onStep={finishing ? undefined : (at) => say(`to step ${at + 1}`)}
         problem={failedTool ? { title: `Couldn’t turn on ${failedTool}`, description: 'You can add it later from Connections.', action: { label: 'Continue', onSelect: () => say('continue') } } : undefined}
         onBack={() => say('back')}
         next={{ label: finishing ? 'Setting up…' : 'Get started', busy: finishing, disabled: failedTool !== undefined, onSelect: () => say(`finish, without ${[...off].join(', ') || 'nothing'}`) }}
@@ -111,7 +119,7 @@ export const OnboardingPreview = () => {
         <ProfileStep narrow busy />
         <ProfileStep narrow problem="The image could not be read." />
       </Section>
-      <Section title="OnboardingServices (services to sign in to, one connected, each connecting a moment after it is asked; the tools, on unless switched off; at a phone’s width; finishing; a tool that could not be turned on)">
+      <Section title="OnboardingServices (services to sign in to, the most used first, in a surface that scrolls, one connected, each connecting a moment after it is asked; the tools, on unless switched off; at a phone’s width; finishing; a tool that could not be turned on)">
         <ServicesStep />
         <ServicesStep narrow />
         <ServicesStep narrow finishing />

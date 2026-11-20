@@ -32,13 +32,31 @@ const listed = ({ id, description }: GatekeeperVendorInfo) => ({
   tagline: description.tagline,
 })
 
-const byName = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name)
+// By a service's id (see `serviceCategories.ts`): those most people work in every day first (mail
+// and documents, chat, code, tickets), then wikis and notes, then what fewer people use, so that
+// the few anyone is likely to connect are at the top of a long list.
+const SERVICES_FIRST = [
+  'google', 'microsoft', 'slack', 'github', 'gitlab', 'jira', 'confluence', 'cf_wiki', 'notion', 'linear',
+  'cloudflare', 'email', 'backstage', 'salesforce', 'workday', 'pagerduty', 'sentry',
+]
+// What the agent reaches for most, first.
+const TOOLS_FIRST = ['websearch', 'context', 'scheduler', 'container']
+
+const byRelevance = (first: string[]) => {
+  const rank = (vendorId: string) => {
+    const at = first.indexOf(vendorId)
+    return at === -1 ? first.length : at
+  }
+  return (a: { vendorId: string; name: string }, b: { vendorId: string; name: string }) =>
+    rank(a.vendorId) - rank(b.vendorId) || a.name.localeCompare(b.name)
+}
 
 /**
  * What setting up offers: each service that can be signed in to and can be reached, said to be
  * connected once the user has an account of it; and each tool that is added as it is
- * (`autoProvisionsAccount`) which they do not have yet. Each by name, an order that a service
- * being connected does not change, so nothing moves under the pointer.
+ * (`autoProvisionsAccount`) which they do not have yet. The ones most people use first, then the
+ * rest by name, an order that a service being connected does not change, so nothing moves under
+ * the pointer.
  */
 export const onboardingChoicesOf = ({ vendors, addable, accounts }: {
   vendors: GatekeeperVendorInfo[]
@@ -50,11 +68,11 @@ export const onboardingChoicesOf = ({ vendors, addable, accounts }: {
     services: vendors
       .filter(({ unavailable, description }) => !unavailable && !description.autoProvisionsAccount)
       .map((vendor): OnboardingService => ({ ...listed(vendor), connected: had.has(vendor.id) }))
-      .toSorted(byName),
+      .toSorted(byRelevance(SERVICES_FIRST)),
     tools: addable
       .filter(({ id, unavailable, description }) => !unavailable && description.autoProvisionsAccount && !had.has(id))
       .map(listed)
-      .toSorted(byName),
+      .toSorted(byRelevance(TOOLS_FIRST)),
   }
 }
 
