@@ -11,7 +11,7 @@ into the connect page, for a provider with no OAuth. `--hooks` adds event hooks 
 the provider delivers to. The command writes
 `packages/gatekeeper-<name>`, adds it to the gatekeeper list in `README.md` and, for OAuth, to the
 credential map in `scripts/run-dev-server.ts` (with hooks, also to that script's passed-through
-variables and to the `restore` list in `scripts/generate-worker-types.ts`), and runs `pnpm install` and `pnpm types:generate`. It also writes the stand-in bundle the release manifest's test needs. The
+variables and to the `restore` list in `scripts/generate-worker-types.ts`), and runs `pnpm install` and, for the new package alone, `pnpm types:generate`. It also writes the stand-in bundle the release manifest's test needs. The
 package builds, lints and bundles as written, but its own tests fail by design (below), and the
 release manifest's test fails until its golden file is updated
 (`UPDATE_GOLDEN=1 node --test scripts/release/manifest-lib.test.ts`). A pasted-key gatekeeper takes

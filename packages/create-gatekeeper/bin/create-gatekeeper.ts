@@ -136,7 +136,7 @@ if (values.out === undefined) {
   if (!values["no-install"]) {
     // The new package is not in the lockfile, which an install in CI would otherwise refuse to change.
     run("pnpm", ["install", "--no-frozen-lockfile"]);
-    run("pnpm", ["types:generate"]);
+    run("pnpm", ["types:generate", `gatekeeper-${names.name}`]);
   }
 }
 
