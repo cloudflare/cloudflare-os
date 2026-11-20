@@ -1943,6 +1943,12 @@ describe.each(RUNS)("Google Doc write receipts, $name", r => {
     expect(await hooks().lastActionFields).toEqual([
       markdownField("Requested", "3. three\n4. four"), markdownField("Resulting", "1. three\n1. four"),
     ]);
+
+    // A bulleted list between two numbered items ends the first one's list, so the second starts another.
+    await hooks().submitAppend("numbered-append", "1. one\n\n- apart\n\n2. two");
+    expect(await hooks().lastActionFields).toEqual([
+      markdownField("Requested", "1. one\n\n- apart\n\n2. two"), markdownField("Resulting", "1. one\n\n- apart\n\n1. two"),
+    ]);
   });
 
   it("shows literal Markdown escapes in the append approval", async () => {
