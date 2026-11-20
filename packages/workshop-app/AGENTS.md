@@ -385,6 +385,13 @@ A workspace's title, the viewer's role in it, its owner and its sharing rules fo
 
 ## The Workspaces page
 
+A workspace is listed only to whoever is in it (`joinedWorkspaces`, in `workspaceList.ts`): the
+server lists one an app of was shared with the viewer to use (`role === 'use'`) from the time they
+open it, but they were not let into it, so the sidebar, this page and search leave it out, and the
+app is in their Library. Its address shows, in the page's place beside the sidebar, that it is not
+theirs (`SharedAppPane`), with the way to the app, or a menu of them, else the Library, reading
+nothing of the workspace; nor does `LiveWaiting` read its agents.
+
 `/workspaces` (the sidebar's folder button) lists every workspace: the starred ones first, then the
 rest by when they were last active, grouped as the chat settings page groups its files. Starring is
 the server's `pinned`; the starred ones' order is this device's (`prefs/starOrder.ts`), the latest
@@ -1265,9 +1272,14 @@ connections read it (`protectedResources`, by its address, else its title): what
 shared with will be asked about. They are asked as they open it (`connections/ObserverAccessProvider`,
 beneath `RpcGate`, which hands every `openWorkspace()` and `getGadget()` the overseer's
 `ObserverConfigCallback`), by `ConfirmAccessForm`, never in a dialog: as the page, in the pane of
-the gadget being opened, which shows it while it loads (`useAccessQuestion`), or, where no pane is
-showing one of that workspace's, as the whole window, as the first run is, with the app kept out
-of sight under it and Cancel, its only way out. Each resource once with the account to show it with,
+the gadget being opened, which shows it while it loads (`useAccessQuestion`), or, for a workspace
+where no pane is showing one of its gadgets, in the page's place beside the sidebar
+(`usePageAccessQuestion`, which `_app` puts where the page or an item's own page would be), with
+what it covers kept out of sight under it, the sidebar there to go elsewhere by, and Cancel. Only
+before the app's frame is there (a shared link being let in by) is it the whole window. A gadget's
+question is asked only in its own pane (`connections/accessQuestions.ts`, plain and tested): what
+reads a gadget in the background, such as its agents' bindings, waits unasked until it is shown or
+its workspace is left, and what can be asked meanwhile is. Each resource once with the account to show it with,
 a choice of theirs, or the way to connect one, what would make the one chosen do, and, asked again,
 which were refused; on a phone, a card for each service instead, its account and what is to be done
 about it once for the resources it reads, which are chips under it. Only the workspace on screen asks (`viewedWorkspace`): those the sidebar and the

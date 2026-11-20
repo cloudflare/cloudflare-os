@@ -239,6 +239,9 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, statu
           onOpenItem={(item) => setOpen(item.key)}
           onNewChat={() => setWorkspace(false)}
           onRemoved={onOpenScenarios}
+          // Never asked for: the scripted workspace is the viewer's to build in.
+          onOpenOutput={(output) => setOpen(formatAsideRef({ kind: 'output', workpieceId: output.workpieceId }))}
+          onOpenLibrary={onOpenScenarios}
         />
       ) : settings ? (
         <ChatSettingsPane

@@ -10,6 +10,7 @@ import { protectedResources } from '@/workspaces/sharingRules'
 import { openConnectWindow } from './connectHandoff'
 import { ConnectedAccounts } from './ConnectedAccounts'
 import { accountLabel, type ConnectedAccount } from './connectionList'
+import { askable, holderOf, PAGE, placeOf } from './accessQuestions'
 import { accessNames, accountChoices, accountsFor, accountWillDo, defaultChoices, missingAccess, refusedAccount, requiredAccess, type AccessChoices } from './observerAccess'
 
 /** What answers the overseer when it asks which accounts the user confirms their access with. */
@@ -85,25 +86,12 @@ export const accessNotConfirmed = (message: string) => message.includes(NOT_CONF
 // Forgets what the user cancelled, so that the next open asks them again.
 const AskAgainContext = createContext<() => void>(() => {})
 
-const placeOf = (workspaceId: string, gadgetId: number | undefined) => `${workspaceId}/${gadgetId ?? ''}`
-
-/**
- * Where a question is asked: in the pane of the gadget it is for, or, for one of its workspace's as
- * a whole, a pane of any gadget of that workspace. Undefined where there is none.
- */
-const holderOf = (asking: Asking, hosts: readonly string[]) => {
-  if (asking.gadgetId !== undefined) {
-    const exact = placeOf(asking.workspaceId, asking.gadgetId)
-    return hosts.includes(exact) ? exact : undefined
-  }
-  return hosts.find((place) => place.startsWith(`${asking.workspaceId}/`))
-}
-
 type Questions = {
   asking?: Asking
   /** Where the question is asked in place, if anywhere. */
   holder?: string
-  answer: (choices: ObserverAccountChoice[] | undefined) => void
+  /** Answers the question of `key`: the accounts confirmed with, or none, cancelled. */
+  answer: (key: string, choices: ObserverAccountChoice[] | undefined) => void
   /** Says that what is at `place` asks what is asked of it in place, until the function it gives is called. */
   host: (place: string) => () => void
   /** Whether the user is asked, or about to be, about a gadget. */
@@ -125,7 +113,22 @@ export const useAccessQuestion = (gadget: { workspaceId: string; workpieceId: nu
   const place = gadget && placeOf(gadget.workspaceId, gadget.workpieceId)
   useEffect(() => (place && loading ? host(place) : undefined), [host, place, loading])
   if (!place || !loading || !asking || holder !== place) return null
-  return <ConfirmAccess key={asking.key} what={title} needs={asking.needs} onAnswer={answer} />
+  return <ConfirmAccess key={asking.key} what={title} needs={asking.needs} onAnswer={(choices) => answer(asking.key, choices)} />
+}
+
+/**
+ * What the page beside the sidebar shows in place of what it would, where opening a workspace asks
+ * the user to confirm their access and no pane of that workspace's asks it: the question, as the
+ * page (`ConfirmAccessForm`), with the sidebar beside it to go elsewhere by, which leaves it
+ * unanswered. It has Cancel all the same, as a page with no sidebar button on a phone, such as a
+ * chat, has no other way out. Null while there is nothing to ask. Where nothing calls it, as before
+ * the app's frame is there, the question is the whole window.
+ */
+export const usePageAccessQuestion = (): ReactNode => {
+  const { asking, holder, answer, host } = use(QuestionsContext)
+  useEffect(() => host(PAGE), [host])
+  if (!asking || holder !== PAGE) return null
+  return <ConfirmAccess key={asking.key} what={asking.what} needs={asking.needs} surface="base" cancellable onAnswer={(choices) => answer(asking.key, choices)} />
 }
 
 /** Call before opening again what the user cancelled confirming their access to, so that it is asked again. */
@@ -134,9 +137,9 @@ export const useAskAccessAgain = () => use(AskAgainContext)
 /**
  * Beneath `RpcGate`: the API for everything below, ready to ask the user to confirm their access
  * (`withObserverAccess`), and what asks (`ConfirmAccess`), one question at a time: as the pane of
- * the gadget it is for (`useAccessQuestion`), or else as the whole window. What
- * the user cancels is not asked again, as it is opened again and again in the background, until
- * they ask for it (`useAskAccessAgain`).
+ * the gadget it is for (`useAccessQuestion`), or, for a workspace, as the page beside the sidebar
+ * (`usePageAccessQuestion`), else the whole window. What the user cancels is not asked again, as it
+ * is opened again and again in the background, until they ask for it (`useAskAccessAgain`).
  */
 export const ObserverAccessProvider = ({ children, viewing: shown }: {
   children: ReactNode
@@ -146,8 +149,10 @@ export const ObserverAccessProvider = ({ children, viewing: shown }: {
   const session = useApi()
   const queue = useRef<Asking[]>([])
   const declined = useRef(new Set<string>())
-  const [asking, setAsking] = useState<Asking>()
-  // The panes that ask in place, each as many times as it is shown: a question for none of them is the whole window.
+  // What is asked, as of the last change to the queue, for rendering.
+  const [queued, setQueued] = useState<readonly Asking[]>([])
+  const changed = () => setQueued([...queue.current])
+  // The panes that ask in place, and the page, each as many times as it is shown.
   const [hosts, setHosts] = useState<readonly string[]>([])
   const host = useCallback((place: string) => {
     setHosts((was) => [...was, place])
@@ -172,19 +177,19 @@ export const ObserverAccessProvider = ({ children, viewing: shown }: {
     const same = queue.current.find((each) => each.key === key)
     if (same) return void same.waiting.push({ resolve, reject })
     queue.current.push({ key, what, workspaceId, gadgetId, needs, waiting: [{ resolve, reject }] })
-    setAsking(queue.current[0])
+    changed()
   }), [])
 
-  const answer = useCallback((choices: ObserverAccountChoice[] | undefined) => {
-    const [done] = queue.current.splice(0, 1)
-    if (done) {
-      if (!choices) declined.current.add(done.key)
-      for (const { resolve, reject } of done.waiting) {
-        if (choices) resolve(choices)
-        else reject(new Error(NOT_CONFIRMED))
-      }
+  const answer = useCallback((key: string, choices: ObserverAccountChoice[] | undefined) => {
+    const at = queue.current.findIndex((each) => each.key === key)
+    if (at === -1) return
+    const [done] = queue.current.splice(at, 1)
+    if (!choices) declined.current.add(done.key)
+    for (const { resolve, reject } of done.waiting) {
+      if (choices) resolve(choices)
+      else reject(new Error(NOT_CONFIRMED))
     }
-    setAsking(queue.current[0])
+    changed()
   }, [])
 
   const askAgain = useCallback(() => declined.current.clear(), [])
@@ -197,16 +202,18 @@ export const ObserverAccessProvider = ({ children, viewing: shown }: {
     if (left.length === 0) return
     queue.current = queue.current.filter(({ workspaceId }) => workspaceId === onScreen)
     for (const { waiting: waitingOn } of left) for (const { reject } of waitingOn) reject(new Error(NOT_CONFIRMED))
-    setAsking(queue.current[0])
+    changed()
   }, [onScreen])
 
   const { api } = session
   const wrapped = useMemo(() => withObserverAccess(api, (what, workspaceId, gadgetId) => new ObserverConfig((needs) => ask(what, workspaceId, gadgetId, needs)) as unknown as RpcStub<ObserverConfigCallback>), [api, ask])
   const value = useMemo(() => ({ ...session, api: wrapped }), [session, wrapped])
+  const asking = askable(queued, hosts)
   const holder = asking && holderOf(asking, hosts)
   const questions = useMemo<Questions>(() => ({ asking, holder, answer, host, waiting }), [asking, holder, answer, host, waiting])
-  // Asked of what no pane shows, it is the page, as the first run is: the app stays as it was
-  // under it, out of sight, so that what waits on the answer is there to have it.
+  // A workspace's asked where nothing else can ask it, before the app's frame is there (a shared
+  // link being let in by), is the whole window, as the first run is: what is there stays under it,
+  // out of sight, so that what waits on the answer is there to have it.
   const whole = asking !== undefined && holder === undefined
 
   return (
@@ -217,7 +224,7 @@ export const ObserverAccessProvider = ({ children, viewing: shown }: {
           <div inert={whole} className={whole ? 'hidden' : 'contents'}>{children}</div>
           {whole && (
             <div className="flex h-full flex-col bg-kumo-canvas">
-              <ConfirmAccess key={asking.key} what={asking.what} needs={asking.needs} surface="canvas" cancellable onAnswer={answer} />
+              <ConfirmAccess key={asking.key} what={asking.what} needs={asking.needs} surface="canvas" cancellable onAnswer={(choices) => answer(asking.key, choices)} />
             </div>
           )}
         </QuestionsContext>
@@ -252,8 +259,8 @@ const issueOf = (
 
 type ConfirmAccessProps = {
   what: string
-  /** What it is drawn on: a gadget's pane, or the window. */
-  surface?: 'tint' | 'canvas'
+  /** What it is drawn on: a gadget's pane, the page, or the window. */
+  surface?: 'tint' | 'base' | 'canvas'
   needs: ObserverBindingNeed[]
   /** The accounts confirmed with, for every connection asked about; or none, cancelled. */
   onAnswer: (choices: ObserverAccountChoice[] | undefined) => void

@@ -43,7 +43,8 @@ import { formatActivity } from '@/workspaces/formatActivity'
 import { useLiveWorkspace } from '@/workspaces/useLiveWorkspace'
 import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
-import { ObserverAccessProvider } from '@/connections/ObserverAccessProvider'
+import { joinedWorkspaces } from '@/workspaces/workspaceList'
+import { ObserverAccessProvider, usePageAccessQuestion } from '@/connections/ObserverAccessProvider'
 import { sidebarConnections } from '@/connections/sidebarConnections'
 import { useConnections } from '@/connections/useConnections'
 import { AppSearch, type SearchContext } from './-AppSearch'
@@ -140,8 +141,12 @@ const AppFrame = () => {
   useLiveWorkspace(workspaceId ?? pageItem?.workspaceId)
   // What waits on the user in the workspace they are in, kept up as it changes, so that the sidebar
   // says so as soon as they answer it; its own page and an agent's keep it up already.
+  // Not one the user can only use an app of, which has no agents of theirs.
   const agentPage = useMatch({ from: '/_app/workspace/$workspaceId/agent/$agentKey', shouldThrow: false })
-  const liveWaitingIn = workspacePage || agentPage ? undefined : workspaceId ?? pageItem?.workspaceId
+  const liveWaitingCandidate = workspacePage || agentPage ? undefined : workspaceId ?? pageItem?.workspaceId
+  const onlyUses = (inWorkspace: string) =>
+    workspacesState.status === 'ready' && workspacesState.workspaces.some(({ id, role }) => id === inWorkspace && role === 'use')
+  const liveWaitingIn = liveWaitingCandidate !== undefined && !onlyUses(liveWaitingCandidate) ? liveWaitingCandidate : undefined
 
   // Beside a chat, a chat that is still to be made, or a workspace's own page: which is named.
   const besideOf: { workspaceId: string; open: string | undefined } | undefined = chatPage
@@ -295,11 +300,11 @@ const AppFrame = () => {
     asideElement = <EmptyAsidePane reading={library.reading} problem={library.problem} onRetry={library.retry} onHide={hideEmpty} narrow={narrow} />
   }
 
-  // Each workspace is listed by its title and when it was last active, or what waits on the user
-  // in it, and marked while it has anything unread.
+  // Each workspace the user is in is listed by its title and when it was last active, or what waits
+  // on the user in it, and marked while it has anything unread.
   const workspaces =
     workspacesState.status === 'ready'
-      ? workspacesState.workspaces.map(({ id, title, lastActive }) => ({
+      ? joinedWorkspaces(workspacesState.workspaces).map(({ id, title, lastActive }) => ({
           id,
           title,
           workspaceLabel: workspaceLabel(title),
@@ -447,6 +452,21 @@ const AppFrame = () => {
     : undefined
   const closeAside = besideOf && named ? aside.hide : openedEmpty ? hideEmpty : undefined
 
+  // What opening a workspace asks that no pane of its asks is the page, beside the sidebar, which
+  // stays to go elsewhere by: in the item's place on its own page, else the page's. What it is in
+  // place of stays under it, out of sight, so that what waits on the answer is there to have it,
+  // in the same element either way, so that it is not made again as it is hidden and shown.
+  const accessQuestion = usePageAccessQuestion()
+  const asked = (content: ReactNode, here: boolean) => {
+    const covered = here && accessQuestion !== null
+    return (
+      <>
+        <div inert={covered} className={covered ? 'hidden' : 'contents'}>{content}</div>
+        {covered && accessQuestion}
+      </>
+    )
+  }
+
   // What search can do where the user is, in a workspace's chat or on its page: a new chat in the
   // workspace as the page's own button starts one, keeping what is shown beside it, and inviting
   // people, which the page's own dialog is asked for (`?invite`).
@@ -492,7 +512,7 @@ const AppFrame = () => {
         // the ends of its rows, which open what they list.
         onOpenAside={chatRef ? openAside : undefined}
       >
-        {pageItem ? asideElement : <Outlet />}
+        {asked(pageItem ? asideElement : <Outlet />, true)}
       </NarrowShell>
       {search}
       {liveWaitingIn && <LiveWaiting key={liveWaitingIn} workspaceId={liveWaitingIn} />}
@@ -509,14 +529,14 @@ const AppFrame = () => {
       onSidebarChange={(size) => writeLayoutPrefs({ sidebar: size })}
       initialAsideShare={prefs.asideShare}
       onAsideShareChange={(asideShare) => writeLayoutPrefs({ asideShare })}
-      aside={asideElement}
+      aside={asideElement === null ? null : asked(asideElement, pageItem !== undefined)}
       asideAlone={pageItem !== undefined || expanded}
       asideFullScreen={fullScreen}
       onOpenAside={openAside}
       onCloseAside={closeAside}
       onExpandAside={expandAside}
     >
-      <Outlet />
+      {asked(<Outlet />, pageItem === undefined)}
     </AppShell>
     {search}
     </>

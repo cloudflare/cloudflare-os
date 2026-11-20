@@ -26,6 +26,7 @@ import { useUnread } from '@/notifications/UnreadContext'
 import { useApi } from '@/rpc/ApiContext'
 import { useWaitingAsks } from '@/gadgets/WaitingAsksProvider'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
+import { SharedAppPane } from './SharedAppPane'
 import { ShareWorkspaceDialog } from './ShareWorkspaceDialog'
 import { shareStanding } from './sharingRules'
 import { useSharing } from './useSharing'
@@ -74,6 +75,10 @@ export type WorkspacePaneProps = {
   outputHref?: (output: OutputSummary) => string
   /** Goes to an output's settings, from its row's more menu. */
   onOpenSettings?: (output: OutputSummary) => void
+  /** Opens an app on its own page, for someone who can only use the workspace's apps shared with them. */
+  onOpenOutput: (output: OutputSummary) => void
+  /** Goes to the Library, where what was shared with the viewer is. */
+  onOpenLibrary: () => void
   /** Starts a chat in the workspace, with `draft` written in its composer where something is to be asked for, to be finished before it is sent. */
   onNewChat: (draft?: string) => void
   /** The workspace's address, which inviting people copies and its link lets anyone in to. Left out, nobody is invited from here. */
@@ -94,9 +99,17 @@ export type WorkspacePaneProps = {
  * and delete it, or remove it from the list where it is someone else's. The chats, the library
  * and what runs load what they list once chosen; who has access is read with the page, for its
  * header, and its agents and activity too, so that what waits on the viewer is counted on the
- * Chats and Agents tabs, whichever is chosen.
+ * Chats and Agents tabs, whichever is chosen. Someone who was only shared an app of it to use is
+ * told it is not theirs (`SharedAppPane`), with nothing of it read, once the list says so.
  */
-export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatHref, onOpenAgent, agentHref, onOpenItem, itemHref, outputHref, onOpenSettings, onNewChat, link, onRemoved, inviteRequested = false, onInviteHandled }: WorkspacePaneProps) => {
+export const WorkspacePane = ({ onOpenOutput, onOpenLibrary, ...props }: WorkspacePaneProps) => {
+  const workspaces = useWorkspaces()
+  const listed = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === props.workspaceId) : undefined
+  if (listed?.role === 'use') return <SharedAppPane workspace={listed} onOpenOutput={onOpenOutput} onOpenLibrary={onOpenLibrary} />
+  return <MemberWorkspacePane {...props} />
+}
+
+const MemberWorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatHref, onOpenAgent, agentHref, onOpenItem, itemHref, outputHref, onOpenSettings, onNewChat, link, onRemoved, inviteRequested = false, onInviteHandled }: Omit<WorkspacePaneProps, 'onOpenOutput' | 'onOpenLibrary'>) => {
   const workspaces = useWorkspaces()
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
   const title = workspace?.title

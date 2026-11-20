@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
 import { narrowList } from '@/components/listView'
-import { workspaceList } from './workspaceList'
+import { joinedWorkspaces, workspaceList } from './workspaceList'
 import type { WorkspaceMember } from './workspaceMembers'
 
 const NOW = new Date(2026, 10, 12, 15)
@@ -49,5 +49,12 @@ describe('workspaceList', () => {
   it('narrows to the workspaces with anything unread, and to none before the account has said', () => {
     expect(unreadOnly(new Set(['team', 'alone']))).toEqual(['alone', 'team'])
     expect(unreadOnly(new Set())).toEqual([])
+  })
+})
+
+describe('joinedWorkspaces', () => {
+  it('leaves out those the viewer can only use an app of, keeping their own and those they build in', () => {
+    const listed = [workspace('own'), { ...workspace('member'), role: 'build' as const }, { ...workspace('app only'), role: 'use' as const }]
+    expect(joinedWorkspaces(listed).map(({ id }) => id)).toEqual(['own', 'member'])
   })
 })

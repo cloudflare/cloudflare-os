@@ -17,6 +17,7 @@ import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { formatActivity } from '@/workspaces/formatActivity'
 import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
+import { joinedWorkspaces } from '@/workspaces/workspaceList'
 import { suggestedEntries, type SuggestedContext } from './-appSearchSuggestions'
 
 /**
@@ -82,9 +83,9 @@ export const AppSearch = ({ open, onOpenChange, connections, context }: {
     { key: 'templates', group: 'Go to', title: 'Templates', keywords: ['store', 'discover', 'blueprints'], icon: <StorefrontIcon />, onSelect: () => void navigate({ to: '/library/templates' }) },
     { key: 'connections', group: 'Go to', title: 'Connections', keywords: ['accounts', 'services'], icon: <PuzzlePieceIcon />, onSelect: () => void navigate({ to: '/connections' }) },
   ]
-  // Most recently active first, as the provider keeps them.
+  // Most recently active first, as the provider keeps them: those the user is in, as the sidebar lists them.
   const listed: SearchEntry[] = workspaces.status === 'ready'
-    ? workspaces.workspaces.map(({ id, title, lastActive }) => ({
+    ? joinedWorkspaces(workspaces.workspaces).map(({ id, title, lastActive }) => ({
         key: `workspace:${id}`,
         group: 'Workspaces',
         title: title || 'Untitled workspace',

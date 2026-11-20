@@ -55,6 +55,8 @@ function Workspace() {
       itemHref={(item) => router.buildLocation({ to: '/workspace/$workspaceId', params: { workspaceId }, search: { tab: 'library', open: item.key } }).href}
       outputHref={(output) => router.buildLocation(outputPage(output)).href}
       onOpenSettings={(output) => navigate(outputSettings(output))}
+      onOpenOutput={(output) => navigate(outputPage(output))}
+      onOpenLibrary={() => navigate({ to: '/library' })}
       inviteRequested={invite === true}
       // In place, with the rest of the address as it was, so that going back does not ask again.
       onInviteHandled={() => navigate({ to: '.', search: (previous: Record<string, unknown>) => ({ ...previous, invite: undefined }), replace: true })}

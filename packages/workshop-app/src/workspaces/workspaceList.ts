@@ -16,6 +16,14 @@ export type WorkspaceOrder = ListOrder<Workspace> & {
   at: (workspace: Workspace) => Date
 }
 
+/**
+ * The workspaces the viewer is in, which are the ones listed as workspaces: not those they were
+ * only shared an app of to use (`role === 'use'`), which the server lists too once they open it.
+ * They were not let into those, and the app is in their Library.
+ */
+export const joinedWorkspaces = <Listed extends Pick<Workspace, 'role'>>(workspaces: readonly Listed[]): Listed[] =>
+  workspaces.filter(({ role }) => role !== 'use')
+
 /** What a workspace is called where it is listed. */
 export const workspaceTitle = ({ title }: { title: string }) => title || 'Untitled workspace'
 

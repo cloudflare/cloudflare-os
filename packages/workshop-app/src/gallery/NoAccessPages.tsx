@@ -6,7 +6,7 @@ import { Sidebar, type SidebarWorkspace } from '@/blocks/Sidebar'
 import { Button } from '@/components/Button'
 import { DropdownMenu } from '@/components/DropdownMenu'
 import { Tooltip } from '@/components/Tooltip'
-import { ObserverAccessProvider } from '@/connections/ObserverAccessProvider'
+import { ObserverAccessProvider, usePageAccessQuestion } from '@/connections/ObserverAccessProvider'
 import { useNarrowScreen } from '@/hooks/useNarrowScreen'
 import { AppShell } from '@/layouts/AppShell'
 import { NarrowShell } from '@/layouts/NarrowShell'
@@ -16,6 +16,7 @@ import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { WorkspacesProvider } from '@/workspaces/WorkspacesProvider'
 import { formatActivity } from '@/workspaces/formatActivity'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
+import { joinedWorkspaces } from '@/workspaces/workspaceList'
 import { createNoAccessApi, NO_ACCESS_CASES, NO_ACCESS_GADGET_ID, NO_ACCESS_WORKSPACE_ID, type NoAccessCase } from './noAccessApi'
 
 const REF = { kind: 'output', workpieceId: NO_ACCESS_GADGET_ID } as const
@@ -73,7 +74,7 @@ const Frame = () => {
   // As the page has it from its address alone: nothing names it until the workspace does.
   const item = keptVersion(asideItemFor(NO_ACCESS_WORKSPACE_ID, REF, undefined))
   const listed: SidebarWorkspace[] = workspaces.status === 'ready'
-    ? workspaces.workspaces.map(({ id, title, lastActive }) => ({ id, title, workspaceLabel: workspaceLabel(title), subtitle: formatActivity(lastActive) }))
+    ? joinedWorkspaces(workspaces.workspaces).map(({ id, title, lastActive }) => ({ id, title, workspaceLabel: workspaceLabel(title), subtitle: formatActivity(lastActive) }))
     : []
   const nowhere = { current: false, onOpen: () => {} }
   const sidebar = (collapsed: boolean) => (
@@ -92,16 +93,23 @@ const Frame = () => {
       collapsed={collapsed}
     />
   )
+  // As `_app` has it: what no pane asks is in the app's place, beside the sidebar.
+  const accessQuestion = usePageAccessQuestion()
   const pane = (
-    <AsidePane
-      placement="page"
-      item={item}
-      link={new URL(`/app/${itemPageId(NO_ACCESS_WORKSPACE_ID, REF)}`, window.location.origin).href}
-      fullScreen={!narrow && fullScreen}
-      onFullScreenChange={setFullScreen}
-      narrow={narrow}
-      onBack={narrow ? () => setSidebarOpen(true) : undefined}
-    />
+    <>
+      <div inert={accessQuestion !== null} className={accessQuestion ? 'hidden' : 'contents'}>
+        <AsidePane
+          placement="page"
+          item={item}
+          link={new URL(`/app/${itemPageId(NO_ACCESS_WORKSPACE_ID, REF)}`, window.location.origin).href}
+          fullScreen={!narrow && fullScreen}
+          onFullScreenChange={setFullScreen}
+          narrow={narrow}
+          onBack={narrow ? () => setSidebarOpen(true) : undefined}
+        />
+      </div>
+      {accessQuestion}
+    </>
   )
 
   if (narrow) {

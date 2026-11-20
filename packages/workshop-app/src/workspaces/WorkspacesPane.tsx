@@ -28,7 +28,7 @@ import { useWorkspaceLooks } from './useWorkspaceLooks'
 import { useWorkspaceMemberships } from './useWorkspaceMemberships'
 import { useWorkspaceRemoval } from './useWorkspaceRemoval'
 import { removalOf } from './workspaceRemoval'
-import { workspaceList, workspaceTitle } from './workspaceList'
+import { joinedWorkspaces, workspaceList, workspaceTitle } from './workspaceList'
 
 export type WorkspacesPaneProps = {
   onOpenWorkspace: (id: string) => void
@@ -55,7 +55,8 @@ export const WorkspacesPane = ({ onOpenWorkspace, workspaceHref, onNewWorkspace 
   useDocumentTitle('Workspaces')
 
   const { user } = useApi()
-  const all = workspaces.status === 'ready' ? workspaces.workspaces : []
+  // Those the user is in: an app shared with them alone is in their Library.
+  const all = workspaces.status === 'ready' ? joinedWorkspaces(workspaces.workspaces) : []
   const memberships = useWorkspaceMemberships(all)
   const looks = useWorkspaceLooks()
   const removing = useWorkspaceRemoval()

@@ -215,8 +215,8 @@ export type ConfirmAccessFormProps = {
   onChoose: (key: string, accountId: number) => void
   /** Confirms with the accounts chosen, once each will do. */
   onConfirm: () => void
-  /** What it is drawn on, which its list is raised from: a pane's tint, or the window's canvas. */
-  surface?: 'tint' | 'canvas'
+  /** What it is drawn on, which its list is raised from: a pane's tint, a page's base, or the window's canvas. */
+  surface?: 'tint' | 'base' | 'canvas'
   /** Puts it away without confirming, which leaves it unopened: for where there is no other way out, as the whole window. */
   onCancel?: () => void
 }
@@ -243,8 +243,10 @@ export const ConfirmAccessForm = ({ what, again = false, rows, problem, onChoose
       <div className="m-auto flex w-full max-w-[31rem] flex-col gap-6 px-6 pt-10 md:max-h-full md:min-h-0">
         {/* Said as the pane's other notices say what it shows in place of the app, the same lock and all. */}
         <EmptyState size="section" onTint={surface === 'tint'} icon={LockSimpleIcon} title={headingOf(again)} description={descriptionOf(what, again)} className="shrink-0 py-0" />
-        {/* Wide, the list's surface stays where it is, and what scrolls is the rows within it. */}
-        <div className={cn('flex shrink-0 flex-col rounded-3xl md:max-h-[26rem] md:overflow-hidden md:min-h-32 md:shrink', !narrow && rows && groupSurface(surface === 'tint'))}>
+        {/* Wide, the list's surface stays where it is, and what scrolls is the rows within it. It keeps
+            a little of the list in sight however short the page, but no more than the list is: one
+            row is shorter than that, and would have room left under it. */}
+        <div className={cn('flex shrink-0 flex-col rounded-3xl md:max-h-[26rem] md:overflow-hidden md:shrink', rows && rows.length > 1 && 'md:min-h-32', !narrow && rows && groupSurface(surface === 'tint'))}>
           <div className="min-h-0 md:overflow-y-auto md:overscroll-contain">
             <Resources rows={rows} onChoose={onChoose} onTint={surface === 'tint'} narrow={narrow} />
           </div>
@@ -261,7 +263,7 @@ export const ConfirmAccessForm = ({ what, again = false, rows, problem, onChoose
 }
 
 // The foot's ground, and the fade over what scrolls under it, of what it is drawn on. Written out whole, for Tailwind to find.
-const FOOT = { tint: 'bg-kumo-tint before:from-kumo-tint', canvas: 'bg-kumo-canvas before:from-kumo-canvas' }
+const FOOT = { tint: 'bg-kumo-tint before:from-kumo-tint', base: 'bg-kumo-base before:from-kumo-base', canvas: 'bg-kumo-canvas before:from-kumo-canvas' }
 
 const headingOf = (again: boolean) => (again ? 'Some access couldn’t be confirmed' : 'Confirm your access')
 
