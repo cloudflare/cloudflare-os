@@ -189,7 +189,7 @@ styleSheet.textContent = `
 
   /* The sheets, as tabs in the outline. */
   #outline .tab.cut { background: none; color: var(--gone-ink); text-decoration: none; }
-  #outline .tab.cut .name { cursor: default; }
+  #outline .tab .name[aria-disabled] { cursor: default; }
   #outline .tab.cut .name > span:first-of-type { text-decoration: line-through; }
   #outline .tab.away { opacity: .55; }
   .said { flex: none !important; padding: 0 6px; border-radius: 999px; background: var(--edit);
@@ -864,7 +864,9 @@ function renderOutline() {
   const tabs = tabsOf(info.sheets);
   outlineList.replaceChildren(...tabs.map(({ sheet: listed, added, renamed, moved, deleted }) => {
     const on = listed.id === sheet.id && !deleted;
-    const row = make('div', `tab${on ? ' on' : ''}${deleted ? ' cut' : ''}${listed.hidden ? ' away' : ''}`);
+    // A sheet that is a chart alone has no cells to draw.
+    const drawn = listed.rowCount > 0;
+    const row = make('div', `tab${on ? ' on' : ''}${deleted ? ' cut' : ''}${listed.hidden || !drawn ? ' away' : ''}`);
     const name = row.appendChild(make('button', 'name'));
     name.append(lineIcon(SHEET_ICON), make('span', '', listed.title));
     // A sheet added or deleted is that whatever else is done to it; any other a change touches is edited.
@@ -873,13 +875,14 @@ function renderOutline() {
     const says = [
       added && 'new, not yet added', renamed && `renamed from “${renamed}”`, moved && 'moved',
       deleted && 'deleted by a pending change', listed.hidden && 'hidden', kind === 'changed' && dot,
+      !drawn && 'a chart, not drawn in this preview',
     ].filter(Boolean);
     name.title = says.length ? `${listed.title} (${says.join('; ')})` : listed.title;
     for (const tag of [renamed && 'renamed', moved && 'moved', deleted && 'deleted']) {
       if (tag) name.append(make('span', 'said', tag));
     }
     name.setAttribute('aria-pressed', String(on));
-    if (deleted) name.setAttribute('aria-disabled', 'true');
+    if (deleted || !drawn) name.setAttribute('aria-disabled', 'true');
     else {
       name.addEventListener('click', () => {
         if (!on) void open(listed);
@@ -1091,13 +1094,17 @@ function open(other) {
   return load();
 }
 
+// The first of `sheets` to open: one in view before one hidden, and one of cells before a chart.
+const firstOf = sheets => sheets.find(listed => !listed.hidden && listed.rowCount) ??
+  sheets.find(listed => listed.rowCount) ?? sheets[0];
+
 // The pending changes of the sheet shown. On opening that is the first sheet the changes touch,
 // or the first there is.
 async function readChanges() {
   let title = sheet?.title;
   if (title === undefined) {
     const { sheets } = await gadget.getSpreadsheet();
-    title = (sheets.find(listed => !listed.hidden) ?? sheets[0]).title;
+    title = firstOf(sheets).title;
   }
   const read = await gadget.getPendingChanges(title);
   const { pending } = read.sheets;
@@ -1108,7 +1115,7 @@ async function readChanges() {
   const titled = pending.find(listed => listed.title === title);
   // One there already before one a change adds, which is empty until more is written to it.
   const saved = new Set(read.sheets.saved.map(listed => listed.id));
-  const changed = pending.filter(listed => listed.touched && !listed.hidden);
+  const changed = pending.filter(listed => listed.touched && !listed.hidden && listed.rowCount);
   const touched = changed.find(listed => saved.has(listed.id)) ?? changed[0];
   if (sheet || !touched || touched === titled) return { read, title };
   return { read: await gadget.getPendingChanges(touched.title), title: touched.title };
@@ -1143,7 +1150,7 @@ async function load() {
     // The changes read are those of the sheet with this title, and no other's.
     const found = pending.find(listed => listed.title.toLowerCase() === title.toLowerCase());
     // A sheet a pending change deletes is no longer drawn: the first that stays is.
-    if (!found) return void open(pending.find(listed => !listed.hidden) ?? pending[0]);
+    if (!found) return void open(firstOf(pending));
     const resized = found.rowCount !== axes.rows.count || found.columnCount !== axes.columns.count;
     if (found.id !== sheet?.id || !loaded || resized) {
       axes = axesOf(found);
