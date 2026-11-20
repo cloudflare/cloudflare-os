@@ -439,6 +439,8 @@ export function docTabDrawing(
       points(style[`margin${side}`]) ?? points(document[`margin${side}`]) ?? fallback;
     let columns = (style.columnProperties ?? []).map(column =>
       ({ width: points(column.width) ?? 0, gap: points(column.paddingEnd) ?? 0 }));
+    let pageNumberStart = style.pageNumberStart ??
+      (before || (document.pageNumberStart ?? 1) === 1 ? undefined : document.pageNumberStart);
     return sections.push({
       ...set({
         newPage: sections.length > 0 && style.sectionType === "NEXT_PAGE" || undefined,
@@ -462,9 +464,9 @@ export function docTabDrawing(
         firstPage: (style.useFirstPageHeaderFooter ?? document.useFirstPageHeaderFooter) || undefined,
         evenHeader: style.evenPageHeaderId ?? (before ? before.evenHeader : document.evenPageHeaderId),
         evenFooter: style.evenPageFooterId ?? (before ? before.evenFooter : document.evenPageFooterId),
-        pageNumberStart: style.pageNumberStart ??
-          (before || (document.pageNumberStart ?? 1) === 1 ? undefined : document.pageNumberStart),
       }),
+      // Outside set(): pages may be counted from 0.
+      ...pageNumberStart === undefined ? {} : { pageNumberStart },
     }) - 1;
   };
 

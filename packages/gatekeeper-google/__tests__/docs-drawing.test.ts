@@ -55,6 +55,14 @@ describe("a Google Doc tab's drawing", () => {
     expect(custom.drawing.sections[0]).not.toHaveProperty("headerGap");
   });
 
+  it("keeps a count of pages that starts at 0, and leaves out one that starts at 1", () => {
+    let first = (pageNumberStart: number) =>
+      docTabToMarkdown({ ...buildTab([{ runs: ["Body\n"] }]), documentStyle: { pageNumberStart } }).drawing.sections[0];
+
+    expect(first(0)).toMatchObject({ pageNumberStart: 0 });
+    expect(first(1)).not.toHaveProperty("pageNumberStart");
+  });
+
   it("draws the header a section names, with the image tethered to it", () => {
     let { drawing, imageUris } = docTabToMarkdown({
       ...buildTab([{ runs: ["Body\n"] }]),
