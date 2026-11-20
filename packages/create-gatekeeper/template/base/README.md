@@ -19,6 +19,22 @@ verdict, how it is delivered and its fence. A test keeps it in step with the cod
 with `pnpm --filter @gadgets/acme-gatekeeper exec vitest run -u`, and read the diff: regenerating
 accepts any change.
 
+// #if openapi
+## The provider's API
+
+[`openapi.json`](openapi.json) is Acme Service's OpenAPI description, and
+[`openapi-operations.jsonl`](openapi-operations.jsonl) lists the operations the gatekeeper calls,
+one line each as `pnpm exec gatekeeper-openapi-schema openapi.json --list` prints it. The typed
+client's schema is generated from the two into `src/openapi/`. The `generate:openapi` script in
+`package.json` pins the description by hash, so after replacing it, set the script's `--sha256`
+to the new file's (`sha256sum openapi.json`). After that or a change to the list, regenerate and
+commit the output:
+
+```sh
+pnpm --filter @gadgets/acme-gatekeeper generate:openapi
+```
+
+// #endif
 ## Sharing a workspace
 
 Every read reports the item it depends on, and an observer sees it only if their own Acme Service
