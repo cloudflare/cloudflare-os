@@ -16,12 +16,20 @@ export const MAX_INLINE_ATTACHMENT_BYTES = 7 * 1024 * 1024;
 
 /**
  * The most image and PDF bytes one model request carries inline, across the whole replayed
- * chat, since every turn resends them all: a message inlines its own only within it, and a chat
- * whose messages together pass it compacts first (see the replay in agent.ts). Base64-encoded,
- * this stays under Gemini's 20 MB inline request limit with room left for the text, and the
- * request stays small beside the Durable Object's 128 MB of memory.
+ * chat, since every turn resends them all; a chat whose messages together pass it compacts first
+ * (see the replay in agent.ts). Base64-encoded, about 28 MB, within the 100 MB Gemini allows
+ * inline (https://blog.google/innovation-and-ai/technology/developers-tools/gemini-api-new-file-limits/).
+ * A request holds about four times its inline bytes at its peak, beside the Durable Object's
+ * 128 MB of memory.
  */
-export const MAX_INLINE_ATTACHMENTS_TOTAL_BYTES = 10 * 1024 * 1024;
+export const MAX_INLINE_ATTACHMENTS_TOTAL_BYTES = 20 * 1024 * 1024;
+
+/**
+ * The most image and PDF bytes one message carries inline: half a request's, since the turn that
+ * takes a chat past MAX_INLINE_ATTACHMENTS_TOTAL_BYTES holds an earlier request's and the new
+ * message's together while it compacts.
+ */
+export const MAX_INLINE_MESSAGE_BYTES = MAX_INLINE_ATTACHMENTS_TOTAL_BYTES / 2;
 
 /**
  * The most images and PDFs one model request carries inline; a chat that passes it compacts

@@ -5,7 +5,7 @@ import { applyCodeChange, codeChangeSerializedSize, MAX_CODE_CHANGE_SIZE, replac
 import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
 import { snapshotChatEmbeds } from './chat-embeds';
 import type { ChatEmbeds } from '@gadgets/workshop-shared/api';
-import { canInlineChatAttachmentImage, decodeChatAttachmentText, isAllowedChatAttachmentImageMimeType, MAX_INLINE_ATTACHMENT_BYTES, MAX_INLINE_ATTACHMENTS, MAX_INLINE_ATTACHMENTS_TOTAL_BYTES } from './chat-attachment-validation';
+import { canInlineChatAttachmentImage, decodeChatAttachmentText, isAllowedChatAttachmentImageMimeType, MAX_INLINE_ATTACHMENT_BYTES, MAX_INLINE_ATTACHMENTS, MAX_INLINE_ATTACHMENTS_TOTAL_BYTES, MAX_INLINE_MESSAGE_BYTES } from './chat-attachment-validation';
 import { AgentCatalog, ObservationDescription } from '@gadgets/workshop-shared/gatekeeper';
 import { createWorkshopLogger, obsContext } from "./observability";
 import { createTracer } from "@gadgets/observability/tracing";
@@ -346,6 +346,9 @@ export interface AgentHooks {
   getWorktreeFileOid(chatId: number, id: WorkpieceId, path: string,
       turn: WorktreeTurnAccess): Promise<string | undefined>;
   getChatAgentContext(chatId: number): AiChatAgentContext;
+
+  /** Records attachments a provider refused, so later turns name them by path instead. */
+  refuseInlineAttachments(chatId: number, attachmentIds: string[]): void;
 
   /** Records the chat's AiChatAgentContext.workspacePrompt. */
   setChatWorkspacePrompt(chatId: number, workspacePrompt: string): void;
@@ -2323,37 +2326,50 @@ async function runAgentPass(
   }
 
   // Which images and PDFs go inline. Whether one does depends only on its own message, so a
-  // request never changes what an earlier request showed (rewriting an earlier message would
-  // invalidate the model's preserved thinking after it): it must be within
-  // MAX_INLINE_ATTACHMENT_BYTES, and leave its message's inline attachments within
-  // MAX_INLINE_ATTACHMENTS_TOTAL_BYTES. Parts count even if their headers later rule them out.
-  // Every request resends them all, so once the chat's pass MAX_INLINE_ATTACHMENTS or
-  // MAX_INLINE_ATTACHMENTS_TOTAL_BYTES, the turn compacts to the newest messages whose attachments
-  // fit, which start at `attachmentsFitFrom`. Until it does, the older ones are named by workspace
-  // path instead, unread; the model sees them so only if compaction fails.
-  const isInlineCandidate = (mimeType: string) => isAllowedChatAttachmentImageMimeType(mimeType) ||
-      (mimeType === PDF_MIME_TYPE && modelApiSupportsPdfAttachments(handle.model.api));
+  // request never changes what an earlier one showed, which would invalidate the model's preserved
+  // thinking after it: the model must take images, the attachment must be within
+  // MAX_INLINE_ATTACHMENT_BYTES and its message's inline ones within MAX_INLINE_MESSAGE_BYTES, and
+  // no provider may have refused a request for it (see the failure at the end of this pass). Parts
+  // count even if their headers later rule them out.
+  //
+  // Every request resends them all, so once the chat's inline ones pass MAX_INLINE_ATTACHMENTS or
+  // MAX_INLINE_ATTACHMENTS_TOTAL_BYTES, the turn compacts first, from the prompt earlier requests
+  // sent, keeping the messages from `attachmentsFitFrom` on, whose attachments fit. Only if it
+  // can't are the older ones named by path instead (`pastLimitParts`).
+  const isInlineCandidate = (mimeType: string) => handle.model.input.includes("image") &&
+      (isAllowedChatAttachmentImageMimeType(mimeType) ||
+       (mimeType === PDF_MIME_TYPE && modelApiSupportsPdfAttachments(handle.model.api)));
+  const refusedAttachmentIds = new Set(agentContext.refusedInlineAttachments ?? []);
   const inlineAttachmentIds = new Set<string>();
+  // Those of the messages the model has not answered yet: what a refusal of this pass's first
+  // request is put down to.
+  const unansweredAttachmentIds: string[] = [];
   let attachmentsFitFrom: number | undefined;
-  let inlineAttachmentBytes = 0;
+  let answered = false, keptAttachments = 0, keptAttachmentBytes = 0;
   for (let msg of chatMessages.toReversed()) {
     if (msg.type !== "message") continue;
+    if (msg.author.type === "agent") answered = true;
     let messageIds: string[] = [], messageBytes = 0;
     for (let attachment of msg.attachments ?? []) {
-      if (isInlineCandidate(attachment.mimeType) && attachment.size <= MAX_INLINE_ATTACHMENT_BYTES &&
-          messageBytes + attachment.size <= MAX_INLINE_ATTACHMENTS_TOTAL_BYTES) {
+      if (isInlineCandidate(attachment.mimeType) && !refusedAttachmentIds.has(attachment.id) &&
+          attachment.size <= MAX_INLINE_ATTACHMENT_BYTES &&
+          messageBytes + attachment.size <= MAX_INLINE_MESSAGE_BYTES) {
         messageBytes += attachment.size;
         messageIds.push(attachment.id);
       }
     }
-    if (inlineAttachmentIds.size + messageIds.length > MAX_INLINE_ATTACHMENTS ||
-        inlineAttachmentBytes + messageBytes > MAX_INLINE_ATTACHMENTS_TOTAL_BYTES) {
+    keptAttachments += messageIds.length;
+    keptAttachmentBytes += messageBytes;
+    if (attachmentsFitFrom === undefined && (keptAttachments > MAX_INLINE_ATTACHMENTS ||
+        keptAttachmentBytes > MAX_INLINE_ATTACHMENTS_TOTAL_BYTES)) {
       attachmentsFitFrom = msg.sequence + 1;
-      break;
     }
-    inlineAttachmentBytes += messageBytes;
     for (let id of messageIds) inlineAttachmentIds.add(id);
+    if (!answered) unansweredAttachmentIds.push(...messageIds);
   }
+  // The label part of each inline attachment before `attachmentsFitFrom`, with the marker that
+  // replaces it and the part after it if the turn has to run without compacting.
+  const pastLimitParts = new Map<TextContent | ImageContent, TextContent>();
   for (let [msgIndex, msg] of chatMessages.entries()) {
     let modelMessageStart = modelMessages.length;
     let msgTimestamp = msg.timestamp.getTime();
@@ -2447,12 +2463,25 @@ async function runAgentPass(
                   text: `\n\n[Attached file${filename} (${attachment.mimeType})${workspaceLocation}; ` +
                       `binary contents are not inlined. Use byte-aware tools to inspect the workspace file.]`,
                 }];
+                let notShown = (reason: string): TextContent => ({type: "text", text:
+                    `\n\n[Attached ${isPdf ? "PDF file" : "image"}${filename}${workspaceLocation}; ` +
+                    `${attachment.size} bytes, not shown to you: ${reason}.]`});
+                const PAST_LIMITS = "past the limits on the images and PDFs one request can carry";
+                // A label and inline part, which the marker replaces if the turn runs uncompacted
+                // past the limits.
+                let inline = (label: string, data: string): (TextContent | ImageContent)[] => {
+                  let parts: [TextContent, ImageContent] = [{type: "text", text: label},
+                    {type: "image", data, mimeType: attachment.mimeType}];
+                  if (attachmentsFitFrom !== undefined && msg.sequence < attachmentsFitFrom) {
+                    pastLimitParts.set(parts[0], notShown(PAST_LIMITS));
+                  }
+                  return parts;
+                };
                 // Read the bytes only of what may be inlined: an image or PDF chosen above, or text
                 // short enough, since text decodes to at least a character per four bytes.
                 if (isInlineCandidate(attachment.mimeType) && !inlineAttachmentIds.has(attachment.id)) {
-                  return [{type: "text", text: `\n\n[Attached ${isPdf ? "PDF file" : "image"}${filename}` +
-                    `${workspaceLocation}; ${attachment.size} bytes, not shown to you: past the limits ` +
-                    "on the images and PDFs one request can carry.]"}];
+                  return [notShown(refusedAttachmentIds.has(attachment.id)
+                      ? "the model's provider refused a request with it" : PAST_LIMITS)];
                 } else if (textLike && attachment.size > 4 * MAX_TOOL_RESULT_CHARS) {
                   return tooLargeText();
                 } else if (!textLike && !isInlineCandidate(attachment.mimeType)) {
@@ -2472,11 +2501,7 @@ async function runAgentPass(
                 }
                 let text = decodeChatAttachmentText(attachment.mimeType, data);
                 if (canInlineChatAttachmentImage(attachment.mimeType, data)) {
-                  return [{type: "text", text: `\n\n[Attached image${filename}${workspaceLocation}]`}, {
-                    type: "image",
-                    data: data.toBase64(),
-                    mimeType: attachment.mimeType,
-                  }];
+                  return inline(`\n\n[Attached image${filename}${workspaceLocation}]`, data.toBase64());
                 } else if (text !== undefined && text.length <= MAX_TOOL_RESULT_CHARS) {
                   return [{
                     type: "text",
@@ -2490,10 +2515,7 @@ async function runAgentPass(
                   // the model handle rewrites it into the provider's native document block just
                   // before the request goes out (see chat-attachment-pdf.ts). The text part
                   // carries the filename, which the disguised part cannot.
-                  return [
-                    {type: "text", text: `\n\n[Attached PDF file${filename}${workspaceLocation}]`},
-                    {type: "image", data: data.toBase64(), mimeType: attachment.mimeType},
-                  ];
+                  return inline(`\n\n[Attached PDF file${filename}${workspaceLocation}]`, data.toBase64());
                 } else {
                   return binary();
                 }
@@ -4306,6 +4328,8 @@ async function runAgentPass(
   // loop reports them as a final assistant message with stopReason "error"/"aborted".) Nothing
   // from a failed turn is persisted.
   let turnFailure: AssistantMessage | undefined;
+  // Whether a step of this pass got a response, so a failure is not this pass's first request.
+  let stepFinished = false;
 
   // Set when the next provider request would cross the preferred compaction budget. The
   // turn_end barrier persists this step before the caller reloads durable history.
@@ -4640,6 +4664,28 @@ async function runAgentPass(
   // `/compact` ends the turn whether or not the boundary could advance; the model is never prompted.
   if (compactionTurn) return {type: "finished"};
 
+  // Past the limits on inline attachments with no compaction: name the older ones by path, and
+  // drop the thinking after the first of them, which that rewrite invalidates.
+  let rewrittenFrom = modelMessages.findIndex(message => message.role === "user" &&
+      Array.isArray(message.content) && message.content.some(part => pastLimitParts.has(part)));
+  if (rewrittenFrom >= 0) {
+    modelMessages = modelMessages.flatMap((message, index): Message[] => {
+      if (index < rewrittenFrom) return [message];
+      if (message.role === "assistant") {
+        let content = message.content.filter(block => block.type !== "thinking");
+        return content.length ? [{...message, content}] : [];
+      }
+      if (message.role !== "user" || !Array.isArray(message.content)) return [message];
+      let content: (TextContent | ImageContent)[] = [];
+      for (let i = 0; i < message.content.length; ++i) {
+        let marker = pastLimitParts.get(message.content[i]);
+        content.push(marker ?? message.content[i]);
+        if (marker) ++i;
+      }
+      return [{...message, content}];
+    });
+  }
+
   if (modelMessages.length === 0 ||
       modelMessages[modelMessages.length - 1].role === "assistant") {
     // The log tail ends with a completed assistant response and nothing new has arrived for
@@ -4679,6 +4725,7 @@ async function runAgentPass(
     maxTokens: maxOutputTokens,
     finishTurn: ({message, toolResults}) => {
       if (message.stopReason === "error" || message.stopReason === "aborted") return;
+      stepFinished = true;
       capturedActionsForStep = hooks.consumeCapturedActions(chatId);
       if (capturedActionsForStep?.awaitDecision) awaitingActionDecision = true;
       // The next request is this step's measured prompt plus the tool results just produced,
@@ -4731,8 +4778,19 @@ async function runAgentPass(
     // Other failures become an AgentTurnError carrying the failing request's HTTP status (when
     // it can be determined) for the overseer's triage; runAgent retries a transient one first.
     let message = turnFailure.errorMessage ?? "The model request failed.";
-    let error = new AgentTurnError(message, httpStatusFromError(message, handle.lastResponse));
+    let statusCode = httpStatusFromError(message, handle.lastResponse);
+    let error = new AgentTurnError(message, statusCode);
     if (isRetryableAssistantError(turnFailure)) return {type: "transientFailure", error};
+    // A provider that refuses the pass's first request may be refusing an attachment the model
+    // hasn't seen, such as a PDF of more pages than it takes, which every retry would send again.
+    // Those go by path from now on. The model answered nothing after them, so no thinking
+    // depends on how they were shown.
+    if ((statusCode === 400 || statusCode === 413) && !stepFinished &&
+        unansweredAttachmentIds.length > 0) {
+      hooks.refuseInlineAttachments(chatId, unansweredAttachmentIds);
+      throw new AgentTurnError(`${message}\n\nRetrying sends this message's images and PDFs ` +
+          "as workspace files instead.", statusCode);
+    }
     throw error;
   }
 

@@ -2,9 +2,9 @@ import {describe, expect, it, vi} from "vitest";
 import {env} from "cloudflare:workers";
 import {abortAllDurableObjects, runInDurableObject} from "cloudflare:test";
 import {buildPackStream, decodePackStream} from "../src/git-codec";
-import {assertChatAttachmentSize, MAX_INLINE_ATTACHMENT_BYTES, MAX_INLINE_ATTACHMENTS_TOTAL_BYTES, validateChatAttachmentUpload} from "../src/chat-attachment-validation";
+import {assertChatAttachmentSize, MAX_INLINE_ATTACHMENT_BYTES, MAX_INLINE_MESSAGE_BYTES, validateChatAttachmentUpload} from "../src/chat-attachment-validation";
 import {MAX_TOOL_RESULT_CHARS, runAgent} from "../src/agent";
-import {createFauxCore, fauxAssistantMessage, fauxText, fauxToolCall, getCurrentSystemPrompt, type Api, type Message} from "@earendil-works/pi-ai";
+import {createFauxCore, fauxAssistantMessage, fauxText, fauxThinking, fauxToolCall, getCurrentSystemPrompt, type Api, type Message} from "@earendil-works/pi-ai";
 import type {OverseerDurableObject} from "../src/overseer";
 import type {UserDurableObject} from "../src/user";
 import type {CodeChange} from "@gadgets/workshop-shared/code-change";
@@ -41,6 +41,17 @@ async function scriptedTurn(impl: Impl, chatId: number, calls: ReturnType<typeof
   {provider: "cloudflare", model: "faux-model", apiToken: ""});
   return requests;
 }
+// A PNG header claiming `width`×1000 pixels, padded to `size` bytes: projection reads only headers.
+const pngOfSize = (size: number, width: number) => {
+  const bytes = new Uint8Array(size);
+  bytes.set([137, 80, 78, 71, 13, 10, 26, 10]);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(8, 13); view.setUint32(12, 0x49484452);
+  view.setUint32(16, width); view.setUint32(20, 1000);
+  return bytes;
+};
+const imageParts = (messages: Message[]) => messages.flatMap(message =>
+  Array.isArray(message.content) ? message.content.filter(part => part.type === "image") : []);
 const fileToolResults = (messages: Message[]) => messages.flatMap(message =>
   message.role === "toolResult" && message.toolName !== "observeUserChanges"
     ? [{toolName: message.toolName, content: message.content, isError: message.isError}] : []);
@@ -767,8 +778,6 @@ describe("attachment worktree ingress", () => {
       const batch = Array.from({length: 5}, (_, i) => ({oid: blob.oid, mimeType: "image/png", name: `${i}.png`}));
       const chatId = await impl.newChat(user, {profile: USER}, "First five", undefined, batch);
       for (let i = 1; i < 4; ++i) await impl.sendChatMessage(user, {profile: USER}, chatId, "Five more", undefined, batch);
-      const imageParts = (messages: Message[]) => messages.flatMap(message =>
-        Array.isArray(message.content) ? message.content.filter(part => part.type === "image") : []);
       const before = await scriptedTurn(impl, chatId, [], "anthropic-messages");
       expect(imageParts(before[0])).toHaveLength(20);
       const lastBytes = mimeType === "image/png" ? small : new TextEncoder().encode("%PDF-1.7");
@@ -800,50 +809,102 @@ describe("attachment worktree ingress", () => {
   // Whether an image is inline depends only on its own message, so later messages never change
   // how an earlier one is shown. One past the limits is named by workspace path, unread.
   it("decides each image within its own message, and compacts once the chat's pass the byte limit", () => inKernel(crypto.randomUUID(), async impl => {
-    const png = (size: number, width: number) => {
-      const bytes = new Uint8Array(size);
-      bytes.set([137, 80, 78, 71, 13, 10, 26, 10]);
-      const view = new DataView(bytes.buffer);
-      view.setUint32(8, 13); view.setUint32(12, 0x49484452);
-      view.setUint32(16, width); view.setUint32(20, 1000);
-      return bytes;
-    };
-    const upload = async (name: string, bytes: Uint8Array) =>
-      ({oid: impl.gitCache.writeBlob(bytes).oid, mimeType: "image/png", name});
-    const share = Math.floor(MAX_INLINE_ATTACHMENTS_TOTAL_BYTES / 2.5);
+    const upload = async (name: string, size: number, width: number) =>
+      ({oid: impl.gitCache.writeBlob(pngOfSize(size, width)).oid, mimeType: "image/png", name});
+    const share = Math.floor(MAX_INLINE_MESSAGE_BYTES / 2.5);
     const user = env.TEST_USER.getByName(crypto.randomUUID());
     // The third of these passes the message's byte limit; the last passes the per-file one.
     const chatId = await impl.newChat(user, {profile: USER}, "Photos", undefined, [
-      await upload("a.png", png(share, 1)), await upload("b.png", png(share, 2)),
-      await upload("c.png", png(share, 3)), await upload("huge.png", png(MAX_INLINE_ATTACHMENT_BYTES + 1, 4))]);
+      await upload("a.png", share, 1), await upload("b.png", share, 2),
+      await upload("c.png", share, 3), await upload("huge.png", MAX_INLINE_ATTACHMENT_BYTES + 1, 4)]);
     const attachmentName = (id: string) => [...impl.storage.chats.list()].flatMap(message =>
       message.type === "message" ? message.attachments ?? [] : []).find(attachment => attachment.id === id)?.name;
     const read = vi.spyOn(impl, "getChatAttachmentData");
-    const userParts = (messages: Message[]) => messages.filter(message => message.role === "user")
-      .map(message => typeof message.content === "string" ? message.content : message.content);
     const first = (await scriptedTurn(impl, chatId, []))[0];
-    expect(first.flatMap(message => Array.isArray(message.content) ? message.content : [])
-      .filter(part => part.type === "image")).toHaveLength(2);
-    const text = JSON.stringify(first);
+    expect(imageParts(first)).toHaveLength(2);
     for (const [name, size] of [["c.png", share], ["huge.png", MAX_INLINE_ATTACHMENT_BYTES + 1]] as const) {
-      expect(text).toContain(`[Attached image (${name}); workspace file env.ATTACHMENTS/${name}; ${size} ` +
-        "bytes, not shown to you: past the limits on the images and PDFs one request can carry.]");
+      expect(JSON.stringify(first)).toContain(`[Attached image (${name}); workspace file env.ATTACHMENTS/${name}; ` +
+        `${size} bytes, not shown to you: past the limits on the images and PDFs one request can carry.]`);
     }
     expect(read.mock.calls.map(([, id]) => attachmentName(id)).toSorted()).toEqual(["a.png", "b.png"]);
 
-    // A small image fits beside them, and the first message is shown as before.
-    await impl.sendChatMessage(user, {profile: USER}, chatId, "And this", undefined, [await upload("d.png", png(1000, 5))]);
+    // Later images that fit leave the first message as it was shown.
+    await impl.sendChatMessage(user, {profile: USER}, chatId, "And these", undefined,
+      [await upload("d.png", 1000, 5), await upload("e.png", share, 6), await upload("f.png", share, 7)]);
     const second = (await scriptedTurn(impl, chatId, []))[0];
-    expect(userParts(second)[0]).toEqual(userParts(first)[0]);
+    expect(second.find(message => message.role === "user")).toEqual(first.find(message => message.role === "user"));
+    expect(imageParts(second)).toHaveLength(5);
 
-    // One more large image takes the chat past the byte limit, so the turn compacts the first
+    // One more takes the chat past the request's byte limit, so the turn compacts the first
     // message away first.
-    await impl.sendChatMessage(user, {profile: USER}, chatId, "And this", undefined, [await upload("e.png", png(share, 6))]);
+    await impl.sendChatMessage(user, {profile: USER}, chatId, "And this", undefined, [await upload("g.png", share, 8)]);
     const [, compacted] = await scriptedTurn(impl, chatId, [], undefined, "Summary of the photos.");
     expect(JSON.stringify(compacted)).toContain("Summary of the photos.");
     expect(JSON.stringify(compacted)).not.toContain("a.png");
-    expect(compacted.flatMap(message => Array.isArray(message.content) ? message.content : [])
-      .filter(part => part.type === "image")).toHaveLength(2);
+    expect(imageParts(compacted)).toHaveLength(4);
+  }));
+
+  // Compaction summarizes the prompt as earlier requests sent it. Only if it fails does the turn
+  // name the older attachments by path, and then without the thinking the rewrite invalidates.
+  it("names older attachments by path, without the thinking after them, when compaction fails", () => inKernel(crypto.randomUUID(), async impl => {
+    const user = env.TEST_USER.getByName(crypto.randomUUID());
+    const blob = impl.gitCache.writeBlob(pngOfSize(24, 100));
+    const batch = (from: number, length = 5) =>
+      Array.from({length}, (_, i) => ({oid: blob.oid, mimeType: "image/png", name: `${from + i}.png`}));
+    const chatId = await impl.newChat(user, {profile: USER}, "First five", undefined, batch(0));
+    const faux = createFauxCore({models: [{id: "faux-model"}]});
+    const requests: Message[][] = [];
+    const turn = (...responses: ReturnType<typeof fauxAssistantMessage>[]) => {
+      faux.setResponses(responses);
+      return runAgent(impl, {model: faux.getModel(), stream: (model, context, options) => {
+        requests.push(structuredClone(context.messages));
+        return faux.stream(model, context, options);
+      }}, chatId, AUTHOR, new AbortController().signal, USER,
+      {provider: "cloudflare", model: "faux-model", apiToken: ""});
+    };
+    const thinking = (messages: Message[]) => messages.flatMap(message =>
+      message.role === "assistant" ? message.content.filter(block => block.type === "thinking") : []);
+    await turn(fauxAssistantMessage([fauxThinking("Considering the first five."), fauxText("Seen.")]));
+    for (let i = 1; i < 4; ++i) await impl.sendChatMessage(user, {profile: USER}, chatId, "Five more", undefined, batch(5 * i));
+    await impl.sendChatMessage(user, {profile: USER}, chatId, "Wait");
+    await turn(fauxAssistantMessage(fauxText("Waiting.")));
+    // The thinking is replayed while nothing rewrites the messages before it.
+    expect(thinking(requests[1])).toHaveLength(1);
+    await impl.sendChatMessage(user, {profile: USER}, chatId, "One more", undefined, batch(20, 1));
+    // An empty summary fails the compaction, so the turn runs without it.
+    await turn(fauxAssistantMessage(fauxText("")), fauxAssistantMessage(fauxText("Done")));
+    const request = requests.at(-1)!;
+    expect(imageParts(request)).toHaveLength(16);
+    expect(JSON.stringify(request)).toContain("workspace file env.ATTACHMENTS/0.png; 24 bytes, not shown to you");
+    expect(thinking(request)).toEqual([]);
+    expect(JSON.stringify(request)).toContain("Seen.");
+  }));
+
+  // The model has answered nothing after the messages it was refused with, so naming their
+  // attachments by path changes nothing it has seen.
+  it("names the attachments of a refused first request by path from then on", () => inKernel(crypto.randomUUID(), async impl => {
+    const user = env.TEST_USER.getByName(crypto.randomUUID());
+    const pdf = impl.gitCache.writeBlob(new TextEncoder().encode("%PDF-1.7 601 pages"));
+    const chatId = await impl.newChat(user, {profile: USER}, "Read this", undefined,
+      [{oid: pdf.oid, mimeType: "application/pdf", name: "long.pdf"}]);
+    const faux = createFauxCore({models: [{id: "faux-model"}]});
+    const requests: Message[][] = [];
+    const turn = (...responses: ReturnType<typeof fauxAssistantMessage>[]) => {
+      faux.setResponses(responses);
+      return runAgent(impl, {model: {...faux.getModel(), api: "anthropic-messages"}, stream: (model, context, options) => {
+        requests.push(structuredClone(context.messages));
+        return faux.stream(model, context, options);
+      }}, chatId, AUTHOR, new AbortController().signal, USER,
+      {provider: "cloudflare", model: "faux-model", apiToken: ""});
+    };
+    await expect(turn(fauxAssistantMessage([], {stopReason: "error",
+      errorMessage: '400 {"type":"error","error":{"type":"invalid_request_error","message":"too many PDF pages"}}'})))
+      .rejects.toThrow("Retrying sends this message's images and PDFs as workspace files instead.");
+    expect(imageParts(requests[0])).toHaveLength(1);
+    await turn(fauxAssistantMessage(fauxText("Read it from the workspace.")));
+    expect(imageParts(requests[1])).toHaveLength(0);
+    expect(JSON.stringify(requests[1])).toContain("[Attached PDF file (long.pdf); workspace file " +
+      "env.ATTACHMENTS/long.pdf; 18 bytes, not shown to you: the model's provider refused a request with it.]");
   }));
 
   it("never scans attachment payloads on text-only sends or namespace allocation", () => inKernel(crypto.randomUUID(), async impl => {

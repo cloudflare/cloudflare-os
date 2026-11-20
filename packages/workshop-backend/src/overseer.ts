@@ -1253,6 +1253,13 @@ class OverseerImpl implements AgentHooks {
     return this.#reportedStorageBytes;
   }
 
+  refuseInlineAttachments(chatId: number, attachmentIds: string[]): void {
+    let context = this.getChatAgentContext(chatId);
+    context.refusedInlineAttachments =
+        [...new Set([...context.refusedInlineAttachments ?? [], ...attachmentIds])];
+    this.storage.chatContext.put(context);
+  }
+
   // Refuses `byteLength` more bytes of a new file over 1 MiB once the workspace nears its limit.
   #assertRoomForFile(byteLength: number): void {
     let stored = this.sampleStorageBytes();
