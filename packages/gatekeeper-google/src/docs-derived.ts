@@ -9,4 +9,4 @@
  * `__tests__/docs-derived.test.ts` lists, which fails, with the value to put here, whenever
  * that code moves. Record it then; nothing else is to be remembered.
  */
-export const DOC_DERIVED = "f2907c91b0da1cff6ecd4a74e90595ccb445b39d974f3c1d6097fa8621b4980b";
+export const DOC_DERIVED = "c4b08efe416e46a53325464c0a25fb782b63100f8f92a5c52fb8f7d4085c7e6d";

@@ -311,9 +311,9 @@ describe("docEditKey", () => {
     { type: "insertTable", rows: 1, columns: 2, cells: [["a", "b"]], after: "Hello" },
     { type: "insertTableRows", at: 1, cells: [["a", "b"]], expected },
     { type: "insertTableColumns", at: 1, cells: [["a"], ["b"]], expected },
-    { type: "deleteTableRows", at: 0, count: 1, expected, unshown: true },
-    { type: "deleteTableColumns", at: 0, count: 1, expected, unshown: true },
-    { type: "deleteTable", expected, unshown: true, suggested: true },
+    { type: "deleteTableRows", at: 0, count: 1, expected, unshown: 1 },
+    { type: "deleteTableColumns", at: 0, count: 1, expected, unshown: 1 },
+    { type: "deleteTable", expected, unshown: 1, suggested: 1 },
     {
       type: "setTableCellStyle", row: 0, column: 0, rows: 1, columns: 1, expected,
       style: { background: "#ff0000", padding: { top: "2pt", left: "1pt" } },
@@ -366,8 +366,8 @@ describe("docEditKey", () => {
       }
     }
     // The same fields under another type are another edit.
-    expect(docEditKey({ type: "deleteTableColumns", at: 0, count: 1, expected, unshown: true }))
-      .not.toBe(docEditKey({ type: "deleteTableRows", at: 0, count: 1, expected, unshown: true }));
+    expect(docEditKey({ type: "deleteTableColumns", at: 0, count: 1, expected, unshown: 1 }))
+      .not.toBe(docEditKey({ type: "deleteTableRows", at: 0, count: 1, expected, unshown: 1 }));
   });
 
   it("tells a replacement in a table from one outside tables", () => {

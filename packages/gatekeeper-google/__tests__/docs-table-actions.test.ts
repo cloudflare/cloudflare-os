@@ -1073,7 +1073,7 @@ describe("cards", () => {
 
       let said = prepare(chipped, call);
       expect(said.description.description).toContain("chips that are not shown below");
-      expect(said.change).toMatchObject({ unshown: true });
+      expect(said.change).toMatchObject({ unshown: 1 });
       expect(tableChangeRequests(chipped.tab, said.change)).toHaveLength(1);
     }
 
@@ -1089,7 +1089,7 @@ describe("cards", () => {
       "cells since this change was queued.");
     let said = prepare(suggested, dropTable(0));
     expect(said.description.description).toContain("It holds suggested changes");
-    expect(said.change).toMatchObject({ suggested: true });
+    expect(said.change).toMatchObject({ suggested: 3 });
     expect(tableChangeRequests(suggested.tab, said.change)).toHaveLength(1);
   });
 

@@ -1780,7 +1780,7 @@ describe("Google Docs table map", () => {
     makeInlineImage(fixtureParagraph(fixtureCell(tab, 1, 0, 9)), 0);
 
     expect(firstRowCells(tab).map(cell => cell.unshown))
-      .toEqual([true, true, true, true, true, false, false, false, false, false]);
+      .toEqual([1, 1, 1, 1, 1, 0, 0, 0, 0, 0]);
     // What such a cell reads as: nothing where the element stands.
     let { markdown } = docTabToMarkdown(tab);
     expect(markdown).toContain(
@@ -1806,13 +1806,13 @@ describe("Google Docs table map", () => {
     (fixtureTable(secondRowPinned, 1).tableRows ?? [])[1].tableRowStyle = { tableHeader: true };
 
     expect(firstTableMap(buildTab([{ table: rows, suggestedRows: { 1: "insertion" } }])).suggested)
-      .toBe(true);
+      .toBeGreaterThan(0);
     expect(firstTableMap(buildTab([{ table: [
       ["a\n", { paragraphs: [{ runs: ["b\n"] }], suggested: "deletion" }],
-    ] }])).suggested).toBe(true);
-    expect(ownFields.map(table => table.suggested)).toEqual([true, true]);
+    ] }])).suggested).toBeGreaterThan(0);
+    expect(ownFields.map(table => table.suggested)).toEqual([1, 1]);
     // A table inside a cell: deleting the cell discards what is suggested in it.
-    expect(firstTableMap(nested).suggested).toBe(true);
+    expect(firstTableMap(nested).suggested).toBeGreaterThan(0);
     for (let table of [plain, firstTableMap(emptyIds)]) {
       expect("suggested" in table).toBe(false);
     }
