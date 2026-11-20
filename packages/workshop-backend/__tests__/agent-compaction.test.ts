@@ -228,6 +228,22 @@ describe("compaction boundary", () => {
     expect(findCompactionBoundary(projection(messages), 100_000, 40_000)).toBe(1);
   });
 
+  // Too many inline attachments require the tail to start after them. The cut keeps as much as
+  // that allows, unless the token budget cuts later.
+  it("starts the tail at a required sequence, or later if the budget demands it", () => {
+    let messages = [
+      message(0, user, "first request"),
+      message(1, agent, "first response"),
+      message(2, user, "follow-up"),
+      message(3, agent, "second response"),
+    ];
+
+    expect(findCompactionBoundary(projection(messages), 100_000, 20_000, 0, undefined, 1)).toBe(1);
+    expect(findCompactionBoundary(projection(messages), 100_000, 40_000, 0, undefined, 2)).toBe(2);
+    // The budget alone cuts at 1, later than a required 0.
+    expect(findCompactionBoundary(projection(messages), 100_000, 40_000, 0, undefined, 0)).toBe(1);
+  });
+
   // The checkpoint records provisional creations, so unlike a pending connection request they need
   // no protection and the boundary may pass them.
   it("protects a pending connection request but not a provisional creation", () => {

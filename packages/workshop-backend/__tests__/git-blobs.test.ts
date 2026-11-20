@@ -2,7 +2,7 @@ import {createHash} from "node:crypto";
 import {expect, it, vi} from "vitest";
 import {makeMockStorage} from "./mock-storage";
 import {makeOverseerStorage} from "../src/storage-schema/overseer-storage";
-import {WorkspaceGitCache} from "../src/git-cache";
+import {MAX_WHOLE_TEXT_BYTES, UnreadableContentError, WorkspaceGitCache} from "../src/git-cache";
 import {buildPackStream, decodeLooseObject, decodePackStream} from "../src/git-codec";
 
 function fixture() {
@@ -128,4 +128,68 @@ it("decodes UTF-8 blobs by content and preserves old blob contents across replac
   expect(() => git.readCommitFiles(next)).toThrow("not a text file");
   expect(git.readBlob(ref.oid)).toEqual(bytes);
   expect(await cache.fileBytesAtCommit(commit, "a.txt")).toEqual(ref);
+});
+
+it("asks for room before storing a blob over CHUNK_MAX_SIZE, and before each new chunk", async () => {
+  const storage = makeOverseerStorage(makeMockStorage());
+  const asked: number[] = [];
+  let refuseAfter = Infinity;
+  const git = new WorkspaceGitCache(storage, {async pull() {throw new Error("unexpected pull");}},
+    byteLength => {
+      if (asked.length >= refuseAfter) throw new Error("no room");
+      asked.push(byteLength);
+    });
+  // Varied bytes, so the blob cuts into several distinct chunks.
+  const large = Uint8Array.from({length: 3 * 1024 * 1024}, (_, i) => (i * 2654435761) >>> 24);
+  git.writeBlob(Uint8Array.of(1));
+  expect(asked).toEqual([]);
+  const ref = git.writeBlob(large);
+  expect(asked[0]).toBe(large.byteLength);
+  expect(asked.length).toBeGreaterThan(2);
+  expect(git.readBlob(ref.oid, ref.byteLength)).toEqual(large);
+
+  const before = [...storage.gitObjects.list()].length;
+  asked.length = 0;
+  refuseAfter = 0;
+  expect(() => git.writeBlob(large.toReversed())).toThrow("no room");
+  let cancelled: unknown;
+  const refused = new ReadableStream<Uint8Array>({
+    pull: controller => controller.enqueue(large.toReversed()),
+    cancel: reason => { cancelled = reason; },
+  });
+  await expect(git.writeBlobStream(refused, large.byteLength)).rejects.toThrow("no room");
+  expect(cancelled).toBeInstanceOf(Error);
+  expect([...storage.gitObjects.list()]).toHaveLength(before);
+  // A small blob is never refused, streamed or not, of known length or not.
+  const small = Uint8Array.of(4, 5, 6);
+  expect((await git.writeBlobStream(new Blob([small]).stream(), small.byteLength)).byteLength).toBe(3);
+  expect((await git.writeBlobStream(new Blob([small.toReversed()]).stream())).byteLength).toBe(3);
+  expect(asked).toEqual([]);
+  // A stream of unknown length is refused at the chunk that finds no room.
+  refuseAfter = 2;
+  await expect(git.writeBlobStream(new Blob([large.toReversed()]).stream())).rejects.toThrow("no room");
+  expect(asked).toHaveLength(2);
+});
+
+// Its bytes and its text together would crowd the Durable Object, so a file over
+// MAX_WHOLE_TEXT_BYTES is refused as whole text, unread, while windowed reads still stream it.
+it("refuses to read a file over MAX_WHOLE_TEXT_BYTES whole as text", async () => {
+  const {git} = fixture();
+  const line = new TextEncoder().encode("a row of the spreadsheet\n");
+  let left = MAX_WHOLE_TEXT_BYTES + line.length;
+  const size = left;
+  const ref = await git.writeBlobStream(new ReadableStream({pull(controller) {
+    if (left === 0) return controller.close();
+    const piece = line.subarray(0, Math.min(left, line.length));
+    left -= piece.length;
+    controller.enqueue(piece);
+  }}), size);
+  const commit = await git.writeFilesAsCommit(new Map([["rows.csv", ref]]), options);
+  const refusal = `rows.csv is ${size} bytes, too large to read or edit as whole text`;
+  await expect(git.readFileAtCommitIfExists(commit, "rows.csv")).rejects.toThrow(refusal);
+  await expect(git.readFileAtCommitIfExists(commit, "rows.csv")).rejects.toBeInstanceOf(UnreadableContentError);
+  await expect(git.readTextBlob(ref.oid, undefined, "rows.csv")).rejects.toThrow(refusal);
+  expect(() => git.readLocalFileAtCommitIfExists(commit, "rows.csv")).toThrow(refusal);
+  const file = await git.openFileAtCommit(commit, "rows.csv");
+  expect(file?.reader.size).toBe(size);
 });

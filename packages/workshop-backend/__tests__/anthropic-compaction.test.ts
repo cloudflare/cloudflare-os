@@ -15,11 +15,13 @@ import {
   requestAnthropicCompaction, withAnthropicCompactionBlock,
 } from "../src/anthropic-compaction.js";
 import type { OverseerDurableObject } from "../src/overseer.js";
+import type { UserDurableObject } from "../src/user.js";
 import type { GadgetRecord } from "../src/storage-schema/overseer-storage.js";
 
 declare module "cloudflare:workers" {
   interface ProvidedEnv {
     TEST_OVERSEER: DurableObjectNamespace<OverseerDurableObject>;
+    TEST_USER: DurableObjectNamespace<UserDurableObject>;
   }
 }
 
@@ -315,5 +317,45 @@ describe("Anthropic compaction in a chat", () => {
     const summary = contexts[0]?.messages.find(message => message.role === "user");
     expect(summary?.content).toContain("<prior_conversation");
     expect(summary?.content).toContain(BLOCK.content);
+  }));
+});
+
+describe("Anthropic compaction of a chat's attachments", () => {
+  // A chat past the limits on inline images compacts from the prompt earlier requests sent, images
+  // included, so the request reuses their cache and the thinking it keeps stays valid.
+  it("summarizes the messages with the images earlier requests sent", () => runInDurableObject(
+      env.TEST_OVERSEER.getByName(`anthropic-compaction-${++doCounter}`),
+      async (instance: OverseerDurableObject) => {
+    const impl = instance.impl;
+    const png = new Uint8Array(24);
+    png.set([137, 80, 78, 71, 13, 10, 26, 10]);
+    const view = new DataView(png.buffer);
+    view.setUint32(8, 13); view.setUint32(12, 0x49484452);
+    view.setUint32(16, 100); view.setUint32(20, 100);
+    const blob = impl.gitCache.writeBlob(png);
+    const batch = (length: number) =>
+      Array.from({ length }, (_, i) => ({ oid: blob.oid, mimeType: "image/png", name: `${i}.png` }));
+    const user = env.TEST_USER.getByName(crypto.randomUUID());
+    const chatId = await impl.newChat(user, { profile: OWNER }, "First five", undefined, batch(5));
+    for (let i = 0; i < 3; ++i) {
+      await impl.sendChatMessage(user, { profile: OWNER }, chatId, "Five more", undefined, batch(5));
+    }
+    const { handle, bodies, respond } = claude();
+    const claudeTurn = () => runAgent(impl, handle, chatId, AGENT, new AbortController().signal,
+        OWNER, { provider: "anthropic", model: "claude-sonnet-5-5", apiToken: "" });
+    const images = (body: Record<string, unknown> | undefined) =>
+        JSON.stringify(body?.messages).match(/"type":"image"/g)?.length ?? 0;
+    respond(...REPLY_EVENTS);
+    await claudeTurn();
+    expect(images(bodies[0])).toBe(20);
+
+    await impl.sendChatMessage(user, { profile: OWNER }, chatId, "One more", undefined, batch(1));
+    respond(...SUMMARY_EVENTS);
+    respond(...REPLY_EVENTS);
+    await claudeTurn();
+    expect(bodies[1]?.compaction).toBeDefined();
+    expect(images(bodies[1])).toBe(5);
+    expect(JSON.stringify(bodies[1])).not.toContain("not shown to you");
+    expect(images(bodies[2])).toBe(16);
   }));
 });
