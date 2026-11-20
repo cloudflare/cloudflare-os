@@ -44,17 +44,27 @@ export class GoogleGrantRegistry extends DurableObject<Env> {
   async remove(userObjectId: string): Promise<{ last: boolean; unsure?: true }> {
     let kv = this.ctx.storage.kv;
     kv.delete(HOLDER_PREFIX + userObjectId);
+    // Holders that could not say, each with the record it was asked under: passed over, so that
+    // one listed after them can still say it holds the grant.
+    let unknown = new Map<string, string | boolean>();
     // Holders can be recorded while one is asked, so the list is read afresh after each answer,
     // and "none left" is answered only straight after a read that found none.
     for (;;) {
-      let [holder] = kv.list<string | boolean>({ prefix: HOLDER_PREFIX, limit: 1 });
-      if (holder === undefined) return { last: true };
+      let holder = [...kv.list<string | boolean>({ prefix: HOLDER_PREFIX })]
+          .find(([key, recorded]) => unknown.get(key) !== recorded);
+      if (holder === undefined) {
+        let unsure = [...unknown].some(([key, recorded]) => kv.get<string | boolean>(key) === recorded);
+        return unsure ? { last: false, unsure: true } : { last: true };
+      }
       let [key, recorded] = holder;
       let holds = await this.#stillHolds(key.slice(HOLDER_PREFIX.length));
       // The answer stands only for the holder as it was recorded when asked. One that let go, or
       // was recorded again, while it was asked is looked at afresh.
       if (kv.get<string | boolean>(key) !== recorded) continue;
-      if (holds === "unknown") return { last: false, unsure: true };
+      if (holds === "unknown") {
+        unknown.set(key, recorded);
+        continue;
+      }
       if (holds) return { last: false };
       kv.delete(key);
     }

@@ -435,6 +435,26 @@ describe("Google grants shared by several connections", () => {
     expect(google.revoked).toEqual(["refresh-first"]);
   });
 
+  // A holder listed after one that cannot say is still asked, and its answer decides.
+  it("goes by a holder that answers, though one listed before it cannot say", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const google = fakeGoogle();
+    const {ada} = googleAccounts();
+    const named = await Promise.all(["one", "two"].map(async name =>
+      ({name, account: await connection(google, name, ada)})));
+    // The registry asks its holders in the order of their IDs: the first is the one that cannot say.
+    const [idle] = named.toSorted((a, b) => a.account.id < b.account.id ? -1 : 1);
+    await idle.account.run((_instance, state) => {
+      state.storage.kv.put("accessToken", {token: `access-${idle.name}`, expires: new Date(Date.now() - 1000)});
+    });
+    const leaving = await connection(google, "leaving", ada);
+    google.refreshFails = true;
+    await leaving.disconnect();
+    expect(google.revoked).toEqual([]);
+    // The other holder said it holds the grant, so nothing is left to try again.
+    expect(await leaving.isEmpty()).toBe(true);
+  });
+
   // Sparing a holder that could not be asked must not lose the last token that can revoke.
   // A reconnect not yet known to be the same Google account's may hold another's grant now.
   it("puts off a disconnect's revocation while a reconnect's Google account is not known", async () => {
