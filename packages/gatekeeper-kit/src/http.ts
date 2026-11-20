@@ -293,7 +293,8 @@ async function send(
   // fetch upper-cases GET, POST, PUT and DELETE itself, but sends `patch` as written.
   const httpMethod = method.toUpperCase();
   const request = new Request(url, { method: httpMethod, headers, body, redirect: "manual" });
-  const response = await (options.fetch ?? fetch)(request);
+  // Called on `options`, which may be a class whose `fetch()` reads `this`.
+  const response = await (options.fetch ? options.fetch(request) : fetch(request));
 
   // Errors name the path template, never the filled path or URL, which carry agent-supplied values.
   const operation = `${httpMethod} ${template}`;

@@ -156,8 +156,9 @@ describe("createOpenAPIClient", () => {
     class Transport {
       baseUrl = "https://api.example.com/v2//";
       headers() { return { Authorization: "Bearer token" }; }
+      #requests = requests;
       async fetch(request: Request) {
-        requests.push(request);
+        this.#requests.push(request);
         return Response.json([]);
       }
     }
