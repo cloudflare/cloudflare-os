@@ -22,13 +22,17 @@ type ConnectionPreviewPaneProps = {
   restricted: boolean
   /** The connection's resource was created, so the connection now reads that one: the preview of it. */
   onCreated: (preview: ConnectionPreview) => void
+  /** The connection's resource will not be created, so the connection is gone. */
+  onDiscarded: () => void
 }
 
 /**
  * A connection's content in the gadget UI frame, with the connection's session as the frame's
  * `gadget` stub. The frame only reads; applying and discarding are drawn here, outside it.
  */
-export const ConnectionPreviewPane = ({ overseer, preview, restricted, onCreated }: ConnectionPreviewPaneProps) => {
+export const ConnectionPreviewPane = (
+  { overseer, preview, restricted, onCreated, onDiscarded }: ConnectionPreviewPaneProps,
+) => {
   const { gatekeeperId } = preview
 
   const [source, setSource] = useState<GadgetUiSource | null>(null)
@@ -54,6 +58,7 @@ export const ConnectionPreviewPane = ({ overseer, preview, restricted, onCreated
     // Creating the resource restarts its connection on the real one, which ends this pane's
     // session: the pane is opened anew on what was created.
     if (entry.creation && entry.state === 'approved') return onCreated(previewOf(gatekeeperId, entry, preview))
+    if (entry.creation && entry.state === 'rejected') return onDiscarded()
     window.clearTimeout(refreshTimer.current)
     refreshTimer.current = window.setTimeout(() => setRefreshSignal(n => n + 1), REFRESH_DEBOUNCE_MS)
   })
