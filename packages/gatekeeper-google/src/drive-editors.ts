@@ -297,9 +297,9 @@ export const SHEETS_STATE_PREFIX = "driveSheets:file:";
 export const DOC_RECEIPT_PREFIX = "driveDocs:receipt:";
 
 /**
- * Where the numbers of a document's edits that no longer fit it are kept, by its file ID, as a
- * replay or an approval found: the journal lists no failed record, and such an edit is shown, as
- * stale, until it is rejected.
+ * Where the numbers of a document's edits that can no longer be applied are kept, by its file ID:
+ * those a replay or an approval found no longer fit it, and those an approval refused for good.
+ * The journal lists no failed record, and such an edit is shown, as stale, until it is rejected.
  */
 export const DOC_STALE_PREFIX = "driveDocs:stale:";
 
@@ -565,7 +565,7 @@ export class DriveFileEditors {
     };
   }
 
-  /** Notes that edit `id` of document `fileId` no longer fits it, beside those still to reject. */
+  /** Notes that edit `id` of document `fileId` can no longer be applied, beside those still to reject. */
   #noteStale(fileId: string, id: number): void {
     let { kv, journal } = this.#options;
     let key = `${DOC_STALE_PREFIX}${fileId}`;
@@ -656,6 +656,7 @@ export class DriveFileEditors {
           if (!refusal.liftable) {
             this.#options.journal.markSubmitted(actionId);
             this.#options.journal.markFailed(actionId, refusal.message, { undispatched: true });
+            if (editor === "docs") this.#noteStale(target.fileId, actionId);
           }
           throw new Error(refusal.message);
         }
