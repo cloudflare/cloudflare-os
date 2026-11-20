@@ -127,7 +127,8 @@ export const PendingChangeGroupRow = ({
           size={12}
           weight="bold"
           aria-hidden="true"
-          className={`flex-shrink-0 text-kumo-inactive transition-transform duration-150 ${open ? 'rotate-90' : ''}`}
+          // Turned, it would lie over the row's click target and take the click that closes the group.
+          className={`pointer-events-none flex-shrink-0 text-kumo-inactive transition-transform duration-150 ${open ? 'rotate-90' : ''}`}
         />
       </div>
 
