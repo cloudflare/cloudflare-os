@@ -352,6 +352,14 @@ async function readFonts(slides) {
   return faces.read(wanted.filter(([family]) => listed.has(family)));
 }
 
+// Reads the fonts of `slides`, each as drawn and as saved, and draws every slide again once any arrive.
+const showFonts = slides => readFonts(slides.flatMap(({ drawing, saved }) => [drawing, saved])).catch(() => false)
+  .then(any => {
+    if (!any) return;
+    for (const card of cards.values()) if (card.stages.length) paint(card);
+    showPictures();
+  });
+
 // ---------------------------------------------------------------------------------------------
 // Pictures: each is an <img> naming its picture, filled once its bytes are read
 
@@ -803,12 +811,7 @@ async function readDrawings(now, stale, drawn) {
     }
     const read = wholeSlides(answer);
     waiting.push(...answer.slides.filter(slide => slide.outlinesPending).map(slide => slide.slideId));
-    const fonts = readFonts(read.flatMap(({ drawing, saved }) => [drawing, saved])).catch(() => false)
-      .then(any => {
-        if (!any) return;
-        for (const card of cards.values()) if (card.stages.length) paint(card);
-        showPictures();
-      });
+    const fonts = showFonts(read);
     await Promise.race([fonts, pause(FONT_WAIT_MS)]);
     if (now !== generation) return;
     for (const slide of read) {
@@ -876,9 +879,10 @@ async function load() {
       (row.touched || cards.get(row.id).differs || cards.get(row.id).pending || drawings.get(row.id)?.seen !== row.seen));
     const waiting = await readDrawings(now, stale.toSorted((a, b) => b.touched - a.touched), drawn);
     if (!waiting) return;
-    // A picture that could not be read is asked for again, on a slide drawn again or not.
+    // A picture or a font that could not be read is asked for again, on a slide drawn again or not.
     for (const [id, picture] of pictures) if (picture.read && !picture.url) pictures.delete(id);
     showPictures();
+    void showFonts([...drawings.values()].filter(slide => !slide.large));
     showStops();
     status('');
     loaded = true;
