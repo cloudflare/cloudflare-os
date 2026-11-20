@@ -5,7 +5,7 @@ import { act } from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
 import type { GatekeeperVendorInfo, Overseer, WorkpieceId } from '@gadgets/workshop-shared/api'
-import { entry, makeOverseer, makeTestRoot } from '../../action-test-harness'
+import { entry, flushFrames, makeOverseer, makeTestRoot } from '../../action-test-harness'
 import type { ConnectionPreview, OffersPreview } from './connectionPreview'
 import { previewOffers } from './connectionPreview'
 import { usePendingConnectionPreviews } from './usePendingConnectionPreviews'
@@ -109,5 +109,41 @@ it('lists a connection that could not be asked once it can be, and nothing anoth
   // In another workspace the same number is another connection, which has not answered yet.
   await view.render(<Probe offersPreview={() => new Promise(() => {})} />)
   expect(previews).toEqual([])
+  vi.useRealTimers()
+})
+
+it('asks again as soon as at first once every connection has answered', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+  const server = makeOverseer()
+  let asked = 0
+  const overseer = Object.assign(server.overseer, {
+    getGatekeeperById: () => ({
+      // Each connection fails the first time it is asked.
+      describe: async () => {
+        if (++asked % 2) throw new Error('Google is busy')
+        return { hasPreview: true }
+      },
+      getCreationSpec: async () => ({ type: 'gatekeeper', vendorId: 'google', resourceTypeId: 'doc' }),
+      [Symbol.dispose]: () => {},
+    }),
+  }) as RpcStub<Overseer>
+  const offersPreview = previewOffers(listVendors)
+  let previews: ConnectionPreview[] = []
+  const Probe = () => {
+    previews = usePendingConnectionPreviews(overseer, offersPreview)
+    return null
+  }
+  await view.render(<Probe />)
+  await server.resolveSubscription()
+  await server.resolvePendingQuery({ entries: [entry(1, { gatekeeperId: DOC, resourceTitle: 'Notes' })] })
+  await act(async () => {})
+  await act(() => vi.advanceTimersByTimeAsync(2_000))
+  expect(previews).toHaveLength(1)
+
+  await server.emit(entry(2, { gatekeeperId: PLAIN, resourceTitle: 'Plan' }))
+  await act(async () => flushFrames())
+  expect(previews).toHaveLength(1)
+  await act(() => vi.advanceTimersByTimeAsync(2_000))
+  expect(previews).toHaveLength(2)
   vi.useRealTimers()
 })

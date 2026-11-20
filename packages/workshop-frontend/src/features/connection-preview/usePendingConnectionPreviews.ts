@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useReducer, useRef, useState } from 'react'
 import type { RpcStub } from 'capnweb'
 import type { Overseer, WorkpieceId } from '@gadgets/workshop-shared/api'
 import { useActions } from '../../useActions'
@@ -22,12 +22,13 @@ export const usePendingConnectionPreviews = (
   // Kept with what gave them: another workspace numbers its connections from one again.
   const [offered, setOffered] = useState<{ by?: OffersPreview, offers: ReadonlyMap<WorkpieceId, PreviewOffer> }>(
     { offers: new Map() })
-  const [attempt, setAttempt] = useState(0)
+  const failures = useRef(0)
+  const [retried, retry] = useReducer((count: number) => count + 1, 0)
   const ids = [...waiting.keys()].join()
   useEffect(() => {
     if (!overseer || !ids) return
     let stale = false
-    let retry: number | undefined
+    let timer: number | undefined
     const asked = ids.split(',').map(Number)
     void Promise.allSettled(asked.map(id => offersPreview(overseer, id))).then(answers => {
       if (stale) return
@@ -39,16 +40,15 @@ export const usePendingConnectionPreviews = (
         })),
       })
       // A connection that could not be asked still has changes waiting, so it is asked again,
-      // less often each time.
-      if (answers.some(({ status }) => status === 'rejected')) {
-        retry = window.setTimeout(() => setAttempt(attempt + 1), Math.min(60_000, 2_000 * 2 ** attempt))
-      }
+      // less often each time, until every one has answered.
+      failures.current = answers.some(({ status }) => status === 'rejected') ? failures.current + 1 : 0
+      if (failures.current) timer = window.setTimeout(retry, Math.min(60_000, 1_000 * 2 ** failures.current))
     })
     return () => {
       stale = true
-      window.clearTimeout(retry)
+      window.clearTimeout(timer)
     }
-  }, [overseer, ids, offersPreview, attempt])
+  }, [overseer, ids, offersPreview, retried])
 
   const offers = offered.by === offersPreview ? offered.offers : undefined
   return [...waiting.values()].flatMap(preview => {
