@@ -122,14 +122,16 @@ return formPageResponse(connectFormHtml({
 // POST /<account>/key
 const form = await readConnectForm(req, { origin: baseUrl });
 if (form instanceof Response) return form;
+const submittedNonce = form.get(CONNECT_FORM_NONCE_FIELD) ?? "";
+const key = form.get("key") ?? "";
 
-// In the account: check the nonce, ask the provider, and only then claim.
-if (peekOAuth(kv, formNonce, Date.now()) === null) return null;
+// In the account: check the submitted nonce, ask the provider, and only then claim.
+if (peekOAuth(kv, submittedNonce, Date.now()) === null) return null;
 if (!(await providerAccepts(key))) {
   // The attempt may have ended meanwhile, and a form shown for it could not be posted.
-  return peekOAuth(kv, formNonce, Date.now()) === null ? null : { retry: "Vendor refused that key." };
+  return peekOAuth(kv, submittedNonce, Date.now()) === null ? null : { retry: "Vendor refused that key." };
 }
-const attempt = claimOAuth<ConnectAttempt>(kv, formNonce, Date.now());
+const attempt = claimOAuth<ConnectAttempt>(kv, submittedNonce, Date.now());
 if (attempt === null) return null;
 ```
 

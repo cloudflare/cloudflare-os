@@ -125,12 +125,12 @@ export function advanceToOAuth<Extra extends object>(
  *
  * @example
  * ```ts
- * if (peekOAuth(kv, formNonce, Date.now()) === null) return null;
+ * if (peekOAuth(kv, submittedNonce, Date.now()) === null) return null;
  * if (!(await providerAccepts(key))) {
  *   // The attempt may have ended meanwhile, and a form shown for it could not be posted.
- *   return peekOAuth(kv, formNonce, Date.now()) === null ? null : { retry: "The provider refused that key." };
+ *   return peekOAuth(kv, submittedNonce, Date.now()) === null ? null : { retry: "The provider refused that key." };
  * }
- * const attempt = claimOAuth<ConnectAttempt>(kv, formNonce, Date.now());
+ * const attempt = claimOAuth<ConnectAttempt>(kv, submittedNonce, Date.now());
  * if (attempt === null) return null;
  * ```
  */
