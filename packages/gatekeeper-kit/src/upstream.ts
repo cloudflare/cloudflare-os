@@ -261,8 +261,9 @@ export type UpstreamRequestInit = RequestInit & {
  *   cancelled before the wait, which ends at once when the caller's signal aborts, after an
  *   answer and after a throw alike.
  * - **Replay.** See `UpstreamRequestInit.replay`: at most two more sends of a request.
- * - **What is sent.** The input goes to `fetch` as given. The init is the caller's without the
- *   options of `UpstreamRequestInit`, with `headers` replaced by a `Headers` only where
+ * - **What is sent.** The input goes to `fetch` as given, and it and the init are read anew for
+ *   each attempt: a caller changes neither while the request is in flight. The init is the
+ *   caller's without the options of `UpstreamRequestInit`, with `headers` replaced by a `Headers` only where
  *   `authorize` is given, `signal` set where there is a timeout or a caller's signal, and
  *   `redirect` always set: the request's mode, else a mode other than `"follow"` that a
  *   `Request` input holds, else the upstream's, else `"manual"`. The caller's init is read by property: the enumerable
@@ -284,7 +285,8 @@ export type UpstreamRequestInit = RequestInit & {
  *   An attempt that threw is an `error` with the reason `timeout` when the timeout fired or the
  *   caller's signal aborted with a `TimeoutError`, and with the reason `network` otherwise,
  *   unless the upstream's `thrown` says otherwise. It is not counted when the caller's signal had
- *   aborted before it was sent, nor when the caller aborted it for any other reason. Counting
+ *   aborted before it was sent, nor when the caller aborted it for any other reason, nor where
+ *   its input is no URL, which was sent nowhere and is not sent again. Counting
  *   never throws, never waits and never changes what a request answers or throws.
  */
 export interface Upstream {
@@ -318,8 +320,9 @@ export interface Upstream {
    * `request` counts them, but one whose answer `parse` threw on, which is counted as below.
    * @param input The URL or `Request`.
    * @param init The `fetch` init and this request's own options.
-   * @param parse Reads the answer. When it throws, what is left of the body is cancelled and the
-   * error propagates, unless the Retry rule sends the request again, the attempt's own timeout
+   * @param parse Reads the answer. A `parse` that takes a reader of the body releases or cancels
+   * it itself, in a `finally`: a body that is locked is its reader's. When it throws, what is
+   * left of a body no reader holds is cancelled and the error propagates, unless the Retry rule sends the request again, the attempt's own timeout
    * having fired: `parse` is then asked to read the last answer of what is sent. The attempt is
    * counted, either way, as `request` counts its answer, by the status or by what the request's
    * `answer` says, where that is no `success`. Where it is a `success`, the attempt is an `error`
@@ -423,6 +426,11 @@ const LONGEST_TIMER_MS = 2 ** 31 - 1;
 const OPTION_NAMES = [
   "service", "routes", "operation", "timeoutMs", "retry", "redirect", "succeeded", "fetch", "thrown",
 ] satisfies (keyof UpstreamOptions)[];
+// The options `fetcher` takes for every request it sends.
+const DEFAULT_NAMES = [
+  "operation", "service", "idempotent", "timeoutMs", "retry", "redirect", "authorize", "replay",
+  "answer",
+] as const;
 // The members the Workers runtime's `fetch` reads of its init. It reads no other, a browser's
 // (`duplex`, `mode`, `credentials`) included.
 const FETCH_MEMBERS = [
@@ -521,9 +529,10 @@ export function defineUpstream(options: UpstreamOptions): Upstream {
   // The service of a request or call. Never throws.
   function serviceOf(own: string | undefined, url: URL | undefined): string {
     if (own !== undefined) return own;
-    const { service } = options;
-    if (typeof service !== "function") return service ?? vendorId;
     try {
+      // Read here, where a throw is caught: an option may be held behind a getter.
+      const { service } = options;
+      if (typeof service !== "function") return service ?? vendorId;
       return service(url && new URL(url)) ?? vendorId;
     } catch {
       return vendorId;
@@ -612,10 +621,11 @@ export function defineUpstream(options: UpstreamOptions): Upstream {
           // service not answering, unless the wait ran out before this attempt was sent.
           const waitedOut = errorName(caller?.reason) === "TimeoutError";
           const durationMs = Date.now() - startedAt;
-          const counted = !unsent && (!caller?.aborted || waitedOut);
+          // What is no URL was sent nowhere: its failure is the caller's, not the service's.
+          const counted = url !== undefined && !unsent && (!caller?.aborted || waitedOut);
           // A `null` is the gatekeeper saying that nothing was sent: there is no attempt to count
           // or to make again.
-          const given = counted ? askedNow(() => options.thrown?.(error)) : undefined;
+          const given = !url ? null : counted ? askedNow(() => options.thrown?.(error)) : undefined;
           if (counted && given !== null) {
             count({ ...call, durationMs }, given ?? {
               outcome: "error", reason: timeout?.aborted || waitedOut ? "timeout" : "network",
@@ -777,8 +787,11 @@ export function defineUpstream(options: UpstreamOptions): Upstream {
       return result;
     },
     fetcher(defaults = {}) {
-      const given = Object.fromEntries(
-        Object.entries(defaults).filter(([, value]) => value !== undefined));
+      // Read by name, as a request's own options are, so that one behind a getter counts.
+      const given: Pick<UpstreamRequestInit, typeof DEFAULT_NAMES[number]> = {};
+      for (const name of DEFAULT_NAMES) {
+        if (defaults[name] !== undefined) Object.assign(given, { [name]: defaults[name] });
+      }
       // An async function, so that a member of the init that throws on being read fails the call
       // as it fails a `fetch`: by a rejection.
       return async (input, init) =>
@@ -1037,11 +1050,12 @@ function pause(ms: number, signal: AbortSignal | undefined): Promise<void> {
   });
 }
 
-// Cancels what is left of an answer's body, so that its connection is not held. The cancelling
-// is not waited for: that of a body a hook cloned ends only once the clone is read. Never throws.
+// Cancels what is left of an answer's body, so that its connection is not held, as far as it
+// can: a body that is locked is its reader's to cancel, and is left as it is. The cancelling is
+// not waited for: that of a body a hook cloned ends only once the clone is read. Never throws.
 function release(response: Response): void {
   try {
-    // A body that is locked or errored has nothing left to release.
+    // The cancelling of a body that is locked or errored rejects, and nothing is done for it.
     response.body?.cancel().catch(() => undefined);
   } catch {
     // Nor has one whose cancelling throws.

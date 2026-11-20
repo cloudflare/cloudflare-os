@@ -384,6 +384,17 @@ describe("names", () => {
       expect(points).toEqual([]);
     });
 
+    it("takes the vendor id for the service of an upstream whose service throws on being read", async () => {
+      answering(200);
+      const options = new (class {
+        get vendorId() { return "vendor"; }
+        get service(): never { throw new Error("unread"); }
+      })();
+
+      expect((await defineUpstream(options).request(THREAD)).status).toBe(200);
+      expect(calls()).toEqual([["vendor", "GET", "success", "", 200]]);
+    });
+
     it("names by the method a request whose namer throws", () => {
       const throwing = upstream.with({ operation: () => { throw new Error("no name"); } });
       expect(throwing.operationOf("get", THREAD)).toBe("GET");
@@ -1116,6 +1127,15 @@ describe("abort", () => {
     expect(vi.getTimerCount()).toBe(0);
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(outcomes()).toEqual([["error", "network", 0]]);
+  });
+
+  it("neither counts nor sends again a request to what is no URL, which its transport refuses", async () => {
+    const fetch = answering(new TypeError("Invalid URL"), 200);
+
+    await expect(upstream.request("/v1/threads?page=2")).rejects.toThrow("Invalid URL");
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(outcomes()).toEqual([]);
   });
 
   it("does not count an attempt whose caller's wait ran out while its headers were asked for", async () => {
@@ -2761,6 +2781,19 @@ describe("summed", () => {
 });
 
 describe("fetcher", () => {
+  it("takes a default held behind a getter", async () => {
+    const fetch = answering(302);
+    const defaults = new (class {
+      get redirect() { return "manual" as const; }
+      get operation() { return "keys.send"; }
+    })();
+
+    await untimed.with({ redirect: "follow" }).fetcher(defaults)(THREAD);
+
+    expect(initOf(fetch).redirect).toBe("manual");
+    expect(calls()).toEqual([["vendor", "keys.send", "error", "http", 302]]);
+  });
+
   it("sends each call as a request with the caller's init under its defaults", async () => {
     const fetch = answering(401, 200);
     let minted = 0;
