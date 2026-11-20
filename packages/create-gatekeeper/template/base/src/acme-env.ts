@@ -51,7 +51,9 @@ export type AcmeGatekeeperImplProps = {
 /** One item, by its page in the web app. */
 export const ITEM_RESOURCE: SupportedResource = {
   id: "item",
-  urlPattern: `${WEB_ORIGIN}/items/:itemId([A-Za-z0-9_-]+){/*}?`,
+  // The hyphen is escaped: a URL pattern's regular expressions are compiled in a mode that takes a
+  // bare one in a class for a range.
+  urlPattern: `${WEB_ORIGIN}/items/:itemId([A-Za-z0-9_\\-]+){/*}?`,
   title: "Acme Service Item",
   description: "One item: read it, and rename it once you approve.",
 };

@@ -11,10 +11,10 @@ import type { RpcStub } from "cloudflare:workers";
 
 /** One Acme Service item. */
 export interface AcmeItem {
-  /** The item as it is now, including a change of yours still waiting for approval. */
+  /** The item as it is now. */
   get(): Promise<AcmeItemInfo>;
 
-  /** Renames the item. Needs the user's approval. */
+  /** Renames the item. `get()` returns the new title from then on. Throws if `title` is blank. */
   rename(title: string): Promise<void>;
   // #if hooks
 

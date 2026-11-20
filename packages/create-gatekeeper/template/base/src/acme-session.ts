@@ -60,6 +60,10 @@ export class AcmeItemImpl extends RpcTarget implements AcmeItem {
   }
 
   async get(): Promise<AcmeItemInfo> {
+    // What is waiting, taken before the read: a rename approved while the item is read or
+    // authorized leaves the journal, and would show in neither. One applied before the read is
+    // laid over its own result, which changes nothing.
+    const pending = this.#host.pending();
     const wire = await this.#host.read(api => api.get("/items/{id}", { path: { id: this.#itemId } }));
     // Authorized after the read and before anything is returned, with every dependency named.
     await authorizeRead(this.#queue, {
@@ -69,7 +73,7 @@ export class AcmeItemImpl extends RpcTarget implements AcmeItem {
     });
     // A rename still waiting for approval shows, since its action goes on with a simulated result.
     let item = toItem(wire);
-    for (const { kind, payload } of this.#host.pending()) {
+    for (const { kind, payload } of pending) {
       if (kind === "rename" && payload.itemId === this.#itemId) {
         item = { ...item, title: payload.title, updatedAt: payload.stagedAt };
       }

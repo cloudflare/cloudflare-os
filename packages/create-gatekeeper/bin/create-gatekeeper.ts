@@ -115,7 +115,8 @@ const dir = values.out ?? join(ROOT, "packages", `gatekeeper-${names.name}`);
 // A release folds the hyphens out of a package's name to make its install slug, the route and
 // binding this name becomes, so a package with another name can already have it.
 const owner = values.out === undefined ? readdirSync(join(ROOT, "packages")).find(other =>
-  other !== `gatekeeper-${names.name}` && other.replace(/^gatekeeper-/, "").replaceAll("-", "") === names.name) : undefined;
+  other !== `gatekeeper-${names.name}` && other.startsWith("gatekeeper-") &&
+    other.slice("gatekeeper-".length).replaceAll("-", "") === names.name) : undefined;
 if (owner !== undefined) fail(`packages/${owner} already has the install slug "${names.name}": use another name.`);
 if (existsSync(dir)) {
   fail(`${dir} already exists.` + (values.out === undefined
@@ -133,7 +134,8 @@ if (values.out === undefined) {
   register(names, values.auth as ScaffoldOptions["auth"], values.hooks === true);
   console.log("Registered it in README.md, the scripts that list gatekeepers by name, and the release test's fixture bundles.");
   if (!values["no-install"]) {
-    run("pnpm", ["install"]);
+    // The new package is not in the lockfile, which an install in CI would otherwise refuse to change.
+    run("pnpm", ["install", "--no-frozen-lockfile"]);
     run("pnpm", ["types:generate"]);
   }
 }
