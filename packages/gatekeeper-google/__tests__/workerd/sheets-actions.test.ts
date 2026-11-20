@@ -2707,10 +2707,12 @@ describe("Google Sheets preview reads", () => {
     let header = "Rating Scales Delivered to CM’s";
     let provider = current = new SheetsProvider([sheetMeta(0, "Sales")], {
       "Sales!A1": header, "Sales!B1": header, "Sales!C1": header, "Sales!A2": header, "Sales!A3": "one\ntwo",
+      "Sales!A4": "one\ntwo\nthree",
     }).install();
     let wrapped = { wrapStrategy: "WRAP", textFormat: { fontSize: 10 } };
     // Three lines in one column, bold and smaller; one where it does not wrap, and none in a
-    // hidden column; two in the width of the columns it is merged across; a line for each line break.
+    // hidden column; two in the width of the columns it is merged across; a line for each line break,
+    // in a cell with no look of its own too.
     provider.effective.set(key(0, 0, 0), { wrapStrategy: "WRAP", textFormat: { fontSize: 9, bold: true } });
     provider.effective.set(key(0, 0, 1), { textFormat: { fontSize: 10 } });
     provider.effective.set(key(0, 0, 2), wrapped);
@@ -2721,9 +2723,10 @@ describe("Google Sheets preview reads", () => {
       merges: [{ sheetId: 0, startRowIndex: 1, endRowIndex: 2, startColumnIndex: 0, endColumnIndex: 2 }],
     });
 
-    let drawing = await drawingOf(gatekeeper(), "Sales!A1:C3");
+    let drawing = await drawingOf(gatekeeper(), "Sales!A1:C4");
 
-    expect(drawing.rows.map(row => row.size)).toEqual([48, 37, 37]);
+    expect(drawing.rows.map(row => row.size)).toEqual([48, 37, 37, 53]);
+    expect(drawing.cells[3][0]).not.toHaveProperty("format");
   });
 
   it("keeps the fill a conditional rule gives a cell under one a pending change sets", async () => {

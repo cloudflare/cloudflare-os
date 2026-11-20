@@ -493,8 +493,9 @@ export function drawingOf(
     size: Math.max(line.size, ...cells[r].map((cell, c) => {
       let { startColumn, endColumn, endRow } = merged.get(`${drawn.rows[r]}:${drawn.columns[c]}`) ??
         cellRect(drawn.rows[r], drawn.columns[c]);
-      if (!cell?.text || cell.format === undefined || endRow - drawn.rows[r] > 1) return 0;
-      let format = formats[cell.format];
+      if (!cell?.text || endRow - drawn.rows[r] > 1) return 0;
+      // A cell with no look of its own is drawn in the default one.
+      let format = cell.format === undefined ? {} : formats[cell.format];
       let width = Array.from({ length: Math.min(endColumn, sheet.columnCount) - startColumn },
         (_column, n) => widths.get(startColumn + n) ?? DEFAULT_SIZE.columns).reduce((sum, size) => sum + size, 0);
       // A cell of hidden columns is not drawn, so it makes its row no taller.
