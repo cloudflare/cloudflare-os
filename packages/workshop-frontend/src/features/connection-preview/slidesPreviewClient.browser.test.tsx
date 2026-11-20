@@ -269,6 +269,29 @@ it('rings the text a change leaves spilling out of a box too small for it, and a
   })
 })
 
+it('rings a table whole for a change to the text of one of its cells', async () => {
+  const cell = (words: string) => ({ text: [{ runs: [run(words)] }] })
+  const table = (last: string, more: object = {}): Piece => ({
+    id: 'table', bounds: { x: 20, y: 100, width: 400, height: 20 }, kind: 'table', columnWidths: [200, 200], rowHeights: [10, 10],
+    cells: [[cell('Heading'), cell('B')], [cell('C'), cell(last)]], horizontalBorders: [], verticalBorders: [], ...more,
+  })
+  const { card } = await draw({
+    saved: listed('Table'),
+    changes: [edit(1, 's1', 'table')],
+    drawings: { s1: { saved: slide([table('D')]), drawing: slide([table('Changed', { changes: [{ id: 1, op: 'editText' }] })]) } },
+  })
+
+  // Once the slide is scaled to its sheet.
+  await vi.waitFor(() => {
+    const ring = card('s1').querySelector('.marks .spot')!.getBoundingClientRect()
+    const drawn = card('s1').querySelector('.sheet [data-id="table"]')!.getBoundingClientRect()
+    // Its rows have grown past the box Slides gives for it, and the ring with them, to the last cell.
+    expect(drawn.height).toBeGreaterThan(40)
+    expect([ring.left - drawn.left, ring.top - drawn.top].every(gap => gap < 1)).toBe(true)
+    expect([drawn.right - ring.right, drawn.bottom - ring.bottom].every(gap => gap < 1)).toBe(true)
+  })
+})
+
 it('lists slides that are added, deleted, moved and skipped where they belong, each marked as what it is', async () => {
   const [a, b, c, d] = listed('Alpha', 'Bravo', 'Charlie', 'Delta')
   const added = { ...a, id: 'new', title: 'Added' }
