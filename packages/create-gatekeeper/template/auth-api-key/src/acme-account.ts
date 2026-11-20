@@ -29,13 +29,12 @@ import { notifyCredentialsExpiredOnce } from "@gadgets/gatekeeper-kit/credential
 import { commitStagedCredentials, discardStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
 import { createApi, isAuthError, isDenial } from "./acme-api";
 import { KEY_HELP, MAX_KEY_LENGTH } from "./acme-auth";
-import {
-  RECONNECT_MESSAGE, accountStub, identityOf, parseSubresource, type Identity, type PublicGrant,
-} from "./acme-credentials";
+import { RECONNECT_MESSAGE, accountStub, identityOf, type Identity, type PublicGrant } from "./acme-credentials";
 import { VENDOR_ID, getBaseUrl, type Env } from "./acme-env";
 // #if hooks
 import { forgetHooks } from "./acme-hooks";
 // #endif
+import { parseSubresource } from "./acme-resources";
 import { obsContext } from "./observability";
 
 const logger = obsContext.createLogger({ component: "gatekeeper.acme", vendorId: VENDOR_ID });

@@ -6,7 +6,7 @@ import { validateRpc } from "capnweb-validate";
 import type { ApprovalQueue, ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
 import type { AcmeAction, AcmeActions } from "./acme-actions";
 import type { Rest, WireItem } from "./acme-api";
-import { itemSubresourceId } from "./acme-credentials";
+import { itemSubresourceId } from "./acme-resources";
 // #if hooks
 import type { AcmeEventHookTarget } from "./acme-hooks";
 // #endif

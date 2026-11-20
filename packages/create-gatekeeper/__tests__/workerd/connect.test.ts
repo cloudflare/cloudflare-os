@@ -7,7 +7,7 @@
 import { SELF, env, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { generateNonce } from "@gadgets/gatekeeper-kit/connect-nonce";
-import { ALL_RESOURCES } from "#gatekeeper/acme-env";
+import { ALL_RESOURCES } from "#gatekeeper/acme-resources";
 import { itemUrl, parseResourceUrl } from "#gatekeeper/acme-urls";
 import type { Outcome } from "./worker";
 

@@ -16,15 +16,14 @@ import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
 import { observerAccessVerifier } from "@gadgets/gatekeeper-kit/observers";
 import { actions, type AcmeAction, type AcmeActionHost } from "./acme-actions";
 import { createApi } from "./acme-api";
-import {
-  accountSource, accountStub, itemSubresourceId, type AcmeVerifierApi, type Identity,
-} from "./acme-credentials";
-import type { AcmeGatekeeperImplProps, Env } from "./acme-env";
+import { accountSource, accountStub, type AcmeVerifierApi, type Identity } from "./acme-credentials";
+import type { Env } from "./acme-env";
 // #if hooks
 import {
   HOOKS_NOT_CONFIGURED, AcmeHookDeliveryImpl, hookDescription, hooksConfigured, type AcmeHookDelivery, type HookScope,
 } from "./acme-hooks";
 // #endif
+import { itemSubresourceId, type AcmeGatekeeperImplProps } from "./acme-resources";
 import { AcmeItemImpl, type SessionHost } from "./acme-session";
 import { itemUrl } from "./acme-urls";
 import type { AcmeItem } from "./types";

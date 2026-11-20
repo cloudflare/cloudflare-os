@@ -23,12 +23,11 @@ import { generateNonce } from "@gadgets/gatekeeper-kit/connect-nonce";
 import { handleConnect } from "./acme-account";
 import { AcmeConfiguratorUI } from "./acme-configurator";
 import { accountStub, type AcmeVerifierApi } from "./acme-credentials";
-import {
-  ALL_RESOURCES, ITEM_RESOURCE, WEB_ORIGIN, getBasePath, getBaseUrl, type AcmeGatekeeperImplProps, type Env,
-} from "./acme-env";
+import { WEB_ORIGIN, getBasePath, getBaseUrl, type Env } from "./acme-env";
 // #if hooks
 import { handleWebhook } from "./acme-hooks";
 // #endif
+import { ALL_RESOURCES, ITEM_RESOURCE, type AcmeGatekeeperImplProps } from "./acme-resources";
 import { parseResourceUrl } from "./acme-urls";
 import ACME_LOGO_SVG from "./acme-logo.svg";
 import TYPES_CODE from "./types.txt";
