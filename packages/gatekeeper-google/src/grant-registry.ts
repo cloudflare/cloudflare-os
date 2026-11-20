@@ -22,7 +22,17 @@ const HOLDER_SCAN_MS = 20 * 1000;
 // How many holders are asked at once.
 const HOLDER_ASKS_AT_ONCE = 8;
 
-/** One Google account's grant holders; the object is named by the account's stable subject (`sub`). */
+/**
+ * The name of the registry of the grant the OAuth client `clientId` holds for the Google account
+ * `subject` (its stable `sub`). A grant is a project's, and revoking a token ends only what its own
+ * project holds, so a deployment that moves to a client of another project starts other
+ * registries: a connection made under the former client never holds the grant of the new one.
+ */
+export function grantRegistryName(clientId: string, subject: string): string {
+  return `${clientId} ${subject}`;
+}
+
+/** One grant's holders; the object is named by grantRegistryName(). */
 export class GoogleGrantRegistry extends DurableObject<Env> {
   /** Records the `UserAccount` with this id as a holder of the grant. */
   async add(userObjectId: string): Promise<void> {

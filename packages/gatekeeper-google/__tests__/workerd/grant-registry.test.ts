@@ -4,7 +4,7 @@ import {stageCredentials} from "@gadgets/gatekeeper-kit/credential-stage";
 import type {GatekeeperConnectCallback} from "@gadgets/workshop-shared/gatekeeper";
 import {afterEach, describe, expect, it, vi} from "vitest";
 import type {UserAccount} from "../../src/google";
-import {GoogleGrantRegistry} from "../../src/grant-registry";
+import {GoogleGrantRegistry, grantRegistryName} from "../../src/grant-registry";
 import {connectCallbackEvents, describingConnectCallbacks} from "./worker";
 
 // Google revokes a grant for every client of a Google Cloud project at once, so an account that is
@@ -126,6 +126,9 @@ function fakeGoogle() {
 
 type Google = ReturnType<typeof fakeGoogle>;
 
+/** The name of the registry of `subject`'s grant held by the test deployment's OAuth client. */
+const registryName = (subject: string) => grantRegistryName("test-client", subject);
+
 /** Two Google accounts no other test has connected: a registry outlives the test that filled it. */
 function googleAccounts() {
   const run = crypto.randomUUID();
@@ -241,6 +244,38 @@ describe("Google grants shared by several connections", () => {
     await first.disconnect();
     expect(google.revoked).toEqual(["refresh-first"]);
     expect(await first.isEmpty()).toBe(true);
+  });
+
+  // Revoking a token ends only what its own Cloud project holds: a connection made under a client
+  // of the project the deployment used before holds none of the new client's grant.
+  it("revokes the new client's grant whatever connections a former client's credentials hold", async () => {
+    const google = fakeGoogle();
+    const {ada} = googleAccounts();
+    const former = await storedAccount(google, "former", ada);
+    await former.run((_instance, state) => { state.storage.kv.put("credentialsClientId", "former-client"); });
+    await former.refresh();
+    await former.holds(ada);
+    const current = await connection(google, "current", ada);
+
+    await current.disconnect();
+    expect(google.revoked).toEqual(["refresh-current"]);
+    expect(await former.stored("grantClientId")).toBe("former-client");
+  });
+
+  // Reconnected under the new client, the same Google account holds the new client's grant.
+  it("moves a former client's connection to the new client's grant when it reconnects", async () => {
+    const google = fakeGoogle();
+    const {ada} = googleAccounts();
+    const moved = await storedAccount(google, "moved", ada);
+    await moved.run((_instance, state) => { state.storage.kv.put("credentialsClientId", "former-client"); });
+    await moved.refresh();
+    await moved.holds(ada);
+    const other = await connection(google, "other", ada);
+
+    await reconnect(google, moved, "moved-again", ada);
+    expect(await moved.stored("grantClientId")).toBe("test-client");
+    await other.disconnect();
+    expect(google.revoked).toEqual([]);
   });
 
   it("revokes one Google account's grant whatever connections another has", async () => {
@@ -786,7 +821,7 @@ describe("Google grants shared by several connections", () => {
     google.profileFails = true;
     await reconnect(google, moved, "moved-again", grace, false);
     google.profileFails = false;
-    const formerId = testEnv.GoogleGrantRegistry.idFromName(ada).toString();
+    const formerId = testEnv.GoogleGrantRegistry.idFromName(registryName(ada)).toString();
     const failFormer = <M extends "drop" | "remove">(method: M) => {
       const real = GoogleGrantRegistry.prototype[method] as (this: GoogleGrantRegistry, id: string) => Promise<never>;
       vi.spyOn(GoogleGrantRegistry.prototype, method).mockImplementation(function (this: GoogleGrantRegistry, id: string) {
@@ -1191,7 +1226,7 @@ describe("Google grants shared by several connections", () => {
 
 describe("GoogleGrantRegistry", () => {
   const registryOf = (subject: string) =>
-    testEnv.GoogleGrantRegistry.get(testEnv.GoogleGrantRegistry.idFromName(subject));
+    testEnv.GoogleGrantRegistry.get(testEnv.GoogleGrantRegistry.idFromName(registryName(subject)));
 
   it("says a holder is the last only once no other account holds the grant", async () => {
     const google = fakeGoogle();
