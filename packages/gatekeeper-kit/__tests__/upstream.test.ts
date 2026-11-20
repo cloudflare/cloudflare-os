@@ -113,6 +113,25 @@ function stalling(status: number = 200) {
   return fetch;
 }
 
+// A global fetch that gives each of `answers` in turn, a status being an answer with it whose
+// body never ends, as those of `stalling` are. It gives the fake clock's time at each send.
+function stalled(...answers: (number | Response)[]): number[] {
+  const times: number[] = [];
+  vi.stubGlobal("fetch", async (_input: string, init: RequestInit) => {
+    times.push(Date.now());
+    const next = answers[times.length - 1];
+    if (next === undefined) throw new Error("the test listed no further answer");
+    if (typeof next !== "number") return next;
+    const signal = init.signal;
+    return new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        signal?.addEventListener("abort", () => controller.error(signal.reason));
+      },
+    }), { status: next });
+  });
+  return times;
+}
+
 // An answer whose body stays open, and whether that body was cancelled.
 function open(status: number, headers: Record<string, string> = { "Retry-After": "0" }) {
   let cancelled = false;
@@ -152,6 +171,18 @@ function sendTimes(answerOf: (send: number) => Response | Error): number[] {
 // The milliseconds between each send and the one before it, on the fake clock.
 function gaps(times: number[]): number[] {
   return times.slice(1).map((time, at) => time - times[at]);
+}
+
+// A Request whose signal has aborted.
+function stoppedRequest(): Request {
+  return new Request(THREAD, { signal: AbortSignal.abort(new Error("stop")) });
+}
+
+// A Request to give for an init, which holds everything but the URL of the request to send.
+function givenForInit(method: string): Request {
+  return new Request("https://elsewhere.example/", {
+    method, headers: { "X-Api": "2" }, body: "payload", redirect: "follow",
+  });
 }
 
 // `times` rows like `row`.
@@ -613,8 +644,7 @@ describe("retry", () => {
       ["60", {}, 10_000],
       ["60", { maxDelayMs: 300 }, 300],
       ["9".repeat(400), {}, 10_000],
-      // What is no count of seconds leaves the backoff: half of 500 ms.
-      ["Wed, 21 Oct 2026 07:28:00 GMT", {}, 250],
+      // What is neither a count of seconds nor a date leaves the backoff: half of 500 ms.
       ["-5", {}, 250],
       ["1.5", {}, 250],
       ["", {}, 250],
@@ -629,6 +659,67 @@ describe("retry", () => {
 
       expect((await response).status).toBe(200);
       expect(gaps(times)).toEqual([waited]);
+    });
+
+    it.each<[string, string, RetryPolicy, number]>([
+      ["a date to come", "Wed, 21 Oct 2026 07:28:04 GMT", {}, 4_000],
+      ["a date to come, in spaces", "  Wed, 21 Oct 2026 07:28:04 GMT ", {}, 4_000],
+      ["a date past the longest delay", "Wed, 21 Oct 2026 08:28:00 GMT", {}, 10_000],
+      ["a date past a policy's longest delay", "Thu, 22 Oct 2026 07:28:00 GMT", { maxDelayMs: 300 }, 300],
+      ["the date of the moment", "Wed, 21 Oct 2026 07:28:00 GMT", {}, 0],
+      ["a date that is past", "Wed, 21 Oct 2026 07:27:59 GMT", {}, 0],
+      ["a date long past", "Sun, 06 Nov 1994 08:49:37 GMT", {}, 0],
+      ["a leap day", "Tue, 29 Feb 2028 07:28:04 GMT", {}, 10_000],
+      // The two obsolete forms of an HTTP date.
+      ["a date in the RFC 850 form", "Wednesday, 21-Oct-26 07:28:04 GMT", {}, 4_000],
+      ["an RFC 850 date of a later year of the century", "Monday, 21-Oct-30 07:28:04 GMT", {}, 10_000],
+      ["an RFC 850 date of a year more than 50 on, read in the century before",
+        "Friday, 21-Oct-77 07:28:04 GMT", {}, 0],
+      ["a date in the asctime form", "Wed Oct 21 07:28:04 2026", {}, 4_000],
+      ["an asctime date whose day has one digit", "Sun Nov  1 07:28:00 2026", {}, 10_000],
+      // The day of the week is not read.
+      ["a date under another day of the week", "Mon, 21 Oct 2026 07:28:04 GMT", {}, 4_000],
+      // What is no HTTP date leaves the backoff, whatever date it may spell: half of 500 ms.
+      ["a date in another form", "2026-10-21T07:28:04Z", {}, 250],
+      ["a date with no time", "Wed, 21 Oct 2026", {}, 250],
+      ["a date in another zone", "Wed, 21 Oct 2026 07:28:04 +0100", {}, 250],
+      ["a date that is none", "Wed, 41 Oct 2026 07:28:04 GMT", {}, 250],
+      ["a day that its month does not have", "Tue, 31 Nov 2026 07:28:04 GMT", {}, 250],
+      ["a leap day of a year that has none", "Sun, 29 Feb 2026 07:28:04 GMT", {}, 250],
+      ["a day of nothing", "Wed, 00 Oct 2026 07:28:04 GMT", {}, 250],
+      ["an RFC 850 date with a year of four digits", "Wednesday, 21-Oct-2026 07:28:04 GMT", {}, 250],
+      ["an asctime date with a zone", "Wed Oct 21 07:28:04 2026 GMT", {}, 250],
+      ["a word", "soon", {}, 250],
+      ["a number and a date", "4, Wed, 21 Oct 2026 07:28:04 GMT", {}, 250],
+    ])("waits out a Retry-After of %s (%j) under %j for %d ms", async (_name, retryAfter, retry, waited) => {
+      vi.useFakeTimers({ now: Date.parse("2026-10-21T07:28:00Z") });
+      vi.spyOn(Math, "random").mockReturnValue(0.5);
+      const times = sendTimes(send => send === 1
+        ? new Response(null, { status: 503, headers: { "Retry-After": retryAfter } }) : answer(200));
+
+      const response = untimed.request(THREAD, { retry });
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect((await response).status).toBe(200);
+      expect(gaps(times)).toEqual([waited]);
+    });
+
+    it("waits out the time left until a Retry-After date when the answer comes", async () => {
+      vi.useFakeTimers({ now: Date.parse("2026-10-21T07:28:00Z") });
+      const times: number[] = [];
+      // The first answer takes three seconds to come, and asks for a retry at a date five on.
+      vi.stubGlobal("fetch", async () => {
+        times.push(Date.now());
+        if (times.length > 1) return answer(200);
+        await new Promise(resolve => setTimeout(resolve, 3_000));
+        return answer(429, "", "Wed, 21 Oct 2026 07:28:05 GMT");
+      });
+
+      const response = untimed.request(THREAD);
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect((await response).status).toBe(200);
+      expect(gaps(times)).toEqual([5_000]);
     });
 
     it("waits a random share of a ceiling that doubles up to the longest delay", async () => {
@@ -759,6 +850,63 @@ describe("abort", () => {
     await outcome;
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(points).toEqual([]);
+  });
+
+  it("takes the signal of a Request for its caller's where the init's signal is undefined", async () => {
+    const fetch = unanswered();
+    const caller = new AbortController();
+    const outcome = expect(upstream.request(
+      new Request(THREAD, { signal: caller.signal }), { signal: undefined })).rejects.toThrow("stop");
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+
+    caller.abort(new Error("stop"));
+
+    await outcome;
+    expect(points).toEqual([]);
+  });
+
+  describe("a Request whose signal the init clears with null", () => {
+    it("is handed to fetch with the timeout's signal alone, or with the null given", async () => {
+      const fetch = answering(200, 200);
+
+      await upstream.request(stoppedRequest(), { signal: null });
+      await untimed.request(stoppedRequest(), { signal: null });
+
+      expect(initOf(fetch).signal).toBeInstanceOf(AbortSignal);
+      expect(initOf(fetch).signal?.aborted).toBe(false);
+      expect(fetch.mock.calls[1][1]).toEqual({ signal: null, redirect: "manual" });
+      expect(outcomes()).toEqual([["success", "", 200], ["success", "", 200]]);
+    });
+
+    it("is sent again, and a throw of it counted, though its signal has aborted", async () => {
+      vi.spyOn(Math, "random").mockReturnValue(0);
+      const fetch = answering(503, new TypeError("network down"), 200);
+
+      expect((await upstream.request(stoppedRequest(), { signal: null })).status).toBe(200);
+
+      expect(fetch).toHaveBeenCalledTimes(3);
+      expect(outcomes()).toEqual([["error", "http", 503], ["error", "network", 0], ["success", "", 200]]);
+    });
+
+    it("waits out the wait though its signal aborts meanwhile", async () => {
+      vi.useFakeTimers();
+      const caller = new AbortController();
+      const times = sendTimes(send => send === 1 ? answer(503, "", "5") : answer(200));
+
+      const response = untimed.request(new Request(THREAD, { signal: caller.signal }), { signal: null });
+      await vi.advanceTimersByTimeAsync(1_000);
+      caller.abort(new Error("stop"));
+      await vi.advanceTimersByTimeAsync(4_000);
+
+      expect((await response).status).toBe(200);
+      expect(gaps(times)).toEqual([5_000]);
+    });
+
+    it("counts a reading that fails as a malformed answer, and not as one its caller gave up", async () => {
+      answering(200);
+      await expect(upstream.read(stoppedRequest(), { signal: null }, unparsed)).rejects.toThrow("rejected");
+      expect(outcomes()).toEqual([["error", "parse", 200]]);
+    });
   });
 
   it("counts as a network failure a throw with the caller's signal not aborted", async () => {
@@ -1004,6 +1152,64 @@ describe("what fetch is handed", () => {
     expect(fetch.mock.calls.map(([, sent]) => sent)).toEqual([init, init, other]);
     // Only `"manual"` is a mode that follows no redirects.
     expect(outcomes()).toEqual([["error", "http", 302], ["error", "http", 302], ["success", "", 302]]);
+  });
+
+  it("reads a Request given for the init by property, as fetch does", async () => {
+    const fetch = answering(200, 200);
+    const given = givenForInit("PUT");
+
+    await untimed.request(THREAD, given);
+    await untimed.request(THREAD, new Request("https://elsewhere.example/", { redirect: "error" }));
+
+    const sent = initOf(fetch);
+    expect(fetch.mock.calls[0][0]).toBe(THREAD);
+    // The `follow` a Request holds is no declaration: the upstream's mode stands.
+    expect([sent.method, sent.redirect]).toEqual(["PUT", "manual"]);
+    expect(sent.headers).toBe(given.headers);
+    expect(sent.body).toBe(given.body);
+    expect(sent.signal).toBe(given.signal);
+    expect([initOf(fetch, 1).method, initOf(fetch, 1).redirect]).toEqual(["GET", "error"]);
+    // The request is named and counted by what the init holds, its redirect mode included.
+    expect(calls()).toEqual([
+      ["vendor", "threads.update", "success", "", 200], ["vendor", "threads.get", "success", "", 200],
+    ]);
+  });
+
+  it("reads by property what an init holds as no enumerable property of its own", async () => {
+    const fetch = answering(302, 200);
+    const headers = new Headers({ Accept: "text/plain" });
+    // A member behind a prototype's getter, one that is not enumerable, and one that is undefined.
+    class Draft {
+      body = "payload";
+      get method() { return "post"; }
+      get headers() { return headers; }
+      get cache() { return undefined; }
+    }
+    const hidden = Object.defineProperty({ method: "DELETE" }, "redirect", { value: "manual" });
+
+    await untimed.request(THREAD, new Draft());
+    await untimed.request(THREAD, hidden);
+
+    expect(fetch.mock.calls.map(([, init]) => init)).toEqual([
+      { body: "payload", method: "post", headers, redirect: "manual" },
+      { method: "DELETE", redirect: "manual" },
+    ]);
+    expect(Object.keys(initOf(fetch))).toEqual(["body", "method", "headers", "redirect"]);
+    expect(initOf(fetch).headers).toBe(headers);
+    expect(calls()).toEqual([
+      ["vendor", "threads.create", "error", "http", 302], ["vendor", "threads.delete", "success", "", 200],
+    ]);
+  });
+
+  it("sends once a request whose init is a Request that has a body, and again one that has none", async () => {
+    const fetch = answering(503, 503, 200);
+
+    const put = await upstream.request(THREAD, Object.assign(
+      new Request("https://elsewhere.example/", { method: "PUT", body: "payload" }), { idempotent: true }));
+    const read = await upstream.request(THREAD, new Request("https://elsewhere.example/"));
+
+    expect([put.status, read.status]).toEqual([503, 200]);
+    expect(fetch).toHaveBeenCalledTimes(3);
   });
 
   it("gets the headers of `authorize` set over the request's, asked anew for each attempt", async () => {
@@ -1546,6 +1752,221 @@ describe("read", () => {
     });
   });
 
+  describe("an answer whose reading the attempt's own timeout cuts off", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+      fakeTimeouts();
+      vi.spyOn(Math, "random").mockReturnValue(0.5);
+    });
+
+    it("is counted a timeout and a GET sent again after the wait of a throw, the new answer parsed", async () => {
+      const times = stalled(200, answer(200, "payload"));
+      const parse = vi.fn(bodyText);
+
+      const text = upstream.read(THREAD, undefined, parse);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(times).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(250);
+
+      expect(await text).toBe("payload");
+      // Half of the first backoff ceiling, as after an attempt that threw.
+      expect(gaps(times)).toEqual([30_250]);
+      expect(parse).toHaveBeenCalledTimes(2);
+      expect(calls()).toEqual([
+        ["vendor", "threads.get", "error", "timeout", 200], ["vendor", "threads.get", "success", "", 200],
+      ]);
+    });
+
+    it("sends again a marked write whose body can be sent again, and counts the last by what was parsed", async () => {
+      const times = stalled(200, answer(200, `{"ok":false,"code":17}`));
+
+      const body = upstream.read(
+        THREAD, { method: "POST", body: "{}", idempotent: true }, parseBody, failedBody);
+      await vi.advanceTimersByTimeAsync(31_000);
+
+      expect(await body).toEqual({ ok: false, code: 17 });
+      expect(times).toHaveLength(2);
+      expect(outcomes()).toEqual([["error", "timeout", 200], ["error", "api", 200]]);
+    });
+
+    it.each<[string, RequestInit & { idempotent?: boolean; retry?: null }]>([
+      ["a POST", { method: "POST", body: "{}" }],
+      ["a marked write whose body is a stream", {
+        method: "POST", body: new ReadableStream<Uint8Array>(), idempotent: true,
+      }],
+      ["a GET that has no retry policy", { retry: null }],
+    ])("fails %s with the timeout, sent once", async (_name, init) => {
+      const times = stalled(200, answer(200, "payload"));
+
+      const text = expect(upstream.read(THREAD, init, bodyText)).rejects.toMatchObject({ name: "TimeoutError" });
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      await text;
+      expect(times).toHaveLength(1);
+      expect(outcomes()).toEqual([["error", "timeout", 200]]);
+    });
+
+    it("fails a GET with the timeout once its attempts are used, each counted a timeout", async () => {
+      const times = stalled(200, 200, 200, answer(200, "payload"));
+
+      const text = expect(upstream.read(THREAD, undefined, bodyText))
+          .rejects.toMatchObject({ name: "TimeoutError" });
+      await vi.advanceTimersByTimeAsync(120_000);
+
+      await text;
+      expect(gaps(times)).toEqual([30_250, 30_500]);
+      expect(outcomes()).toEqual(rows(3, ["error", "timeout", 200]));
+    });
+
+    it("uses the attempts of the retry policy, as an attempt that threw does", async () => {
+      // A 503 is sent again, and no attempt of two is left for the answer that stalls.
+      const times = stalled(answer(503), 200, answer(200, "payload"));
+
+      const text = expect(upstream.read(THREAD, { retry: { attempts: 2 } }, bodyText))
+          .rejects.toMatchObject({ name: "TimeoutError" });
+      await vi.advanceTimersByTimeAsync(120_000);
+
+      await text;
+      expect(times).toHaveLength(2);
+      expect(outcomes()).toEqual([["error", "http", 503], ["error", "timeout", 200]]);
+    });
+
+    it("asks for no replay of it, and leaves the replays that remain", async () => {
+      const times = stalled(answer(401), 200, answer(403), answer(200, "payload"));
+      const replay = vi.fn((response: Response) => response.status !== 200);
+
+      const text = upstream.read(THREAD, { replay }, bodyText);
+      await vi.advanceTimersByTimeAsync(31_000);
+
+      expect(await text).toBe("payload");
+      expect(times).toHaveLength(4);
+      // Asked of each answer as it came, twice replayed: sending the stalled one again is no replay.
+      expect(replay.mock.calls.map(([response]) => response.status)).toEqual([401, 200, 403]);
+      expect(outcomes()).toEqual([
+        ["error", "http", 401], ["error", "timeout", 200], ["error", "http", 403], ["success", "", 200],
+      ]);
+    });
+
+    it("fails with the caller's reason where the caller aborts during the wait, and sends nothing more", async () => {
+      const times = stalled(200, answer(200, "payload"));
+      const caller = new AbortController();
+
+      const text = expect(upstream.read(THREAD, { signal: caller.signal }, bodyText)).rejects.toThrow("stop");
+      await vi.advanceTimersByTimeAsync(30_100);
+      expect(vi.getTimerCount()).toBe(1);
+      caller.abort(new Error("stop"));
+
+      // No time passes: the request has failed by the abort alone, and its timer is gone.
+      await text;
+      expect(vi.getTimerCount()).toBe(0);
+      expect(times).toHaveLength(1);
+      expect(outcomes()).toEqual([["error", "timeout", 200]]);
+    });
+
+    it("is not sent again where the caller's signal has aborted too", async () => {
+      const times = stalled(200, answer(200, "payload"));
+      const caller = new AbortController();
+
+      // The caller gives up as the timeout fires: what `parse` then throws is the request's end.
+      const text = expect(upstream.read(THREAD, { signal: caller.signal }, async response => {
+        await new Promise(resolve => setTimeout(resolve, 30_000));
+        caller.abort(new Error("stop"));
+        return response.text();
+      })).rejects.toMatchObject({ name: "TimeoutError" });
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      await text;
+      expect(times).toHaveLength(1);
+      expect(points).toEqual([]);
+    });
+
+    it("is not one that the caller's own wait cuts off, which is sent once", async () => {
+      const times = stalled(200, answer(200, "payload"));
+      const wait = new AbortController();
+
+      const text = expect(untimed.read(THREAD, { signal: wait.signal }, response => {
+        const read = response.text();
+        wait.abort(new DOMException("too slow", "TimeoutError"));
+        return read;
+      })).rejects.toThrow("too slow");
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      await text;
+      expect(times).toHaveLength(1);
+      expect(outcomes()).toEqual([["error", "timeout", 200]]);
+    });
+
+    it("sends once a GET whose answer cannot be parsed and whose timeout has not fired", async () => {
+      const times = stalled(answer(200, "not json"), answer(200, "{}"));
+
+      const body = expect(upstream.read(THREAD, undefined, parseBody)).rejects.toBeInstanceOf(SyntaxError);
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      await body;
+      expect(times).toHaveLength(1);
+      expect(outcomes()).toEqual([["error", "parse", 200]]);
+    });
+
+    it("cancels the body of the answer before it sends again", async () => {
+      const unread = open(200);
+      const times = stalled(unread.response, answer(200, "payload"));
+
+      // A reading that fails once the timeout has fired, with the body left as it was.
+      const text = upstream.read(THREAD, undefined, async response => {
+        if (response === unread.response) {
+          await new Promise(resolve => setTimeout(resolve, 30_000));
+          throw new Error("cut off");
+        }
+        return response.text();
+      });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(unread.cancelled()).toBe(true);
+      expect(times).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(250);
+
+      expect(await text).toBe("payload");
+      expect(times).toHaveLength(2);
+    });
+
+    it("is told by the timeout having fired, and not by what `parse` threw", async () => {
+      const times = stalled(answer(200, "not json"), answer(200, "{}"));
+
+      // A reading that fails for a reason of its own, once the timeout has fired.
+      const body = upstream.read(THREAD, undefined, async response => {
+        if (times.length === 1) await new Promise(resolve => setTimeout(resolve, 30_000));
+        return parseBody(response);
+      });
+      await vi.advanceTimersByTimeAsync(31_000);
+
+      expect(await body).toEqual({});
+      expect(times).toHaveLength(2);
+      expect(outcomes()).toEqual([["error", "timeout", 200], ["success", "", 200]]);
+    });
+
+    it("is counted by its status where that is no success, and sent again all the same", async () => {
+      const times = stalled(404, answer(200, "payload"));
+
+      const text = upstream.read(THREAD, undefined, bodyText);
+      await vi.advanceTimersByTimeAsync(31_000);
+
+      expect(await text).toBe("payload");
+      expect(times).toHaveLength(2);
+      expect(outcomes()).toEqual([["error", "http", 404], ["success", "", 200]]);
+    });
+
+    it("leaves a request, whose caller reads the body, sent once", async () => {
+      const times = stalled(200, answer(200, "payload"));
+
+      const response = await upstream.request(THREAD);
+      const text = expect(response.text()).rejects.toMatchObject({ name: "TimeoutError" });
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      await text;
+      expect(times).toHaveLength(1);
+      expect(outcomes()).toEqual([["success", "", 200]]);
+    });
+  });
+
   it("counts how long the answer took, the parsing left out", async () => {
     let now = 1_000;
     vi.spyOn(Date, "now").mockImplementation(() => now);
@@ -1934,6 +2355,59 @@ describe("fetcher", () => {
       ["vendor", "threads.create", "error", "http", 503],
       ["vendor", "keys.send", "error", "http", 401],
     ]);
+  });
+
+  it("reads a Request given for a call's init by property, as fetch does", async () => {
+    const fetch = answering(200, 200);
+    const first = givenForInit("POST");
+
+    await untimed.fetcher()(`${THREAD}/modify`, first);
+    await untimed.fetcher({ redirect: "manual", operation: "threads.send" })(THREAD, givenForInit("POST"));
+
+    const sent = initOf(fetch);
+    expect([sent.method, sent.redirect]).toEqual(["POST", "manual"]);
+    expect(sent.headers).toBe(first.headers);
+    expect(sent.body).toBe(first.body);
+    expect([initOf(fetch, 1).method, initOf(fetch, 1).redirect]).toEqual(["POST", "manual"]);
+    expect(calls()).toEqual([
+      ["vendor", "threads.modify", "success", "", 200], ["vendor", "threads.send", "success", "", 200],
+    ]);
+  });
+
+  it("reads none of a request's own options that a call's init holds behind a getter", async () => {
+    const fetch = answering(503);
+    class Sdk {
+      get method() { return "POST"; }
+      get operation() { return "from-caller"; }
+      get idempotent() { return true; }
+      get retry() { return { attempts: 5 }; }
+    }
+
+    expect((await untimed.fetcher()(THREAD, new Sdk())).status).toBe(503);
+
+    expect(fetch.mock.calls.map(([, init]) => init)).toEqual([{ method: "POST", redirect: "manual" }]);
+    expect(calls()).toEqual([["vendor", "threads.create", "error", "http", 503]]);
+  });
+
+  it("fails by a rejection, as fetch does, a call whose init throws on being read", async () => {
+    const fetch = answering(200, 200);
+    const refused = new Error("no init");
+    class Sdk {
+      get method(): string { throw refused; }
+    }
+    const own: RequestInit = Object.defineProperty({}, "body", {
+      enumerable: true, get() { throw refused; },
+    });
+
+    for (const init of [new Sdk(), own]) {
+      const sent: Promise<Response>[] = [];
+      expect(() => sent.push(untimed.fetcher()(THREAD, init))).not.toThrow();
+      expect(sent).toHaveLength(1);
+      await expect(sent[0]).rejects.toBe(refused);
+    }
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(points).toEqual([]);
   });
 
   it("uses a redirect mode of the caller's init where its defaults have none", async () => {

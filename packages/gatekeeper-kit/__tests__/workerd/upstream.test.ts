@@ -4,7 +4,7 @@ import {
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it } from "vitest";
 import { ID, type Routes } from "../../src/route-operation";
-import { defineUpstream, recordCall, summedInto } from "../../src/upstream";
+import { defineUpstream, recordCall, summedInto, type UpstreamFetch } from "../../src/upstream";
 
 const API = "https://api.vendor.example/v1";
 const ROUTES: Routes = [[`${API}/`, { threads: { [ID]: {} } }]];
@@ -19,6 +19,37 @@ const upstream = defineUpstream({
     return new Response("{}", { status: Number(new URL(String(input)).searchParams.get("status") ?? 200) });
   },
 });
+
+// What a request holds, as the answer of `echo` tells it.
+type Echoed = { method: string; headers: Record<string, string>; body: string; redirect: string };
+
+// A fetch that reads its input and init as the runtime's own does, into a `Request`, fails as that
+// one does where the request's signal has aborted, and answers with what the request holds.
+const echo: UpstreamFetch = async (input, init) => {
+  const request = new Request(input, init);
+  request.signal.throwIfAborted();
+  const echoed: Echoed = {
+    method: request.method,
+    headers: Object.fromEntries(request.headers),
+    body: await request.text(),
+    redirect: request.redirect,
+  };
+  return Response.json(echoed);
+};
+const echoing = upstream.with({ fetch: echo });
+
+// A Request to give for an init, which holds everything but the URL of the request to send.
+function givenForInit(): Request {
+  return new Request("https://elsewhere.example/", {
+    method: "PUT", headers: { "X-Api": "2", "Content-Type": "text/plain" }, body: "payload",
+    redirect: "manual",
+  });
+}
+
+// A Request whose signal has aborted.
+function stoppedRequest(): Request {
+  return new Request(`${API}/threads/18c2`, { signal: AbortSignal.abort(new Error("stop")) });
+}
 
 // A tally that keeps each call added to it.
 function keeping(): { tally: SubserviceTally; added: SubserviceCallInput[] } {
@@ -129,6 +160,43 @@ describe("upstream in workerd", () => {
 
     await background;
     expect(written()).toEqual([["threads.get", 1], ["threads.create", 1], ["threads.list", 2]]);
+  });
+
+  it("sends what a Request given for the init holds, through `request` and through `fetcher`", async () => {
+    const held: Echoed = {
+      method: "PUT", headers: { "content-type": "text/plain", "x-api": "2" }, body: "payload",
+      redirect: "manual",
+    };
+    const { tally, added } = keeping();
+
+    // The runtime's own reading of a Request given for an init, which the client's is to match.
+    expect(await (await echo(`${API}/threads/18c2`, givenForInit())).json()).toEqual(held);
+    const [requested, fetched] = await summedInto(tally, async () => [
+      await (await echoing.request(`${API}/threads/18c2`, givenForInit())).json(),
+      await (await echoing.fetcher()(`${API}/threads/18c2`, givenForInit())).json(),
+    ]);
+
+    expect(requested).toEqual(held);
+    expect(fetched).toEqual(held);
+    expect(kinds(added)).toEqual([["threads.update", "success"], ["threads.update", "success"]]);
+  });
+
+  it("sends a Request whose signal has aborted where the init's signal is null, as fetch does", async () => {
+    const { tally, added } = keeping();
+
+    // The runtime's own reading: the init's `null` clears the signal of the Request.
+    await expect(echo(stoppedRequest())).rejects.toThrow("stop");
+    expect((await echo(stoppedRequest(), { signal: null })).status).toBe(200);
+    const answers = await summedInto(tally, async () => [
+      (await echoing.request(stoppedRequest(), { signal: null })).status,
+      (await echoing.request(stoppedRequest(), { signal: null, timeoutMs: null })).status,
+      await echoing.read(stoppedRequest(), { signal: null }, response => response.status),
+    ]);
+    await expect(summedInto(tally, () => echoing.request(stoppedRequest()))).rejects.toThrow("stop");
+
+    expect(answers).toEqual([200, 200, 200]);
+    // The one whose signal was not cleared is its caller's to give up, and is not counted.
+    expect(kinds(added)).toEqual([["threads.get", "success"], ["threads.get", "success"], ["threads.get", "success"]]);
   });
 
   it("cuts off an attempt by the runtime's own timeout, and counts it one", async () => {

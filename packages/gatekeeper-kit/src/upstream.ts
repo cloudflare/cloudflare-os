@@ -69,7 +69,8 @@ export type RetryPolicy = {
    * that is idempotent (a GET or HEAD, or one marked `idempotent`) and was answered 429, 502, 503
    * or 504, so a write is never sent twice unless it is marked or this says so. It is asked only
    * while attempts remain and the body can be sent again, and is not asked about an attempt that
-   * threw: that one is sent again only when the request is idempotent.
+   * threw, nor about one whose answer `read` could not read before its timeout: those are sent
+   * again only when the request is idempotent.
    */
   retryable?: (
     status: number, request: { method: string; operation: string; idempotent: boolean },
@@ -129,7 +130,11 @@ export type UpstreamOptions = {
   thrown?: (error: unknown) => CallAnswer | null | undefined;
 };
 
-/** A request's own options, beside those of `fetch`. None of them is handed to `fetch`. */
+/**
+ * A request's own options, beside those of `fetch`. None of them is handed to `fetch`. The init is
+ * any object `fetch` takes for one, a `Request` included: what `fetch` reads of it is read as
+ * `fetch` reads it (see `Upstream`, "What is sent").
+ */
 export type UpstreamRequestInit = RequestInit & {
   /**
    * The request's name, a literal, for a request its URL cannot name: a token's exchange and its
@@ -185,23 +190,35 @@ export type UpstreamRequestInit = RequestInit & {
  *   vendor id.
  * - **Timeout.** Each attempt has a fresh `AbortSignal.timeout`, combined with the caller's
  *   signal. The signal is handed to `fetch` and so bounds the reading of the body too: a stream
- *   or a long download passes `null` or a higher value.
+ *   or a long download passes `null` or a higher value. The caller's signal is the init's
+ *   `signal`, else that of a `Request` input. An init's `signal: null` clears the signal of a
+ *   `Request` input, as it does for `fetch`: the request then has no caller's signal.
  * - **Retry.** An answered attempt is sent again while attempts remain, its body can be sent
  *   again (it is absent, a string, bytes, a `Blob`, `URLSearchParams` or `FormData`, and not the
  *   body of a `Request` input) and `retryable` says so. An attempt that threw is sent again under
  *   the same conditions when the request is idempotent, unless the upstream's `thrown` says that
- *   nothing was sent. A write is never sent twice unless it is marked `idempotent` or the
- *   gatekeeper's `retryable` says so, and nothing is sent again once the caller's signal has
- *   aborted. The wait is the answer's `Retry-After` in its delta-seconds form, capped at
- *   `maxDelayMs`, else `Math.random() * min(baseDelayMs * 2 ** attempt, maxDelayMs)`. The body of
- *   the answer is cancelled before the wait, which ends at once when the caller's signal aborts,
- *   after an answer and after a throw alike.
+ *   nothing was sent. So is, under `read`, an attempt whose answer `parse` could not read once
+ *   the attempt's own timeout had fired, after the wait of one that threw. A write is never sent
+ *   twice unless it is marked `idempotent` or the gatekeeper's `retryable` says so, and nothing
+ *   is sent again once the caller's signal has aborted. The wait is what the answer's
+ *   `Retry-After` asks for, capped at `maxDelayMs`: its count of seconds, or the time left until
+ *   its HTTP date (in any of the three forms RFC 9110 gives one, as `Sun, 06 Nov 1994 08:49:37
+ *   GMT`), which is nothing once the date is past. With no `Retry-After`, or one that is neither
+ *   (a day that its month does not have makes no date), and after a throw, the wait is
+ *   `Math.random() * min(baseDelayMs * 2 ** attempt, maxDelayMs)`. The body of the answer is
+ *   cancelled before the wait, which ends at once when the caller's signal aborts, after an
+ *   answer and after a throw alike.
  * - **Replay.** See `UpstreamRequestInit.replay`: at most two more sends of a request.
  * - **What is sent.** The input goes to `fetch` as given. The init is the caller's without the
  *   options of `UpstreamRequestInit`, with `headers` replaced by a `Headers` only where
  *   `authorize` is given, `signal` set where there is a timeout or a caller's signal, and
  *   `redirect` always set: the request's mode, else the upstream's, else `"manual"`, whatever
- *   the mode of a `Request` input.
+ *   the mode of a `Request` input. The caller's init is read as `fetch` reads it: the enumerable
+ *   properties it has of its own are handed on as they are, and so is each further member of a
+ *   `fetch` init that it holds any other way and that is not undefined, behind a prototype's
+ *   getter for one. A `Request` given for the init so sends its method, headers, body and
+ *   signal. Its redirect mode is the request's unless it is `"follow"`, which a `Request` holds
+ *   where it was given none and so declares nothing.
  * - **Counting.** Each attempt is one point (`recordCall`) with the milliseconds from its send
  *   to its answer or throw. An answered attempt is a `success` when `succeeded` says so, else
  *   `refused` with the reason `rate` for a 429, else an `error` with the reason `http`, each with
@@ -230,7 +247,9 @@ export interface Upstream {
    * Sends one request under the rules above, and counts every attempt.
    * @param input The URL or `Request`, handed to `fetch` as given.
    * @param init The `fetch` init and this request's own options.
-   * @returns The answer of the last attempt, whatever its status.
+   * @returns The answer of the last attempt, whatever its status. Its body is the caller's to
+   * read: where the timeout cuts that reading off, the reading fails and the request is not sent
+   * again, as it is under `read`.
    * @throws What `fetch`, `authorize`, `replay` or `retryable` threw; the reason of the caller's
    * signal, where that had aborted when the request was to be sent again; and an `Error` for a
    * `timeoutMs` or `retry` that is not valid.
@@ -239,19 +258,23 @@ export interface Upstream {
   /**
    * Sends as `request` does, then parses the answer and counts its attempt by what was parsed,
    * which is how an error inside a 200 is counted. The attempts before the last are counted as
-   * `request` counts them.
+   * `request` counts them, but one whose answer `parse` threw on, which is counted as below.
    * @param input The URL or `Request`.
    * @param init The `fetch` init and this request's own options.
    * @param parse Reads the answer. When it throws, what is left of the body is cancelled and the
-   * error propagates. The attempt is then counted by its status where that is no success. Where
-   * it is one, the attempt is an `error` with the reason `parse`, unless the reading was cut off,
-   * which the attempt's signal does to it: it is an `error` with the reason `timeout` once the
-   * timeout has fired or the caller's signal has aborted with a `TimeoutError`, and is not
-   * counted once the caller's signal has aborted for any other reason.
+   * error propagates, unless the Retry rule sends the request again, the attempt's own timeout
+   * having fired: `parse` is then asked to read the last answer of what is sent. The attempt is
+   * counted, either way, by its status where that is no success. Where it is one, the attempt is
+   * an `error` with the reason `parse`, unless the reading was cut off, which the attempt's
+   * signal does to it: it is an `error` with the reason `timeout` once the timeout has fired or
+   * the caller's signal has aborted with a `TimeoutError`, and is not counted once the caller's
+   * signal has aborted for any other reason. What `parse` threw is read for none of this, and
+   * the signals alone are: whatever `parse` throws once the attempt's timeout has fired is taken
+   * for a reading that the timeout cut off.
    * @param answer How the parsed answer is counted; undefined, a throw or what is no answer (a
    * promise is not awaited) counts it by its status. By convention an error inside a success is
    * an `error` with the reason `api`.
-   * @returns What `parse` returned.
+   * @returns What `parse` returned of the last answer.
    */
   read<T>(
     input: string | URL | Request,
@@ -295,11 +318,12 @@ export interface Upstream {
   /**
    * A fetch-shaped function for code that takes one, such as a remote key set, an SDK or a git
    * transport: each call is `request(input, { ...init, ...defaults })`. Of a call's own init
-   * only what `fetch` takes is read: a member named as one of a request's own options is
-   * dropped, so that the code handed the function sets none of them.
+   * only what `fetch` takes is read, as `fetch` reads it: a member named as one of a request's
+   * own options is dropped, so that the code handed the function sets none of them.
    * @param defaults Options of every request it sends. A `redirect` in a call's own init is used
    * where `defaults` has none.
-   * @returns The function.
+   * @returns The function. It never throws: a call that fails rejects the promise it returned,
+   * as `fetch` does, a member of the init that throws on being read included.
    */
   fetcher(defaults?: Pick<UpstreamRequestInit,
     "operation" | "service" | "idempotent" | "timeoutMs" | "retry" | "redirect" | "authorize"
@@ -336,6 +360,13 @@ const LONGEST_TIMER_MS = 2 ** 31 - 1;
 const OWN_OPTIONS: ReadonlySet<string> = new Set([
   "operation", "service", "idempotent", "timeoutMs", "retry", "authorize", "replay", "answer",
 ] satisfies (keyof UpstreamRequestInit)[]);
+// The members `fetch` reads of its init: those the Fetch standard gives a `RequestInit`, and the
+// Workers runtime's own.
+const FETCH_MEMBERS = [
+  "method", "headers", "body", "referrer", "referrerPolicy", "mode", "credentials", "cache",
+  "redirect", "integrity", "keepalive", "signal", "duplex", "priority", "window", "cf", "fetcher",
+  "encodeResponseBody",
+];
 
 // The tally of the work that is running, when `summedInto` or `Upstream.summed` started one.
 const runningTally = new AsyncLocalStorage<SubserviceTally>();
@@ -453,8 +484,9 @@ export function defineUpstream(options: UpstreamOptions): Upstream {
   ): Promise<Sent> {
     const {
       operation: named, service: ownService, idempotent: marked, timeoutMs: ownTimeoutMs,
-      retry: ownRetry, authorize, replay, answer, ...rest
+      retry: ownRetry, authorize, replay, answer, ...own
     } = init;
+    const rest = asFetchReads(own, init);
     const request = input instanceof Request ? input : undefined;
     const method = (rest.method ?? request?.method ?? "GET").toUpperCase();
     const url = parsedUrl(input instanceof Request ? input.url : input);
@@ -465,105 +497,118 @@ export function defineUpstream(options: UpstreamOptions): Upstream {
     // No redirect is followed unless the request or the upstream says so.
     const redirect = rest.redirect ?? options.redirect ?? "manual";
     const manual = redirect === "manual";
-    const caller = rest.signal ?? request?.signal ?? undefined;
+    // The signal of a `Request` input is the caller's only where the init gives none: a `null`
+    // there clears it, as it does for `fetch`.
+    const caller = (rest.signal === undefined ? request?.signal : rest.signal) ?? undefined;
     const resendable = canResend(rest.body) && !request?.body;
     const call = { source, service: serviceOf(ownService, url), operation };
 
     let attempt = 0;
     let replays = 0;
-    for (;;) {
-      // Nothing is sent again once the caller's signal has aborted, and no header is asked for.
-      if (attempt + replays > 0) caller?.throwIfAborted();
-      const sent: RequestInit = { ...rest };
-      if (authorize) {
-        const headers = new Headers(rest.headers ?? request?.headers);
-        new Headers(await authorize()).forEach((value, name) => headers.set(name, value));
-        sent.headers = headers;
-      }
-      // A fresh timeout for each attempt, so that a retry has the whole of it.
-      const timeout = timeoutMs === null ? undefined : AbortSignal.timeout(timeoutMs);
-      if (timeout) sent.signal = caller ? AbortSignal.any([timeout, caller]) : timeout;
-      sent.redirect = redirect;
-
-      // An attempt begun once its caller's signal has aborted is failed by `fetch` unsent.
-      const unsent = caller?.aborted === true;
-      const startedAt = Date.now();
-      let response: Response;
-      try {
-        response = await (options.fetch ?? globalThis.fetch)(input, sent);
-      } catch (error) {
-        // A request its caller gave up is not one the service failed, and is not counted. A
-        // caller that times its own wait aborts with a `TimeoutError`, though, and that is the
-        // service not answering, unless the wait ran out before this attempt was sent.
-        const waitedOut = errorName(caller?.reason) === "TimeoutError";
-        const durationMs = Date.now() - startedAt;
-        const counted = !unsent && (!caller?.aborted || waitedOut);
-        // A `null` is the gatekeeper saying that nothing was sent: there is no attempt to count
-        // or to make again.
-        const given = counted ? askedNow(() => options.thrown?.(error)) : undefined;
-        if (counted && given !== null) {
-          count({ ...call, durationMs }, given ?? {
-            outcome: "error", reason: timeout?.aborted || waitedOut ? "timeout" : "network",
-          });
+    // Sends attempt after attempt, from the one that is next, until one is returned.
+    const sending = async (): Promise<Sent> => {
+      for (;;) {
+        // Nothing is sent again once the caller's signal has aborted, and no header is asked for.
+        if (attempt + replays > 0) caller?.throwIfAborted();
+        const sent: RequestInit = { ...rest };
+        if (authorize) {
+          const headers = new Headers(rest.headers ?? request?.headers);
+          new Headers(await authorize()).forEach((value, name) => headers.set(name, value));
+          sent.headers = headers;
         }
-        // Whether the service applied the request is not known, so it is sent again only when
-        // that is safe.
-        if (given !== null && resendable && idempotent && retry && attempt < retry.attempts - 1
-            && !caller?.aborted) {
-          await pause(backoffMs(retry, attempt, null), caller);
+        // A fresh timeout for each attempt, so that a retry has the whole of it.
+        const timeout = timeoutMs === null ? undefined : AbortSignal.timeout(timeoutMs);
+        if (timeout) sent.signal = caller ? AbortSignal.any([timeout, caller]) : timeout;
+        sent.redirect = redirect;
+
+        // An attempt begun once its caller's signal has aborted is failed by `fetch` unsent.
+        const unsent = caller?.aborted === true;
+        const startedAt = Date.now();
+        let response: Response;
+        try {
+          response = await (options.fetch ?? globalThis.fetch)(input, sent);
+        } catch (error) {
+          // A request its caller gave up is not one the service failed, and is not counted. A
+          // caller that times its own wait aborts with a `TimeoutError`, though, and that is the
+          // service not answering, unless the wait ran out before this attempt was sent.
+          const waitedOut = errorName(caller?.reason) === "TimeoutError";
+          const durationMs = Date.now() - startedAt;
+          const counted = !unsent && (!caller?.aborted || waitedOut);
+          // A `null` is the gatekeeper saying that nothing was sent: there is no attempt to count
+          // or to make again.
+          const given = counted ? askedNow(() => options.thrown?.(error)) : undefined;
+          if (counted && given !== null) {
+            count({ ...call, durationMs }, given ?? {
+              outcome: "error", reason: timeout?.aborted || waitedOut ? "timeout" : "network",
+            });
+          }
+          // Whether the service applied the request is not known, so it is sent again only when
+          // that is safe.
+          if (given !== null && resendable && idempotent && retry && attempt < retry.attempts - 1
+              && !caller?.aborted) {
+            await pause(backoffMs(retry, attempt, null), caller);
+            attempt++;
+            continue;
+          }
+          throw error;
+        }
+
+        const answered = { ...call, durationMs: Date.now() - startedAt, httpStatus: response.status };
+        const verdict = (answer && await asked(() => answer(response)))
+          ?? byStatus(response.status, succeeded(response.status, operation, manual));
+        let counted = false;
+        const countOnce = (given: CallAnswer) => {
+          if (counted) return;
+          counted = true;
+          count(answered, given);
+        };
+        if (!deferred) countOnce(verdict);
+        // Asks a hook whether to send again. An answer that is not returned is counted here, and
+        // its body cancelled, whether the hook says yes or throws.
+        const sendsAgain = async (hook: () => boolean | Promise<boolean>): Promise<boolean> => {
+          try {
+            if (!await hook()) return false;
+          } catch (error) {
+            countOnce(verdict);
+            release(response);
+            throw error;
+          }
+          countOnce(verdict);
+          release(response);
+          return true;
+        };
+
+        if (replay && resendable && replays < MAX_REPLAYS && await sendsAgain(() => replay(response))) {
+          replays++;
+          continue;
+        }
+        if (resendable && retry && attempt < retry.attempts - 1
+            && await sendsAgain(() => retry.retryable(response.status, { method, operation, idempotent }))) {
+          await pause(backoffMs(retry, attempt, response.headers.get("Retry-After")), caller);
           attempt++;
           continue;
         }
-        throw error;
+        return {
+          response,
+          verdict,
+          count: countOnce,
+          // The attempt's signal bounds the reading of its answer too, and is read as it is for an
+          // attempt that threw: a caller's abort first, which is no failure of the service.
+          cutOff: () => {
+            if (caller?.aborted && errorName(caller.reason) !== "TimeoutError") return "abort";
+            return timeout?.aborted || caller?.aborted ? "timeout" : undefined;
+          },
+          // An answer that the attempt's own timeout kept from being read is an attempt that
+          // timed out, and is sent again as one that threw is.
+          again: () => {
+            if (!timeout?.aborted || caller?.aborted || !resendable || !idempotent || !retry
+                || attempt >= retry.attempts - 1) return undefined;
+            return pause(backoffMs(retry, attempt++, null), caller).then(sending);
+          },
+        };
       }
-
-      const answered = { ...call, durationMs: Date.now() - startedAt, httpStatus: response.status };
-      const verdict = (answer && await asked(() => answer(response)))
-        ?? byStatus(response.status, succeeded(response.status, operation, manual));
-      let counted = false;
-      const countOnce = (given: CallAnswer) => {
-        if (counted) return;
-        counted = true;
-        count(answered, given);
-      };
-      if (!deferred) countOnce(verdict);
-      // Asks a hook whether to send again. An answer that is not returned is counted here, and
-      // its body cancelled, whether the hook says yes or throws.
-      const sendsAgain = async (hook: () => boolean | Promise<boolean>): Promise<boolean> => {
-        try {
-          if (!await hook()) return false;
-        } catch (error) {
-          countOnce(verdict);
-          release(response);
-          throw error;
-        }
-        countOnce(verdict);
-        release(response);
-        return true;
-      };
-
-      if (replay && resendable && replays < MAX_REPLAYS && await sendsAgain(() => replay(response))) {
-        replays++;
-        continue;
-      }
-      if (resendable && retry && attempt < retry.attempts - 1
-          && await sendsAgain(() => retry.retryable(response.status, { method, operation, idempotent }))) {
-        await pause(backoffMs(retry, attempt, response.headers.get("Retry-After")), caller);
-        attempt++;
-        continue;
-      }
-      return {
-        response,
-        verdict,
-        count: countOnce,
-        // The attempt's signal bounds the reading of its answer too, and is read as it is for an
-        // attempt that threw: a caller's abort first, which is no failure of the service.
-        cutOff: () => {
-          if (caller?.aborted && errorName(caller.reason) !== "TimeoutError") return "abort";
-          return timeout?.aborted || caller?.aborted ? "timeout" : undefined;
-        },
-      };
-    }
+    };
+    return sending();
   }
 
   const upstream: Upstream = {
@@ -575,26 +620,30 @@ export function defineUpstream(options: UpstreamOptions): Upstream {
     async request(input, init) {
       return (await send(input, init ?? {}, false)).response;
     },
-    read(input, init, parse, answer) {
-      return send(input, init ?? {}, true).then(({ response, verdict, count: countLast, cutOff }) =>
-        settling(() => parse(response)).then(
-          parsed => {
-            countLast(askedNow(() => answer?.(parsed, response)) ?? verdict);
-            return parsed;
-          },
-          error => {
-            // A success that could not be read is a malformed answer only where its reading was
-            // not cut off.
-            if (verdict.outcome !== "success") {
-              countLast(verdict);
-            } else {
-              const cut = cutOff();
-              if (cut !== "abort") countLast({ outcome: "error", reason: cut ?? "parse" });
-            }
-            release(response);
-            throw error;
-          },
-        ));
+    async read(input, init, parse, answer) {
+      let sent = await send(input, init ?? {}, true);
+      for (;;) {
+        const { response, verdict, count: countLast, cutOff, again } = sent;
+        try {
+          // Only `parse` throws here: the asking of `answer` and the counting never do.
+          const parsed = await parse(response);
+          countLast(askedNow(() => answer?.(parsed, response)) ?? verdict);
+          return parsed;
+        } catch (error) {
+          // A success that could not be read is a malformed answer only where its reading was
+          // not cut off.
+          if (verdict.outcome !== "success") {
+            countLast(verdict);
+          } else {
+            const cut = cutOff();
+            if (cut !== "abort") countLast({ outcome: "error", reason: cut ?? "parse" });
+          }
+          release(response);
+          const resent = again();
+          if (!resent) throw error;
+          sent = await resent;
+        }
+      }
     },
     call(operation, work, hooks) {
       const call = { source, service: serviceOf(hooks?.service, undefined), operation };
@@ -644,8 +693,10 @@ export function defineUpstream(options: UpstreamOptions): Upstream {
     fetcher(defaults = {}) {
       const given = Object.fromEntries(
         Object.entries(defaults).filter(([, value]) => value !== undefined));
-      return (input, init) =>
-        send(input, { ...fetchInit(init), ...given }, false).then(sent => sent.response);
+      // An async function, so that a member of the init that throws on being read fails the call
+      // as it fails a `fetch`: by a rejection.
+      return async (input, init) =>
+        (await send(input, { ...fetchInit(init), ...given }, false)).response;
     },
     with(overrides) {
       return defineUpstream({ ...options, ...overrides, vendorId });
@@ -654,18 +705,41 @@ export function defineUpstream(options: UpstreamOptions): Upstream {
   return upstream;
 }
 
-// The answer of a request's last attempt, how its status counts, the counting of it, and how the
-// reading of it was cut off where the attempt's signal has aborted.
+// The answer of a request's last attempt, how its status counts, the counting of it, how the
+// reading of it was cut off where the attempt's signal has aborted, and the sending of the request
+// again where its reading failed: undefined unless the attempt's own timeout has fired and an
+// attempt that threw would be sent again, and else the last answer of what is then sent, after
+// the wait.
 type Sent = {
   response: Response;
   verdict: CallAnswer;
   count: (answer: CallAnswer) => void;
   cutOff: () => "timeout" | "abort" | undefined;
+  again: () => Promise<Sent> | undefined;
 };
 
-// The init of a `fetcher`'s caller, without what is named as one of a request's own options.
+// The init of a `fetcher`'s caller as `fetch` reads it, without what is named as one of a
+// request's own options.
 function fetchInit(init: RequestInit | undefined): RequestInit {
-  return Object.fromEntries(Object.entries(init ?? {}).filter(([name]) => !OWN_OPTIONS.has(name)));
+  const given = init ?? {};
+  return asFetchReads(
+    Object.fromEntries(Object.entries(given).filter(([name]) => !OWN_OPTIONS.has(name))), given);
+}
+
+// An init as `fetch` reads it: `own`, a copy of the enumerable properties that `init` has of its
+// own, with each member of a `fetch` init that `init` holds any other way, where it is not
+// undefined. `fetch` reads its init by property, so it finds the members that a prototype's
+// getters expose, as a `Request` given for an init has them all. A plain init holds none so, and
+// its copy is returned as it is.
+function asFetchReads(own: RequestInit, init: RequestInit): RequestInit {
+  for (const member of FETCH_MEMBERS) {
+    if (Object.hasOwn(own, member)) continue;
+    const value: unknown = Reflect.get(init, member);
+    // A `Request` holds `follow` where it was given no mode: that is no word to follow redirects.
+    if (member === "redirect" && value === "follow") continue;
+    if (value !== undefined) Object.assign(own, { [member]: value });
+  }
+  return own;
 }
 
 // The words of a call that are the same whatever its answer.
@@ -783,13 +857,53 @@ function delayOf(label: string, value: number): number {
   return value;
 }
 
-// The wait before the attempt after `attempt`: the server's `Retry-After` in its delta-seconds
-// form, else exponential backoff with full jitter. Never longer than the policy's longest delay.
+// The wait before the attempt after `attempt`: what the server's `Retry-After` asks for, else
+// exponential backoff with full jitter. Never longer than the policy's longest delay.
 function backoffMs(retry: Required<RetryPolicy>, attempt: number, retryAfter: string | null): number {
-  if (retryAfter !== null && /^\s*\d+\s*$/.test(retryAfter)) {
-    return Math.min(Number(retryAfter) * 1000, retry.maxDelayMs);
-  }
+  const askedFor = retryAfter === null ? undefined : retryAfterMs(retryAfter);
+  if (askedFor !== undefined) return Math.min(askedFor, retry.maxDelayMs);
   return Math.random() * Math.min(retry.baseDelayMs * 2 ** attempt, retry.maxDelayMs);
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MONTH = `(?<month>${MONTHS.join("|")})`;
+const TIME = "(?<hour>[01]\\d|2[0-3]):(?<minute>[0-5]\\d):(?<second>[0-5]\\d|60)";
+// The three forms of an HTTP date, each of which a recipient is to take (RFC 9110, 5.6.7): the
+// one a server is to send, as `Sun, 06 Nov 1994 08:49:37 GMT`, and the two obsolete ones, as
+// `Sunday, 06-Nov-94 08:49:37 GMT` and `Sun Nov  6 08:49:37 1994`. All three are in GMT. The day
+// of the week is matched and not read: the date is the one its day, month and year give.
+const HTTP_DATES = [
+  `(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), (?<day>\\d{2}) ${MONTH} (?<year>\\d{4}) ${TIME} GMT`,
+  `(?:Mon|Tues|Wednes|Thurs|Fri|Satur|Sun)day, (?<day>\\d{2})-${MONTH}-(?<year>\\d{2}) ${TIME} GMT`,
+  `(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) ${MONTH} (?<day>\\d{2}| \\d) ${TIME} (?<year>\\d{4})`,
+].map(form => new RegExp(`^${form}$`));
+
+// The milliseconds a `Retry-After` asks to wait: its count of seconds, or the time left until
+// its HTTP date, which is nothing once that is past. Undefined for what is neither.
+function retryAfterMs(retryAfter: string): number | undefined {
+  if (/^\s*\d+\s*$/.test(retryAfter)) return Number(retryAfter) * 1000;
+  const at = httpDate(retryAfter.trim());
+  return at === undefined ? undefined : Math.max(at - Date.now(), 0);
+}
+
+// The time an HTTP date gives, in milliseconds. Undefined for what is in none of the three forms,
+// and for a day that its month does not have.
+function httpDate(value: string): number | undefined {
+  const date = HTTP_DATES.map(form => form.exec(value)?.groups).find(found => found !== undefined);
+  if (!date) return undefined;
+  let year = Number(date.year);
+  if (date.year.length === 2) {
+    // A year of two digits is one of this century, or of the century before where that one would
+    // be more than 50 years on.
+    const now = new Date().getUTCFullYear();
+    year += now - now % 100;
+    if (year > now + 50) year -= 100;
+  }
+  const month = MONTHS.indexOf(date.month);
+  const day = Number(date.day);
+  // `Date.UTC` would read a day past the end of its month as a day of the next.
+  if (day < 1 || day > new Date(Date.UTC(year, month + 1, 0)).getUTCDate()) return undefined;
+  return Date.UTC(year, month, day, Number(date.hour), Number(date.minute), Number(date.second));
 }
 
 // Waits `ms`, or until `signal` aborts. A wait of nothing sets no timer, and no wait is longer
