@@ -10,9 +10,11 @@ import { Markdown } from '@/components/Markdown'
 import { ServiceLogo } from '@/components/ServiceLogo'
 import { useNarrowScreen } from '@/hooks/useNarrowScreen'
 import { useWorkspaceUnderlay } from './useWorkspaceUnderlay'
+import type { SidebarChat } from './SidebarChatItem'
+import type { SidebarActions } from './SidebarMenus'
 import { WorkspaceNav, type SidebarWorkspace } from './WorkspaceNav'
 
-export type { SidebarWorkspace }
+export type { SidebarActions, SidebarChat, SidebarWorkspace }
 
 /** A service as the connect button shows it. */
 export type SidebarConnection = {
@@ -24,9 +26,19 @@ export type SidebarConnection = {
 
 export type SidebarProps = {
   user: { name: string; avatarUrl?: string }
+  /** The workspaces listed first: in the app, those pinned to the sidebar. */
   workspaces: SidebarWorkspace[]
   selectedWorkspaceId?: string
   onSelectWorkspace: (id: string) => void
+  /** The viewer's recent chats, after the workspaces (`WorkspaceNav`). */
+  chats?: SidebarChat[]
+  /** The chat that is open. */
+  selectedChatId?: string
+  onSelectChat?: (chat: SidebarChat) => void
+  /** What a row's menu does, opened by right-clicking it or pressing and holding it. */
+  actions?: SidebarActions
+  /** Puts back a chat taken out of the sidebar. */
+  onUnhideChat?: (chat: SidebarChat) => void
   /** The logo was clicked: go to the start of a new chat. */
   onGoHome?: () => void
   /** The deployment's own logo, in place of the app's mark. */
@@ -152,6 +164,11 @@ export const Sidebar = ({
   workspaces,
   selectedWorkspaceId,
   onSelectWorkspace,
+  chats,
+  selectedChatId,
+  onSelectChat,
+  actions,
+  onUnhideChat,
   onGoHome,
   logoUrl,
   announcement,
@@ -244,6 +261,11 @@ export const Sidebar = ({
       workspaces={workspaces}
       selectedWorkspaceId={selectedWorkspaceId}
       onSelectWorkspace={onSelectWorkspace}
+      chats={chats}
+      selectedChatId={selectedChatId}
+      onSelectChat={onSelectChat}
+      actions={actions}
+      onUnhideChat={onUnhideChat}
       notice={notice}
       empty={empty}
       rail={collapsed}

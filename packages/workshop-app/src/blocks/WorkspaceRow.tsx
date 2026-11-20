@@ -58,7 +58,7 @@ export const WorkspaceRow = ({ workspaceLabel, workspaceLook, title, time, membe
       </span>
     )}
     <RowAction shown={starred}>
-      <StarButton title={title} starred={starred} onStarredChange={onStarredChange} className="relative" />
+      <StarButton title={title} starred={starred} onStarredChange={onStarredChange} pin className="relative" />
     </RowAction>
   </div>
 )

@@ -13,7 +13,7 @@ import { WorkspaceIconPicker } from '@/blocks/WorkspaceIconPicker'
 import { WorkspaceListItem } from '@/blocks/WorkspaceListItem'
 import type { WorkspacePickerProps } from '@/blocks/WorkspacePicker'
 import { MessageBubble } from '@/blocks/MessageBubble'
-import { Sidebar, type SidebarWorkspace } from '@/blocks/Sidebar'
+import { Sidebar, type SidebarActions, type SidebarChat, type SidebarWorkspace } from '@/blocks/Sidebar'
 import { Avatar } from '@/components/Avatar'
 import { Tag } from '@/components/Tag'
 import { Banner } from '@/components/Banner'
@@ -107,6 +107,23 @@ const previewWorkspaces: SidebarWorkspace[] = [
   { id: 'untitled', workspaceLabel: 'UW', title: 'Untitled Workspace' },
   { id: 'dashboard', workspaceLabel: 'JD', title: 'Jira dashboard', subtitle: 'Oct 27', unread: true },
   { id: 'slides', workspaceLabel: 'PS', title: 'Presentation slides', subtitle: 'Oct 26' },
+]
+
+const chatIn = (workspace: SidebarWorkspace, chat: Omit<SidebarChat, 'workspaceId' | 'workspaceTitle' | 'workspaceLabel' | 'workspaceLook'>): SidebarChat => ({
+  ...chat,
+  workspaceId: workspace.id,
+  workspaceTitle: workspace.title,
+  workspaceLabel: workspace.workspaceLabel,
+  workspaceLook: workspace.workspaceLook,
+})
+const [greeting, assistant, , dashboard, slides] = previewWorkspaces
+const previewChats: SidebarChat[] = [
+  chatIn(dashboard, { id: 'dashboard:4', title: 'Sprint burndown', time: '2m', attention: 'Needs approval', preview: 'Share “Q3 plan” with finance' }),
+  chatIn(greeting, { id: 'greeting:7', title: 'Plan the offsite', time: '5m', speaker: 'Maya', preview: 'Sounds good, let’s book the venue for Thursday', unread: true }),
+  chatIn(slides, { id: 'slides:2', title: 'Investor update deck', time: '18m', working: true }),
+  chatIn(dashboard, { id: 'dashboard:3', title: 'Bug triage', time: '1h', preview: 'I grouped the open bugs by component and flagged three as regressions.' }),
+  chatIn(assistant, { id: 'assistant:1', title: 'Availability next week', time: '3h', speaker: 'You', preview: 'Can you check Tuesday instead?', muted: true }),
+  chatIn(greeting, { id: 'greeting:6', title: 'Welcome email draft', time: '2d', preview: 'Here’s a shorter version with the dates up front.' }),
 ]
 
 // More than fit in the menu, one with a look of its own and one with a title too long for the button.
@@ -392,34 +409,80 @@ const ListRowsPage = () => (
 
 // The app's sidebar, as it was and as it is, expanded and on the rail.
 const SidebarPage = () => {
-  const [selectedWorkspace, setSelectedWorkspace] = useState('greeting')
+  const [selectedWorkspace, setSelectedWorkspace] = useState<string | undefined>('greeting')
+  const [selectedChat, setSelectedChat] = useState<string>()
   const [sidebarPage, setSidebarPage] = useState<'library' | 'workspaces' | 'connections' | 'settings'>()
+  const [chats, setChats] = useState(previewChats)
+  const [hidden, setHidden] = useState<string[]>([])
+  const [pinned, setPinned] = useState(['greeting', 'dashboard'])
+  const [said, setSaid] = useState('Right-click a row, or press and hold it on a touch screen, for its menu.')
+  const shownChats = chats
+    .filter(({ id }) => !hidden.includes(id))
+    .map((chat) => ({ ...chat, workspacePinned: pinned.includes(chat.workspaceId) }))
+  const workspaces = previewWorkspaces.filter(({ id }) => pinned.includes(id)).map((workspace) => ({ ...workspace, pinned: true }))
+  const change = (id: string, to: Partial<SidebarChat>) => setChats((current) => current.map((chat) => (chat.id === id ? { ...chat, ...to } : chat)))
+  const actions: SidebarActions = {
+    onOpenWorkspace: (id) => setSaid(`Go to the workspace ${id}.`),
+    onPinWorkspace: (id, on) => setPinned((current) => (on ? [id, ...current] : current.filter((other) => other !== id))),
+    onMuteWorkspace: (id, length) => {
+      setChats((current) => current.map((chat) => (chat.workspaceId === id ? { ...chat, workspaceMuted: length !== null } : chat)))
+      setSaid(length ? `Muted ${id} (${length}).` : `Unmuted ${id}.`)
+    },
+    onMarkWorkspaceRead: (id) => setChats((current) => current.map((chat) => (chat.workspaceId === id ? { ...chat, unread: false } : chat))),
+    onNewChat: (id) => setSaid(`A new chat in ${id}.`),
+    onMuteChat: (chat, muted) => change(chat.id, { muted }),
+    onMarkChatRead: (chat, read) => change(chat.id, { unread: !read }),
+    onHideChat: (chat) => setHidden((current) => [...current, chat.id]),
+  }
+  // A message arrives in the last chat: it moves up once the sidebar is no longer pointed at.
+  const arrive = () => setChats((current) => {
+    const last = current.at(-1)!
+    return [{ ...last, time: 'now', unread: true, speaker: 'Grace', preview: 'Just pushed the fix, can you take a look?' }, ...current.slice(0, -1)]
+  })
   return (
     <>
-      <Section title="Sidebar, expanded and collapsed to a rail: as it was, with the pages as icons beside the logo, kept to compare, then as it is, with them as rows under the list (approach a neighbour from the active row or a distant row; on the rail, point at a workspace for its title)">
-        <div className="flex gap-4">
-          {(['icons', 'rows'] as const).flatMap((layout) => [false, true].map((collapsed) => (
-            <div key={`${layout}-${collapsed}`} className={`flex h-[32rem] shrink-0 flex-col rounded-3xl bg-kumo-canvas p-2 ring-1 ring-kumo-line ${collapsed ? 'w-14' : 'w-64'}`}>
-              <Sidebar
-                user={{ name: 'Ada Lovelace' }}
-                workspaces={previewWorkspaces}
-                selectedWorkspaceId={sidebarPage ? undefined : selectedWorkspace}
-                onSelectWorkspace={(id) => {
-                  setSelectedWorkspace(id)
-                  setSidebarPage(undefined)
-                }}
-                connections={[{ name: 'Google' }, { name: 'Linear' }, { name: 'Cloudflare' }]}
-                library={{ current: sidebarPage === 'library', onOpen: () => setSidebarPage('library'), waiting: 3 }}
-                workspacesPage={{ current: sidebarPage === 'workspaces', onOpen: () => setSidebarPage('workspaces') }}
-                connectionsPage={{ current: sidebarPage === 'connections', onOpen: () => setSidebarPage('connections') }}
-                // The user's own menu has the settings and signing out.
-                settingsPage={{ current: sidebarPage === 'settings', onOpen: () => setSidebarPage('settings') }}
-                onSignOut={() => {}}
-                collapsed={collapsed}
-                layout={layout}
-              />
-            </div>
-          )))}
+      <Section title="Sidebar, expanded and collapsed to a rail: the pinned workspaces, then the viewer’s recent chats, each under its workspace’s icon, with what waits on them first. Right-click a row (or press and hold it) for its menu; a chat removed can be put back from where it was for a while. The chats keep their order while the list is pointed at: send a message to the last one and it moves up once the pointer leaves. On the rail, each workspace is its icon, pinned first, and pointing at one opens a card of its chats. As it was, with the pages as icons beside the logo, kept to compare, then as it is, with them as rows under the list">
+        <div className="flex flex-col gap-3">
+          <div className="flex items-center gap-3">
+            <Button onClick={arrive}>A message arrives in the last chat</Button>
+            <Button onClick={() => setHidden([])} disabled={hidden.length === 0}>Put back removed chats</Button>
+            <p role="status" className="text-sm text-kumo-subtle">{said}</p>
+          </div>
+          <div className="flex gap-4">
+            {(['icons', 'rows'] as const).flatMap((layout) => [false, true].map((collapsed) => (
+              <div key={`${layout}-${collapsed}`} className={`flex h-[40rem] shrink-0 flex-col rounded-3xl bg-kumo-canvas p-2 ring-1 ring-kumo-line ${collapsed ? 'w-14' : 'w-72'}`}>
+                <Sidebar
+                  user={{ name: 'Ada Lovelace' }}
+                  workspaces={workspaces}
+                  selectedWorkspaceId={sidebarPage || (selectedChat && !collapsed) ? undefined : selectedWorkspace}
+                  onSelectWorkspace={(id) => {
+                    setSelectedWorkspace(id)
+                    setSelectedChat(undefined)
+                    setSidebarPage(undefined)
+                  }}
+                  chats={shownChats}
+                  selectedChatId={sidebarPage ? undefined : selectedChat}
+                  onSelectChat={(chat) => {
+                    setSelectedChat(chat.id)
+                    setSelectedWorkspace(chat.workspaceId)
+                    setSidebarPage(undefined)
+                    change(chat.id, { unread: false })
+                  }}
+                  actions={actions}
+                  onUnhideChat={(chat) => setHidden((current) => current.filter((id) => id !== chat.id))}
+                  connections={[{ name: 'Google' }, { name: 'Linear' }, { name: 'Cloudflare' }]}
+                  library={{ current: sidebarPage === 'library', onOpen: () => setSidebarPage('library'), waiting: 3 }}
+                  workspacesPage={{ current: sidebarPage === 'workspaces', onOpen: () => setSidebarPage('workspaces') }}
+                  connectionsPage={{ current: sidebarPage === 'connections', onOpen: () => setSidebarPage('connections') }}
+                  // The user's own menu has the settings and signing out.
+                  settingsPage={{ current: sidebarPage === 'settings', onOpen: () => setSidebarPage('settings') }}
+                  onSignOut={() => {}}
+                  collapsed={collapsed}
+                  layout={layout}
+                />
+              </div>
+            )))}
+          </div>
         </div>
       </Section>
     </>

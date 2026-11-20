@@ -92,10 +92,12 @@ export const plainLine = (line: string) =>
     .replace(/`+([^`]+)`+/g, '$1')
     .trim()
 
-// What a message asks of a person, while it waits, as a list's line has it beside the pill that says
-// it waits (so not "Asks for approval" again): a connection to make, and what for, or the action to
-// approve. Once decided it asks nothing.
-const askOf = (message: AiChatMessage): LatestMessage | undefined => {
+/**
+ * What a message asks of a person, while it waits, as a list's line has it beside the pill that says
+ * it waits (so not "Asks for approval" again): a connection to make, and what for, or the action to
+ * approve. Once decided it asks nothing.
+ */
+export const askOf = (message: AiChatMessage): LatestMessage | undefined => {
   const at = { author: message.author, at: message.timestamp }
   if (message.type === 'connectionRequest' && message.state === 'pending') {
     return { text: `Connect ${message.vendorName} · ${plainLine(message.reason)}`.slice(0, PREVIEW), ...at }
@@ -105,8 +107,8 @@ const askOf = (message: AiChatMessage): LatestMessage | undefined => {
   return undefined
 }
 
-// What a message says, as a list's line has it: its first line with words in it, if it has any.
-const latestOf = (message: AiChatMessage): LatestMessage | undefined => {
+/** What a message says, as a list's line has it: its first line with words in it, if it has any. */
+export const latestOf = (message: AiChatMessage): LatestMessage | undefined => {
   if (message.type !== 'message') return undefined
   const line = message.message.split('\n').map((each) => plainLine(each.trim())).find(Boolean)
   return line ? { text: line.slice(0, PREVIEW), author: message.author, at: message.timestamp } : undefined

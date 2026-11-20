@@ -63,7 +63,7 @@ export const WorkspaceCard = ({ workspaceLabel, workspaceLook, title, time, memb
         </CardAction>
       )}
       <CardAction shown={starred}>
-        <StarButton title={title} starred={starred} onStarredChange={onStarredChange} />
+        <StarButton title={title} starred={starred} onStarredChange={onStarredChange} pin />
       </CardAction>
     </span>
   </div>

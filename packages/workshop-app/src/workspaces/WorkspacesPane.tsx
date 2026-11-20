@@ -70,7 +70,7 @@ export const WorkspacesPane = ({ onOpenWorkspace, workspaceHref, onNewWorkspace 
   const starred = orderStarred(shown.filter(({ pinned }) => pinned), starOrder)
   const timeOf = (workspace: WorkspaceMetadataWithTimestamps) => formatActivity(list.order.at(workspace))
   const groups = [
-    ...(starred.length > 0 ? [{ key: 'starred', label: 'Starred', entries: starred.map((workspace) => ({ value: workspace, time: timeOf(workspace) })) }] : []),
+    ...(starred.length > 0 ? [{ key: 'starred', label: 'Pinned', entries: starred.map((workspace) => ({ value: workspace, time: timeOf(workspace) })) }] : []),
     ...list.arrange(shown.filter(({ pinned }) => !pinned)).map(({ key, label, entries }) => ({
       key: `${list.order.id}:${key}`,
       label,
@@ -88,7 +88,7 @@ export const WorkspacesPane = ({ onOpenWorkspace, workspaceHref, onNewWorkspace 
     // The whole order is kept, so that one starred elsewhere since stays after this one.
     keepOrder(on ? [id, ...starredIds.filter((other) => other !== id)] : starredIds.filter((other) => other !== id))
     setPinned(id, on).catch((error: unknown) => {
-      setStarProblem(`Couldn’t ${on ? 'star' : 'unstar'} the workspace: ${error instanceof Error ? error.message : String(error)}`)
+      setStarProblem(`Couldn’t ${on ? 'pin' : 'unpin'} the workspace: ${error instanceof Error ? error.message : String(error)}`)
     })
   }
 

@@ -392,10 +392,12 @@ app is in their Library. Its address shows, in the page's place beside the sideb
 theirs (`SharedAppPane`), with the way to the app, or a menu of them, else the Library, reading
 nothing of the workspace; nor does `LiveWaiting` read its agents.
 
-`/workspaces` (the sidebar's folder button) lists every workspace: the starred ones first, then the
-rest by when they were last active, grouped as the chat settings page groups its files. Starring is
-the server's `pinned`; the starred ones' order is this device's (`prefs/starOrder.ts`), the latest
-starred first until they are dragged, or moved with Alt and an arrow key.
+`/workspaces` (the sidebar's folder button) lists every workspace: the pinned ones first, then the
+rest by when they were last active, grouped as the chat settings page groups its files. A workspace
+is pinned, never starred (a pin, `StarButton`'s `pin`), as pinning is what puts it in the sidebar:
+the server's `pinned`. The pinned ones' order is this device's (`prefs/starOrder.ts`), the latest
+pinned first until they are dragged, or moved with Alt and an arrow key. The code still says
+`starred` for them (the filter's id, `orderStarred`); the words are Pin and Pinned.
 
 Over the list are its controls (see Lists, below): `workspaces/workspaceList.ts` says how it can be
 ordered (last active, date created, name), narrowed (starred, whose it is, who has access) and
@@ -1047,6 +1049,34 @@ sidebar of the rest. The same reading counts the chats people had that wait on t
 on the tab that lists it (Chats, Agents, Library), what waits on a decision all of it on Chats. The `agents` scenario has a workspace whose gadgets start four agents, and the
 gallery has each block in each state (`AgentsPreview`, over `exampleAgents.ts`).
 
+## The sidebar
+
+The sidebar is flat: the pinned workspaces (`WorkspaceListItem`), then the viewer's recent chats
+across workspaces (`SidebarChatItem`: the workspace's icon, the chat's title and time, and its
+workspace and latest message, or what waits on the viewer), under quiet Pinned and Recent headings
+where there are both. With nothing pinned and no recent chats, it lists the latest workspaces as it
+did before. Which chats are recent is `workspaces/recentChats.ts` (plain and tested): what waits on
+the viewer first, then the chats people had that they take part in, the latest first, from the past
+week, thirty at most; an agent's run only while it waits. Nothing says who takes part in a chat, so
+it is guessed: the viewer wrote in its last messages, has a read cursor in it, or hears of it. The
+sweep that counts what waits (`AgentsWaitingProvider`) reads each workspace's read state
+(`getWorkspaceUnreadState`) and the last messages of its latest chats with it, into
+`RecentChatsStore`, which `useRecentChats` reads; a workspace whose unread count changes, or whose
+chat is opened, is read again at once. The backend listing the viewer's chats with their latest
+message would replace all of it.
+
+The rows keep their order while the list is pointed at, focused from the keyboard or has a menu
+open, what is new coming at the end (`heldOrder`), and take the real order once left. A row's menu
+opens by right-clicking it, or pressing and holding it on a touch screen (`ContextMenu`, one for the
+whole list, `SidebarMenus`): a chat's has Open in new tab, Mark as read or unread, Go to workspace,
+pinning its workspace, muting the chat or the workspace (for an hour, until tomorrow morning, or
+until turned back on, `muteFor`), and Remove from sidebar; a pinned workspace's has Open in new
+tab, New chat here, Mark all as read, Unpin and Mute. A removed chat is kept out on this device
+(`prefs/sidebarHidden.ts`) until it waits on the viewer again after more happened in it, and its
+place says so with Undo for a few seconds. On the rail each workspace is its icon, the pinned first,
+then those the chats are in (`railWorkspacesOf`), and pointing at one with chats opens a card of
+them (`HoverCard`), with the way to the workspace and New chat.
+
 ## A gadget's own page
 
 A gadget's page (`/app/<id>`, the side pane as the page) shows it as it is kept, which is what
@@ -1309,7 +1339,7 @@ app, and the template offered as it would be were the backend to say so.
 
 A workspace goes from the user's list from its page's Settings tab (`WorkspaceOptionsTab`), which
 also marks everything in it read, or from the More menu (`WorkspaceMoreMenu`) on its row or card on
-the Workspaces page, which have it beside the star; the sidebar's rows have no menu. Its owner deletes it (`deleteSelf`), with everything in it
+the Workspaces page, which have it beside the pin; the sidebar's menus (see The sidebar) do not remove one. Its owner deletes it (`deleteSelf`), with everything in it
 and for everyone; someone it was shared with only removes it from their own list
 (`dismissSharedWorkspace`), keeping their access, so that opening it again brings it back. Which
 is offered is whose it is (`workspaces/workspaceRemoval.ts`, plain and tested: a workspace that

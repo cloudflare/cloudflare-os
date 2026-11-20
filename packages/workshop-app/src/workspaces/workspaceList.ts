@@ -44,7 +44,7 @@ const ORDERS: WorkspaceOrder[] = [
 
 // Those with anything unread (by id), as far as the account has said.
 const filtersFor = (unread: ReadonlySet<string>): ListFilter<Workspace>[] => [
-  { id: 'starred', label: 'Starred', test: ({ pinned }) => pinned === true },
+  { id: 'starred', label: 'Pinned', test: ({ pinned }) => pinned === true },
   { id: 'unread', label: 'Unread', test: ({ id }) => unread.has(id) },
   // Whose it is: a workspace with an owner is somebody else's.
   { id: 'mine', label: 'Mine', facet: 'owner', test: ({ owner }) => owner === undefined },

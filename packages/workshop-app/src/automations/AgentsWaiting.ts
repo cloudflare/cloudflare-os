@@ -74,6 +74,17 @@ export class AgentsWaiting {
     this.pump()
   }
 
+  /**
+   * Asks the workspaces `ids` again ahead of the rest, however lately they said, as when something
+   * in one is known to have changed. Only once something has been wanted, which says how.
+   */
+  refresh(ids: string[]) {
+    if (!this.load) return
+    const again = ids.filter((id) => !this.loading.has(id))
+    this.queue = [...again, ...this.queue.filter((id) => !again.includes(id))]
+    this.pump()
+  }
+
   /** What a workspace that is open says, as it changes, which is fresher than anything asked. */
   report(workspaceId: string, waiting: WorkspaceWaiting) {
     this.readAt.set(workspaceId, this.now())

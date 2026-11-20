@@ -11,7 +11,7 @@ import { AgentsWaitingProvider } from '@/automations/AgentsWaitingProvider'
 import { useWorkspaceAgents } from '@/automations/useWorkspaceAgents'
 import { ConnectionIsland, type ConnectionIslandState } from '@/blocks/ConnectionIsland'
 import { SettingsSidebar } from '@/blocks/SettingsSidebar'
-import { Sidebar } from '@/blocks/Sidebar'
+import { Sidebar, type SidebarActions, type SidebarChat, type SidebarWorkspace } from '@/blocks/Sidebar'
 import { ChatSessionsProvider } from '@/chat/ChatSessionsProvider'
 import { useWaitingAsks, WaitingAsksProvider } from '@/gadgets/WaitingAsksProvider'
 import { useNarrowScreen } from '@/hooks/useNarrowScreen'
@@ -22,6 +22,7 @@ import { UnreadProvider } from '@/notifications/UnreadProvider'
 import { useBrowserPushSync } from '@/notifications/useBrowserPush'
 import { useTaskNotices } from '@/notifications/useTaskNotices'
 import { readLayoutPrefs, writeLayoutPrefs } from '@/prefs/layoutPrefs'
+import { readStarOrder, writeStarOrder } from '@/prefs/starOrder'
 import { useApi } from '@/rpc/ApiContext'
 import { signOut } from '@/rpc/signOut'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
@@ -37,13 +38,18 @@ import { FIRST_SECTION, isSettingsSection, settingsNavGroups } from '@/settings/
 import { useOwnAvatar } from '@/settings/useOwnAvatar'
 import { useReadSkills } from '@/skills/useSkills'
 import { ShareLinkGate } from '@/workspaces/ShareLinkGate'
-import { useWorkspaces } from '@/workspaces/WorkspacesContext'
+import { useSetWorkspaceMuted, useSetWorkspacePinned, useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { WorkspacesProvider } from '@/workspaces/WorkspacesProvider'
-import { formatActivity } from '@/workspaces/formatActivity'
+import { formatActivity, formatActivityShort } from '@/workspaces/formatActivity'
+import { recentChatKey } from '@/workspaces/recentChats'
+import { orderStarred } from '@/workspaces/starredOrder'
+import { useRecentChats } from '@/workspaces/useRecentChats'
+import { isWorkspaceMuted, muteFor } from '@/workspaces/workspaceMute'
 import { useLiveWorkspace } from '@/workspaces/useLiveWorkspace'
 import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
-import { joinedWorkspaces } from '@/workspaces/workspaceList'
+import { chatTitle } from '@/workspaces/chatList'
+import { joinedWorkspaces, workspaceTitle } from '@/workspaces/workspaceList'
 import { ObserverAccessProvider, usePageAccessQuestion } from '@/connections/ObserverAccessProvider'
 import { sidebarConnections } from '@/connections/sidebarConnections'
 import { useConnections } from '@/connections/useConnections'
@@ -80,6 +86,9 @@ export const Route = createFileRoute('/_app')({
     </SiteFrame>
   ),
 })
+
+// How many of the latest workspaces the sidebar lists while it has nothing pinned and no recent chats.
+const FALLBACK_WORKSPACES = 8
 
 const absolute = (href: string) => new URL(href, window.location.origin).href
 
@@ -302,20 +311,119 @@ const AppFrame = () => {
 
   // Each workspace the user is in is listed by its title and when it was last active, or what waits
   // on the user in it, and marked while it has anything unread.
-  const workspaces =
-    workspacesState.status === 'ready'
-      ? joinedWorkspaces(workspacesState.workspaces).map(({ id, title, lastActive }) => ({
-          id,
-          title,
-          workspaceLabel: workspaceLabel(title),
-          workspaceLook: looks[id],
-          subtitle: formatActivity(lastActive),
-          attention: waitingWords({ runs: waiting.get(id)?.runs ?? 0, chats: waiting.get(id)?.chats ?? 0, gadgets: gadgetsWaitingIn(id, asks.byGadget) }),
-          unread: unread?.totals.workspaces.has(id),
-          href: router.buildLocation({ to: '/workspace/$workspaceId', params: { workspaceId: id } }).href,
-        }))
-      : []
-  const notice = workspacesState.status === 'failed' ? `Couldn’t load workspaces: ${workspacesState.message}` : undefined
+  const joined = workspacesState.status === 'ready' ? joinedWorkspaces(workspacesState.workspaces) : []
+  const joinedById = new Map(joined.map((workspace) => [workspace.id, workspace]))
+  const workspaceHref = (id: string) => router.buildLocation({ to: '/workspace/$workspaceId', params: { workspaceId: id } }).href
+  const sidebarWorkspaceOf = (workspace: (typeof joined)[number]): SidebarWorkspace => {
+    const { id, lastActive } = workspace
+    const title = workspaceTitle(workspace)
+    return {
+      id,
+      title,
+      workspaceLabel: workspaceLabel(title),
+      workspaceLook: looks[id],
+      subtitle: formatActivity(lastActive),
+      attention: waitingWords({ runs: waiting.get(id)?.runs ?? 0, chats: waiting.get(id)?.chats ?? 0, gadgets: gadgetsWaitingIn(id, asks.byGadget) }),
+      unread: unread?.totals.workspaces.has(id),
+      href: workspaceHref(id),
+      pinned: workspace.pinned === true,
+      muted: isWorkspaceMuted(workspace),
+    }
+  }
+  // The viewer's recent chats, each with its workspace, for whoever is in it.
+  const recentChats = useRecentChats()
+  const recentById = new Map(recentChats.chats.map((chat) => [chat.key, chat]))
+  const sidebarChats: SidebarChat[] = recentChats.chats.flatMap((chat) => {
+    const workspace = joinedById.get(chat.workspaceId)
+    if (!workspace) return []
+    const author = chat.latest?.author
+    return [{
+      id: chat.key,
+      workspaceId: chat.workspaceId,
+      title: chatTitle(chat),
+      workspaceTitle: workspaceTitle(workspace),
+      workspaceLabel: workspaceLabel(workspaceTitle(workspace)),
+      workspaceLook: looks[workspace.id],
+      time: formatActivityShort(chat.lastActive),
+      preview: chat.latest?.text,
+      // A chat's own assistant is not named: it is whose the chat is.
+      speaker: author?.type === 'user' ? (author.id === user.id ? 'You' : author.name) : chat.agent,
+      attention: chat.waiting === 'approval' ? 'Needs approval' : chat.waiting === 'action' ? 'Needs action' : undefined,
+      working: chat.working,
+      unread: chat.unread,
+      muted: chat.muted,
+      workspaceMuted: isWorkspaceMuted(workspace),
+      workspacePinned: workspace.pinned === true,
+      href: router.buildLocation({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId: chat.workspaceId, chatId: chat.chatId } }).href,
+      workspaceHref: workspaceHref(chat.workspaceId),
+    }]
+  })
+  // The pinned workspaces, in the order the Workspaces page has them; with none of them and no recent
+  // chats to list either, the latest workspaces, as the sidebar had before there were chats in it.
+  const pinnedWorkspaces = orderStarred(joined.filter(({ pinned }) => pinned), readStarOrder()).map(sidebarWorkspaceOf)
+  const workspaces = pinnedWorkspaces.length === 0 && sidebarChats.length === 0 && recentChats.known
+    ? joined.slice(0, FALLBACK_WORKSPACES).map(sidebarWorkspaceOf)
+    : pinnedWorkspaces
+  const selectedChatId = chatPage ? recentChatKey(chatPage.params.workspaceId, chatPage.params.chatId) : undefined
+  // A chat just opened is read again with its workspace, so that it is listed as soon as it is the viewer's.
+  const refreshRecent = recentChats.refresh
+  const openedIn = chatPage?.params.workspaceId
+  const openedChat = chatPage?.params.chatId
+  useEffect(() => {
+    if (openedIn !== undefined && openedChat !== undefined) refreshRecent(openedIn)
+  }, [openedIn, openedChat, refreshRecent])
+  // Each puts the sidebar away on a narrow screen, even where it goes to the page it is over.
+  const openWorkspace = (id: string) => {
+    leaveSidebar()
+    // What is shown beside one of the workspace's pages stays beside its own.
+    const open = besideOf?.workspaceId === id ? carryAside(besideOf.open, { workspaceId: id }) : undefined
+    void navigate({ to: '/workspace/$workspaceId', params: { workspaceId: id }, search: { open } })
+  }
+  const openChat = (chat: SidebarChat) => {
+    const recent = recentOf(chat)
+    if (!recent) return
+    leaveSidebar()
+    const open = besideOf?.workspaceId === recent.workspaceId ? carryAside(besideOf.open, { workspaceId: recent.workspaceId, chatId: recent.chatId }) : undefined
+    void navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId: recent.workspaceId, chatId: recent.chatId }, search: { open }, state: { chatTitle: recent.title } })
+  }
+  const setPinned = useSetWorkspacePinned()
+  const setWorkspaceMuted = useSetWorkspaceMuted()
+  // What a sidebar menu asked for and could not be done, said under the list until the next.
+  const [sidebarProblem, setSidebarProblem] = useState<string>()
+  const attempt = (what: string, act: () => Promise<unknown> | void) => {
+    if (connection.blocked()) return
+    setSidebarProblem(undefined)
+    Promise.resolve().then(act).catch((error: unknown) => setSidebarProblem(`Couldn’t ${what}: ${error instanceof Error ? error.message : String(error)}`))
+  }
+  const recentOf = (chat: SidebarChat) => recentById.get(chat.id)
+  const sidebarActions: SidebarActions = {
+    onOpenWorkspace: (id) => openWorkspace(id),
+    onPinWorkspace: (id, pinned) => attempt(pinned ? 'pin the workspace' : 'unpin the workspace', () => {
+      // First among the pinned, as the latest pinned is on the Workspaces page.
+      const order = readStarOrder().filter((other) => other !== id)
+      writeStarOrder(pinned ? [id, ...order] : order)
+      return setPinned(id, pinned)
+    }),
+    onMuteWorkspace: (id, length) => attempt(length ? 'mute the workspace' : 'unmute the workspace', () => setWorkspaceMuted(id, length ? muteFor(length) : false)),
+    onMarkWorkspaceRead: unread === null ? undefined : (id) => attempt('mark the workspace read', () => unread.markWorkspaceRead(id)),
+    onNewChat: (id) => {
+      leaveSidebar()
+      void navigate({ to: '/', search: { workspace: id } })
+    },
+    onMuteChat: (chat, muted) => attempt(muted ? 'mute the chat' : 'unmute the chat', () => {
+      const recent = recentOf(chat)
+      return recent && recentChats.setMuted(recent, muted)
+    }),
+    onMarkChatRead: (chat, read) => attempt(read ? 'mark the chat read' : 'mark the chat unread', () => {
+      const recent = recentOf(chat)
+      return recent && recentChats.setRead(recent, read)
+    }),
+    onHideChat: (chat) => {
+      const recent = recentOf(chat)
+      if (recent) recentChats.hide(recent)
+    },
+  }
+  const notice = workspacesState.status === 'failed' ? `Couldn’t load workspaces: ${workspacesState.message}` : sidebarProblem
 
   // The user's own menu has the settings, which are only stayed in when already there.
   const openSettingsPage = () => {
@@ -352,13 +460,17 @@ const AppFrame = () => {
     <Sidebar
       user={{ name: user.name, avatarUrl }}
       workspaces={workspaces}
-      selectedWorkspaceId={workspaceId}
+      // The chat open is marked where it is listed, and its workspace only on the rail, or where it is not.
+      selectedWorkspaceId={collapsed || selectedChatId === undefined || !sidebarChats.some(({ id }) => id === selectedChatId) ? workspaceId : undefined}
       // Each puts the sidebar away on a narrow screen, even where it goes to the page it is over.
-      onSelectWorkspace={(id) => {
-        leaveSidebar()
-        // What is shown beside one of the workspace's pages stays beside its own.
-        const open = besideOf?.workspaceId === id ? carryAside(besideOf.open, { workspaceId: id }) : undefined
-        void navigate({ to: '/workspace/$workspaceId', params: { workspaceId: id }, search: { open } })
+      onSelectWorkspace={openWorkspace}
+      chats={sidebarChats}
+      selectedChatId={selectedChatId}
+      onSelectChat={openChat}
+      actions={sidebarActions}
+      onUnhideChat={(chat) => {
+        const recent = recentOf(chat)
+        if (recent) recentChats.unhide(recent.workspaceId, recent.chatId)
       }}
       onGoHome={() => {
         leaveSidebar()

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { isWorkspaceMuted } from './workspaceMute'
+import { isWorkspaceMuted, muteFor } from './workspaceMute'
 
 describe('isWorkspaceMuted', () => {
   beforeEach(() => {
@@ -19,5 +19,15 @@ describe('isWorkspaceMuted', () => {
   it('is muted until a time, and no longer once it has passed', () => {
     expect(isWorkspaceMuted({ notificationMute: { until: new Date('2026-01-01T13:00:00Z') } })).toBe(true)
     expect(isWorkspaceMuted({ notificationMute: { until: new Date('2026-01-01T11:00:00Z') } })).toBe(false)
+  })
+})
+
+describe('muteFor', () => {
+  const now = new Date(2026, 10, 20, 22, 30)
+
+  it('mutes for an hour, until tomorrow morning, or until unmuted', () => {
+    expect(muteFor('hour', now)).toEqual({ until: new Date(2026, 10, 20, 23, 30) })
+    expect(muteFor('tomorrow', now)).toEqual({ until: new Date(2026, 10, 21, 8) })
+    expect(muteFor('always', now)).toEqual({ indefinite: true })
   })
 })
