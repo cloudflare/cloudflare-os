@@ -1,6 +1,6 @@
 // Placing a new tab in a Google Doc's flattened tab tree, as `addDocumentTab` places it.
 
-import type { DocTabSnapshot } from "./markdown-converter";
+import type { GoogleDocsTab } from "./docs-api";
 
 /** The deepest `nestingLevel` a tab may have: Google keeps a tab tree to three levels. */
 const MAX_DOC_TAB_NESTING_LEVEL = 2;
@@ -29,9 +29,9 @@ export function checkDocTabTitle(title: string): void {
  * Refuses a parent that is not in `tabs`, one already as deep as Google nests, and an index that
  * is not an integer from 0 to the parent's child count, as Google does.
  */
-export function insertDocTab<T extends DocTabSnapshot>(
-  tabs: T[], tab: T, { parentTabId, index }: DocTabPlacement,
-): T[] {
+export function insertDocTab<
+  T extends Pick<GoogleDocsTab, "tabId" | "parentTabId" | "index" | "nestingLevel">,
+>(tabs: readonly T[], tab: T, { parentTabId, index }: DocTabPlacement): T[] {
   let parentAt = parentTabId === undefined ? -1 : tabs.findIndex(t => t.tabId === parentTabId);
   let parent = tabs[parentAt];
   if (parentTabId !== undefined && !parent) {

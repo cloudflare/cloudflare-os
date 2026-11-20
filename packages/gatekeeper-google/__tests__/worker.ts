@@ -3,6 +3,7 @@ import type {
   ActionDescription, ActionField, ActionKind, ApprovalQueue, Gatekeeper, GitCache, HookController,
   HookDescription, ObservationDescription, ResourceDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
+import { tableCounts } from "./doc-store-scenarios";
 import { TestGitCache } from "./test-git-cache";
 import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
 import type { GoogleAccessToken } from "../src/google-api";
@@ -13,7 +14,8 @@ import type {
 } from "../src/drive-types";
 import { WRITE_ATTEMPT_PREFIX, type WriteAttempt } from "../src/drive-writes";
 import type { DriveAccessLevel } from "../src/resources";
-import type { DocMetadata, GoogleDocSession, GoogleDocTab } from "../src/docs-types";
+import { DocStore, runId, type DocCopyHead } from "../src/docs-store";
+import type { DocMetadata, GoogleDocSession, GoogleDocTab, NewDocTable } from "../src/docs-types";
 import type { MarkerEntry } from "../src/sheets-actions";
 import type { SpreadsheetInfo, SpreadsheetRange } from "../src/sheets-read-types";
 import type { GoogleSpreadsheetSession } from "../src/sheets-types";
@@ -30,6 +32,7 @@ export {
 };
 export default GoogleWorker;
 export { CalendarTestHooks, GoogleCalendarGatekeeperImpl } from "./calendar-hooks";
+export { DocCopyHost, DocStoreHost } from "./docs-copy-hosts";
 // The PDF renderer's entrypoint, which the pool binds as a deployment binds the renderer Worker.
 export { PdfRenderer } from "@gadgets/pdf-renderer";
 
@@ -101,7 +104,27 @@ type StorageOperation = { kind: "put"; key: string; value: unknown };
 type TestGoogleDocGatekeeper = GoogleDocGatekeeperImpl & {
   applyTestStorage(operations: StorageOperation[]): void;
   testStoredValueJsonLength(key: string): number | undefined;
+  testDocCopyHead(): DocCopyHead | null;
+  testTouchDocCopy(change: DocCopyTouch): void;
+  testDocStoreRows(): Record<string, number>;
+  testDocStoreExec(statement: string, bindings: SqlStorageValue[]): StoreRow[];
+  testDocBaseRows(): string;
 };
+
+/** One row a statement run for a test answered. */
+type StoreRow = Record<string, SqlStorageValue>;
+
+/** What a test changes of a bound Doc's copy record (`DocStore.touch`). */
+type DocCopyTouch = { checkedAt: number | null } | { stale: true };
+
+/** The key of a bound Doc's one document in its store. */
+const DOC_COPY_KEY = "doc";
+
+/** The methods of a Google Doc session that queue an edit. */
+type DocWriteMethod =
+  | "replaceText" | "appendText" | "insertTable" | "insertTableRows" | "insertTableColumns"
+  | "deleteTableRows" | "deleteTableColumns" | "deleteTable" | "setTableCellStyle"
+  | "setTableColumnWidths" | "setTableRowHeights" | "mergeTableCells" | "unmergeTableCells";
 
 /** An action the queue received: its ID and its card's title. */
 type SubmittedAction = { actionId: number; title: string };
@@ -219,6 +242,10 @@ class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
   readonly submitted: SubmittedAction[] = [];
   /** Holds the next submission open until `released`, calling `reach` once it has arrived. */
   holdSubmission?: { reach(): void; released: Promise<void> };
+  /** Whether every observation is refused, as for a document its observers cannot read. */
+  refuseObservations = false;
+  /** Holds the next observation open until `released`, calling `reach` once it has arrived. */
+  holdObservation?: { reach(): void; released: Promise<void> };
 
   async authorizeObservation(description: ObservationDescription): Promise<void> {
     this.observations.push(description.description);
@@ -226,6 +253,14 @@ class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
       title: description.title,
       ...(description.subresources ? { subresources: description.subresources } : {}),
     });
+    if (this.refuseObservations) throw new Error("Reads of this document are refused.");
+    let held = this.holdObservation;
+    if (held) {
+      // One hold, so a later observation of the same call is never held twice.
+      this.holdObservation = undefined;
+      held.reach();
+      await held.released;
+    }
   }
 
   async getGitCache(): Promise<GitCache> {
@@ -272,6 +307,7 @@ class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
 }
 
 export class TestHooks extends DurableObject<Env> {
+  #lastActionTitle = "";
   #lastActionDescription = "";
   #lastActionFields: ActionField[] = [];
   #lastActionVerdict: { actionKind?: ActionKind; autoApprovable?: boolean } = {};
@@ -280,6 +316,11 @@ export class TestHooks extends DurableObject<Env> {
   #classes = new Map<string, DurableObjectClass<Gatekeeper<any>>>();
   /** The class each facet's applyCreation() returned, until adoptCreated() switches to it. */
   #created = new Map<string, DurableObjectClass<Gatekeeper<any>>>();
+
+  /** The approval title of the edit most recently submitted through these hooks. */
+  get lastActionTitle(): string {
+    return this.#lastActionTitle;
+  }
 
   /** The approval description of the edit most recently submitted through these hooks. */
   get lastActionDescription(): string {
@@ -440,6 +481,7 @@ export class TestHooks extends DurableObject<Env> {
       // Awaited inside the scope: `return body(...)` would dispose both stubs mid-call.
       return await body(session, queue);
     } finally {
+      this.#lastActionTitle = queue.action?.title ?? "";
       this.#lastActionDescription = queue.actionDescription ?? "";
       this.#lastActionFields = queue.actionFields;
       this.#lastActionVerdict = {
@@ -472,6 +514,113 @@ export class TestHooks extends DurableObject<Env> {
       facetName, session => session.replaceText(oldMarkdown, newMarkdown, tabId));
   }
 
+  /**
+   * Call one write method of a fresh session, returning the ID of the action it queued and what
+   * it resolved to. With `refuseRead`, the session's approval queue refuses every observation
+   * made once the session is open.
+   */
+  async submitEdit(
+    facetName: string, method: DocWriteMethod, args: unknown[],
+    options: { refuseRead?: boolean } = {},
+  ): Promise<{ actionId: number; returned?: number }> {
+    return this.#withSession(facetName, async (session, queue) => {
+      queue.refuseObservations = options.refuseRead === true;
+      let returned = await (session[method] as (...args: unknown[]) => Promise<unknown>)(...args);
+      if (queue.actionId === undefined) throw new Error("Action was not submitted");
+      return {
+        actionId: queue.actionId,
+        ...(typeof returned === "number" ? { returned } : {}),
+      };
+    });
+  }
+
+  /**
+   * Four calls sent on one session without waiting for one another, the first held where it
+   * authorizes a read: `insertTable()`, then `appendText()`, `getContent()` and `getMetadata()`.
+   * Returns the actions in the order the approval queue received them, the position
+   * `insertTable()` resolved to, the content read, and the metadata's `lastModified` as epoch
+   * milliseconds.
+   */
+  async callsDuringTableRead(
+    facetName: string, table: NewDocTable, markdown: string, tabId?: string,
+  ): Promise<{ received: SubmittedAction[]; returned: number; read: string; modified: number }> {
+    return this.#withSession(facetName, async (session, queue) => {
+      let { promise: reached, resolve: reach } = Promise.withResolvers<void>();
+      let { promise: released, resolve: release } = Promise.withResolvers<void>();
+      queue.holdObservation = { reach, released };
+      try {
+        // Each is handled below, once all are sent; this only keeps it from reporting as unhandled.
+        let inserting = Promise.resolve(session.insertTable(table, tabId));
+        inserting.catch(() => {});
+        // A table call that stores first, or authorizes nothing, would never reach the hold.
+        let held = await Promise.race([
+          reached.then(() => true), inserting.then(() => false, () => false),
+        ]);
+        if (!held) throw new Error("insertTable authorized no read before settling");
+
+        // The table call is waiting for a read to be authorized, inside its turn.
+        let appending = Promise.resolve(session.appendText(markdown, tabId));
+        appending.catch(() => {});
+        let reading = Promise.resolve(session.getContent(tabId));
+        reading.catch(() => {});
+        let describing = Promise.resolve(session.getMetadata());
+        describing.catch(() => {});
+        // Calls on one stub are delivered in order, and a table call refused on its arguments
+        // waits for no turn: once it returns, the three before it have arrived and are waiting
+        // behind the table. A read would wait for the turns itself, the held one among them.
+        await Promise.resolve(session.insertTable({ rows: 1, columns: 0 }, tabId)).catch(() => {});
+        release();
+
+        let [returned, , read, metadata] =
+          await Promise.all([inserting, appending, reading, describing]);
+        return {
+          received: queue.submitted, returned, read, modified: metadata.lastModified.valueOf(),
+        };
+      } finally {
+        release();
+      }
+    });
+  }
+
+  /** The session {@link holdDoc} keeps open, with what closes it and its approval queue. */
+  #heldDoc?: { session: GoogleDocSession } & Disposable;
+
+  /**
+   * Opens a session of doc-1 as every hook here opens one (bound, or through Drive for a
+   * `drive:` facet) and keeps it open until {@link releaseDoc}, so that reads made on it between
+   * other calls are one session's. Throws while another is held.
+   */
+  async holdDoc(facetName: string): Promise<void> {
+    if (this.#heldDoc) throw new Error("A Doc session is already held.");
+    let approvalQueue = new RpcStub<ApprovalQueue>(new TestApprovalQueue());
+    try {
+      let opened = await this.#openDoc(facetName, approvalQueue);
+      this.#heldDoc = {
+        session: opened.session,
+        [Symbol.dispose]: () => {
+          opened[Symbol.dispose]();
+          approvalQueue[Symbol.dispose]();
+        },
+      };
+    } catch (error) {
+      approvalQueue[Symbol.dispose]();
+      throw error;
+    }
+  }
+
+  /** Reads a tab on the session {@link holdDoc} keeps open. */
+  async readHeldDoc(tabId?: string): Promise<string> {
+    if (!this.#heldDoc) throw new Error("No Doc session is held.");
+    return this.#heldDoc.session.getContent(tabId);
+  }
+
+  /** Closes the session {@link holdDoc} opened; does nothing when none is held. */
+  async releaseDoc(): Promise<void> {
+    let held = this.#heldDoc;
+    this.#heldDoc = undefined;
+    held?.[Symbol.dispose]();
+  }
+
   /** The `lastModified` a metadata read reports, as epoch milliseconds. */
   async readMetadata(facetName: string): Promise<number> {
     return this.#withSession(
@@ -492,9 +641,52 @@ export class TestHooks extends DurableObject<Env> {
       .applyTestStorage(operations);
   }
 
+  /**
+   * Ends the Doc gatekeeper `facetName` names: the next call starts another activation over the
+   * same storage, so its constructor runs again on whatever a test stored.
+   */
+  async restartDoc(facetName: string): Promise<void> {
+    this.ctx.facets.abort(facetName, new Error("Restarted by the test."));
+  }
+
   async storedValueJsonLength(facetName: string, key: string): Promise<number | undefined> {
     return (this.#gatekeeper(facetName) as unknown as TestGoogleDocGatekeeper)
       .testStoredValueJsonLength(key);
+  }
+
+  /** The record of the bound Doc's stored copy, stale or not, or `null` where none is stored. */
+  async docCopyHead(facetName: string): Promise<DocCopyHead | null> {
+    return (this.#gatekeeper(facetName) as unknown as TestGoogleDocGatekeeper).testDocCopyHead();
+  }
+
+  /** Changes when the bound Doc's stored copy was last confirmed, or marks it stale. */
+  async touchDocCopy(facetName: string, change: DocCopyTouch): Promise<void> {
+    await (this.#gatekeeper(facetName) as unknown as TestGoogleDocGatekeeper).testTouchDocCopy(change);
+  }
+
+  /** How many rows each table of the bound Doc's store holds. */
+  async docStoreRows(facetName: string): Promise<Record<string, number>> {
+    return (this.#gatekeeper(facetName) as unknown as TestGoogleDocGatekeeper).testDocStoreRows();
+  }
+
+  /**
+   * Runs one statement on the bound Doc's storage and answers its rows, for a test that spoils
+   * what is stored or reads what a hook does not name.
+   */
+  async docStoreExec(
+    facetName: string, statement: string, ...bindings: SqlStorageValue[]
+  ): Promise<StoreRow[]> {
+    return (this.#gatekeeper(facetName) as unknown as TestGoogleDocGatekeeper)
+      .testDocStoreExec(statement, bindings);
+  }
+
+  /**
+   * A digest of what Google sent of the bound Doc's stored copy, which is kept byte for byte
+   * whatever code derives of it: for each tab the record lists, its version without what was
+   * derived of it, its run list (the order, the runs and their sizes) and the runs themselves.
+   */
+  async docBaseRows(facetName: string): Promise<string> {
+    return (this.#gatekeeper(facetName) as unknown as TestGoogleDocGatekeeper).testDocBaseRows();
   }
 
   async applyAction(facetName: string, actionId: number): Promise<string | null> {
@@ -864,6 +1056,52 @@ export class TestHooks extends DurableObject<Env> {
       .retireTestActions(count);
   }
 
+  /**
+   * The record of the copy a Drive binding stores of Doc `fileId`, stale or not, or `null`
+   * where it stores none.
+   */
+  async driveDocStoreHead(
+    facetName: string, binding: DriveBinding, fileId: string,
+  ): Promise<DocCopyHead | null> {
+    return (this.#drive(facetName, binding) as unknown as TestGoogleDriveGatekeeper)
+      .testDocStoreHead(fileId);
+  }
+
+  /**
+   * How many rows each table of a Drive binding's Doc store holds, and how many of its copy
+   * records and of its versions are Doc `fileId`'s. Empty where the binding has no such table.
+   */
+  async driveDocStoreRows(
+    facetName: string, binding: DriveBinding, fileId: string,
+  ): Promise<Record<string, number>> {
+    return (this.#drive(facetName, binding) as unknown as TestGoogleDriveGatekeeper)
+      .testDocStoreRows(fileId);
+  }
+
+  /** Runs one statement on a Drive binding's storage and answers its rows. */
+  async driveDocStoreExec(
+    facetName: string, binding: DriveBinding, statement: string, ...bindings: SqlStorageValue[]
+  ): Promise<StoreRow[]> {
+    return (this.#drive(facetName, binding) as unknown as TestGoogleDriveGatekeeper)
+      .testDocStoreExec(statement, bindings);
+  }
+
+  /** `docBaseRows` for the copy a Drive binding stores of Doc `fileId`. */
+  async driveDocBaseRows(facetName: string, binding: DriveBinding, fileId: string): Promise<string> {
+    return (this.#drive(facetName, binding) as unknown as TestGoogleDriveGatekeeper)
+      .testDocBaseRows(fileId);
+  }
+
+  /** The names of the Doc store's tables in a Drive binding's storage, in order. */
+  async driveDocTables(facetName: string, binding: DriveBinding): Promise<string[]> {
+    return (this.#drive(facetName, binding) as unknown as TestGoogleDriveGatekeeper).testDocTables();
+  }
+
+  /** The clock a Drive binding's object has an alarm set for, or `null` where it has none. */
+  async driveAlarm(facetName: string, binding: DriveBinding): Promise<number | null> {
+    return (this.#drive(facetName, binding) as unknown as TestGoogleDriveGatekeeper).testAlarm();
+  }
+
   /** The keys a Drive binding stores under `prefix`, in key order. */
   async driveStoredKeys(facetName: string, binding: DriveBinding, prefix: string): Promise<string[]> {
     return (this.#drive(facetName, binding) as unknown as TestGoogleDriveGatekeeper)
@@ -1145,6 +1383,45 @@ for (let gatekeeper of [GoogleDocGatekeeperImpl, GoogleSheetsGatekeeperImpl, Goo
   return value === undefined ? undefined : JSON.stringify(value).length;
 };
 
+// A store of the test's own over the Doc's storage: a store holds no document, so it reads and
+// writes the rows the Doc's own store does.
+const docCopyHooks: Pick<
+  TestGoogleDocGatekeeper,
+  "testDocCopyHead" | "testTouchDocCopy" | "testDocStoreRows" | "testDocStoreExec" | "testDocBaseRows"
+> & ThisType<TestDurableObjectState> = {
+  testDocCopyHead() {
+    return new DocStore(this.ctx.storage).head(DOC_COPY_KEY) ?? null;
+  },
+  testTouchDocCopy(change) {
+    new DocStore(this.ctx.storage).touch(DOC_COPY_KEY, change);
+  },
+  testDocStoreRows() {
+    return tableCounts(this.ctx.storage);
+  },
+  testDocStoreExec(statement, bindings) {
+    return this.ctx.storage.sql.exec<StoreRow>(statement, ...bindings).toArray();
+  },
+  testDocBaseRows() {
+    return baseRowsDigest(this.ctx.storage, DOC_COPY_KEY);
+  },
+};
+Object.assign(GoogleDocGatekeeperImpl.prototype, docCopyHooks);
+
+/** The digest `docBaseRows` answers, of document `doc` in `storage`. */
+function baseRowsDigest(storage: DurableObjectStorage, doc: string): string {
+  let rows = <T extends StoreRow>(statement: string, ...bindings: SqlStorageValue[]) =>
+    storage.sql.exec<T>(statement, ...bindings).toArray();
+  let content = (id: string) => rows<{ json: string }>("SELECT json FROM doc_run WHERE id = ?", id);
+  let { versions = [] } = new DocStore(storage).head(doc) ?? {};
+  return runId(JSON.stringify(versions.map(id => {
+    let [version] = rows<{ context: string; meta: string }>(
+      "SELECT context, meta FROM doc_version WHERE doc = ? AND id = ?", doc, id);
+    let runs = rows<{ seq: number; run: string; size: number }>(
+      "SELECT seq, run, size FROM doc_seq WHERE version = ? ORDER BY seq", id);
+    return [id, version, content(version.context), runs, runs.map(({ run }) => content(run))];
+  })));
+}
+
 type TestGoogleSlidesGatekeeper = GoogleSlidesGatekeeperImpl & { claimTestAction(id: number): void };
 
 (GoogleSlidesGatekeeperImpl.prototype as TestGoogleSlidesGatekeeper).claimTestAction = function(
@@ -1165,7 +1442,52 @@ type TestGoogleDriveGatekeeper = GoogleDriveGatekeeperImpl & {
   writeTestStored(key: string, json: string | null): void;
   testStoredKeys(prefix: string): string[];
   retireTestActions(count: number): void;
+  testDocStoreHead(fileId: string): DocCopyHead | null;
+  testDocStoreRows(fileId: string): Record<string, number>;
+  testDocStoreExec(statement: string, bindings: SqlStorageValue[]): StoreRow[];
+  testDocBaseRows(fileId: string): string;
+  testDocTables(): string[];
+  testAlarm(): Promise<number | null>;
 };
+
+// What the Doc store holds in a Drive binding's storage. The tables are named by a statement of
+// the hook's own, which makes no store and so creates none; the record is read through a store
+// of the test's own, only where the binding has made its tables.
+const driveDocStoreHooks: Pick<
+  TestGoogleDriveGatekeeper,
+  "testDocStoreHead" | "testDocStoreRows" | "testDocTables" | "testDocStoreExec" | "testDocBaseRows"
+  | "testAlarm"
+> & ThisType<TestDurableObjectState & TestGoogleDriveGatekeeper> = {
+  testAlarm() {
+    return this.ctx.storage.getAlarm();
+  },
+  testDocStoreExec(statement, bindings) {
+    return this.ctx.storage.sql.exec<StoreRow>(statement, ...bindings).toArray();
+  },
+  testDocBaseRows(fileId) {
+    return baseRowsDigest(this.ctx.storage, fileId);
+  },
+  testDocTables() {
+    return this.ctx.storage.sql.exec<{ name: string }>(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'doc\\_%' ESCAPE '\\' " +
+      "ORDER BY name").toArray().map(({ name }) => name);
+  },
+  testDocStoreHead(fileId) {
+    if (this.testDocTables().length === 0) return null;
+    return new DocStore(this.ctx.storage).head(fileId) ?? null;
+  },
+  testDocStoreRows(fileId) {
+    if (this.testDocTables().length === 0) return {};
+    let of = (table: string) => this.ctx.storage.sql.exec<{ rows: number }>(
+      `SELECT count(*) AS rows FROM ${table} WHERE doc = ?`, fileId).one().rows;
+    return {
+      ...tableCounts(this.ctx.storage),
+      "doc_copy of the file": of("doc_copy"),
+      "doc_version of the file": of("doc_version"),
+    };
+  },
+};
+Object.assign(GoogleDriveGatekeeperImpl.prototype, driveDocStoreHooks);
 
 (GoogleDriveGatekeeperImpl.prototype as TestGoogleDriveGatekeeper).retireTestActions = function(
   count: number,

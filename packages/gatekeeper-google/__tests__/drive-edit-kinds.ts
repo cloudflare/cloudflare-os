@@ -33,4 +33,5 @@ export const DRIVE_SHEETS_KINDS: ActionKind[] = [
 /** The Doc kinds a user may let apply without asking, as a read and write Drive binding lists them. */
 export const DRIVE_DOCS_KINDS: ActionKind[] = [
   { tag: "editDocument", label: "Document edits" },
+  { tag: "document-tables", label: "Table changes" },
 ].map(kind => onDrive(kind, "Doc"));

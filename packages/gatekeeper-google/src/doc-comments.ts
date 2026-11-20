@@ -16,15 +16,14 @@ import type { ActionKind, ObservationDescription } from "@gadgets/workshop-share
 import { UNCREATED_FILE_ID } from "./creation";
 import {
   docsFileInvisible, docsLacksScope, type DocsCommentPost,
-  type DocsCommentRecord, type GoogleDocReader, type GoogleDocsApi, type GoogleDocsDocument,
-  type GoogleDocsTab,
+  type DocsCommentRecord, type GoogleDocReader, type GoogleDocsApi,
 } from "./docs-api";
 import {
   isDriveCommentId, isInsufficientScope, type DriveApi, type DriveCommentRecord,
   type DriveReplyRecord,
 } from "./drive-api";
 import {
-  checkSuggestion, composeComment, composeReply, composeResolve, locateQuote, requireQuote,
+  checkSuggestion, composeComment, composeReply, composeResolve, requireQuote, type SavedDoc,
 } from "./drive-comment-body";
 import {
   ALREADY_RESOLVED, COMMENT_NOT_FOUND, commentDefinitions, commentParent, docsSendFailure,
@@ -188,11 +187,11 @@ export const DOC_COMMENT_ACTIONS = defineActions<CommentHost, DriveCommentAction
 
 /**
  * The tab of `document` an operation named `operation` acts on: `tabId`, which may be omitted only
- * when the Doc has one tab, as for the binding's edits.
+ * when the Doc has one tab, as for the binding's edits. Reads only each tab's ID.
  */
-export function docTab(
-  document: GoogleDocsDocument, tabId: string | undefined, operation: string,
-): GoogleDocsTab {
+export function docTab<Tab extends { readonly tabId: string }>(
+  document: { readonly tabs: readonly Tab[] }, tabId: string | undefined, operation: string,
+): Tab {
   if (tabId === undefined) {
     if (document.tabs.length !== 1) {
       throw new Error(`${operation}: tabId is required for documents with multiple tabs. ` +
@@ -221,6 +220,15 @@ export type DocCommentSessionDeps = {
   approvalQueue: Parameters<DocCommentQueue["submit"]>[0];
   /** Authorizes a read, reporting the Doc as its subresource. */
   authorizeRead(description: Omit<ObservationDescription, "subresources">): Promise<void>;
+  /**
+   * Runs `use` over the Doc as Google has it saved (`savedDoc` of the stored copy, fetched
+   * where none is fresh; this call asks for no revision probe) in one synchronous
+   * stretch, and answers what it returned with the Doc's title: the fetch's own where this
+   * call fetched the Doc, and otherwise asked of Google (its metadata). ONE request of
+   * Google, whichever. What `use` throws is thrown, and so is what the read of the Doc
+   * throws for one the binding cannot keep a copy of, before `use` is called.
+   */
+  saved<T>(use: (doc: SavedDoc) => T): Promise<{ value: T; title: string }>;
   /** Whether `quote` is in tab `tabId` only once its pending edits are replayed. */
   onlyInPendingEdits(tabId: string, quote: string): Promise<boolean>;
 };
@@ -253,9 +261,9 @@ export class DocCommentSession {
     let content = composeComment(text, true);
     let quoted = requireQuote(options.quote);
     await this.#requireCommentable();
-    let { document, tab } = await this.#quotedTab(quoted, options.tabId, "comment", false);
+    let { title, tabId } = await this.#quotedTab(quoted, options.tabId, "comment", false);
     let payload: DriveCommentActions["createComment"] = {
-      ...this.#target(document.title), content, anchor: { tabId: tab.tabId, text: quoted },
+      ...this.#target(title), content, anchor: { tabId, text: quoted },
     };
     let id = await this.#submit("createComment", payload);
     return pendingComment(id, payload);
@@ -267,10 +275,10 @@ export class DocCommentSession {
     this.#requireCreated();
     let checked = checkSuggestion(oldText, newText, options.note);
     await this.#requireCommentable();
-    let { document, tab } =
+    let { title, tabId } =
       await this.#quotedTab(checked.oldText, options.tabId, "suggestEdit", true);
     let payload: DriveCommentActions["suggestEdit"] = {
-      ...this.#target(document.title), tabId: tab.tabId, ...checked,
+      ...this.#target(title), tabId, ...checked,
     };
     let id = await this.#submit("suggestEdit", payload);
     return pendingSuggestion(id, payload);
@@ -388,29 +396,36 @@ export class DocCommentSession {
   }
 
   /**
-   * The saved Doc and its tab in which `quote` occurs exactly once; with `wholeChips`, as for text
-   * a suggestion replaces, refused when it takes in part of a chip. Text only in an edit still
-   * waiting for approval is refused as such.
+   * The saved Doc's title and the ID of its tab in which `quote` occurs exactly once; with
+   * `wholeChips`, as for text a suggestion replaces, refused when it takes in part of a chip.
+   * Text only in an edit still waiting for approval is refused as such. The text is read from
+   * the binding's stored copy of the Doc, a run at a time (`saved`).
    */
   async #quotedTab(
     quote: string, tabId: string | undefined, operation: string, wholeChips: boolean,
-  ): Promise<{ document: GoogleDocsDocument; tab: GoogleDocsTab }> {
-    let { documentId, docs, onlyInPendingEdits } = this.#deps;
+  ): Promise<{ title: string; tabId: string }> {
+    let { saved, onlyInPendingEdits } = this.#deps;
     return this.#read({
       title: "Read Google Doc content",
       description: "Read the text of one tab of the document to find the quoted text.",
     }, async () => {
-      let document = await docs.getDocument(documentId);
-      let tab = docTab(document, tabId, operation);
-      try {
-        locateQuote(tab, quote, { wholeChips });
-      } catch (error) {
-        if (await onlyInPendingEdits(tab.tabId, quote)) {
-          throw new Error(QUOTE_ONLY_PENDING, { cause: error });
+      // A failed search is answered, not thrown, so that the tab it searched is known.
+      let { value: { tab, failure }, title } = await saved(doc => {
+        let searched = docTab(doc, tabId, operation);
+        try {
+          doc.locate(searched.tabId, quote, { wholeChips });
+          return { tab: searched };
+        } catch (thrown) {
+          return { tab: searched, failure: thrown };
         }
-        throw error;
+      });
+      if (failure !== undefined) {
+        if (await onlyInPendingEdits(tab.tabId, quote)) {
+          throw new Error(QUOTE_ONLY_PENDING, { cause: failure });
+        }
+        throw failure;
       }
-      return { document, tab };
+      return { title, tabId: tab.tabId };
     });
   }
 

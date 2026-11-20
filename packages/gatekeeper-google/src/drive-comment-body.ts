@@ -11,7 +11,10 @@ import type { DocsRange, GoogleDocsDocument, GoogleDocsTab, ParagraphElement } f
 import {
   MAX_DOCS_COMMENT_BYTES, MAX_QUOTE_CHARS, MAX_REPLACEMENT_CHARS, checkCommentContent,
 } from "./drive-api";
-import { isGoogleDocsStrippedCharacter, paragraphElementText } from "./markdown-converter";
+import { isGoogleDocsStrippedCharacter } from "./docs-content";
+import type { DocCopy } from "./docs-copy";
+import { DOC_COPY_UNREADABLE, type GoogleDocTabIdentity } from "./docs-replica";
+import { paragraphElementText } from "./markdown-converter";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -19,9 +22,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /**
  * The tab `tabId` names, or the document's first tab when it names none. A child tab is found like
- * any other: the document's tab list is already flattened.
+ * any other: the document's tab list is already flattened. Reads only each tab's ID.
  */
-export function selectTab(document: GoogleDocsDocument, tabId?: string): GoogleDocsTab {
+export function selectTab<Tab extends { readonly tabId: string }>(
+  document: { readonly tabs: readonly Tab[] }, tabId?: string,
+): Tab {
   if (tabId === undefined) return document.tabs[0];
   let tab = document.tabs.find(candidate => candidate.tabId === tabId);
   if (!tab) {
@@ -33,22 +38,26 @@ export function selectTab(document: GoogleDocsDocument, tabId?: string): GoogleD
 
 /**
  * One piece of a tab's text and where it sits in the tab: a text run, whose characters are its
- * indices one for one, or a chip, which reads as more text than the one index it takes.
+ * indices one for one, or a chip, which reads as more text than the one index it takes. `at` is
+ * counted from the start of the tab's text.
  */
 type Piece = { at: number; length: number; startIndex: number; endIndex: number; run: boolean };
 
 /**
- * A tab's text as its Markdown shows it, without the formatting: text runs, chips and placeholders,
- * in document order, table cells included, with where each piece sits in the tab. Structural
- * elements arrive unvalidated, so they are read defensively.
+ * Adds the text of `content`, some consecutive body elements of a tab, as its Markdown shows it,
+ * without the formatting: text runs, chips and placeholders, in document order, table cells
+ * included. Each part of it is pushed to `chunks`, and where it sits in the tab to `pieces`;
+ * `length` is the length of the tab's text before `content`, and the answer its length after.
+ * Structural elements arrive unvalidated, so they are read defensively.
+ *
+ * Pieces of no text that follow one another are pushed as ONE, from the first's start to the
+ * last's end, so `pieces` grows only with the text; its end is `NaN`, equal to no index, where
+ * two of them do not meet, so that it reads as the gap it stands for.
  */
-function tabText(tab: GoogleDocsTab): { text: string; pieces: Piece[] } {
-  let chunks: string[] = [];
-  let length = 0;
-  let pieces: Piece[] = [];
-  let visit = (content: unknown) => {
-    if (!Array.isArray(content)) return;
-    for (let element of content) {
+function addText(content: unknown, length: number, chunks: string[], pieces: Piece[]): number {
+  let visit = (elements: unknown) => {
+    if (!Array.isArray(elements)) return;
+    for (let element of elements) {
       if (!isRecord(element)) continue;
       let { paragraph, table } = element;
       if (isRecord(paragraph)) {
@@ -59,6 +68,11 @@ function tabText(tab: GoogleDocsTab): { text: string; pieces: Piece[] } {
           let { startIndex, endIndex } = part;
           if (typeof text !== "string" || typeof startIndex !== "number" ||
               typeof endIndex !== "number") continue;
+          let last = pieces.at(-1);
+          if (text === "" && last?.length === 0) {
+            last.endIndex = last.endIndex === startIndex ? endIndex : NaN;
+            continue;
+          }
           pieces.push({
             at: length, length: text.length, startIndex, endIndex, run: isRecord(part.textRun),
           });
@@ -73,8 +87,8 @@ function tabText(tab: GoogleDocsTab): { text: string; pieces: Piece[] } {
       }
     }
   };
-  visit(tab.body.content);
-  return { text: chunks.join(""), pieces };
+  visit(content);
+  return length;
 }
 
 /** The refusal for replacing part of a chip, which takes one index however long its text reads. */
@@ -103,14 +117,29 @@ function indexAt(pieces: Piece[], offset: number, end: boolean, wholeChips: bool
   return piece.startIndex + offset - piece.at;
 }
 
+/** The pieces of `pieces` that hold text from offset `from` on, or stand past it with none. */
+const piecesPast = (pieces: Piece[], from: number): Piece[] =>
+  pieces.filter(piece => piece.at + piece.length > from);
+
 /**
- * Finds `quote`, trimmed, in the tab's text, where it must occur exactly once; neither side is
- * normalized. Returns the range it takes in the tab. A chip the quote takes part of is taken
- * whole, as a comment's anchor; with `wholeChips`, as for text a suggestion replaces, it is refused,
- * as is a quote that runs across an element the text leaves out, which the range would take in.
+ * Finds `quote`, trimmed, in the text of a tab handed as ITS RUNS' ELEMENTS, in order (each
+ * item some consecutive body elements of the tab, with the indexes they have in the tab),
+ * where it must occur exactly once; neither side is normalized. Returns the range it takes in
+ * the tab. A chip the quote takes part of is taken whole, as a comment's anchor; with
+ * `wholeChips`, as for text a suggestion replaces, it is refused, as is a quote that runs
+ * across an element the text leaves out, which the range would take in.
+ *
+ * ONE ITEM IS IN HAND AT A TIME: of the items passed it keeps a count, the last characters of
+ * the text (one fewer than the quote's, so a place that spans two items is found once) with
+ * the pieces they came from, and the pieces of the first place found. Those characters are cut
+ * from the text of the item they end, which stays in hand with them until the next item's text
+ * is made. So what it keeps between two items grows with the quote and never with the tab.
+ * `runs` is read to its end, since the refusal of a quote that occurs more than once says how
+ * often; a quote refused on its own text (empty, or with a line break) reads none of it.
  */
-export function locateQuote(
-  tab: GoogleDocsTab, quote: string, { wholeChips = false }: { wholeChips?: boolean } = {},
+export function locateQuoteInRuns(
+  tabId: string, runs: Iterable<readonly unknown[]>, quote: string,
+  { wholeChips = false }: { wholeChips?: boolean } = {},
 ): DocsRange {
   let needle = quote.trim();
   if (!needle) throw new Error("The quote is empty.");
@@ -118,28 +147,127 @@ export function locateQuote(
   if (/[\n\v]/.test(needle)) {
     throw new Error("A quote must sit within one paragraph; quote part of one paragraph instead.");
   }
-  let { text, pieces } = tabText(tab);
-  let first = text.indexOf(needle);
-  if (first < 0) {
-    throw new Error(`That text was not found in tab ${tab.tabId}. Quote it as written, without ` +
+  // The end of the text so far, which the next item's text is searched behind, the pieces
+  // that reach into it, and the length of the tab's text so far.
+  let tail = "", pieces: Piece[] = [], length = 0;
+  // How often the quote was found, and of the first place: its offset and its pieces.
+  let count = 0, first = -1, inside: Piece[] = [];
+  let items = runs[Symbol.iterator]();
+  // Takes the next item in, where there is one. The item is this call's own, so nothing here
+  // names it when the item after it is asked for: a `for...of` holds each item until the
+  // next has been made.
+  let take = (): boolean => {
+    let next = items.next();
+    if (next.done) return false;
+    let chunks = [tail];
+    length = addText(next.value, length, chunks, pieces);
+    let text = chunks.join("");
+    // No place lies within the tail, which is shorter than the quote: each is met once, in
+    // the item it ends in.
+    for (let at = text.indexOf(needle); at >= 0; at = text.indexOf(needle, at + 1)) {
+      if (++count > 1) continue;
+      first = length - text.length + at;
+      let end = first + needle.length;
+      inside = piecesPast(pieces, first).filter(piece => piece.at < end);
+    }
+    tail = needle.length > 1 ? text.slice(1 - needle.length) : "";
+    pieces = piecesPast(pieces, length - tail.length);
+    return true;
+  };
+  while (take());
+  if (count === 0) {
+    throw new Error(`That text was not found in tab ${tabId}. Quote it as written, without ` +
       "Markdown or HTML formatting, and pass tabId if it is in another tab.");
   }
-  let count = 0;
-  for (let at = first; at >= 0; at = text.indexOf(needle, at + 1)) count++;
   if (count > 1) {
     throw new Error(`That text appears ${count} times; quote more of it so it is unique.`);
   }
-  if (wholeChips) {
-    let end = first + needle.length;
-    let inside = pieces.filter(piece => piece.at < end && piece.at + piece.length > first);
-    if (inside.some((piece, i) => i > 0 && inside[i - 1].endIndex !== piece.startIndex)) {
-      throw new Error(SPANS_HIDDEN);
-    }
+  if (wholeChips && inside.some((piece, i) => i > 0 && inside[i - 1].endIndex !== piece.startIndex)) {
+    throw new Error(SPANS_HIDDEN);
   }
   return {
-    startIndex: indexAt(pieces, first, false, wholeChips),
-    endIndex: indexAt(pieces, first + needle.length, true, wholeChips),
-    tabId: tab.tabId,
+    startIndex: indexAt(inside, first, false, wholeChips),
+    endIndex: indexAt(inside, first + needle.length, true, wholeChips),
+    tabId,
+  };
+}
+
+/**
+ * Cuts `document.tabs`, in place, to the tab `tabId` names (`selectTab`) and answers that tab.
+ * A call of its own: once it has returned, nothing but `document.tabs` and its caller names
+ * the tab, and nothing names another.
+ * @throws What `selectTab` throws, before anything is let go.
+ */
+function cutToTab(document: GoogleDocsDocument, tabId: string | undefined): GoogleDocsTab {
+  let tab = selectTab(document, tabId);
+  document.tabs.splice(0, document.tabs.length, tab);
+  return tab;
+}
+
+/**
+ * The elements of `content`, a tab's body as the parsed answer holds it, one at a time and in
+ * order, each as Google sent it. An element's slot is emptied before the element is handed
+ * over, so what the answer held of the elements already read can be collected: what is in
+ * hand falls from the parsed answer to the element being read.
+ */
+function* releasedElements(content: unknown[]): Generator<readonly unknown[]> {
+  for (let at = 0; at < content.length; at++) {
+    let element = content[at];
+    // The parsed answer lets go of the element. The slot stays: the loop goes by index.
+    content[at] = undefined;
+    yield [element];
+  }
+}
+
+/**
+ * Finds `quote` in tab `tabId` (the document's first tab when it names none) of `document`, a
+ * Doc as a fetch just answered it, and returns the range it takes there (`locateQuoteInRuns`,
+ * handed the tab's body elements one at a time, as Google sent them).
+ * IT TAKES `document` OVER AND EMPTIES IT: every other tab is let go before the search, and
+ * each element of the tab searched leaves the parsed answer as the search is handed it.
+ * Nothing is pruned, cut, stored, rendered or decoded.
+ *
+ * WHAT IS IN HAND as the search goes: the elements of the answer not yet read and the one
+ * being read, so never more than the parsed answer held, and less with each element. For a
+ * tab that is mostly ONE ELEMENT, a table of megabytes, that element stays in hand while it
+ * is read, as the answer held it.
+ *
+ * A caller reads what else it needs of `document` (its revision) first, and hands a document
+ * it means to read again a copy.
+ * @throws What `selectTab` and `locateQuoteInRuns` throw, as they throw it (plain `Error`s
+ * with their messages).
+ */
+export function locateQuoteInFetched(
+  document: GoogleDocsDocument, tabId: string | undefined, quote: string,
+  options?: { wholeChips?: boolean },
+): DocsRange {
+  let tab = cutToTab(document, tabId);
+  return locateQuoteInRuns(tab.tabId, releasedElements(tab.body.content), quote, options);
+}
+
+/** A Doc as Google has it saved, for a lookup of quoted text: its tabs, and one tab's text. */
+export type SavedDoc = {
+  /** Every tab's identity, in the document's order. */
+  readonly tabs: readonly GoogleDocTabIdentity[];
+  /** `locateQuoteInRuns` in tab `tabId` as the copy holds it, with no pending edit. */
+  locate(tabId: string, quote: string, options?: { wholeChips?: boolean }): DocsRange;
+};
+
+/**
+ * `copy` as a lookup of quoted text reads it: the copy's outline and, for one tab, its base
+ * version's runs, decoded one at a time (`DocCopy.runs`). Nothing of the document is held
+ * beside the run in hand. Valid until the next await, as the copy is: use it inside
+ * `DocSource.read`.
+ */
+export function savedDoc(copy: DocCopy): SavedDoc {
+  return {
+    tabs: copy.outline,
+    locate(tabId, quote, options) {
+      // A tab the outline does not list is refused as `selectTab` refuses it.
+      let version = copy.tab(selectTab({ tabs: copy.outline }, tabId).tabId);
+      if (!version) throw new Error(DOC_COPY_UNREADABLE);
+      return locateQuoteInRuns(tabId, copy.runs(version), quote, options);
+    },
   };
 }
 

@@ -1,6 +1,12 @@
 import gatekeeperConfiguratorConfig from "@gadgets/scripts/gatekeeper-configurator";
 import { TESTS_WITH_TIMEOUT_ENV, vitestTask, withTestTimeout } from "@gadgets/scripts/vitest-task";
 
+const tests = vitestTask([
+  "vitest run",
+  "vitest run -c vitest.worker.config.ts",
+  "vitest run -c vitest.docs-worker.config.ts",
+]);
+
 /** Configurator tasks plus separate Node and workerd test passes. */
 export default {
   ...gatekeeperConfiguratorConfig,
@@ -26,11 +32,11 @@ export default {
         },
       },
       test: {
-        ...vitestTask([
-          "vitest run",
-          "vitest run -c vitest.worker.config.ts",
-          "vitest run -c vitest.docs-worker.config.ts",
-        ]),
+        ...tests,
+        // `GOOGLE_DOCS_WIDER_TESTS` widens the tables of the Docs tests that have two widths
+        // (`__tests__/wider-run.ts`): a run with it set holds more, so it is another result,
+        // and a cached run must neither strip it nor replay the narrower one.
+        cache: { ...tests.cache, env: [...tests.cache.env, "GOOGLE_DOCS_WIDER_TESTS"] },
         dependsOn: ["build:configurator"],
       },
     },
