@@ -240,8 +240,9 @@ const newGatekeeperObserverContract: Rule = {
         "reads made before subresources were reported.",
       observerState: "A new gatekeeper's `{{name}}()` does nothing. Report `subresources` on every " +
         "read and check each observer in `verifyObserverAccess()`.",
-      unreported: "Pass `subresources` explicitly, `[]` for a read nothing restricts. Leaving it " +
-        "out adds no requirement and reads as one that was forgotten.",
+      unreported: "Pass `subresources` explicitly, after any spread, which could replace it, and " +
+        "`[]` for a read nothing restricts. Leaving it out adds no requirement and reads as one " +
+        "that was forgotten.",
       excludeObservers: "`excludeObservers` belongs to the legacy observer protocol. Report " +
         "`subresources` and deny in `verifyObserverAccess()`.",
     },
