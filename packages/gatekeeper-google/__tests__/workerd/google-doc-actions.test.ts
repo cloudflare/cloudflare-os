@@ -4082,6 +4082,18 @@ describe("Google Doc edits through a read and write Drive binding", () => {
     expect(await notes()).toEqual([]);
   });
 
+  it("lists as stale an edit of a Doc that its approval refuses for good", async () => {
+    let docs = draft("target");
+    let facet = "drive-stale-refused";
+    let id = await hooks().submitReplace(facet, "target", "changed");
+    docs.canEdit = false;
+
+    expect(await hooks().applyAction(facet, id)).toMatch(/cannot edit that file/);
+    expect((await hooks().readPendingChanges(facet, MAIN_TAB)).changes).toEqual([{
+      id, stale: true, type: "replaceText", oldMarkdown: "target", newMarkdown: "changed",
+    }]);
+  });
+
   // The engine's run holds the write with a promise the test releases, which hangs a Drive binding's
   // apply in this harness; a timer slows it here instead, with the second approval sent meanwhile.
   it("holds a second approval of one edit behind the first, the write slowed", async () => {
