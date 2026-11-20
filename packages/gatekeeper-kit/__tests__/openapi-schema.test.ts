@@ -17,6 +17,9 @@ function generate(spec: string, out: string, ...args: string[]) {
   return spawnSync(process.execPath, [bin, spec, "--out", out, ...args], { encoding: "utf8" });
 }
 
+/** An --operations file of these operationIds, with nothing else on a line. */
+const listing = (...ids: string[]): string => ids.map(operationId => `${JSON.stringify({ operationId })}\n`).join("");
+
 function readTree(dir: string): Record<string, string> {
   return Object.fromEntries(readdirSync(dir, { recursive: true, withFileTypes: true })
     .filter(entry => entry.isFile())
@@ -44,15 +47,15 @@ describe("gatekeeper-openapi-schema", { timeout: 120_000 }, () => {
     const dir = mkdtempSync(join(tmpdir(), "openapi-schema-"));
     try {
       const out = join(dir, "out");
-      writeFileSync(join(dir, "ops.txt"), "# Users only\nusers/get\n");
+      writeFileSync(join(dir, "ops.jsonl"), listing("users/get"));
       const kept = generate(join(fixture, "spec.json"), out, "--group-by", "tag",
-        "--operations", join(dir, "ops.txt"));
+        "--operations", join(dir, "ops.jsonl"));
       expect(kept.status, kept.stderr).toBe(0);
       expect(Object.keys(readTree(out))).toEqual(["users.d.ts"]);
       expect(readTree(out)["users.d.ts"]).toContain("export type SimpleUser =");
 
-      writeFileSync(join(dir, "ops.txt"), "users/get\nusers/missing\n");
-      const missing = generate(join(fixture, "spec.json"), out, "--operations", join(dir, "ops.txt"));
+      writeFileSync(join(dir, "ops.jsonl"), listing("users/get", "users/missing"));
+      const missing = generate(join(fixture, "spec.json"), out, "--operations", join(dir, "ops.jsonl"));
       expect(missing.status).toBe(1);
       expect(missing.stderr).toContain("the document has no operation users/missing");
     } finally {
@@ -139,9 +142,9 @@ describe("gatekeeper-openapi-schema", { timeout: 120_000 }, () => {
           value: [{ "x-fern-sdk-group-name": "tickets", "x-fern-sdk-method-name": "list" }],
           reason: "Tests an operation with an alias." },
       ]));
-      writeFileSync(join(dir, "ops.txt"), "users.get\nissues/list\nissues/delete\n");
+      writeFileSync(join(dir, "ops.jsonl"), listing("users.get", "issues/list", "issues/delete"));
       const result = generate(join(fixture, "spec.json"), out, "--patch", join(dir, "patch.json"),
-        "--operations", join(dir, "ops.txt"));
+        "--operations", join(dir, "ops.jsonl"));
       expect(result.status, result.stderr).toBe(0);
       const tree = readTree(out);
       expect(Object.keys(tree)).toEqual(["index.d.ts"]);
@@ -154,19 +157,46 @@ describe("gatekeeper-openapi-schema", { timeout: 120_000 }, () => {
     }
   });
 
+  it("takes the lines --list prints as its --operations file, and refuses one that has moved", () => {
+    const dir = mkdtempSync(join(tmpdir(), "openapi-schema-"));
+    try {
+      const out = join(dir, "out");
+      const listed = spawnSync(process.execPath, [bin, join(fixture, "spec.json"), "--list"], { encoding: "utf8" });
+      const chosen = listed.stdout.split("\n").filter(line => line.includes('"users/get"'));
+      expect(chosen).toHaveLength(1);
+      writeFileSync(join(dir, "ops.jsonl"), `${chosen[0]}\n\n`);
+      const kept = generate(join(fixture, "spec.json"), out, "--operations", join(dir, "ops.jsonl"));
+      expect(kept.status, kept.stderr).toBe(0);
+      expect(readTree(out)["index.d.ts"]).toContain('      path: "/users/{username}";');
+
+      writeFileSync(join(dir, "ops.jsonl"), chosen[0].replace("/users/{username}", "/people/{username}"));
+      const moved = generate(join(fixture, "spec.json"), out, "--operations", join(dir, "ops.jsonl"));
+      expect(moved.status).toBe(1);
+      expect(moved.stderr).toContain(
+        "users/get is GET /users/{username} in the document, not GET /people/{username} as");
+
+      writeFileSync(join(dir, "ops.jsonl"), "users/get\n");
+      const text = generate(join(fixture, "spec.json"), out, "--operations", join(dir, "ops.jsonl"));
+      expect(text.status).toBe(1);
+      expect(text.stderr).toContain("ops.jsonl line 1 is not JSON");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("refuses a listed operation that a schema cannot hold", () => {
     const dir = mkdtempSync(join(tmpdir(), "openapi-schema-"));
     try {
       const out = join(dir, "out");
-      writeFileSync(join(dir, "ops.txt"), "issues/list\nissues/upload\nusers/avatar\n");
-      const result = generate(join(fixture, "spec.json"), out, "--operations", join(dir, "ops.txt"));
+      writeFileSync(join(dir, "ops.jsonl"), listing("issues/list", "issues/upload", "users/avatar"));
+      const result = generate(join(fixture, "spec.json"), out, "--operations", join(dir, "ops.jsonl"));
       expect(result.status).toBe(1);
       expect(result.stderr).toContain(
         "issues/upload, POST /repos/{owner}/{repo}/issues/{issue_number}/attachments cannot be in a schema: " +
         "its request body is not JSON (application/octet-stream). Take it out of");
       expect(result.stderr).toContain("users/avatar, GET /users/{username}/avatar cannot be in a schema");
       expect(result.stderr).not.toContain("issues/list");
-      expect(readdirSync(dir)).toEqual(["ops.txt"]);
+      expect(readdirSync(dir)).toEqual(["ops.jsonl"]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -196,8 +226,8 @@ describe("gatekeeper-openapi-schema", { timeout: 120_000 }, () => {
   it("lists every operation of the document with --list, and writes nothing", () => {
     const listed = spawnSync(process.execPath, [bin, join(fixture, "spec.json"), "--list"], { encoding: "utf8" });
     expect(listed.status, listed.stderr).toBe(0);
-    const lines = listed.stdout.replace(/\n$/, "").split("\n").map(line => line.split("\t"));
-    expect(lines.map(([id, method, path, tag]) => [id, method, path, tag])).toEqual([
+    const lines = listed.stdout.replace(/\n$/, "").split("\n").map(line => JSON.parse(line) as Record<string, string>);
+    expect(lines.map(({ operationId, method, path, tag }) => [operationId, method, path, tag])).toEqual([
       ["issues/list", "GET", "/repos/{owner}/{repo}/issues", "issues"],
       ["issues/create", "POST", "/repos/{owner}/{repo}/issues", "issues"],
       ["issues/delete", "DELETE", "/repos/{owner}/{repo}/issues/{issue_number}", "issues"],
@@ -205,7 +235,7 @@ describe("gatekeeper-openapi-schema", { timeout: 120_000 }, () => {
       ["users/get", "GET", "/users/{username}", "users"],
       ["users/avatar", "GET", "/users/{username}/avatar", "users"],
     ]);
-    expect(lines.every(line => line.length === 5)).toBe(true);
+    expect(lines.every(line => Object.keys(line).join() === "operationId,method,path,tag,summary")).toBe(true);
 
     const both = generate(join(fixture, "spec.json"), join(tmpdir(), "unused"), "--list");
     expect(both.status).toBe(1);
@@ -222,8 +252,8 @@ describe("gatekeeper-openapi-schema", { timeout: 120_000 }, () => {
           reason: "Tests declared scopes." },
         { op: "add", path: "/paths/~1users~1{username}/get/x-scope", value: "users.read", reason: "Tests an extension." },
       ]));
-      writeFileSync(join(dir, "ops.txt"), "users/get\n");
-      const args = ["--patch", join(dir, "patch.json"), "--operations", join(dir, "ops.txt")];
+      writeFileSync(join(dir, "ops.jsonl"), listing("users/get"));
+      const args = ["--patch", join(dir, "patch.json"), "--operations", join(dir, "ops.jsonl")];
       expect(generate(join(fixture, "spec.json"), out, ...args).status).toBe(0);
       expect(readTree(out)["index.d.ts"])
         .toContain("     * Scopes the description declares: `users:read`, `users:admin` or `profile`\n");

@@ -121,14 +121,15 @@ bracket convention for arrays, takes an array even where the document declares a
 
 ```sh
 gatekeeper-openapi-schema <spec.json or https URL> --out src/generated/openapi \
-  [--sha256 <hex>] [--group-by tag] [--operations operations.txt] [--omit-header Accept]... \
+  [--sha256 <hex>] [--group-by tag] [--operations openapi-operations.jsonl] [--omit-header Accept]... \
   [--writable id]... [--patch openapi-patch.json] [--scopes-extension x-scopes]
 ```
 
 `--sha256` is the document's SHA-256, which a URL needs: a run fails when the document is not the
 one the hash names, so regenerating changes only what its author changed. `--operations` keeps only
-the listed operationIds, one per line, and fails for one the document lacks or a schema cannot
-hold. `--group-by tag` writes one `.d.ts` and one `<Tag>Api` schema per first tag instead, where one
+the operations a JSON Lines file lists, each line an object as `--list` prints one. Only a line's
+`operationId` chooses; the run fails for one the document lacks or a schema cannot hold, and for a
+line whose `method` or `path` is no longer the document's. `--group-by tag` writes one `.d.ts` and one `<Tag>Api` schema per first tag instead, where one
 schema of every operation is too large. `--omit-header` drops a header parameter from every
 operation, for one the client sends itself through its `headers` or `fetch` option, such as a
 versioning `Accept` header. `--writable` clears `readOnly` from every property of a name, for a
@@ -142,9 +143,9 @@ generated files and is replaced on each run. Commit the
 output: generating needs Forge's native binary and jco, which builds the plugin on first use and
 caches it under `node_modules/.cache`.
 
-To choose the operations, list the document's with `--list` in place of `--out`. It prints each
-one's operationId, method, path, first tag and summary on a line, separated by tabs, and writes no
-files:
+To choose the operations, list the document's with `--list` in place of `--out`. It prints one
+JSON object per line, with an operation's `operationId`, `method`, `path`, first `tag` and
+`summary`, and writes no files. The lines you keep are the `--operations` file:
 
 ```sh
 gatekeeper-openapi-schema <spec.json or https URL> --list [--sha256 <hex>] | grep -i incident
