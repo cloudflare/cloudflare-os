@@ -503,6 +503,21 @@ describe("Google Slides preview pictures and fonts", () => {
     expect(reads(queue)).toEqual(["Read one Google Slides slide as drawn", "Read Google Slides pictures", "Read Google Slides pictures"]);
   });
 
+  it("fetches a picture's bytes inside its read, so a binding that the file leaves meanwhile refuses them", async () => {
+    // As a folder binding's check after the fetch refuses a file moved out during it.
+    let { session } = newSession(read => (fetch, observe) => read(async () => {
+      let value = await fetch();
+      if (pictureRequests.length > 0) throw new Error("The requested file is outside this Drive binding.");
+      return value;
+    }, observe));
+    using _session = session;
+    await session.readSlideDrawings(["s1"]);
+
+    await expect(Promise.resolve(session.readPicture("pic", "s1"))).rejects.toThrow("outside this Drive binding");
+
+    expect(pictureRequests).toHaveLength(1);
+  });
+
   it.each([429, 500, 503])("fails a picture Google answers %i for, without reading the slide again", async status => {
     let { queue, session } = newSession();
     using _session = session;

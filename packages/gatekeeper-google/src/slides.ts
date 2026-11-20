@@ -720,33 +720,33 @@ export class GooglePresentationSessionImpl extends RpcTarget
     return read;
   }
 
-  /** Reads the pictures `slideId` shows from Google, and reports it as a read of them. */
-  async #picturesOn(slideId: string): Promise<void> {
-    let { title, drawings, pictures } = await this.#read(() => this.#drawn([slideId]), ({ title }) => ({
-      title: "Read Google Slides pictures",
-      description: `Read the pictures on one slide in "${title}".`,
-    }));
-    if (!drawings[0].saved && !drawings[0].pending) throw noSlide(slideId, title);
-    this.#name([slideId], pictures);
-  }
-
   async readPicture(pictureId: string, slideId: string): Promise<SlidePictureBytes> {
     // A drawing told of the picture, not its bytes: each read of them is authorized as its own,
     // without asking Google for a slide already drawn. One never drawn is read here, and so is
-    // one whose address has lapsed, for a current one.
+    // one whose address has lapsed, for a current one. The bytes are fetched inside the read, so
+    // a scope check bracketing it covers them too.
     for (let reread of this.#pictured.has(slideId) ? [false, true] : [true]) {
-      if (reread) await this.#picturesOn(slideId);
-      else {
-        await this.#read(async () => undefined, () => ({
-          title: "Read Google Slides pictures", description: "Read a picture on one slide of the presentation.",
-        }));
-      }
-      let named = this.#pictures.get(pictureId);
+      let { slide, shown, named, picture } = await this.#read(async () => {
+        let slide = reread ? await this.#drawn([slideId]) : undefined;
+        let shown = !slide || !!(slide.drawings[0].saved || slide.drawings[0].pending);
+        let named = shown ? slide?.pictures.get(pictureId) ?? this.#pictures.get(pictureId) : undefined;
+        // What Google answers for the bytes is told once the read is reported, as the rest is.
+        let picture = named && await downloadPicture(named.contentUrl, named.pixels)
+          .catch((error: unknown) => ({ error }));
+        return { slide, shown, named, picture };
+      }, ({ slide }) => ({
+        title: "Read Google Slides pictures",
+        description: slide
+          ? `Read the pictures on one slide in "${slide.title}".`
+          : "Read a picture on one slide of the presentation.",
+      }));
+      if (!shown) throw noSlide(slideId, slide!.title);
+      if (slide) this.#name([slideId], slide.pictures);
       if (!named) {
         throw new Error(`readPicture: no drawing of slide "${slideId}" names a picture "${pictureId}". ` +
           "Pass the `pictureId` of an element readSlideDrawings() returned for the slide.");
       }
-      let picture = await downloadPicture(named.contentUrl, named.pixels);
+      if (picture && "error" in picture) throw picture.error;
       if (picture) return picture;
     }
     throw new Error("readPicture: Google Slides no longer serves this picture.");
