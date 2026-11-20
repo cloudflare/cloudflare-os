@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { Combobox } from '@cloudflare/kumo/primitives/combobox'
 import { PaperclipIcon, PlugIcon, PlusIcon } from '@phosphor-icons/react'
-import { DropdownMenu } from '@/components/DropdownMenu'
+import { DropdownMenu } from '@gadgets/ui'
 import { commandGlyph, type ComposerCommand } from './ComposerCommandPicker'
 import { composerAddEntries, composerAddKey, type ComposerAddEntry } from './composerAddEntries'
 
@@ -24,10 +24,12 @@ type ComposerAddMenuProps = ComposerAddActions & {
   anchorRef: RefObject<HTMLElement | null>
   /** Keep the popup's anchored corner at the button's original position. */
   inPlace?: boolean
+  /** The menu opened. */
+  onOpen?: () => void
 }
 
 /** The composer's action picker. Its callers supply capabilities; absent actions stay disabled. */
-export const ComposerAddMenu = ({ anchorRef, inPlace, ...actions }: ComposerAddMenuProps) => (
+export const ComposerAddMenu = ({ anchorRef, inPlace, onOpen, ...actions }: ComposerAddMenuProps) => (
   <DropdownMenu
     icon={<PlusIcon weight="bold" />}
     aria-label="Add to conversation"
@@ -36,6 +38,9 @@ export const ComposerAddMenu = ({ anchorRef, inPlace, ...actions }: ComposerAddM
     anchorRef={anchorRef}
     side="top"
     inPlace={inPlace}
+    onOpenChange={(open) => {
+      if (open) onOpen?.()
+    }}
     picker="wide"
   >
     {(close) => <ComposerAddSearch {...actions} close={close} />}

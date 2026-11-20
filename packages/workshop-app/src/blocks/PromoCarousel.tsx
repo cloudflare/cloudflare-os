@@ -1,10 +1,8 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { ArrowLeftIcon, ArrowRightIcon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
-import { Button } from '@/components/Button'
+import { Button, LinkButton, isMotionOff } from '@gadgets/ui'
 import { FormatIcon, type FormatIconName } from '@/components/FormatIcon'
-import { LinkButton } from '@/components/LinkButton'
-import { isMotionOff } from '@/prefs/motion'
 
 export type PromoItem = {
   key: string

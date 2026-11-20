@@ -108,11 +108,10 @@ export type { ContextApi as AppApi } from "./context-types.js";
 
 and `pnpm api-schema:generate` extracts that interface's schema, under its own name, with the same
 extractor, under the package's own tsconfig, so the file and what it imports must type-check there
-and should be light (types and `capnweb` only, as `context-types.ts` and the scheduler's
-`management-types.ts` are). Its vendor id is the backend's: the suffix of its
-`GATEKEEPER_<NAME>` binding, lowercased, which `scripts/run-dev-server.ts` names after the package
-directory (`gatekeeper-context` is `context`). Today `context` (`ContextApi`) and `scheduler`
-(`ScheduleManagementApi`) declare one. A configurator's `ui` (`startResourceConfigurator`) has
+and should be light (types and `capnweb` only, as `context-types.ts` is). Its vendor id is the
+backend's: the suffix of its `GATEKEEPER_<NAME>` binding, lowercased, which
+`scripts/run-dev-server.ts` names after the package directory (`gatekeeper-context` is `context`).
+Today only `context` (`ContextApi`) declares one. A configurator's `ui` (`startResourceConfigurator`) has
 none: its methods are its vendor's `*ConfiguratorUI` class in `packages/gatekeeper-<vendor>/src/`.
 
 ## Generating

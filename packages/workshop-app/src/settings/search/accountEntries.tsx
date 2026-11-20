@@ -33,7 +33,7 @@ export const accountEntries: SearchEntry[] = [
     key: 'setting:reset-local-preferences',
     group: GROUP,
     title: 'Reset local preferences',
-    keywords: ['forget', 'clear', 'stars', 'layout', 'theme', 'advanced'],
+    keywords: ['forget', 'clear', 'layout', 'theme', 'advanced'],
     icon: <ArrowCounterClockwiseIcon />,
     onSelect: () => confirmPage('Reset local preferences?', 'Reset', 'Can’t be undone', <ArrowCounterClockwiseIcon />, resetLocalPreferences),
   },

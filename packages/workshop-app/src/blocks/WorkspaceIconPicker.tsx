@@ -1,7 +1,8 @@
 import { cn } from '@cloudflare/kumo/utils'
-import { DropdownMenu } from '@/components/DropdownMenu'
+import { WORKSPACE_ICON_COLORS, WORKSPACE_ICON_SHAPES, type WorkspaceLook } from '@/prefs/preferenceFields'
+import { DropdownMenu } from '@gadgets/ui'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
-import { WORKSPACE_COLORS, WORKSPACE_SHAPES, workspaceColors, workspaceShapes, type WorkspaceLook } from '@/components/workspaceLook'
+import { WORKSPACE_COLORS, WORKSPACE_SHAPES } from '@/components/workspaceLook'
 
 export type WorkspaceIconPickerProps = {
   /** Two letters shown on the icon. */
@@ -17,8 +18,8 @@ export type WorkspaceIconPickerProps = {
  * and the menu stays open, so that each choice is seen on it as it is made.
  */
 export const WorkspaceIconPicker = ({ label, look, onLookChange }: WorkspaceIconPickerProps) => {
-  const shape = look?.shape ?? workspaceShapes[0]
-  const color = look?.color ?? workspaceColors[0]
+  const shape = look?.shape ?? WORKSPACE_ICON_SHAPES[0]
+  const color = look?.color ?? WORKSPACE_ICON_COLORS[0]
 
   return (
     <DropdownMenu
@@ -34,7 +35,7 @@ export const WorkspaceIconPicker = ({ label, look, onLookChange }: WorkspaceIcon
     >
       <DropdownMenu.Label>Icon</DropdownMenu.Label>
       <DropdownMenu.SwatchGroup value={shape} onValueChange={(next) => onLookChange({ shape: next, color })} aria-label="Icon">
-        {workspaceShapes.map((id) => (
+        {WORKSPACE_ICON_SHAPES.map((id) => (
           <DropdownMenu.Swatch key={id} value={id} label={WORKSPACE_SHAPES[id]}>
             <WorkspaceIcon label={label} shape={id} color={color} />
           </DropdownMenu.Swatch>
@@ -43,7 +44,7 @@ export const WorkspaceIconPicker = ({ label, look, onLookChange }: WorkspaceIcon
       <DropdownMenu.Separator />
       <DropdownMenu.Label>Color</DropdownMenu.Label>
       <DropdownMenu.SwatchGroup value={color} onValueChange={(next) => onLookChange({ shape, color: next })} aria-label="Color">
-        {workspaceColors.map((id) => (
+        {WORKSPACE_ICON_COLORS.map((id) => (
           <DropdownMenu.Swatch key={id} value={id} label={WORKSPACE_COLORS[id].name}>
             <svg viewBox="0 0 24 24" aria-hidden="true" className={cn('size-6', WORKSPACE_COLORS[id].fill)}>
               <circle cx="12" cy="12" r="12" />

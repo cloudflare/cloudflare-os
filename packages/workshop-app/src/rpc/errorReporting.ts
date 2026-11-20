@@ -1,11 +1,13 @@
 import {
   MAX_STRING_CHARS,
+  extractFrontendFrameReport,
   normalizePageLocation,
   serializeException,
   type ErrorExceptionV1,
   type FrontendBrowserFacts,
   type FrontendCaptureMechanism,
   type FrontendErrorReportV1,
+  type FrontendErrorSurface,
 } from '@gadgets/error-reporting'
 
 /** What a place that catches something may say of it, besides what was caught. */
@@ -15,6 +17,8 @@ export type ReportOptions = Readonly<{
   captureMechanism?: FrontendCaptureMechanism
   gadgetId?: string
   gatekeeperVendorId?: string
+  /** What it went wrong in: the app's own code, unless it is a frame's the app hosts. */
+  surface?: FrontendErrorSurface
 }>
 
 type ReporterOptions = Readonly<{
@@ -58,21 +62,25 @@ const firstFrame = (stack: string | undefined): string =>
 /**
  * Makes reports of what went wrong in the app, ported from `workshop-frontend`'s: each failure once
  * a minute at most (the same place, the same kind, the same first frame), and no more than ten
- * different ones, so that a loop cannot flood the endpoint. The route is not part of what makes a
- * failure the same: one fault on two pages is one issue. Nothing it does can throw.
+ * different ones from each surface, so that a loop cannot flood the endpoint, nor a frame the app
+ * hosts use up what the app's own may say. The route is not part of what makes a failure the same:
+ * one fault on two pages is one issue. Nothing it does can throw.
  */
 export const createReporter = (options: ReporterOptions): Reporter => {
   const now = options.now ?? Date.now
   let windowStart = 0
-  const seen = new Set<string>()
+  const seenBySurface = new Map<FrontendErrorSurface, Set<string>>()
 
   const reportSerialized: Reporter['reportSerialized'] = (site, exception, reportOptions) => {
     try {
       const at = now()
       if (at - windowStart >= WINDOW_MS) {
         windowStart = at
-        seen.clear()
+        seenBySurface.clear()
       }
+      const surface = reportOptions?.surface ?? 'workshop'
+      const seen = seenBySurface.get(surface) ?? new Set<string>()
+      seenBySurface.set(surface, seen)
       if (seen.size >= PER_WINDOW) return
       const failureSite = site.slice(0, MAX_STRING_CHARS)
       const fingerprint = `${failureSite}\n${exception?.type ?? ''}\n${firstFrame(exception?.stack)}`
@@ -90,7 +98,7 @@ export const createReporter = (options: ReporterOptions): Reporter => {
         severity: reportOptions?.severity ?? 'error',
         handled: reportOptions?.handled ?? true,
         captureMechanism: reportOptions?.captureMechanism ?? 'explicit',
-        surface: 'workshop',
+        surface,
         ...(options.sessionId && { sessionId: options.sessionId }),
         ...(location && { pageLocation: location.slice(0, MAX_STRING_CHARS) }),
         ...(reportedUserId && { reportedUserId: reportedUserId.slice(0, MAX_STRING_CHARS) }),
@@ -182,6 +190,30 @@ const reporter: Reporter = REPORTING
  * sent or received in an error.
  */
 export const reportIssue = (site: string, caught: unknown, options?: ReportOptions) => reporter.report(site, caught, options)
+
+/**
+ * Reports what went wrong in a frame the app hosts (a gatekeeper's app), where `event` is a report
+ * the frame posted (`extractFrontendFrameReport`), and says whether it was one. Only `frameWindow`'s
+ * own, at its opaque origin, is taken; the frame says only what went wrong, and the app says the
+ * rest (`context`): what the frame claims of where it is or who it is for is not kept.
+ */
+export const forwardFrameError = (
+  event: Pick<MessageEvent, 'source' | 'origin' | 'data'>,
+  frameWindow: Window,
+  context: Readonly<{ surface: Exclude<FrontendErrorSurface, 'workshop'>; gatekeeperVendorId?: string }>,
+  forward: Reporter['reportSerialized'] = reporter.reportSerialized,
+): boolean => {
+  if (event.source !== frameWindow || event.origin !== 'null') return false
+  const frame = extractFrontendFrameReport(event.data)
+  if (!frame) return false
+  forward(`frame:${frame.failureSite}`.slice(0, MAX_STRING_CHARS), frame.exception, {
+    severity: frame.severity,
+    handled: frame.handled,
+    captureMechanism: frame.captureMechanism,
+    ...context,
+  })
+  return true
+}
 
 /** Who the reports from here on say is signed in, or nobody. */
 export const setReportedUserId = (id: string | undefined) => {

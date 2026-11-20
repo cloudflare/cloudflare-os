@@ -1,6 +1,6 @@
 import type { RpcStub } from 'capnweb'
 import type { ActionKind } from '@gadgets/workshop-shared/gatekeeper'
-import type { ActionLogEntry, AiChatMessage, AiChatMetadata, AiChatStreamEvent, AiToolCall, ChatCodeBase, Overseer, CapsuleSpecifier, SlashCommandChoice, SlashCommandRequest } from '@gadgets/workshop-shared/api'
+import type { ActionLogEntry, AiChatMessage, AiChatMetadata, AiChatStreamEvent, AiToolCall, ChatCodeBase, Overseer, CapsuleSpecifier, ChatArtifact, ChatConnectionUse, SlashCommandChoice, SlashCommandRequest } from '@gadgets/workshop-shared/api'
 import {
   EMPTY_FEED,
   toChatFeed,
@@ -12,13 +12,12 @@ import {
   type UserItem,
   type WorkEntry,
 } from './chatItems'
-import { agentKeyOf, namedAgentKey } from '@/automations/agents'
+import { agentKeyOf } from '@/automations/agents'
 import { answerParts } from './answerParts'
 import { ChatCode, NotSent } from './code/ChatCode'
 import type { StreamRow } from './code/changeStream'
 import { epochCode } from './code/epochCode'
 import { proposedChanges, type ProposedChanges } from './proposedChanges'
-import { quotedBy } from './replyQuote'
 import { liveToolLabel, liveToolSections, toolIcon } from './toolCalls'
 import { uploadAttachments } from './uploadAttachments'
 import { ActionUpdates, ChatSubscriber, type ChatEvents } from './ChatSubscriber'
@@ -36,6 +35,14 @@ export type KeepAsk = {
   epoch: number | undefined
 }
 
+/** What a chat has, as its workspace lists it (`Overseer.listChatArtifacts()`), every page of it. */
+export type ChatArtifacts = {
+  /** The gadgets and worktrees it made that the workspace still has, and the files sent in it, oldest first. */
+  artifacts: ChatArtifact[]
+  /** The connections it used. */
+  connections: ChatConnectionUse[]
+}
+
 export type ChatSnapshot =
   | { status: 'loading' }
   | {
@@ -49,8 +56,8 @@ export type ChatSnapshot =
        */
       notificationsRequireParticipation: boolean
       /**
-       * The agent whose run it is, where it is one (`AiChatMetadata.spawnerId`): its key on the
-       * workspace's Agents tab, and its name as the run was started under. Undefined until the
+       * The agent whose run it is, where it names one (`AiChatMetadata.spawnerId`): its key on
+       * the workspace's Agents tab, and its name as the run was started under. Undefined until the
        * metadata arrives, and for a chat someone started.
        */
       agent: { key: string; name: string } | undefined
@@ -96,13 +103,20 @@ export type ChatSnapshot =
       hasEarlier: boolean
       loadingEarlier: boolean
       historyError: string | undefined
+      /**
+       * What the chat has, all of it, however little of the conversation is loaded. Undefined
+       * until it is first read, or where it could not be.
+       */
+      artifacts: ChatArtifacts | undefined
     }
   | { status: 'failed'; message: string }
   /** The chat was deleted while it was open, by the viewer or by anyone else in the workspace. */
   | { status: 'deleted' }
 
 type Calls =
-  | 'listChats'
+  | 'getChatMetadata'
+  | 'listChatArtifacts'
+  | 'listActions'
   | 'getChatHistory'
   | 'sendChatMessage'
   | 'listSlashCommands'
@@ -146,7 +160,7 @@ export type ChatOverseer = Pick<Overseer, Calls> & {
   onRpcBroken(callback: (error: unknown) => void): void
 }
 
-const sameSteer = (a: PendingSteer, b: PendingSteer) => a.text === b.text && a.from === b.from
+const sameSteer = (a: PendingSteer, b: PendingSteer) => a.text === b.text && a.from === b.from && a.replyTo === b.replyTo
 
 /** How many of `waiting`, oldest first, are no longer in `queue`, which is read from its front. */
 const readFrom = (waiting: PendingSteer[], queue: PendingSteer[]) => {
@@ -158,8 +172,6 @@ const readFrom = (waiting: PendingSteer[], queue: PendingSteer[]) => {
 export type ChatSessionOptions = {
   /** The signed-in user's id, so their own actions read as theirs. */
   viewerId?: string
-  /** Called when an assistant turn ends, e.g. to refresh lists that show the workspace. */
-  onTurnEnded?: () => void
   /**
    * The app's connection to the backend, which may be `down` while it is made again. Meanwhile
    * nothing asked of the session is sent, and `blocked()`, which says so, tells the user; and the
@@ -198,15 +210,10 @@ const liveEntry = (call: LiveCall, reasoning: string | undefined): ToolEntry => 
 const LOADING: ChatSnapshot = { status: 'loading' }
 const DELETED: ChatSnapshot = { status: 'deleted' }
 const HISTORY_PAGE_SIZE = 50
-/** How many earlier pages are fetched in search of the message a reply quotes. */
-const QUOTE_SEARCH_PAGES = 20
+/** The most messages the workspace sends at once (`Overseer.getChatHistory`'s `limit`). */
+const MAX_HISTORY_PAGE_SIZE = 200
 /** How many rows of a chat's change stream are kept for its code, should it be shown. */
 const MAX_KEPT_ROWS = 500
-/**
- * How many messages each earlier page holds that is fetched to see everything a chat's changes
- * would keep, as many as one page may: however far back that is, it is read.
- */
-const EPOCH_PAGE_SIZE = 200
 /** How long the code waits to read back again where a page could not be had, at first and at most. */
 const CODE_RETRY = { first: 2000, most: 60_000 }
 /** How many fetched files a session keeps, so a chat's tiles and what is opened share their bytes. */
@@ -222,6 +229,12 @@ const KEEP_GRACE = 1500
 const RETRY_DELAY = { first: 1000, most: 10_000 }
 
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
+
+// A message that can change what the chat has (`ChatArtifacts`): a file sent, gadgets made or
+// worked on, their changes kept or discarded, a connection used.
+const changesArtifacts = (message: AiChatMessage) =>
+  (message.type === 'message' && (message.attachments?.length ?? 0) > 0) ||
+  message.type === 'changes' || message.type === 'merge' || message.type === 'revert' || message.type === 'action'
 
 /**
  * One chat in a workspace, live. Observable through `subscribe`/`getSnapshot` (for
@@ -256,10 +269,24 @@ export class ChatSession {
   // is not connected to again.
   #deleted = false
   #agentActive = false
-  // Set once a live metadata update was applied, so the listed metadata cannot overwrite it.
+  // Set once a live metadata update was applied, so the metadata read on loading cannot overwrite it.
   #liveMetadata = false
   #messages = new Map<number, AiChatMessage>()
   #feed: ChatFeed = EMPTY_FEED
+  // The chat's actions that wait on a decision, wherever their messages are: read on loading
+  // (undefined until then), and kept up here.
+  #pendingActions: ActionLogEntry[] | undefined
+  // The chat's action records that changed while those are read, by id, the last of each: put on
+  // top of what was read, so that a decision or new pending action then is not lost.
+  #actionsWhileListing = new Map<number, ActionLogEntry>()
+  // Whether the metadata says the chat waits on a decision (undefined until it is read), and whether
+  // this load has fetched the history back to it (`#seekWaiting`).
+  #awaitingDecision: boolean | undefined
+  #sought = false
+  #artifacts: ChatArtifacts | undefined
+  // The reads of what the chat has, one after another, and whether one is waiting to start.
+  #artifactsRead: Promise<void> = Promise.resolve()
+  #artifactsWanted = false
   #compactedTo: number | undefined
   // The messages sent to the running agent that are not among `#messages` yet: first those it has
   // read whose message has not arrived, then those still waiting to be read.
@@ -512,12 +539,12 @@ export class ChatSession {
 
   /**
    * Sends a message to the chat, words or a skill or command with what it is given, with `files`
-   * uploaded for it to carry and the connections in `capsules` given to the chat, and resolves to whether it
-   * went, so that whoever drafted it can keep the draft when it did not. The message and the reply
-   * come back through the subscription, not from here; a failure is reported in the snapshot's
-   * `sendError`.
+   * uploaded for it to carry and the connections in `capsules` given to the chat, replying to the
+   * message numbered `replyTo` if given, and resolves to whether it went, so that whoever drafted
+   * it can keep the draft when it did not. The message and the reply come back through the
+   * subscription, not from here; a failure is reported in the snapshot's `sendError`.
    */
-  send = async (message: string | SlashCommandRequest, modelId: string, files: readonly File[] = [], capsules?: CapsuleSpecifier[]): Promise<boolean> => {
+  send = async (message: string | SlashCommandRequest, modelId: string, files: readonly File[] = [], capsules?: CapsuleSpecifier[], replyTo?: number): Promise<boolean> => {
     if (this.options.connection?.blocked()) return false
     const overseer = this.#overseer
     if (!overseer || !this.#loaded) {
@@ -540,7 +567,7 @@ export class ChatSession {
     }
     try {
       const attachments = await uploadAttachments(overseer, files)
-      await overseer.sendChatMessage(this.chatId, message, modelId, capsules, attachments)
+      await overseer.sendChatMessage(this.chatId, message, modelId, capsules, attachments, undefined, replyTo)
     } catch (error) {
       if (run === this.#run) {
         this.#sendError = messageOf(error)
@@ -669,22 +696,21 @@ export class ChatSession {
   }
 
   /**
-   * Finds the message a reply answers, and resolves to its row's key. A reply carries only a line
-   * of that message (see replyQuote.ts), and the message may be further back than has been
-   * loaded, so earlier history is fetched a page at a time until it turns up. The search gives up
-   * at the start of the conversation, when a page cannot be fetched, and after
-   * `QUOTE_SEARCH_PAGES`: a quote that far back is more likely not of a message here at all.
+   * Finds the message a reply answers (`UserItem.replyTo`), and resolves to its row's key. The
+   * list holds history only from some message on, so to reach one before that, everything back to
+   * it is fetched, in as few reads as the workspace allows. Nothing when the message has no row of
+   * its own, or the history cannot be fetched.
    */
-  findQuoted = async (reply: UserItem): Promise<string | undefined> => {
+  findReplied = async (reply: UserItem): Promise<string | undefined> => {
+    const sequence = reply.replyTo
+    if (sequence === undefined) return undefined
     const run = this.#run
-    for (let pages = 0; ; pages++) {
-      const quoted = quotedBy(reply, this.#feed.items)
-      if (quoted || run !== this.#run || pages === QUOTE_SEARCH_PAGES) return quoted?.key
-      const before = this.#nextBeforeSequence
-      // A page already on its way counts as this one.
-      await (this.#earlier ?? this.loadEarlier())
-      if (this.#nextBeforeSequence === before) return undefined
+    for (let before = this.#nextBeforeSequence; before !== undefined && sequence < before; before = this.#nextBeforeSequence) {
+      // A page already on its way is waited for, and then the rest fetched.
+      await (this.#earlier ?? this.#loadEarlier(Math.min(MAX_HISTORY_PAGE_SIZE, before - sequence)))
+      if (run !== this.#run || this.#nextBeforeSequence === before) return undefined
     }
+    return this.#feed.items.find((row) => row.id === sequence && (row.kind === 'user' || row.kind === 'assistant'))?.key
   }
 
   /** A message as the server sent it, written out in full, for someone looking into what happened. Nothing for one not loaded. */
@@ -782,11 +808,12 @@ export class ChatSession {
     this.#feedCode()
   }
 
-  async #loadEarlier(size: number) {
+  /** Fetches the `limit` messages before those loaded, as `loadEarlier` does a page. */
+  async #loadEarlier(limit: number) {
     const overseer = this.#overseer
     const before = this.#nextBeforeSequence
     if (!overseer || !this.#loaded || this.#failure || this.#loadingEarlier || before === undefined) return
-    const fetching = this.#fetchEarlier(overseer, before, size)
+    const fetching = this.#fetchEarlier(overseer, before, limit)
     this.#earlier = fetching
     try {
       await fetching
@@ -795,13 +822,52 @@ export class ChatSession {
     }
   }
 
-  async #fetchEarlier(overseer: ChatOverseer, before: number, size: number) {
+  /**
+   * The chat's actions that wait on a decision, oldest first: every page of the workspace's pending
+   * ones (`listActions`), less the other chats'. It costs what is pending, not the chat's length.
+   */
+  async #readPendingActions(run: number, overseer: ChatOverseer): Promise<ActionLogEntry[]> {
+    const pending: ActionLogEntry[] = []
+    let beforeId: number | undefined
+    do {
+      const page = await overseer.listActions({ filter: 'pending', beforeId })
+      if (run !== this.#run) break
+      pending.push(...page.entries.filter(({ chatId }) => chatId === this.chatId))
+      beforeId = page.nextBeforeId
+    } while (beforeId !== undefined)
+    return pending.toReversed()
+  }
+
+  /**
+   * Where the chat waits on a decision (`AiChatMetadata.awaitingDecision`) that none of its pending
+   * actions and none of the requests loaded is, the request is further back than has been loaded:
+   * the history is fetched back to it, in as few reads as the workspace allows, so that it shows,
+   * at the end of its turn as any is. Once a load, when both the metadata and the pending actions
+   * have been read; stopped by a read that fails, as `loadEarlier` leaves it to try again.
+   */
+  async #seekWaiting(run: number) {
+    if (this.#sought || this.#awaitingDecision === undefined || this.#pendingActions === undefined) return
+    this.#sought = true
+    const waitsShown = () => {
+      const before = this.#nextBeforeSequence
+      return this.#pendingActions?.some(({ state }) => state === 'pending') || [...this.#messages.values()].some((message) =>
+        (before === undefined || message.sequence >= before) &&
+        (message.type === 'connectionRequest' || message.type === 'webFetchRequest') && message.state === 'pending')
+    }
+    for (let before = this.#nextBeforeSequence; before !== undefined && this.#awaitingDecision && !waitsShown(); before = this.#nextBeforeSequence) {
+      // A page already on its way is waited for, and then the rest fetched.
+      await (this.#earlier ?? this.#loadEarlier(MAX_HISTORY_PAGE_SIZE))
+      if (run !== this.#run || this.#nextBeforeSequence === before) return
+    }
+  }
+
+  async #fetchEarlier(overseer: ChatOverseer, before: number, limit: number) {
     const run = this.#run
     this.#loadingEarlier = true
     this.#historyError = undefined
     this.#publishReady()
     try {
-      const page = await overseer.getChatHistory(this.chatId, before, size)
+      const page = await overseer.getChatHistory(this.chatId, before, limit)
       if (run !== this.#run) return
       // Live updates (e.g. an approval resolved during the read) take precedence over the page.
       for (const message of page.messages) {
@@ -824,15 +890,50 @@ export class ChatSession {
     const loaded = [...this.#messages.values()]
       .filter((message) => this.#nextBeforeSequence === undefined || message.sequence >= this.#nextBeforeSequence)
       .toSorted((a, b) => a.sequence - b.sequence)
+    // What waits from before the loaded messages: the actions whose messages are not loaded (a
+    // slash command's has none).
+    const loadedActions = new Set(loaded.flatMap((message) => (message.type === 'action' ? [message.actionId] : [])))
+    const waitingBefore = (this.#pendingActions ?? []).filter(({ id, state }) => state === 'pending' && !loadedActions.has(id))
     const context = {
       viewerId: this.options.viewerId,
       agentActive: this.#agentActive,
       steers: this.#steers,
       compactedTo: this.#compactedTo,
       outputFormats: this.#outputFormats,
+      waitingBefore,
     }
     this.#feed = toChatFeed(loaded, context, this.#feed)
     this.#work = undefined
+  }
+
+  /**
+   * Reads what the chat has, every page of it, after any read under way; while one waits to
+   * start, it covers whatever asked since. What was read before stays until it is replaced, and
+   * where a read fails, until the next.
+   */
+  #readArtifacts() {
+    if (this.#artifactsWanted) return
+    this.#artifactsWanted = true
+    this.#artifactsRead = this.#artifactsRead.then(async () => {
+      this.#artifactsWanted = false
+      const run = this.#run
+      const overseer = this.#overseer
+      if (!overseer) return
+      try {
+        const first = await overseer.listChatArtifacts(this.chatId)
+        const artifacts = [...first.artifacts]
+        for (let after = first.nextAfterSequence; after !== undefined && run === this.#run;) {
+          const page = await overseer.listChatArtifacts(this.chatId, after)
+          artifacts.push(...page.artifacts)
+          after = page.nextAfterSequence
+        }
+        if (run !== this.#run) return
+        this.#artifacts = { artifacts, connections: first.connections ?? [] }
+        if (this.#loaded) this.#publishReady()
+      } catch {
+        // Kept as last read: the next change to what the chat has reads it again.
+      }
+    })
   }
 
   #discardProvisional() {
@@ -888,6 +989,10 @@ export class ChatSession {
     this.#liveMetadata = false
     this.#messages = new Map()
     this.#feed = EMPTY_FEED
+    this.#pendingActions = undefined
+    this.#actionsWhileListing = new Map()
+    this.#awaitingDecision = undefined
+    this.#sought = false
     this.#compactedTo = undefined
     this.#steers = []
     this.#discardProvisional()
@@ -952,6 +1057,7 @@ export class ChatSession {
       hasEarlier: this.#nextBeforeSequence !== undefined,
       loadingEarlier: this.#loadingEarlier,
       historyError: this.#historyError,
+      artifacts: this.#artifacts,
     })
   }
 
@@ -973,11 +1079,29 @@ export class ChatSession {
       if (run !== this.#run) return
 
       // The messages are shown as soon as they arrive; the title and agent state follow from the
-      // list, as the workspace has no call for one chat's metadata.
-      overseer.listChats().then(
-        (chats) => this.#live(run, () => this.#applyListedChat(run, chats.find(({ id }) => id === this.chatId))),
+      // chat's metadata, and the actions it waits on from before the messages loaded, when read.
+      overseer.getChatMetadata(this.chatId).then(
+        (chat) => this.#live(run, () => this.#applyReadChat(run, chat)),
         (error) => this.#lost(run, error),
       )
+      this.#readPendingActions(run, overseer).then(
+        (pending) => this.#live(run, () => {
+          // The records that changed while the pages were read, over them: one decided goes, one
+          // still pending keeps its place, and one newly pending is added.
+          const later = this.#actionsWhileListing
+          this.#actionsWhileListing = new Map()
+          const listed = new Set(pending.map(({ id }) => id))
+          this.#pendingActions = [
+            ...pending.map((action) => later.get(action.id) ?? action),
+            ...[...later.values()].filter(({ id }) => !listed.has(id)),
+          ].filter(({ state }) => state === 'pending')
+          this.#rebuildFeed()
+          this.#publishReady()
+          void this.#seekWaiting(run)
+        }),
+        (error) => this.#lost(run, error),
+      )
+      this.#readArtifacts()
       const history = await overseer.getChatHistory(this.chatId, undefined, HISTORY_PAGE_SIZE)
       if (run !== this.#run) return
 
@@ -1048,15 +1172,16 @@ export class ChatSession {
     }
   }
 
-  #applyListedChat(run: number, chat: AiChatMetadata | undefined) {
+  #applyReadChat(run: number, chat: AiChatMetadata | undefined) {
     if (!chat) return this.#fail('This chat doesn’t exist, or was deleted.')
-    // The list may have been read before a live update that arrived first; live updates win, as
-    // they do over fetched history.
+    // It may have been read before a live update that arrived first; live updates win, as they
+    // do over fetched history.
     if (this.#liveMetadata) return
     this.#readMetadata(chat)
     this.#publishReady()
     this.#feedCode()
     this.#offerKeep(run, chat, false)
+    void this.#seekWaiting(run)
   }
 
   #applyMetadata(run: number, chat: AiChatMetadata) {
@@ -1073,8 +1198,8 @@ export class ChatSession {
     }
     this.#publishReady()
     this.#feedCode()
-    if (turnEnded) this.options.onTurnEnded?.()
     this.#offerKeep(run, chat, turnEnded)
+    void this.#seekWaiting(run)
   }
 
   /**
@@ -1129,7 +1254,7 @@ export class ChatSession {
       const before = this.#nextBeforeSequence
       if (before === undefined || (epoch !== undefined && before <= epoch)) return true
       if (run !== this.#run) return false
-      await (this.#earlier ?? this.#loadEarlier(EPOCH_PAGE_SIZE))
+      await (this.#earlier ?? this.#loadEarlier(MAX_HISTORY_PAGE_SIZE))
       if (run !== this.#run || this.#nextBeforeSequence === before) return false
     }
   }
@@ -1139,17 +1264,18 @@ export class ChatSession {
     this.#codeBase = { known: true, base: chat.codeBase }
     const usage = usageOf(chat)
     if (!sameUsage(this.#usage, usage)) this.#usage = usage
-    const agentName = chat.spawnerName || 'Agent'
-    this.#agent = chat.spawnerId !== undefined ? { key: agentKeyOf(chat.spawnerId), name: agentName }
-      : chat.spawnerName !== undefined ? { key: namedAgentKey(agentName), name: agentName } : undefined
+    // A run from before runs named their spawner has no agent to go to.
+    this.#agent = chat.spawnerId !== undefined ? { key: agentKeyOf(chat.spawnerId), name: chat.spawnerName || 'Agent' } : undefined
     this.#requiresParticipation = chat.notificationsRequireParticipation === true
     this.#agentActive = chat.activeAgent !== undefined
+    this.#awaitingDecision = chat.awaitingDecision === true
     this.#compactedTo = chat.compactedTo
     const { viewerId } = this.options
-    const queue = (chat.queuedSteers ?? []).map(({ text, author }): PendingSteer => ({
+    const queue = (chat.queuedSteers ?? []).map(({ text, author, replyToSequence }): PendingSteer => ({
       text,
       from: author.id === viewerId ? undefined : author.name,
       unread: true,
+      replyTo: replyToSequence,
     }))
     // A steer leaves the queue when the agent reads it, and its message follows separately. It is
     // kept in between, as read, so the row it is shown as does not go and come back. With the
@@ -1174,6 +1300,7 @@ export class ChatSession {
     this.#rebuildFeed()
     // What is asked about says what more was written into it meanwhile, such as edits typed beside the chat.
     if (message.type === 'changes' && this.#keep) this.#keep = { ...this.#keep, changes: proposedChanges([...this.#messages.values()], this.#keepEpoch) }
+    if (changesArtifacts(message)) this.#readArtifacts()
     // A finished step replaces what streamed of it; updates to an agent's approval/tool cards do not.
     if (message.type === 'message' && message.author.type === 'agent' &&
       (this.#nextBeforeSequence === undefined || message.sequence >= this.#nextBeforeSequence)) this.#discardProvisional()
@@ -1181,13 +1308,26 @@ export class ChatSession {
     if (message.type === 'changes' || message.type === 'merge' || message.type === 'revert') this.#feedCode()
   }
 
-  /** Refreshes the copy of an action's record that its chat message carries. */
+  /**
+   * Refreshes the copy of an action's record that its chat message carries, and that of one the
+   * chat waits on. One of the chat's decided may have used a connection.
+   */
   #applyAction(record: ActionLogEntry) {
     let changed = false
     for (const [sequence, message] of this.#messages) {
       if (message.type !== 'action' || message.actionId !== record.id) continue
       this.#messages.set(sequence, { ...message, actionLog: record })
       changed = true
+    }
+    if (record.chatId === this.chatId) {
+      const actions = this.#pendingActions
+      const at = actions?.findIndex(({ id }) => id === record.id) ?? -1
+      if (!actions) this.#actionsWhileListing.set(record.id, record)
+      else if (at !== -1 || record.state === 'pending') {
+        this.#pendingActions = at === -1 ? [...actions, record] : actions.with(at, record)
+        changed = true
+      }
+      if (record.type === 'action' && record.state !== 'pending') this.#readArtifacts()
     }
     if (!changed) return
     this.#rebuildFeed()

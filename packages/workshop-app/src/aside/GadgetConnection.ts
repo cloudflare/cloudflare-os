@@ -1,5 +1,6 @@
 import { RpcTarget, newMessagePortRpcSession, type RpcStub } from 'capnweb'
 import {
+  getAccessConfirmationErrorCode,
   getOpenWorkspaceErrorCode,
   OPEN_WORKSPACE_ERROR_CODES,
   type AiChatAuthorInfo,
@@ -27,6 +28,11 @@ export type GadgetUi =
   | { status: 'ready'; page: string; load: number }
   /** The gadget has no UI: it is new, or an agent with no code. */
   | { status: 'none' }
+  /**
+   * Shared with the user, it reads what is kept at other services, and their access to that was
+   * not confirmed (`ACCESS_CONFIRMATION_ERROR_CODES`): asking them again can put it right.
+   */
+  | { status: 'unconfirmed' }
   /**
    * It could not be loaded, and why: `refused` where its workspace does not let the viewer in, and
    * `gone` where there is no such workspace, as one that was deleted.
@@ -386,6 +392,10 @@ export class GadgetConnection {
       // Still loading, or showing what it did, until the connection is back.
       if (!current() || this.options.connection?.down) return
       this.#unlink()
+      if (getAccessConfirmationErrorCode(error)) {
+        this.#publish({ ui: { status: 'unconfirmed' } })
+        return
+      }
       const code = getOpenWorkspaceErrorCode(error)
       const reason = code === OPEN_WORKSPACE_ERROR_CODES.workspaceAccessDenied ? 'refused' : code === OPEN_WORKSPACE_ERROR_CODES.workspaceNotFound ? 'gone' : undefined
       this.#publish({ ui: { status: 'failed', message: messageOf(error), ...(reason ? { reason } : {}) } })

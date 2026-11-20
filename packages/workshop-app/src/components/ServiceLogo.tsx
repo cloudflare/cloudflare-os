@@ -17,12 +17,8 @@ export type ServiceLogoProps = {
    * leaving a 3px gap round the badge through which what is behind shows, whatever that is.
    */
   notched?: boolean
-  /**
-   * Just the logo, 14px, with no tile or colour behind it, to sit on a surface of its own such as a
-   * button. `'wide'` is for a logo much wider than it is tall (a cloud), which would look small in
-   * a square: as tall, and a little wider, keeping its own proportions.
-   */
-  bare?: boolean | 'wide'
+  /** Just the logo, 14px, with no tile or colour behind it, to sit on a surface of its own such as a button. */
+  bare?: boolean
 }
 
 // The badge's middle is 4px in from each edge, and the cut 3px wider than its 6px radius.
@@ -39,10 +35,9 @@ export const ServiceLogo = ({ name, src, color, small = false, tiny = false, not
 
   if (bare) {
     return (
-      <span aria-hidden="true" className={cn('grid h-3.5 shrink-0 place-items-center text-[0.5625rem] font-medium text-kumo-subtle', bare === 'wide' ? 'w-5' : 'w-3.5')}>
+      <span aria-hidden="true" className="grid size-3.5 shrink-0 place-items-center text-[0.5625rem] font-medium text-kumo-subtle">
         {shown
-          // A wide one is sized by its width alone, so that its height follows from its own proportions.
-          ? <img src={src} alt="" className={bare === 'wide' ? 'h-auto w-full' : 'size-full object-contain'} onError={() => setFailed(src)} />
+          ? <img src={src} alt="" className="size-full object-contain" onError={() => setFailed(src)} />
           : name.trim().slice(0, 1).toUpperCase() || '?'}
       </span>
     )

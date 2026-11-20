@@ -3,25 +3,15 @@ import type { BlueprintOutput, OutputSummary } from '@gadgets/workshop-shared/ap
 import { LibraryCard } from '@/blocks/LibraryCard'
 import type { LibraryMoreActions } from '@/blocks/LibraryMoreMenu'
 import { LibraryRow } from '@/blocks/LibraryRow'
-import { ListToolbar } from '@/blocks/ListToolbar'
-import { NoMatches } from '@/blocks/NoMatches'
-import { Button } from '@/components/Button'
+import { Button, DropdownMenu, EmptyState, HeaderBubble, ListToolbar, type ListView, NoMatches, PageLayout, Tabs, formatActivity, useNarrowScreen } from '@gadgets/ui'
 import { CardGrid } from '@/components/CardGrid'
-import { DropdownMenu } from '@/components/DropdownMenu'
-import { EmptyState } from '@/components/EmptyState'
 import { FormatIcon } from '@/components/FormatIcon'
 import { GroupedList } from '@/components/GroupedList'
-import { HeaderBubble } from '@/components/HeaderBubble'
-import { Tabs } from '@/components/Tabs'
-import type { ListView } from '@/hooks/useListView'
-import { useNarrowScreen } from '@/hooks/useNarrowScreen'
-import { PageLayout } from '@/layouts/PageLayout'
-import { formatActivity } from '@/workspaces/formatActivity'
-import type { WorkspaceLooksById } from '@/workspaces/WorkspaceLooks'
+import type { WorkspaceLooksById } from '@/workspaces/useWorkspaceLooks'
 import { APP, outputDetail, outputKey, outputTitle, outputWorkspace, type LibraryOrder } from './libraryList'
 import { needingYou, recentOutputs } from './libraryRecent'
 import { withStar, withStarOrder } from './libraryStars'
-import type { LibraryState } from './useLibrary'
+import type { LibraryState } from './OutputsFeed'
 
 /** The tab of what needs the user and what they opened last, and the tab of everything. The others are a type's id each. */
 export const RECENT_TAB = 'recent'
@@ -43,7 +33,7 @@ export type LibraryViewProps = {
   /** The keys of the starred outputs, in their order. */
   stars: string[]
   onStarsChange: (stars: string[]) => void
-  /** The keys of the outputs opened last on this device, latest first, which the Recent tab lists. */
+  /** The keys of the outputs the user opened last, latest first, which the Recent tab lists. */
   opened: readonly string[]
   onOpenOutput: (output: OutputSummary) => void
   /** An output's page, for its row to link to so that it can be opened in another tab. */

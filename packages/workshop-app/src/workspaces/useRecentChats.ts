@@ -3,59 +3,48 @@ import { setSidebarHidden, useSidebarHidden } from '@/prefs/sidebarHidden'
 import { useApi } from '@/rpc/ApiContext'
 import { RecentChats } from './RecentChatsStore'
 import { useRecentChatsContext } from './RecentChatsContext'
+import { useWorkspaceSummaries } from './WorkspaceSummariesContext'
 import { recentChatsOf, type RecentChat } from './recentChats'
 
 const EMPTY = new RecentChats()
-const nothing = () => {}
 
 export type RecentChatsValue = {
   chats: RecentChat[]
-  /** Every workspace asked has answered: with none listed, there are none. */
+  /** The account has said: with none listed, there are none. */
   known: boolean
   /** Mutes a chat for the viewer, or unmutes it, shown at once and put back if refused. Rejects with why. */
   setMuted: (chat: RecentChat, muted: boolean) => Promise<void>
   /** Takes a chat out of the sidebar on this device, until it waits on the viewer again. */
   hide: (chat: RecentChat) => void
-  /** Reads a workspace's chats again ahead of the rest. Stable. */
-  refresh: (workspaceId: string) => void
 }
 
 /**
  * The viewer's recent chats across their workspaces, as the sidebar lists them (`recentChatsOf`),
- * from what the sweep has read (`AgentsWaitingProvider`), and what can be done to each from there.
+ * from the account's tracked chats (`RecentChatsProvider`) and what waits on them in each workspace
+ * (`WorkspaceSummariesProvider`), and what can be done to each from there.
  */
 export const useRecentChats = (): RecentChatsValue => {
   const { api } = useApi()
-  const context = useRecentChatsContext()
-  const store = context?.store ?? EMPTY
-  const { readings, tails, known } = useSyncExternalStore(store.subscribe, store.snapshot)
+  const store = useRecentChatsContext() ?? EMPTY
+  const { threads, known } = useSyncExternalStore(store.subscribe, store.snapshot)
+  const summaries = useWorkspaceSummaries()
   const hidden = useSidebarHidden()
 
-  // Through the chat's workspace, let go of after.
-  const inWorkspace = async (workspaceId: string, act: (overseer: ReturnType<typeof api.openWorkspace>) => Promise<unknown>) => {
-    const overseer = api.openWorkspace(workspaceId)
-    try {
-      await act(overseer)
-    } finally {
-      overseer[Symbol.dispose]()
-    }
-  }
-  const changing = async (chat: RecentChat, change: Parameters<RecentChats['markChat']>[2], act: Parameters<typeof inWorkspace>[1]) => {
-    const was = store.markChat(chat.workspaceId, chat.chatId, change)
-    try {
-      await inWorkspace(chat.workspaceId, act)
-    } catch (error) {
-      store.restoreChat(chat.workspaceId, chat.chatId, was)
-      throw error
-    }
-  }
-
   return {
-    chats: recentChatsOf(readings, tails, hidden, Date.now()),
-    known,
-    setMuted: (chat, muted) =>
-      changing(chat, { notificationsEnabled: !muted, notificationsEnabledOverride: !muted }, (overseer) => overseer.setChatNotificationsEnabled(chat.chatId, !muted)),
+    chats: recentChatsOf(threads.values(), summaries.workspaces, hidden, Date.now()),
+    known: known && summaries.known,
+    setMuted: async (chat, muted) => {
+      const was = store.markChat(chat.workspaceId, chat.chatId, { notificationsEnabled: !muted, notificationsEnabledOverride: !muted })
+      const overseer = api.openWorkspace(chat.workspaceId)
+      try {
+        await overseer.setChatNotificationsEnabled(chat.chatId, !muted)
+      } catch (error) {
+        store.restoreChat(chat.workspaceId, chat.chatId, was)
+        throw error
+      } finally {
+        overseer[Symbol.dispose]()
+      }
+    },
     hide: (chat) => setSidebarHidden(chat.key, chat.lastActive.getTime()),
-    refresh: context?.refresh ?? nothing,
   }
 }

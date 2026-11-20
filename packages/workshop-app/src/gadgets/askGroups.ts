@@ -1,45 +1,46 @@
 import type { ActionLogEntry, AiChatMetadata, GadgetBindingInfo } from '@gadgets/workshop-shared/api'
 import type { ActionKind } from '@gadgets/workshop-shared/gatekeeper'
-import { formatActivity } from '@/workspaces/formatActivity'
+import { formatActivity } from '@gadgets/ui'
 
 /** Something a gadget's code, or an agent it started, asked to do through a connection. */
 export type Ask = Extract<ActionLogEntry, { type: 'action' }>
 
 /**
- * What tells one gadget's asks from the rest of its workspace's. An action does not say which
- * gadget made it, only the connection it went through and the chat it was made from, if any, so
- * an ask is the gadget's when it went through one of its connections from outside any chat, or
- * was made by an agent it started.
+ * What tells one gadget's asks from the rest of its workspace's: those its code or its hooks made
+ * outside any chat (`ActionLogEntry.gadgetId`), and those of the agents it started
+ * (`AiChatMetadata.spawnedByGadgetId`).
  */
 export type AskScope = {
-  /** What its bindings reach, by workpiece id: its connections, and the agents it can start. */
-  targets: ReadonlySet<number>
+  gadgetId: number
   /** The chats of the agents it started, with what their spawner calls them. */
   agents: ReadonlyMap<number, string | undefined>
   /**
-   * The chat it is shown from while that chat is out of sight, as on its own page: what went
-   * through its connections from that chat is asked here too. Beside the chat, the chat asks it.
+   * The chat it is shown from while that chat is out of sight, as on its own page: what its code,
+   * or anyone, sent through its connections (`targets`) from that chat is asked here too. Beside
+   * the chat, the chat asks it.
    */
-  chatId?: number
+  chat?: { chatId: number; targets: ReadonlySet<number> }
 }
 
-/** The chats of the agents a gadget started: those its spawner bindings (`targets`) made. */
+/** The chats of the agents a gadget started (`AiChatMetadata.spawnedByGadgetId`). */
 export const agentsOf = (
-  chats: readonly Pick<AiChatMetadata, 'id' | 'spawnerId' | 'spawnerName'>[],
-  targets: ReadonlySet<number>,
+  chats: readonly Pick<AiChatMetadata, 'id' | 'spawnerName' | 'spawnedByGadgetId'>[],
+  gadgetId: number,
 ): Map<number, string | undefined> =>
-  new Map(chats.flatMap(({ id, spawnerId, spawnerName }) => (spawnerId !== undefined && targets.has(spawnerId) ? [[id, spawnerName] as const] : [])))
+  new Map(chats.flatMap(({ id, spawnerName, spawnedByGadgetId }) => (spawnedByGadgetId === gadgetId ? [[id, spawnerName] as const] : [])))
 
-/** What a gadget's bindings reach (`AskScope.targets`). */
+/** What a gadget's bindings reach (`AskScope.chat.targets`). */
 export const targetsOf = (bindings: readonly Pick<GadgetBindingInfo, 'target'>[]): ReadonlySet<number> => new Set(bindings.map(({ target }) => target))
 
 /** Whether `entry` is waiting on someone to decide it, and is the gadget's to ask (`AskScope`). */
 export const isAskOf = (entry: ActionLogEntry, scope: AskScope): entry is Ask => {
   if (entry.type !== 'action' || entry.state !== 'pending') return false
   const { chatId, gatekeeperId } = entry
-  if (chatId !== undefined && scope.agents.has(chatId)) return true
-  if (gatekeeperId === undefined || !scope.targets.has(gatekeeperId)) return false
-  return chatId === undefined || chatId === scope.chatId
+  if (chatId === undefined) return entry.gadgetId === scope.gadgetId
+  if (scope.agents.has(chatId)) return true
+  const { chat } = scope
+  if (chat?.chatId !== chatId) return false
+  return entry.gadgetId === scope.gadgetId || (gatekeeperId !== undefined && chat.targets.has(gatekeeperId))
 }
 
 /** Everything asked of one kind through one connection, decided together. */
@@ -55,7 +56,7 @@ export type AskGroup = {
    */
   allowable?: ActionKind
   /** It makes something in one of the approver's accounts (`ActionLogEntry.creation`), asked where. */
-  creation: boolean
+  creation?: true
 }
 
 /**
@@ -73,7 +74,7 @@ export const askGroups = (asks: readonly Ask[], { restricted = false }: { restri
     const [{ gatekeeperId, description, creation }] = grouped
     const allows = !restricted && gatekeeperId !== undefined && description.actionKind !== undefined &&
       grouped.every((ask) => ask.description.autoApprovable)
-    return { key, asks: grouped, gatekeeperId, allowable: allows ? description.actionKind : undefined, creation: creation === true }
+    return { key, asks: grouped, gatekeeperId, allowable: allows ? description.actionKind : undefined, creation }
   })
 }
 

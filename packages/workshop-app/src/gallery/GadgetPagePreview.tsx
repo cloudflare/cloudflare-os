@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { CodeIcon, PresentationIcon } from '@phosphor-icons/react'
 import { SidePane } from '@/blocks/SidePane'
-import { Button } from '@/components/Button'
+import { Button } from '@gadgets/ui'
 import { PaneNotice } from '@/blocks/PaneNotice'
 import { useReport } from './previewState'
 import { Section } from './Section'

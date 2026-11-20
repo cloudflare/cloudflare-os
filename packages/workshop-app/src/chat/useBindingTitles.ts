@@ -11,8 +11,8 @@ export type BindingReach = { title: string; model?: true }
  * What the `bindings` a chat proposes reach, by name, as people know them: a
  * document's or a repository's title rather than the name the code reaches it by
  * (`listBindings(chatId)`, which lists the chat's own pending ones too, with `resourceTitle`),
- * and for one with no service, whether it is a model (`getCreationSpec()`), whose title is the
- * model's name. Keyed by `bindingKey`, and empty until read or where it could not be read.
+ * and whether it is a model (`kind`), whose title is the model's name. Keyed by `bindingKey`, and
+ * empty until read or where it could not be read.
  */
 export const useBindingTitles = (workspaceId: string, chatId: number, bindings: readonly { gadgetId: number; name: string }[]) => {
   const { api, reconnecting } = useApi()
@@ -27,23 +27,12 @@ export const useBindingTitles = (workspaceId: string, chatId: number, bindings: 
     const overseer = api.openWorkspace(workspaceId)
     const ids = new Set(asked.split('|').map((key) => Number(key.split(' ')[0])))
     const gadgets = [...ids].map((id) => ({ id, gadget: overseer.getGadget(id) }))
-    // Only what has no service could be a model; a model said as a connection still reads.
-    const isModel = async (target: number) => {
-      const gatekeeper = overseer.getGatekeeperById(target)
-      try {
-        return (await gatekeeper.getCreationSpec()).type === 'aiModel'
-      } catch {
-        return false
-      } finally {
-        gatekeeper[Symbol.dispose]()
-      }
-    }
     const wanted = new Set(asked.split('|'))
-    Promise.allSettled(gadgets.map(({ id, gadget }) => Promise.resolve().then(() => gadget.listBindings(chatId)).then((listed) => Promise.all(
+    Promise.allSettled(gadgets.map(({ id, gadget }) => Promise.resolve().then(() => gadget.listBindings(chatId)).then((listed) =>
       listed
         .filter(({ name, resourceTitle }) => resourceTitle && wanted.has(bindingKey(id, name)))
-        .map(async ({ name, resourceTitle, vendorId, target }) => [bindingKey(id, name), { title: resourceTitle, ...(vendorId === undefined && await isModel(target) ? { model: true as const } : {}) }] as const),
-    ))))
+        .map(({ name, resourceTitle, kind }) => [bindingKey(id, name), { title: resourceTitle, ...(kind === 'aiModel' ? { model: true as const } : {}) }] as const),
+    )))
       .then((results) => {
         if (!current) return
         const found = new Map<string, BindingReach>()

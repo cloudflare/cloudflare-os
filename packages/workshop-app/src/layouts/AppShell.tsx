@@ -1,10 +1,9 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { AnimatePresence, animate, motion, useIsPresent, useMotionValue, useMotionValueEvent, useTransform, type Variants } from 'motion/react'
-import { useReducedMotion } from '@/hooks/useReducedMotion'
+import { motionTransition, useReducedMotion } from '@gadgets/ui'
 import { cn } from '@cloudflare/kumo/utils'
 import { ResizeHandle } from '@/components/ResizeHandle'
 import { clampSize, resistSize, settleSize } from '@/components/resizing'
-import { motionTransition } from '@/hooks/motionTransition'
 import { SplitLayout, type SplitLayoutProps } from './SplitLayout'
 import { SCROLLBARS_AWAY, useScrollbarsAway } from './useScrollbarsAway'
 

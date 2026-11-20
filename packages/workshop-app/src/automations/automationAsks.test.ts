@@ -7,7 +7,6 @@ import type { Automation } from './automations'
 const automation = (id: number, gadgetId: number): Automation => ({
   key: `w/${id}`,
   workspaceId: 'w',
-  kind: 'event',
   hook: { id, gatekeeperId: 1, gadgetId, description: { title: `Hook ${id}`, description: '' }, enabled: true } as BoundHookInfo,
 })
 const ask = (id: number, gatekeeperId?: number) => ({

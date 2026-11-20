@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { SlashCommandChoice } from '@gadgets/workshop-shared/api'
 import type { ComposerCommand } from '@/blocks/ComposerCommandPicker'
-import { useSkills } from '@/skills/useSkills'
 import { composerCommandOf, orderCommands } from './slashCommands'
 import type { ChatActions } from './useChatSession'
 
@@ -11,17 +10,15 @@ const listedIn = new Map<string, SlashCommandChoice[]>()
 
 /**
  * The skills and commands a chat's composer offers, as its workspace lists them, and that list
- * itself, to send one by. Read once the chat is, and again whenever the user's skills change, so
- * one just written can be used at once; what was read stays when reading again fails. Until the
- * first read of the workspace's has answered, `loading` says so.
+ * itself, to send one by. Read once the chat is, and again for another workspace; what was read
+ * stays when reading again fails. Until the first read of the workspace's has answered, `loading`
+ * says so.
  */
 export const useChatCommands = (
   workspaceId: string,
   listCommands: ChatActions['listCommands'],
   loaded: boolean,
 ): { choices: SlashCommandChoice[]; commands: ComposerCommand[]; loading: boolean } => {
-  // Read again as the user's skills change, so one just written can be used at once.
-  const skills = useSkills()
   const [read, setRead] = useState(() => ({ workspaceId, choices: listedIn.get(workspaceId) }))
   const choices = (read.workspaceId === workspaceId ? read.choices : listedIn.get(workspaceId)) ?? []
   // The workspace whose list has answered, read or not.
@@ -44,7 +41,7 @@ export const useChatCommands = (
     return () => {
       current = false
     }
-  }, [workspaceId, listCommands, loaded, skills])
+  }, [workspaceId, listCommands, loaded])
   return {
     choices,
     commands: useMemo(() => orderCommands(choices.map(composerCommandOf)), [choices]),

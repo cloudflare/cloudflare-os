@@ -352,8 +352,11 @@ Logic:
 
 4. **If there are uncovered bindings**, invoke `configureCb.configure(needs)` with one
    `ObserverBindingNeed` per uncovered binding. If `configureCb` is absent (e.g. a non-interactive
-   open), deny. Merge the returned `ObserverAccountChoice[]` into a working copy of the record's
-   `accountChoices`.
+   open), deny with `ACCESS_CONFIRMATION_ERROR_CODES.notAsked`; if `configure()` rejects, deny with
+   the rejection's access-confirmation code (`cancelled`, `notAsked`), or `disconnected` for one
+   without. Each denial names the workspace and, for a gadget grant, the gadget
+   (`createAccessConfirmationError`). Merge the returned `ObserverAccountChoice[]` into a working
+   copy of the record's `accountChoices`.
 
 5. **Re-verify all in-scope bindings** (covered + newly chosen). For each, resolve the chosen
    account's verifier via `clientUser.getVerifier(accountId, bindingVendorId)` and call
@@ -612,8 +615,9 @@ Implement the `ObserverConfigCallback` on the client. When the overseer calls `c
    directly; otherwise use the existing `connectAccount` flow. Then include the new account as the
    choice.
 4. Resolve `configure()` with one `ObserverAccountChoice` per binding. If the user cancels / can't
-   provide an account, reject (the overseer denies the open and the UI shows an access-denied
-   state).
+   provide an account, reject with `createAccessConfirmationError(cancelled)` (or `notAsked` when
+   the client chooses not to ask); the overseer denies the open with that code and the UI shows an
+   access-denied state.
 
 Messaging: "To open this Gadget, choose which of your «Vendor» accounts to use, so we can confirm
 you're allowed to see the data it uses."
@@ -833,7 +837,8 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
   - a thrown `addObserver` denies the open without publishing its choices, and keeps every
     registration, a first open's included.
   - concurrent admissions by one profile share its `observerId` and keep each other's choices.
-  - missing account → binding reported as a need to the callback; callback rejection denies open.
+  - missing account → binding reported as a need to the callback; callback rejection denies open
+    with its access-confirmation code (`disconnected` if it carried none).
 - **`authorizeObservation` exclusion:** observation naming a still-authorized observer throws;
   observation naming an observer who lost access proceeds and deletes that observer record (+
   `removeObserver`); unknown id is ignored.

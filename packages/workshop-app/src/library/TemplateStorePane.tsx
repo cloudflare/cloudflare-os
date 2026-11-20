@@ -1,15 +1,14 @@
 import { useState } from 'react'
 import type { OutputSummary } from '@gadgets/workshop-shared/api'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
-import { useListView } from '@/hooks/useListView'
-import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
+import { useListView } from '@gadgets/ui'
 import { templatable } from './libraryEdits'
 import { outputKey, outputTitle } from './libraryList'
 import { CreateTemplate } from './CreateTemplate'
 import { templateList } from './templateList'
 import type { Template } from './templates'
 import { DISCOVER_TAB, TemplateStoreView } from './TemplateStoreView'
-import { useLibrary } from './useLibrary'
+import { useLibrary } from './OutputsFeedContext'
 import { useTemplates } from './useTemplates'
 
 export type TemplateStorePaneProps = {
@@ -27,17 +26,17 @@ const NONE: Template[] = []
 
 /**
  * The templates' page (`TemplateStoreView`) over what it shows: the templates there are (the
- * deployment's featured blueprints, the user's saved ones and what they created), their stars,
- * which are the backend's, and how they are listed; and the user's gadgets, which Create template
- * lists, the one chosen made into a template as a gadget's own More menu does (`CreateTemplate`).
+ * deployment's featured blueprints, the user's saved ones and what they created) and how they are
+ * listed, which can be narrowed to the starred (the backend's stars); and the user's gadgets, which
+ * Create template lists, the one chosen made into a template as a gadget's own More menu does
+ * (`CreateTemplate`).
  */
 export const TemplateStorePane = ({ tab = DISCOVER_TAB, onTabChange, onOpenTemplate, templateHref, onBack }: TemplateStorePaneProps) => {
-  const { state, setStars, reload } = useTemplates()
+  const { state, reload } = useTemplates()
   const templates = state.status === 'ready' ? state.templates : NONE
   const stars = state.status === 'ready' ? state.stars : []
   const list = useListView('templates', templateList(templates, new Set(stars)))
   const library = useLibrary()
-  const connection = useConnectionNotice()
   // The gadget chosen to make a template from, kept while its dialog closes.
   const [creating, setCreating] = useState<{ app: OutputSummary; open: boolean }>()
   useDocumentTitle('Templates')
@@ -50,10 +49,6 @@ export const TemplateStorePane = ({ tab = DISCOVER_TAB, onTabChange, onOpenTempl
       templates={templates}
       status={state.status === 'loading' ? { loading: true } : state.status === 'failed' ? { failed: state.message, onRetry: () => void reload() } : undefined}
       list={list}
-      stars={stars}
-      onStarsChange={(next) => {
-        if (!connection?.blocked()) setStars(next)
-      }}
       onOpenTemplate={onOpenTemplate}
       templateHref={templateHref}
       onBack={onBack}

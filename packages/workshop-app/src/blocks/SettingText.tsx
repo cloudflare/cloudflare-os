@@ -1,10 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
-import { Button } from '@/components/Button'
-import { TextField } from '@/components/TextField'
-import { SettingRow } from './SettingRow'
-import { ON_SETTINGS_CARD } from './SettingsGroup'
-import type { SaveOutcome } from './useEditedField'
+import { Button, ON_SETTINGS_CARD, type SaveOutcome, SettingRow, TextField } from '@gadgets/ui'
 
 export type SettingTextProps = {
   title: string

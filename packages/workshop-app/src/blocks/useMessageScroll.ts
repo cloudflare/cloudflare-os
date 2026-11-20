@@ -1,5 +1,5 @@
 import { useCallback, useLayoutEffect, useRef } from 'react'
-import { useReducedMotion } from '@/hooks/useReducedMotion'
+import { useReducedMotion } from '@gadgets/ui'
 import { useStickToBottom } from 'use-stick-to-bottom'
 
 // Where a row the reader can see is in the conversation: how far down the content its top is. Not

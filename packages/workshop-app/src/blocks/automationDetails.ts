@@ -4,18 +4,10 @@ import type { ActionResult } from './usePending'
 
 /** Everything there is to say of one automation, and what can be done to it, as its row and its dialog show it. */
 export type AutomationDetails = {
-  /** A scheduled task (a clock), or something an event a service delivers sets off (a bolt). */
-  kind: 'schedule' | 'event'
   title: string
-  /** When it runs, in words: "Every weekday at 9:00 AM". Absent where that is not known. */
-  when?: string
-  /** When it runs next while on course: how soon ("in 3 days") and when exactly ("Monday at 8:00 AM"). */
-  next?: { soon: string; at: string }
-  /** Said in place of when it runs next: why it stopped, that it is trying again, or that it is done. */
-  note?: { words: string; tone: 'quiet' | 'warning' }
   /** What it does each time, as it was set up to, in Markdown. */
   description?: string
-  /** What an event comes from, such as a board or an inbox. */
+  /** What it watches or runs on, such as a board or an inbox. */
   resource?: ResourceLinkProps
   /** The app whose code it runs, which opens it. */
   gadget?: { title: string; href?: string; onOpen: () => void }

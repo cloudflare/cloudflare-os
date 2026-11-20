@@ -46,7 +46,7 @@ async function withClient(fn: (impl: any, client: Overseer) => Promise<void>): P
     let ownerId = impl.users.newUniqueId().toString();
     impl.ownerId = ownerId;
     impl.ensureAmbientCapsules = async () => {};
-    impl.markOutputsDirty = () => {};
+    impl.markListingDirty = () => {};
     using notifyClosed = new NativeRpcStub<() => void>(() => {});
     using client = await instance.open(ownerId, "owner-profile", notifyClosed);
     await fn(impl, client);

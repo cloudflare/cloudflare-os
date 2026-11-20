@@ -1,10 +1,8 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { motion } from 'motion/react'
 import { cn } from '@cloudflare/kumo/utils'
-import { Banner, type BannerProps } from '@/components/Banner'
-import { Button } from '@/components/Button'
+import { Banner, type BannerProps, Button, useMotionTransition } from '@gadgets/ui'
 import { Mascot, type MascotEmotion } from '@/components/mascot/Mascot'
-import { useMotionTransition } from '@/hooks/useMotionTransition'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 
 export type OnboardingFrameProps = {

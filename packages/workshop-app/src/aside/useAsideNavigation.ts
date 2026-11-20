@@ -1,7 +1,9 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useRouter } from '@tanstack/react-router'
-import { isNarrowScreen } from '@/hooks/useNarrowScreen'
+import { isNarrowScreen } from '@gadgets/ui'
 import { readLayoutPrefs, writeLayoutPrefs } from '@/prefs/layoutPrefs'
+import type { UserPreferences } from '@/prefs/UserPreferences'
+import { usePreferences } from '@/prefs/UserPreferencesContext'
 import { carriedOpen, parseAsideRef } from './asideItems'
 import { lastShown, rememberShown } from './lastShown'
 
@@ -16,17 +18,17 @@ export type BesideRef = { workspaceId: string; chatId?: number }
  * it, when the aside was showing when last left. A link that names something shows that instead.
  * Nothing on a narrow screen, where the aside would cover the chat that was asked for.
  */
-export const asideFor = ({ workspaceId, chatId }: ChatRef): string | undefined =>
-  readLayoutPrefs().asideOpen && !isNarrowScreen() ? lastShown(workspaceId, chatId) : undefined
+export const asideFor = (preferences: UserPreferences, { workspaceId, chatId }: ChatRef): string | undefined =>
+  readLayoutPrefs().asideOpen && !isNarrowScreen() ? lastShown(preferences.getSnapshot(), workspaceId, chatId) : undefined
 
 /**
  * What to show beside `to`, a page of a workspace being gone to from another of its pages, where
  * `open` is shown: the same, when it is the workspace's to show (`carriedOpen`), so that it stays
  * in sight from one chat to the next. It is then what was last shown beside `to`.
  */
-export const carryAside = (open: unknown, to: BesideRef): string | undefined => {
+export const carryAside = (preferences: UserPreferences, open: unknown, to: BesideRef): string | undefined => {
   const carried = carriedOpen(open)
-  if (carried !== undefined) rememberShown(to.workspaceId, to.chatId, carried)
+  if (carried !== undefined) rememberShown(preferences, to.workspaceId, to.chatId, carried)
   return carried
 }
 
@@ -38,13 +40,17 @@ export const carryAside = (open: unknown, to: BesideRef): string | undefined => 
  */
 export const useAsideNavigation = () => {
   const router = useRouter()
+  // Each connection has its own, read when a function is called.
+  const current = usePreferences()
+  const preferences = useRef(current)
+  preferences.current = current
   const [actions] = useState(() => ({
     /** Shows `open` (an `AsideRef`, written out) beside the page this is on: `beside`, unless it is a chat still to be made. */
     show: (open: string, beside?: BesideRef) => {
       const { location } = router.state
       // Read as the URL has it: an output's ref comes back a number.
       const showing = parseAsideRef(location.search.open) !== undefined
-      if (beside) rememberShown(beside.workspaceId, beside.chatId, open)
+      if (beside) rememberShown(preferences.current, beside.workspaceId, beside.chatId, open)
       writeLayoutPrefs({ asideOpen: true })
       void router.navigate({
         to: '.',

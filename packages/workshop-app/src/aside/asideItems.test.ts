@@ -1,18 +1,20 @@
 import { describe, expect, it } from 'vitest'
 import type { ChatSnapshot } from '@/chat/ChatSession'
 import type { ChatItem, OutputItem, UserItem } from '@/chat/chatItems'
-import type { OutputSummary } from '@gadgets/workshop-shared/api'
+import type { ChatArtifact, OutputSummary } from '@gadgets/workshop-shared/api'
 import { asideItemFor, carriedOpen, chatAsideItems, formatAsideRef, itemPageId, keptVersion, parseAsideRef, parseItemPageId, validateAsideParam, workspaceAsideItems } from './asideItems'
 
 const output = (id: number, workpieceId: number, title: string): OutputItem => ({
   kind: 'output', id, key: `output:${id}`, workpieceId, title, type: 'gadget', draft: false,
 })
-const user = (id: number, files: string[], sentAt?: Date): UserItem => ({
-  kind: 'user', id, key: `user:${id}`, text: '', parts: [], sentAt, attachments: files.map((name) => ({ id: name, name, mimeType: 'text/plain', size: 1 })),
-})
-const ready = (items: ChatItem[], pinned: OutputItem[] = []): ChatSnapshot => ({
+const user = (id: number, sentAt?: Date): UserItem => ({ kind: 'user', id, key: `user:${id}`, text: '', parts: [], sentAt, attachments: [] })
+const sent = (sequence: number, name: string, timestamp = new Date(sequence)): ChatArtifact =>
+  ({ type: 'attachment', timestamp, attachment: { id: name, name, mimeType: 'text/plain', size: 1, sequence } })
+const made = (sequence: number, id: number, title: string, timestamp = new Date(sequence)): ChatArtifact =>
+  ({ type: 'workpiece', sequence, timestamp, workpiece: { type: 'gadget', id, title } })
+const ready = (items: ChatItem[], pinned: OutputItem[] = [], artifacts: ChatArtifact[] = []): ChatSnapshot => ({
   status: 'ready', title: undefined, notificationsRequireParticipation: false, agent: undefined, usage: {}, items, pinned, activity: undefined, work: [], agentActive: false, waiting: [],
-  sendError: undefined, keep: undefined, actionError: undefined, hasEarlier: false, loadingEarlier: false, historyError: undefined,
+  sendError: undefined, keep: undefined, actionError: undefined, hasEarlier: false, loadingEarlier: false, historyError: undefined, artifacts: { artifacts, connections: [] },
 })
 
 describe('aside refs', () => {
@@ -51,18 +53,19 @@ describe('aside refs', () => {
 
 describe('chatAsideItems', () => {
   it('lists what the chat made and was sent, most recent first, each once with its latest title', () => {
-    const chat = ready([output(1, 7, 'Report'), user(2, ['notes.txt']), output(3, 8, 'App'), output(4, 7, 'Report v2')], [output(5, 9, 'Slides')])
+    const chat = ready([user(2, new Date(10)), output(3, 8, 'App'), output(4, 7, 'Report v2')], [output(5, 9, 'Slides')], [made(1, 7, 'Report'), sent(2, 'notes.txt'), made(3, 11, 'Made before what is loaded')])
     expect(chatAsideItems('w', 3, chat).map(({ key, title }) => [key, title])).toEqual([
       ['9', 'Slides'],
       ['7', 'Report v2'],
       ['8', 'App'],
+      ['11', 'Made before what is loaded'],
       ['file-notes.txt', 'notes.txt'],
     ])
   })
 
   it('dates a file by its message, and an output by the last message before it', () => {
     const [monday, tuesday] = [new Date('2026-11-09T10:00'), new Date('2026-11-10T10:00')]
-    const chat = ready([user(1, ['notes.txt'], monday), output(2, 7, 'Report'), user(3, [], tuesday), output(4, 8, 'App')], [output(5, 7, 'Report v2')])
+    const chat = ready([output(2, 7, 'Report'), user(3, tuesday), output(4, 8, 'App')], [output(5, 7, 'Report v2')], [sent(1, 'notes.txt', monday)])
     expect(chatAsideItems('w', 3, chat).map(({ key, at }) => [key, at])).toEqual([
       ['7', tuesday],
       ['8', tuesday],
@@ -100,7 +103,7 @@ describe('workspaceAsideItems', () => {
   })
 
   it('adds what the chat made that the library does not have yet, and dates by the chat’s latest work, but not its files', () => {
-    const chat = chatAsideItems('w', 3, ready([user(1, ['notes.txt'], wednesday), output(2, 7, 'Old title'), output(3, 10, 'Pending')]))
+    const chat = chatAsideItems('w', 3, ready([user(1, wednesday), output(2, 7, 'Old title'), output(3, 10, 'Pending')], [], [sent(1, 'notes.txt', wednesday)]))
     const items = workspaceAsideItems('w', 3, [summary('w', 7, 'Report', monday), summary('w', 9, 'App', tuesday)], chat)
     expect(items.map(({ key, title, at }) => [key, title, at])).toEqual([
       ['10', 'Pending', wednesday],

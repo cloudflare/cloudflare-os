@@ -8,11 +8,11 @@ export type GadgetAgent = { key: string; name: string }
 const NONE: GadgetAgent[] = []
 
 /**
- * The agents `gadgetIds` start, for a chat's or a gadget's header: each gadget's bindings
- * (`listBindings(chatId)`, so that in a chat its own not kept yet count) to a connection with no service that was made as an agent
- * spawner (`getCreationSpec()`), as the workspace's Agents tab finds them. Read again as `read`
- * changes, as when a turn ends, which may have given a gadget one. Empty until read, or where it
- * could not be.
+ * The agents `gadgetIds` start, for a chat's or a gadget's header: the workspace's agent spawners
+ * bound to any of them (`listAgentSpawners(chatId)`, so that in a chat its own bindings not kept
+ * yet count), each named as it was made, as the workspace's Agents tab names them. Read again as
+ * `read` changes, as when a turn ends, which may have given a gadget one. Empty until read, or
+ * where it could not be.
  */
 export const useGadgetAgents = (workspaceId: string | undefined, chatId: number | undefined, gadgetIds: readonly number[], read?: unknown) => {
   const { api, reconnecting } = useApi()
@@ -24,39 +24,17 @@ export const useGadgetAgents = (workspaceId: string | undefined, chatId: number 
     if (!ids || !workspaceId || reconnecting) return
     let current = true
     const overseer = api.openWorkspace(workspaceId)
-    const spawnerName = async (target: number) => {
-      const gatekeeper = overseer.getGatekeeperById(target)
-      try {
-        const spec = await gatekeeper.getCreationSpec()
-        return spec.type === 'agentSpawner' ? spec.config.displayName : undefined
-      } catch {
-        return undefined
-      } finally {
-        gatekeeper[Symbol.dispose]()
-      }
-    }
-    const gadgets = ids.split(',').map((id) => overseer.getGadget(Number(id)))
-    void Promise.allSettled(gadgets.map(async (gadget) => {
-      const bindings = await gadget.listBindings(chatId)
-      // Only what has no service could be an agent.
-      return Promise.all(bindings.filter(({ vendorId }) => vendorId === undefined).map(async ({ target }) => {
-        const name = await spawnerName(target)
-        return name === undefined ? [] : [{ key: agentKeyOf(target), name }]
-      }))
-    }))
-      .then((results) => {
+    const gadgets = new Set(ids.split(',').map(Number))
+    overseer.listAgentSpawners(chatId)
+      .then((spawners) => {
         if (!current) return
-        const found = new Map<string, GadgetAgent>()
-        for (const result of results) if (result.status === 'fulfilled') for (const agent of result.value.flat()) found.set(agent.key, agent)
-        setAgents((before) => {
-          const next = [...found.values()]
-          return next.length === before.length && next.every(({ key, name }, index) => before[index]?.key === key && before[index]?.name === name) ? before : next
-        })
+        const next = spawners
+          .filter(({ bindings }) => bindings.some(({ gadgetId }) => gadgets.has(gadgetId)))
+          .map(({ id, config }) => ({ key: agentKeyOf(id), name: config.displayName }))
+        setAgents((before) => (next.length === before.length && next.every(({ key, name }, index) => before[index]?.key === key && before[index]?.name === name) ? before : next))
       })
-      .finally(() => {
-        for (const gadget of gadgets) gadget[Symbol.dispose]()
-        overseer[Symbol.dispose]()
-      })
+      .catch(() => {})
+      .finally(() => overseer[Symbol.dispose]())
     return () => {
       current = false
     }

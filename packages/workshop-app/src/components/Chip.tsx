@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
-import { webUrl } from './webUrl'
+import { webUrl } from '@gadgets/ui'
 
 export type ChipProps = {
   children: ReactNode

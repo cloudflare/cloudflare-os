@@ -1,4 +1,4 @@
-import type { ActionHistoryPage, ActionLogEntry, ActionsSubscriber, AiChatMetadata, GadgetClient } from '@gadgets/workshop-shared/api'
+import type { ActionHistoryPage, ActionLogEntry, ActionsSubscriber, AiChatMetadata, ChatListOptions, GadgetClient } from '@gadgets/workshop-shared/api'
 import type { ActionKind } from '@gadgets/workshop-shared/gatekeeper'
 import type { RpcTarget } from 'capnweb'
 import { ActionUpdates } from '@/chat/ChatSubscriber'
@@ -12,7 +12,7 @@ export type AsksOverseer = {
   getGadget(id: number): AsksGadget
   subscribeToActions(subscriber: ActionsSubscriber & RpcTarget): Promise<Disposable>
   listActions(options?: { beforeId?: number; filter?: 'pending' }): Promise<ActionHistoryPage>
-  listChats(): Promise<Pick<AiChatMetadata, 'id' | 'spawnerId' | 'spawnerName'>[]>
+  listChats(options?: ChatListOptions): Promise<Pick<AiChatMetadata, 'id' | 'spawnerName' | 'spawnedByGadgetId'>[]>
   approveAction(id: number): Promise<void>
   rejectAction(id: number): Promise<void>
   setAutoApprovedActionKind(gatekeeperId: number, actionKind: ActionKind): Promise<void>
@@ -27,7 +27,7 @@ export type GadgetAsksSnapshot =
       status: 'ready'
       /** Everything waiting in the workspace, oldest first, for `isAskOf` to sort. */
       pending: Ask[]
-      /** What the gadget's bindings reach. */
+      /** What the gadget's bindings reach, for what it asks from the chat it is shown from. */
       targets: ReadonlySet<number>
       /** The service each of them is of, by what it reaches, for drawing an ask by its logo. */
       vendors: ReadonlyMap<number, string | undefined>
@@ -58,9 +58,9 @@ const notPending = (error: unknown) => /not pending/i.test(error instanceof Erro
 /**
  * What one gadget is waiting on someone for, live: every action waiting in its workspace
  * (`subscribeToActions()` over `listActions({ filter: 'pending' })`), with what tells the
- * gadget's from the rest (`isAskOf`): what its bindings reach, read again when something arrives
- * through a connection not among them, as one just kept would be, and the agents it started,
- * read again when something arrives from a chat not yet known. Observable through
+ * gadget's from the rest (`isAskOf`): the agents it started, read again when something arrives
+ * from a chat not yet known, and what its bindings reach, read again when something arrives
+ * through a connection not among them, as one just kept would be. Observable through
  * `subscribe`/`getSnapshot`. Nothing happens until `start()`; `stop()` lets the workspace go, and
  * `restart()` starts over on a new connection, keeping what is shown meanwhile.
  *
@@ -82,7 +82,7 @@ export class GadgetAsks {
   #held = new Map<number, ReturnType<typeof setTimeout>>()
   #targets: ReadonlySet<number> = new Set()
   #vendors: ReadonlyMap<number, string | undefined> = new Map()
-  #chats: Pick<AiChatMetadata, 'id' | 'spawnerId' | 'spawnerName'>[] = []
+  #chats: Pick<AiChatMetadata, 'id' | 'spawnerName' | 'spawnedByGadgetId'>[] = []
   #listed = false
   #reading: { chats?: Promise<void>; bindings?: Promise<void> } = {}
 
@@ -227,8 +227,9 @@ export class GadgetAsks {
     }
   }
 
+  // The runs alone, as only a run is started by a gadget (`spawnedByGadgetId`).
   #readChats(overseer: AsksOverseer, run: number): Promise<void> {
-    this.#reading.chats ??= overseer.listChats().then((chats) => {
+    this.#reading.chats ??= overseer.listChats({ kind: 'runs' }).then((chats) => {
       if (run !== this.#run) return
       this.#chats = chats
       this.#publishReady()
@@ -268,7 +269,7 @@ export class GadgetAsks {
   #publishReady() {
     if (!this.#listed) return
     const pending = [...this.#pending.values()].filter(({ id }) => !this.#held.has(id)).toSorted((a, b) => a.id - b.id)
-    this.#snapshot = { status: 'ready', pending, targets: this.#targets, vendors: this.#vendors, agents: agentsOf(this.#chats, this.#targets) }
+    this.#snapshot = { status: 'ready', pending, targets: this.#targets, vendors: this.#vendors, agents: agentsOf(this.#chats, this.workpieceId) }
     for (const listener of this.#listeners) listener()
   }
 }

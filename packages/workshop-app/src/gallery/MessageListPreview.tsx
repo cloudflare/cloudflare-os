@@ -3,7 +3,7 @@ import { Composer } from '@/blocks/Composer'
 import { LiveRows } from '@/blocks/LiveRows'
 import { MessageBubble } from '@/blocks/MessageBubble'
 import { MessageList, type MessageListHandle } from '@/blocks/MessageList'
-import { Button } from '@/components/Button'
+import { Button } from '@gadgets/ui'
 import { Card } from '@/components/Card'
 import { ChatLayout } from '@/layouts/ChatLayout'
 

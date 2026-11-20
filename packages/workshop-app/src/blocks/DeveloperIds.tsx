@@ -1,5 +1,4 @@
-import { SettingRow } from '@/blocks/SettingRow'
-import { SettingsCard } from '@/blocks/SettingsGroup'
+import { SettingRow, SettingsCard } from '@gadgets/ui'
 import { CopyValueButton } from './CopyValueButton'
 
 /** One ID a settings page shows in developer mode: what it names, and the ID itself. */

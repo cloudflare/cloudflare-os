@@ -44,5 +44,7 @@ Its `GatekeeperVendor` entrypoint (bound as `GATEKEEPER_CONTEXT`) declares `auto
 mints a `ContextAccount` via `createAccount()` (no user identity is passed in; the account keys its
 private data by its own generated `accountId`). The account exposes the agent read session
 (`getSession()`), collection discovery metadata (`getAgentCatalog()`), and a management UI
-(`startAppUi({ isAdmin })`). The UI is a single-file React SPA in `app/` (Vite + Tailwind + Kumo)
-bundled by `build-app.ts` into `src/generated/app.txt`.
+(`startAppUi({ isAdmin })`). The UI is a single-file React SPA in `app/` (Vite + Tailwind + Kumo,
+and the Workshop's shared components and tokens from `@gadgets/ui`) bundled by `build-app.ts` into
+`src/generated/app.txt`. It opens on the user's skills and collections, with every collection's
+documents, settings and Git tokens from its page; `app/skills/README.md` describes it.

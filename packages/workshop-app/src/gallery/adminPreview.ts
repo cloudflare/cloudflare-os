@@ -1,22 +1,25 @@
 import type { AdminApi, AdminSettingsView } from '@gadgets/workshop-shared/api'
 import type { AdminCapability } from '@/settings/admin/AdminContext'
 
-/** The deployment's settings the admin parts' previews start from, as `AdminApi.getSettings()` gives them. */
-export const PREVIEW_ADMIN_SETTINGS: AdminSettingsView = {
+const previewAdminSettings = {
   signupsEnabled: true,
   userSearchEnabled: false,
-  adminWorkspaceAccess: { effective: 'metadata', chosen: 'metadata', max: 'metadata' },
+  snapshotSharingEnabled: true,
+  adminWorkspaceAccess: { effective: 'metadata', chosen: 'metadata', max: 'metadata' } as const,
   adminAuditRetentionDays: { effective: 365, chosen: 365, min: 90 },
   siteName: '',
   instanceInstructions: 'ACME Corp is a logistics company. Prefer metric units.',
   announcement: '',
-  banner: { text: 'Scheduled maintenance on Saturday from 9:00 UTC.', color: 'warning' },
+  banner: { text: 'Scheduled maintenance on Saturday from 9:00 UTC.', color: 'warning' as const },
   accentColor: '',
   restrictedWebFetchHosts: ['docs.example.com', 'status.example.com'],
   restrictedWebFetchApprovals: false,
   resourceVendors: [],
   formats: [],
 }
+
+/** The deployment's settings the admin parts' previews start from, as `AdminApi.getSettings()` gives them. */
+export const PREVIEW_ADMIN_SETTINGS: AdminSettingsView = previewAdminSettings
 
 type Methods = { [Method in keyof AdminApi]?: (...args: Parameters<AdminApi[Method]>) => ReturnType<AdminApi[Method]> }
 

@@ -1,7 +1,7 @@
 import { useRef } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
 import { ArrowCounterClockwiseIcon, UploadSimpleIcon } from '@phosphor-icons/react'
-import { DropdownMenu } from '@/components/DropdownMenu'
+import { DropdownMenu } from '@gadgets/ui'
 import { LogoIcon } from '@/components/LogoIcon'
 
 export type SiteLogoPickerProps = {

@@ -95,7 +95,8 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
           }}
           loadAttachment={handlers.loadAttachment}
           joins={joins}
-          onReply={() => handlers.onReply(item)}
+          // One the agent has not read yet has no sequence to reply to.
+          onReply={item.sentAt ? () => handlers.onReply(item) : undefined}
           onMarkUnread={handlers.onMarkUnread && (() => handlers.onMarkUnread?.(item))}
           developerCopies={developerCopies}
           details={{ open: isOpen, onToggle: toggle, ...messageInfo({ sender: item.from, sentAt: item.sentAt }) }}

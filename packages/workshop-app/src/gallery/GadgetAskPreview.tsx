@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react'
 import { GadgetAsk, type GadgetAskGroup, type GadgetAskProps } from '@/blocks/GadgetAsk'
 import { LibraryRow } from '@/blocks/LibraryRow'
-import { Button } from '@/components/Button'
+import { Button } from '@gadgets/ui'
 import { useReport } from './previewState'
 import { Section } from './Section'
 

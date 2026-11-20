@@ -1,4 +1,4 @@
-import { SWITCH_THUMB, SWITCH_TRACK } from './switchStyle'
+import { SWITCH_THUMB, SWITCH_TRACK } from '@gadgets/ui'
 
 /**
  * What a switch shows, with nothing to press: for where the row it is in is the control, and

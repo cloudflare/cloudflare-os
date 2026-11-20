@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type RefObject } from 'react'
 import { AppWindowIcon, PaperPlaneRightIcon, PlayIcon, StopIcon, WarningCircleIcon } from '@phosphor-icons/react'
 import { newMessagePortRpcSession, type RpcStub } from 'capnweb'
-import { Button } from '@/components/Button'
+import { Button } from '@gadgets/ui'
 import { ShimmerText } from '@/components/ShimmerText'
 import {
   INLINE_VIEW_HANDSHAKE,

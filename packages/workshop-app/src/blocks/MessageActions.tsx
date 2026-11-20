@@ -1,6 +1,5 @@
 import { ArrowBendUpLeftIcon, BracketsCurlyIcon, CopyIcon, DotsThreeIcon, EyeSlashIcon, HashIcon, InfoIcon } from '@phosphor-icons/react'
-import { Button } from '@/components/Button'
-import { DropdownMenu } from '@/components/DropdownMenu'
+import { Button, DropdownMenu } from '@gadgets/ui'
 
 export type MessageActionsProps = {
   /** Start a reply to the message. */

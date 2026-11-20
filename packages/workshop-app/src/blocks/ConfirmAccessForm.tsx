@@ -1,13 +1,8 @@
 import { useState } from 'react'
 import { LockSimpleIcon, WarningCircleIcon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
-import { Banner } from '@/components/Banner'
-import { Button } from '@/components/Button'
-import { EmptyState } from '@/components/EmptyState'
-import { DropdownMenu } from '@/components/DropdownMenu'
+import { Banner, Button, DropdownMenu, EmptyState, groupSurface, ListGroup, useNarrowScreen } from '@gadgets/ui'
 import { ServiceLogo } from '@/components/ServiceLogo'
-import { useNarrowScreen } from '@/hooks/useNarrowScreen'
-import { groupSurface, ListGroup } from './ListGroup'
 
 /** One protected resource, as the dialog asks about it. */
 export type ConfirmAccessRow = {

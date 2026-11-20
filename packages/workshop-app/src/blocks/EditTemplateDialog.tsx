@@ -1,9 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { XIcon } from '@phosphor-icons/react'
-import { Banner } from '@/components/Banner'
-import { Button } from '@/components/Button'
-import { Dialog } from '@/components/Dialog'
-import { TextField } from '@/components/TextField'
+import { Banner, Button, Dialog, TextField } from '@gadgets/ui'
 
 type Fields = { title: string; description: string }
 

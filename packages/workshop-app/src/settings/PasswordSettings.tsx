@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import { PasswordForm } from '@/blocks/PasswordForm'
-import { SettingRow } from '@/blocks/SettingRow'
-import { SettingsGroup } from '@/blocks/SettingsGroup'
+import { SettingRow, SettingsGroup } from '@gadgets/ui'
 import { useApi } from '@/rpc/ApiContext'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { hashPassword } from '@/rpc/passwordHash'

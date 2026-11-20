@@ -1,11 +1,9 @@
 import { AppWindowIcon, LockSimpleIcon } from '@phosphor-icons/react'
 import type { OutputSummary, WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
 import { WorkspaceCrumb } from '@/blocks/WorkspaceCrumb'
-import { DropdownMenu } from '@/components/DropdownMenu'
-import { EmptyState, type EmptyStateAction } from '@/components/EmptyState'
+import { DropdownMenu, EmptyState, type EmptyStateAction, PageLayout } from '@gadgets/ui'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
-import { PageLayout } from '@/layouts/PageLayout'
-import { useLibrary } from '@/library/useLibrary'
+import { useLibrary } from '@/library/OutputsFeedContext'
 import { workspaceLabel } from './workspaceLabel'
 import { useWorkspaceLooks } from './useWorkspaceLooks'
 

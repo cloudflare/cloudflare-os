@@ -1,8 +1,7 @@
 import { useState } from 'react'
 import { motion } from 'motion/react'
-import { useReducedMotion } from '@/hooks/useReducedMotion'
+import { Button, useReducedMotion } from '@gadgets/ui'
 import { XIcon } from '@phosphor-icons/react'
-import { Button } from '@/components/Button'
 import { CommandIcon, type ComposerCommand } from './ComposerCommandPicker'
 
 const TRANSITION = { duration: 0.18, ease: [0.25, 0.1, 0.25, 1] } as const

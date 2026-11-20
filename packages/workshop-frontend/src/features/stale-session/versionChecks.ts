@@ -4,44 +4,24 @@ import { getBackendHost } from '../../connectHandoff'
 const FETCH_TIMEOUT_MS = 5_000
 
 /**
- * The version id of the backend that new requests reach (see VERSION_PATH): null where it has
- * none, undefined when the request fails. Never rejects.
+ * What new requests reach (see VERSION_PATH): the version id of the backend, and the build id of
+ * the frontend a fresh load serves. Each is undefined where there is none, it is not said, or the
+ * request fails. Never rejects.
  */
-export const fetchBackendVersion = async (): Promise<string | null | undefined> => {
+export const fetchVersions = async (): Promise<{ backend?: string; assets?: string }> => {
   try {
     const response = await fetch(`${window.location.protocol}//${getBackendHost()}${VERSION_PATH}`, {
       cache: 'no-store',
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     })
-    if (!response.ok) return undefined
-    const { version } = await response.json() as { version?: unknown }
-    return typeof version === 'string' ? version : version === null ? null : undefined
+    if (!response.ok) return {}
+    const { version, assets } = await response.json() as { version?: unknown; assets?: unknown }
+    return {
+      backend: typeof version === 'string' ? version : undefined,
+      assets: typeof assets === 'string' ? assets : undefined,
+    }
   } catch {
-    return undefined
-  }
-}
-
-/**
- * The `src` of a page's entry script, its first module script: Vite names it by a hash of its
- * content, so a new frontend build has a new one.
- */
-export const entryScriptOf = (page: Document): string | undefined =>
-  page.querySelector('script[type="module"][src]')?.getAttribute('src') ?? undefined
-
-/**
- * The entry script of the page a fresh load would serve, or undefined when it cannot be read.
- * Never rejects.
- */
-export const fetchEntryScript = async (): Promise<string | undefined> => {
-  try {
-    const response = await fetch('/', {
-      cache: 'no-store',
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    })
-    if (!response.ok) return undefined
-    return entryScriptOf(new DOMParser().parseFromString(await response.text(), 'text/html'))
-  } catch {
-    return undefined
+    return {}
   }
 }
 

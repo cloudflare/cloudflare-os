@@ -1,8 +1,8 @@
 # Workshop App
 
 The reworked Workshop frontend, built beside `workshop-frontend` (which stays the shipped app until
-cutover). Scope is deliberately small: chat, chat settings, the Library, Workspaces and
-Connections pages, and the Settings page with the skills listed in it.
+cutover). Scope is deliberately small: chat, chat settings, the Library, Workspaces, Automations
+and Connections pages, the Settings page, and the pages of the user's gatekeepers' management apps.
 Follow `../../AGENTS.md` and the `frontend-conventions` skill in addition to this file.
 
 Dev server: `pnpm --filter @gadgets/workshop-app dev` (port 3001; the old frontend uses 3000).
@@ -39,8 +39,8 @@ src/
                 Connections page, and the window a service is signed in to in
   settings/     The Settings page (`SettingsPane`), a file for each of its parts, and what they
                 read and write of the user's account
-  skills/       The user's skills (`SkillStore`, over their Context Library), the list of them in
-                the settings (`SkillLibrary`) and one skill's page (`SkillPane`)
+  gatekeeperApps/ The management apps of the user's gatekeepers (`useGatekeeperApps()`), the page
+                one is shown on (`GatekeeperAppPane`) and what it may ask of the Workshop
   automations/  What runs by itself in a workspace (`useAutomations`), the tab that lists it
                 (`AutomationsTab`) and the page of every workspace's (`AutomationsPane`); its agents (`WorkspaceAgents`), their tab (`AgentsTab`) and
                 one agent's page (`AgentPane`)
@@ -50,19 +50,37 @@ src/
                 (`TaskNotices`), and this browser's notifications (`browserPush.ts`)
 
   files/        What a file is, from its name and type; plain functions any layer may use
-  prefs/        What is kept on this device between visits (layout); plain, any layer may use
+  prefs/        What is kept between visits: on this device (layout), and what follows the user
+                from their account (`UserPreferences`); plain, any layer may use
   gallery/      The component gallery's previews, at `/gallery`. Development only
 ```
 
 UI imports point down only: components and hooks, then blocks, then layouts, then routes. The data
-folders (`rpc/`, `workspaces/`, `chat/`, `aside/`, `library/`, `connections/`, `settings/`, `skills/`, `automations/`, `gadgets/`, `notifications/`) are the only code that talks to the
+folders (`rpc/`, `workspaces/`, `chat/`, `aside/`, `library/`, `connections/`, `settings/`, `gatekeeperApps/`, `automations/`, `gadgets/`, `notifications/`) are the only code that talks to the
 backend: UI layers cannot import them, and they cannot import routes. `files/` and `prefs/` are
 beneath everything and import neither UI nor data, and nothing that ships imports `gallery/`. Lint
 enforces all of it (`vite.config.ts` at the repo root), by alias and by relative path alike. Blocks
 and layouts take plain typed props and callbacks.
 
+What the user last chose that should follow them (recent commands, what was last beside each page,
+the file each export save made, their Library stars and what they opened last, the order of their
+starred workspaces and each workspace's icon) is kept in their User DO, whose `UserPreferences` is
+a map of strings the app owns: each field JSON under its own key, with the app's own bounds, read
+defensively (`prefs/preferenceFields.ts`). It is live through
+`rpc/UserPreferencesProvider.tsx` (the store is `prefs/UserPreferences.ts`, tested; the provider
+talks to the backend, so it is in `rpc/`): `usePreferences()` to change it or read it in handlers,
+`usePreferencesSnapshot()` for render. One store lasts across connections: what the account last
+said stays shown until a new connection's subscription says again, a change still on its way over
+the old one is dropped, and none is made while there is no connection. A field that names
+workspaces or outputs keeps no more than its bound and passes over what is no longer listed when
+read; the whole map stays well under the account's `MAX_PREFERENCES_SIZE`. Layout, list views,
+theme and dismissed notices stay in `localStorage` as this device's.
+
 Put protocol logic in plain classes and functions with no React (like `ChatSession`), so it can be
-tested without rendering. `pnpm --filter @gadgets/workshop-app test:run` runs the tests.
+tested without rendering. `pnpm --filter @gadgets/workshop-app test:run` runs the tests. What only a
+real browser runs (a frame's page and the port it hands over, for one) is in `*.browser.test.tsx`,
+run in headless Chromium by `test:run:browser` (`vitest.browser.config.ts`) and left out of
+`test:run`; the package's `test` task runs both.
 
 Signing in is `RpcGate`'s. A signed-out user is shown the sign-in page (`SignInPane`, drawn by
 `SignInForm`) in place of the page, at the address they were going to, so that signing in shows
@@ -74,9 +92,9 @@ with in a window of its own (`GatekeeperSignIn`, plain and tested, ported from t
 `OAuthButtons`), which ends on `/connect/handoff` as a connect does, but confirms its ticket over
 the public API, as it has no session (`SignInHandoffPane`); the page meanwhile asks its attempt for
 the token. The token is kept under the old app's key (`token.ts`), so the two share a sign-in on one
-origin. Built with `VITE_CF_ACCESS_MODE=true`, as the old app is for a deployment behind Cloudflare
-Access, which the server does not say, it signs in as whoever Access says, never shows the page,
-and signs out of Access (`rpc/cfAccess.ts`). The gallery has the page in each of its states
+origin. Where the server says the deployment is behind Cloudflare Access (`ServerConfig.authMode`),
+it signs in as whoever Access says, never shows the page, and signs out of Access (`rpc/signOut.ts`).
+The gallery has the page in each of its states
 (`SignInPreview`).
 
 A lost connection leaves the app as it is. Only the first connection has the page to itself;
@@ -86,6 +104,10 @@ new `api` without dropping what it shows: the chats (`ChatSessions.reconnect`) a
 beside the page read again over what is shown, and the lists load again with the old ones up
 meanwhile. Nothing loads over the lost connection, which could only fail: what opens meanwhile
 says it is loading until the new `api` is there.
+
+`OutputsFeedProvider` and `WorkspaceSummariesProvider` keep one store across connections. They
+stop the old subscription and start it on the new API, showing the last account snapshot until the
+new snapshot arrives. `UserPreferencesProvider` does the same (see above).
 
 What the user is told is `RpcGate`'s `ConnectionNotice` (plain, tested), shown by
 `ConnectionIsland` at the top of the window, centred over the content beside the
@@ -104,9 +126,10 @@ with growing waits until the history (or the UI) is in. Register `onRpcBroken` o
 for longer than a call, or what it feeds goes silently still. The `workspace-restart` scenario
 plays one (a script's `restart` step).
 
-Motion has three levels (`prefs/motion.ts`): `full` (springs with some bounce), `calm` (the same
-springs without the overshoot) and `off` (nothing moves). The person's choice in Settings wins;
-until they choose, the system's reduce-motion setting gives `off`, else `full`. Never ask the
+Motion has three levels (`@gadgets/ui`'s `motion`): `full` (springs with some bounce), `calm` (the
+same springs without the overshoot) and `off` (nothing moves). The person's choice in Settings wins
+(`prefs/motion.ts`' `chosenMotionLevel`, given to `provideMotionLevel` in `main.tsx`); until they
+choose, the system's reduce-motion setting gives `off`, else `full`. Never ask the
 browser for `prefers-reduced-motion` or use `motion/react`'s `useReducedMotion`, which hear only of
 the system: use `useReducedMotion()` (true when `off`), `isMotionOff()` outside React, and CSS under
 `:root[data-motion='off']`. Springs go through `useMotionTransition(t)` or `motionTransition(t)` (a
@@ -125,20 +148,22 @@ down its side by group (`PAGES` in `routes/gallery.tsx`, drawn by `gallery/Galle
 ## First run, and what the deployment says
 
 A new user is set up before anything else is read for them (`settings/OnboardingGate`, beneath
-`RpcGate`, asked `isOnboardingCompleted()` once a user, and letting them in where it cannot ask):
-in place of the app, laid out as the sign-in page is (`OnboardingFrame`: one centred column, the
-way on in the middle of its foot on the first step, then at its end with Back at its start; its
-top and foot stay put and only what is asked between them scrolls, fading under each; a dot for
-each step, which goes to it, swelling on a spring when pointed at; the mascot happy as a step
-opens, then idle, and happy again for as long as it cheers each time it is clicked), who they are (as the profile settings start: the
-picture, kept as it is chosen, over their name, renamed where it is), then what the app can use on
-their behalf (`OnboardingServices`: each service to sign in to in a window of its own, a row as the
-Connections page has, the ones most people use first, in the order `onboardingChoicesOf` gives,
-which a connection does not change, in a surface that scrolls; and the tools the deployment adds as
-they are, such as Web Search and Scheduled Tasks, each on unless switched off).
-Finishing keeps the name, turns those on (`provisionAmbientAccount`) and calls
-`completeOnboarding()` (`settings/onboardingSteps.ts`, plain and tested); a tool that cannot be
-turned on is said and keeps nobody from going on. The connections step is left out once there is
+`RpcGate`, asked `isOnboardingCompleted()` once a user, and saying so with Try again where it cannot
+ask, asking again on a new connection): in place of the app, laid out as the sign-in page is
+(`OnboardingFrame`: one centred column, the way on in the middle of its foot on the first step,
+then at its end with Back at its start; its top and foot stay put and only what is asked between
+them scrolls, fading under each; a dot for each step, which goes to it, swelling on a spring when
+pointed at; the mascot happy as a step opens, then idle, and happy again for as long as it cheers
+each time it is clicked), who they are (as the profile settings start: the picture, kept as it is
+chosen, over their name, renamed where it is), then what the app can use on their behalf
+(`OnboardingServices`: each service to sign in to in a window of its own, a row as the Connections
+page has, the ones most people use first, in the order `onboardingChoicesOf` gives, which a
+connection does not change, in a surface that scrolls; and the tools the deployment adds as they
+are, such as Web Search and Scheduled Tasks, each on unless switched off). Finishing keeps the name
+if it changed (`setOwnDisplayName`), turns each tool on (`provisionAmbientAccount`) and then marks
+it finished (`completeOnboarding`), and can be done again after a failure
+(`settings/onboardingSteps.ts`, plain and tested); a tool that could not be turned on is said and
+keeps nobody from going on. The connections step is left out once there is
 nothing to offer. There is no model step, as the old wizard had: the model is chosen in the
 settings, and until then the first of the user's models answers (`useDefaultModel`).
 
@@ -147,12 +172,14 @@ What the deployment puts around the app, signed in or not, is `rpc/SiteFrame`'s,
 and its logo in the tab (`rpc/siteLook.ts`), its banner across the top of the window
 (`SiteBanner`, put away on this device until it says something else, `prefs/dismissedBanner.ts`),
 and, over the foot of the window, that a newer version of the app is there (`UpdateNotice`),
-which only the user reloads for. The announcement is said under the sidebar's logo, which is the
-deployment's own where it has one. A socket that outlived a deploy is made again
-(`useStaleBackendReconnect`, `Connection.reconnect`): each socket is asked its backend's version,
-compared on each session check (shown again, back online, every five minutes) with what
-`VERSION_PATH` answers, and a version is left behind once at most (`rpc/staleSession.ts`, plain
-and tested), so that a rollout cannot loop it.
+which only the user reloads for: the build id the page was built with
+(`import.meta.env.ASSETS_BUILD_ID`, `scripts/assets-build-id.ts`) against the one `VERSION_PATH`
+answers as `assets` (`usePageUpdate`). The announcement is said under the sidebar's logo, which is
+the deployment's own where it has one. A socket that outlived a deploy is made again
+(`useStaleBackendReconnect`, `Connection.reconnect`): each socket is asked its backend's version
+(`ServerConfig.backendVersion`), compared on each session check (shown again, back online, every
+five minutes) with what `VERSION_PATH` answers, and a version is left behind once at most
+(`rpc/staleSession.ts`, plain and tested), so that a rollout cannot loop it.
 
 What goes wrong is reported as the old app reports it (`rpc/errorReporting.ts`, ported, with its
 throttle tested), only in a build with `VITE_FRONTEND_ERROR_REPORTING=true`, which also gives the
@@ -227,16 +254,19 @@ is the same row before and after, so being read only brings it to full strength.
 place among its turn's steers rather than its sequence, which it has only once read, and
 `ChatSession` keeps it between leaving the queue and arriving as a message.
 
-A message can be replied to. The protocol has no replies, so a reply carries a line of what it
-answers at the front of its own text, as a Markdown blockquote (`chat/replyQuote.ts`): the agent
-reads it as anyone would, and a client that knows nothing of replies shows a quote. The composer
-shows that line above the draft while it is a reply, over any attachments, and the feed sets it
-apart from what was written when it draws the message. Either line goes to the message it quotes
-when clicked (`MessageList`'s `scrollToMessage`): by scrolling when the message's row is mounted,
-and by fading the conversation over to it when the way there runs over a page that is only a
-spacer. A sent reply finds its message by the line, since that is all it carries, fetching earlier
-history until it turns up (`ChatSession.findQuoted`). A reply that named its message would need
-neither, which is for the backend to support.
+A message can be replied to. A reply names its message by sequence (`replyToSequence` on
+`sendChatMessage` and the message, kept through steering), and since the agent is not shown what a
+reply names, it also carries a line of that message at the front of its own text, as a Markdown
+blockquote (`chat/replyQuote.ts`): the agent reads it as anyone would, and a client that knows
+nothing of replies shows a quote. The composer shows that line above the draft while it is a
+reply, over any attachments, and the feed sets it apart from what was written when it draws a
+message that names what it replies to; one that names nothing, such as a reply from before replies
+were recorded, is shown as it was written, linked to nothing. A message the agent has not read
+has no sequence yet, so it offers no reply. Either line goes to the message it quotes when clicked
+(`MessageList`'s `scrollToMessage`): by scrolling when the message's row is mounted, and by fading
+the conversation over to it when the way there runs over a page that is only a spacer. A sent
+reply's message, when it is further back than has been loaded, is reached by fetching the history
+back to its sequence in as few reads as the workspace allows (`ChatSession.findReplied`).
 
 What the agent writes can say anything, so `Markdown` renders no HTML, links only web and mail
 addresses, and links an image from elsewhere instead of loading it, which would tell whoever is
@@ -335,15 +365,19 @@ workspace's crumb in its header, what is shown beside it (`?open=`, dropped as a
 since it was the other's), and the workspace marked in the sidebar; the chat then takes the empty
 one's place in the history. The old `/workspace/<id>/new` redirects there, for links made before.
 
-The composer's + menu (`ComposerAddMenu`) is Upload and Add a new connection, then the skills, the
-ones chosen last first (`prefs/recentCommands.ts`, as a slash's matches are), then the commands,
+The composer's + menu (`ComposerAddMenu`) is Upload and Add a new connection, then the commands,
+the ones chosen last first (`recentCommands` in the user's preferences, `prefs/recentCommands.ts`, as a slash's matches are),
 under a field to find one by on the edge nearest the composer (`composerAddEntries.ts`, plain and
 tested): typing narrows it as a slash does and leaves the two actions out. It opens at the size it
-keeps: the skills are read as the app starts (`useReadSkills`), a workspace's commands are kept for
-the visit (`useChatCommands`), and until they are known the room they take says it is loading. On
-the home page a connection is added before the chat exists, so the first one makes the workspace
-the chat will start in (`NewChatPane`'s `makeConnectable`), which is then where it starts unless
-another is chosen.
+keeps: a workspace's commands are kept for the visit (`useChatCommands`), and until they are known the
+room they take says it is loading. On the home page, with no workspace chosen, the first slash or
+opening of the + menu, or the first connection added before the chat exists, makes the workspace the
+chat will start in (`ensureWorkspace` in `routes/_app/index.tsx`, as main's
+`ensureProvisionalGadget`), whose commands are then listed and which is then where it starts unless
+another is chosen. Opening the page alone makes none. A connection added keeps how it was made (an
+account and resource, or a model: `ConnectionSource`), and one made in another workspace than the
+one the chat starts in is made again there as it is sent (`startConversation`), so the chat is given
+its own.
 
 A chat's notifications, read state and deletion are in its settings (`ChatOptionsTab`), for whoever
 may build in the workspace: someone who can only use it has no chats of it. Its row in the
@@ -354,8 +388,15 @@ viewer's read state scoped to it (`subscribeToUnreadState()`), and a chat it say
 the default, which is off only in one that waits for the viewer to take part
 (`notificationsRequireParticipation`). A change shows at once and is put back if refused. Deleting a
 chat is asked first. One that is open says so when it is deleted (`ChatSession`'s `deleted`, whoever deleted it), and the page
-goes to its workspace in its place in the history. The list is read once, so a chat someone else
-deletes stays in it until it is read again.
+goes to its workspace in its place in the history. The Chats tab's list is live (`useWorkspaceChats`
+over `workspaces/WorkspaceChats.ts`, plain and tested): people's chats are read once
+(`listChats({ kind: 'chats' })`, after subscribing) and kept up from `subscribeToChat()`, so a new
+chat shows, a title or cost changes as it does and one someone else deletes goes; agents' runs
+never come in (`isAgentRun()`). When the workspace restarts it is opened and read again a moment
+later, as `AgentRunList` does, what was shown staying up meanwhile; stopping, as on a lost
+connection, cancels that. The workspace page reads it once for the tab and for what it counts
+as waiting there: a chat stopped on a decision, or with an action waiting (`WorkspaceAgents`'
+`actionsWaiting`).
 
 ## Unread, and being told
 
@@ -378,10 +419,15 @@ worker `public/sw.js` and its subscription). Its links are the old app's
 (`/workspace/<id>?chat=<n>`), which the workspace's route sends on to the chat. The workspace's
 mute and each chat's setting are the backend's to apply.
 
-A workspace's title, the viewer's role in it, its owner and its sharing rules follow
-`subscribeToMetadata()` while it or one of its chats is open
-(`workspaces/LiveWorkspace.ts`, plain and tested), changed in the list through
-`useUpdateWorkspace()`.
+The user's workspaces come from their account as they change (`WorkspacesProvider`, over
+`subscribeToWorkspaces()`, kept by `workspaces/WorkspacesFeed.ts`, plain and tested): renamed,
+starred, muted, removed, or their role changed, by them or by whoever owns a workspace shared with
+them. What the list does is shown at once and undone if the account refuses. Each workspace's icon
+and the order of the starred are the user's own, kept in their preferences and seen by no one
+else. A workspace's sharing rules follow `subscribeToMetadata()` while it or one of its chats is
+open (`workspaces/LiveWorkspace.ts`, plain and tested), and the open workspace tells the list only
+what it doesn't keep: its data restrictions, who may invite, and its cost (`useLiveWorkspace`,
+through `useUpdateWorkspace()`).
 
 ## The Workspaces page
 
@@ -390,29 +436,23 @@ server lists one an app of was shared with the viewer to use (`role === 'use'`) 
 open it, but they were not let into it, so the sidebar, this page and search leave it out, and the
 app is in their Library. Its address shows, in the page's place beside the sidebar, that it is not
 theirs (`SharedAppPane`), with the way to the app, or a menu of them, else the Library, reading
-nothing of the workspace; nor does `LiveWaiting` read its agents.
+nothing of the workspace.
 
 `/workspaces` (the sidebar's folder button) lists every workspace: the pinned ones first, then the
 rest by when they were last active, grouped as the chat settings page groups its files. A workspace
 is pinned, never starred (a pin, `StarButton`'s `pin`), as pinning is what puts it in the sidebar:
-the server's `pinned`. The pinned ones' order is this device's (`prefs/starOrder.ts`), the latest
-pinned first until they are dragged, or moved with Alt and an arrow key. The code still says
-`starred` for them (the filter's id, `orderStarred`); the words are Pin and Pinned.
+the server's `pinned`. The pinned ones' order is the user's preferences' (`starredWorkspaces`,
+kept and read by `workspaces/starredOrder.ts`), which the sidebar follows too: one pinned that the
+order does not have comes first, so the latest pinned is first until they are dragged, or moved
+with Alt and an arrow key, and pinning one takes it out of the order. A reorder writes the whole
+order, which drops what is no longer pinned. The code still says `starred` for them (the filter's
+id, `orderStarred`); the words are Pin and Pinned.
 
 Over the list are its controls (see Lists, below): `workspaces/workspaceList.ts` says how it can be
-ordered (last active, date created, name), narrowed (starred, whose it is, who has access) and
+ordered (last active, date created, name), narrowed (starred, whose it is) and
 searched. The starred stay first in every order, and are only reordered while nothing narrows
 them, as putting some of them in order would lose the others' places. Its New button starts a chat
 on the home page, which is what makes a workspace.
-
-A workspace shows the first three of those with access to it on its row (`MemberAvatars`), the
-viewer alone when nobody else has, each saying how many there are and whose it is when pointed at;
-a card shows them, smaller, at the end of the line its time is on. `listWorkspaces()` says nothing of members, so each workspace is asked for
-its own (`WorkspaceMemberships`, plain and tested): a few at a time, in the order listed, and kept
-for a while by `WorkspacesProvider`, so that going back to the page does not ask them all again.
-That is a round trip to every workspace, each of which it wakes: the list should carry its members
-instead, once the backend can say so. Until a workspace has answered it shows no one, and passes
-none of the filters for members.
 
 The groups are drawn by `GroupedList`: one flat list of rows, so a row that changes group is the
 same row and keeps its focus, with each group's padding and the gap before it as margins. Its
@@ -442,10 +482,10 @@ list's controls at its end (`Tabs`' `end`, `ListToolbar`'s `inline`, whose searc
 until it is opened into the room between), and scrolled along it where it is too short for both;
 on a narrow screen the controls are under the list): Recent, All, and one for each type something
 has been made as, once there is more than one. Recent is what waits on the user (the "N waiting"
-its row and card say), under Needs you, most waiting first, then what they opened last on this
-device (`prefs/libraryOpened.ts`, plain and tested, recorded where `AsidePane` shows a gadget, whichever page it is
-opened from; `library/libraryRecent.ts`, plain and tested), the twelve latest. It starts at Recent
-for whoever has opened anything here, and at All otherwise. Every tab is the same list under the
+its row and card say), under Needs you, most waiting first, then what they opened last (the
+user's `opened` in the outputs feed, recorded through it where `AsidePane` shows a gadget,
+whichever page it is opened from; `library/libraryRecent.ts`, plain and tested), the twelve latest.
+It starts at Recent for whoever has opened anything, and at All otherwise. Every tab is the same list under the
 same controls, of what the tab has, so the types are tabs rather than filters, and the filter menu
 has the rest, Starred among them. On every tab but Recent, what waits on the user comes first, then
 the starred, in their order, which is dragged on All while nothing narrows them and none of them
@@ -475,20 +515,21 @@ was, and making one is publishing it: `GadgetClient.createBlueprint()` stores an
 one step, so there is no draft, and "publish" is not said anywhere. A gadget has one from its
 Share menu (Create template, under Invite user), its settings, and its row's More menu, Create
 template… (`CreateTemplate` over `CreateTemplateDialog`): a title and what it is for. There is one
-template to an app: a workspace that has made one (`Overseer.listBlueprints()`) opens the dialog at
-it instead, with Release update, which releases what the gadget has kept since as its next version
-(`updateBlueprint` with `updateCode`), and no way to make another. The backend does not say which
-gadget a template was made from, so "has one" is the workspace's; there is no step for a screenshot. And a banner of the organization's
+template to an app: a gadget that has made one opens the dialog at it instead (account feed for
+the owner, `Overseer.listBlueprints()` on demand for other builders), with Release update, which
+releases what the gadget has kept since as its next version (`updateBlueprint` with `updateCode`),
+or Update connections where only its bindings changed (`updateBindings`, the same version),
+and no way to make another. Only the gadget's own templates count (each names its `gadgetId`; an
+owner's not yet backfilled one counts once the workspace is next opened); there is no step for a screenshot. And a banner of the organization's
 own over everything else (`PromoCarousel`, in the workspace colours, moving on by itself while it
-is not pointed at or focused, and not with reduced motion): a tab each (`?tab=`) for its front (Discover: the most used on one line that is
-scrolled along (`ScrollRow`), the latest created two to a line, then some of each kind they
-make, each a `Shelf` with the way to the rest), for all of them, and for each kind, then a search
-and the filters (`library/templateList.ts`, plain and tested: starred, needing nothing connected,
-and the services they work with). A search or a filter lists what it leaves in place of the front.
-The front's large cards are `TemplateCard`s and the rest are `TemplateListing`s, which have no
-button of their own: a template is used from its page. Both end in who it is by (their picture,
-or the organization's mark) and the services it needs connected as a stack of their logos
-(`TemplateByline`, `ServiceStack`).
+is not pointed at or focused, and not with reduced motion): a tab each (`?tab=`) for its front (Discover: the latest created two
+to a line, then some of each kind they make, each a `Shelf` with the way to the rest), for all of
+them, and for each kind, then a search and the filters (`library/templateList.ts`, plain and
+tested: starred, needing nothing connected, and the services they work with). A search or a
+filter lists what it leaves in place of the front. Its entries are `TemplateListing`s, which have
+no button of their own: a template is used from its page. Each ends in who it is by (their
+picture, or the organization's mark) and the services it needs connected as a stack of their
+logos (`TemplateByline`, `ServiceStack`).
 
 A template's own page (`/library/templates/<id>`, `TemplatePageView`) is laid out as a store's
 page for an app: what it makes on a tile beside its title, Use template and its star, what there
@@ -501,17 +542,17 @@ deleted. A section's title is a group of settings' (`text-lg`).
 
 The templates are the deployment's featured blueprints (`listFeaturedBlueprints()`), which are the
 organization's own, then the user's saved and uploaded ones (`listLibraryBlueprints()`), then those
-they created (`listOwnBlueprints()`, each read from its public record), once each
+they created (`subscribeToOwnBlueprints()`, whole and live from their account, which says as each is created, released, edited or deleted and as its gadget keeps changes), once each
 (`templatesOf`, plain and tested), held by `TemplateStore` so that the store and a template's page
 show the same. A template's services are named as the deployment's vendors name them. Its stars are
 the backend's `pinned` (`setBlueprintPinned()`, which saves one to the library first), shown at once
-and put back if refused. How much each is used is not said by the backend, so the store's front
-puts the organization's first among the most used, and a template's page leaves Used out; the
-examples (`exampleTemplates.ts`) say it, for the gallery. A template whose link was shared, which
-is not listed, is read on its own (`getBlueprint()`). Use template (`UseTemplate`,
-`UseTemplateDialog`) sets up each binding with the user's own (a connection in its service's form,
-`ConnectResource`; a model, starting as its creator suggested, `library/templateSetup.ts`), then
-makes it in a new workspace named after it (`newWorkspaceFromBlueprint()`) and shows what it made.
+and put back if refused. Every ranking of them is the latest created first: the banner's, the
+organization's own first; the front's and each kind's; and a template's page's others of its kind.
+A template whose link was shared, which is not listed, is read on its own (`getBlueprint()`). Use
+template (`UseTemplate`, `UseTemplateDialog`) sets up each binding with the user's own (a
+connection in its service's form, `ConnectResource`; a model, starting as its creator suggested,
+`library/templateSetup.ts`), then makes it in a new workspace named after it
+(`newWorkspaceFromBlueprint()`) and shows what it made.
 Making one in a workspace the user has is for the backend to offer. Keep `/blueprint/<id>` public
 for share links, and do not call starring one "Add to library", which lists outputs.
 
@@ -520,11 +561,14 @@ the deployment offers (`listOutputFormats()`, `useOutputFormats`), in its order 
 anything has been made as one, then whatever else is in the library, such as a format no longer
 offered.
 
-The backend keeps no star for an output, so the stars and their order are this device's
-(`prefs/libraryStars.ts`, with the rules in `library/libraryStars.ts`): they do not follow the
-user to another browser. They should be the server's, as a workspace's `pinned` is, once the
-backend can say so. A star for an output that is not listed is kept: it may only not have been
-read yet, as while the index catches up.
+The library (everything the user's workspaces have made) comes from one live subscription,
+`OutputsFeedProvider` (`subscribeToOutputs()`, kept by `library/OutputsFeed.ts`, plain and tested);
+read it with `useLibrary()`, and never call `listOutputs()` from the app. Stars, their order and
+what was opened last are the user's own, kept in their preferences (`starredOutputs`,
+`openedOutputs`), with the rules in `library/libraryStars.ts` (`keepStars`) and
+`library/libraryRecent.ts` (`recordOpened`, from the aside): shown at once, and given way to if
+refused, as any preference is. A star for an output that is not listed is kept: it may only not
+have been read yet, as while the index catches up; past the bound the last star goes.
 
 Its New button is a menu of the formats that can be started by asking for one (not those whose
 blueprint has something to set up first), and a plain button until there are any. Choosing one goes
@@ -545,18 +589,11 @@ without a service's own page.
 
 `connections/connectionList.ts` (plain, tested) says what is listed and how. It has the one order,
 so no control to choose it by: what needs attention first (an account whose sign-in ran out), then
-the accounts connected, each a group of its own however few it has, then what could be connected,
-by category. A service can be of several categories, the first the one it is most, which is the
-one it is listed under (Google is for mail and data too, but is listed under Productivity). A
-category with enough services for the view is a group of its own, and the rest, with those that
-have no category, are gathered after them under More; while no category has enough, they are all
-under Available. A service says nothing of its categories itself, so
-`connections/serviceCategories.ts` says them for the services this repository has a gatekeeper
-for, and the internal deployment's, by their id. A deployment's own services have none: they should be the gatekeeper's to say
-(`VendorDescription`), once the backend can. The filters are where a connection stands and, in a
-menu of their own, the categories that something listed is of, which a service passes by any of
-its own. The search also finds one by what it is for, its categories, what it gives access to,
-and whose account it is.
+the accounts connected, then what could be connected (Available), each a group of its own however
+few it has. Services have no categories: a service says nothing of any itself, and the Workshop
+names none, so they would have to be the gatekeeper's to say (`VendorDescription`) before they
+could be listed by. The filters are where a connection stands. The search finds one by its
+service's name, what that says of itself, what it gives access to, and whose account it is.
 
 It starts as cards (`startsAs`), two to a line (`CardGrid`'s `wide`), each laid out along its line
 (`ConnectionCard`): the logo, the name over what the service is for, and at the end a mark of
@@ -657,7 +694,7 @@ address, so in development it only finishes when that is this app's.
 out, done at once) is one route, with `?section=` naming the part
 that is showing (`settings/settingsSections.ts` has them, in order, with their names and icons).
 The user's own parts are one list with no heading over it (`SETTINGS_GROUP`: Profile, Preferences,
-Notifications, Models, Skills, Usage & billing), and an admin's come after it under Admin.
+Notifications, Models, Usage & billing), and an admin's come after it under Admin.
 Where there is room for a sidebar, the parts are listed there in place of the app's own
 (`SettingsSidebar`, which `_app.tsx` swaps in for as long as the page is a settings one), and
 choosing one replaces the address, so that going back leaves the settings rather than going
@@ -708,7 +745,8 @@ leave nothing.
 
 Before anything is typed it offers, in this order, with no heading over the first: a new chat, and
 what else is done where the user is (`routes/-appSearchSuggestions.ts`, plain and tested); three
-recent workspaces; Workspaces, Library and Automations, which the sidebar also has; and a few
+recent workspaces; Workspaces, Library and Automations, which the sidebar also has, and each of the
+user's gatekeeper apps (`useGatekeeperApps()`, under Go to, as the sidebar has them too); and a few
 settings reached for under one Settings heading: the default model, the theme, the animations, and
 the way to Settings itself. The first is a new chat of its own, which starts a workspace, and is not
 offered on the page that starts one (home, in a workspace or not). In a workspace's chat it is a
@@ -726,10 +764,9 @@ keys.
 
 Everything the user has made is found by typing, under Library (`library/libraryEntries.tsx`, plain
 and tested): one entry for each output of every workspace, with its workspace at its end, found by
-its title and its kind, opening its own page. None is offered before anything is typed. It is read as
-search opens (`useLibrary` with a key only while open: one `listOutputs()` call), so a search on the
-first opening that finds nothing says "Looking…" until it has been read (`SearchDialog`'s
-`reading`).
+its title and its kind, opening its own page. None is offered before anything is typed. It is the
+app's one library feed (`useLibrary()`), so a search before it has first been read that finds
+nothing says "Looking…" (`SearchDialog`'s `reading`).
 
 Where the user is only adds to what is found everywhere and never takes anything away: what a chat
 or a workspace's page adds is found by typing too, and comes first among equals, so that what is
@@ -801,12 +838,16 @@ once in `usePreferenceSettings`, so ⌘K flips it too) shows what is for those w
 and nothing else changes while it is off. A chat has, under its composer, `ChatStatusLine`
 (`ComposerStatusLine` block): the model on the left, which is the default model, so choosing another
 there is choosing it in the settings (`setPreferred`, which tells `useDefaultModel`), and on the
-right what the context holds with its share of the window in brackets (`83.3K (42%)`), and what the chat has cost, in short figures with
-the exact ones in a tooltip. The usage is the chat's metadata (`ChatSnapshot.usage`: `totalTokens`,
-`totalCost`, the cache counts). The window is only what the client knows: the model's own from
-`modelOptionsOf`, or what the user held a model of theirs to (`useModelConfig`), which can be
-changed there as in the settings (`contextWindow.ts`, plain and tested) and applies to every chat on
-the model; a deployment's model has no window to change. A workspace's page shows its total cost in
+right what the context holds with its share of the budget in brackets (`83.3K (42%)`), and what the chat has cost, in short figures with
+the exact ones in a tooltip. The usage is the chat's metadata (`ChatSnapshot.usage`: `totalTokens`
+and `contextBudget`, `totalCost`, the cache counts). The share is the server's: `totalTokens` is the
+last step's tokens, and `contextBudget` the prompt budget the agent compacts against on the model
+that step ran on, and that model, named in the tooltip with the share it compacts at
+(`COMPACTION_TRIGGER_RATIO`); both are absent, and nothing is shown, before a step has measured
+them and after a compaction. A model of the user's own
+can be held to a smaller window there as in the settings (`useModelConfig`, `contextWindow.ts`,
+plain and tested), which applies to every chat on the model from its next step; a deployment's
+model has no window to change. A workspace's page shows its total cost in
 the header (`LiveWorkspaceFields.totalCost` keeps it live), the chat list has each chat's cost and
 a Cost order, and a message's details say how long a reply took (`AssistantItem.workedFor`, from
 the message before it), its more menu copies the message's ID and raw JSON, and the chat's, the
@@ -817,112 +858,72 @@ chat and is the viewer's to put away by a click, as it is for anyone.
 
 ## Skills
 
-A skill is instructions the assistant loads when a task calls for them, with the files they refer
-to. They are the user's Context Library's (`gatekeeper-context`, see its `AGENTS.md`), which
-`skills/SkillStore.ts` (plain, tested over `MemorySkillsBackend`) reads and writes through the
-management API its app is given (`getGatekeeperApp('context')`'s `ui`, a `ContextApi`). Every
-collection the user can read is listed, its skills flat, the collection as the tag, but for the
-user's own first one (`My skills`), which is no tag. Changing a tag moves the skill, files and all,
-to the user's collection of that name, made for it where there is none: the Context Library has no
-move between collections, so it is made again there and deleted here. A rename moves it to a
-folder of the new name, so both give it another id, which the page goes to. A skill's files are
-read once it is opened. Auto-use is not kept anywhere, so it lasts the visit, as does the title a
-skill was given here while its name is still made from it. A user with no Context Library is told
-so, with the way to turn it on where the deployment offers it. The examples (`exampleSkills.ts`)
-are kept the same way for the scripted chats (`exampleSkillsBackend`).
+Skills are not the Workshop's. They are the Context Library's (`gatekeeper-context`, see its
+`AGENTS.md` and `app/skills/README.md`), kept and shared in its own app, which is opened as any
+gatekeeper app is (below): there is no Skills part in the settings and no skill page here.
 
-A collection is also a thing of its own, since it is what is shared (`plans/skill-collections.md`).
-The settings list them under the skills (`SkillCollections`, rows as a skill's are), the user's own
-first, and make an empty one. A collection's page (`/skills/collections/<id>`, `CollectionPane`)
-is laid out as a skill's: its name and description edited in place by whoever may edit it, a
-Share button, then Skills (its rows, added to directly) and Settings (Delete for owners, Leave for
-whoever it was shared with). `ShareCollectionDialog` is the workspace dialog's twin: people by
-role, through `createGatekeeperUserSelection('context', …)` so the browser never names an account,
-and everyone in the deployment as one row. What the user may do comes from
-`getContextCollectionPermissions`, so a skill in a collection shared to edit is editable
-(`Skill.editable`); a collection whose permissions cannot be read is only read.
+A new chat's composer offers the commands of the workspace it will start in (`listSlashCommands`,
+through `useChatCommands`): the one chosen, or the provisional one made as they are first looked
+for. The first message finds the command in that same workspace (`startConversation`), and says so
+where it no longer offers it.
 
-A new chat's composer offers the user's skills from the Library, as there is no workspace yet to
-list them, by the id the workspace knows each by (`skillCommandOf`); the first message finds it in
-the workspace it goes to (`startConversation`), and says so where that workspace does not offer
-it.
+## Gatekeeper apps
 
-A skill's name and what it is for are kept twice: on the skill, as they are read, and in the
-frontmatter of its `SKILL.md`, as the Agent Skills format has them (`name` in lowercase with
-hyphens). A change to either is made to the other, whichever was changed. How uploaded files
-become skills (`skillUpload.ts`, `skillName.ts`, `skillFiles.ts`) is ported from the Context
-Library's app, tests and all, so that what is uploaded here reads as it does there: keep the two
-alike. Text is kept as written and anything else as base64; hidden files (`.DS_Store`) are left
-out.
+`gatekeeperApps/` holds the management apps of the user's gatekeepers. The list
+(`GatekeeperAppsProvider`, `useGatekeeperApps()`) is read on each connection and again whenever
+the user's accounts change, so turning a tool on or off shows without a refresh. Each app gets a
+sidebar row under Automations with its own icon (`MaskIcon`, or a window), a ⌘K Go to entry, and a
+page at `/apps/$appId` (`GatekeeperAppPane`). Old `/gatekeepers/<id>` links redirect there
+(`routes/-legacy.ts`).
 
-The skills are listed in the settings' Skills part (`SkillLibrary`): one flat list on one
-surface, whatever the order, in a `ScrollArea` once there are more than fit, with rows only and no
-icon on them. What a skill is collected in is a tag on it, and whose it is is a picture, as a
-workspace's members are where it is listed: the owner's, or the organization's mark. The organization's are left out until
-the filter for them is on (`startsNarrowedTo`), and the filters are kept on this device
-(`keepsFilters`). One is added by writing it or by uploading Markdown files or a folder. It
-goes into the collection chosen as it is added (`AddSkillDialog`'s `collections`): one of the
-user's own, My skills first, or a new one named there.
-
-A skill's page (`/skills/<id>`, `SkillPane`) keeps the settings' sidebar, and its header is the
-way back to the list and then the skill. Its name and what it is for are edited where they are
-(`EditableTitle`, `multiline` for the latter), by whoever's it is; the rest only read it. Under
-them, a tab each (`?tab=`):
-
-- Preview, which is the first: the start of each file as it reads, `SKILL.md` before the rest
-  (`FilePreviewCard`), so that the skill can be read without opening anything.
-- Files: the list of them by path, folders and all, under the list controls, with the way to
-  upload more, or a folder, which goes in under its own name.
-- A file that is opened (`?file=<path>`, from either) has a tab of its own after those
-  (`Tabs`' `onClose`), with all of it as it reads (`SkillFileView`). Only Markdown is edited, in a
-  plain editor (`FileEditor`) in place of how it reads, and kept on Save. The tab is put away by
-  going to another, unless something typed in it has not been saved: it then stays, with a dot,
-  and the way back to the list asks first.
-- Settings: its tag, and deleting it.
+The app runs in a frame sandboxed with no origin (`allow-scripts allow-modals`, as the old app had
+it). Its handshake and the frame's error reports are handled by `GatekeeperAppSession`; what the
+app may ask of the Workshop is `GatekeeperAppHost`. That covers its gatekeeper's `ui`, relayed
+through rate limits and never called by the Workshop, plus the theme and its changes, growing over
+the window for its own dialogs, going to a workspace, starting a chat with a prompt in the
+composer, looking up workspace titles, and the Workshop's person picker. The picker
+(`UserPickerDialog`, logic in `UserPicker.ts`, plain and tested) gets a ticket for one person at a
+time and gives it to the app's frame, never to the gatekeeper. Done waits for whoever is being
+added. No gatekeeper is named anywhere in this code.
 
 ## Automations
 
-What runs by itself is a workspace's hooks (`listHooks()`): a scheduled task, which the scheduler
-gatekeeper delivers, or something an event a service delivers sets off. They are listed on a tab of
-the workspace's page and of a chat's settings page (`?tab=automations`), which the chat header's
-clock opens with how many the chat has (`AutomationsTab`, `AutomationRow`): the scheduled first,
-then the rest. A row is two lines, as the Library's and the Connections page's are: its name over
-when it runs (or what it watches) and, on the Automations page, its workspace, with why it stopped
-first where it did; at its end how soon it runs next ("in 3 days", the exact time in a tooltip,
-`soonWords`), its switch (`enableHook`/`disableHook`) and more (`AutomationMoreMenu`), which is
-always there rather than slid out when pointed at, as it is the way to delete. All of the
-row opens the rest (`AutomationDialog`): what it does, when it runs and runs next, what it watches,
-the app it runs and its workspace, each going there, its switch, and Delete at its foot, asked
-first by a `ConfirmMenu`, as Disconnect is. More deletes it too, asking in `DeleteAutomationDialog`.
-Deleting is `deleteHook()`, which
-removes a schedule for good: the row goes once the workspace has done it, and a refusal is said
-where it was asked. The switch and Delete are for whoever may build there.
+Automations are the kernel's hooks (`BoundHookInfo`) and nothing more: the workspace tab and agent
+page read `Overseer.listHooks()`, and the Automations page reads the workspace summaries' `hooks`.
+They are listed on a tab of the workspace's page and of a chat's settings page
+(`?tab=automations`), which the chat header's clock opens with how many the chat has
+(`AutomationsTab`, `AutomationRow`), grouped On / Paused. A row is two lines, as the Library's and
+the Connections page's are: its name over what it does or watches and, on the Automations page,
+its workspace; at its end its switch (`enableHook`/`disableHook`) and more (`AutomationMoreMenu`),
+which is always there rather than slid out when pointed at, as it is the way to delete. All of the
+row opens the rest (`AutomationDialog`): what it does, what it watches, the app it runs and its
+workspace, each going there, its switch, and Delete at its foot, asked first by a `ConfirmMenu`,
+as Disconnect is. More deletes it too, asking in `DeleteAutomationDialog`. Deleting is
+`deleteHook()`, which removes a schedule for good: the row goes once the workspace has done it, and
+a refusal is said where it was asked. The switch and Delete are for whoever may build there. No
+gatekeeper's private API is read for timing or status, so nothing says when one runs next or why
+it stopped.
 
 Every workspace's are on a page of their own too (`/automations`, `AutomationsPane` over
 `AutomationsView`), between Library and Connections in the sidebar: under the list's controls
-(`automationList.ts`, plain and tested), by how each stands (what needs seeing to, a schedule that
-stopped or is trying again, first; then the scheduled, soonest first; then what an event sets off;
-then what is paused), by workspace or by name, narrowed to a kind, on or paused, and a workspace,
-each row saying which workspace it is in (`AutomationRow`'s `workspace`). Nothing lists hooks
-across workspaces, so `useAllAutomations` reads the account's schedules once and opens each
-workspace the user builds in, three at a time, the most recently active first, the list filling in
-as they answer. With none at all it says what an automation is and offers a few things to ask for
-(`AutomationsEmpty`), each going home with it written in the composer (the history state's `draft`).
+(`automationList.ts`, plain and tested), by status (On, then Paused), by workspace or by name,
+narrowed to on or paused and a workspace, each row saying which workspace it is in
+(`AutomationRow`'s `workspace`). `useAllAutomations` takes every workspace's hooks from the
+summaries the account keeps (`useWorkspaceSummaries`, below), opening none; a switch turned in
+another tab or on a workspace's own tab is heard of there. While the account is still asking
+workspaces made before it kept summaries, the page says so under what has come in. With none at
+all it says what an automation is and offers a few things to ask for (`AutomationsEmpty`), each
+going home with it written in the composer (the history state's `draft`).
 
-When a schedule runs is the scheduler's to say, from its management app
-(`getGatekeeperApp('scheduler')`, whose `ui` lists the account's schedules), and it is matched to
-its hook by the title, description and gadget it was enabled with (`automations/automations.ts`,
-plain and tested): neither says which the other is. A hook does not say who delivers it either, so
-one is a schedule by having one, or by the scheduler's resource (`scheduler://tasks`), which keeps
-a paused one, which has no schedule, among the scheduled. Nor does it say which chat set it up: a
-chat's are those its cards show, as far as its conversation has been loaded.
+A hook says which chat set it up (`chatId`): a chat's automations are the hooks bound from it
+(`setUpIn`).
 
 On the workspace's page the tab lists first, under "Waiting on you", what was asked outside any
 chat (`attentionOf`'s 'elsewhere' group), which it counts: an action says only the connection it
 went through, not the hook or gadget that made it, so it is put down to the automation whose
 gadget is bound to that connection (`useGadgetConnections`, read only while something waits;
 `asksOfAutomations`, plain and tested), where exactly one is. That automation is listed there,
-what it asks its second line and a pill in place of when it runs next (`AutomationRow`'s
+what it asks its second line and a pill at its end (`AutomationRow`'s
 `waiting`), decided in its gadget. What none, or several, could have asked is one row
 of its own (`OutsideAsksRow`), which goes to the Library tab.
 
@@ -999,7 +1000,7 @@ it waits on) would replace reading each chat's last messages.
 
 An agent is what the backend calls an agent spawner, which is never said to anyone: something a
 gadget starts with a task, such as answering each email that arrives, each time in a run of its
-own, a chat with no person in it. Runs are not chats people have (`isAgentRun`, by `spawnerId` or `spawnerName`), so they are not
+own, a chat with no person in it. Runs are not chats people have (`isAgentRun()` from the shared API, by `spawnerId` or `spawnerName`), so they are not
 offered to carry on in from a gadget's page. They are listed on the Chats tab while they need someone, or
 when looked for, and under their agent, on the workspace's Agents tab, after Chats
 (`AgentsTab`), and on the agent's own page (`/workspace/<id>/agent/<key>`, `AgentPane`, drawn by
@@ -1009,44 +1010,48 @@ asks for is answered. The design record is `plans/agents.md`.
 What matters of a run is how it stands (`automations/agents.ts`, plain and tested): at work,
 waiting on a person, failed, done with changes to keep, or done. Waiting on a person is a run
 stopped on a decision (`awaitingDecision`) or with an action of its own waiting to be approved,
-and failed is a run whose last message is an error other than being stopped. What wants a person
+and failed is a run whose last turn ended on an error other than being stopped (`lastTurnFailed`). What wants a person
 (a run waiting on them, or an agent's latest run that failed) is said where it is seen without
 looking for it: first on the workspace's Chats tab (in progress), counted on it and on the Agents tab (`Tabs`' `count`),
 on the agent's page, on the agent's row on the Agents tab, first and in the colour of it, and
 in the sidebar, in place of the workspace's subtitle (`WorkspaceListItem`'s `attention`). A run's
 header has its agent's crumb (`AgentCrumb`) after the workspace's, which goes to the agent's page.
 An agent is drawn as the mascot (`AgentMark`): thinking while a run works, sad once its latest
-failed, greeting whoever points at its row. A workspace has one agent of a name: a spawner made
-again under a name one already has carries its runs on, its old key kept as another way to it.
+failed, greeting whoever points at its row. An agent is the kernel's: it is an agent spawner, its
+key is the spawner's id, a run is its agent's by its `spawnerId`, and a run with none (from before
+runs recorded their spawner) is no agent's. Nothing is matched by name.
 Its page lists its runs under a tab for each way they stand (`RunFilter`, `runsMatching`,
-`runFilterCounts`: all, needs you, failed, with changes), with what needs the user first under
-All, twenty-five at first and fifty more at a time, and a row of done runs of one title in a row
-folded into one that opens to them (`foldRuns`), so that an agent with hundreds of runs reads at a
-glance and draws only what is shown.
+`runFilterCounts`: all, needs you, failed, with changes, counting those read), with what needs
+the user first under All, and a row of done runs of one title in a row folded into one that
+opens to them (`foldRuns`), so that an agent with hundreds of runs reads at a glance. Its runs are
+its own, read a page at a time (`AgentRunList`, plain and tested, over `listChats({ spawnerId,
+limit, beforeId })`: twenty-five at first and fifty more on Show more), and kept up from
+`subscribeToChat()`, subscribed to first, whose metadata brings its runs that start or change and
+says which are deleted. How many runs it has is said only once the last page is read; until then
+it is "at least" those read. Nothing says when it runs or which of a gadget's hooks started a run,
+so its page says neither.
 
-`WorkspaceAgents` (plain, tested, like `GadgetSettings`) keeps a workspace's agents live: its
-runs from `listChats()` and `subscribeToChat()`, the actions waiting from
-`listActions({ filter: 'pending' })` and `subscribeToActions()`, and the last few messages of the
-latest runs that ended, which say whether they failed and which actions are theirs, as an action
-does not always say which chat it was made from. What an agent is comes from the gadgets: each
-gadget's bindings to a connection with no service are asked how they were made
-(`getCreationSpec()`), which names an agent and its model, so an agent is known before it has run,
-with the gadget that starts it; one no gadget starts any more is asked by the id its runs name.
-When it runs is the automations of that gadget, as nothing says which of a gadget's hooks starts
-which agent. An agent's key is its spawner's id, which a run made before that was recorded does
-not have: such a run joins the agent whose latest run has its name.
+`WorkspaceAgents` (plain, tested, like `GadgetSettings`) keeps a workspace's agents live: what
+each is from `listAgentSpawners()`, one agent each (`setupsOf`: named and given its model as it
+was made, with every gadget bound to it, so one bound by two gadgets says both), read again as
+the workpieces change; its latest runs from the first page of
+`listChats({ kind: 'runs', limit: RUNS_READ })` and `subscribeToChat()`, whose metadata says
+whether each one's last turn failed; and the actions waiting from `listActions({ filter:
+'pending' })` and `subscribeToActions()`, each run's by the chat the action names, or else by the
+run's message that names it (`actionsWaiting`, of people's chats as much as runs). An agent
+known only by runs older than that first page is not listed on the tab (its page still finds
+it by its id), and what the tab says of an agent's runs is of those read (`allRuns`).
 
-The sidebar has the user's other workspaces asked how many of their agents' runs wait
-(`AgentsWaiting`, plain and tested, held by `AgentsWaitingProvider` in `_app`): those active this
-past week that they build in, a few at a time, every two minutes, each by its chats and the actions
-waiting, as nothing says it of the workspaces as a whole. An open workspace says so as it changes. The
-one on screen does wherever it is, in a chat or beside one, not only on its own page (`LiveWaiting`
-in `_app.tsx`), so that what was just approved leaves the sidebar's count at once.
-It only counts an action that names its chat, so the open workspace's page knows more than the
-sidebar of the rest. The same reading counts the chats people had that wait on them
-(stopped on a decision, or with an action waiting), and the gadgets that ask something come from
-`WaitingAsks`; a workspace's line says all three at once (`waitingWords`), and its page counts each
-on the tab that lists it (Chats, Agents, Library), what waits on a decision all of it on Chats. The `agents` scenario has a workspace whose gadgets start four agents, and the
+What waits on the user in each workspace they build in comes from the account, which every
+workspace keeps up to date (`AuthenticatedApi.subscribeToWorkspaceSummaries()`; `WorkspaceSummaries`,
+plain and tested, held by `WorkspaceSummariesProvider` in `_app`, read through
+`useWorkspaceSummaries`): its agents' runs and the chats people had that wait (stopped on a
+decision, or with an action waiting), the gadgets that ask something and how much, and its hooks.
+It opens no workspace and changes as the workspace does. A workspace shared with the user is in it
+once they have opened it and confirmed access; one with no summary yet shows nothing waiting. A
+workspace's line says all three at once (`waitingWords`), and its page counts each on the tab that
+lists it (Chats, Agents, Library), what waits on a decision all of it on Chats, its runs and chats
+from its own live reading. The `agents` scenario has a workspace whose gadgets start four agents, and the
 gallery has each block in each state (`AgentsPreview`, over `exampleAgents.ts`).
 
 ## The sidebar
@@ -1060,9 +1065,8 @@ chat's title, and its latest message; no time). A row marks its activity alone: 
 icon's corner while its agent works (`TypingDots`, which a workspace's chat list has on its
 pictures too), and the unread dot, which a muted chat leaves out. In the rail's card, which has no
 icons, a working chat's second line is "Typing…", shimmering, and the unread dot ends the row.
-Until its latest message is read (`RecentChat.reading`: among those
-whose last messages are read, `tailsWanted`, and not read yet for it as it is now), its second
-line is "Loading…", shimmering; one whose messages are not read at all has none. What waits on the
+A ghost (below) whose conversation is still being read says "Loading…" on its second line,
+shimmering; a listed chat's line comes with it. What waits on the
 viewer is not said on it. With nothing pinned
 and no recent chats, it lists the latest workspaces as rows, as it did before. A row is dragged
 with a mouse onto the tiles to pin its workspace, and a tile within them to move it or out of them
@@ -1073,22 +1077,23 @@ the area is tinted, its height springs to what it holds (from nothing while none
 it says Pin workspace), and the tiles make way for the place it would take (`CardGridMotion`,
 which also moves them with Alt and an arrow key, and drags nothing itself here). A chat of a workspace pinned already can still be picked up, but the area does not open
 for it and it only goes back. A finger does not
-drag: a long press is the menu. The order is `prefs/starOrder.ts`'s, which the Workspaces page
-follows too (`useStarOrder`). Which chats are recent is `workspaces/recentChats.ts` (plain and tested): what waits on
+drag: a long press is the menu. The order is the preferences' `starredWorkspaces`
+(`workspaces/starredOrder.ts`), which the Workspaces page follows too. Which chats are recent is `workspaces/recentChats.ts` (plain and tested): what waits on
 the viewer and the chats people had that they take part in, all by when they were last active, the
-latest first, so a new message puts its chat at the top, from the past week, thirty at most; an agent's run only while it waits. Nothing says who takes part in a chat, so
-it is guessed: the viewer wrote in its last messages, has a read cursor in it, or hears of it. The
-sweep that counts what waits (`AgentsWaitingProvider`) reads each workspace's read state
-(`getWorkspaceUnreadState`) and the last messages of its latest chats with it, into
-`RecentChatsStore`, which `useRecentChats` reads; a workspace whose unread count changes, or whose
-chat is opened, is read again at once. The backend listing the viewer's chats with their latest
-message would replace all of it.
+latest first, so a new message puts its chat at the top, from the past week, thirty at most. Both
+come from the account, opening no workspace: its tracked chats, each with its latest message and
+who wrote it (`subscribeToUnreadState("recent")`, followed by `RecentChatsProvider` into
+`RecentChatsStore`), and what waits on the viewer and which agents work in each workspace (the
+summaries' `waitingChats`, with what each asks, and `workingChatIds`), which `useRecentChats`
+puts together. The viewer takes part in a chat they wrote in (`participated`), have a read cursor
+in, or asked to hear of. An agent's run is listed only while it waits, as the account tracks none
+the viewer was not enrolled in.
 
 A chat open that is not among them (older than a week, hidden, or not the viewer's) is listed
 first while it is open, faintly until something is said in it (`useGhostChats`, its line from the
 open chat's own session, `ghostChat.ts`; `SidebarChat.ghost`). Left with nothing said in it,
 it goes; left with something said, it stays first, as it is drawn then, until the recent chats,
-read again for its workspace, have it. Gone to again from there, it is still drawn whole. Its menu has nothing to mute it by or hide.
+which follow the account live, have it. Gone to again from there, it is still drawn whole. Its menu has nothing to mute it by or hide.
 
 The rows keep their order while the list is pointed at, focused from the keyboard or has a menu
 open, what is new coming at the end (`heldOrder`), and take the real order once left, sliding to
@@ -1118,7 +1123,8 @@ beside a chat names: back in the history when it was the step before, else to th
 beside it), then New chat (`/?workspace=<id>&open=`, greeted "what should we do with Slides?"
 through the `gadgetTitle` history state), then up to four of the workspace's other chats to carry
 on in (`aside/itemChats.ts`, tested, over `useWorkspaceChats`), those that last had it beside them
-in this browser (`lastShown`) first and saying so, agents' runs left out. Opening one remembers it
+(`lastShown`, kept in the user's preferences so it follows them to another browser) first and
+saying so, agents' runs left out. Opening one remembers it
 there. With no chats and none to go back to, Chat starts a new one at once. It is left out in full
 screen; on a phone it is its icon alone and the crumb gives way to the back arrow. The backend does not record
 which chat made a gadget, so nothing claims to know it. The design record is
@@ -1126,14 +1132,15 @@ which chat made a gadget, so nothing claims to know it. The design record is
 
 What a gadget asks to do through its connections is answered where the gadget is: beside a chat,
 as its page and in full screen, by `aside/GadgetAskDock.tsx` (UI `blocks/GadgetAsk.tsx`) over its
-foot, shown once something is asked. An ask counts as the gadget's when it came from one of its
-agents, or through one of its bindings' targets with no chat (`gadgets/askGroups.ts`, tested).
+foot, shown once something is asked. An ask is the gadget's when its code or one of its hooks made
+it outside any chat (`ActionLogEntry.gadgetId`), or one of the agents it started did
+(`AiChatMetadata.spawnedByGadgetId`); shown from a chat out of sight, also what that chat sent
+through its connections (`gadgets/askGroups.ts`, tested).
 Asks from the chat beside it are left to that chat's feed while it is in sight. The asks are
 grouped by kind and resource, named by the resource's title, with Don't allow, Only this time and
 Always allow (Undo for eight seconds). `gadgets/GadgetAsks.ts` (tested) keeps them live, holding
-arrivals back a second, as a rule may let them through. Asks waiting elsewhere are counted by
-`gadgets/WaitingAsks.ts` (tested): open gadgets report live, a sweep reads the workspaces one
-builds in. The count shows on the sidebar's Library row and as `WaitingBadge` on Library rows and
+arrivals back a second, as a rule may let them through. Asks waiting elsewhere are counted from the
+workspace summaries (`gadgetAsks`, `totalGadgetAsks`), each once. The count shows on the sidebar's Library row and as `WaitingBadge` on Library rows and
 cards. The mock scenario `gadget-asks` has three waiting, and ticking a task off asks again; the
 gallery has it as "GadgetAsk". The design record, with what the backend can't say, is
 `plans/gadget-approvals.md`.
@@ -1156,27 +1163,33 @@ file has Download in place of Export and the settings). That goes to its setting
 (`/app/<id>/settings`, `GadgetSettingsPane`), as does the title's bubble, a button ending in a
 chevron as a chat's title is, beside a chat as much as on the gadget's own page. Everything else done to a gadget, such as renaming, exporting (which more has too), making a template of it,
 updating and deleting it, is on that page, and copying its link is in Share.
-The page is laid out as a skill's
-page is: what it is drawn as, its title, renamed where it is, and what its template says it is for,
+The page is laid out as a header with
+what it is drawn as, its title, renamed where it is, and what its template says it is for,
 which is the template's and only read here. The way back to the gadget goes back where it was
 opened from it (`fromItem`). Under them, a tab each (`?tab=`, kept in place in the history):
 
 - Settings, which is the first (`DEFAULT_GADGET_SETTINGS_TAB`, which an address leaves out):
   updating it from its template, creating a template from it, exporting it, and deleting
   it, as rows on one card with no titles of their own (no row says which workspace or template it is
-  from). The template row is Create template until its workspace has made one. Then it is gone, and
-  a group of its own after the card, Template (`MadeTemplateSettings`, one for each: the workspace
-  may have several, as the backend does not say which gadget each is of), read by `useMadeTemplates`
-  from `Overseer.listBlueprints()`. Across from its title is View template, which goes to its page;
-  its rows are Edit details (`EditTemplateDialog`: its title and what it is for, `updateBlueprint`),
-  Release update where its gadget has changes, else Updates with Up to date, and Delete template,
+  from). The template row is Create template until the gadget has made one. Then it is gone, and
+  a group of its own after the card, Template (`MadeTemplateSettings`, one for each of the gadget's
+  own, by `gadgetId`; older ones may be several). `useMadeTemplates` uses
+  `subscribeToOwnBlueprints()` for the owner, so Release update shows once its gadget keeps changes
+  in any chat. Other builders read `Overseer.listBlueprints()` on demand. Across from its title is
+  View template, which goes to its page; its rows are Edit details (`EditTemplateDialog`: its title
+  and what it is for, `updateBlueprint`),
+  Release update where its gadget has code to release (`unpublishedChanges.code`, sent with
+  `updateCode`, which takes the bindings too), Update connections where only its bindings changed
+  (`unpublishedChanges.bindings`: a binding renamed, rebound or given a new note, sent with
+  `updateBindings`, no new version; `releaseWords` names both), else Updates with Up to date, and Delete template,
   which asks "Delete template?" without the name, as the name would read as the gadget.
   `useTemplateOwner` does them, one at a time. Export is the More menu's
   (`ExportItems`) in a menu of its own.
 - Connections: what it is bound to (`GadgetSettings`, plain and tested,
   `listBindings()`), by the name its code knows each by, with the agents it can start apart. A
-  binding says only its service, so one with none is asked what it is (`getCreationSpec()`): an
-  agent and the model it thinks with, or a model. One is taken away from the gadget, asked for
+  binding says what it reaches (`kind`): an agent, with the model its spawner thinks with
+  (`listAgentSpawners()`), a model, which its connection is asked to name (`getCreationSpec()`,
+  for a model alone), or a service's resource. One is taken away from the gadget, asked for
   twice, and stays in the workspace. Its name is renamed where it is, as a title is
   (`BindingRow`'s `onRename`, `renameBinding()`): one the code could not reach it by, or that the
   gadget has another by, is refused with why before anything is asked (`bindingNameProblem`, by the
@@ -1185,9 +1198,9 @@ opened from it (`fromItem`). Under them, a tab each (`?tab=`, kept in place in t
   added here, neither a service nor an AI model: the agent asks for what it needs in a chat, and a
   model is added to a chat (`ChatModelDialog`, from Add a connection) for the agent to give to a
   gadget. A model's row is titled by its model's name and changes model in place (`changeModel`,
-  `ModelBindingDialog`): there is no call to point a binding elsewhere, so the new model's
-  connection replaces it under the same name, its blueprint annotation kept, the old one bound
-  again if that fails. A chat proposing a model says so in plain words when its changes wait to be
+  `ModelBindingDialog`): a connection to the new model, then the binding pointed at it in one step
+  (`GadgetClient.rebind`), which keeps its blueprint annotation and is refused if the binding
+  changed since it was read. A chat proposing a model says so in plain words when its changes wait to be
   kept ("Lets “Tip jar” use Claude Haiku", `useBindingTitles`).
 
 There is one settings page. As the page itself it is the route; beside the page the same page
@@ -1205,11 +1218,13 @@ unless another, or No agent, is chosen. Where nothing was proposed the dialog sa
 to date, the two cannot be merged, or it could not be asked, with Try again. A gadget that shares
 no history with its template is warned of first, in the dialog's place, and merged over a guess
 only on Update anyway. Only a gadget with code of its own takes one: one still waiting in a chat
-has none. Nothing says a template had a new version released, so a newer version is noticed as its page
-or pane is opened, or once the gadget takes one. The template is read through
-`useTemplateReader` (`rpc/PublicApiContext`), which the scripted chats give a fake of their own:
-the `output` scenario's document follows a template a version behind, whose update is proposed
-in the scenario's own chat.
+has none. Settings reads the published record via KV-backed `PublicApi.getBlueprint()` and refreshes
+it on reconnect, entering Settings, checking or taking an update, and a relevant local template
+change. While mounted, `useBlueprintInfo` also reads it again as the window is focused and every
+minute the tab is not hidden, never while a read is still under way, so Update available shows
+without a reload: a re-check, not a feed, as nothing says when a template is released. The
+`output` scenario serves that read from its scripted public API: its document follows a
+template a version behind, whose update is proposed in the scenario's own chat.
 
 Someone it was shared with to use is told its settings are not theirs. What the old app also had
 here (who has access, its automations, changing what it is drawn as,
@@ -1224,9 +1239,9 @@ whoever may build in its workspace, as in the old app, the kinds of file a conne
 from one of those formats (`saveTargetsOf`: a kind with a creation form whose `savableFrom` names
 the format). Save to one asks in `ConnectResource`'s `save`: the account, the file's name, then
 where, in the service's creation form opened for saving; the export is handed to `saveFile()`
-unawaited, so that it goes straight to the service. The file the last save made is kept on this
-device (`prefs/savedExports.ts`), as the backend keeps no record of it, and Update saves over it
-after asking (`UpdateFileDialog`). What became of an export floats over the foot of the pane
+unawaited, so that it goes straight to the service. The file the last save made is kept in the
+user's account (`savedExports`, through `prefs/savedExports.ts`), so Update works
+from any browser, and Update saves over it after asking (`UpdateFileDialog`). What became of an export floats over the foot of the pane
 (`PaneStatus`): under way, saved with the way to open it, or why it failed. The `output`
 scenario's gadget exports as Markdown and CSV, and fails as a PDF; the scripted chats offer no
 service to save to.
@@ -1325,8 +1340,12 @@ the dialog is open: people are invited one at a time, a name that would change n
 without asking, and access is taken away from a person's row, the server first saying what that
 does to whom (`RemovalDialog`); from a gadget, they lose that gadget alone. The viewer's own link
 (each sharer has one default link for what they share) lets anyone in the deployment get it from
-the page it was copied on, its key in the fragment, which `ShareLinkGate` redeems before anything
-is shown. Turned off, whoever came in by it keeps what it gave them.
+the page it was copied on, its key in the fragment, which `ShareLinkGate` redeems on its own
+(`redeemWorkspaceShareLink`) before anything is shown, then opens the workspace without it, so that
+a dead link, a confirmation declined and a dropped connection are each said as what they are. It is
+found among `listShareLinks()` (the viewer's `default` link for what is shared), and Copy link mints its key only when chosen
+(`SharingSession.linkToCopy`). Turned off, whoever came in by it keeps what it gave them, decided
+by the server as it turns it off (`revokeShareLink(linkId, "everyone")`).
 
 What it reads at other services is said at the dialog's foot (Protected resources, and how many),
 which goes on to a page of its own listing each once under its service's logo, however many of its
@@ -1345,11 +1364,13 @@ its workspace is left, and what can be asked meanwhile is. Each resource once wi
 a choice of theirs, or the way to connect one, what would make the one chosen do, and, asked again,
 which were refused; on a phone, a card for each service instead, its account and what is to be done
 about it once for the resources it reads, which are chips under it. Only the workspace on screen asks (`viewedWorkspace`): those the sidebar and the
-sweeps open in the background are refused, as is what the user cancelled, until they ask again, and
-going to another workspace leaves what it asked unanswered, which is asked again on coming back. A
-gadget's loading waits on the answer as long as it takes (`GadgetConnection`'s `waitsOnViewer`). A
-gadget that was not confirmed says so in its pane, with Confirm access, which asks again
-(`useAskAccessAgain`).
+sweeps open in the background are refused as not asked, as is what the user cancelled, until they ask again, and
+going to another workspace leaves what it asked unanswered, which is asked again on coming back; a
+cancelled question is refused as cancelled (`ACCESS_CONFIRMATION_ERROR_CODES`, which the overseer
+refuses the open with, naming the workspace and gadget). A gadget's loading waits on the answer as
+long as it takes (`GadgetConnection`'s `waitsOnViewer`). A gadget whose open was refused with one
+of those codes is `unconfirmed` (`GadgetConnection`) and says so in its pane, with Confirm access,
+which asks again (`useAskAccessAgain`).
 
 Where a gadget can't be opened, as its workspace does not let the viewer in or is gone
 (`GadgetUi`'s `reason`, from the open's error code), or they are yet to confirm their access, and a
@@ -1373,19 +1394,20 @@ and for everyone; someone it was shared with only removes it from their own list
 is offered is whose it is (`workspaces/workspaceRemoval.ts`, plain and tested: a workspace that
 names no `owner` is the viewer's). Either asks first, in place under its button (`ConfirmMenu`, with the words of `RemoveWorkspaceDialog`, which the Workspaces page's menu opens), deleting saying
 what goes and for how many besides the viewer, as far as its members are known, and that it
-cannot be undone. Once done, `WorkspacesProvider` drops it from the list, which nothing else would
-tell it, and its page goes home. The `shared-workspace` scenario's page offers the removal, and
+cannot be undone. Once done, the account drops it from the list (`WorkspacesProvider`'s feed), and
+its page goes home. The `shared-workspace` scenario's page offers the removal, and
 any other's the deletion: its Settings tab opens it there.
 
 A workspace's icon is a folder with its initials until the user gives it a look: one of the shapes
-and colours in `components/workspaceLook.ts`. On its page the icon is a button, as its title is a
-field (`WorkspaceIconPicker`): it opens a menu of the shapes and, under them, the colours
+and colours in `prefs/preferenceFields.ts` (`WorkspaceLook`), named and filled by
+`components/workspaceLook.ts`. On its page the icon is a button, as its title is a field
+(`WorkspaceIconPicker`): it opens a menu of the shapes and, under them, the colours
 (`DropdownMenu.SwatchGroup`), which stays open beside the icon so that each choice is seen on it.
-The backend keeps no look, so they are this device's (`workspaces/WorkspaceLooks.ts`, plain and
-tested, held by `WorkspacesProvider`), for anyone who can open the workspace: they do not follow
-the user to another browser, and should be the server's once the backend can say so. Whatever
-draws a workspace's icon is given its look with its initials (`useWorkspaceLooks`), so that it is
-the same in the sidebar, the lists, a header and a filter.
+Each look is the user's own, kept in their preferences (`workspaceLooks`, `setWorkspaceLook` in
+`workspaces/useWorkspaceLooks.ts`) and seen by no one else, so it follows them to another
+browser; a shape or colour the app no longer has is read as the first. Whatever draws a
+workspace's icon is given its look with its initials (`useWorkspaceLooks`), so that it is the same
+in the sidebar, the lists, a header and a filter.
 
 `WorkspaceIcon` draws a shape as layers, each rounded, with the letters on what looks like the
 middle of the layer they are on: say where that is for a new shape (`label`), and size it to weigh
@@ -1439,11 +1461,21 @@ crumb or the sidebar, so that the same output is in sight from one chat to the n
 chat's, and is left there.
 
 What is listed beside a chat, and on its settings page, is everything its workspace has made
-(`useChatLibrary`): the library (`listOutputs()`), read again for each chat, and what the chat has
-made that the library does not have yet (a gadget still to be accepted, a worktree), from what is
-loaded of the conversation. The backend says nothing of which chat made what, so it is not just
-the chat's own. Files sent in the chat are not listed for now, though one opened from its message
-is shown as before.
+(`useChatLibrary`): the library (`useLibrary()`, the app's one outputs feed), and what the chat has
+made that the library does not have yet (a gadget still to be accepted, a worktree), from all of
+what the chat has (`Overseer.listChatArtifacts()`, read whole by `ChatSession` and again when a
+message or decided action can change it), with what it worked on as far as the conversation is
+loaded. The chat's context card lists its uploads and the connections it used from the same read,
+however little of the conversation is loaded. A file opened from a link alone has its name and type
+read with its bytes (`Overseer.getChatAttachment()`). The actions the chat waits on are the
+workspace's pending ones (`Overseer.listActions({ filter: 'pending' })`, every page, kept up by the
+actions subscription) that name the chat (`ActionLogEntry.chatId`); those whose messages are not
+loaded are shown first under the conversation. A connection or web fetch request it waits on is in
+its history: where the metadata says it waits (`AiChatMetadata.awaitingDecision`) and neither a
+pending action nor a loaded request explains it, `ChatSession` fetches the history back until one
+is loaded or there is no more, in as few reads as the workspace allows, once a load. Its own
+metadata, on opening, reconnecting and before keeping changes, comes from
+`Overseer.getChatMetadata()`: no chat reads every chat in its workspace to find itself.
 
 The card (`SidePane`) is a header, then what is shown on a tinted surface that fills the rest of the
 card out to its sides and bottom, with rounded top corners and a line along its top only. The header
@@ -1669,11 +1701,18 @@ literals. Wrap a Kumo component only for what tokens cannot change, such as size
 
 - Page backdrop: `kumo-canvas`. Content card: `kumo-base`. The composer: `kumo-elevated`.
 - Dark follows the system: `index.html` sets `data-mode` on the root before anything is drawn, and
-  keeps it in step. Each token in `theme.css` is a `light-dark()` pair, and the rules that derive
-  dark from light are written at the top of that file. Keep to them, so that what matches in light
-  matches in dark.
+  keeps it in step. The shared tokens are `@gadgets/ui/styles.css`'s, and this app's own are in
+  `theme.css` over them; each is a `light-dark()` pair, and the rules that derive dark from light
+  are written at the top of the shared file. Keep to them, so that what matches in light matches
+  in dark.
 
-## Promoting to `@gadgets/ui`
+## Shared components: `@gadgets/ui`
 
-Components start here. Move one to `packages/ui` once a second frontend (e.g. a gatekeeper app) needs
-it, as `packages/ui/AGENTS.md` describes. Shell and layout code is expected to stay here.
+The components this app shares with the Context Library's app (buttons, lists and their view,
+menus, dialogs, the page layout, settings rows, motion) live in `@gadgets/ui`: a change to one goes
+there, as `packages/ui/AGENTS.md` describes, and a new one starts here until a second frontend
+needs it. Shell and layout code is expected to stay here. The app gives the package what it keeps
+for the user, in `main.tsx`: the motion level (`provideMotionLevel(chosenMotionLevel)`, from
+`prefs/motion.ts`) and where each list's view is kept (`ListViewPrefsContext` with
+`keepListViewOnDevice`, from `prefs/listView.ts`). `styles.css` imports `@gadgets/ui/styles.css`
+after Tailwind, with `packages/ui/src` as an `@source`.

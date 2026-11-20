@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { isMotionOff } from '@/prefs/motion'
+import { isMotionOff } from '@gadgets/ui'
 
 /**
  * Where a message's details are between away and shown. `arriving` and `full` are both all of

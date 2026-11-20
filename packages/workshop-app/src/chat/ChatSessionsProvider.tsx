@@ -1,26 +1,23 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { useApi } from '@/rpc/ApiContext'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
-import { useRefreshWorkspaces } from '@/workspaces/WorkspacesContext'
 import { ChatSession } from './ChatSession'
 import { ChatSessions } from './ChatSessions'
 import { ChatSessionsContext } from './ChatSessionsContext'
 
 /**
- * Shares one live session for each chat shown beneath it. Needs `WorkspacesProvider` above it. A
- * new API, from a new connection, connects them all again, keeping what each shows meanwhile.
+ * Shares one live session for each chat shown beneath it. A new API, from a new connection,
+ * connects them all again, keeping what each shows meanwhile.
  */
 export const ChatSessionsProvider = ({ children }: { children: ReactNode }) => {
   const { api, user } = useApi()
   // Stable, as the gate holds one for as long as it is signed in.
   const connection = useConnectionNotice() ?? undefined
-  // Stable: when a turn ends the workspace's title and activity may have changed, so the sidebar reloads.
-  const refreshWorkspaces = useRefreshWorkspaces()
   // The API sessions open their workspace with, read when they connect.
   const latestApi = useRef(api)
   const [sessions] = useState(
     () => new ChatSessions((workspaceId, chatId) =>
-      new ChatSession(() => latestApi.current.openWorkspace(workspaceId), chatId, { viewerId: user.id, onTurnEnded: refreshWorkspaces, connection })),
+      new ChatSession(() => latestApi.current.openWorkspace(workspaceId), chatId, { viewerId: user.id, connection })),
   )
   // A layout effect, so the new API is in place before any session started in the same commit
   // connects, which happens in a passive effect.

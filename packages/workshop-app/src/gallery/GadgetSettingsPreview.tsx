@@ -1,9 +1,8 @@
 import { useState } from 'react'
 import { BindingRow } from '@/blocks/BindingRow'
-import { ListGroup } from '@/blocks/ListGroup'
+import { Button, ListGroup } from '@gadgets/ui'
 import { ModelBindingDialog, type ModelChoice } from '@/blocks/ModelBindingDialog'
 import { UpdateFromTemplateDialog, type UpdateFromTemplateOutcome, type UpdateTemplate } from '@/blocks/UpdateFromTemplateDialog'
-import { Button } from '@/components/Button'
 import { bindingNameProblem, freeBindingName, MODEL_BINDING_NAMES, type GadgetBinding, type Listed } from '@/gadgets/GadgetSettings'
 import { DEFAULT_GADGET_SETTINGS_TAB, GadgetSettingsView, type GadgetSettingsState, type GadgetSettingsTab } from '@/gadgets/GadgetSettingsView'
 import type { MadeTemplate } from '@/blocks/CreateTemplateDialog'
@@ -130,9 +129,10 @@ const STATES = {
 
 const TEMPLATES: Record<string, { label: string; made: MadeTemplate[] | undefined }> = {
   none: { label: 'No template yet', made: [] },
-  changes: { label: 'Template with changes', made: [{ id: 'tpl-tip', title: 'Tip jar', description: 'Counts tips for the team lunch.', version: 3, changes: true }] },
+  changes: { label: 'Template with changes', made: [{ id: 'tpl-tip', title: 'Tip jar', description: 'Counts tips for the team lunch.', version: 3, changes: { code: true } }] },
+  connections: { label: 'Template with connection changes', made: [{ id: 'tpl-tip', title: 'Tip jar', description: 'Counts tips for the team lunch.', version: 3, changes: { bindings: true } }] },
   current: { label: 'Template up to date', made: [{ id: 'tpl-tip', title: 'Tip jar', description: 'Counts tips for the team lunch.', version: 3 }] },
-  several: { label: 'Several templates', made: [{ id: 'tpl-tip', title: 'Tip jar', description: 'Counts tips for the team lunch.', version: 3, changes: true }, { id: 'tpl-lunch', title: 'Team lunch tracker', description: '', version: 1 }] },
+  several: { label: 'Several templates', made: [{ id: 'tpl-tip', title: 'Tip jar', description: 'Counts tips for the team lunch.', version: 3, changes: { code: true } }, { id: 'tpl-lunch', title: 'Team lunch tracker', description: '', version: 1, changes: { bindings: true } }] },
   unread: { label: 'Templates not read', made: undefined },
 }
 

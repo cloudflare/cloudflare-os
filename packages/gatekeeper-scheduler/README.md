@@ -1,22 +1,16 @@
 # Scheduled Tasks
 
 Scheduled Tasks is an ambient Gatekeeper that lets workspace code register persistent callbacks for
-elapsed intervals, wall-clock recurrences, and one-time runs. Each account also gets a read-only
-management app at `/gatekeepers/scheduler`.
+elapsed intervals, wall-clock recurrences, and one-time runs.
 
 ## User flow
 
-1. Ask the agent to create a scheduled task, or open **Scheduled** and choose a starter prompt.
+1. Ask the agent to create a scheduled task.
 2. Confirm what the task should do, the workspace and resources it may use, its cadence, and its
    IANA timezone when it uses wall-clock time.
 3. The agent registers a persistent callback. Registration creates a disabled hook and returns its
    schedule ID; it does not start the schedule.
 4. Enable the hook in the Workshop's Connections UI.
-5. Use **Scheduled** to search and inspect schedules across the account. Select a schedule row to
-   open its workspace.
-
-The Scheduler app is intentionally read-only. Enabling and disabling remain in Connections; the app
-does not provide editing, pausing, deletion, run history, or a second hook toggle.
 
 ## Agent API
 
@@ -109,8 +103,8 @@ choose UTC.
 
 ## Lifecycle
 
-Registration only binds a disabled Workshop hook; it writes no schedule row. Enabling records the
-target workspace ID and optional gadget ID, then creates the account-driver row and arms its alarm.
+Registration only binds a disabled Workshop hook; it writes no schedule row. Enabling creates the
+account-driver row and arms its alarm.
 Disabling removes the row and its stored capabilities. Re-enabling creates fresh active state,
 preserves the original recurrence phase, and does not replay missed work. A repeated enable while
 the row still exists instead preserves its current schedule state and refreshes its activation details.
@@ -122,24 +116,6 @@ register its callback and receive fresh enablement.
 
 Disconnecting the Scheduler account revokes its driver, deletes schedule state, and leaves a permanent
 tombstone so retained stale controllers cannot recreate the account.
-
-## Management app
-
-The account advertises its UI through the generic `AccountDescription.providesUi` mechanism, the same
-mechanism used by other Gatekeeper management apps. The Workshop discovers it dynamically and hosts
-the single-file app in an opaque-origin, network-isolated `srcDoc` frame.
-
-The app can only call its account-scoped, read-only `list()` capability (`ScheduleManagementApi` in
-`src/management-types.ts`, which `src/app-api.ts` exports as `AppApi`, so `pnpm cf-os api
-get-gatekeeper-app scheduler ui list` is a typed command) plus bounded host methods for
-theme updates, workspace-title resolution, navigation, and starter prompts. Pages contain at most 100
-schedules. Search is case-insensitive over title and description and is limited to 200 characters.
-Cursors are opaque, bounded, and tied to the normalized search and status filters.
-
-The **All**, **Active**, **Needs attention**, and **Finished** tabs map to the projected
-`active`, `dead`, and `completed`/`expired` statuses. Target metadata is presentation data only;
-opening its validated internal route grants no new authority. Create and starter actions place fixed
-editable text in the Home composer and never submit it automatically.
 
 ## Architecture and security
 
@@ -153,7 +129,7 @@ pass with four concurrent deliveries, then arms an immediate continuation when a
 Stable `runId` fencing prevents late completion or retry continuations from mutating a disabled,
 re-enabled, or revoked schedule.
 
-One account-wide driver keeps management and revocation simple, but it is also a shared failure domain:
+One account-wide driver keeps revocation simple, but it is also a shared failure domain:
 a user callback that never settles can delay other schedules in that account until the runtime aborts
 the alarm. Bounded batches limit ordinary load; they do not eliminate that tradeoff.
 
@@ -168,7 +144,6 @@ Observers follow the low-stakes policy: `list()` and each delivery report `subre
 
 - 500 enabled or terminal schedule rows per account.
 - 100 enabled or terminal schedule rows per workspace.
-- 100 rows per management page.
 - 20 due schedules per alarm pass and four concurrent deliveries.
 - Eight callback attempts per logical occurrence.
 - Schedule titles: 200 characters; descriptions: 2,000 characters.
@@ -187,21 +162,18 @@ pnpm run dev-server
 pnpm run dev-client
 ```
 
-The development server discovers `gatekeeper-*` packages, builds `app/` into the generated single-file
-asset, and creates the local `GATEKEEPER_SCHEDULER` service binding. Do not edit generated local
-Wrangler configuration.
+The development server discovers `gatekeeper-*` packages and creates the local
+`GATEKEEPER_SCHEDULER` service binding. Do not edit generated local Wrangler configuration.
 
 Worker code gets its runtime and `Cloudflare.Env` types from generated
 [`worker-configuration.d.ts`](worker-configuration.d.ts), referenced by `tsconfig.json`. Regenerate it
 with Wrangler after changing Worker configuration; do not hand-maintain a parallel `Env` interface.
-The browser app uses the separate DOM-only `tsconfig.app.json` and imports only environment-neutral
-management DTOs.
 
 ## Deployment
 
 Before exposing Scheduler:
 
-1. Deploy the Workshop hook target-metadata contract and the `startHook()` admission backstop.
+1. Deploy the Workshop `startHook()` admission backstop.
 2. Deploy this Worker so its `ScheduleDriver` and `SchedulerGatekeeper` SQLite migration exists.
 3. Add `GATEKEEPER_SCHEDULER` to the deployment's Workshop service bindings.
 
@@ -214,8 +186,6 @@ exist and must not be removed from an existing deployment.
 
 ## Troubleshooting
 
-- **Scheduled is missing from navigation:** confirm the Scheduler binding exists, the vendor is enabled
-  or optional with a connected account, and account discovery returns `providesUi`.
 - **A new schedule is not listed or running:** registration starts disabled. Enable its hook in the
   workspace Connections UI.
 - **A schedule says Needs attention:** callback authorization or execution exhausted its retry budget.

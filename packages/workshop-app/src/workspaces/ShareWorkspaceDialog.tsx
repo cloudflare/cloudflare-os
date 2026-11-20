@@ -2,18 +2,11 @@ import { useState } from 'react'
 import { ArrowSquareOutIcon, BuildingsIcon, CaretLeftIcon, CaretRightIcon, LockSimpleIcon, UsersThreeIcon, XIcon } from '@phosphor-icons/react'
 import type { CollaboratorInfo } from '@gadgets/workshop-shared/api'
 import { resolveSiteName } from '@gadgets/workshop-shared/api'
-import { AccessMenu } from '@/blocks/AccessMenu'
+import { AccessMenu, Banner, Button, Dialog, ListGroup, MemberListItem, ShareNote, webUrl } from '@gadgets/ui'
 import { CopyLinkButton } from '@/blocks/CopyLinkButton'
 import { InviteField } from '@/blocks/InviteField'
-import { ListGroup } from '@/blocks/ListGroup'
-import { MemberListItem } from '@/blocks/MemberListItem'
 import { RemovalDialog } from '@/blocks/RemovalDialog'
-import { ShareNote } from '@/blocks/ShareNote'
-import { Banner } from '@/components/Banner'
-import { Button } from '@/components/Button'
-import { Dialog } from '@/components/Dialog'
 import { ServiceLogo } from '@/components/ServiceLogo'
-import { webUrl } from '@/components/webUrl'
 import { useApi } from '@/rpc/ApiContext'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { useServerConfig } from '@/rpc/serverConfig'
@@ -89,8 +82,6 @@ const ShareContent = ({ workspaceId, title: knownTitle, page, target }: ContentP
 
   const link = ready?.link
   const linkOn = link?.status === 'on'
-  // Off, its address still opens it for whoever has access already.
-  const copied = linkOn ? link.url : page
   const feedbackId = `share-${workspaceId}-feedback`
   const removable = (person: CollaboratorInfo) => standing !== undefined && person.profile.id !== user.id && canChange(person, standing, user.id)
   const resources = ready?.requirements && protectedResources(ready.requirements, ready.vendors)
@@ -239,8 +230,8 @@ const ShareContent = ({ workspaceId, title: knownTitle, page, target }: ContentP
             </button>
           )}
           <span className="flex-1" />
-          {/* Until its key is minted, a link that is on has nothing to copy that would let anyone in. */}
-          <CopyLinkButton link={copied ?? page} title={what} labelled primary disabled={linkOn && copied === undefined} />
+          {/* Off, its address still opens it for whoever has access already; on, a key is minted for the copy. */}
+          <CopyLinkButton link={() => session.linkToCopy()} title={what} labelled primary />
         </footer>
       </div>
       {/* Within it, so that it is the one Escape and a click outside put away. */}

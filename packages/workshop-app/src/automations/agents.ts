@@ -1,5 +1,5 @@
-import type { AiChatMessage, AiChatMetadata } from '@gadgets/workshop-shared/api'
-import { formatActivity } from '@/workspaces/formatActivity'
+import { isAgentRun, type AgentSpawnerInfo, type AiChatMetadata } from '@gadgets/workshop-shared/api'
+import { formatActivity } from '@gadgets/ui'
 
 /**
  * How one run stands: its agent at work (`running`), stopped on a decision only a person can make
@@ -17,32 +17,29 @@ export type AgentRun = {
   status: RunStatus
 }
 
+/** A gadget bound to an agent, and the name its code knows the agent by (`env.NAME`). */
+export type AgentGadget = { id: number; title: string; bindingName: string }
+
 /**
- * An agent as the workspace has set it up (an agent spawner), as far as it can be read: its
- * name and the model it thinks with, from how it was made, and the gadget that starts it, from
- * that gadget's bindings. One that no gadget is bound to has none.
+ * An agent as the workspace has set it up: one of its agent spawners (`listAgentSpawners()`),
+ * which is the agent, with its name and the model it thinks with as it was made, and every gadget
+ * bound to it. One that no gadget is bound to has none.
  */
 export type AgentSetup = {
+  /** The agent's spawner, as its runs name it (`AiChatMetadata.spawnerId`). */
   spawnerId: number
   name: string
   /** The model it thinks with, by name. Absent for one that thinks with none, whose runs wait for a person. */
   model?: string
-  /** The gadget that starts it, and the name its code knows it by (`env.NAME`). */
-  gadget?: { id: number; title: string; bindingName: string }
+  gadgets: AgentGadget[]
 }
 
 /**
- * An agent a workspace's gadgets start: what it is, as it was set up where that can be read, and
- * the runs it has had, latest first. Its key is its spawner's id, which a run started before runs
- * recorded it does not have: such runs join the agent whose latest run has their name, or are an
- * agent of that name alone.
+ * An agent of a workspace: as it was set up where its spawner is listed, else as its runs name
+ * it, with those of its runs that were read, latest first. Its key is its spawner's id.
  */
-export type Agent = {
+export type Agent = AgentSetup & {
   key: string
-  spawnerId?: number
-  name: string
-  model?: string
-  gadget?: AgentSetup['gadget']
   runs: AgentRun[]
   /** Its runs waiting on a person. */
   waiting: number
@@ -50,37 +47,48 @@ export type Agent = {
   running: number
   /** Its latest run ended on an error, which nothing has run since to put right. */
   failed: boolean
-  /** The keys of spawners it replaced, whose runs are its: a run's page names its agent by one. */
-  aliases?: string[]
 }
 
 /** What says how runs stand, beyond what each chat says of itself. */
 export type RunSignals = {
   /** The runs with an action waiting to be approved. */
   pending: ReadonlySet<number>
-  /** The runs whose last message is an error. */
-  failed: ReadonlySet<number>
 }
 
-const NO_SIGNALS: RunSignals = { pending: new Set(), failed: new Set() }
-
-/** A chat an agent had, rather than one a person started. */
-export const isAgentRun = (chat: AiChatMetadata) => chat.spawnerId !== undefined || chat.spawnerName !== undefined
+const NO_SIGNALS: RunSignals = { pending: new Set() }
 
 /** The key of an agent, by its spawner's id, for its page's address. */
 export const agentKeyOf = (spawnerId: number) => String(spawnerId)
 
-/** The key of an agent known only by its name, as one whose runs predate their spawner's id is. */
-export const namedAgentKey = (name: string) => `name:${name}`
+/**
+ * What a workspace's agent spawners set up: one agent each, bound to every gadget it is bound to
+ * that `gadgets` lists (by id, with its title). A binding still waiting in a chat is not the
+ * agent's yet.
+ */
+export const setupsOf = (spawners: readonly AgentSpawnerInfo[], gadgets: ReadonlyMap<number, string>): AgentSetup[] =>
+  spawners.map(({ id, config, modelName, bindings }) => ({
+    spawnerId: id,
+    name: config.displayName,
+    ...(modelName ? { model: modelName } : {}),
+    gadgets: bindings.flatMap(({ gadgetId, name, chatId }) => {
+      const title = gadgets.get(gadgetId)
+      return chatId === undefined && title !== undefined ? [{ id: gadgetId, title: title || 'Untitled gadget', bindingName: name }] : []
+    }),
+  }))
 
-/** A message that says its turn ended on an error, other than being stopped by a person. */
-export const isFailure = (message: AiChatMessage) => message.type === 'error' && message.code !== 'stopped'
+/** The gadgets bound to an agent, each once, though it may know the agent by two names. */
+export const gadgetsOf = ({ gadgets }: Pick<AgentSetup, 'gadgets'>) => [...new Map(gadgets.map((gadget) => [gadget.id, gadget])).values()]
+
+const LIST = new Intl.ListFormat('en', { type: 'conjunction' })
+
+/** Gadgets' titles, in words: "Inbox, Changelog and Triage". */
+export const gadgetTitles = (gadgets: readonly Pick<AgentGadget, 'title'>[]) => LIST.format(gadgets.map(({ title }) => title))
 
 /** How a run stands, from its chat and what else is known of it. */
 export const runStatus = (chat: AiChatMetadata, signals: RunSignals = NO_SIGNALS): RunStatus => {
   if (chat.awaitingDecision || signals.pending.has(chat.id)) return 'waiting'
   if (chat.activeAgent) return 'running'
-  if (signals.failed.has(chat.id)) return 'failed'
+  if (chat.lastTurnFailed) return 'failed'
   if (chat.proposedChangeWorkpieces?.length) return 'changes'
   return 'done'
 }
@@ -91,39 +99,23 @@ export const wantsAttention = (agent: Pick<Agent, 'waiting' | 'failed'>) => agen
 const latestFirst = (a: { lastActive: Date }, b: { lastActive: Date }) => b.lastActive.getTime() - a.lastActive.getTime()
 
 /**
- * A workspace's agents: those it has set up (`setups`), with the runs among its chats, and any
- * others its runs name. Those that want a person come first, then the rest by their latest run,
- * then those that have not run, by name.
+ * A workspace's agents: those it has set up (`setups`), with their runs among `chats`, and any
+ * others those runs are of (their `spawnerId`), named as the latest of them names its spawner. A
+ * run with no `spawnerId` joins none. Those that want a person come first, then the rest by their
+ * latest run, then those that have not run, by name.
  */
 export const agentsOf = (chats: readonly AiChatMetadata[], signals: RunSignals = NO_SIGNALS, setups: readonly AgentSetup[] = []): Agent[] => {
-  const runs = chats.filter(isAgentRun).toSorted(latestFirst)
   const agents = new Map<string, Agent>()
-  const add = (key: string, agent: Omit<Agent, 'key' | 'runs' | 'waiting' | 'running' | 'failed'>) => {
-    const made: Agent = { key, ...agent, runs: [], waiting: 0, running: 0, failed: false }
-    agents.set(key, made)
+  const add = (setup: AgentSetup) => {
+    const made: Agent = { ...setup, key: agentKeyOf(setup.spawnerId), runs: [], waiting: 0, running: 0, failed: false }
+    agents.set(made.key, made)
     return made
   }
-  for (const setup of setups) {
-    if (!agents.has(agentKeyOf(setup.spawnerId))) add(agentKeyOf(setup.spawnerId), setup)
-  }
-  // A run joins its spawner's agent. One whose spawner is no longer set up (a chat that set the
-  // agent up again replaced it) joins the one set-up agent of its name, as people know it by its
-  // name; and a run that names only its spawner's name joins the agent whose latest run has that
-  // name.
-  const setUpByName = new Map<string, string | null>()
-  for (const { name, spawnerId } of setups) setUpByName.set(name, setUpByName.has(name) ? null : agentKeyOf(spawnerId))
-  const keyByName = new Map<string, string>()
-  for (const [name, key] of setUpByName) if (key) keyByName.set(name, key)
-  for (const chat of runs) {
-    if (chat.spawnerId !== undefined && chat.spawnerName && !keyByName.has(chat.spawnerName)) keyByName.set(chat.spawnerName, agentKeyOf(chat.spawnerId))
-  }
-  for (const chat of runs) {
-    const name = chat.spawnerName || 'Agent'
-    const own = chat.spawnerId !== undefined ? agentKeyOf(chat.spawnerId) : undefined
-    const setUp = setUpByName.get(name)
-    const key = own ? (agents.has(own) || !setUp ? own : setUp) : keyByName.get(name) ?? namedAgentKey(name)
-    const agent = agents.get(key) ?? add(key, { name, ...(chat.spawnerId !== undefined ? { spawnerId: chat.spawnerId } : {}) })
-    if (own && own !== key && !agent.aliases?.includes(own)) agent.aliases = [...(agent.aliases ?? []), own]
+  for (const setup of setups) if (!agents.has(agentKeyOf(setup.spawnerId))) add(setup)
+  for (const chat of chats.filter(isAgentRun).toSorted(latestFirst)) {
+    const { spawnerId } = chat
+    if (spawnerId === undefined) continue
+    const agent = agents.get(agentKeyOf(spawnerId)) ?? add({ spawnerId, name: chat.spawnerName || 'Agent', gadgets: [] })
     const status = runStatus(chat, signals)
     if (agent.runs.length === 0) agent.failed = status === 'failed'
     agent.runs.push({ chatId: chat.id, title: chat.title || 'Untitled run', started: chat.started, lastActive: chat.lastActive, status })
@@ -137,10 +129,6 @@ export const agentsOf = (chats: readonly AiChatMetadata[], signals: RunSignals =
     || a.name.localeCompare(b.name))
 }
 
-/** The agent `key` names: its own key, or one of a spawner it replaced. */
-export const agentByKey = (agents: readonly Agent[], key: string) =>
-  agents.find((agent) => agent.key === key) ?? agents.find(({ aliases }) => aliases?.includes(key))
-
 /** The runs of a workspace's agents that want a person, latest first, each with its agent. */
 export const runsWantingAttention = (agents: readonly Agent[]) =>
   agents
@@ -152,11 +140,15 @@ const COUNT = new Intl.NumberFormat('en')
 /** When something was, in words that can follow others: "2 hours ago", "just now", "yesterday". */
 export const activityWords = (at: Date, now?: Date) => formatActivity(at, now).replace(/^(Just now|Yesterday)$/, (word) => word.toLowerCase())
 
-/** An agent's runs, in words: how many, and when the latest was; or that it has not run. */
-export const runsWords = ({ runs }: Pick<Agent, 'runs'>, now?: Date) =>
-  runs.length === 0
-    ? 'Hasn’t run yet'
-    : `${runs.length === 1 ? 'One run' : `${COUNT.format(runs.length)} runs`} · latest ${activityWords(runs[0].lastActive, now)}`
+/**
+ * An agent's runs, in words: how many, and when the latest was; or that it has not run. Unless
+ * `all` of them were read, it says only what was: at least so many, or none of late.
+ */
+export const runsWords = ({ runs }: Pick<Agent, 'runs'>, all: boolean, now?: Date) => {
+  if (runs.length === 0) return all ? 'Hasn’t run yet' : 'No recent runs'
+  const count = runs.length === 1 ? (all ? 'One run' : 'At least one run') : `${all ? '' : 'At least '}${COUNT.format(runs.length)} runs`
+  return `${count} · latest ${activityWords(runs[0].lastActive, now)}`
+}
 
 /** How a run stands, in a word or two. */
 export const STATUS_WORDS: Record<RunStatus, string> = {

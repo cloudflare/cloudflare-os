@@ -1,6 +1,5 @@
 import { ArrowUUpLeftIcon, ChatCircleIcon, PlusIcon } from '@phosphor-icons/react'
-import { Button } from '@/components/Button'
-import { DropdownMenu } from '@/components/DropdownMenu'
+import { Button, DropdownMenu } from '@gadgets/ui'
 
 /** A chat in the workspace an item is in, to carry on in with the item beside it. */
 export type GadgetChatMenuChat = {
@@ -8,7 +7,7 @@ export type GadgetChatMenuChat = {
   title: string
   /** When it was last active: "2 hours ago". */
   time: string
-  /** It had the item beside it when it was last open, in this browser. */
+  /** It had the item beside it when it was last open. */
   showing?: boolean
 }
 

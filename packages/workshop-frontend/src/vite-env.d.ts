@@ -8,6 +8,10 @@ interface ImportMetaEnv {
   // In this mode, password-based login/signup is disabled and the app authenticates
   // via the CF Access JWT that Access injects into requests before they reach the server.
   readonly VITE_CF_ACCESS_MODE?: string;
+
+  // The build's id, which VERSION_PATH answers as `assets` (scripts/assets-build-id.ts);
+  // undefined outside a build.
+  readonly ASSETS_BUILD_ID?: string;
 }
 
 interface ImportMeta {

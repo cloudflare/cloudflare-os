@@ -1,8 +1,7 @@
 import { XIcon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
 import type { BannerColor } from '@gadgets/workshop-shared/api'
-import { Button } from '@/components/Button'
-import { Markdown } from '@/components/Markdown'
+import { Button, Markdown } from '@gadgets/ui'
 
 export type SiteBannerProps = {
   /** What the deployment says to everyone, as Markdown, whose links open elsewhere. */

@@ -1,7 +1,7 @@
 import { useId, type ReactNode } from 'react'
 import { CaretRightIcon, ChatCircleIcon, CheckCircleIcon, ClockClockwiseIcon, EyeIcon, HandPalmIcon, LightningIcon, XCircleIcon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
-import { Markdown } from '@/components/Markdown'
+import { Markdown } from '@gadgets/ui'
 import { ActionFields, type ActionField } from './ActionFields'
 import { ResourceLink, type ResourceLinkProps } from './ResourceLink'
 

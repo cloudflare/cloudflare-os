@@ -15,11 +15,6 @@ import {
 import { obsContext } from "./observability.js";
 import { toScheduleCadence } from "./schedule-types.js";
 import type { ScheduleSummary, ScheduledFiring, ScheduledTaskHook } from "./types.js";
-import {
-  paginateManagementSchedules,
-  type ManagementListOptions,
-  type ManagementSchedulePage,
-} from "./management.js";
 
 const logger = obsContext.createLogger({
   component: "gatekeeper.scheduler.driver",
@@ -57,8 +52,6 @@ type HookResult = {
 export type ScheduleActivation = ScheduleRegistration & {
   title: string;
   description: string;
-  /** The gadget the hook delivers into, when the hook is pinned to one. */
-  gadgetId?: number;
 };
 
 export type StoredSchedule = {
@@ -66,7 +59,6 @@ export type StoredSchedule = {
   state: EnabledSchedule;
   title: string;
   description: string;
-  gadgetId?: number;
 };
 
 type PreparedRun = {
@@ -116,7 +108,6 @@ export class ScheduleDriver extends DurableObject {
             ...existing,
             title: activation.title,
             description: activation.description,
-            gadgetId: activation.gadgetId,
           });
         } else {
           this.#assertScheduleQuota(activation.workspaceId);
@@ -126,7 +117,6 @@ export class ScheduleDriver extends DurableObject {
             state,
             title: activation.title,
             description: activation.description,
-            ...(activation.gadgetId !== undefined ? { gadgetId: activation.gadgetId } : {}),
           });
         }
         // A schedule already terminal here — a lapsed bound, or a repeated enable of a finished
@@ -193,21 +183,6 @@ export class ScheduleDriver extends DurableObject {
     return this.#listSchedules(workspaceSchedulePrefix(workspaceId))
       .map(([, schedule]) => toScheduleSummary(schedule))
       .toSorted(compareScheduleSummaries);
-  }
-
-  async listAccount(options?: ManagementListOptions): Promise<ManagementSchedulePage> {
-    if (this.#requireMetadata().revoked) return { schedules: [] };
-    return paginateManagementSchedules(
-      this.#listSchedules().map(([key, schedule]) => ({
-        key,
-        schedule: {
-          ...toScheduleSummary(schedule),
-          workspaceId: schedule.state.workspaceId,
-          ...(schedule.gadgetId !== undefined ? { gadgetId: schedule.gadgetId } : {}),
-        },
-      })),
-      options,
-    );
   }
 
   async revoke(): Promise<void> {

@@ -6,8 +6,7 @@ import { DeveloperIds } from '@/blocks/DeveloperIds'
 import { messageInfo } from '@/blocks/messageInfo'
 import { WorkspaceCost } from '@/blocks/WorkspaceCost'
 import { MessageBubble } from '@/blocks/MessageBubble'
-import { Markdown } from '@/components/Markdown'
-import { Select } from '@/components/Select'
+import { Markdown, Select } from '@gadgets/ui'
 import { useOpen } from './previewState'
 import { Section } from './Section'
 
@@ -23,14 +22,13 @@ const SIZES = [{ id: '', label: '200K (model default)' }, { id: '128000', label:
 const StatusLineDemo = ({ own, bare, problem }: { own?: boolean; bare?: boolean; problem?: string }) => {
   const [model, setModel] = useState(MODELS[0].id)
   const [size, setSize] = useState('')
-  const window = size === '' ? 200_000 : Number(size)
   return (
     <div className="w-[34rem] max-w-full rounded-3xl bg-kumo-tint p-2">
       <ComposerStatusLine
         model={bare ? undefined : { value: model, options: MODELS, onChange: setModel }}
         context={{
-          used: bare ? undefined : 83_312,
-          window: bare ? undefined : window,
+          measured: bare ? undefined : { tokens: 83_312, budget: 168_000, model: 'Claude Sonnet 5.5' },
+          compactsAt: 0.85,
           cacheRead: bare ? undefined : 410_000,
           cacheWrite: bare ? undefined : 52_000,
           sizes: own ? { value: size, options: SIZES, onChange: setSize } : undefined,

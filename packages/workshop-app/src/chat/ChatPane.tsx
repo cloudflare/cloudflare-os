@@ -5,6 +5,7 @@ import { Composer, type ComposerHandle } from '@/blocks/Composer'
 import type { ComposerCommand } from '@/blocks/ComposerCommandPicker'
 import type { ComposerConnection } from '@/blocks/ComposerConnectionLines'
 import { AddConnection, type AddedConnection } from '@/connections/AddConnection'
+import type { CreationAction } from '@/connections/ApproveCreation'
 import { KeepChangesCard } from '@/blocks/KeepChangesCard'
 import { LiveRows } from '@/blocks/LiveRows'
 import { MessageBubble } from '@/blocks/MessageBubble'
@@ -25,9 +26,9 @@ import { ChatContextPanel } from './ChatContextPanel'
 import { ChatContextSide } from './ChatContextSide'
 import { chatContextOf, contextCount } from './chatContext'
 import { useContextOpen } from './useContextOpen'
-import { useNarrowScreen } from '@/hooks/useNarrowScreen'
+import { useNarrowScreen } from '@gadgets/ui'
 import { ChatItemView, type ChatItemHandlers } from './ChatItemView'
-import { continuesRun, EMPTY_FEED, outOfCreditsAt, type ActionItem, type ChatAttachment, type ChatItem, type HookItem, type OutputItem } from './chatItems'
+import { continuesRun, EMPTY_FEED, outOfCreditsAt, type ChatAttachment, type ChatItem, type HookItem, type OutputItem } from './chatItems'
 import { DisclosureStore, useOpenKeys } from './DisclosureStore'
 import { keepChangeLines, keepReason } from './keepChanges'
 import { bindingKey, useBindingTitles } from './useBindingTitles'
@@ -78,7 +79,7 @@ export type ChatPaneProps = {
    * Approves an action that creates something (`ActionItem.creation`), asking where. Left out,
    * it is approved as any other, which the workspace refuses. Rejects with why it was not made.
    */
-  onApproveCreation?: (action: ActionItem & { creation: { gatekeeperId: number } }) => Promise<void>
+  onApproveCreation?: (action: CreationAction) => Promise<void>
   /**
    * The chat was deleted, here or by anyone else in the workspace: go somewhere else, in place of
    * it in the history, so that going back does not come back to it.
@@ -149,8 +150,8 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   // What a row asked for that this app cannot do yet.
   const [notice, setNotice] = useState<string>()
   const [disclosure] = useState(() => new DisclosureStore())
-  // The message the draft replies to: its row, and the line of it that will be quoted.
-  const [reply, setReply] = useState<{ key: string; quote: string }>()
+  // The message the draft replies to: its row, its sequence, and the line of it that will be quoted.
+  const [reply, setReply] = useState<{ key: string; sequence: number; quote: string }>()
   const composer = useRef<ComposerHandle>(null)
   const list = useRef<MessageListHandle>(null)
   const [sentFirst] = useState(() => firstMessageOf(workspaceId, chatId))
@@ -253,11 +254,11 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
         actions.markUnreadFrom(item.id).catch((error: unknown) => setNotice(`Couldn’t mark the chat unread: ${messageOf(error)}`))
       } : undefined,
       onReply: (item) => {
-        setReply({ key: item.key, quote: quoteLine(item) })
+        setReply({ key: item.key, sequence: item.id, quote: quoteLine(item) })
         composer.current?.focus()
       },
       // The message may have had to be fetched. The list has its row by the next frame.
-      onShowQuoted: (replying) => void actions.findQuoted(replying).then((key) => {
+      onShowQuoted: (replying) => void actions.findReplied(replying).then((key) => {
         if (key) requestAnimationFrame(() => list.current?.scrollToMessage(key))
       }),
       onOpenAttachment: onOpenAttachment ?? unavailable('Previewing attachments'),
@@ -267,7 +268,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
       onApprove: (action) => {
         const { creation } = action
         if (!creation || !onApproveCreation) return actions.approveAction(action.actionId)
-        return onApproveCreation({ ...action, creation }).catch((error: unknown) => setNotice(messageOf(error)))
+        return onApproveCreation({ actionId: action.actionId, title: action.title, gatekeeperId: creation.gatekeeperId }).catch((error: unknown) => setNotice(messageOf(error)))
       },
       onDeny: actions.rejectAction,
       onAlwaysApprove: onAlwaysApprove ?? actions.alwaysApprove,
@@ -335,7 +336,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
     // The connections after the words, each where its capsule shows it.
     const given = connections?.flatMap(({ key }) => added.current.get(key) ?? []) ?? []
     const { text: written, capsules } = withCapsules(words, given)
-    const sent = await actions.send(request ?? written, model.id, files, capsules.length ? capsules : undefined)
+    const sent = await actions.send(request ?? written, model.id, files, capsules.length ? capsules : undefined, replied?.sequence)
     // Unless another message has been chosen to reply to meanwhile.
     if (sent) setReply((current) => (current === replied ? undefined : current))
     return sent
@@ -370,7 +371,8 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   ), [agentNames, openStarted, workspaceTitle, agentKey, agentName, openAgent, hasAgentPage, title, workspaceId, look, openWorkspace, hasSettings, openSettings])
 
   // What the chat has, at the end of its header while it has any, where there is room for it beside the conversation.
-  const context = useMemo(() => chatContextOf([...(items ?? []), ...(pinned ?? [])]), [items, pinned])
+  const artifacts = chat.status === 'ready' ? chat.artifacts : undefined
+  const context = useMemo(() => chatContextOf(artifacts, [...(items ?? []), ...(pinned ?? [])]), [artifacts, items, pinned])
   const hasContext = contextCount(context) > 0
   const [contextOpen, changeContextOpen] = useContextOpen()
   // Not on a phone, where the conversation has the screen to itself.

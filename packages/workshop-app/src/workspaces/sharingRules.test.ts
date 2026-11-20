@@ -7,7 +7,6 @@ import type {
   GatekeeperVendorInfo,
   ObserverBindingNeed,
   PermissionEdge,
-  ShareLinkInfo,
   WorkspaceMetadata,
 } from '@gadgets/workshop-shared/api'
 import {
@@ -17,7 +16,6 @@ import {
   invitedBy,
   inviteRefusal,
   listed,
-  ownLinkOf,
   removalOutcome,
   type ShareTarget,
   shareKeyOf,
@@ -96,23 +94,6 @@ describe('inviteRefusal', () => {
 })
 
 describe('links', () => {
-  const created = new Date(0)
-  const link = (linkId: string, change: Partial<ShareLinkInfo> = {}): ShareLinkInfo => ({ linkId, created, createdBy: ada, default: true, ...change })
-
-  it('finds the viewer’s own link to what is being shared', () => {
-    const links = [
-      link('theirs', { createdBy: person('grace') }),
-      link('extra', { default: undefined }),
-      link('gadget', { role: 'use', gadgetId: 3 }),
-      link('whole', { role: 'build' }),
-    ]
-    expect(ownLinkOf(links, WHOLE, 'ada')?.linkId).toBe('whole')
-    expect(ownLinkOf(links, gadget(3), 'ada')?.linkId).toBe('gadget')
-    expect(ownLinkOf(links, gadget(4), 'ada')).toBeUndefined()
-    expect(ownLinkOf([link('old')], WHOLE, 'ada')?.linkId).toBe('old')
-    expect(ownLinkOf([link('several', { role: 'use', gadgets: [{ id: 3, title: 'Budget' }, { id: 4, title: 'Plan' }] })], WHOLE, 'ada')).toBeUndefined()
-  })
-
   it('carries the key in the fragment, and reads it back', () => {
     const url = withShareKey('https://os.example/app/ws-3', 'k3y')
     expect(url).toBe('https://os.example/app/ws-3#share=k3y')

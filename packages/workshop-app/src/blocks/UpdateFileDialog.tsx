@@ -1,7 +1,5 @@
 import { useState } from 'react'
-import { Banner } from '@/components/Banner'
-import { Button } from '@/components/Button'
-import { Dialog } from '@/components/Dialog'
+import { Banner, Button, Dialog } from '@gadgets/ui'
 import { usePending, type ActionResult } from './usePending'
 
 export type UpdateFileDialogProps = {

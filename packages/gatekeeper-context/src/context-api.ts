@@ -9,7 +9,7 @@ import {
   ContextApi, ContextCollectionContent, ContextCollectionMetadata, ContextCollectionPermissions,
   ContextCollectionRole, ContextCollectionSharing, ContextCollectionVisibility,
   ContextDocument, ContextDocumentSummary, ContextGitTokenCreateResult, ContextGitTokenList,
-  DEFAULT_GIT_BRANCH, EnabledCollectionInfo,
+  ContextSkillCollection, DEFAULT_GIT_BRANCH, EnabledCollectionInfo, VENDOR_ID,
 } from "./context-types.js";
 import type { ContextCollectionDurableObject } from "./context-collection.js";
 import type { UserLibraryDurableObject } from "./user-library.js";
@@ -17,9 +17,15 @@ import type { LibraryRegistryDurableObject } from "./registry-do.js";
 import type { ContextVerifierApi } from "./context-observers.js";
 import { canReadCollection, collectionPermissions } from "./collection-access.js";
 import { metadataToSummary } from "./collection-kv.js";
+import { MAX_COLLECTION_FANOUT, mapWithConcurrency } from "./concurrency.js";
 import { domainName } from "./domain.js";
+import { obsContext } from "./observability.js";
 
 const NOT_FOUND = "Collection not found or you don't have access.";
+
+const logger = obsContext.createLogger({
+  component: "gatekeeper.context", vendorId: VENDOR_ID,
+});
 
 @validateRpc()
 export class ContextApiImpl extends RpcTarget implements ContextApi {
@@ -234,6 +240,26 @@ export class ContextApiImpl extends RpcTarget implements ContextApi {
     await this.#collection(collectionId).moveContextSkill(manifestPath, directoryPath);
   }
 
+  async moveContextSkillToCollection(
+    fromCollectionId: string,
+    manifestPath: string,
+    toCollectionId: string,
+    directoryPath: string,
+  ): Promise<string> {
+    if (fromCollectionId === toCollectionId) {
+      throw new Error("A skill is moved within its collection with moveContextSkill().");
+    }
+    // Each step checks the caller's grant where it reads or writes, as one may be revoked mid-move.
+    let source = this.#collection(fromCollectionId);
+    let skill = await source.exportContextSkill(this.accountId, this.isAdmin, manifestPath);
+    let movedPath = await this.#collection(toCollectionId)
+      .importContextSkill(this.accountId, this.isAdmin, directoryPath, skill);
+    let folder = manifestPath.slice(0, -"SKILL.md".length);
+    await source.deleteMovedContextSkill(
+      this.accountId, this.isAdmin, skill.records.map(record => folder + record.path));
+    return movedPath;
+  }
+
   async renameContextSkill(
     collectionId: string,
     manifestPath: string,
@@ -247,6 +273,32 @@ export class ContextApiImpl extends RpcTarget implements ContextApi {
 
   async listEnabledContextCollections(): Promise<EnabledCollectionInfo[]> {
     return this.#userLib().listLibrary(this.domain, this.accountId);
+  }
+
+  async listSkillCollections(): Promise<ContextSkillCollection[]> {
+    let entries = await this.listEnabledContextCollections();
+    let listed = await mapWithConcurrency(entries, MAX_COLLECTION_FANOUT, async (entry) => {
+      let listing;
+      try {
+        listing = await this.#collection(entry.id).getSkillListing(this.accountId, this.isAdmin);
+      } catch (err) {
+        logger.warn("failed to list a library collection's skills", {
+          event: "library.collection.skills.list.failed", collectionId: entry.id, error: err,
+        });
+        return null;
+      }
+      if (!listing) return null;
+      let { summary, ...contents } = listing;
+      return {
+        ...entry,
+        title: summary.title,
+        description: summary.description,
+        icon: summary.icon,
+        lastUpdated: summary.lastUpdated,
+        ...contents,
+      } satisfies ContextSkillCollection;
+    });
+    return listed.filter(collection => collection !== null);
   }
 
   async getContextCollectionPermissions(collectionId: string): Promise<ContextCollectionPermissions> {

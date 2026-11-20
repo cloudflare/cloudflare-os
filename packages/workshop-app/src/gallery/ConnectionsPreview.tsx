@@ -5,15 +5,12 @@ import type { SupportedResource } from '@gadgets/workshop-shared/gatekeeper'
 import { ConnectDialog } from '@/blocks/ConnectDialog'
 import { ConnectionCard } from '@/blocks/ConnectionCard'
 import { ConnectionRow } from '@/blocks/ConnectionRow'
-import { ListToolbar } from '@/blocks/ListToolbar'
-import { Button } from '@/components/Button'
+import { Button, ListToolbar, Switch, useListView } from '@gadgets/ui'
 import { CardGrid } from '@/components/CardGrid'
 import { GroupedList } from '@/components/GroupedList'
 import { ManageConnectionDialog } from '@/blocks/ManageConnectionDialog'
 import { connectionList, connectionName, connectionsOf, type ConnectedAccount, type Connection } from '@/connections/connectionList'
 import { connectDialogProps, connectionProps, manageDialogProps, type ConnectionActions } from '@/connections/connectionProps'
-import { useListView } from '@/hooks/useListView'
-import { Switch } from '@/components/Switch'
 import { useReport } from './previewState'
 import { Section } from './Section'
 
@@ -52,8 +49,8 @@ const CONTEXT = service('context', 'Context Library', 'Notes and documents your 
 // In black with no colour, as the real one is, drawn for a light tile.
 const SCHEDULER = service('scheduler', 'Scheduled Tasks', 'Run something every morning, or once next week', { logo: logo('T', 'black'), autoProvisionsAccount: true })
 
-// With the rest, enough of two categories for a group each, as cards too.
-const CATEGORISED = [
+// Enough of them that the list is a long one.
+const MORE = [
   service('gitlab', 'GitLab', 'Triage issues, review merge requests, and push to projects', { logo: logo('L'), color: '#e24329' }),
   service('supabase', 'Supabase', 'Query Postgres, inspect schema, and manage projects', { logo: logo('S'), color: '#249361' }),
   service('cloudflare', 'Cloudflare', 'Use AI Gateway and inspect Workers Observability', { logo: logo('C'), color: '#f6821f' }),
@@ -70,7 +67,7 @@ const CATEGORISED = [
   ]),
 ]
 
-const VENDORS = [GOOGLE, GITHUB, JIRA, SLACK, SENTRY, LINEAR, BROKEN, ...CATEGORISED]
+const VENDORS = [GOOGLE, GITHUB, JIRA, SLACK, SENTRY, LINEAR, BROKEN, ...MORE]
 
 const account = (id: number, of: GatekeeperVendorInfo, description: Partial<ConnectedAccount['description']> = {}, credentialsValid = true): ConnectedAccount => ({
   id,
@@ -98,7 +95,7 @@ export const ConnectionsPreview = () => {
   const all = connectionsOf({ vendors: VENDORS, addable: [CONTEXT, SCHEDULER], accounts })
   const inDialog = dialog && (all.find(({ key }) => key === dialog.connection.key) ?? dialog.connection)
   const closeDialog = () => setDialog((current) => current && { ...current, open: false })
-  const list = useListView('gallery-connections', connectionList(all))
+  const list = useListView('gallery-connections', connectionList())
   const shown = list.narrow(all)
   const groups = list.arrange(shown)
 
@@ -134,7 +131,7 @@ export const ConnectionsPreview = () => {
   const { search, view, filter } = list.controls
 
   return (
-    <Section title="ConnectionCard, ConnectionRow (the Connections page’s list, as a store’s apps, two cards to a line: what needs attention first, an account whose sign-in ran out, with a red dot on its logo and a badge, whose dialog has Reconnect; then the accounts connected, a green dot on each one’s logo, whose card or row opens ManageConnectionDialog, which gives access it does not have, as the first Google account can be given, connects another account, and disconnects, asked for twice; then the services that could be connected, by category, a category with too few for the view gathered under More with those that have none. All of one’s card or row is a button, which opens ConnectDialog: what it is for, cut short with “more” after it where it runs long, as Slack’s is and Microsoft 365’s SharePoint site, and what it gives access to, with a switch for each kind given on its own, as Slack’s are, and the way on to sign in, or to add it where there is nothing to sign in to, as with Context Library. One has no logo, one’s does not load, and one’s name is too long. The filters are where a connection stands; the search also finds one by what it is for, its category, what it gives access to, and whose account it is)">
+    <Section title="ConnectionCard, ConnectionRow (the Connections page’s list, as a store’s apps, two cards to a line: what needs attention first, an account whose sign-in ran out, with a red dot on its logo and a badge, whose dialog has Reconnect; then the accounts connected, a green dot on each one’s logo, whose card or row opens ManageConnectionDialog, which gives access it does not have, as the first Google account can be given, connects another account, and disconnects, asked for twice; then the services that could be connected. All of one’s card or row is a button, which opens ConnectDialog: what it is for, cut short with “more” after it where it runs long, as Slack’s is and Microsoft 365’s SharePoint site, and what it gives access to, with a switch for each kind given on its own, as Slack’s are, and the way on to sign in, or to add it where there is nothing to sign in to, as with Context Library. One has no logo, one’s does not load, and one’s name is too long. The filters are where a connection stands; the search also finds one by what it is for, its category, what it gives access to, and whose account it is)">
       <Switch label="Controls under the list, as on a narrow screen" checked={under} onCheckedChange={setUnder} />
       <p className="w-full text-sm text-kumo-subtle">{report}</p>
       <div className={cn('flex w-full gap-4', under ? 'flex-col-reverse' : 'flex-col')}>

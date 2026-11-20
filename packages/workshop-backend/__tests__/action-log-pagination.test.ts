@@ -156,6 +156,34 @@ describe("subscribeToActions", () => {
 });
 
 describe("listActions", () => {
+  it("says who asked: an agent, a gadget's code, a hook firing into a gadget, or a person",
+      async () => {
+    let storage = makeActionStorage();
+    let callers: GatekeeperCaller[] = [
+      { from: "gadget", gadgetId: 10, chatId: 1 },
+      { from: "hook", gadgetId: 11 },
+      { from: "agent", chatId: 2 },
+      // Written before workspaces held several gadgets: whose is not known.
+      { from: "gadget" },
+      { from: "user" },
+    ];
+    for (let [id, caller] of callers.entries()) {
+      putAction(storage, id);
+      storage.actions.put({ ...storage.actions.get(id)!, caller });
+    }
+    let client = await openFakeOverseer(storage);
+
+    let page = await client.listActions();
+    expect(page.entries.map(({ id, from, chatId, gadgetId }) => ({ id, from, chatId, gadgetId })))
+        .toEqual([
+          { id: 4, from: "user", chatId: undefined, gadgetId: undefined },
+          { id: 3, from: "gadget", chatId: undefined, gadgetId: undefined },
+          { id: 2, from: "agent", chatId: 2, gadgetId: undefined },
+          { id: 1, from: "hook", chatId: undefined, gadgetId: 11 },
+          { id: 0, from: "gadget", chatId: 1, gadgetId: 10 },
+        ]);
+  });
+
   it("returns sparse matches in one full page, however much history buries them", async () => {
     let storage = makeActionStorage();
     // A few observations buried under far more history than the old design's per-call scan cap:

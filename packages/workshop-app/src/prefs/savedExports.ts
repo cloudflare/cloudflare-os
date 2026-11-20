@@ -1,22 +1,15 @@
-import { isRecord, stored } from './stored'
-
-/** The file a save of a gadget's export last made in one of the user's accounts, which a later save can replace. */
-export type SavedExport = { accountId: number; url: string; name: string }
-
-const isSaved = (value: unknown): value is SavedExport =>
-  isRecord(value) && typeof value.accountId === 'number' && typeof value.url === 'string' && typeof value.name === 'string'
-
-// Any that are not what they should be are left out, rather than the rest with them.
-const parse = (value: unknown): Record<string, SavedExport> | undefined =>
-  isRecord(value) ? Object.fromEntries(Object.entries(value).filter(([, saved]) => isSaved(saved))) as Record<string, SavedExport> : undefined
-
-const store = stored<Record<string, SavedExport>>('workshop-app:saved-exports', parse, {})
+import { MAX_PREFERENCE_LENGTH, MAX_SAVED_EXPORTS, type SavedExport } from './preferenceFields'
+import type { UserPreferences } from './UserPreferences'
 
 /**
- * The file last saved under `key` (see `savedExportKey`), on this device. The backend keeps no
- * record of what was saved where, so another browser has nothing to update, only new copies to
- * save, as the old app had.
+ * Remembers the file a save under `key` (see `savedExportKey`) made, in the user's account, so a
+ * later save from any browser can replace it: for the latest MAX_SAVED_EXPORTS. One too long to
+ * keep is not kept.
  */
-export const readSavedExport = (key: string): SavedExport | undefined => store.read()[key]
-
-export const writeSavedExport = (key: string, saved: SavedExport) => store.write({ ...store.read(), [key]: saved })
+export const rememberSavedExport = (preferences: UserPreferences, key: string, saved: SavedExport) => {
+  if ([key, saved.url, saved.name].some((text) => text.length > MAX_PREFERENCE_LENGTH)) return
+  preferences.change(({ savedExports }) => {
+    const entries = Object.entries(savedExports).filter(([candidate]) => candidate !== key)
+    return { savedExports: Object.fromEntries([...entries, [key, saved]].slice(-MAX_SAVED_EXPORTS)) }
+  })
+}

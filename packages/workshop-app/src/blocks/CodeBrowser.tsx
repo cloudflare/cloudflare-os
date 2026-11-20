@@ -1,17 +1,13 @@
 import { lazy, Suspense, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import { useReducedMotion } from '@/hooks/useReducedMotion'
+import { Button, ConfirmMenu, DropdownMenu, Markdown, useReducedMotion } from '@gadgets/ui'
 import {
   ArrowLeftIcon, CheckIcon, ClockCounterClockwiseIcon, CopyIcon, DotsThreeIcon, DownloadSimpleIcon, LinkSimpleIcon, ListNumbersIcon,
   GitDiffIcon, MagnifyingGlassIcon, PlusIcon, SidebarSimpleIcon, TextAlignLeftIcon, WarningCircleIcon, XIcon,
 } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
-import { Button } from '@/components/Button'
 import type { CodeEditorHandle, CodeEditorStatus, CodeLines, CodeTextChange } from '@/components/CodeEditor'
 import { CODE_LANGUAGE_NAMES } from '@/components/codeLanguages'
-import { ConfirmMenu } from '@/components/ConfirmMenu'
-import { DropdownMenu } from '@/components/DropdownMenu'
-import { Markdown } from '@/components/Markdown'
 import { codeLanguage } from '@/files/codeLanguage'
 import { codePrefs, type CodePrefs } from '@/prefs/codePrefs'
 import { changeLabel, CodeChangeList, CodeFileTree, editLabel, type CodeFileEditing, type CodeTreeEntry } from './CodeFileTree'

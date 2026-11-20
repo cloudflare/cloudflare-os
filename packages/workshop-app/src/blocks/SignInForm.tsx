@@ -1,8 +1,6 @@
 import { useState, type FormEvent, type ReactNode } from 'react'
-import { Banner } from '@/components/Banner'
-import { Button } from '@/components/Button'
+import { Banner, Button, TextField } from '@gadgets/ui'
 import { Mascot, type MascotEmotion } from '@/components/mascot/Mascot'
-import { TextField } from '@/components/TextField'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { canCreateAccount, newAccountProblems } from './newAccount'
 

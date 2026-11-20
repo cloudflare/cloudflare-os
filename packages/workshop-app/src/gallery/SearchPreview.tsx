@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { CirclesFourIcon, CpuIcon, FolderIcon, GearIcon, MoonIcon, SparkleIcon, MagnifyingGlassIcon, NotePencilIcon, SidebarSimpleIcon, UserIcon, WarningIcon } from '@phosphor-icons/react'
 import { SearchDialog, type SearchEntry, type SearchPage } from '@/blocks/SearchDialog'
-import { Button } from '@/components/Button'
+import { Button } from '@gadgets/ui'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import type { OutputSummary } from '@gadgets/workshop-shared/api'
 import { libraryEntries } from '@/library/libraryEntries'
@@ -47,7 +47,7 @@ export const SearchPreview = () => {
   const entries: SearchEntry[] = [
     { title: 'New chat', group: 'Go to', keywords: ['home', 'start'], icon: <NotePencilIcon /> },
     { title: 'Workspaces', group: 'Go to', icon: <FolderIcon /> },
-    { title: 'Library', group: 'Go to', keywords: ['apps', 'files', 'skills'], icon: <CirclesFourIcon /> },
+    { title: 'Library', group: 'Go to', keywords: ['apps', 'files'], icon: <CirclesFourIcon /> },
     workspace('Garden planning', 'GP', 'Just now'),
     workspace('Launch readiness', 'LR', 'Yesterday'),
     workspace('Weekly digest', 'WD', 'Monday'),

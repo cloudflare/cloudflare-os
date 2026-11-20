@@ -20,7 +20,7 @@ import type {
 } from "@earendil-works/pi-ai";
 import { createTypedStorage, collection, singleton, keyString } from "@gadgets/typed-storage";
 import {
-  actionChangeTime,
+  actionChangeTime, isAgentRun,
   type ActionState, type AgentSpawnerConfig, type AiChatAuthorInfo, type AiChatMessage,
   type AlwaysAvailableResource,
   type AiChatMetadata, type BlueprintBindingAnnotation, type BlueprintMetadata,
@@ -627,12 +627,34 @@ export function chatKeyPrefix(chatId: number, ...leading: number[]): string {
 }
 
 /**
+ * Key of the chats `artifactsByChat` index that finds the message a file was sent with by the
+ * file's id (see ChatAttachmentRef.id), within its chat.
+ */
+export function chatAttachmentKey(chatId: number, attachmentId: string): string {
+  return `${keyString(chatId)}:${attachmentId}`;
+}
+
+/**
+ * The start of every key of the actions `connectionsByChat` index for one chat: each key is this
+ * followed by the connection's id in decimal, so a listing of the keys under it reads each
+ * connection's id back.
+ */
+export function chatConnectionKeyPrefix(chatId: number): string {
+  return `${keyString(chatId)}:`;
+}
+
+/**
  * A stored chat metadata row. Rows written before proposed-ness became derived (see
  * Overseer.proposedChangeWorkpieceIds) carried a cached `hasProposedChanges` flag; nothing
  * writes or reads it anymore, but old rows still hold stale values, so the stored shape admits
  * it and chatMetaForClient strips it from deliveries.
  */
 export type StoredChatMetadata = AiChatMetadata & {hasProposedChanges?: boolean};
+
+/** The key the chatMeta collection's byListing index lists an agent spawner's runs under. */
+export function chatListingSpawnerKey(spawnerId: WorkpieceId): string {
+  return `spawner:${spawnerId}`;
+}
 
 /**
  * A stored "changes" message. Those written before git-backed code storage carry the retired
@@ -1406,6 +1428,10 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       //   7 = no grant is of every gadget: each "use" edge names one gadget, and each "use" link
       //       names one (`gadgetId`) or several (`gadgetIds`), frozen to the gadgets the workspace
       //       held when it was migrated (see migrateToFrozenGadgetGrants() in overseer-migrations.ts).
+      //   8 = the chats collection's artifactsByChat and pendingRequestsByChat indexes, the
+      //       actions collection's connectionsByChat index, and the chatMeta collection's
+      //       byListing index exist and are backfilled (see migrateToChatIndexes() in
+      //       overseer-migrations.ts).
       version: 0,
 
       // The workspace title. (Each chat, gatekeeper, and gadget has its own title, elsewhere.)
@@ -1484,20 +1510,30 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // The highest titleRev the directory has acknowledged; -1 until it acknowledges one, and
       // again once the workspace leaves the directory (OverseerImpl.removeFromDirectory).
       directoryRev: -1,
+
+      // The revision of collaborators' access, bumped with every narrowing of anyone's (see
+      // OverseerImpl.refreshAffectedCollaboratorListings), in the transaction that journals it.
+      // Time-based, like titleRev. A collaborator's outputs are sent with the revision their access
+      // was read at, and their User DO takes none older than it has, so outputs read under wider
+      // access cannot land after a narrowing.
+      accessRev: 0,
     },
 
     collections: {
       // Changes to a user's access to this workspace that still need to be sent to that user's
-      // User DO: a new role (e.g. downgraded to use-only), or removal (`role: null`), which also
-      // clears their unread state and queued notifications for this workspace. When the workspace
-      // is deleted, every user gets a removal. Retried from the alarm until each User DO confirms.
-      // Before each attempt, the user's current access is checked again (via `profileId`), so an
-      // outdated entry is updated or dropped. Deletion entries have no `profileId`.
+      // User DO: a narrowing (`accessRev`), which also narrows their Outputs index, a new role
+      // (e.g. downgraded to use-only), or removal (`role: null`), which also clears their unread
+      // state and queued notifications for this workspace. When the workspace is deleted, every
+      // user gets a removal. Retried from the alarm until each User DO confirms. Before each
+      // attempt, the user's current access is checked again (via `profileId`), so an outdated
+      // entry is updated or dropped. Deletion entries have no `profileId`.
       pendingUserUpdates: collection<{
         /** The recipient's User DO ID. */
         userId: string;
         profileId?: string;
         role: CollaboratorRole | null;
+        /** The accessRev of the narrowing, which a later one replaces. */
+        accessRev?: number;
       }>()({primaryKey: "userId"}),
       // Chats whose changes (new visible messages, new notifications, renames, deletion) haven't yet
       // reached enrolled owners/build collaborators, or a one-off approval recipient.
@@ -1617,9 +1653,10 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       actions: collection<ActionRecord>()({
         primaryKey: "id",
 
-        // The first three indexes are backfilled by the version-3 migration;
-        // byObserverRequirement needs none: no gatekeeper reported subresources before the
-        // Workshop enforced them, so no earlier observation is a requirement.
+        // The first three indexes are backfilled by the version-3 migration, and
+        // connectionsByChat by the version-8 one; byObserverRequirement needs none: no
+        // gatekeeper reported subresources before the Workshop enforced them, so no earlier
+        // observation is a requirement.
         uniqueIndexes: {
           // Resume-replay index (see subscribeToActions): keyed by last state-change time so a
           // reconnect replays only the records changed during the gap.
@@ -1656,6 +1693,17 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
             }
             return [...keys];
           },
+
+          // Sparse index over what each chat did through a real connection: one key per chat
+          // and connection (see chatConnectionKeyPrefix) for every applied record its caller
+          // attributes to the chat -- reads, approved actions and bound hooks; a pending or
+          // rejected action used nothing yet. listChatArtifacts() lists only the distinct keys,
+          // so its cost follows the connections used, not how often each was.
+          connectionsByChat(record: ActionRecord) {
+            let chatId = record.caller.from === "hook" ? undefined : record.caller.chatId;
+            return chatId !== undefined && record.gatekeeperId >= 0 && record.state === "approved"
+                ? `${chatConnectionKeyPrefix(chatId)}${record.gatekeeperId}` : null;
+          },
         }
       }),
 
@@ -1676,7 +1724,18 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
         // Allow quick lookup of chats with active agents.
         uniqueIndexes: {
           byLastActive(meta: StoredChatMetadata) { return meta.lastActive.valueOf(); }
-        }
+        },
+
+        // Keyed by what Overseer.listChats() filters on (ChatListOptions): every chat by its kind,
+        // "runs" or "chats", and each run that names its spawner also by `spawner:<spawnerId>`,
+        // so each filter is one ranged read in id order. Backfilled by the version-8 migration.
+        nonUniqueIndexes: {
+          byListing(meta: StoredChatMetadata): string[] {
+            if (!isAgentRun(meta)) return ["chats"];
+            return meta.spawnerId === undefined
+                ? ["runs"] : ["runs", chatListingSpawnerKey(meta.spawnerId)];
+          },
+        },
       }),
 
       chatContext: collection<AiChatAgentContext>()({
@@ -1724,7 +1783,29 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
         primaryKey: (msg: StoredChatMessage) => chatKey(msg.chatId, msg.sequence),
         uniqueIndexes: {
           byTimestamp(msg: StoredChatMessage) { return msg.timestamp.valueOf(); }
-        }
+        },
+        // Both backfilled by the version-8 migration.
+        nonUniqueIndexes: {
+          // The messages that record what a chat has (see listChatArtifacts()): the gadgets and
+          // worktrees it created, and the files sent in it. Each is under its chat's key
+          // (keyString(chatId)), to page through, and a message with files under each file's
+          // chatAttachmentKey too, to find one by its id.
+          artifactsByChat(msg: StoredChatMessage): string[] {
+            let files = msg.type === "message" ? msg.attachments ?? [] : [];
+            let created = msg.type === "changes" &&
+                (!!msg.createdGadgets?.length || !!msg.createdWorktrees?.length);
+            if (!created && !files.length) return [];
+            return [keyString(msg.chatId), ...files.map(({id}) => chatAttachmentKey(msg.chatId, id))];
+          },
+
+          // Sparse index over the connection and web fetch requests still waiting on a
+          // decision, keyed by chat (see OverseerImpl.#waiting()). A request is decided in
+          // place, which drops it from here.
+          pendingRequestsByChat(msg: StoredChatMessage) {
+            return (msg.type === "connectionRequest" || msg.type === "webFetchRequest") &&
+                msg.state === "pending" ? msg.chatId : null;
+          },
+        },
       }),
 
       // READ-ONLY LEGACY: pre-git-storage live drafts. Retained only as migration input (the

@@ -71,7 +71,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { COLLECTION_ROLE_LABELS } from "./skills/collectionRole";
 import { ShareCollectionDialog } from "./skills/ShareCollectionDialog";
-import { SkillsNavigatorPage } from "./skills/SkillsNavigatorPage";
+import { useSkillsState } from "./skills/useSkills";
 import { fileToBase64, readUploadFile } from "./uploadFiles";
 
 function baseName(path: string): string {
@@ -427,49 +427,6 @@ function DeletePermanentlyDescription({
       ) : null}
       . This cannot be undone.
     </>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Main page
-// ---------------------------------------------------------------------------
-
-export default function ContextLibraryPage() {
-  // Iframe-local selection state (no router/URL).
-  const [selectedCollection, setSelectedCollection] = useState<string | null>(null);
-  const [selectedDoc, setSelectedDoc] = useState<string | null>(null);
-
-  const goToCollection = useCallback((id: string | null) => {
-    setSelectedCollection(id);
-    setSelectedDoc(null);
-  }, []);
-  const goToDoc = useCallback((path: string | null) => {
-    setSelectedDoc(path);
-  }, []);
-
-  if (selectedCollection) {
-    return (
-      <div className="h-full bg-kumo-base">
-        <CollectionEditor
-          collectionId={selectedCollection}
-          selectedPath={selectedDoc}
-          onSelectPath={goToDoc}
-          onBack={() => {
-            goToCollection(null);
-          }}
-        />
-      </div>
-    );
-  }
-
-  return (
-    <SkillsNavigatorPage
-      onSelectSkill={(collectionId, manifestPath) => {
-        setSelectedCollection(collectionId);
-        setSelectedDoc(manifestPath);
-      }}
-      onOpenCollection={goToCollection}
-    />
   );
 }
 
@@ -1600,18 +1557,31 @@ const NO_PERMISSIONS: ContextCollectionPermissions = {
   canDelete: false,
 };
 
-function CollectionEditor({
+/**
+ * Everything in one collection, skills or not, as a tree of folders and documents beside the one
+ * that is open (`selectedPath`), with the collection's details, its settings and Git tokens, and
+ * sharing. `onBack` returns to the page it was opened from, which `backLabel` names; `onGone` is
+ * for when the collection was deleted or left from here, so there is no page of it to go back to.
+ */
+export function CollectionEditor({
   collectionId,
   selectedPath,
   onSelectPath,
+  backLabel,
   onBack,
+  onGone,
 }: {
   collectionId: string;
   selectedPath: string | null;
   onSelectPath: (path: string | null) => void;
+  backLabel: string;
   onBack: () => void;
+  onGone: () => void;
 }) {
   const context = useContextApi();
+  const skillState = useSkillsState();
+  // Shared from the collection as the skills list it, whose sharing it changes.
+  const listed = skillState.status === "ready" ? skillState.collections.find(({ id }) => id === collectionId) : undefined;
   const toasts = useKumoToastManager();
   const [docs, setDocs] = useState<ContextDocumentSummary[]>([]);
   const [metadata, setMetadata] = useState<ContextCollectionMetadata | null>(
@@ -1971,7 +1941,7 @@ function CollectionEditor({
             className="press -ml-1 mb-4 inline-flex items-center gap-1 rounded-md px-1 py-0.5 text-[13px] font-medium tracking-[-0.25px] text-kumo-subtle transition-colors hover:text-kumo-default"
           >
             <CaretLeft size={14} />
-            Context &amp; Skills
+            {backLabel}
           </button>
           <div className="rounded-xl border border-kumo-line bg-kumo-base px-5 py-10 text-center shadow-[0_1px_2px_rgba(20,17,16,0.03)]">
             <BookOpen size={32} className="mx-auto mb-3 text-kumo-subtle" />
@@ -1998,7 +1968,7 @@ function CollectionEditor({
           collectionId={collectionId}
           onClose={() => setSettingsOpen(false)}
           onUpdated={loadDocs}
-          onDeleted={onBack}
+          onDeleted={onGone}
         />
       )}
 
@@ -2011,12 +1981,16 @@ function CollectionEditor({
         />
       )}
 
-      {shareOpen && metadata && (
+      {listed && (
         <ShareCollectionDialog
-          collection={{ id: collectionId, title: metadata.title }}
-          onChanged={() => void loadDocs()}
-          onLeft={onBack}
-          onClose={() => setShareOpen(false)}
+          collection={listed}
+          open={shareOpen}
+          onOpenChange={(open) => {
+            setShareOpen(open);
+            // Who has it labels the overview.
+            if (!open) void loadDocs();
+          }}
+          onLeft={onGone}
         />
       )}
 
@@ -2086,7 +2060,7 @@ function CollectionEditor({
             className="press -ml-1 inline-flex items-center gap-1 rounded-md px-1 py-0.5 text-[13px] font-medium tracking-[-0.25px] text-kumo-subtle transition-colors hover:text-kumo-default"
           >
             <CaretLeft size={14} />
-            Context &amp; Skills
+            {backLabel}
           </button>
         </div>
           {metadata && (

@@ -1,9 +1,7 @@
 import { useMemo, useState } from 'react'
 import { CaretRightIcon, XIcon } from '@phosphor-icons/react'
-import { Button } from '@/components/Button'
-import { Dialog } from '@/components/Dialog'
+import { Button, Dialog, TextField } from '@gadgets/ui'
 import { ServiceLogo } from '@/components/ServiceLogo'
-import { TextField } from '@/components/TextField'
 
 /** A kind of resource one of the services offers: a GitHub repository, a Google spreadsheet. */
 export type ConnectionChoice = {

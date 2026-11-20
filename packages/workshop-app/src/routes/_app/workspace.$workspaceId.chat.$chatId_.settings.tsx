@@ -4,6 +4,7 @@ import { rememberShown } from '@/aside/lastShown'
 import { asideFor } from '@/aside/useAsideNavigation'
 import { CHAT_SETTINGS_TABS, ChatSettingsPane, type ChatSettingsTab } from '@/chat/ChatSettingsPane'
 import { writeLayoutPrefs } from '@/prefs/layoutPrefs'
+import { usePreferences } from '@/prefs/UserPreferencesContext'
 
 const validateTab = (value: unknown): ChatSettingsTab | undefined =>
   CHAT_SETTINGS_TABS.find((tab) => tab.value === value && value !== 'settings')?.value
@@ -32,6 +33,7 @@ function ChatSettings() {
   const initialTitle = useLocation({ select: (location) => location.state.chatTitle })
   const navigate = useNavigate()
   const router = useRouter()
+  const preferences = usePreferences()
   // The chat, with `open` shown beside it.
   const chat = (open: string | undefined) =>
     ({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId, chatId }, search: { open } }) as const
@@ -59,11 +61,11 @@ function ChatSettings() {
       onDeleted={() => navigate({ to: '/workspace/$workspaceId', params: { workspaceId }, replace: true })}
       onBack={() => {
         if (router.state.location.state.fromChat) return router.history.back()
-        void navigate(chat(asideFor({ workspaceId, chatId })))
+        void navigate(chat(asideFor(preferences, { workspaceId, chatId })))
       }}
       onOpenWorkspace={() => navigate({ to: '/workspace/$workspaceId', params: { workspaceId } })}
       onOpenItem={(item: AsideItem) => {
-        rememberShown(workspaceId, chatId, item.key)
+        rememberShown(preferences, workspaceId, chatId, item.key)
         writeLayoutPrefs({ asideOpen: true })
         void navigate(chat(item.key))
       }}

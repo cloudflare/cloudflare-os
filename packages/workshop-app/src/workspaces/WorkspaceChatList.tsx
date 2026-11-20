@@ -1,3 +1,4 @@
+import { isAgentRun } from '@gadgets/workshop-shared/api'
 import { useChatNotifications } from '@/chat/useChatNotifications'
 import { useDevMode } from '@/hooks/useDevMode'
 import { useChatFavorites } from '@/prefs/chatFavorites'
@@ -7,10 +8,12 @@ import { useUnreadPreviews } from './activity/useUnreadPreviews'
 import type { useWorkspaceActivity } from './activity/useWorkspaceActivity'
 import { ChatListView } from './ChatListView'
 import { chatStatesOf, type FailedRun } from './chatStates'
-import { useWorkspaceChats } from './useWorkspaceChats'
+import type { WorkspaceChatsState } from './useWorkspaceChats'
 
 export type WorkspaceChatListProps = {
   workspaceId: string
+  /** The chats people have in it, as `useWorkspaceChats` keeps them. */
+  chats: WorkspaceChatsState
   onOpenChat: (chat: { id: number; title: string }) => void
   /** A chat's address, for its row to link to so that it can be opened in another tab. */
   chatHref?: (chatId: number) => string
@@ -29,17 +32,18 @@ export type WorkspaceChatListProps = {
 }
 
 /**
- * A workspace's Chats tab (`ChatListView`), from its chats, its activity (what waits, and who wrote
- * what in each), its agents' failed runs, the viewer's read state and the chats they starred.
+ * A workspace's Chats tab (`ChatListView`), from the chats people have in it (`chats`), its
+ * agents' runs and its activity (what waits, and who wrote what in each), its agents' failed runs,
+ * the viewer's read state and the chats they starred.
  */
-export const WorkspaceChatList = ({ workspaceId, onOpenChat, chatHref, builds = false, waiting, activity, failed = [], onMarkRead, onNewChat }: WorkspaceChatListProps) => {
+export const WorkspaceChatList = ({ workspaceId, chats, onOpenChat, chatHref, builds = false, waiting, activity, failed = [], onMarkRead, onNewChat }: WorkspaceChatListProps) => {
   const { user } = useApi()
-  const chats = useWorkspaceChats(workspaceId)
   const devMode = useDevMode()
   const notifications = useChatNotifications(workspaceId, builds)
   const favorites = useChatFavorites(workspaceId)
-  const all = chats.status === 'ready' ? chats.chats : []
   const ready = activity?.state.status === 'ready' ? activity.state : undefined
+  // People's chats as `chats` keeps them, and the agents' runs as the activity reads them.
+  const all = chats.status === 'ready' ? [...chats.chats, ...(ready?.chats.filter(isAgentRun) ?? [])] : []
 
   const attention = builds && ready ? attentionOf(ready) : []
   const reviews = builds ? reviewsOf(all) : []

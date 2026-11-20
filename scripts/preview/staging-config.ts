@@ -373,6 +373,7 @@ function applyRouter(config: StagingConfig, { gatekeepers }: PreviewContext): vo
   // reached through it. See routerPreviewUrl.
   config.workers_dev = true;
   config.preview_urls = true;
+  if (config.assets) config.assets.directory = "../workshop-app/dist";
   config.services = [
     { binding: "WORKSHOP_BACKEND", service: "workshop-backend" },
     ...routerGatekeeperServices(gatekeepers),

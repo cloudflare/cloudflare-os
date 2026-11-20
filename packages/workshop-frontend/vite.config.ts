@@ -5,6 +5,7 @@ import tailwindcss from '@tailwindcss/vite'
 import tsconfigPaths from 'vite-tsconfig-paths'
 import { TanStackRouterVite } from '@tanstack/router-plugin/vite'
 import { vitestTask } from '@gadgets/scripts/vitest-task'
+import { assetsBuildId } from '@gadgets/scripts/assets-build-id'
 import { pdfjsAssets } from './vite-pdfjs-assets'
 
 // `dist/` is this package's own build output, excluded from the inputs of the bundle and test
@@ -81,6 +82,8 @@ export default defineConfig(({ mode }) => {
       tailwindcss(),
       tsconfigPaths(),
       pdfjsAssets(),
+      // The build's id, which `/api/version` answers (see PageUpdateNotice).
+      assetsBuildId(),
     ],
     server: {
       port: 3000,

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { Overseer } from '@gadgets/workshop-shared/api'
-import { skillCommandOf } from './slashCommands'
+import { composerCommandOf } from './slashCommands'
 import { startConversation, type NewConversationOverseer } from './startConversation'
 
 const fakeOverseer = (workspaceId = 'ws-1', chatId = 0) => {
@@ -11,9 +11,20 @@ const fakeOverseer = (workspaceId = 'ws-1', chatId = 0) => {
     { selection: { gatekeeperId: 4, commandId: 'c1/brief/SKILL.md' }, name: 'brief', description: 'Brief me', providerLabel: 'Context Library' },
   ])
   const dispose = vi.fn<() => void>()
-  const overseer: NewConversationOverseer = { newChat, getMetadata, uploadBlob, listSlashCommands, [Symbol.dispose]: dispose }
-  return { overseer, newChat, getMetadata, uploadBlob, dispose }
+  // Each connection made in this workspace, numbered as it numbers them: 50 and on.
+  const made: string[] = []
+  const connection = (what: string) => {
+    made.push(what)
+    return { getId: async () => 49 + made.length, [Symbol.dispose]: () => {} }
+  }
+  // Only getId() of what they return is used; the RPC types they would return cannot be built here.
+  const newGatekeeper = ((accountId: number, resourceUrl: string) => connection(`${accountId} ${resourceUrl}`)) as unknown as Overseer['newGatekeeper']
+  const newAiModelGatekeeper = ((modelId: string) => connection(modelId)) as unknown as Overseer['newAiModelGatekeeper']
+  const overseer: NewConversationOverseer = { newChat, getMetadata, uploadBlob, listSlashCommands, newGatekeeper, newAiModelGatekeeper, [Symbol.dispose]: dispose }
+  return { overseer, newChat, getMetadata, uploadBlob, dispose, made }
 }
+
+const description = (title: string) => ({ url: `https://example.com/${title}`, title, snippet: '', suggestedBindingName: title.toUpperCase(), tsType: 'Thing' })
 
 describe('startConversation', () => {
   it('starts the chat with the message and model, and returns the workspace and chat ids', async () => {
@@ -25,9 +36,9 @@ describe('startConversation', () => {
     expect(fake.newChat).toHaveBeenCalledExactlyOnceWith('Build me a dashboard', 'model-1', undefined, undefined, undefined)
   })
 
-  it('starts the chat with a Library skill, as the new workspace offers it, given the words', async () => {
+  it('starts the chat with a command the workspace offers, given the words', async () => {
     const fake = fakeOverseer()
-    const command = skillCommandOf({ id: 'c1/brief/SKILL.md', name: 'Brief', description: 'Brief me' })
+    const command = composerCommandOf({ selection: { gatekeeperId: 4, commandId: 'c1/brief/SKILL.md' }, name: 'brief', description: 'Brief me', providerLabel: 'Context Library' })
 
     await startConversation(() => fake.overseer, 'for Tuesday', [], 'model-1', command)
 
@@ -36,7 +47,7 @@ describe('startConversation', () => {
 
   it('says so, and starts nothing, for a skill the workspace does not offer', async () => {
     const fake = fakeOverseer()
-    const command = skillCommandOf({ id: 'c1/gone/SKILL.md', name: 'Gone', description: '' })
+    const command = composerCommandOf({ selection: { gatekeeperId: 4, commandId: 'c1/gone/SKILL.md' }, name: 'gone', description: '', providerLabel: 'Context Library' })
 
     await expect(startConversation(() => fake.overseer, '', [], 'model-1', command)).rejects.toThrow('Gone isn’t available here')
     expect(fake.newChat).not.toHaveBeenCalled()
@@ -82,5 +93,21 @@ describe('startConversation', () => {
 
     await expect(startConversation(() => fake.overseer, 'hi', [], 'bad-model')).rejects.toThrow('No such model')
     expect(fake.dispose).toHaveBeenCalledOnce()
+  })
+
+  it('makes again in the workspace it starts in each connection the draft was given in another', async () => {
+    const fake = fakeOverseer('chosen')
+    const connections = [
+      { gatekeeperId: 3, workspaceId: 'chosen', source: { modelId: 'kept' }, description: description('Kept'), vendorId: 'ai-model' },
+      { gatekeeperId: 3, workspaceId: 'provisional', source: { accountId: 8, resourceUrl: 'https://example.com/repo' }, description: description('Repo'), vendorId: 'github' },
+      { gatekeeperId: 4, workspaceId: 'provisional', source: { modelId: 'sonnet' }, description: description('Sonnet'), vendorId: 'ai-model' },
+    ]
+
+    await startConversation(() => fake.overseer, 'Compare', [], 'model-1', undefined, undefined, connections)
+
+    expect(fake.made).toEqual(['8 https://example.com/repo', 'sonnet'])
+    const [text, , capsules] = fake.newChat.mock.calls[0]
+    expect(text).toBe('Compare [0] [1] [2]')
+    expect(capsules?.map(({ gatekeeperId, description: { title } }) => [title, gatekeeperId])).toEqual([['Kept', 3], ['Repo', 50], ['Sonnet', 51]])
   })
 })
