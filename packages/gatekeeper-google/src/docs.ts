@@ -780,16 +780,17 @@ export class GoogleDocSessionImpl extends RpcTarget
 
   /**
    * Reads through the session's NativeRead with `fetch`, which reads the document from `source`,
-   * and tells `source` of the snapshot once the read is authorized. A failure `fetch` resolves
-   * with is authorized as `failed` and then thrown.
+   * from Google `again` where it asks, and tells `source` of the snapshot once the read is
+   * authorized. A failure `fetch` resolves with is authorized as `failed` and then thrown.
    */
   async #readDocument<T>(
-    fetch: (snapshot: () => Promise<GoogleDocSnapshot>) => Promise<T | ReadFailure>,
+    fetch: (snapshot: (again?: boolean) => Promise<GoogleDocSnapshot>) => Promise<T | ReadFailure>,
     observe: (value: T) => NativeObservation,
     failed = DOC_CONTENT_OBSERVATION,
   ): Promise<T> {
     let used: GoogleDocSnapshot | undefined;
-    let snapshot = async () => used = await this.#source.snapshot();
+    let snapshot = async (again = false) =>
+      used = await (again && this.#source.refetched?.() || this.#source.snapshot());
     let value = await this.#read(() => fetch(snapshot), result =>
       result instanceof ReadFailure ? failed : observe(result));
     if (used) this.#source.approved(used);
@@ -1100,13 +1101,8 @@ export class GoogleDocSessionImpl extends RpcTarget
   }
 
   async readImage(imageId: string, tabId: string): Promise<GoogleDocImageBytes> {
-    let find = (snapshot: GoogleDocSnapshot) => this.#savedTab(snapshot, tabId, "readImage");
-    // A listing told of the image, not its bytes: each read of them is authorized as its own.
-    let tab = await this.#readSettled(find, tab => ({
-      title: "Read Google Doc images",
-      description: `Read an image in tab ${googleDocTabLabel(tab)}.`,
-    }), DOC_IMAGES_OBSERVATION);
-    let contentUri = (tab: GoogleDocTabSnapshot) => {
+    let find = (snapshot: GoogleDocSnapshot) => {
+      let tab = this.#savedTab(snapshot, tabId, "readImage");
       // An image of the body's text, or one a drawing names, as a header's is.
       let uri = tab.images.find(image => image.id === imageId)?.contentUri ?? tab.imageUris[imageId];
       if (!uri) {
@@ -1114,17 +1110,31 @@ export class GoogleDocSessionImpl extends RpcTarget
           `readImage: tab "${tab.tabId}" has no readable image with ID "${imageId}". ` +
           `Call listImages("${tab.tabId}") to see its images.`);
       }
-      return uri;
+      return { tab, uri };
     };
-    let image = await openGoogleDocImage(contentUri(tab));
-    if (!image) {
-      // The address has lapsed, so the document is read again for a current one, and replayed
-      // again: the replay kept for its revision holds the lapsed address.
-      this.#changes.cache.current = undefined;
-      image = await openGoogleDocImage(contentUri(await this.#settled(
-        () => this.#source.refetched?.() ?? this.#source.snapshot(), find)));
-    }
-    if (!image) throw new Error("readImage: Google Docs did not return this image.");
+    await this.#changes.afterTurns();
+    // A listing told of the image, not its bytes: each read of them is authorized as its own.
+    // The bytes are read inside it, so that no document read for them is left unchecked.
+    let { image } = await this.#readDocument(async snapshot => {
+      try {
+        let { tab, uri } = await this.#settled(snapshot, find);
+        let image = await openGoogleDocImage(uri);
+        if (!image) {
+          // The address has lapsed, so the document is read again for a current one, and replayed
+          // again: the replay kept for its revision holds the lapsed address.
+          this.#changes.cache.current = undefined;
+          ({ tab, uri } = await this.#settled(() => snapshot(true), find));
+          image = await openGoogleDocImage(uri);
+        }
+        if (!image) throw new Error("readImage: Google Docs did not return this image.");
+        return { tab, image };
+      } catch (error) {
+        return new ReadFailure(error);
+      }
+    }, ({ tab }) => ({
+      title: "Read Google Doc images",
+      description: `Read an image in tab ${googleDocTabLabel(tab)}.`,
+    }), DOC_IMAGES_OBSERVATION);
     return image;
   }
 

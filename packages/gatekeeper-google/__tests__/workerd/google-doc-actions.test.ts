@@ -153,6 +153,8 @@ class DocsModel {
   imageOutage = false;
   /** The image addresses Google refuses, as it does once one lapses. */
   readonly #lapsed = new Set<string>();
+  /** Runs as each request for an image arrives, before it is answered. */
+  onImage?: () => void;
   /** The length Google states for an image, when not its real one. */
   imageLength?: number;
   /** Every provider request, of any kind. */
@@ -369,6 +371,7 @@ class DocsModel {
     }
     if (url.hostname === "docs.google.com") {
       this.imageFetches++;
+      this.onImage?.();
       if (this.#lapsed.has(url.href)) return new Response("gone", { status: 403 });
       if (this.imageOutage) return new Response("busy", { status: 503 });
       let bytes = new TextEncoder().encode(`bytes of ${url.pathname.slice(1)}`);
@@ -3852,6 +3855,8 @@ function docsProvider(...models: DocsModel[]): ProviderFake {
   return {
     async handle(request) {
       let url = new URL(request.url);
+      // An image's address names no document.
+      if (url.hostname === "docs.google.com") return models[0].fetch(request.url);
       if (url.hostname !== "docs.googleapis.com") return undefined;
       let id = /^\/v1\/documents\/([^/:]+)/.exec(url.pathname)?.[1];
       let model = models.find(candidate => candidate.documentId === id) ?? models[0];
@@ -4140,6 +4145,28 @@ describe("Google Doc edits through a read and write Drive binding", () => {
     expect(await rawHooks().applyDrive(facet, FOLDER, queued.actionId!)).toBe(OUT_OF_SCOPE);
     expect(docs.fetches).toBe(fetched);
     expect(docs.contentBatches).toBe(0);
+  });
+
+  it("refuses an image of a Doc that left the folder before it was read again for a lapsed address", async () => {
+    let docs = new DocsModel();
+    docs.setImages(MAIN_TAB, [{ id: "photo" }]);
+    let drive = new DriveFiles({
+      [ROOT]: { name: "Reports", mimeType: FOLDER_MIME, parents: ["my-root"] },
+      "doc-1": { name: "Test document", mimeType: DRIVE_DOC_MIME, parents: [ROOT] },
+    });
+    serveFakes([drive, docsProvider(docs)]);
+    // The address lapses as the image is asked for, and the file leaves the folder with it.
+    docs.onImage = () => {
+      docs.onImage = undefined;
+      docs.lapseImages();
+      drive.files.get("doc-1")!.parents = ["elsewhere"];
+    };
+
+    let read = await rawHooks().callDriveNative(
+      "drive:drive-doc-image-left-folder", FOLDER, "openGoogleDoc", "doc-1", "readImage", ["photo", MAIN_TAB]);
+
+    expect(read.error).toBe("The requested file is outside this Drive binding.");
+    expect(docs.documentFetches).toBe(2);
   });
 
   it("opens a Doc with no comment method: the binding's own comment writes reach it", async () => {
