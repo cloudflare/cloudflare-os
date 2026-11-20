@@ -1203,9 +1203,7 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
     }
     this.storage.gitSyncAttempts.put(attempts + 1);
     this.storage.gitSyncStartedAt.put(new Date());
-    let promise = this.#loadArtifactSnapshot().then(() => {
-      this.storage.gitSyncAttempts.put(0);
-    }).finally(() => {
+    let promise = this.#loadArtifactSnapshot().finally(() => {
       if (this.#artifactRefresh === promise) this.#artifactRefresh = undefined;
     });
     this.#artifactRefresh = promise;
@@ -1215,17 +1213,28 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
   // Each stored document's git blob hash, into `stored`. A document stored before hashes were kept
   // gets one from its bytes, which a sync stores verbatim, and is added to `computed` as well.
   async #readStoredGitBlobHashes(stored: Map<string, string>, computed: Map<string, string>): Promise<void> {
-    // Records are read one at a time; only bodies that still need hashing are kept.
-    let unhashed: Array<{ path: string; body: Uint8Array }> = [];
+    // Records are read one at a time and no body is kept, so a large collection never has all of
+    // its bodies in memory at once.
+    let unhashed: string[] = [];
     for (let record of this.storage.documents.list()) {
       if (record.gitBlobHash) stored.set(record.path, record.gitBlobHash);
       // Older records with string bodies can't be hashed; the sync reads them again.
-      else if (record.body instanceof Uint8Array) unhashed.push({ path: record.path, body: record.body });
+      else if (record.body instanceof Uint8Array) unhashed.push(record.path);
     }
-    for (let { path, body } of unhashed) {
+    for (let path of unhashed) {
+      let body = this.storage.documents.get(path)?.body;
+      if (!(body instanceof Uint8Array)) continue;
       let hash = await gitBlobHash(body);
       stored.set(path, hash);
       computed.set(path, hash);
+    }
+  }
+
+  // A sync waits on Artifacts, and its collection can be deleted meanwhile. Each of the sync's writes
+  // checks first, so nothing it read is stored once deletion has begun.
+  #assertGitSyncTarget(id: string): void {
+    if (this.storage.deletionPending.get() || this.storage.metadata.get().id !== id) {
+      throw new Error("The collection was deleted during its git sync.");
     }
   }
 
@@ -1262,6 +1271,7 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
         this.storage.gitStaged.delete(path);
       }
 
+      this.storage.gitSyncAttempts.put(0);
       let meta = this.getMetadata();
       meta.documentCount = published.size;
       meta.lastUpdated = new Date();
@@ -1297,14 +1307,19 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
             for (let record of this.storage.gitStaged.list()) held.set(record.path, record.gitBlobHash);
             return held;
           },
-          stage: document => this.storage.gitStaged.put(document),
+          stage: (document) => {
+            this.#assertGitSyncTarget(meta.id);
+            this.storage.gitStaged.put(document);
+          },
         });
+    this.#assertGitSyncTarget(meta.id);
     if (!result.changed) {
       // Nothing changed, just bump the refresh timestamp.
       const latestMeta = this.getMetadata();
       if (latestMeta.content.source !== "git") throw new Error("Collection is not git-based.");
       latestMeta.content = { ...latestMeta.content, lastRefreshedAt: new Date() };
       this.storage.metadata.put(latestMeta);
+      this.storage.gitSyncAttempts.put(0);
       return;
     }
 

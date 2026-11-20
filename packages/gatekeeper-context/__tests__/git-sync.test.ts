@@ -152,6 +152,24 @@ describe("git-backed collection sync", () => {
     expect((await stub.getMetadata()).documentCount).toBe(1);
   });
 
+  it("stores nothing a sync reads once its collection's deletion has begun", async () => {
+    let fake = new FakeGitRepo();
+    let stub = await createGitCollection(fake);
+    await fake.push("main", { "a.md": "# A" });
+    let hold = Promise.withResolvers<void>();
+    fake.blobDelay = () => hold.promise;
+    let sync = settled(stub.syncArtifactSource());
+    await vi.waitFor(() => expect(fake.blobReads).toHaveLength(1));
+
+    await stub.deleteSelf("owner", false);
+    hold.resolve();
+
+    await expect(sync).rejects.toThrow("deleted during its git sync");
+    await runInDurableObject(stub, (_instance: ContextCollectionDurableObject, state) => {
+      expect([...state.storage.kv.list()]).toEqual([]);
+    });
+  });
+
   it("backs off after failed syncs, doubling the wait, until one succeeds", async () => {
     let fake = new FakeGitRepo();
     let stub = await createGitCollection(fake);

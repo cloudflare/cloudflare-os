@@ -110,6 +110,28 @@ describe("reading a git-backed collection's repo", () => {
     await expect(read(fake)).rejects.toThrow("INTERNAL_ERROR");
   });
 
+  it("starts no reads after one fails, and finishes those in flight before failing", async () => {
+    let fake = new FakeGitRepo();
+    let files: Record<string, string> = {};
+    for (let i = 0; i < 6; i++) files[`file-${i}.md`] = `file ${i}`;
+    await fake.push("main", files);
+    fake.blobErrors.set(await fake.hashOf("file 0"), artifactsError("INTERNAL_ERROR"));
+    fake.blobDelay = () => new Promise(resolve => setTimeout(resolve, 5));
+    let artifacts = { get: async () => fake.repo() } as unknown as Artifacts;
+    let staged: string[] = [];
+
+    await expect(readArtifactRepoDocuments(artifacts, "repo", "main", undefined, {
+      heldBlobHashes: async () => new Map(),
+      stage: document => staged.push(document.path),
+    })).rejects.toThrow("INTERNAL_ERROR");
+    let atFailure = { reads: fake.blobReads.length, staged: [...staged] };
+    // A read still running after the failure could stage a stale file over a later sync's copy.
+    await new Promise(resolve => setTimeout(resolve, 30));
+
+    expect(atFailure).toEqual({ reads: 2, staged: ["file-1.md"] });
+    expect({ reads: fake.blobReads.length, staged }).toEqual(atFailure);
+  });
+
   it("reads at most two files at a time, since each can be 32 MiB", async () => {
     let fake = new FakeGitRepo();
     let files: Record<string, string> = {};
