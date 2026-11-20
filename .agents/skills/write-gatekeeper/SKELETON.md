@@ -1,13 +1,91 @@
 # Gatekeeper Implementation Skeleton
 
-Replace all `My`/`my`/`MY` prefixes with the service name.
+A new gatekeeper starts from a command, not from copied code:
+
+```bash
+pnpm create-gatekeeper <name> --auth <oauth|api-key> [--hooks] --display "<Provider Name>"
+```
+
+`--auth oauth` is an authorization-code grant with PKCE; `--auth api-key` is a key the user pastes
+into the connect page, for a provider with no OAuth. `--hooks` adds event hooks fed by a webhook
+the provider delivers to. The command writes
+`packages/gatekeeper-<name>`, adds it to the gatekeeper list in `README.md` and, for OAuth, to the
+credential map in `scripts/run-dev-server.ts` (with hooks, also to that script's passed-through
+variables and to the `restore` list in `scripts/generate-worker-types.ts`), and runs `pnpm install` and, for the new package alone, `pnpm types:generate`. It also writes the stand-in bundle the release manifest's test needs. The
+package builds, lints and bundles as written, but its own tests fail by design (below), and the
+release manifest's test fails until its golden file is updated
+(`UPDATE_GOLDEN=1 node --test scripts/release/manifest-lib.test.ts`). A pasted-key gatekeeper takes
+no deploy inputs, so that test also asks for it to be added to `SINGLETON` in
+`scripts/release/manifest-lib.ts`: decide that deliberately.
+
+`<name>` is 1-20 lowercase letters and digits, the release's install slug rule: it becomes a
+`GATEKEEPER_<NAME>` binding and the `/gatekeeper/<name>` route. The template is
+`packages/create-gatekeeper/template/`; a test generates a package from it and compiles that, so
+read the template rather than an older gatekeeper for the current shape.
+
+## What the command decides and what it leaves
+
+The package is written for an invented provider with one resource type, an item at
+`https://<name>.example/items/:itemId`, one read and one action. Everything the kit already has an
+answer for is real: the connect handshake and its nonces, PKCE and the preview-deployment callback
+relay (or the key form and its cross-site check), staged reconnects, credential refresh and rejection handling, the action journal and its
+fence, per-read observer reporting, the observer verifier with its cache, and with `--hooks` the
+hook registry, its delivery queue and retries, and dropping a disconnected connection's hooks.
+
+Wherever only the provider's documentation or a design decision can say what is right, the
+command wrote an invented answer and marked it `STOP(<id>)`. `__tests__/scaffold-stops.test.ts`
+fails, listing the marks, until none is left: replace what a mark is on, then delete the mark.
+Deleting a mark alone rarely passes, since the test also looks for the invented values it can
+tell from real ones. It cannot tell an invented status classification or cache lifetime, so
+those marks are the only record that the decision is open. The
+command prints the marks in the skill's order: the session API, resource types and subresource
+model come first and need the operator's review (Step 3) before the rest. A package that compiles
+is not a reviewed design; nothing in it is approved until the operator has seen those three.
+
+The invented provider is the **B — One access-controlled unit** example: one atomic resource per
+link, whose own read endpoint answers for its hook events too, with `403` or `404` a definite "no
+access" and `401`, network failures and other errors indeterminate, so they propagate. That is
+not a requirement that a binding have one resource kind or one permission level. Account discovery
+can be private while item reads are shareable; a broad binding can report several independently
+checked resources; one provider object can have different audiences for metadata, content and
+availability. Choose the strategy for each disclosure before adapting the template; see
+[Choosing a strategy](SKILL.md#choosing-a-strategy-per-resource-type--binding) and the kit's
+[worked Google patterns](../../../packages/gatekeeper-kit/USAGE.md#worked-patterns-from-the-google-migrations).
+The template also pins a connection to one `userId` and reports `item/<id>` with no tenant; both
+are marked, and a provider with organizations or workspaces needs the tenant in each.
+
+| File | Holds | Marks |
+|---|---|---|
+| `src/types.d.ts` | the interface gadgets are given | `session-api` |
+| `src/<name>-env.ts` | the Worker's environment and the provider's origins | `origins` |
+| `src/<name>-resources.ts` | resource types and URL patterns, subresource IDs | `resources`, `subresources` |
+| `src/<name>-urls.ts` | parsing and building resource links | |
+| `src/<name>-api.ts` | the typed client and error classification | `api`, `api-auth`, `api-errors` |
+| `src/<name>-auth.ts` | how a user connects: OAuth endpoints, scopes and client, or the key form's text | `oauth-endpoints`, `oauth-scopes`, `oauth-token-lifetime`, `oauth-client-auth`; or `key-help`, `key-format` |
+| `src/<name>-account.ts` | the `UserAccount` Durable Object and connect routes | `identity`, `observer-probe`, `observer-cache` |
+| `src/<name>-credentials.ts` | identity, the verifier's interface | |
+| `src/<name>-gatekeeper.ts` | the per-binding Durable Object | |
+| `src/<name>-session.ts` | the capability a gadget holds | |
+| `src/<name>-actions.ts`, `action-table.json` | actions and their committed table | `actions` |
+| `src/<name>-hooks.ts` (`--hooks`) | webhook route, hook driver, controller and delivery | `webhook-signature`, `webhook-payload`, `webhook-limits` |
+| `src/<name>.ts` | HTTP entrypoint, vendor, account entrypoint, verifier | `vendor-description` |
+| `src/configurator/` | the resource configurator frame | `configurator` |
+
+Still by hand afterwards: the gatekeeper's row in `docs/observers.md`, its README, its
+`deploy-inputs.json` setup steps, and tests against a fake of the provider (`gatekeeper-pagerduty`'s
+`__tests__/workerd/` is the model).
+
+Do not run the command to try it out in a checkout you will commit from: a package with a
+`wrangler.jsonc` is deployable, so the release manifest and the deploy wizard pick it up.
 
 ## Observer safety: new gatekeepers versus migrations
 
 This template is for a **new gatekeeper with no historical observations**. Explicitly report **all
 access dependencies** on every observation and authorize observers only in
-`verifyObserverAccess()`. The shared `subresources` field is currently optional, so the local typed
-helper below makes it required for reads and hook deliveries. Implement
+`verifyObserverAccess()`. The shared `subresources` field is currently optional; the
+`new-gatekeeper-observer-contract` lint rule refuses an `authorizeObservation({...})` that names
+none, and a gatekeeper with many reads should route them through one helper that takes
+`ObservationDescription & { subresources: string[] }`. Implement
 `getHistoricalSubresources()` returning `[]`: it is required even though the current `Gatekeeper`
 interface does not declare it, so type-checking will not catch its absence. Implement
 `addObserver(id, verifier)` / `removeObserver(id)`, which the current interface requires, as
@@ -25,734 +103,33 @@ Private-only reads must still report a real resource ID and deny collaborators i
 `verifyObserverAccess()`. If tenant/workspace membership is required in addition to resource ACLs,
 report that membership resource on every affected observation and verify it explicitly too.
 
-The fictitious provider below has one atomic resource per `https://example.com/resources/:resourceId`,
-with nonempty ASCII alphanumeric, `_`, or `-` IDs. Its authenticated
-`GET /api/resources/:resourceId` returns the resource's complete data on success; this same ACL
-covers its hook events. A `403` or `404` definitively means the account cannot read the resource;
-`401`, network failures, and other errors are indeterminate and must propagate. Adapt these
-assumptions to the real provider: a public metadata probe is not proof of access to private data
-or hooks. The OAuth, action, and event-source scaffolding remains service-specific.
-
-This is the **B — One access-controlled unit** example, not a requirement that a binding have one resource kind or
-one permission level. Account discovery can be private while item reads are shareable; a broad
-binding can report several independently checked resources, and one provider object can expose
-different audiences for metadata, content, or availability. Choose the strategy for each disclosure
-before adapting this template; see [Choosing a strategy](SKILL.md#choosing-a-strategy-per-resource-type--binding)
-and the kit's [worked Google patterns](../../../packages/gatekeeper-kit/USAGE.md#worked-patterns-from-the-google-migrations).
-
-## Main implementation (`src/<name>.ts`)
-
-```typescript
-import { WorkerEntrypoint, DurableObject, RpcTarget, RpcStub } from "cloudflare:workers";
-import {
-  GatekeeperUser,
-  GatekeeperUserVerifier,
-  GatekeeperVendor as GatekeeperVendorIface,
-  Gatekeeper,
-  HookController,        // Remove if no hooks
-  HookInitiator,         // Remove if no hooks
-  HookTargetMetadata,    // Remove if no hooks
-  ResourceDescription,
-  ApprovalQueue,
-  ActionKind,
-  ObservationDescription,
-  VendorDescription,
-  GatekeeperConnectCallback,
-  GatekeeperConnectOptions,
-  AccountDescription,
-  SupportedResource,
-  ResourceConfiguratorFrame,
-  resourceTypeUrlPattern,
-} from '@gadgets/workshop-shared/gatekeeper';
-import { observerAccessVerifier } from "@gadgets/gatekeeper-kit/observers";
-import { formatSubresourceId } from "@gadgets/gatekeeper-kit/subresource-ids";
-import { MySession, MyHook as MyHookIface } from "./types";  // Remove MyHook if no hooks
-import TYPES_CODE from "./types.txt";
-import MY_CONFIGURATOR_HTML from "./generated/my-configurator-ui.txt";
-
-const NONCE_BYTES = 32;
-const NONCE_LIFETIME_MS = 10 * 60 * 1000;  // 10 minutes
-
-function hexEncode(bytes: Uint8Array): string {
-  return [...bytes].map(b => b.toString(16).padStart(2, "0")).join("");
-}
-
-function generateNonce(): string {
-  return hexEncode(crypto.getRandomValues(new Uint8Array(NONCE_BYTES)));
-}
-
-function constantTimeEqual(a: string, b: string): boolean {
-  let encoder = new TextEncoder();
-  let bufA = encoder.encode(a);
-  let bufB = encoder.encode(b);
-  if (bufA.byteLength !== bufB.byteLength) return false;
-  return crypto.subtle.timingSafeEqual(bufA, bufB);
-}
-
-type Env = Cloudflare.Env & {
-  BASE_URL?: string,
-};
-
-function getBaseUrl(env: Env) {
-  return (env.BASE_URL || "http://localhost:8787/gatekeeper/<name>").replace(/\/+$/, "");
-}
-
-function getBasePath(env: Env) {
-  const path = new URL(getBaseUrl(env)).pathname;
-  return path === "/" ? "" : path;
-}
-
-const SELF_CLOSING_HTML = `<!DOCTYPE html>
-<html lang="en">
-  <body>
-    <script type="text/javascript">window.close();</script>
-    <p>Authorization complete. You may close this tab and return to the Gadgets Workshop.
-  </body>
-</html>`;
-
-const MY_RESOURCE: SupportedResource = {
-  id: "resource",
-  urlPattern: "https://example.com/resources/:resourceId",
-  title: "My Resource",
-  description: "Access a specific resource.",
-};
-
-// One product: omit the optional product namespace. Use this exact ID on every read and hook.
-function resourceSubresourceId(resourceId: string): string {
-  return formatSubresourceId({ fragments: [{ name: "resource", id: resourceId }] });
-}
-
-function resourceApiUrl(resourceId: string): string {
-  return `https://example.com/api/resources/${encodeURIComponent(resourceId)}`;
-}
-
-// The shared type still makes subresources optional; new observation paths must not omit them.
-function authorizeResourceObservation(
-    queue: Pick<RpcStub<ApprovalQueue>, "authorizeObservation">,
-    description: ObservationDescription & { subresources: string[] }): Promise<void> {
-  return queue.authorizeObservation(description);
-}
-
-// Every action declares an auto-approval verdict, and a kind when it can be true (SKILL.md
-// "Action kinds and auto-approval"). The user's "always approve" rule is stored under the tag, so never rename it
-// once shipped; the label is what the user sees.
-const MY_EDIT_KIND: ActionKind = { tag: "edit-data", label: "Edit data" };
-
-// ---------------------------------------------------------------------------
-// HTTP handler — serves the browser-based auth flow.
-// For a complete OAuth example, see gatekeeper-google/src/google.ts.
-
-export default {
-  async fetch(req: Request, env: Env, ctx: ExecutionContext) {
-    let url = new URL(req.url);
-    let basePath = getBasePath(env);
-    if (!url.pathname.startsWith(basePath + "/") && url.pathname !== basePath) {
-      throw new Error(`Request path ${url.pathname} does not match BASE_URL path ${basePath}`);
-    }
-    let relPath = url.pathname.slice(basePath.length);
-    let path = relPath.slice(1).split("/");
-
-    if (path.length === 2 && path[0].length === 64 && path[1].length === NONCE_BYTES * 2) {
-      // Auth initiation: the user has visited the connect URL.
-      let doId = path[0];
-      let nonce = path[1];
-      let stub = ctx.exports.UserAccount.get(ctx.exports.UserAccount.idFromString(doId));
-      if (!await stub.verifyNonce(nonce)) {
-        // Show a friendly error page for expired/replayed links.
-        return new Response("TODO: error HTML", {
-          headers: { "Content-Type": "text/html; charset=utf-8" }
-        });
-      }
-
-      // TODO: Redirect to external auth provider, or present an auth form.
-      // For OAuth, generate a second nonce for the `state` parameter here —
-      // see gatekeeper-google for the full pattern.
-      throw new Error("TODO: implement auth initiation");
-    } else {
-      return new Response("Not Found", {status: 404});
-    }
-  }
-};
-
-// ---------------------------------------------------------------------------
-// Vendor — top-level API exposed to the Workshop
-
-export class GatekeeperVendor extends WorkerEntrypoint<Env> implements GatekeeperVendorIface {
-  async describe(): Promise<VendorDescription> {
-    return {
-      displayName: "My Service",
-      url: "https://example.com",
-      logo: { url: "TODO: data URL or hosted image URL" },
-      color: "#f0f4ff",
-      tagline: "Short summary of what this connector enables",
-      description:
-          "Explain what Gadgets can do with this connector in plain language.",
-    };
-  }
-
-  // This skeleton has no independently grantable resources, so it ignores
-  // `options.resourceTypeIds` and stores an empty requested-resource list. Gatekeepers with
-  // grantable resources should follow gatekeeper-google.
-  async connectAccount(
-      callback: Fetcher<GatekeeperConnectCallback>,
-      _options?: GatekeeperConnectOptions): Promise<{url: string}> {
-    let userObjectId = this.ctx.exports.UserAccount.newUniqueId();
-    let nonce = generateNonce();
-    await this.ctx.exports.UserAccount.get(userObjectId).setCallback(callback, nonce, []);
-    return { url: `${getBaseUrl(this.env)}/${userObjectId.toString()}/${nonce}` };
-  }
-
-  async getSupportedResources(): Promise<SupportedResource[]> {
-    return [MY_RESOURCE];
-  }
-
-  async getTypeScriptTypes(): Promise<string> {
-    return TYPES_CODE;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// UserAccount DO — stores per-user credentials (tokens, API keys, etc.).
-// For a full OAuth implementation with two-phase nonces and reconnect support,
-// see gatekeeper-google.
-export class UserAccount extends DurableObject<Env> {
-  async setCallback(
-      callback: Fetcher<GatekeeperConnectCallback>,
-      nonce: string,
-      requestedResourceUrlPatterns: string[]) {
-    // Self-destruct if the connect flow is never completed.
-    if (!this.ctx.storage.kv.get<string>("credentials")) {
-      this.ctx.storage.setAlarm(Date.now() + 3600 * 1000);
-    }
-    this.ctx.storage.kv.put("callback", callback);
-    this.ctx.storage.kv.put("nonce", { value: nonce, expiresAt: Date.now() + NONCE_LIFETIME_MS });
-    this.ctx.storage.kv.put("requestedResourceUrlPatterns", requestedResourceUrlPatterns);
-  }
-
-  // Verify and consume the nonce from the initiation URL. Prevents replay.
-  // Returns false if the nonce is invalid or expired.
-  async verifyNonce(nonce: string): Promise<boolean> {
-    let stored = this.ctx.storage.kv.get<{value: string, expiresAt: number}>("nonce");
-    if (!stored || Date.now() >= stored.expiresAt || !constantTimeEqual(stored.value, nonce)) {
-      return false;
-    }
-    this.ctx.storage.kv.delete("nonce");
-    return true;
-  }
-
-  // Called when the user completes authorization. Store credentials and notify the workshop.
-  async completeConnection(/* auth result params */) {
-    let callback = this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>("callback");
-    if (!callback) {
-      throw new Error("Authorization timed out. Please try again.");
-    }
-
-    // TODO: Store credentials obtained from the auth flow
-    this.ctx.storage.kv.put<string>("credentials", "TODO");
-
-    let props: MyUserImplProps = { userObjectId: this.ctx.id.toString() };
-    try {
-      await callback.complete(this.ctx.exports.MyUserImpl({ props }));
-    } catch (err) {
-      this.ctx.storage.kv.delete("credentials");
-      throw err;
-    }
-  }
-
-  async getAccessToken(): Promise<string> {
-    // TODO: Return a cached short-lived token, refreshing credentials if needed.
-    let token = this.ctx.storage.kv.get<string>("credentials");
-    if (!token) throw new Error("No credentials set.");
-    return token;
-  }
-
-  async alarm() {
-    if (!this.ctx.storage.kv.get<string>("credentials")) {
-      this.ctx.storage.deleteAll();
-    }
-  }
-
-  async revoke() {
-    // TODO: Revoke credentials with the external service
-    this.ctx.storage.deleteAlarm();
-    this.ctx.storage.deleteAll();
-  }
-}
-
-// ---------------------------------------------------------------------------
-// UserImpl — maps resource URLs to gatekeeper DO classes
-
-type MyUserImplProps = {
-  userObjectId: string;
-};
-
-export class MyUserImpl extends WorkerEntrypoint<Env, MyUserImplProps>
-                         implements GatekeeperUser {
-  async describe(): Promise<AccountDescription> {
-    // TODO: Fetch account info from external service using stored credentials
-    return {
-      displayName: "TODO",
-      avatar: { url: "" },
-    };
-  }
-
-  async getSupportedResources(): Promise<SupportedResource[]> {
-    return [MY_RESOURCE];
-  }
-
-  async startResourceConfigurator(resourceTypeId: string): Promise<ResourceConfiguratorFrame> {
-    resourceTypeUrlPattern([MY_RESOURCE], resourceTypeId);
-    let id = this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId);
-    let userAccount = this.ctx.exports.UserAccount.get(id);
-    let ui = new MyConfiguratorUI(async () => {
-      // TODO: Return a short-lived token or construct a read-only API client.
-      // Keep this helper private; do not expose it as an RPC method.
-      return await userAccount.getAccessToken();
-    });
-    return {
-      iframeHtml: MY_CONFIGURATOR_HTML,
-      ui: new RpcStub(ui),
-    };
-  }
-
-  async getGatekeeperClassFor(url: string): Promise<{
-    class: DurableObjectClass<Gatekeeper<any>>;
-    resource: SupportedResource;
-  }> {
-    let parsed = new URL(url);
-    let match = /^\/resources\/([A-Za-z0-9_-]+)\/?$/.exec(parsed.pathname);
-    if (parsed.origin !== "https://example.com" || !match || parsed.search || parsed.hash) {
-      throw new Error("Unsupported resource URL");
-    }
-    // The Overseer instantiates this class as a facet, with the resource pinned in props.
-    let props: MyGatekeeperImplProps = {
-      userObjectId: this.ctx.props.userObjectId,
-      resourceId: match[1],
-    };
-    return {
-      class: this.ctx.exports.MyGatekeeperImpl({ props }),
-      resource: MY_RESOURCE,
-    };
-  }
-
-  async revoke(): Promise<void> {
-    let id = this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId);
-    await this.ctx.exports.UserAccount.get(id).revoke();
-  }
-
-  async ensureResources(_resourceTypeIds: string[]): Promise<{url?: string}> {
-    return {};
-  }
-
-  // The overseer only hands this account verifier back to this vendor, so
-  // MyGatekeeperImpl.verifyObserverAccess may call its vendor-specific ACL probe.
-  async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {
-    let props: MyVerifierProps = { userObjectId: this.ctx.props.userObjectId };
-    return this.ctx.exports.MyVerifier({ props });
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Verifier — answers "can this observer access X?" against the OBSERVER's own credentials.
-// Probe the same data endpoint/ACL used by getData(), not public metadata or the owner's account.
-
-type MyVerifierProps = {
-  userObjectId: string;
-};
-
-// Vendor-specific methods on the otherwise opaque verifier. The overseer's same-vendor guarantee
-// lets verifyObserverAccess cast it back to this interface for this call only.
-export interface MyVerifierApi extends GatekeeperUserVerifier {
-  hasResourceAccess(resourceId: string): Promise<boolean>;
-}
-
-export class MyVerifier extends WorkerEntrypoint<Env, MyVerifierProps>
-    implements MyVerifierApi {
-  async hasResourceAccess(resourceId: string): Promise<boolean> {
-    let account = this.ctx.exports.UserAccount.get(
-        this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId));
-    let token = await account.getAccessToken();
-    let response = await fetch(resourceApiUrl(resourceId), {
-      headers: { Authorization: `Bearer ${token}` },
-      redirect: "manual",  // Workers has no "error"; a 3xx is not ok, so it throws below.
-    });
-    // Discard data: this probe answers an ACL question, it does not reveal data to a caller.
-    await response.body?.cancel();
-    if (response.status === 403 || response.status === 404) return false;
-    if (!response.ok) {
-      // Includes 401 (expired/invalid credentials), throttling, and provider outages.
-      throw new Error(`Could not determine resource access: HTTP ${response.status}`);
-    }
-    return true;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Resource configurator — narrow iframe helper API
-
-const configuratorTokenGetters = new WeakMap<object, () => Promise<string>>();
-
-class MyConfiguratorUI extends RpcTarget {
-  constructor(getToken: () => Promise<string>) {
-    super();
-    configuratorTokenGetters.set(this, getToken);
-  }
-
-  async listResources(query: string): Promise<{ value: string; title: string }[]> {
-    let getToken = configuratorTokenGetters.get(this);
-    if (!getToken) throw new Error("Configurator is not initialized.");
-    let token = await getToken();
-    void token;
-    // TODO: Call read-only external APIs and return bounded search results.
-    return [{ value: query || "example", title: query || "Example" }];
-  }
-
-}
-
-// ---------------------------------------------------------------------------
-// Hook type — remove this section (and the HookController/HookInitiator/HookTargetMetadata
-// imports, the `subscribe` method, the `hookTsType` field, and MyHookControllerImpl) if the
-// gatekeeper doesn't push events.
-//
-// The hook interface from types.d.ts is implemented by the Gadget as an RpcTarget. Intersect it
-// with RpcTarget so it satisfies the HookController/HookInitiator generic constraints (Hook
-// extends RpcTarget).
-//
-// Note that you can also use a plain function as a hook type, e.g. `RpcStub<() => Promise<void>>`.
-// In that case you would not need to merge the type with `RpcTarget`.
-
-type MyHook = RpcTarget & MyHookIface;
-
-// ---------------------------------------------------------------------------
-// GatekeeperImpl DO — per-resource instance, runs as a facet of the Overseer
-
-type MyGatekeeperImplProps = {
-  userObjectId: string;
-  resourceId: string;
-};
-
-export class MyGatekeeperImpl extends DurableObject<Env, MyGatekeeperImplProps>
-    implements Gatekeeper<MySession> {
-
-  async describe(): Promise<ResourceDescription> {
-    return {
-      url: `https://example.com/resources/${encodeURIComponent(this.ctx.props.resourceId)}`,
-      title: "TODO",
-      snippet: "TODO",
-      suggestedBindingName: "MY_RESOURCE",  // Based on type, not instance
-      tsType: "MySession",
-      hookTsType: "MyHook",  // Remove if hooks are not supported
-    };
-  }
-
-  async getTypeScriptTypes(): Promise<string> {
-    return TYPES_CODE;
-  }
-
-  // The kinds this binding can submit with `autoApprovable: true`, offered to the user to enable.
-  // Approves nothing by itself. With gatekeeper-kit, return `autoApprovableKinds()` filtered to
-  // this binding; return [] if every action opts out.
-  async getAutoApprovableActions(): Promise<ActionKind[]> {
-    return [MY_EDIT_KIND];
-  }
-
-  async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<MySession> {
-    return new MySessionImpl(
-      approvalQueue.dup(),  // Always dup() before storing
-      this.ctx,
-      // ... API client, props, etc.
-    );
-  }
-
-  async applyAction(actionId: number): Promise<void> {
-    // Look up the action by ID from this gatekeeper's own storage, then perform it
-    // against the external service.
-    // TODO: Implement action lookup and execution.
-    throw new Error(`Unknown action: ${actionId}`);
-  }
-
-  async rejectAction(actionId: number): Promise<void | { restart?: boolean }> {
-    // Clean up simulation state for this action.
-    // Return { restart: true } if the session can't recover from rejection.
-  }
-
-  revertAction(actionId: number):
-      Promise<void | { message?: string; canRetry?: boolean; restart?: boolean }> {
-    // TODO: Undo the action (look up what was done from own storage)
-    throw new Error("Revert not implemented");
-  }
-
-  // Judges each observer by the verifier this call brings, against every reported ID, and stores
-  // nothing. If the oracle throws, the whole call fails and the Workshop denies everyone in it.
-  readonly #verifyObserverAccess = observerAccessVerifier({
-    hasCollectionAccess: async (verifier: Fetcher<MyVerifierApi>, subresources) => {
-      // Every ID this binding reports names its one atomic resource, so one live ACL probe
-      // covers them all.
-      let allowed = await verifier.hasResourceAccess(this.ctx.props.resourceId);
-      return subresources.map(() => allowed);
-    },
-  });
-
-  // Required, though the current Gatekeeper interface does not declare it. A new gatekeeper
-  // observed nothing under the legacy observer protocol, so the export is empty and reads no state.
-  async getHistoricalSubresources(): Promise<string[]> {
-    return [];
-  }
-
-  async verifyObserverAccess(
-      observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
-      subresources: string[]): Promise<{ allowedObserverIds: string[] }> {
-    let expected = resourceSubresourceId(this.ctx.props.resourceId);
-    // Refuse an ID this binding never reports rather than guessing what it names.
-    if (subresources.some(id => id !== expected)) {
-      throw new Error("This connection was asked about a resource it never reported.");
-    }
-    return this.#verifyObserverAccess(observers, subresources);
-  }
-
-  // Compatibility only: the current interface requires these. All access dependencies are
-  // explicit on observations; observer authorization is above, never here.
-  async addObserver(_id: string, _verifier: Fetcher<GatekeeperUserVerifier>): Promise<void> {}
-
-  // Compatibility only; there is no observer state to remove.
-  async removeObserver(_id: string): Promise<void> {}
-}
-
-// ---------------------------------------------------------------------------
-// HookController — remove if the gatekeeper doesn't push events.
-//
-// A WorkerEntrypoint the overseer uses to enable/disable the hook after the user approves it.
-// It is constructed with `props` carrying the specifics of that particular registration, so it
-// needs no other state. If your gatekeeper offers several kinds of hooks, give each its own
-// controller class.
-
-// Bind-time details for a single hook registration, baked into the controller's props.
-type MyHookProps = {
-  // TODO: e.g. an event kind, a filter, a sub-resource id, etc. — whatever the registration
-  // method received and the controller/event source will need later.
-  filter?: string;
-};
-
-type MyHookControllerImplProps = MyGatekeeperImplProps & MyHookProps;
-
-export class MyHookControllerImpl extends WorkerEntrypoint<Env, MyHookControllerImplProps>
-    implements HookController<MyHook> {
-  // Called when the user enables the hook. Store `initiator` somewhere it can be reached when an
-  // event arrives — typically an event-source DO. Don't store other state until now; everything
-  // else is already in `this.ctx.props`. If already enabled, replace the previous initiator.
-  //
-  // `target` identifies where the hook delivers (workspace, and gadget when pinned to one). Store
-  // it too if you display or link to the target; otherwise ignore it, but keep the parameter
-  // declared — RPC argument validation rejects arguments the receiver doesn't declare.
-  async enable(initiator: Fetcher<HookInitiator<MyHook>>, target: HookTargetMetadata): Promise<void> {
-    // TODO: persist `initiator` (e.g. forward it to an event-source DO keyed by props).
-  }
-
-  // Called when the hook is disabled or deleted. Forget the stored initiator and clean up all
-  // related state. May never be called again, though the overseer may later call enable() afresh.
-  async disable(): Promise<void> {
-    // TODO: forget the stored initiator.
-  }
-}
-
-// Event delivery (sketch). When the external event arrives — e.g. in the event-source DO that
-// holds the `initiator` — invoke the hook like so. The resource ID comes from the enabled
-// registration's props, never an untrusted event field; events reveal only that resource:
-//
-//   async onEvent(initiator: Fetcher<HookInitiator<MyHook>>, resourceId: string, event: MyEvent) {
-//     // startHook() begins a fresh session and returns the callback (re-bound to it) plus an
-//     // ApprovalQueue. Await the disposable result so `using` releases its stubs even on denial.
-//     using result = await initiator.startHook();
-//
-//     // A hook event is almost always an observation. (Register actions too if invoking the
-//     // callback can cause side effects.) Authorize before delivering any event data.
-//     await authorizeResourceObservation(result.approvalQueue, {
-//       title: "Resource event",
-//       description: "Delivered an event from the bound resource.",
-//       subresources: [resourceSubresourceId(resourceId)],
-//     });
-//
-//     // Deliver the event to the Gadget's callback.
-//     await result.callback.onMyEvent(event);
-//   }
-
-// ---------------------------------------------------------------------------
-// SessionImpl — the RPC interface exposed to the Gadget
-
-class MySessionImpl extends RpcTarget implements MySession {
-  #approvalQueue: RpcStub<ApprovalQueue>;
-  #ctx: DurableObjectState<MyGatekeeperImplProps>;
-
-  constructor(
-      approvalQueue: RpcStub<ApprovalQueue>,
-      ctx: DurableObjectState<MyGatekeeperImplProps>) {
-    super();
-    this.#approvalQueue = approvalQueue;
-    this.#ctx = ctx;
-  }
-
-  [Symbol.dispose]() {
-    this.#approvalQueue[Symbol.dispose]();
-  }
-
-  // Example: observation (read). Fetch data, then authorize before returning.
-  async getData(): Promise<string> {
-    let account = this.#ctx.exports.UserAccount.get(
-        this.#ctx.exports.UserAccount.idFromString(this.#ctx.props.userObjectId));
-    let token = await account.getAccessToken();
-    let response = await fetch(resourceApiUrl(this.#ctx.props.resourceId), {
-      headers: { Authorization: `Bearer ${token}` },
-      redirect: "manual",  // Workers has no "error"; a 3xx is not ok, so it throws below.
-    });
-    if (!response.ok) throw new Error(`Resource read failed: HTTP ${response.status}`);
-    let result = await response.text();
-
-    await authorizeResourceObservation(this.#approvalQueue, {
-      title: "Read data",
-      description: "Fetched data from the bound resource.",
-      subresources: [resourceSubresourceId(this.#ctx.props.resourceId)],
-    });
-
-    return result;
-  }
-
-  // Example: action (side effect). Submit for approval; do NOT perform here.
-  // Assign a sequential action ID, store the action details in the gatekeeper's
-  // own storage, then submit the ID to the approval queue. If you read current state to build
-  // the description or capture revert info, do NOT log it as an observation: nothing is
-  // returned to the caller.
-  async updateData(newValue: string): Promise<void> {
-    let actionId = /* assign next sequential ID and store action details */ 0;
-
-    await this.#approvalQueue.submitAction(actionId, {
-      title: "Update data",
-      description: `Update value to: ${newValue}`,
-      implementsRevert: true,
-      actionKind: MY_EDIT_KIND,
-      // `true` unless the action falls under the opt-out policy in SKILL.md. Where it depends on
-      // the payload, compute it, with a comment naming the rule:
-      //   autoApprovable: !removesContent(newValue),  // rule 1: deletes or removes content
-      autoApprovable: true,
-    });
-
-    // TODO: Update cache/simulation state so subsequent reads reflect this
-  }
-
-  // Example: hook registration — remove if the gatekeeper doesn't push events.
-  // `callback` is a persistent stub the Gadget created with ctx.restore(). Construct a controller
-  // whose props capture the specifics of THIS registration (e.g. `filter`), then hand it, the
-  // callback, and a user-facing description to the overseer via bindHook(). For multiple hook
-  // kinds, pick the appropriate controller class here. Do NOT store the callback yourself — it is
-  // bound to this session and would be revoked when the session ends.
-  async subscribe(callback: RpcStub<MyHook>, filter?: string): Promise<void> {
-    let controller = this.#ctx.exports.MyHookControllerImpl({
-      props: { ...this.#ctx.props, filter },
-    });
-    await this.#approvalQueue.bindHook(controller, callback, {
-      title: "TODO: short hook title",
-      description: `TODO: what events this hook delivers${filter ? ` (filter: ${filter})` : ""}`,
-    });
-  }
-}
-```
-
-## `cloudflare.config.ts`
-
-```typescript
-import {
-  DEFAULT_GATEKEEPER_WRANGLER, OBSERVABILITY, defineGadgetsWorker, type DurableObjectMigration,
-} from "@gadgets/scripts/worker-config";
-
-export default defineGadgetsWorker({
-  name: "gatekeeper-<name>",
-  entrypoint: ".wrangler/validate/src/<name>.ts",
-  compatibilityFlags: ["allow_irrevocable_stub_storage"],
-  observability: OBSERVABILITY,
-});
-
-export const wrangler = DEFAULT_GATEKEEPER_WRANGLER;
-
-export const migrations: DurableObjectMigration[] = [
-  { tag: "v0", new_sqlite_classes: ["UserAccount", "MyGatekeeperImpl"] },
-];
-```
-
-Run `pnpm configs:generate`; the generated `wrangler.jsonc` is committed and never edited by hand.
-
-Only Durable Object classes go in `new_sqlite_classes`. `MyVerifier` and `MyHookControllerImpl` are `WorkerEntrypoint`s, so they need no `migrations` entry — but, like all entrypoints, they must be `export`ed from the worker's main module (so `ctx.exports.MyVerifier(...)` resolves). If your hook uses a dedicated event-source DO to hold the `initiator`, add that DO here too.
-
-## Creating the `types.txt` symlink
-
-```bash
-cd packages/gatekeeper-<name>/src
-ln -s types.d.ts types.txt
-```
-
-## Resource configurator files
-
-Add per-resource configurator types and UI modules:
-
-```
-src/configurator/my-configurator-types.d.ts
-src/configurator/my-configurator-types.txt -> my-configurator-types.d.ts
-src/configurator/my-configurator-ui.tsx
-```
-
-`my-configurator-types.d.ts` should describe the iframe helper API. The UI module's own `resourceUrl()` hook returns the resource URL to Workshop.
-
-```typescript
-export interface MyConfiguratorUI {
-  listResources(query: string): Promise<{ value: string; title: string }[]>;
-}
-```
-
-Add package scripts:
-
-```json
-{
-  "scripts": {
-    "deploy": "vp run --no-cache build:configurator && wrangler deploy"
-  },
-  "dependencies": {
-    "@gadgets/configurator-ui": "workspace:*",
-    "@gadgets/gatekeeper-kit": "workspace:*"
-  },
-  "devDependencies": {
-    "@gadgets/scripts": "workspace:*"
-  }
-}
-```
-
-`@gadgets/scripts` has to be declared, not just imported. The shared task configs and the
-`gadgets-*` bins that run them belong to that package, and the workspace root depends on it too —
-so its bins are already on `PATH` and a `vite.config.ts` importing it resolves even with no
-declaration here. That is a phantom dependency: it works until this package is built somewhere that
-does not happen to hoist it.
-
-No `build` script: `build` is one of the shared Vite+ tasks below, and vp forbids a task and a
-script sharing a name. Build this one package with `pnpm exec vp run -F <package-name> build` —
-`pnpm --filter` cannot see a task, so `pnpm --filter <package-name> build` reports nothing to run;
-the workspace-wide `pnpm build` picks it up as usual. `deploy` goes through the task rather than
-calling
-`build-gatekeeper-configurator.ts` itself, so the codegen command lives in one place and cannot
-drift from the task that declares its env — `wrangler deploy` stays outside vp, since it has side
-effects and needs real credentials.
-
-Also add a `vite.config.ts` re-exporting the shared `build` and `build:configurator` Vite+ tasks —
-the latter is what the `pnpm dev-server` pre-flight builds (`vp run -r --cache build:configurator
---dev`). Both are tasks rather than package.json scripts so `VITE_FRONTEND_ERROR_REPORTING` is
-passed through and cache-fingerprinted; a `build` script running the builder with `&&` would bypass
-that and silently bake the wrong value into the shipped HTML (do not add either script back):
-
-```typescript
-// Vite+ per-package settings. The build:configurator task definition is shared by all gatekeepers
-// with a configurator UI and ships as an export of `@gadgets/scripts`, alongside the builder it
-// runs.
-export { default } from '@gadgets/scripts/gatekeeper-configurator'
-
-// ...or, if the gatekeeper has tests, `withTests` instead: the same settings plus the shared vitest
-// `test` task. Add a `"test:run": "vitest run"` script too, for iterating without the cache.
-export { withTests as default } from '@gadgets/scripts/gatekeeper-configurator'
-```
-
-Keep tokens and broad API clients out of public `RpcTarget` properties; use closures, `#private`, or `WeakMap` state and expose only narrow read-only helper methods.
+## Configuration notes
+
+Only Durable Object classes go in `new_sqlite_classes` in `cloudflare.config.ts`. A verifier or
+hook controller is a `WorkerEntrypoint`, so it needs no `migrations` entry, but like every
+entrypoint it must be exported from the Worker's main module so `ctx.exports.<Class>(...)`
+resolves. Run `pnpm configs:generate` after changing `cloudflare.config.ts`; the generated
+`wrangler.jsonc` is committed and never edited by hand.
+
+`build` and `build:configurator` are shared Vite+ tasks the package's `vite.config.ts` re-exports,
+not package.json scripts, so `VITE_FRONTEND_ERROR_REPORTING` is passed through and
+cache-fingerprinted. Do not add either as a script. Build one package with
+`pnpm exec vp run -F <package-name> build`.
+
+Keep tokens and broad API clients out of public `RpcTarget` properties; use closures or `#private`
+state and expose only narrow read-only helper methods.
+
+## Hooks
+
+`--hooks` writes `src/<name>-hooks.ts`, modelled on `gatekeeper-pagerduty`: one webhook for the
+deployment, delivering to `POST {BASE_URL}/webhook` and signed with the `<NAME>_WEBHOOK_SECRET`
+secret, which is set outside the deploy wizard; while it is unset, subscribing is refused and the
+route answers 404. The session's `subscribe()` binds a controller whose props carry a persistent
+stub back to the binding's facet; the driver queues each verified event for the hooks that may
+watch it; and the facet re-reads what the event names as the hook's owner, authorizes the
+observation with its subresources, and only then calls the hook. Keep that order when you replace
+the invented event: take identifiers from the webhook and nothing else.
+
+A provider that has no deployment-wide webhook (one that needs a subscription per resource, or
+polling) needs a different event source; keep the controller, registry and delivery, and replace
+`handleWebhook`.
