@@ -862,12 +862,15 @@ function tabsOf({ saved, pending }) {
 
 function renderOutline() {
   const tabs = tabsOf(info.sheets);
+  // The sheet whose name holds the keyboard: the name drawn in its place is to hold it again.
+  const held = document.activeElement?.dataset.sheet;
   outlineList.replaceChildren(...tabs.map(({ sheet: listed, added, renamed, moved, deleted }) => {
     const on = listed.id === sheet.id && !deleted;
     // A sheet that is a chart alone has no cells to draw.
     const drawn = listed.rowCount > 0;
     const row = make('div', `tab${on ? ' on' : ''}${deleted ? ' cut' : ''}${listed.hidden || !drawn ? ' away' : ''}`);
     const name = row.appendChild(make('button', 'name'));
+    name.dataset.sheet = listed.id;
     name.append(lineIcon(SHEET_ICON), make('span', '', listed.title));
     // A sheet added or deleted is that whatever else is done to it; any other a change touches is edited.
     const kind = added ? 'added' : deleted ? 'removed' : listed.touched && 'changed';
@@ -892,6 +895,7 @@ function renderOutline() {
     return row;
   }));
   setOutline('Sheets', tabs.length > 1);
+  if (held) outlineList.querySelector(`[data-sheet="${held}"]:not([aria-disabled])`)?.focus();
   outlineList.querySelector('.on')?.scrollIntoView({ block: 'nearest' });
 }
 

@@ -502,6 +502,16 @@ it('opens on a sheet of cells, not a chart that comes first, and opens no chart'
   expect(reads).toEqual(["'Sales'!A1:C4"])
 })
 
+it('keeps the keyboard on the name of a sheet as it is opened', async () => {
+  const { doc, cell, tabs } = await draw({ sheets: [small(1, 'Sales', 0), small(2, 'Costs', 1)] }, 1100)
+
+  tabs()[1].focus()
+  tabs()[1].click()
+  await expect.poll(() => cell('A1')?.textContent).toBe('Costs A1')
+
+  expect(doc.activeElement).toBe(tabs()[1])
+})
+
 /**
  * The rows a window asks for, and how many cells it draws with the one row, and the `frozen`
  * columns, the sheet keeps in view.
