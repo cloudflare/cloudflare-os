@@ -14,6 +14,7 @@ import { AdminModelsPanel } from './features/ai-models/AdminModelsPanel'
 import { AdminUpdatesPanel } from './features/deployment-updates/AdminUpdatesPanel'
 import { AdminAuditPanel } from './features/admin-audit/AdminAuditPanel'
 import { auditSettingsOf, type AuditSettings } from './features/admin-audit/auditSettings'
+import { PendingApprovalsCard } from './features/admin-grants/PendingApprovalsCard'
 import { latestReads } from './features/deployment-updates/latestReads'
 import { probeRouterTag } from './features/deployment-updates/probeRouterTag'
 import { RestrictedWebFetchCard } from './features/web-fetch/RestrictedWebFetchCard'
@@ -41,7 +42,7 @@ const BANNER_SWATCH: Record<BannerColor, string> = {
 }
 
 export default function AdminPage() {
-  const { authenticatedApi, isAdmin } = useAuthenticatedApi()
+  const { authenticatedApi, isAdmin, currentUser, isCurrentUserConfirmed } = useAuthenticatedApi()
   const toasts = useKumoToastManager()
   useDocumentTitle('Admin')
 
@@ -115,6 +116,11 @@ export default function AdminPage() {
   // Only the latest re-read applies (see latestReads).
   const [reloadAuditSettings] = useState(() =>
     latestReads<AdminSettingsView>((view) => setAuditSettings(auditSettingsOf(view))))
+
+  // Each press of the Audit tab's Refresh, which lists the pending approvals again too.
+  const [auditRefreshes, setAuditRefreshes] = useState(0)
+  // Each grant decision the pending approvals card settles, which the audit panel loads again for.
+  const [grantDecisions, setGrantDecisions] = useState(0)
 
   // The tab lives in the URL so the notice can link to one, and so do the Audit tab's filters;
   // changing either replaces the history entry on the same route, which keeps this component and
@@ -537,11 +543,22 @@ export default function AdminPage() {
       )}
 
       {/* Admin audit log, inspection access and retention */}
+      {/* The signed-in admin, by whose id the card tells their own requests from other admins'. */}
+      {activeTab === 'audit' && auditSettings !== null && isCurrentUserConfirmed && currentUser !== null && (
+        <PendingApprovalsCard
+          admin={admin.api}
+          userId={currentUser.id}
+          refreshes={auditRefreshes}
+          onDecided={() => setGrantDecisions((n) => n + 1)}
+        />
+      )}
       {activeTab === 'audit' && auditSettings !== null && (
         <AdminAuditPanel
           admin={admin.api}
           settings={auditSettings}
           onSettingsChanged={() => reloadAuditSettings(() => admin.api.getSettings())}
+          onRefresh={() => setAuditRefreshes((n) => n + 1)}
+          recorded={grantDecisions}
           filter={auditFilter}
           onFilterChange={(filter) => void navigate({ to: '/admin', search: { tab: 'audit', ...filter }, replace: true })}
         />

@@ -1,7 +1,8 @@
 import {
   MAX_ADMIN_AUDIT_ARG_LENGTH,
-  type AdminAuditPage, type AdminAuditQuery, type AdminAuditRecord, type AdminAuditStats,
-  type AdminAuditStatsQuery,
+  type AdminAccessExposure, type AdminAccessRecord, type AdminAuditPage, type AdminAuditQuery,
+  type AdminAuditRecord, type AdminAuditStats, type AdminAuditStatsQuery, type AdminGrantRecord,
+  type AdminWriteRecord,
 } from "@gadgets/workshop-shared/api";
 import { DurableObject } from "cloudflare:workers";
 import {
@@ -19,28 +20,31 @@ const PRUNE_BATCH = 1000;
 // The longest admin or workspace filter list() takes; workspace ids are 64 characters.
 const MAX_FILTER_LENGTH = 1000;
 const TOP_LIMIT = 10;
-// A record's method, and the user an access or write record's target belongs to (the account's
-// user, or the workspace's owner), which stay in the JSON (see the schema below).
+// A record's method, and the user an access, write or grant record's target belongs to (the
+// account's user, or the workspace's owner), which stay in the JSON (see the schema below).
 const METHOD = "json_extract(record, '$.method')";
 const TARGET =
     "coalesce(json_extract(record, '$.userId'), json_extract(record, '$.workspaceOwner'))";
 // Rows counted as writes: one per write.
 const WRITES = "COUNT(*) FILTER (WHERE kind = 'write')";
+// Rows counted as content reads, by FILTER rather than SUM(exposed = 'content'), which the rows
+// of other kinds (exposed NULL) would make NULL.
+const CONTENT_READS = "COUNT(*) FILTER (WHERE exposed = 'content')";
 
 // The table's definition from its opening parenthesis: the text SQLite stores for it, which the
 // constructor compares with this one.
 const TABLE = `(
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
   at INTEGER NOT NULL,
-  kind TEXT NOT NULL CHECK (kind IN ('workspace', 'user', 'setting', 'write')),
+  kind TEXT NOT NULL CHECK (kind IN ('workspace', 'user', 'setting', 'write', 'grant')),
   admin TEXT NOT NULL,
   workspace_id TEXT,
   workspace_title TEXT,
   exposed TEXT CHECK (exposed IN ('metadata', 'content')),
   record TEXT NOT NULL CHECK (json_valid(record)),
-  CHECK ((kind IN ('workspace', 'write')) =
+  CHECK ((kind IN ('workspace', 'write', 'grant')) =
       (workspace_id IS NOT NULL AND workspace_title IS NOT NULL)),
-  CHECK ((kind IN ('setting', 'write')) = (exposed IS NULL))
+  CHECK ((kind IN ('setting', 'write', 'grant')) = (exposed IS NULL))
 ) STRICT`;
 
 type AuditRow = {
@@ -50,6 +54,7 @@ type AuditRow = {
   admin: string;
   workspace_id: string | null;
   workspace_title: string | null;
+  exposed: string | null;
   record: string;
 };
 
@@ -60,24 +65,27 @@ type AuditRow = {
  * AdminApiImpl before it refuses an open that never reached the workspace. An
  * AdminUserAccessRecord is appended the same way, by the inspected account's Durable Object or by
  * AdminApiImpl. An AdminSettingRecord is appended by AdminSettings before its change takes effect.
- * An AdminWriteRecord is appended by the workspace before the write takes effect.
+ * An AdminWriteRecord is appended by the workspace before the write takes effect. An
+ * AdminGrantRecord is appended before its step takes effect: by AdminSettings for a content access
+ * request and its denial, by the workspace for an approval and the end of a grant.
  * Always addressed as getByName(""). Callers pass the retention they read for the call; whatever
  * they pass, a record is kept at least minAdminAuditRetentionDays() days. Each method given one
  * first deletes up to 1000 rows older than it, and never lists or counts one.
  *
  * Schema (the integration suite installs a trigger on the table by this name). Each field of a
- * record is stored once: kind, at (epoch ms), admin and, for access or a write to a workspace,
- * workspace_id and workspace_title are columns, and `exposed` is 'metadata' for every access record
- * and NULL for any other; the rest of the record is JSON in `record`. The constructor rebuilds a
- * table stored under another definition.
+ * record is stored once: kind, at (epoch ms), admin and, for access, a write or a grant step on a
+ * workspace, workspace_id and workspace_title are columns, and so is `exposed`, which holds what an
+ * access record's answer exposed ('content' for a call made under a grant whose answer held
+ * content, 'metadata' for any other) and is NULL for a record of another kind; the rest of the
+ * record is JSON in `record`. The constructor rebuilds a table stored under another definition.
  *   admin_audit(seq INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL,
- *     kind TEXT NOT NULL CHECK (kind IN ('workspace', 'user', 'setting', 'write')),
+ *     kind TEXT NOT NULL CHECK (kind IN ('workspace', 'user', 'setting', 'write', 'grant')),
  *     admin TEXT NOT NULL, workspace_id TEXT, workspace_title TEXT,
  *     exposed TEXT CHECK (exposed IN ('metadata', 'content')),
  *     record TEXT NOT NULL CHECK (json_valid(record)),
- *     CHECK ((kind IN ('workspace', 'write')) =
+ *     CHECK ((kind IN ('workspace', 'write', 'grant')) =
  *         (workspace_id IS NOT NULL AND workspace_title IS NOT NULL)),
- *     CHECK ((kind IN ('setting', 'write')) = (exposed IS NULL))) STRICT;
+ *     CHECK ((kind IN ('setting', 'write', 'grant')) = (exposed IS NULL))) STRICT;
  *   indexes (at), (admin, seq), (workspace_id, seq), (kind, seq), (exposed, seq),
  *     (json_extract(record, '$.method'), seq),
  *     (coalesce(json_extract(record, '$.userId'), json_extract(record, '$.workspaceOwner')), seq)
@@ -142,20 +150,33 @@ export class AdminAuditDurableObject extends DurableObject<Cloudflare.Env> {
    * an AdminWriteRecord's workspaceTitle is stored cut by cutAdminAuditText() to
    * MAX_ADMIN_AUDIT_ARG_LENGTH, and its workspaceOwner as auditOwnerId() gives it, whatever the
    * caller sent: the fields a workspace's members choose, neither bounded otherwise. An
-   * AdminUserAccessRecord's userId is kept as auditOwnerId() gives it too. */
+   * AdminUserAccessRecord's userId is kept as auditOwnerId() gives it too. Throws (TypeError) for
+   * an AdminAccessRecord whose `exposed` is neither "metadata" nor "content". */
   append(record: AdminAuditRecord, retentionDays?: number): void {
     if (retentionDays !== undefined) this.#prune(retentionDays);
     // Each field is stored once, in its column or in the JSON, never both: a title stored twice let
     // an over-long one overflow the row (the platform caps one at 8 MiB) and fail every append.
     let workspaceId: string | null = null;
     let workspaceTitle: string | null = null;
+    let exposed: AdminAccessExposure | null = null;
     let rest: Record<string, unknown>;
-    if (record.kind === "workspace" || record.kind === "write") {
-      // A write record is stored as an access record is.
+    if (record.kind === "workspace" || record.kind === "write" || record.kind === "grant") {
+      // A write or a grant record is stored as an access record is, and carries no `exposed`.
       let {
         kind: _kind, at: _at, admin: _admin, workspaceId: id, workspaceTitle: title,
-        workspaceOwner: owner, ...fields
-      } = record;
+        workspaceOwner: owner, exposed: answered, ...fields
+      }: (AdminAccessRecord | AdminWriteRecord | AdminGrantRecord) &
+          { exposed?: AdminAccessExposure } = record;
+      if (record.kind === "workspace") {
+        // A record without the field comes from a view that returns metadata only: this log is
+        // one deployment-wide object, so a workspace whose code sends no such field reaches it,
+        // and its record is kept as what its answer held instead of failing the table's CHECK,
+        // which would fail the admin's call with it.
+        exposed = answered ?? "metadata";
+        if (exposed !== "metadata" && exposed !== "content") {
+          throw new TypeError("An access record exposes \"metadata\" or \"content\".");
+        }
+      }
       workspaceId = id ?? null;
       // Neither a title nor a username has a length limit of its own, and a page of records holding
       // them whole could pass the RPC size limit, so the store holds the bound itself.
@@ -164,14 +185,13 @@ export class AdminAuditDurableObject extends DurableObject<Cloudflare.Env> {
       rest = typeof owner === "string" ? { ...fields, workspaceOwner: auditOwnerId(owner) } : fields;
     } else if (record.kind === "user") {
       let { kind: _kind, at: _at, admin: _admin, userId, ...fields } = record;
+      // A view of a user's account answers with metadata alone.
+      exposed = "metadata";
       rest = typeof userId === "string" ? { ...fields, userId: auditOwnerId(userId) } : fields;
     } else {
       let { kind: _kind, at: _at, admin: _admin, ...fields } = record;
       rest = fields;
     }
-    // The table's `exposed` column says what an access record's answer held, and a view answers
-    // with metadata alone.
-    let exposed = record.kind === "setting" || record.kind === "write" ? null : "metadata";
     this.ctx.storage.sql.exec(
       `INSERT INTO admin_audit (at, kind, admin, workspace_id, workspace_title, exposed, record)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -215,6 +235,10 @@ export class AdminAuditDurableObject extends DurableObject<Cloudflare.Env> {
       where.push(`${TARGET} = ?`);
       params.push(auditOwnerId(query.owner));
     }
+    if (query.exposed !== undefined) {
+      where.push("exposed = ?");
+      params.push(query.exposed);
+    }
     if (query.since !== undefined) {
       let since = query.since.getTime();
       if (Number.isNaN(since)) throw new TypeError("Invalid since.");
@@ -229,15 +253,16 @@ export class AdminAuditDurableObject extends DurableObject<Cloudflare.Env> {
     }
 
     let rows = this.ctx.storage.sql.exec<AuditRow>(
-      `SELECT seq, at, kind, admin, workspace_id, workspace_title, record FROM admin_audit
-       WHERE ${where.join(" AND ")} ORDER BY seq DESC LIMIT ?`,
+      `SELECT seq, at, kind, admin, workspace_id, workspace_title, exposed, record
+       FROM admin_audit WHERE ${where.join(" AND ")} ORDER BY seq DESC LIMIT ?`,
       ...params, limit + 1).toArray();
     let page: AdminAuditPage = { records: rows.slice(0, limit).map(recordFromRow) };
     if (rows.length > limit) page.nextCursor = String(rows[limit - 1].seq);
     return page;
   }
 
-  /** The counts getAdminAuditStats() reports for the last `days` UTC days of this object's clock. */
+  /** The counts getAdminAuditStats() reports for the last `days` UTC days of this object's clock.
+   * The content reads are the access records whose `exposed` is "content". */
   stats(query: Pick<AdminAuditStatsQuery, "kind"> & { days: number }, retentionDays: number)
       : AdminAuditStats {
     let days = adminAuditStatsDays(query.days);
@@ -258,13 +283,16 @@ export class AdminAuditDurableObject extends DurableObject<Cloudflare.Env> {
     let counts = new Map<number, number>();
     let totalEvents = 0;
     let writes = 0;
-    type DayRow = { day: number; count: number; writeCount: number };
-    for (let { day, count, writeCount } of sql.exec<DayRow>(
-        `SELECT at / ${DAY_MS} AS day, COUNT(*) AS count, ${WRITES} AS writeCount
+    let contentReads = 0;
+    type DayRow = { day: number; count: number; writeCount: number; contentCount: number };
+    for (let { day, count, writeCount, contentCount } of sql.exec<DayRow>(
+        `SELECT at / ${DAY_MS} AS day, COUNT(*) AS count, ${WRITES} AS writeCount,
+           ${CONTENT_READS} AS contentCount
          FROM admin_audit WHERE ${where} GROUP BY day`, ...params)) {
       counts.set(day, count);
       totalEvents += count;
       writes += writeCount;
+      contentReads += contentCount;
     }
     let firstDay = start / DAY_MS;
     let byDay = Array.from({ length: days }, (_, i) => ({
@@ -272,7 +300,9 @@ export class AdminAuditDurableObject extends DurableObject<Cloudflare.Env> {
       count: counts.get(firstDay + i) ?? 0,
     }));
 
-    return { days, totalEvents, byDay, topAdmins: this.#topAdmins(where, params), writes };
+    return {
+      days, totalEvents, byDay, topAdmins: this.#topAdmins(where, params), writes, contentReads,
+    };
   }
 
   // The admins with the most rows matching `where`, most first.
@@ -303,8 +333,13 @@ export class AdminAuditDurableObject extends DurableObject<Cloudflare.Env> {
 
 function recordFromRow(row: AuditRow): AdminAuditRecord {
   let rest = JSON.parse(row.record) as Record<string, unknown>;
-  let columns = row.kind === "workspace" || row.kind === "write"
+  let columns = row.kind === "workspace" || row.kind === "write" || row.kind === "grant"
       ? { workspaceId: row.workspace_id, workspaceTitle: row.workspace_title } : {};
-  return { ...rest, kind: row.kind, at: new Date(row.at), admin: row.admin, ...columns } as
-      AdminAuditRecord;
+  // A view is opened for metadata unless content is asked for, so an access record kept without
+  // `requested` was made by a metadata view. The column holds `exposed` for every access record.
+  let access = row.kind === "workspace"
+      ? { requested: rest.requested ?? "metadata", exposed: row.exposed } : {};
+  return {
+    ...rest, kind: row.kind, at: new Date(row.at), admin: row.admin, ...columns, ...access,
+  } as AdminAuditRecord;
 }

@@ -1,29 +1,36 @@
 // A deployment admin's read-only view of a workspace (OverseerDurableObject.openForAdmin() and
 // AdminWorkspaceView): what it refuses before recording anything, what it records and where, what
-// it withholds, how live views follow the deployment's setting, and that nothing it does reaches
-// the workspace's members or its connections.
+// it withholds, what it returns under a grant and how it looks for one, the five content reads
+// and what refuses each, how live views follow the deployment's setting, and that nothing it does
+// reaches the workspace's members or its connections.
 //
 // Runs against a real OverseerDurableObject (the TEST_OVERSEER binding) whose impl.env is replaced
 // per test: the admin path must read the environment only through it. The deployment-wide log is
 // the real AdminAuditDurableObject the Overseer reaches through ctx.exports, read back through the
 // TEST_ADMIN_AUDIT binding.
 
-import { describe, expect, it } from "vitest";
-import { env } from "cloudflare:workers";
+import { describe, expect, it, vi } from "vitest";
+import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { RpcTarget } from "capnweb";
 import {
-  ADMIN_ACCESS_ERROR_CODES, ADMIN_WORKSPACE_METHODS, DEFAULT_ADMIN_COMMIT_LOG_DEPTH,
-  MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_COMMIT_LOG_DEPTH, getAdminAccessErrorCode,
-  type AdminAccessRecord, type AdminAutoApproval, type AdminChatAttachment, type AdminChatState,
+  ADMIN_ACCESS_ERROR_CODES, ADMIN_GRANT_ACCOUNT_CACHE_SECONDS, ADMIN_WORKSPACE_METHODS,
+  DEFAULT_ADMIN_COMMIT_LOG_DEPTH, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_COMMIT_LOG_DEPTH,
+  MAX_ADMIN_GRANTS_LISTED, getAdminAccessErrorCode,
+  type AdminAccessGrant, type AdminAccessRecord, type AdminAutoApproval,
+  type AdminChatAttachment, type AdminChatState, type AdminFileContent,
   type AdminObserver, type AdminPendingChange, type AdminWorkspaceAccess,
-  type AdminWorkspaceView, type AiChatAuthorInfo,
-  type BlueprintGadgetSummary, type ChatGadgetPin, type ObserverBindingNeed, type ShareLinkInfo,
+  type AdminWorkspaceMethod, type AdminWorkspaceView, type AiChatAuthorInfo,
+  type BlueprintGadgetSummary, type ChatGadgetPin, type ObserverBindingNeed, type Overseer,
+  type ShareLinkInfo,
 } from "@gadgets/workshop-shared/api";
 import { diffFiles, type CodeChange, type CodeContent } from "@gadgets/workshop-shared/code-change";
 import type { OverseerDurableObject } from "../src/overseer.js";
 import type { AdminAuditDurableObject } from "../src/admin-audit.js";
-import type { AdminViewTerms } from "../src/admin-access.js";
+import { ADMIN_METHOD_ANSWERS, type AdminWorkspaceViewTerms } from "../src/admin-access.js";
+import { newAdminGrant } from "../src/admin-grants.js";
+import { MAX_BUFFERED_BLOB_SIZE } from "@gadgets/workshop-shared/gatekeeper";
+import { BlobReader } from "../src/git-chunked-blob.js";
 import { encodeGitTree, gitObjectOid } from "../src/git-codec.js";
 import { ADMIN_CONFIG_KEY } from "../src/storage-schema/blueprints-kv.js";
 import { putAction } from "./fixtures.js";
@@ -125,6 +132,9 @@ type Workspace = {
   config: { adminWorkspaceAccess: AdminWorkspaceAccess; adminAuditRetentionDays: number };
   // Replaces the KV read when set, so a test can hold a call at its config read.
   kvGet?: (key: string) => Promise<string | null>;
+  // The owner's account, as the workspace asks it for the owner's account-wide grant: the user
+  // object asked each time, and what it answers.
+  account: { asked: string[]; answer: () => unknown };
   gadgetId: number;
   // The seeded gadget's head, and the head's parent, whose files differ.
   commitId: string;
@@ -159,6 +169,7 @@ async function withWorkspace(fn: (ws: Workspace) => Promise<void>,
     let ws: Workspace = {
       impl, instance, state, id: state.id.toString(),
       config: { adminWorkspaceAccess: "metadata", adminAuditRetentionDays: RETENTION },
+      account: { asked: [], answer: () => null },
       gadgetId: -1, commitId: "", parentCommitId: "", orphanCommitId: "", attachmentOid: "",
       attachmentSequence: -1, lastMessageAt: new Date(NaN),
     };
@@ -176,8 +187,12 @@ async function seed(ws: Workspace): Promise<void> {
   impl.users = {
     idFromString: (id: string) => id,
     idFromName: (name: string) => name,
-    get: () => ({
-      whoami: async () => OWNER, getGadget: async () => null,
+    get: (id: string) => ({
+      id, whoami: async () => OWNER, getGadget: async () => null,
+      liveAccountAdminGrant: async () => {
+        ws.account.asked.push(id);
+        return ws.account.answer();
+      },
       // What the workspace tells its owner's account of members' activity, taken and dropped.
       messageArrived: async () => {}, setWorkspaceLastActive: async () => {},
       getWorkspace: async () => null, syncWorkspaceOutputs: async () => {},
@@ -513,15 +528,19 @@ function addIdleChat(ws: Workspace): void {
       { id: IDLE_CHAT_ID, title: "Idle", started: new Date(0), lastActive: new Date(0) });
 }
 
-// The seeded chat's state once seedTurn() has run, as a view reports it.
-function seededChatState(ws: Workspace): AdminChatState {
+// The seeded chat's state once seedTurn() has run, as a view reports it: with the queued call's
+// argument summary when the call ran under a grant.
+function seededChatState(ws: Workspace, content = false): AdminChatState {
   return {
     turn: {
       modelId: MODEL_ID, initiator: OWNER, callbackInitiated: false, resumeAttempts: 0,
       paused: true,
     },
     lastMessageAt: ws.lastMessageAt,
-    queuedCalls: [{ callId: QUEUED_CALL_ID, methodName: "summarize", initiatorModelId: MODEL_ID }],
+    queuedCalls: [{
+      callId: QUEUED_CALL_ID, methodName: "summarize", initiatorModelId: MODEL_ID,
+      ...(content ? { argsSummary: WITHHELD.callSummary } : {}),
+    }],
     pendingActionIds: [0, 1, 2],
   };
 }
@@ -545,13 +564,68 @@ function seededAttachments(ws: Workspace): AdminChatAttachment[] {
   ];
 }
 
-function terms(overrides: Partial<AdminViewTerms> = {}): AdminViewTerms {
-  return { via: "api", expiresAt: new Date(Date.now() + 600_000), ...overrides };
+function terms(overrides: Partial<AdminWorkspaceViewTerms> = {}): AdminWorkspaceViewTerms {
+  return {
+    via: "api", access: "metadata", expiresAt: new Date(Date.now() + 600_000), ...overrides,
+  };
 }
 
-function open(ws: Workspace, overrides: Partial<AdminViewTerms> = {},
+function open(ws: Workspace, overrides: Partial<AdminWorkspaceViewTerms> = {},
               admin = ADMIN, reason = REASON) {
   return ws.instance.openForAdmin(admin, reason, "session-1", terms(overrides));
+}
+
+// Puts the level in force at "content": the cap, which only impl.env raises (the pool's own env
+// sets none), and the admins' choice.
+function allowContent(ws: Workspace): void {
+  setEnv(ws, { ADMIN_WORKSPACE_ACCESS_MAX: "content" });
+  ws.config.adminWorkspaceAccess = "content";
+}
+
+// A view opened for content.
+function openForContent(ws: Workspace, overrides: Partial<AdminWorkspaceViewTerms> = {}) {
+  return open(ws, { access: "content", ...overrides });
+}
+
+// A live grant the owner gave on this workspace, put in its storage.
+function putGrant(ws: Workspace, overrides: Partial<AdminAccessGrant> = {}): AdminAccessGrant {
+  let grant = {
+    ...newAdminGrant({ source: "owner", scope: "workspace", grantedBy: OWNER }), ...overrides,
+  };
+  ws.impl.storage.adminGrants.put(grant);
+  return grant;
+}
+
+// A live account-wide grant, as the owner's account answers with it.
+function accountGrant(overrides: Partial<AdminAccessGrant> = {}): AdminAccessGrant {
+  return {
+    ...newAdminGrant({ source: "owner", scope: "account", grantedBy: OWNER }), ...overrides,
+  };
+}
+
+// The keys the workspace stores its grants under.
+function grantKeys(ws: Workspace): string[] {
+  return storageKeys(ws).filter(key => key.startsWith("adminGrants:"));
+}
+
+// The methods whose answer holds content under a grant, and those that answer with metadata
+// alone, the open left out.
+const MIXED_METHODS = ADMIN_WORKSPACE_METHODS.filter(m => ADMIN_METHOD_ANSWERS[m] === "mixed");
+const METADATA_METHODS = ADMIN_WORKSPACE_METHODS.filter(
+    m => ADMIN_METHOD_ANSWERS[m] === "metadata" && m !== "inspectWorkspace");
+// The calls the audit names that are not content reads, in its order: the open, and the methods
+// everyAnswer() calls. A metadata or mixed method added to the audit's list joins it, and so
+// fails every assertion made against it until everyAnswer() calls that method.
+const NON_CONTENT_METHODS = ADMIN_WORKSPACE_METHODS.filter(
+    m => ADMIN_METHOD_ANSWERS[m] !== "content");
+// The five content reads, in the audit's order.
+const CONTENT_METHODS = [
+  "getChat", "readChatAttachment", "readFile", "readFileAtCommit", "readPendingFile",
+] as const satisfies readonly AdminWorkspaceMethod[];
+
+// The seed's chat as listChats() lists it.
+async function seededChat(view: AdminWorkspaceView) {
+  return (await view.listChats()).find(chat => chat.id === CHAT_ID)!;
 }
 
 // The code a refusal carries, failing the test if `promise` resolves.
@@ -586,7 +660,9 @@ async function memberVisibleState(ws: Workspace) {
   };
 }
 
-// Calls each of the seventeen view methods once on the seed, and returns their answers by method.
+// Calls each of the seventeen metadata and mixed view methods once on the seed, and returns their
+// answers by method. The five content reads are not among them: a content read has no answer on
+// a metadata view (see contentReads()).
 async function everyAnswer(ws: Workspace, view: AdminWorkspaceView) {
   return {
     describe: await view.describe(),
@@ -635,7 +711,7 @@ describe("opening an admin view", () => {
       kind: "workspace", workspaceId: ws.id, workspaceOwner: OWNER.id, at: expect.any(Date),
       admin: ADMIN, sessionId: "session-1", via: "cli", workspaceTitle: "Quarterly plan",
       method: "inspectWorkspace", args: { expiresAt: expiresAt.toISOString() }, reason: REASON,
-      access: "metadata",
+      requested: "metadata", access: "metadata", exposed: "metadata",
     });
   }));
 
@@ -660,7 +736,8 @@ describe("opening an admin view", () => {
 });
 
 describe("a metadata view", () => {
-  it("records every one of its calls, and refuses none", () => withWorkspace(async ws => {
+  it("records every one of its calls, and refuses only the content reads",
+      () => withWorkspace(async ws => {
     let view = await open(ws);
     await view.describe();
     await view.listChats();
@@ -681,6 +758,14 @@ describe("a metadata view", () => {
     await view.listAutoApprovals();
     await view.listBlueprints();
     await view.getDiagnostics();
+    // The view was not opened for content, so each content read is refused, having read nothing.
+    let refused = ADMIN_ACCESS_ERROR_CODES.contentNotRequested;
+    expect(await codeOf(view.getChat(CHAT_ID, 5))).toBe(refused);
+    expect(await codeOf(view.readChatAttachment(CHAT_ID, BLOB_ATTACHMENT_ID))).toBe(refused);
+    expect(await codeOf(view.readFile(ws.gadgetId, "notes.txt"))).toBe(refused);
+    expect(await codeOf(view.readFileAtCommit(ws.parentCommitId, "old.txt"))).toBe(refused);
+    expect(await codeOf(view.readPendingFile(DRAFT_CHAT_ID, ws.gadgetId, "added.txt")))
+        .toBe(refused);
 
     let records = await deploymentRecords(ws);
     expect(records.map(r => [r.method, r.args, r.access, r.refused])).toStrictEqual([
@@ -705,12 +790,23 @@ describe("a metadata view", () => {
       ["listAutoApprovals", {}, "metadata", undefined],
       ["listBlueprints", {}, "metadata", undefined],
       ["getDiagnostics", {}, "metadata", undefined],
+      ["getChat", { chatId: CHAT_ID, beforeSequence: 5 }, "metadata", refused],
+      ["readChatAttachment", { chatId: CHAT_ID, id: BLOB_ATTACHMENT_ID }, "metadata", refused],
+      ["readFile", { gadgetId: ws.gadgetId, path: "notes.txt" }, "metadata", refused],
+      ["readFileAtCommit", { commitId: ws.parentCommitId, path: "old.txt" }, "metadata", refused],
+      ["readPendingFile", { chatId: DRAFT_CHAT_ID, gadgetId: ws.gadgetId, path: "added.txt" },
+       "metadata", refused],
     ]);
     // The list above is kept by hand: a method the audit names fails here until it is called
     // above, and its record asserted.
     expect(new Set(records.map(r => r.method))).toStrictEqual(new Set(ADMIN_WORKSPACE_METHODS));
     expect(new Set(records.map(r => r.reason))).toStrictEqual(new Set([REASON]));
-    for (let record of records) expect(record).not.toHaveProperty("exposed");
+    for (let record of records) {
+      expect(record).toMatchObject({ requested: "metadata", exposed: "metadata" });
+      expect(record).not.toHaveProperty("grantId");
+    }
+    // A metadata view never asks the owner's account for a grant.
+    expect(ws.account.asked).toStrictEqual([]);
   }));
 
   it("stores each of its records with exposed 'metadata' in the audit table",
@@ -722,24 +818,35 @@ describe("a metadata view", () => {
              WHERE workspace_id = ? ORDER BY seq`, ws.id).toArray());
     // The open and one call of each of the seventeen methods, in the audit's order.
     expect(rows).toHaveLength(18);
-    expect(rows).toStrictEqual(ADMIN_WORKSPACE_METHODS.map(
+    expect(rows).toStrictEqual(NON_CONTENT_METHODS.map(
         method => ({ kind: "workspace", method, exposed: "metadata" })));
   }));
 
-  it("exposes no method but the ones the audit names, and none that reads content",
+  it("exposes no method but the ones the audit names, the five content reads among them",
       () => withWorkspace(async ws => {
     let view = await open(ws);
     expect(view).toBeInstanceOf(RpcTarget);
     expect(rpcSurface(view)).toStrictEqual(
         new Set(ADMIN_WORKSPACE_METHODS.filter(method => method !== "inspectWorkspace")));
-    // The open and seventeen view methods.
-    expect(ADMIN_WORKSPACE_METHODS).toHaveLength(18);
+    // The open and twenty-two view methods.
+    expect(ADMIN_WORKSPACE_METHODS).toHaveLength(23);
     for (let name of [
       "getChat", "readChatAttachment", "readFile", "readFileAtCommit", "readPendingFile",
     ]) {
-      expect(name in view).toBe(false);
-      expect(ADMIN_WORKSPACE_METHODS).not.toContain(name);
+      expect(name in view, name).toBe(true);
+      expect(ADMIN_WORKSPACE_METHODS, name).toContain(name);
+      expect((ADMIN_METHOD_ANSWERS as Record<string, string>)[name], name).toBe("content");
     }
+    // Every call the audit names is classified, whatever a cast might hide from the compiler,
+    // and the five are all that answer with content alone.
+    for (let method of ADMIN_WORKSPACE_METHODS) {
+      expect(["metadata", "mixed", "content"], method)
+          .toContain((ADMIN_METHOD_ANSWERS as Record<string, string>)[method]);
+    }
+    expect(Object.keys(ADMIN_METHOD_ANSWERS).toSorted())
+        .toStrictEqual([...ADMIN_WORKSPACE_METHODS].toSorted());
+    expect(Object.values(ADMIN_METHOD_ANSWERS).filter(kind => kind === "content"))
+        .toHaveLength(5);
   }));
 
   it("withholds content but keeps structure", () => withWorkspace(async ws => {
@@ -789,7 +896,7 @@ describe("a metadata view", () => {
     let view = await open(ws);
     let answers = await everyAnswer(ws, view);
     expect(Object.keys(answers)).toStrictEqual(
-        ADMIN_WORKSPACE_METHODS.filter(method => method !== "inspectWorkspace"));
+        NON_CONTENT_METHODS.filter(method => method !== "inspectWorkspace"));
     let answered = JSON.stringify(answers);
     for (let sentinel of [...Object.values(WITHHELD), BLUEPRINT_ID, "/blueprint-screenshot/"]) {
       expect(answered, sentinel).not.toContain(sentinel);
@@ -828,9 +935,11 @@ describe("a metadata view", () => {
       }],
     });
     expect(Object.keys(description).toSorted()).toStrictEqual([
-      "collaborators", "containsRestrictedData", "defaultGadgetId", "expiresAt", "id", "owner",
-      "ownerInvitesOnly", "title", "totalCost", "workpieces",
+      "access", "collaborators", "containsRestrictedData", "defaultGadgetId", "expiresAt",
+      "grants", "id", "owner", "ownerInvitesOnly", "title", "totalCost", "workpieces",
     ]);
+    expect(description.access).toBe("metadata");
+    expect(description.grants).toStrictEqual([]);
     let gadget = description.workpieces.find(w => w.id === ws.gadgetId)!;
     expect(gadget).toMatchObject({ type: "gadget", title: "Notes", commitId: ws.commitId });
     expect(gadget).not.toHaveProperty("upstream");
@@ -935,19 +1044,42 @@ describe("an inspection", () => {
     });
     // A chat with a worktree, whose content the view is the one to fold: the fold that reads its
     // bases from stored objects alone.
-    await addWorktreeChat(ws);
+    let worktree = await addWorktreeChat(ws);
     await settled();
+    // The level and the owner's grant that the content reads below need.
+    allowContent(ws);
+    putGrant(ws);
     impl.invalidateChatContent(WORKTREE_CHAT_ID);
     impl.invalidateChatContent(DRAFT_CHAT_ID);
     let before = await memberVisibleState(ws);
 
-    // Every view method.
+    // The seventeen metadata and mixed methods, through a view opened for metadata.
     let view = await open(ws);
     let answers = await everyAnswer(ws, view);
     expect(await view.listPendingChanges(WORKTREE_CHAT_ID)).toHaveLength(1);
     await view.listObserverRequirements({ gadgetId: ws.gadgetId });
     // Asks the owner's account, since the owner created a link, and still writes nothing.
     expect(answers.listShareLinks).toHaveLength(3);
+
+    // The five content reads, under the grant, through a view opened for content: each attachment
+    // from wherever the workspace stores it, read to its end, and a file of the worktree chat,
+    // whose content this read folds.
+    let content = await openForContent(ws);
+    impl.invalidateChatContent(WORKTREE_CHAT_ID);
+    impl.invalidateChatContent(DRAFT_CHAT_ID);
+    for (let read of Object.values(contentReads(ws, content))) await read();
+    for (let id of [BLOB_ATTACHMENT_ID, INLINE_ATTACHMENT_ID, LEGACY_ATTACHMENT_ID]) {
+      expect((await bytesOf(await content.readChatAttachment(CHAT_ID, id))).byteLength)
+          .toBeGreaterThan(0);
+    }
+    expect(await content.readPendingFile(WORKTREE_CHAT_ID, worktree.id, "a.txt"))
+        .toStrictEqual({ kind: "text", text: "one!\n" });
+    // Every one of them answered: none was refused.
+    let reads = (await deploymentRecords(ws)).filter(r => r.requested === "content").slice(1);
+    expect(reads.map(r => [r.method, r.refused])).toStrictEqual([
+      ...CONTENT_METHODS, "readChatAttachment", "readChatAttachment", "readChatAttachment",
+      "readPendingFile",
+    ].map(method => [method, undefined]));
 
     expect(await memberVisibleState(ws)).toStrictEqual(before);
     expect(notified).toStrictEqual([]);
@@ -1020,20 +1152,49 @@ describe("a live view's checks", () => {
 
   it("refuses, unrecorded, a call after expiry or demotion, or on a deleted workspace",
       () => withWorkspace(async ws => {
-    let shortLived = await open(ws, { expiresAt: new Date(Date.now() + SHORT_LIFETIME_MS) });
+    allowContent(ws);
+    let expiresAt = new Date(Date.now() + SHORT_LIFETIME_MS);
+    let shortLived = await open(ws, { expiresAt });
+    let shortLivedForContent = await openForContent(ws, { expiresAt });
     let view = await open(ws);
+    let forContent = await openForContent(ws);
+    let reads = watchReads(ws);
     await scheduler.wait(SHORT_LIFETIME_MS + 100);
-    expect(await codeOf(shortLived.listChats())).toBe(ADMIN_ACCESS_ERROR_CODES.viewExpired);
 
-    setEnv(ws, { ADMINS: ["someone-else@example.test"] });
-    expect(await codeOf(view.listChats())).toBe(ADMIN_ACCESS_ERROR_CODES.notAdmin);
-    setEnv(ws);
+    // `code` is what a mixed method and each content read is refused with, through `views`: a
+    // view opened for metadata, and one opened for content.
+    let expectRefused = async (views: AdminWorkspaceView[], code: string) => {
+      for (let each of views) expect(await codeOf(each.listChats())).toBe(code);
+      for (let method of CONTENT_METHODS) {
+        expect(await codeOf(contentReads(ws, views[1])[method]()), method).toBe(code);
+      }
+    };
+    // The content reads have a refusal of their own to record, and a grant to look for: neither
+    // comes before these checks, with a live grant in the workspace or with none.
+    let ownerId = ws.impl.ownerId;
+    for (let grant of [putGrant(ws), undefined]) {
+      if (!grant) {
+        for (let stored of ws.impl.storage.adminGrants.list()) {
+          ws.impl.storage.adminGrants.delete(stored.id);
+        }
+      }
+      await expectRefused(
+          [shortLived, shortLivedForContent], ADMIN_ACCESS_ERROR_CODES.viewExpired);
 
-    ws.impl.ownerId = undefined;
-    expect(await codeOf(view.listChats())).toBe(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
+      setEnv(ws, { ADMIN_WORKSPACE_ACCESS_MAX: "content", ADMINS: ["someone-else@example.test"] });
+      await expectRefused([view, forContent], ADMIN_ACCESS_ERROR_CODES.notAdmin);
+      allowContent(ws);
 
+      ws.impl.ownerId = undefined;
+      await expectRefused([view, forContent], ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
+      ws.impl.ownerId = ownerId;
+    }
+
+    // Nothing recorded but the four opens, nothing read, and the owner's account never asked.
     expect((await deploymentRecords(ws)).map(r => r.method))
-        .toStrictEqual(["inspectWorkspace", "inspectWorkspace"]);
+        .toStrictEqual([1, 2, 3, 4].map(() => "inspectWorkspace"));
+    for (let read of reads) expect(read).not.toHaveBeenCalled();
+    expect(ws.account.asked).toStrictEqual([]);
   }));
 
   it("writes nothing for a call that the workspace's deletion overtakes",
@@ -1440,12 +1601,25 @@ describe("a chat's pending changes", () => {
   it("fold a worktree's changes from stored objects alone", () => withWorkspace(async ws => {
     let view = await open(ws);
     let { id, baseCommit } = await addWorktreeChat(ws);
+    // A view opened for content, under a grant, reads the files of the same fold.
+    allowContent(ws);
+    let grant = putGrant(ws);
+    let content = await openForContent(ws);
 
     // same.txt, edited back to its base text, is in no list.
     expect(await view.listPendingChanges(WORKTREE_CHAT_ID)).toStrictEqual([{
       gadgetId: id, baseCommit, mergedCommit: baseCommit,
       added: ["new.txt"], modified: ["a.txt"], removed: ["gone.txt"],
     }]);
+    expect(await content.readPendingFile(WORKTREE_CHAT_ID, id, "a.txt"))
+        .toStrictEqual({ kind: "text", text: "one!\n" });
+    expect(await content.readPendingFile(WORKTREE_CHAT_ID, id, "gone.txt"))
+        .toStrictEqual({ kind: "absent" });
+    // A file the chat never touched is not in its content: it reads at the base.
+    expect(await content.readPendingFile(WORKTREE_CHAT_ID, id, "src/untouched.txt"))
+        .toStrictEqual({ kind: "absent" });
+    expect(await content.readFileAtCommit(baseCommit, "src/untouched.txt"))
+        .toStrictEqual({ kind: "text", text: "kept\n" });
 
     // Without the edited file's base text the fold fails, and asks no connection for it.
     let base = ws.impl.gitCache.localPathEntryAtCommit(baseCommit, "a.txt").oid;
@@ -1453,11 +1627,16 @@ describe("a chat's pending changes", () => {
     ws.impl.invalidateChatContent(WORKTREE_CHAT_ID);
     await expect(view.listPendingChanges(WORKTREE_CHAT_ID))
         .rejects.toThrow(missingObject(base));
+    await expect(content.readPendingFile(WORKTREE_CHAT_ID, id, "a.txt"))
+        .rejects.toThrow(missingObject(base));
     expect(pulls.pulled).toBe(false);
-    let records = (await deploymentRecords(ws)).slice(-1);
-    expect(records.map(r => [r.method, r.access])).toStrictEqual([
-      ["listPendingChanges", "metadata"],
-    ]);
+    // Each a read that failed: recorded, not as a refusal, and as having exposed nothing.
+    let records = (await deploymentRecords(ws)).slice(-2);
+    expect(records.map(r => [r.method, r.requested, r.exposed, r.grantId, r.refused]))
+        .toStrictEqual([
+          ["listPendingChanges", "metadata", "metadata", undefined, undefined],
+          ["readPendingFile", "content", "metadata", grant.id, undefined],
+        ]);
   }));
 
   it("never pull a worktree's base to tell its paths apart", () => withWorkspace(async ws => {
@@ -1609,8 +1788,24 @@ describe("a chat's pending changes", () => {
 
   it("leave out a pin that outlived its workpiece", () => withWorkspace(async ws => {
     let view = await open(ws);
+    allowContent(ws);
+    let grant = putGrant(ws);
+    let content = await openForContent(ws);
     await ws.impl.removeWorkpiece(ws.gadgetId);
     expect(await view.listPendingChanges(DRAFT_CHAT_ID)).toStrictEqual([]);
+
+    // The chat's content still holds the removed workpiece's files, and a content read under a
+    // grant returns none of them.
+    let held = await ws.impl.getCurrentChatContent(
+        DRAFT_CHAT_ID, ws.impl.getChatMetaOrThrow(DRAFT_CHAT_ID));
+    expect(held.get(ws.gadgetId)?.get("notes.txt")).toBe("draft notes\n");
+    await expect(content.readPendingFile(DRAFT_CHAT_ID, ws.gadgetId, "notes.txt"))
+        .rejects.toThrow(`Chat ${DRAFT_CHAT_ID} holds no changes to workpiece ${ws.gadgetId}.`);
+    let record = (await deploymentRecords(ws)).at(-1)!;
+    expect(record).toMatchObject({
+      method: "readPendingFile", access: "content", exposed: "metadata", grantId: grant.id,
+    });
+    expect(record).not.toHaveProperty("refused");
   }));
 
   it("fail on a pending edit of a symlink without naming its target",
@@ -1855,5 +2050,1434 @@ describe("sharing reads", () => {
     await view.listBlueprints();
     await view.getDiagnostics();
     expect(reached).toBe(0);
+  }));
+});
+
+// One call of each mixed method on the seed, in the audit's order.
+async function mixedAnswers(ws: Workspace, view: AdminWorkspaceView) {
+  return {
+    describe: await view.describe(),
+    listChats: await view.listChats(),
+    getChatState: await view.getChatState(CHAT_ID),
+    listActions: await view.listActions(),
+    getCommitLog: await view.getCommitLog(ws.commitId),
+    listGatekeepers: await view.listGatekeepers(),
+    listBlueprints: await view.listBlueprints(),
+  };
+}
+
+// What the seed stores of each thing a mixed method returns under a grant and withholds without
+// one. The rest of WITHHELD is what only a content read returns (a message, a file) and what
+// no method of the view returns (a call's raw arguments).
+const MIXED_CONTENT = [
+  WITHHELD.steer, WITHHELD.callSummary, WITHHELD.observation, WITHHELD.observationLabel,
+  WITHHELD.observationValue, WITHHELD.action, WITHHELD.actionLabel, WITHHELD.actionValue,
+  WITHHELD.hookEntry, WITHHELD.hook, WITHHELD.configuration, WITHHELD.upstream,
+  WITHHELD.headMessage, WITHHELD.parentMessage, BLUEPRINT_ID, "/blueprint-screenshot/",
+];
+
+describe("a content view", () => {
+  it.each([
+    ["a live grant in the workspace", (ws: Workspace) => { putGrant(ws); }],
+    ["a live account-wide grant", (ws: Workspace) => { ws.account.answer = () => accountGrant(); }],
+    ["no grant anywhere", () => {}],
+  ])("is opened without a grant being looked for, with %s", (_case, arrange) =>
+      withWorkspace(async ws => {
+    allowContent(ws);
+    arrange(ws);
+    let expiresAt = new Date(Date.now() + 600_000);
+    let view = await openForContent(ws, { expiresAt });
+
+    expect(ws.account.asked).toStrictEqual([]);
+    // Strictly: the open's record carries no grant, the workspace's live one included.
+    expect(await deploymentRecords(ws)).toStrictEqual([{
+      kind: "workspace", workspaceId: ws.id, workspaceOwner: OWNER.id, at: expect.any(Date),
+      admin: ADMIN, sessionId: "session-1", via: "api", workspaceTitle: "Quarterly plan",
+      method: "inspectWorkspace", args: { expiresAt: expiresAt.toISOString() }, reason: REASON,
+      requested: "content", access: "content", exposed: "metadata",
+    }]);
+
+    // The first call that could return content is the one that looks: in the workspace's own
+    // storage, and in the owner's account only when that holds no live grant.
+    await view.listChats();
+    expect(ws.account.asked).toStrictEqual(grantKeys(ws).length ? [] : [OWNER_USER_ID]);
+  }));
+
+  it("answers with metadata alone, unrefused, while no grant is live",
+      () => withWorkspace(async ws => {
+    seedTurn(ws);
+    let withheld = await mixedAnswers(ws, await open(ws));
+    allowContent(ws);
+    let view = await openForContent(ws);
+    let answers = await mixedAnswers(ws, view);
+
+    // As a metadata view answers, but for what the view says of itself.
+    let { expiresAt } = answers.describe;
+    expect(answers).toStrictEqual(
+        { ...withheld, describe: { ...withheld.describe, access: "content", expiresAt } });
+    let records = (await deploymentRecords(ws)).slice(-MIXED_METHODS.length);
+    expect(records.map(r => [r.method, r.requested, r.access, r.exposed, r.refused]))
+        .toStrictEqual(MIXED_METHODS.map(
+            method => [method, "content", "content", "metadata", undefined]));
+    for (let record of records) expect(record).not.toHaveProperty("grantId");
+    // An answer that there is no grant is not kept: each call asked the owner's account.
+    expect(ws.account.asked).toStrictEqual(MIXED_METHODS.map(() => OWNER_USER_ID));
+  }));
+
+  it("returns what metadata withholds under a grant in the workspace, and records it",
+      () => withWorkspace(async ws => {
+    seedTurn(ws);
+    addIdleChat(ws);
+    allowContent(ws);
+    let grant = putGrant(ws);
+    let view = await openForContent(ws);
+    let answers = await everyAnswer(ws, view);
+
+    let answered = JSON.stringify(answers);
+    for (let sentinel of MIXED_CONTENT) expect(answered, sentinel).toContain(sentinel);
+    // What only a content read returns stays out, a message and a file, and so does what no
+    // method of the view returns, a call's raw arguments.
+    for (let sentinel of [WITHHELD.message, WITHHELD.callArgument, WITHHELD.file]) {
+      expect(answered, sentinel).not.toContain(sentinel);
+    }
+
+    expect((await seededChat(view)).queuedSteers)
+        .toStrictEqual([{ text: WITHHELD.steer, author: OWNER }]);
+    expect(answers.getChatState).toStrictEqual(seededChatState(ws, true));
+    expect(answers.describe.access).toBe("content");
+    expect(answers.describe.grants).toStrictEqual([grant]);
+    expect(answers.describe.workpieces.find(w => w.id === ws.gadgetId))
+        .toMatchObject({ upstream: { blueprintId: WITHHELD.upstream } });
+    let action = answers.listActions.entries.find(entry => entry.type === "action")!;
+    expect(action.description).toMatchObject({
+      description: WITHHELD.action,
+      fields: [{ label: WITHHELD.actionLabel, value: WITHHELD.actionValue }],
+    });
+    expect(answers.getCommitLog.map(commit => commit.message.trim()))
+        .toStrictEqual([WITHHELD.headMessage, WITHHELD.parentMessage]);
+    let [gatekeeper] = answers.listGatekeepers;
+    expect(gatekeeper.creationSpec).toMatchObject({ configuration: WITHHELD.configuration });
+    expect(gatekeeper.hooks.map(hook => hook.description.description))
+        .toStrictEqual([WITHHELD.hook]);
+    expect(answers.listBlueprints.map(blueprint => blueprint.id)).toStrictEqual([BLUEPRINT_ID]);
+
+    // Answers that hold nothing "metadata" withholds: the call ran under the grant all the same.
+    expect((await view.listActions({ beforeId: 0 })).entries).toStrictEqual([]);
+    expect((await view.getChatState(IDLE_CHAT_ID)).queuedCalls).toStrictEqual([]);
+    ws.impl.storage.blueprints.delete(BLUEPRINT_ID);
+    expect(await view.listBlueprints()).toStrictEqual([]);
+
+    let records = (await deploymentRecords(ws)).slice(1);
+    expect(records.map(r => [r.method, r.exposed, r.grantId])).toStrictEqual([
+      ...NON_CONTENT_METHODS.filter(method => method !== "inspectWorkspace").map(method =>
+          ADMIN_METHOD_ANSWERS[method] === "mixed"
+              ? [method, "content", grant.id] : [method, "metadata", undefined]),
+      // seededChat()'s listing.
+      ["listChats", "content", grant.id],
+      ["listActions", "metadata", grant.id],
+      ["getChatState", "metadata", grant.id],
+      ["listBlueprints", "metadata", grant.id],
+    ]);
+    for (let record of records) {
+      expect(record).toMatchObject({ requested: "content", access: "content" });
+      expect(record).not.toHaveProperty("refused");
+      expect("grantId" in record, record.method)
+          .toBe(ADMIN_METHOD_ANSWERS[record.method] === "mixed");
+    }
+    // The workspace's own grant answers: the owner's account is not asked.
+    expect(ws.account.asked).toStrictEqual([]);
+  }));
+
+  it("returns metadata alone through a view opened for metadata, whatever grant is live",
+      () => withWorkspace(async ws => {
+    seedTurn(ws);
+    allowContent(ws);
+    let grant = putGrant(ws);
+    ws.account.answer = () => accountGrant();
+    let view = await open(ws);
+    let answered = JSON.stringify(await everyAnswer(ws, view));
+    for (let sentinel of Object.values(WITHHELD)) expect(answered, sentinel).not.toContain(sentinel);
+
+    // Nor does it ask the owner's account when the workspace holds no grant of its own.
+    ws.impl.storage.adminGrants.delete(grant.id);
+    await mixedAnswers(ws, view);
+    expect(ws.account.asked).toStrictEqual([]);
+    for (let record of await deploymentRecords(ws)) {
+      expect(record).toMatchObject({ requested: "metadata", access: "content", exposed: "metadata" });
+      expect(record).not.toHaveProperty("grantId");
+    }
+  }));
+
+  it("never looks for a grant for a method that answers with metadata alone",
+      () => withWorkspace(async ws => {
+    allowContent(ws);
+    ws.account.answer = () => accountGrant();
+    let view = await openForContent(ws);
+    await view.listChatAttachments(CHAT_ID);
+    await view.listFiles(ws.gadgetId);
+    await view.listFilesAtCommit(ws.parentCommitId);
+    await view.listChangedPaths(ws.parentCommitId, ws.commitId);
+    await view.listPendingChanges(DRAFT_CHAT_ID);
+    await view.listObservers();
+    await view.listObserverRequirements("workspace");
+    await view.listShareLinks();
+    await view.listAutoApprovals();
+    await view.getDiagnostics();
+
+    expect(ws.account.asked).toStrictEqual([]);
+    let records = (await deploymentRecords(ws)).slice(1);
+    expect(records.map(r => r.method)).toStrictEqual(METADATA_METHODS);
+    for (let record of records) {
+      expect(record).toMatchObject({ requested: "content", access: "content", exposed: "metadata" });
+      expect(record).not.toHaveProperty("grantId");
+    }
+  }));
+
+  it("withholds from its very next call once the grant is revoked, or has expired",
+      () => withWorkspace(async ws => {
+    allowContent(ws);
+    let view = await openForContent(ws);
+    let revoked = putGrant(ws);
+    expect((await seededChat(view)).queuedSteers).toBeDefined();
+    ws.impl.storage.adminGrants.put({ ...revoked, revokedAt: new Date(), revokedBy: OWNER });
+    expect(await seededChat(view)).not.toHaveProperty("queuedSteers");
+
+    let expired = putGrant(ws);
+    expect((await seededChat(view)).queuedSteers).toBeDefined();
+    ws.impl.storage.adminGrants.put({ ...expired, expiresAt: new Date(Date.now() - 1) });
+    expect(await seededChat(view)).not.toHaveProperty("queuedSteers");
+
+    expect((await deploymentRecords(ws)).slice(1).map(r => [r.exposed, r.grantId]))
+        .toStrictEqual([
+          ["content", revoked.id], ["metadata", undefined],
+          ["content", expired.id], ["metadata", undefined],
+        ]);
+  }));
+
+  it("withholds from its next call once the level in force is below content, looking for no grant",
+      () => withWorkspace(async ws => {
+    allowContent(ws);
+    ws.account.answer = () => accountGrant();
+    let view = await openForContent(ws);
+    expect((await seededChat(view)).queuedSteers).toBeDefined();
+    expect(ws.account.asked).toHaveLength(1);
+
+    // The admins' choice drops, with the grant still live.
+    ws.config.adminWorkspaceAccess = "metadata";
+    expect(await seededChat(view)).not.toHaveProperty("queuedSteers");
+    // So does the cap, whatever the admins chose.
+    ws.config.adminWorkspaceAccess = "content";
+    setEnv(ws);
+    expect(await seededChat(view)).not.toHaveProperty("queuedSteers");
+    expect(ws.account.asked).toHaveLength(1);
+
+    allowContent(ws);
+    expect((await seededChat(view)).queuedSteers).toBeDefined();
+
+    let records = (await deploymentRecords(ws)).slice(1);
+    expect(records.map(r => [r.requested, r.access, r.exposed, "grantId" in r])).toStrictEqual([
+      ["content", "content", "content", true],
+      ["content", "metadata", "metadata", false],
+      ["content", "metadata", "metadata", false],
+      ["content", "content", "content", true],
+    ]);
+  }));
+
+  it("records a read that fails under a grant as an attempt that exposed no content",
+      () => withWorkspace(async ws => {
+    allowContent(ws);
+    let grant = putGrant(ws);
+    let view = await openForContent(ws);
+    await expect(view.getChatState(999)).rejects.toThrow();
+    expect((await deploymentRecords(ws)).at(-1)).toMatchObject({
+      method: "getChatState", args: { chatId: 999 }, exposed: "metadata", grantId: grant.id,
+    });
+  }));
+});
+
+// Runs `fn` with the clock held still, moved only by the `advance` it is handed.
+async function withClock(fn: (advance: (ms: number) => void) => Promise<void>): Promise<void> {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  try {
+    await fn(ms => { vi.setSystemTime(Date.now() + ms); });
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
+// Initialises an unseeded workspace far enough for its owner to open a session on it: an owner
+// whose account answers whoami() with `profile`, and the seed's chat with its queued steer.
+function initForOwnerSession(ws: Workspace, profile: AiChatAuthorInfo = OWNER): void {
+  let impl = ws.impl;
+  impl.directories = {
+    getByName: () => ({ syncWorkspace: async () => {}, removeWorkspace: async () => {} }),
+  };
+  impl.users = {
+    idFromString: (id: string) => id,
+    idFromName: (name: string) => name,
+    get: (id: string) => ({
+      id, whoami: async () => profile,
+      liveAccountAdminGrant: async () => {
+        ws.account.asked.push(id);
+        return ws.account.answer();
+      },
+      listGatekeeperVendors: async () => [], setWorkspaceLastActive: async () => {},
+      recordSharedWorkspaceOpen: async () => {}, workspaceRemoved: async () => {},
+      messageArrived: async () => {}, getWorkspace: async () => null,
+      getGadget: async () => null, syncWorkspaceOutputs: async () => {},
+    }),
+  };
+  // The side effects of opening that reach outside the workspace.
+  impl.ensureAmbientCapsules = async () => {};
+  impl.markOutputsDirty = () => {};
+  impl.scheduleAccessRestart = async () => {};
+  impl.ownerId = OWNER_USER_ID;
+  impl.ownerProfileId = profile.id;
+  impl.storage.ownerId.put(OWNER_USER_ID);
+  impl.storage.title.put("Quarterly plan");
+  impl.storage.chatMeta.put({
+    id: CHAT_ID, title: "Plans", started: new Date(0), lastActive: new Date(0),
+    queuedSteers: [{ text: WITHHELD.steer, author: OWNER }],
+  });
+}
+
+// Runs `fn` over a real owner session on a workspace initForOwnerSession() set up.
+async function asOwner<T>(ws: Workspace, fn: (client: Overseer) => Promise<T>): Promise<T> {
+  // Disposed with the session: the session holds a duplicate of the stub until then.
+  using notifyClosed = new NativeRpcStub<() => void>(() => {});
+  using client = await ws.instance.open(OWNER_USER_ID, OWNER.id, notifyClosed);
+  return await fn(client);
+}
+
+// Whether a listChats() through `view` returned the seeded chat's queued steers: content.
+async function readsContent(view: AdminWorkspaceView): Promise<boolean> {
+  return (await seededChat(view)).queuedSteers !== undefined;
+}
+
+describe("the owner's account-wide grant", () => {
+  it("is asked for once, relied on for a minute, and never copied into the workspace",
+      () => withWorkspace(ws => withClock(async advance => {
+    initForOwnerSession(ws);
+    allowContent(ws);
+    let grant = accountGrant();
+    ws.account.answer = () => grant;
+    let view = await openForContent(ws);
+
+    expect(await readsContent(view)).toBe(true);
+    advance(30_000);
+    expect(await readsContent(view)).toBe(true);
+    expect(ws.account.asked).toStrictEqual([OWNER_USER_ID]);
+
+    // The workspace stores no grant: neither its admins' listing nor its owner's holds one.
+    expect(grantKeys(ws)).toStrictEqual([]);
+    expect((await view.describe()).grants).toStrictEqual([]);
+    expect(await asOwner(ws, client => client.listAdminGrants())).toStrictEqual([]);
+    expect((await deploymentRecords(ws)).slice(1).map(r => [r.method, r.exposed, r.grantId]))
+        .toStrictEqual([
+          ["listChats", "content", grant.id], ["listChats", "content", grant.id],
+          // Nothing "metadata" withholds from this workspace's description.
+          ["describe", "metadata", grant.id],
+        ]);
+
+    // The owner ends it. The workspace relies on what it was told until that is a minute old.
+    ws.account.answer = () => null;
+    advance(ADMIN_GRANT_ACCOUNT_CACHE_SECONDS * 1000 - 30_001);
+    expect(await readsContent(view)).toBe(true);
+    expect(ws.account.asked).toHaveLength(1);
+    advance(1);
+    expect(await readsContent(view)).toBe(false);
+    expect(ws.account.asked).toHaveLength(2);
+    expect((await deploymentRecords(ws)).at(-1)).not.toHaveProperty("grantId");
+    expect(grantKeys(ws)).toStrictEqual([]);
+  }), { seed: false }));
+
+  it("covers a workspace made after it was given", () => withWorkspace(async ws => {
+    allowContent(ws);
+    let grant = accountGrant({ grantedAt: new Date(Date.now() - 3_600_000) });
+    ws.account.answer = () => grant;
+    expect(await readsContent(await openForContent(ws))).toBe(true);
+    expect((await deploymentRecords(ws)).at(-1)).toMatchObject({ grantId: grant.id });
+  }));
+
+  it("is found by the next call once it is given: an answer that there is none is not kept",
+      () => withWorkspace(async ws => {
+    allowContent(ws);
+    let view = await openForContent(ws);
+    expect(await readsContent(view)).toBe(false);
+    expect(await readsContent(view)).toBe(false);
+    expect(ws.account.asked).toHaveLength(2);
+
+    let grant = accountGrant();
+    ws.account.answer = () => grant;
+    expect(await readsContent(view)).toBe(true);
+    expect(ws.account.asked).toHaveLength(3);
+    expect((await deploymentRecords(ws)).slice(1).map(r => [r.exposed, r.grantId]))
+        .toStrictEqual([["metadata", undefined], ["metadata", undefined], ["content", grant.id]]);
+  }));
+
+  it.each<[string, () => unknown]>([
+    ["a grant of one workspace", () => accountGrant({ scope: "workspace" })],
+    ["a grant a second admin approved", () => accountGrant({ source: "admins" })],
+    ["a grant whose end is not a time", () => accountGrant({ expiresAt: new Date(NaN) })],
+    ["a grant whose end is not a Date",
+     () => accountGrant({ expiresAt: "2999-01-01T00:00:00.000Z" as never })],
+    ["a grant of a level that is not content", () => accountGrant({ level: "all" as never })],
+    ["a grant already revoked", () => accountGrant({ revokedAt: new Date(0) })],
+    ["a grant already expired", () => accountGrant({ expiresAt: new Date(Date.now() - 1) })],
+    ["something that is not a grant", () => "yes"],
+    ["nothing", () => undefined],
+  ])("is not taken on the account's word: %s is no grant, and is not kept", (_case, answer) =>
+      withWorkspace(async ws => {
+    allowContent(ws);
+    ws.account.answer = answer;
+    let view = await openForContent(ws);
+    expect(await readsContent(view)).toBe(false);
+    expect(await readsContent(view)).toBe(false);
+    expect(ws.account.asked).toHaveLength(2);
+    for (let record of (await deploymentRecords(ws)).slice(1)) {
+      expect(record).toMatchObject({ method: "listChats", exposed: "metadata" });
+      expect(record).not.toHaveProperty("grantId");
+      expect(record).not.toHaveProperty("refused");
+    }
+  }));
+
+  it("counts as none while the account cannot answer, and the call is still answered and recorded",
+      () => withWorkspace(async ws => {
+    allowContent(ws);
+    let view = await openForContent(ws);
+
+    // A reset is retried once, and the retry fails too.
+    ws.account.answer = () => {
+      throw Object.assign(new Error("The Durable Object was reset."), { durableObjectReset: true });
+    };
+    expect(await readsContent(view)).toBe(false);
+    expect(ws.account.asked).toHaveLength(2);
+    // Any other failure is not retried.
+    ws.account.answer = () => { throw new Error("account unavailable"); };
+    expect(await readsContent(view)).toBe(false);
+    expect(ws.account.asked).toHaveLength(3);
+    for (let record of (await deploymentRecords(ws)).slice(1)) {
+      expect(record).toMatchObject({ method: "listChats", access: "content", exposed: "metadata" });
+      expect(record).not.toHaveProperty("grantId");
+      expect(record).not.toHaveProperty("refused");
+    }
+
+    // Nothing was kept of the failures: the next call asks again, and reads content.
+    let grant = accountGrant();
+    ws.account.answer = () => grant;
+    expect(await readsContent(view)).toBe(true);
+    expect(ws.account.asked).toHaveLength(4);
+    expect((await deploymentRecords(ws)).at(-1)).toMatchObject(
+        { exposed: "content", grantId: grant.id });
+  }));
+
+  it("is not relied on past its own end, inside the minute",
+      () => withWorkspace(ws => withClock(async advance => {
+    allowContent(ws);
+    let grant = accountGrant({ expiresAt: new Date(Date.now() + 10_000) });
+    ws.account.answer = () => grant;
+    let view = await openForContent(ws);
+    expect(await readsContent(view)).toBe(true);
+    advance(9_999);
+    expect(await readsContent(view)).toBe(true);
+    expect(ws.account.asked).toHaveLength(1);
+
+    // The account answering with the ended grant again changes nothing.
+    advance(1);
+    expect(await readsContent(view)).toBe(false);
+    expect(ws.account.asked).toHaveLength(2);
+  })));
+
+  it("is relied on for a minute from when the question was sent, not from its answer",
+      () => withWorkspace(ws => withClock(async advance => {
+    allowContent(ws);
+    let grant = accountGrant();
+    // The account takes 20 seconds to answer.
+    ws.account.answer = () => {
+      advance(20_000);
+      return grant;
+    };
+    let view = await openForContent(ws);
+    expect(await readsContent(view)).toBe(true);
+
+    ws.account.answer = () => null;
+    advance(ADMIN_GRANT_ACCOUNT_CACHE_SECONDS * 1000 - 20_001);
+    expect(await readsContent(view)).toBe(true);
+    expect(ws.account.asked).toHaveLength(1);
+    // A minute after the question, 40 seconds after the answer.
+    advance(1);
+    expect(await readsContent(view)).toBe(false);
+    expect(ws.account.asked).toHaveLength(2);
+  })));
+
+  it("is not used when its answer took the minute it may be kept for",
+      () => withWorkspace(ws => withClock(async advance => {
+    allowContent(ws);
+    let grant = accountGrant();
+    // The owner ends the grant once the account has read it, and the answer is a minute on its
+    // way.
+    ws.account.answer = () => {
+      ws.account.answer = () => null;
+      advance(ADMIN_GRANT_ACCOUNT_CACHE_SECONDS * 1000);
+      return grant;
+    };
+    let view = await openForContent(ws);
+    expect(await readsContent(view)).toBe(false);
+    // It was not kept either: the next call asks again.
+    expect(await readsContent(view)).toBe(false);
+    expect(ws.account.asked).toHaveLength(2);
+    expect((await deploymentRecords(ws)).slice(1).map(r => r.grantId))
+        .toStrictEqual([undefined, undefined]);
+
+    // An answer a moment quicker is used.
+    ws.account.answer = () => {
+      advance(ADMIN_GRANT_ACCOUNT_CACHE_SECONDS * 1000 - 1);
+      return grant;
+    };
+    expect(await ws.impl.contentGrant()).toStrictEqual(grant);
+  })));
+
+  it("is kept for the owner it was asked of, and dropped when the workspace is deleted",
+      () => withWorkspace(async ws => {
+    allowContent(ws);
+    const NEXT_OWNER_USER_ID = "next-owner-user-do";
+    let first = accountGrant();
+    let second = accountGrant();
+    ws.account.answer = () => ws.account.asked.at(-1) === OWNER_USER_ID ? first : second;
+    let view = await openForContent(ws);
+    expect(await readsContent(view)).toBe(true);
+
+    // The workspace is another owner's: what the first owner's account said is not used.
+    ws.impl.ownerId = NEXT_OWNER_USER_ID;
+    ws.impl.storage.ownerId.put(NEXT_OWNER_USER_ID);
+    expect(await readsContent(view)).toBe(true);
+    expect(ws.account.asked).toStrictEqual([OWNER_USER_ID, NEXT_OWNER_USER_ID]);
+    expect((await deploymentRecords(ws)).slice(1).map(r => r.grantId))
+        .toStrictEqual([first.id, second.id]);
+
+    // Kept until the workspace is deleted: its id can live again under an owner.
+    expect(await ws.impl.contentGrant()).toStrictEqual(second);
+    expect(ws.account.asked).toHaveLength(2);
+    ws.impl.beginDeletion(new Set());
+    ws.impl.ownerId = NEXT_OWNER_USER_ID;
+    expect(await ws.impl.contentGrant()).toStrictEqual(second);
+    expect(ws.account.asked).toHaveLength(3);
+  }));
+
+  it.each<[string, number, (ws: Workspace) => Promise<void>, string]>([
+    ["the workspace's deletion", 600_000, async ws => {
+      await ws.state.storage.deleteAll();
+      ws.impl.ownerId = undefined;
+    }, ADMIN_ACCESS_ERROR_CODES.workspaceNotFound],
+    ["the view's expiry", SHORT_LIFETIME_MS,
+     () => scheduler.wait(SHORT_LIFETIME_MS + 100), ADMIN_ACCESS_ERROR_CODES.viewExpired],
+    ["its admin's demotion", 600_000, async ws => {
+      setEnv(ws, { ADMIN_WORKSPACE_ACCESS_MAX: "content", ADMINS: ["someone-else@example.test"] });
+    }, ADMIN_ACCESS_ERROR_CODES.notAdmin],
+  ])("writes nothing for a call that %s overtakes while it asks", (_case, lifetime, overtake, code) =>
+      withWorkspace(async ws => {
+    allowContent(ws);
+    let view = await openForContent(ws, { expiresAt: new Date(Date.now() + lifetime) });
+    let reach!: () => void;
+    let reached = new Promise<void>(resolve => { reach = resolve; });
+    let release!: () => void;
+    let released = new Promise<void>(resolve => { release = resolve; });
+    ws.account.answer = async () => {
+      reach();
+      await released;
+      return accountGrant();
+    };
+
+    let call = view.listChats();
+    await reached;
+    await overtake(ws);
+    release();
+
+    expect(await codeOf(call)).toBe(code);
+    expect((await deploymentRecords(ws)).map(r => r.method)).toStrictEqual(["inspectWorkspace"]);
+  }));
+});
+
+// A live grant given `minutesAgo`, by the owner or by a second admin's approval, so that a test's
+// grants have an order.
+function grantGiven(ws: Workspace, minutesAgo: number, source: "owner" | "admins" = "owner") {
+  let grantedAt = new Date(Date.now() - minutesAgo * 60_000);
+  return putGrant(ws, source === "owner" ? { grantedAt } : {
+    ...newAdminGrant({
+      source: "admins", scope: "workspace", grantedBy: { id: "grace@example.test", name: "Grace" },
+      requestedBy: ADMIN, requestId: `request-${minutesAgo}`, reason: REASON,
+    }),
+    grantedAt,
+  });
+}
+
+describe("the grants a view lists", () => {
+  it("are the newest of the live ones, bounded, on a view opened for metadata too",
+      () => withWorkspace(async ws => {
+    allowContent(ws);
+    let grants = Array.from({ length: 30 }, (_, i) => grantGiven(ws, i));
+    putGrant(ws, { revokedAt: new Date(), revokedBy: OWNER });
+    putGrant(ws, { expiresAt: new Date(Date.now() - 1) });
+
+    let listed = (await (await open(ws)).describe()).grants;
+    expect(listed).toStrictEqual(grants.slice(0, MAX_ADMIN_GRANTS_LISTED));
+    expect(MAX_ADMIN_GRANTS_LISTED).toBe(20);
+
+    // Any live one lets content be read, listed or not.
+    let view = await openForContent(ws);
+    expect(await readsContent(view)).toBe(true);
+    expect((await deploymentRecords(ws)).at(-1)).toMatchObject({ grantId: grants[0].id });
+    expect((await view.describe()).grants).toStrictEqual(listed);
+  }));
+
+  it("hold a grant only an admin can end ahead of every owner grant, however old it is",
+      () => withWorkspace(async ws => {
+    let owners = Array.from({ length: 20 }, (_, i) => grantGiven(ws, i));
+    let approved = grantGiven(ws, 600, "admins");
+    expect((await (await open(ws)).describe()).grants)
+        .toStrictEqual([approved, ...owners.slice(0, MAX_ADMIN_GRANTS_LISTED - 1)]);
+  }));
+
+  it("order the admins' grants newest first, then the owner's", () => withWorkspace(async ws => {
+    let older = grantGiven(ws, 30, "admins");
+    let owner = grantGiven(ws, 1);
+    let newer = grantGiven(ws, 10, "admins");
+    expect((await (await open(ws)).describe()).grants).toStrictEqual([newer, older, owner]);
+  }));
+
+  it("stay small whatever the owner's name", () => withWorkspace(async ws => {
+    let name = "n".repeat(1_000_000);
+    initForOwnerSession(ws, { ...OWNER, name });
+    allowContent(ws);
+    await asOwner(ws, async client => {
+      for (let i = 0; i < 30; i++) await client.grantAdminAccess();
+    });
+
+    let description = await (await open(ws)).describe();
+    expect(description.grants).toHaveLength(MAX_ADMIN_GRANTS_LISTED);
+    for (let grant of description.grants) {
+      expect(grant.grantedBy).toStrictEqual(
+          { id: OWNER.id, name: `${"n".repeat(MAX_ADMIN_AUDIT_ARG_LENGTH - 1)}…` });
+    }
+    expect(JSON.stringify(description.grants).length).toBeLessThan(64 * 1024);
+    // The description holds the name once, in the owner's profile, and not once a grant.
+    expect(description.owner.name).toBe(name);
+    expect(JSON.stringify(description).length).toBeLessThan(name.length + 64 * 1024);
+  }, { seed: false }));
+});
+
+type ContentMethod = typeof CONTENT_METHODS[number];
+
+// One call of each content read on the seed, by method, each started only when it is asked for:
+// the seeded chat's page, its blob-backed attachment, the head's notes.txt, a file only the head's
+// parent holds, and a file the draft chat added.
+function contentReads(ws: Workspace, view: AdminWorkspaceView)
+    : Record<ContentMethod, () => Promise<unknown>> {
+  return {
+    getChat: () => view.getChat(CHAT_ID),
+    readChatAttachment: () => view.readChatAttachment(CHAT_ID, BLOB_ATTACHMENT_ID),
+    readFile: () => view.readFile(ws.gadgetId, "notes.txt"),
+    readFileAtCommit: () => view.readFileAtCommit(ws.parentCommitId, "old.txt"),
+    readPendingFile: () => view.readPendingFile(DRAFT_CHAT_ID, ws.gadgetId, "added.txt"),
+  };
+}
+
+// What contentReads() records as each call's arguments.
+function contentReadArgs(ws: Workspace): Record<ContentMethod, AdminAccessRecord["args"]> {
+  return {
+    getChat: { chatId: CHAT_ID },
+    readChatAttachment: { chatId: CHAT_ID, id: BLOB_ATTACHMENT_ID },
+    readFile: { gadgetId: ws.gadgetId, path: "notes.txt" },
+    readFileAtCommit: { commitId: ws.parentCommitId, path: "old.txt" },
+    readPendingFile: { chatId: DRAFT_CHAT_ID, gadgetId: ws.gadgetId, path: "added.txt" },
+  };
+}
+
+// A stream read to its end.
+async function bytesOf(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> {
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+// The bytes of a file a content read returned as a stream, failing the test for any other kind.
+async function streamedBytes(file: AdminFileContent): Promise<Uint8Array> {
+  if (file.kind !== "stream") throw new Error(`Expected a stream, got "${file.kind}".`);
+  return await bytesOf(file.content);
+}
+
+// `size` bytes that no run of zeroes or of one value makes up, so that a chunk misplaced or
+// repeated shows.
+function patternBytes(size: number): Uint8Array {
+  let bytes = new Uint8Array(size);
+  for (let i = 0; i < size; i++) bytes[i] = (i * 31 + (i >>> 8)) & 0xff;
+  return bytes;
+}
+
+// Watches every way the content reads could reach the workspace's content: the page builder's
+// rows, an attachment's stream and a file read.
+function watchReads(ws: Workspace) {
+  return [
+    vi.spyOn(ws.impl, "getChatMetaOrThrow"),
+    vi.spyOn(ws.impl, "hydrateChatMessageForClient"),
+    vi.spyOn(ws.impl, "openChatAttachment"),
+    vi.spyOn(ws.impl.gitCache, "readLocalFileAtCommit"),
+    vi.spyOn(ws.impl, "getCurrentChatContent"),
+  ];
+}
+
+describe("a content read", () => {
+  it("is refused, recorded, through a view opened for metadata, even while a grant is live",
+      () => withWorkspace(async ws => {
+    allowContent(ws);
+    putGrant(ws);
+    ws.account.answer = () => accountGrant();
+    let view = await open(ws);
+    let reads = watchReads(ws);
+
+    for (let method of CONTENT_METHODS) {
+      expect(await codeOf(contentReads(ws, view)[method]()), method)
+          .toBe(ADMIN_ACCESS_ERROR_CODES.contentNotRequested);
+    }
+    let records = (await deploymentRecords(ws)).slice(1);
+    expect(records.map(r => [r.method, r.args, r.requested, r.access, r.exposed, r.refused]))
+        .toStrictEqual(CONTENT_METHODS.map(method => [
+          method, contentReadArgs(ws)[method], "metadata", "content", "metadata",
+          ADMIN_ACCESS_ERROR_CODES.contentNotRequested,
+        ]));
+    for (let record of records) expect(record).not.toHaveProperty("grantId");
+    // Refused before anything was read or asked.
+    for (let read of reads) expect(read).not.toHaveBeenCalled();
+    expect(ws.account.asked).toStrictEqual([]);
+  }));
+
+  it("is refused, recorded, while the level in force is below content, the account never asked",
+      () => withWorkspace(async ws => {
+    allowContent(ws);
+    putGrant(ws);
+    ws.account.answer = () => accountGrant();
+    let view = await openForContent(ws);
+    let reads = watchReads(ws);
+
+    // The admins' choice drops, then the cap, each with both grants still live.
+    let lower: (() => void)[] = [
+      () => { ws.config.adminWorkspaceAccess = "metadata"; },
+      () => { ws.config.adminWorkspaceAccess = "content"; setEnv(ws); },
+    ];
+    for (let drop of lower) {
+      allowContent(ws);
+      drop();
+      for (let method of CONTENT_METHODS) {
+        expect(await codeOf(contentReads(ws, view)[method]()), method)
+            .toBe(ADMIN_ACCESS_ERROR_CODES.contentOff);
+      }
+    }
+    let records = (await deploymentRecords(ws)).slice(1);
+    expect(records.map(r => [r.method, r.args, r.requested, r.access, r.exposed, r.refused]))
+        .toStrictEqual([...CONTENT_METHODS, ...CONTENT_METHODS].map(method => [
+          method, contentReadArgs(ws)[method], "content", "metadata", "metadata",
+          ADMIN_ACCESS_ERROR_CODES.contentOff,
+        ]));
+    for (let record of records) expect(record).not.toHaveProperty("grantId");
+    for (let read of reads) expect(read).not.toHaveBeenCalled();
+    expect(ws.account.asked).toStrictEqual([]);
+
+    // Back at "content", the same view reads again.
+    allowContent(ws);
+    expect(await view.readFile(ws.gadgetId, "notes.txt"))
+        .toStrictEqual({ kind: "text", text: `${WITHHELD.file}\n` });
+  }));
+
+  it("is refused, recorded, while no grant is live", () => withWorkspace(async ws => {
+    allowContent(ws);
+    // Grants that have ended are not live.
+    putGrant(ws, { revokedAt: new Date(), revokedBy: OWNER });
+    putGrant(ws, { expiresAt: new Date(Date.now() - 1) });
+    let view = await openForContent(ws);
+    let reads = watchReads(ws);
+
+    for (let method of CONTENT_METHODS) {
+      expect(await codeOf(contentReads(ws, view)[method]()), method)
+          .toBe(ADMIN_ACCESS_ERROR_CODES.grantRequired);
+    }
+    let records = (await deploymentRecords(ws)).slice(1);
+    expect(records.map(r => [r.method, r.args, r.requested, r.access, r.exposed, r.refused]))
+        .toStrictEqual(CONTENT_METHODS.map(method => [
+          method, contentReadArgs(ws)[method], "content", "content", "metadata",
+          ADMIN_ACCESS_ERROR_CODES.grantRequired,
+        ]));
+    for (let record of records) expect(record).not.toHaveProperty("grantId");
+    for (let read of reads) expect(read).not.toHaveBeenCalled();
+    // Each call asked the owner's account: an answer that there is none is not kept.
+    expect(ws.account.asked).toStrictEqual(CONTENT_METHODS.map(() => OWNER_USER_ID));
+  }));
+
+  it("is refused, recorded, while the owner's account cannot answer, and answers under a " +
+      "workspace grant without asking it", () => withWorkspace(async ws => {
+    allowContent(ws);
+    ws.account.answer = () => { throw new Error("account unavailable"); };
+    let view = await openForContent(ws);
+
+    for (let method of CONTENT_METHODS) {
+      expect(await codeOf(contentReads(ws, view)[method]()), method)
+          .toBe(ADMIN_ACCESS_ERROR_CODES.grantRequired);
+    }
+    // Never an unrecorded failure: each refusal is in the log.
+    expect((await deploymentRecords(ws)).slice(1).map(r => [r.method, r.refused, r.grantId]))
+        .toStrictEqual(CONTENT_METHODS.map(
+            method => [method, ADMIN_ACCESS_ERROR_CODES.grantRequired, undefined]));
+    expect(ws.account.asked).toHaveLength(CONTENT_METHODS.length);
+
+    let grant = putGrant(ws);
+    for (let method of CONTENT_METHODS) await contentReads(ws, view)[method]();
+    expect(ws.account.asked).toHaveLength(CONTENT_METHODS.length);
+    expect((await deploymentRecords(ws)).slice(-CONTENT_METHODS.length)
+        .map(r => [r.method, r.exposed, r.grantId, r.refused]))
+        .toStrictEqual(CONTENT_METHODS.map(method => [method, "content", grant.id, undefined]));
+  }));
+
+  it.each(CONTENT_METHODS)(
+      "%s uses an account-wide grant given just after it was refused", method =>
+      withWorkspace(async ws => {
+    allowContent(ws);
+    let view = await openForContent(ws);
+    expect(await codeOf(contentReads(ws, view)[method]()))
+        .toBe(ADMIN_ACCESS_ERROR_CODES.grantRequired);
+
+    let grant = accountGrant();
+    ws.account.answer = () => grant;
+    await contentReads(ws, view)[method]();
+    expect(ws.account.asked).toHaveLength(2);
+    expect((await deploymentRecords(ws)).slice(1).map(r => [r.method, r.exposed, r.grantId, r.refused]))
+        .toStrictEqual([
+          [method, "metadata", undefined, ADMIN_ACCESS_ERROR_CODES.grantRequired],
+          [method, "content", grant.id, undefined],
+        ]);
+  }));
+
+  it("returns nothing when its record cannot be written", () => withWorkspace(async ws => {
+    allowContent(ws);
+    putGrant(ws);
+    let view = await openForContent(ws);
+    ws.impl.adminAudits = {
+      getByName: () => ({ append: async () => { throw new Error("audit store down"); } }),
+    };
+    for (let method of CONTENT_METHODS) {
+      await expect(contentReads(ws, view)[method](), method).rejects.toThrow("audit store down");
+    }
+    // A refusal whose record cannot be written fails the same way, never as the refusal.
+    for (let grant of ws.impl.storage.adminGrants.list()) {
+      ws.impl.storage.adminGrants.delete(grant.id);
+    }
+    for (let method of CONTENT_METHODS) {
+      await expect(contentReads(ws, view)[method](), method).rejects.toThrow("audit store down");
+    }
+    expect((await deploymentRecords(ws)).map(r => r.method)).toStrictEqual(["inspectWorkspace"]);
+  }));
+});
+
+// Three MiB: over MAX_BUFFERED_BLOB_SIZE, so a file or an attachment of this size is one the
+// server must not hold whole.
+const LARGE_SIZE = 3 * 1024 * 1024;
+const LARGE_ATTACHMENT_ID = "88888888-8888-4888-8888-888888888888";
+const IMAGE_ATTACHMENT_ID = "99999999-9999-4999-8999-999999999999";
+
+// Watches the reads that hold a blob whole. The function it returns fails the test if one was
+// made since: a whole read of a blob by oid, of an attachment, or of an object that turned out
+// to be a blob (commits and trees are read whole), or one read of more than
+// MAX_BUFFERED_BLOB_SIZE bytes from a blob opened to be read in pieces.
+function watchWholeReads(ws: Workspace): () => void {
+  let readBlob = vi.spyOn(ws.impl.gitCache, "readBlob");
+  let readObject = vi.spyOn(ws.impl.gitCache, "readLocalObject");
+  let attachmentData = vi.spyOn(ws.impl, "getChatAttachmentData");
+  let readPiece = vi.spyOn(BlobReader.prototype, "read");
+  return () => {
+    let pieces = readPiece.mock.calls.map(([, length]) => length);
+    readPiece.mockRestore();
+    expect(readBlob).not.toHaveBeenCalled();
+    expect(attachmentData).not.toHaveBeenCalled();
+    expect(readObject.mock.results.map(result => result.value?.type)).not.toContain("blob");
+    expect(pieces.filter(length => length > MAX_BUFFERED_BLOB_SIZE)).toStrictEqual([]);
+  };
+}
+
+describe("content reads under a grant", () => {
+  it.each<[string, (ws: Workspace) => AdminAccessGrant]>([
+    ["a grant in the workspace", ws => putGrant(ws)],
+    ["an account-wide grant alone", ws => {
+      let grant = accountGrant();
+      ws.account.answer = () => grant;
+      return grant;
+    }],
+  ])("answer under %s, each record saying what it exposed", (_case, arrange) =>
+      withWorkspace(async ws => {
+    addIdleChat(ws);
+    allowContent(ws);
+    let grant = arrange(ws);
+    let view = await openForContent(ws);
+
+    let page = await view.getChat(CHAT_ID);
+    expect(page.messages.map(msg => msg.type === "message" ? msg.message : msg.type))
+        .toStrictEqual([WITHHELD.message, "see attached"]);
+    expect(page.compacted).toBeUndefined();
+    expect(await bytesOf(await view.readChatAttachment(CHAT_ID, BLOB_ATTACHMENT_ID)))
+        .toStrictEqual(BLOB_ATTACHMENT_BYTES);
+    expect(await view.readFile(ws.gadgetId, "notes.txt"))
+        .toStrictEqual({ kind: "text", text: `${WITHHELD.file}\n` });
+    expect(await view.readFileAtCommit(ws.parentCommitId, "old.txt"))
+        .toStrictEqual({ kind: "text", text: "dropped\n" });
+    expect(await view.readPendingFile(DRAFT_CHAT_ID, ws.gadgetId, "added.txt"))
+        .toStrictEqual({ kind: "text", text: "added\n" });
+
+    // Answers that hold no content: the calls ran under the grant all the same.
+    expect(await view.getChat(IDLE_CHAT_ID)).toStrictEqual({ messages: [], compacted: undefined });
+    expect(await view.readFile(ws.gadgetId, "nowhere.txt")).toStrictEqual({ kind: "absent" });
+    expect(await view.readFileAtCommit(ws.commitId, "old.txt")).toStrictEqual({ kind: "absent" });
+    // A path the chat removed.
+    expect(await view.readPendingFile(DRAFT_CHAT_ID, ws.gadgetId, "todo.txt"))
+        .toStrictEqual({ kind: "absent" });
+
+    let records = (await deploymentRecords(ws)).slice(1);
+    expect(records.map(r => [r.method, r.args, r.exposed])).toStrictEqual([
+      ...CONTENT_METHODS.map(method => [method, contentReadArgs(ws)[method], "content"]),
+      ["getChat", { chatId: IDLE_CHAT_ID }, "metadata"],
+      ["readFile", { gadgetId: ws.gadgetId, path: "nowhere.txt" }, "metadata"],
+      ["readFileAtCommit", { commitId: ws.commitId, path: "old.txt" }, "metadata"],
+      ["readPendingFile", { chatId: DRAFT_CHAT_ID, gadgetId: ws.gadgetId, path: "todo.txt" },
+       "metadata"],
+    ]);
+    for (let record of records) {
+      expect(record).toMatchObject(
+          { requested: "content", access: "content", grantId: grant.id });
+      expect(record).not.toHaveProperty("refused");
+    }
+    // The workspace's own grant answers without the owner's account. An account-wide one is
+    // asked for once, and relied on for the calls that follow within the minute.
+    expect(ws.account.asked).toStrictEqual(grantKeys(ws).length ? [] : [OWNER_USER_ID]);
+  }));
+
+  it("page a chat back by sequence, past the boundary of a compaction",
+      () => withWorkspace(async ws => {
+    let impl = ws.impl;
+    allowContent(ws);
+    let grant = putGrant(ws);
+    let view = await openForContent(ws);
+
+    // A chat that was never compacted is one page, which a bound cuts short.
+    let whole = await view.getChat(CHAT_ID);
+    expect(whole.messages.map(msg => msg.sequence)).toStrictEqual([0, 1]);
+    expect(whole.compacted).toBeUndefined();
+    let bounded = await view.getChat(CHAT_ID, 1);
+    expect(bounded.messages.map(msg => msg.sequence)).toStrictEqual([0]);
+    expect(bounded.compacted).toBeUndefined();
+
+    // A checkpoint that summarized the first message, published as a compaction publishes one.
+    let summary = "The owner laid out the quarter's plan.";
+    impl.storage.chatCompactions.put(
+        { chatId: CHAT_ID, compactedTo: 1, summary, chatBindings: [], nextChangeId: 0 });
+    impl.storage.chatMeta.put({ ...impl.storage.chatMeta.get(CHAT_ID), compactedTo: 1 });
+
+    // The newest page starts at the boundary and carries the summary of what came before it.
+    let newest = await view.getChat(CHAT_ID);
+    expect(newest.messages.map(msg => msg.sequence)).toStrictEqual([1]);
+    expect(newest.compacted).toStrictEqual({ to: 1, summary, proposedChange: undefined });
+    // The page below the boundary is the span the checkpoint summarized, in the stored words.
+    let earlier = await view.getChat(CHAT_ID, 1);
+    expect(earlier.messages.map(msg => [msg.sequence, msg.type === "message" && msg.message]))
+        .toStrictEqual([[0, WITHHELD.message]]);
+    expect(earlier.compacted).toBeUndefined();
+
+    let unbounded = { chatId: CHAT_ID };
+    let below = { chatId: CHAT_ID, beforeSequence: 1 };
+    expect((await deploymentRecords(ws)).slice(1)
+        .map(r => [r.method, r.args, r.exposed, r.grantId, r.refused]))
+        .toStrictEqual([unbounded, below, unbounded, below].map(
+            args => ["getChat", args, "content", grant.id, undefined]));
+  }));
+
+  it("never copy an account-wide grant into the workspace", () => withWorkspace(async ws => {
+    initForOwnerSession(ws);
+    allowContent(ws);
+    let grant = accountGrant();
+    ws.account.answer = () => grant;
+    let view = await openForContent(ws);
+    for (let method of CONTENT_METHODS) await contentReads(ws, view)[method]();
+    expect((await deploymentRecords(ws)).slice(1).map(r => [r.method, r.exposed, r.grantId]))
+        .toStrictEqual(CONTENT_METHODS.map(method => [method, "content", grant.id]));
+
+    expect(grantKeys(ws)).toStrictEqual([]);
+    expect([...ws.impl.storage.adminGrants.list()]).toStrictEqual([]);
+    expect((await view.describe()).grants).toStrictEqual([]);
+    expect(await asOwner(ws, client => client.listAdminGrants())).toStrictEqual([]);
+  }));
+
+  it("end on the very next call once the grant is revoked, while a stream already returned " +
+      "reads to its end", () => withWorkspace(async ws => {
+    let impl = ws.impl;
+    let bytes = patternBytes(LARGE_SIZE);
+    impl.storage.chatAttachmentContent.put({
+      fileId: LARGE_ATTACHMENT_ID,
+      state: { type: "committed", chatId: CHAT_ID, oid: impl.gitCache.writeBlob(bytes).oid },
+    });
+    allowContent(ws);
+    let grant = putGrant(ws);
+    let view = await openForContent(ws);
+
+    let stream = await view.readChatAttachment(CHAT_ID, LARGE_ATTACHMENT_ID);
+    impl.storage.adminGrants.put({ ...grant, revokedAt: new Date(), revokedBy: OWNER });
+    for (let method of CONTENT_METHODS) {
+      expect(await codeOf(contentReads(ws, view)[method]()), method)
+          .toBe(ADMIN_ACCESS_ERROR_CODES.grantRequired);
+    }
+    // The first call was recorded whole before its stream was returned.
+    let read = await bytesOf(stream);
+    expect(read.byteLength === bytes.byteLength && read.every((byte, i) => byte === bytes[i]))
+        .toBe(true);
+    expect((await deploymentRecords(ws)).slice(1).map(r => [r.method, r.exposed, r.grantId, r.refused]))
+        .toStrictEqual([
+          ["readChatAttachment", "content", grant.id, undefined],
+          ...CONTENT_METHODS.map(method =>
+              [method, "metadata", undefined, ADMIN_ACCESS_ERROR_CODES.grantRequired]),
+        ]);
+  }));
+
+  it("stream a large file and a large attachment, holding neither whole",
+      () => withWorkspace(async ws => {
+    let impl = ws.impl;
+    let large = patternBytes(LARGE_SIZE);
+    let binary = new Uint8Array([0x00, 0xff, 0x10, 0x80, 0x7f, 0x01, 0x02, 0x03, 0x04, 0x05]);
+    let largeRef = impl.gitCache.writeBlob(large);
+    let commitId = await impl.gitCache.writeFilesAsCommit(new Map<string, unknown>([
+      ["large.bin", largeRef], ["small.bin", impl.gitCache.writeBlob(binary)],
+      ["small.txt", "ten bytes\n"],
+    ]), { parents: [], author: COMMITTER, message: "files", timestamp: new Date(1700000000_000) });
+    let gadget = impl.createGadget("Files", "FILES", undefined, undefined, commitId);
+    impl.storage.chatAttachmentContent.put({
+      fileId: LARGE_ATTACHMENT_ID,
+      state: { type: "committed", chatId: CHAT_ID, oid: largeRef.oid },
+    });
+    allowContent(ws);
+    putGrant(ws);
+    let view = await openForContent(ws);
+    let noneWhole = watchWholeReads(ws);
+    let same = (read: Uint8Array) =>
+        read.byteLength === large.byteLength && read.every((byte, i) => byte === large[i]);
+
+    for (let file of [
+      await view.readFile(gadget.id, "large.bin"),
+      await view.readFileAtCommit(commitId, "large.bin"),
+    ]) {
+      expect(file).toMatchObject({ kind: "stream", byteLength: LARGE_SIZE });
+      expect(same(await streamedBytes(file))).toBe(true);
+    }
+    expect(same(await bytesOf(await view.readChatAttachment(CHAT_ID, LARGE_ATTACHMENT_ID))))
+        .toBe(true);
+    noneWhole();
+
+    // A file that is not text is a stream whatever its size, and a small text file is text.
+    let small = await view.readFile(gadget.id, "small.bin");
+    expect(small).toMatchObject({ kind: "stream", byteLength: binary.byteLength });
+    expect(await streamedBytes(small)).toStrictEqual(binary);
+    expect(await view.readFile(gadget.id, "small.txt"))
+        .toStrictEqual({ kind: "text", text: "ten bytes\n" });
+
+    let records = (await deploymentRecords(ws)).slice(1);
+    expect(records.map(r => [r.method, r.args.path ?? r.args.id, r.exposed])).toStrictEqual([
+      ["readFile", "large.bin", "content"], ["readFileAtCommit", "large.bin", "content"],
+      ["readChatAttachment", LARGE_ATTACHMENT_ID, "content"],
+      ["readFile", "small.bin", "content"], ["readFile", "small.txt", "content"],
+    ]);
+  }));
+
+  it("stream each attachment from wherever the workspace stores it", () => withWorkspace(async ws => {
+    allowContent(ws);
+    putGrant(ws);
+    let view = await openForContent(ws);
+    let noneWhole = watchWholeReads(ws);
+    let stored: [string, Uint8Array][] = [
+      [BLOB_ATTACHMENT_ID, BLOB_ATTACHMENT_BYTES], [INLINE_ATTACHMENT_ID, INLINE_ATTACHMENT_BYTES],
+      [LEGACY_ATTACHMENT_ID, LEGACY_ATTACHMENT_BYTES],
+    ];
+    for (let [id, bytes] of stored) {
+      expect(await bytesOf(await view.readChatAttachment(CHAT_ID, id)), id).toStrictEqual(bytes);
+    }
+    noneWhole();
+  }));
+
+  it("return a chat's page with no image inlined, where a member's page carries it",
+      () => withWorkspace(async ws => {
+    initForOwnerSession(ws);
+    let impl = ws.impl;
+    let image = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01, 0x02]);
+    let oid = impl.gitCache.writeBlob(image).oid;
+    impl.storage.chatAttachmentContent.put({
+      fileId: IMAGE_ATTACHMENT_ID,
+      state: { type: "committed", chatId: CHAT_ID, oid, workspacePath: "shot.png" },
+    });
+    let reference = {
+      id: IMAGE_ATTACHMENT_ID, oid, mimeType: "image/png", name: "shot.png",
+      size: image.byteLength, workspacePath: "shot.png",
+    };
+    impl.addChatMessages(CHAT_ID, OWNER, [
+      { type: "message", message: "a screenshot", attachments: [reference] },
+      // An image kept as bytes on its record, whose stored reference holds them too.
+      {
+        type: "message", message: "an older image",
+        attachments: [{
+          id: INLINE_ATTACHMENT_ID, mimeType: "image/png", size: INLINE_ATTACHMENT_BYTES.byteLength,
+          content: INLINE_ATTACHMENT_BYTES,
+        }],
+      },
+    ]);
+    impl.storage.chatAttachmentContent.put({
+      fileId: INLINE_ATTACHMENT_ID, data: INLINE_ATTACHMENT_BYTES,
+      state: { type: "committed", chatId: CHAT_ID },
+    });
+    allowContent(ws);
+    putGrant(ws);
+    let view = await openForContent(ws);
+
+    let noneWhole = watchWholeReads(ws);
+    let records = vi.spyOn(impl.storage.chatAttachmentContent, "get");
+    let page = await view.getChat(CHAT_ID);
+    let attachments = page.messages.flatMap(msg => msg.type === "message" ? msg.attachments ?? [] : []);
+    expect(attachments).toStrictEqual([
+      reference,
+      { id: INLINE_ATTACHMENT_ID, mimeType: "image/png", size: INLINE_ATTACHMENT_BYTES.byteLength },
+    ]);
+    for (let attachment of attachments) expect(attachment).not.toHaveProperty("content");
+    // Neither an image's blob nor its stored bytes were read for the page.
+    noneWhole();
+    expect(records).not.toHaveBeenCalled();
+    records.mockRestore();
+
+    // The bytes are what readChatAttachment() streams.
+    expect(await bytesOf(await view.readChatAttachment(CHAT_ID, IMAGE_ATTACHMENT_ID)))
+        .toStrictEqual(image);
+    expect(await bytesOf(await view.readChatAttachment(CHAT_ID, INLINE_ATTACHMENT_ID)))
+        .toStrictEqual(INLINE_ATTACHMENT_BYTES);
+
+    // A member's page of the same chat still carries each image.
+    let member = await asOwner(ws, client => client.getChatHistory(CHAT_ID));
+    let inlined = member.messages
+        .flatMap(msg => msg.type === "message" ? msg.attachments ?? [] : [])
+        .map(attachment => attachment.content && new Uint8Array(attachment.content));
+    expect(inlined).toStrictEqual([image, INLINE_ATTACHMENT_BYTES]);
+  }, { seed: false }));
+});
+
+describe("a content read that fails", () => {
+  it("is recorded as an attempt that exposed no content", () => withWorkspace(async ws => {
+    allowContent(ws);
+    let grant = putGrant(ws);
+    let view = await openForContent(ws);
+    let elsewhere = "44444444-4444-4444-8444-444444444444";
+    ws.impl.storage.chatAttachmentContent.put({
+      fileId: elsewhere, data: new Uint8Array([1]),
+      state: { type: "committed", chatId: DRAFT_CHAT_ID },
+    });
+    let unknownCommit = "cd".repeat(20);
+
+    await expect(view.getChat(999)).rejects.toThrow("No such chatId: 999");
+    await expect(view.readChatAttachment(CHAT_ID, "nope"))
+        .rejects.toThrow("Invalid chat attachment ID.");
+    // An attachment of another chat is none of this one's.
+    await expect(view.readChatAttachment(CHAT_ID, elsewhere))
+        .rejects.toThrow("Chat attachment not found.");
+    await expect(view.readFile(999, "notes.txt"))
+        .rejects.toThrow("No gadget with committed code has id 999.");
+    await expect(view.readFileAtCommit(unknownCommit, "notes.txt"))
+        .rejects.toThrow(noStoredCommit(unknownCommit));
+    await expect(view.readFileAtCommit(ws.commitId, "")).rejects.toThrow();
+    await expect(view.readPendingFile(999, ws.gadgetId, "x")).rejects.toThrow("No such chatId: 999");
+    await expect(view.readPendingFile(DRAFT_CHAT_ID, 999, "x"))
+        .rejects.toThrow(`Chat ${DRAFT_CHAT_ID} holds no changes to workpiece 999.`);
+
+    let records = (await deploymentRecords(ws)).slice(1);
+    expect(records.map(r => [r.method, r.args])).toStrictEqual([
+      ["getChat", { chatId: 999 }],
+      ["readChatAttachment", { chatId: CHAT_ID, id: "nope" }],
+      ["readChatAttachment", { chatId: CHAT_ID, id: elsewhere }],
+      ["readFile", { gadgetId: 999, path: "notes.txt" }],
+      ["readFileAtCommit", { commitId: unknownCommit, path: "notes.txt" }],
+      ["readFileAtCommit", { commitId: ws.commitId, path: "" }],
+      ["readPendingFile", { chatId: 999, gadgetId: ws.gadgetId, path: "x" }],
+      ["readPendingFile", { chatId: DRAFT_CHAT_ID, gadgetId: 999, path: "x" }],
+    ]);
+    for (let record of records) {
+      expect(record).toMatchObject({ access: "content", exposed: "metadata", grantId: grant.id });
+      expect(record).not.toHaveProperty("refused");
+    }
+  }));
+
+  it("never pulls a file's missing object through a connection", () => withWorkspace(async ws => {
+    allowContent(ws);
+    let grant = putGrant(ws);
+    let view = await openForContent(ws);
+    let entry = await ws.impl.gitCache.pathEntryAtCommit(ws.commitId, "notes.txt");
+    let pulls = forbidPulls(ws, entry.oid, "blob");
+
+    await expect(view.readFile(ws.gadgetId, "notes.txt")).rejects.toThrow(missingObject(entry.oid));
+    await expect(view.readFileAtCommit(ws.commitId, "notes.txt"))
+        .rejects.toThrow(missingObject(entry.oid));
+    let root = await ws.impl.gitCache.pathEntryAtCommit(ws.parentCommitId, "");
+    pulls = forbidPulls(ws, root.oid, "tree");
+    await expect(view.readFileAtCommit(ws.parentCommitId, "old.txt"))
+        .rejects.toThrow(missingObject(root.oid));
+    expect(pulls.pulled).toBe(false);
+
+    let records = (await deploymentRecords(ws)).slice(1);
+    expect(records.map(r => [r.method, r.exposed, r.grantId])).toStrictEqual([
+      ["readFile", "metadata", grant.id], ["readFileAtCommit", "metadata", grant.id],
+      ["readFileAtCommit", "metadata", grant.id],
+    ]);
+    for (let record of records) expect(record).not.toHaveProperty("refused");
+  }));
+
+  it("never pulls an attachment's missing object through a connection",
+      () => withWorkspace(async ws => {
+    allowContent(ws);
+    putGrant(ws);
+    let view = await openForContent(ws);
+    let gitCache = ws.impl.gitCache;
+    let missing = "Chat attachment content is missing from Git.";
+
+    let pulls = forbidPulls(ws, ws.attachmentOid, "blob");
+    await expect(view.readChatAttachment(CHAT_ID, BLOB_ATTACHMENT_ID))
+        .rejects.toThrow("Unknown Git blob.");
+    expect(pulls.pulled).toBe(false);
+
+    // The legacy attachment's file, then the tree that names it.
+    let { workspaceCommitId } =
+        ws.impl.storage.chatAttachmentContent.get(LEGACY_ATTACHMENT_ID).state;
+    let file = await gitCache.pathEntryAtCommit(workspaceCommitId, "legacy.pdf");
+    let root = await gitCache.pathEntryAtCommit(workspaceCommitId, "");
+    pulls = forbidPulls(ws, file.oid, "blob");
+    await expect(view.readChatAttachment(CHAT_ID, LEGACY_ATTACHMENT_ID)).rejects.toThrow(missing);
+    expect(pulls.pulled).toBe(false);
+
+    pulls = forbidPulls(ws, root.oid, "tree");
+    await expect(view.readChatAttachment(CHAT_ID, LEGACY_ATTACHMENT_ID))
+        .rejects.toThrow(missingObject(root.oid));
+    expect(pulls.pulled).toBe(false);
+
+    let records = (await deploymentRecords(ws)).slice(1);
+    expect(records.map(r => [r.method, r.exposed])).toStrictEqual(
+        [1, 2, 3].map(() => ["readChatAttachment", "metadata"]));
+    for (let record of records) expect(record).not.toHaveProperty("refused");
+  }));
+
+  it("reports a legacy attachment whose path names no file as missing from Git",
+      () => withWorkspace(async ws => {
+    allowContent(ws);
+    putGrant(ws);
+    let view = await openForContent(ws);
+    let gitCache = ws.impl.gitCache;
+    let commit = {
+      parents: [], author: COMMITTER, message: "attachments", timestamp: new Date(1700000000_000),
+    };
+    // A commit whose tree holds a directory and a submodule. Writing files produces no submodule
+    // entry, so the tree is encoded here.
+    let withDir = await gitCache.writeFilesAsCommit(
+        new Map([["dir/inner.bin", gitCache.writeBlob(new Uint8Array([0x00, 0x01]))]]), commit);
+    let tree = encodeGitTree([
+      { mode: "40000", name: "dir", oid: gitCache.localPathEntryAtCommit(withDir, "dir").oid },
+      { mode: "160000", name: "vendored", oid: "1".repeat(40) },
+    ]);
+    gitCache.importObjects([{ type: "tree", payload: tree }]);
+    let commitId = gitCache.writeCommitForTree(gitObjectOid("tree", tree), commit);
+    // Legacy records whose paths name nothing, the directory and the submodule.
+    let paths = new Map([
+      ["55555555-5555-4555-8555-555555555555", "absent.bin"],
+      ["66666666-6666-4666-8666-666666666666", "dir"],
+      ["77777777-7777-4777-8777-777777777777", "vendored"],
+    ]);
+    for (let [fileId, workspacePath] of paths) {
+      ws.impl.storage.chatAttachmentContent.put({
+        fileId,
+        state: { type: "committed", chatId: CHAT_ID, workspaceCommitId: commitId, workspacePath },
+      });
+      await expect(view.readChatAttachment(CHAT_ID, fileId))
+          .rejects.toThrow("Chat attachment content is missing from Git.");
+    }
+    // A record that holds neither bytes, a blob nor a commit and a path.
+    let bare = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    ws.impl.storage.chatAttachmentContent.put(
+        { fileId: bare, state: { type: "committed", chatId: CHAT_ID } });
+    await expect(view.readChatAttachment(CHAT_ID, bare))
+        .rejects.toThrow("Chat attachment has no stored content.");
+
+    let records = (await deploymentRecords(ws)).slice(1);
+    expect(records.map(r => [r.method, r.args, r.exposed])).toStrictEqual(
+        [...paths.keys(), bare].map(
+            id => ["readChatAttachment", { chatId: CHAT_ID, id }, "metadata"]));
+    for (let record of records) expect(record).not.toHaveProperty("refused");
+  }));
+});
+
+describe("a chat's pending files", () => {
+  it("are read as the chat holds them", () => withWorkspace(async ws => {
+    allowContent(ws);
+    putGrant(ws);
+    let view = await openForContent(ws);
+    // A modified and an added path hold the chat's text, and a removed one nothing.
+    expect(await view.readPendingFile(DRAFT_CHAT_ID, ws.gadgetId, "notes.txt"))
+        .toStrictEqual({ kind: "text", text: "draft notes\n" });
+    expect(await view.readPendingFile(DRAFT_CHAT_ID, ws.gadgetId, "added.txt"))
+        .toStrictEqual({ kind: "text", text: "added\n" });
+    expect(await view.readPendingFile(DRAFT_CHAT_ID, ws.gadgetId, "todo.txt"))
+        .toStrictEqual({ kind: "absent" });
+
+    // A gadget the chat created, not accepted yet.
+    let created = ws.impl.createGadget("Sketch", "SKETCH", DRAFT_CHAT_ID);
+    await agentStep(ws, DRAFT_CHAT_ID,
+        { [created.id]: [["main.js", { set: "code\n" }], ["lib/util.js", { set: "util\n" }]] });
+    expect(await view.readPendingFile(DRAFT_CHAT_ID, created.id, "main.js"))
+        .toStrictEqual({ kind: "text", text: "code\n" });
+  }));
+
+  it("stream a file the chat holds as bytes", () => withWorkspace(async ws => {
+    allowContent(ws);
+    putGrant(ws);
+    let view = await openForContent(ws);
+    let { id } = await addWorktreeChat(ws);
+    let small = new Uint8Array([0x00, 0xff, 0x10, 0x80, 0x7f]);
+    let large = patternBytes(LARGE_SIZE);
+    let set = (content: Uint8Array) => ({ setBytes: ws.impl.gitCache.writeBlob(content) });
+    await agentStep(ws, WORKTREE_CHAT_ID,
+        { [id]: [["data.bin", set(small)], ["large.bin", set(large)]] });
+    let noneWhole = watchWholeReads(ws);
+
+    let file = await view.readPendingFile(WORKTREE_CHAT_ID, id, "data.bin");
+    expect(file).toMatchObject({ kind: "stream", byteLength: small.byteLength });
+    expect(await streamedBytes(file)).toStrictEqual(small);
+
+    let streamed = await view.readPendingFile(WORKTREE_CHAT_ID, id, "large.bin");
+    expect(streamed).toMatchObject({ kind: "stream", byteLength: LARGE_SIZE });
+    let read = await streamedBytes(streamed);
+    expect(read.byteLength === LARGE_SIZE && read.every((byte, i) => byte === large[i]))
+        .toBe(true);
+    noneWhole();
+    // A path of the worktree the chat has not touched is not in its content.
+    expect(await view.readPendingFile(WORKTREE_CHAT_ID, id, "src/untouched.txt"))
+        .toStrictEqual({ kind: "absent" });
+
+    expect((await deploymentRecords(ws)).slice(1).map(r => [r.method, r.args.path, r.exposed]))
+        .toStrictEqual([
+          ["readPendingFile", "data.bin", "content"], ["readPendingFile", "large.bin", "content"],
+          ["readPendingFile", "src/untouched.txt", "metadata"],
+        ]);
+  }));
+
+  it("send a text by the size of its UTF-8 encoding", () => withWorkspace(async ws => {
+    allowContent(ws);
+    putGrant(ws);
+    let view = await openForContent(ws);
+    // "é" is two bytes: the first text is exactly MAX_BUFFERED_BLOB_SIZE bytes in one character
+    // fewer, and the second one byte over it in exactly that many characters.
+    let atLimit = "é" + "a".repeat(MAX_BUFFERED_BLOB_SIZE - 2);
+    let overLimit = `${atLimit}a`;
+    expect(overLimit.length).toBe(MAX_BUFFERED_BLOB_SIZE);
+    await submit(ws, DRAFT_CHAT_ID, { [ws.gadgetId]: [["at-limit.txt", { set: atLimit }]] });
+    await submit(ws, DRAFT_CHAT_ID, { [ws.gadgetId]: [["over-limit.txt", { set: overLimit }]] });
+
+    let whole = await view.readPendingFile(DRAFT_CHAT_ID, ws.gadgetId, "at-limit.txt");
+    expect(whole.kind).toBe("text");
+    expect(whole.kind === "text" && whole.text === atLimit).toBe(true);
+
+    let streamed = await view.readPendingFile(DRAFT_CHAT_ID, ws.gadgetId, "over-limit.txt");
+    expect(streamed).toMatchObject({ kind: "stream", byteLength: MAX_BUFFERED_BLOB_SIZE + 1 });
+    let bytes = await streamedBytes(streamed);
+    expect(bytes.byteLength).toBe(MAX_BUFFERED_BLOB_SIZE + 1);
+    expect(new TextDecoder().decode(bytes) === overLimit).toBe(true);
+
+    expect((await deploymentRecords(ws)).slice(1).map(r => [r.method, r.args.path, r.exposed]))
+        .toStrictEqual([
+          ["readPendingFile", "at-limit.txt", "content"],
+          ["readPendingFile", "over-limit.txt", "content"],
+        ]);
+  }));
+});
+
+// What can overtake a call while it waits: the refusal it must then end in, and what brings it
+// about. Each stops the call unrecorded.
+const OVERTAKES: [string, string, (ws: Workspace) => Promise<void>][] = [
+  ["the view expires", ADMIN_ACCESS_ERROR_CODES.viewExpired,
+   async () => { await scheduler.wait(SHORT_LIFETIME_MS + 100); }],
+  ["the admin is demoted", ADMIN_ACCESS_ERROR_CODES.notAdmin,
+   async ws => {
+     setEnv(ws, { ADMIN_WORKSPACE_ACCESS_MAX: "content", ADMINS: ["someone-else@example.test"] });
+   }],
+  ["the workspace is deleted", ADMIN_ACCESS_ERROR_CODES.workspaceNotFound,
+   async ws => {
+     await ws.state.storage.deleteAll();
+     ws.impl.ownerId = undefined;
+   }],
+];
+
+describe("a content read overtaken while the owner's account is asked for a grant", () => {
+  describe.each<[string, () => unknown]>([
+    ["a live account-wide grant", () => accountGrant()],
+    ["none", () => null],
+  ])("the account then answering with %s", (_answer, answer) => {
+    it.each(OVERTAKES)("writes nothing and reads nothing when %s", (_case, code, overtake) =>
+        withWorkspace(async ws => {
+      allowContent(ws);
+      // The workspace holds no grant of its own, so each call asks the owner's account, which
+      // holds its answer until the test lets it go.
+      let release!: () => void;
+      let released = new Promise<void>(resolve => { release = resolve; });
+      ws.account.answer = async () => {
+        await released;
+        return answer();
+      };
+      let expires = code === ADMIN_ACCESS_ERROR_CODES.viewExpired;
+      let view = await openForContent(ws,
+          expires ? { expiresAt: new Date(Date.now() + SHORT_LIFETIME_MS) } : {});
+      let reads = watchReads(ws);
+
+      let calls = CONTENT_METHODS.map(method => codeOf(contentReads(ws, view)[method]()));
+      while (ws.account.asked.length < CONTENT_METHODS.length) await settled();
+      await overtake(ws);
+      release();
+
+      // Neither the refusal for want of a grant nor an attempt: the view's own check comes
+      // first, and stops each call before it records or reads anything.
+      expect(await Promise.all(calls)).toStrictEqual(CONTENT_METHODS.map(() => code));
+      for (let read of reads) expect(read).not.toHaveBeenCalled();
+      expect((await deploymentRecords(ws)).map(r => r.method))
+          .toStrictEqual(["inspectWorkspace"]);
+      expect(ws.account.asked).toHaveLength(CONTENT_METHODS.length);
+      if (code === ADMIN_ACCESS_ERROR_CODES.workspaceNotFound) {
+        expect(storageKeys(ws)).toStrictEqual([]);
+      }
+    }));
+  });
+});
+
+describe("a view method of each kind, with no grant", () => {
+  it("answers, answers withheld, or is refused, as its kind says", () => withWorkspace(async ws => {
+    allowContent(ws);
+    let view = await openForContent(ws);
+
+    // Metadata alone: answered, the owner's account never asked for a grant.
+    expect(ADMIN_METHOD_ANSWERS.listFiles).toBe("metadata");
+    expect((await view.listFiles(ws.gadgetId)).map(node => node.name))
+        .toStrictEqual(["notes.txt", "todo.txt"]);
+    expect(ws.account.asked).toStrictEqual([]);
+
+    // Mixed: answered as the "metadata" level answers.
+    expect(ADMIN_METHOD_ANSWERS.listChats).toBe("mixed");
+    expect(await seededChat(view)).not.toHaveProperty("queuedSteers");
+    expect(ws.account.asked).toHaveLength(1);
+
+    // Content alone: refused.
+    expect(ADMIN_METHOD_ANSWERS.getChat).toBe("content");
+    expect(await codeOf(view.getChat(CHAT_ID))).toBe(ADMIN_ACCESS_ERROR_CODES.grantRequired);
+    expect(ws.account.asked).toHaveLength(2);
+
+    expect((await deploymentRecords(ws)).slice(1).map(r => [r.method, r.exposed, r.refused]))
+        .toStrictEqual([
+          ["listFiles", "metadata", undefined], ["listChats", "metadata", undefined],
+          ["getChat", "metadata", ADMIN_ACCESS_ERROR_CODES.grantRequired],
+        ]);
   }));
 });

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  devAdmins,
   getDevServerConfig,
   getWranglerPortFromBackendHost,
 } from "./dev-server-config.ts";
@@ -71,4 +72,25 @@ describe("getDevServerConfig", () => {
       assert.throws(() => getDevServerConfig(args), /--port must be an integer between 1 and 65535/);
     });
   }
+});
+
+describe("devAdmins", () => {
+  it("leaves only admin when ADMINS is unset", () => {
+    assert.deepEqual(devAdmins(undefined), ["admin"]);
+  });
+
+  for (const value of ["", "   ", ",", " , ,"]) {
+    it(`leaves only admin when ADMINS names nobody: ${JSON.stringify(value)}`, () => {
+      assert.deepEqual(devAdmins(value), ["admin"]);
+    });
+  }
+
+  it("replaces the list with the usernames ADMINS names", () => {
+    assert.deepEqual(devAdmins("admin,grace"), ["admin", "grace"]);
+    assert.deepEqual(devAdmins("grace"), ["grace"]);
+  });
+
+  it("trims each username and drops the empty entries", () => {
+    assert.deepEqual(devAdmins(" admin , grace ,"), ["admin", "grace"]);
+  });
 });

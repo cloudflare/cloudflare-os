@@ -24,7 +24,8 @@ const RESIZABLE_COLUMNS = {
 } as const
 type ResizableColumn = keyof typeof RESIZABLE_COLUMNS
 // Sized so that, with Action at its least, the log fits the Audit tab at a 1440 px window, and a
-// refused call's two badges share a line.
+// call's kind and what it exposed share a line, as a write's kind and step do. A refused call's
+// third badge goes on a line below.
 const DEFAULT_WIDTHS: Record<ResizableColumn, number> = { time: 170, admin: 140, kind: 240, target: 140 }
 const TOGGLE_WIDTH = 48
 const ACTION_MIN_WIDTH = 140
@@ -33,8 +34,8 @@ const ACTION_MIN_WIDTH = 140
 type Answer = { request: string } & ({ page: AdminAuditPage } | { failed: true })
 
 // Identifies a filter, so that the pages turned under one are forgotten once it changes.
-const filterKey = ({ admin, method, kind, workspace, owner }: AuditFilter) =>
-  JSON.stringify([admin, method, kind, workspace, owner].map((value) => value ?? null))
+const filterKey = ({ admin, method, kind, workspace, owner, exposed }: AuditFilter) =>
+  JSON.stringify([admin, method, kind, workspace, owner, exposed].map((value) => value ?? null))
 
 /**
  * The Audit tab's log, filtered as `filter` says, one page at a time, newest first. Older pages
@@ -69,10 +70,10 @@ export const AuditLog = ({ admin, filter, onFilterChange, adminSuggestions, relo
   // Everything a load depends on, so that an answer to an earlier one is told apart.
   const request = JSON.stringify([key, cursor ?? null, reloads, retries])
 
-  const { admin: byAdmin, method, kind, workspace, owner } = filter
+  const { admin: byAdmin, method, kind, workspace, owner, exposed } = filter
   useEffect(() => {
     let current = true
-    const query = { admin: byAdmin, method, kind, workspace, owner, cursor, limit: AUDIT_PAGE_SIZE }
+    const query = { admin: byAdmin, method, kind, workspace, owner, exposed, cursor, limit: AUDIT_PAGE_SIZE }
     admin.listAdminAudit(query).then(
       (page) => { if (current) setAnswer({ request, page }) },
       (err: unknown) => {
@@ -82,7 +83,7 @@ export const AuditLog = ({ admin, filter, onFilterChange, adminSuggestions, relo
       },
     )
     return () => { current = false }
-  }, [admin, byAdmin, method, kind, workspace, owner, cursor, request])
+  }, [admin, byAdmin, method, kind, workspace, owner, exposed, cursor, request])
 
   // A page stays shown, dimmed, until the load that replaces it answers.
   const page = answer !== null && 'page' in answer ? answer.page : null
@@ -101,9 +102,11 @@ export const AuditLog = ({ admin, filter, onFilterChange, adminSuggestions, relo
       ?.focus()
   }
   const targetSuggestions = [...new Set(page?.records.flatMap((record) => targetUserOf(record) ?? []))]
-  // A call into a workspace and a write to one name the workspace and its title.
+  // A call into a workspace, a write to one and a grant step on one name the workspace and its
+  // title.
   const workspaceLabel = page?.records
-    .flatMap((record) => record.kind === 'workspace' || record.kind === 'write' ? [record] : [])
+    .flatMap((record) => record.kind === 'workspace' || record.kind === 'write' || record.kind === 'grant'
+      ? [record] : [])
     .find(({ workspaceId, workspaceTitle }) => workspaceId === workspace && workspaceTitle)?.workspaceTitle
 
   // A page button is disabled on the first or the last page, and a browser drops the focus of a

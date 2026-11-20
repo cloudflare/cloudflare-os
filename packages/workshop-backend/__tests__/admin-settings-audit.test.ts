@@ -499,10 +499,36 @@ describe("AdminSettings admin access bounds", () => {
     expect((await config()).adminWorkspaceAccess).toBe("metadata");
   });
 
+  // Content is off by default: the operator raises the cap before an admin can choose it.
+  it("refuses content until ADMIN_WORKSPACE_ACCESS_MAX allows it", async () => {
+    const { inDo, appended, config, records } = adminSettings();
+    for (let more of [{}, { ADMIN_WORKSPACE_ACCESS_MAX: "metadata" }]) {
+      await expect(inDo(admin => admin.setAdminWorkspaceAccess("content", ACTOR), { more }))
+          .rejects.toThrow(`can't be set above "metadata", the most this deployment's ` +
+              "ADMIN_WORKSPACE_ACCESS_MAX allows");
+    }
+    expect(appended).toEqual([]);
+    expect((await config()).adminWorkspaceAccess).toBe("metadata");
+
+    const capped = { more: { ADMIN_WORKSPACE_ACCESS_MAX: "content" } };
+    expect((await inDo(admin => admin.getSettings("admin"), capped)).adminWorkspaceAccess)
+        .toStrictEqual({ effective: "metadata", chosen: "metadata", max: "content" });
+    await inDo(admin => admin.setAdminWorkspaceAccess("content", ACTOR), capped);
+    expect(records().map(record => record.changes)).toStrictEqual([
+      [{ setting: "adminWorkspaceAccess", before: "metadata", after: "content" }],
+    ]);
+    expect((await inDo(admin => admin.getSettings("admin"), capped)).adminWorkspaceAccess)
+        .toStrictEqual({ effective: "content", chosen: "content", max: "content" });
+    // The choice is kept, but not enforced, once the cap is lowered again.
+    expect((await inDo(admin => admin.getSettings("admin"))).adminWorkspaceAccess)
+        .toStrictEqual({ effective: "metadata", chosen: "content", max: "metadata" });
+  });
+
   // The bound check alone would pass such a value: it sorts below every level.
   describe.each([
     ["no cap", {}],
     ["the cap at off", { ADMIN_WORKSPACE_ACCESS_MAX: "off" }],
+    ["the cap at content", { ADMIN_WORKSPACE_ACCESS_MAX: "content" }],
   ])("with %s", (_name, more) => {
     it.each(["full", "FULL", "", undefined])(
         "refuses a value that is not a level: %j", async value => {

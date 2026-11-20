@@ -12,7 +12,7 @@ import {
   DEFAULT_ADMIN_AUDIT_RETENTION_DAYS, DEFAULT_ADMIN_WORKSPACE_ACCESS, DEFAULT_BANNER_COLOR,
   DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES, DEFAULT_UPDATE_MINIMUM_AGE_HOURS,
   DEFAULT_UPDATE_NOTICE_SNOOZE_HOURS,
-  type AdminWorkspaceAccess,
+  type AdminContentRequest, type AdminWorkspaceAccess,
   type AiModelProvider, type AmbientGatekeeperMode, type BannerConfig, type BlueprintOutput,
   type BlueprintPublicInfo, type GatewayModel, type GatewayModelMode, type GatewayModelSettings,
   type ReasoningLevel,
@@ -240,6 +240,12 @@ export function makeAdminSettingsStorage(storage: DurableObjectStorage) {
       // Mirror of the currently-featured blueprint public records. The user DO owns the
       // authoritative featured bit; this DO keeps the publishable deployment-wide copy.
       featuredBlueprints: collection<BlueprintPublicInfo>()({
+        primaryKey: 'id',
+      }),
+
+      // The requests admins made to read a workspace's content without its owner, by id: the
+      // pending ones and, for a day after, the resolved ones.
+      contentAccessRequests: collection<AdminContentRequest>()({
         primaryKey: 'id',
       }),
     },

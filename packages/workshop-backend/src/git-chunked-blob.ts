@@ -568,3 +568,66 @@ function countNewlines(bytes: Uint8Array): number {
   for (let pos = bytes.indexOf(NEWLINE); pos >= 0; pos = bytes.indexOf(NEWLINE, pos + 1)) count++;
   return count;
 }
+
+// How much of a string or a byte array one pull of textByteStream() or bytesStream() yields.
+const STREAM_PIECE = 64 * 1024;
+
+/** The length of `text` encoded as UTF-8, counted without encoding it: a lone surrogate counts
+ * as the three bytes of U+FFFD, which TextEncoder writes for one. */
+export function utf8ByteLength(text: string): number {
+  let length = 0;
+  for (let i = 0; i < text.length; i++) {
+    let unit = text.charCodeAt(i);
+    if (unit < 0x80) {
+      length += 1;
+    } else if (unit < 0x800) {
+      length += 2;
+    } else if ((unit & 0xfc00) === 0xd800 && (text.charCodeAt(i + 1) & 0xfc00) === 0xdc00) {
+      length += 4;
+      i++;
+    } else {
+      length += 3;
+    }
+  }
+  return length;
+}
+
+/** `text` as a byte stream of its UTF-8 encoding, a piece encoded at each pull, so that the
+ * whole encoding is never held. A piece never ends between the halves of a surrogate pair. */
+export function textByteStream(text: string): ReadableStream<Uint8Array> {
+  let encoder = new TextEncoder();
+  let at = 0;
+  return new ReadableStream({
+    type: "bytes",
+    pull(controller) {
+      if (at >= text.length) {
+        controller.close();
+        controller.byobRequest?.respond(0);
+        return;
+      }
+      let end = Math.min(text.length, at + STREAM_PIECE);
+      if (end < text.length && (text.charCodeAt(end - 1) & 0xfc00) === 0xd800) end--;
+      controller.enqueue(encoder.encode(text.slice(at, end)));
+      at = end;
+    },
+  }, { highWaterMark: 0 });
+}
+
+/** `bytes` as a byte stream, a copied piece at each pull, so that the stream holds no second
+ * copy of the whole. */
+export function bytesStream(bytes: Uint8Array): ReadableStream<Uint8Array> {
+  let at = 0;
+  return new ReadableStream({
+    type: "bytes",
+    pull(controller) {
+      if (at >= bytes.byteLength) {
+        controller.close();
+        controller.byobRequest?.respond(0);
+        return;
+      }
+      let end = Math.min(bytes.byteLength, at + STREAM_PIECE);
+      controller.enqueue(bytes.slice(at, end));
+      at = end;
+    },
+  }, { highWaterMark: 0 });
+}
