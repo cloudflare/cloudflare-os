@@ -1656,7 +1656,9 @@ export class UserAccount extends DurableObject<Env> {
         return;
       }
       pending = { ...pending, subject };
-      let answer = await this.#grantRegistry(subject).remove(this.ctx.id.toString());
+      // Each try starts its ask further along, so a slow holder cannot keep the same ones unasked.
+      let answer = await this.#grantRegistry(subject)
+          .remove(this.ctx.id.toString(), undefined, pending.attempts);
       // A holder that could not be asked may be one whose grant is gone: asked again later.
       if (answer.unsure) throw new Error("A holder of the grant could not be asked whether it holds it.");
       if (!answer.last) {

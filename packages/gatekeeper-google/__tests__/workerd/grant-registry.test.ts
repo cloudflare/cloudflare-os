@@ -1219,6 +1219,24 @@ describe("GoogleGrantRegistry", () => {
     }
   });
 
+  // A revocation tried again asks once more, from further along, so a slow holder listed first
+  // cannot keep a later one unasked every time.
+  it("asks from further along the holders each time it is asked again", async () => {
+    const google = fakeGoogle();
+    const {ada} = googleAccounts();
+    const holders = await Promise.all(["first", "second"].map(name => connection(google, name, ada)));
+    const [slow] = holders.toSorted((a, b) => a.id < b.id ? -1 : 1);
+    const registry = registryOf(ada);
+    await slow.run((_instance, state) => { state.storage.kv.put("test:holdGrantCheck", true); });
+    try {
+      const asking = testEnv.UserAccount.newUniqueId().toString();
+      expect(await registry.remove(asking, 200, 0)).toEqual({last: false, unsure: true});
+      expect(await registry.remove(asking, 200, 1)).toEqual({last: false});
+    } finally {
+      await slow.run((_instance, state) => { state.storage.kv.delete("test:holdGrantCheck"); });
+    }
+  });
+
   it("keeps a holder recorded again while it was being asked", async () => {
     fakeGoogle();
     const {ada} = googleAccounts();

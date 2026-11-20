@@ -44,8 +44,10 @@ export class GoogleGrantRegistry extends DurableObject<Env> {
    * some other way, is dropped when it is asked, so it cannot keep the grant from being revoked.
    * `unsure` says no holder answered that it holds the grant, but one could not be asked, or could
    * not yet say, or was still to be asked when `scanMs` ran out, and so was counted as holding it.
+   * The holders are asked from the `startAt`th on, round the list, so that a caller asking again
+   * reaches the ones a slow holder before them kept it from.
    */
-  async remove(userObjectId: string, scanMs = HOLDER_SCAN_MS)
+  async remove(userObjectId: string, scanMs = HOLDER_SCAN_MS, startAt = 0)
       : Promise<{ last: boolean; unsure?: true }> {
     let kv = this.ctx.storage.kv;
     kv.delete(HOLDER_PREFIX + userObjectId);
@@ -56,7 +58,9 @@ export class GoogleGrantRegistry extends DurableObject<Env> {
     // Holders can be recorded while one is asked, so the list is read afresh after each answer,
     // and "none left" is answered only straight after a read that found none.
     for (;;) {
-      let holder = [...kv.list<string | boolean>({ prefix: HOLDER_PREFIX })]
+      let listed = [...kv.list<string | boolean>({ prefix: HOLDER_PREFIX })];
+      let first = listed.length === 0 ? 0 : startAt % listed.length;
+      let holder = [...listed.slice(first), ...listed.slice(0, first)]
           .find(([key, recorded]) => unknown.get(key) !== recorded);
       if (holder === undefined) {
         let unsure = [...unknown].some(([key, recorded]) => kv.get<string | boolean>(key) === recorded);
