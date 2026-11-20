@@ -768,6 +768,25 @@ it('reads no picture of a tab that was left while the picture waited its turn', 
   await expect.poll(() => page.querySelector('.obj img')).not.toBeNull()
 })
 
+it('offers no copy of the tab it left while the tab chosen is read', async () => {
+  let arrive = () => {}
+  const { page } = await draw({ savedMarkdown: '', tabs: ['t.0', 't.1'] }, {
+    getPendingChanges: async (tabId: string) => {
+      if (tabId === 't.1') await new Promise<void>(resolve => { arrive = resolve })
+      return { changes: [], savedMarkdown: `${tabId}\n`, markdown: tabId === 't.0' ? 'Edited\n' : `${tabId}\n` }
+    },
+  })
+  const views = frame!.contentDocument!.querySelector<HTMLElement>('.views')!
+  expect(views.hidden).toBe(false)
+
+  frame!.contentDocument!.querySelectorAll<HTMLElement>('#outline .tab .name')[1].click()
+  await expect.poll(() => page.hasAttribute('aria-busy')).toBe(true)
+  expect(views.hidden).toBe(true)
+
+  arrive()
+  await expect.poll(() => page.textContent).toContain('t.1')
+})
+
 it('steps back from where it opens to the last change', async () => {
   const savedMarkdown = 'One\n\nTwo\n\nThree\n'
   const { page } = await draw({ savedMarkdown, markdown: 'One more\n\nTwo\n\nThree more\n' })
