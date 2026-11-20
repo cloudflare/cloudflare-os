@@ -44,8 +44,8 @@ client needs to draw the resource faithfully. Nothing else changes for it.
 - **Not a `GatekeeperUiFrame`.** A gatekeeper already serves two kinds of frame that way (its
   resource configurator and its account's management app): finished HTML, with a capability the
   gatekeeper chooses handed to it. A preview differs on both counts. Its capability is the
-  session, so its reads are authorized and logged and anything it submitted would wait for
-  approval, where a frame's `ui` stub answers to nothing but its gatekeeper. And its code is a
+  session, so its reads are authorized and logged and anything it submitted would go through the
+  approval queue, where a frame's `ui` stub answers to nothing but its gatekeeper. And its code is a
   gadget's UI files rather than a page, so the kernel checks its imports as it does a gadget's and
   a person can fork it into one.
 - **A preview is shipped as source, so it can be forked.** Plain `.js` files with relative
@@ -56,9 +56,13 @@ client needs to draw the resource faithfully. Nothing else changes for it.
 - **The preview holds a session and nothing more.** The frame's `gadget` stub is what
   `GatekeeperClient.openSession()` returns. The preview can therefore do only what a gadget bound
   to the resource could, every read it makes is authorized and logged as an observation, and any
-  action it submitted would wait for approval like any other. No new trust is introduced.
+  action it submitted would go through the approval queue like any other. No new trust is
+  introduced.
 - **Read-only is a property of a preview, not a kernel limit.** The frame holds the full session;
-  nothing in the kernel stops a preview from submitting actions.
+  nothing in the kernel stops a preview from submitting actions. One it submitted would be queued
+  as a gadget's is: waiting for a person, unless the user has switched on auto-approval for that
+  kind of action on the connection, which applies it whoever submitted it (`autoApprovalRule()`
+  does not ask). A pane that opens by itself is one more reason a preview submits nothing.
 - **Applying and discarding stay in the Workshop.** The card with Apply and Discard is drawn by
   the Workshop outside the frame and calls the existing `approveAction()` / `rejectAction()`.
   Approval is the user's authority, not a capability a session holder has.
@@ -223,8 +227,11 @@ draws its resource is the gatekeeper's business; what every preview keeps to is:
   change is not yet approved, and its address could carry what the resource holds elsewhere.
 - It carries its own styling for light and dark; the Workshop's tokens do not exist in the frame.
 - It gets images and other media as bytes from the session and draws them as `data:` URLs. The
-  frame's content policy allows no network access, and stays that way: a host the frame could
-  load from is a host it could send the session's data to.
+  frame's content policy lets it load and fetch nothing from the network, and stays that way: a
+  host the frame could load from is a host it could send the session's data to.
+- It sends nothing the session returns anywhere else. The frame does not see to that: its
+  content policy does not cover WebRTC, and a link can be followed out of it. Keeping a session's
+  data off the network is a rule a preview keeps, the one about links above among them.
 - It does not apply or discard. Those stay in the Workshop.
 
 A preview is only as faithful as its session: it can draw what the session's reads return and
