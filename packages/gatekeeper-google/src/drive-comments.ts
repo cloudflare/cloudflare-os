@@ -1132,5 +1132,5 @@ export const DRIVE_COMMENT_DEFINITIONS = commentDefinitions<DriveWritesHost>(DRI
   docs: host.docs,
   writeRefusal: () => host.writeRefusal(),
   attempts: host.attempts,
-  ready: async () => { await host.ready?.() },
+  ready: async () => { await host.ready?.(); },
 }));
