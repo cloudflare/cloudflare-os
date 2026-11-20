@@ -280,8 +280,11 @@ it('keeps the connection name readable beside its preview link', async () => {
   // The caret closes the row, after the button, and opens the group as the rest of the row does.
   const caret = row.parentElement!.lastElementChild!
   expect(caret.getBoundingClientRect().left).toBeGreaterThanOrEqual(link.getBoundingClientRect().right)
-  const { x, y, width, height } = caret.getBoundingClientRect()
-  expect(document.elementFromPoint(x + width / 2, y + height / 2)).toBe(row)
+  const underCaret = () => {
+    const { x, y, width, height } = caret.getBoundingClientRect()
+    return document.elementFromPoint(x + width / 2, y + height / 2) as HTMLElement
+  }
+  expect(underCaret()).toBe(row)
   // Nothing inside the row's button spills out under the link.
   for (const part of row.children) {
     expect(part.getBoundingClientRect().right).toBeLessThanOrEqual(row.getBoundingClientRect().right + 1)
@@ -291,6 +294,12 @@ it('keeps the connection name readable beside its preview link', async () => {
   await act(async () => { host!.style.width = '720px' })
   const badge = [...host!.querySelectorAll('span')].find(span => span.textContent === 'Asked elsewhere')!
   expect(badge.getBoundingClientRect().width).toBeGreaterThan(0)
+
+  // Turned, the caret still closes the group it opened.
+  await act(async () => underCaret().click())
+  expect(row.getAttribute('aria-expanded')).toBe('true')
+  await act(async () => underCaret().click())
+  expect(row.getAttribute('aria-expanded')).toBe('false')
 })
 
 it('opens one group at a time, and keeps focus on the row that was pressed', async () => {
