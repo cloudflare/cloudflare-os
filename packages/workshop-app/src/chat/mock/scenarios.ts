@@ -1,7 +1,8 @@
 import type { ActionLogEntry, BlueprintOutput } from '@gadgets/workshop-shared/api'
-import { EXAMPLE_AGENT_CHATS, EXAMPLE_AGENT_SETUPS, EXAMPLE_NOW, EXAMPLE_SIGNALS } from '@/automations/exampleAgents'
+import { EXAMPLE_AGENT_SETUPS } from '@/automations/exampleAgents'
 import { withQuote } from '../replyQuote'
 import { PLANS_ANSWER } from './liveViews'
+import { agentRuns, team } from './teamScenario'
 import { BUDGET_XLSX, Q2_REVIEW_PDF, Q3_PLAN_DOCX, ROADMAP_PPTX } from './officeFiles'
 import {
   action,
@@ -731,22 +732,15 @@ const longHistory: Scenario = {
   script: when('onSend', turn(say(agent({ text: 'Noted. That makes sixty-one.' })))),
 }
 
-// The examples' runs, as long before now as they were before the time they are shown at.
-const sinceExamples = Date.now() - EXAMPLE_NOW.getTime()
-const shifted = (date: Date) => new Date(date.getTime() + sinceExamples)
-
 const agents: Scenario = {
   id: 'agents',
   title: 'Support agents',
-  description: 'A workspace whose gadgets start agents. Open the workspace from the crumb: what its agents want of you is said over its tabs and counted on Agents, which lists the runs that need you first, then each agent. Its chats leave the runs out.',
+  description: 'A workspace whose gadgets start agents. Open the workspace from the crumb: its Chats tab lists the runs that want you (waiting, failed, ready for review, at work) with what each last said, and folds the rest by agent; its Agents tab lists each agent.',
   history: history([user('Which of our agents answers the support inbox?')]),
-  script: turn(say(agent({ text: 'The **Inbox helper**: Inbox starts it for each email that arrives. Its runs are under the workspace’s Agents tab, not among the chats.' }))),
-  agents: {
-    setups: EXAMPLE_AGENT_SETUPS,
-    runs: EXAMPLE_AGENT_CHATS.filter(({ spawnerId }) => spawnerId !== undefined).map((chat) => ({ ...chat, started: shifted(chat.started), lastActive: shifted(chat.lastActive) })),
-    failed: [...EXAMPLE_SIGNALS.failed],
-    pending: [...EXAMPLE_SIGNALS.pending],
-  },
+  script: turn(say(agent({ text: 'The **Inbox helper**: Inbox starts it for each email that arrives. Its runs are on the workspace’s Chats tab, and under its Agents tab.' }))),
+  // Its runs are among its chats, each with what it said.
+  agents: { setups: EXAMPLE_AGENT_SETUPS, runs: [] },
+  workspace: agentRuns(),
 }
 
 /** Every scripted chat, in the order the picker lists them. */
@@ -771,4 +765,5 @@ export const SCENARIOS: Scenario[] = [
   steerSlash,
   longHistory,
   agents,
+  team,
 ]

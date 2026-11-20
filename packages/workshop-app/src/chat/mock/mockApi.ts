@@ -31,6 +31,8 @@ export const createMockApi = (scenario: Scenario): { session: ApiSession; overse
     // The viewer's notifications for the one chat, which its header's more changes.
     subscribeToUnreadState: (_scope: unknown, subscriber: Parameters<MockOverseer['subscribeToReadState']>[1]) =>
       overseer.subscribeToReadState(MOCK_WORKSPACE_ID, subscriber),
+    markWorkspaceRead: () => overseer.markWorkspaceRead(),
+    getUnreadThreads: async () => overseer.unreadThreads(MOCK_WORKSPACE_ID),
     listModels: async () => [AGENT],
     getPreferredModel: async () => null,
     // Until it has deleted itself or been removed from the list.

@@ -1,31 +1,34 @@
-import type {
-  ActionHistoryPage,
-  BoundHookInfo,
-  ActionLogEntry,
-  ActionsSubscriber,
-  AiChatHistoryPage,
-  AiChatMessage,
-  AiChatMetadata,
-  AiChatSubscriber,
-  ChatAttachmentHandle,
-  ChatReadState,
-  ChatAttachmentRef,
-  CodeChangeSubmission,
-  CollaboratorInfo,
-  CommitInfo,
-  FileAtCommit,
-  PresenceSubscriber,
-  SlashCommandRequest,
-  TreeNode,
-  UnreadStateSubscriber,
-  WorkpiecesSubscriber,
-  WorkspaceMetadata,
+import {
+  matchesActionHistoryFilter,
+  type ActionHistoryFilter,
+  type ActionHistoryPage,
+  type BoundHookInfo,
+  type ActionLogEntry,
+  type ActionsSubscriber,
+  type AiChatHistoryPage,
+  type AiChatMessage,
+  type AiChatMetadata,
+  type AiChatSubscriber,
+  type ChatAttachmentHandle,
+  type ChatReadState,
+  type ChatAttachmentRef,
+  type CodeChangeSubmission,
+  type CollaboratorInfo,
+  type CommitInfo,
+  type FileAtCommit,
+  type PresenceSubscriber,
+  type SlashCommandRequest,
+  type TreeNode,
+  type UnreadStateSubscriber,
+  type UnreadThread,
+  type WorkpiecesSubscriber,
+  type WorkspaceMetadata,
 } from '@gadgets/workshop-shared/api'
 import type { ActionKind, GitOid } from '@gadgets/workshop-shared/gatekeeper'
 import { DISCONNECTED, MockGadget, RESTARTED, UI_CODE, type Handle } from './MockGadget'
 import { ScriptPlayer } from './ScriptPlayer'
 import { MockChatCode } from './MockChatCode'
-import { AGENT, changes, merge, revert, stamp, TEMPLATE, TEMPLATE_TAKEN, VIEWER, type MessageSource, type MockWorktree, type Scenario, type ScriptStep } from './scenario'
+import { AGENT, changes, merge, revert, stamp, TEMPLATE, TEMPLATE_TAKEN, VIEWER, type MessageSource, type MockAutomation, type MockChat, type MockWorktree, type Scenario, type ScriptStep } from './scenario'
 
 // Who else has the workspace open, beside the viewer.
 const COLLABORATORS = [
@@ -111,12 +114,10 @@ const commitPlace = (commitId: string) =>
 const OTHERS_CHANGE = { from: 'font-size: 28px', to: 'font-size: 32px' }
 const GRACE = { name: COLLABORATORS[0].name, email: COLLABORATORS[0].id }
 
-// The totals of a read state in which there is nothing unread.
-const NOTHING_UNREAD = (workspaceId: string) => ({
-  unreadChatCount: 0,
-  unreadMessageCount: 0,
-  workspace: { workspaceId, unreadChatCount: 0, unreadMessageCount: 0 },
-})
+const logs = (messages: AiChatMessage[]) => messages.flatMap((message) => (message.type === 'action' && message.actionLog ? [message.actionLog] : []))
+
+// How many entries a page of a workspace's history holds, as the server pages it.
+const HISTORY_PAGE = 15
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 // Made up, and only told apart here. Not `crypto.randomUUID()`, which a page that is not served
@@ -150,7 +151,12 @@ export class MockOverseer {
   // What the gadget asks outside the chat, by id (`Scenario.gadgetAsks`).
   #gadgetAsks: Scenario['gadgetAsks']
   #outside = new Map<number, ActionLogEntry & { type: 'action' }>()
+  // The workspace's other chats, by id, and what else was read and set up outside any chat (`Scenario.workspace`).
+  #others = new Map<number, MockChat>()
+  #elsewhere: ActionLogEntry[] = []
   #gadgets = new Map<number, MockGadget>()
+  // The workspace's gadgets that run by itself, with their hooks (`Scenario.workspace.automations`).
+  #automations: MockAutomation[] = []
   // What each gadget's code was kept as since its made-up history, by its id: saved edits, and
   // what someone else kept.
   #kept = new Map<number, KeptCode[]>()
@@ -197,6 +203,13 @@ export class MockOverseer {
     this.#templateUpdate = scenario.templateUpdate ?? false
     this.#gadgetAsks = scenario.gadgetAsks
     for (const entry of scenario.gadgetAsks?.waiting ?? []) if (entry.type === 'action') this.#outside.set(entry.id, entry)
+    for (const other of scenario.workspace?.chats ?? []) this.#others.set(other.chat.id, { ...other, messages: [...other.messages] })
+    this.#automations = (scenario.workspace?.automations ?? []).map((each) => ({ ...each, hooks: each.hooks.map((hook) => ({ ...hook })) }))
+    for (const { gadget } of this.#automations) this.#gadgets.set(gadget.id, new MockGadget(gadget.title, () => this.#backUp()))
+    for (const entry of scenario.workspace?.outside ?? []) {
+      if (entry.type === 'action') this.#outside.set(entry.id, entry)
+      else this.#elsewhere.push(entry)
+    }
     // A copy, since files sent in the chat join them, and a restart begins from the scenario again.
     this.#files = { ...scenario.files }
     this.#worktrees = scenario.worktrees ?? {}
@@ -254,6 +267,7 @@ export class MockOverseer {
                   .filter(({ gadget }) => gadget?.id === id)
                   .map(({ spawnerId, name: title, gadget }) => ({ name: gadget!.bindingName, target: spawnerId, resourceTitle: title })),
                 ...(this.#gadgetAsks ? [this.#gadgetAsks.connection] : []),
+                ...(this.#automations.find(({ gadget }) => gadget.id === id)?.connections ?? []),
               ]
             },
           })
@@ -547,7 +561,7 @@ export class MockOverseer {
   }
 
   async listChats(): Promise<AiChatMetadata[]> {
-    return [...(this.#deleted ? [] : [this.#metadata]), ...this.#agents.runs]
+    return [...(this.#deleted ? [] : [this.#metadata]), ...[...this.#others.values()].map(({ chat }) => chat), ...this.#agents.runs]
   }
 
 
@@ -557,7 +571,7 @@ export class MockOverseer {
     this.#deleted = true
     this.player.pause()
     this.#chatSubscribers.forEach((subscriber) => subscriber.deleted(CHAT_ID))
-    this.#readStateSubscribers.forEach((workspaceId, subscriber) => void subscriber.chatUpdated(workspaceId, CHAT_ID, null, NOTHING_UNREAD(workspaceId)))
+    this.#readStateSubscribers.forEach((workspaceId, subscriber) => void subscriber.chatUpdated(workspaceId, CHAT_ID, null, this.#totals(workspaceId)))
   }
 
   /**
@@ -566,7 +580,9 @@ export class MockOverseer {
    */
   subscribeToReadState(workspaceId: string, subscriber: ReadStateEvents) {
     this.#readStateSubscribers.set(subscriber, workspaceId)
-    void subscriber.updated({ unreadChatCount: 0, unreadMessageCount: 0, workspaces: [], chats: this.#deleted ? [] : [this.#readState(workspaceId)] })
+    const { unreadChatCount, unreadMessageCount, workspace } = this.#totals(workspaceId)
+    const others = [...this.#others.keys()].map((chatId) => this.#otherReadState(workspaceId, chatId))
+    void subscriber.updated({ unreadChatCount, unreadMessageCount, workspaces: [workspace], chats: [...(this.#deleted ? [] : [this.#readState(workspaceId)]), ...others] })
     return lease(() => this.#readStateSubscribers.delete(subscriber))
   }
 
@@ -574,11 +590,13 @@ export class MockOverseer {
     if (chatId !== CHAT_ID || this.#deleted) throw new Error('This chat is no longer available.')
     this.#notifications = { notificationsEnabled: enabled, notificationsEnabledOverride: enabled }
     this.#readStateSubscribers.forEach((workspaceId, subscriber) =>
-      void subscriber.chatUpdated(workspaceId, CHAT_ID, this.#readState(workspaceId), NOTHING_UNREAD(workspaceId)))
+      void subscriber.chatUpdated(workspaceId, CHAT_ID, this.#readState(workspaceId), this.#totals(workspaceId)))
   }
 
   /** Read through what there is: the chat is on screen whenever this is asked. */
   async markChatRead(chatId: number) {
+    const other = this.#others.get(chatId)
+    if (other) return this.#readOther(other)
     if (chatId !== CHAT_ID || this.#unread === 0) return
     this.#unread = 0
     this.#publishReadState()
@@ -599,7 +617,47 @@ export class MockOverseer {
 
   #publishReadState() {
     this.#readStateSubscribers.forEach((workspaceId, subscriber) =>
-      void subscriber.chatUpdated(workspaceId, CHAT_ID, this.#readState(workspaceId), NOTHING_UNREAD(workspaceId)))
+      void subscriber.chatUpdated(workspaceId, CHAT_ID, this.#readState(workspaceId), this.#totals(workspaceId)))
+  }
+
+  /** Every chat of the workspace read, as marking all of it read leaves it. */
+  async markWorkspaceRead() {
+    for (const other of this.#others.values()) this.#readOther(other)
+    await this.markChatRead(CHAT_ID)
+  }
+
+  /** The chats with something unread, as the inbox lists them. */
+  unreadThreads(workspaceId: string): UnreadThread[] {
+    return [...this.#others.values()].filter(({ unread }) => (unread ?? 0) > 0).map(({ chat, messages }) => {
+      const latest = messages.at(-1)
+      return {
+        ...this.#otherReadState(workspaceId, chat.id),
+        chatTitle: chat.title ?? '',
+        latestSequence: latest?.sequence ?? -1,
+        latestMessagePreview: latest?.type === 'message' ? latest.message.split('\n')[0] : '',
+        latestActivityAt: latest?.timestamp,
+      }
+    })
+  }
+
+  #readOther(other: MockChat) {
+    if (!other.unread) return
+    other.unread = 0
+    this.#readStateSubscribers.forEach((workspaceId, subscriber) =>
+      void subscriber.chatUpdated(workspaceId, other.chat.id, this.#otherReadState(workspaceId, other.chat.id), this.#totals(workspaceId)))
+  }
+
+  #otherReadState(workspaceId: string, chatId: number): ChatReadState {
+    const { messages, unread = 0 } = this.#others.get(chatId)!
+    return { workspaceId, chatId, unreadMessageCount: unread, readThroughSequence: (messages.at(-1)?.sequence ?? -1) - unread, notificationsEnabled: true }
+  }
+
+  // The workspace's unread totals, over its chats.
+  #totals(workspaceId: string) {
+    const counts = [this.#deleted ? 0 : this.#unread, ...[...this.#others.values()].map(({ unread = 0 }) => unread)].filter((count) => count > 0)
+    const unreadChatCount = counts.length
+    const unreadMessageCount = counts.reduce((sum, count) => sum + count, 0)
+    return { unreadChatCount, unreadMessageCount, workspace: { workspaceId, unreadChatCount, unreadMessageCount } }
   }
 
   #readState(workspaceId: string): ChatReadState {
@@ -612,7 +670,12 @@ export class MockOverseer {
     if (this.#agents.failed?.includes(chatId)) {
       return { messages: [{ chatId, sequence: 1, timestamp: new Date(), author: AGENT, type: 'error', message: 'The model provider returned an error.' }] }
     }
-    const older = this.#messages.filter(({ sequence }) => beforeSequence === undefined || sequence < beforeSequence)
+    const other = this.#others.get(chatId)
+    const older = (other?.messages ?? this.#messages).filter(({ sequence }) => beforeSequence === undefined || sequence < beforeSequence)
+    if (other) {
+      const messages = limit === undefined ? older : older.slice(-limit)
+      return { messages, nextBeforeSequence: messages.length < older.length ? messages[0].sequence : undefined }
+    }
     if (chatId !== CHAT_ID || limit === undefined) return { messages: chatId === CHAT_ID ? older : [] }
     const messages = older.slice(-limit)
     return { messages, nextBeforeSequence: messages.length < older.length ? messages[0].sequence : undefined }
@@ -673,23 +736,41 @@ export class MockOverseer {
   }
 
   /**
-   * What waits outside the chat, which is all a gadget's asks are read from here; and one for each
-   * of the agents' runs that has one.
+   * The workspace's actions: what waits outside the chat, which is all a gadget's asks are read
+   * from here, what the chats asked for, as their messages have it now, and one waiting for each
+   * of the agents' runs that has one. All of it in one page, but for the whole history of a
+   * workspace with other chats, which is paged as the server pages it.
    */
-  async listActions(): Promise<ActionHistoryPage> {
-    const runs = (this.#agents.pending ?? []).map((chatId, index) =>
-      ({ id: 9000 + index, type: 'action', chatId, state: 'pending', resourceTitle: 'Mail', createdAt: new Date() }) as unknown as ActionLogEntry)
-    return { entries: [...[...this.#outside.values()].filter(({ state }) => state === 'pending').toSorted((a, b) => b.id - a.id), ...runs] }
+  async listActions(options: { filter?: ActionHistoryFilter; beforeId?: number } = {}): Promise<ActionHistoryPage> {
+    const runs = (this.#agents.pending ?? []).map((chatId, index): ActionLogEntry => ({
+      id: 9000 + index,
+      type: 'action',
+      chatId,
+      state: 'pending',
+      resourceTitle: 'Mail',
+      createdAt: new Date(),
+      description: { title: 'Reply to the email', description: '', implementsRevert: false, autoApprovable: true },
+    }))
+    const others = [...this.#others.values()].flatMap(({ messages }) => logs(messages))
+    const entries = [...this.#outside.values(), ...this.#elsewhere, ...logs(this.#messages), ...others, ...runs]
+      .filter((entry) => matchesActionHistoryFilter(entry, options.filter ?? 'all'))
+      .filter((entry) => options.beforeId === undefined || entry.id < options.beforeId)
+      .toSorted((a, b) => b.id - a.id)
+    if (this.#others.size === 0 || (options.filter ?? 'all') !== 'all' || entries.length <= HISTORY_PAGE) return { entries }
+    const page = entries.slice(0, HISTORY_PAGE)
+    return { entries: page, nextBeforeId: page.at(-1)!.id }
   }
 
   async approveAction(id: number) {
     if (this.#outside.has(id)) return this.#resolveOutside(id, { state: 'approved', resolvedBy: VIEWER })
+    if (this.#resolveOther(id, { state: 'approved', resolvedBy: VIEWER })) return
     this.#resolve(id, { state: 'approved', resolvedBy: VIEWER })
     this.player.fire('onApprove')
   }
 
   async rejectAction(id: number) {
     if (this.#outside.has(id)) return this.#resolveOutside(id, { state: 'rejected', resolvedBy: VIEWER })
+    if (this.#resolveOther(id, { state: 'rejected', resolvedBy: VIEWER })) return
     this.#resolve(id, { state: 'rejected', resolvedBy: VIEWER })
     this.player.fire('onDeny')
   }
@@ -751,14 +832,38 @@ export class MockOverseer {
     this.#actionSubscribers.forEach((subscriber) => subscriber.entry(resolved))
   }
 
-  /** The hooks the conversation's cards set up, each waking the scenarios' one gadget. */
+  /**
+   * Decides an action another chat of the workspace asked for, if it is one, which its chat hears
+   * of; with nothing else there to decide, the chat waits no longer.
+   */
+  #resolveOther(id: number, change: Pick<ActionLogEntry & { type: 'action' }, 'state' | 'resolvedBy'>) {
+    for (const other of this.#others.values()) {
+      const message = other.messages.find((candidate): candidate is ActionMessage => candidate.type === 'action' && candidate.actionLog?.id === id)
+      if (!message?.actionLog) continue
+      if (message.actionLog.state !== 'pending') throw new Error(`Action is not pending: ${id}`)
+      const resolved = { ...message, actionLog: { ...message.actionLog, ...change, appliedAt: new Date() } }
+      other.messages = other.messages.map((candidate) => (candidate === message ? resolved : candidate))
+      this.#actionSubscribers.forEach((subscriber) => subscriber.entry(resolved.actionLog))
+      this.#deliver(resolved)
+      const waiting = other.messages.some((candidate) => candidate.type === 'action' && candidate.actionLog?.state === 'pending' && candidate.actionLog.type === 'action' && candidate.actionLog.description.awaitDecision)
+      if (other.chat.awaitingDecision && !waiting) {
+        other.chat = { ...other.chat, awaitingDecision: undefined, lastActive: new Date() }
+        this.#chatSubscribers.forEach((subscriber) => subscriber.metadata(other.chat))
+      }
+      return true
+    }
+    return false
+  }
+
+  /** The hooks the conversation's cards set up, each waking the scenarios' one gadget, and the workspace's automations'. */
   async listHooks(): Promise<BoundHookInfo[]> {
-    return this.#messages.flatMap((message) => {
+    const set = this.#messages.flatMap((message) => {
       const log = message.type === 'action' ? message.actionLog : undefined
       if (log?.type !== 'bindHook' || log.hookId === undefined) return []
       const { hookId: id, gatekeeperId = 0, resourceTitle, resourceUrl, description, enabled } = log
       return [{ id, gatekeeperId, gadgetId: 1, resourceTitle, resourceUrl, description, enabled }]
     })
+    return [...set, ...this.#automations.flatMap(({ gadget, hooks }) => hooks.map((hook) => ({ ...hook, gadgetId: gadget.id })))]
   }
 
   async enableHook(id: number) {
@@ -884,6 +989,8 @@ export class MockOverseer {
   #append(source: MessageSource) {
     let message = stamp(source, (this.#messages.at(-1)?.sequence ?? -1) + 1)
     message.timestamp = new Date()
+    // Its record was made as it was, too.
+    if (message.type === 'action' && message.actionLog) message = { ...message, actionLog: { ...message.actionLog, createdAt: message.timestamp } }
     if (this.#autoApproves(message)) {
       message = { ...message, actionLog: { ...message.actionLog, state: 'approved', resolvedBy: VIEWER, autoApproved: true } }
     }
@@ -931,6 +1038,11 @@ export class MockOverseer {
   }
 
   #setHookEnabled(hookId: number, enabled: boolean) {
+    const kept = this.#automations.flatMap(({ hooks }) => hooks).find(({ id }) => id === hookId)
+    if (kept) {
+      kept.enabled = enabled
+      return
+    }
     const { message, log } = this.#action((candidate) => candidate.type === 'bindHook' && candidate.hookId === hookId)
     if (log.type === 'bindHook') this.#updateAction(message, { ...log, enabled })
   }

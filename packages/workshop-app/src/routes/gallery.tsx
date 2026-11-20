@@ -33,6 +33,7 @@ import { AdminSettingsPreview } from '@/gallery/AdminSettingsPreview'
 import { AdminUpdatesPreview } from '@/gallery/AdminUpdatesPreview'
 import { AssistantPresencePreview } from '@/gallery/AssistantPresencePreview'
 import { AgentsPreview } from '@/gallery/AgentsPreview'
+import { HistoryPreview, WorkspaceChatsPreview } from '@/gallery/WorkspaceChatsPreview'
 import { AutomationsPreview } from '@/gallery/AutomationsPreview'
 import { CardBlocksPreview } from '@/gallery/CardBlocksPreview'
 import { ChatMenuPreview } from '@/gallery/ChatMenuPreview'
@@ -55,6 +56,7 @@ import { UiUnderwayPreview } from '@/gallery/UiUnderwayPreview'
 import { MessageBlocksPreview } from '@/gallery/MessageBlocksPreview'
 import { MessageListPreview } from '@/gallery/MessageListPreview'
 import { OnboardingPreview } from '@/gallery/OnboardingPreview'
+import { GalleryShell, type GalleryPage } from '@/gallery/GalleryShell'
 import { Section } from '@/gallery/Section'
 import { AddConnectionPreview, SetUpConnectionPreview } from '@/gallery/SetUpConnectionPreview'
 import { SearchPreview } from '@/gallery/SearchPreview'
@@ -68,11 +70,8 @@ import { ToolBlocksPreview } from '@/gallery/ToolBlocksPreview'
 import { WorkspaceRemovalPreview } from '@/gallery/WorkspaceRemovalPreview'
 
 export const Route = createFileRoute('/gallery')({
-  component: () => (
-    <div className="h-full overflow-y-auto">
-      <Gallery />
-    </div>
-  ),
+  validateSearch: (search: Record<string, unknown>): { page?: string } => (typeof search.page === 'string' ? { page: search.page } : {}),
+  component: () => <Gallery />,
 })
 
 const previewCommands: ComposerCommand[] = [
@@ -262,170 +261,141 @@ const DropdownMenuPlayground = () => {
   )
 }
 
-function Gallery() {
+// The app's own controls, on their own.
+const BasicsPage = () => (
+  <>
+    <Section title="Button">
+      <Button>Refactor conditional rendering logic</Button>
+      <Button icon={CaretLeftIcon}>Back to chat</Button>
+      <Button icon={CirclesFourIcon} aria-label="Apps" />
+      <Button disabled>Disabled</Button>
+      <Button icon={MagnifyingGlassIcon} aria-label="Search" />
+      <Button variant="ghost">Ghost</Button>
+      <Button variant="primary">Primary</Button>
+      <Button variant="danger">Danger</Button>
+    </Section>
+    <Section title="ConfirmMenu (what cannot be taken back, asked in place: growing up from the end, and down from an icon)">
+      <ConfirmMenu label="Delete chat" title="Delete this chat?" description="What was said in it goes for everyone in the workspace. What it made stays in the library." confirmLabel="Delete chat" onConfirm={() => {}} />
+      <ConfirmMenu icon={SignOutIcon} aria-label="Sign out" triggerVariant="ghost" triggerClassName="text-kumo-danger" side="bottom" title="Sign out?" description="You will have to sign in again on this device." confirmLabel="Sign out" onConfirm={() => {}} />
+    </Section>
+    <Section title="Banner (something wrong: said alone, and with what to do about it and the way to)">
+      <div className="flex w-full max-w-lg flex-col gap-3">
+        <Banner title="Couldn’t connect Slack: the service did not answer." />
+        <Banner title="Sign-in expired" description="Sign in to Jira again to keep using this account." action={{ label: 'Reconnect', onSelect: () => {} }} />
+      </div>
+    </Section>
+    <Section title="ShimmerText (something under way, in the colour of what it is in; still with reduced motion, or not active)">
+      <ShimmerTextPreview />
+    </Section>
+    <Section title="DropdownMenu (side, align, trigger, in-place and keep-trigger toggles)">
+      <DropdownMenuPlayground />
+    </Section>
+    <Section title="Avatar">
+      <Avatar name="Balint" />
+      <Avatar name="Ada Lovelace" />
+      <Avatar name="Broken image" src="/missing.png" />
+    </Section>
+    <Section title="Tag (an outline only, the same on the page and on a tinted surface)">
+      <Tag>Meetings</Tag>
+      <span className="flex rounded-2xl bg-kumo-tint p-3">
+        <Tag>Meetings</Tag>
+      </span>
+    </Section>
+    <Section title="ConnectButton">
+      <ConnectButton>
+        <span className="size-5 rounded-full bg-kumo-fill" />
+        <span className="size-5 rounded-full bg-kumo-fill" />
+      </ConnectButton>
+      <ConnectButton />
+    </Section>
+    <Section title="Borders: line (input) and hairline (checkbox)">
+      <Input aria-label="Text input" placeholder="Input" />
+      <Checkbox label="Checkbox" />
+    </Section>
+  </>
+)
+
+// What a workspace is drawn as, and the way to choose it.
+const WorkspaceIconsPage = () => (
+  <>
+    <Section title="WorkspaceIcon (and small, as in a button)">
+      <WorkspaceIcon label="EN" />
+      <WorkspaceIcon label="DE" />
+      <WorkspaceIcon label="FR" />
+      <WorkspaceIcon label="EN" small />
+      <WorkspaceIcon label="MW" small />
+    </Section>
+    <Section title="WorkspaceIcon (every shape, and small; every colour)">
+      <div className="flex w-full flex-col gap-4">
+        <div className="flex flex-wrap items-center gap-4">
+          {workspaceShapes.map((shape) => <WorkspaceIcon key={shape} label="EN" shape={shape} />)}
+        </div>
+        <div className="flex flex-wrap items-center gap-4">
+          {workspaceShapes.map((shape) => <WorkspaceIcon key={shape} label="MW" shape={shape} small />)}
+        </div>
+        <div className="flex flex-wrap items-center gap-4">
+          {workspaceColors.map((color, index) => <WorkspaceIcon key={color} label="EN" shape={workspaceShapes[index % workspaceShapes.length]} color={color} />)}
+        </div>
+      </div>
+    </Section>
+    <Section title="WorkspaceIconPicker (a workspace’s icon on its page: click it to choose its shape and its colour, which it takes on as each is chosen)">
+      <WorkspaceIconPickerPreview />
+    </Section>
+  </>
+)
+
+// A row of each list in the sidebar and on a workspace's page.
+const ListRowsPage = () => (
+  <>
+    <Section title="WorkspaceListItem (selected + unread, plain, long text)">
+      <div className="flex w-80 flex-col">
+        <WorkspaceListItem
+          workspaceLabel="EN"
+          title="Refactor conditional rendering logic"
+          subtitle="I see what you’re aiming for…"
+          unread
+          selected
+          onSelect={() => {}}
+        />
+        <WorkspaceListItem
+          workspaceLabel="DE"
+          title="Short title"
+          subtitle="Yesterday"
+          onSelect={() => {}}
+        />
+        <WorkspaceListItem
+          workspaceLabel="FR"
+          title="Create a new slideshow about the history of Paris"
+          subtitle="Here’s your new slideshow with twelve slides…"
+          onSelect={() => {}}
+        />
+        <WorkspaceListItem workspaceLabel="UW" title="Title only, no subtitle" onSelect={() => {}} />
+      </div>
+    </Section>
+    <Section title="ChatListItem (with activity, long title, title only)">
+      <div className="flex w-96 flex-col rounded-3xl bg-kumo-tint p-1.5">
+        <ChatListItem title="Jira dashboard" time="4 hours ago" onSelect={() => {}} />
+        <ChatListItem title="Create a new slideshow about the history of Paris" time="Oct 27" onSelect={() => {}} />
+        <ChatListItem title="Title only, no time" onSelect={() => {}} />
+      </div>
+    </Section>
+    <Section title="MemberListItem (the owner, the viewer, a collaborator who can only use it, one with no picture)">
+      <div className="flex w-96 flex-col rounded-3xl bg-kumo-tint p-1.5">
+        <MemberListItem name="Ada Lovelace" role="Owner" />
+        <MemberListItem name="Grace Hopper" you role="Member" />
+        <MemberListItem name="Alan Turing" role="Can use" />
+        <MemberListItem name="A collaborator with a much longer name than fits" role="Member" />
+      </div>
+    </Section>
+  </>
+)
+
+// The app's sidebar, as it was and as it is, expanded and on the rail.
+const SidebarPage = () => {
   const [selectedWorkspace, setSelectedWorkspace] = useState('greeting')
   const [sidebarPage, setSidebarPage] = useState<'library' | 'workspaces' | 'connections' | 'settings'>()
-  const [menuAction, setMenuAction] = useState('Open + to preview files, connections, and skills.')
-  const addActions = {
-    onAddConnection: () => setMenuAction('Preview: add a new connection selected.'),
-  }
-  const previewSend = (text: string, files: File[], command?: ComposerCommand) => {
-    setMenuAction(command
-      ? `Preview: sent /${command.name}${text ? ` with “${text}”` : ''}.`
-      : `Preview: sent ${files.length} ${files.length === 1 ? 'attachment' : 'attachments'}${text ? ` with “${text}”` : ''}.`)
-    return true
-  }
-  const [replying, setReplying] = useState(true)
-  const [startWorkspace, setStartWorkspace] = useState<string>()
-  const [startsWithFormat, setStartsWithFormat] = useState(true)
-  const [sendFailed, setSendFailed] = useState(true)
-  const [working, setWorking] = useState(true)
-
   return (
-    <div className="mx-auto flex max-w-3xl flex-col gap-8 p-8">
-      <h1 className="text-xl font-medium">Components</h1>
-      <p className="text-sm text-kumo-subtle">
-        Whole pages, over a fake backend:{' '}
-        <Link to="/gallery/no-access" className="underline underline-offset-2">opening a link to an app without access</Link>
-      </p>
-      <Section title="Button">
-        <Button>Refactor conditional rendering logic</Button>
-        <Button icon={CaretLeftIcon}>Back to chat</Button>
-        <Button icon={CirclesFourIcon} aria-label="Apps" />
-        <Button disabled>Disabled</Button>
-        <Button icon={MagnifyingGlassIcon} aria-label="Search" />
-        <Button variant="ghost">Ghost</Button>
-        <Button variant="primary">Primary</Button>
-        <Button variant="danger">Danger</Button>
-      </Section>
-      <Section title="ConfirmMenu (what cannot be taken back, asked in place: growing up from the end, and down from an icon)">
-        <ConfirmMenu label="Delete chat" title="Delete this chat?" description="What was said in it goes for everyone in the workspace. What it made stays in the library." confirmLabel="Delete chat" onConfirm={() => {}} />
-        <ConfirmMenu icon={SignOutIcon} aria-label="Sign out" triggerVariant="ghost" triggerClassName="text-kumo-danger" side="bottom" title="Sign out?" description="You will have to sign in again on this device." confirmLabel="Sign out" onConfirm={() => {}} />
-      </Section>
-      <Section title="Banner (something wrong: said alone, and with what to do about it and the way to)">
-        <div className="flex w-full max-w-lg flex-col gap-3">
-          <Banner title="Couldn’t connect Slack: the service did not answer." />
-          <Banner title="Sign-in expired" description="Sign in to Jira again to keep using this account." action={{ label: 'Reconnect', onSelect: () => {} }} />
-        </div>
-      </Section>
-      <Section title="ShimmerText (something under way, in the colour of what it is in; still with reduced motion, or not active)">
-        <ShimmerTextPreview />
-      </Section>
-      <Section title="DropdownMenu (side, align, trigger, in-place and keep-trigger toggles)">
-        <DropdownMenuPlayground />
-      </Section>
-      <Section title="Avatar">
-        <Avatar name="Balint" />
-        <Avatar name="Ada Lovelace" />
-        <Avatar name="Broken image" src="/missing.png" />
-      </Section>
-      <Section title="Tag (an outline only, the same on the page and on a tinted surface)">
-        <Tag>Meetings</Tag>
-        <span className="flex rounded-2xl bg-kumo-tint p-3">
-          <Tag>Meetings</Tag>
-        </span>
-      </Section>
-      <Section title="ConnectButton">
-        <ConnectButton>
-          <span className="size-5 rounded-full bg-kumo-fill" />
-          <span className="size-5 rounded-full bg-kumo-fill" />
-        </ConnectButton>
-        <ConnectButton />
-      </Section>
-      <Section title="WorkspaceIcon (and small, as in a button)">
-        <WorkspaceIcon label="EN" />
-        <WorkspaceIcon label="DE" />
-        <WorkspaceIcon label="FR" />
-        <WorkspaceIcon label="EN" small />
-        <WorkspaceIcon label="MW" small />
-      </Section>
-      <Section title="WorkspaceIcon (every shape, and small; every colour)">
-        <div className="flex w-full flex-col gap-4">
-          <div className="flex flex-wrap items-center gap-4">
-            {workspaceShapes.map((shape) => <WorkspaceIcon key={shape} label="EN" shape={shape} />)}
-          </div>
-          <div className="flex flex-wrap items-center gap-4">
-            {workspaceShapes.map((shape) => <WorkspaceIcon key={shape} label="MW" shape={shape} small />)}
-          </div>
-          <div className="flex flex-wrap items-center gap-4">
-            {workspaceColors.map((color, index) => <WorkspaceIcon key={color} label="EN" shape={workspaceShapes[index % workspaceShapes.length]} color={color} />)}
-          </div>
-        </div>
-      </Section>
-      <Section title="WorkspaceIconPicker (a workspace’s icon on its page: click it to choose its shape and its colour, which it takes on as each is chosen)">
-        <WorkspaceIconPickerPreview />
-      </Section>
-      <Section title="WorkspaceListItem (selected + unread, plain, long text)">
-        <div className="flex w-80 flex-col">
-          <WorkspaceListItem
-            workspaceLabel="EN"
-            title="Refactor conditional rendering logic"
-            subtitle="I see what you’re aiming for…"
-            unread
-            selected
-            onSelect={() => {}}
-          />
-          <WorkspaceListItem
-            workspaceLabel="DE"
-            title="Short title"
-            subtitle="Yesterday"
-            onSelect={() => {}}
-          />
-          <WorkspaceListItem
-            workspaceLabel="FR"
-            title="Create a new slideshow about the history of Paris"
-            subtitle="Here’s your new slideshow with twelve slides…"
-            onSelect={() => {}}
-          />
-          <WorkspaceListItem workspaceLabel="UW" title="Title only, no subtitle" onSelect={() => {}} />
-        </div>
-      </Section>
-      <Section title="ChatListItem (with activity, long title, title only)">
-        <div className="flex w-96 flex-col rounded-3xl bg-kumo-tint p-1.5">
-          <ChatListItem title="Jira dashboard" time="4 hours ago" onSelect={() => {}} />
-          <ChatListItem title="Create a new slideshow about the history of Paris" time="Oct 27" onSelect={() => {}} />
-          <ChatListItem title="Title only, no time" onSelect={() => {}} />
-        </div>
-      </Section>
-      <ChatMenuPreview />
-      <DeveloperPreview />
-      <Section title="MemberListItem (the owner, the viewer, a collaborator who can only use it, one with no picture)">
-        <div className="flex w-96 flex-col rounded-3xl bg-kumo-tint p-1.5">
-          <MemberListItem name="Ada Lovelace" role="Owner" />
-          <MemberListItem name="Grace Hopper" you role="Member" />
-          <MemberListItem name="Alan Turing" role="Can use" />
-          <MemberListItem name="A collaborator with a much longer name than fits" role="Member" />
-        </div>
-      </Section>
-      <TabsPreview />
-      <EmptyStatePreview />
-      <ListViewPreview />
-      <LibraryListPreview />
-      <LibraryMenuPreview />
-      <LibraryPagePreview />
-      <TemplateStorePreview />
-      <ConnectionsPreview />
-      <SetUpConnectionPreview />
-      <AddConnectionPreview />
-      <GadgetSettingsPreview />
-      <ExportPreview />
-      <GadgetAskPreview />
-      <SharingPreview />
-      <WorkspaceRemovalPreview />
-      <SettingsPreview />
-      <AdminSettingsPreview />
-      <AdminFormatsPreview />
-      <AdminModelsPreview />
-      <AdminAuditPreview />
-      <AdminUpdatesPreview />
-      <SignInPreview />
-      <OnboardingPreview />
-      <SearchPreview />
-      <HeaderPreview />
-      <AutomationsPreview />
-      <AgentsPreview />
-      <ShellPreview />
-      <GadgetPagePreview />
+    <>
       <Section title="Sidebar, expanded and collapsed to a rail: as it was, with the pages as icons beside the logo, kept to compare, then as it is, with them as rows under the list (approach a neighbour from the active row or a distant row; on the rail, point at a workspace for its title)">
         <div className="flex gap-4">
           {(['icons', 'rows'] as const).flatMap((layout) => [false, true].map((collapsed) => (
@@ -452,24 +422,45 @@ function Gallery() {
           )))}
         </div>
       </Section>
-      <MascotPreview />
-      <AssistantPresencePreview />
-      <UiUnderwayPreview />
-      <Section title="MessageBubble, MessageActions (a run of messages tucks together; point at a message, or tab to it, for its actions)">
-        <div className="flex w-full flex-col gap-2">
-          <MessageBubble role="user">Create a dashboard showcasing my jira stats</MessageBubble>
-          <MessageBubble role="user">Make it dark</MessageBubble>
-          <MessageBubble role="user">And add a chart of open tickets per week, with the team split out</MessageBubble>
-          <MessageBubble role="assistant">I’ll build a personal Jira dashboard.</MessageBubble>
-          <MessageBubble role="error">Something went wrong</MessageBubble>
-        </div>
-      </Section>
-      <MessageBlocksPreview />
-      <ToolBlocksPreview />
-      <CardBlocksPreview />
-      <CodePreview />
-      <SystemBlocksPreview />
-      <OutOfCreditsPreview />
+    </>
+  )
+}
+
+// Messages drawn as bubbles, in runs.
+const BubblesPage = () => (
+  <>
+    <Section title="MessageBubble, MessageActions (a run of messages tucks together; point at a message, or tab to it, for its actions)">
+      <div className="flex w-full flex-col gap-2">
+        <MessageBubble role="user">Create a dashboard showcasing my jira stats</MessageBubble>
+        <MessageBubble role="user">Make it dark</MessageBubble>
+        <MessageBubble role="user">And add a chart of open tickets per week, with the team split out</MessageBubble>
+        <MessageBubble role="assistant">I’ll build a personal Jira dashboard.</MessageBubble>
+        <MessageBubble role="error">Something went wrong</MessageBubble>
+      </div>
+    </Section>
+  </>
+)
+
+// The composer in each of the ways it is written in, and the home page around it.
+const ComposerPage = () => {
+  const [menuAction, setMenuAction] = useState('Open + to preview files, connections, and skills.')
+  const addActions = {
+    onAddConnection: () => setMenuAction('Preview: add a new connection selected.'),
+  }
+  const previewSend = (text: string, files: File[], command?: ComposerCommand) => {
+    setMenuAction(command
+      ? `Preview: sent /${command.name}${text ? ` with “${text}”` : ''}.`
+      : `Preview: sent ${files.length} ${files.length === 1 ? 'attachment' : 'attachments'}${text ? ` with “${text}”` : ''}.`)
+    return true
+  }
+  const [replying, setReplying] = useState(true)
+  const [startWorkspace, setStartWorkspace] = useState<string>()
+  const [startsWithFormat, setStartsWithFormat] = useState(true)
+  const [sendFailed, setSendFailed] = useState(true)
+  const [working, setWorking] = useState(true)
+
+  return (
+    <>
       <Section title="Composer">
         <div className="flex w-full flex-col gap-3">
           <p className="text-sm text-kumo-subtle">
@@ -576,13 +567,97 @@ function Gallery() {
           <Composer onSend={previewSend} addActions={addActions} commands={previewCommands} addMenuInPlace />
         </div>
       </Section>
-      <Section title="ChatLayout + MessageList + LiveRows (virtual pages, streaming, slow history, expandable cards; send a message or add a card to see a row arrive, remove the card to see it leave; go to the oldest loaded message from near it to scroll there, or from pages away to fade over to it)">
-        <MessageListPreview />
-      </Section>
-      <Section title="Borders: line (input) and hairline (checkbox)">
-        <Input aria-label="Text input" placeholder="Input" />
-        <Checkbox label="Checkbox" />
-      </Section>
-    </div>
+    </>
+  )
+}
+
+// A whole conversation, as it scrolls.
+const MessageListPage = () => (
+  <>
+    <Section title="ChatLayout + MessageList + LiveRows (virtual pages, streaming, slow history, expandable cards; send a message or add a card to see a row arrive, remove the card to see it leave; go to the oldest loaded message from near it to scroll there, or from pages away to fade over to it)">
+      <MessageListPreview />
+    </Section>
+  </>
+)
+
+// Each page of the gallery, in the order its index lists them, a group at a time.
+// Pages drawn whole, at an address of their own, over a fake backend.
+const WholePagesPage = () => (
+  <p className="text-base text-kumo-subtle">
+    Whole pages, over a fake backend:{' '}
+    <Link to="/gallery/no-access" className="underline underline-offset-2">opening a link to an app without access</Link>
+  </p>
+)
+
+const PAGES: GalleryPage[] = [
+  { id: 'basics', group: 'Foundations', name: 'Basics', Page: BasicsPage },
+  { id: 'workspace-icons', group: 'Foundations', name: 'Workspace icons', Page: WorkspaceIconsPage },
+  { id: 'list-rows', group: 'Foundations', name: 'List rows', Page: ListRowsPage },
+  { id: 'tabs', group: 'Foundations', name: 'Tabs', Page: TabsPreview },
+  { id: 'empty-states', group: 'Foundations', name: 'Empty states', Page: EmptyStatePreview },
+  { id: 'list-controls', group: 'Foundations', name: 'List controls', Page: ListViewPreview },
+  { id: 'headers', group: 'Foundations', name: 'Headers', Page: HeaderPreview },
+  { id: 'mascot', group: 'Foundations', name: 'Mascot', Page: MascotPreview },
+  { id: 'assistant-presence', group: 'Foundations', name: 'Assistant presence', Page: AssistantPresencePreview },
+  { id: 'under-way', group: 'Foundations', name: 'Under way', Page: UiUnderwayPreview },
+
+  { id: 'composer', group: 'Chat', name: 'Composer', Page: ComposerPage },
+  { id: 'bubbles', group: 'Chat', name: 'Message bubbles', Page: BubblesPage },
+  { id: 'messages', group: 'Chat', name: 'Messages', Page: MessageBlocksPreview },
+  { id: 'message-list', group: 'Chat', name: 'Message list', Page: MessageListPage },
+  { id: 'cards', group: 'Chat', name: 'Cards', Page: CardBlocksPreview },
+  { id: 'tools', group: 'Chat', name: 'Work log', Page: ToolBlocksPreview },
+  { id: 'system', group: 'Chat', name: 'System rows', Page: SystemBlocksPreview },
+  { id: 'code', group: 'Chat', name: 'Code', Page: CodePreview },
+  { id: 'chat-menu', group: 'Chat', name: 'Chat menu', Page: ChatMenuPreview },
+  { id: 'out-of-credits', group: 'Chat', name: 'Out of credits', Page: OutOfCreditsPreview },
+  { id: 'developer', group: 'Chat', name: 'Developer mode', Page: DeveloperPreview },
+
+  { id: 'workspace-chats', group: 'Workspace', name: 'Chats', Page: WorkspaceChatsPreview },
+  { id: 'history', group: 'Workspace', name: 'Activity log', Page: HistoryPreview },
+  { id: 'agents', group: 'Workspace', name: 'Agents', Page: AgentsPreview },
+  { id: 'automations', group: 'Workspace', name: 'Automations', Page: AutomationsPreview },
+  { id: 'sharing', group: 'Workspace', name: 'Sharing', Page: SharingPreview },
+  { id: 'workspace-removal', group: 'Workspace', name: 'Removing a workspace', Page: WorkspaceRemovalPreview },
+
+  { id: 'library', group: 'Library', name: 'Library page', Page: LibraryPagePreview },
+  { id: 'library-rows', group: 'Library', name: 'Library rows', Page: LibraryListPreview },
+  { id: 'library-menu', group: 'Library', name: 'Library menu', Page: LibraryMenuPreview },
+  { id: 'templates', group: 'Library', name: 'Templates', Page: TemplateStorePreview },
+  { id: 'export', group: 'Library', name: 'Export', Page: ExportPreview },
+
+  { id: 'gadget-page', group: 'Apps', name: 'App page', Page: GadgetPagePreview },
+  { id: 'gadget-settings', group: 'Apps', name: 'App settings', Page: GadgetSettingsPreview },
+  { id: 'gadget-asks', group: 'Apps', name: 'App asks', Page: GadgetAskPreview },
+
+  { id: 'connections', group: 'Connections', name: 'Connections', Page: ConnectionsPreview },
+  { id: 'set-up-connection', group: 'Connections', name: 'Set up a connection', Page: SetUpConnectionPreview },
+  { id: 'add-connection', group: 'Connections', name: 'Add a connection', Page: AddConnectionPreview },
+
+  { id: 'settings', group: 'Settings', name: 'Settings', Page: SettingsPreview },
+  { id: 'admin', group: 'Settings', name: 'Admin', Page: AdminSettingsPreview },
+  { id: 'admin-formats', group: 'Settings', name: 'Admin formats', Page: AdminFormatsPreview },
+  { id: 'admin-models', group: 'Settings', name: 'Admin models', Page: AdminModelsPreview },
+  { id: 'admin-audit', group: 'Settings', name: 'Admin audit', Page: AdminAuditPreview },
+  { id: 'admin-updates', group: 'Settings', name: 'Admin updates', Page: AdminUpdatesPreview },
+
+  { id: 'shell', group: 'App', name: 'Shell', Page: ShellPreview },
+  { id: 'sidebar', group: 'App', name: 'Sidebar', Page: SidebarPage },
+  { id: 'search', group: 'App', name: 'Search', Page: SearchPreview },
+  { id: 'sign-in', group: 'App', name: 'Sign in', Page: SignInPreview },
+  { id: 'onboarding', group: 'App', name: 'Onboarding', Page: OnboardingPreview },
+  { id: 'whole-pages', group: 'App', name: 'Whole pages', Page: WholePagesPage },
+]
+
+function Gallery() {
+  const { page } = Route.useSearch()
+  const navigate = Route.useNavigate()
+  return (
+    <GalleryShell
+      pages={PAGES}
+      current={page}
+      href={(id) => `/gallery?page=${id}`}
+      onSelect={(id) => void navigate({ search: { page: id } })}
+    />
   )
 }

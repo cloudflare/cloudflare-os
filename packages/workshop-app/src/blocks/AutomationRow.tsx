@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { ShieldCheckIcon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
 import { Switch } from '@/components/Switch'
 import { Tooltip } from '@/components/Tooltip'
@@ -8,19 +9,28 @@ import type { AutomationDetails } from './automationDetails'
 import { AutomationMoreMenu } from './AutomationMoreMenu'
 import { DeleteAutomationDialog } from './DeleteAutomationDialog'
 import { LIST_ACTION } from './StarButton'
+import { StatusPill } from './StatusPill'
 import { usePending } from './usePending'
 
-export type AutomationRowProps = AutomationDetails
+export type AutomationRowProps = AutomationDetails & {
+  /**
+   * What it asked that waits on someone, outside any chat: how many, as its pill says it ("Needs
+   * approval"), in place of when it runs next, and the first of them, as its second line. Decided
+   * in its app.
+   */
+  waiting?: { words: string; count?: number; first: string }
+}
 
 /**
  * One automation in a list of them, on a row of two lines: a clock or a bolt, its name over when
  * it runs (or what it watches) and the workspace it is in where it is listed among others', with
  * why it stopped first where it did; and at the far end how soon it runs next, then its switch,
  * held while the workspace answers, or Off for whoever has no switch, and more, always there,
- * which also deletes it, asking first. The row itself opens all of it (`AutomationDialog`),
+ * which also deletes it, asking first. What it asked that waits on someone is its second line,
+ * with a pill in place of when it runs next. The row itself opens all of it (`AutomationDialog`),
  * Delete included.
  */
-export const AutomationRow = (automation: AutomationRowProps) => {
+export const AutomationRow = ({ waiting, ...automation }: AutomationRowProps) => {
   const { kind, title, when, next, note, resource, gadget, workspace, enabled, onEnabledChange, onDelete, problem } = automation
   const [pending, run] = usePending()
   const [open, setOpen] = useState<'details' | 'delete'>()
@@ -42,14 +52,21 @@ export const AutomationRow = (automation: AutomationRowProps) => {
         <span className="min-w-0 flex-1 leading-snug">
           <span className={cn('block truncate font-medium', enabled ? 'text-kumo-default' : 'text-kumo-subtle')}>{title}</span>
           <span className="block truncate text-kumo-subtle">
-            {shownNote && <span className={cn(shownNote.tone === 'warning' && 'text-kumo-warning')}>{shownNote.words} · </span>}
-            {detail}
+            {waiting
+              ? waiting.first
+              : (
+                  <>
+                    {shownNote && <span className={cn(shownNote.tone === 'warning' && 'text-kumo-warning')}>{shownNote.words} · </span>}
+                    {detail}
+                  </>
+                )}
           </span>
           {problem && <span role="alert" className="block text-sm text-kumo-danger">{problem}</span>}
         </span>
         {/* Its switch says so, for whoever has one. */}
         {!enabled && !onEnabledChange && <span className="shrink-0 text-kumo-subtle">Off</span>}
-        {enabled && next && !shownNote && (
+        {waiting && <StatusPill words={waiting.words} tone="warning" icon={ShieldCheckIcon} count={waiting.count} />}
+        {!waiting && enabled && next && !shownNote && (
           <Tooltip content={`Next run ${next.at}`} delay={300}>
             {/* On a narrow screen the name has the room, and the dialog says when. */}
             <span className="relative shrink-0 text-kumo-subtle max-md:hidden">

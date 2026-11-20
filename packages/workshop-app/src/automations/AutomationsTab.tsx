@@ -9,9 +9,13 @@ import { EmptyState, type EmptyStateAction } from '@/components/EmptyState'
 import { useNow } from '@/hooks/useNow'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
+import type { ActionEntry } from '@/workspaces/activity/activityEntries'
+import { approvalsWords, asksOfAutomations } from './automationAsks'
 import type { Automation } from './automations'
 import { cadenceWords, scheduleState } from './cadence'
+import { OutsideAsksRow } from './OutsideAsksRow'
 import { useAutomations } from './useAutomations'
+import { useGadgetConnections } from './useGadgetConnections'
 
 export type AutomationsTabProps = {
   workspaceId: string
@@ -25,6 +29,12 @@ export type AutomationsTabProps = {
   itemHref?: (item: AsideItem) => string
   /** What the tab says while there is nothing to list, under its title, and what it offers to do then. */
   empty: { description: string; action?: EmptyStateAction }
+  /**
+   * What waits on someone that no chat asked, for the tab to put down to the automation that asked
+   * it (`asksOfAutomations`), listed first; and the way to where it is decided, the workspace's
+   * apps, for what it cannot.
+   */
+  waiting?: { asks: readonly ActionEntry[]; onOpen: () => void; href?: string }
 }
 
 const GROUPS = [
@@ -35,12 +45,14 @@ const GROUPS = [
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
 /**
- * What runs by itself in a workspace, as a tab of a page: the scheduled tasks, then what an event
- * sets off, each saying when it runs and when next or why it stopped, what it does and the gadget
- * it runs, with its switch and its deletion for whoever builds there. The agents those gadgets start have a tab of
- * their own (`AgentsTab`). The clock moves on while it is shown, so "next in 5 minutes" stays true.
+ * What runs by itself in a workspace, as a tab of a page: what waits on someone that it asked
+ * outside any chat, where `waiting` is given, then the scheduled tasks, then what an event sets
+ * off, each saying when it runs and when next or why it stopped, what it does and the gadget it
+ * runs, with its switch and its deletion for whoever builds there. The agents those gadgets start
+ * have a tab of their own (`AgentsTab`). The clock moves on while it is shown, so "next in 5
+ * minutes" stays true.
  */
-export const AutomationsTab = ({ workspaceId, chatId, filter, onOpenItem, itemHref, empty }: AutomationsTabProps) => {
+export const AutomationsTab = ({ workspaceId, chatId, filter, onOpenItem, itemHref, empty, waiting }: AutomationsTabProps) => {
   const { state, setEnabled, remove } = useAutomations(workspaceId)
   const library = useChatLibrary({ workspaceId, chatId })
   const workspaces = useWorkspaces()
@@ -55,6 +67,12 @@ export const AutomationsTab = ({ workspaceId, chatId, filter, onOpenItem, itemHr
     () => (state.status === 'ready' ? (filter ? state.automations.filter(filter) : state.automations) : []),
     [state, filter],
   )
+  const asks = waiting?.asks ?? []
+  // Their gadgets' connections are only read while something waits that one of them may have asked.
+  const connections = useGadgetConnections(workspaceId, asks.length > 0 ? shown.map(({ hook }) => hook.gadgetId) : [], asks.map(({ id }) => id).join(','))
+  const asked = asksOfAutomations(shown, asks, (gadgetId) => connections.get(gadgetId))
+  const waitingOn = shown.filter(({ key }) => asked.byAutomation.has(key))
+
   // A gadget as its workspace lists it; one not listed yet is still opened, by its id alone, and
   // named for what it is rather than "Untitled", which it may not be.
   const gadgetOf = (gadgetId: number) => {
@@ -85,9 +103,34 @@ export const AutomationsTab = ({ workspaceId, chatId, filter, onOpenItem, itemHr
     )
   }
 
+  const row = (automation: Automation) => {
+    const { hook, schedule } = automation
+    const { item, title } = gadgetOf(hook.gadgetId)
+    const its = asked.byAutomation.get(automation.key)
+    return (
+      <AutomationRow
+        key={automation.key}
+        kind={automation.kind}
+        title={hook.description.title}
+        when={schedule && cadenceWords(schedule.cadence)}
+        {...(schedule && scheduleState(schedule, now))}
+        description={hook.description.description || undefined}
+        // A schedule's resource is the scheduler itself, which says nothing.
+        resource={automation.kind === 'event' && hook.resourceTitle ? { title: hook.resourceTitle, url: hook.resourceUrl } : undefined}
+        gadget={{ title, href: itemHref?.(item), onOpen: () => onOpenItem(item) }}
+        enabled={hook.enabled}
+        onEnabledChange={canChange ? (enabled) => change(automation, enabled) : undefined}
+        onDelete={canChange ? () => removeOne(automation) : undefined}
+        problem={problems[automation.key]}
+        // Decided in its gadget, which its link opens.
+        waiting={its && { words: approvalsWords(its.length), count: its.length > 1 ? its.length : undefined, first: `${its[0].description.title}${its.length > 1 ? ` and ${its.length - 1} more` : ''}` }}
+      />
+    )
+  }
+
   return (
     <>
-      {shown.length === 0 && (
+      {shown.length === 0 && asks.length === 0 && (
         <EmptyState
           size="section"
           tinted
@@ -97,35 +140,22 @@ export const AutomationsTab = ({ workspaceId, chatId, filter, onOpenItem, itemHr
           actions={empty.action && [empty.action]}
         />
       )}
+      {(waitingOn.length > 0 || asked.unmatched.length > 0) && (
+        <section className="flex flex-col gap-2">
+          <h2 className="px-4 text-sm font-medium text-kumo-subtle">Waiting on you</h2>
+          <ListGroup label="Waiting on you">
+            {asked.unmatched.length > 0 && waiting && <OutsideAsksRow asks={asked.unmatched} onOpen={waiting.onOpen} href={waiting.href} />}
+            {waitingOn.map(row)}
+          </ListGroup>
+        </section>
+      )}
       {GROUPS.map(({ kind, label }) => {
-        const rows = shown.filter((automation) => automation.kind === kind)
+        const rows = shown.filter((automation) => automation.kind === kind && !asked.byAutomation.has(automation.key))
         if (rows.length === 0) return null
         return (
           <section key={kind} className="flex flex-col gap-2">
             <h2 className="px-4 text-sm font-medium text-kumo-subtle">{label}</h2>
-            <ListGroup label={label}>
-              {rows.map((automation) => {
-                const { hook, schedule } = automation
-                const { item, title } = gadgetOf(hook.gadgetId)
-                return (
-                  <AutomationRow
-                    key={automation.key}
-                    kind={automation.kind}
-                    title={hook.description.title}
-                    when={schedule && cadenceWords(schedule.cadence)}
-                    {...(schedule && scheduleState(schedule, now))}
-                    description={hook.description.description || undefined}
-                    // A schedule's resource is the scheduler itself, which says nothing.
-                    resource={automation.kind === 'event' && hook.resourceTitle ? { title: hook.resourceTitle, url: hook.resourceUrl } : undefined}
-                    gadget={{ title, href: itemHref?.(item), onOpen: () => onOpenItem(item) }}
-                    enabled={hook.enabled}
-                    onEnabledChange={canChange ? (enabled) => change(automation, enabled) : undefined}
-                    onDelete={canChange ? () => removeOne(automation) : undefined}
-                    problem={problems[automation.key]}
-                  />
-                )
-              })}
-            </ListGroup>
+            <ListGroup label={label}>{rows.map(row)}</ListGroup>
           </section>
         )
       })}

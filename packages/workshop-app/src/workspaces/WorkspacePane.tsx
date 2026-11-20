@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
-import { CaretRightIcon, ChatCircleIcon, CirclesFourIcon, PlusIcon, UserPlusIcon } from '@phosphor-icons/react'
-import { cn } from '@cloudflare/kumo/utils'
+import { PlusIcon, UserPlusIcon } from '@phosphor-icons/react'
 import type { OutputSummary } from '@gadgets/workshop-shared/api'
 import type { AsideItem } from '@/aside/asideItems'
 import { runsWantingAttention, type Agent } from '@/automations/agents'
@@ -8,13 +7,11 @@ import { AGENT_DRAFT, AUTOMATION_DRAFT } from '@/automations/startDrafts'
 import { AgentsTab } from '@/automations/AgentsTab'
 import { AutomationsTab } from '@/automations/AutomationsTab'
 import { useWorkspaceAgents } from '@/automations/useWorkspaceAgents'
-import { AgentMark } from '@/blocks/AgentMark'
 import { WorkspaceCost } from '@/blocks/WorkspaceCost'
 import { WorkspaceCrumb } from '@/blocks/WorkspaceCrumb'
 import { WorkspaceIconPicker } from '@/blocks/WorkspaceIconPicker'
 import { AvatarStack } from '@/components/AvatarStack'
 import { Button } from '@/components/Button'
-import { DropdownMenu } from '@/components/DropdownMenu'
 import { EditableTitle } from '@/components/EditableTitle'
 import { HeaderBubble } from '@/components/HeaderBubble'
 import { Tabs } from '@/components/Tabs'
@@ -39,6 +36,9 @@ import { WorkspaceOptionsTab } from './WorkspaceOptionsTab'
 import { useRemoveWorkspace, useRenameWorkspace, useWorkspaces } from './WorkspacesContext'
 import { workspaceLabel } from './workspaceLabel'
 import { workspaceMembers } from './workspaceMembers'
+import { attentionCount, attentionOf } from './activity/overview'
+import { useWorkspaceActivity } from './activity/useWorkspaceActivity'
+import { WorkspaceHistory } from './activity/WorkspaceHistory'
 import { removalOf } from './workspaceRemoval'
 import { useSetWorkspaceLook, useWorkspaceLooks } from './useWorkspaceLooks'
 import { gadgetsWaitingIn } from './waitingWords'
@@ -88,13 +88,13 @@ export type WorkspacePaneProps = {
 
 /**
  * One workspace: its title, which can be renamed, who it is shared with and the way to invite
- * more, and, a tab each, its chats, with the way to start one, its agents, what it has made, what
- * runs in it by itself, who has access to it, with the way to invite more there too, and its
- * settings, which mark it read and delete it, or remove it from the list where it is someone
- * else's. The chats, the library and what runs load what they list once chosen; who has access is
- * read with the page, for its header, and its agents too, so that what of theirs waits on the
- * viewer is said over the tabs, whichever is chosen, and counted
- * on the Agents tab.
+ * more, and, a tab each, its chats, what needs the viewer first, with the way to start one, its
+ * agents, what it has made, what runs in it by itself, who has access to it, with the way to
+ * invite more there too, the history of what was done in it, and its settings, which mark it read
+ * and delete it, or remove it from the list where it is someone else's. The chats, the library
+ * and what runs load what they list once chosen; who has access is read with the page, for its
+ * header, and its agents and activity too, so that what waits on the viewer is counted on the
+ * Chats and Agents tabs, whichever is chosen.
  */
 export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatHref, onOpenAgent, agentHref, onOpenItem, itemHref, outputHref, onOpenSettings, onNewChat, link, onRemoved, inviteRequested = false, onInviteHandled }: WorkspacePaneProps) => {
   const workspaces = useWorkspaces()
@@ -140,13 +140,20 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
   const asks = useWaitingAsks()
   const gadgetsWaiting = gadgetsWaitingIn(workspaceId, asks.byGadget)
   const chatsWaiting = agents.state.status === 'ready' ? agents.state.chatsWaiting : undefined
-  const counts: Partial<Record<WorkspaceTab, number>> = { chats: chatsWaiting?.size ?? 0, agents: waiting.length, library: gadgetsWaiting }
+  // Everything that waits on a decision, wherever it was asked for, and the runs that failed, on the
+  // chats' tab, which lists them all first.
+  const activity = useWorkspaceActivity(workspaceId)
+  const builds = workspace !== undefined && workspace.role !== 'use'
+  const failedRuns = wanting.filter(({ run }) => run.status === 'failed').map(({ agent, run }) => ({ chatId: run.chatId, title: run.title, agent: agent.name, at: run.lastActive }))
+  // What waits outside any chat is the automations' to list, which ask it, not the chats'.
+  const attention = builds && activity.state.status === 'ready' ? attentionOf(activity.state) : []
+  const outsideAsks = attention.find(({ place }) => place.kind === 'elsewhere')?.asks ?? []
+  const needsCount = attentionCount(attention.filter(({ place }) => place.kind !== 'elsewhere')) + (builds ? failedRuns.length : 0)
+  const counts: Partial<Record<WorkspaceTab, number>> = { chats: needsCount, agents: waiting.length, library: gadgetsWaiting, automations: outsideAsks.length }
   const tabs = WORKSPACE_TABS.map((each) => {
     const value = counts[each.value] ?? 0
-    return value > 0 ? { ...each, count: { value, label: 'waiting on you' } } : each
+    return value > 0 ? { ...each, count: { value, label: 'waiting on you', dot: true } } : each
   })
-  const attention = waitingOf({ runs: waiting, failed: wanting, gadgets: gadgetsWaiting, chats: chatsWaiting?.size ?? 0 })
-  const openRun = (run: { chatId: number; title: string }) => onOpenChat({ id: run.chatId, title: run.title })
 
   const renameWorkspace = useRenameWorkspace()
   // Why the last new title was not kept.
@@ -211,18 +218,20 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
               : <span className="px-2.5 py-1">{title || 'Workspace'}</span>}
           </h1>
           {renameProblem && <p role="alert" className="text-base text-kumo-subtle">{renameProblem}</p>}
-          {attention && (
-            <div className="flex h-(--control-size) items-center justify-center">
-              <WaitingPill
-                {...attention}
-                onOpen={({ to }) => ('run' in to ? openRun(to.run) : 'agent' in to ? onOpenAgent(to.agent) : onTabChange(to.tab))}
-              />
-            </div>
-          )}
         </div>
         <Tabs value={tab} onValueChange={onTabChange} tabs={tabs} aria-label="Workspace" className="gap-6">
           <Tabs.Panel value="chats" className="flex flex-col gap-8">
-            <WorkspaceChatList workspaceId={workspaceId} onOpenChat={onOpenChat} chatHref={chatHref} builds={workspace !== undefined && workspace.role !== 'use'} waiting={chatsWaiting} onNewChat={onNewChat} />
+            <WorkspaceChatList
+              workspaceId={workspaceId}
+              onOpenChat={onOpenChat}
+              chatHref={chatHref}
+              builds={builds}
+              waiting={chatsWaiting}
+              activity={activity}
+              failed={failedRuns}
+              onMarkRead={markRead}
+              onNewChat={() => onNewChat()}
+            />
           </Tabs.Panel>
           <Tabs.Panel value="agents" className="flex flex-col gap-8">
             <AgentsTab
@@ -230,8 +239,6 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
               onRetry={agents.retry}
               onOpenAgent={onOpenAgent}
               agentHref={agentHref}
-              onOpenRun={openRun}
-              runHref={chatHref}
               now={now}
               onAddAgent={() => onNewChat(AGENT_DRAFT)}
             />
@@ -248,6 +255,7 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
                 description: 'Ask in a chat for something to happen on a schedule, like a morning summary, or whenever something arrives, like a new email.',
                 action: { label: 'Add automation', icon: PlusIcon, variant: 'primary', onClick: () => onNewChat(AUTOMATION_DRAFT) },
               }}
+              waiting={{ asks: outsideAsks, onOpen: () => onTabChange('library') }}
             />
           </Tabs.Panel>
           <Tabs.Panel value="members" className="flex flex-col gap-8">
@@ -267,6 +275,16 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
                 },
               }}
             />
+            {/* To look something up in rather than to check, so here rather than a tab of its own. */}
+            <section aria-labelledby="workspace-activity-log" className="flex flex-col gap-4">
+              <WorkspaceHistory
+                activity={activity}
+                onOpenChat={onOpenChat}
+                chatHref={chatHref}
+                scrolls
+                heading={<h2 id="workspace-activity-log" className="shrink-0 px-5 text-lg font-medium text-kumo-default">Activity log</h2>}
+              />
+            </section>
           </Tabs.Panel>
         </Tabs>
       </div>
@@ -284,84 +302,5 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
         />
       )}
     </PageLayout>
-  )
-}
-
-type WaitingOf = {
-  /** Its agents' runs waiting on the viewer, each with its agent. */
-  runs: ReturnType<typeof runsWantingAttention>
-  /** Those, and its agents whose latest run failed. */
-  failed: ReturnType<typeof runsWantingAttention>
-  gadgets: number
-  chats: number
-}
-
-/** One thing, or one kind of thing, that waits on the viewer, and where it is seen to. */
-type WaitingEntry = {
-  key: string
-  kind: 'agent' | 'chat' | 'gadget'
-  label: string
-  to: { tab: WorkspaceTab } | { run: { chatId: number; title: string } } | { agent: Agent }
-}
-
-// An agent's runs among `runs`, as one entry each: one run opens by itself, several their agent's page.
-const agentEntries = (runs: WaitingOf['runs'], said: (count: number) => string): WaitingEntry[] => {
-  const byAgent = new Map<string, WaitingOf['runs']>()
-  for (const entry of runs) byAgent.set(entry.agent.key, [...(byAgent.get(entry.agent.key) ?? []), entry])
-  return [...byAgent.values()].map((own) => ({
-    key: `agent:${own[0]!.agent.key}`,
-    kind: 'agent',
-    label: `${own[0]!.agent.name} · ${said(own.length)}`,
-    to: own.length === 1 ? { run: own[0]!.run } : { agent: own[0]!.agent },
-  }))
-}
-
-/**
- * What waits on the viewer in a workspace, for the line under its title: how many, and each,
- * where it is seen to: a run by itself, gadgets and chats on the tab that lists them. A failed run
- * is said only where nothing waits.
- */
-const waitingOf = ({ runs, failed, gadgets, chats }: WaitingOf): { tone: 'warning' | 'danger'; label: string; entries: WaitingEntry[] } | undefined => {
-  const entries: WaitingEntry[] = [
-    ...agentEntries(runs, (count) => (count === 1 ? 'a run' : `${count} runs`)),
-    ...(chats > 0 ? [{ key: 'chats', kind: 'chat' as const, label: chats === 1 ? 'A chat' : `${chats} chats`, to: { tab: 'chats' as const } }] : []),
-    ...(gadgets > 0 ? [{ key: 'gadgets', kind: 'gadget' as const, label: gadgets === 1 ? 'A gadget' : `${gadgets} gadgets`, to: { tab: 'library' as const } }] : []),
-  ]
-  const count = runs.length + chats + gadgets
-  if (count > 0) return { tone: 'warning', label: `${count} waiting on you`, entries }
-  if (failed.length > 0) {
-    return {
-      tone: 'danger',
-      label: failed.length === 1 ? `${failed[0].agent.name}’s latest run failed` : `${failed.length} agents’ latest runs failed`,
-      entries: agentEntries(failed, () => 'latest run'),
-    }
-  }
-  return undefined
-}
-
-// An agent, in a menu, as its own page draws it.
-const AgentGlyph = () => <AgentMark size="small" />
-
-/**
- * What waits on the viewer, as a pill in the caution's colour (or a failure's): one thing opens at
- * once; several open a menu of each, as the tabs that list them have them counted.
- */
-const WaitingPill = ({ tone, label, entries, onOpen }: { tone: 'warning' | 'danger'; label: string; entries: WaitingEntry[]; onOpen: (entry: WaitingEntry) => void }) => {
-  const look = cn(
-    'appears rounded-full ps-2.5 text-sm font-normal',
-    tone === 'danger' ? 'bg-kumo-danger-tint text-kumo-danger not-data-disabled:hover:bg-kumo-danger/15' : 'bg-kumo-warning-tint text-kumo-default not-data-disabled:hover:bg-kumo-warning/20',
-  )
-  const dot = <span aria-hidden="true" className={cn('size-1.5 rounded-full', tone === 'danger' ? 'bg-kumo-danger' : 'bg-kumo-warning')} />
-  if (entries.length === 1) {
-    return <Button className={look} onClick={() => onOpen(entries[0]!)}><span className="flex items-center gap-2">{dot}{label}<CaretRightIcon aria-hidden="true" weight="bold" className="size-3 text-kumo-subtle" /></span></Button>
-  }
-  return (
-    <DropdownMenu label={<span className="flex items-center gap-2">{dot}{label}</span>} caret keepTrigger triggerClassName={look} triggerVariant="secondary" align="center">
-      {entries.map((entry) => (
-        <DropdownMenu.Item key={entry.key} icon={entry.kind === 'agent' ? AgentGlyph : entry.kind === 'chat' ? ChatCircleIcon : CirclesFourIcon} onSelect={() => onOpen(entry)}>
-          {entry.label}
-        </DropdownMenu.Item>
-      ))}
-    </DropdownMenu>
   )
 }

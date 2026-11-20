@@ -1,10 +1,12 @@
 import { useState } from 'react'
 import { AUTOMATION_EXAMPLES } from '@/automations/AutomationsView'
 import type { AutomationDetails } from '@/blocks/automationDetails'
+import { OutsideAsksRow } from '@/automations/OutsideAsksRow'
 import { AutomationRow } from '@/blocks/AutomationRow'
 import { AutomationsEmpty } from '@/blocks/AutomationsEmpty'
 import { ListGroup } from '@/blocks/ListGroup'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
+import type { ActionEntry } from '@/workspaces/activity/activityEntries'
 import { useReport } from './previewState'
 import { Section } from './Section'
 
@@ -51,6 +53,17 @@ const GROUPS = [
  * opens to all of it, and is deleted from there or from more. Switches and deletions answer after
  * a moment, the digest's refused to show what is said.
  */
+// Asked outside any chat through a connection no automation is bound to.
+const OUTSIDE_ASKS = [40, 90].map((minutes, index) => ({
+  id: 900 + index,
+  type: 'action',
+  gatekeeperId: 15,
+  resourceTitle: 'cloudflare/workshop',
+  createdAt: new Date(Date.now() - minutes * 60_000),
+  state: 'pending',
+  description: { title: index === 0 ? 'Open an issue “Flaky export test”' : 'Label PR #2210 as ready', description: '', implementsRevert: false, autoApprovable: true },
+}) as ActionEntry)
+
 export const AutomationsPreview = () => {
   const { report, say, later } = useReport()
   const [rows, setRows] = useState(ROWS)
@@ -58,6 +71,25 @@ export const AutomationsPreview = () => {
 
   return (
     <>
+      <Section title="Waiting on you (first on a workspace’s Automations tab: what was asked outside any chat, put down to the automation whose gadget is bound to the connection it went through, with a pill in place of when it runs next and the first ask as its second line; and what no one automation could have asked, in a row of its own that goes to the workspace’s apps)">
+        <div className="flex w-full max-w-3xl flex-col gap-2">
+          <h2 className="px-4 text-sm font-medium text-kumo-subtle">Waiting on you</h2>
+          <ListGroup label="Waiting on you">
+            <OutsideAsksRow asks={OUTSIDE_ASKS} href="#" onOpen={() => say('went to the apps')} />
+            <AutomationRow
+              kind="event"
+              title="When a meeting is booked"
+              description="Adds a design review the day before, for whoever is presenting."
+              resource={{ title: 'Google Calendar · Team' }}
+              gadget={{ title: 'Team calendar', href: '#', onOpen: () => say('opened Team calendar') }}
+              enabled
+              onEnabledChange={() => say('switched it')}
+              onDelete={() => say('deleted it')}
+              waiting={{ words: '2 approvals', first: 'Add “Design review” to Team calendar and 1 more' }}
+            />
+          </ListGroup>
+        </div>
+      </Section>
       <Section title="AutomationRow in ListGroups (a workspace’s and a chat’s Automations tab: a clock or a bolt, its name over when it runs, or why it stopped; how soon it runs next or Off, its switch, and more, which deletes it; the row opens AutomationDialog, with Delete at its foot; and for whoever may only use the workspace, no switch)">
         <div className="flex w-full max-w-3xl flex-col gap-8">
           {GROUPS.map(({ kind, label }) => (

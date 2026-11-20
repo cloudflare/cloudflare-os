@@ -118,7 +118,9 @@ Below `full` a `DropdownMenu` does not morph out of its trigger at all: the trig
 and the menu fades in with a nudge of a few pixels (`DropdownMenu.css`), instantly at `off`.
 
 Build UI by looking at the component gallery (`/gallery`) first: add each new component or block
-there so its states can be reviewed in isolation.
+there so its states can be reviewed in isolation. The gallery is a page at a time (`?page=`), listed
+down its side by group (`PAGES` in `routes/gallery.tsx`, drawn by `gallery/GalleryShell`): put a new
+`Section` on the page it belongs with, or give a new preview a page of its own there.
 
 ## First run, and what the deployment says
 
@@ -906,13 +908,93 @@ one is a schedule by having one, or by the scheduler's resource (`scheduler://ta
 a paused one, which has no schedule, among the scheduled. Nor does it say which chat set it up: a
 chat's are those its cards show, as far as its conversation has been loaded.
 
+On the workspace's page the tab lists first, under "Waiting on you", what was asked outside any
+chat (`attentionOf`'s 'elsewhere' group), which it counts: an action says only the connection it
+went through, not the hook or gadget that made it, so it is put down to the automation whose
+gadget is bound to that connection (`useGadgetConnections`, read only while something waits;
+`asksOfAutomations`, plain and tested), where exactly one is. That automation is listed there,
+what it asks its second line and a pill in place of when it runs next (`AutomationRow`'s
+`waiting`), decided in its gadget. What none, or several, could have asked is one row
+of its own (`OutsideAsksRow`), which goes to the Library tab.
+
+## A workspace's chats and history
+
+A workspace's Chats tab, which its page opens on, is where whoever comes back to it, after being
+in other chats or away, finds what to do, as several people each with many chats depend on one
+another to decide what an agent asks. It lists people's chats and agents' runs alike
+(`ChatListView`, fed by `WorkspaceChatList`), in cards. The menu by the search groups them and
+orders each group (`ListToolbar`'s `order.groups`, `useListView`'s `groupings`, kept on this device
+as the order is): grouped by Status (the default), Date, Owner or None (`groupChats`,
+`workspaces/chatGroups.ts`, plain and tested), and in each group by Last active (the default),
+Date started or Name (`chatList.ts`). The filters only say what is listed; "action needed" means
+one thing throughout: waiting on an approval or an answer, failed, or ready for review, as the
+pill, the status groups and the filter have it.
+
+- Favorites: the chats the viewer starred, on this device (`prefs/chatFavorites.ts`), each still
+  saying how it stands, first whatever the grouping, in its order (`favoritesFirst`).
+- By Status, most urgent first, in cards with no headings, as each row's pill says what its card
+  is (`chatStatesOf`): Needs approval, however many, then Needs action, as for a connection
+  to make (`attentionOf`, plain and tested),
+  Failed, Ready for review (`reviewsOf`), Unread, and everything else. What is at work is not a
+  group: it would move in and out each time its agent starts and stops, so it stays where it is,
+  its row saying it works. A row opens its
+  chat, where what waits is decided as its cards there have it. The tab has a dot while anything
+  waits in a chat or failed (`attentionCount`, read out as how many; `Tabs`' `count.dot`), as the
+  Agents and Automations tabs do; what was asked outside any chat is the Automations tab's (see
+  Automations).
+- By Date, under headings, in stretches of time as the Library's are (`groupByTime`), by when each
+  started where that is the order, and otherwise when it was last active.
+- By Owner, under headings: the viewer (You), then each person and then each agent by name
+  (`ownerOf`), then those whose starter is not read yet (Someone).
+
+The filters show only the viewer's
+own (Yours), what needs them, the unread, or their favorites (`chatList.ts`); and which agent runs
+(`ListToolbar`'s `choices`): Action needed, the default, lists a run while it needs someone or is
+starred (one at work does not), and a search looks through them all; All; or None. Under the list,
+"8 more agent runs · Show all" says what Action needed leaves out of what the filters leave, and
+chooses All. Yours is by the starter, so a chat whose first
+messages were not read (past the latest 40) is not counted among the viewer's.
+
+Each row (`ChatListItem`) has who it is by: the agent a run is of, in the Workshop's static cloud,
+or the person who started the chat, in their picture (`chatByOf`, the first message a person
+wrote, `WorkspaceActivity`'s `starters`, as a chat names nobody who started it); its picture is
+marked at the corner with what waits, failed or is unread, or with hopping dots while at work.
+Under the title, its latest message after who said it: the agent a run is of ("Inbox helper:
+…"), or a person, but not a chat's own assistant (`speakerOf`), its Markdown as plain words
+(`plainLine`). While it waits, what it last asked, where nothing was said after it
+(`WorkspaceActivity`'s `asks`), without saying again that it asks, which the pill does: "Connect
+Jira · To read the sprint's tickets", "Share “Q3 plan” with finance", as the text it asked after
+may be a person's. Or
+"Working…" shimmering. How it stands is a pill before the time, its words in its colour over a
+see-through wash of the same (a banner's tint is muddy on the card's grey): Needs approval, Needs
+an answer, Run failed, Ready for review. Mark all read is over the list.
+
+The activity log (`HistoryView`, `WorkspaceHistory`) is the record of everything asked for, read
+and set up (`listActions()`, a page at a time with Load older, newest first, what changes live
+laid over it), there to look something up in rather than to be checked, and so at the bottom of the Settings tab
+rather than a tab of its own, its heading on the line of its search and filters (`heading`), its
+entries one card that keeps its place, its lines scrolling inside it and older pages read as its
+end comes near (`scrolls`), rather than with Load older: a line each as a log has
+it (`ActivityRow`, opening in place to what it did or read, when, and the way to its chat), under
+a search and the filters (`activityList`, plain and tested): kind, how an approval went, who
+decided (Decided by) and the chat, each a menu of those the pages read name, which narrow only
+what has been read. The gallery renders both over `gallery/exampleActivity.ts`
+(`WorkspaceChatsPreview`, `HistoryPreview`), and the `team` scenario is a busy shared workspace
+with all of it.
+
+`WorkspaceActivity` (plain, tested, like `WorkspaceAgents`) holds it, opened by the workspace's
+page for the tab's count whichever tab is shown: the chats, every page of what waits, and the
+history. What waits on a decision is anyone's who builds in the workspace to decide, since nothing
+says whom an action is for, and it is decided in its chat; the backend saying who asked (and whom
+it waits on) would replace reading each chat's last messages.
+
 ## Agents
 
 An agent is what the backend calls an agent spawner, which is never said to anyone: something a
 gadget starts with a task, such as answering each email that arrives, each time in a run of its
-own, a chat with no person in it. Runs are not chats people have, so they are not listed among a
-workspace's chats (`isAgentRun`, by `spawnerId` or `spawnerName`), nor offered to carry on in from
-a gadget's page. They are listed under their agent, on the workspace's Agents tab, after Chats
+own, a chat with no person in it. Runs are not chats people have (`isAgentRun`, by `spawnerId` or `spawnerName`), so they are not
+offered to carry on in from a gadget's page. They are listed on the Chats tab while they need someone, or
+when looked for, and under their agent, on the workspace's Agents tab, after Chats
 (`AgentsTab`), and on the agent's own page (`/workspace/<id>/agent/<key>`, `AgentPane`, drawn by
 `AgentView`), each opening its conversation, which is where what it did is seen and where what it
 asks for is answered. The design record is `plans/agents.md`.
@@ -922,9 +1004,8 @@ waiting on a person, failed, done with changes to keep, or done. Waiting on a pe
 stopped on a decision (`awaitingDecision`) or with an action of its own waiting to be approved,
 and failed is a run whose last message is an error other than being stopped. What wants a person
 (a run waiting on them, or an agent's latest run that failed) is said where it is seen without
-looking for it: over the workspace page's tabs (a `Banner`, `warning` for waiting, with the way to
-the run, or to the tab where there are several), counted on the Agents tab (`Tabs`' `count`),
-first on the tab (Needs you) and on the agent's page, on the agent's row in the colour of it, and
+looking for it: first on the workspace's Chats tab (in progress), counted on it and on the Agents tab (`Tabs`' `count`),
+on the agent's page, on the agent's row on the Agents tab, first and in the colour of it, and
 in the sidebar, in place of the workspace's subtitle (`WorkspaceListItem`'s `attention`). A run's
 header has its agent's crumb (`AgentCrumb`) after the workspace's, which goes to the agent's page.
 An agent is drawn as the mascot (`AgentMark`): thinking while a run works, sad once its latest
@@ -958,7 +1039,7 @@ It only counts an action that names its chat, so the open workspace's page knows
 sidebar of the rest. The same reading counts the chats people had that wait on them
 (stopped on a decision, or with an action waiting), and the gadgets that ask something come from
 `WaitingAsks`; a workspace's line says all three at once (`waitingWords`), and its page counts each
-on the tab that lists it (Chats, Agents, Library) with one banner over the others. The `agents` scenario has a workspace whose gadgets start four agents, and the
+on the tab that lists it (Chats, Agents, Library), what waits on a decision all of it on Chats. The `agents` scenario has a workspace whose gadgets start four agents, and the
 gallery has each block in each state (`AgentsPreview`, over `exampleAgents.ts`).
 
 ## A gadget's own page
@@ -1107,7 +1188,9 @@ to a row's and a card's buttons (`RowAction`, `CardAction`, `StarButton`):
   view shown, as cards need fuller groups than rows. Filters of one `facet` are alternatives, and
   an item has to pass in every facet. A facet named in `facetMenus` has a menu of its own
   (`DropdownMenu.Submenu`) with a field to find one by (`OptionPicker`): for alternatives that are
-  many, or that come and go, such as people.
+  many, or that come and go, such as people. A choice the list keeps itself, one of a few, is given
+  to the menu as `choices`, under its name; one off its default counts as a filter, and clearing
+  sets it back.
 - `hooks/useListView.ts` keeps how one list is looked at. Rows or cards and the order are kept on
   this device (`prefs/listView.ts`), under the list's name. A list is rows until the user chooses,
   unless it says it starts as cards (`startsAs`). The search and the filters last for the
@@ -1153,8 +1236,8 @@ below.
 
 A workspace's page (`/workspace/<id>`) is laid out as a chat's settings page is: its icon and its
 title, renamed where it is (`EditableTitle`) by whoever may build in it, then tabs (`?tab=`, kept
-in place in the history): its chats, what it has made (the library's, as beside a chat, opening
-beside the page), its agents (see Agents), what runs by itself, its members, the owner first until ordered by name, under a search and the Invite button, and its Settings. The
+in place in the history): its chats, which it opens on (see A workspace's chats and history), what it has made (the library's, as beside a chat, opening
+beside the page), its agents (see Agents), what runs by itself, its members, the owner first until ordered by name, under a search and the Invite button, and its Settings, its activity log among them. The
 chats and the library load what they list once chosen; who has access is read with the page, for
 its header, and its agents too, for what of theirs waits on the viewer.
 

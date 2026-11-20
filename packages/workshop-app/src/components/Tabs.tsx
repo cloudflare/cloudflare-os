@@ -17,9 +17,10 @@ export type TabsTab<Value extends string> = {
   unsaved?: boolean
   /**
    * How many things in it are waiting on the reader, shown after its label, with what they are
-   * for whoever cannot see it: "waiting on you". Nothing is shown for none.
+   * for whoever cannot see it: "waiting on you". Nothing is shown for none. As a `dot`, only that
+   * anything is, the number being read out alone.
    */
-  count?: { value: number; label: string }
+  count?: { value: number; label: string; dot?: boolean }
 }
 
 export type TabsProps<Value extends string> = {
@@ -78,7 +79,9 @@ const TabsRoot = <Value extends string>({ value, onValueChange, tabs, 'aria-labe
                 {tab.label}
                 {Boolean(tab.count?.value) && (
                   <>
-                    <span aria-hidden="true" className="min-w-5 rounded-full bg-kumo-warning-tint px-1.5 text-xs/5 text-kumo-default tabular-nums">{tab.count!.value}</span>
+                    {tab.count!.dot
+                      ? <span aria-hidden="true" className="size-2 shrink-0 rounded-full bg-kumo-warning" />
+                      : <span aria-hidden="true" className="min-w-5 rounded-full bg-kumo-warning-tint px-1.5 text-xs/5 text-kumo-default tabular-nums">{tab.count!.value}</span>}
                     <span className="sr-only">{`, ${tab.count!.value} ${tab.count!.label}`}</span>
                   </>
                 )}

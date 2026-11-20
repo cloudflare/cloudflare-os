@@ -37,11 +37,18 @@ const NARROWED = "after:absolute after:top-0 after:right-0 after:size-2.5 after:
 
 /**
  * The filters, as a menu: those that stand alone and each facet's alternatives are ticked in place,
- * a line between one facet and the next; a facet with a menu of its own (`facetMenus`) is an item
- * that opens it, with a field to find one of its alternatives by, and says how many of them are on.
+ * a line between those that stand alone and a facet, and between one facet and the next; a facet
+ * with a menu of its own (`facetMenus`) is an item that opens it, with a field to find one of its
+ * alternatives by, and says how many of them are on; then each of the list's own choices
+ * (`choices`), one of a few under its name. Clearing them all sets those back too.
  */
-const FilterMenu = ({ value, options, facetMenus = {}, onChange, side, className }: NonNullable<ListControls['filter']> & { side: 'top' | 'bottom'; className?: string }) => {
+const FilterMenu = ({ value, options, facetMenus = {}, choices = [], onChange, side, className }: NonNullable<ListControls['filter']> & { side: 'top' | 'bottom'; className?: string }) => {
   const set = (id: string, on: boolean) => onChange(on ? [...value, id] : value.filter((other) => other !== id))
+  const count = value.length + choices.filter((choice) => choice.value !== choice.default).length
+  const clear = () => {
+    onChange([])
+    for (const choice of choices) if (choice.value !== choice.default) choice.onChange(choice.default)
+  }
   const inPlace = options.filter(({ facet }) => facet === undefined || !(facet in facetMenus))
   const menus = Object.entries(facetMenus)
     .map(([facet, label]) => ({ facet, label, options: options.filter((option) => option.facet === facet) }))
@@ -50,8 +57,8 @@ const FilterMenu = ({ value, options, facetMenus = {}, onChange, side, className
   return (
     <DropdownMenu
       icon={FunnelSimpleIcon}
-      aria-label={value.length > 0 ? `Filter (${value.length} on)` : 'Filter'}
-      triggerClassName={cn(value.length > 0 && NARROWED, className)}
+      aria-label={count > 0 ? `Filter (${count} on)` : 'Filter'}
+      triggerClassName={cn(count > 0 && NARROWED, className)}
       side={side}
       align="end"
       inPlace
@@ -59,7 +66,8 @@ const FilterMenu = ({ value, options, facetMenus = {}, onChange, side, className
       <DropdownMenu.Label>Show only</DropdownMenu.Label>
       {inPlace.map(({ id, label, facet }, index) => (
         <Fragment key={id}>
-          {index > 0 && (facet === undefined || facet !== inPlace[index - 1].facet) && <DropdownMenu.Separator />}
+          {/* Those that stand alone are together, as are each facet's alternatives. */}
+          {index > 0 && facet !== inPlace[index - 1].facet && <DropdownMenu.Separator />}
           <DropdownMenu.CheckboxItem checked={value.includes(id)} onCheckedChange={(on) => set(id, on)}>{label}</DropdownMenu.CheckboxItem>
         </Fragment>
       ))}
@@ -79,10 +87,19 @@ const FilterMenu = ({ value, options, facetMenus = {}, onChange, side, className
           </DropdownMenu.Submenu>
         )
       })}
+      {choices.map((choice) => (
+        <Fragment key={choice.id}>
+          <DropdownMenu.Separator />
+          <DropdownMenu.Label>{choice.label}</DropdownMenu.Label>
+          <DropdownMenu.RadioGroup value={choice.value} onValueChange={choice.onChange} aria-label={choice.label}>
+            {choice.options.map(({ id, label }) => <DropdownMenu.RadioItem key={id} value={id}>{label}</DropdownMenu.RadioItem>)}
+          </DropdownMenu.RadioGroup>
+        </Fragment>
+      ))}
       <DropdownMenu.Separator />
       {/* Always there, so that the menu keeps its size as filters are set. */}
-      <DropdownMenu.Item disabled={value.length === 0} onSelect={() => onChange([])}>
-        <span className={value.length === 0 ? 'text-kumo-inactive' : undefined}>Clear all</span>
+      <DropdownMenu.Item disabled={count === 0} onSelect={clear}>
+        <span className={count === 0 ? 'text-kumo-inactive' : undefined}>Clear all</span>
       </DropdownMenu.Item>
     </DropdownMenu>
   )
@@ -116,7 +133,16 @@ export const ListToolbar = ({ noun, search, searchExpanded = false, view, order,
             : <Button icon={RowsIcon} aria-label="Show as a list" title="Show as a list" className={lifted} onClick={() => view.onChange('list')} />
         )}
         {order && (
-          <DropdownMenu icon={SortAscendingIcon} aria-label="Sort" triggerClassName={lifted} side={at} align="end" inPlace>
+          <DropdownMenu icon={SortAscendingIcon} aria-label={order.groups ? 'Group and sort' : 'Sort'} triggerClassName={lifted} side={at} align="end" inPlace>
+            {order.groups && (
+              <>
+                <DropdownMenu.Label>Group by</DropdownMenu.Label>
+                <DropdownMenu.RadioGroup value={order.groups.value} onValueChange={order.groups.onChange} aria-label="Group by">
+                  {order.groups.options.map(({ id, label }) => <DropdownMenu.RadioItem key={id} value={id}>{label}</DropdownMenu.RadioItem>)}
+                </DropdownMenu.RadioGroup>
+                <DropdownMenu.Separator />
+              </>
+            )}
             <DropdownMenu.Label>Sort by</DropdownMenu.Label>
             <DropdownMenu.RadioGroup value={order.value} onValueChange={order.onChange} aria-label="Sort by">
               {order.options.map(({ id, label }) => <DropdownMenu.RadioItem key={id} value={id}>{label}</DropdownMenu.RadioItem>)}

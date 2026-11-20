@@ -21,10 +21,10 @@ describe('chatList', () => {
     expect(left('untitled')).toEqual([3])
   })
 
-  it('narrows to the chats with anything unread, and to those waiting on the viewer', () => {
+  it('narrows to the chats with anything unread, and to those that need the viewer', () => {
     expect(left('', 'unread')).toEqual([1, 3])
-    expect(left('', 'waiting')).toEqual([3])
-    expect(left('', 'unread', 'waiting')).toEqual([3])
+    expect(left('', 'needs')).toEqual([3])
+    expect(left('', 'unread', 'needs')).toEqual([3])
   })
 
   it('orders by when they were last active and by name', () => {

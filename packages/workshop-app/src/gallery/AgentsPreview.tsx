@@ -74,7 +74,7 @@ export const AgentsPreview = () => {
           </ListGroup>
         </div>
       </Section>
-      <Section title="AgentsTab (a workspace’s Agents tab: the runs that want the user first, each opening its conversation, then every agent, those that want the user first; loading, could not load, and none yet)">
+      <Section title="AgentsTab (a workspace’s Agents tab: every agent, those that want the user first, each row saying so; loading, could not load, and none yet)">
         <div className="flex w-full max-w-3xl flex-col gap-4">
           <div className="flex flex-wrap gap-2">
             {STATES.map((state) => <Button key={state} variant={which === state ? 'primary' : 'secondary'} onClick={() => setWhich(state)}>{state}</Button>)}
@@ -85,7 +85,6 @@ export const AgentsPreview = () => {
               onRetry={() => say('tried again')}
               onOpenAgent={({ name }) => say(`opened ${name}`)}
               agentHref={() => '#'}
-              onOpenRun={({ title }) => say(`opened the run “${title}”`)}
               now={EXAMPLE_NOW.getTime()}
             />
           </div>

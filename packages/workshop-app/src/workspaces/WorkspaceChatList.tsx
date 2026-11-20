@@ -1,16 +1,12 @@
-import { ChatListItem } from '@/blocks/ChatListItem'
-import { ListGroup } from '@/blocks/ListGroup'
-import { ListToolbar } from '@/blocks/ListToolbar'
-import { NoMatches } from '@/blocks/NoMatches'
 import { useChatNotifications } from '@/chat/useChatNotifications'
-import { isAgentRun } from '@/automations/agents'
-import { ChatsCircleIcon, NotePencilIcon } from '@phosphor-icons/react'
-import { Button } from '@/components/Button'
-import { EmptyState } from '@/components/EmptyState'
 import { useDevMode } from '@/hooks/useDevMode'
-import { useListView } from '@/hooks/useListView'
-import { chatList, chatTitle } from './chatList'
-import { formatActivity } from './formatActivity'
+import { useChatFavorites } from '@/prefs/chatFavorites'
+import { useApi } from '@/rpc/ApiContext'
+import { attentionOf, reviewsOf, workingOf } from './activity/overview'
+import { useUnreadPreviews } from './activity/useUnreadPreviews'
+import type { useWorkspaceActivity } from './activity/useWorkspaceActivity'
+import { ChatListView } from './ChatListView'
+import { chatStatesOf, type FailedRun } from './chatStates'
 import { useWorkspaceChats } from './useWorkspaceChats'
 
 export type WorkspaceChatListProps = {
@@ -18,73 +14,60 @@ export type WorkspaceChatListProps = {
   onOpenChat: (chat: { id: number; title: string }) => void
   /** A chat's address, for its row to link to so that it can be opened in another tab. */
   chatHref?: (chatId: number) => string
-  /** The viewer may build in the workspace, and so has a read state: what of each chat is unread to them. */
+  /** The viewer may build in the workspace, and so has a read state and decides what waits. */
   builds?: boolean
   /** The chats waiting on a person, by id: stopped on a decision, or with an action waiting. */
   waiting?: ReadonlySet<number>
+  /** The workspace's activity, which its page holds: what waits on a decision, and who wrote what in each chat. */
+  activity?: ReturnType<typeof useWorkspaceActivity>
+  /** The agents whose latest run failed, as the page reads its agents. */
+  failed?: readonly FailedRun[]
+  /** Marks everything in the workspace read, while anything is. */
+  onMarkRead?: () => Promise<void>
   /** Starts a chat in the workspace. */
   onNewChat: () => void
 }
 
 /**
- * A workspace's chats, most recently active first until another order is chosen, grouped as that
- * order groups them: those people started, as its agents' runs are listed under each agent, on the
- * Agents tab. Each is marked while it has anything the viewer has not read, and says so while it is
- * waiting on them. Over them, a search, the order, filters (unread and waiting among them) and the way to start a new chat.
+ * A workspace's Chats tab (`ChatListView`), from its chats, its activity (what waits, and who wrote
+ * what in each), its agents' failed runs, the viewer's read state and the chats they starred.
  */
-export const WorkspaceChatList = ({ workspaceId, onOpenChat, chatHref, builds = false, waiting, onNewChat }: WorkspaceChatListProps) => {
+export const WorkspaceChatList = ({ workspaceId, onOpenChat, chatHref, builds = false, waiting, activity, failed = [], onMarkRead, onNewChat }: WorkspaceChatListProps) => {
+  const { user } = useApi()
   const chats = useWorkspaceChats(workspaceId)
   const devMode = useDevMode()
   const notifications = useChatNotifications(workspaceId, builds)
-  const listed = chats.status === 'ready' ? chats.chats.filter((chat) => !isAgentRun(chat)) : []
-  const unreadOf = ({ id }: { id: number }) => (builds ? notifications.rows.get(id)?.unreadMessageCount ?? 0 : 0)
-  const isWaiting = ({ id, awaitingDecision }: { id: number; awaitingDecision?: true }) => waiting?.has(id) || awaitingDecision === true
-  const list = useListView('workspace-chats', chatList(new Set(listed.filter((chat) => unreadOf(chat) > 0).map(({ id }) => id)), isWaiting, devMode))
-  const shown = list.narrow(listed)
-  const groups = list.arrange(shown)
+  const favorites = useChatFavorites(workspaceId)
+  const all = chats.status === 'ready' ? chats.chats : []
+  const ready = activity?.state.status === 'ready' ? activity.state : undefined
+
+  const attention = builds && ready ? attentionOf(ready) : []
+  const reviews = builds ? reviewsOf(all) : []
+  const states = chatStatesOf({ attention, failed: builds ? failed : [], reviews, working: workingOf(all) })
+  const unreadOf = (id: number) => (builds ? notifications.rows.get(id)?.unreadMessageCount ?? 0 : 0)
+  const unread = all.filter(({ id }) => unreadOf(id) > 0).map(({ id }) => `${id}:${unreadOf(id)}`).join(',')
+  const previews = useUnreadPreviews(workspaceId, unread)
+  // Who started a chat, or else who last wrote in it, while its first messages are read.
+  const starters = new Map([...(ready?.askers ?? []), ...(ready?.starters ?? [])])
 
   return (
-    <div className="flex flex-col gap-4">
-      {/* None with no chats, where the empty state has the way to start one. */}
-      {!(chats.status === 'ready' && listed.length === 0) && (
-        <ListToolbar
-          noun="chats"
-          {...(listed.length > 0 ? { search: list.controls.search, order: list.controls.order, filter: list.controls.filter } : {})}
-          action={<Button variant="primary" icon={NotePencilIcon} onClick={onNewChat}>New chat</Button>}
-        />
-      )}
-      {chats.status === 'loading' && <p role="status" className="appears-late px-4 text-center text-base text-kumo-subtle">Loading chats…</p>}
-      {chats.status === 'failed' && <p className="px-4 text-center text-base text-kumo-subtle">Couldn’t load chats: {chats.message}</p>}
-      {chats.status === 'ready' && listed.length === 0 && (
-        <EmptyState
-          size="section"
-          tinted
-          icon={ChatsCircleIcon}
-          title="No chats yet"
-          description="Chats in this workspace show here. Ask for an app, a document or something to run by itself, and it’s made here."
-          actions={[{ label: 'New chat', icon: NotePencilIcon, variant: 'primary', onClick: onNewChat }]}
-        />
-      )}
-      {listed.length > 0 && shown.length === 0 && <NoMatches noun="chats" onShowAll={list.showAll} />}
-      {/* Another order is another list, cut to rather than moved to row by row. */}
-      <div key={list.order.id} className="flex flex-col gap-3">
-        {groups.map(({ key, label, entries }) => (
-          <ListGroup key={key} label={label}>
-            {entries.map(({ value: chat }) => (
-              <ChatListItem
-                key={chat.id}
-                title={chatTitle(chat)}
-                time={formatActivity(chat.lastActive)}
-                unread={unreadOf(chat)}
-                waiting={isWaiting(chat)}
-                cost={devMode ? chat.totalCost : undefined}
-                href={chatHref?.(chat.id)}
-                onSelect={() => onOpenChat({ id: chat.id, title: chat.title })}
-              />
-            ))}
-          </ListGroup>
-        ))}
-      </div>
-    </div>
+    <ChatListView
+      status={chats.status === 'failed' ? { status: 'failed', message: chats.message } : { status: chats.status }}
+      chats={all}
+      states={states}
+      unreadOf={unreadOf}
+      starters={starters}
+      latest={ready?.latest ?? new Map()}
+      asks={ready?.asks}
+      previews={previews}
+      favorites={favorites}
+      viewerId={user.id}
+      showsCost={devMode}
+      waiting={waiting}
+      onOpenChat={onOpenChat}
+      chatHref={chatHref}
+      onMarkRead={onMarkRead}
+      onNewChat={onNewChat}
+    />
   )
 }

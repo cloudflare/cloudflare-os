@@ -1,7 +1,5 @@
 import type { AiChatMetadata } from '@gadgets/workshop-shared/api'
-import { groupByTime } from '@/chat/timeGroups'
 import type { ListFilter, ListOrder } from '@/components/listView'
-import { groupByName } from '@/components/nameGroups'
 import type { ListViewSpec } from '@/hooks/useListView'
 
 type Chat = AiChatMetadata
@@ -9,40 +7,54 @@ type Chat = AiChatMetadata
 /** What a chat is called where it is listed. */
 export const chatTitle = ({ title }: { title: string }) => title || 'Untitled chat'
 
-/** Latest first, in stretches of time as fine as there are enough chats for. */
-const byTime = (id: string, label: string, at: (chat: Chat) => Date): ListOrder<Chat> => ({
+// Each order is one group, which the list then groups as chosen (`groupChats`), each group in it.
+const flat = (id: string, label: string, compare: (a: Chat, b: Chat) => number): ListOrder<Chat> => ({
   id,
   label,
-  arrange: (chats, enough) =>
-    groupByTime(chats.toSorted((a, b) => at(b).getTime() - at(a).getTime()).map((chat) => ({ value: chat, at: at(chat) })), new Date(), enough),
+  arrange: (chats) => [{ key: id, label, entries: chats.toSorted(compare).map((value) => ({ value })) }],
 })
 
+const latest = (at: (chat: Chat) => Date) => (a: Chat, b: Chat) => at(b).getTime() - at(a).getTime()
+
 const ORDERS: ListOrder<Chat>[] = [
-  byTime('active', 'Last active', ({ lastActive }) => lastActive),
-  byTime('started', 'Date started', ({ started }) => started),
-  { id: 'name', label: 'Name', arrange: (chats, enough) => groupByName(chats, chatTitle, enough) },
+  flat('active', 'Last active', latest(({ lastActive }) => lastActive)),
+  flat('started', 'Date started', latest(({ started }) => started)),
+  flat('name', 'Name', (a, b) => chatTitle(a).localeCompare(chatTitle(b), 'en', { sensitivity: 'base' }) || latest(({ lastActive }) => lastActive)(a, b)),
 ]
 
-/** Dearest first, in the one group, and those that have no cost known last. */
-const byCost: ListOrder<Chat> = {
-  id: 'cost',
-  label: 'Cost',
-  arrange: (chats) => [{
-    key: 'cost',
-    label: 'Most expensive first',
-    entries: chats.toSorted((a, b) => (b.totalCost ?? -1) - (a.totalCost ?? -1) || b.lastActive.getTime() - a.lastActive.getTime()).map((value) => ({ value })),
-  }],
+// Dearest first, and those that have no cost known last.
+const byCost = flat('cost', 'Cost', (a, b) => (b.totalCost ?? -1) - (a.totalCost ?? -1) || b.lastActive.getTime() - a.lastActive.getTime())
+
+/** How a workspace's chats can be grouped, each group in the order chosen: how they stand first. */
+export const CHAT_GROUPINGS = [
+  { id: 'status', label: 'Status' },
+  { id: 'date', label: 'Date' },
+  { id: 'owner', label: 'Owner' },
+  { id: 'none', label: 'None' },
+] as const
+
+export type ChatGrouping = (typeof CHAT_GROUPINGS)[number]['id']
+
+/** What else a workspace's chats can be ordered and narrowed by, where the list knows it. */
+export type ChatListExtras = {
+  /** Which the viewer has starred. */
+  favorite?: (chat: Chat) => boolean
+  /** Which the viewer started, where who started it is known. */
+  mine?: (chat: Chat) => boolean
 }
 
 /**
- * How a workspace's chats can be ordered, narrowed and searched: by title, by whether anything in
- * one is unread (`unread`, the ids of those that have), and by whether it is waiting on the viewer
- * (`waiting`, the ids of those that are). By cost too, for `showsCost`.
+ * How a workspace's chats can be ordered, narrowed and searched: by title, by whether it needs the
+ * viewer (`needsYou`: waiting on an approval or an answer, failed, or ready for review), by whether
+ * anything in one is unread (`unread`, the ids of those that have). By cost too, for `showsCost`;
+ * and by what `extras` adds, the viewer's own and their favorites among it.
  */
-export const chatList = (unread: ReadonlySet<number>, waiting: (chat: Chat) => boolean, showsCost = false): ListViewSpec<Chat, ListOrder<Chat>> => {
+export const chatList = (unread: ReadonlySet<number>, needsYou: (chat: Chat) => boolean, showsCost = false, extras: ChatListExtras = {}): ListViewSpec<Chat, ListOrder<Chat>> => {
   const filters: ListFilter<Chat>[] = [
+    ...(extras.mine ? [{ id: 'mine', label: 'Yours', test: extras.mine }] : []),
+    { id: 'needs', label: 'Action needed', test: needsYou },
     { id: 'unread', label: 'Unread', test: ({ id }) => unread.has(id) },
-    { id: 'waiting', label: 'Waiting on you', test: waiting },
+    ...(extras.favorite ? [{ id: 'favorites', label: 'Favorites', test: extras.favorite }] : []),
   ]
-  return { orders: showsCost ? [...ORDERS, byCost] : ORDERS, filters, searchText: chatTitle }
+  return { orders: [...ORDERS, ...(showsCost ? [byCost] : [])], groupings: [...CHAT_GROUPINGS], filters, searchText: chatTitle }
 }

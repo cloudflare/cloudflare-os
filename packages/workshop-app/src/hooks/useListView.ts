@@ -13,6 +13,12 @@ export type ListViewSpec<T, Order extends ListOrder<T>> = {
   keepsFilters?: boolean
   /** The facets whose filters have a menu of their own, by what it is called (see `ListControls`). */
   facetMenus?: Record<string, string>
+  /**
+   * How the list can be grouped, apart from its order, which then orders each group: the first is
+   * how it starts. The list groups it itself (`ListView`'s `grouping`); the choice is kept as the
+   * order is.
+   */
+  groupings?: Array<{ id: string; label: string }>
   /** What a search looks through for an item: its title, and whatever else it may be known by. */
   searchText: (item: T) => string
   /** How it is drawn until the user chooses: as rows, unless it says cards. */
@@ -24,6 +30,8 @@ export type ListViewSpec<T, Order extends ListOrder<T>> = {
 export type ListView<T, Order extends ListOrder<T>> = {
   mode: ListViewMode
   order: Order
+  /** The id of how it is grouped, where it can be. */
+  grouping?: string
   /** Whether a search or a filter is leaving things out. */
   narrowed: boolean
   /** The items the search and the filters leave. */
@@ -57,12 +65,14 @@ export const useListView = <T, Order extends ListOrder<T> = ListOrder<T>>(name: 
   }
   // One kept from before may be gone since.
   const order = spec.orders.find(({ id }) => id === prefs.order) ?? spec.orders[0]
+  const grouping = spec.groupings && (spec.groupings.find(({ id }) => id === prefs.group) ?? spec.groupings[0]).id
   const filters = spec.filters ?? []
   const on = filters.filter(({ id }) => filtersOn.includes(id))
 
   return {
     mode: prefs.mode,
     order,
+    grouping,
     narrowed: query.trim() !== '' || on.length > 0,
     narrow: (items) => narrowList(items, { query, searchText: spec.searchText, filters: on }),
     arrange: (items) => order.arrange(items, ENOUGH[prefs.mode]),
@@ -73,7 +83,12 @@ export const useListView = <T, Order extends ListOrder<T> = ListOrder<T>>(name: 
     controls: {
       search: { value: query, onChange: setQuery },
       view: { value: prefs.mode, onChange: (mode) => keep({ ...prefs, mode }) },
-      order: { value: order.id, options: spec.orders.map(({ id, label }) => ({ id, label })), onChange: (id) => keep({ ...prefs, order: id }) },
+      order: {
+        value: order.id,
+        options: spec.orders.map(({ id, label }) => ({ id, label })),
+        onChange: (id) => keep({ ...prefs, order: id }),
+        groups: spec.groupings && grouping !== undefined ? { value: grouping, options: spec.groupings, onChange: (id) => keep({ ...prefs, group: id }) } : undefined,
+      },
       filter: {
         value: on.map(({ id }) => id),
         options: filters.map(({ id, label, facet, icon }) => ({ id, label, facet, icon })),

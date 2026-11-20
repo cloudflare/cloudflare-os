@@ -5,6 +5,7 @@ import type {
   AiChatMessageBody,
   AiChatMetadata,
   AiChatStreamEvent,
+  BoundHookInfo,
   AiToolCall,
   BlueprintOutput,
   BlueprintPublicInfo,
@@ -247,12 +248,22 @@ export const history = (sources: Array<MessageSource | MessageSource[]>, startAt
 const FIRST_MESSAGE_AT = Date.UTC(2026, 10, 2, 9, 0)
 
 /** Gives a draft its place in chat 0. */
-export const stamp = (source: MessageSource, sequence: number): AiChatMessage => ({
-  ...(typeof source === 'function' ? source(sequence) : source),
-  chatId: 0,
-  sequence,
-  timestamp: new Date(FIRST_MESSAGE_AT + sequence * 60_000),
-})
+export const stamp = (source: MessageSource, sequence: number): AiChatMessage =>
+  placed({
+    ...(typeof source === 'function' ? source(sequence) : source),
+    chatId: 0,
+    sequence,
+    timestamp: new Date(FIRST_MESSAGE_AT + sequence * 60_000),
+  })
+
+/**
+ * An action message's record as the server keeps it: made from the message's chat, when the
+ * message was, as a script's records say neither.
+ */
+const placed = (message: AiChatMessage): AiChatMessage =>
+  message.type === 'action' && message.actionLog && message.actionLog.createdAt.getTime() === 0
+    ? { ...message, actionLog: { ...message.actionLog, chatId: message.chatId, createdAt: message.timestamp } }
+    : message
 
 // A step of the agent is committed as one batch, in this order: its message (text, reasoning and
 // tool calls), then the actions, observations and hooks its tools made, then any connection
@@ -337,7 +348,26 @@ export type Scenario = {
    * start, and one more each time one of its tasks is ticked off.
    */
   gadgetAsks?: { connection: { name: string; target: number; resourceTitle: string; vendorId?: string }; waiting: ActionLogEntry[] }
+  /**
+   * The workspace's other chats, which its overview and lists show and which open to what was
+   * said in them, the actions they made among it; and what was asked, read and set up outside
+   * any chat.
+   */
+  workspace?: { chats: MockChat[]; outside?: ActionLogEntry[]; automations?: MockAutomation[] }
 }
+
+/**
+ * A gadget of the workspace that runs by itself: what it is called, the connections it is bound
+ * to (which what it asks outside any chat goes through), and the hooks that wake it.
+ */
+export type MockAutomation = {
+  gadget: { id: number; title: string }
+  connections: Array<{ name: string; target: number; resourceTitle: string }>
+  hooks: Array<Omit<BoundHookInfo, 'gadgetId'>>
+}
+
+/** Another chat of the workspace: its metadata, its messages, and how many of them the viewer has not read. */
+export type MockChat = { chat: AiChatMetadata; messages: AiChatMessage[]; unread?: number }
 
 const CHUNK_DELAY = 45
 

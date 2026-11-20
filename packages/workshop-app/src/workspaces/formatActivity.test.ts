@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatActivity } from './formatActivity'
+import { formatActivity, formatActivityShort } from './formatActivity'
 
 // Wednesday 28 October 2026, 09:00 local time.
 const now = new Date(2026, 9, 28, 9, 0, 0)
@@ -34,5 +34,25 @@ describe('formatActivity', () => {
   it('adds the year only when it is not the current one', () => {
     expect(formatActivity(new Date(2026, 7, 2, 12), now)).toBe('Aug 2')
     expect(formatActivity(new Date(2025, 8, 12, 12), now)).toBe('Sep 12, 2025')
+  })
+})
+
+describe('formatActivity without ago', () => {
+  it('leaves it off minutes and hours, and says the rest as before', () => {
+    expect(formatActivity(ago(5 * MINUTE), now, { ago: false })).toBe('5 min')
+    expect(formatActivity(ago(HOUR), now, { ago: false })).toBe('1 hour')
+    expect(formatActivity(ago(30_000), now, { ago: false })).toBe('Just now')
+    expect(formatActivity(ago(25 * HOUR), now, { ago: false })).toBe('Yesterday')
+  })
+})
+
+describe('formatActivityShort', () => {
+  it('says it in a letter: now, minutes, hours, then calendar days within a week, then a date', () => {
+    expect(formatActivityShort(ago(30_000), now)).toBe('now')
+    expect(formatActivityShort(ago(5 * MINUTE), now)).toBe('5m')
+    expect(formatActivityShort(ago(3 * HOUR), now)).toBe('3h')
+    expect(formatActivityShort(ago(25 * HOUR), now)).toBe('1d')
+    expect(formatActivityShort(new Date(2026, 9, 22, 12), now)).toBe('6d')
+    expect(formatActivityShort(new Date(2026, 9, 2, 12), now)).toBe('Oct 2')
   })
 })

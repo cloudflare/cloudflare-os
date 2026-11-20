@@ -57,7 +57,13 @@ export type ListFilterOption = Omit<ListFilter<never>, 'test'>
 export type ListControls = {
   search?: { value: string; onChange: (query: string) => void }
   view?: { value: ListViewMode; onChange: (mode: ListViewMode) => void }
-  order?: { value: string; options: Array<{ id: string; label: string }>; onChange: (id: string) => void }
+  order?: {
+    value: string
+    options: Array<{ id: string; label: string }>
+    onChange: (id: string) => void
+    /** How the list can be grouped, for one that can be, chosen in the same menu, before the order. */
+    groups?: { value: string; options: Array<{ id: string; label: string }>; onChange: (id: string) => void }
+  }
   filter?: {
     /** The ids of the filters that are on. */
     value: string[]
@@ -69,6 +75,11 @@ export type ListControls = {
      */
     facetMenus?: Record<string, string>
     onChange: (ids: string[]) => void
+    /**
+     * Choices the list keeps itself, each one of a few to pick under its name, as "Agent runs:
+     * Needing you, All, None". One set other than its `default` counts as a filter set.
+     */
+    choices?: Array<{ id: string; label: string; options: Array<{ id: string; label: string }>; value: string; default: string; onChange: (id: string) => void }>
   }
 }
 
