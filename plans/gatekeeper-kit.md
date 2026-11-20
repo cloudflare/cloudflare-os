@@ -2200,7 +2200,7 @@ export type OAuthClientOptions = {
   authorizationEndpoint?: string; revocationEndpoint?: string;
   bodyEncoding?: "form" | "json"; headers?: Record<string, string>;
   defaultExpiresIn?: number; scopeSeparator?: string; timeoutMs?: number; maxResponseBytes?: number;
-  fetch?: (input: string, init: RequestInit) => Promise<Response>;
+  upstream: Upstream;
 };
 export type OAuthTokens = { accessToken: string; tokenType?: string; refreshToken?: string;
   expiresAt?: number; scopes?: string[]; idToken?: string; raw: Record<string, unknown> };

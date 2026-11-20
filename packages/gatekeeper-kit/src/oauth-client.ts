@@ -4,7 +4,8 @@ import { base64url } from "jose";
 import { CredentialsExpiredError, type RefreshCredentials } from "./credentials";
 import { requirePositiveInt } from "./positive-int";
 import { readTextCapped } from "./response-body";
-// Types alone: a Worker that passes no `upstream` loads neither that module nor what it needs.
+// Types alone: the upstream is its gatekeeper's to define, so this module loads neither
+// `./upstream` nor what that needs.
 import type { AnsweredWith, CallAnswer, Upstream } from "./upstream";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -106,17 +107,12 @@ export type OAuthClientOptions = {
   /** Response size cap. Default 64 KiB. */
   maxResponseBytes?: number;
   /**
-   * Fetch implementation, called detached. Default `globalThis.fetch`, read at each request. Pass a
-   * service binding as `binding.fetch.bind(binding)`.
-   */
-  fetch?: (input: string, init: RequestInit) => Promise<Response>;
-  /**
-   * The gatekeeper's upstream client (`defineUpstream` in `./upstream`). Given one, every request
-   * is sent through its `read`, so with its `fetch`, and counted as one subservice call; `fetch`
-   * may not be given beside it. The request, its timeout, and what a method returns or throws
-   * are those of a client without it: the upstream's timeout, retry and redirect options do not
-   * apply, and neither does its `succeeded`, which is the rule of the provider's API and not of
-   * these endpoints.
+   * The gatekeeper's upstream client (`defineUpstream` in `./upstream`). Every request is sent
+   * through its `read`, so with its `fetch`, and counted as one subservice call: a service
+   * binding that leads to the provider is that upstream's `fetch`, and this client takes none of
+   * its own. The request, its timeout, and what a method returns or throws are this client's: the
+   * upstream's timeout, retry and redirect options do not apply, and neither does its
+   * `succeeded`, which is the rule of the provider's API and not of these endpoints.
    *
    * The operation is `token.exchange` for `exchangeCode`, `token.refresh` for `refresh`, and
    * `token.revoke` for `revoke` and `request("revocation")`. A `request("token")` is named by its
@@ -131,7 +127,7 @@ export type OAuthClientOptions = {
    * a 3xx included, is an `error` with the reason `http`. A request that was not answered is
    * counted as `Upstream` counts one.
    */
-  upstream?: Upstream;
+  upstream: Upstream;
 };
 
 /** A parsed token response. Plain, structured-clone-safe data; absent fields stay absent. */
@@ -213,8 +209,8 @@ export function isInvalidGrant(error: unknown): boolean {
  * times out. A non-2xx response, or a 2xx body carrying an `error` and no non-empty
  * `access_token`, throws `OAuthResponseError`; network, abort, timeout, and `ResponseTooLargeError`
  * failures propagate unchanged. The client holds no state between calls and classifies nothing as
- * grant death: `oauthRefresh` does. Given an `upstream`, every request is also counted as a
- * subservice call (see `OAuthClientOptions.upstream`).
+ * grant death: `oauthRefresh` does. Every request is sent through the gatekeeper's `upstream` and
+ * counted as a subservice call (see `OAuthClientOptions.upstream`).
  *
  * @example
  * ```ts
@@ -223,6 +219,7 @@ export function isInvalidGrant(error: unknown): boolean {
  *   client: { method: "basic", id: env.CLIENT_ID, secret: env.CLIENT_SECRET },
  *   authorizationEndpoint: "https://vendor.example/oauth/authorize",
  *   tokenEndpoint: "https://vendor.example/oauth/token",
+ *   upstream: vendorUpstream,
  * });
  * const tokens = await client.exchangeCode({ code, redirectUri, codeVerifier });
  * ```
@@ -239,12 +236,12 @@ export class OAuthClient {
   readonly #scopeSeparator: string | undefined;
   readonly #timeoutMs: number;
   readonly #maxResponseBytes: number;
-  readonly #fetch: OAuthClientOptions["fetch"];
-  readonly #upstream: Upstream | undefined;
+  readonly #upstream: Upstream;
 
   /**
    * Creates a client, validating its configuration up front.
-   * @param options Provider endpoints, client credentials, and request policy.
+   * @param options Provider endpoints, client credentials, request policy, and the upstream.
+   * @throws When the configuration is not valid, no `upstream` is given, or a `fetch` is.
    */
   constructor(options: OAuthClientOptions) {
     this.#label = options.label;
@@ -271,10 +268,15 @@ export class OAuthClient {
     this.#timeoutMs = requirePositiveInt("timeoutMs", options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     this.#maxResponseBytes = requirePositiveInt(
       "maxResponseBytes", options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES);
-    if (options.upstream !== undefined && options.fetch !== undefined) {
-      throw new Error("Pass upstream or fetch, not both: an upstream sends with its own fetch.");
+    // Both are checked for a caller that is not type-checked: a client with no upstream would
+    // count nothing, and a `fetch` it was handed would send nothing.
+    if (typeof options.upstream?.read !== "function") {
+      throw new Error(
+        "OAuthClient requires an upstream (defineUpstream), which sends and counts its requests.");
     }
-    this.#fetch = options.fetch;
+    if ("fetch" in options && options.fetch !== undefined) {
+      throw new Error("OAuthClient takes no fetch: it sends with its upstream's.");
+    }
     this.#upstream = options.upstream;
   }
 
@@ -422,7 +424,7 @@ export class OAuthClient {
     });
   }
 
-  // Sends one request. `operation` is what an upstream counts it as, and `tokenRequired` makes
+  // Sends one request. `operation` is what the upstream counts it as, and `tokenRequired` makes
   // a 2xx with no access token a rejection.
   async #post(
     url: string, body: Record<string, string>, operation: string, signal?: AbortSignal,
@@ -445,32 +447,17 @@ export class OAuthClient {
       headers.set("Content-Type", "application/x-www-form-urlencoded");
       encoded = new URLSearchParams(body);
     }
-    // The one request of both paths, which differ only in who sends it and whether it is counted.
-    const request: RequestInit & { redirect: "manual" } = {
-      method: "POST", headers, body: encoded, redirect: "manual",
-    };
-    const read = (response: Response) => this.#read(response, tokenRequired);
-    const upstream = this.#upstream;
-    let answer: Answer;
-    if (upstream === undefined) {
-      const timeout = AbortSignal.timeout(this.#timeoutMs);
-      const fetch = this.#fetch ?? globalThis.fetch;
-      answer = await read(await fetch(url, {
-        ...request,
-        signal: signal === undefined ? timeout : AbortSignal.any([signal, timeout]),
-      }));
-    } else {
-      answer = await upstream.read(url, {
-        ...request, signal, operation, timeoutMs: this.#timeoutMs, retry: null,
-        answer: countedByStatus,
-      }, read, countedAs);
-    }
+    // Sent once, under this client's own timeout and redirect mode and no retry policy.
+    const answer = await this.#upstream.read(url, {
+      method: "POST", headers, body: encoded, redirect: "manual", signal, operation,
+      timeoutMs: this.#timeoutMs, retry: null, answer: countedByStatus,
+    }, response => this.#read(response, tokenRequired), countedAs);
     if (answer.rejection !== undefined) throw answer.rejection;
     return answer;
   }
 
   // Reads one answer: its body, and the rejection it is. A rejection is returned, not thrown, so
-  // that an upstream counts the answer by what was read. What reading the body throws propagates.
+  // that the upstream counts the answer by what was read. What reading the body throws propagates.
   async #read(response: Response, tokenRequired: boolean): Promise<Answer> {
     const { status } = response;
     if (status >= 300 && status < 400) {
