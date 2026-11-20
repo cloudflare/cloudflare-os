@@ -4,13 +4,13 @@ import type { AutomationDetails } from '@/blocks/automationDetails'
 import { OutsideAsksRow } from '@/automations/OutsideAsksRow'
 import { AutomationRow } from '@/blocks/AutomationRow'
 import { AutomationsEmpty } from '@/blocks/AutomationsEmpty'
-import { ListGroup } from '@/blocks/ListGroup'
+import { ListGroup } from '@gadgets/ui'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import type { ActionEntry } from '@/workspaces/activity/activityEntries'
 import { useReport } from './previewState'
 import { Section } from './Section'
 
-type Row = Pick<AutomationDetails, 'kind' | 'title' | 'when' | 'next' | 'note' | 'description' | 'resource' | 'enabled'> & {
+type Row = Pick<AutomationDetails, 'title' | 'description' | 'resource' | 'enabled'> & {
   key: string
   gadget: string
   /** Its switch and its deletion are refused, to show what is said. */
@@ -18,40 +18,25 @@ type Row = Pick<AutomationDetails, 'kind' | 'title' | 'when' | 'next' | 'note' |
 }
 
 const ROWS: Row[] = [
+  { key: 'brief', title: 'Morning brief', description: 'Gather today’s meetings and what changed overnight, and post a short brief.', gadget: 'Morning brief', enabled: true },
+  { key: 'digest', title: 'Weekly digest', description: 'Sum up the week’s merged changes for the team channel.', gadget: 'Team digest', enabled: true, refuses: true },
+  { key: 'report', title: 'Quarter report', description: 'Draft the quarter’s report from the forecast sheet.', gadget: 'Forecast', enabled: false },
   {
-    key: 'brief', kind: 'schedule', title: 'Morning brief', when: 'Every weekday at 9:00 AM', next: { soon: 'tomorrow', at: 'tomorrow at 9:00 AM' },
-    description: 'Gather today’s meetings and what changed overnight, and post a short brief.', gadget: 'Morning brief', enabled: true,
-  },
-  {
-    key: 'hello', kind: 'schedule', title: 'Weekly hello', when: 'Every Monday at 8:00 AM, Lisbon time', next: { soon: 'in 3 days', at: 'Monday at 8:00 AM' },
-    description: 'Sends “hello” into this chat every Monday at 8 am Lisbon time.', gadget: 'Weekly hello', enabled: true,
-  },
-  {
-    key: 'digest', kind: 'schedule', title: 'Weekly digest', when: 'Every Friday at 4:30 PM, Chicago time', note: { words: 'Failed, trying again in 12 minutes', tone: 'warning' },
-    description: 'Sum up the week’s merged changes for the team channel.', gadget: 'Team digest', enabled: true, refuses: true,
-  },
-  {
-    key: 'stopped', kind: 'schedule', title: 'Inbox sweep', when: 'Every hour', note: { words: 'Stopped: it no longer had access', tone: 'warning' },
-    description: 'Label new email and flag what needs a reply.', gadget: 'Inbox', enabled: true,
-  },
-  { key: 'report', kind: 'schedule', title: 'Quarter report', description: 'Draft the quarter’s report from the forecast sheet.', gadget: 'Forecast', enabled: false },
-  {
-    key: 'issue', kind: 'event', title: 'New issue in PLAT', resource: { title: 'Jira · Platform board', url: 'https://jira.example.com/projects/PLAT' },
+    key: 'issue', title: 'New issue in PLAT', resource: { title: 'Jira · Platform board', url: 'https://jira.example.com/projects/PLAT' },
     description: 'Write a one-line summary of each new ticket as it is created.', gadget: 'Issue triage', enabled: true,
   },
 ]
 
 const GROUPS = [
-  { kind: 'schedule', label: 'Scheduled' },
-  { kind: 'event', label: 'When something happens' },
+  { key: 'on', label: 'On', has: (row: Row) => row.enabled },
+  { key: 'paused', label: 'Paused', has: (row: Row) => !row.enabled },
 ] as const
 
 /**
- * Automations as a workspace's tab and a chat's list them: scheduled ones, saying when they run
- * and how soon next, a retry warned of and one that stopped; one that is off, whose schedule is
- * not known; one an event sets off, with what it watches; and two for whoever may only look. Each
- * opens to all of it, and is deleted from there or from more. Switches and deletions answer after
- * a moment, the digest's refused to show what is said.
+ * Automations as a workspace's tab and a chat's list them: those on, then those paused, one with
+ * what it watches; and two for whoever may only look. Each opens to all of it, and is deleted from
+ * there or from more. Switches and deletions answer after a moment, the digest's refused to show
+ * what is said.
  */
 // Asked outside any chat through a connection no automation is bound to.
 const OUTSIDE_ASKS = [40, 90].map((minutes, index) => ({
@@ -71,13 +56,12 @@ export const AutomationsPreview = () => {
 
   return (
     <>
-      <Section title="Waiting on you (first on a workspace’s Automations tab: what was asked outside any chat, put down to the automation whose gadget is bound to the connection it went through, with a pill in place of when it runs next and the first ask as its second line; and what no one automation could have asked, in a row of its own that goes to the workspace’s apps)">
+      <Section title="Waiting on you (first on a workspace’s Automations tab: what was asked outside any chat, put down to the automation whose gadget is bound to the connection it went through, with a pill and the first ask as its second line; and what no one automation could have asked, in a row of its own that goes to the workspace’s apps)">
         <div className="flex w-full max-w-3xl flex-col gap-2">
           <h2 className="px-4 text-sm font-medium text-kumo-subtle">Waiting on you</h2>
           <ListGroup label="Waiting on you">
             <OutsideAsksRow asks={OUTSIDE_ASKS} href="#" onOpen={() => say('went to the apps')} />
             <AutomationRow
-              kind="event"
               title="When a meeting is booked"
               description="Adds a design review the day before, for whoever is presenting."
               resource={{ title: 'Google Calendar · Team' }}
@@ -90,13 +74,13 @@ export const AutomationsPreview = () => {
           </ListGroup>
         </div>
       </Section>
-      <Section title="AutomationRow in ListGroups (a workspace’s and a chat’s Automations tab: a clock or a bolt, its name over when it runs, or why it stopped; how soon it runs next or Off, its switch, and more, which deletes it; the row opens AutomationDialog, with Delete at its foot; and for whoever may only use the workspace, no switch)">
+      <Section title="AutomationRow in ListGroups (a workspace’s and a chat’s Automations tab: a bolt, its name over what it watches; Off for whoever has no switch, its switch, and more, which deletes it; the row opens AutomationDialog, with Delete at its foot; and for whoever may only use the workspace, no switch)">
         <div className="flex w-full max-w-3xl flex-col gap-8">
-          {GROUPS.map(({ kind, label }) => (
-            <section key={kind} className="flex flex-col gap-2">
+          {GROUPS.map(({ key, label, has }) => (
+            <section key={key} className="flex flex-col gap-2">
               <h2 className="px-4 text-sm font-medium text-kumo-subtle">{label}</h2>
               <ListGroup label={label}>
-                {rows.filter((row) => row.kind === kind).map(({ key, gadget, refuses, ...row }) => (
+                {rows.filter(has).map(({ key, gadget, refuses, ...row }) => (
                   <AutomationRow
                     key={key}
                     {...row}
@@ -124,8 +108,8 @@ export const AutomationsPreview = () => {
             </section>
           ))}
           <ListGroup label="Only to look at">
-            <AutomationRow kind="event" title="Build failed" resource={{ title: 'GitHub · builds' }} description="Post the failing step." gadget={{ title: 'Builds', onOpen: () => say('opened Builds') }} enabled />
-            <AutomationRow kind="schedule" title="Nightly backup" gadget={{ title: 'Backups', onOpen: () => say('opened Backups') }} enabled={false} />
+            <AutomationRow title="Build failed" resource={{ title: 'GitHub · builds' }} description="Post the failing step." gadget={{ title: 'Builds', onOpen: () => say('opened Builds') }} enabled />
+            <AutomationRow title="Nightly backup" gadget={{ title: 'Backups', onOpen: () => say('opened Backups') }} enabled={false} />
           </ListGroup>
           <button type="button" className="self-start text-sm text-kumo-subtle underline" onClick={() => setRows(ROWS)}>Put them all back</button>
           <p role="status" className="text-sm text-kumo-subtle">{report}</p>
@@ -133,18 +117,15 @@ export const AutomationsPreview = () => {
       </Section>
       <Section title="AutomationRow on the Automations page (among every workspace’s, so it says which it is in, which its dialog and more go to)">
         <div className="w-full max-w-3xl">
-          <ListGroup label="Scheduled">
+          <ListGroup label="On">
             <AutomationRow
-              kind="schedule"
-              title="Weekly Hello to Balint"
-              when="Every Monday at 8:00 AM"
-              next={{ soon: 'in 3 days', at: 'Monday at 8:00 AM' }}
-              description="Sends ‘hello balint’ into this chat every Monday at 8 am Lisbon time."
-              workspace={{ title: 'DesEng Team', icon: <WorkspaceIcon label="DT" small />, onOpen: () => say('opened DesEng Team') }}
-              gadget={{ title: 'Weekly Hello Automation', onOpen: () => say('opened Weekly Hello Automation') }}
+              title="Morning brief"
+              description="Gather today’s meetings and what changed overnight, and post a short brief."
+              workspace={{ title: 'Q3 Forecast', icon: <WorkspaceIcon label="QF" small />, onOpen: () => say('opened Q3 Forecast') }}
+              gadget={{ title: 'Morning brief', onOpen: () => say('opened Morning brief') }}
               enabled
               onEnabledChange={async () => {}}
-              onDelete={async () => { await later(); say('deleted Weekly Hello to Balint') }}
+              onDelete={async () => { await later(); say('deleted Morning brief') }}
             />
           </ListGroup>
         </div>

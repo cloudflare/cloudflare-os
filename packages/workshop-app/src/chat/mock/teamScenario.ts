@@ -1,5 +1,5 @@
 import type { ActionLogEntry, AiChatAuthorInfo, AiChatMessage, AiChatMetadata } from '@gadgets/workshop-shared/api'
-import { EXAMPLE_AGENT_SETUPS } from '@/automations/exampleAgents'
+import { EXAMPLE_AGENT_SPAWNERS, EXAMPLE_GADGETS } from '@/automations/exampleAgents'
 import {
   action, agent, bindHook, connectionRequest, error, history, observation, say, turn, user, VIEWER,
   type MessageSource, type MockAutomation, type MockChat, type Scenario,
@@ -255,6 +255,6 @@ export const team: Scenario = {
   history: history([user('What’s left before the launch?')]),
   script: turn(say(agent({ text: 'Two approvals and a review. They’re first on the workspace’s Chats tab.' }))),
   // Its agents' runs are among its chats, each with what it said.
-  agents: { setups: EXAMPLE_AGENT_SETUPS, runs: [] },
+  agents: { spawners: EXAMPLE_AGENT_SPAWNERS, gadgets: [...EXAMPLE_GADGETS].map(([id, title]) => ({ id, title })), runs: [] },
   workspace: { ...renumbered([...CHATS, ...RUNS], outside()), automations: AUTOMATIONS },
 }

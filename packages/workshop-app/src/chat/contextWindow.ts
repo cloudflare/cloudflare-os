@@ -1,9 +1,6 @@
 import { formatTokenCount } from '@/components/usageFormat'
 import { contextWindowPresets } from '@/settings/modelOptions'
 
-/** The context window a model is held to: what it was set to, else its own, where that is known. */
-export const effectiveWindow = (known: number | undefined, held: number | undefined) => held ?? known
-
 /**
  * The sizes a model of the user's can be held to, as options to choose from: its own, kept as
  * nothing (`''`), the usual sizes under it, and a size set elsewhere that is none of those, so that

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { ADMIN_ACCESS_ERROR_CODES, type AdminAuditRecord, type AdminSettingsView } from '@gadgets/workshop-shared/api'
-import { Button } from '@/components/Button'
+import { Button } from '@gadgets/ui'
 import { AdminAuditSettings } from '@/settings/admin/AdminAuditSettings'
 import { AdminCapabilityProvider } from '@/settings/admin/AdminContext'
 import { never, PREVIEW_ADMIN_SETTINGS, previewAdmin, previewDelay } from './adminPreview'

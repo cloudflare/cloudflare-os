@@ -6,7 +6,6 @@ import {
   CpuIcon,
   FileTextIcon,
   GearSixIcon,
-  LightningIcon,
   ListMagnifyingGlassIcon,
   PlugsIcon,
   SlidersHorizontalIcon,
@@ -21,7 +20,6 @@ export const SETTINGS_SECTION_IDS = [
   'preferences',
   'notifications',
   'models',
-  'skills',
   'usage',
   'admin-general',
   'admin-services',
@@ -64,7 +62,6 @@ export const SETTINGS_GROUP: SectionGroup = {
     { id: 'preferences', label: 'Preferences', summary: 'Appearance, side pane and developer mode', icon: SlidersHorizontalIcon },
     { id: 'notifications', label: 'Notifications', summary: 'This browser and muted workspaces', icon: BellIcon },
     { id: 'models', label: 'Models', summary: 'Default and quick models, and your own', icon: CpuIcon },
-    { id: 'skills', label: 'Skills', summary: 'Your skills and their collections', icon: LightningIcon },
     { id: 'usage', label: 'Usage & billing', summary: 'Free requests and billing', icon: ChartBarIcon },
   ],
 }

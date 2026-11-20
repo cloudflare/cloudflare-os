@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { CheckIcon, CopyIcon, XIcon } from '@phosphor-icons/react'
-import { Button } from '@/components/Button'
+import { Button } from '@gadgets/ui'
 
 export type CopyValueButtonProps = {
   /** What is shown, and put on the clipboard. */

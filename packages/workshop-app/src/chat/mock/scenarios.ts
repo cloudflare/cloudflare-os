@@ -1,5 +1,5 @@
 import type { ActionLogEntry, BlueprintOutput } from '@gadgets/workshop-shared/api'
-import { EXAMPLE_AGENT_SETUPS } from '@/automations/exampleAgents'
+import { EXAMPLE_AGENT_SPAWNERS, EXAMPLE_GADGETS } from '@/automations/exampleAgents'
 import { withQuote } from '../replyQuote'
 import { PLANS_ANSWER } from './liveViews'
 import { agentRuns, team } from './teamScenario'
@@ -393,6 +393,8 @@ const appendDone = (id: number, task: string, minutesAgo: number): Extract<Actio
   type: 'action',
   state: 'pending',
   gatekeeperId: NOTES.target,
+  from: 'gadget',
+  gadgetId: 41,
   resourceTitle: NOTES.resourceTitle,
   createdAt: new Date(Date.now() - minutesAgo * MINUTE),
   description: {
@@ -422,6 +424,7 @@ const gadgetAsks: Scenario = {
     agent({ text: 'Done. Each task you tick off asks to add a line to Q3 notes, so nothing is written there without you.' }),
   ]),
   gadgetAsks: {
+    gadgetId: 41,
     connection: NOTES,
     waiting: [
       appendDone(1001, 'Summarise the quarter’s incidents', 180),
@@ -720,13 +723,19 @@ const longRound = (round: number): Array<MessageSource | MessageSource[]> => {
   ]
 }
 
+const longRounds = Array.from({ length: 60 }, (_, round) => longRound(round).flat())
+
 const longHistory: Scenario = {
   id: 'long-history',
   title: 'A long conversation',
   description: 'More than 300 mixed messages, to exercise paging and virtual pages. It ends in a reply to a message from near the start, with an image to open beside the chat: click its quote to go there. Send a message for a new answer.',
   history: history([
-    ...Array.from({ length: 60 }, (_, round) => longRound(round)).flat(),
-    user(withQuote('Request 3: update src/module-2.ts and check it still runs.', 'Does that one still pass?'), { attachments: [REVIEW_FILES[0]] }),
+    ...longRounds.flat(),
+    // The third request opens the third round.
+    user(withQuote('Request 3: update src/module-2.ts and check it still runs.', 'Does that one still pass?'), {
+      attachments: [REVIEW_FILES[0]],
+      replyToSequence: longRounds[0].length + longRounds[1].length,
+    }),
     agent({ text: 'Yes: `src/module-2.ts` has passed every check since.' }),
   ]),
   script: when('onSend', turn(say(agent({ text: 'Noted. That makes sixty-one.' })))),
@@ -739,7 +748,7 @@ const agents: Scenario = {
   history: history([user('Which of our agents answers the support inbox?')]),
   script: turn(say(agent({ text: 'The **Inbox helper**: Inbox starts it for each email that arrives. Its runs are on the workspace’s Chats tab, and under its Agents tab.' }))),
   // Its runs are among its chats, each with what it said.
-  agents: { setups: EXAMPLE_AGENT_SETUPS, runs: [] },
+  agents: { spawners: EXAMPLE_AGENT_SPAWNERS, gadgets: [...EXAMPLE_GADGETS].map(([id, title]) => ({ id, title })), runs: [] },
   workspace: agentRuns(),
 }
 

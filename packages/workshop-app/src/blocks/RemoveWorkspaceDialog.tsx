@@ -1,8 +1,6 @@
 import { useState } from 'react'
 import { XIcon } from '@phosphor-icons/react'
-import { Banner } from '@/components/Banner'
-import { Button } from '@/components/Button'
-import { Dialog } from '@/components/Dialog'
+import { Banner, Button, Dialog } from '@gadgets/ui'
 import { usePending, type ActionResult } from './usePending'
 import type { WorkspaceRemoval } from './WorkspaceMoreMenu'
 

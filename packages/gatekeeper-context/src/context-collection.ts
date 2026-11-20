@@ -5,14 +5,15 @@ import { DurableObject } from "cloudflare:workers";
 import { createTypedStorage, collection } from "@gadgets/typed-storage";
 import {
   ContextCollectionContent, ContextCollectionMember, ContextCollectionMetadata,
-  ContextCollectionRole, ContextCollectionSharing, ContextCollectionVisibility,
+  ContextCollectionPermissions, ContextCollectionRole, ContextCollectionSharing,
+  ContextCollectionSummary, ContextCollectionVisibility,
   ContextDocument, ContextDocumentSummary,
   ContextGitTokenCreateResult, ContextGitTokenList,
   DEFAULT_DOCUMENT_CONTENT_TYPE, DEFAULT_GIT_BRANCH, MAX_DOCUMENT_BODY_BYTES,
-  contentTypeFromPath, isTextContentType, VENDOR_ID,
+  contentTypeFromPath, isTextContentType, skillFilesOf, VENDOR_ID,
 } from "./context-types.js";
 import {
-  type CollectionAccess, collectionPermissions,
+  type CollectionAccess, canReadCollection, collectionPermissions,
 } from "./collection-access.js";
 import { metadataToSummary } from "./collection-kv.js";
 import { domainName } from "./domain.js";
@@ -123,6 +124,29 @@ function contextRecordSize(record: ContextRecord): number {
     JSON.stringify({ ...record, body: "" }),
   ).byteLength;
 }
+
+function sameStoredBody(left: string | Uint8Array, right: string | Uint8Array): boolean {
+  if (typeof left === "string" || typeof right === "string") return left === right;
+  return left.byteLength === right.byteLength && left.every((byte, i) => byte === right[i]);
+}
+
+/** A skill's document as its collection stores it, its path relative to the skill's directory. */
+export type ContextSkillRecord = Pick<ContextRecord, "path" | "description" | "contentType" | "body">;
+
+/** A skill as exportContextSkill() reads it for importContextSkill(). */
+export type ContextSkillExport = {
+  /** The skill's directory name: its own directory's, or its manifest name for a top-level SKILL.md. */
+  name: string;
+  records: ContextSkillRecord[];
+};
+
+/** What getSkillListing() gives a reader: the parts of `ContextSkillCollection` read here. */
+export type SkillListing = {
+  summary: ContextCollectionSummary;
+  documents: ContextDocumentSummary[];
+  permissions: ContextCollectionPermissions;
+  owner?: ContextCollectionMember;
+};
 
 // Old records that predate git-based collections won't have `content` set in storage.
 // Unset `content` is defaulted to { "source": "web" } at the API layer, which is why
@@ -351,7 +375,14 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
   getSharing(accountId: string): ContextCollectionSharing {
     let access = this.getAccess(accountId);
     if (!access.exists || access.role === null) throw new Error(NOT_FOUND);
-    let members: ContextCollectionMember[] = [...this.storage.grants.list()]
+    return {
+      members: this.#members(accountId), everyoneCanView: access.everyoneCanView,
+      hasOwner: access.hasOwner,
+    };
+  }
+
+  #members(viewerId: string): ContextCollectionMember[] {
+    return [...this.storage.grants.list()]
       .toSorted((left, right) =>
         ROLE_ORDER[left.role] - ROLE_ORDER[right.role]
         || left.grantedAt.valueOf() - right.grantedAt.valueOf())
@@ -359,9 +390,27 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
         memberId: grant.accountId,
         role: grant.role,
         displayName: grant.displayName,
-        isViewer: grant.accountId === accountId,
+        isViewer: grant.accountId === viewerId,
       }));
-    return { members, everyoneCanView: access.everyoneCanView, hasOwner: access.hasOwner };
+  }
+
+  /**
+   * What the Skills app lists of this collection, read in one step: its summary, its documents, the
+   * account's permissions and, where the account holds a role on a private collection, the first
+   * owner other than it. Null for an account that can't read the collection.
+   */
+  async getSkillListing(accountId: string, isAdmin: boolean): Promise<SkillListing | null> {
+    let access = this.getAccess(accountId);
+    if (!canReadCollection(access)) return null;
+    let owner = access.visibility === "private" && access.role !== null
+      ? this.#members(accountId).find(member => member.role === "owner" && !member.isViewer)
+      : undefined;
+    return {
+      summary: metadataToSummary(this.getMetadata()),
+      documents: await this.listContextDocuments(),
+      permissions: collectionPermissions(access, isAdmin),
+      ...(owner ? { owner } : {}),
+    };
   }
 
   // Throws unless `actorId` may give `targetId` the role `role`, or remove them (null).
@@ -823,23 +872,20 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
     if (directoryOccupied) {
       throw new Error(`Skill directory already exists: ${directory}`);
     }
-    let parentDirectory = dirName(directory);
-    if (parentDirectory) {
-      let parentExists = false;
-      for (let record of this.storage.documents.list({ prefix: parentDirectory + "/" })) {
-        parentExists = record.path.length > 0;
-        break;
-      }
-      if (!parentExists) throw new Error(`Directory not found: ${parentDirectory}`);
-      let ancestor = parentDirectory;
-      while (ancestor) {
-        if (this.storage.documents.get(joinPath(ancestor, "SKILL.md"))) {
-          throw new Error("Cannot create a skill inside another skill.");
-        }
-        ancestor = dirName(ancestor);
+    this.#assertSkillParent(dirName(directory), "create");
+    await this.#writeContextDocument(path, doc, true);
+  }
+
+  // A skill's directory goes in an existing directory (or the top level) that no skill holds.
+  #assertSkillParent(directory: string, action: "create" | "move"): void {
+    if (!directory) return;
+    let [first] = this.storage.documents.list({ prefix: directory + "/", limit: 1 });
+    if (!first) throw new Error(`Directory not found: ${directory}`);
+    for (let ancestor = directory; ancestor; ancestor = dirName(ancestor)) {
+      if (this.storage.documents.get(joinPath(ancestor, "SKILL.md"))) {
+        throw new Error(`Cannot ${action} a skill inside another skill.`);
       }
     }
-    await this.#writeContextDocument(path, doc, true);
   }
 
   async deleteContextDocument(path: string): Promise<void> {
@@ -884,6 +930,22 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
       : [manifestPath];
     if (!paths.includes(manifestPath)) throw new Error(`Document not found: ${manifestPath}`);
     await this.#deleteContextDocuments(paths);
+  }
+
+  /**
+   * Delete the files a move copied from here, as exportContextSkill() listed them (`paths`), once
+   * `actorId` is found to still be able to edit, with no await between the check and the delete.
+   * Files already gone are skipped.
+   */
+  async deleteMovedContextSkill(actorId: string, isAdmin: boolean, paths: string[]): Promise<void> {
+    this.#assertWebWritable();
+    this.#assertActorCanEdit(actorId, isAdmin);
+    for (let path of paths) validateDocumentPath(path);
+    await this.#deleteContextDocuments(paths.filter(path => this.storage.documents.get(path)));
+  }
+
+  #assertActorCanEdit(actorId: string, isAdmin: boolean): void {
+    if (!collectionPermissions(this.getAccess(actorId), isAdmin).canEdit) throw new Error(NOT_FOUND);
   }
 
   async #deleteContextDocuments(paths: string[]): Promise<void> {
@@ -1045,27 +1107,95 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
     )) {
       throw new Error("Cannot move a skill into itself.");
     }
-    if (directoryPath) {
-      let targetExists = false;
-      for (let record of this.storage.documents.list({ prefix: directoryPath + "/" })) {
-        targetExists = record.path.length > 0;
-        break;
-      }
-      if (!targetExists) throw new Error(`Directory not found: ${directoryPath}`);
-      let ancestor = directoryPath;
-      while (ancestor) {
-        if (this.storage.documents.get(joinPath(ancestor, "SKILL.md"))) {
-          throw new Error("Cannot move a skill inside another skill.");
-        }
-        ancestor = dirName(ancestor);
-      }
-    }
+    this.#assertSkillParent(directoryPath, "move");
     let destinationDirectory = joinPath(
       directoryPath,
       sourceDirectory ? baseName(sourceDirectory) : skill.name,
     );
     validateDocumentPath(destinationDirectory);
     await this.#moveContextSkill(manifestPath, destinationDirectory);
+  }
+
+  /**
+   * A skill's files as stored (those of skillFilesOf(), so not those of a skill within it), for
+   * importContextSkill() in another collection, if `actorId` can edit here. Refuses a git-based
+   * collection, which a move could not then delete the skill from.
+   */
+  exportContextSkill(actorId: string, isAdmin: boolean, manifestPath: string): ContextSkillExport {
+    this.#assertWebWritable();
+    this.#assertActorCanEdit(actorId, isAdmin);
+    validateDocumentPath(manifestPath);
+    if (!isSkillManifestPath(manifestPath)) throw new Error("Skill manifest filename must be SKILL.md.");
+    let manifest = this.storage.documents.get(manifestPath);
+    if (!manifest) throw new Error(`Document not found: ${manifestPath}`);
+    let skill = parseSkillManifest(
+      manifestPath, decodeStoredContextBody(manifest.contentType, manifest.body));
+    let directory = dirName(manifestPath);
+    this.#ensureSkillIndex();
+    let records = skillFilesOf(
+      manifestPath,
+      [...this.storage.skillIndex.list()].map(entry => entry.path),
+      [...(directory ? this.storage.documents.list({ prefix: directory + "/" }) : this.storage.documents.list())]);
+    let prefixLength = directory ? directory.length + 1 : 0;
+    return {
+      name: directory ? baseName(directory) : skill.name,
+      records: records.map(record => ({
+        path: record.path.slice(prefixLength),
+        description: record.description,
+        contentType: record.contentType ?? DEFAULT_DOCUMENT_CONTENT_TYPE,
+        body: record.body,
+      })),
+    };
+  }
+
+  /**
+   * Store an exported skill in `directoryPath` (`""` for the top level), in a directory of its
+   * name, each record as exported, in one transaction. Refuses an occupied skill directory, a
+   * parent that doesn't exist or is inside another skill, and a git-based collection. A skill
+   * directory holding exactly these records already is an earlier import of them, and succeeds.
+   * Returns the skill's manifest path.
+   */
+  async importContextSkill(
+      actorId: string, isAdmin: boolean, directoryPath: string, skill: ContextSkillExport): Promise<string> {
+    this.#assertWebWritable();
+    this.#assertActorCanEdit(actorId, isAdmin);
+    if (directoryPath) validateDocumentPath(directoryPath);
+    let directory = joinPath(directoryPath, skill.name);
+    validateDocumentPath(directory);
+    let records = skill.records.map(record => ({ ...record, path: joinPath(directory, record.path) }));
+    for (let record of records) validateDocumentPath(record.path);
+    let manifestPath = joinPath(directory, "SKILL.md");
+    let manifest = records.find(record => record.path === manifestPath);
+    if (!manifest) throw new Error(`Document not found: ${manifestPath}`);
+    parseSkillManifest(manifestPath, decodeStoredContextBody(manifest.contentType, manifest.body));
+
+    let existing = [...this.storage.documents.list({ prefix: directory + "/" })];
+    let occupant = this.storage.documents.get(directory);
+    if (occupant || existing.length > 0) {
+      let imported = new Map(records.map(record => [record.path, record]));
+      let isEarlierImport = !occupant && existing.length === imported.size
+        && existing.every(stored => {
+          let record = imported.get(stored.path);
+          return !!record && record.description === stored.description
+            && record.contentType === stored.contentType && sameStoredBody(record.body, stored.body);
+        });
+      if (isEarlierImport) return manifestPath;
+      throw new Error(`Skill directory already exists: ${directory}`);
+    }
+    this.#assertSkillParent(directoryPath, "move");
+
+    let now = new Date();
+    this.storage.transaction(() => {
+      for (let record of records) {
+        this.#putDocument({ ...record, name: baseName(record.path), lastUpdated: now });
+      }
+      let meta = this.getMetadata();
+      meta.documentCount += records.length;
+      meta.lastUpdated = now;
+      this.storage.metadata.put(meta);
+    });
+    await this.#propagate();
+    return manifestPath;
   }
 
   async renameContextSkill(manifestPath: string, newName: string): Promise<void> {

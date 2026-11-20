@@ -629,7 +629,9 @@ test("workshop-shared's API: the whole graph, and every subscriber's full method
   expect(functions).toBe(1);
   expect([...new Set(subscribers.values())].toSorted()).toEqual([
     "ActionsSubscriber", "AiChatSubscriber", "ConnectedAccountsSubscriber", "ConsoleLogSubscriber",
-    "NotificationSubscriber", "PresenceSubscriber", "UnreadStateSubscriber", "WorkpiecesSubscriber",
+    "NotificationSubscriber", "OutputsSubscriber", "OwnBlueprintsSubscriber", "PresenceSubscriber",
+    "UnreadStateSubscriber", "UserPreferencesSubscriber", "WorkpiecesSubscriber",
+    "WorkspaceSummarySubscriber", "WorkspacesSubscriber",
   ]);
   // A client-implemented interface keeps every method it declares, so the client can implement it
   // from the schema alone.

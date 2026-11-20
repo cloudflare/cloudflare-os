@@ -2,7 +2,6 @@ import { RpcTarget } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
 import type { ApprovalQueue, HookInitiator } from "@gadgets/workshop-shared/gatekeeper";
 import {
-  ScheduleManagementApi,
   ScheduleSessionImpl,
   describeScheduleAccount,
   disableScheduleController,
@@ -246,9 +245,9 @@ describe("ScheduleSessionImpl", () => {
 });
 
 describe("schedule hook controller", () => {
-  it("records the target gadget when enabling the driver", async () => {
+  it("enables the driver with the controller's activation", async () => {
     const initiator = {} as unknown as Fetcher<HookInitiator<ScheduleHookTarget>>;
-    const enable = vi.fn(async () => {});
+    const enable = vi.fn(async (_activation: ScheduleActivation) => {});
     const props = {
       accountId: "account-a",
       workspaceId: "workspace-a",
@@ -258,39 +257,10 @@ describe("schedule hook controller", () => {
       description: "Run the heartbeat callback.",
     };
 
-    await enableScheduleController(
-      props,
-      initiator,
-      { enable },
-      {
-        workspaceId: "workspace-a",
-        gadgetId: 3,
-      },
-    );
+    await enableScheduleController(props, initiator, { enable });
 
     const { accountId: _accountId, ...activation } = props;
-    expect(enable).toHaveBeenCalledWith({ ...activation, gadgetId: 3 }, initiator);
-  });
-
-  it("omits the gadget ID when the hook is not pinned to one", async () => {
-    const initiator = {} as unknown as Fetcher<HookInitiator<ScheduleHookTarget>>;
-    const enable = vi.fn(async (_activation: ScheduleActivation) => {});
-
-    await enableScheduleController(
-      {
-        accountId: "account-a",
-        workspaceId: "workspace-a",
-        scheduleId: "schedule-a",
-        spec: { kind: "interval", everyMs: 60_000, anchorMs: 1_000 },
-        title: "Heartbeat",
-        description: "Run the heartbeat callback.",
-      },
-      initiator,
-      { enable },
-      { workspaceId: "workspace-a" },
-    );
-
-    expect(enable.mock.calls[0]![0]).not.toHaveProperty("gadgetId");
+    expect(enable).toHaveBeenCalledWith(activation, initiator);
   });
 
   it("disables only its immutable workspace schedule", async () => {
@@ -312,23 +282,12 @@ describe("schedule hook controller", () => {
   });
 });
 
-describe("ScheduleManagementApi", () => {
-  it("forwards only read-only list filters to the account driver", async () => {
-    const page = { schedules: [activeSummary("schedule-a")] };
-    const listAccount = vi.fn(async () => page);
-    const api = new ScheduleManagementApi({ listAccount });
-    const options = { query: "brief", statuses: ["active" as const] };
-
-    await expect(api.list(options)).resolves.toBe(page);
-    expect(listAccount).toHaveBeenCalledWith(options);
-  });
-});
-
 describe("Scheduler account", () => {
-  it("advertises the generic Scheduled management app", () => {
-    expect(describeScheduleAccount()).toMatchObject({
+  it("advertises its ambient session", () => {
+    expect(describeScheduleAccount()).toEqual({
+      displayName: "Scheduled Tasks",
+      avatar: expect.any(Object),
       singleton: { tsType: "ScheduleSession" },
-      providesUi: { title: "Scheduled" },
     });
   });
 });

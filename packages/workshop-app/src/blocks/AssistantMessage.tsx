@@ -1,4 +1,4 @@
-import { Markdown } from '@/components/Markdown'
+import { Markdown } from '@gadgets/ui'
 import { InlineView } from './InlineView'
 import { MessageBubble, type MessageBubbleProps, type MessageDetails, type MessageJoins } from './MessageBubble'
 

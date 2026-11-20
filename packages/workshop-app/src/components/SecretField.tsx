@@ -1,6 +1,5 @@
 import { ArrowCounterClockwiseIcon } from '@phosphor-icons/react'
-import { Button } from './Button'
-import { TextField } from './TextField'
+import { Button, TextField } from '@gadgets/ui'
 
 export type SecretFieldProps = (
   | { label: string; 'aria-label'?: undefined }

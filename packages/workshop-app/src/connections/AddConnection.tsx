@@ -5,15 +5,25 @@ import type { ResourceDescription, SupportedResource } from '@gadgets/workshop-s
 import { AddConnectionDialog, type ConnectionChoice } from '@/blocks/AddConnectionDialog'
 import { ChatModelDialog } from '@/blocks/ChatModelDialog'
 import { useBindableModels } from '@/gadgets/useBindableModels'
-import { Dialog } from '@/components/Dialog'
+import { Dialog } from '@gadgets/ui'
 import { useApi } from '@/rpc/ApiContext'
 import { resourceGroups, resourceOfUrl } from './connectionList'
 import { ConnectResource } from './SetUpConnection'
 import { useConnections } from './useConnections'
 
+/**
+ * How a connection was made: to a resource through one of the user's accounts (`newGatekeeper`),
+ * or to one of their models (`newAiModelGatekeeper`), so that it can be made again in another
+ * workspace.
+ */
+export type ConnectionSource = { accountId: number; resourceUrl: string } | { modelId: string }
+
 /** A connection just made in a workspace (`newGatekeeper`), as much of it as is shown. */
 export type AddedConnection = {
   gatekeeperId: number
+  /** The workspace it was made in, whose connection `gatekeeperId` is. */
+  workspaceId: string
+  source: ConnectionSource
   description: ResourceDescription
   vendorId: string
   service: { name: string; logoUrl?: string; color?: string }
@@ -120,7 +130,7 @@ export const AddConnection = memo(function AddConnection({ workspaceId, open, on
             try {
               const [gatekeeperId, description] = await Promise.all([gatekeeper.getId(), gatekeeper.describe()])
               const name = models?.models.find(({ id }) => id === modelId)?.name ?? description.title
-              await onAdded({ gatekeeperId, description: { ...description, title: name }, vendorId: MODEL_KEY, service: MODEL_SERVICE, kind: 'AI model' })
+              await onAdded({ gatekeeperId, workspaceId, source: { modelId }, description: { ...description, title: name }, vendorId: MODEL_KEY, service: MODEL_SERVICE, kind: 'AI model' })
             } finally {
               gatekeeper[Symbol.dispose]()
               overseer[Symbol.dispose]()
@@ -146,7 +156,7 @@ export const AddConnection = memo(function AddConnection({ workspaceId, open, on
               const [gatekeeperId, description] = await Promise.all([gatekeeper.getId(), gatekeeper.describe()])
               // What was chosen, which in a group may be any of its kinds.
               const kind = resourceOfUrl(chosen.kinds, resourceUrl)?.title ?? chosen.title
-              await onAdded({ gatekeeperId, description, vendorId: chosen.vendorId, service: chosen.service, kind })
+              await onAdded({ gatekeeperId, workspaceId, source: { accountId, resourceUrl }, description, vendorId: chosen.vendorId, service: chosen.service, kind })
             } finally {
               gatekeeper[Symbol.dispose]()
               overseer[Symbol.dispose]()

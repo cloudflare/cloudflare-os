@@ -1,6 +1,5 @@
 import type { AiChatMetadata } from '@gadgets/workshop-shared/api'
-import type { ListFilter, ListOrder } from '@/components/listView'
-import type { ListViewSpec } from '@/hooks/useListView'
+import type { ListFilter, ListOrder, ListViewSpec } from '@gadgets/ui'
 
 type Chat = AiChatMetadata
 

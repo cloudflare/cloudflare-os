@@ -1,10 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import { XIcon } from '@phosphor-icons/react'
 import { COMPACTION_TRIGGER_RATIO, type AdminModelView, type AiModelProvider, type GatewayModelSettings, type ReasoningLevel } from '@gadgets/workshop-shared/api'
-import { Button } from '@/components/Button'
-import { Dialog } from '@/components/Dialog'
-import { Select } from '@/components/Select'
-import { TextField } from '@/components/TextField'
+import { Button, Dialog, Select, TextField } from '@gadgets/ui'
 import { AllowedModelsEditor } from './AllowedModelsEditor'
 import { builtInReasoningLabel, parseTokenLimit, REASONING_LEVEL_LABELS, settingsWith, tokenCount, type AllowedModelSuggestion } from './modelForm'
 

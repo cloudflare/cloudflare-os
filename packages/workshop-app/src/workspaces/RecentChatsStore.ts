@@ -1,25 +1,51 @@
-import type { AiChatMetadata, ChatReadState } from '@gadgets/workshop-shared/api'
-import type { ChatTail, WorkspaceChatsReading } from './recentChats'
+import { RpcTarget, type RpcStub } from 'capnweb'
+import type { AuthenticatedApi, ChatReadState, UnreadStateSubscriber, UnreadThread, UserUnreadState } from '@gadgets/workshop-shared/api'
+import { keepSubscribed } from '@/rpc/keepSubscribed'
 import { recentChatKey } from './recentChats'
 
-/** What has been read of the viewer's chats for the sidebar: each workspace's, and the last messages of some. */
+/** The viewer's tracked chats, each with its latest message, as the account lists them, by key (`recentChatKey`). */
 export type RecentChatsSnapshot = {
-  readings: ReadonlyMap<string, WorkspaceChatsReading>
-  tails: ReadonlyMap<string, ChatTail>
-  /** Every workspace asked for has answered, or could not. */
+  threads: ReadonlyMap<string, UnreadThread>
+  /** The account has said: with none listed, there are none. */
   known: boolean
 }
 
 /**
- * The viewer's chats as the sidebar's sweep reads them (`AgentsWaitingProvider`), a workspace at
- * a time, with the last messages of some (`recentChatsOf` says which are listed). What the viewer
- * changes of a chat (muted, read) shows at once (`markChat`), until the workspace is read again.
- * Observable through `subscribe`/`snapshot`.
+ * What the server calls with the viewer's recent chats (the `"recent"` scope, whose rows are
+ * `UnreadThread`s). A class, because the server must receive a single stub for the object.
+ */
+class RecentListener extends RpcTarget implements UnreadStateSubscriber {
+  constructor(
+    private readonly onState: (state: UserUnreadState) => void,
+    private readonly onChat: (workspaceId: string, chatId: number, chat: ChatReadState | null) => void,
+    private readonly onReleased: () => void,
+  ) {
+    super()
+  }
+
+  async updated(state: UserUnreadState) {
+    this.onState(state)
+  }
+
+  async summaryUpdated() {}
+
+  async chatUpdated(workspaceId: string, chatId: number, chat: ChatReadState | null) {
+    this.onChat(workspaceId, chatId, chat)
+  }
+
+  [Symbol.dispose]() {
+    this.onReleased()
+  }
+}
+
+/**
+ * The viewer's recent chats across their workspaces, live from the account
+ * (`subscribeToUnreadState("recent")`), which needs no workspace opened. What the viewer changes of
+ * a chat (muted) shows at once (`markChat`), until the account says what it came to. Observable
+ * through `subscribe`/`snapshot`.
  */
 export class RecentChats {
-  #snapshot: RecentChatsSnapshot = { readings: new Map(), tails: new Map(), known: false }
-  #expected = new Set<string>()
-  #answered = new Set<string>()
+  #snapshot: RecentChatsSnapshot = { threads: new Map(), known: false }
   #listeners = new Set<() => void>()
 
   subscribe = (listener: () => void) => {
@@ -31,56 +57,46 @@ export class RecentChats {
 
   snapshot = () => this.#snapshot
 
-  /** The workspaces that will be asked: until each has answered, or could not, the list is not known whole. */
-  expect(ids: readonly string[]) {
-    this.#expected = new Set(ids)
-    this.#publish({})
-  }
-
-  /** What a workspace said of its chats, with the last messages of those read with it. */
-  set(workspaceId: string, reading: WorkspaceChatsReading, tails: ReadonlyMap<number, ChatTail> = new Map()) {
-    this.#answered.add(workspaceId)
-    const nextTails = new Map(this.#snapshot.tails)
-    for (const [chatId, tail] of tails) nextTails.set(recentChatKey(workspaceId, chatId), tail)
-    this.#publish({ readings: new Map(this.#snapshot.readings).set(workspaceId, reading), tails: nextTails })
-  }
-
-  /** A workspace could not be read: what it said before stays. */
-  failed(workspaceId: string) {
-    this.#answered.add(workspaceId)
-    this.#publish({})
-  }
-
-  /** Whether a chat's last messages are to be read: never yet, or not since it was last active. */
-  needsTail(workspaceId: string, chat: AiChatMetadata) {
-    return this.#snapshot.tails.get(recentChatKey(workspaceId, chat.id))?.lastActive !== chat.lastActive.getTime()
+  /** Follows the account's recent chats until the function given back is called. */
+  start(api: RpcStub<AuthenticatedApi>): () => void {
+    return keepSubscribed((released, current) => api.subscribeToUnreadState('recent', new RecentListener(
+      (state) => {
+        if (!current()) return
+        const threads = new Map((state.chats as UnreadThread[]).map((thread) => [recentChatKey(thread.workspaceId, thread.chatId), thread]))
+        this.#publish({ threads, known: true })
+      },
+      (workspaceId, chatId, chat) => {
+        if (!current()) return
+        const threads = new Map(this.#snapshot.threads)
+        // Only a thread says its latest message; a row without one says nothing to list it by.
+        if (chat && 'latestActivityAt' in chat) threads.set(recentChatKey(workspaceId, chatId), chat as UnreadThread)
+        else threads.delete(recentChatKey(workspaceId, chatId))
+        this.#publish({ threads })
+      },
+      released,
+    )))
   }
 
   /**
    * Shows a change the viewer made to a chat's read state, as the server has been asked for it,
-   * until the workspace is read again. Returns how it was, to put back should the server refuse.
+   * until the account says otherwise. Returns how it was, to put back should the server refuse.
    */
-  markChat(workspaceId: string, chatId: number, change: Partial<ChatReadState>): ChatReadState | undefined {
-    const reading = this.#snapshot.readings.get(workspaceId)
-    if (!reading) return undefined
-    const was = reading.readStates.find((state) => state.chatId === chatId)
-    const next: ChatReadState = { ...(was ?? { workspaceId, chatId, unreadMessageCount: 0, readThroughSequence: -1 }), ...change }
-    const readStates = was ? reading.readStates.map((state) => (state === was ? next : state)) : [...reading.readStates, next]
-    this.#publish({ readings: new Map(this.#snapshot.readings).set(workspaceId, { ...reading, readStates }) })
+  markChat(workspaceId: string, chatId: number, change: Partial<ChatReadState>): UnreadThread | undefined {
+    const key = recentChatKey(workspaceId, chatId)
+    const was = this.#snapshot.threads.get(key)
+    if (!was) return undefined
+    this.#publish({ threads: new Map(this.#snapshot.threads).set(key, { ...was, ...change }) })
     return was
   }
 
-  /** Puts a chat's read state back as it was (`markChat`'s answer), as after the server refused. */
-  restoreChat(workspaceId: string, chatId: number, was: ChatReadState | undefined) {
-    const reading = this.#snapshot.readings.get(workspaceId)
-    if (!reading) return
-    const others = reading.readStates.filter((state) => state.chatId !== chatId)
-    this.#publish({ readings: new Map(this.#snapshot.readings).set(workspaceId, { ...reading, readStates: was ? [...others, was] : others }) })
+  /** Puts a chat's row back as it was (`markChat`'s answer), as after the server refused. */
+  restoreChat(workspaceId: string, chatId: number, was: UnreadThread | undefined) {
+    if (!was) return
+    this.#publish({ threads: new Map(this.#snapshot.threads).set(recentChatKey(workspaceId, chatId), was) })
   }
 
-  #publish(change: Partial<Omit<RecentChatsSnapshot, 'known'>>) {
-    const known = [...this.#expected].every((id) => this.#answered.has(id))
-    this.#snapshot = { ...this.#snapshot, ...change, known }
+  #publish(change: Partial<RecentChatsSnapshot>) {
+    this.#snapshot = { ...this.#snapshot, ...change }
     for (const listener of this.#listeners) listener()
   }
 }

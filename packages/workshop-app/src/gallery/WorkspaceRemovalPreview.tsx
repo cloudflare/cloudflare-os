@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { RemoveWorkspaceDialog, type RemoveWorkspaceDialogProps } from '@/blocks/RemoveWorkspaceDialog'
 import { WorkspaceMoreMenu } from '@/blocks/WorkspaceMoreMenu'
-import { Button } from '@/components/Button'
+import { Button } from '@gadgets/ui'
 import { useReport } from './previewState'
 import { Section } from './Section'
 

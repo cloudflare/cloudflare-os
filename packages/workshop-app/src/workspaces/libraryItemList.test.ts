@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AsideItem } from '@/aside/asideItems'
-import { narrowList } from '@/components/listView'
+import { narrowList } from '@gadgets/ui'
 import { libraryItemList } from './libraryItemList'
 
 const item = (workpieceId: number, title: string, noun?: string): AsideItem => ({

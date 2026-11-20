@@ -37,7 +37,7 @@ export function typeText(shape: ApiShape): string {
     case "union": {
       return shape.branches.toSorted((a, b) => nullishLast(a) - nullishLast(b)).map(wrapped).join(" | ");
     }
-    // A gatekeeper app UI's names are prefixed with its vendor id in the table (`scheduler:ScheduleStatus`);
+    // A gatekeeper app UI's names are prefixed with its vendor id in the table (`context:ContextApi`);
     // no TypeScript name has a `:`, and the text shows the name its declarations use.
     case "ref": return shape.name.slice(shape.name.indexOf(":") + 1);
     case "typedArray": return shape.name;

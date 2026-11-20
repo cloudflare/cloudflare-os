@@ -1,15 +1,11 @@
 import { useState, type ReactNode } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
-import { Avatar } from '@/components/Avatar'
-import { EditableTitle } from '@/components/EditableTitle'
+import { Avatar, CardAction, EditableTitle, LIST_ACTION, LinkButton, Tooltip } from '@gadgets/ui'
 import { FormatIcon, type FormatIconName } from '@/components/FormatIcon'
-import { LinkButton } from '@/components/LinkButton'
-import { Tooltip } from '@/components/Tooltip'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
-import type { WorkspaceLook } from '@/components/workspaceLook'
-import { CardAction } from './CardAction'
+import type { WorkspaceLook } from '@/prefs/preferenceFields'
 import { LibraryMoreMenu, type LibraryMoreActions } from './LibraryMoreMenu'
-import { LIST_ACTION, StarButton } from './StarButton'
+import { StarButton } from './StarButton'
 import { TemplatePreview } from './TemplatePreview'
 import { WaitingBadge } from './WaitingBadge'
 
@@ -45,10 +41,10 @@ const CARD = 'flex flex-1 flex-col rounded-3xl p-1.5 text-left text-base group-h
 const TOOLTIP_DELAY = 150
 
 /**
- * One output on the Library page, as a card, as a template is in a store's most used
- * (`TemplateCard`): a picture of what it is (`TemplatePreview`), with the icon of the workspace it
- * is in in its corner, which goes there, and its type's beside that, then its title, and at its
- * end whose it is, as their picture, and when it was. Each of those says what it is when pointed
+ * One output on the Library page, as a card, as a template is one (`TemplateCard`): a picture of
+ * what it is (`TemplatePreview`), with the icon of the workspace it is in in its corner, which goes
+ * there, and its type's beside that, then its title, and at its end whose it is, as their picture,
+ * and when it was. Each of those says what it is when pointed
  * at. Pointed at, more and its star show in its corner; a starred one keeps its star. Renamed from
  * more, its title is typed where it is, and the card opens nothing until that is done. On a narrow
  * screen, where two cards share a line, more is left out, which the output's own page has.

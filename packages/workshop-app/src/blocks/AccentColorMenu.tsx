@@ -1,7 +1,7 @@
 import { useRef } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
 import { EyedropperIcon } from '@phosphor-icons/react'
-import { DropdownMenu } from '@/components/DropdownMenu'
+import { DropdownMenu } from '@gadgets/ui'
 
 /** One of the colours offered, by what it is kept as: a hex colour, or `''` for the app's own. */
 export type AccentColorPreset = { label: string; value: string }

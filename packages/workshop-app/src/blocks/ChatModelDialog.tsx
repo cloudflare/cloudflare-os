@@ -1,9 +1,6 @@
 import { useState } from 'react'
 import { BrainIcon, XIcon } from '@phosphor-icons/react'
-import { Banner } from '@/components/Banner'
-import { Button } from '@/components/Button'
-import { Dialog } from '@/components/Dialog'
-import { Select } from '@/components/Select'
+import { Banner, Button, Dialog, Select } from '@gadgets/ui'
 import type { ModelChoice } from './ModelBindingDialog'
 
 export type ChatModelDialogProps = {

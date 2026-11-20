@@ -1,9 +1,6 @@
-import { createElement } from 'react'
 import type { GatekeeperVendorInfo } from '@gadgets/workshop-shared/api'
-import { getResourceTypeId, matchesResourceUrlPattern, type AccountDescription, type SupportedResource, type VendorDescription } from '@gadgets/workshop-shared/gatekeeper'
-import type { ArrangedGroup, ListFilter, ListOrder } from '@/components/listView'
-import type { ListViewSpec } from '@/hooks/useListView'
-import { primaryCategory, SERVICE_CATEGORIES, serviceCategories } from './serviceCategories'
+import { findResourceType, getResourceTypeId, matchesResourceUrlPattern, type AccountDescription, type SupportedResource, type VendorDescription } from '@gadgets/workshop-shared/gatekeeper'
+import type { ArrangedGroup, ListFilter, ListOrder, ListViewSpec } from '@gadgets/ui'
 
 /** An account of the user's on a service, as the backend says it is connected. */
 export type ConnectedAccount = {
@@ -156,15 +153,22 @@ export const resourceOfUrl = (all: readonly SupportedResource[], url: string) =>
 }
 
 /**
- * The account to create a resource of `typeUrlPattern` in without asking: the user's only one on
+ * The kind a creation makes (its creation spec's `resourceTypeId`): by its id, or, for one queued
+ * before stable ids, which names it by its pattern (`typeUrlPattern`), by that pattern exactly.
+ */
+export const creationKindOf = (resources: readonly SupportedResource[], resourceTypeId: string) =>
+  findResourceType(resources, resourceTypeId) ?? findResourceType(resources, undefined, resourceTypeId)
+
+/**
+ * The account to create a resource of `resourceTypeId` in without asking: the user's only one on
  * `vendorId` that can, signed in and with access to the kind. Undefined when there is a choice to
  * make, or none to make it with, which the creation dialog then asks.
  */
-export const creationAccountOf = (accounts: readonly ConnectedAccount[], vendorId: string, typeUrlPattern: string) => {
+export const creationAccountOf = (accounts: readonly ConnectedAccount[], vendorId: string, resourceTypeId: string) => {
   const usable = accounts.filter((account) => {
     if (account.vendorId !== vendorId || !account.credentialsValid) return false
-    const kind = account.supportedResources.find(({ urlPattern }) => urlPattern === typeUrlPattern)
-    return kind?.grantable !== true || isGranted(account.description.grantedResourceUrlPatterns, typeUrlPattern)
+    const kind = creationKindOf(account.supportedResources, resourceTypeId)
+    return kind?.grantable !== true || isGranted(account.description.grantedResourceUrlPatterns, kind.urlPattern)
   })
   return usable.length === 1 ? usable[0].id : undefined
 }
@@ -179,35 +183,18 @@ const byName = (a: Connection, b: Connection) =>
 const group = (key: string, label: string, connections: Connection[]): ArrangedGroup<Connection> => ({ key, label, entries: connections.map((value) => ({ value })) })
 
 /**
- * The services that could be connected, under the kind of service each is most, as fine as there are
- * enough of them for: a category with `enough` of them is a group of its own, and the rest, with
- * those that have no category, are gathered after them. While no category has enough, they are all
- * one group, under what they all are.
- */
-const byCategory = (available: Connection[], enough: number): ArrangedGroup<Connection>[] => {
-  const categories = SERVICE_CATEGORIES
-    .map((category) => ({ category, within: available.filter(({ vendorId }) => primaryCategory(vendorId) === category) }))
-    .filter(({ within }) => within.length >= enough)
-  const grouped = new Set(categories.flatMap(({ within }) => within))
-  return [
-    ...categories.map(({ category, within }) => group(`category:${category.id}`, category.label, within)),
-    group('available', categories.length > 0 ? 'More' : 'Available', available.filter((connection) => !grouped.has(connection))),
-  ]
-}
-
-/**
  * What the user has to see to first, then what they have, each a group of its own however few it
- * has, as each asks something else of them; then what they could have, by category.
+ * has, as each asks something else of them; then what they could have.
  */
 const BY_STANDING: ListOrder<Connection> = {
   id: 'standing',
   label: 'Status',
-  arrange: (connections, enough) => {
+  arrange: (connections) => {
     const standing = (status: ReturnType<typeof connectionStatus>) => connections.filter((connection) => connectionStatus(connection) === status).toSorted(byName)
     return [
       group('expired', 'Needs attention', standing('expired')),
       group('connected', 'Connected', standing('connected')),
-      ...byCategory(standing('available'), enough),
+      group('available', 'Available', standing('available')),
     ].filter(({ entries }) => entries.length > 0)
   },
 }
@@ -219,37 +206,18 @@ const STATUS_FILTERS: ListFilter<Connection>[] = [
 ]
 
 /**
- * A filter for each kind of service that one of `connections` is, any of the kinds it is and not
- * only the one it is listed under, once there is more than one kind to choose between.
- */
-const categoryFilters = (connections: Connection[]): ListFilter<Connection>[] => {
-  const present = new Set(connections.flatMap(({ vendorId }) => serviceCategories(vendorId)))
-  return present.size < 2
-    ? []
-    : SERVICE_CATEGORIES.filter((category) => present.has(category)).map(({ id, label, icon }) => ({
-        id: `category:${id}`,
-        label,
-        facet: 'category',
-        icon: createElement(icon, { className: 'size-4' }),
-        test: ({ vendorId }) => serviceCategories(vendorId).some((category) => category.id === id),
-      }))
-}
-
-/**
  * How the Connections page is ordered, narrowed and searched: by where each connection stands,
- * narrowed by that and by the kinds of service it is, and found by its service's name, what that
- * says of itself, its categories, what it gives access to, and whose account it is. It starts as
+ * narrowed by that, and found by its service's name, what that says of itself, what it gives access to, and whose account it is. It starts as
  * cards, as a store's apps are shown.
  */
-export const connectionList = (connections: Connection[]): ListViewSpec<Connection, ListOrder<Connection>> => ({
+export const connectionList = (): ListViewSpec<Connection, ListOrder<Connection>> => ({
   orders: [BY_STANDING],
-  filters: [...STATUS_FILTERS, ...categoryFilters(connections)],
-  facetMenus: { category: 'Category' },
+  filters: STATUS_FILTERS,
   startsAs: 'cards',
   searchText: (connection) => {
     const { vendor, resources } = connection
     const account = connection.kind === 'account' ? connection.account.description : undefined
-    return [vendor.displayName, vendor.tagline, vendor.description, ...serviceCategories(connection.vendorId).map(({ label }) => label), ...resources.map(({ title }) => title), account?.displayName, account?.uniqueName]
+    return [vendor.displayName, vendor.tagline, vendor.description, ...resources.map(({ title }) => title), account?.displayName, account?.uniqueName]
       .filter(Boolean)
       .join(' ')
   },

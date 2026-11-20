@@ -1,10 +1,8 @@
 import { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, type ReactNode, type Ref } from 'react'
 import { ArrowDownIcon } from '@phosphor-icons/react'
-import { Button } from '@/components/Button'
-import { isMotionOff, readMotionLevel } from '@/prefs/motion'
+import { Button, isMotionOff, readMotionLevel, useScrollFadeFallback } from '@gadgets/ui'
 import { MessagePage, type MessageListItem, type MessageListPage } from './MessagePage'
 import { useMessageScroll } from './useMessageScroll'
-import { useScrollFadeFallback } from './useScrollFadeFallback'
 
 const VIRTUAL_PAGE_SIZE = 50
 

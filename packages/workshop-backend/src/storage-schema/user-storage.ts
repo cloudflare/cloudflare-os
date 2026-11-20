@@ -6,8 +6,8 @@
 
 import { createTypedStorage, collection } from "@gadgets/typed-storage";
 import type {
-  AiChatAuthorInfo, AiModelConfig, BlueprintMetadata, BlueprintOutput,
-  WorkspaceMetadata, WorkpieceId, UserNotification, ChatTimelineHead,
+  AiChatAuthorInfo, AiModelConfig, BlueprintMetadata, BlueprintOutput, BlueprintUnpublishedChanges,
+  WorkspaceMetadata, WorkpieceId, UserNotification, ChatTimelineHead, WorkspaceSummary, UserPreferences,
 } from "@gadgets/workshop-shared/api";
 import { chatKey } from "./overseer-storage.js";
 import type { AccountDescription, GatekeeperUser } from "@gadgets/workshop-shared/gatekeeper";
@@ -103,8 +103,18 @@ export type BlueprintUserRecord = {
   id: string;
   metadata: BlueprintMetadata;
   gadgetId?: string;
+  /**
+   * The gadget in workspace `gadgetId` the blueprint is published from
+   * (BlueprintSource.gadgetId). Absent on records last pushed before it was sent.
+   */
+  workpieceId?: WorkpieceId;
   /** Source of truth for whether the blueprint is featured deployment-wide. */
   featured?: boolean;
+  /**
+   * Present while its gadget has something it has not released
+   * (BlueprintUserSummary.unpublishedChanges), as the workspace `gadgetId` names last pushed it.
+   */
+  unpublishedChanges?: BlueprintUnpublishedChanges;
 };
 
 type LibraryBlueprintRecord = {
@@ -117,6 +127,11 @@ type LibraryBlueprintRecord = {
 export type GadgetRecord = WorkspaceMetadata & {
   created: Date;
   lastActive?: Date;  // if missing, gadget is provisional
+  /** The source workspace's title revision, present on versioned shared listings. */
+  sharedTitleRev?: number;
+  /** On a shared listing, the source workspace's access revision its outputs were last scoped at
+   * (see UserDurableObject.syncWorkspaceListing()). */
+  sharedAccessRev?: number;
   // If we're not the gadget owner (it was shared with us), `owner` is set (inherited from
   // WorkspaceMetadata).
 };
@@ -208,7 +223,7 @@ export type QueuedChatNotification = UserNotification & {
 
 /**
  * One output of a workspace, as pushed into a user's output index by the Overseer that owns it
- * (see `syncWorkspaceOutputs()`). Carries only what the workspace itself knows: its title,
+ * (see `syncWorkspaceListing()`). Carries only what the workspace itself knows: its title,
  * activity time and ownership are joined in from the `gadgets` collection on read, so they can't
  * go stale here.
  */
@@ -288,13 +303,19 @@ export function makeUserStorage(storage: DurableObjectStorage) {
       }),
       // Outputs of every workspace in `gadgets`, mirrored here by each workspace's Overseer so the
       // Outputs page is one cheap read of the user's own DO. Entries are meaningful only while the
-      // corresponding `gadgets` record exists; `syncWorkspaceOutputs()` and the `gadgets` deletion
+      // corresponding `gadgets` record exists; `syncWorkspaceListing()` and the `gadgets` deletion
       // paths keep the two in step.
       outputs: collection<OutputRecord>()({
         primaryKey: record => `${record.workspaceId}:${record.workpieceId}`,
         nonUniqueIndexes: {
           byWorkspace(record: OutputRecord) { return record.workspaceId; },
         },
+      }),
+      // Each listed workspace's summary (see AuthenticatedApi.subscribeToWorkspaceSummaries()),
+      // pushed by its Overseer to the owner and to "build" collaborators. Kept only while the
+      // workspace is listed for building: the `gadgets` subscription drops it otherwise.
+      workspaceSummaries: collection<WorkspaceSummary>()({
+        primaryKey: "workspaceId",
       }),
     },
     singletons: {
@@ -332,6 +353,9 @@ export function makeUserStorage(storage: DurableObjectStorage) {
 
       nextAccountId: 0,
       pinnedBlueprints: <string[]>[],
+
+      // What the user last chose in the app (see AuthenticatedApi.subscribeToPreferences()).
+      preferences: <UserPreferences>{},
 
       // Per-user free-tier daily LLM-call counter (only used when ENABLE_CLOUDFLARE_LIMITS is on).
       // Stores the current UTC day and the calls made that day; a stale `day` implicitly resets the

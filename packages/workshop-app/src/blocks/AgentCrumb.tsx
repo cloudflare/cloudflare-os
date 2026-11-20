@@ -1,5 +1,4 @@
-import { Button } from '@/components/Button'
-import { HeaderBubble } from '@/components/HeaderBubble'
+import { Button, HeaderBubble } from '@gadgets/ui'
 import { AgentMark } from './AgentMark'
 
 export type AgentCrumbProps = {

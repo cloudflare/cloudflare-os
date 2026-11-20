@@ -48,6 +48,8 @@ async function withImpl(
   await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
     let impl = (instance as unknown as { impl: any }).impl;
     impl.ownerId = OWNER_ID;
+    // Known, so that a listing push asks the owner's user object nothing but to take it.
+    impl.ownerProfileId = "owner-profile";
     let restarts: string[] = [];
     impl.scheduleAccessRestart = async (reason: string) => { restarts.push(reason); };
     // streamGeneration is the instance's creation time, so pinning the clock pins its age.
@@ -67,8 +69,7 @@ function rejectUserCalls(impl: any, error: unknown): string[] {
   };
   let user = {
     id: { toString: () => OWNER_ID },
-    setWorkspaceLastActive: reject("setWorkspaceLastActive"),
-    syncWorkspaceOutputs: reject("syncWorkspaceOutputs"),
+    syncWorkspaceListing: reject("syncWorkspaceListing"),
     listProvidedAccounts: reject("listProvidedAccounts"),
     listModels: reject("listModels"),
     getChatContext: reject("getChatContext"),
@@ -83,9 +84,19 @@ function logged(spy: ReturnType<typeof vi.spyOn>, event: string): Record<string,
       .filter(entry => entry.event === event);
 }
 
-// The last-active bump is fire-and-forget; give its rejection a turn to be handled.
+// A listing push is fire-and-forget; give its rejection a turn to be handled.
 function settle(): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, 0));
+}
+
+// Pushes the owner's listing again (see OverseerImpl.resyncListingTo()) and waits for the call it
+// makes, and for its rejection to be handled.
+async function pushListing(impl: { resyncListingTo(userId: string): void }, calls: string[]): Promise<void> {
+  let pushes = () => calls.filter(call => call === "syncWorkspaceListing").length;
+  let sent = pushes();
+  impl.resyncListingTo(OWNER_ID);
+  await vi.waitFor(() => expect(pushes()).toBe(sent + 1));
+  await settle();
 }
 
 describe("restarting a workspace whose loop counter is exhausted", () => {
@@ -93,37 +104,17 @@ describe("restarting a workspace whose loop counter is exhausted", () => {
     vi.restoreAllMocks();
   });
 
-  it("a refused last-active bump restarts the workspace", () => withImpl(async (impl, restarts) => {
-    let errors = vi.spyOn(console, "error").mockImplementation(() => {});
-    let warnings = vi.spyOn(console, "warn").mockImplementation(() => {});
-    let calls = rejectUserCalls(impl, new Error(LOOP_LIMIT_MESSAGE));
-
-    impl.bumpLastActive();
-    await settle();
-
-    expect(calls).toEqual(["setWorkspaceLastActive"]);
-    expect(restarts).toEqual([RESTART_REASON]);
-    // The restart is an error-level event carrying the rejection; the bump's own failure log is
-    // still written.
-    expect(logged(errors, "workspace.loop.limit.restart")).toEqual([expect.objectContaining({
-      component: "workshop.overseer",
-      gadgetId: impl.ctx.id.toString(),
-      error: expect.stringContaining(LOOP_LIMIT_MESSAGE),
-    })]);
-    expect(logged(warnings, "gadget.last.active.bump.failed")).toHaveLength(1);
-  }));
-
-  it("a refused outputs sync restarts the workspace", () => withImpl(async (impl, restarts) => {
+  it("a refused listing push restarts the workspace", () => withImpl(async (impl, restarts) => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     let warnings = vi.spyOn(console, "warn").mockImplementation(() => {});
     let calls = rejectUserCalls(impl, new Error(LOOP_LIMIT_MESSAGE));
 
-    // The sync still reports that the index did not take the snapshot, and still logs why.
-    expect(await impl.syncOutputsTo(impl.users.get(OWNER_ID))).toBe(false);
+    // The push still logs why it failed.
+    await pushListing(impl, calls);
 
-    expect(calls).toEqual(["syncWorkspaceOutputs"]);
+    expect(calls).toEqual(["syncWorkspaceListing"]);
     expect(restarts).toEqual([RESTART_REASON]);
-    expect(logged(warnings, "workspace.outputs.sync.failed")).toHaveLength(1);
+    expect(logged(warnings, "workspace.listing.push.failed")).toHaveLength(1);
   }));
 
   it("a refused call through the workspace's owner stub restarts it",
@@ -200,16 +191,15 @@ describe("restarting a workspace whose loop counter is exhausted", () => {
 
     for (let rejection of rejections) {
       let calls = rejectUserCalls(impl, rejection);
-      expect(await impl.syncOutputsTo(impl.users.get(OWNER_ID))).toBe(false);
+      await pushListing(impl, calls);
       await expect(impl.ensureAmbientCapsules()).rejects.toBe(rejection);
-      expect(calls).toEqual(["syncWorkspaceOutputs", "listProvidedAccounts"]);
+      expect(calls).toEqual(["syncWorkspaceListing", "listProvidedAccounts"]);
     }
     expect(restarts).toEqual([]);
     expect(logged(errors, "workspace.loop.limit.restart")).toEqual([]);
 
     // The same routes do restart on the loop-limit rejection.
-    rejectUserCalls(impl, new Error(LOOP_LIMIT_MESSAGE));
-    expect(await impl.syncOutputsTo(impl.users.get(OWNER_ID))).toBe(false);
+    await pushListing(impl, rejectUserCalls(impl, new Error(LOOP_LIMIT_MESSAGE)));
     expect(restarts).toEqual([RESTART_REASON]);
   }));
 
@@ -219,18 +209,16 @@ describe("restarting a workspace whose loop counter is exhausted", () => {
     let calls = rejectUserCalls(impl, new Error(LOOP_LIMIT_MESSAGE));
 
     // An instance this young may itself be the product of a restart that did not help.
-    expect(await impl.syncOutputsTo(impl.users.get(OWNER_ID))).toBe(false);
+    await pushListing(impl, calls);
     await expect(impl.ensureAmbientCapsules()).rejects.toThrow(/looped back/);
-    impl.bumpLastActive();
-    await settle();
 
-    expect(calls).toEqual(["syncWorkspaceOutputs", "listProvidedAccounts", "setWorkspaceLastActive"]);
+    expect(calls).toEqual(["syncWorkspaceListing", "listProvidedAccounts"]);
     expect(restarts).toEqual([]);
     expect(logged(errors, "workspace.loop.limit.restart")).toEqual([]);
 
     // Nothing was spent on the refusals: once the instance is old enough, the next one restarts.
     vi.spyOn(Date, "now").mockReturnValue(impl.streamGeneration + MIN_AGE_MS);
-    expect(await impl.syncOutputsTo(impl.users.get(OWNER_ID))).toBe(false);
+    await pushListing(impl, calls);
     expect(restarts).toEqual([RESTART_REASON]);
   }, MIN_AGE_MS - 1));
 
@@ -242,15 +230,14 @@ describe("restarting a workspace whose loop counter is exhausted", () => {
 
     // Every call fails while the counter is exhausted, and they arrive faster than the restart.
     await Promise.all([
-      impl.syncOutputsTo(impl.users.get(OWNER_ID)),
-      impl.syncOutputsTo(impl.users.get(OWNER_ID)),
+      pushListing(impl, calls),
       expect(impl.ensureAmbientCapsules()).rejects.toThrow(/looped back/),
     ]);
     impl.bumpLastActive();
     await settle();
-    expect(await impl.syncOutputsTo(impl.users.get(OWNER_ID))).toBe(false);
+    await pushListing(impl, calls);
 
-    expect(calls).toHaveLength(5);
+    expect(calls).toHaveLength(4);
     expect(restarts).toEqual([RESTART_REASON]);
     expect(logged(errors, "workspace.loop.limit.restart")).toHaveLength(1);
   }));

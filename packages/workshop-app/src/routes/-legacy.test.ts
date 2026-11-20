@@ -28,7 +28,8 @@ describe('legacyTarget', () => {
   it('renames the old pages', () => {
     expect(legacyTarget('/blueprints', {})).toEqual({ href: '/library/templates' })
     expect(legacyTarget('/blueprint/b-1', {})).toEqual({ href: '/library/templates/b-1' })
-    expect(legacyTarget('/gatekeepers/github', {})).toEqual({ href: '/connections' })
+    expect(legacyTarget('/gatekeepers', {})).toEqual({ href: '/connections' })
+    expect(legacyTarget('/gatekeepers/example', {})).toEqual({ href: '/apps/example' })
     expect(legacyTarget('/profile/', {})).toEqual({ href: '/settings' })
   })
 })

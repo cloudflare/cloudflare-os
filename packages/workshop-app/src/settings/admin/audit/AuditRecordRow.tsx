@@ -1,7 +1,7 @@
 import { useId, useState, type ReactNode } from 'react'
 import { CaretRightIcon } from '@phosphor-icons/react'
 import type { AdminAccessRecord, AdminAuditRecord, AdminSettingChange, AdminUserAccessRecord } from '@gadgets/workshop-shared/api'
-import { Tag } from '@/components/Tag'
+import { Tag } from '@gadgets/ui'
 import { targetUserOf, type AuditFilter } from './auditFilter'
 import { ACCESS_LEVEL_NAMES, changeName, excerptLabel, KIND_NAMES, REFUSAL_NAMES, VIA_NAMES } from './auditText'
 import { AuditValue } from './AuditValue'

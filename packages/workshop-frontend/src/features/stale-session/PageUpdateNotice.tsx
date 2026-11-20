@@ -1,13 +1,14 @@
 import { useEffect, useRef } from 'react'
 import { useKumoToastManager } from '@cloudflare/kumo'
 import { useSiteName } from '../../ServerConfigContext'
-import { entryScriptOf, fetchEntryScript, reloadPage } from './versionChecks'
+import { fetchVersions, reloadPage } from './versionChecks'
 import { useSessionCheck } from './useSessionCheck'
 
 /**
  * Tells the user, with a persistent toast, that a fresh load would serve a newer frontend than
- * this page runs, and offers to reload. Never reloads by itself, so nothing typed is lost. Shown
- * once per new frontend, on the session checks. Renders nothing itself.
+ * this page runs (its build id against the one VERSION_PATH answers), and offers to reload. Never
+ * reloads by itself, so nothing typed is lost. Shown once per new frontend, on the session checks.
+ * Renders nothing itself.
  */
 export const PageUpdateNotice = () => {
   const siteName = useSiteName()
@@ -17,19 +18,19 @@ export const PageUpdateNotice = () => {
   toastsRef.current = toasts
   const mounted = useRef(false)
   const checking = useRef(false)
-  const notified = useRef<{ entryScript: string; toastId: string } | null>(null)
+  const notified = useRef<{ buildId: string; toastId: string } | null>(null)
 
   useSessionCheck(() => {
-    const own = entryScriptOf(document)
+    const own = import.meta.env.ASSETS_BUILD_ID
     if (checking.current || own === undefined) return
     checking.current = true
-    void fetchEntryScript().then((latest) => {
+    void fetchVersions().then(({ assets: latest }) => {
       checking.current = false
       if (!mounted.current) return
-      if (latest === undefined || latest === own || latest === notified.current?.entryScript) return
+      if (latest === undefined || latest === own || latest === notified.current?.buildId) return
       if (notified.current) toastsRef.current.close(notified.current.toastId)
       notified.current = {
-        entryScript: latest,
+        buildId: latest,
         toastId: toastsRef.current.add({
           title: `${siteName} was updated`,
           description: 'Reload to use the new version.',

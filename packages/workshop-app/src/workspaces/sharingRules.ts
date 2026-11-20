@@ -6,7 +6,6 @@ import type {
   CollaboratorInfo,
   GatekeeperVendorInfo,
   ObserverBindingNeed,
-  ShareLinkInfo,
   WorkspaceMetadata,
 } from '@gadgets/workshop-shared/api'
 import { parseItemPageId } from '@/aside/asideItems'
@@ -70,23 +69,6 @@ export const inviteRefusal = (userId: string, target: ShareTarget, owner: AiChat
   if (existing.access.role === 'build') return `${existing.profile.name} is already a member of this workspace.`
   return target.kind === 'gadget' ? `${existing.profile.name} can already use ${target.title}.` : undefined
 }
-
-/**
- * Whether a link grants what sharing `target` does: the whole workspace (a link made before roles
- * did), or that one gadget. A link to several gadgets, from before gadgets were shared one at a
- * time, grants neither.
- */
-export const linkGrants = (link: ShareLinkInfo, target: ShareTarget) =>
-  target.kind === 'gadget'
-    ? link.gadgetId === target.gadgetId
-    : link.gadgetId === undefined && link.gadgets === undefined && (link.role ?? 'build') === 'build'
-
-/**
- * The viewer's own link to `target`, the one each person has for what they share (`default`):
- * anyone who opens it gets what it grants. Others' links are theirs to turn off.
- */
-export const ownLinkOf = (links: readonly ShareLinkInfo[], target: ShareTarget, viewerId: string) =>
-  links.find((link) => link.default && link.createdBy.id === viewerId && linkGrants(link, target))
 
 const SHARE = 'share='
 

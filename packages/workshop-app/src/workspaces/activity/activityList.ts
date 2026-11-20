@@ -1,7 +1,5 @@
 import type { ActionLogEntry } from '@gadgets/workshop-shared/api'
-import type { ListFilter, ListOrder } from '@/components/listView'
-import type { ListViewSpec } from '@/hooks/useListView'
-import { formatActivity } from '../formatActivity'
+import { formatActivity, type ListFilter, type ListOrder, type ListViewSpec } from '@gadgets/ui'
 import { activityStatus, activityTime, activityTitle, deciderOf, outcomeOf } from './activityEntries'
 
 /** One entry of a workspace's activity, with the title of the chat it was in where that is known. */

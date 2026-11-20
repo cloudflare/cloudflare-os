@@ -3,7 +3,7 @@ import { cn } from '@cloudflare/kumo/utils'
 import { ArrowUpRightIcon, GitBranchIcon } from '@phosphor-icons/react'
 import { CARD } from '@/components/Card'
 import { FormatIcon, type FormatIconName } from '@/components/FormatIcon'
-import { LinkButton } from '@/components/LinkButton'
+import { LinkButton } from '@gadgets/ui'
 
 export type OutputCardProps = {
   title: string

@@ -1,6 +1,6 @@
 import { ArrowClockwiseIcon, LightningIcon, WarningCircleIcon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
-import { Button } from '@/components/Button'
+import { Button } from '@gadgets/ui'
 import { usePending, type ActionResult } from './usePending'
 
 export type ErrorMessageProps = {

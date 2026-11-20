@@ -92,10 +92,12 @@ export const onboardingSteps = (choices: OnboardingChoices): OnboardingStep[] =>
 export type OnboardingApi = Pick<AuthenticatedApi, 'setOwnDisplayName' | 'provisionAmbientAccount' | 'completeOnboarding'>
 
 /**
- * Finishes setting up: keeps the name, where it was changed, and turns on the tools, then marks the
- * user as set up. A tool is optional, so one that cannot be turned on (an administrator switched it
- * off meanwhile, say) is said, by name, and keeps no one from going on; anything else that fails
- * rejects, with the user still to be set up. Resolves to the name kept, if it was changed.
+ * Finishes setting up: keeps the name, where it was changed (`setOwnDisplayName`), turns on each
+ * tool (`provisionAmbientAccount`), then marks the user as set up (`completeOnboarding`), and can
+ * be made again after any failure. A tool is optional, so one that cannot be turned on (an
+ * administrator switched it off meanwhile, say) is said, by name, and keeps no one from going on;
+ * anything else that fails rejects, with the user still to be set up. Resolves to the name kept,
+ * if it was changed.
  */
 export const finishOnboarding = async (api: OnboardingApi, { name, previousName, tools }: {
   name: string
@@ -105,14 +107,10 @@ export const finishOnboarding = async (api: OnboardingApi, { name, previousName,
   const trimmed = name.trim()
   const renamed = trimmed && trimmed !== previousName ? trimmed : undefined
   if (renamed) await api.setOwnDisplayName(renamed)
-  const failed = await Promise.all(tools.map(async ({ vendorId, name: toolName }) => {
-    try {
-      await api.provisionAmbientAccount(vendorId)
-      return undefined
-    } catch {
-      return toolName
-    }
-  }))
+  const outcomes = await Promise.allSettled(tools.map(({ vendorId }) => api.provisionAmbientAccount(vendorId)))
   await api.completeOnboarding()
-  return { name: renamed, failedTools: failed.filter((toolName) => toolName !== undefined) }
+  return {
+    name: renamed,
+    failedTools: tools.flatMap(({ name: toolName }, index) => (outcomes[index].status === 'rejected' ? [toolName] : [])),
+  }
 }

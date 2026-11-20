@@ -9,6 +9,7 @@ const chat = (id: number, minutes: number, more: Partial<AiChatMetadata> = {}): 
 const ask = (id: number, chatId: number | undefined, minutes: number, awaitDecision = false): ActionEntry => ({
   id,
   type: 'action',
+  from: 'agent',
   chatId,
   resourceTitle: 'Thing',
   createdAt: at(minutes),

@@ -1,41 +1,30 @@
 import { useEffect, useState } from 'react'
-import type { AiChatMetadata } from '@gadgets/workshop-shared/api'
 import { useApi } from '@/rpc/ApiContext'
+import { WorkspaceChats, type WorkspaceChatsState } from './WorkspaceChats'
 
-export type WorkspaceChatsState =
-  | { status: 'loading' }
-  | { status: 'ready'; chats: AiChatMetadata[] }
-  | { status: 'failed'; message: string }
+export type { WorkspaceChatsState }
 
 const LOADING: WorkspaceChatsState = { status: 'loading' }
 
 /**
- * The chats in one workspace, most recently active first, loaded once for each workspace it is
- * given. Given none, nothing is loaded and it stays loading. One workspace's chats are never
- * returned for another's while that one loads.
+ * The chats people have in one workspace (`WorkspaceChats`), live while mounted, most recently
+ * active first. Given none, nothing is read and it stays loading. One workspace's chats are never
+ * returned for another's while that one loads; over a new connection, what was shown stays until
+ * they are read again.
  */
 export const useWorkspaceChats = (workspaceId: string | undefined): WorkspaceChatsState => {
   const { api, reconnecting } = useApi()
   const [loaded, setLoaded] = useState<{ workspaceId: string; state: WorkspaceChatsState }>()
 
   useEffect(() => {
-    // Over a lost connection it could only fail; the new connection's `api` loads it.
+    // Over a lost connection it could only fail; the new connection's `api` reads it.
     if (reconnecting || workspaceId === undefined) return
-    let cancelled = false
-    const overseer = api.openWorkspace(workspaceId)
-    overseer.listChats().then(
-      (chats) => {
-        if (cancelled) return
-        const byRecentActivity = chats.toSorted((a, b) => b.lastActive.getTime() - a.lastActive.getTime())
-        setLoaded({ workspaceId, state: { status: 'ready', chats: byRecentActivity } })
-      },
-      (error) => {
-        if (!cancelled) setLoaded({ workspaceId, state: { status: 'failed', message: error instanceof Error ? error.message : String(error) } })
-      },
-    )
+    const chats = new WorkspaceChats(() => api.openWorkspace(workspaceId))
+    const unsubscribe = chats.subscribe(() => setLoaded({ workspaceId, state: chats.getSnapshot() }))
+    chats.start()
     return () => {
-      cancelled = true
-      overseer[Symbol.dispose]()
+      unsubscribe()
+      chats.stop()
     }
   }, [api, reconnecting, workspaceId])
 

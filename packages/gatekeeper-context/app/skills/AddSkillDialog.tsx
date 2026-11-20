@@ -1,155 +1,105 @@
-import { Button, Dialog, Input, InputArea, Select, useKumoToastManager } from "@cloudflare/kumo";
-import { X } from "@phosphor-icons/react";
-import { useState } from "react";
-import type { ContextDocumentSummary, EnabledCollectionInfo } from "../../src/context-types";
-import { useContextApi } from "../bridge";
-import {
-  buildNewSkillLocation,
-  isValidSkillDescription,
-  makeSkillManifestBody,
-} from "./addSkillNavigatorNode";
-import { isValidSkillName, sanitizeSkillTitle, skillNameFromTitle } from "./skillName";
-import { useMutationDialog } from "./useMutationDialog";
+import { useState } from 'react'
+import { XIcon } from '@phosphor-icons/react'
+import { Banner, Button, Select, TextField } from '@gadgets/ui'
+import { PresentedDialog as Dialog } from '../PresentedDialog'
+import { submitOnEnter } from './submitOnEnter'
 
-/** Location and collection-selection behavior for a new skill. */
-export type AddSkillTarget = {
-  collectionId: string;
-  directoryPath: string;
-  collectionEditable: boolean;
-};
+/**
+ * A skill as it is written here: what it is called, what it is for, and the collection it goes
+ * into: one there is (`collectionId`), or one made for it by its name (`tag`), or, with neither,
+ * the user's first, My skills.
+ */
+export type NewSkill = { name: string; description: string; tag?: string; collectionId?: string }
 
-type AddSkillDialogProps = {
-  target: AddSkillTarget;
-  collections: readonly EnabledCollectionInfo[];
-  writableCollections: readonly EnabledCollectionInfo[];
-  documents: ReadonlyMap<string, readonly ContextDocumentSummary[]>;
-  onAdded: () => void;
-  onClose: () => void;
-};
+/** One of the user's own collections, which a skill can be written into. */
+export type SkillCollectionChoice = { id: string; title: string }
 
-/** Dialog that validates and creates a skill in a writable collection. */
-export const AddSkillDialog = ({
-  target,
-  collections,
-  writableCollections,
-  documents,
-  onAdded,
-  onClose,
-}: AddSkillDialogProps) => {
-  const context = useContextApi();
-  const toasts = useKumoToastManager();
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [collectionId, setCollectionId] = useState(
-    target.collectionId || (writableCollections.length === 1 ? writableCollections[0].id : ""),
-  );
-  const [adding, setAdding] = useState(false);
-  const dialog = useMutationDialog(adding, onClose);
-  const metadataName = skillNameFromTitle(name);
-  const valid = Boolean(collectionId)
-    && isValidSkillName(metadataName)
-    && isValidSkillDescription(description);
+export type AddSkillDialogProps = {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  /** The user's own collections, which it can go into, their first (My skills) first. */
+  collections?: SkillCollectionChoice[]
+  /** The collection it goes into, by its name, in place of a tag to file it under. */
+  into?: string
+  /** Adds it, holding the dialog while it does, and leaving it open under why if it cannot. */
+  onAdd: (skill: NewSkill) => void | Promise<void>
+}
 
+const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
+
+// As long as a skill's name can be (the Agent Skills specification's limit).
+const NAME_LENGTH = 64
+
+// The choice that stands for a collection made for it, by the name typed in its place.
+const NEW = '\0new'
+
+const AddSkillForm = ({ collections = [], into, onAdd }: Pick<AddSkillDialogProps, 'collections' | 'into' | 'onAdd'>) => {
+  const [name, setName] = useState('')
+  const [description, setDescription] = useState('')
+  // Their first, My skills, unless they have none yet, which the first skill makes.
+  const [collection, setCollection] = useState(collections[0]?.id ?? '')
+  const [newTitle, setNewTitle] = useState('')
+  const [pending, setPending] = useState(false)
+  const [problem, setProblem] = useState<string>()
+  const written = name.trim() !== '' && description.trim() !== '' && (collection !== NEW || newTitle.trim() !== '')
   const add = async () => {
-    if (!valid || adding) return;
-    const trimmedDescription = description.trim();
-    const location = buildNewSkillLocation(
-      documents,
-      collectionId,
-      target.directoryPath,
-      metadataName,
-    );
-
-    setAdding(true);
+    if (!written || pending) return
+    setProblem(undefined)
+    setPending(true)
     try {
-      await context.createContextSkill(collectionId, location.path, {
-        description: trimmedDescription,
-        body: makeSkillManifestBody(location.name, trimmedDescription),
-        contentType: "text/markdown",
-      });
-      onAdded();
-      dialog.closeAfterSuccess();
+      const place = collection === NEW ? { tag: newTitle.trim() } : collection ? { collectionId: collection } : {}
+      await onAdd({ name: name.trim(), description: description.trim(), ...place })
     } catch (error) {
-      toasts.add({
-        title: error instanceof Error ? error.message : "Failed to add skill",
-        variant: "error",
-      });
+      setProblem(messageOf(error))
     } finally {
-      setAdding(false);
+      setPending(false)
     }
-  };
+  }
 
   return (
-    <Dialog.Root
-      open={dialog.open}
-      onOpenChange={(open) => { if (!open) dialog.requestClose(); }}
-      onOpenChangeComplete={dialog.onOpenChangeComplete}
-    >
-      <Dialog className="w-[min(440px,calc(100vw-32px))]! bg-kumo-base p-0 top-[16%]! translate-y-0!" size="sm">
-        <div className="flex items-center justify-between gap-4 border-b border-kumo-line px-4 py-4 sm:px-6">
-          <Dialog.Title className="text-[17px] leading-6 font-medium tracking-[-0.35px] text-kumo-default">
-            Add skill
-          </Dialog.Title>
-          <Dialog.Close
-            disabled={adding}
-            render={(props) => (
-              <Button {...props} variant="ghost" shape="square" aria-label="Close">
-                <X size={18} />
-              </Button>
-            )}
-          />
+    <div onKeyDown={submitOnEnter(() => void add())} className="flex min-h-0 flex-col">
+      <header className="flex items-center gap-3 p-6 pb-5">
+        <div className="flex min-w-0 flex-1 flex-col gap-1 leading-snug">
+          <Dialog.Title className="text-lg font-medium text-kumo-default">Add skill</Dialog.Title>
+          {into && <Dialog.Description className="text-sm wrap-anywhere text-kumo-subtle">To {into}</Dialog.Description>}
         </div>
-        <div className="flex flex-col gap-4 px-4 py-5 sm:px-6">
-          <Input
-            label="Name"
-            description="Up to 64 letters, numbers, spaces, or hyphens."
-            value={name}
-            onChange={(event) => setName(sanitizeSkillTitle(event.target.value))}
-            placeholder="New skill"
-            maxLength={64}
-            autoFocus
-          />
-          <InputArea
-            label="Description"
-            value={description}
-            onChange={(event) => setDescription(event.target.value)}
-            placeholder="What this skill does"
-            rows={3}
-          />
-          {target.collectionEditable && writableCollections.length > 1 && (
+        <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<XIcon weight="bold" />} aria-label="Close" className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
+      </header>
+      <div className="flex min-h-0 flex-col gap-4 overflow-y-auto px-6 pb-1">
+        <TextField label="Name" autoFocus maxLength={NAME_LENGTH} placeholder="Summarize meeting notes" value={name} onValueChange={setName} />
+        <TextField label="Description" rows={3} placeholder="What it’s for, and when the assistant should use it" value={description} onValueChange={setDescription} />
+        {/* Written from a collection's page, it goes into that one, which the title says. */}
+        {into === undefined && collections.length > 0 && (
+          <div className="flex flex-col gap-1.5">
+            <span className="text-sm font-medium text-kumo-default">Collection</span>
             <Select
-              label="Collection"
-              className="w-full"
-              placeholder="Select a collection"
-              value={collectionId}
-              onValueChange={(value) => setCollectionId(value as string)}
-              renderValue={(id) => {
-                const collection = collections.find((candidate) => candidate.id === id);
-                if (!collection) return "Select a collection";
-                return (
-                  <span className="flex items-center gap-2">
-                    {collection.icon ? <span>{collection.icon}</span> : null}
-                    <span className="truncate">{collection.title}</span>
-                  </span>
-                );
-              }}
-            >
-              {writableCollections.map((collection) => (
-                <Select.Option key={collection.id} value={collection.id}>
-                  <span className="flex items-center gap-2">
-                    {collection.icon ? <span>{collection.icon}</span> : null}
-                    <span className="truncate">{collection.title}</span>
-                  </span>
-                </Select.Option>
-              ))}
-            </Select>
-          )}
+              aria-label="Collection"
+              value={collection}
+              onValueChange={setCollection}
+              options={[...collections.map(({ id, title }) => ({ id, label: title })), { id: NEW, label: 'New collection' }]}
+              typed={collection === NEW ? { 'aria-label': 'New collection’s name', placeholder: 'Name it', autoFocus: true, value: newTitle, onValueChange: setNewTitle } : undefined}
+            />
+          </div>
+        )}
+      </div>
+      <footer className="flex flex-col gap-3 p-6">
+        {problem && <Banner title={`Couldn’t add it: ${problem}`} />}
+        <div className="flex justify-end gap-2">
+          <Dialog.Close render={(props) => <Button {...props} disabled={pending}>Cancel</Button>} />
+          <Button variant="primary" disabled={!written || pending} onClick={() => void add()}>{pending ? 'Adding…' : 'Add skill'}</Button>
         </div>
-        <div className="flex items-center justify-end gap-2 border-t border-kumo-line px-4 py-3 sm:px-6">
-          <Button variant="secondary" onClick={dialog.requestClose} disabled={adding}>Cancel</Button>
-          <Button onClick={add} loading={adding} disabled={!valid}>Add skill</Button>
-        </div>
-      </Dialog>
-    </Dialog.Root>
-  );
-};
+      </footer>
+    </div>
+  )
+}
+
+/**
+ * Where a skill is written, over the page: what it is called, what it is for, and which of the
+ * user's collections it goes into, My skills unless another is chosen, or a new one named there;
+ * from a collection's page, that one. It starts empty each time it is opened.
+ */
+export const AddSkillDialog = ({ open, onOpenChange, collections, into, onAdd }: AddSkillDialogProps) => (
+  <Dialog open={open} onOpenChange={onOpenChange}>
+    <AddSkillForm collections={collections} into={into} onAdd={onAdd} />
+  </Dialog>
+)

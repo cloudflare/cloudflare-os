@@ -10,11 +10,11 @@ import { SidebarChatItem, type SidebarChat } from './SidebarChatItem'
 import { ChatMenuItems, WorkspaceMenuItems, type MenuWorkspace, type SidebarActions } from './SidebarMenus'
 import { WorkspaceListItem, type WorkspaceListItemProps } from './WorkspaceListItem'
 import { WorkspaceRailItem } from './WorkspaceRailItem'
+import { useScrollFadeFallback } from '@gadgets/ui'
 import { heldOrder, sameOrder } from './heldOrder'
 import { useRowSlide } from './useRowSlide'
 import { railWorkspacesOf, type RailWorkspace } from './railWorkspaces'
 import { usePinDrag, type PinDrag, type PinDragSource } from './usePinDrag'
-import { useScrollFadeFallback } from './useScrollFadeFallback'
 import { useWorkspaceUnderlay } from './useWorkspaceUnderlay'
 
 export type SidebarWorkspace = Omit<WorkspaceListItemProps, 'selected' | 'onSelect'> & {

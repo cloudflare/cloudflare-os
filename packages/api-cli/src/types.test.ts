@@ -26,7 +26,7 @@ test("the generated copy is api-schema's declarations, fragments and gatekeeper 
   const appFiles = readdirSync(join(UPSTREAM, "gatekeeper-apps")).filter((name) => name.endsWith(".d.ts")).toSorted();
   assert.deepEqual(apps, Object.fromEntries(appFiles.map((name) =>
     [name.slice(0, -".d.ts".length), readFileSync(join(UPSTREAM, "gatekeeper-apps", name), "utf8")])));
-  assert.deepEqual(Object.keys(apps), ["context", "scheduler"]);
+  assert.deepEqual(Object.keys(apps), ["context"]);
 });
 
 test("a gatekeeper's vendor id prints its app UI's declarations", () => {
@@ -35,8 +35,7 @@ test("a gatekeeper's vendor id prints its app UI's declarations", () => {
   assert.equal(context.stdout, apps.context);
   assert.match(context.stdout, /^export interface ContextApi \{$/m);
   assert.match(context.stdout, /createContextSkill\(collectionId: Awaitable<string>, path: Awaitable<string>/);
-  assert.match(api("types", "scheduler").stdout, /^export interface ScheduleManagementApi \{$/m);
-  assert.match(typesHelp(), /^Gatekeeper app UIs: context, scheduler\.$/m);
+  assert.match(typesHelp(), /^Gatekeeper app UIs: context\.$/m);
   // A service of the API wins over an app of the same name, and the error names both lists.
   assert.equal(agentTypes("A", { declarations: "", fragments: { A: "a" }, apps: { A: "app" } }), "a");
   assert.throws(() => agentTypes("b", { declarations: "", fragments: { A: "a" }, apps: { sketch: "s" } }),
@@ -68,7 +67,7 @@ test("an unknown service, or a second one, is a usage error naming the services,
   const unknown = api("types", "Nope");
   assert.equal(unknown.status, 2);
   assert.equal(unknown.stdout, "");
-  assert.match(unknown.stderr, /^No service "Nope" in the API's declarations\. The services: ActionsSubscriber, AdminApi, .*\bOverseer\b.*\. The gatekeeper app UIs, by vendor id: context, scheduler\.$/m);
+  assert.match(unknown.stderr, /^No service "Nope" in the API's declarations\. The services: ActionsSubscriber, AdminApi, .*\bOverseer\b.*\. The gatekeeper app UIs, by vendor id: context\.$/m);
   assert.throws(() => agentTypes("toString"), UsageError);
   assert.throws(() => agentTypes("B", { declarations: "", fragments: { A: "a" } }),
     (error: unknown) => error instanceof UsageError && error.message === 'No service "B" in the API\'s declarations. The services: A.');

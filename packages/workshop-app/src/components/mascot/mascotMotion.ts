@@ -1,4 +1,4 @@
-import { isMotionOff, subscribeMotionLevel } from '@/prefs/motion'
+import { isMotionOff, subscribeMotionLevel } from '@gadgets/ui'
 import { circlePath } from './circlePath'
 import { LoadingMotion } from './loadingMotion'
 import { alignPoints, inverseTransformPoints, orderHalves, roundedPointsToPath, samplePath, splitOutline, transformPoints, type Point, type Pose } from './morph'

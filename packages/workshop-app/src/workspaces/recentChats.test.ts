@@ -1,80 +1,68 @@
 import { describe, expect, it } from 'vitest'
-import type { AiChatAuthorInfo, AiChatMessage, AiChatMetadata, ChatReadState } from '@gadgets/workshop-shared/api'
-import { RECENT_FOR, recentChatsOf, tailOf, tailsWanted, type ChatTail, type WorkspaceChatsReading } from './recentChats'
+import type { UnreadThread, WorkspaceSummary, WorkspaceWaitingChat } from '@gadgets/workshop-shared/api'
+import { RECENT_FOR, recentChatsOf } from './recentChats'
 
 const NOW = 10 * RECENT_FOR
 const ago = (minutes: number) => new Date(NOW - minutes * 60_000)
-const chat = (id: number, minutesAgo: number, more: Partial<AiChatMetadata> = {}) =>
-  ({ id, title: `Chat ${id}`, started: ago(minutesAgo + 10), lastActive: ago(minutesAgo), ...more }) as AiChatMetadata
-const read = (chatId: number, more: Partial<ChatReadState> = {}): ChatReadState => ({ workspaceId: 'w', chatId, unreadMessageCount: 0, readThroughSequence: 3, ...more })
-const reading = (chats: AiChatMetadata[], readStates: ChatReadState[] = [], approvals: number[] = []): WorkspaceChatsReading => ({ chats, readStates, approvals: new Set(approvals) })
-const listed = (readings: Record<string, WorkspaceChatsReading>, tails: Record<string, ChatTail> = {}, hidden: Record<string, number> = {}) =>
-  recentChatsOf(new Map(Object.entries(readings)), new Map(Object.entries(tails)), new Map(Object.entries(hidden)), NOW).map(({ key }) => key)
+const grace = { type: 'user' as const, id: 'grace', name: 'Grace' }
 
-const ada: AiChatAuthorInfo = { type: 'user', id: 'ada', name: 'Ada' }
-const grace: AiChatAuthorInfo = { type: 'user', id: 'grace', name: 'Grace' }
-const message = (author: AiChatAuthorInfo, text: string) => ({ type: 'message', author, message: text, timestamp: ago(1) }) as AiChatMessage
+const thread = (chatId: number, minutesAgo: number, more: Partial<UnreadThread> = {}): UnreadThread => ({
+  workspaceId: 'w', chatId, unreadMessageCount: 0, readThroughSequence: 3, notificationsEnabled: true,
+  chatTitle: `Chat ${chatId}`, latestSequence: 3, latestMessagePreview: `Said in ${chatId}`, latestActivityAt: ago(minutesAgo), ...more,
+})
+const waits = (chatId: number, minutesAgo: number, more: Partial<WorkspaceWaitingChat> = {}): WorkspaceWaitingChat =>
+  ({ chatId, title: `Chat ${chatId}`, lastActive: ago(minutesAgo), waiting: 'action', ...more })
+const summaries = (waitingChats: WorkspaceWaitingChat[] = [], workingChatIds: number[] = []) =>
+  new Map<string, WorkspaceSummary>([['w', { workspaceId: 'w', waiting: { runs: 0, chats: 0, gadgets: [] }, waitingChats, workingChatIds, hooks: [] }]])
+const listed = (threads: UnreadThread[], summary = summaries(), hidden: Record<string, number> = {}) =>
+  recentChatsOf(threads, summary, new Map(Object.entries(hidden)), NOW)
 
 describe('recentChatsOf', () => {
   it('lists the chats the viewer has read, asked to hear of, or wrote in, the latest first', () => {
-    const chats = [chat(1, 30), chat(2, 5), chat(3, 10), chat(4, 1), chat(5, 2, { notificationsRequireParticipation: true })]
-    const states = [read(1), read(2, { readThroughSequence: -1, notificationsEnabledOverride: true }), read(5, { readThroughSequence: -1, notificationsEnabled: true })]
-    const tails = { 'w:3': { lastActive: ago(10).getTime(), wrote: true } }
-    // Chat 4 the viewer has never opened, written in or asked to hear of.
-    expect(listed({ w: reading(chats, states) }, tails)).toEqual(['w:5', 'w:2', 'w:3', 'w:1'])
+    const threads = [
+      thread(1, 30),
+      thread(2, 5, { readThroughSequence: -1, notificationsEnabledOverride: true }),
+      thread(3, 10, { readThroughSequence: -1, participated: true }),
+      // Never opened, written in or asked to hear of.
+      thread(4, 1, { readThroughSequence: -1 }),
+    ]
+    expect(listed(threads).map(({ key }) => key)).toEqual(['w:2', 'w:3', 'w:1'])
   })
 
-  it('lists what waits on a person among the rest, by when it was last active, an agent’s run only while it waits', () => {
-    const chats = [chat(1, 1), chat(2, 50, { awaitingDecision: true }), chat(3, 20, { spawnerName: 'Inbox' }), chat(4, 30, { spawnerName: 'Inbox' })]
-    expect(listed({ w: reading(chats, [read(1), read(3)], [4]) })).toEqual(['w:1', 'w:4', 'w:2'])
+  it('lists what waits on a person among the rest, by when it was last active, whether or not the viewer takes part', () => {
+    expect(listed([thread(1, 1), thread(2, 40)], summaries([waits(3, 20, { spawnerName: 'Inbox' }), waits(2, 10)])).map(({ key, waiting }) => [key, waiting]))
+      .toEqual([['w:1', undefined], ['w:2', 'action'], ['w:3', 'action']])
   })
 
   it('leaves out what was last active too long ago, unless it waits', () => {
     const old = RECENT_FOR / 60_000 + 1
-    expect(listed({ w: reading([chat(1, old), chat(2, old, { awaitingDecision: true })], [read(1)]) })).toEqual(['w:2'])
+    expect(listed([thread(1, old), thread(2, old)], summaries([waits(2, old)])).map(({ key }) => key)).toEqual(['w:2'])
   })
 
   it('leaves out a chat taken out of the sidebar until it waits on a person after more happened in it', () => {
-    const states = [read(1), read(2)]
     const hidden = { 'w:1': ago(5).getTime(), 'w:2': ago(5).getTime() }
-    expect(listed({ w: reading([chat(1, 5), chat(2, 5)], states) }, {}, hidden)).toEqual([])
-    expect(listed({ w: reading([chat(1, 1), chat(2, 1, { awaitingDecision: true })], states) }, {}, hidden)).toEqual(['w:2'])
+    expect(listed([thread(1, 5), thread(2, 5)], summaries(), hidden)).toEqual([])
+    expect(listed([thread(1, 1), thread(2, 1)], summaries([waits(2, 1)]), hidden).map(({ key }) => key)).toEqual(['w:2'])
   })
 
-  it('says it is unread only where the viewer hears of it, and muted where they muted it', () => {
-    const states = [read(1, { unreadMessageCount: 2 }), read(2, { unreadMessageCount: 2, notificationsEnabled: false, notificationsEnabledOverride: false })]
-    const [first, second] = recentChatsOf(new Map([['w', reading([chat(1, 1), chat(2, 2)], states)]]), new Map(), new Map(), NOW)
-    expect(first).toMatchObject({ key: 'w:1', unread: true, muted: false })
-    expect(second).toMatchObject({ key: 'w:2', unread: false, muted: true })
+  it('says it is unread only where the viewer hears of it, muted where they muted it, and working while its agent works', () => {
+    const [first, second] = listed([
+      thread(1, 1, { unreadMessageCount: 2 }),
+      thread(2, 2, { unreadMessageCount: 2, notificationsEnabled: false, notificationsEnabledOverride: false }),
+    ], summaries([], [2]))
+    expect(first).toMatchObject({ key: 'w:1', unread: true, muted: false, working: false })
+    expect(second).toMatchObject({ key: 'w:2', unread: false, muted: true, working: true })
   })
 
-  it('says what a chat last said only for the chat as it was when read, and what it asks while it waits', () => {
-    const latest = { text: 'Done', author: grace, at: ago(5) }
-    const ask = { text: 'Connect Jira', author: grace, at: ago(5) }
-    const tails = { 'w:1': { lastActive: ago(5).getTime(), latest, wrote: false }, 'w:2': { lastActive: ago(9).getTime(), latest, wrote: false }, 'w:3': { lastActive: ago(5).getTime(), latest, ask, wrote: false } }
-    const chats = recentChatsOf(new Map([['w', reading([chat(1, 5), chat(2, 5), chat(3, 5, { awaitingDecision: true })], [read(1), read(2)])]]), new Map(Object.entries(tails)), new Map(), NOW)
-    expect(Object.fromEntries(chats.map(({ key, latest: said }) => [key, said?.text]))).toEqual({ 'w:3': 'Connect Jira', 'w:1': 'Done', 'w:2': undefined })
-  })
-
-  it('says which are still to be read, as they are now, of those whose last messages are read', () => {
-    const tails = { 'w:1': { lastActive: ago(5).getTime(), wrote: false }, 'w:2': { lastActive: ago(9).getTime(), wrote: false } }
-    // Seven chats people had: the oldest is not one whose last messages are read.
-    const chats = recentChatsOf(new Map([['w', reading(Array.from({ length: 7 }, (_, index) => chat(index + 1, 5 + index)), Array.from({ length: 7 }, (_, index) => read(index + 1)))]]), new Map(Object.entries(tails)), new Map(), NOW)
-    expect(Object.fromEntries(chats.map(({ key, reading: still }) => [key, still]))).toEqual({ 'w:1': false, 'w:2': true, 'w:3': true, 'w:4': true, 'w:5': true, 'w:6': true, 'w:7': false })
-  })
-})
-
-describe('tailsWanted', () => {
-  it('reads the latest few chats people had, and whatever waits, but no other runs', () => {
-    const chats = [...Array.from({ length: 8 }, (_, index) => chat(index + 1, index)), chat(20, 0, { spawnerName: 'Inbox' }), chat(21, 900, { awaitingDecision: true })]
-    expect(tailsWanted(reading(chats), NOW).map(({ id }) => id)).toEqual([1, 2, 3, 4, 5, 6, 21])
-  })
-})
-
-describe('tailOf', () => {
-  it('says whether the viewer wrote, and what was last said', () => {
-    const tail = tailOf([message(ada, 'Can you check Tuesday?'), message(grace, '**Tuesday** works')], ago(1), 'ada')
-    expect(tail).toMatchObject({ wrote: true, latest: { text: 'Tuesday works', author: grace } })
-    expect(tailOf([message(grace, 'Hello')], ago(1), 'ada').wrote).toBe(false)
+  it('says what a chat last said and who said it, and what it asks while it waits', () => {
+    const chats = listed(
+      [thread(1, 5, { latestAuthor: grace, latestMessagePreview: '**Done**' }), thread(2, 6, { latestMessagePreview: '' }), thread(3, 4)],
+      summaries([waits(3, 4, { ask: { type: 'connection', vendorName: 'Jira', reason: 'To read issues' } })]),
+    )
+    expect(Object.fromEntries(chats.map(({ key, latest }) => [key, latest]))).toEqual({
+      'w:3': { text: 'Connect Jira · To read issues' },
+      'w:1': { text: 'Done', author: grace },
+      'w:2': undefined,
+    })
   })
 })

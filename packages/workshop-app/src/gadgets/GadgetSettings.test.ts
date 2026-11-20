@@ -1,13 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, type GatekeeperCreationSpec, type WorkpiecesSubscriber } from '@gadgets/workshop-shared/api'
+import { createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, type AgentSpawnerInfo, type GatekeeperCreationSpec, type WorkpiecesSubscriber } from '@gadgets/workshop-shared/api'
 import { bindingNameProblem, describeBinding, freeBindingName, GadgetSettings, groupBindings, InvalidBindingName, type GadgetSummary, type SettingsGadget, type SettingsOverseer } from './GadgetSettings'
 
 const summary = (title: string, id = 7): GadgetSummary => ({ id, type: 'gadget', title })
 
-const SPECS: Record<number, GatekeeperCreationSpec> = {
-  4: { type: 'agentSpawner', config: { displayName: 'Triage', modelId: 'sonnet' }, modelName: 'Claude Sonnet' },
-  5: { type: 'aiModel', modelId: 'haiku', provider: 'anthropic', modelName: 'Claude Haiku' },
-}
+const SPAWNERS: AgentSpawnerInfo[] = [{ id: 4, config: { displayName: 'Triage', modelId: 'sonnet' }, modelName: 'Claude Sonnet', bindings: [{ gadgetId: 7, name: 'TRIAGE' }] }]
+const MODEL: GatekeeperCreationSpec = { type: 'aiModel', modelId: 'haiku', provider: 'anthropic', modelName: 'Claude Haiku' }
 
 const fakeWorkspace = ({ subscribe }: { subscribe?: () => Promise<Disposable> } = {}) => {
   let subscriber: WorkpiecesSubscriber | undefined
@@ -16,13 +14,11 @@ const fakeWorkspace = ({ subscribe }: { subscribe?: () => Promise<Disposable> } 
     setTitle: vi.fn<SettingsGadget['setTitle']>(async () => {}),
     remove: vi.fn<SettingsGadget['remove']>(async () => {}),
     listBindings: vi.fn<SettingsGadget['listBindings']>(async () => [
-      { name: 'GITHUB', target: 3, resourceTitle: 'cloudflare/gadgets', vendorId: 'github' },
-      { name: 'TRIAGE', target: 4, resourceTitle: 'Triage' },
-      { name: 'LLM', target: 5, resourceTitle: 'Claude Haiku' },
+      { name: 'GITHUB', target: 3, resourceTitle: 'cloudflare/gadgets', vendorId: 'github', kind: 'gatekeeper' },
+      { name: 'TRIAGE', target: 4, resourceTitle: 'Triage', kind: 'agentSpawner' },
+      { name: 'LLM', target: 5, resourceTitle: 'Claude Haiku', kind: 'aiModel' },
     ]),
-    bind: vi.fn<SettingsGadget['bind']>(async () => {}),
-    getBlueprintAnnotation: vi.fn<SettingsGadget['getBlueprintAnnotation']>(async () => null),
-    setBlueprintAnnotation: vi.fn<SettingsGadget['setBlueprintAnnotation']>(async () => {}),
+    rebind: vi.fn<SettingsGadget['rebind']>(async () => {}),
     unbind: vi.fn<SettingsGadget['unbind']>(async () => {}),
     renameBinding: vi.fn<SettingsGadget['renameBinding']>(async () => {}),
     [Symbol.dispose]: vi.fn<() => void>(),
@@ -34,8 +30,9 @@ const fakeWorkspace = ({ subscribe }: { subscribe?: () => Promise<Disposable> } 
     getGatekeeperById: vi.fn<SettingsOverseer['getGatekeeperById']>((id) => {
       const dispose = vi.fn<() => void>()
       gatekeepers.push({ id, dispose })
-      return { getCreationSpec: async () => SPECS[id], [Symbol.dispose]: dispose }
+      return { getCreationSpec: async () => MODEL, [Symbol.dispose]: dispose }
     }),
+    listAgentSpawners: vi.fn<SettingsOverseer['listAgentSpawners']>(async () => SPAWNERS),
     newAiModelGatekeeper: vi.fn<SettingsOverseer['newAiModelGatekeeper']>((modelId) => {
       const dispose = vi.fn<() => void>()
       minted.push({ modelId, dispose })
@@ -52,24 +49,27 @@ const fakeWorkspace = ({ subscribe }: { subscribe?: () => Promise<Disposable> } 
 }
 
 describe('describeBinding', () => {
-  const binding = { name: 'X', target: 1, resourceTitle: 'X' }
-  it('says an agent and its model, a model, and a service apart', () => {
-    expect(describeBinding(binding, SPECS[4])).toEqual({ ...binding, kind: 'agent', model: 'Claude Sonnet' })
-    expect(describeBinding(binding, SPECS[5])).toEqual({ ...binding, kind: 'model', model: 'Claude Haiku', modelId: 'haiku' })
-    expect(describeBinding({ ...binding, vendorId: 'google' })).toEqual({ ...binding, vendorId: 'google', kind: 'service' })
+  const binding = { name: 'X', target: 4, resourceTitle: 'X' }
+  it('says an agent and its model, a model, and a service apart, by what each reaches', () => {
+    expect(describeBinding({ ...binding, kind: 'agentSpawner' }, { spawners: SPAWNERS })).toEqual({ ...binding, kind: 'agent', model: 'Claude Sonnet' })
+    expect(describeBinding({ ...binding, kind: 'aiModel' }, { spec: MODEL })).toEqual({ ...binding, kind: 'model', model: 'Claude Haiku', modelId: 'haiku' })
+    expect(describeBinding({ ...binding, vendorId: 'google', kind: 'gatekeeper' })).toEqual({ ...binding, vendorId: 'google', kind: 'service' })
+    // One whose kind is not recorded says what its title says.
+    expect(describeBinding(binding)).toEqual({ ...binding, kind: 'service' })
   })
 
-  it('names no model for an agent that runs none', () => {
-    const spec: GatekeeperCreationSpec = { type: 'agentSpawner', config: { displayName: 'Inbox', modelId: null } }
-    expect(describeBinding(binding, spec)).toEqual({ ...binding, kind: 'agent' })
+  it('names no model for an agent that runs none, or whose spawner is not listed', () => {
+    const none: AgentSpawnerInfo = { id: 4, config: { displayName: 'Inbox', modelId: null }, bindings: [] }
+    expect(describeBinding({ ...binding, kind: 'agentSpawner' }, { spawners: [none] })).toEqual({ ...binding, kind: 'agent' })
+    expect(describeBinding({ ...binding, kind: 'agentSpawner' })).toEqual({ ...binding, kind: 'agent' })
   })
 })
 
 describe('groupBindings', () => {
   it('lists the agents apart from what it reaches, a model among the latter', () => {
     const service = describeBinding({ name: 'A', target: 1, resourceTitle: 'A', vendorId: 'github' })
-    const agent = describeBinding({ name: 'B', target: 2, resourceTitle: 'B' }, SPECS[4])
-    const model = describeBinding({ name: 'C', target: 3, resourceTitle: 'C' }, SPECS[5])
+    const agent = describeBinding({ name: 'B', target: 4, resourceTitle: 'B', kind: 'agentSpawner' }, { spawners: SPAWNERS })
+    const model = describeBinding({ name: 'C', target: 3, resourceTitle: 'C', kind: 'aiModel' }, { spec: MODEL })
     expect(groupBindings([agent, service, model])).toEqual({ connections: [service, model], agents: [agent] })
   })
 })
@@ -111,7 +111,7 @@ const readyWorkspace = async () => {
 }
 
 describe('GadgetSettings', () => {
-  it('shows the gadget as the workspace says, then what it is bound to, asking only what has no service what it is', async () => {
+  it('shows the gadget as the workspace says, then what it is bound to, asking only a model’s connection which model it is', async () => {
     const { overseer, gatekeepers, server } = fakeWorkspace()
     const settings = new GadgetSettings(() => overseer, 7)
     settings.start()
@@ -124,10 +124,11 @@ describe('GadgetSettings', () => {
       const snapshot = settings.getSnapshot()
       if (snapshot.status !== 'ready' || snapshot.bindings.status !== 'ready') throw new Error('not yet')
       expect(snapshot.gadget.title).toBe('Todo')
-      expect(snapshot.bindings.items.map(({ name, kind }) => [name, kind])).toEqual([['GITHUB', 'service'], ['TRIAGE', 'agent'], ['LLM', 'model']])
+      expect(snapshot.bindings.items.map(({ name, kind, model }) => [name, kind, model])).toEqual([['GITHUB', 'service', undefined], ['TRIAGE', 'agent', 'Claude Sonnet'], ['LLM', 'model', 'Claude Haiku']])
     })
-    expect(gatekeepers.map(({ id }) => id)).toEqual([4, 5])
+    expect(gatekeepers.map(({ id }) => id)).toEqual([5])
     expect(gatekeepers[0].dispose).toHaveBeenCalled()
+    expect(overseer.listAgentSpawners).toHaveBeenCalledTimes(1)
 
     // A new title, from anywhere, keeps the list.
     server().entry(summary('Today'))
@@ -210,21 +211,17 @@ describe('GadgetSettings', () => {
     await expect(refused).rejects.not.toBeInstanceOf(InvalidBindingName)
   })
 
-  it('changes a model under the same name, keeping its annotation, and puts the old one back if the new cannot be bound', async () => {
+  it('changes a model under the same name in one step, from the target it read', async () => {
     const { settings, gadget, minted } = await readyWorkspace()
     await settings.changeModel('LLM', 'haiku')
     expect(minted).toEqual([])
 
-    const annotation = { title: 'Writer', description: 'Writes the summary' }
-    gadget.getBlueprintAnnotation.mockResolvedValueOnce(annotation)
     await settings.changeModel('LLM', 'sonnet')
-    expect(gadget.unbind).toHaveBeenCalledWith('LLM')
-    expect(gadget.bind).toHaveBeenCalledWith('LLM', 41)
-    expect(gadget.setBlueprintAnnotation).toHaveBeenCalledWith('LLM', annotation)
+    expect(gadget.rebind).toHaveBeenCalledWith('LLM', 5, 41)
 
-    gadget.bind.mockRejectedValueOnce(new Error('Binding name is reserved'))
-    await expect(settings.changeModel('LLM', 'opus')).rejects.toThrow('Binding name is reserved')
-    expect(gadget.bind).toHaveBeenLastCalledWith('LLM', 5)
+    // What the server refuses, such as a binding changed meanwhile, is said as it said it.
+    gadget.rebind.mockRejectedValueOnce(new Error('The binding LLM has changed since it was read.'))
+    await expect(settings.changeModel('LLM', 'opus')).rejects.toThrow('changed since it was read')
     await expect(settings.changeModel('NOPE', 'opus')).rejects.toThrow('It no longer has env.NOPE.')
   })
 

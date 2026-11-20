@@ -14,13 +14,11 @@ export type TemplateService = { name: string; logoUrl?: string; color?: string }
 
 /**
  * Something to start from that somebody created: what the backend calls a blueprint, as the
- * library says it, with how many times it has been used, which the backend does not say yet;
- * whether it is the organization's own (one the deployment features) rather than one of its
- * people's; whether it is the user's own, created by them; and the services its bindings are
- * to, by the binding, where the deployment has them.
+ * library says it; whether it is the organization's own (one the deployment features) rather than
+ * one of its people's; whether it is the user's own, created by them; and the services its
+ * bindings are to, by the binding, where the deployment has them.
  */
 export type Template = BlueprintPublicInfo & {
-  uses?: number
   organization?: true
   mine?: true
   /** Where one of the user's own was made from, which is where it is released to and deleted from. */
@@ -91,11 +89,11 @@ export const templateSearchText = (template: Template) => {
   return [title, description, noun, plural, author.name, ...templateNeeds(template).map(({ name }) => name)].join(' ')
 }
 
-/** What the templates are read from: the deployment's featured blueprints, those the user saved or uploaded, and those they created, each of those with its public record where it could be read. */
+/** What the templates are read from: the deployment's featured blueprints, those the user saved or uploaded, and those they created, each whole. */
 export type TemplateSources = {
   featured: readonly BlueprintPublicInfo[]
   library: readonly BlueprintLibrarySummary[]
-  own: readonly { summary: BlueprintUserSummary; info: BlueprintPublicInfo | null }[]
+  own: readonly BlueprintUserSummary[]
   /** The deployment's services, to name what a template's bindings are to. */
   vendors: readonly GatekeeperVendorInfo[]
 }
@@ -103,9 +101,8 @@ export type TemplateSources = {
 /**
  * Every template the user can find, once each however many ways they have it: those the deployment
  * features, which are the organization's, then those they saved or uploaded, then those they
- * created, which are theirs. One created whose public record could not be read is left out,
- * as there is nothing to show of it. With the ids of the starred ones (the backend's `pinned`),
- * in the order they are listed.
+ * created, which are theirs. With the ids of the starred ones (the backend's `pinned`), in the
+ * order they are listed.
  */
 export const templatesOf = ({ featured, library, own, vendors }: TemplateSources): { templates: Template[]; stars: string[] } => {
   const byId = new Map<string, Template>()
@@ -116,10 +113,10 @@ export const templatesOf = ({ featured, library, own, vendors }: TemplateSources
     if (!byId.has(id)) put({ id, metadata, screenshotUrl: blueprintScreenshotUrl(id, metadata) }, {})
     if (pinned) stars.add(id)
   }
-  for (const { summary, info } of own) {
-    if (summary.pinned) stars.add(summary.id)
+  for (const { id, metadata, screenshotUrl, source, pinned } of own) {
+    if (pinned) stars.add(id)
     // One the user added rather than created is in their library, and listed from there.
-    if (info && summary.source.type !== 'imported') put(info, { mine: true, source: summary.source })
+    if (source.type !== 'imported') put({ id, metadata, screenshotUrl }, { mine: true, source })
   }
   const named = new Map(vendors.map(({ id, description }) => [id, { name: description.displayName, logoUrl: description.logo?.url, color: description.color }]))
   const templates = [...byId.values()].map((template) => {

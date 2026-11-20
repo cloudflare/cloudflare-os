@@ -1,7 +1,6 @@
 import { cn } from '@cloudflare/kumo/utils'
+import { LinkButton, Tooltip } from '@gadgets/ui'
 import { closeHoverCards, HoverCard } from '@/components/HoverCard'
-import { LinkButton } from '@/components/LinkButton'
-import { Tooltip } from '@/components/Tooltip'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import { FOCUS_RING } from '@/components/focusRing'
 import { SidebarChatItem, type SidebarChat } from './SidebarChatItem'

@@ -8,7 +8,7 @@
 // graph; a forged UseOverseerInterface (openFakeOverseer) delegates to it, and gatekeeper facets
 // and User DOs are the only fakes.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import type {
@@ -16,7 +16,7 @@ import type {
 } from "@gadgets/workshop-shared/api";
 import type { OverseerDurableObject } from "../src/overseer.js";
 import type { GatekeeperRecord } from "../src/storage-schema/overseer-storage.js";
-import type { WorkspaceOutputEntry } from "../src/storage-schema/user-storage.js";
+import type { WorkspaceListing } from "../src/workspace-listing.js";
 import { openFakeOverseer } from "./fixtures.js";
 
 declare module "cloudflare:workers" {
@@ -239,19 +239,33 @@ describe("what a use session lists", () => {
     dispose(client);
   }));
 
-  it("open() syncs the viewer's Outputs index with only their gadgets", () =>
-      withImpl(async impl => {
+  it("open() pushes the viewer's Outputs index with only their gadgets", () => withImpl(async impl => {
     seedGadget(impl, 100);
     seedGadget(impl, 101);
-    let synced = Promise.withResolvers<WorkspaceOutputEntry[]>();
+    shareGadgets(impl, [101]);
+    impl.ownerId = "owner-user";
+    let pushed = Promise.withResolvers<WorkspaceListing>();
+    impl.users = {
+      idFromString: (id: string) => id,
+      idFromName: (name: string) => name === VIEWER ? VIEWER_USER : name,
+      get: (id: string) => ({
+        syncWorkspaceListing: (_workspace: string, listing: WorkspaceListing) => {
+          // The first may come before the session joins the fan-out, with the title alone.
+          if (id === VIEWER_USER && listing.outputs) pushed.resolve(listing);
+        },
+      }),
+    } as unknown as ObserverImpl["users"];
     let client = await openViewer(impl, { role: "use", gadgetIds: [101] }, {
-      outputsSnapshot: (access?: CollaboratorAccess) => impl.outputsSnapshot(access),
-      syncOutputsTo: async (_user: unknown, snapshot: WorkspaceOutputEntry[]) => {
-        synced.resolve(snapshot);
-      },
+      joinOutputsFanout: (...args: Parameters<ObserverImpl["joinOutputsFanout"]>) =>
+          impl.joinOutputsFanout(...args),
+      resyncListingTo: (userId: string) => impl.resyncListingTo(userId),
     });
 
-    expect((await synced.promise).map(entry => entry.workpieceId)).toEqual([101]);
+    let listing = await pushed.promise;
+    expect(listing.outputs?.map(entry => entry.workpieceId)).toEqual([101]);
+    // A "use" collaborator lists the workspace under its title, but is told nothing of its summary.
+    expect(listing.title?.title).toBe(impl.storage.title.get());
+    expect(listing.summary).toBeUndefined();
     dispose(client);
   }));
 
@@ -259,25 +273,60 @@ describe("what a use session lists", () => {
     seedGadget(impl, 100);
     seedGadget(impl, 101);
     impl.ownerId = "owner-user";
-    let pushes = new Map<string, PromiseWithResolvers<number[]>>(
+    let pushes = new Map<string, PromiseWithResolvers<number[] | undefined>>(
         ["owner-user", VIEWER_USER, "other-user"].map(id => [id, Promise.withResolvers()]));
     impl.users = {
       idFromString: (id: string) => id,
       get: (id: string) => ({
-        syncWorkspaceOutputs: async (_workspace: string, snapshot: WorkspaceOutputEntry[]) => {
-          pushes.get(id)!.resolve(snapshot.map(entry => entry.workpieceId));
+        syncWorkspaceListing: (_workspace: string, listing: WorkspaceListing) => {
+          pushes.get(id)!.resolve(listing.outputs?.map(entry => entry.workpieceId));
         },
       }),
     } as unknown as ObserverImpl["users"];
     let leaveViewer = impl.joinOutputsFanout(VIEWER_USER, { role: "use", gadgetIds: [100] });
     let leaveOther = impl.joinOutputsFanout("other-user", { role: "use", gadgetIds: [101] });
 
-    impl.markOutputsDirty();
+    impl.markListingDirty("outputs");
 
     expect(await pushes.get("owner-user")!.promise).toEqual([100, 101]);
     expect(await pushes.get(VIEWER_USER)!.promise).toEqual([100]);
     expect(await pushes.get("other-user")!.promise).toEqual([101]);
     leaveViewer();
     leaveOther();
+  }));
+
+  it("sends a marked part only once it changes, and every part on a resync", () =>
+      withImpl(async impl => {
+    seedGadget(impl, 100);
+    impl.ownerId = "owner-user";
+    let listings: WorkspaceListing[] = [];
+    impl.users = {
+      idFromString: (id: string) => id,
+      get: () => ({
+        syncWorkspaceListing: (_workspace: string, listing: WorkspaceListing) => {
+          listings.push(listing);
+        },
+      }),
+    } as unknown as ObserverImpl["users"];
+    let parts = () => listings.splice(0).map(listing => Object.keys(listing).toSorted());
+
+    impl.resyncListingTo("owner-user");
+    await vi.waitFor(() => expect(listings).toHaveLength(1));
+    expect(parts()).toEqual([["outputs", "summary", "title"]]);
+
+    // Marked, but unchanged.
+    impl.markListingDirty("outputs");
+    impl.markListingDirty("summary");
+    await scheduler.wait(10);
+    expect(parts()).toEqual([]);
+
+    // A new gadget changes the outputs alone.
+    seedGadget(impl, 101);
+    await vi.waitFor(() => expect(listings).toHaveLength(1));
+    expect(parts()).toEqual([["outputs"]]);
+
+    impl.resyncListingTo("owner-user");
+    await vi.waitFor(() => expect(listings).toHaveLength(1));
+    expect(parts()).toEqual([["outputs", "summary", "title"]]);
   }));
 });

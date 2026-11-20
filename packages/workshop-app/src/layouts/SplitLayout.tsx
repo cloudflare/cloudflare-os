@@ -1,10 +1,9 @@
 import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { AnimatePresence, animate, motion, useMotionValue, useMotionValueEvent, usePresence, useTransform, type MotionValue } from 'motion/react'
-import { useReducedMotion } from '@/hooks/useReducedMotion'
+import { motionTransition, useReducedMotion } from '@gadgets/ui'
 import { cn } from '@cloudflare/kumo/utils'
 import { ResizeHandle } from '@/components/ResizeHandle'
 import { clampSize, resistSize, settleSize } from '@/components/resizing'
-import { motionTransition } from '@/hooks/motionTransition'
 import { CLICK_SLOP, CLOSING_DIM, EDGE_GAP, OPENING_TIMING, useEdgeHint } from './useEdgeHint'
 import { SCROLLBARS_AWAY, useScrollbarsAway } from './useScrollbarsAway'
 

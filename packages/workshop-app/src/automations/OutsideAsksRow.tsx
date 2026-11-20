@@ -1,8 +1,7 @@
 import { CirclesFourIcon, ShieldCheckIcon } from '@phosphor-icons/react'
 import { StatusPill } from '@/blocks/StatusPill'
-import { LinkButton } from '@/components/LinkButton'
+import { formatActivity, LinkButton } from '@gadgets/ui'
 import type { ActionEntry } from '@/workspaces/activity/activityEntries'
-import { formatActivity } from '@/workspaces/formatActivity'
 import { approvalsWords } from './automationAsks'
 
 export type OutsideAsksRowProps = {

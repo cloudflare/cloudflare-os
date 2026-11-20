@@ -1,3 +1,4 @@
+import { COMPACTION_TRIGGER_RATIO } from '@gadgets/workshop-shared/api'
 import { ComposerStatusLine, type ComposerStatusLineProps } from '@/blocks/ComposerStatusLine'
 import { useDevMode } from '@/hooks/useDevMode'
 import { modelOptionsOf } from '@/settings/modelOptions'
@@ -5,16 +6,13 @@ import { useAttempt } from '@/settings/useAttempt'
 import { useModelConfig } from '@/settings/useModelConfig'
 import { useModelSettings, type ModelSettingsState } from '@/settings/useModelSettings'
 import type { ChatUsage } from './chatUsage'
-import { effectiveWindow, heldWindow, windowSizes } from './contextWindow'
+import { heldWindow, windowSizes } from './contextWindow'
 
 type LineProps = {
   usage: ChatUsage | undefined
   settings: ReturnType<typeof useModelSettings>
   modelId: string
 }
-
-// The model's own window, from what the Workshop knows of its models, whichever the user's setting is.
-const knownWindow = (modelId: string) => modelOptionsOf(modelId).contextWindow
 
 const lineOf = (
   { usage, settings, modelId }: LineProps,
@@ -23,9 +21,10 @@ const lineOf = (
   sizing: { held: number | undefined; setHeld?: (tokens: number | undefined) => Promise<void> },
 ): ComposerStatusLineProps => {
   const state: ModelSettingsState = settings.state
-  const known = knownWindow(modelId)
   const setHeld = sizing.setHeld
-  const sizes = setHeld && windowSizes(known, sizing.held)
+  // The model's own window, from what the Workshop knows of its models, whichever the user's setting is.
+  const sizes = setHeld && windowSizes(modelOptionsOf(modelId).contextWindow, sizing.held)
+  const measured = usage?.context
   return {
     model: state.status === 'ready'
       ? {
@@ -35,8 +34,9 @@ const lineOf = (
         }
       : undefined,
     context: {
-      used: usage?.tokens,
-      window: effectiveWindow(known, sizing.held),
+      // The server's figure, against the budget of the model the step ran on, which need not be the one answering next.
+      measured: measured && { ...measured, model: (state.status === 'ready' && state.models.find(({ id }) => id === measured.model)?.name) || measured.model },
+      compactsAt: COMPACTION_TRIGGER_RATIO,
       cacheRead: usage?.cacheReadTokens,
       cacheWrite: usage?.cacheWriteTokens,
       sizes: sizes && setHeld ? { ...sizes, onChange: (choice) => void attempt('change the context size', () => setHeld(heldWindow(choice))) } : undefined,
@@ -75,7 +75,7 @@ export const ChatStatusLine = ({ usage, modelId }: ChatStatusLineProps) => {
   const settings = useModelSettings(devMode)
   if (!devMode) return null
   const ready = settings.state.status === 'ready' ? settings.state : undefined
-  if (modelId === undefined || !ready) return <ComposerStatusLine cost={usage?.cost} context={{ used: usage?.tokens }} />
+  if (modelId === undefined || !ready) return <ComposerStatusLine cost={usage?.cost} context={{ measured: usage?.context, compactsAt: COMPACTION_TRIGGER_RATIO }} />
   const props = { usage, settings, modelId }
   // A model the deployment provides has a window of its own that is not the user's to set.
   return ready.builtIn.has(modelId) ? <DeploymentModelLine key={modelId} {...props} /> : <OwnModelLine key={modelId} {...props} />

@@ -5,8 +5,8 @@ import { useUpdateWorkspace } from './WorkspacesContext'
 
 /**
  * Keeps what the list shows of the open workspace (`workspaceId`) up with what it says of itself
- * (see `LiveWorkspace`), for as long as it is open: renamed, or the viewer's role in it changed,
- * elsewhere, it shows here without reading the list again. Nothing, for no workspace.
+ * that the list does not keep (see `LiveWorkspace`), for as long as it is open: what its data
+ * allows, and what it has cost. Nothing, for no workspace.
  */
 export const useLiveWorkspace = (workspaceId: string | undefined) => {
   const { api, reconnecting } = useApi()

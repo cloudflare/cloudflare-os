@@ -1,6 +1,4 @@
-import { SettingRow } from '@/blocks/SettingRow'
-import { SettingsGroup } from '@/blocks/SettingsGroup'
-import { Switch } from '@/components/Switch'
+import { SettingRow, SettingsGroup, Switch } from '@gadgets/ui'
 import { useAttempt } from '../useAttempt'
 import { AdminSettingsStatus } from './AdminSettingsStatus'
 import { useAdminSettings } from './useAdminSettings'

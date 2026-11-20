@@ -1,10 +1,8 @@
 import type { ReactNode } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
 import { CheckIcon, CircleNotchIcon } from '@phosphor-icons/react'
-import { Button } from '@/components/Button'
+import { Button, ScrollArea, Switch } from '@gadgets/ui'
 import { ServiceLogo } from '@/components/ServiceLogo'
-import { ScrollArea } from '@/components/ScrollArea'
-import { Switch } from '@/components/Switch'
 import { ConnectionMark } from './ConnectionMark'
 import { ConnectionStatus } from './ConnectionStatus'
 

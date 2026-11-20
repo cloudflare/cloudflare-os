@@ -1,9 +1,7 @@
 import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { AnimatePresence, spring, usePresence } from 'motion/react'
-import { useReducedMotion } from '@/hooks/useReducedMotion'
+import { Button, HeaderBubble, useReducedMotion } from '@gadgets/ui'
 import { SidebarSimpleIcon } from '@phosphor-icons/react'
-import { Button } from '@/components/Button'
-import { HeaderBubble } from '@/components/HeaderBubble'
 import { OPENING_TIMING } from './useEdgeHint'
 
 export type NarrowShellProps = {

@@ -128,8 +128,9 @@ export const keptVersion = (item: AsideItem): AsideItem =>
   item.kind === 'output' && item.output.chatId !== undefined ? { ...item, output: { ...item.output, chatId: undefined } } : item
 
 /**
- * What a chat has to show beside it, most recently made or changed first: the outputs it made or
- * worked on, and the files sent in it. Only what has been loaded of the conversation is known.
+ * What a chat has to show beside it, most recently made or changed first: the outputs it made
+ * (`artifacts`, all of them) or worked on (as far as the conversation is loaded), and every file
+ * sent in it (`artifacts`), none until those are read.
  */
 export const chatAsideItems = (workspaceId: string, chatId: number, chat: ChatSnapshot): AsideItem[] => {
   if (chat.status !== 'ready') return []
@@ -145,25 +146,31 @@ export const chatAsideItems = (workspaceId: string, chatId: number, chat: ChatSn
   // Later rows go first, and an output's latest row has its latest title.
   for (let index = rows.length - 1; index >= 0; index--) {
     const row = rows[index]
-    const at = times[index]
-    if (row.kind === 'output') {
-      const key = formatAsideRef({ kind: 'output', workpieceId: row.workpieceId })
-      if (found.has(key)) continue
-      found.set(key, {
-        key,
-        title: row.title,
-        at,
-        kind: 'output',
-        output: { workspaceId, workpieceId: row.workpieceId, type: row.type, format: row.format, chatId },
-      })
-    } else if (row.kind === 'user') {
-      for (const file of row.attachments.toReversed()) {
-        const key = formatAsideRef({ kind: 'file', fileId: file.id })
-        if (!found.has(key)) found.set(key, { key, title: file.name, at, kind: 'file', file: { ...file, workspaceId, chatId } })
-      }
-    }
+    if (row.kind !== 'output') continue
+    const key = formatAsideRef({ kind: 'output', workpieceId: row.workpieceId })
+    if (found.has(key)) continue
+    found.set(key, {
+      key,
+      title: row.title,
+      at: times[index],
+      kind: 'output',
+      output: { workspaceId, workpieceId: row.workpieceId, type: row.type, format: row.format, chatId },
+    })
   }
-  return [...found.values()]
+  for (const artifact of (chat.artifacts?.artifacts ?? []).toReversed()) {
+    if (artifact.type === 'attachment') {
+      const { id, name = 'File', mimeType, size } = artifact.attachment
+      const key = formatAsideRef({ kind: 'file', fileId: id })
+      if (!found.has(key)) found.set(key, { key, title: name, at: artifact.timestamp, kind: 'file', file: { id, name, mimeType, size, workspaceId, chatId } })
+      continue
+    }
+    const { workpiece } = artifact
+    const key = formatAsideRef({ kind: 'output', workpieceId: workpiece.id })
+    if (found.has(key)) continue
+    const format = workpiece.type === 'gadget' ? workpiece.output : undefined
+    found.set(key, { key, title: workpiece.title, at: artifact.timestamp, kind: 'output', output: { workspaceId, workpieceId: workpiece.id, type: workpiece.type, format, chatId } })
+  }
+  return [...found.values()].toSorted((a, b) => (b.at?.getTime() ?? 0) - (a.at?.getTime() ?? 0))
 }
 
 /**

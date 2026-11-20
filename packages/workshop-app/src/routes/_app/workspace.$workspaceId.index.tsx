@@ -1,6 +1,7 @@
 import { createFileRoute, useNavigate, useRouter } from '@tanstack/react-router'
 import { carriedOpen, outputPage, outputSettings, validateAsideParam } from '@/aside/asideItems'
 import { asideFor, carryAside, useAsideNavigation } from '@/aside/useAsideNavigation'
+import { usePreferences } from '@/prefs/UserPreferencesContext'
 import { WORKSPACE_TABS, WorkspacePane, type WorkspaceTab } from '@/workspaces/WorkspacePane'
 
 const validateTab = (value: unknown): WorkspaceTab | undefined =>
@@ -28,6 +29,7 @@ function Workspace() {
   const navigate = useNavigate()
   const router = useRouter()
   const aside = useAsideNavigation()
+  const preferences = usePreferences()
   return (
     <WorkspacePane
       // Keyed, so each workspace loads its own chats rather than showing the previous one's.
@@ -44,7 +46,7 @@ function Workspace() {
         navigate({
           to: '/workspace/$workspaceId/chat/$chatId',
           params: { workspaceId, chatId: id },
-          search: { open: carryAside(open, { workspaceId, chatId: id }) ?? asideFor({ workspaceId, chatId: id }) },
+          search: { open: carryAside(preferences, open, { workspaceId, chatId: id }) ?? asideFor(preferences, { workspaceId, chatId: id }) },
           state: { chatTitle: title },
         })
       }

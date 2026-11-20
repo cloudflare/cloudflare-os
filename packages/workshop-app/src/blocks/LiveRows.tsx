@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import { AnimatePresence, motion, useIsPresent } from 'motion/react'
-import { useReducedMotion } from '@/hooks/useReducedMotion'
+import { useReducedMotion } from '@gadgets/ui'
 
 const TRANSITION = { duration: 0.24, ease: [0.25, 0.1, 0.25, 1] } as const
 // A row of no height would still be given the list's `gap-2`, so it ends by taking that back.

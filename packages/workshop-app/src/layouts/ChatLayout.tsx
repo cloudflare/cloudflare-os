@@ -1,7 +1,6 @@
 import { useCallback, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { animate, useMotionValue } from 'motion/react'
-import { useReducedMotion } from '@/hooks/useReducedMotion'
-import { publishHeight } from './publishHeight'
+import { publishHeight, useReducedMotion } from '@gadgets/ui'
 import { OPENING_TIMING } from './useEdgeHint'
 
 // The column at the end, open, is 19rem wide: a 17rem card, 0.75rem in from the edge (the header's

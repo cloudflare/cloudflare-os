@@ -4,20 +4,15 @@ import { BuildingsIcon, CaretLeftIcon, CompassIcon, PencilSimpleIcon, StarIcon, 
 import { ConnectionNeeds } from '@/blocks/ConnectionNeeds'
 import { EditTemplateDialog } from '@/blocks/EditTemplateDialog'
 import { TemplatePreview } from '@/blocks/TemplatePreview'
-import { Button } from '@/components/Button'
-import { ConfirmMenu } from '@/components/ConfirmMenu'
+import { Button, ConfirmMenu, HeaderBubble, PageLayout, useNarrowScreen } from '@gadgets/ui'
 import { ClampedText } from '@/components/ClampedText'
 import { FactStrip } from '@/components/FactStrip'
 import { FormatIcon } from '@/components/FormatIcon'
-import { HeaderBubble } from '@/components/HeaderBubble'
 import { ServiceStack } from '@/components/ServiceStack'
 import { Shelf } from '@/components/Shelf'
-import { useNarrowScreen } from '@/hooks/useNarrowScreen'
-import { PageLayout } from '@/layouts/PageLayout'
 import { TemplateEntries } from './TemplateEntries'
 import { templateCreator, templateNeeds, templateServices, templateType, type Template, type TemplateNeed } from './templates'
 
-const count = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 })
 const day = new Intl.DateTimeFormat('en', { day: 'numeric', month: 'short' })
 const month = new Intl.DateTimeFormat('en', { month: 'short', year: 'numeric' })
 const date = new Intl.DateTimeFormat('en', { day: 'numeric', month: 'long', year: 'numeric' })
@@ -149,8 +144,6 @@ export const TemplatePageView = ({ template, status, starred, onStarredChange, o
         <FactStrip
           facts={[
             { label: 'Makes', value: <FormatIcon name={icon} />, detail: noun },
-            // Only where it is known, which the backend does not say yet.
-            ...(template.uses === undefined ? [] : [{ label: 'Used', value: count.format(template.uses), detail: template.uses === 1 ? 'time' : 'times' }]),
             // The logos, as a card shows them, where there are any to show.
             { label: 'Connections', value: needs.length > 0 ? <ServiceStack label="Needs" services={templateServices(template)} /> : 'None', detail: names || 'Nothing to connect' },
             { label: 'Author', value: creator.organization ? <BuildingsIcon aria-hidden="true" /> : <UserIcon aria-hidden="true" />, detail: creator.name },

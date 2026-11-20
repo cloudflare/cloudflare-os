@@ -1,4 +1,4 @@
-import { webUrl } from '@/components/webUrl'
+import { webUrl } from '@gadgets/ui'
 
 export type ResourceLinkProps = { title: string; url?: string }
 

@@ -8,6 +8,8 @@ const ask = (id: number, change: Partial<Ask> = {}): Ask => ({
   type: 'action',
   state: 'pending',
   gatekeeperId: 3,
+  from: 'gadget',
+  gadgetId: 7,
   resourceTitle: 'Q3 notes',
   createdAt: new Date(0),
   ...change,
@@ -33,7 +35,7 @@ const fakeWorkspace = ({ pending = [ask(1), ask(2, { gatekeeperId: 8 })], bindin
     listActions: async ({ beforeId } = {}) => (beforeId === undefined
       ? { entries: pending.slice(0, 1), nextBeforeId: pending.length > 1 ? pending[0].id : undefined }
       : { entries: pending.slice(1) }),
-    listChats: vi.fn<AsksOverseer['listChats']>(async () => [{ id: 12, spawnerId: 9, spawnerName: 'Researcher' }]),
+    listChats: vi.fn<AsksOverseer['listChats']>(async () => [{ id: 12, spawnerName: 'Researcher', spawnedByGadgetId: 7 }, { id: 14, spawnerName: 'Other', spawnedByGadgetId: 8 }]),
     approveAction: async (id) => void calls.push(`approve ${id}`),
     rejectAction: async (id) => void calls.push(`reject ${id}`),
     setAutoApprovedActionKind: async (gatekeeperId, kind) => void calls.push(`allow ${gatekeeperId}:${kind.tag}`),
@@ -96,7 +98,7 @@ describe('GadgetAsks', () => {
     expect(listBindings).toHaveBeenCalledTimes(2)
   })
 
-  it('reads the chats again for what came from a chat not yet known, which may be an agent just started', async () => {
+  it('reads the runs again for what came from a chat not yet known, which may be an agent just started', async () => {
     const { overseer, server } = fakeWorkspace()
     const asks = new GadgetAsks(() => overseer, 7)
     asks.start()
@@ -105,6 +107,7 @@ describe('GadgetAsks', () => {
     expect(overseer.listChats).toHaveBeenCalledTimes(1)
     server().entry(ask(6, { chatId: 13 }))
     expect(overseer.listChats).toHaveBeenCalledTimes(2)
+    expect(overseer.listChats).toHaveBeenLastCalledWith({ kind: 'runs' })
   })
 
   it('approves oldest first and denies newest first, only what still waits', async () => {

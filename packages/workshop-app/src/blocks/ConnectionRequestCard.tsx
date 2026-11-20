@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Badge } from '@cloudflare/kumo'
 import { PlugsIcon, RobotIcon } from '@phosphor-icons/react'
-import { Button } from '@/components/Button'
+import { Button } from '@gadgets/ui'
 import { Card } from '@/components/Card'
 import { usePending, type ActionResult } from './usePending'
 

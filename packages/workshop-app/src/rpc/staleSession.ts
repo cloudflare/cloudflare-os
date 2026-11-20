@@ -14,11 +14,11 @@ export class StaleBackend {
 
   /**
    * Whether a socket answered by `socket` should be dropped for a new one, now that a new request
-   * reaches `latest` (null where the backend has no version, undefined where it could not be
-   * asked). Saying so is leaving `socket` behind.
+   * reaches `latest` (undefined where the backend has no version or could not be asked). Saying so
+   * is leaving `socket` behind.
    */
-  leave(socket: string | undefined, latest: string | null | undefined) {
-    if (socket === undefined || typeof latest !== 'string' || latest === socket || this.#left.has(socket)) return false
+  leave(socket: string | undefined, latest: string | undefined) {
+    if (socket === undefined || latest === undefined || latest === socket || this.#left.has(socket)) return false
     this.#left.add(socket)
     return true
   }
@@ -26,7 +26,8 @@ export class StaleBackend {
 
 /**
  * Whether the user should be told that a fresh load would get a newer app than the page runs: by
- * its entry script, which a new build names anew. Each newer one is told of once.
+ * the build id each build of it is named by (`scripts/assets-build-id.ts`). Each newer one is told
+ * of once.
  */
 export class PageUpdates {
   #told: string | undefined
