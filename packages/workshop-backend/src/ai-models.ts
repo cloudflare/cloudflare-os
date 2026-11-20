@@ -576,12 +576,12 @@ function makeHandle(args: HandleArgs): ModelHandle {
           headers["x-goog-api-key"] === null) {
         // @google/genai appends `x-goog-api-key` after `httpOptions.headers`,
         // so a null header entry cannot suppress it like Anthropic/OpenAI SDKs.
-        const targetFetch = baseFetch ?? globalThis.fetch;
         fetch = (input, init) => {
           const stripped = new Headers(
               init?.headers ?? (input instanceof Request ? input.headers : undefined));
           stripped.delete("x-goog-api-key");
-          return targetFetch(input, { ...init, headers: stripped });
+          const nextInit = { ...init, headers: stripped };
+          return baseFetch ? baseFetch(input, nextInit) : globalThis.fetch(input, nextInit);
         };
       }
       const transcript = normalizeContext(

@@ -82,13 +82,6 @@ minimumReleaseAgeExclude:
   - capnweb-validate
   - workerd
   - "@cloudflare/workerd-*"
-  # One-time exception for pi's 1.6.0 Google custom-fetch release and its
-  # co-released dependencies. Pin the exemption to exact versions so future
-  # releases remain subject to the 24-hour gate.
-  - "@earendil-works/pi-agent-core@1.6.0"
-  - "@earendil-works/pi-ai@1.6.0"
-  - "@earendil-works/pi-schema@1.6.0"
-  - "@earendil-works/pi-telemetry@1.6.0"
 
 allowBuilds:
   '@google/genai': true
