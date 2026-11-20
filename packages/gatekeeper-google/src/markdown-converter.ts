@@ -144,10 +144,11 @@ export type TableMapping = MarkdownRange & {
   /** How many rows, from the first, the table pins as its header; absent when it pins none. */
   pinnedRows?: number;
   /**
-   * Set when the table, a row of it or a cell of it is a suggested insertion or suggested for
-   * deletion, or a table inside one of its cells holds such a suggestion.
+   * How many suggestions the table holds that the view does not show: each suggested insertion
+   * or deletion of the table, of a row of it or of a cell of it, and those of a table inside
+   * one of its cells. Absent when it holds none.
    */
-  suggested?: true;
+  suggested?: number;
 };
 
 /** One row of a table: its lines in the rendering, `  <tr…>` through `  </tr>` and its line break. */
@@ -200,10 +201,11 @@ export type TableCellMapping = MarkdownRange & {
    */
   copies?: "dropdown" | "placeholder" | "nothing";
   /**
-   * Whether the cell holds an element the rendering shows nothing for: a dropdown, or a smart
-   * chip that has no text of its own. A cell that holds nothing else reads as an empty cell.
+   * How many elements the cell holds that the rendering shows nothing for: a dropdown, or a
+   * smart chip that has no text of its own. A cell that holds nothing else reads as an empty
+   * cell.
    */
-  unshown: boolean;
+  unshown: number;
 };
 
 /** An editable text of a cell: the HTML between the tags of its paragraph. */
@@ -1515,23 +1517,31 @@ type RenderedCell = RenderedHtml &
 /** A rendered table: its HTML, its look, and its rows when it is a table of the tab body. */
 type RenderedTable = { html: string } & Pick<TableMapping, "look" | "rows">;
 
-function isSuggested(
+/** How many suggested insertions and deletions `value` is marked with. */
+function suggestionsOf(
   value: { suggestedInsertionIds?: string[]; suggestedDeletionIds?: string[] },
-): boolean {
-  return !!(value.suggestedInsertionIds?.length || value.suggestedDeletionIds?.length);
+): number {
+  return (value.suggestedInsertionIds?.length ?? 0) + (value.suggestedDeletionIds?.length ?? 0);
 }
 
 /**
- * Whether the table, a row of it or a cell of it is a suggestion, or a table inside one of its
- * cells holds one: deleting the cell discards that suggestion too. The table's own fields count
- * beside those of its rows and cells, since a table that is itself a suggestion may mark only
- * itself.
+ * How many suggestions the table, its rows and its cells are marked with, those of a table
+ * inside one of its cells included: deleting the cell discards that suggestion too. The table's
+ * own fields count beside those of its rows and cells, since a table that is itself a
+ * suggestion may mark only itself.
  */
-function holdsSuggestion(table: Table): boolean {
-  return isSuggested(table) || !!table.tableRows?.some(row =>
-    isSuggested(row) || !!row.tableCells?.some(cell =>
-      isSuggested(cell) ||
-      !!cell.content?.some(element => !!element.table && holdsSuggestion(element.table))));
+function suggestionsIn(table: Table): number {
+  let count = suggestionsOf(table);
+  for (let row of table.tableRows ?? []) {
+    count += suggestionsOf(row);
+    for (let cell of row.tableCells ?? []) {
+      count += suggestionsOf(cell);
+      for (let element of cell.content ?? []) {
+        if (element.table) count += suggestionsIn(element.table);
+      }
+    }
+  }
+  return count;
 }
 
 /** What the tab says of a table that its HTML does not show. */
@@ -1539,14 +1549,14 @@ function tableDocMapping(
   element: StructuralElement, table: Table,
 ): Pick<TableMapping, "docStart" | "docEnd" | "pinnedRows" | "suggested"> {
   let rows = table.tableRows ?? [];
-  let suggested = holdsSuggestion(table);
+  let suggested = suggestionsIn(table);
   let pinnedRows = 0;
   while (rows[pinnedRows]?.tableRowStyle?.tableHeader === true) pinnedRows++;
   return {
     docStart: element.startIndex,
     docEnd: element.endIndex,
     ...(pinnedRows > 0 ? { pinnedRows } : {}),
-    ...(suggested ? { suggested: true as const } : {}),
+    ...(suggested > 0 ? { suggested } : {}),
   };
 }
 
@@ -1628,7 +1638,7 @@ function cellMapping(
     styled: !first || !!first.bullet || first.paragraphStyle.namedStyleType !== "NORMAL_TEXT",
     loneChip: copy !== undefined,
     ...(copy && copy !== "unseen" ? { copies: copy } : {}),
-    unshown: someCellParagraph(elements, lists, holdsUnshownElement),
+    unshown: unshownElements(elements),
   };
 }
 
@@ -1661,12 +1671,20 @@ function holdsFootnote(paragraph: Paragraph): boolean {
 }
 
 /**
- * Whether a paragraph holds an element the rendering shows nothing for: a dropdown, or a smart
- * chip that has no text of its own.
+ * How many elements the paragraphs of `elements`, the cells of tables among them included, hold
+ * that the rendering shows nothing for: a dropdown, or a smart chip that has no text of its own.
  */
-function holdsUnshownElement(paragraph: Paragraph): boolean {
-  return paragraph.elements.some(element =>
-    !element.textRun && !element.horizontalRule && !visibleParagraphElement(element));
+function unshownElements(elements: readonly StructuralElement[]): number {
+  let count = 0;
+  for (let element of elements) {
+    for (let part of element.paragraph?.elements ?? []) {
+      if (!part.textRun && !part.horizontalRule && !visibleParagraphElement(part)) count++;
+    }
+    for (let row of element.table?.tableRows ?? []) {
+      for (let cell of row.tableCells ?? []) count += unshownElements(cell.content ?? []);
+    }
+  }
+  return count;
 }
 
 /** A paragraph of a cell that holds nothing, as a line of the cell's HTML. */

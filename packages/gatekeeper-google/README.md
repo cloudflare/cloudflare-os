@@ -810,9 +810,9 @@ before anything is queued:
   cells, or to those of a table inside one of its cells, since deleting a suggested row or column
   would discard the suggestion, or merging or splitting its cells. The text of such a table's
   cells can still be replaced, and the
-  table deleted, with a note on its approval card. A table that comes to hold suggested changes
-  after its deletion was requested is not deleted: the deletion fails without writing, and is
-  requested again.
+  table deleted, with a note on its approval card. A table that comes to hold suggested changes,
+  or more of them, after its deletion was requested is not deleted: the deletion fails without
+  writing, and is requested again.
 
 A table holding merged cells or another table can still be deleted whole. The checks that ask
 whether paragraphs are list items are made on the copy of the document with the queued
@@ -827,9 +827,9 @@ document tabs". A deletion may apply that way
 too, since the document's version history undoes it. The card of a deletion shows what is deleted
 as `getContent()` reads it. A dropdown reads as nothing there, and so does a smart chip that has no
 text of its own, so a cell that holds nothing else reads as an empty cell; the card says when what
-is deleted holds one. Where one is put into those cells after the deletion was requested, the table
-still reads as it did and the card says nothing of it, so the deletion fails without writing and is
-requested again. The card of a replacement in table cells says that its values are the table's
+is deleted holds one. Where one more is put into those cells after the deletion was requested, the
+table still reads as it did and the card says nothing of it, so the deletion fails without writing
+and is requested again: the change records how many such elements its cells held. The card of a replacement in table cells says that its values are the table's
 HTML, where Markdown syntax is written to the cells as typed.
 
 A replacement's card shows `Old` and `New`, the text the change replaces and the text that stands

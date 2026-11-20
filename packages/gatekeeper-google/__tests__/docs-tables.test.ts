@@ -1528,7 +1528,7 @@ describe("a chip alone in a cell", () => {
     // A copy is a chip alone in its cell, which a row added beside it copies again.
     let after = docTabToMarkdown(applied);
     expect(after.sourceMap.tables[0].rows[2].cells[1])
-      .toMatchObject({ texts: [], loneChip: true, copies: "dropdown", unshown: true });
+      .toMatchObject({ texts: [], loneChip: true, copies: "dropdown", unshown: 1 });
     appliedChange(applied, addRows(after, 0, 3, [["z", ""]]));
 
     expect(refusal(CHIPS, addRows(content, 0, 2, [["x", "y"]]))).toBe(CHIP_COLUMN(1, 1));
@@ -1632,7 +1632,7 @@ describe("a table that holds suggestions", () => {
   for (let [name, tab] of tabs) {
     it(`refuses row and column changes on a table with ${name}, and deletes it`, () => {
       let content = read(tab());
-      expect(content.sourceMap.tables[0].suggested).toBe(true);
+      expect(content.sourceMap.tables[0].suggested).toBeGreaterThan(0);
       // Refused before `at` is looked at: none of these names a row or column of the table.
       for (let change of [
         addRows(content, 0, 9, [["", ""]]), addColumns(content, 0, 9, [[""], [""], [""]]),
@@ -1641,7 +1641,7 @@ describe("a table that holds suggestions", () => {
         expect(targetRefusal(tab(), change)).toBe(suggestedRefusal(change.type));
       }
       let { rendering } = appliedCellText(tab(), "<p>a</p>", "<p>changed</p>");
-      expect(rendering.sourceMap.tables[0].suggested).toBe(true);
+      expect(rendering.sourceMap.tables[0].suggested).toBeGreaterThan(0);
       appliedChange(tab(), dropTable(content, 0));
       expect(kinds(tableChangeRequests(docTabToMarkdown(tab()), dropTable(content, 0))))
         .toEqual(["deleteContentRange"]);
@@ -1677,7 +1677,24 @@ describe("a deletion whose cells have come to hold what its card did not say", (
 
   it("applies a deletion that recorded the dropdown, with it and once it is gone", () => {
     for (let change of statusDeletions(read(dropdownTab()))) {
-      expect(change).toMatchObject({ unshown: true });
+      expect(change).toMatchObject({ unshown: 1 });
+      appliedChange(dropdownTab(), change);
+      appliedChange(statusTab(), change);
+    }
+  });
+
+  it("refuses a deletion that recorded one dropdown once its cells hold a second", () => {
+    let two = () => statusTab(cellOf({ runs: [{ dropdown: "Blocked" }, { dropdown: "Late" }, "\n"] }));
+    // A second dropdown reads as nothing too, so the table reads as it did with one.
+    expect(read(two()).markdown).toBe(read(dropdownTab()).markdown);
+    for (let change of statusDeletions(read(dropdownTab()))) {
+      expect(change).toMatchObject({ unshown: 1 });
+      expect(refusal(two(), change)).toBe(cameToHoldChips(change.type));
+    }
+    // One that recorded both applies with both, with one and with none.
+    for (let change of statusDeletions(read(two()))) {
+      expect(change).toMatchObject({ unshown: 2 });
+      appliedChange(two(), change);
       appliedChange(dropdownTab(), change);
       appliedChange(statusTab(), change);
     }
@@ -1705,9 +1722,19 @@ describe("a deletion whose cells have come to hold what its card did not say", (
       "cells since this change was queued.");
 
     let queuedWith = dropTable(read(suggested()), 0);
-    expect(queuedWith).toMatchObject({ suggested: true });
+    // The row suggested for deletion, and each of its two cells.
+    expect(queuedWith).toMatchObject({ suggested: 3 });
     appliedChange(suggested(), queuedWith);
     appliedChange(plain(), queuedWith);
+    // A second row suggested for deletion since: more than the change recorded.
+    let more = () => buildTab([
+      para("Before"), { table: rows, suggestedRows: { 0: "deletion", 1: "deletion" } }, para("After"),
+    ]);
+    expect(read(more()).markdown).toBe(read(plain()).markdown);
+    expect(refusal(more(), queuedWith)).toBe(
+      "deleteTable: this table has come to hold suggested changes to its rows, columns or " +
+      "cells since this change was queued.");
+    appliedChange(more(), dropTable(read(more()), 0));
 
     // A suggestion in a table inside a cell is deleted with the cell, so it counts the same.
     let holding = (suggestedRows?: Record<number, "deletion">) => buildTab([
@@ -1727,14 +1754,14 @@ describe("a deletion whose cells have come to hold what its card did not say", (
     expect(refusal(holding({ 0: "deletion" }), dropRows(read(holding()), 0, 0))).toBe(
       "deleteTableRows: this table holds suggested changes to its rows, columns or cells, so " +
       "its rows and columns cannot be changed until they are accepted or rejected.");
-    expect(dropTable(read(holding({ 0: "deletion" })), 0)).toMatchObject({ suggested: true });
+    expect(dropTable(read(holding({ 0: "deletion" })), 0)).toMatchObject({ suggested: 3 });
   });
 
   it("carries what a deletion would remove through the changes queued before it", () => {
     let content = read(dropdownTab());
     let grown = renderTab(applyDocEdit(dropdownTab(), addRows(content, 0, 0, [["new", "row"]])));
     // The dropdown's row has moved down by one.
-    expect(dropRows(grown, 0, 2)).toMatchObject({ unshown: true });
+    expect(dropRows(grown, 0, 2)).toMatchObject({ unshown: 1 });
     expect(dropRows(grown, 0, 0)).not.toHaveProperty("unshown");
     expect(dropRows(grown, 0, 1)).not.toHaveProperty("unshown");
   });

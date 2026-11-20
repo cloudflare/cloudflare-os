@@ -51,15 +51,19 @@ export type TableRef = {
 };
 
 /**
- * What a deletion removes that the Markdown view does not show. The approval card of a deletion
- * shows what is deleted as the view reads, so it says these in words, and the queued change
- * records them: it applies only while what it deletes holds nothing of the kind beyond that.
+ * What a deletion removes that the Markdown view does not show, by number. The approval card of
+ * a deletion shows what is deleted as the view reads, so it says these in words, and the queued
+ * change records how many there were: it applies only while what it deletes holds no more of
+ * either kind than that.
  */
 export type HiddenContent = {
-  /** Set when a deleted cell holds an element the view shows nothing for. */
-  unshown?: true;
-  /** Set when a table deleted whole holds suggested changes to its rows, columns or cells. */
-  suggested?: true;
+  /** How many elements the deleted cells hold that the view shows nothing for; absent for none. */
+  unshown?: number;
+  /**
+   * How many suggested changes to its rows, columns or cells a table deleted whole holds; absent
+   * for none.
+   */
+  suggested?: number;
 };
 
 /** A change to a tab's tables, as stored with its pending action. */
@@ -349,18 +353,19 @@ export function hiddenContent(
   let cells = shape.type === "deleteTable" ? rows.flat()
     : shape.type === "deleteTableRows" ? rows.slice(shape.at, shape.at + shape.count).flat()
     : rows.flatMap(row => row.slice(shape.at, shape.at + shape.count));
+  let unshown = cells.reduce((count, cell) => count + cell.unshown, 0);
   return {
-    ...(cells.some(cell => cell.unshown) ? { unshown: true as const } : {}),
-    ...(shape.type === "deleteTable" && target.suggested ? { suggested: true as const } : {}),
+    ...(unshown > 0 ? { unshown } : {}),
+    ...(shape.type === "deleteTable" && target.suggested ? { suggested: target.suggested } : {}),
   };
 }
 
 /**
  * The place, among the rendering's tables, of the table a queued change applies to: the
  * tab's table `number`, the one that reads as the change recorded (`tableNumbered`). A
- * deletion is refused there when what it would remove has come to hold what the view does
- * not show and the change did not record: its table still reads as recorded, and its
- * approval card says nothing of what would go with it.
+ * deletion is refused there when what it would remove has come to hold more of what the view
+ * does not show than the change recorded: its table still reads as recorded, and its approval
+ * card says nothing of what more would go with it.
  */
 function targetOf(render: DocTabSnapshot, change: ExistingTableChange, number: number): number {
   let op = change.type;
@@ -369,12 +374,12 @@ function targetOf(render: DocTabSnapshot, change: ExistingTableChange, number: n
       change.type === "mergeTableCells" || change.type === "unmergeTableCells" ||
       isLookChange(change)) return table;
   let hidden = hiddenContent(render, table, change);
-  if (hidden.unshown && !change.unshown) {
+  if ((hidden.unshown ?? 0) > (change.unshown ?? 0)) {
     throw new Error(
       `${op}: what would be deleted has come to hold a dropdown or other smart chips, which ` +
       "getContent() does not show, since this change was queued.");
   }
-  if (hidden.suggested && !change.suggested) {
+  if ((hidden.suggested ?? 0) > (change.suggested ?? 0)) {
     throw new Error(
       `${op}: this table has come to hold suggested changes to its rows, columns or cells ` +
       "since this change was queued.");
