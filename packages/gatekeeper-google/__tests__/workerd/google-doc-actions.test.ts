@@ -2408,6 +2408,8 @@ describe("Google Doc pending changes", () => {
         { id: replaceId, type: "replaceText", oldMarkdown: "Before", newMarkdown: "After" },
         { id: appendId, type: "appendText", markdown: "added" },
       ],
+      // The document as saved, which a change to how it is drawn would name anew.
+      revisionId: "revision-1",
     });
     expect(pending.markdown).toBe("After\n\nadded\n");
     expect(docs.text()).toBe("Before");
@@ -2456,6 +2458,7 @@ describe("Google Doc pending changes", () => {
       changes: [{
         id: actionId, stale: true, type: "replaceText", oldMarkdown: "target", newMarkdown: "changed",
       }],
+      revisionId: "revision-2",
     });
   });
 
@@ -2477,7 +2480,7 @@ describe("Google Doc pending changes", () => {
     let changes = [{ id: actionId, type: "appendText", markdown: "Hello" }];
 
     expect(await hooks().readPendingChanges("pending-added-tab", added.tabId))
-      .toEqual({ savedMarkdown: "\n", markdown: "Hello\n", changes });
+      .toEqual({ savedMarkdown: "\n", markdown: "Hello\n", changes, revisionId: "revision-1" });
     expect((await hooks().readPendingChanges("pending-added-tab", MAIN_TAB)).changes).toEqual([]);
     expect((await hooks().callDoc("pending-added-tab", "readDrawing" as keyof GoogleDocSession, [added.tabId])).value)
       .toMatchObject({ blocks: [{ type: "paragraph", line: 0, style: "NORMAL_TEXT" }] });
@@ -2485,7 +2488,7 @@ describe("Google Doc pending changes", () => {
     expect(await hooks().applyAction("pending-added-tab", added.actionId)).toBeNull();
     // The ID the agent was given still names the tab, and the edit queued under it.
     expect(await hooks().readPendingChanges("pending-added-tab", added.tabId))
-      .toEqual({ savedMarkdown: "\n", markdown: "Hello\n", changes });
+      .toEqual({ savedMarkdown: "\n", markdown: "Hello\n", changes, revisionId: "revision-3" });
   });
 
   it("refuses a tab the document does not have", async () => {
@@ -2511,6 +2514,7 @@ describe("Google Doc pending changes", () => {
       savedMarkdown: "Before\n\nkept\n",
       markdown: "Before\n\nkept\n",
       changes: [],
+      revisionId: "revision-3",
     });
   });
 

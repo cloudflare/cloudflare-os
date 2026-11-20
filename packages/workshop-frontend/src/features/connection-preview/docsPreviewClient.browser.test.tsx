@@ -5,7 +5,7 @@ import { afterEach, expect, it } from 'vitest'
 import { prepareUiPage } from '@gadgets/workshop-shared/ui-page'
 import { DOCS_PREVIEW_BUNDLE } from './docsPreviewBundle'
 
-type Doc = { savedMarkdown: string, markdown?: string, drawing?: object, tabs?: string[], titles?: string[] }
+type Doc = { savedMarkdown: string, markdown?: string, revisionId?: string, drawing?: object, tabs?: string[], titles?: string[] }
 
 let frame: HTMLIFrameElement | undefined
 
@@ -309,6 +309,20 @@ it('keeps the images of a paragraph a pending change edits, and wraps its text r
   const words = run(edited, 'Beside').getBoundingClientRect()
   expect(words.left).toBeGreaterThanOrEqual(tethered.getBoundingClientRect().right - 1)
   expect(words.top).toBeLessThan(tethered.getBoundingClientRect().bottom)
+})
+
+it('draws a tab again once it is saved anew, though its Markdown reads the same', async () => {
+  const set = (fontSize: number) => drawing([paragraph(0, 'Words')], { textLooks: [{ ...ARIAL, fontSize }] })
+  const { blocks, look, refresh } = await draw({ savedMarkdown: 'Words\n', drawing: set(11), revisionId: 'a' })
+  const size = () => parseFloat(look(run(blocks()[0], 'Words')).fontSize)
+
+  // A drawing is kept for as long as the document is the one it was read of.
+  await refresh({ drawing: set(20), markdown: 'Words\n\nMore\n' })
+  await expect.poll(() => blocks().length).toBe(2)
+  expect(size()).toBeCloseTo(11 * POINT, 1)
+
+  await refresh({ revisionId: 'b' })
+  await expect.poll(size).toBeCloseTo(20 * POINT, 1)
 })
 
 it('draws a tab from its Markdown when its drawing is of another document', async () => {

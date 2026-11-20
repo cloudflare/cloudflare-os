@@ -1034,7 +1034,7 @@ export class GoogleDocSessionImpl extends RpcTarget
               oldMarkdown: action.oldMarkdown, newMarkdown: action.newMarkdown }
           : { id, ...stale, type: action.type, markdown: action.markdown }];
       });
-      return { tab, changes: { savedMarkdown: tab.markdown, markdown, changes: listed } };
+      return { tab, changes: { savedMarkdown: tab.markdown, markdown, changes: listed, revisionId: taken.revisionId } };
     }, ({ tab }) => ({
       title: "Read Google Doc pending changes",
       description:

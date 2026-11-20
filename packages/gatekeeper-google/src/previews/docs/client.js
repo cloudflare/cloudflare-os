@@ -153,16 +153,17 @@ function namedOf(style) {
   return found ? { paragraph: paragraphLooks[found.paragraph], text: textLooks[found.text] } : PLAIN[style] ?? PLAIN.NORMAL_TEXT;
 }
 
-// Per tab: the saved Markdown its drawing was read for, and the drawing.
+// Per tab: the saved Markdown and the revision its drawing was read for, and the drawing. The
+// revision tells of a change to how the tab is drawn that its Markdown does not show.
 const drawings = new Map();
 
-async function readDrawing(savedMarkdown) {
+async function readDrawing(savedMarkdown, revisionId) {
   // The tab asked about, which is no longer the one shown if another was chosen meanwhile.
   const id = tabId;
   const held = drawings.get(id);
-  if (held?.savedMarkdown === savedMarkdown) return held.drawing;
+  if (held?.savedMarkdown === savedMarkdown && held.revisionId === revisionId) return held.drawing;
   const drawing = await gadget.readDrawing(id);
-  drawings.set(id, { savedMarkdown, drawing });
+  drawings.set(id, { savedMarkdown, revisionId, drawing });
   return drawing;
 }
 
@@ -777,10 +778,10 @@ async function load() {
       pending = gadget.getPendingChanges(tabId);
     }
     if (tab) renderOutline();
-    const { savedMarkdown, markdown, changes } = await pending;
+    const { savedMarkdown, markdown, changes, revisionId } = await pending;
     if (current !== generation) return;
     // Without its drawing the tab is still drawn, as a document of Google's own styles.
-    const drawing = await readDrawing(savedMarkdown).catch(() => BLANK);
+    const drawing = await readDrawing(savedMarkdown, revisionId).catch(() => BLANK);
     if (current !== generation) return;
     const stale = changes.filter(change => change.stale).length;
     pager.lift(changes.length > 0);
