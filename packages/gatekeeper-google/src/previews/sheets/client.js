@@ -1016,9 +1016,10 @@ async function show(view, current, target) {
   }
   pick(picked);
   // Text runs on over empty cells as far as it is wide, so a font that arrives is drawn again.
+  // Whichever window is drawn by then: a later one asked for no font that was already on its way.
   readFonts(drawing).then(arrived => {
-    if (!arrived || shown?.drawing !== drawing) return;
-    draw(drawing);
+    if (!arrived || !shown) return;
+    draw(shown.drawing);
     lightHeads();
     showPeek();
     pick(picked);

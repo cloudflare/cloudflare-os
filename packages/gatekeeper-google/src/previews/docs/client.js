@@ -843,20 +843,19 @@ async function load() {
     const writes = flag => rows.some(({ item, mark, words }) => mark && mark !== 'removed' && item.type !== 'table' &&
       (words ?? wordsOf(item.text)).some(word => word.style & flag && word.mark !== 'removed'));
     const [bold, italic] = [writes(BOLD), writes(ITALIC)];
-    let drawn = false;
     const arriving = fonts.read(drawing.textLooks.flatMap(({ fontFamily, weight, italic: slanted }) => [
       [fontFamily, weight, !!slanted],
       ...bold ? [[fontFamily, 700, false]] : [],
       ...italic ? [[fontFamily, 400, true]] : [],
     ])).then(any => {
-      if (!any) return;
-      if (drawn && current === generation) render(false, readingPlace());
+      // Whichever read drew the tab on the page by then: a later one asked for no font that was
+      // already on its way.
+      if (any && loaded && !page.hidden) render(false, readingPlace());
     });
     if (!loaded) await Promise.race([arriving, new Promise(resolve => setTimeout(resolve, 1500))]);
     if (current !== generation) return;
 
     render(true);
-    drawn = true;
     showStale(stale, 'document');
     status('');
     loaded = true;

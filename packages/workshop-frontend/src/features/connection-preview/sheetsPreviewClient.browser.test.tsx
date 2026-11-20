@@ -3,6 +3,7 @@
 // cannot.
 
 import { afterEach, expect, it } from 'vitest'
+import FONT_URL from 'pdfjs-dist/standard_fonts/LiberationSans-Bold.ttf?url'
 import { prepareUiPage } from '@gadgets/workshop-shared/ui-page'
 import { SHEETS_PREVIEW_BUNDLE } from './sheetsPreviewBundle'
 
@@ -34,6 +35,8 @@ type Book = {
   failDrawing?: (range: string) => string | undefined
   /** What a read of the pending changes waits for before it answers. */
   wait?: Promise<void>
+  /** The bytes of any font asked for, when one is served. */
+  font?: Promise<ArrayBuffer>
 }
 
 const letters = (column: number): string =>
@@ -93,10 +96,10 @@ async function draw(book: Book, width = 900) {
   const asked: string[] = []
   const fonts: [string, number, boolean][] = []
   const gadget = {
-    // No font is served: the cells are drawn in what the browser has.
+    // No font is served unless the book has one: the cells are drawn in what the browser has.
     readFont: async (...font: [string, number, boolean]) => {
       fonts.push(font)
-      throw new Error('readFont: Google Fonts does not serve this font.')
+      return book.font ?? Promise.reject(new Error('readFont: Google Fonts does not serve this font.'))
     },
     getSpreadsheet: async () => ({ id: 'book', title: 'Book', sheets: book.sheets.map(info) }),
     getPendingChanges: async (title: string) => {
@@ -586,6 +589,18 @@ it('reads a large sheet a window at a time: first around its changes, then where
 })
 
 const pause = (time: number) => new Promise(resolve => setTimeout(resolve, time))
+
+it('draws the window in view again in a font that arrives after it was scrolled to', async () => {
+  let arrive!: (bytes: ArrayBuffer) => void
+  const { doc, cell } = await draw({ ...bigBook({ formats: [{ fontFamily: 'Poppins' }] }), font: new Promise(resolve => { arrive = resolve }) })
+  doc.getElementById('scroll')!.scrollTo(0, 100 * 21)
+  await expect.poll(() => cell('A101')?.textContent, { timeout: 10_000 }).toBe('row 101')
+  const drawn = cell('A101')
+
+  arrive(await (await fetch(FONT_URL)).arrayBuffer())
+
+  await expect.poll(() => cell('A101') !== drawn).toBe(true)
+})
 
 it('opens on a change clear of the rows a sheet keeps in view', async () => {
   const { cell } = await draw(bigBook({ frozenRowCount: 6 }))
