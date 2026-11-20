@@ -19,6 +19,8 @@ const models = scriptedModelRouter();
 const TRUSTED_HOST = "gadgets-test.example";
 const OTHER_HOST = "other.example";
 const PAGE = "The fetched page.";
+// A trusted host's path that redirects to an untrusted host.
+const REDIRECT_PATH = "/redirect-to-other";
 
 // What the origin received, per request.
 type Received = { url: string; method: string; headers: Headers };
@@ -26,6 +28,9 @@ let received: Received[] = [];
 const web: Handler = (url, method, headers) => {
   if (url.host !== TRUSTED_HOST && url.host !== OTHER_HOST) return null;
   received.push({ url: url.href, method, headers });
+  if (url.pathname === REDIRECT_PATH) {
+    return new Response(null, { status: 302, headers: { location: `https://${OTHER_HOST}/redirected` } });
+  }
   return new Response(PAGE, { headers: { "content-type": "text/plain" } });
 };
 const network = new NetworkInterceptor({ handlers: [models.handler, web] });
@@ -135,6 +140,29 @@ it("fetches from a trusted host once restricted, but not with a query string", a
     expect(model.requests[2]).toMatchObject(toolResult("fetch", `GET ${query}: 403 `));
     expect(receivedUrls()).toEqual([plain]);
     expect(await fetchObservations(session)).toEqual([`GET \`${plain}\``]);
+  } finally {
+    await admin.setRestrictedWebFetchHosts([]);
+  }
+});
+
+it("checks each redirect executeCode's fetch follows, refusing one to an untrusted host", async () => {
+  await admin.setRestrictedWebFetchHosts([TRUSTED_HOST]);
+  try {
+    const start = `https://${TRUSTED_HOST}${REDIRECT_PATH}`;
+    const model = models.script([
+      readRestricted(),
+      fetchCode("fetch", [[start]]),
+      { text: "Done." },
+    ]);
+    await using session = await openSession(model);
+    await session.runTurn("Read the restricted value, then fetch the page.");
+
+    // The runtime follows the redirect, and its next hop comes back through the FetchLoopback,
+    // which refuses it before it reaches the untrusted host.
+    expect(model.requests[2]).toMatchObject(toolResult("fetch",
+        `GET ${start}: 403 This workspace has observed sensitive data, so it may only fetch from ${TRUSTED_HOST}`));
+    expect(receivedUrls()).toEqual([start]);
+    expect(await fetchObservations(session)).toEqual([`GET \`${start}\``]);
   } finally {
     await admin.setRestrictedWebFetchHosts([]);
   }
