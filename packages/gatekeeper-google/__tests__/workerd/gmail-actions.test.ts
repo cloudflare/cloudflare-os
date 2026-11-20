@@ -4045,6 +4045,61 @@ describe("Gmail message mutations", () => {
     expect(await values.has("pending:action:1")).toBe(false);
   });
 
+  // A first chunk never sent, its token not to be had, wrote nothing: the next approval is a first
+  // attempt, which a message deleted meanwhile fails, rather than a reconciliation that skips it.
+  it("approves anew a mutation whose first chunk could not get its token", async () => {
+    vi.useFakeTimers({toFake: ["Date"]});
+    try {
+      const start = Date.now();
+      const deleted = new Set<string>();
+      const batches: string[][] = [];
+      const {gatekeeper, storage, values, account} = actionHarness((url, init) => {
+        if (url.pathname === batchModifyPath && init.method === "POST") {
+          const {ids} = JSON.parse(String(init.body)) as BatchBody;
+          batches.push(ids);
+          return ids.some(id => deleted.has(id)) ? json({error: "missing"}, 404) : new Response(null, {status: 204});
+        }
+        const message = /^\/gmail\/v1\/users\/me\/messages\/(\w+)$/.exec(url.pathname);
+        if (message && !init.method) {
+          return deleted.has(message[1]) ? json({error: "missing"}, 404) : json(messageMetadata(message[1], "thread"));
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      });
+      // A token the memo serves for the approval's account check, and no longer once the clock
+      // moves on: the batch then asks the account, whose refresh fails.
+      account.kv.put("accessToken", {
+        token: "access-token", expires: new Date(start + ACCESS_TOKEN_EXPIRY_SAFETY_MS + 1000),
+      });
+      storage.kv.put("pending:action:1", {
+        type: "messageMutation",
+        operation: "markRead",
+        target: {kind: "messages", messageIds: ["aaa", "bbb"]},
+      });
+      const inner = globalThis.fetch;
+      let moved = false;
+      vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
+        const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
+        if (url.pathname === "/oauth2/v3/userinfo" && !moved) {
+          moved = true;
+          vi.setSystemTime(start + 2000);
+        }
+        return inner(input, init);
+      });
+      await expect(gatekeeper.applyAction(1)).rejects.toThrow();
+      expect(moved).toBe(true);
+      expect(batches).toEqual([]);
+      expect(await values.has("gmail:applying:1")).toBe(false);
+
+      deleted.add("aaa");
+      account.kv.put("accessToken", {token: "access-token", expires: new Date(start + 3_600_000)});
+      vi.setSystemTime(start + 10_000);
+      await expect(gatekeeper.applyAction(1)).rejects.toThrow(/messages\.batchModify failed/);
+      expect(batches).toEqual([["aaa", "bbb"]]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("skips messages deleted since the first attempt while reconciling", async () => {
     const batches: string[][] = [];
     const {gatekeeper, storage, values} = actionHarness((url, init) => {

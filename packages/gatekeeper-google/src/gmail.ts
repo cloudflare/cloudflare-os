@@ -4998,7 +4998,10 @@ async function applyMessageMutation(
       mayHaveWritten = true;
     }
   } catch (error) {
-    if (!mayHaveWritten && isDefinitiveWriteRejection(error)) store.clearApplying(actionId);
+    // Refused outright, or never sent for want of its token: nothing was written by this attempt.
+    if (!mayHaveWritten && (isDefinitiveWriteRejection(error) || isUnsentRequest(error))) {
+      store.clearApplying(actionId);
+    }
     throw error;
   }
 }
