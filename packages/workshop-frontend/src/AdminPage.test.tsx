@@ -229,7 +229,7 @@ it.each([
 })
 
 it.each([
-  { vendorId: 'instanceadmin', optional: 'Deployment admins can add it themselves', enabled: 'On for every deployment admin automatically' },
+  { vendorId: 'admin', optional: 'Deployment admins can add it themselves', enabled: 'On for every deployment admin automatically' },
   { vendorId: 'library', optional: 'Users can add it themselves', enabled: 'On for everyone automatically' },
 ])('says who receives the $vendorId account in each mode', async ({ vendorId, optional, enabled }) => {
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })

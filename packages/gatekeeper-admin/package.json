@@ -1,5 +1,5 @@
 {
-  "name": "@gadgets/gatekeeper-instanceadmin",
+  "name": "@gadgets/gatekeeper-admin",
   "version": "1.0.0",
   "type": "module",
   "main": "./src/worker.ts",
@@ -7,7 +7,7 @@
     "dev": "echo \"run 'pnpm dev-server' in the root directory instead\" >&2 && exit 1",
     "deploy": "vp run --no-cache build:configurator && wrangler deploy",
     "clean": "rm -rf dist src/generated",
-    "test:run": "node ../api-schema/scripts/generate.ts --if-stale && vp run -F @gadgets/gatekeeper-instanceadmin build:configurator && vitest run && vitest run -c vitest.worker.config.ts"
+    "test:run": "node ../api-schema/scripts/generate.ts --if-stale && vp run -F @gadgets/gatekeeper-admin build:configurator && vitest run && vitest run -c vitest.worker.config.ts"
   },
   "dependencies": {
     "@gadgets/api-schema": "workspace:*",

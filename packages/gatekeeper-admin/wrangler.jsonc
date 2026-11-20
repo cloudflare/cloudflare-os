@@ -1,7 +1,7 @@
 // Generated from cloudflare.config.ts by scripts/generate-worker-configs.ts -- do not edit.
 // Change cloudflare.config.ts and run `pnpm configs:generate`.
 {
-  "name": "gatekeeper-instanceadmin",
+  "name": "gatekeeper-admin",
   "main": ".wrangler/validate/src/worker.ts",
   "compatibility_date": "2026-09-04",
   "compatibility_flags": [
@@ -31,7 +31,7 @@
     {
       "tag": "v1",
       "new_sqlite_classes": [
-        "InstanceAdminGatekeeper"
+        "AdminGatekeeperImpl"
       ]
     }
   ]

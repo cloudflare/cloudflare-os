@@ -44,7 +44,7 @@ const SHIELD_ICON = {
  * The one resource of an admin gatekeeper account: this deployment's Admin API. Not exported: the
  * runtime refuses to start a Worker whose entry module exports a value that is no handler.
  */
-const DEPLOYMENT_URL = "instanceadmin://deployment";
+const DEPLOYMENT_URL = "admin://deployment";
 
 const DEPLOYMENT_RESOURCE: SupportedResource = {
   id: "deployment",
@@ -66,7 +66,7 @@ const TYPES = `${generatedDeclarations()}\n${TYPES_CODE}`;
  * through its queue; the facet itself holds nothing, and queues no action.
  */
 @validateRpc()
-export class InstanceAdminGatekeeper
+export class AdminGatekeeperImpl
   extends DurableObject<Cloudflare.Env>
   implements AdminGatekeeper<AdminSession>
 {
@@ -166,7 +166,7 @@ function noAction(action: number): Error {
  * is injected into no workspace: its holder adds its one resource to the workspaces that need it.
  */
 @validateRpc()
-export class InstanceAdminAccount extends WorkerEntrypoint<Cloudflare.Env> implements GatekeeperUser {
+export class AdminAccount extends WorkerEntrypoint<Cloudflare.Env> implements GatekeeperUser {
   /** Describes the account: no agent singleton and no management UI. */
   async describe(): Promise<AccountDescription> {
     return { displayName: DISPLAY_NAME, avatar: SHIELD_ICON };
@@ -185,7 +185,7 @@ export class InstanceAdminAccount extends WorkerEntrypoint<Cloudflare.Env> imple
     if (url !== DEPLOYMENT_URL) {
       throw new Error(`The admin gatekeeper has one resource, ${DEPLOYMENT_URL}.`);
     }
-    return { class: this.ctx.exports.InstanceAdminGatekeeper({}), resource: DEPLOYMENT_RESOURCE };
+    return { class: this.ctx.exports.AdminGatekeeperImpl({}), resource: DEPLOYMENT_RESOURCE };
   }
 
   /** Returns the frame that adds the deployment: it has nothing to choose. The type is named by
@@ -229,7 +229,7 @@ export class InstanceAdminAccount extends WorkerEntrypoint<Cloudflare.Env> imple
   /** Mints the trivial verifier that goes with allowing every observer. */
   @skipRpcValidation()
   async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {
-    return this.ctx.exports.InstanceAdminVerifier({});
+    return this.ctx.exports.AdminVerifier({});
   }
 }
 
@@ -245,7 +245,7 @@ class DeploymentConfiguratorUI extends RpcTarget implements DeploymentConfigurat
  * Every account is alike, so there is nothing to verify.
  */
 @validateRpc()
-export class InstanceAdminVerifier
+export class AdminVerifier
   extends WorkerEntrypoint<Cloudflare.Env>
   implements GatekeeperUserVerifier
 {
@@ -283,7 +283,7 @@ export class GatekeeperVendor
   /** Mints a new account. It takes no identity: every account is alike and holds nothing. */
   @skipRpcValidation()
   async createAccount(): Promise<Fetcher<GatekeeperUser>> {
-    return this.ctx.exports.InstanceAdminAccount({});
+    return this.ctx.exports.AdminAccount({});
   }
 
   connectAccount(

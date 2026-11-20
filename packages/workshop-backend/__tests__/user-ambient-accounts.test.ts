@@ -23,7 +23,7 @@ import { FAKE_ADMIN_RESOURCE, type FakeAdminVendor } from "./test-worker.js";
 declare module "cloudflare:workers" {
   interface ProvidedEnv {
     TEST_USER: DurableObjectNamespace<UserDurableObject>;
-    GATEKEEPER_INSTANCEADMIN: Service<FakeAdminVendor>;
+    GATEKEEPER_ADMIN: Service<FakeAdminVendor>;
   }
 }
 
@@ -162,7 +162,7 @@ async function deployment() {
  */
 const seed = (user: TestUser, declares: Partial<AccountDescription> = {}) =>
     user.run(async object => {
-      const account = await env.GATEKEEPER_INSTANCEADMIN.createAccount();
+      const account = await env.GATEKEEPER_ADMIN.createAccount();
       object.storage.connectedAccounts.put({
         id: 0, account, description: { ...await account.describe(), ...declares },
         vendorId: ADMIN_VENDOR, autoProvisioned: true,

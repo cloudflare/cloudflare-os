@@ -8,7 +8,7 @@ import {
  * it the Admin API of a workspace's owner, a session at a time.
  */
 export default defineGadgetsWorker({
-  name: "gatekeeper-instanceadmin",
+  name: "gatekeeper-admin",
   entrypoint: ".wrangler/validate/src/worker.ts",
   compatibilityFlags: ["allow_irrevocable_stub_storage"],
   observability: OBSERVABILITY,
@@ -26,5 +26,5 @@ export const wrangler = {
 
 /** The facet class is reached through ctx.exports; no binding is required. */
 export const migrations: DurableObjectMigration[] = [
-  { tag: "v1", new_sqlite_classes: ["InstanceAdminGatekeeper"] },
+  { tag: "v1", new_sqlite_classes: ["AdminGatekeeperImpl"] },
 ];

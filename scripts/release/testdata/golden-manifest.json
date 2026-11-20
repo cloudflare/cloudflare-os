@@ -18,6 +18,47 @@
   "manifestVersion": 1,
   "releaseId": "r000000-fixture",
   "workers": {
+    "gatekeeper-admin": {
+      "bindings": [],
+      "compatibilityDate": "2026-09-04",
+      "compatibilityFlags": [
+        "allow_irrevocable_stub_storage"
+      ],
+      "inputs": [],
+      "installable": true,
+      "kind": "gatekeeper",
+      "mainModule": "admin.js",
+      "migrations": [
+        {
+          "new_sqlite_classes": [
+            "AdminGatekeeperImpl"
+          ],
+          "tag": "v1"
+        }
+      ],
+      "modules": [
+        {
+          "name": "admin.js",
+          "r2Key": "blobs/modules/65fd772a3d3a8c3339eb683012f9af9469d1f15d682632ab435e0cc8c88fd82f",
+          "sha256": "65fd772a3d3a8c3339eb683012f9af9469d1f15d682632ab435e0cc8c88fd82f",
+          "size": 58,
+          "type": "esm"
+        }
+      ],
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 1,
+        "logs": {
+          "invocation_logs": false
+        }
+      },
+      "preinstall": true,
+      "shortName": "admin",
+      "singleton": true,
+      "vars": {
+        "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/admin"
+      }
+    },
     "gatekeeper-cloudflare": {
       "bindings": [
         {
@@ -573,47 +614,6 @@
       "singleton": true,
       "vars": {
         "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/homeassistant"
-      }
-    },
-    "gatekeeper-instanceadmin": {
-      "bindings": [],
-      "compatibilityDate": "2026-09-04",
-      "compatibilityFlags": [
-        "allow_irrevocable_stub_storage"
-      ],
-      "inputs": [],
-      "installable": true,
-      "kind": "gatekeeper",
-      "mainModule": "instanceadmin.js",
-      "migrations": [
-        {
-          "new_sqlite_classes": [
-            "InstanceAdminGatekeeper"
-          ],
-          "tag": "v1"
-        }
-      ],
-      "modules": [
-        {
-          "name": "instanceadmin.js",
-          "r2Key": "blobs/modules/de982e7524e56d9f750e6491146921ab4998d80090bcb76df19bacbfe6e4c03a",
-          "sha256": "de982e7524e56d9f750e6491146921ab4998d80090bcb76df19bacbfe6e4c03a",
-          "size": 66,
-          "type": "esm"
-        }
-      ],
-      "observability": {
-        "enabled": true,
-        "head_sampling_rate": 1,
-        "logs": {
-          "invocation_logs": false
-        }
-      },
-      "preinstall": true,
-      "shortName": "instanceadmin",
-      "singleton": true,
-      "vars": {
-        "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/instanceadmin"
       }
     },
     "gatekeeper-linear": {

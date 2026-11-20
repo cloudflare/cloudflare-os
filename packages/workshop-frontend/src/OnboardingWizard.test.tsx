@@ -95,7 +95,7 @@ describe('OnboardingWizard built-in tools', () => {
   it('offers an auto-provisioned vendor that has a resource as a tool, with no button to connect it',
       async () => {
     const admin: GatekeeperVendorInfo = {
-      id: 'instanceadmin',
+      id: 'admin',
       description: { url: 'https://admin.example', displayName: 'Deployment admin', autoProvisionsAccount: true },
       supportedResources: [],
     }

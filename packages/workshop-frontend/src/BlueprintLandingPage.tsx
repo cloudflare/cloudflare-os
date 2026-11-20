@@ -592,7 +592,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
           throw new Error(`Binding "${activeBindingName}" is not configured.`)
         }
         // Saved as the configurator returned it, as the connection picker does: a vendor's URL
-        // need not be https (the admin gatekeeper's is instanceadmin://deployment).
+        // need not be https (the admin gatekeeper's is admin://deployment).
         const resourceUrl = await collect()
         assignment = {
           type: 'gatekeeper',

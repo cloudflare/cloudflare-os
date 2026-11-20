@@ -24,7 +24,7 @@ const USER_VIEW = "AdminUserView";
 /** The view each open of the Admin API returns. */
 const OPENS: Record<string, string> = { inspectWorkspace: VIEW, inspectUser: USER_VIEW };
 /** The account's one resource, as the Workshop and a workspace's owner name it. */
-const DEPLOYMENT_URL = "instanceadmin://deployment";
+const DEPLOYMENT_URL = "admin://deployment";
 
 /** A session's stub, as an agent's code sees it: the schema's methods, which its type can't name. */
 type Session = Disposable & Record<string, (...args: unknown[]) => Promise<any>>;
@@ -102,7 +102,7 @@ function workshop() {
 }
 
 let facets = 0;
-const facet = (name = `facet-${++facets}`) => env.INSTANCE_ADMIN_GATEKEEPER.getByName(name);
+const facet = (name = `facet-${++facets}`) => env.ADMIN_GATEKEEPER.getByName(name);
 
 /** A session from a facet of its own, over `queue`. */
 async function openSession(queue: RpcTarget): Promise<Session> {
@@ -143,7 +143,7 @@ function sampleArguments(service: string, name: string): unknown[] {
 }
 
 /** An account and the vendor, as the Workshop reaches them: through the Worker's exports. */
-const account = () => createExecutionContext().exports.InstanceAdminAccount({});
+const account = () => createExecutionContext().exports.AdminAccount({});
 const vendor = () => createExecutionContext().exports.GatekeeperVendor({});
 
 const READS = SERVICES.get(ROOT)!.filter((name) => kindOf(name) === "read");
@@ -186,14 +186,14 @@ describe("the facet", () => {
     const worker = createExecutionContext().exports;
     const gatekeeper = facet();
     const observers = [
-      { id: "owner", verifier: await worker.InstanceAdminAccount({}).getVerifier() },
-      { id: "second-admin", verifier: await worker.InstanceAdminAccount({}).getVerifier() },
+      { id: "owner", verifier: await worker.AdminAccount({}).getVerifier() },
+      { id: "second-admin", verifier: await worker.AdminAccount({}).getVerifier() },
     ];
     await expect(gatekeeper.verifyObserverAccess(observers, [ADMIN_SUBRESOURCE]))
         .resolves.toEqual({ allowedObserverIds: ["owner", "second-admin"] });
     await expect(gatekeeper.verifyObserverAccess(observers, []))
         .resolves.toEqual({ allowedObserverIds: ["owner", "second-admin"] });
-    for (const unknown of ["instanceadmin:other", "", "global"]) {
+    for (const unknown of ["admin:other", "", "global"]) {
       await expect(gatekeeper.verifyObserverAccess(observers, [ADMIN_SUBRESOURCE, unknown]))
           .resolves.toEqual({ allowedObserverIds: [] });
     }
@@ -221,9 +221,9 @@ describe("the account", () => {
 
     const found = await account().getGatekeeperClassFor(DEPLOYMENT_URL);
     expect(found.resource.urlPattern).toBe(DEPLOYMENT_URL);
-    for (const url of ["instanceadmin://deployment/", "instanceadmin://other", "https://example.com/"]) {
+    for (const url of ["admin://deployment/", "admin://other", "https://example.com/"]) {
       expect((await rejection(account().getGatekeeperClassFor(url))).message, url)
-          .toBe("The admin gatekeeper has one resource, instanceadmin://deployment.");
+          .toBe("The admin gatekeeper has one resource, admin://deployment.");
     }
   });
 
@@ -237,7 +237,7 @@ describe("the account", () => {
     expect(legacy.iframeHtml).toBe(frame.iframeHtml);
     for (const type of ["https://*", "other"]) {
       expect((await rejection(account().startResourceConfigurator(type))).message, type)
-          .toBe("The admin gatekeeper has one resource, instanceadmin://deployment.");
+          .toBe("The admin gatekeeper has one resource, admin://deployment.");
     }
   });
 
@@ -305,7 +305,7 @@ describe("the Worker", () => {
         JSON.parse(WRANGLER_CONFIG.replace(/^\s*\/\/.*$/gm, ""));
     const migrated = config.migrations.flatMap(
         (migration) => [...(migration.new_sqlite_classes ?? []), ...(migration.new_classes ?? [])]);
-    expect(migrated).toEqual(["InstanceAdminGatekeeper"]);
+    expect(migrated).toEqual(["AdminGatekeeperImpl"]);
     const exported: Record<string, unknown> = WORKER;
     for (const name of migrated) {
       const exportedClass = exported[name] as { prototype?: unknown } | undefined;
