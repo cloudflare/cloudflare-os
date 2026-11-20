@@ -15,7 +15,8 @@ import { observerAccessVerifier } from "@gadgets/gatekeeper-kit/observers";
 import { formatSubresourceId, parseSubresourceId } from "@gadgets/gatekeeper-kit/subresource-ids";
 import {
   SlackApi, SlackApiError, SlackAccessToken, SlackConversationTypeFilter, SlackOAuthGrant,
-  exchangeAuthCode, refreshAccessToken, revokeToken, isWorkspaceId, type SlackInstallation,
+  exchangeAuthCode, refreshAccessToken, revokeToken, isWorkspaceId, slackUpstream,
+  type SlackInstallation,
 } from "./slack-api";
 import {
   SlackConversation, SlackConversationEntry, SlackConversationInfo, SlackMessage,
@@ -653,6 +654,10 @@ export class UserAccount extends DurableObject<Env> {
    * determined, which is never reused.
    */
   async checkSubresourceAccess(subresources: string[]): Promise<boolean[]> {
+    return slackUpstream.summed(() => this.#checkSubresourceAccess(subresources));
+  }
+
+  async #checkSubresourceAccess(subresources: string[]): Promise<boolean[]> {
     // Parsed before anything is asked, so an ID this account can't check is refused outright.
     let parsed = new Map(subresources.map(id => [id, parseSlackSubresource(id)] as const));
     let api = new SlackApi(async () => (await this.getAccessToken()).token,
@@ -1105,7 +1110,7 @@ class SlackCursor<T> extends RpcTarget implements Cursor<T> {
   }
 
   next(): Promise<T[] | null> {
-    let result = this.#tail.then(() => this.#nextPage());
+    let result = this.#tail.then(() => slackUpstream.summed(() => this.#nextPage()));
     this.#tail = result.then(() => undefined, () => undefined);
     return result;
   }
@@ -1647,14 +1652,16 @@ class SlackThreadImpl extends RpcTarget implements SlackThread {
   async listReplies(): Promise<SlackMessage[]> {
     let { rootTs } = await this.#resolveRoot();
     let messages: SlackMessage[] = [];
-    let cursor: string | undefined;
-    for (let page = 0; page < MAX_REPLY_PAGES; page++) {
-      let result = await this.#ctx.api.listReplies(
-          this.#conversationId, rootTs, cursor, HISTORY_PAGE_SIZE);
-      messages.push(...result.items);
-      cursor = result.nextCursor;
-      if (!cursor || messages.length >= MAX_THREAD_REPLIES) break;
-    }
+    await slackUpstream.summed(async () => {
+      let cursor: string | undefined;
+      for (let page = 0; page < MAX_REPLY_PAGES; page++) {
+        let result = await this.#ctx.api.listReplies(
+            this.#conversationId, rootTs, cursor, HISTORY_PAGE_SIZE);
+        messages.push(...result.items);
+        cursor = result.nextCursor;
+        if (!cursor || messages.length >= MAX_THREAD_REPLIES) break;
+      }
+    });
     await observe(this.#ctx, [this.#conversationId], {
       title: `Read Slack thread (${messages.length} messages)`,
       description:

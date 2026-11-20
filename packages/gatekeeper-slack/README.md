@@ -152,6 +152,14 @@ See `src/types.d.ts` for the full Session API (the agent-facing documentation). 
 List and search methods return paginated `Cursor` objects. Known mentions are rendered with readable
 names.
 
+Every request to Slack is sent through `slackUpstream` (`src/slack-api.ts`) and counted as a
+[subservice metric](../observability/README.md#subservice-calls) under the source
+`gatekeeper.slack.api`: a Web API call by its method (`SLACK_METHODS`), a token request as
+`token.exchange`, `token.refresh` or `token.revoke`. A revocation that Slack answers with
+`token_revoked` or `token_expired` is counted a success: the token is revoked already. An exchange
+or refresh that Slack answers `ok` without a user token is counted an error, and so is a call whose
+`ok` answer the client refuses for lacking what the call was sent for.
+
 ## Build
 
 ```
