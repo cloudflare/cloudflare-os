@@ -554,8 +554,8 @@ async function submitGoogleDocEdit(
 /** What a Doc session needs of its connection to show and queue edits. */
 export type DocChangeQueue = {
   /**
-   * The edits a read replays, oldest first. A connection that records an unreplayable edit in the
-   * record itself lists it too, marked with `invalidatedReason`.
+   * The edits a read replays, oldest first, and among them each that can no longer be replayed
+   * and still awaits its rejection, marked with `invalidatedReason`.
    */
   pending(): GoogleDocPendingAction[];
   /** Records that edit `record` can no longer be replayed, for `reason`. */
