@@ -385,7 +385,7 @@ function withoutNull(type: Type): Type {
 function isScalarLike(type: Type, seen = new Set<Model>()): boolean {
   switch (type.kind) {
     case "scalar":
-      return type.scalar !== "null";
+      return type.scalar !== "null" && type.scalar !== "unknown";
     case "enum":
       return true;
     case "union":

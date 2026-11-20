@@ -277,6 +277,9 @@ describe("gatekeeper-openapi-schema", { timeout: 120_000 }, () => {
         paths: {
           "/status": { $ref: "#/components/pathItems/Status" },
           "/things": { get: { operationId: "things/find", requestBody: body("application/json", false), responses } },
+          "/tenants": {
+            get: { operationId: "tenants/list", parameters: [{ name: "tenant", in: "query", schema: {} }], responses },
+          },
           "/things/search": { get: { operationId: "things/search", requestBody: body("application/json", true), responses } },
           "/things/{id}": {
             parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
@@ -287,8 +290,14 @@ describe("gatekeeper-openapi-schema", { timeout: 120_000 }, () => {
       };
       const file = join(dir, "spec.json");
       writeFileSync(file, JSON.stringify(spec));
-      const listed = spawnSync(process.execPath, [bin, file, "--list"], { encoding: "utf8" });
-      expect(listed.stdout).toContain('{"operationId":"status/get","method":"GET","path":"/status"');
+      // A patch to the path item that is referenced reaches the path that references it, and an id
+      // is listed as written, so that the line chooses it.
+      writeFileSync(join(dir, "patch.json"), JSON.stringify([{
+        op: "replace", path: "/components/pathItems/Status/get/operationId", value: "status  get",
+        reason: "The test's own.",
+      }]));
+      const listed = spawnSync(process.execPath, [bin, file, "--list", "--patch", join(dir, "patch.json")], { encoding: "utf8" });
+      expect(listed.stdout).toContain('{"operationId":"status  get","method":"GET","path":"/status"');
 
       const out = join(dir, "out");
       const result = generate(file, out);
@@ -298,6 +307,8 @@ describe("gatekeeper-openapi-schema", { timeout: 120_000 }, () => {
       // An optional body a GET cannot carry is not offered.
       expect(schema).toMatch(/path: "\/things";\n\s+response: undefined;/);
       expect(schema).toContain("GET /things/search (things/search): it requires a request body, which a GET cannot send.");
+      // A value of no type has no query string form, and would fail the whole schema's type.
+      expect(schema).toContain("GET /tenants (tenants/list): query parameter `tenant` is not a scalar or an array of scalars.");
       expect(schema).toContain("PATCH /things/{id} (things/patch): its request body is not `application/json` " +
         "(application/merge-patch+json).");
 
