@@ -1562,12 +1562,12 @@ describe("comments that quote a Doc, and suggested edits, through the Docs API",
     let { docs, attempts, host, submit, apply } = harness();
     let id = await submit("suggestEdit", edit({ note: "It moved." }));
     let checks = 0;
-    // What the account says can quote Google, so it is left out.
+    // What the account says is what would let it send, which approving again would not.
+    const disconnected = "The Google account this connection was made with has been disconnected.";
     host.ready = async () => {
-      if (checks++ > 0) throw new Error("Google said: blocked for ada@example.com by policy 42");
+      if (checks++ > 0) throw new Error(disconnected);
     };
-    expect(await apply(id)).toBe("The suggestion was made, but its note was not posted: the " +
-      "connection cannot send now. Approve it again to post the note.");
+    expect(await apply(id)).toBe(`The suggestion was made, but its note was not posted: ${disconnected}`);
     expect(docs.suggest).toHaveBeenCalledTimes(1);
     expect(docs.replyToSuggestion).not.toHaveBeenCalled();
     expect(attempts.get(id)).toMatchObject({ suggestionId: "suggest.s1" });
