@@ -1864,7 +1864,10 @@ export class GoogleChatGatekeeperImpl
               "This message was edited in Google Chat after this change was queued, so applying it " +
               "would overwrite that edit. Reject this change and edit the message again.");
           }
-          text = await store.attemptWrite(actionId, () => api.updateMessageText(target.committed, action.text));
+          const stored = await store.attemptWrite(actionId,
+            () => api.updateMessageText(target.committed, action.text));
+          // Read once the edit has landed, outside its attempt: a failed read says nothing of it.
+          text = stored ?? (await api.getMessage(target.committed)).formattedText;
         }
         store.rebaseEdits(chatActionSpaceName(action), target.committed, action.text, text);
         return {

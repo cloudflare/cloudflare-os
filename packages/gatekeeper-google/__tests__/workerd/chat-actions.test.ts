@@ -113,6 +113,8 @@ function chatBackend() {
     /** Post replies as new top-level threads, as Google would by ignoring the reply option. */
     misplaceReplies: false,
     getMessageStatus: 200,
+    /** The status message reads answer with once an edit lands, until changed. */
+    getStatusAfterEdit: undefined as number | undefined,
     deleteAfterGet: false,
     rejectedToken: undefined as string | undefined,
     sentRequests: new Map<string, string>(),
@@ -325,6 +327,7 @@ function chatBackend() {
         state.edits.push({name, text});
         Object.assign(state.messages[index], storedText(state.storeText(text)));
         state.messages[index].lastUpdateTime = new Date().toISOString();
+        if (state.getStatusAfterEdit !== undefined) state.getMessageStatus = state.getStatusAfterEdit;
         if (state.editFailure) return json({}, state.editFailure);
         const {formattedText: _omitted, ...plain} = state.messages[index];
         return json(state.editsOmitFormattedText ? plain : state.messages[index]);
@@ -1142,6 +1145,29 @@ describe("Google Chat gatekeeper behaviors", () => {
     await chat.applyAction(2);
     await expect(chat.revertAction(2)).resolves.toBeUndefined();
     expect(backend.state.messages[0].formattedText).toBe("Merged <https://gitlab.example/mr/1|logfwdr>\n");
+  });
+
+  // The read for Chat's stored markup follows an edit that landed, so its failure leaves the edit
+  // as one that may have landed: the next approval takes Chat's markup for its own.
+  it("finishes an edit whose follow-up read failed, taking Chat's markup for its own", async () => {
+    const backend = chatBackend();
+    backend.state.storeText = text => text.endsWith("\n") ? text : `${text}\n`;
+    backend.state.editsOmitFormattedText = true;
+    backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using message = (await space.getMessage(messageName("root"))).message;
+    await message.edit("Resolved");
+    backend.state.getStatusAfterEdit = 403;
+    await expect(chat.applyAction(1)).rejects.toThrow(/http=403/);
+    expect(backend.state.edits).toEqual([{name: messageName("root"), text: "Resolved"}]);
+
+    backend.state.getStatusAfterEdit = undefined;
+    backend.state.getMessageStatus = 200;
+    await chat.applyAction(1);
+    expect(backend.state.messages[0].formattedText).toBe("Resolved\n");
+    await expect(chat.revertAction(1)).resolves.toBeUndefined();
+    expect(backend.state.messages[0].formattedText).toBe("root\n");
   });
 
   it("lets an uncertain edit be rejected once its message is deleted", async () => {
