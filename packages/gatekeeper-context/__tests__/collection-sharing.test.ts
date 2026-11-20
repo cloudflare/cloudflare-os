@@ -798,3 +798,179 @@ describe("git tokens of members who lose write access", () => {
     await expect(settled(stub.createGitToken("bob"))).rejects.toThrow("Collection not found");
   });
 });
+
+const manifest = (name: string) => `---\nname: ${name}\ndescription: How ${name} is done.\n---\n\nSteps.\n`;
+
+/** A web skill with a supporting text file and image, each with its own description. */
+async function putSkill(collectionId: string, directory = "weekly") {
+  await collection(collectionId).createContextSkill(`${directory}/SKILL.md`, {
+    description: "The report skill.", body: manifest("weekly"),
+  });
+  await collection(collectionId).putContextDocument(`${directory}/notes.md`, {
+    description: "Notes on the numbers.", body: "Start with revenue.",
+  });
+  await collection(collectionId).putContextDocument(`${directory}/logo.png`, {
+    description: "The logo.", body: "iVBORw0KGgo=", contentType: "image/png",
+  });
+}
+
+/** Every document of a collection as stored, by key, but for when it was written. */
+async function storedDocuments(collectionId: string) {
+  return runInDurableObject(collection(collectionId), (_instance, state) =>
+    [...state.storage.kv.list<{ lastUpdated: Date }>({ prefix: "documents:" })]
+      .map(([key, { lastUpdated: _lastUpdated, ...record }]) => ({ key, ...record })));
+}
+
+async function documentCount(collectionId: string) {
+  return (await collection(collectionId).getMetadata()).documentCount;
+}
+
+/** A public web collection with one document, listed in the domain's KV snapshot. */
+async function createPublicCollection(): Promise<string> {
+  let id = `collection-${nextId++}`;
+  let now = new Date();
+  await collection(id).initialize({
+    id, title: "Handbook", description: "", visibility: "public",
+    created: now, lastUpdated: now, documentCount: 0, content: { source: "web" },
+  }, domain, "");
+  await collection(id).putContextDocument("welcome.md", { description: "Start here.", body: "Hi." });
+  await testEnv.CONTEXT_COLLECTIONS.put(publicCollectionsKvKey(domain),
+    JSON.stringify([metadataToSummary(await collection(id).getMetadata())]));
+  return id;
+}
+
+describe("listSkillCollections", () => {
+  it("lists what the separate reads of each collection return", async () => {
+    let mine = await createCollection("alice");
+    await putSkill(mine);
+    let theirs = await createCollection("bob");
+    await collection(theirs).share("bob", [{ accountId: "carol", displayName: "Carol" }], "owner");
+    await collection(theirs).share("bob", [{ accountId: "alice", displayName: "Alice" }], "editor");
+    await putSkill(theirs);
+    await createPublicCollection();
+
+    let alice = api("alice", []);
+    let expected = await Promise.all((await alice.listEnabledContextCollections()).map(async (entry) => {
+      let sharing = entry.source === "private" ? await alice.getContextCollectionSharing(entry.id) : undefined;
+      let owner = sharing?.members.find(member => member.role === "owner" && !member.isViewer);
+      return {
+        ...entry,
+        documents: await alice.listContextDocuments(entry.id),
+        permissions: await alice.getContextCollectionPermissions(entry.id),
+        ...(owner ? { owner } : {}),
+      };
+    }));
+
+    expect(expected.map(entry => [entry.source, entry.documents.length, entry.owner?.memberId]))
+      .toEqual([["private", 3, undefined], ["private", 3, "bob"], ["public", 1, undefined]]);
+    expect(await alice.listSkillCollections()).toEqual(expected);
+  });
+
+  it("leaves out a collection that can't be reached, and those the caller can no longer read", async () => {
+    let kept = await createCollection("alice");
+    let unreachable = await createCollection("alice");
+    await runInDurableObject(collection(unreachable), (instance: ContextCollectionDurableObject) => {
+      instance.getSkillListing = () => { throw new Error("Collection unavailable."); };
+    });
+    let revoked = await createCollection("bob");
+    await collection(revoked).share("bob", [{ accountId: "alice", displayName: "Alice" }], "viewer");
+    await collection(revoked).removeMember("bob", "alice");
+    await library("alice").addSharedCollection(revoked);
+    // A public collection deleted since the KV snapshot was read.
+    let gone = await createPublicCollection();
+    let snapshot = await testEnv.CONTEXT_COLLECTIONS.get(publicCollectionsKvKey(domain));
+    await collection(gone).deleteSelf("admin", true);
+    await testEnv.CONTEXT_COLLECTIONS.put(publicCollectionsKvKey(domain), snapshot!);
+
+    expect((await api("alice", []).listSkillCollections()).map(entry => entry.id)).toEqual([kept]);
+  });
+});
+
+describe("moveContextSkillToCollection", () => {
+  it("moves a skill's files, descriptions and content types, and deletes it from the source", async () => {
+    let from = await createCollection("alice");
+    let to = await createCollection("alice");
+    await putSkill(from);
+    let before = await storedDocuments(from);
+
+    expect(await api("alice", []).moveContextSkillToCollection(from, "weekly/SKILL.md", to, ""))
+      .toBe("weekly/SKILL.md");
+
+    expect(await storedDocuments(to)).toEqual(before);
+    expect(await storedDocuments(from)).toEqual([]);
+    expect([await documentCount(from), await documentCount(to)]).toEqual([0, 3]);
+    expect((await collection(to).listContextDocuments()).find(doc => doc.path === "weekly/SKILL.md"))
+      .toMatchObject({ skillName: "weekly" });
+  });
+
+  it("refuses an occupied destination directory", async () => {
+    let from = await createCollection("alice");
+    let to = await createCollection("alice");
+    await putSkill(from);
+    await collection(to).putContextDocument("weekly/draft.md", { description: "", body: "Draft." });
+
+    await expect(api("alice", []).moveContextSkillToCollection(from, "weekly/SKILL.md", to, ""))
+      .rejects.toThrow("Skill directory already exists: weekly");
+    expect(await storedDocuments(from)).toHaveLength(3);
+    expect((await storedDocuments(to)).map(doc => doc.key)).toEqual(["documents:weekly/draft.md"]);
+  });
+
+  it("refuses a Git-backed destination", async () => {
+    let from = await createCollection("alice");
+    await putSkill(from);
+    let to = (await (await createGitCollection(fakeArtifacts().binding)).getMetadata()).id;
+
+    await expect(api("alice", []).moveContextSkillToCollection(from, "weekly/SKILL.md", to, ""))
+      .rejects.toThrow("Git-based collections are read-only.");
+    expect(await storedDocuments(from)).toHaveLength(3);
+    expect(await storedDocuments(to)).toEqual([]);
+  });
+
+  it("refuses a move without edit rights on either collection", async () => {
+    let own = await createCollection("alice");
+    await putSkill(own);
+    let viewed = await createCollection("bob");
+    await putSkill(viewed, "status");
+    await collection(viewed).share("bob", [{ accountId: "alice", displayName: "Alice" }], "viewer");
+
+    await expect(api("alice", []).moveContextSkillToCollection(own, "weekly/SKILL.md", viewed, ""))
+      .rejects.toThrow("Collection not found or you don't have access.");
+    await expect(api("alice", []).moveContextSkillToCollection(viewed, "status/SKILL.md", own, ""))
+      .rejects.toThrow("Collection not found or you don't have access.");
+    expect([await documentCount(own), await documentCount(viewed)]).toEqual([3, 3]);
+  });
+
+  it("completes a move retried after the copy landed but before the source was deleted", async () => {
+    let from = await createCollection("alice");
+    let to = await createCollection("alice");
+    await putSkill(from);
+    let before = await storedDocuments(from);
+    // The source fails to delete once, as an outage after the copy landed would.
+    let source = collection(from);
+    let deleteSkill: ContextCollectionDurableObject["deleteContextSkill"];
+    await runInDurableObject(source, (target: ContextCollectionDurableObject) => {
+      let prototype = Object.getPrototypeOf(target);
+      deleteSkill = prototype.deleteContextSkill;
+      prototype.deleteContextSkill = async function (this: ContextCollectionDurableObject, path: string) {
+        prototype.deleteContextSkill = deleteSkill;
+        if (this === target) throw new Error("Collection unavailable.");
+        return deleteSkill.call(this, path);
+      };
+    });
+    try {
+      await expect(api("alice", []).moveContextSkillToCollection(from, "weekly/SKILL.md", to, ""))
+        .rejects.toThrow("Collection unavailable.");
+    } finally {
+      await runInDurableObject(source, (target: ContextCollectionDurableObject) => {
+        Object.getPrototypeOf(target).deleteContextSkill = deleteSkill;
+      });
+    }
+    expect(await documentCount(to)).toBe(3);
+
+    expect(await api("alice", []).moveContextSkillToCollection(from, "weekly/SKILL.md", to, ""))
+      .toBe("weekly/SKILL.md");
+    expect(await storedDocuments(to)).toEqual(before);
+    expect(await storedDocuments(from)).toEqual([]);
+    expect([await documentCount(from), await documentCount(to)]).toEqual([0, 3]);
+  });
+});

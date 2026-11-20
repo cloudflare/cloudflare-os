@@ -1,30 +1,14 @@
 import { useState } from 'react'
-import { AddCollectionDialog } from '@/blocks/AddCollectionDialog'
 import { ApprovalRules, type ApprovalRule } from '@/blocks/ApprovalRules'
-import { AddSkillDialog } from '@/blocks/AddSkillDialog'
 import { BrowserNotificationsRow } from '@/blocks/BrowserNotificationsRow'
-import { FilePreviewCard } from '@/blocks/FilePreviewCard'
-import { FileEditor } from '@/blocks/FileEditor'
-import { ListToolbar } from '@/blocks/ListToolbar'
+import { Button, FileEditor, FilePreviewCard, Markdown, Select, SettingField, SettingRow, SettingsCard, SettingsGroup, Switch, Tabs, TextField } from '@gadgets/ui'
 import { ModelListItem } from '@/blocks/ModelListItem'
 import { MutedWorkspaces, type MutableWorkspace } from '@/blocks/MutedWorkspaces'
 import { PasswordForm } from '@/blocks/PasswordForm'
 import { ProfilePicture } from '@/blocks/ProfilePicture'
-import { SettingField } from '@/blocks/SettingField'
 import { SettingPresets } from '@/blocks/SettingPresets'
-import { SettingRow } from '@/blocks/SettingRow'
-import { SettingsCard, SettingsGroup } from '@/blocks/SettingsGroup'
 import { SettingsMenu } from '@/blocks/SettingsMenu'
 import { SettingsSidebar } from '@/blocks/SettingsSidebar'
-import { SkillFileRow } from '@/blocks/SkillFileRow'
-import { SkillRow } from '@/blocks/SkillRow'
-import { Button } from '@/components/Button'
-import { Markdown } from '@/components/Markdown'
-import { ScrollArea } from '@/components/ScrollArea'
-import { Select } from '@/components/Select'
-import { Switch } from '@/components/Switch'
-import { Tabs } from '@/components/Tabs'
-import { TextField } from '@/components/TextField'
 import { ModelDialog, type ModelDialogProps } from '@/settings/ModelDialog'
 import type { ModelSource } from '@/settings/modelForm'
 import { settingsNavGroups } from '@/settings/settingsSections'
@@ -87,7 +71,6 @@ export const SettingsPreview = () => {
   const [tokens, setTokens] = useState('150000')
   const [text, setText] = useState('')
   const [notes, setNotes] = useState('')
-  const [fileQuery, setFileQuery] = useState('')
   const [skillTab, setSkillTab] = useState('preview')
   const [openTabs, setOpenTabs] = useState(['summary.md', 'report.md'])
   const [fileText, setFileText] = useState('---\nname: summarize-meeting-notes\ndescription: Turn a transcript into decisions, owners and next steps.\n---\n\n# Summarize meeting notes\n\n1. List the decisions that were made.\n2. Name an owner for each action.\n')
@@ -96,9 +79,6 @@ export const SettingsPreview = () => {
   const [quiet, setQuiet] = useState(['design'])
   const [browserOn, setBrowserOn] = useState(false)
   const [browserPending, setBrowserPending] = useState(false)
-  const [addingSkill, setAddingSkill] = useState(false)
-  const [addingToCollection, setAddingToCollection] = useState(false)
-  const [makingCollection, setMakingCollection] = useState(false)
   const [modelDialog, setModelDialog] = useState<number>()
   const [modelDialogOpen, setModelDialogOpen] = useState(false)
 
@@ -313,78 +293,8 @@ export const SettingsPreview = () => {
           <MutedWorkspaces title="With none" muted={[]} others={WORKSPACES} problem="Couldn’t mute the workspace." onMute={(id) => say(`muted ${id}`)} onUnmute={() => {}} />
         </div>
       </Section>
-      <Section title="SkillRow, in a ScrollArea, which is as tall as three of them and draws its scrollbar over their ends: a skill as a list has it, which opens it: the viewer’s own with a tag, somebody else’s, the organization’s, one with nobody’s picture, tag or time, and one whose name and what it is for are too long. AddSkillDialog: a name and what it is for, without which it cannot be added, and which of their collections it goes into, My skills unless another is chosen or a new one named; held while it is added, and open under why where it could not be (one called Weekly report)">
+      <Section title="FileEditor: what is written in a file, saved with Cmd or Ctrl and S, then one that is only read">
         <div className="flex w-full max-w-3xl flex-col gap-3">
-          <ScrollArea className="max-h-48 rounded-3xl bg-kumo-tint">
-            <div className="flex flex-col p-1.5">
-              <SkillRow name="Summarize meeting notes" detail="Turn a transcript into decisions, owners and next steps." owner={{ kind: 'person', name: 'Ada Lovelace', you: true }} tag="Meetings" time="2h ago" onSelect={() => say('opened the skill')} />
-              <SkillRow name="Weekly report" detail="How the team writes the weekly status report." owner={{ kind: 'person', name: 'Grace Hopper' }} tag="Reports" time="Nov 12" onSelect={() => say('opened the skill')} />
-              <SkillRow name="Brand voice" detail="How the organization writes." owner={{ kind: 'organization' }} time="Oct 2" onSelect={() => say('opened the skill')} />
-              <SkillRow name="Plan a trip" detail="Preferences for flights and hotels." onSelect={() => say('opened the skill')} />
-              <SkillRow name="A skill with a name long enough that it has to be cut off somewhere along the line it is on" detail="And with so much to say of what it is for that it cannot all be said on the one line there is for it" tag="A tag that is long too" time="Sep 3" onSelect={() => say('opened the skill')} />
-            </div>
-          </ScrollArea>
-          <div>
-            <Button onClick={() => setAddingSkill(true)}>Add skill</Button>
-          </div>
-          <AddSkillDialog
-            open={addingSkill}
-            onOpenChange={setAddingSkill}
-            collections={[{ id: 'mine', title: 'My skills' }, { id: 'engineering', title: 'Engineering' }, { id: 'meetings', title: 'Meetings' }]}
-            onAdd={async (skill) => {
-              // As long as keeping it takes, and refused as one there is already would be.
-              await new Promise((resolve) => setTimeout(resolve, 600))
-              if (skill.name.toLowerCase() === 'weekly report') throw new Error('A skill is already there.')
-              say(`added “${skill.name}”${skill.tag ? `, tagged ${skill.tag}` : ''}`)
-              setAddingSkill(false)
-            }}
-          />
-        </div>
-      </Section>
-      <Section title="Collections, a SkillRow each, as the Skills part of the settings lists them under the skills: the viewer’s own first, My skills ahead, one shared with others, one somebody shared with them, and the organization’s. AddCollectionDialog: a name, without which it cannot be made, and what it is for; held while it is made, and open under why where it could not be (one called Taken). AddSkillDialog from a collection’s page, which says where it goes in place of a tag">
-        <div className="flex w-full max-w-3xl flex-col gap-3">
-          <div className="flex flex-col rounded-3xl bg-kumo-tint p-1.5">
-            <SkillRow name="My skills" detail="4 skills" owner={{ kind: 'person', name: 'Ada Lovelace', you: true }} onSelect={() => say('opened My skills')} />
-            <SkillRow name="Design team" detail="2 skills · Shared" owner={{ kind: 'person', name: 'Ada Lovelace', you: true }} onSelect={() => say('opened Design team')} />
-            <SkillRow name="Support playbook" detail="No skills · Shared by Grace Hopper" owner={{ kind: 'person', name: 'Grace Hopper' }} onSelect={() => say('opened Support playbook')} />
-            <SkillRow name="Company" detail="12 skills · Organization" owner={{ kind: 'organization' }} onSelect={() => say('opened Company')} />
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <Button onClick={() => setMakingCollection(true)}>New collection</Button>
-            <Button onClick={() => setAddingToCollection(true)}>Add skill to Design team</Button>
-          </div>
-          <AddCollectionDialog
-            open={makingCollection}
-            onOpenChange={setMakingCollection}
-            onAdd={async ({ title }) => {
-              await new Promise((resolve) => setTimeout(resolve, 600))
-              if (title.toLowerCase() === 'taken') throw new Error('The Context Library refused it.')
-              say(`made “${title}”`)
-              setMakingCollection(false)
-            }}
-          />
-          <AddSkillDialog
-            open={addingToCollection}
-            onOpenChange={setAddingToCollection}
-            into="Design team"
-            onAdd={(skill) => {
-              say(`added “${skill.name}” to Design team`)
-              setAddingToCollection(false)
-            }}
-          />
-        </div>
-      </Section>
-      <Section title="SkillFileRow: a skill’s files, with the ways to download one and to take it out while it is pointed at: its instructions, which cannot be taken out, one in a folder, a picture, and one that is only downloaded, under a ListToolbar whose search is open all along. FileEditor: what is written in one, saved with Cmd or Ctrl and S, then one that is only read">
-        <div className="flex w-full max-w-3xl flex-col gap-3">
-          <div className="px-5">
-            <ListToolbar noun="files" search={{ value: fileQuery, onChange: setFileQuery }} searchExpanded action={<Button variant="primary" onClick={() => say('chose files')}>Upload files</Button>} />
-          </div>
-          <ul className="flex flex-col rounded-3xl bg-kumo-tint p-1.5">
-            <SkillFileRow path="SKILL.md" kind="text" detail="Markdown · 412 B" role="Instructions" onSelect={() => say('opened SKILL.md')} onDownload={() => say('downloaded SKILL.md')} />
-            <SkillFileRow path="templates/summary.md" kind="text" detail="Markdown · 1.2 KB" onSelect={() => say('opened the template')} onDownload={() => say('downloaded the template')} onRemove={() => say('deleted the template')} />
-            <SkillFileRow path="assets/a-diagram-with-a-name-long-enough-that-it-has-to-be-cut-off-somewhere-along-the-line-it-is-on.png" kind="image" detail="Image · 48 KB" onSelect={() => say('opened the picture')} onDownload={() => say('downloaded the picture')} onRemove={() => say('deleted the picture')} />
-            <SkillFileRow path="data/archive.zip" kind="other" detail="ZIP file · 1.4 MB" onDownload={() => say('downloaded the archive')} onRemove={() => say('deleted the archive')} />
-          </ul>
           <FileEditor aria-label="SKILL.md" value={fileText} onValueChange={setFileText} onSave={() => say('saved SKILL.md')} />
           <FileEditor aria-label="notes.txt" value={'Ana: the importer is done, review today.\nBen: blocked on the staging database.'} onValueChange={() => {}} readOnly />
         </div>

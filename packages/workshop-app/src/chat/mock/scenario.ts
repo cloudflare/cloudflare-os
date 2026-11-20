@@ -1,5 +1,6 @@
 import type {
   ActionLogEntry,
+  AgentSpawnerInfo,
   AiChatAuthorInfo,
   AiChatMessage,
   AiChatMessageBody,
@@ -10,7 +11,6 @@ import type {
   BlueprintPublicInfo,
 } from '@gadgets/workshop-shared/api'
 import type { ActionField, ActionKind } from '@gadgets/workshop-shared/gatekeeper'
-import type { AgentSetup } from '@/automations/agents'
 
 /** Who the mock backend says is signed in. */
 export const VIEWER: AiChatAuthorInfo = { type: 'user', id: 'ada@example.com', name: 'Ada Lovelace' }
@@ -18,7 +18,7 @@ export const VIEWER: AiChatAuthorInfo = { type: 'user', id: 'ada@example.com', n
 export const AGENT: AiChatAuthorInfo = { type: 'agent', id: 'mock-model', name: 'Mock Model' }
 /**
  * The template the scenarios' gadget follows where a scenario says it has a newer version
- * (`templateUpdate`), as anyone may read it (`PublicApi.getBlueprint()`).
+ * (`templateUpdate`), as the public API reads it (`getBlueprint()`).
  */
 export const TEMPLATE: BlueprintPublicInfo = {
   id: 'quarterly-review',
@@ -71,11 +71,13 @@ export const call = <N extends AiToolCall['toolName']>(
 
 let actionCount = 0
 
-type LogBase = Pick<ActionLogEntry, 'id' | 'gatekeeperId' | 'resourceTitle' | 'resourceUrl' | 'createdAt' | 'state'>
+type LogBase = Pick<ActionLogEntry, 'id' | 'gatekeeperId' | 'from' | 'resourceTitle' | 'resourceUrl' | 'createdAt' | 'state'>
 
+// What the chat's agent did.
 const logBase = (resource: { title?: string; url?: string }, state: ActionLogEntry['state']): LogBase => ({
   id: ++actionCount,
   gatekeeperId: 7,
+  from: 'agent',
   resourceTitle: resource.title ?? 'Jira · Platform board',
   resourceUrl: resource.url ?? 'https://jira.example.com/projects/PLAT',
   createdAt: new Date(0),
@@ -105,7 +107,7 @@ export type ActionOptions = {
   awaitDecision?: boolean
   resource?: { title?: string; url?: string }
   /** It creates something in one of the user's accounts (`ActionLogEntry.creation`). */
-  creation?: boolean
+  creation?: true
 }
 
 export const action = ({
@@ -138,7 +140,7 @@ export const action = ({
     resolvedBy: resolver,
     autoApproved: autoApprovedBy ? true : undefined,
     appliedAt: resolver ? new Date(0) : undefined,
-    creation: creation ? true : undefined,
+    creation,
   })
 }
 
@@ -327,16 +329,17 @@ export type Scenario = {
    */
   templateUpdate?: boolean
   /**
-   * The agents the workspace's gadgets start, with their runs among its chats: those that failed
-   * end on an error, and those with an action of their own waiting have one.
+   * The workspace's agent spawners, the gadgets they are bound to (by id, with their titles), and
+   * their runs among its chats: those whose last turn failed end on an error, and those with an
+   * action of their own waiting have one.
    */
-  agents?: { setups: AgentSetup[]; runs: AiChatMetadata[]; failed?: number[]; pending?: number[] }
+  agents?: { spawners: AgentSpawnerInfo[]; gadgets: { id: number; title: string }[]; runs: AiChatMetadata[]; pending?: number[] }
   /**
-   * What the chat's gadget asks outside any chat, as when it is used on its own page or by
-   * someone it was shared with: through the connection it is bound to, those waiting from the
-   * start, and one more each time one of its tasks is ticked off.
+   * What the chat's gadget (`gadgetId`) asks outside any chat, as when it is used on its own page
+   * or by someone it was shared with: through the connection it is bound to, those waiting from
+   * the start, and one more each time one of its tasks is ticked off.
    */
-  gadgetAsks?: { connection: { name: string; target: number; resourceTitle: string; vendorId?: string }; waiting: ActionLogEntry[] }
+  gadgetAsks?: { gadgetId: number; connection: { name: string; target: number; resourceTitle: string; vendorId?: string }; waiting: ActionLogEntry[] }
 }
 
 const CHUNK_DELAY = 45

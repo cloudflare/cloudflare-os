@@ -2,7 +2,7 @@ import { useEffect, useEffectEvent, useId, useRef, useState, type MouseEvent as 
 import { CaretUpIcon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
 import '@/components/Arrival.css'
-import { Button } from '@/components/Button'
+import { Button } from '@gadgets/ui'
 import { MessageActions, MESSAGE_ACTION_STYLE, type MessageActionsProps } from './MessageActions'
 import './MessageBubble.css'
 import { useDetailsStage } from './useDetailsStage'

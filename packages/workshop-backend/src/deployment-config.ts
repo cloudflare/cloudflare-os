@@ -55,6 +55,7 @@ export async function getServerConfig(env: Cloudflare.Env): Promise<ServerConfig
   return {
     authVendors,
     passwordAuthEnabled: isPasswordAuthEnabled(env),
+    authMode: env.CF_ACCESS_AUD ? "cfAccess" : "token",
     cloudflareLimitsEnabled: isCloudflareLimitsEnabled(env),
     signupsEnabled: config.signupsEnabled,
     userSearchEnabled: config.userSearchEnabled,

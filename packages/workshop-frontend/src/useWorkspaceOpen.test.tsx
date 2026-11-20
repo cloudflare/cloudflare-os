@@ -6,6 +6,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
 import {
+  ACCESS_CONFIRMATION_ERROR_CODES,
   AUTH_ERROR_CODES,
   createAuthError,
   createOpenWorkspaceError,
@@ -311,12 +312,12 @@ describe('useWorkspaceOpen', () => {
       const first = await prompt(new AbortController().signal, [need(1)])
       const second = await prompt(left.signal, [need(2)])
 
-      await expect(first.answer).rejects.toThrow('Cancelled')
+      await expect(first.answer).rejects.toMatchObject({ code: ACCESS_CONFIRMATION_ERROR_CODES.notAsked })
       expect(observerConfig?.needs).toEqual([need(2)])
 
       await act(async () => left.abort())
 
-      await expect(second.answer).rejects.toThrow('Cancelled')
+      await expect(second.answer).rejects.toMatchObject({ code: ACCESS_CONFIRMATION_ERROR_CODES.notAsked })
       expect(observerConfig).toBeNull()
     })
   })

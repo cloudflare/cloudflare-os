@@ -1,8 +1,7 @@
 import { useRef } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
 import { TrashIcon, UploadSimpleIcon } from '@phosphor-icons/react'
-import { Avatar } from '@/components/Avatar'
-import { DropdownMenu } from '@/components/DropdownMenu'
+import { Avatar, DropdownMenu } from '@gadgets/ui'
 
 export type ProfilePictureProps = {
   /** Whose picture it is, for their initials while there is none. */

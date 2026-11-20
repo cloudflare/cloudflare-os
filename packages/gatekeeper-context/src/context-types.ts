@@ -259,6 +259,19 @@ export type ContextCollectionSharing = {
   hasOwner: boolean;
 };
 
+/** A collection in the account's library with what the Skills app lists of it. */
+export type ContextSkillCollection = EnabledCollectionInfo & {
+  /** Every document's summary, as listContextDocuments() lists them. */
+  documents: ContextDocumentSummary[];
+  /** What the viewer may do with it, as getContextCollectionPermissions() says. */
+  permissions: ContextCollectionPermissions;
+  /**
+   * On a private collection the viewer holds a role on, the first owner other than the viewer, in
+   * the order getContextCollectionSharing() lists members. Absent when there is no such owner.
+   */
+  owner?: ContextCollectionMember;
+};
+
 // ---------------------------------------------------------------------------
 // Content-type helpers for context documents
 // ---------------------------------------------------------------------------
@@ -416,10 +429,27 @@ export interface ContextApi extends RpcTarget {
   moveContextDocument(collectionId: string, fromPath: string, toPath: string): Promise<void>;
   /** Atomically moves a skill and its supporting files within its collection. */
   moveContextSkill(collectionId: string, manifestPath: string, directoryPath: string): Promise<void>;
+  /**
+   * Moves a skill and its supporting files, descriptions and content types included, to another
+   * collection, into `directoryPath` (`""` for the top level) under its directory's name. Needs
+   * edit rights on both collections; the destination must be web-managed and have no skill
+   * directory of that name. A move within one collection is moveContextSkill(). Repeating a move
+   * whose copy landed but whose source was not yet deleted completes it. Resolves to the skill's
+   * manifest path in the destination.
+   */
+  moveContextSkillToCollection(
+    fromCollectionId: string, manifestPath: string, toCollectionId: string, directoryPath: string,
+  ): Promise<string>;
   /** Atomically renames a skill directory and its manifest name. */
   renameContextSkill(collectionId: string, manifestPath: string, newName: string): Promise<void>;
   /** Collections this account holds a role on, plus every public one. */
   listEnabledContextCollections(): Promise<EnabledCollectionInfo[]>;
+  /**
+   * The account's library as listEnabledContextCollections() lists it, each collection with its
+   * documents, the viewer's permissions and owner. A collection that can't be reached, or that the
+   * viewer can no longer read, is left out.
+   */
+  listSkillCollections(): Promise<ContextSkillCollection[]>;
   /** What the viewer may do with a collection it can read. */
   getContextCollectionPermissions(collectionId: string): Promise<ContextCollectionPermissions>;
 

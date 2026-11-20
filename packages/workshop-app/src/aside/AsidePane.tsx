@@ -12,21 +12,20 @@ import { SidePane, type SidePaneItem } from '@/blocks/SidePane'
 import { WorktreeView } from '@/blocks/WorktreeView'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { usePointerNearTop } from '@/hooks/usePointerNearTop'
-import { accessNotConfirmed, useAskAccessAgain } from '@/connections/ObserverAccessProvider'
+import { useAskAccessAgain } from '@/connections/ObserverAccessProvider'
 import type { CodeLines } from '@/components/CodeEditor'
-import { agentKeyOf } from '@/automations/agents'
 import { historyEntry } from '@/gadgets/codeHistory'
 import { GadgetCodeView } from '@/gadgets/GadgetCodeView'
 import { GadgetSettingsPane } from '@/gadgets/GadgetSettingsPane'
 import { useGadgetExports } from '@/gadgets/useGadgetExports'
 import { DEFAULT_GADGET_SETTINGS_TAB, type GadgetSettingsTab } from '@/gadgets/GadgetSettingsView'
-import { outputKey } from '@/library/libraryList'
-import { recordLibraryOpen } from '@/prefs/libraryOpened'
+import { recordOpened } from '@/library/libraryRecent'
 import { CreateTemplate } from '@/library/CreateTemplate'
 import { useMadeTemplates } from '@/library/useMadeTemplates'
 import { ShareWorkspaceDialog } from '@/workspaces/ShareWorkspaceDialog'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
-import { formatActivity } from '@/workspaces/formatActivity'
+import { formatActivity } from '@gadgets/ui'
+import { usePreferences, usePreferencesSnapshot } from '@/prefs/UserPreferencesContext'
 import { useWorkspaceChats } from '@/workspaces/useWorkspaceChats'
 import { asideItemIcon } from './asideItemIcon'
 import { isApp, type AsideFile, type AsideItem, type AsideOutput } from './asideItems'
@@ -117,10 +116,12 @@ export const AsidePane = (props: AsidePaneProps) => {
   const gadget = item.kind === 'output' && item.output.type === 'gadget' ? item.output : undefined
   // Opened, beside a chat or a workspace or on its own page, for the Library's Recent tab: here,
   // as wherever it is opened from shows it here.
-  const opened = gadget && outputKey(gadget)
+  const preferenceStore = usePreferences()
+  const openedIn = gadget?.workspaceId
+  const openedId = gadget?.workpieceId
   useEffect(() => {
-    if (opened) recordLibraryOpen(opened)
-  }, [opened])
+    if (openedIn !== undefined && openedId !== undefined) recordOpened(preferenceStore, { workspaceId: openedIn, workpieceId: openedId })
+  }, [preferenceStore, openedIn, openedId])
   // A gadget's settings, connections and code are its workspace's, which whoever it was shared
   // with to use does not build in, rename or delete there.
   const workspaces = useWorkspaces()
@@ -128,7 +129,7 @@ export const AsidePane = (props: AsidePaneProps) => {
     ? workspaces.workspaces.find(({ id }) => id === item.output.workspaceId)
     : undefined
   const readsCode = gadget !== undefined && listed !== undefined && listed.role !== 'use'
-  const title = snapshot.title ?? item.title
+  const title = snapshot.title ?? (fileState.status === 'ready' ? fileState.file.name : item.title)
   // Exported by whoever can use it, as the backend lets them, with the chat's changes where it is
   // shown from one; saved to their accounts by whoever builds where it is.
   const exports = useGadgetExports(gadget, title, { saves: readsCode })
@@ -166,7 +167,7 @@ export const AsidePane = (props: AsidePaneProps) => {
   if (page) page.search = ''
   const builds = item.kind === 'output' && item.output.type !== 'worktree' && listed !== undefined && listed.role !== 'use' ? { output: item.output, workspace: listed } : undefined
   // Where it stands as a template, which the Share menu's item says. Read again once the dialog that changes it has closed.
-  const made = useMadeTemplates(builds?.output.workspaceId, creating === true)
+  const made = useMadeTemplates(builds?.output.workspaceId, builds?.output.workpieceId, creating === true)
   const stands: 'none' | 'changes' | 'current' = !made.templates || made.templates.length === 0 ? 'none' : made.templates.some(({ changes }) => changes) ? 'changes' : 'current'
   const templateId = made.templates?.[0]?.id
   const share = builds && (
@@ -244,10 +245,11 @@ export const AsidePane = (props: AsidePaneProps) => {
   const workspaceChats = useWorkspaceChats(chatsWith && home?.id)
   const fromChat = ownPage?.fromChat
   const readChats = workspaceChats.status === 'ready' ? workspaceChats.chats : []
+  const preferences = usePreferencesSnapshot()
   // The one it came from is the way back, first, and not offered again among the rest.
   const chats = home && workspaceChats.status !== 'loading'
     // Where they could not be read, there are none to offer, and Chat starts a new one.
-    ? itemChats(readChats.filter(({ id }) => id !== fromChat?.chatId), home.id, item.key, lastShown)
+    ? itemChats(readChats.filter(({ id }) => id !== fromChat?.chatId), home.id, item.key, (workspaceId, chatId) => lastShown(preferences, workspaceId, chatId))
     : undefined
   const pageParts = home && {
     chat: chatsWith && {
@@ -334,7 +336,8 @@ export const AsidePane = (props: AsidePaneProps) => {
           onBack={() => setSettings({ key: item.key, open: false, tab: settingsHere?.tab ?? DEFAULT_GADGET_SETTINGS_TAB })}
           onDeleted={() => onDeleted?.(gadget)}
           onUpdateProposed={(chatId) => onUpdateProposed?.(gadget, chatId)}
-          onOpenAgent={(spawnerId) => void navigate({ to: '/workspace/$workspaceId/agent/$agentKey', params: { workspaceId: gadget.workspaceId, agentKey: agentKeyOf(spawnerId) } })}
+          // By the spawner's id, which the agent's page takes to its agent.
+          onOpenAgent={(spawnerId) => void navigate({ to: '/workspace/$workspaceId/agent/$agentKey', params: { workspaceId: gadget.workspaceId, agentKey: String(spawnerId) } })}
         />
       )}
       {/* The settings take the whole pane, header and all. Hidden, not gone, so that the gadget keeps running behind them. */}
@@ -397,17 +400,17 @@ const GadgetView = ({ title, ui, frame, onReload, onAskAccess }: {
       return <PaneNotice title="Loading…" />
     case 'none':
       return <UiUnderway title="Its UI shows here" description="As soon as the gadget builds one." />
-    case 'failed':
-      // Shared with the user, it reads what is kept at other services, which they confirm their
-      // own accounts can see before it opens: cancelled, it is offered again rather than failed.
-      if (onAskAccess && accessNotConfirmed(ui.message)) return (
+    case 'unconfirmed':
+      // Its access is confirmed before it opens: cancelled, it is offered again rather than failed.
+      return (
         <PaneNotice
           icon={LockSimpleIcon}
           title={`Confirm your access to open ${title}`}
           description="It was shared with you and reads things kept in other services, such as a Google doc. Before it opens, confirm that your own accounts can see them too."
-          action={{ label: 'Confirm access', onClick: onAskAccess }}
+          action={onAskAccess && { label: 'Confirm access', onClick: onAskAccess }}
         />
       )
+    case 'failed':
       return (
         <PaneNotice
           icon={WarningCircleIcon}
@@ -454,9 +457,10 @@ const FileContent = ({ file, state }: { file: AsideFile; state: FileState }) => 
     case 'failed':
       return <PaneNotice icon={WarningCircleIcon} title={`Couldn’t load ${file.name}`} description={state.message} />
     case 'ready': {
-      const details = [file.mimeType, file.size > 0 && SIZE.format(file.size)].filter(Boolean).join(' · ')
+      const { name, mimeType, size } = state.file
+      const details = [mimeType, size > 0 && SIZE.format(size)].filter(Boolean).join(' · ')
       const { preview } = state
-      const shared = { name: file.name, details, onDownload: state.download }
+      const shared = { name, details, onDownload: state.download }
       return <FileView {...shared} {...preview} />
     }
   }

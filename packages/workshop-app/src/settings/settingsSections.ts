@@ -6,7 +6,6 @@ import {
   CpuIcon,
   FileTextIcon,
   GearSixIcon,
-  LightningIcon,
   ListMagnifyingGlassIcon,
   LockKeyIcon,
   PlugsIcon,
@@ -26,7 +25,6 @@ export const SETTINGS_SECTION_IDS = [
   'usage',
   'models',
   'approvals',
-  'skills',
   'preferences',
   'notifications',
   'collaboration',
@@ -74,7 +72,6 @@ export const SETTINGS_GROUPS: { label: string; sections: SectionInfo[] }[] = [
     sections: [
       { id: 'models', label: 'Models', summary: 'Default model, context and custom instructions', icon: CpuIcon },
       { id: 'approvals', label: 'Approvals', summary: 'What the assistant can do without asking', icon: ShieldCheckIcon },
-      { id: 'skills', label: 'Skills', summary: 'Your skills and how they are used', icon: LightningIcon },
     ],
   },
   {

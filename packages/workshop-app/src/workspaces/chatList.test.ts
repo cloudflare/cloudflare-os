@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AiChatMetadata } from '@gadgets/workshop-shared/api'
-import { narrowList } from '@/components/listView'
+import { narrowList } from '@gadgets/ui'
 import { chatList } from './chatList'
 
 const chat = (id: number, title: string, lastActive: Date, started = lastActive): AiChatMetadata => ({ id, title, started, lastActive })

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { BlueprintOutput, OutputSummary } from '@gadgets/workshop-shared/api'
-import { narrowList } from '@/components/listView'
+import { narrowList } from '@gadgets/ui'
 import { libraryList, outputKey } from './libraryList'
 
 const NOW = new Date(2026, 10, 12, 15)

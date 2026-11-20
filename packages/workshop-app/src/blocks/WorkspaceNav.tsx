@@ -2,7 +2,7 @@ import { useRef } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
 import { WorkspaceListItem, type WorkspaceListItemProps } from './WorkspaceListItem'
 import { WorkspaceRailItem } from './WorkspaceRailItem'
-import { useScrollFadeFallback } from './useScrollFadeFallback'
+import { useScrollFadeFallback } from '@gadgets/ui'
 import { useWorkspaceUnderlay } from './useWorkspaceUnderlay'
 
 export type SidebarWorkspace = Omit<WorkspaceListItemProps, 'selected' | 'onSelect'> & { id: string }

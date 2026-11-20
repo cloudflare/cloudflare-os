@@ -1,6 +1,6 @@
 import { ChatCircleIcon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
-import { LinkButton } from '@/components/LinkButton'
+import { LinkButton } from '@gadgets/ui'
 import { formatCost } from '@/components/usageFormat'
 import { UnreadDot } from './UnreadDot'
 

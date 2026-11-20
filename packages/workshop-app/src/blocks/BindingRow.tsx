@@ -1,16 +1,9 @@
 import { useState } from 'react'
 import { ArrowsLeftRightIcon, BrainIcon, LinkBreakIcon, PencilSimpleIcon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
-import { Button } from '@/components/Button'
-import { ConfirmMenu } from '@/components/ConfirmMenu'
-import { LinkButton } from '@/components/LinkButton'
+import { Button, CardAction, ConfirmMenu, LIST_ACTION, LinkButton, type SaveOutcome, Tag, Tooltip, useEditedField } from '@gadgets/ui'
 import { ServiceLogo } from '@/components/ServiceLogo'
-import { Tag } from '@/components/Tag'
-import { Tooltip } from '@/components/Tooltip'
 import { AgentMark } from './AgentMark'
-import { CardAction } from './CardAction'
-import { LIST_ACTION } from './StarButton'
-import { useEditedField, type SaveOutcome } from './useEditedField'
 
 export type BindingRowProps = {
   /** What it reaches, as the workspace calls it: a repository, a mailbox, an agent's name. */

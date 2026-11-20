@@ -1,6 +1,6 @@
 import type { Icon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
-import { Button } from '@/components/Button'
+import { Button } from '@gadgets/ui'
 
 export type PaneNoticeProps = {
   /** Left out for something under way, which is held back a moment, as most are soon over. */

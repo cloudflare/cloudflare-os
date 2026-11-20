@@ -6,7 +6,7 @@ import type {
   Overseer,
   WorkspaceMetadata,
 } from '@gadgets/workshop-shared/api'
-import { grantOf, ownLinkOf, removalOutcome, withShareKey, type RemovalOutcome, type ShareTarget } from './sharingRules'
+import { grantOf, removalOutcome, withShareKey, type RemovalOutcome, type ShareTarget } from './sharingRules'
 
 type Calls =
   | 'getMetadata'
@@ -18,7 +18,6 @@ type Calls =
   | 'listShareLinks'
   | 'createShareLink'
   | 'newShareLinkKey'
-  | 'previewRevokeShareLink'
   | 'revokeShareLink'
 
 /** The part of a workspace's Overseer that sharing uses, and the lease that must be disposed. */
@@ -29,9 +28,8 @@ export type SharingOverseer = Pick<Overseer, Calls> & Disposable & {
 
 /**
  * The viewer's own link to what is shared: whether anyone who can sign in to the deployment gets
- * what sharing it gives from its address. On, it carries a key minted for this session, ready to
- * copy: a clipboard write is refused once the click that asked for it has passed, so the key
- * cannot be waited for then.
+ * what sharing it gives from its address. On, it carries a key only when it was just turned on;
+ * otherwise Copy link mints one (see `linkToCopy`).
  */
 export type LinkState =
   | { status: 'loading' }
@@ -64,9 +62,9 @@ export type SharingSource = {
   /**
    * For a dialog that shares it, rather than a page that lists who has it: what is shared (the
    * workspace, or one of its gadgets), the page a link lets people in to, which its key is added
-   * to, who is sharing it, whose own link is theirs to turn on and off, and the services there
-   * are, for what its connections ask of whoever it is shared with. Without it only the people
-   * are read.
+   * to, and the services there are, for what its connections ask of whoever it is shared with.
+   * Without it only the people are read. `viewerId` is the viewer's profile id, whose own link is
+   * the one shown.
    */
   sharing?: { target: ShareTarget; page: string; viewerId: string; vendors: () => Promise<GatekeeperVendorInfo[]> }
 }
@@ -164,17 +162,33 @@ export class SharingSession {
     void this.#loadLink(run, overseer, sharing)
   }
 
-  async #loadLink(run: number, overseer: SharingOverseer, { target, page, viewerId }: NonNullable<SharingSource['sharing']>) {
+  async #loadLink(run: number, overseer: SharingOverseer, { target, viewerId }: NonNullable<SharingSource['sharing']>) {
     try {
-      const own = ownLinkOf(await overseer.listShareLinks(), target, viewerId)
-      if (run !== this.#run) return
-      if (!own) return this.#update({ link: { status: 'off' } })
-      this.#update({ link: { status: 'on', linkId: own.linkId } })
-      const { key } = await overseer.newShareLinkKey(own.linkId)
-      if (run === this.#run) this.#update({ link: { status: 'on', linkId: own.linkId, url: withShareKey(page, key) } })
+      // The viewer's default link granting `target`: that gadget, or the whole workspace to build.
+      const own = (await overseer.listShareLinks()).find((link) =>
+        link.default === true &&
+        link.createdBy.id.toLowerCase() === viewerId.toLowerCase() &&
+        (target.kind === 'gadget'
+          ? link.gadgetId === target.gadgetId
+          : (link.role ?? 'build') === 'build' && link.gadgetId === undefined && link.gadgets === undefined))
+      if (run === this.#run) this.#update({ link: own ? { status: 'on', linkId: own.linkId } : { status: 'off' } })
     } catch {
       if (run === this.#run) this.#update({ link: { status: 'failed' } })
     }
+  }
+
+  /**
+   * The address Copy link copies: the page while the viewer's own link is off, or else the link
+   * with a key, minted now unless the link was just turned on and came with one.
+   */
+  async linkToCopy(): Promise<string> {
+    const snapshot = this.#snapshot
+    const sharing = this.source.sharing
+    const link = snapshot.status === 'ready' ? snapshot.link : undefined
+    if (!sharing || link?.status !== 'on') return sharing?.page ?? ''
+    if (link.url) return link.url
+    const { key } = await this.#require().newShareLinkKey(link.linkId)
+    return withShareKey(sharing.page, key)
   }
 
   /** Reads who it is shared with again, keeping what is shown up meanwhile. */
@@ -243,8 +257,7 @@ export class SharingSession {
       return
     }
     if (link.status !== 'on') return
-    const affected = await overseer.previewRevokeShareLink(link.linkId)
-    await overseer.revokeShareLink(link.linkId, affected.map(({ profile }) => profile.id))
+    await overseer.revokeShareLink(link.linkId, 'everyone')
     if (run === this.#run) this.#update({ link: { status: 'off' } })
     await this.#reloadPeople()
   }

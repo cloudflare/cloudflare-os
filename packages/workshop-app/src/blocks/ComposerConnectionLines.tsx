@@ -1,7 +1,6 @@
 import { AnimatePresence, motion } from 'motion/react'
-import { useReducedMotion } from '@/hooks/useReducedMotion'
+import { Button, useReducedMotion } from '@gadgets/ui'
 import { XIcon } from '@phosphor-icons/react'
-import { Button } from '@/components/Button'
 import { ServiceLogo } from '@/components/ServiceLogo'
 
 /** A connection added to a draft, which the chat has once the message goes. */

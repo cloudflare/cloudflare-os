@@ -40,7 +40,7 @@ export const useLinkConnections = (
     const gatekeeper = overseer.newGatekeeper(account.id, url) as RpcPromise<GatekeeperClient<never>>
     try {
       const [gatekeeperId, description] = await Promise.all([gatekeeper.getId(), gatekeeper.describe()])
-      added.current.set(key, { gatekeeperId, description, vendorId: account.vendorId, service, kind: resource.title })
+      added.current.set(key, { gatekeeperId, workspaceId, source: { accountId: account.id, resourceUrl: url }, description, vendorId: account.vendorId, service, kind: resource.title })
       composer.current?.addConnection({ key, title: description.title, kind: resource.title, service })
       composer.current?.replaceInDraft(url, description.title)
     } catch (error) {

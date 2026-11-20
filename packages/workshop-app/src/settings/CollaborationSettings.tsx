@@ -1,5 +1,4 @@
-import { SettingRow } from '@/blocks/SettingRow'
-import { SettingsGroup } from '@/blocks/SettingsGroup'
+import { SettingRow, SettingsGroup } from '@gadgets/ui'
 import { SoonSelect, SoonSwitch } from './SoonControls'
 
 /**

@@ -1,9 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
-import { Banner } from '@/components/Banner'
-import { Button } from '@/components/Button'
-import { Dialog } from '@/components/Dialog'
-import { Select } from '@/components/Select'
+import { Banner, Button, Dialog, Select } from '@gadgets/ui'
 import { ServiceDialogHeader } from './ServiceDialogHeader'
 
 /** One of the user's accounts on the service, to connect with. */

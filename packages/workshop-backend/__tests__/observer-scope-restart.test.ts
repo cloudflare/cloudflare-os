@@ -613,6 +613,69 @@ describe("restarting sessions when verification scope widens", () => {
   }));
 });
 
+// A binding pointed at another gatekeeper in one step (GadgetClient.rebind): refused unless it
+// still points where the caller read it did, keeping the rest of the edge, and restarting only
+// where the new target widens what the gadget reaches, as binding it would.
+describe("rebinding a binding", () => {
+  const ANNOTATION = { title: "Writer", description: "Writes the summary" };
+
+  function seedBound(impl: Parameters<Parameters<typeof withImpl>[0]>[0]): void {
+    seedGadget(impl, 100);
+    seedVendorlessGatekeeper(impl, 1);
+    seedVendorlessGatekeeper(impl, 2);
+    seedGatekeeper(impl, 3);
+    let gadget = impl.storage.gadgets.get(100);
+    gadget.bindings.LLM = { target: 1, blueprintAnnotation: ANNOTATION };
+    impl.storage.gadgets.put(gadget);
+  }
+
+  it("refuses a binding pointed elsewhere since it was read, changing nothing",
+      () => withImpl(async (impl, restarts) => {
+    seedBound(impl);
+    joinSession(impl, 100);
+
+    expect(() => impl.rebindWorkpiece(100, "LLM", 2, 3)).toThrow(/changed since it was read/);
+    expect(impl.storage.gadgets.get(100).bindings.LLM)
+        .toEqual({ target: 1, blueprintAnnotation: ANNOTATION });
+    expect(restarts).toEqual([]);
+  }));
+
+  it("points it at another model, keeping its annotation and every session",
+      () => withImpl(async (impl, restarts) => {
+    seedBound(impl);
+    joinSession(impl, 100);
+
+    impl.rebindWorkpiece(100, "LLM", 1, 2);
+    expect(impl.storage.gadgets.get(100).bindings.LLM)
+        .toEqual({ target: 2, blueprintAnnotation: ANNOTATION });
+    // A model is vendorless, so nobody is verified against it and nobody's scope widened.
+    expect(restarts).toEqual([]);
+  }));
+
+  it("restarts a use collaborator when the new target widens the gadget's reach",
+      () => withImpl(async (impl, restarts) => {
+    seedBound(impl);
+    joinSession(impl, 100);
+
+    impl.rebindWorkpiece(100, "LLM", 1, 3);
+    expect(restarts).toHaveLength(1);
+  }));
+
+  it("refuses a binding a chat proposes, and a target that is no gatekeeper",
+      () => withImpl(async impl => {
+    seedBound(impl);
+    seedGadget(impl, 101);
+    let gadget = impl.storage.gadgets.get(100);
+    gadget.bindings.PROPOSED = { target: 1, pending: { chatId: 7 } };
+    impl.storage.gadgets.put(gadget);
+
+    expect(() => impl.rebindWorkpiece(100, "PROPOSED", 1, 2)).toThrow(/No such binding/);
+    expect(() => impl.rebindWorkpiece(100, "LLM", 1, 101)).toThrow(/Gadget-to-gadget/);
+    expect(() => impl.rebindWorkpiece(100, "LLM", 1, 99)).toThrow(/No such gatekeeper/);
+    expect(impl.storage.gadgets.get(100).bindings.LLM.target).toBe(1);
+  }));
+});
+
 // An enabled hook is a live write channel into the gadget it wakes -- the one its record names,
 // which its firings are attributed to -- so its connection is in that gadget's verification scope
 // regardless of binding edges, or in every gadget's when it names none; enabling one is a scope
@@ -1028,7 +1091,7 @@ describe("agent spawner envs widen the binding gadget's scope", () => {
         getChatContext: async () => ({ profile: USER_META.profile }),
         // Best-effort bookkeeping the bind triggers for the owner.
         setGadgetLastActive: async () => {},
-        syncWorkspaceOutputs: async () => {},
+        syncWorkspaceListing: () => {},
       }),
     };
     // The queue the spawner's facet would wrap, minted while the spawner was still usable.
@@ -1539,7 +1602,7 @@ async function replayOwnerSteps(steps: Step[], from = 0): Promise<void> {
     impl.ownerId = user.id;
     impl.users = { idFromString: (id: string) => id, get: () => user };
     impl.ensureAmbientCapsules = async () => {};
-    impl.markOutputsDirty = () => {};
+    impl.markListingDirty = () => {};
     impl.getGatekeeperFacet = () => ({
       describe: async () =>
           ({ title: "Test", url: "https://example.com/new", suggestedBindingName: "RES" }),

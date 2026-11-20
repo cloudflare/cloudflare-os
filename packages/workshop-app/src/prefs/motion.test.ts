@@ -1,41 +1,56 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { chosenMotionLevel, writeMotionLevel } from './motion'
 
-const load = async (systemReduces: boolean, kept?: string) => {
+const system = vi.hoisted(() => ({ reduces: false }))
+
+vi.mock('@gadgets/ui', () => ({
+  MOTION_LEVELS: ['full', 'calm', 'off'],
+  systemMotionLevel: { read: () => (system.reduces ? 'off' : 'full'), subscribe: () => () => {} },
+}))
+
+const keep = (kept?: string) => {
   const store = new Map<string, string>(kept ? [['workshop-app:motion', kept]] : [])
   vi.stubGlobal('localStorage', {
     getItem: (key: string) => store.get(key) ?? null,
     setItem: (key: string, value: string) => void store.set(key, value),
   })
-  vi.stubGlobal('matchMedia', () => ({ matches: systemReduces, addEventListener: () => {} }))
-  vi.stubGlobal('document', { documentElement: { dataset: {} as Record<string, string> } })
-  vi.resetModules()
-  return import('./motion')
 }
 
 describe('motion level', () => {
-  beforeEach(() => vi.unstubAllGlobals())
+  beforeEach(() => {
+    system.reduces = false
+    vi.stubGlobal('addEventListener', () => {})
+    vi.stubGlobal('removeEventListener', () => {})
+  })
   afterEach(() => vi.unstubAllGlobals())
 
-  it('is full until the system asks for less', async () => {
-    expect((await load(false)).readMotionLevel()).toBe('full')
-    expect((await load(true)).readMotionLevel()).toBe('off')
+  it('is full until the system asks for less', () => {
+    keep()
+    expect(chosenMotionLevel.read()).toBe('full')
+    system.reduces = true
+    expect(chosenMotionLevel.read()).toBe('off')
   })
 
-  it('is what was chosen, whatever the system asks', async () => {
-    expect((await load(true, JSON.stringify({ level: 'calm' }))).readMotionLevel()).toBe('calm')
+  it('is what was chosen, whatever the system asks', () => {
+    keep(JSON.stringify({ level: 'calm' }))
+    system.reduces = true
+    expect(chosenMotionLevel.read()).toBe('calm')
   })
 
-  it('ignores a choice it does not know', async () => {
-    expect((await load(false, JSON.stringify({ level: 'wild' }))).readMotionLevel()).toBe('full')
+  it('ignores a choice it does not know', () => {
+    keep(JSON.stringify({ level: 'wild' }))
+    expect(chosenMotionLevel.read()).toBe('full')
   })
 
-  it('puts a new choice on the root and tells listeners', async () => {
-    const motion = await load(false)
+  it('keeps a new choice and tells listeners', () => {
+    keep()
     const heard = vi.fn<() => void>()
-    motion.subscribeMotionLevel(heard)
-    motion.writeMotionLevel('off')
-    expect(motion.isMotionOff()).toBe(true)
-    expect(document.documentElement.dataset.motion).toBe('off')
+    const stop = chosenMotionLevel.subscribe(heard)
+    writeMotionLevel('off')
+    expect(chosenMotionLevel.read()).toBe('off')
+    expect(heard).toHaveBeenCalledTimes(1)
+    stop()
+    writeMotionLevel('full')
     expect(heard).toHaveBeenCalledTimes(1)
   })
 })

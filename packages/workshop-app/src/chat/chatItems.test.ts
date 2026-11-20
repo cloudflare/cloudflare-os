@@ -97,9 +97,9 @@ describe('toChatFeed', () => {
         gatekeeperId: 3,
         description: { url: 'https://jira.example.com/PLAT-1', title: 'PLAT-1', snippet: '', suggestedBindingName: 'ISSUE', tsType: 'Issue' },
       }
-      const [item] = only(feed(user(`${quote}See [0] too`, { capsules: [capsule] })), 'user')
+      const [, item] = only(feed(user('The chart now covers 12 weeks'), user(`${quote}See [0] too`, { capsules: [capsule], replyToSequence: 0 })), 'user')
 
-      expect(item.quote).toBe('The chart now covers 12 weeks')
+      expect(item).toMatchObject({ replyTo: 0, quote: 'The chart now covers 12 weeks' })
       expect(item.parts).toEqual([
         { type: 'text', text: 'See ' },
         { type: 'capsule', title: 'PLAT-1', url: 'https://jira.example.com/PLAT-1' },
@@ -107,9 +107,15 @@ describe('toChatFeed', () => {
       ])
     })
 
+    it('shows a message that names nothing it replies to as it was written, whatever it opens with', () => {
+      const text = '> The chart now covers 12 weeks\n\nMake it 24'
+      const [item] = only(feed(user(text)), 'user')
+      expect(item).toMatchObject({ replyTo: undefined, quote: undefined, parts: [{ type: 'text', text }] })
+    })
+
     it('sets the quote of a reply the agent has not read yet apart too', () => {
-      const result = toChatFeed(history([user('go')]), { ...viewer, agentActive: true, steers: [{ text: '> go\n\nand faster', unread: true }] })
-      expect(only(result, 'user').at(-1)).toMatchObject({ quote: 'go', parts: [{ type: 'text', text: 'and faster' }], unread: true })
+      const result = toChatFeed(history([user('go')]), { ...viewer, agentActive: true, steers: [{ text: '> go\n\nand faster', unread: true, replyTo: 0 }] })
+      expect(only(result, 'user').at(-1)).toMatchObject({ replyTo: 0, quote: 'go', parts: [{ type: 'text', text: 'and faster' }], unread: true })
     })
 
     it('does not link a mention whose address is not a web page', () => {

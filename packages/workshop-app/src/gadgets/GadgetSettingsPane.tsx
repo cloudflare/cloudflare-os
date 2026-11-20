@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useRouter } from '@tanstack/react-router'
-import { agentByKey, agentKeyOf, attentionWords } from '@/automations/agents'
+import { agentKeyOf, attentionWords } from '@/automations/agents'
 import { useWorkspaceAgents } from '@/automations/useWorkspaceAgents'
 import { useDevMode } from '@/hooks/useDevMode'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
@@ -63,25 +63,30 @@ export const GadgetSettingsPane = ({ workspaceId, workpieceId, initialTitle, tab
   const title = gadget?.title ?? initialTitle
   const blueprintId = gadget?.upstream?.blueprintId
   const upstream = gadget?.upstream
-  const blueprint = useBlueprintInfo(blueprintId, upstream?.commitId)
+  const { info: blueprint, refresh: refreshBlueprint } = useBlueprintInfo(workspace?.role === 'use' ? undefined : blueprintId, upstream?.commitId)
   // Only a gadget with code of its own takes an update, from a template it follows: one still
   // waiting in a chat has none, and one built from scratch follows none.
   const follows = upstream?.blueprintId !== undefined && gadget?.commitId !== undefined ? { ...upstream, blueprintId: upstream.blueprintId } : undefined
   const [updating, setUpdating] = useState(false)
   // Not there until it is first asked for, as it reads the templates.
   const [creating, setCreating] = useState<boolean>()
-  const made = useMadeTemplates(workspaceId, creating === true || tab !== 'settings')
-  const owner = useTemplateOwner(workspaceId, { onChange: made.refresh })
+  const made = useMadeTemplates(workspaceId, workpieceId, creating === true || tab !== 'settings')
+  const templateChanged = (id: string) => {
+    made.refresh()
+    if (id === blueprintId) refreshBlueprint()
+  }
+  const owner = useTemplateOwner(workspaceId, { onChange: templateChanged })
   const router = useRouter()
   // Only whoever builds in its workspace gets here, who may save it to their accounts too.
   const exports = useGadgetExports(gadget && { workspaceId, workpieceId, type: 'gadget', chatId }, title ?? '', { saves: true })
   useDocumentTitle(namesTab ? (title ? `Settings · ${title}` : 'App settings') : undefined)
   // Why the last thing asked for was not done.
   const [problem, setProblem] = useState<string>()
-  // What its agents want of the user, as the workspace's Agents tab says it, by spawner.
+  // What its agents want of the user, as the workspace's Agents tab says it, by spawner: an agent
+  // is found by any of its spawners' ids.
   const { state: agentsState } = useWorkspaceAgents(workspaceId)
   const agentAttention = (spawnerId: number) => {
-    const agent = agentsState.status === 'ready' ? agentByKey(agentsState.agents, agentKeyOf(spawnerId)) : undefined
+    const agent = agentsState.status === 'ready' ? agentsState.agents.find(({ key }) => key === agentKeyOf(spawnerId)) : undefined
     const words = agent && attentionWords(agent)
     return agent && words ? { words, tone: agent.waiting > 0 ? 'warning' as const : 'danger' as const } : undefined
   }
@@ -107,13 +112,19 @@ export const GadgetSettingsPane = ({ workspaceId, workpieceId, initialTitle, tab
         icon={gadget?.output?.icon}
         description={blueprint?.description}
         // The template gone, there is nothing to update it from.
-        templateUpdate={follows && blueprint !== null ? { status: templateUpdateStatus(follows, blueprint), onUpdate: () => setUpdating(true) } : undefined}
+        templateUpdate={follows && blueprint !== null ? { status: templateUpdateStatus(follows, blueprint), onUpdate: () => {
+          refreshBlueprint()
+          setUpdating(true)
+        } } : undefined}
         template={gadget && { made: made.templates, onCreate: () => setCreating(true), onEdit: owner.edit, onRelease: owner.release, onDelete: owner.remove, busy: owner.busy, problem: owner.problem, onOpen: (id) => void router.navigate({ to: '/library/templates/$templateId', params: { templateId: id } }) }}
         exports={exports.menu}
         status={exports.status}
         workspace={workspace && { id: workspaceId, title: workspace.title, label: workspaceLabel(workspace.title), look }}
         tab={tab}
-        onTabChange={onTabChange}
+        onTabChange={(next) => {
+          if (next === 'settings' && tab !== 'settings') refreshBlueprint()
+          onTabChange(next)
+        }}
         onRename={gadget && ((next) => attempt('rename the gadget', () => settings.rename(next)))}
         problem={problem}
         bindings={snapshot.status === 'ready' ? snapshot.bindings : { status: 'loading' }}
@@ -154,7 +165,7 @@ export const GadgetSettingsPane = ({ workspaceId, workpieceId, initialTitle, tab
       />
       {exports.dialogs}
       {gadget && creating !== undefined && (
-        <CreateTemplate gadget={{ workspaceId, workpieceId, title: title ?? '' }} open={creating} onOpenChange={setCreating} />
+        <CreateTemplate gadget={{ workspaceId, workpieceId, title: title ?? '' }} open={creating} onOpenChange={setCreating} onReleased={templateChanged} />
       )}
       {follows && (
         <UpdateFromTemplate
@@ -165,6 +176,7 @@ export const GadgetSettingsPane = ({ workspaceId, workpieceId, initialTitle, tab
           title={title ?? ''}
           upstream={follows}
           template={blueprint}
+          onChecked={refreshBlueprint}
           onProposed={onUpdateProposed}
         />
       )}

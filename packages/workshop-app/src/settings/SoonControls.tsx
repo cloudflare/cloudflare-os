@@ -1,5 +1,4 @@
-import { Select, type SelectOption } from '@/components/Select'
-import { Switch } from '@/components/Switch'
+import { Select, type SelectOption, Switch } from '@gadgets/ui'
 
 // What a setting that is not there yet is set by: it is shown as it will be, at what it would
 // start as, and is out of use, which the row or the group it is in sees to (`SettingRow`'s and

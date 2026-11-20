@@ -25,7 +25,7 @@ const isMarkdownPath = (path: string) => /\.(?:md|markdown)$/i.test(path);
  * with a skill metadata key opts in; ambiguous or malformed blocks remain instruction text.
  * Both metadata inference and conversion must use this decision to avoid losing content.
  */
-const readSkillUploadSource = (body: string) => {
+export const readSkillUploadSource = (body: string) => {
   const { frontmatter, content } = splitFrontmatter(body);
   if (frontmatter !== null) {
     const document = parseDocument(frontmatter);

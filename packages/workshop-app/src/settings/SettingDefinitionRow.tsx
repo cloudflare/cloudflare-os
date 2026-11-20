@@ -1,6 +1,4 @@
-import { SettingRow } from '@/blocks/SettingRow'
-import { Select } from '@/components/Select'
-import { Switch } from '@/components/Switch'
+import { Select, SettingRow, Switch } from '@gadgets/ui'
 import type { ChoiceSetting, ToggleSetting } from './settingDefinition'
 
 type SettingDefinitionRowProps = {

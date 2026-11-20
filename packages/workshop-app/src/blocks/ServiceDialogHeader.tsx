@@ -1,7 +1,6 @@
 import type { ReactNode } from 'react'
 import { XIcon } from '@phosphor-icons/react'
-import { Button } from '@/components/Button'
-import { Dialog } from '@/components/Dialog'
+import { Button, Dialog } from '@gadgets/ui'
 import { ServiceLogo } from '@/components/ServiceLogo'
 
 export type ServiceDialogHeaderProps = {

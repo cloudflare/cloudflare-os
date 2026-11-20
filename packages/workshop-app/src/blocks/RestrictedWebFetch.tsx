@@ -1,12 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { PlusIcon, TrashIcon } from '@phosphor-icons/react'
-import { CardAction } from './CardAction'
-import { LIST_ACTION } from './StarButton'
-import { SettingRow } from './SettingRow'
-import { ON_SETTINGS_CARD, SettingsCard, SettingsGroup } from './SettingsGroup'
-import { Button } from '@/components/Button'
-import { Switch } from '@/components/Switch'
-import { TextField } from '@/components/TextField'
+import { Button, CardAction, LIST_ACTION, ON_SETTINGS_CARD, SettingRow, SettingsCard, SettingsGroup, Switch, TextField } from '@gadgets/ui'
 
 export type RestrictedWebFetchProps = {
   /** The hosts it may reach, as the server keeps them. */

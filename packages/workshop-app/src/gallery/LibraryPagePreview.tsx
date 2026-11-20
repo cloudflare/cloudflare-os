@@ -1,6 +1,5 @@
 import { useState } from 'react'
-import { Switch } from '@/components/Switch'
-import { useListView } from '@/hooks/useListView'
+import { Switch, useListView } from '@gadgets/ui'
 import { mayChange, NO_EDITS, withDeletion, withEdits, withRename } from '@/library/libraryEdits'
 import { libraryList, outputKey, outputTitle } from '@/library/libraryList'
 import { LibraryView, RECENT_TAB } from '@/library/LibraryView'

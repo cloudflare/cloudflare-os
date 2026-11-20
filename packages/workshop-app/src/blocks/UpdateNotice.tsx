@@ -1,5 +1,5 @@
 import { ArrowClockwiseIcon, XIcon } from '@phosphor-icons/react'
-import { Button } from '@/components/Button'
+import { Button } from '@gadgets/ui'
 
 export type UpdateNoticeProps = {
   /** What the deployment calls itself. */

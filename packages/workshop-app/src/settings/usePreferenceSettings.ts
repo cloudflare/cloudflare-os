@@ -1,11 +1,11 @@
 import { useReducer } from 'react'
 import { CodeIcon, DesktopIcon, MoonIcon, PaletteIcon, SidebarSimpleIcon, SparkleIcon, SunIcon } from '@phosphor-icons/react'
 import { useDevMode } from '@/hooks/useDevMode'
-import { useMotionLevel } from '@/hooks/useMotionLevel'
+import { type MotionLevel, useMotionLevel } from '@gadgets/ui'
 import { readTheme, writeTheme, type Theme } from '@/prefs/appearance'
 import { writeDevMode } from '@/prefs/devMode'
 import { readLayoutPrefs, writeLayoutPrefs } from '@/prefs/layoutPrefs'
-import { writeMotionLevel, type MotionLevel } from '@/prefs/motion'
+import { writeMotionLevel } from '@/prefs/motion'
 import { MOTION_OPTIONS, THEME_OPTIONS } from './preferenceOptions'
 import type { ChoiceSetting, ToggleSetting } from './settingDefinition'
 

@@ -57,7 +57,7 @@ async function withClient(fn: (impl: any, client: Overseer) => Promise<void>): P
     let ownerId = impl.users.newUniqueId().toString();
     impl.ownerId = ownerId;
     impl.ensureAmbientCapsules = async () => {};
-    impl.markOutputsDirty = () => {};
+    impl.markListingDirty = () => {};
     let client = await instance.open(
         ownerId, "owner-profile", new NativeRpcStub<() => void>(() => {}));
     await fn(impl, client);

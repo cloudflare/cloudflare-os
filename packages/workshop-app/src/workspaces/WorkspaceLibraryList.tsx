@@ -2,15 +2,12 @@ import type { OutputSummary } from '@gadgets/workshop-shared/api'
 import { workspaceAsideItems, type AsideItem } from '@/aside/asideItems'
 import { asideItemIcon } from '@/aside/asideItemIcon'
 import { FileListItem } from '@/blocks/FileListItem'
-import { ListGroup } from '@/blocks/ListGroup'
-import { ListToolbar } from '@/blocks/ListToolbar'
-import { Button } from '@/components/Button'
-import { useListView } from '@/hooks/useListView'
+import { Button, ListGroup, ListToolbar, useListView } from '@gadgets/ui'
 import { withEdits } from '@/library/libraryEdits'
-import { useLibrary } from '@/library/useLibrary'
+import { useLibrary } from '@/library/OutputsFeedContext'
 import { useLibraryActions } from '@/library/useLibraryActions'
-import { gadgetKey } from '@/gadgets/WaitingAsks'
-import { useWaitingAsks } from '@/gadgets/WaitingAsksProvider'
+import { gadgetAsks } from './WorkspaceSummaries'
+import { useWorkspaceSummaries } from './WorkspaceSummariesContext'
 import { libraryItemList } from './libraryItemList'
 
 export type WorkspaceLibraryListProps = {
@@ -30,7 +27,7 @@ export type WorkspaceLibraryListProps = {
  * Library page has (`useLibraryActions`). Over it, a search, the order and filters.
  */
 export const WorkspaceLibraryList = ({ workspaceId, onOpenItem, itemHref, outputHref, onOpenSettings }: WorkspaceLibraryListProps) => {
-  const library = useLibrary(workspaceId)
+  const library = useLibrary()
   const read = library.status === 'ready' ? library.outputs : []
   const { edits, actionsOf, problem, dialogs } = useLibraryActions({ read, outputHref, onOpenSettings })
   const outputs = withEdits(read, edits)
@@ -46,8 +43,8 @@ export const WorkspaceLibraryList = ({ workspaceId, onOpenItem, itemHref, output
     return output && outputHref ? outputHref(output) : itemHref?.(item)
   }
   // What each gadget asks of the user, which its own pane asks when it is opened.
-  const asks = useWaitingAsks()
-  const waitingOf = (item: AsideItem) => (item.kind === 'output' ? asks.byGadget.get(gadgetKey(workspaceId, item.output.workpieceId)) ?? 0 : 0)
+  const summaries = useWorkspaceSummaries()
+  const waitingOf = (item: AsideItem) => (item.kind === 'output' ? gadgetAsks(summaries, workspaceId, item.output.workpieceId) : 0)
   const list = useListView('workspace-library', libraryItemList(items, (item) => waitingOf(item) > 0))
   const shown = list.narrow(items)
   const groups = list.arrange(shown)

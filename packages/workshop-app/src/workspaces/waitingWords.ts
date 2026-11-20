@@ -1,3 +1,5 @@
+import type { WorkspaceSummary } from '@gadgets/workshop-shared/api'
+
 /** What in a workspace waits on the user, by kind: its agents' runs, its gadgets, and its chats. */
 export type WaitingCounts = { runs: number; gadgets: number; chats: number }
 
@@ -17,9 +19,12 @@ export const waitingWords = ({ runs, gadgets, chats }: WaitingCounts): string | 
   return count(chats, 'A chat needs you', 'chats need you')
 }
 
-/** The gadgets of one workspace that wait on the user, from what every gadget waits on, by `gadgetKey`. */
-export const gadgetsWaitingIn = (workspaceId: string, byGadget: ReadonlyMap<string, number>) => {
-  let gadgets = 0
-  for (const [key, n] of byGadget) if (n > 0 && key.startsWith(`${workspaceId}/`)) gadgets++
-  return gadgets
-}
+/**
+ * What waits on the user in a workspace, as its summary says (`WorkspaceWaiting`): the gadgets that
+ * ask something, each once. Nothing, where the workspace has not said.
+ */
+export const waitingCountsOf = (summary: WorkspaceSummary | undefined): WaitingCounts => ({
+  runs: summary?.waiting.runs ?? 0,
+  chats: summary?.waiting.chats ?? 0,
+  gadgets: summary?.waiting.gadgets.length ?? 0,
+})

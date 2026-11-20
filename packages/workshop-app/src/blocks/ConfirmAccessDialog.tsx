@@ -1,11 +1,7 @@
 import { ArrowClockwiseIcon, CheckCircleIcon, PlusIcon, WarningIcon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
-import { Banner } from '@/components/Banner'
-import { Button } from '@/components/Button'
-import { Dialog } from '@/components/Dialog'
-import { Select } from '@/components/Select'
+import { Banner, Button, Dialog, ListGroup, Select } from '@gadgets/ui'
 import { ServiceLogo } from '@/components/ServiceLogo'
-import { ListGroup } from './ListGroup'
 
 /** One protected resource, as the dialog asks about it. */
 export type ConfirmAccessRow = {

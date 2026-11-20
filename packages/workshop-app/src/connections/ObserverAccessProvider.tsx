@@ -1,7 +1,15 @@
 import { createContext, use, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { RpcTarget, type RpcStub } from 'capnweb'
 import { useRouterState } from '@tanstack/react-router'
-import type { AuthenticatedApi, GatekeeperVendorInfo, ObserverAccountChoice, ObserverBindingNeed, ObserverConfigCallback } from '@gadgets/workshop-shared/api'
+import {
+  ACCESS_CONFIRMATION_ERROR_CODES,
+  createAccessConfirmationError,
+  type AuthenticatedApi,
+  type GatekeeperVendorInfo,
+  type ObserverAccountChoice,
+  type ObserverBindingNeed,
+  type ObserverConfigCallback,
+} from '@gadgets/workshop-shared/api'
 import { parseItemPageId } from '@/aside/asideItems'
 import { ConfirmAccessDialog, type ConfirmAccessRow } from '@/blocks/ConfirmAccessDialog'
 import { ApiContext, useApi } from '@/rpc/ApiContext'
@@ -63,8 +71,8 @@ type Asking = {
   waiting: { resolve: (choices: ObserverAccountChoice[]) => void; reject: (error: Error) => void }[]
 }
 
-const askingKey = (needs: readonly ObserverBindingNeed[]) =>
-  needs.map(({ gatekeeperId, failure }) => `${gatekeeperId}${failure ? '!' : ''}`).toSorted().join(',')
+const askingKey = (workspaceId: string, needs: readonly ObserverBindingNeed[]) =>
+  `${workspaceId}:${needs.map(({ gatekeeperId, failure }) => `${gatekeeperId}${failure ? '!' : ''}`).toSorted().join(',')}`
 
 /** The workspace a page shows, by its address: its own pages, or one of its items on a page of its own. */
 export const viewedWorkspace = (pathname: string): string | undefined => {
@@ -73,11 +81,6 @@ export const viewedWorkspace = (pathname: string): string | undefined => {
   const item = /^\/(?:app|library)\/([^/]+)/.exec(pathname)
   return item ? parseItemPageId(decodeURIComponent(item[1]))?.workspaceId : undefined
 }
-
-const NOT_CONFIRMED = 'You didn’t confirm your access, so it can’t be opened.'
-
-/** Whether an open failed only for the user's access not being confirmed, which asking again can put right. */
-export const accessNotConfirmed = (message: string) => message.includes(NOT_CONFIRMED)
 
 // Forgets what the user cancelled, so that the next open asks them again.
 const AskAgainContext = createContext<() => void>(() => {})
@@ -99,13 +102,15 @@ export const ObserverAccessProvider = ({ children }: { children: ReactNode }) =>
 
   // Only what is on screen asks: the sidebar's counts and what the gadgets ask open the user's
   // recent workspaces in the background, which would otherwise ask of them unbidden, wherever they
-  // are. Those are refused, as an open with nothing to ask is.
+  // are. Those are refused as not asked, as an open with nothing to ask is; so is what the user
+  // cancelled, until they ask again. The overseer refuses the open with the code it is answered.
   const viewing = useRef<string | undefined>(undefined)
   viewing.current = useRouterState({ select: ({ location }) => viewedWorkspace(location.pathname) })
   const ask = useCallback((what: string, workspaceId: string, needs: ObserverBindingNeed[]) => new Promise<ObserverAccountChoice[]>((resolve, reject) => {
-    if (workspaceId !== viewing.current) return reject(new Error(NOT_CONFIRMED))
-    const key = askingKey(needs)
-    if (declined.current.has(key)) return reject(new Error(NOT_CONFIRMED))
+    const key = askingKey(workspaceId, needs)
+    if (workspaceId !== viewing.current || declined.current.has(key)) {
+      return reject(createAccessConfirmationError(ACCESS_CONFIRMATION_ERROR_CODES.notAsked))
+    }
     const same = queue.current.find((each) => each.key === key)
     if (same) return void same.waiting.push({ resolve, reject })
     queue.current.push({ key, what, needs, waiting: [{ resolve, reject }] })
@@ -118,7 +123,7 @@ export const ObserverAccessProvider = ({ children }: { children: ReactNode }) =>
       if (!choices) declined.current.add(done.key)
       for (const { resolve, reject } of done.waiting) {
         if (choices) resolve(choices)
-        else reject(new Error(NOT_CONFIRMED))
+        else reject(createAccessConfirmationError(ACCESS_CONFIRMATION_ERROR_CODES.cancelled))
       }
     }
     setAsking(queue.current[0])

@@ -1,9 +1,6 @@
 import { StarIcon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
-import { Button } from '@/components/Button'
-
-/** How a button over a row or a card of a list is drawn: quiet until it is pointed at itself. */
-export const LIST_ACTION = 'text-kumo-subtle not-data-disabled:hover:bg-kumo-contrast/5 not-data-disabled:hover:text-kumo-default'
+import { Button, LIST_ACTION } from '@gadgets/ui'
 
 export type StarButtonProps = {
   /** What it stars, for its name. */

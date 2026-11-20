@@ -1,19 +1,18 @@
-import { useState } from 'react'
 import type { BlueprintOutput, OutputSummary } from '@gadgets/workshop-shared/api'
-import { gadgetKey } from '@/gadgets/WaitingAsks'
-import { useRefreshedWaitingAsks, useWaitingAsks } from '@/gadgets/WaitingAsksProvider'
+import { gadgetAsks } from '@/workspaces/WorkspaceSummaries'
+import { useWorkspaceSummaries } from '@/workspaces/WorkspaceSummariesContext'
 import { useApi } from '@/rpc/ApiContext'
+import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
-import { useListView } from '@/hooks/useListView'
-import { readLibraryOpened } from '@/prefs/libraryOpened'
-import { readLibraryStars, writeLibraryStars } from '@/prefs/libraryStars'
+import { useListView } from '@gadgets/ui'
+import { useLibrary } from './OutputsFeedContext'
+import { usePreferences, usePreferencesSnapshot } from '@/prefs/UserPreferencesContext'
 import { useOwnAvatar } from '@/settings/useOwnAvatar'
 import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { withEdits } from './libraryEdits'
 import { libraryList, outputKey } from './libraryList'
-import { withStar } from './libraryStars'
+import { keepStars, withStar } from './libraryStars'
 import { ALL_TAB, LibraryView, RECENT_TAB } from './LibraryView'
-import { useLibrary } from './useLibrary'
 import { useLibraryActions } from './useLibraryActions'
 import { startableFormats, useOutputFormats } from './useOutputFormats'
 
@@ -36,37 +35,36 @@ export type LibraryPaneProps = {
   onOpenSettings?: (output: OutputSummary) => void
 }
 
-// How old what the gadgets ask may be when the page is come to before it is read again.
-const WAITING_MAX_AGE = 60_000
-
 /**
  * The Library page (`LibraryView`) over what it shows: everything made in the user's workspaces
- * and those shared with them, the formats the deployment offers, the stars, which are this
- * device's, and how the list is looked at. What is renamed or deleted from an output's more menu
- * shows at once, a rename put back if it is refused, and a deleted one leaves the list, and its
- * star with it, once it is gone (`useLibraryActions`).
+ * and those shared with them, the formats the deployment offers, the user's stars and what they
+ * opened last, which their preferences keep, and how the list is looked at. What is renamed or
+ * deleted from an output's more menu shows at once, a rename put back if it is refused, and a
+ * deleted one leaves the list, and its star with it, once it is gone (`useLibraryActions`).
  */
 export const LibraryPane = ({ tab, onTabChange, onOpenOutput, outputHref, onOpenWorkspace, workspaceHref, onNew, onExplore, onOpenSettings }: LibraryPaneProps) => {
   const read = useLibrary()
+  const preferences = usePreferences()
+  const { starredOutputs, openedOutputs } = usePreferencesSnapshot()
+  const stars = starredOutputs.map(outputKey)
+  const opened = openedOutputs.map(outputKey)
+  const connection = useConnectionNotice()
   const offers = useOutputFormats()
-  // The keys of the starred, in their order.
-  const [stars, setStars] = useState(readLibraryStars)
-  // What was opened last on this device, as the page was come to.
-  const [opened] = useState(readLibraryOpened)
-  // Recent, for whoever has opened anything here, and everything otherwise. What waits on the user
-  // is first on either.
+  // Recent, for whoever has opened anything, and everything otherwise. What waits on the user is
+  // first on either.
   const startsAt = opened.length > 0 ? RECENT_TAB : ALL_TAB
   useDocumentTitle('Library')
-  // What each asks of the user, read again as the page is come to.
-  useRefreshedWaitingAsks(WAITING_MAX_AGE)
-  const waiting = useWaitingAsks()
+  // What each asks of the user, as its workspace says.
+  const summaries = useWorkspaceSummaries()
   const { edits, actionsOf, problem, dialogs } = useLibraryActions({
     read: read.status === 'ready' ? read.outputs : [],
     outputHref,
     onOpenSettings,
     // Its star goes with it.
     onDeleted: (output) => {
-      if (stars.includes(outputKey(output))) changeStars(withStar(stars, outputKey(output), false))
+      const key = outputKey(output)
+      const current = preferences.getSnapshot().starredOutputs.map(outputKey)
+      if (current.includes(key)) keepStars(preferences, withStar(current, key, false))
     },
   })
   const library = read.status === 'ready' ? { ...read, outputs: withEdits(read.outputs, edits) } : read
@@ -76,8 +74,7 @@ export const LibraryPane = ({ tab, onTabChange, onOpenOutput, outputHref, onOpen
   const avatarUrl = useOwnAvatar()
   const list = useListView('library', libraryList(all, offers.map(({ output }) => output), new Set(stars), looks))
   const changeStars = (next: string[]) => {
-    setStars(next)
-    writeLibraryStars(next)
+    if (!connection?.blocked()) keepStars(preferences, next)
   }
 
   return (
@@ -100,7 +97,7 @@ export const LibraryPane = ({ tab, onTabChange, onOpenOutput, outputHref, onOpen
         looks={looks}
         me={{ name: user.name, avatarUrl }}
         actionsOf={actionsOf}
-        waitingOf={(output) => waiting.byGadget.get(gadgetKey(output.workspaceId, output.workpieceId)) ?? 0}
+        waitingOf={(output) => gadgetAsks(summaries, output.workspaceId, output.workpieceId)}
         problem={problem}
       />
       {dialogs}

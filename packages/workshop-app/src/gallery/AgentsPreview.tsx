@@ -2,16 +2,13 @@ import { useState } from 'react'
 import { AgentRow } from '@/blocks/AgentRow'
 import { AgentRunRow } from '@/blocks/AgentRunRow'
 import { ChatHeader } from '@/blocks/ChatHeader'
-import { ListGroup } from '@/blocks/ListGroup'
+import { Banner, Button, ListGroup, Tabs } from '@gadgets/ui'
 import { WorkspaceListItem } from '@/blocks/WorkspaceListItem'
 import { WorkspaceRailItem } from '@/blocks/WorkspaceRailItem'
 import { agentsOf, STATUS_WORDS, type Agent, type AgentRun, type AgentSetup } from '@/automations/agents'
 import { AgentsTab } from '@/automations/AgentsTab'
 import { AgentView } from '@/automations/AgentPane'
 import type { WorkspaceAgentsSnapshot } from '@/automations/WorkspaceAgents'
-import { Banner } from '@/components/Banner'
-import { Button } from '@/components/Button'
-import { Tabs } from '@/components/Tabs'
 import { useReport } from './previewState'
 import { Section } from './Section'
 import { EXAMPLE_AGENT_CHATS, EXAMPLE_AGENT_SETUPS, EXAMPLE_NOW, EXAMPLE_SIGNALS } from '@/automations/exampleAgents'
@@ -21,18 +18,18 @@ const STATES = ['ready', 'loading', 'failed', 'empty'] as const
 const stateOf = (which: (typeof STATES)[number], setups: readonly AgentSetup[] = EXAMPLE_AGENT_SETUPS): WorkspaceAgentsSnapshot =>
   which === 'loading' ? { status: 'loading' }
     : which === 'failed' ? { status: 'failed', message: 'The workspace could not be reached.' }
-      : which === 'empty' ? { status: 'ready', agents: [], setUpRead: true, chatsWaiting: new Set() }
-        : { status: 'ready', agents: agentsOf(EXAMPLE_AGENT_CHATS, EXAMPLE_SIGNALS, setups), setUpRead: true, chatsWaiting: new Set() }
+      : which === 'empty' ? { status: 'ready', agents: [], setUpRead: true, allRuns: true, actionsWaiting: new Set() }
+        : { status: 'ready', agents: agentsOf(EXAMPLE_AGENT_CHATS, EXAMPLE_SIGNALS, setups), setUpRead: true, allRuns: true, actionsWaiting: new Set() }
 
 // An agent run on a schedule, many times over: the same digest every few hours, now and then
-// failing, waiting on the user or leaving changes.
+// failing, waiting on the user or leaving changes; more of its runs are still to be read.
 const BUSY: Agent = (() => {
   const runs = Array.from({ length: 273 }, (_, index): AgentRun => {
     const lastActive = new Date(EXAMPLE_NOW.getTime() - index * 3 * 60 * 60 * 1000)
     const status = index === 2 || index === 40 ? 'waiting' : index % 37 === 5 ? 'failed' : index % 23 === 11 ? 'changes' : 'done'
     return { chatId: 10_000 - index, title: index % 9 === 4 ? 'Weekly digest' : 'Digest of new tickets', started: lastActive, lastActive, status }
   })
-  return { key: 'busy', name: 'Ticket digest', model: 'claude-sonnet-5-5', gadget: { id: 99, title: 'Triage', bindingName: 'DIGEST' }, runs, waiting: 2, running: 0, failed: false }
+  return { key: 'busy', spawnerId: 99, name: 'Ticket digest', model: 'claude-sonnet-5-5', gadgets: [{ id: 99, title: 'Triage', bindingName: 'DIGEST' }], runs, waiting: 2, running: 0, failed: false }
 })()
 
 /** A workspace's agents, their runs and what of them waits on the user, in each of their states. */
@@ -91,7 +88,7 @@ export const AgentsPreview = () => {
           </div>
         </div>
       </Section>
-      <Section title="AgentView (an agent’s page: what wants the user, with the way to that run, the gadget that starts it, its model, when it runs and how often it has, then its runs by when; choose an agent)">
+      <Section title="AgentView (an agent’s page: what wants the user, with the way to that run, the gadgets that start it, its model and how often it has run, then its runs by when, with the way to read more; choose an agent)">
         <div className="flex w-full flex-col gap-4">
           <div className="flex flex-wrap gap-2">
             {agents.map(({ key, name }) => <Button key={key} variant={shown === key ? 'primary' : 'secondary'} onClick={() => setShown(key)}>{name}</Button>)}
@@ -100,8 +97,7 @@ export const AgentsPreview = () => {
           </div>
           <div className="w-full rounded-3xl bg-kumo-base">
             <AgentView
-              state={agent ? { status: 'ready', agent } : { status: 'gone' }}
-              when={agent?.gadget?.title === 'Inbox' ? ['When a new email arrives'] : agent?.gadget?.title === 'Changelog' ? ['Every Friday at 4:30 PM'] : []}
+              state={agent === BUSY ? { status: 'ready', agent, all: false, more: { reading: false, onMore: () => say('read more runs') } } : agent ? { status: 'ready', agent, all: true } : { status: 'gone' }}
               now={EXAMPLE_NOW.getTime()}
               onOpenRun={({ title }) => say(`opened the run “${title}”`)}
               runHref={() => '#'}

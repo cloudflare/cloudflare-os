@@ -19,6 +19,8 @@ export type UpdateFromTemplateProps = {
   upstream: GadgetUpstream & { blueprintId: string }
   /** The template as it now stands: undefined while it is read, null once it is not there. */
   template?: BlueprintInfo | null
+  /** Recheck the published release after asking the server to apply it. */
+  onChecked: () => void
   /** The update was proposed in a new chat, which is where it is tried and accepted: go there. */
   onProposed: (chatId: number) => void
 }
@@ -51,7 +53,7 @@ const useReviewers = (open: boolean) => {
  * proposed in a new chat (`proposeTemplateUpdate`), reviewed by the model the user's messages are
  * answered by unless another, or none, is chosen, and the chat is gone to once it is there.
  */
-export const UpdateFromTemplate = ({ open, onOpenChange, workspaceId, gadgetId, title, upstream, template, onProposed }: UpdateFromTemplateProps) => {
+export const UpdateFromTemplate = ({ open, onOpenChange, workspaceId, gadgetId, title, upstream, template, onChecked, onProposed }: UpdateFromTemplateProps) => {
   const { api } = useApi()
   const connection = useConnectionNotice()
   const models = useReviewers(open)
@@ -74,6 +76,7 @@ export const UpdateFromTemplate = ({ open, onOpenChange, workspaceId, gadgetId, 
       onUpdate={async (allowUnrelated) => {
         if (connection?.blocked() || reviewer === undefined) return { outcome: 'blocked' }
         const result = await proposeTemplateUpdate(() => api.openWorkspace(workspaceId), gadgetId, upstream.blueprintId, { reviewer, allowUnrelated })
+        if (result.outcome === 'upToDate' || result.outcome === 'proposed') onChecked()
         if (result.outcome === 'proposed') {
           onOpenChange(false)
           onProposed(result.chatId)

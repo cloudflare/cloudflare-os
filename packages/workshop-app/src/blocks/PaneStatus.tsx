@@ -1,6 +1,6 @@
 import { CheckCircleIcon, WarningCircleIcon, XIcon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
-import { Button } from '@/components/Button'
+import { Button } from '@gadgets/ui'
 import { ShimmerText } from '@/components/ShimmerText'
 
 export type PaneStatusProps = {

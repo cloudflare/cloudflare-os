@@ -1,9 +1,10 @@
 import { useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type Ref } from 'react'
 import { InputArea } from '@cloudflare/kumo'
 import { ArrowUpIcon, StopIcon } from '@phosphor-icons/react'
-import { Button } from '@/components/Button'
+import { Button } from '@gadgets/ui'
 import type { FormatIconName } from '@/components/FormatIcon'
-import { byRecentUse, readRecentCommands, recordCommandUse } from '@/prefs/recentCommands'
+import { byRecentUse, recordCommandUse } from '@/prefs/recentCommands'
+import { usePreferences, usePreferencesSnapshot } from '@/prefs/UserPreferencesContext'
 import { ComposerAddMenu, type ComposerAddActions } from './ComposerAddMenu'
 import { ComposerAttachmentTray } from './ComposerAttachmentTray'
 import { ComposerCommandLine } from './ComposerCommandLine'
@@ -48,6 +49,11 @@ export type ComposerProps = {
   commands?: readonly ComposerCommand[]
   /** The skills are still being read, and none are known yet: the add menu keeps their room. */
   commandsLoading?: boolean
+  /**
+   * The skills are about to be wanted: a slash was typed or the + menu opened. For a composer
+   * whose commands are read only once someone looks for them, as a new chat's.
+   */
+  onCommandsWanted?: () => void
   /**
    * The draft is a reply: a line of the message it answers, shown above the draft, the way to
    * that message, and the way to make the draft an ordinary message again. Whoever sends the
@@ -98,7 +104,7 @@ const MAX_ROWS = 6
 const COMPOSER_BUTTON = 'size-(--composer-button) [&>svg]:size-[calc(var(--composer-button)*0.47)]'
 
 /** Starts inline, then lifts the growing message above the actions when it wraps. */
-export const Composer = ({ onSend, initialDraft, commands = [], commandsLoading, reply, format, problem, stop, addActions, endSlot, onPasteLinks, addMenuInPlace, autoFocus, ref }: ComposerProps) => {
+export const Composer = ({ onSend, initialDraft, commands = [], commandsLoading, onCommandsWanted, reply, format, problem, stop, addActions, endSlot, onPasteLinks, addMenuInPlace, autoFocus, ref }: ComposerProps) => {
   const [text, setText] = useState(initialDraft?.text ?? '')
   // The skill or command the draft goes with, once chosen.
   const [command, setCommand] = useState(initialDraft?.command)
@@ -160,9 +166,10 @@ export const Composer = ({ onSend, initialDraft, commands = [], commandsLoading,
     (stop ? canSteer : !!command || !!trimmed || attachments.length > 0 || ready.length > 0 || !!format)
   const showSend = !stop || canSteer
   // Those chosen last first: with many skills, the + menu's few, and the slash list's order among
-  // equally good matches, are those the user goes back to.
-  const [recent, setRecent] = useState(readRecentCommands)
-  const ordered = useMemo(() => byRecentUse(commands, recent), [commands, recent])
+  // equally good matches, are those the user goes back to, in any browser.
+  const preferences = usePreferences()
+  const { recentCommands } = usePreferencesSnapshot()
+  const ordered = useMemo(() => byRecentUse(commands, recentCommands), [commands, recentCommands])
   const matches = slash && !command && !sending && dismissedAt !== slash.start ? matchCommands(ordered, slash.query) : []
   const picking = matches.length > 0
   const active = Math.min(highlighted, matches.length - 1)
@@ -185,6 +192,7 @@ export const Composer = ({ onSend, initialDraft, commands = [], commandsLoading,
   const readSlash = (field: HTMLTextAreaElement) => {
     const next = field.selectionStart === field.selectionEnd ? slashTokenAt(field.value, field.selectionStart) : undefined
     setSlash((was) => (was?.start === next?.start && was?.query === next?.query ? was : next))
+    if (next && !slash) onCommandsWanted?.()
     if (next?.query !== slash?.query) setHighlighted(0)
     if (next?.start !== dismissedAt) setDismissedAt(undefined)
   }
@@ -201,8 +209,7 @@ export const Composer = ({ onSend, initialDraft, commands = [], commandsLoading,
     }
     setSlash(undefined)
     setCommand(chosen)
-    recordCommandUse(chosen.name)
-    setRecent(readRecentCommands())
+    recordCommandUse(preferences, chosen.name)
     field?.focus()
   }
 
@@ -451,6 +458,7 @@ export const Composer = ({ onSend, initialDraft, commands = [], commandsLoading,
               anchorRef={formRef}
               inPlace={addMenuInPlace}
               {...addActions}
+              onOpen={onCommandsWanted}
               commands={sending ? undefined : { items: ordered, onChoose: choose, loading: commandsLoading }}
               onUpload={() => fileInputRef.current?.click()}
             />

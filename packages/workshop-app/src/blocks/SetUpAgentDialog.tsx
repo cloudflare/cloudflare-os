@@ -1,10 +1,6 @@
 import { useState } from 'react'
 import { RobotIcon, XIcon } from '@phosphor-icons/react'
-import { Banner } from '@/components/Banner'
-import { Button } from '@/components/Button'
-import { Dialog } from '@/components/Dialog'
-import { Select } from '@/components/Select'
-import { TextField } from '@/components/TextField'
+import { Banner, Button, Dialog, Select, TextField } from '@gadgets/ui'
 
 /** A model an agent can think with. */
 export type AgentModel = { id: string; name: string }

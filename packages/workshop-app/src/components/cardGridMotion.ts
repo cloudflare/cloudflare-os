@@ -1,6 +1,5 @@
-import { isMotionOff } from '@/prefs/motion'
+import { isMotionOff, motionCurve } from '@gadgets/ui'
 import { arrowPlace, isArrowKey, nearestSlot, type Slot } from './cardGridLayout'
-import { motionCurve } from './springCurve'
 
 /** A group as the motion knows it: its cards' keys, and how to put them in another order, if it can. */
 export type CardMotionGroup = { key: string; cards: string[]; reorder?: (keys: string[]) => void }

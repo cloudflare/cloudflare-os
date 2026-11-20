@@ -10,15 +10,10 @@ import type {
   WorkspaceMetadata,
 } from '@gadgets/workshop-shared/api'
 import { BuildingsIcon, UsersThreeIcon } from '@phosphor-icons/react'
-import { AccessMenu } from '@/blocks/AccessMenu'
+import { AccessMenu, Banner, Button, ListGroup, MemberListItem, ShareNote } from '@gadgets/ui'
 import { ConfirmAccessDialog, type ConfirmAccessRow } from '@/blocks/ConfirmAccessDialog'
 import { InviteField } from '@/blocks/InviteField'
-import { ListGroup } from '@/blocks/ListGroup'
-import { MemberListItem } from '@/blocks/MemberListItem'
 import { RemovalDialog, type RemovalDialogProps } from '@/blocks/RemovalDialog'
-import { ShareNote } from '@/blocks/ShareNote'
-import { Banner } from '@/components/Banner'
-import { Button } from '@/components/Button'
 import { ApiContext, type ApiSession } from '@/rpc/ApiContext'
 import type { SharingOverseer } from '@/workspaces/SharingSession'
 import { ShareWorkspaceDialog } from '@/workspaces/ShareWorkspaceDialog'
@@ -68,7 +63,7 @@ const fakeSession = ({ viewer = ADA, metadata, failing }: Setup): ApiSession => 
     { profile: GRACE, addedBy: [by('ada')], access: BUILD },
     { profile: ALAN, addedBy: [by('grace')], access: { role: 'use', gadgetIds: [CHECKLIST.id] } },
   ]
-  let links: ShareLinkInfo[] = []
+  let own: ShareLinkInfo | undefined
   const meta: WorkspaceMetadata = {
     id: 'notes',
     title: 'Engineering Notes',
@@ -100,16 +95,14 @@ const fakeSession = ({ viewer = ADA, metadata, failing }: Setup): ApiSession => 
       people = people.filter(({ profile }) => !gone.some((one) => one.profile.id === profile.id))
       return gone
     }),
-    listShareLinks: () => later(() => links),
+    listShareLinks: () => later(() => (own ? [own] : [])),
     createShareLink: (grant: CollaboratorGrant) => later(() => {
-      const gadget = grant === 'workspace' ? {} : { gadgetId: grant.gadgetId }
-      links = [{ linkId: 'link', created: new Date(), createdBy: viewer, role: grant === 'workspace' ? 'build' : 'use', default: true, ...gadget }]
+      own = { linkId: 'link', created: new Date(), createdBy: viewer, default: true, ...(grant === 'workspace' ? {} : { role: 'use' as const, gadgetId: grant.gadgetId }) }
       return { key: 'preview-key', linkId: 'link' }
     }),
     newShareLinkKey: () => later(() => ({ key: 'preview-key' })),
-    previewRevokeShareLink: () => later(() => []),
     revokeShareLink: () => later(() => {
-      links = []
+      own = undefined
       return []
     }),
     onRpcBroken: () => {},

@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import type { OutputSummary } from '@gadgets/workshop-shared/api'
 import { useChatBeside } from '@/chat/useChatSession'
-import { useLibrary } from '@/library/useLibrary'
+import { useLibrary } from '@/library/OutputsFeedContext'
 import { chatAsideItems, workspaceAsideItems, type AsideItem } from './asideItems'
 import type { BesideRef } from './useAsideNavigation'
 
@@ -27,14 +27,14 @@ const NONE: readonly OutputSummary[] = []
 
 /**
  * What can be shown beside a chat, or beside its workspace's own page: what the workspace has
- * made, from the library, which is read again for each page. What a chat has made that the library
+ * made, from the library the app keeps live. What a chat has made that the library
  * does not have yet is taken from what has been loaded of the conversation.
  */
 export const useChatLibrary = (beside: BesideRef | undefined): ChatLibrary => {
   const workspaceId = beside?.workspaceId
   const chatId = beside?.chatId
   const { chat: snapshot } = useChatBeside(workspaceId === undefined || chatId === undefined ? undefined : { workspaceId, chatId })
-  const library = useLibrary(workspaceId === undefined ? null : chatId === undefined ? workspaceId : `${workspaceId}/${chatId}`)
+  const library = useLibrary()
   const outputs = library.status === 'ready' ? library.outputs : undefined
   const fromChat = useMemo(
     () => (workspaceId === undefined || chatId === undefined ? [] : chatAsideItems(workspaceId, chatId, snapshot)),

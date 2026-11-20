@@ -1,13 +1,9 @@
 import { useId, useState, type ReactNode } from 'react'
 import { PlusIcon, XIcon } from '@phosphor-icons/react'
 import type { AiModelProvider } from '@gadgets/workshop-shared/api'
-import { Banner } from '@/components/Banner'
-import { Button } from '@/components/Button'
-import { Dialog } from '@/components/Dialog'
+import { Banner, Button, Dialog, Select, TextField } from '@gadgets/ui'
 import { Disclosure } from '@/components/Disclosure'
 import { SecretField } from '@/components/SecretField'
-import { Select } from '@/components/Select'
-import { TextField } from '@/components/TextField'
 import {
   PROVIDER_NAMES, defaultNameOf, fieldsOf, formOf, headerIsSaved, keyIsSaved, knownModels, newHeaderRow, noProblems,
   problemsOf, renameHeader, saveOf, savedSecretsUsable, withProvider,

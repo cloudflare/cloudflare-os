@@ -3,8 +3,7 @@ import { AddConnectionDialog, type ConnectionChoice } from '@/blocks/AddConnecti
 import { Composer, type ComposerHandle } from '@/blocks/Composer'
 import { SetUpAgentDialog } from '@/blocks/SetUpAgentDialog'
 import { SetUpConnectionDialog, type SetUpConnectionAccount } from '@/blocks/SetUpConnectionDialog'
-import { Button } from '@/components/Button'
-import { Dialog } from '@/components/Dialog'
+import { Button, Dialog } from '@gadgets/ui'
 import { Section } from './Section'
 
 const GITHUB = { name: 'GitHub', logoUrl: 'https://github.githubassets.com/favicons/favicon.svg' }

@@ -1,6 +1,5 @@
 import { cn } from '@cloudflare/kumo/utils'
-import { LinkButton } from '@/components/LinkButton'
-import { Tooltip } from '@/components/Tooltip'
+import { LinkButton, Tooltip } from '@gadgets/ui'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import type { WorkspaceListItemProps } from './WorkspaceListItem'
 

@@ -39,7 +39,6 @@ describe("SchedulerGatekeeper facet scope", () => {
           },
           title: scheduleId,
           description: "Test inherited facet scope.",
-          gadgetId: 3,
         });
       }
     });

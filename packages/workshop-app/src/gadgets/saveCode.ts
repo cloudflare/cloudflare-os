@@ -6,7 +6,7 @@ import { conflictsWith, editedLine, rebase, toChange, type CodeDraft, type Draft
  * The part of a workspace's Overseer a save uses, and the lease that must be disposed. The
  * subscribe call takes the subscriber object itself, as a call through a stub does.
  */
-export type SavingOverseer = Pick<Overseer, 'listChats' | 'newChat' | 'setChatTitle' | 'submitCodeChange' | 'mergeChanges' | 'revertChanges' | 'readFilesAtCommit'> & {
+export type SavingOverseer = Pick<Overseer, 'getChatMetadata' | 'newChat' | 'setChatTitle' | 'submitCodeChange' | 'mergeChanges' | 'revertChanges' | 'readFilesAtCommit'> & {
   subscribeToWorkpieces(subscriber: Parameters<RpcStub<Overseer>['subscribeToWorkpieces']>[0]): ReturnType<Overseer['subscribeToWorkpieces']>
 } & Disposable
 
@@ -123,11 +123,10 @@ export const saveCode = async (open: () => SavingOverseer, options: SaveCodeOpti
         draft = moved
       }
 
-      const chats = await overseer.listChats()
-      let chat = chats.find(({ id }) => id === chatId)
+      let chat = chatId === undefined ? undefined : await overseer.getChatMetadata(chatId)
       if (!chat) {
         const { title, reuse } = options.chat
-        const reused = chats.find(({ id }) => id === reuse)
+        const reused = reuse === undefined ? undefined : await overseer.getChatMetadata(reuse)
         if (reused && !reused.activeAgent && !reused.proposedChangeWorkpieces?.length) {
           chat = reused
         } else {

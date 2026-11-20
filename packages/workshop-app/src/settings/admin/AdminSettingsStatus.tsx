@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import type { AdminSettingsView } from '@gadgets/workshop-shared/api'
-import { Button } from '@/components/Button'
+import { Button } from '@gadgets/ui'
 import type { AdminSettingsState } from './useAdminSettings'
 
 /**

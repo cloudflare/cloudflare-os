@@ -1,4 +1,4 @@
-import { TextField } from '@/components/TextField'
+import { TextField } from '@gadgets/ui'
 import { ProfilePicture } from './ProfilePicture'
 
 export type OnboardingProfileProps = {

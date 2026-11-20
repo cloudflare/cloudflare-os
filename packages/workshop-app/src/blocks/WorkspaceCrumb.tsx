@@ -1,8 +1,7 @@
 import { cn } from '@cloudflare/kumo/utils'
-import { Button } from '@/components/Button'
-import { HeaderBubble } from '@/components/HeaderBubble'
+import { Button, HeaderBubble } from '@gadgets/ui'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
-import type { WorkspaceLook } from '@/components/workspaceLook'
+import type { WorkspaceLook } from '@/prefs/preferenceFields'
 
 export type WorkspaceCrumbProps = {
   id: string

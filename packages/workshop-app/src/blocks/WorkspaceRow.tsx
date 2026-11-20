@@ -1,9 +1,9 @@
-import { LinkButton } from '@/components/LinkButton'
+import { LIST_ACTION, LinkButton } from '@gadgets/ui'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
-import type { WorkspaceLook } from '@/components/workspaceLook'
+import type { WorkspaceLook } from '@/prefs/preferenceFields'
 import { MemberAvatars, type ListedMember } from './MemberAvatars'
 import { RowAction } from './RowAction'
-import { LIST_ACTION, StarButton } from './StarButton'
+import { StarButton } from './StarButton'
 import { UnreadDot } from './UnreadDot'
 import { WorkspaceMoreMenu, type WorkspaceMoreMenuProps } from './WorkspaceMoreMenu'
 
@@ -16,6 +16,8 @@ export type WorkspaceRowProps = {
   time?: string
   /** Everyone with access to it, the owner first, once that is known: the viewer alone, when nobody else has. */
   members?: ListedMember[]
+  /** How many have access to it, when more than `members` lists. */
+  memberCount?: number
   starred: boolean
   onStarredChange: (starred: boolean) => void
   /** The workspace's address, so that it can be opened in another tab. */
@@ -34,7 +36,7 @@ export type WorkspaceRowProps = {
  * screen the line has room for less: the time and more are left out, which the workspace's own
  * page has.
  */
-export const WorkspaceRow = ({ workspaceLabel, workspaceLook, title, time, members, starred, onStarredChange, href, unread, removal, onSelect }: WorkspaceRowProps) => (
+export const WorkspaceRow = ({ workspaceLabel, workspaceLook, title, time, members, memberCount, starred, onStarredChange, href, unread, removal, onSelect }: WorkspaceRowProps) => (
   <div className="group relative flex items-center rounded-2xl pr-1.5 hover:bg-kumo-contrast/5 has-focus-visible:bg-kumo-contrast/5 has-data-popup-open:bg-kumo-contrast/5">
     <LinkButton
       href={href}
@@ -45,7 +47,7 @@ export const WorkspaceRow = ({ workspaceLabel, workspaceLook, title, time, membe
       <WorkspaceIcon label={workspaceLabel} {...workspaceLook} />
       <span className="min-w-0 flex-1 truncate font-medium text-kumo-default">{title}</span>
       {unread && <UnreadDot />}
-      {members && members.length > 0 && <MemberAvatars members={members} />}
+      {members && members.length > 0 && <MemberAvatars members={members} count={memberCount} />}
       {time && <span className="shrink-0 text-end text-kumo-subtle max-md:hidden">{time}</span>}
     </LinkButton>
     {href && (

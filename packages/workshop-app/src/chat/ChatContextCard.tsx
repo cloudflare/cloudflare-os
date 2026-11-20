@@ -6,7 +6,8 @@ import { ContextSection } from '@/blocks/ContextSection'
 import { FormatIcon } from '@/components/FormatIcon'
 import { ServiceLogo } from '@/components/ServiceLogo'
 import { attachmentKind } from '@/files/attachmentKind'
-import { useLibrary } from '@/library/useLibrary'
+import { useConnections } from '@/connections/useConnections'
+import { useLibrary } from '@/library/OutputsFeedContext'
 import type { ChatContext } from './chatContext'
 import type { ChatAttachment, HookItem, OutputFormat, OutputItem } from './chatItems'
 
@@ -40,13 +41,16 @@ const fileIcon = (file: ChatAttachment) => {
  */
 export const ChatContextCard = ({ workspaceId, context, onOpenOutput, onOpenAttachment, outputHref, onOpenAutomation, automationHref }: ChatContextCardProps) => {
   const { outputs, hooks, files, connectors } = context
-  // What the conversation does not say of an output's format, the library does: it is read once the card is open.
-  const library = useLibrary(workspaceId)
+  // What the conversation does not say of an output's format, the library does.
+  const library = useLibrary()
   const formats = new Map(
     library.status === 'ready'
       ? library.outputs.flatMap(({ workspaceId: at, workpieceId, output }) => (at === workspaceId && output ? [[workpieceId, { noun: output.noun, icon: output.icon }] as const] : []))
       : [],
   )
+  // A service's name and logo, by its id, from those the user can connect.
+  const { state: services } = useConnections()
+  const vendors = new Map(services.status === 'ready' ? services.connections.map(({ vendorId, vendor }) => [vendorId.toLowerCase(), vendor] as const) : [])
   // Open, until folded away.
   const [folded, setFolded] = useState<ReadonlySet<Section>>(new Set())
   const toggle = (section: Section) => setFolded((current) => {
@@ -68,9 +72,13 @@ export const ChatContextCard = ({ workspaceId, context, onOpenOutput, onOpenAtta
       {section('files', 'Uploads', files.length, files.map((file) => (
         <ContextRow key={file.id} icon={fileIcon(file)} title={file.name} onSelect={() => onOpenAttachment(file)} />
       )))}
-      {section('connectors', 'Connectors', connectors.length, connectors.map(({ key, name, logoUrl, scopes }) => (
-        <ContextRow key={key} icon={<ServiceLogo name={name} src={logoUrl} small />} title={name} detail={scopes.join(', ') || undefined} />
-      )))}
+      {section('connectors', 'Connectors', connectors.length, connectors.map(({ key, vendorId, scopes }) => {
+        const vendor = vendorId === undefined ? undefined : vendors.get(vendorId.toLowerCase())
+        // One with no service is named by what it reaches.
+        const name = vendor?.displayName ?? (vendorId === undefined ? scopes[0] : vendorId) ?? 'Connection'
+        const detail = vendorId === undefined ? undefined : scopes.join(', ') || undefined
+        return <ContextRow key={key} icon={<ServiceLogo name={name} src={vendor?.logo?.url} small />} title={name} detail={detail} />
+      }))}
     </>
   )
 }

@@ -4,26 +4,20 @@ import type { OutputSummary } from '@gadgets/workshop-shared/api'
 import type { AsideItem } from '@/aside/asideItems'
 import { asideItemIcon } from '@/aside/asideItemIcon'
 import { useChatLibrary } from '@/aside/useChatLibrary'
-import { hooksShownIn, setUpIn } from '@/automations/automations'
+import { setUpIn } from '@/automations/automations'
 import { AutomationsTab } from '@/automations/AutomationsTab'
 import { FileListItem } from '@/blocks/FileListItem'
-import { ListGroup } from '@/blocks/ListGroup'
+import { Button, EditableTitle, HeaderBubble, ListGroup, PageLayout, Tabs, groupByTime } from '@gadgets/ui'
 import { WorkspaceCrumb } from '@/blocks/WorkspaceCrumb'
-import { Button } from '@/components/Button'
-import { EditableTitle } from '@/components/EditableTitle'
-import { HeaderBubble } from '@/components/HeaderBubble'
-import { Tabs } from '@/components/Tabs'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { withItemEdits } from '@/library/libraryEdits'
 import { useLibraryActions } from '@/library/useLibraryActions'
-import { PageLayout } from '@/layouts/PageLayout'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
 import { ChatOptionsTab } from './ChatOptionsTab'
-import { groupByTime } from './timeGroups'
 import { useChatSession } from './useChatSession'
 
 /** What a chat's settings page shows beneath its title. */
@@ -61,8 +55,8 @@ export type ChatSettingsPaneProps = {
  * What a chat has, apart from the conversation, a tab each: for whoever builds in its workspace,
  * what they can do about the chat (its notifications, marking it read, and deleting it), which it
  * starts with; what its workspace has made, as beside the chat (`useChatLibrary`), latest first,
- * grouped by when; and what the chat set up to run by itself, as the cards in its conversation
- * show. Whoever may only use the workspace starts with its library.
+ * grouped by when; and what the chat set up to run by itself, the hooks bound from it. Whoever may
+ * only use the workspace starts with its library.
  */
 export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTabChange, onBack, onOpenWorkspace, onOpenItem, itemHref, outputHref, onOpenSettings, onDeleted }: ChatSettingsPaneProps) => {
   const { chat, actions } = useChatSession(workspaceId, chatId)
@@ -93,10 +87,7 @@ export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTab
     return output && actionsOf(output)
   }
   const groups = groupByTime(withItemEdits(library.items, edits).map((item) => ({ value: item, at: item.at })))
-  // A hook does not say which chat set it up, so the chat's are those its cards show.
-  const items = chat.status === 'ready' ? chat.items : undefined
-  const pinned = chat.status === 'ready' ? chat.pinned : undefined
-  const ownAutomations = useMemo(() => setUpIn(new Set(hooksShownIn([...(items ?? []), ...(pinned ?? [])]))), [items, pinned])
+  const ownAutomations = useMemo(() => setUpIn(chatId), [chatId])
 
   return (
     <PageLayout

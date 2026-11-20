@@ -296,25 +296,26 @@ describe('scenarios', () => {
     expect(scenario('long-history').history.length).toBeGreaterThan(300)
   })
 
-  it('long-history: the message a reply quotes is found by paging back to it', async () => {
+  it('long-history: the message a reply names is reached by fetching back to it, and no further', async () => {
     const { session, ready } = await open(scenario('long-history'))
-    const reply = ready().items.findLast((item) => item.kind === 'user' && item.quote !== undefined)
+    const reply = ready().items.findLast((item) => item.kind === 'user' && item.replyTo !== undefined)
     if (reply?.kind !== 'user') throw new Error('expected the history to end in a reply')
     expect(ready().items.some((item) => item.kind === 'user' && item.text.startsWith('Request 3:'))).toBe(false)
 
-    const key = await session.findQuoted(reply)
+    const key = await session.findReplied(reply)
 
-    expect(ready().items.find((item) => item.key === key)).toMatchObject({ kind: 'user', text: 'Request 3: update src/module-2.ts and check it still runs.' })
-    // No further than it had to.
+    expect(ready().items.find((item) => item.key === key)).toMatchObject({ kind: 'user', id: reply.replyTo, text: 'Request 3: update src/module-2.ts and check it still runs.' })
+    expect(ready().items.findIndex((item) => item.key === key)).toBe(ready().items.findIndex((item) => item.kind === 'user'))
     expect(ready().hasEarlier).toBe(true)
   })
 
-  it('long-history: a quote of nothing that was said is given up on at the start of the conversation', async () => {
+  it('long-history: a message that names nothing it replies to fetches nothing', async () => {
     const { session, ready } = await open(scenario('long-history'))
-    const [reply] = ready().items.filter((item) => item.kind === 'user')
+    const reply = ready().items.findLast((item) => item.kind === 'user')
     if (reply?.kind !== 'user') throw new Error('expected a message from the user')
+    const shown = ready().items.length
 
-    expect(await session.findQuoted({ ...reply, quote: 'Nobody said this' })).toBeUndefined()
-    expect(ready().hasEarlier).toBe(false)
+    expect(await session.findReplied({ ...reply, replyTo: undefined })).toBeUndefined()
+    expect(ready().items).toHaveLength(shown)
   })
 })

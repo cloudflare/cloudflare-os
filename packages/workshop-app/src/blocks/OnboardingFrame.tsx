@@ -1,7 +1,6 @@
 import type { FormEvent, ReactNode } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
-import { Banner, type BannerProps } from '@/components/Banner'
-import { Button } from '@/components/Button'
+import { Banner, type BannerProps, Button } from '@gadgets/ui'
 import { Mascot, type MascotEmotion } from '@/components/mascot/Mascot'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 

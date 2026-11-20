@@ -1,8 +1,6 @@
 import type { ReactNode, Ref } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
-import { Button } from '@/components/Button'
-import { DropdownMenu } from '@/components/DropdownMenu'
-import { HeaderBubble } from '@/components/HeaderBubble'
+import { Button, DropdownMenu, HeaderBubble } from '@gadgets/ui'
 
 export type ContextStat = {
   key: string

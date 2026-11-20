@@ -1,6 +1,4 @@
-import { SettingRow } from '@/blocks/SettingRow'
-import { SettingsGroup } from '@/blocks/SettingsGroup'
-import { Button } from '@/components/Button'
+import { Button, SettingRow, SettingsGroup } from '@gadgets/ui'
 import { SettingDefinitionRow } from './SettingDefinitionRow'
 import { SoonSelect } from './SoonControls'
 import { usePreferenceSettings } from './usePreferenceSettings'

@@ -1,7 +1,6 @@
 import { useCallback, useState } from 'react'
 import { XIcon } from '@phosphor-icons/react'
-import { Button } from '@/components/Button'
-import { Tooltip } from '@/components/Tooltip'
+import { Button, Tooltip } from '@gadgets/ui'
 import { attachmentKind } from '@/files/attachmentKind'
 import { previewFormat } from '@/files/previewFormat'
 import { useImageUrl } from '@/hooks/useImageUrl'

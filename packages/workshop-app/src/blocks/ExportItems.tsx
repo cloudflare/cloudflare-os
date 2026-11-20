@@ -1,6 +1,6 @@
 import { useEffect, useEffectEvent } from 'react'
 import { ArrowsClockwiseIcon, CloudArrowUpIcon, DownloadSimpleIcon } from '@phosphor-icons/react'
-import { DropdownMenu } from '@/components/DropdownMenu'
+import { DropdownMenu } from '@gadgets/ui'
 import { ShimmerText } from '@/components/ShimmerText'
 
 /** A kind of file the gadget can be saved as in one of the user's accounts. */

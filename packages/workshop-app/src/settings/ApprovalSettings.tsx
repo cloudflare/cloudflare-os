@@ -1,7 +1,6 @@
 import { useRef, useState } from 'react'
 import { ApprovalRules, type ApprovalRule } from '@/blocks/ApprovalRules'
-import { SettingRow } from '@/blocks/SettingRow'
-import { SettingsCard, SettingsGroup } from '@/blocks/SettingsGroup'
+import { SettingRow, SettingsCard, SettingsGroup } from '@gadgets/ui'
 import { SoonSelect } from './SoonControls'
 
 // Asked about every time, which is said the same way on every line.

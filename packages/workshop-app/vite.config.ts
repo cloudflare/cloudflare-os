@@ -5,6 +5,7 @@ import tailwindcss from '@tailwindcss/vite'
 import tsconfigPaths from 'vite-tsconfig-paths'
 import { TanStackRouterVite } from '@tanstack/router-plugin/vite'
 import { vitestTask } from '@gadgets/scripts/vitest-task'
+import { assetsBuildId } from '@gadgets/scripts/assets-build-id'
 import { pdfjsAssets } from './vite-pdfjs-assets'
 
 const ownDist = { pattern: '!dist/**', base: 'package' } as const
@@ -67,6 +68,8 @@ export default defineConfig(({ command, mode }) => {
       tsconfigPaths(),
       // The files pdf.js fetches by name while it draws a PDF's thumbnail.
       pdfjsAssets(),
+      // The build's id, which `/api/version` answers (see usePageUpdate).
+      assetsBuildId(),
     ],
     resolve: build
       ? { alias: [{ find: /^\.\/routeTree\.gen$/, replacement: fileURLToPath(new URL(BUILD_ROUTE_TREE, import.meta.url)) }] }

@@ -1,14 +1,11 @@
 import type { ReactNode } from 'react'
-import { CirclesFourIcon, FolderIcon, GearIcon, LightningIcon, MagnifyingGlassIcon, PuzzlePieceIcon, SignOutIcon } from '@phosphor-icons/react'
+import { AppWindowIcon, CirclesFourIcon, FolderIcon, GearIcon, LightningIcon, MagnifyingGlassIcon, PuzzlePieceIcon, SignOutIcon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
-import { Avatar } from '@/components/Avatar'
-import { Button } from '@/components/Button'
+import { Avatar, Button, DropdownMenu, Markdown, useNarrowScreen } from '@gadgets/ui'
 import { ConnectButton } from '@/components/ConnectButton'
-import { DropdownMenu } from '@/components/DropdownMenu'
 import { LogoIcon } from '@/components/LogoIcon'
-import { Markdown } from '@/components/Markdown'
+import { MaskIcon } from '@/components/MaskIcon'
 import { ServiceLogo } from '@/components/ServiceLogo'
-import { useNarrowScreen } from '@/hooks/useNarrowScreen'
 import { useWorkspaceUnderlay } from './useWorkspaceUnderlay'
 import { WorkspaceNav, type SidebarWorkspace } from './WorkspaceNav'
 
@@ -18,8 +15,16 @@ export type { SidebarWorkspace }
 export type SidebarConnection = {
   name: string
   logoUrl?: string
-  /** Its logo is much wider than it is tall, and is drawn a little larger for it. */
-  wide?: boolean
+}
+
+/** A page of its own a tool the user has turned on brings, such as a gatekeeper's management app. */
+export type SidebarApp = {
+  id: string
+  title: string
+  /** A one-colour icon's address, drawn in the colour of the text; without one, a window's. */
+  iconUrl?: string
+  current: boolean
+  onOpen: () => void
 }
 
 export type SidebarProps = {
@@ -49,6 +54,8 @@ export type SidebarProps = {
   workspacesPage?: { current: boolean; onOpen: () => void }
   /** The page listing everything that runs by itself, across workspaces, and whether it is the one showing. */
   automationsPage?: { current: boolean; onOpen: () => void }
+  /** The pages of their own the user's tools bring, under Automations, in the order given. */
+  apps?: SidebarApp[]
   /** The page listing what is connected and what could be, and whether it is the one showing. */
   connectionsPage?: { current: boolean; onOpen: () => void }
   /**
@@ -141,6 +148,9 @@ const NavRows = ({ children }: { children: ReactNode }) => {
   )
 }
 
+/** An app's own icon, or a window where it has none. */
+const appIcon = (app: SidebarApp) => (app.iconUrl ? <MaskIcon src={app.iconUrl} /> : <AppWindowIcon />)
+
 /**
  * The sidebar: the logo and the global buttons, the workspaces, and the user and connections. The
  * user's own button opens a menu of the settings and signing out.
@@ -158,6 +168,7 @@ export const Sidebar = ({
   library,
   workspacesPage,
   automationsPage,
+  apps = [],
   connectionsPage,
   settingsPage,
   onSignOut,
@@ -212,6 +223,16 @@ export const Sidebar = ({
       className="aria-[current=page]:bg-kumo-tint"
     />
   )
+  const appButtons = apps.map((app) => (
+    <Button
+      key={app.id}
+      icon={appIcon(app)}
+      aria-label={app.title}
+      aria-current={app.current ? 'page' : undefined}
+      onClick={app.onOpen}
+      className="aria-[current=page]:bg-kumo-tint"
+    />
+  ))
   const search = <Button icon={MagnifyingGlassIcon} aria-label="Search" onClick={onSearch} />
   const account = (
     <DropdownMenu
@@ -231,7 +252,7 @@ export const Sidebar = ({
   const connect = (
     <ConnectButton onConnect={connectionsPage?.onOpen} current={connectionsPage?.current}>
       {connections && connections.length > 0
-        ? connections.map(({ name, logoUrl, wide }) => <ServiceLogo key={name} name={name} src={logoUrl} bare={wide ? 'wide' : true} />)
+        ? connections.map(({ name, logoUrl }) => <ServiceLogo key={name} name={name} src={logoUrl} bare />)
         : undefined}
     </ConnectButton>
   )
@@ -262,6 +283,7 @@ export const Sidebar = ({
           {workspacesButton}
           {libraryButton}
           {automationsButton}
+          {appButtons}
           <Button
             icon={PuzzlePieceIcon}
             aria-label="Connections"
@@ -301,6 +323,7 @@ export const Sidebar = ({
               waiting={waiting}
             />
             <NavRow icon={<LightningIcon />} label="Automations" current={automationsPage?.current} onClick={automationsPage?.onOpen} />
+            {apps.map((app) => <NavRow key={app.id} icon={appIcon(app)} label={app.title} current={app.current} onClick={app.onOpen} />)}
           </NavRows>
           {/* The account is in from the edge as a row's circle is (`p-2`), so that it lines up with them; the connect button ends where the search button does, over it. */}
           <div className="flex items-center justify-between pt-2 pl-2">
@@ -323,6 +346,7 @@ export const Sidebar = ({
             {search}
             {libraryButton}
             {automationsButton}
+            {appButtons}
             {workspacesButton}
           </div>
           <RailDivider />
@@ -343,6 +367,7 @@ export const Sidebar = ({
         {workspacesButton}
         {libraryButton}
         {automationsButton}
+        {appButtons}
         {search}
       </header>
       {said}

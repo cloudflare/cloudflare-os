@@ -1,8 +1,8 @@
 import { ArrowRightIcon, ClockIcon, LightningIcon } from '@phosphor-icons/react'
-import { ListGroup } from './ListGroup'
+import { ListGroup } from '@gadgets/ui'
 
 /** Something to ask for in a chat, which would set up an automation. */
-export type AutomationExample = { kind: 'schedule' | 'event'; prompt: string }
+export type AutomationExample = { prompt: string }
 
 export type AutomationsEmptyProps = {
   /** What could be asked for, to start from. */
@@ -28,29 +28,26 @@ export const AutomationsEmpty = ({ examples, onTry }: AutomationsEmptyProps) => 
       <h2 className="text-lg font-medium text-balance text-kumo-default">Nothing runs by itself yet</h2>
       <p className="text-base text-pretty text-kumo-subtle">
         Ask in any chat for something to happen on a schedule, or whenever something happens, like a new email.
-        It shows up here, to pause or see when it runs next.
+        It shows up here, to pause or turn back on.
       </p>
     </div>
     <div className="flex w-full flex-col gap-2 text-left">
       <h3 className="px-4 text-sm font-medium text-kumo-subtle">Try asking</h3>
       <ListGroup label="Try asking">
-        {examples.map(({ kind, prompt }) => {
-          const Glyph = kind === 'schedule' ? ClockIcon : LightningIcon
-          return (
-            <button
-              key={prompt}
-              type="button"
-              onClick={() => onTry(prompt)}
-              className="group flex cursor-pointer items-center gap-3 rounded-2xl p-3 text-left text-base text-kumo-default hover:bg-kumo-contrast/5 focus-visible:bg-kumo-contrast/5 focus-visible:outline-none"
-            >
-              <span aria-hidden="true" className="grid size-10 shrink-0 place-items-center rounded-xl bg-kumo-fill text-kumo-subtle">
-                <Glyph className="size-5" />
-              </span>
-              <span className="min-w-0 flex-1 text-pretty">{prompt}</span>
-              <ArrowRightIcon aria-hidden="true" className="size-4 shrink-0 text-kumo-subtle opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
-            </button>
-          )
-        })}
+        {examples.map(({ prompt }) => (
+          <button
+            key={prompt}
+            type="button"
+            onClick={() => onTry(prompt)}
+            className="group flex cursor-pointer items-center gap-3 rounded-2xl p-3 text-left text-base text-kumo-default hover:bg-kumo-contrast/5 focus-visible:bg-kumo-contrast/5 focus-visible:outline-none"
+          >
+            <span aria-hidden="true" className="grid size-10 shrink-0 place-items-center rounded-xl bg-kumo-fill text-kumo-subtle">
+              <LightningIcon className="size-5" />
+            </span>
+            <span className="min-w-0 flex-1 text-pretty">{prompt}</span>
+            <ArrowRightIcon aria-hidden="true" className="size-4 shrink-0 text-kumo-subtle opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
+          </button>
+        ))}
       </ListGroup>
     </div>
   </div>

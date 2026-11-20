@@ -1,5 +1,5 @@
 import type { Theme } from '@/prefs/appearance'
-import type { MotionLevel } from '@/prefs/motion'
+import type { MotionLevel } from '@gadgets/ui'
 
 /** What the theme can be set to, as the settings and search both name it. */
 export const THEME_OPTIONS: { id: Theme; label: string }[] = [

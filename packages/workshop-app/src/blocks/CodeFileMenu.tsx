@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { ArrowCounterClockwiseIcon, CopyIcon, DotsThreeIcon, PencilSimpleIcon, TrashIcon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
-import { DropdownMenu } from '@/components/DropdownMenu'
+import { DropdownMenu } from '@gadgets/ui'
 import { CodeFileCautionDialog } from './CodeFileCautionDialog'
 import type { CodeFileOffers } from './CodeFileTree'
 

@@ -1,31 +1,20 @@
 import { CaretLeftIcon, CompassIcon } from '@phosphor-icons/react'
 import type { OutputSummary } from '@gadgets/workshop-shared/api'
-import { ListToolbar } from '@/blocks/ListToolbar'
+import { Button, HeaderBubble, type ListOrder, ListToolbar, type ListView, PageLayout, Tabs, useNarrowScreen } from '@gadgets/ui'
 import { PromoCarousel } from '@/blocks/PromoCarousel'
-import { TemplateCard } from '@/blocks/TemplateCard'
-import { Button } from '@/components/Button'
 import { CardGrid } from '@/components/CardGrid'
-import { HeaderBubble } from '@/components/HeaderBubble'
-import type { ListOrder } from '@/components/listView'
-import { ScrollRow } from '@/components/ScrollRow'
 import { Shelf } from '@/components/Shelf'
-import { Tabs } from '@/components/Tabs'
-import type { ListView } from '@/hooks/useListView'
-import { useNarrowScreen } from '@/hooks/useNarrowScreen'
-import { PageLayout } from '@/layouts/PageLayout'
-import { withStar } from './libraryStars'
 import { CreateTemplateMenu } from './CreateTemplateMenu'
-import { mostUsed, recentlyAdded, templatesByType } from './templateList'
+import { recentlyAdded, templatesByType } from './templateList'
 import { TemplateEntries } from './TemplateEntries'
 import { TemplateEntry } from './TemplateEntry'
-import { templateCreator, templateServices, templateType, type Template } from './templates'
+import { templateType, type Template } from './templates'
 
 /** The tab that makes much of a few, and the tab of all of them. The others are a type's id each. */
 export const DISCOVER_TAB = 'discover'
 export const ALL_TEMPLATES_TAB = 'all'
 
-/** How many the front has of the most used, of the latest, and of each kind. */
-const HIGHLIGHTS = 6
+/** How many the banner has, and the front has of the latest and of each kind. */
 const PROMOTED = 6
 const LATEST = 6
 const OF_A_KIND = 4
@@ -39,9 +28,6 @@ export type TemplateStoreViewProps = {
   status?: { loading: true } | { failed: string; onRetry: () => void }
   /** How they are listed: the order, the filters and what they are searched for. */
   list: ListView<Template, ListOrder<Template>>
-  /** The ids of the starred ones, in their order. */
-  stars: string[]
-  onStarsChange: (stars: string[]) => void
   /** Shows one on its own page. */
   onOpenTemplate: (template: Template) => void
   /** A template's page, for it to link to so that it can be opened in another tab. */
@@ -57,21 +43,20 @@ export type TemplateStoreViewProps = {
   onCreateTemplate?: (app: OutputSummary) => void
 }
 
-/** What the banner makes much of: the organization's own first, then the most used of the rest. */
+/** What the banner makes much of: the organization's own first, then the rest, each the latest created first. */
 const promoted = (templates: Template[]) => {
-  const ranked = mostUsed(templates)
+  const ranked = recentlyAdded(templates)
   return [...ranked.filter(({ organization }) => organization), ...ranked.filter(({ organization }) => !organization)]
 }
 
 /**
  * The templates there are to start something from, as a store lists what it has, under a banner
- * of the organization's own (`PromoCarousel`), whichever tab is showing. Its front makes
- * much of a few: the most used, on one line that is scrolled along, the latest created, two to
- * a line, then some of each kind they make, each with the way to the rest. A tab lists all of
- * them, and one each those of a kind, under the controls a list has; a search or a filter lists
- * what it leaves in place of the front.
+ * of the organization's own (`PromoCarousel`), whichever tab is showing. Its front makes much of a
+ * few: the latest created, two to a line, then some of each kind they make, each with the way to
+ * the rest. A tab lists all of them, and one each those of a kind, under the controls a list has; a
+ * search or a filter lists what it leaves in place of the front.
  */
-export const TemplateStoreView = ({ tab, onTabChange, templates, status, list, stars, onStarsChange, onOpenTemplate, templateHref, onBack, apps, onCreateTemplate }: TemplateStoreViewProps) => {
+export const TemplateStoreView = ({ tab, onTabChange, templates, status, list, onOpenTemplate, templateHref, onBack, apps, onCreateTemplate }: TemplateStoreViewProps) => {
   const narrow = useNarrowScreen()
   const kinds = templatesByType(templates)
   const tabs = [
@@ -82,7 +67,6 @@ export const TemplateStoreView = ({ tab, onTabChange, templates, status, list, s
   const current = tabs.some(({ value }) => value === tab) ? tab : DISCOVER_TAB
   const front = current === DISCOVER_TAB && !list.narrowed
 
-  const starred = new Set(stars)
   const entry = { templateHref, onOpenTemplate }
   // To the tab of all of them, in the order the shelf was in.
   const seeAllIn = (order: string) => () => {
@@ -153,32 +137,6 @@ export const TemplateStoreView = ({ tab, onTabChange, templates, status, list, s
             {!status && templates.length === 0 && <p className="px-4 text-center text-base text-kumo-subtle">No templates yet.</p>}
             {front && templates.length > 0 && (
               <div className="flex flex-col gap-8">
-                <Shelf title="Most used" more={{ label: 'See all', 'aria-label': 'See all, the most used first', onSelect: seeAllIn('used') }}>
-                  <ScrollRow aria-label="Most used templates">
-                    {mostUsed(templates).slice(0, HIGHLIGHTS).map((template) => {
-                      const { title, description } = template.metadata
-                      const { noun, icon } = templateType(template)
-                      return (
-                        // Three of them to the page's width, with the start of the next to say there are more.
-                        <div key={template.id} className="flex w-60 flex-col *:flex-1">
-                          <TemplateCard
-                            title={title}
-                            description={description}
-                            kind={noun}
-                            icon={icon}
-                            creator={templateCreator(template)}
-                            connections={templateServices(template).map(({ name }) => name)}
-                            previewUrl={template.screenshotUrl}
-                            starred={starred.has(template.id)}
-                            onStarredChange={(on) => onStarsChange(withStar(stars, template.id, on))}
-                            href={templateHref?.(template)}
-                            onSelect={() => onOpenTemplate(template)}
-                          />
-                        </div>
-                      )
-                    })}
-                  </ScrollRow>
-                </Shelf>
                 <Shelf title="Recently added" more={{ label: 'See all', 'aria-label': 'See all, the latest first', onSelect: seeAllIn('recent') }}>
                   <TemplateEntries templates={recentlyAdded(templates).slice(0, LATEST)} {...entry} />
                 </Shelf>

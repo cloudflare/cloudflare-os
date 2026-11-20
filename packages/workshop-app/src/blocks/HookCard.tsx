@@ -1,7 +1,6 @@
 import { LightningIcon } from '@phosphor-icons/react'
 import { Card } from '@/components/Card'
-import { Markdown } from '@/components/Markdown'
-import { Switch } from '@/components/Switch'
+import { Markdown, Switch } from '@gadgets/ui'
 import { ResourceLink, type ResourceLinkProps } from './ResourceLink'
 import { usePending, type ActionResult } from './usePending'
 

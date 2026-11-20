@@ -2,6 +2,9 @@
 @source "../../ui/src/**/*.{js,jsx,ts,tsx}";
 @import "@cloudflare/kumo/styles";
 @import "tailwindcss";
+/* The shared components' tokens (`@gadgets/ui`), the same as the Workshop's, which the host's
+   accent colour is applied over (`theme.ts`). */
+@import "@gadgets/ui/styles.css";
 @custom-variant dark (&:where([data-mode="dark"], [data-mode="dark"] *));
 
 html,
@@ -33,89 +36,12 @@ body,
   --text-lg: 1.125rem;
   --text-lg--line-height: 1.75rem;
 
-  /* ===== KUMO SEMANTIC COLOR OVERRIDES ===== */
-
-  /* Background tokens */
-  --color-kumo-base: #fcfcfb;
-  --color-kumo-elevated: #f8f8f7;
-  --color-kumo-tint: #f3f3f1;
-  --color-kumo-overlay: #fbfbfa;
-  --color-kumo-recessed: #efeeec;
-  --color-kumo-control: #ffffff;
-  --color-kumo-contrast: #14110f;
-  --color-kumo-fill: #e8e7e4;
-  --color-kumo-fill-hover: #dededb;
-  --color-kumo-interact: #cac8c3;
-
-  /* Brand — orange accent */
-  --color-kumo-brand: #ff4801;
-  --color-kumo-brand-hover: #e03f00;
-
-  /* Border / line tokens — neutral */
-  --color-kumo-line: #1411100f;
-  --color-kumo-ring: #cac8c3;
-
-  /* Chat surface tokens */
-  --color-kumo-bubble-user: #f1f0ee;
-
-  /* Status tints */
-  --color-kumo-info: oklch(62.3% 0.214 259.815);
-  --color-kumo-info-tint: oklch(90% 0.06 250);
-  --color-kumo-warning: oklch(79.5% 0.184 86.047);
-  --color-kumo-warning-tint: oklch(92% 0.08 85);
-  --color-kumo-danger: oklch(63.7% 0.237 25.331);
-  --color-kumo-danger-tint: oklch(92% 0.06 25);
-  --color-kumo-success: oklch(72.3% 0.219 149.579);
-  --color-kumo-success-tint: oklch(92% 0.08 150);
-
-  /* Tooltip */
-  --color-kumo-tip-shadow: #14111014;
-  --color-kumo-arrow-edge: var(--color-kumo-line);
-  --color-kumo-arrow-stroke: transparent;
-
-  /* Text color tokens */
-  --text-color-kumo-default: #1c1a18;
-  --text-color-kumo-default-hover: #100f0d;
-  --text-color-kumo-inverse: #ffffff;
-  --text-color-kumo-strong: #100f0d;
-  --text-color-kumo-subtle: oklch(52% 0.006 60);
-  --text-color-kumo-inactive: oklch(66% 0.005 60);
-  --text-color-kumo-brand: #ff4801;
-  --text-color-kumo-link: #ff4801;
-  --text-color-kumo-success: oklch(72.3% 0.219 149.579);
-  --text-color-kumo-danger: oklch(63.7% 0.237 25.331);
-  --text-color-kumo-warning: oklch(47.6% 0.114 61.907);
-
-  /* ===== CUSTOM BRAND TOKENS ===== */
-  --color-accent-100: #ff4801;
-  --color-accent-200: #ff7038;
-  --color-background-100: #fcfcfb;
-  --color-background-200: #f8f8f7;
-  --color-background-300: #f3f3f1;
-  --color-foreground-100: #100f0d;
-  --color-foreground-200: #100f0d;
-  --color-foreground-300: #1c1a18;
-  --color-border-100: #e8e7e4;
-  --color-border-100-50: #1411100f;
+  /* Text selection, until the host pushes an accent colour of its own. */
   --color-selection-bg: #ffe9e0;
   --color-selection-text: #ff500a;
-  --color-shadow-accent-light: #ffa683;
-  --color-shadow-accent-dark: #b13200;
 
-  /* Category colors */
-  --color-compute-100: #0a95ff;
-  --color-compute-200: #0a95ff1a;
-  --color-storage-100: #ee0ddb;
-  --color-storage-200: #ee0ddb1a;
-  --color-ai-100: #19e306;
-  --color-ai-200: #f2f5e1;
-  --color-media-100: #9616ff;
-  --color-media-200: #f8ebee;
-
-  /* Status colors */
-  --color-status-live: oklch(72.3% 0.219 149.579);
-  --color-status-draft: oklch(68.1% 0.162 75.834);
-  --color-status-building: oklch(62.3% 0.214 259.815);
+  /* This app's focused-field outline, which Kumo has no token for. */
+  --color-kumo-ring: light-dark(#cac8c3, oklch(0.52 0.065 285));
 
   /* Spacing / layout */
   --spacing: 0.25rem;
@@ -140,87 +66,11 @@ body,
   --ease-out-strong: cubic-bezier(0.23, 1, 0.32, 1);
   --default-transition-duration: 0.15s;
   --default-transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
-
-  /* Shadows */
-  --shadow-stack: 1px 6px 6px 0 #fff3 inset, 0 0 0px 0 #ffffff59 inset,
-    0 4px 12px 0 #00000005, 0 0 0px 0 #00000005, 0 2px 12px 0 #00000008;
 }
 
-/* Dark palette, kept in sync with workshop-frontend/src/styles.css so the app matches the host. */
 [data-mode="dark"] {
-  --color-kumo-base: oklch(0.115 0.012 285);
-  --color-kumo-elevated: oklch(0.155 0.011 285);
-  --color-kumo-tint: oklch(0.225 0.025 285);
-  --color-kumo-overlay: oklch(0.155 0.011 285);
-  --color-kumo-recessed: oklch(0.1 0.012 285);
-  --color-kumo-control: oklch(0.155 0.011 285);
-  --color-kumo-contrast: var(--color-kumo-brand);
-  --color-kumo-strong: var(--color-kumo-brand-hover);
-  --color-kumo-fill: oklch(0.225 0.025 285);
-  --color-kumo-fill-hover: oklch(0.295 0.045 285);
-  --color-kumo-interact: oklch(0.34 0.022 285);
-  --color-kumo-line: oklch(0.34 0.022 285);
-  --color-kumo-ring: oklch(0.52 0.065 285);
-  --color-kumo-bubble-user: oklch(0.225 0.025 285);
-
-  --color-kumo-brand: #b84e00;
-  --color-kumo-brand-hover: #a54200;
-
-  --color-kumo-info: oklch(62.3% 0.214 259.815);
-  --color-kumo-info-tint: oklch(0.25 0.065 259.815);
-  --color-kumo-warning: oklch(55.5% 0.163 48.998);
-  --color-kumo-warning-tint: oklch(0.27 0.06 84.429);
-  --color-kumo-danger: oklch(50.5% 0.213 27.518);
-  --color-kumo-danger-tint: oklch(0.25 0.065 25.331);
-  --color-kumo-success: oklch(52.7% 0.154 150.069);
-  --color-kumo-success-tint: oklch(0.25 0.06 150.069);
-
-  --color-kumo-tip-shadow: #00000066;
-  --color-kumo-arrow-edge: transparent;
-  --color-kumo-arrow-stroke: var(--color-kumo-line);
-
-  --text-color-kumo-default: oklch(0.92 0.01 285);
-  --text-color-kumo-default-hover: oklch(0.97 0.006 285);
-  --text-color-kumo-inverse: #ffffff;
-  --text-color-kumo-strong: oklch(0.92 0.01 285);
-  --text-color-kumo-subtle: oklch(0.66 0.02 285);
-  --text-color-kumo-inactive: oklch(0.58 0.025 285);
-  --text-color-kumo-brand: #ff8a5c;
-  --text-color-kumo-link: #ff8a5c;
-  --text-color-kumo-success: oklch(79.2% 0.209 151.711);
-  --text-color-kumo-danger: oklch(70.4% 0.191 22.216);
-  --text-color-kumo-warning: oklch(82.8% 0.189 84.429);
-
-  --color-accent-100: #b84e00;
-  --color-accent-200: #ff8a5c;
-  --color-background-100: oklch(0.115 0.012 285);
-  --color-background-200: oklch(0.155 0.011 285);
-  --color-background-300: oklch(0.225 0.025 285);
-  --color-foreground-100: oklch(0.92 0.01 285);
-  --color-foreground-200: oklch(0.78 0.018 285);
-  --color-foreground-300: oklch(0.66 0.02 285);
-  --color-border-100: oklch(0.34 0.022 285);
-  --color-border-100-50: oklch(0.34 0.022 285 / 0.5);
   --color-selection-bg: color-mix(in srgb, var(--color-kumo-brand) 28%, transparent);
   --color-selection-text: oklch(0.97 0.006 285);
-  --color-shadow-accent-light: #ff663355;
-  --color-shadow-accent-dark: #00000080;
-
-  --color-compute-100: oklch(74% 0.16 250);
-  --color-compute-200: oklch(0.25 0.065 250);
-  --color-storage-100: oklch(78% 0.22 325);
-  --color-storage-200: oklch(0.25 0.07 325);
-  --color-ai-100: oklch(79.2% 0.209 151.711);
-  --color-ai-200: oklch(0.25 0.06 150);
-  --color-media-100: oklch(78% 0.19 300);
-  --color-media-200: oklch(0.25 0.07 300);
-
-  --color-status-live: oklch(79.2% 0.209 151.711);
-  --color-status-draft: oklch(82.8% 0.189 84.429);
-  --color-status-building: oklch(74% 0.16 250);
-
-  --shadow-stack: 1px 6px 6px 0 #ffffff08 inset, 0 0 0 1px #ffffff05 inset,
-    0 18px 40px 0 #00000033, 0 4px 12px 0 #0000002e;
 }
 
 body {
@@ -354,14 +204,14 @@ html {
   font-weight: 600;
   line-height: 1.25;
   margin: 1em 0 0.4em;
-  color: var(--color-kumo-strong);
+  color: var(--text-color-kumo-strong);
 }
 .kb-mdx-content h1 { font-size: 1.6em; }
 .kb-mdx-content h2 { font-size: 1.35em; }
 .kb-mdx-content h3 { font-size: 1.15em; }
 .kb-mdx-content h4 { font-size: 1em; }
 .kb-mdx-content h5 { font-size: 0.9em; }
-.kb-mdx-content h6 { font-size: 0.85em; color: var(--color-kumo-subtle); }
+.kb-mdx-content h6 { font-size: 0.85em; color: var(--text-color-kumo-subtle); }
 .kb-mdx-content p { margin: 0.5em 0; }
 .kb-mdx-content ul,
 .kb-mdx-content ol {
@@ -385,7 +235,7 @@ html {
   margin: 0.6em 0;
   padding-left: 1em;
   border-left: 3px solid var(--color-kumo-line);
-  color: var(--color-kumo-subtle);
+  color: var(--text-color-kumo-subtle);
 }
 .kb-mdx-content hr {
   margin: 1em 0;

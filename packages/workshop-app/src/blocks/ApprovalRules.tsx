@@ -1,13 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import { PlusIcon, TrashIcon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
-import { Button } from '@/components/Button'
-import { Switch } from '@/components/Switch'
-import { TextField } from '@/components/TextField'
-import { CardAction } from './CardAction'
-import { SOON } from './SettingRow'
-import { ON_SETTINGS_CARD, SettingsGroup } from './SettingsGroup'
-import { LIST_ACTION } from './StarButton'
+import { Button, CardAction, LIST_ACTION, ON_SETTINGS_CARD, SOON, SettingsGroup, Switch, TextField } from '@gadgets/ui'
 
 /** A rule in the user's own words for what the assistant does. */
 export type ApprovalRule = {

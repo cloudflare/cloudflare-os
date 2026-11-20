@@ -1,6 +1,5 @@
 import type { ReactNode } from 'react'
-import { Select, type SelectOption } from '@/components/Select'
-import { Tooltip } from '@/components/Tooltip'
+import { Select, type SelectOption, Tooltip } from '@gadgets/ui'
 import { formatCost, formatExactCost, formatTokenCount } from '@/components/usageFormat'
 
 export type ComposerStatusLineProps = {
@@ -10,16 +9,19 @@ export type ComposerStatusLineProps = {
     options: SelectOption<string>[]
     onChange: (id: string) => void
   }
-  /** What the chat's context holds, against what the model can hold. Either may be unknown. */
+  /** What the chat's context holds, as the server measured it. */
   context?: {
-    /** Tokens in the context at the last step, once one has measured it. */
-    used?: number
-    /** The most the model is held to, where that is known. */
-    window?: number
+    /**
+     * How full the context was at the last step, once one has measured it: its tokens, against the
+     * prompt budget the chat compacts against on the model the step ran on, named as shown.
+     */
+    measured?: { tokens: number; budget: number; model: string }
+    /** The share of the budget at which the chat compacts. */
+    compactsAt?: number
     /** Of all the prompt tokens sent, those read from the provider's cache and written to it. */
     cacheRead?: number
     cacheWrite?: number
-    /** The window can be changed to one of these. Left out where it is not the user's to change. */
+    /** The model's window can be changed to one of these. Left out where it is not the user's to change. */
     sizes?: { value: string; options: SelectOption<string>[]; onChange: (choice: string) => void }
   }
   /** What the chat has cost, in dollars. */
@@ -30,25 +32,25 @@ export type ComposerStatusLineProps = {
 
 const exact = (tokens: number) => tokens.toLocaleString()
 
-/** What the context holds, and in brackets how much of the window that is: 83.3K (42%). Just the tokens where the window is not known. */
-const contextText = ({ used, window }: NonNullable<ComposerStatusLineProps['context']>) => {
-  if (used === undefined) return undefined
-  if (window === undefined || window <= 0) return formatTokenCount(used)
-  const share = (used / window) * 100
-  return `${formatTokenCount(used)} (${share > 0 && share < 0.5 ? '<1' : Math.round(share)}%)`
+/** What the context holds, and in brackets how much of the budget that is: 83.3K (42%). */
+const contextText = ({ measured }: NonNullable<ComposerStatusLineProps['context']>) => {
+  if (measured === undefined) return undefined
+  const share = (measured.tokens / measured.budget) * 100
+  return `${formatTokenCount(measured.tokens)} (${share > 0 && share < 0.5 ? '<1' : Math.round(share)}%)`
 }
 
 const ContextDetails = ({ context }: { context: NonNullable<ComposerStatusLineProps['context']> }) => {
-  const { used, window, cacheRead, cacheWrite, sizes } = context
+  const { measured, compactsAt, cacheRead, cacheWrite, sizes } = context
   return (
     <>
       <span className="block">
-        {used === undefined ? 'Not measured yet.' : window === undefined ? `${exact(used)} tokens in the context.` : `${exact(used)} of ${exact(window)} tokens (${((used / window) * 100).toFixed(1)}%).`}
+        {measured === undefined ? 'Not measured yet.' : `${exact(measured.tokens)} of ${exact(measured.budget)} tokens (${((measured.tokens / measured.budget) * 100).toFixed(1)}%), on ${measured.model}.`}
       </span>
+      {measured !== undefined && compactsAt !== undefined && <span className="block">The chat compacts at {Math.round(compactsAt * 100)}%.</span>}
       {(cacheRead !== undefined || cacheWrite !== undefined) && (
         <span className="block">Cache: {exact(cacheRead ?? 0)} tokens read, {exact(cacheWrite ?? 0)} written.</span>
       )}
-      {window !== undefined && <span className="block">{sizes ? 'Changing the size applies to every chat on this model.' : 'The model’s own size; the deployment may compact sooner.'}</span>}
+      {sizes && <span className="block">Changing the size applies to every chat on this model, from its next step.</span>}
     </>
   )
 }

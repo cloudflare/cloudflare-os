@@ -58,10 +58,6 @@ const EXPECTED: Record<string, ExpectedArea> = {
     forwarded: ["VITE_FRONTEND_ERROR_REPORTING"],
     injected: ["GATEKEEPER_APP_UNMINIFIED"],
   },
-  "packages/gatekeeper-scheduler": {
-    forwarded: ["VITE_FRONTEND_ERROR_REPORTING"],
-    injected: ["GATEKEEPER_APP_UNMINIFIED"],
-  },
   // The live-tenant suite (`vitest.contract.config.ts`) and its sign-in and rendering tooling under
   // `scripts/` run as package.json scripts and by hand, never as vp tasks.
   "packages/gatekeeper-microsoft": {
@@ -82,6 +78,18 @@ const EXPECTED: Record<string, ExpectedArea> = {
   // `cache: { env: ['VITE_*'] }` — vite's `define` inlines any VITE_-prefixed variable, so the set
   // this package can depend on is open-ended and the wildcard is the only honest declaration.
   "packages/workshop-frontend": {
+    forwarded: [
+      "VITE_BACKEND_HOST",
+      "VITE_CF_ACCESS_MODE",
+      "VITE_DEV_AUTO_LOGIN",
+      "VITE_DEV_PASSWORD",
+      "VITE_DEV_USERNAME",
+      "VITE_FRONTEND_ERROR_REPORTING",
+    ],
+    injected: ["NODE_ENV"],
+  },
+  // Built as workshop-frontend is, with the same `VITE_*` wildcard and injected NODE_ENV.
+  "packages/workshop-app": {
     forwarded: [
       "VITE_BACKEND_HOST",
       "VITE_CF_ACCESS_MODE",
@@ -196,9 +204,10 @@ function readsUnder(directory: string): Set<string> {
 // Comments in these files quote the very syntax being searched for — workshop-backend's explains why
 // it is `cache: false` "rather than `cache: { env: ['BUNDLED_BLUEPRINTS_DIR'] }`" — so scanning raw
 // source both reads declarations out of prose and lets a deleted one keep passing. Strip comments
-// first.
+// first: only those opening a line or after whitespace, so a glob such as '!dist/**' or a URL in a
+// string is not taken for one.
 const stripComments = (source: string) =>
-  source.replaceAll(/\/\*[\s\S]*?\*\//g, "").replaceAll(/\/\/.*$/gm, "");
+  source.replaceAll(/(^|\s)\/\*[\s\S]*?\*\//g, "$1").replaceAll(/(^|\s)\/\/.*$/gm, "$1");
 
 /** The `env` patterns declared by any task in `directory`'s Vite+ config, and its `cache: false`. */
 function declarationsIn(directory: string): { patterns: Set<string>; hasUncachedTask: boolean } {

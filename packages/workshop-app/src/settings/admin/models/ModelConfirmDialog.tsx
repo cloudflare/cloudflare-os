@@ -1,7 +1,6 @@
 import type { ReactNode } from 'react'
 import { XIcon } from '@phosphor-icons/react'
-import { Button } from '@/components/Button'
-import { Dialog } from '@/components/Dialog'
+import { Button, Dialog } from '@gadgets/ui'
 
 export type ModelConfirmDialogProps = {
   /** What is asked, or nothing while nothing is: "Disable “GPT-6”?". */

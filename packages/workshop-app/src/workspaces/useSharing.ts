@@ -11,7 +11,7 @@ import type { ShareTarget } from './sharingRules'
  * what is shared as it is first given, so key the caller by them.
  */
 export const useSharing = (workspaceId: string, open: boolean, sharing?: { page: string; target: ShareTarget }) => {
-  const { api, reconnecting, user } = useApi()
+  const { api, user, reconnecting } = useApi()
   // Whichever `api` is current when the session opens the workspace, which may be a new connection's.
   const [latest] = useState(() => ({ api }))
   latest.api = api

@@ -2,23 +2,19 @@ import type { RpcStub } from 'capnweb'
 import type { Overseer, WorkspaceMetadata } from '@gadgets/workshop-shared/api'
 
 /**
- * What the workspace says of itself that the viewer's list keeps too, and that can change while it
- * is open: its title, the viewer's role in it, whose it is and what its data allows. Whether the
- * viewer starred or muted it is their own, which the workspace does not say.
+ * What the workspace says of itself that the viewer's listing does not keep, and that can change
+ * while it is open: what its data allows, and what it has cost. Its title, whose it is and the
+ * viewer's role in it come with the list itself (`WorkspacesFeed`).
  */
-export type LiveWorkspaceFields = Pick<WorkspaceMetadata, 'title' | 'role' | 'owner' | 'containsRestrictedData' | 'ownerInvitesOnly' | 'totalCost'>
+export type LiveWorkspaceFields = Pick<WorkspaceMetadata, 'containsRestrictedData' | 'ownerInvitesOnly' | 'totalCost'>
 
 /** The fields the list takes from what the workspace says of itself, each as it says it (absent too). */
-export const liveFieldsOf = ({ title, role, owner, containsRestrictedData, ownerInvitesOnly, totalCost }: WorkspaceMetadata): LiveWorkspaceFields =>
-  ({ title, role, owner, containsRestrictedData, ownerInvitesOnly, totalCost })
+export const liveFieldsOf = ({ containsRestrictedData, ownerInvitesOnly, totalCost }: WorkspaceMetadata): LiveWorkspaceFields =>
+  ({ containsRestrictedData, ownerInvitesOnly, totalCost })
 
-/** Whether `workspace` already shows `fields`, as far as the list keeps them. */
+/** Whether `workspace` already shows `fields`. */
 export const sameLiveFields = (workspace: LiveWorkspaceFields, fields: LiveWorkspaceFields) =>
-  workspace.title === fields.title
-  && (workspace.role ?? 'build') === (fields.role ?? 'build')
-  && workspace.owner?.id === fields.owner?.id
-  && workspace.owner?.name === fields.owner?.name
-  && Boolean(workspace.containsRestrictedData) === Boolean(fields.containsRestrictedData)
+  Boolean(workspace.containsRestrictedData) === Boolean(fields.containsRestrictedData)
   && Boolean(workspace.ownerInvitesOnly) === Boolean(fields.ownerInvitesOnly)
   && workspace.totalCost === fields.totalCost
 
@@ -38,9 +34,9 @@ const RETRY_DELAY = { first: 1000, most: 30_000 }
 
 /**
  * What one workspace says of itself, live (`subscribeToMetadata`), for as long as it is open, so
- * that a title, role or owner changed elsewhere shows without reading the list again: each time it
- * changes, `onChange` is told. A workspace that restarts, or could not be reached, is connected to
- * again with growing waits.
+ * that what its data allows and what it has cost show as they change: each time it changes,
+ * `onChange` is told. A workspace that restarts, or could not be reached, is connected to again
+ * with growing waits.
  */
 export class LiveWorkspace {
   #overseer: MetadataOverseer | undefined

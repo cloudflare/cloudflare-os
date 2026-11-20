@@ -1,6 +1,6 @@
 import type { ReactNode, Ref } from 'react'
 import { CaretDoubleRightIcon } from '@phosphor-icons/react'
-import { Button } from '@/components/Button'
+import { Button } from '@gadgets/ui'
 
 export type ContextSideProps = {
   /** What the card holds (`ContextSection`), each of which scrolls once it is taller than it should be. */

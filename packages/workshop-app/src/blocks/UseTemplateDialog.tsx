@@ -1,9 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import { CheckCircleIcon, CubeIcon, RobotIcon, XIcon } from '@phosphor-icons/react'
-import { Banner } from '@/components/Banner'
-import { Button } from '@/components/Button'
-import { Dialog } from '@/components/Dialog'
-import { Select } from '@/components/Select'
+import { Banner, Button, Dialog, Select } from '@gadgets/ui'
 import { ServiceLogo } from '@/components/ServiceLogo'
 
 /** A model one of the needs can be met with. */

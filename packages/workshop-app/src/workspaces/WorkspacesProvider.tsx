@@ -1,98 +1,54 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useState, useSyncExternalStore, type ReactNode } from 'react'
 import type { WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
 import type { WorkspaceRemoval } from '@/blocks/WorkspaceMoreMenu'
 import { useApi } from '@/rpc/ApiContext'
-import { sameLiveFields, type LiveWorkspaceFields } from './LiveWorkspace'
-import { WorkspaceLooks } from './WorkspaceLooks'
-import { WorkspaceMemberships } from './WorkspaceMemberships'
-import { WorkspacesContext, type WorkspacesState } from './WorkspacesContext'
+import { WorkspacesFeed } from './WorkspacesFeed'
+import { WorkspacesContext } from './WorkspacesContext'
 import { removeWorkspace } from './workspaceRemoval'
 
 /**
- * Loads the user's workspaces when mounted, and again on `refresh()`. The list has no live updates
- * to subscribe to, so whoever changes it asks for a reload; the workspace that is open says what
- * changes of it (`useLiveWorkspace`), which `update` shows.
+ * Keeps the user's workspaces live for everything beneath it (`subscribeToWorkspaces()`): one
+ * subscription for the whole app, made again on each new connection, with the list kept shown
+ * meanwhile. A change made here shows at once and is undone if the server refuses it.
  */
 export const WorkspacesProvider = ({ children }: { children: ReactNode }) => {
   const { api, reconnecting } = useApi()
-  const [state, setState] = useState<WorkspacesState>({ status: 'loading' })
-  // Bumped by refresh() to run the loading effect again.
-  const [version, setVersion] = useState(0)
-  // Stable, for whoever keeps it beyond a render, such as a chat session.
-  const [refresh] = useState(() => () => setVersion((v) => v + 1))
-  const [memberships] = useState(() => new WorkspaceMemberships())
-  const [looks] = useState(() => new WorkspaceLooks())
-
+  const [list] = useState(() => new WorkspacesFeed())
+  const state = useSyncExternalStore(list.subscribe, list.getSnapshot)
   useEffect(() => {
-    // Over a lost connection it could only fail; the new connection's `api` loads it.
+    // Over a lost connection it could only fail; the new connection's `api` subscribes.
     if (reconnecting) return
-    let cancelled = false
-    api.listWorkspaces().then(
-      (workspaces) => {
-        if (cancelled) return
-        const byRecentActivity = workspaces.toSorted((a, b) => b.lastActive.getTime() - a.lastActive.getTime())
-        setState({ status: 'ready', workspaces: byRecentActivity })
-      },
-      (error) => {
-        if (!cancelled) setState({ status: 'failed', message: error instanceof Error ? error.message : String(error) })
-      },
-    )
-    return () => {
-      cancelled = true
-    }
-  }, [api, reconnecting, version])
+    list.start({ subscribe: (listener) => api.subscribeToWorkspaces(listener) })
+    return () => list.stop()
+  }, [api, reconnecting, list])
 
-  const mark = (id: string, change: Partial<WorkspaceMetadataWithTimestamps>) =>
-    setState((current) =>
-      current.status === 'ready'
-        ? { ...current, workspaces: current.workspaces.map((workspace) => (workspace.id === id ? { ...workspace, ...change } : workspace)) }
-        : current,
-    )
-  const setPinned = async (id: string, pinned: boolean) => {
-    mark(id, { pinned })
+  // Shows `change` at once, and puts back what it replaced if `send` fails.
+  const optimistic = async (id: string, change: Partial<WorkspaceMetadataWithTimestamps>, send: () => Promise<void>) => {
+    const current = list.getSnapshot()
+    const row = current.status === 'ready' ? current.workspaces.find((workspace) => workspace.id === id) : undefined
+    const before = Object.fromEntries(Object.keys(change).map((key) => [key, row?.[key as keyof typeof change]]))
+    list.mark(id, change)
     try {
-      await api.setWorkspacePinned(id, pinned)
+      await send()
     } catch (error) {
-      mark(id, { pinned: !pinned })
+      list.mark(id, before)
       throw error
     }
   }
-  const rename = async (id: string, title: string) => {
-    const before = state.status === 'ready' ? state.workspaces.find((workspace) => workspace.id === id)?.title : undefined
-    mark(id, { title })
-    const overseer = api.openWorkspace(id)
-    try {
-      await overseer.setTitle(title)
-    } catch (error) {
-      if (before !== undefined) mark(id, { title: before })
-      throw error
-    } finally {
-      overseer[Symbol.dispose]()
-    }
-  }
-  const setMuted = async (id: string, muted: boolean) => {
-    const before = state.status === 'ready' ? state.workspaces.find((workspace) => workspace.id === id)?.notificationMute : undefined
-    mark(id, { notificationMute: muted ? { indefinite: true } : undefined })
-    try {
-      await api.setWorkspaceNotificationMute(id, muted ? { indefinite: true } : null)
-    } catch (error) {
-      mark(id, { notificationMute: before })
-      throw error
-    }
-  }
-  const remove = async (id: string, removal: WorkspaceRemoval) => {
-    await removeWorkspace(api, id, removal)
-    setState((current) => (current.status === 'ready' ? { ...current, workspaces: current.workspaces.filter((workspace) => workspace.id !== id) } : current))
-  }
+  const setPinned = (id: string, pinned: boolean) => optimistic(id, { pinned }, () => api.setWorkspacePinned(id, pinned))
+  const rename = (id: string, title: string) =>
+    optimistic(id, { title }, async () => {
+      const overseer = api.openWorkspace(id)
+      try {
+        await overseer.setTitle(title)
+      } finally {
+        overseer[Symbol.dispose]()
+      }
+    })
+  const setMuted = (id: string, muted: boolean) =>
+    optimistic(id, { notificationMute: muted ? { indefinite: true } : undefined }, () =>
+      api.setWorkspaceNotificationMute(id, muted ? { indefinite: true } : null))
+  const remove = (id: string, removal: WorkspaceRemoval) => removeWorkspace(api, id, removal)
 
-  // Stable, for the subscription that calls it. What it says again unchanged changes nothing.
-  const [update] = useState(() => (id: string, fields: LiveWorkspaceFields) =>
-    setState((current) => {
-      if (current.status !== 'ready') return current
-      const known = current.workspaces.find((workspace) => workspace.id === id)
-      if (!known || sameLiveFields(known, fields)) return current
-      return { ...current, workspaces: current.workspaces.map((workspace) => (workspace === known ? { ...workspace, ...fields } : workspace)) }
-    }))
-
-  return <WorkspacesContext value={{ state, refresh, setPinned, rename, setMuted, remove, update, memberships, looks }}>{children}</WorkspacesContext>
+  return <WorkspacesContext value={{ state, setPinned, rename, setMuted, remove, update: list.live }}>{children}</WorkspacesContext>
 }

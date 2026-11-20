@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import type { AdminAuditStats } from '@gadgets/workshop-shared/api'
-import { SettingsCard } from '@/blocks/SettingsGroup'
+import { SettingsCard } from '@gadgets/ui'
 
 const NUMBER = new Intl.NumberFormat('en')
 

@@ -1,8 +1,9 @@
-import { describe, expect, it } from 'vitest'
-import type { OutputSummary } from '@gadgets/workshop-shared/api'
+import { describe, expect, it, vi } from 'vitest'
+import type { OutputSummary, UserPreferencesSubscriber } from '@gadgets/workshop-shared/api'
+import { encodePreferences, MAX_OPENED_OUTPUTS } from '@/prefs/preferenceFields'
+import { UserPreferences, type PreferencesBackend } from '@/prefs/UserPreferences'
 import { outputKey } from './libraryList'
-import { OPENED_KEPT, withOpened } from '@/prefs/libraryOpened'
-import { RECENT_SHOWN, recentOutputs } from './libraryRecent'
+import { RECENT_SHOWN, recentOutputs, recordOpened } from './libraryRecent'
 
 const NOW = new Date('2026-11-17T12:00:00Z')
 const hoursAgo = (hours: number) => new Date(NOW.getTime() - hours * 3_600_000)
@@ -13,15 +14,6 @@ const output = (workpieceId: number, lastActive = NOW): OutputSummary => ({
   workspaceTitle: 'Workspace',
   created: NOW,
   lastActive,
-})
-
-describe('withOpened', () => {
-  it('puts the one opened now first, once, and keeps no more than it remembers', () => {
-    expect(withOpened(['a', 'b', 'c'], 'b')).toEqual(['b', 'a', 'c'])
-    const many = Array.from({ length: OPENED_KEPT }, (_, index) => String(index))
-    expect(withOpened(many, 'new')).toHaveLength(OPENED_KEPT)
-    expect(withOpened(many, 'new')[0]).toBe('new')
-  })
 })
 
 describe('recentOutputs', () => {
@@ -42,5 +34,28 @@ describe('recentOutputs', () => {
   it('shows no more of what was opened than it has room for', () => {
     const lots = Array.from({ length: RECENT_SHOWN + 5 }, (_, index) => output(index + 10))
     expect(recentOutputs(lots, lots.map(outputKey)).opened).toHaveLength(RECENT_SHOWN)
+  })
+})
+
+describe('recordOpened', () => {
+  it('puts the one opened first, once, within the bound, and sends nothing when it already is', async () => {
+    let server: UserPreferencesSubscriber | undefined
+    const subscribe = vi.fn<PreferencesBackend['subscribe']>(async (given) => {
+      server = given as unknown as UserPreferencesSubscriber
+      return { [Symbol.dispose]: () => {} }
+    })
+    const update = vi.fn<PreferencesBackend['update']>(async () => {})
+    const store = new UserPreferences()
+    store.start({ subscribe, update })
+    const many = Array.from({ length: MAX_OPENED_OUTPUTS }, (_, index) => ({ workspaceId: 'w', workpieceId: index }))
+    await server!.updated(encodePreferences({ openedOutputs: many }))
+
+    recordOpened(store, { workspaceId: 'w', workpieceId: 5 })
+    recordOpened(store, { workspaceId: 'v', workpieceId: 1 })
+    const opened = store.getSnapshot().openedOutputs.map(outputKey)
+    expect(opened).toHaveLength(MAX_OPENED_OUTPUTS)
+    expect(opened.slice(0, 3)).toEqual(['v/1', 'w/5', 'w/0'])
+    recordOpened(store, { workspaceId: 'v', workpieceId: 1 })
+    expect(update).toHaveBeenCalledTimes(2)
   })
 })

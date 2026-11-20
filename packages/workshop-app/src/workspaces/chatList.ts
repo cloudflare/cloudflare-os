@@ -1,8 +1,5 @@
 import type { AiChatMetadata } from '@gadgets/workshop-shared/api'
-import { groupByTime } from '@/chat/timeGroups'
-import type { ListFilter, ListOrder } from '@/components/listView'
-import { groupByName } from '@/components/nameGroups'
-import type { ListViewSpec } from '@/hooks/useListView'
+import { type ListFilter, type ListOrder, type ListViewSpec, groupByName, groupByTime } from '@gadgets/ui'
 
 type Chat = AiChatMetadata
 

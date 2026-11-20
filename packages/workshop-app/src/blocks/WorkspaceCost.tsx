@@ -1,4 +1,4 @@
-import { Tooltip } from '@/components/Tooltip'
+import { Tooltip } from '@gadgets/ui'
 import { formatExactCost, formatTotalCost } from '@/components/usageFormat'
 
 export type WorkspaceCostProps = {

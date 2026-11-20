@@ -1,18 +1,15 @@
 import { ChatListItem } from '@/blocks/ChatListItem'
-import { ListGroup } from '@/blocks/ListGroup'
-import { ListToolbar } from '@/blocks/ListToolbar'
+import { Button, ListGroup, ListToolbar, formatActivity, useListView } from '@gadgets/ui'
 import { useChatNotifications } from '@/chat/useChatNotifications'
-import { isAgentRun } from '@/automations/agents'
 import { NotePencilIcon } from '@phosphor-icons/react'
-import { Button } from '@/components/Button'
 import { useDevMode } from '@/hooks/useDevMode'
-import { useListView } from '@/hooks/useListView'
 import { chatList, chatTitle } from './chatList'
-import { formatActivity } from './formatActivity'
-import { useWorkspaceChats } from './useWorkspaceChats'
+import type { WorkspaceChatsState } from './useWorkspaceChats'
 
 export type WorkspaceChatListProps = {
   workspaceId: string
+  /** The chats people have in it, as `useWorkspaceChats` keeps them. */
+  chats: WorkspaceChatsState
   onOpenChat: (chat: { id: number; title: string }) => void
   /** A chat's address, for its row to link to so that it can be opened in another tab. */
   chatHref?: (chatId: number) => string
@@ -26,15 +23,14 @@ export type WorkspaceChatListProps = {
 
 /**
  * A workspace's chats, most recently active first until another order is chosen, grouped as that
- * order groups them: those people started, as its agents' runs are listed under each agent, on the
+ * order groups them: those people have, as its agents' runs are listed under each agent, on the
  * Agents tab. Each is marked while it has anything the viewer has not read, and says so while it is
  * waiting on them. Over them, a search, the order, filters (unread and waiting among them) and the way to start a new chat.
  */
-export const WorkspaceChatList = ({ workspaceId, onOpenChat, chatHref, builds = false, waiting, onNewChat }: WorkspaceChatListProps) => {
-  const chats = useWorkspaceChats(workspaceId)
+export const WorkspaceChatList = ({ workspaceId, chats, onOpenChat, chatHref, builds = false, waiting, onNewChat }: WorkspaceChatListProps) => {
   const devMode = useDevMode()
   const notifications = useChatNotifications(workspaceId, builds)
-  const listed = chats.status === 'ready' ? chats.chats.filter((chat) => !isAgentRun(chat)) : []
+  const listed = chats.status === 'ready' ? chats.chats : []
   const unreadOf = ({ id }: { id: number }) => (builds ? notifications.rows.get(id)?.unreadMessageCount ?? 0 : 0)
   const isWaiting = ({ id, awaitingDecision }: { id: number; awaitingDecision?: true }) => waiting?.has(id) || awaitingDecision === true
   const list = useListView('workspace-chats', chatList(new Set(listed.filter((chat) => unreadOf(chat) > 0).map(({ id }) => id)), isWaiting, devMode))

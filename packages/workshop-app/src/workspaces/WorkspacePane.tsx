@@ -12,21 +12,16 @@ import { WorkspaceCost } from '@/blocks/WorkspaceCost'
 import { WorkspaceCrumb } from '@/blocks/WorkspaceCrumb'
 import { WorkspaceIconPicker } from '@/blocks/WorkspaceIconPicker'
 import { AvatarStack } from '@/components/AvatarStack'
-import { Button } from '@/components/Button'
-import { DropdownMenu } from '@/components/DropdownMenu'
-import { EditableTitle } from '@/components/EditableTitle'
-import { HeaderBubble } from '@/components/HeaderBubble'
-import { Tabs } from '@/components/Tabs'
+import { Button, DropdownMenu, EditableTitle, HeaderBubble, PageLayout, Tabs, useNarrowScreen } from '@gadgets/ui'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import { useDevMode } from '@/hooks/useDevMode'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { useHandler } from '@/hooks/useHandler'
-import { useNarrowScreen } from '@/hooks/useNarrowScreen'
 import { useNow } from '@/hooks/useNow'
-import { PageLayout } from '@/layouts/PageLayout'
 import { useUnread } from '@/notifications/UnreadContext'
+import type { WorkspaceLook } from '@/prefs/preferenceFields'
+import { usePreferences } from '@/prefs/UserPreferencesContext'
 import { useApi } from '@/rpc/ApiContext'
-import { useWaitingAsks } from '@/gadgets/WaitingAsksProvider'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { ShareWorkspaceDialog } from './ShareWorkspaceDialog'
 import { shareStanding } from './sharingRules'
@@ -36,11 +31,12 @@ import { WorkspaceLibraryList } from './WorkspaceLibraryList'
 import { WorkspaceMemberList } from './WorkspaceMemberList'
 import { WorkspaceOptionsTab } from './WorkspaceOptionsTab'
 import { useRemoveWorkspace, useRenameWorkspace, useWorkspaces } from './WorkspacesContext'
+import { setWorkspaceLook, useWorkspaceLooks } from './useWorkspaceLooks'
 import { workspaceLabel } from './workspaceLabel'
 import { workspaceMembers } from './workspaceMembers'
 import { removalOf } from './workspaceRemoval'
-import { useSetWorkspaceLook, useWorkspaceLooks } from './useWorkspaceLooks'
-import { gadgetsWaitingIn } from './waitingWords'
+import { useWorkspaceSummaries } from './WorkspaceSummariesContext'
+import { useWorkspaceChats } from './useWorkspaceChats'
 
 /** What a workspace's page shows beneath its title. */
 export type WorkspaceTab = 'chats' | 'agents' | 'library' | 'automations' | 'members' | 'settings'
@@ -102,7 +98,7 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
   const narrow = useNarrowScreen()
   const devMode = useDevMode()
   const look = useWorkspaceLooks()[workspaceId]
-  const setLook = useSetWorkspaceLook()
+  const preferences = usePreferences()
 
   const { user } = useApi()
   const sharing = useSharing(workspaceId, true)
@@ -135,9 +131,12 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
   const waiting = wanting.filter(({ run }) => run.status === 'waiting')
   // What else waits on the viewer: its gadgets that ask something, and the chats people had with
   // its agent stopped on a decision or an action, each counted on the tab that lists it.
-  const asks = useWaitingAsks()
-  const gadgetsWaiting = gadgetsWaitingIn(workspaceId, asks.byGadget)
-  const chatsWaiting = agents.state.status === 'ready' ? agents.state.chatsWaiting : undefined
+  const gadgetsWaiting = useWorkspaceSummaries().workspaces.get(workspaceId)?.waiting.gadgets.length ?? 0
+  const chats = useWorkspaceChats(workspaceId)
+  const actionsWaiting = agents.state.status === 'ready' ? agents.state.actionsWaiting : undefined
+  const chatsWaiting = chats.status === 'ready'
+    ? new Set(chats.chats.filter(({ id, awaitingDecision }) => awaitingDecision || actionsWaiting?.has(id)).map(({ id }) => id))
+    : undefined
   const counts: Partial<Record<WorkspaceTab, number>> = { chats: chatsWaiting?.size ?? 0, agents: waiting.length, library: gadgetsWaiting }
   const tabs = WORKSPACE_TABS.map((each) => {
     const value = counts[each.value] ?? 0
@@ -148,17 +147,20 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
 
   const renameWorkspace = useRenameWorkspace()
   // Why the last new title was not kept.
-  const [renameProblem, setRenameProblem] = useState<string>()
+  const [headingProblem, setHeadingProblem] = useState<string>()
   const connection = useConnectionNotice()
   const unread = useUnread()
   // Its marks clear as the account says they have.
   const markRead = unread?.totals.workspaces.has(workspaceId) ? () => unread.markWorkspaceRead(workspaceId) : undefined
   const rename = (next: string) => {
-    setRenameProblem(undefined)
+    setHeadingProblem(undefined)
     if (connection?.blocked()) return
     renameWorkspace(workspaceId, next).catch((error: unknown) => {
-      setRenameProblem(`Couldn’t rename the workspace: ${error instanceof Error ? error.message : String(error)}`)
+      setHeadingProblem(`Couldn’t rename the workspace: ${error instanceof Error ? error.message : String(error)}`)
     })
+  }
+  const changeLook = (next: WorkspaceLook) => {
+    if (!connection?.blocked()) setWorkspaceLook(preferences, workspaceId, next)
   }
 
   return (
@@ -197,9 +199,9 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
     >
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-8 pb-8">
         <div className="flex flex-col items-center gap-2 pt-8 text-center">
-          {/* Its icon, which opens what it can be drawn as. That is kept on this device, so anyone may choose. */}
+          {/* Its icon, which opens what it can be drawn as. That is the viewer's own, so anyone may choose. */}
           {workspace
-            ? <WorkspaceIconPicker label={workspaceLabel(workspace.title)} look={look} onLookChange={(next) => setLook(workspaceId, next)} />
+            ? <WorkspaceIconPicker label={workspaceLabel(workspace.title)} look={look} onLookChange={changeLook} />
             : <WorkspaceIcon label="" />}
           <span className="mt-3 -mb-2 text-sm text-kumo-subtle">Workspace</span>
           {/* Its own heading, which can be renamed by whoever may build in it. */}
@@ -208,7 +210,7 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
               ? <EditableTitle value={workspace.title} onRename={rename} aria-label="Workspace title" placeholder="Untitled workspace" className="text-center" />
               : <span className="px-2.5 py-1">{title || 'Workspace'}</span>}
           </h1>
-          {renameProblem && <p role="alert" className="text-base text-kumo-subtle">{renameProblem}</p>}
+          {headingProblem && <p role="alert" className="text-base text-kumo-subtle">{headingProblem}</p>}
           {attention && (
             <div className="flex h-(--control-size) items-center justify-center">
               <WaitingPill
@@ -220,7 +222,7 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
         </div>
         <Tabs value={tab} onValueChange={onTabChange} tabs={tabs} aria-label="Workspace" className="gap-6">
           <Tabs.Panel value="chats" className="flex flex-col gap-8">
-            <WorkspaceChatList workspaceId={workspaceId} onOpenChat={onOpenChat} chatHref={chatHref} builds={workspace !== undefined && workspace.role !== 'use'} waiting={chatsWaiting} onNewChat={onNewChat} />
+            <WorkspaceChatList workspaceId={workspaceId} chats={chats} onOpenChat={onOpenChat} chatHref={chatHref} builds={workspace !== undefined && workspace.role !== 'use'} waiting={chatsWaiting} onNewChat={onNewChat} />
           </Tabs.Panel>
           <Tabs.Panel value="agents" className="flex flex-col gap-8">
             <AgentsTab

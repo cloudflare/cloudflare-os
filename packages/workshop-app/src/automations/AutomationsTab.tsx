@@ -2,13 +2,10 @@ import { useMemo, useState } from 'react'
 import { asideItemFor, type AsideItem } from '@/aside/asideItems'
 import { useChatLibrary } from '@/aside/useChatLibrary'
 import { AutomationRow } from '@/blocks/AutomationRow'
-import { ListGroup } from '@/blocks/ListGroup'
-import { Button } from '@/components/Button'
-import { useNow } from '@/hooks/useNow'
+import { Button, ListGroup } from '@gadgets/ui'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import type { Automation } from './automations'
-import { cadenceWords, scheduleStanding } from './cadence'
 import { useAutomations } from './useAutomations'
 
 export type AutomationsTabProps = {
@@ -26,17 +23,16 @@ export type AutomationsTabProps = {
 }
 
 const GROUPS = [
-  { kind: 'schedule', label: 'Scheduled' },
-  { kind: 'event', label: 'When something happens' },
+  { key: 'on', label: 'On', has: (automation: Automation) => automation.hook.enabled },
+  { key: 'paused', label: 'Paused', has: (automation: Automation) => !automation.hook.enabled },
 ] as const
 
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
 /**
- * What runs by itself in a workspace, as a tab of a page: the scheduled tasks, then what an event
- * sets off, each saying when it runs and when next or why it stopped, what it does and the gadget
- * it runs, with its switch for whoever builds there. The agents those gadgets start have a tab of
- * their own (`AgentsTab`). The clock moves on while it is shown, so "next in 5 minutes" stays true.
+ * What runs by itself in a workspace, as a tab of a page: what is on, then what is paused, newest
+ * first, each saying what it does, what it watches and the gadget it runs, with its switch for
+ * whoever builds there. The agents those gadgets start have a tab of their own (`AgentsTab`).
  */
 export const AutomationsTab = ({ workspaceId, chatId, filter, onOpenItem, itemHref, empty }: AutomationsTabProps) => {
   const { state, setEnabled } = useAutomations(workspaceId)
@@ -47,7 +43,6 @@ export const AutomationsTab = ({ workspaceId, chatId, filter, onOpenItem, itemHr
   const connection = useConnectionNotice()
   // Why the last change to each, by its key, was refused.
   const [problems, setProblems] = useState<Record<string, string>>({})
-  const now = useNow()
 
   const shown = useMemo(
     () => (state.status === 'ready' ? (filter ? state.automations.filter(filter) : state.automations) : []),
@@ -81,26 +76,22 @@ export const AutomationsTab = ({ workspaceId, chatId, filter, onOpenItem, itemHr
   return (
     <>
       {shown.length === 0 && <p className="px-4 text-center text-base text-pretty text-kumo-subtle">{empty}</p>}
-      {GROUPS.map(({ kind, label }) => {
-        const rows = shown.filter((automation) => automation.kind === kind)
+      {GROUPS.map(({ key, label, has }) => {
+        const rows = shown.filter(has)
         if (rows.length === 0) return null
         return (
-          <section key={kind} className="flex flex-col gap-2">
+          <section key={key} className="flex flex-col gap-2">
             <h2 className="px-4 text-sm font-medium text-kumo-subtle">{label}</h2>
             <ListGroup label={label}>
               {rows.map((automation) => {
-                const { hook, schedule } = automation
+                const { hook } = automation
                 const { item, title } = gadgetOf(hook.gadgetId)
                 return (
                   <AutomationRow
                     key={automation.key}
-                    kind={automation.kind}
                     title={hook.description.title}
-                    when={schedule && cadenceWords(schedule.cadence)}
-                    standing={schedule && scheduleStanding(schedule, now)}
                     description={hook.description.description || undefined}
-                    // A schedule's resource is the scheduler itself, which says nothing.
-                    resource={automation.kind === 'event' && hook.resourceTitle ? { title: hook.resourceTitle, url: hook.resourceUrl } : undefined}
+                    resource={hook.resourceTitle ? { title: hook.resourceTitle, url: hook.resourceUrl } : undefined}
                     gadget={{ title, href: itemHref?.(item), onOpen: () => onOpenItem(item) }}
                     enabled={hook.enabled}
                     onEnabledChange={canChange ? (enabled) => change(automation, enabled) : undefined}

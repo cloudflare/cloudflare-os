@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AiChatAuthorInfo, AiChatMetadata, ConsoleLogEvent, AiChatSubscriber, PresenceSubscriber, UiBundle, WorkpieceSummary, WorkpiecesSubscriber } from '@gadgets/workshop-shared/api'
+import { ACCESS_CONFIRMATION_ERROR_CODES, createAccessConfirmationError, type AiChatAuthorInfo, type AiChatMetadata, type ConsoleLogEvent, type AiChatSubscriber, type PresenceSubscriber, type UiBundle, type WorkpieceSummary, type WorkpiecesSubscriber } from '@gadgets/workshop-shared/api'
 import { GadgetConnection, type GadgetHandle, type GadgetOverseer, type GadgetUi } from './GadgetConnection'
 import { pipelined } from '@/chat/mock/pipelined'
 
@@ -120,6 +120,14 @@ describe('GadgetConnection', () => {
     broken.connection.start()
     await vi.waitFor(() => expect(broken.connection.getSnapshot().ui).toEqual({ status: 'failed', message: 'No such gadget' }))
     broken.connection.stop()
+  })
+
+  it('tells a gadget the user did not confirm their access to by its code, not its message', async () => {
+    const refusal = Object.assign(createAccessConfirmationError(ACCESS_CONFIRMATION_ERROR_CODES.cancelled, { workspaceId: 'ws', gadgetId: 41 }), { message: 'Reworded' })
+    const unconfirmed = setUp({ bundle: Promise.reject(refusal) })
+    unconfirmed.connection.start()
+    await vi.waitFor(() => expect(unconfirmed.connection.getSnapshot().ui).toEqual({ status: 'unconfirmed' }))
+    unconfirmed.connection.stop()
   })
 
   it('connects only the page in its own frame, which has no origin', async () => {

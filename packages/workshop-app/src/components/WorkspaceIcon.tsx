@@ -1,6 +1,7 @@
 import type { CSSProperties } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
-import { WORKSPACE_COLORS, type WorkspaceLook, type WorkspaceShape } from './workspaceLook'
+import type { WorkspaceIconShape, WorkspaceLook } from '@/prefs/preferenceFields'
+import { WORKSPACE_COLORS } from './workspaceLook'
 
 export type WorkspaceIconProps = WorkspaceLook & {
   /** Two letters shown on the icon, e.g. a language code. */
@@ -35,7 +36,7 @@ type Shape = {
  * Each shape, in a box of 32 by 30, at the size that has it weigh on the eye what the others do.
  * Every layer is rounded: a corner is only ever where one layer meets another.
  */
-const SHAPES: Record<WorkspaceShape, Shape> = {
+const SHAPES: Record<WorkspaceIconShape, Shape> = {
   folder: {
     layers: [
       'M0 6.33379C0 2.83573 2.83574 -1.49864e-06 6.3338 -1.49864e-06H6.60964C7.76897 -1.49864e-06 8.89848 0.367299 9.83607 1.04918C10.7737 1.73106 11.9032 2.09836 13.0625 2.09836H24C28.4183 2.09836 32 5.68008 32 10.0984V21.2834C32 25.7017 28.4183 29.2834 24 29.2834H8C3.58172 29.2834 0 25.7017 0 21.2834V6.33379Z',

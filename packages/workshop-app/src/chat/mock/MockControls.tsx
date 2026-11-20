@@ -1,8 +1,6 @@
 import { useSyncExternalStore } from 'react'
 import { ArrowCounterClockwiseIcon, GitCommitIcon, PauseIcon, PlayIcon, SkipForwardIcon } from '@phosphor-icons/react'
-import { Button } from '@/components/Button'
-import { DropdownMenu } from '@/components/DropdownMenu'
-import { Tooltip } from '@/components/Tooltip'
+import { Button, DropdownMenu, Tooltip } from '@gadgets/ui'
 import type { ScriptPlayer } from './ScriptPlayer'
 import type { Scenario, Trigger } from './scenario'
 

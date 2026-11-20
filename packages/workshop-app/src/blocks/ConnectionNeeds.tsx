@@ -1,5 +1,5 @@
 import { CheckCircleIcon } from '@phosphor-icons/react'
-import { Button } from '@/components/Button'
+import { Button } from '@gadgets/ui'
 import { ServiceLogo } from '@/components/ServiceLogo'
 
 export type ConnectionNeed = {

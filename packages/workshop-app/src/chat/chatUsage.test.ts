@@ -1,30 +1,27 @@
 import { describe, expect, it } from 'vitest'
 import type { AiChatMetadata } from '@gadgets/workshop-shared/api'
 import { sameUsage, usageOf } from './chatUsage'
-import { effectiveWindow, heldWindow, windowSizes } from './contextWindow'
+import { heldWindow, windowSizes } from './contextWindow'
 
 const chat = (change: Partial<AiChatMetadata> = {}): AiChatMetadata => ({ id: 1, title: 'Plans', started: new Date(0), lastActive: new Date(0), ...change })
+const measured = (tokens: number, model = 'claude') => ({ totalTokens: tokens, contextBudget: { tokens: 168_000, model } })
 
 describe('usageOf', () => {
   it('takes what the metadata has measured, and nothing for what it has not', () => {
     expect(usageOf(chat())).toEqual({})
-    expect(usageOf(chat({ totalTokens: 83_312, totalCost: 0.04, cacheReadTokens: 5 }))).toEqual({ tokens: 83_312, cost: 0.04, cacheReadTokens: 5 })
+    expect(usageOf(chat({ ...measured(83_312), totalCost: 0.04, cacheReadTokens: 5 }))).toEqual({ context: { tokens: 83_312, budget: 168_000, model: 'claude' }, cost: 0.04, cacheReadTokens: 5 })
   })
 
   it('is the same usage only when each part is', () => {
-    expect(sameUsage(usageOf(chat({ totalTokens: 1 })), usageOf(chat({ totalTokens: 1, title: 'Other' })))).toBe(true)
-    expect(sameUsage(usageOf(chat({ totalTokens: 1 })), usageOf(chat({ totalTokens: 2 })))).toBe(false)
+    expect(sameUsage(usageOf(chat(measured(1))), usageOf(chat({ ...measured(1), title: 'Other' })))).toBe(true)
+    expect(sameUsage(usageOf(chat(measured(1))), usageOf(chat(measured(2))))).toBe(false)
+    expect(sameUsage(usageOf(chat(measured(1))), usageOf(chat(measured(1, 'gpt'))))).toBe(false)
+    expect(sameUsage(usageOf(chat(measured(1))), usageOf(chat()))).toBe(false)
     expect(sameUsage(usageOf(chat({ totalCost: 1 })), usageOf(chat()))).toBe(false)
   })
 })
 
 describe('context window', () => {
-  it('is what the model was held to, else its own', () => {
-    expect(effectiveWindow(200_000, 64_000)).toBe(64_000)
-    expect(effectiveWindow(200_000, undefined)).toBe(200_000)
-    expect(effectiveWindow(undefined, undefined)).toBeUndefined()
-  })
-
   it('offers the model’s own as nothing, and the smaller usual sizes', () => {
     const { value, options } = windowSizes(200_000, undefined)
     expect(value).toBe('')

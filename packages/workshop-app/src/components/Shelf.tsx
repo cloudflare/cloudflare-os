@@ -1,5 +1,5 @@
 import { useId, type ReactNode } from 'react'
-import { Button } from './Button'
+import { Button } from '@gadgets/ui'
 
 export type ShelfProps = {
   /** What is on it: "Recent", "Starred". */

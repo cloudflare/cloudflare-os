@@ -588,6 +588,22 @@ describe("durable agent calls", () => {
     expect(chats.map(meta => meta.spawnerId)).toEqual(spawners);
   }));
 
+  it("records the gadget whose code started a run, and none for a person's",
+      () => freshImpl(async impl => {
+    impl.ownerId = OWNER_USER_ID;
+    fakeUsers(impl);
+    impl.startAgent = () => {};
+    await (await spawnerBinding(impl)).spawnCallable("By hand", SPAWNER_TYPES);
+    let [spawner] = [...impl.storage.gatekeepers.list()]
+        .filter(record => record.creationSpec?.type === "agentSpawner");
+    let fromGadget: AgentSpawnerBinding = await impl.openGatekeeperSession(
+        spawner.id, await impl.getGatekeeperFacet(spawner.id), {from: "gadget", gadgetId: 7});
+    await fromGadget.spawnCallable("By gadget", SPAWNER_TYPES);
+
+    expect([...impl.storage.chatMeta.list()].map(meta => [meta.title, meta.spawnedByGadgetId]))
+        .toEqual([["By hand", undefined], ["By gadget", 7]]);
+  }));
+
   // The stub spawnCallable() returns is an AgentSelfLoopback, whose every method is a Proxy trap
   // that forwards to deliverAgentCallback. The test pool's RPC emulation resolves methods on the
   // class prototype only, so calls through the stub can't be exercised here; these tests deliver

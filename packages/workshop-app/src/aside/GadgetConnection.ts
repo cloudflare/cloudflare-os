@@ -1,16 +1,17 @@
 import { RpcTarget, newMessagePortRpcSession, type RpcStub } from 'capnweb'
-import type {
-  AiChatAuthorInfo,
-  AiChatMetadata,
-  AiChatSubscriber,
-  ConsoleLogEvent,
-  GadgetUpstream,
-  Overseer,
-  PresenceParticipant,
-  PresenceSubscriber,
-  UiBundle,
-  WorkpieceSummary,
-  WorkpiecesSubscriber,
+import {
+  getAccessConfirmationErrorCode,
+  type AiChatAuthorInfo,
+  type AiChatMetadata,
+  type AiChatSubscriber,
+  type ConsoleLogEvent,
+  type GadgetUpstream,
+  type Overseer,
+  type PresenceParticipant,
+  type PresenceSubscriber,
+  type UiBundle,
+  type WorkpieceSummary,
+  type WorkpiecesSubscriber,
 } from '@gadgets/workshop-shared/api'
 import type { CodeChange } from '@gadgets/workshop-shared/code-change'
 import { GadgetFrameRoot, HANDSHAKE_MESSAGE, WorkshopGadgetHost, gadgetPage, logLocation } from './gadgetSandbox'
@@ -25,6 +26,11 @@ export type GadgetUi =
   | { status: 'ready'; page: string; load: number }
   /** The gadget has no UI: it is new, or an agent with no code. */
   | { status: 'none' }
+  /**
+   * Shared with the user, it reads what is kept at other services, and their access to that was
+   * not confirmed (`ACCESS_CONFIRMATION_ERROR_CODES`): asking them again can put it right.
+   */
+  | { status: 'unconfirmed' }
   | { status: 'failed'; message: string }
 
 export type GadgetSnapshot = {
@@ -371,7 +377,7 @@ export class GadgetConnection {
       // Still loading, or showing what it did, until the connection is back.
       if (!current() || this.options.connection?.down) return
       this.#unlink()
-      this.#publish({ ui: { status: 'failed', message: messageOf(error) } })
+      this.#publish({ ui: getAccessConfirmationErrorCode(error) ? { status: 'unconfirmed' } : { status: 'failed', message: messageOf(error) } })
     } finally {
       clearTimeout(timer)
     }

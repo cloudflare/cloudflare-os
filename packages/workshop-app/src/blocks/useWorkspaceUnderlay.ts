@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef } from 'react'
-import { isMotionOff, subscribeMotionLevel } from '@/prefs/motion'
+import { isMotionOff, subscribeMotionLevel } from '@gadgets/ui'
 
 type Bounds = { top: number; height: number }
 type Target = {

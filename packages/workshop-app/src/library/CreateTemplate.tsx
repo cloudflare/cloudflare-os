@@ -1,12 +1,11 @@
-import { useEffect, useState } from 'react'
 import { useRouter } from '@tanstack/react-router'
-import { CreateTemplateDialog, type CreateTemplateDialogProps } from '@/blocks/CreateTemplateDialog'
+import { CreateTemplateDialog } from '@/blocks/CreateTemplateDialog'
 import { TemplateCard } from '@/blocks/TemplateCard'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
-import { madeTemplatesOf } from './madeTemplates'
 import type { TemplateSource } from './TemplateStore'
 import { withStar } from './libraryStars'
 import { templateCreator, templateServices, templateType } from './templates'
+import { useMadeTemplates } from './useMadeTemplates'
 import { templateStore, useTemplates } from './useTemplates'
 
 export type CreateTemplateProps = {
@@ -14,39 +13,22 @@ export type CreateTemplateProps = {
   gadget: TemplateSource
   open: boolean
   onOpenChange: (open: boolean) => void
+  /** A published template has a new release. */
+  onReleased?: (id: string) => void
 }
-
-const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
 /**
  * Creating a template from a gadget (`CreateTemplateDialog`) over the templates (`TemplateStore`):
- * those its workspace has made, read each time it opens, and creating or releasing, which the
- * templates are read again after, so that the store and the template's page have it.
+ * own templates are live; co-builders read what its workspace has made while the dialog is open.
  */
-export const CreateTemplate = ({ gadget, open, onOpenChange }: CreateTemplateProps) => {
+export const CreateTemplate = ({ gadget, open, onOpenChange, onReleased }: CreateTemplateProps) => {
   // Connects the store, which whatever else shows the templates may not have yet; what it has read of them is what a template just made is shown from.
   const { state, setStars } = useTemplates()
   const router = useRouter()
   const connection = useConnectionNotice()
-  const [existing, setExisting] = useState<CreateTemplateDialogProps['existing']>({ status: 'loading' })
   const { workspaceId } = gadget
 
-  useEffect(() => {
-    if (!open) return
-    let cancelled = false
-    setExisting({ status: 'loading' })
-    templateStore.createdFrom(workspaceId).then(
-      (summaries) => {
-        if (!cancelled) setExisting({ status: 'ready', templates: madeTemplatesOf(summaries) })
-      },
-      (error: unknown) => {
-        if (!cancelled) setExisting({ status: 'failed', message: messageOf(error) })
-      },
-    )
-    return () => {
-      cancelled = true
-    }
-  }, [open, workspaceId])
+  const { state: existing } = useMadeTemplates(workspaceId, gadget.workpieceId, !open)
 
   const href = (templateId: string) => router.buildLocation({ to: '/library/templates/$templateId', params: { templateId } }).href
   const view = (templateId: string) => {
@@ -71,9 +53,10 @@ export const CreateTemplate = ({ gadget, open, onOpenChange }: CreateTemplatePro
         blocked()
         return templateStore.create(gadget, { title, description })
       }}
-      onRelease={async (id) => {
+      onRelease={async (id, changes) => {
         blocked()
-        await templateStore.release(workspaceId, id)
+        await templateStore.release(workspaceId, id, changes)
+        onReleased?.(id)
       }}
       onViewTemplate={view}
       renderTemplate={(templateId) => {
@@ -82,7 +65,7 @@ export const CreateTemplate = ({ gadget, open, onOpenChange }: CreateTemplatePro
         const { title, description } = made.metadata
         const { noun, icon } = templateType(made)
         return (
-          // As wide as the Templates page's cards are, in the middle.
+          // A card's width, in the middle.
           <div className="mx-auto flex w-60 max-w-full flex-col">
             <TemplateCard
               title={title}

@@ -1,7 +1,6 @@
 import { BrowserNotificationsRow } from '@/blocks/BrowserNotificationsRow'
 import { MutedWorkspaces } from '@/blocks/MutedWorkspaces'
-import { SettingRow } from '@/blocks/SettingRow'
-import { SettingsGroup } from '@/blocks/SettingsGroup'
+import { SettingRow, SettingsGroup } from '@gadgets/ui'
 import { useBrowserPushSetting } from '@/notifications/useBrowserPush'
 import { useSetWorkspaceMuted, useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'

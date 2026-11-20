@@ -2,26 +2,16 @@ import { useState, type ReactNode } from 'react'
 import { CaretLeftIcon, FileArrowDownIcon, ShareNetworkIcon, WarningCircleIcon } from '@phosphor-icons/react'
 import { BindingRow } from '@/blocks/BindingRow'
 import { DeveloperIds, type DeveloperId } from '@/blocks/DeveloperIds'
-import type { MadeTemplate } from '@/blocks/CreateTemplateDialog'
+import type { MadeTemplate, TemplateChanges } from '@/blocks/CreateTemplateDialog'
 import { ExportItems, type ExportItemsProps } from '@/blocks/ExportItems'
-import { ListGroup } from '@/blocks/ListGroup'
+import { Button, ConfirmMenu, DropdownMenu, EditableTitle, HeaderBubble, ListGroup, PageLayout, type SaveOutcome, SettingRow, SettingsCard, SettingsGroup, Tabs } from '@gadgets/ui'
 import { MadeTemplateSettings } from '@/blocks/MadeTemplateSettings'
 import { ModelBindingDialog, type ModelChoice } from '@/blocks/ModelBindingDialog'
 import { PaneNotice } from '@/blocks/PaneNotice'
 import { PaneStatus, type PaneStatusProps } from '@/blocks/PaneStatus'
-import { SettingRow } from '@/blocks/SettingRow'
-import { SettingsCard, SettingsGroup } from '@/blocks/SettingsGroup'
-import type { SaveOutcome } from '@/blocks/useEditedField'
 import { WorkspaceCrumb } from '@/blocks/WorkspaceCrumb'
-import { Button } from '@/components/Button'
-import { ConfirmMenu } from '@/components/ConfirmMenu'
-import { DropdownMenu } from '@/components/DropdownMenu'
-import { EditableTitle } from '@/components/EditableTitle'
 import { FormatIcon, type FormatIconName } from '@/components/FormatIcon'
-import { HeaderBubble } from '@/components/HeaderBubble'
-import { Tabs } from '@/components/Tabs'
-import type { WorkspaceLook } from '@/components/workspaceLook'
-import { PageLayout } from '@/layouts/PageLayout'
+import type { WorkspaceLook } from '@/prefs/preferenceFields'
 import { bindingNameProblem, freeBindingName, groupBindings, MODEL_BINDING_NAMES, type GadgetBinding, type Listed } from './GadgetSettings'
 import type { BindingService } from './useGadgetSettings'
 
@@ -62,9 +52,8 @@ export type GadgetSettingsViewProps = {
    */
   templateUpdate?: { status?: 'available' | 'upToDate'; onUpdate: () => void }
   /**
-   * Templates: the way to the dialog that creates one from it, and those its workspace has made,
-   * once they are read, each of which can be released an update or deleted. The backend does not
-   * say which gadget each was made from. Left out where it cannot be.
+   * Templates: the way to the dialog that creates one from it, and those it has made, once they
+   * are read, each of which can be released an update or deleted. Left out where it cannot be.
    */
   template?: {
     made?: MadeTemplate[]
@@ -73,7 +62,8 @@ export type GadgetSettingsViewProps = {
     onOpen: (id: string) => void
     /** Keeps a new title and what it is for, rejecting with why it could not. */
     onEdit: (id: string, fields: { title: string; description: string }) => Promise<void>
-    onRelease: (id: string) => void
+    /** Releases what its gadget has changed since, as the template lists it. */
+    onRelease: (id: string, changes: TemplateChanges) => void
     onDelete: (id: string) => void
     /** The one being released to or deleted, and why the last of those did not go through. */
     busy?: string
@@ -302,7 +292,7 @@ export const GadgetSettingsView = ({
                       busy={template.busy !== undefined}
                       onOpen={() => template.onOpen(each.id)}
                       onEdit={(fields) => template.onEdit(each.id, fields)}
-                      onRelease={() => template.onRelease(each.id)}
+                      onRelease={() => each.changes && template.onRelease(each.id, each.changes)}
                       onDelete={() => template.onDelete(each.id)}
                     />
                   ))}

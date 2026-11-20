@@ -92,7 +92,7 @@ async function withWorkspace(fn: (workspace: Workspace) => Promise<void>): Promi
     impl.env = { ...impl.env, BLUEPRINTS };
     impl.ownerId = OWNER_USER_ID;
     impl.ensureAmbientCapsules = async () => {};
-    impl.markOutputsDirty = () => {};
+    impl.markListingDirty = () => {};
     let owner = {
       id: OWNER_USER_ID,
       whoami: async () => OWNER,
@@ -100,6 +100,7 @@ async function withWorkspace(fn: (workspace: Workspace) => Promise<void>): Promi
           ({ profile: OWNER, ...(modelId ? { aiModel: AI_MODEL } : {}) }),
       listGatekeeperVendors: async () => [],  // asked at the start of every agent turn
       updateBlueprint: async () => false,  // not featured
+      syncWorkspaceListing: () => {},
       deleteBlueprint: async () => {},
       setWorkspaceLastActive: async () => {},
     };
@@ -424,7 +425,7 @@ describe("publishing a blueprint", () => {
     expect(await unpublished()).toBeUndefined();
 
     await commitToGadget(impl, V2);
-    expect(await unpublished()).toBe(true);
+    expect(await unpublished()).toEqual({ code: true });
 
     await client.updateBlueprint(blueprint.id, { updateCode: true });
     expect(await unpublished()).toBeUndefined();
@@ -432,7 +433,7 @@ describe("publishing a blueprint", () => {
     // A head that has moved on to the files as they were published has nothing to publish, and
     // publishing it would mint nothing to say so.
     await commitToGadget(impl, V3);
-    expect(await unpublished()).toBe(true);
+    expect(await unpublished()).toEqual({ code: true });
     await commitToGadget(impl, V2);
     expect(await unpublished()).toBeUndefined();
 

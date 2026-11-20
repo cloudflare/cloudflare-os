@@ -811,7 +811,7 @@ describe("chat notification preferences", () => {
     await evictDurableObject(fixture.workspace);
     await evictDurableObject(reader);
     await withImpl(fixture.workspace, async impl => {
-      expect(impl.storage.version.get()).toBe(7);
+      expect(impl.storage.version.get()).toBe(OVERSEER_STORAGE_VERSION);
       expect(impl.storage.nextChatSequences.get(1)?.notificationParticipants).toBeUndefined();
       expect([...impl.storage.dirtyChats.list()]).toEqual([]);
       using scan = vi.spyOn(impl.storage.chats, "list");
@@ -1382,7 +1382,7 @@ describe("durable forward handoff", () => {
     await runInDurableObject(fixture.workspace, async instance => {
       const impl = instance.impl;
       using _ambient = vi.spyOn(impl, "ensureAmbientCapsules").mockResolvedValue(undefined);
-      using _outputs = vi.spyOn(impl, "markOutputsDirty").mockImplementation(() => {});
+      using _listing = vi.spyOn(impl, "markListingDirty").mockImplementation(() => {});
       using _restart = vi.spyOn(impl, "scheduleAccessRestart").mockResolvedValue(undefined);
       using closed = new NativeRpcStub<() => void>(() => {});
       using client = await instance.open(fixture.user.id.toString(), "owner", closed);

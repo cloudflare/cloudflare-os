@@ -40,17 +40,17 @@ afterEach(() => {
 })
 
 describe('LiveWorkspace', () => {
-  it('says what the workspace says of itself each time it does, and only what the list keeps', () => {
+  it('says what the workspace says of itself each time it does, and only what the list does not keep', () => {
     const workspace = fakeWorkspace()
     const changes: LiveWorkspaceFields[] = []
     new LiveWorkspace(workspace.open, (fields) => changes.push(fields)).start()
 
     workspace.latest().callback!(metadata({ pinned: true, totalCost: 3 }))
-    workspace.latest().callback!(metadata({ title: 'Roadmap', role: 'use' }))
+    workspace.latest().callback!(metadata({ title: 'Roadmap', role: 'use', containsRestrictedData: true }))
 
     expect(changes).toEqual([
-      { title: 'Plans', role: undefined, owner: undefined, containsRestrictedData: undefined, ownerInvitesOnly: undefined, totalCost: 3 },
-      { title: 'Roadmap', role: 'use', owner: undefined, containsRestrictedData: undefined, ownerInvitesOnly: undefined, totalCost: undefined },
+      { containsRestrictedData: undefined, ownerInvitesOnly: undefined, totalCost: 3 },
+      { containsRestrictedData: true, ownerInvitesOnly: undefined, totalCost: undefined },
     ])
   })
 
@@ -92,15 +92,14 @@ describe('LiveWorkspace', () => {
 })
 
 describe('sameLiveFields', () => {
-  it('takes a role the workspace leaves out as building, and absent flags as off', () => {
-    expect(sameLiveFields({ title: 'Plans', role: 'build', containsRestrictedData: false }, { title: 'Plans' })).toBe(true)
-    expect(sameLiveFields({ title: 'Plans' }, { title: 'Plans', role: 'use' })).toBe(false)
-    expect(sameLiveFields({ title: 'Plans', owner: { type: 'user', id: 'a', name: 'Ada' } }, { title: 'Plans' })).toBe(false)
+  it('takes absent flags as off', () => {
+    expect(sameLiveFields({ containsRestrictedData: false }, {})).toBe(true)
+    expect(sameLiveFields({}, { ownerInvitesOnly: true })).toBe(false)
   })
 
   it('sees what the workspace has cost change', () => {
-    expect(sameLiveFields({ title: 'Plans', totalCost: 1 }, { title: 'Plans', totalCost: 1 })).toBe(true)
-    expect(sameLiveFields({ title: 'Plans', totalCost: 1 }, { title: 'Plans', totalCost: 1.5 })).toBe(false)
-    expect(sameLiveFields({ title: 'Plans' }, { title: 'Plans', totalCost: 0.2 })).toBe(false)
+    expect(sameLiveFields({ totalCost: 1 }, { totalCost: 1 })).toBe(true)
+    expect(sameLiveFields({ totalCost: 1 }, { totalCost: 1.5 })).toBe(false)
+    expect(sameLiveFields({}, { totalCost: 0.2 })).toBe(false)
   })
 })

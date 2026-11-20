@@ -1,28 +1,20 @@
 import { useState } from 'react'
 import { ChecksIcon, FolderIcon } from '@phosphor-icons/react'
 import type { WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
-import { ListToolbar } from '@/blocks/ListToolbar'
+import { Button, HeaderBubble, ListToolbar, PageLayout, formatActivity, useListView, useNarrowScreen } from '@gadgets/ui'
 import { RemoveWorkspaceDialog } from '@/blocks/RemoveWorkspaceDialog'
 import { WorkspaceCard } from '@/blocks/WorkspaceCard'
 import { WorkspaceRow } from '@/blocks/WorkspaceRow'
-import { Button } from '@/components/Button'
 import { CardGrid } from '@/components/CardGrid'
 import { GroupedList } from '@/components/GroupedList'
-import { HeaderBubble } from '@/components/HeaderBubble'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
-import { useListView } from '@/hooks/useListView'
-import { useNarrowScreen } from '@/hooks/useNarrowScreen'
-import { PageLayout } from '@/layouts/PageLayout'
-import { readStarOrder, writeStarOrder } from '@/prefs/starOrder'
 import { useUnread } from '@/notifications/UnreadContext'
-import { useApi } from '@/rpc/ApiContext'
+import { usePreferences, usePreferencesSnapshot } from '@/prefs/UserPreferencesContext'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { useSetWorkspacePinned, useWorkspaces } from './WorkspacesContext'
-import { formatActivity } from './formatActivity'
-import { orderStarred } from './starredOrder'
-import { workspaceLabel } from './workspaceLabel'
+import { keepStarredOrder, leaveStarredOrder, orderStarred } from './starredOrder'
 import { useWorkspaceLooks } from './useWorkspaceLooks'
-import { useWorkspaceMemberships } from './useWorkspaceMemberships'
+import { workspaceLabel } from './workspaceLabel'
 import { useWorkspaceRemoval } from './useWorkspaceRemoval'
 import { removalOf } from './workspaceRemoval'
 import { workspaceList, workspaceTitle } from './workspaceList'
@@ -45,24 +37,21 @@ export type WorkspacesPaneProps = {
 export const WorkspacesPane = ({ onOpenWorkspace, workspaceHref, onNewWorkspace }: WorkspacesPaneProps) => {
   const workspaces = useWorkspaces()
   const setPinned = useSetWorkspacePinned()
+  const preferences = usePreferences()
+  const { starredWorkspaces } = usePreferencesSnapshot()
+  const looks = useWorkspaceLooks()
   const connection = useConnectionNotice()
-  const [starOrder, setStarOrder] = useState(readStarOrder)
   // Why the last star or unstar did not hold, or what was not marked read.
   const [starProblem, setStarProblem] = useState<string>()
   useDocumentTitle('Workspaces')
 
-  const { user } = useApi()
   const all = workspaces.status === 'ready' ? workspaces.workspaces : []
-  const memberships = useWorkspaceMemberships(all)
-  const looks = useWorkspaceLooks()
   const removing = useWorkspaceRemoval()
   const unread = useUnread()
   const unreadIds = new Set(unread?.totals.workspaces.keys())
-  const list = useListView('workspaces', workspaceList(all, memberships, user.id, unreadIds))
-  // Every starred one's place is kept, whichever of them the search and the filters leave.
-  const starredIds = orderStarred(all.filter(({ pinned }) => pinned), starOrder).map(({ id }) => id)
+  const list = useListView('workspaces', workspaceList(unreadIds))
   const shown = list.narrow(all)
-  const starred = orderStarred(shown.filter(({ pinned }) => pinned), starOrder)
+  const starred = orderStarred(shown.filter(({ pinned }) => pinned), starredWorkspaces)
   const timeOf = (workspace: WorkspaceMetadataWithTimestamps) => formatActivity(list.order.at(workspace))
   const groups = [
     ...(starred.length > 0 ? [{ key: 'starred', label: 'Starred', entries: starred.map((workspace) => ({ value: workspace, time: timeOf(workspace) })) }] : []),
@@ -73,15 +62,10 @@ export const WorkspacesPane = ({ onOpenWorkspace, workspaceHref, onNewWorkspace 
     })),
   ]
 
-  const keepOrder = (order: string[]) => {
-    setStarOrder(order)
-    writeStarOrder(order)
-  }
   const star = (id: string, on: boolean) => {
     setStarProblem(undefined)
     if (connection?.blocked()) return
-    // The whole order is kept, so that one starred elsewhere since stays after this one.
-    keepOrder(on ? [id, ...starredIds.filter((other) => other !== id)] : starredIds.filter((other) => other !== id))
+    if (on) leaveStarredOrder(preferences, id)
     setPinned(id, on).catch((error: unknown) => {
       setStarProblem(`Couldn’t ${on ? 'star' : 'unstar'} the workspace: ${error instanceof Error ? error.message : String(error)}`)
     })
@@ -97,23 +81,21 @@ export const WorkspacesPane = ({ onOpenWorkspace, workspaceHref, onNewWorkspace 
   }
 
   // Only with all of the starred there: putting some of them in order would lose the others' places.
-  const reorderStarred = list.narrowed ? undefined : keepOrder
+  const reorderStarred = list.narrowed ? undefined : (order: string[]) => {
+    if (!connection?.blocked()) keepStarredOrder(preferences, order)
+  }
   // What a row and a card are both given.
   const propsOf = (workspace: WorkspaceMetadataWithTimestamps) => ({
     workspaceLabel: workspaceLabel(workspace.title),
     workspaceLook: looks[workspace.id],
     title: workspaceTitle(workspace),
-    members: memberships.get(workspace.id)?.map(({ profile }) => ({ id: profile.id, name: profile.name, you: profile.id === user.id })),
     starred: workspace.pinned === true,
     onStarredChange: (on: boolean) => star(workspace.id, on),
     href: workspaceHref?.(workspace.id),
     unread: unread && unreadIds.has(workspace.id) ? { onMarkRead: () => markRead('the workspace', () => unread.markWorkspaceRead(workspace.id)) } : undefined,
     removal: {
       kind: removalOf(workspace),
-      onSelect: () => {
-        const members = memberships.get(workspace.id)
-        removing.ask({ id: workspace.id, title: workspace.title, removal: removalOf(workspace), others: members && members.length - 1 })
-      },
+      onSelect: () => removing.ask({ id: workspace.id, title: workspace.title, removal: removalOf(workspace) }),
     },
     onSelect: () => onOpenWorkspace(workspace.id),
   })

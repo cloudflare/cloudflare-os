@@ -1,9 +1,7 @@
 import type { ReactNode } from 'react'
 import { CheckCircleIcon } from '@phosphor-icons/react'
-import { Button } from '@/components/Button'
-import { ScrollArea } from '@/components/ScrollArea'
+import { Button, ScrollArea, Switch } from '@gadgets/ui'
 import { ServiceLogo } from '@/components/ServiceLogo'
-import { Switch } from '@/components/Switch'
 
 type Service = {
   key: string

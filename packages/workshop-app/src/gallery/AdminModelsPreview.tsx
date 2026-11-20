@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { AdminModelView, AdminSettingsView, GatewayModelTest } from '@gadgets/workshop-shared/api'
-import { Button } from '@/components/Button'
+import { Button } from '@gadgets/ui'
 import { AdminModelSettings } from '@/settings/admin/AdminModelSettings'
 import { AdminCapabilityProvider } from '@/settings/admin/AdminContext'
 import { never, PREVIEW_ADMIN_SETTINGS, previewAdmin, previewDelay } from './adminPreview'

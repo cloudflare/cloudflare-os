@@ -1,6 +1,5 @@
 import { ArrowCircleUpIcon, XIcon } from '@phosphor-icons/react'
-import { Button } from '@/components/Button'
-import { HeaderBubble } from '@/components/HeaderBubble'
+import { Button, HeaderBubble } from '@gadgets/ui'
 
 export type UpdateNoticeViewProps = {
   /** Opens where the update is seen to: the admin settings' Updates. */

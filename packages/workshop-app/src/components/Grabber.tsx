@@ -1,7 +1,6 @@
 import { useEffect, useRef, type PointerEvent as ReactPointerEvent } from 'react'
 import { animate, motion, useMotionValue, useTransform } from 'motion/react'
-import { useReducedMotion } from '@/hooks/useReducedMotion'
-import { motionTransition } from '@/hooks/motionTransition'
+import { motionTransition, useReducedMotion } from '@gadgets/ui'
 import { BOUNCY, HELD_LENGTH, HELD_OPACITY, IDLE_LENGTH, IDLE_OPACITY, SMOOTH, between, useCalm } from './pill'
 import { clampSize } from './resizing'
 

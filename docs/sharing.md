@@ -47,7 +47,7 @@ Share key security: the server generates a random 128-bit key and stores only it
 
 Storage shape: a link is its first key. The `shareKeys` table holds one row per key: the row for the first key carries the link's metadata and is keyed by that key's hash, which serves as the link id. Each later copy stores only an `alias` pointing back at that id.
 
-Share key redemption and workspace opening happen atomically in a single RPC call (`openWorkspace(id, shareKey)`), which allows subsequent calls to be pipelined on the returned `Overseer` stub without waiting for a separate redemption step.
+Share key redemption and workspace opening can happen atomically in a single RPC call (`openWorkspace(id, shareKey)`), which allows subsequent calls to be pipelined on the returned `Overseer` stub without waiting for a separate redemption step. `redeemWorkspaceShareLink(id, shareKey)` redeems a key on its own, opening no session, and resolves to whether the link works -- whether the caller now has access through it or already had it -- so that a client can tell a dead link from a later refusal of the open, such as a declined access confirmation. `false` says nothing of the workspace: an unknown key, a revoked or dead link, and a missing workspace all give it.
 
 Redemption is **one-step**: redeeming a key writes the recipient's `shareKey` edge immediately, making them a collaborator like any other before the redeeming open()'s observer verification runs. A recipient whose verification then fails keeps the edge -- see Known limitations.
 
@@ -140,7 +140,7 @@ Because edges carry grants, severing an upstream edge or revoking a link may eit
 Revocation is a two-phase process in the UI:
 
 1. **Preview.** Before changing anything, the frontend calls `previewRemoveCollaborator()` or `previewRevokeShareLink()`, which runs the effective-access computation with the corresponding hypothetical input and returns the `AffectedCollaborator`s whose access would narrow. If non-empty, the UI can warn the user (e.g. "removing Bob will also cut off Carol").
-2. **Confirm.** The frontend calls `removeCollaborator(profileId, keepUsers, gadgetId?)` or `revokeShareLink(linkId, keepUsers)`. Both perform the lazy edge-severance described above and return the actually-affected set.
+2. **Confirm.** The frontend calls `removeCollaborator(profileId, keepUsers, gadgetId?)` or `revokeShareLink(linkId, keepUsers)`. Both perform the lazy edge-severance described above and return the actually-affected set. `revokeShareLink(linkId, "everyone")` keeps everyone whose access narrows, as computed in the revocation's own synchronous step, so that no preview is needed and someone who joins between a preview and the revocation is kept too.
 
 ### keepUsers (optional re-rooting)
 
