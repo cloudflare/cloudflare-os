@@ -772,7 +772,8 @@ describe("revert and draft discard", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
       impl.cacheWarmer.start(1,
-          { sentAt: Date.now(), cacheLifetime: 5 * 60_000, resendCost: 0, expiryCost: 1, resend },
+          { sentAt: Date.now(), cacheLifetime: 5 * 60_000, resendCost: 0, ownTokens: 0,
+            expiryCost: 1, prefixes: () => false, resend },
           "model");
       expect(vi.getTimerCount()).toBe(1);
       await impl.revertChanges(1, materialized.sequence, USER);
