@@ -408,6 +408,19 @@ it('asks for the fonts its slides are set in, and draws without one it cannot ha
   expect(card('s1').querySelector<HTMLElement>('[data-id="t"] span')!.style.fontFamily).toContain('Poppins')
 })
 
+it('asks for a font a pending change names only once the change is saved, when the session lists it', async () => {
+  const set = (id: string) => slide([{ ...box('t', 20, 20), text: [{ runs: [run(id, { fontFamily: 'Poppins' })] }] }])
+  const { called, refresh } = await draw({
+    saved: listed('Fonts'),
+    changes: [edit(1, 's1', 't')],
+    drawings: { s1: { drawing: set('new'), saved: slide([box('t', 20, 20, 'old')]) } },
+  })
+  expect(called('readFont')).toEqual([])
+
+  await refresh({ changes: [], fonts: ['Poppins'], drawings: { s1: { drawing: set('new') } } })
+  expect(called('readFont')).toContainEqual(['Poppins', 400, false])
+})
+
 it('asks which fonts there are once for a deck read in parts, and counts only fonts that arrive against its limit', async () => {
   const families = Array.from({ length: 30 }, (_, n) => `Family ${'abcdefghijklmnopqrstuvwxyzABCD'[n]}`)
   const { called } = await draw({
