@@ -321,6 +321,62 @@ describe("gatekeeper-openapi-schema", { timeout: 120_000 }, () => {
     }
   });
 
+  it("writes a schema that parses for shapes real descriptions have", () => {
+    const dir = mkdtempSync(join(tmpdir(), "openapi-schema-"));
+    try {
+      const json = (schema: object) => ({ content: { "application/json": { schema } } });
+      const ok = (name: string) => ({ 200: { description: "Found.", ...json({ $ref: `#/components/schemas/${name}` }) } });
+      const responses = { 204: { description: "Done." } };
+      const spec = {
+        openapi: "3.0.3",
+        info: { title: "Things", version: "1" },
+        paths: {
+          "/grid": {
+            put: {
+              operationId: "grid/put",
+              requestBody: json({ type: "object", properties: { rows: { type: "array", items: { type: "array", items: { type: "number" } } } } }),
+              responses,
+            },
+          },
+          "/kinds": {
+            get: {
+              operationId: "kinds/list",
+              parameters: [{ name: "kind", in: "query", schema: { type: "array", items: { type: "string", nullable: true } } }],
+              responses,
+            },
+          },
+          "/blob": { post: { operationId: "blob/post", requestBody: { content: { "*/*": {} } }, responses } },
+          "/a": { get: { operationId: "a/get", responses: ok("job-result") } },
+          "/b": { get: { operationId: "b/get", responses: ok("job_result") } },
+        },
+        components: {
+          schemas: {
+            "job-result": { type: "object", properties: { a: { type: "string" } } },
+            job_result: { type: "object", properties: { b: { type: "number" } } },
+          },
+        },
+      };
+      const file = join(dir, "spec.json");
+      writeFileSync(file, JSON.stringify(spec));
+      const out = join(dir, "out");
+      const result = generate(file, out);
+      expect(result.status, result.stderr).toBe(0);
+      const schema = readTree(out)["index.d.ts"];
+      // `readonly` takes one array type.
+      expect(schema).toContain("rows?: readonly (readonly number[])[];");
+      // A query string has no null, and one in the type fails the whole schema's.
+      expect(schema).toContain("kind?: readonly string[];");
+      // The media type would otherwise end the comment it is named in.
+      expect(schema).toContain("its request body is not `application/json` (*\\/*).");
+      // Two models of one name are told apart.
+      expect(schema).toContain("export type JobResult = {");
+      expect(schema).toContain("export type JobResult2 = {");
+      expect(schema).toMatch(/path: "\/b";\n\s+response: JobResult2;/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("refuses to replace an output directory holding a file it did not generate", () => {
     const dir = mkdtempSync(join(tmpdir(), "openapi-schema-"));
     try {

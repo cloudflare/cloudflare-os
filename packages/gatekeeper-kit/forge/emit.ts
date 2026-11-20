@@ -62,7 +62,8 @@ function emitGroup(group: Group, names: ModelNames): File {
     f("/*");
     f(" * Operations left out, which the client cannot call:");
     for (const { method, reason } of skipped) {
-      f(` * - ${method.httpMethod} ${method.path}${operationId(method)}: ${reason}.`);
+      // A media type such as `*/*` would otherwise end the comment.
+      f(` * - ${method.httpMethod} ${method.path}${operationId(method)}: ${reason}.`.replaceAll("*/", "*\\/"));
     }
     f(" */");
     f();
@@ -130,13 +131,15 @@ class ModelNames {
         taken.add(name);
         return name;
       };
-      for (const model of group.models) taken.add(pascal(model));
-      for (const model of group.models) {
-        const response = pascal(model);
+      // Every model's own name first, so that only a name two models share is numbered:
+      // `job-result` and `job_result` are both `JobResult`.
+      const responses = group.models.map(model => claim(pascal(model)));
+      group.models.forEach((model, index) => {
+        const response = responses[index];
         this.#names.set(model, needsRequest.has(model)
           ? { response, request: claim(`${response}Input`) }
           : { response });
-      }
+      });
       if (group.methods.length > 0) {
         this.#apiNames.set(group, claim(`${group.path.map(name => name.pascal()).join("")}Api`));
       }
@@ -315,7 +318,8 @@ class Printer {
       return name.endsWith("[]") ? wrap("readonly ", needsParens(value) ? wrap("(", one, ")") : one, "[]") : one;
     }
     if (value.kind === "array" && isScalarLike(withoutNull(value.elem))) {
-      return exploded ? this.type(value, "request") : [["string"]];
+      // A parameter has no way to send null, so an item's `nullable` says nothing here.
+      return exploded ? this.type({ ...value, elem: withoutNull(value.elem) }, "request") : [["string"]];
     }
     return undefined;
   }
@@ -335,8 +339,11 @@ class Printer {
         return [[type.values.map(value => JSON.stringify(value)).join(" | ")]];
       case "array": {
         const elem = this.type(type.elem, mode);
-        const grouped = needsParens(type.elem) ? wrap("(", elem, ")") : elem;
-        return wrap(mode === "request" ? "readonly " : "", grouped, "[]");
+        const readonly = mode === "request" ? "readonly " : "";
+        // `readonly` applies to one array type, so an array of arrays brackets the inner one.
+        const parens = needsParens(type.elem) || (readonly !== "" && type.elem.kind === "array");
+        const grouped = parens ? wrap("(", elem, ")") : elem;
+        return wrap(readonly, grouped, "[]");
       }
       case "object":
         return this.#object(type, mode);
