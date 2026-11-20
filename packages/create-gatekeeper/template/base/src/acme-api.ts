@@ -4,6 +4,7 @@
 
 import { createOpenAPIClient, type Client } from "@gadgets/gatekeeper-kit/http";
 import { HttpError } from "@gadgets/gatekeeper-kit/http-errors";
+import type { Api } from "./acme-api-schema";
 import { API_ORIGIN } from "./acme-env";
 
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -13,18 +14,6 @@ export type WireUser = { id: string; name: string; email?: string; avatar_url?: 
 
 /** An item as the API returns one. */
 export type WireItem = { id: string; title: string; updated_at: string };
-
-// STOP(api): These operations are invented. Write the provider's here, or generate them from its
-// OpenAPI description (`gatekeeper-openapi-schema`, see the gatekeeper-kit README) and import the
-// generated `Api` instead.
-/** The operations the gatekeeper calls. */
-export type Api = {
-  get: [
-    { path: "/me"; response: WireUser },
-    { path: "/items/{id}"; response: WireItem },
-  ];
-  patch: [{ path: "/items/{id}"; body: { title: string }; response: WireItem }];
-};
 
 /** A typed client for the operations the gatekeeper uses. */
 export type Rest = Client<Api>;

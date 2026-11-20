@@ -2,6 +2,7 @@
 // those of each choice made on the command line, which replace a base file of the same path. The
 // template is written for an invented provider, "Acme Service", whose name is replaced throughout.
 
+import { createHash } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { join, relative } from "node:path";
 
@@ -10,8 +11,30 @@ const TEMPLATE = join(import.meta.dirname, "..", "template");
 /** How a user connects an account: an OAuth authorization-code grant, or a key they paste. */
 export const AUTH_KINDS = ["oauth", "api-key"] as const;
 
-/** The optional parts a template block can name. */
-const FEATURES = ["hooks"];
+/**
+ * The optional parts a template block can name: `openapi` is a package that has the provider's
+ * OpenAPI description.
+ */
+const FEATURES = ["hooks", "openapi"];
+
+/** The provider's OpenAPI description, as a generated package keeps it. */
+export const OPENAPI_DOCUMENT = "openapi.json";
+/** The operations the package's schema is generated for, as JSON Lines. */
+export const OPENAPI_OPERATIONS = "openapi-operations.jsonl";
+/** Where the generated schema goes. */
+export const OPENAPI_SCHEMA_DIR = "src/openapi";
+
+/** The provider's OpenAPI description, and what was chosen and generated from it. */
+export type OpenApiOptions = {
+  /** The description's text, which the package keeps a copy of and pins by hash. */
+  document: string;
+  /**
+   * The chosen operations, as the lines `gatekeeper-openapi-schema --list` prints for them, and
+   * the schema files generated for them, by path within `OPENAPI_SCHEMA_DIR`. Left out when no
+   * operation is chosen yet: the package then has the description and an empty list.
+   */
+  generated?: { operations: string; schema: ReadonlyMap<string, string> };
+};
 
 /**
  * The decisions that shape everything else, in the order the write-gatekeeper skill takes them.
@@ -28,6 +51,8 @@ export type ScaffoldOptions = {
   auth: (typeof AUTH_KINDS)[number];
   /** Whether the gatekeeper pushes events to gadgets, from a webhook the provider delivers to. */
   hooks?: boolean;
+  /** The provider's OpenAPI description, to call its API through a schema generated from it. */
+  openapi?: OpenApiOptions;
 };
 
 /** One generated file: its text, or the target of a symlink. */
@@ -113,8 +138,11 @@ export function scaffold(options: ScaffoldOptions): Map<string, ScaffoldFile> {
   const names = namesFor(options);
   if (!AUTH_KINDS.includes(options.auth)) throw new Error(`Unknown --auth "${options.auth}": use ${AUTH_KINDS.join(" or ")}.`);
   const files = new Map<string, ScaffoldFile>();
-  const features = new Set(options.hooks ? ["hooks"] : []);
-  for (const layer of ["base", `auth-${options.auth}`, ...features]) {
+  const { openapi } = options;
+  const features = new Set([...(options.hooks ? ["hooks"] : []), ...(openapi ? ["openapi"] : [])]);
+  // A package whose schema is generated calls through it: that layer replaces the invented schema.
+  const layers = ["base", `auth-${options.auth}`, ...(options.hooks ? ["hooks"] : []), ...(openapi?.generated ? ["openapi-schema"] : [])];
+  for (const layer of layers) {
     const root = join(TEMPLATE, layer);
     for (const path of walk(root)) {
       const module = relative(root, path).replaceAll("\\", "/");
@@ -128,7 +156,25 @@ export function scaffold(options: ScaffoldOptions): Map<string, ScaffoldFile> {
   // What an agent is shown is the declarations themselves, so the two cannot differ. Made here and
   // not kept in the template, where a checkout without symlinks would turn it into a file.
   files.set("src/types.txt", { symlink: "types.d.ts" });
+  if (openapi) addOpenApi(files, openapi);
   return files;
+}
+
+/**
+ * Adds the provider's description, the list of chosen operations, the schema generated for them,
+ * and the script that generates it again, which pins the description by its hash.
+ */
+function addOpenApi(files: Map<string, ScaffoldFile>, { document, generated }: OpenApiOptions): void {
+  files.set(OPENAPI_DOCUMENT, { text: document });
+  files.set(OPENAPI_OPERATIONS, { text: generated?.operations ?? "" });
+  for (const [path, text] of generated?.schema ?? []) files.set(`${OPENAPI_SCHEMA_DIR}/${path}`, { text });
+
+  const manifest = files.get("package.json");
+  if (!manifest || !("text" in manifest)) throw new Error("The template has no package.json.");
+  const parsed = JSON.parse(manifest.text) as { scripts: Record<string, string> };
+  parsed.scripts["generate:openapi"] = `gatekeeper-openapi-schema ${OPENAPI_DOCUMENT} --out ${OPENAPI_SCHEMA_DIR} ` +
+    `--sha256 ${createHash("sha256").update(document).digest("hex")} --operations ${OPENAPI_OPERATIONS}`;
+  files.set("package.json", { text: `${JSON.stringify(parsed, null, 2)}\n` });
 }
 
 /** Where a stop comes in review order: the `FIRST_STOPS` in turn, then the rest. */
