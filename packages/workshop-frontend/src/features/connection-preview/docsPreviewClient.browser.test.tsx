@@ -794,3 +794,18 @@ it('draws a paragraph that says only <table> as that text, and what follows it a
   // The tab is still drawn from its drawing.
   expect(parseFloat(look(run(blocks()[0], 'Intro')).fontSize)).toBeCloseTo(26 * POINT, 1)
 })
+
+it('folds one of two headings of the same name, and keeps the keyboard on its arrow', async () => {
+  await draw({ savedMarkdown: '# Results\n\n## First\n\n# Results\n\n## Second\n' })
+  const rows = () => [...frame!.contentDocument!.querySelectorAll<HTMLElement>('#rail .row')]
+  const arrows = () => [...frame!.contentDocument!.querySelectorAll<HTMLElement>('#rail .fold')]
+
+  // Nothing hidden holds the keyboard, and the frame is too narrow for the outline to stand open.
+  if (frame!.contentDocument!.getElementById('outline')!.hidden) frame!.contentDocument!.getElementById('outline-toggle')!.click()
+  arrows()[1].focus()
+  arrows()[1].click()
+
+  expect(rows().map(row => [text(row), row.hidden])).toEqual(
+    [['Results', false], ['First', false], ['Results', false], ['Second', true]])
+  expect(frame!.contentDocument!.activeElement).toBe(arrows()[1])
+})
