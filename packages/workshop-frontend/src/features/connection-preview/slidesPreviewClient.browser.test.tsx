@@ -52,7 +52,7 @@ let frame: HTMLIFrameElement | undefined
 afterEach(() => frame?.remove())
 
 /** Draws `deck` and resolves once every slide it is to draw is drawn. */
-async function draw(deck: Deck, width = 1100) {
+async function draw(deck: Deck, width = 1100, height = 700) {
   const calls: [string, ...unknown[]][] = []
   let loads = 0
   const called = (name: string) => calls.filter(([method]) => method === name).map(([, ...args]) => args)
@@ -95,7 +95,7 @@ async function draw(deck: Deck, width = 1100) {
   }
   Object.assign(window, { slidesPreviewGadget: gadget })
   frame = document.body.appendChild(document.createElement('iframe'))
-  frame.style.cssText = `width:${width}px;height:700px`
+  frame.style.cssText = `width:${width}px;height:${height}px`
   // Started as the gadget UI frame starts it: main(gadget) on the module's default export.
   const { entryUrl, importMap } = prepareUiPage(SLIDES_PREVIEW_BUNDLE, '')
   frame.srcdoc = `<body><script type="importmap">${importMap}</script><script type="module">
@@ -356,6 +356,20 @@ it('steps from slide to slide with a navigator at the foot of the frame, countin
   expect(pager.classList.contains('lifted')).toBe(true)
   next.click()
   await expect.poll(reading).toBe('Slide 2 of 3')
+})
+
+it('steps to the last slide in a pane tall enough to show several', async () => {
+  const { doc } = await draw({ saved: listed('One', 'Two', 'Three', 'Four'), drawings: {} }, 490, 900)
+  const pager = doc.getElementById('pager')!
+  const next = pager.querySelectorAll('button')[1]
+  const reading = () => pager.getAttribute('aria-label')
+
+  for (const slide of ['Slide 2 of 4', 'Slide 3 of 4', 'Slide 4 of 4']) {
+    expect(next.disabled).toBe(false)
+    next.click()
+    await expect.poll(reading).toBe(slide)
+  }
+  await expect.poll(() => next.disabled).toBe(true)
 })
 
 it('draws 50 slides, the changed ones and their neighbours first, and lists the rest by title', async () => {
