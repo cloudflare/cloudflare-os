@@ -7,7 +7,9 @@ import { useNewActionEntries } from './useNewActionEntries'
 /**
  * Opens a connection's preview when work on it starts: at the first read or change of a
  * connection that offers one, and at each change queued after that. Work from before the
- * workspace was opened does not count, and a connection whose preview was dismissed stays closed.
+ * workspace was first opened does not count; work done while it was left, or while its connection
+ * was lost, is delivered on the return and does. A connection whose preview was dismissed stays
+ * closed.
  * Connections and log entries are numbered within a workspace, so another workspace starts afresh.
  *
  * Returns the function that dismisses a connection.
