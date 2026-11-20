@@ -1,6 +1,8 @@
 // End-to-end interop of `./oauth-client` with the connect handshake and `CredentialCoordinator`,
-// in workerd because `claimOAuth` compares nonces with `crypto.subtle.timingSafeEqual`.
+// in workerd because `claimOAuth` compares nonces with `crypto.subtle.timingSafeEqual`, and the
+// counting of its requests through an upstream, on the runtime's own answers.
 
+import type { SubserviceCallInput, SubserviceTally } from "@gadgets/observability/metrics";
 import { describe, expect, it } from "vitest";
 import { advanceToOAuth, claimOAuth, putInitiation } from "../../src/connect-handshake";
 import { CredentialCoordinator, isCredentialsExpired } from "../../src/credentials";
@@ -13,6 +15,7 @@ import {
   oauthRefresh,
   pkceChallenge,
 } from "../../src/oauth-client";
+import { defineUpstream, summedInto } from "../../src/upstream";
 import { fakeKv } from "../fake-kv";
 
 const REDIRECT_URI = "https://gatekeeper.example/oauth";
@@ -186,5 +189,35 @@ describe("oauth-client with the connect handshake and CredentialCoordinator", ()
     expect(notified).toBe(1);
     expect(isCredentialsExpired(await rejection(creds.fresh(refresh)))).toBe(true);
     expect(provider.tokenRequests).toHaveLength(1);
+  });
+});
+
+describe("oauth-client through an upstream", () => {
+  it.each<[string, () => Response, "returned" | "threw", [string, string | undefined, number]]>([
+    ["a 403", () => json({ error: "access_denied" }, 403), "threw", ["error", "http", 403]],
+    ["a redirect", () => new Response(null, { status: 302, headers: { Location: TOKEN_URL } }),
+      "threw", ["error", "http", 302]],
+    ["a 500", () => new Response("down", { status: 500 }), "threw", ["error", "http", 500]],
+    ["a 429", () => json({ error: "slow_down" }, 429), "threw", ["refused", "rate", 429]],
+    ["a 200", () => json({ access_token: "at", expires_in: 3600 }), "returned", ["success", undefined, 200]],
+  ])("counts %s by the client's own rule, under an upstream whose `succeeded` takes every status", async (_name, respond, settles, counted) => {
+    const added: SubserviceCallInput[] = [];
+    const tally: SubserviceTally = { add: input => { added.push(input); }, flush() {} };
+    const client = new OAuthClient({
+      label: "Vendor",
+      client: { method: "basic", id: "client", secret: "secret" },
+      tokenEndpoint: TOKEN_URL,
+      upstream: defineUpstream({ vendorId: "vendor", fetch: async () => respond(), succeeded: () => true }),
+    });
+
+    const settled = await summedInto(tally, () => client.refresh({ refreshToken: "rt" })).then(
+      tokens => ({ returned: tokens.accessToken }),
+      (threw: unknown) => ({ threw }));
+
+    expect(settled).toEqual(settles === "returned"
+      ? { returned: "at" }
+      : { threw: expect.objectContaining({ name: "OAuthResponseError", httpStatus: counted[2] }) });
+    expect(added.map(call => [call.operation, call.outcome, call.reason, call.httpStatus]))
+      .toEqual([["token.refresh", ...counted]]);
   });
 });

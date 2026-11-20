@@ -1,4 +1,8 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { env } from "cloudflare:workers";
+import {
+  COMMON_SLOTS, SUBSERVICE_V1_SLOTS, type BlobSlot, type DoubleSlot,
+} from "@gadgets/observability/metrics";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CredentialCoordinator,
   CredentialsExpiredError,
@@ -18,6 +22,7 @@ import {
   pkceChallenge,
 } from "../src/oauth-client";
 import { ResponseTooLargeError } from "../src/response-body";
+import { defineUpstream, type Upstream, type UpstreamFetch } from "../src/upstream";
 import { fakeKv } from "./fake-kv";
 
 const TOKEN_URL = "https://vendor.example/oauth/token";
@@ -724,5 +729,530 @@ describe("oauthRefresh with CredentialCoordinator", () => {
       expiredMessage: "Reconnect.",
     });
     expect((await refresh(expired({ scopes: ["read", "write"] }))).scopes).toEqual(["read"]);
+  });
+});
+
+// The client the two paths are compared with. Nothing of PRIVATE may reach a metric.
+const COUNTED = {
+  ...BASE,
+  client: { method: "basic", id: "client-1", secret: "s3cret-value" },
+  headers: { "User-Agent": "kit-suite" },
+} satisfies OAuthClientOptions;
+const DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
+const PRIVATE = [
+  "client-1", "s3cret-value", "the-code", "the-verifier", "the-refresh-token", "vendor.example",
+  "device_code", "Basic", "kit-suite",
+];
+// The reason the caller of an aborted request aborts with.
+const STOP = new Error("stop");
+
+// What one call of `fetch` was handed, the signal aside.
+type Handed = {
+  input: unknown;
+  keys: string[];
+  method: string | undefined;
+  redirect: string | undefined;
+  headers: [string, string][];
+  body: string;
+  form: boolean;
+  signalled: boolean;
+};
+
+/** A fake endpoint recording what `fetch` is handed, answered by `respond`. */
+function endpoint(respond: (init: RequestInit) => Response | Promise<Response>) {
+  const handed: Handed[] = [];
+  const fetch: UpstreamFetch = async (input, init = {}) => {
+    handed.push({
+      input,
+      keys: Object.keys(init).toSorted(),
+      method: init.method,
+      redirect: init.redirect,
+      headers: [...new Headers(init.headers)],
+      body: String(init.body),
+      form: init.body instanceof URLSearchParams,
+      signalled: init.signal instanceof AbortSignal,
+    });
+    return respond(init);
+  };
+  return { handed, fetch };
+}
+
+/** An answer that never comes: it fails with the reason of the request's signal once that aborts. */
+function unanswered(init: RequestInit): Promise<Response> {
+  return new Promise((_resolve, reject) => {
+    const { signal } = init;
+    if (!signal) return reject(new Error("The request was handed no signal."));
+    if (signal.aborted) reject(signal.reason);
+    else signal.addEventListener("abort", () => reject(signal.reason));
+  });
+}
+
+/** A 200 whose body never ends: it fails with the reason of the request's signal once that aborts. */
+function stalled(init: RequestInit): Response {
+  const { signal } = init;
+  return new Response(new ReadableStream<Uint8Array>({
+    start(controller) {
+      signal?.addEventListener("abort", () => controller.error(signal.reason));
+    },
+  }));
+}
+
+type Settled = { returned: unknown } | { threw: unknown };
+
+/** What a call returned or threw, an error being what its caller can tell of it. */
+function told(settled: Settled): Settled {
+  if ("returned" in settled) return settled;
+  const { threw } = settled;
+  if (threw === STOP) return { threw: "the caller's reason itself" };
+  if (threw instanceof OAuthResponseError) {
+    return { threw: {
+      type: "OAuthResponseError", message: threw.message, httpStatus: threw.httpStatus,
+      oauthError: threw.oauthError, description: threw.description,
+    } };
+  }
+  if (threw instanceof Error) {
+    return { threw: { type: threw.constructor.name, name: threw.name, message: threw.message } };
+  }
+  return settled;
+}
+
+// One call of the client, with its caller's signal.
+type Run = (client: OAuthClient, signal: AbortSignal) => Promise<unknown>;
+
+function tokenRequest(grantType?: string): Run {
+  const params = { code: "the-code", ...(grantType === undefined ? {} : { grant_type: grantType }) };
+  return (client, signal) => client.request("token", params, { signal });
+}
+
+// Each call, the operation it is counted as, and whether its method requires an access token.
+const CALLS: [call: string, operation: string, tokenRequired: boolean, run: Run][] = [
+  ["exchangeCode", "token.exchange", true, (client, signal) => client.exchangeCode({
+    code: "the-code", redirectUri: REDIRECT_URI, codeVerifier: "the-verifier", signal })],
+  ["refresh", "token.refresh", true, (client, signal) => client.refresh({
+    refreshToken: "the-refresh-token", scopes: ["read"], signal })],
+  ["revoke", "token.revoke", false, (client, signal) => client.revoke({
+    token: "the-refresh-token", tokenTypeHint: "refresh_token", signal })],
+  ['request("token") for authorization_code', "token.exchange", false,
+    tokenRequest("authorization_code")],
+  ['request("token") for refresh_token', "token.refresh", false, tokenRequest("refresh_token")],
+  ['request("token") for client_credentials', "token.client", false,
+    tokenRequest("client_credentials")],
+  ['request("token") for a grant type outside the table', "token.request", false,
+    tokenRequest(DEVICE_GRANT)],
+  ['request("token") for the grant type "constructor"', "token.request", false,
+    tokenRequest("constructor")],
+  ['request("token") with no grant type', "token.request", false, tokenRequest()],
+  ['request("revocation")', "token.revoke", false, (client, signal) =>
+    client.request("revocation", { token: "the-refresh-token" }, { signal })],
+  ['request("revocation") with a grant type of the table', "token.revoke", false, (client, signal) =>
+    client.request("revocation", { token: "the-refresh-token", grant_type: "authorization_code" },
+      { signal })],
+];
+
+// A point's outcome, reason and HTTP status.
+type Counted = [outcome: string, reason: string, httpStatus: number];
+
+// What an endpoint does with a request, and what that makes of a call: the error it throws
+// (none: it returns) and the point an upstream counts it as (none: it is not counted).
+type Scenario = {
+  name: string;
+  options?: Pick<OAuthClientOptions, "timeoutMs" | "maxResponseBytes">;
+  respond: (init: RequestInit, abort: () => void) => Response | Promise<Response>;
+  expected: (tokenRequired: boolean) => { threw?: unknown; counted?: Counted };
+};
+
+function rejected(httpStatus: number, oauthError?: string, description?: string) {
+  const malformed = oauthError === undefined && httpStatus === 200;
+  return {
+    type: "OAuthResponseError",
+    message: malformed
+      ? "Vendor returned a malformed OAuth response."
+      : `Vendor rejected the OAuth request (HTTP ${httpStatus}${oauthError ? `, ${oauthError}` : ""}).`,
+    httpStatus, oauthError, description,
+  };
+}
+
+const SCENARIOS: Scenario[] = [
+  {
+    name: "with tokens",
+    respond: () => json({ access_token: "at", token_type: "bearer", refresh_token: "rt2",
+      expires_in: 3600, scope: "read write" }),
+    expected: () => ({ counted: ["success", "", 200] }),
+  },
+  {
+    name: "with a 400 and an OAuth error",
+    respond: () => json({ error: "invalid_grant", error_description: "expired" }, 400),
+    expected: () => ({
+      threw: rejected(400, "invalid_grant", "expired"), counted: ["error", "http", 400] }),
+  },
+  {
+    name: "with a 429",
+    respond: () => json({ error: "slow_down" }, 429),
+    expected: () => ({ threw: rejected(429, "slow_down"), counted: ["refused", "rate", 429] }),
+  },
+  {
+    name: "with a 200 carrying an error",
+    respond: () => json({ error: "bad_verification_code" }),
+    expected: () => ({
+      threw: rejected(200, "bad_verification_code"), counted: ["error", "api", 200] }),
+  },
+  {
+    name: "with a 200 and no access token",
+    respond: () => json({ token_type: "bearer" }),
+    expected: tokenRequired => tokenRequired
+      ? { threw: rejected(200), counted: ["error", "api", 200] }
+      : { counted: ["success", "", 200] },
+  },
+  {
+    name: "with a redirect",
+    respond: () => new Response(null,
+      { status: 307, headers: { Location: "https://attacker.example/token" } }),
+    expected: () => ({ threw: rejected(307), counted: ["error", "http", 307] }),
+  },
+  {
+    name: "with an oversized body",
+    options: { maxResponseBytes: 16 },
+    respond: () => json({ access_token: "a".repeat(100) }),
+    expected: () => ({
+      threw: { type: "ResponseTooLargeError", name: "Error",
+        message: "The server's response exceeded 16 bytes." },
+      counted: ["error", "parse", 200],
+    }),
+  },
+  {
+    name: "by nothing before its timeout",
+    options: { timeoutMs: 10 },
+    respond: unanswered,
+    expected: () => ({
+      threw: expect.objectContaining({ name: "TimeoutError" }), counted: ["error", "timeout", 0] }),
+  },
+  {
+    name: "with a body its timeout cuts off",
+    options: { timeoutMs: 10 },
+    respond: stalled,
+    expected: () => ({
+      threw: expect.objectContaining({ name: "TimeoutError" }), counted: ["error", "timeout", 200] }),
+  },
+  {
+    name: "with a body its caller's abort cuts off",
+    respond: (init, abort) => {
+      setTimeout(abort, 1);
+      return stalled(init);
+    },
+    expected: () => ({ threw: "the caller's reason itself" }),
+  },
+  {
+    name: "by nothing before its caller aborts",
+    respond: (init, abort) => {
+      const pending = unanswered(init);
+      abort();
+      return pending;
+    },
+    expected: () => ({ threw: "the caller's reason itself" }),
+  },
+];
+
+/** Runs one call on a client built over a fake endpoint's `fetch`. */
+async function attempt(
+  client: (fetch: UpstreamFetch) => OAuthClient, respond: Scenario["respond"], run: Run,
+): Promise<{ handed: Handed[]; settled: Settled }> {
+  const controller = new AbortController();
+  const { handed, fetch } = endpoint(init => respond(init, () => controller.abort(STOP)));
+  const settled = await run(client(fetch), controller.signal).then(
+    (returned): Settled => ({ returned }), (threw): Settled => ({ threw }));
+  return { handed, settled };
+}
+
+/** A written point's value in one column. */
+function column(point: AnalyticsEngineDataPoint, slot: BlobSlot | DoubleSlot) {
+  const values = slot.startsWith("blob") ? point.blobs : point.doubles;
+  return values?.[Number(slot.replace(/\D+/, "")) - 1];
+}
+
+/** Tokens answered after 30 ms, unless the signal the request was handed aborts first. */
+function slow(init: RequestInit): Promise<Response> {
+  return Promise.race([
+    unanswered(init),
+    new Promise<Response>(resolve => setTimeout(() => resolve(json({ access_token: "at" })), 30)),
+  ]);
+}
+
+// Other ways a client authenticates and encodes its body than `COUNTED`'s.
+const SECRET_IN_BODY = { method: "post", id: "client-1", secret: "s3cret-value" } as const;
+const CLIENTS: [name: string, options: Pick<OAuthClientOptions, "client" | "bodyEncoding">][] = [
+  ["form-encoded basic credentials",
+    { client: { method: "basic", id: "client-1", secret: "s3cret+/=value", encoding: "form" } }],
+  ["its secret in the body", { client: SECRET_IN_BODY }],
+  ["no secret", { client: { method: "none", id: "client-1" } }],
+  ["a JSON body", { client: COUNTED.client, bodyEncoding: "json" }],
+  ["its secret in a JSON body", { client: SECRET_IN_BODY, bodyEncoding: "json" }],
+];
+
+/** Answers with tokens. */
+function withTokens(): Response {
+  return json({ access_token: "at", refresh_token: "rt2", expires_in: 3600 });
+}
+
+/** One refresh, with its caller's signal. */
+const refreshing: Run = (client, signal) => client.refresh({ refreshToken: "the-refresh-token", signal });
+
+/** A module factory for a module that `oauth-client` may not load. */
+function refused(module: string) {
+  return () => {
+    throw new Error(`oauth-client loaded ${module}`);
+  };
+}
+
+describe("OAuthClient through an upstream", () => {
+  const ambient = env as { METRICS?: AnalyticsEngineDataset; SUBSERVICE_METRICS?: string };
+  let points: AnalyticsEngineDataPoint[];
+
+  beforeEach(() => {
+    points = [];
+    ambient.METRICS = { writeDataPoint: point => { if (point) points.push(point); } };
+    ambient.SUBSERVICE_METRICS = "true";
+    // One instant for both paths, so that the expiry of the tokens they return is the same.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(1_000_000);
+  });
+
+  afterEach(() => {
+    delete ambient.METRICS;
+    delete ambient.SUBSERVICE_METRICS;
+    vi.useRealTimers();
+    vi.doUnmock("../src/upstream");
+    vi.doUnmock("node:async_hooks");
+    vi.doUnmock("cloudflare:workers");
+    vi.resetModules();
+  });
+
+  // Each point written, as its source, service, operation, outcome, reason and HTTP status.
+  function written() {
+    return points.map(point => [
+      SUBSERVICE_V1_SLOTS.source, SUBSERVICE_V1_SLOTS.service, SUBSERVICE_V1_SLOTS.operation,
+      COMMON_SLOTS.outcome, SUBSERVICE_V1_SLOTS.reason, SUBSERVICE_V1_SLOTS.httpStatus,
+    ].map(slot => column(point, slot)));
+  }
+
+  describe.each(SCENARIOS)("answered $name", ({ options, respond, expected }) => {
+    it.each(CALLS)("%s hands fetch the same request, settles the same, and is counted as %s",
+      async (_, operation, tokenRequired, run) => {
+        const { threw, counted } = expected(tokenRequired);
+
+        const plain = await attempt(
+          fetch => new OAuthClient({ ...COUNTED, ...options, fetch }), respond, run);
+        expect(points).toEqual([]);
+        const through = await attempt(fetch => new OAuthClient({
+          ...COUNTED, ...options, upstream: defineUpstream({ vendorId: "vendor", fetch }),
+        }), respond, run);
+
+        expect(plain.handed).toHaveLength(1);
+        expect(plain.handed[0]).toMatchObject({
+          method: "POST", redirect: "manual", signalled: true,
+          keys: ["body", "headers", "method", "redirect", "signal"],
+        });
+        expect(through.handed).toEqual(plain.handed);
+
+        expect(Object.keys(plain.settled)).toEqual([threw === undefined ? "returned" : "threw"]);
+        if (threw !== undefined) expect(told(plain.settled)).toEqual({ threw });
+        expect(told(through.settled)).toEqual(told(plain.settled));
+
+        expect(written()).toEqual(counted === undefined
+          ? [] : [["gatekeeper.vendor.api", "vendor", operation, ...counted]]);
+        for (const secret of PRIVATE) expect(JSON.stringify(points)).not.toContain(secret);
+      });
+  });
+
+  describe.each(CLIENTS)("of a client with %s", (_name, options) => {
+    it.each(CALLS)("%s hands fetch the same request and returns the same", async (_, operation, __, run) => {
+      const plain = await attempt(
+        fetch => new OAuthClient({ ...COUNTED, ...options, fetch }), withTokens, run);
+      const through = await attempt(fetch => new OAuthClient({
+        ...COUNTED, ...options, upstream: defineUpstream({ vendorId: "vendor", fetch }),
+      }), withTokens, run);
+
+      expect(plain.handed).toHaveLength(1);
+      // The request is this client's own, and not that of the client the table above runs on.
+      expect(plain.handed[0].form).toBe(options.bodyEncoding !== "json");
+      expect(plain.handed[0].headers.some(([name]) => name === "authorization"))
+        .toBe(options.client.method === "basic");
+      expect(plain.handed[0].body.includes("s3cret-value")).toBe(options.client.method === "post");
+      expect(through.handed).toEqual(plain.handed);
+      expect(Object.keys(plain.settled)).toEqual(["returned"]);
+      expect(through.settled).toEqual(plain.settled);
+      expect(written()).toEqual([["gatekeeper.vendor.api", "vendor", operation, "success", "", 200]]);
+    });
+  });
+
+  it.each([undefined, null])(
+    'sends a request("token") whose parameters are %s, with an upstream and without', async params => {
+      const plain = endpoint(() => json({}));
+      const through = endpoint(() => json({}));
+      const clients = [
+        new OAuthClient({ ...COUNTED, client: SECRET_IN_BODY, fetch: plain.fetch }),
+        new OAuthClient({
+          ...COUNTED, client: SECRET_IN_BODY,
+          upstream: defineUpstream({ vendorId: "vendor", fetch: through.fetch }),
+        }),
+      ];
+
+      // What a caller that is not type-checked may pass.
+      for (const client of clients) {
+        expect(await Reflect.apply(client.request, client, ["token", params])).toEqual({});
+      }
+
+      expect(plain.handed).toHaveLength(1);
+      expect(plain.handed[0].body).toBe("client_id=client-1&client_secret=s3cret-value");
+      expect(through.handed).toEqual(plain.handed);
+      expect(written()).toEqual([["gatekeeper.vendor.api", "vendor", "token.request", "success", "", 200]]);
+    });
+
+  it("cancels the body of a redirect once, with an upstream and without", async () => {
+    let cancels = 0;
+    const { fetch } = endpoint(() => new Response(
+      new ReadableStream<Uint8Array>({ cancel() { cancels++; } }),
+      { status: 307, headers: { Location: "https://attacker.example/token" } }));
+
+    const plain = await responseError(
+      new OAuthClient({ ...BASE, fetch }).refresh({ refreshToken: "rt" }));
+    expect(cancels).toBe(1);
+    const through = await responseError(new OAuthClient({
+      ...BASE, upstream: defineUpstream({ vendorId: "vendor", fetch }),
+    }).refresh({ refreshToken: "rt" }));
+
+    expect(cancels).toBe(2);
+    expect([plain.httpStatus, through.httpStatus]).toEqual([307, 307]);
+  });
+
+  it("returns the tokens of a client without one", async () => {
+    const { fetch } = endpoint(() => json({ access_token: "at", refresh_token: "rt2",
+      expires_in: 3600, scope: "read write" }));
+    const client = new OAuthClient({ ...BASE, upstream: defineUpstream({ vendorId: "vendor", fetch }) });
+
+    expect(await client.exchangeCode({ code: "c", redirectUri: REDIRECT_URI })).toEqual({
+      accessToken: "at", refreshToken: "rt2", expiresAt: 1_000_000 + 3_600_000,
+      scopes: ["read", "write"],
+      raw: { access_token: "at", refresh_token: "rt2", expires_in: 3600, scope: "read write" },
+    });
+  });
+
+  it("refuses an upstream beside a fetch", () => {
+    const { fetch } = endpoint(() => json({ access_token: "at" }));
+    expect(() => new OAuthClient({ ...BASE, fetch, upstream: defineUpstream({ vendorId: "vendor" }) }))
+      .toThrow("Pass upstream or fetch, not both");
+  });
+
+  it("sends once and refuses redirects under an upstream that retries and follows them", async () => {
+    const { handed, fetch } = endpoint(() =>
+      new Response("down", { status: 503, headers: { "Retry-After": "0" } }));
+    const upstream = defineUpstream({
+      vendorId: "vendor", service: "identity", fetch, redirect: "follow",
+      retry: { baseDelayMs: 0, retryable: () => true },
+    });
+
+    const error = await responseError(
+      new OAuthClient({ ...BASE, upstream }).refresh({ refreshToken: "rt" }));
+
+    expect(error.httpStatus).toBe(503);
+    expect(handed.map(sent => sent.redirect)).toEqual(["manual"]);
+    expect(written()).toEqual([
+      ["gatekeeper.vendor.api", "identity", "token.refresh", "error", "http", 503],
+    ]);
+  });
+
+  it.each<[string, () => Response, Counted]>([
+    ["a 403", () => json({ error: "access_denied" }, 403), ["error", "http", 403]],
+    ["a redirect", () => new Response(null, { status: 302, headers: { Location: TOKEN_URL } }),
+      ["error", "http", 302]],
+    ["a 500", () => new Response("down", { status: 500 }), ["error", "http", 500]],
+    ["a 429", () => json({ error: "slow_down" }, 429), ["refused", "rate", 429]],
+    ["a 403 whose body is too large", () => json({ error: "a".repeat(100) }, 403), ["error", "http", 403]],
+    ["a 200", withTokens, ["success", "", 200]],
+    ["a 200 whose body is too large", () => json({ access_token: "a".repeat(100) }), ["error", "parse", 200]],
+  ])("counts %s by its own rule, whatever the upstream's `succeeded` says of a status", async (_name, respond, counted) => {
+    const options = { ...COUNTED, maxResponseBytes: 64 };
+    const plain = await attempt(fetch => new OAuthClient({ ...options, fetch }), respond, refreshing);
+
+    // The rule of a provider's API that takes every status for a success, and of one that takes none.
+    for (const succeeded of [() => true, () => false]) {
+      points = [];
+      const through = await attempt(fetch => new OAuthClient({
+        ...options, upstream: defineUpstream({ vendorId: "vendor", fetch, succeeded }),
+      }), respond, refreshing);
+
+      expect(through.handed).toEqual(plain.handed);
+      expect(told(through.settled)).toEqual(told(plain.settled));
+      expect(Object.keys(through.settled)).toEqual([counted[0] === "success" ? "returned" : "threw"]);
+      expect(written()).toEqual([["gatekeeper.vendor.api", "vendor", "token.refresh", ...counted]]);
+    }
+  });
+
+  it("sends through the upstream it is given, and derives no other from it", async () => {
+    const { handed, fetch } = endpoint(() => json({ error: "access_denied" }, 403));
+    const defined = defineUpstream({ vendorId: "vendor", fetch, succeeded: () => true });
+    let reads = 0;
+    // An upstream a gatekeeper wraps: its own `read` over the defined one's.
+    const wrapped: Upstream = {
+      ...defined,
+      read(input, init, parse, answer) {
+        reads++;
+        return defined.read(input, init, parse, answer);
+      },
+      with() {
+        throw new Error("the client derived an upstream");
+      },
+    };
+
+    const error = await responseError(
+      new OAuthClient({ ...BASE, upstream: wrapped }).refresh({ refreshToken: "rt" }));
+
+    expect(error.httpStatus).toBe(403);
+    expect(handed).toHaveLength(1);
+    expect(reads).toBe(1);
+    expect(written()).toEqual([
+      ["gatekeeper.vendor.api", "vendor", "token.refresh", "error", "http", 403],
+    ]);
+  });
+
+  it("times a request by its own timeoutMs under an upstream with a shorter one", async () => {
+    const plain = endpoint(slow);
+    const through = endpoint(slow);
+    const upstream = defineUpstream({ vendorId: "vendor", fetch: through.fetch, timeoutMs: 1 });
+
+    const tokens = await new OAuthClient({ ...BASE, fetch: plain.fetch }).refresh({ refreshToken: "rt" });
+    expect(await new OAuthClient({ ...BASE, upstream }).refresh({ refreshToken: "rt" }))
+      .toEqual(tokens);
+
+    // A caller that gives no signal: `fetch` is handed the timeout's alone, on both paths.
+    expect(plain.handed).toHaveLength(1);
+    expect(plain.handed[0].signalled).toBe(true);
+    expect(through.handed).toEqual(plain.handed);
+  });
+
+  it("sends with the upstream's fetch, the global read at each request", async () => {
+    const client = new OAuthClient({ ...BASE, upstream: defineUpstream({ vendorId: "vendor" }) });
+    const stubbed = provider();
+    vi.stubGlobal("fetch", stubbed.fetch);
+
+    await client.refresh({ refreshToken: "rt" });
+
+    expect(stubbed.calls).toHaveLength(1);
+    expect(written()).toEqual([
+      ["gatekeeper.vendor.api", "vendor", "token.refresh", "success", "", 200],
+    ]);
+  });
+
+  it("loads without the upstream leaf, node:async_hooks or cloudflare:workers", async () => {
+    vi.resetModules();
+    vi.doMock("../src/upstream", refused("./upstream"));
+    vi.doMock("node:async_hooks", refused("node:async_hooks"));
+    vi.doMock("cloudflare:workers", refused("cloudflare:workers"));
+
+    const loaded = await import("../src/oauth-client");
+    const { calls, fetch } = provider();
+    await new loaded.OAuthClient({ ...BASE, fetch }).refresh({ refreshToken: "rt" });
+
+    expect(loaded.OAuthClient).not.toBe(OAuthClient);
+    expect(calls).toHaveLength(1);
   });
 });
