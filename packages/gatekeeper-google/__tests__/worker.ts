@@ -502,8 +502,8 @@ export class TestHooks extends DurableObject<Env> {
       let read = [];
       for (let id of imageIds) {
         try {
-          let { mimeType, bytes } = await session.readImage(id, tabId);
-          read.push({ mimeType, text: new TextDecoder().decode(bytes) });
+          let { mimeType, content } = await session.readImage(id, tabId);
+          read.push({ mimeType, text: await new Response(content).text() });
         } catch (error) {
           read.push({ error: (error as Error).message });
         }

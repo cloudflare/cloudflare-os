@@ -340,8 +340,9 @@ listImages(tabId: string): Promise<GoogleDocImage[]>;    // one for each [Image]
   gives each placeholder's ID, size and alt text in order, so that `readImage()` can be called
   without the drawing or its types. `getStyles()`, which the preview read before the drawing,
   is gone: the drawing holds all it returned, in full.
-- Image bytes are returned whole, not streamed: a stream from the backend session does not reach
-  the UI frame (capnweb 0.12.0). Google's image addresses lapse; a read that finds one lapsed
+- Image bytes are streamed, read from Google as the frame reads them, and fail partway past
+  10 MB where Google did not state the size. (A stream from the backend session reaches the UI
+  frame from capnweb 0.13.0.) Google's image addresses lapse; a read that finds one lapsed
   reads the document again. Any other failure to fetch an image is reported as it is: only a
   lapsed address (403 or 404) is mended by another read. Images in headers and footers, and
   positioned ones, are read the same way.
