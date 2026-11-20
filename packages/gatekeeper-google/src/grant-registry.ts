@@ -15,6 +15,10 @@ const logger = obsContext.createLogger({
 
 const HOLDER_PREFIX = "holder:";
 
+// How long asking the holders may take in all: a disconnect waits on it, with its lock held, and
+// what is left unasked then is asked again later, by the revocation it keeps (see `unsure`).
+const HOLDER_SCAN_MS = 20 * 1000;
+
 /** One Google account's grant holders; the object is named by the account's stable subject (`sub`). */
 export class GoogleGrantRegistry extends DurableObject<Env> {
   /** Records the `UserAccount` with this id as a holder of the grant. */
@@ -39,11 +43,13 @@ export class GoogleGrantRegistry extends DurableObject<Env> {
    * whose removal never arrived here, because the call failed or the account's storage was deleted
    * some other way, is dropped when it is asked, so it cannot keep the grant from being revoked.
    * `unsure` says no holder answered that it holds the grant, but one could not be asked, or could
-   * not yet say, and so was counted as holding it.
+   * not yet say, or was still to be asked when `scanMs` ran out, and so was counted as holding it.
    */
-  async remove(userObjectId: string): Promise<{ last: boolean; unsure?: true }> {
+  async remove(userObjectId: string, scanMs = HOLDER_SCAN_MS)
+      : Promise<{ last: boolean; unsure?: true }> {
     let kv = this.ctx.storage.kv;
     kv.delete(HOLDER_PREFIX + userObjectId);
+    let deadline = Date.now() + scanMs;
     // Holders that could not say, each with the record it was asked under: passed over, so that
     // one listed after them can still say it holds the grant.
     let unknown = new Map<string, string | boolean>();
@@ -57,7 +63,8 @@ export class GoogleGrantRegistry extends DurableObject<Env> {
         return unsure ? { last: false, unsure: true } : { last: true };
       }
       let [key, recorded] = holder;
-      let holds = await this.#stillHolds(key.slice(HOLDER_PREFIX.length));
+      let holds = await within(this.#stillHolds(key.slice(HOLDER_PREFIX.length)), deadline);
+      if (holds === undefined) return { last: false, unsure: true };
       // The answer stands only for the holder as it was recorded when asked. One that let go, or
       // was recorded again, while it was asked is looked at afresh.
       if (kv.get<string | boolean>(key) !== recorded) continue;
@@ -86,5 +93,18 @@ export class GoogleGrantRegistry extends DurableObject<Env> {
       });
       return "unknown";
     }
+  }
+}
+
+/** What `answer` settles to, or undefined once `deadline` has passed first. */
+async function within<T>(answer: Promise<T>, deadline: number): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let late = new Promise<undefined>(resolve => {
+    timer = setTimeout(() => resolve(undefined), Math.max(0, deadline - Date.now()));
+  });
+  try {
+    return await Promise.race([answer, late]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
 }

@@ -1203,6 +1203,22 @@ describe("GoogleGrantRegistry", () => {
     expect(await removing).toEqual({last: false});
   });
 
+  // A disconnect waits on the scan, so the holders it has no time to ask leave it unsure.
+  it("says it is unsure once its time to ask the holders runs out", async () => {
+    const google = fakeGoogle();
+    const {ada} = googleAccounts();
+    const slow = await connection(google, "slow", ada);
+    const registry = registryOf(ada);
+    await slow.run((_instance, state) => { state.storage.kv.put("test:holdGrantCheck", true); });
+    try {
+      // Its answer is still on its way back when the time runs out.
+      expect(await registry.remove(testEnv.UserAccount.newUniqueId().toString(), 200))
+        .toEqual({last: false, unsure: true});
+    } finally {
+      await slow.run((_instance, state) => { state.storage.kv.delete("test:holdGrantCheck"); });
+    }
+  });
+
   it("keeps a holder recorded again while it was being asked", async () => {
     fakeGoogle();
     const {ada} = googleAccounts();
