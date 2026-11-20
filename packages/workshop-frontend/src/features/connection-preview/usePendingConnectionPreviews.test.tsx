@@ -22,6 +22,9 @@ const listVendors = async () => [{
   ],
 }] as unknown as GatekeeperVendorInfo[]
 
+// A connection to a document that exists names it: one yet to be created names none.
+const SPEC = { type: 'gatekeeper', vendorId: 'google', resourceTypeId: 'doc', resourceUrl: 'https://docs.google.com/document/d/1/edit' }
+
 const view = makeTestRoot()
 afterEach(() => view.cleanup())
 
@@ -30,7 +33,7 @@ it('lists each connection with changes waiting that offers a preview, once', asy
   const overseer = Object.assign(server.overseer, {
     getGatekeeperById: (id: WorkpieceId) => ({
       describe: async () => ({ hasPreview: id === DOC ? true : undefined }),
-      getCreationSpec: async () => ({ type: 'gatekeeper', vendorId: 'google', resourceTypeId: 'doc' }),
+      getCreationSpec: async () => SPEC,
       [Symbol.dispose]: () => {},
     }),
   }) as RpcStub<Overseer>
@@ -54,6 +57,41 @@ it('lists each connection with changes waiting that offers a preview, once', asy
   await act(async () => {})
 
   expect(previews).toEqual([{ gatekeeperId: DOC, title: 'Notes', url: undefined, iconUrl: 'data:,doc' }])
+})
+
+it('links to the document as it is once it is created, though changes queued before then still wait', async () => {
+  const server = makeOverseer()
+  const home = 'https://docs.google.com/document/'
+  const made = 'https://docs.google.com/document/d/made/edit'
+  let url = home
+  const overseer = Object.assign(server.overseer, {
+    getGatekeeperById: () => ({
+      describe: async () => ({ hasPreview: true, url }),
+      getCreationSpec: async () => ({ ...SPEC, resourceUrl: url === home ? undefined : url }),
+      [Symbol.dispose]: () => {},
+    }),
+  }) as RpcStub<Overseer>
+  const offersPreview = previewOffers(listVendors)
+  let previews: ConnectionPreview[] = []
+  const Probe = () => {
+    previews = usePendingConnectionPreviews(overseer, offersPreview)
+    return null
+  }
+  await view.render(<Probe />)
+  await server.resolveSubscription()
+  // The draft's creation, and an edit queued on it: both recorded before any document was.
+  const drafted = { gatekeeperId: DOC, resourceTitle: 'Notes', resourceUrl: home }
+  await server.resolvePendingQuery({ entries: [entry(1, { ...drafted, creation: true }), entry(2, drafted)] })
+  await act(async () => {})
+  expect(previews).toMatchObject([{ gatekeeperId: DOC, url: home }])
+
+  // Approval records the document on the creation alone: the edit keeps what it was queued with.
+  url = made
+  await server.emit(entry(1, { ...drafted, creation: true, state: 'approved', resourceUrl: made }))
+  await act(async () => flushFrames())
+  await act(async () => {})
+
+  expect(previews).toEqual([{ gatekeeperId: DOC, title: 'Notes', url: made, iconUrl: 'data:,doc' }])
 })
 
 it('asks a connection again after a lookup that failed, and no more once it has answered', async () => {
@@ -87,7 +125,7 @@ it('lists a connection that could not be asked once it can be, and nothing anoth
         if (++asked === 1) throw new Error('Google is busy')
         return { hasPreview: true }
       },
-      getCreationSpec: async () => ({ type: 'gatekeeper', vendorId: 'google', resourceTypeId: 'doc' }),
+      getCreationSpec: async () => SPEC,
       [Symbol.dispose]: () => {},
     }),
   }) as RpcStub<Overseer>
@@ -123,7 +161,7 @@ it('asks again as soon as at first once every connection has answered', async ()
         if (++asked % 2) throw new Error('Google is busy')
         return { hasPreview: true }
       },
-      getCreationSpec: async () => ({ type: 'gatekeeper', vendorId: 'google', resourceTypeId: 'doc' }),
+      getCreationSpec: async () => SPEC,
       [Symbol.dispose]: () => {},
     }),
   }) as RpcStub<Overseer>

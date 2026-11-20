@@ -29,7 +29,8 @@ const mount = async () => {
         if (id === BUSY && described.length === 1) throw new Error('Google is busy')
         return { hasPreview: id === DOC || id === BUSY ? true : undefined }
       },
-      getCreationSpec: async () => ({ type: 'gatekeeper', vendorId: 'google' }),
+      getCreationSpec: async () => (
+        { type: 'gatekeeper', vendorId: 'google', resourceUrl: 'https://docs.google.com/document/d/1/edit' }),
       [Symbol.dispose]: () => {},
     }),
   }) as RpcStub<Overseer>

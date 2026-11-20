@@ -12,11 +12,13 @@ export const usePendingConnectionPreviews = (
 ): ConnectionPreview[] => {
   const { pending } = useActions(overseer)
   const waiting = new Map<WorkpieceId, ConnectionPreview>()
+  // The connections whose resource is yet to be created: each is asked again once it is.
+  const drafts = new Set<WorkpieceId>()
   for (const entry of pending) {
     const { gatekeeperId } = entry
-    if (entry.type === 'action' && gatekeeperId !== undefined && !waiting.has(gatekeeperId)) {
-      waiting.set(gatekeeperId, previewOf(gatekeeperId, entry))
-    }
+    if (entry.type !== 'action' || gatekeeperId === undefined) continue
+    if (entry.creation) drafts.add(gatekeeperId)
+    if (!waiting.has(gatekeeperId)) waiting.set(gatekeeperId, previewOf(gatekeeperId, entry))
   }
 
   // Kept with what gave them: another workspace numbers its connections from one again.
@@ -25,6 +27,7 @@ export const usePendingConnectionPreviews = (
   const failures = useRef(0)
   const [retried, retry] = useReducer((count: number) => count + 1, 0)
   const ids = [...waiting.keys()].join()
+  const drafted = [...drafts].join()
   useEffect(() => {
     if (!overseer || !ids) return
     let stale = false
@@ -48,7 +51,8 @@ export const usePendingConnectionPreviews = (
       stale = true
       window.clearTimeout(timer)
     }
-  }, [overseer, ids, offersPreview, retried])
+    // `drafted` is not read: a connection whose resource was created has a new answer to give.
+  }, [overseer, ids, drafted, offersPreview, retried])
 
   const offers = offered.by === offersPreview ? offered.offers : undefined
   return [...waiting.values()].flatMap(preview => {
