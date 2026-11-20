@@ -176,6 +176,14 @@ ruleTester.run("new-gatekeeper-observer-contract", plugin.rules["new-gatekeeper-
     // A description built elsewhere is checked by its helper's type, not here.
     "await queue.authorizeObservation(observation);",
     "await queue.authorizeObservation(scoped ? { title, subresources: ids } : observation);",
+    "await queue.authorizeObservation({ title, subresources: id ? [id] : [] });",
+    // A private helper of the same name is not the queue's method.
+    "class Session {\n  #authorizeObservation(description, ids) {}\n" +
+      "  read() { return this.#authorizeObservation({ title }, ids); }\n}",
+    // The implementation is the method that runs, not the overload signature before it.
+    gatekeeper("  getHistoricalSubresources(): Promise<string[]>;\n" +
+      "  async getHistoricalSubresources() { return [] as string[]; }\n" +
+      "  async addObserver(_id: string) {}\n  async removeObserver(_id: string) {}"),
   ],
   invalid: [
     {
@@ -218,6 +226,33 @@ ruleTester.run("new-gatekeeper-observer-contract", plugin.rules["new-gatekeeper-
     {
       code: "await queue.authorizeObservation(scoped ? { title } : ({ title } satisfies ObservationDescription));",
       errors: [{ messageId: "unreported" }, { messageId: "unreported" }],
+    },
+    {
+      code: "await queue.authorizeObservation({ title, subresources: id ? [id] : undefined });",
+      errors: [{ messageId: "unreported" }],
+    },
+    {
+      code: "await queue.authorizeObservation({ title, subresources: (id ? undefined : [id]) as string[] });",
+      errors: [{ messageId: "unreported" }],
+    },
+    {
+      code: "await queue.authorizeObservation({ title, subresources: ids ?? undefined });",
+      errors: [{ messageId: "unreported" }],
+    },
+    {
+      code: "await queue.authorizeObservation(given ?? { title });",
+      errors: [{ messageId: "unreported" }],
+    },
+    {
+      code: "observation.excludeObservers = denied;\nawait queue.authorizeObservation(observation);",
+      errors: [{ messageId: "excludeObservers" }],
+    },
+    {
+      code: gatekeeper("  async getHistoricalSubresources() { return []; }\n" +
+        "  addObserver(id: string, user: Verifier): Promise<void>;\n" +
+        "  async addObserver(id: string, user?: Verifier) { this.observers.add(id); }\n" +
+        "  async removeObserver(_id: string) {}"),
+      errors: [{ messageId: "observerState", data: { name: "addObserver" } }],
     },
     // A static method is not the facet's.
     {

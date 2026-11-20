@@ -211,11 +211,19 @@ const selfContainedAgentTypes: Rule = {
 
 type ClassMember = ESTree.ClassBody["body"][number];
 
-/** The class's instance method named `name`, when it is declared with a plain name and a body. */
+/**
+ * The class's instance method named `name`, when it is declared with a plain name and a body. An
+ * overload signature has no body and is not the method that runs.
+ */
 function methodNamed(body: ESTree.ClassBody, name: string): ESTree.MethodDefinition | undefined {
   return body.body.find((member: ClassMember): member is ESTree.MethodDefinition =>
     member.type === "MethodDefinition" && !member.static && !member.computed &&
-    member.key.type === "Identifier" && member.key.name === name);
+    member.key.type === "Identifier" && member.key.name === name && !!member.value.body);
+}
+
+/** Whether a member expression reads the plain property `name`: not computed, not `#private`. */
+function reads(member: ESTree.MemberExpression, name: string): boolean {
+  return !member.computed && member.property.type === "Identifier" && member.property.name === name;
 }
 
 /** The name a property is written under, quoted or not; undefined for a spread or a computed key. */
@@ -227,17 +235,19 @@ function keyName(property: ESTree.Node): string | undefined {
 }
 
 /**
- * The object literals an argument is written as at its call: itself, or either branch of a
- * conditional. What `satisfies` and `as` wrap is the object that is sent. One built elsewhere is
- * its helper's type to check.
+ * The expressions a value written in place may turn out to be: itself, or any branch of a
+ * conditional or of `??`, `||` and `&&`. What `satisfies` and `as` wrap is the value that is sent.
  */
-function* writtenObjects(node: ESTree.Node | undefined): Generator<ESTree.ObjectExpression> {
+function* branches(node: ESTree.Node | null | undefined): Generator<ESTree.Node> {
   if (node?.type === "TSSatisfiesExpression" || node?.type === "TSAsExpression") {
-    yield* writtenObjects(node.expression);
+    yield* branches(node.expression);
   } else if (node?.type === "ConditionalExpression") {
-    yield* writtenObjects(node.consequent);
-    yield* writtenObjects(node.alternate);
-  } else if (node?.type === "ObjectExpression") {
+    yield* branches(node.consequent);
+    yield* branches(node.alternate);
+  } else if (node?.type === "LogicalExpression") {
+    yield* branches(node.left);
+    yield* branches(node.right);
+  } else if (node) {
     yield node;
   }
 }
@@ -274,14 +284,14 @@ const newGatekeeperObserverContract: Rule = {
 
         const history = methodNamed(body, "getHistoricalSubresources");
         const statements = history?.value.body?.body;
-        const returned = statements?.length === 1 && statements[0].type === "ReturnStatement"
-          ? statements[0].argument : undefined;
+        const [returned, ...others] = statements?.length === 1 && statements[0].type === "ReturnStatement"
+          ? branches(statements[0].argument) : [];
         // A facet base of the gatekeeper's own may supply it, as it may supply `startSession()`.
         // Cloudflare's `DurableObject` supplies neither.
         const inherits = superClass && !(superClass.type === "Identifier" && superClass.name === "DurableObject");
         if (!history) {
           if (!inherits) context.report({ node: addObserver?.key ?? id ?? body, messageId: "missingHistory" });
-        } else if (returned?.type !== "ArrayExpression" || returned.elements.length > 0) {
+        } else if (others.length || returned?.type !== "ArrayExpression" || returned.elements.length > 0) {
           context.report({ node: history.key, messageId: "history" });
         }
 
@@ -294,22 +304,25 @@ const newGatekeeperObserverContract: Rule = {
       },
       CallExpression(node) {
         const { callee } = node;
-        if (callee.type !== "MemberExpression" || callee.computed ||
-            callee.property.name !== "authorizeObservation") {
-          return;
-        }
-        for (const description of writtenObjects(node.arguments[0])) {
+        if (callee.type !== "MemberExpression" || !reads(callee, "authorizeObservation")) return;
+        // A description built elsewhere is its helper's type to check; one written here is this
+        // rule's, in each branch it is written in.
+        for (const description of branches(node.arguments[0])) {
+          if (description.type !== "ObjectExpression") continue;
           // The last word on the field: a spread after it can replace it, and the kernel reads
           // `subresources: undefined` as the field left out.
           const last = description.properties.findLast(property =>
             property.type === "SpreadElement" || keyName(property) === "subresources");
-          const reported = last?.type === "Property" &&
-            !(last.value.type === "Identifier" && last.value.name === "undefined");
+          const reported = last?.type === "Property" && !branches(last.value).some(value =>
+            value.type === "Identifier" && value.name === "undefined");
           if (!reported) context.report({ node: description, messageId: "unreported" });
         }
       },
       Property(node) {
         if (keyName(node) === "excludeObservers") context.report({ node, messageId: "excludeObservers" });
+      },
+      MemberExpression(node) {
+        if (reads(node, "excludeObservers")) context.report({ node, messageId: "excludeObservers" });
       },
     };
   },
