@@ -38,6 +38,8 @@ styleSheet.textContent = `
   .limit, .empty { margin: 0 0 18px; font-size: 12px; color: var(--dim); }
   .empty { margin: 96px 0; text-align: center; font-size: 13px; }
   .card { margin: 0 0 30px; scroll-margin-top: 52px; }
+  /* Room under the last slide, so that it too scrolls up to where a slide is the one being read. */
+  .card:not(.listed):last-child { min-height: 67vh; }
   .card > header { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; min-height: 28px;
     margin-bottom: 8px; font-size: 12px; color: var(--dim); }
   .no { display: grid; flex: none; place-items: center; box-sizing: border-box; min-width: 22px;
