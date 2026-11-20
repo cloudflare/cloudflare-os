@@ -22,11 +22,12 @@ function tableFrom(lines, i) {
 }
 
 /**
- * The blocks of `markdown`. With `tables`, the tables Google holds, only those are tables: the
- * same lines in text a pending change writes are inserted as they are written. A line in `plain`
- * is one Google holds that is no heading, though its text starts as one is written.
+ * The blocks of `markdown`. Only the tables Google holds are tables, which `isTable` says of the
+ * lines that read as one and the line they start on: the same lines in a paragraph's text, or in
+ * text a pending change writes, are what they say. A line in `plain` is one Google holds that is
+ * no heading, though its text starts as one is written.
  */
-export function parseBlocks(markdown, tables, plain) {
+export function parseBlocks(markdown, isTable, plain) {
   const lines = markdown.split('\n');
   const blocks = [];
   let blank = 0;
@@ -45,7 +46,7 @@ export function parseBlocks(markdown, tables, plain) {
     pushEmpty(i);
     blank = 0;
     const table = line.trim() === '<table>' && tableFrom(lines, i);
-    if (table && (tables?.has(table.join('\n')) ?? true)) {
+    if (table && isTable(table.join('\n'), i)) {
       blocks.push({ type: 'table', level: 0, text: table.join('\n'), line: i });
       i += table.length - 1;
     } else if (STRUCTURES.has(line)) {

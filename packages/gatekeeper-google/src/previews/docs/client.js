@@ -274,7 +274,9 @@ function written(item, words, saved, was, mark, hidden, state) {
     left = [];
   };
   for (const piece of pieces) {
-    const chip = piece.kind === 'chip' && piece.mark !== 'added';
+    // Google holds an image, an equation or a page break where the saved Markdown names one. A
+    // pending change cannot write one: where it writes the name, the name is the text it writes.
+    const chip = piece.kind === 'chip' && piece.mark !== 'added' && mark !== 'added';
     const held = chip && piece.text === 'Image' ? images[image++] : undefined;
     const spaced = apart && !piece.kind && !piece.text.trim();
     apart = held !== undefined && image <= tethered.length;
@@ -290,8 +292,9 @@ function written(item, words, saved, was, mark, hidden, state) {
     const change = piece.mark;
     if (piece.kind === 'hr') runs.push({ rule: true, look: text });
     else if (held !== undefined) runs.push({ object: held, look: text });
-    else if (piece.kind === 'chip' && piece.text === 'Page break') runs.push({ break: 'page', look: text });
-    else if (piece.kind === 'chip') runs.push({ chip: piece.text, look: text, change });
+    else if (chip && piece.text === 'Page break') runs.push({ break: 'page', look: text });
+    else if (chip) runs.push({ chip: piece.text, look: text, change });
+    else if (piece.kind === 'chip') runs.push({ text: `[${piece.text}]`, look: text, change });
     else runs.push({ text: piece.kind === 'br' ? '\u000b' : piece.text, look: text, link: piece.href, change });
   }
   leave();
@@ -808,11 +811,14 @@ async function load() {
     }
 
     // The Markdown does not escape the document's text, so a paragraph whose text starts "# "
-    // reads in it as a heading: the drawing says which lines are that.
+    // reads in it as a heading, and one that is "<table>" as a table: the drawing says which
+    // lines are those. Without it, every line is what it reads as.
     const lines = savedMarkdown.split('\n');
     const plain = new Set(drawing.blocks.filter(block => block.type === 'paragraph' && !headingLevel(block.style) &&
       /^#{1,6} /.test(block.runs.map(run => run.text ?? '').join(''))).map(block => lines[block.line]));
-    const saved = parseBlocks(savedMarkdown, undefined, plain);
+    const tables = drawing === BLANK ? undefined
+      : new Set(drawing.blocks.filter(block => block.type === 'table').map(block => block.line));
+    const saved = parseBlocks(savedMarkdown, (_, line) => tables?.has(line) ?? true, plain);
     const byLine = new Map(drawing.blocks.map(block => [block.line, block]));
     // An empty line is an empty paragraph, whatever its style.
     const drawnOf = block => {
@@ -820,7 +826,8 @@ async function load() {
       return block.text || drawn?.type === 'paragraph' && !drawn.runs.length ? drawn : undefined;
     };
     const fits = saved.every(block => !block.text || !drawnOf(block) || sameKind(block, drawnOf(block)));
-    const rows = pairEdits(diff(saved, markdown === savedMarkdown ? saved : parseBlocks(markdown, tablesOf(saved), plain), blockKey));
+    const held = tablesOf(saved);
+    const rows = pairEdits(diff(saved, markdown === savedMarkdown ? saved : parseBlocks(markdown, text => held.has(text), plain), blockKey));
     tab = { drawing, savedMarkdown, markdown, rows, drawnOf: fits ? drawnOf : () => undefined, changed: rows.some(row => row.mark) };
     if (!tab.changed) view = 'after';
 
