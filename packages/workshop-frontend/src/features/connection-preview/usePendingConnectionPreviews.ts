@@ -26,12 +26,13 @@ export const usePendingConnectionPreviews = (
     { offers: new Map() })
   const failures = useRef(0)
   const [retried, retry] = useReducer((count: number) => count + 1, 0)
-  const keys = [...waiting].map(([key, { gatekeeperId }]) => `${key} ${drafts.has(gatekeeperId)}`).join('\n')
+  // Only a connection is asked: a change that names an item is itself the offer of that item's preview.
+  const asked = [...waiting].filter(([, { item }]) => item === undefined)
+  const keys = asked.map(([key, { gatekeeperId }]) => `${key} ${drafts.has(gatekeeperId)}`).join('\n')
   useEffect(() => {
     if (!overseer || !keys) return
     let stale = false
     let timer: number | undefined
-    const asked = [...waiting]
     void Promise.allSettled(asked.map(([, preview]) => offersPreview(overseer, preview))).then(answers => {
       if (stale) return
       setOffered({
@@ -50,13 +51,13 @@ export const usePendingConnectionPreviews = (
       stale = true
       window.clearTimeout(timer)
     }
-    // `keys` names everything `waiting` holds that the offers depend on.
+    // `keys` names everything `asked` holds that the offers depend on.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [overseer, keys, offersPreview, retried])
 
   const offers = offered.by === offersPreview ? offered.offers : undefined
   return [...waiting].flatMap(([key, preview]) => {
-    const offer = offers?.get(key)
+    const offer = preview.item === undefined ? offers?.get(key) : {}
     return offer ? [{ ...preview, ...offer }] : []
   })
 }

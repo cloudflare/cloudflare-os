@@ -59,6 +59,32 @@ it('lists each connection with changes waiting that offers a preview, once', asy
   expect(previews).toEqual([{ gatekeeperId: DOC, title: 'Notes', url: undefined, iconUrl: 'data:,doc' }])
 })
 
+it('lists a file a change names at once, with no link when the change gives none, while its folder is still being asked', async () => {
+  const server = makeOverseer()
+  const overseer = Object.assign(server.overseer, {
+    // The folder's own answer never comes.
+    getGatekeeperById: () => ({ describe: () => new Promise(() => {}), [Symbol.dispose]: () => {} }),
+  }) as RpcStub<Overseer>
+  const offersPreview = previewOffers(listVendors)
+  let previews: ConnectionPreview[] = []
+  const Probe = () => {
+    previews = usePendingConnectionPreviews(overseer, offersPreview)
+    return null
+  }
+  await view.render(<Probe />)
+  await server.resolveSubscription()
+
+  const folder = { gatekeeperId: DOC, resourceTitle: 'Folder', resourceUrl: 'https://drive.google.com/drive/folders/1' }
+  await server.resolvePendingQuery({
+    entries: [
+      entry(1, { ...folder, description: { title: 'Edit', description: '', previewOf: { id: 'file', title: 'Notes' } } }),
+      entry(2, folder),
+    ],
+  })
+
+  expect(previews).toEqual([{ gatekeeperId: DOC, item: 'file', title: 'Notes', url: undefined, iconUrl: undefined }])
+})
+
 it('links to the document as it is once it is created, though changes queued before then still wait', async () => {
   const server = makeOverseer()
   const home = 'https://docs.google.com/document/'
