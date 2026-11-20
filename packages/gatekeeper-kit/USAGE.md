@@ -695,10 +695,12 @@ keeps itself. A listing whose rows are the entities takes its cursor's hooks fro
 see [A listing over a simulation store](#a-listing-over-a-simulation-store).
 
 The store runs no callback but the reducer's. A reducer that cannot replay a record on the entity
-returns `refused` with its reason and the fold goes on; the result lists what that call refused,
-and the gatekeeper marks those records after the fold and leaves marked records out of the lists it
-folds. Inside a resource Durable Object that reads a document one tab at a time, where `#journal`
-is the gatekeeper's own pending store:
+returns `refused` with its reason and the fold goes on; the result lists what that call refused, and
+the gatekeeper marks those records after the fold and leaves marked records out of the lists it
+folds. A mark outlives the read, so it is made only over a copy no resolution may have overtaken:
+where a record left the journal while the copy was fetched, a later record refused over it may be
+refused for the copy's age, and that read marks nothing. Inside a resource Durable Object that reads
+a document one tab at a time, where `#journal` is the gatekeeper's own pending store:
 
 ```ts
 // `invalidatedReason` is the mark, stored with the record under the same id.
@@ -719,18 +721,25 @@ type Queued = { id: number; action: Change };
 });
 
 async read(tabId: string): Promise<string> {
+  const before = this.#journal.listPending().map(({ id }) => id);
   const doc = await this.#api.get();
   const tab = doc.tabs.find(tab => tab.id === tabId);
-  return render(this.#fold(tabId, tab)); // once the observation is authorized, as for any read
+  // A record that left the journal while the document was fetched may have applied after the
+  // fetch read it: a later record built on it is then refused over a copy without it. Such a
+  // read shows what it folded and marks nothing; the next read, over a fresh copy, decides.
+  const pending = new Set(this.#journal.listPending().map(({ id }) => id));
+  const settled = before.some(id => !pending.has(id));
+  return render(this.#fold(tabId, tab, !settled)); // once the observation is authorized
 }
 
 // Folds the records of one tab over the provider's copy of it, or over nothing where the document
-// has no such tab, then marks what the fold refused, with no `await` in between.
-#fold(tabId: string, tab: Tab | undefined): Tab | undefined {
+// has no such tab, then marks what the fold refused when `mark` says the copy may decide it,
+// with no `await` in between.
+#fold(tabId: string, tab: Tab | undefined, mark: boolean): Tab | undefined {
   const view = createSimulationView(this.#journal.listPending(), action => [action.tabId]);
   const { entity, refused } = this.#replay.fold(
     tabId, tab, view.forTarget(tabId).filter(record => !record.action.invalidatedReason));
-  for (const { record, refusal } of refused) this.#journal.markInvalid(record.id, refusal);
+  if (mark) for (const { record, refusal } of refused) this.#journal.markInvalid(record.id, refusal);
   return entity;
 }
 
