@@ -106,6 +106,21 @@ describe("a Google Doc tab's drawing", () => {
     expect(drawing.objects["other-corner"]!.placed).toMatchObject({ left: 420, top: -20 });
   });
 
+  it("fills white behind text on a page of another color, and not on a white one", () => {
+    let white = { color: { rgbColor: { red: 1, green: 1, blue: 1 } } };
+    let highlight = (documentStyle: object) => {
+      let { drawing } = docTabToMarkdown({
+        ...buildTab([{ runs: [{ text: "pasted\n", style: { backgroundColor: white } }] }]),
+        documentStyle,
+      });
+      let [paragraph] = drawing.blocks as GoogleDocParagraph[];
+      return [drawing.page.background, drawing.textLooks[paragraph!.runs[0]!.look]!.highlight];
+    };
+
+    expect(highlight({})).toEqual([undefined, undefined]);
+    expect(highlight({ background: { color: { color: { rgbColor: { blue: 0.4 } } } } })).toEqual(["#000066", "#ffffff"]);
+  });
+
   it("leaves an image no header or footer is near undrawn", () => {
     let { drawing } = docTabToMarkdown({
       ...buildTab([{ runs: ["Body\n"] }]),
