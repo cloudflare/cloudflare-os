@@ -5,9 +5,10 @@
 // `listJobs()` merging jobs, trigger jobs, and external statuses (retries and status changes
 // racing the listings included), failed tests, status read afresh rather than cached, job logs
 // (tail, search, a running job, the cache of finished logs and its revalidation against erasure
-// and the account's access), the role on the project that job-log and test-report reads report
-// (Maintainer for a Maintainer's test report), admission still holding the bar the CI data an
-// earlier version marked raised, and those reads served on a binding an earlier version created.
+// and the account's access, a log too long to read, a finished job with no log), the role on the
+// project that job-log and test-report reads report (Maintainer for a Maintainer's test report),
+// admission still holding the bar the CI data an earlier version marked raised, and those reads
+// served on a binding an earlier version created.
 
 import { env, runInDurableObject } from "cloudflare:test";
 import { RpcStub, RpcTarget } from "cloudflare:workers";
@@ -214,6 +215,8 @@ describe("a commit's CI", () => {
     fake.branches.set("main", HEAD);
     fake.commits.set(HEAD, commit(HEAD));
     fake.pipelines.push(pipeline(290, { status: "failed" }));
+    // Queueing the push reads the project's protected-branch rules, of which it has none.
+    fake.on("GET", /\/protected_branches\?/, () => json([]));
     const { props, name } = await setup(fake);
     const cache = new TestGitCache();
     await unwrap(await hooks().queuePush(name, props, ["release", HEAD, false, stubOf(cache)], DESC));
@@ -903,6 +906,43 @@ describe("job logs", () => {
     fake.ownerAccess = null;
     await expect(session(name, props, ...readLog())).rejects.toThrow(/403|Forbidden/i);
     expect(fake.count("GET", /jobs\/8\/trace$/)).toBe(3);
+  });
+
+  it("refuses a log longer than it reads, saying where to open it, and stores none of it", async () => {
+    const fake = logFake(() => "success");
+    // A mebibyte of lines, handed over again for as long as more is asked for.
+    const chunk = new TextEncoder().encode(`${"x".repeat(1023)}\n`.repeat(1024));
+    let endless = true;
+    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/jobs/8/trace$`), () => endless
+      ? new Response(new ReadableStream<Uint8Array>({ pull: controller => controller.enqueue(chunk) }, { highWaterMark: 0 }))
+      : new Response(trace(300), { headers: { "content-type": "text/plain" } }));
+    const { props, name } = await setup(fake);
+    await expect(session(name, props, ...readLog())).rejects.toThrow(
+      `The log of job 8 is too large to read here; open it on GitLab: https://gitlab.example.com/${PROJECT}/-/jobs/8`);
+    expect(fake.count("GET", /jobs\/8\/trace$/)).toBe(1);
+    // Nothing was stored for the finished job: the log is asked for again.
+    endless = false;
+    expect(await session<GitLabLogPage>(name, props, ...readLog())).toMatchObject({ totalLines: 301, complete: true });
+    expect(fake.count("GET", /jobs\/8\/trace$/)).toBe(2);
+  });
+
+  it("reads a finished job that has no log as an empty one, stores nothing for it, and asks GitLab for its log again", async () => {
+    const fake = logFake(() => "success");
+    let logged = false;
+    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/jobs/8/trace$`), () => logged
+      ? new Response(trace(300), { headers: { "content-type": "text/plain" } })
+      : json({ message: "404 Not found" }, { status: 404 }));
+    const { props, name } = await setup(fake);
+    expect(await session<GitLabLogPage>(name, props, ...readLog()))
+      .toMatchObject({ lines: [], totalLines: 0, firstAvailableLine: 1, complete: true });
+    expect(fake.count("GET", /jobs\/8\/trace$/)).toBe(1);
+    // The empty reading was not stored for the finished job: the log is asked for again, and read.
+    logged = true;
+    expect(await session<GitLabLogPage>(name, props, ...readLog())).toMatchObject({ totalLines: 301, complete: true });
+    expect(fake.count("GET", /jobs\/8\/trace$/)).toBe(2);
+    // What was read then is stored.
+    await session(name, props, ...readLog());
+    expect(fake.count("GET", /jobs\/8\/trace$/)).toBe(2);
   });
 
   it("refuses bad options before reading anything", async () => {

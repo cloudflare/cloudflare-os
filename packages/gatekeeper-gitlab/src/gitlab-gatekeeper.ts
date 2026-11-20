@@ -169,6 +169,7 @@ import {
   type GitLabDiscussionCommentEntry,
 } from "./gitlab-normalize";
 import { StreamingCursor, mapPage } from "./gitlab-cursors";
+import { gitlabUpstream } from "./gitlab-upstream";
 import type { GitLabVerifierApi } from "./gitlab";
 import { GitLabIssueImpl, GitLabMergeRequestImpl, GitLabProjectSessionImpl } from "./gitlab-sessions";
 import { parseProjectSubresource, projectSubresourceId } from "./project-subresources";
@@ -570,22 +571,25 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
 
   /**
    * Every row of a listing, page after page for as long as GitLab says there is a next one, or
-   * until `max` rows are in; `truncated` says whether rows were left out.
+   * until `max` rows are in; `truncated` says whether rows were left out. The requests of the
+   * walk are counted as one sum.
    */
   async #fetchAllPages<T>(loader: (page: number, perPage: number) => Promise<GitLabPage<T>>, max = Infinity):
       Promise<T[] & { truncated?: true }> {
-    const results: T[] & { truncated?: true } = [];
-    for (let page: number | null = 1; page !== null;) {
-      const batch = await loader(page, 100);
-      results.push(...batch.items);
-      page = batch.nextPage;
-      if (results.length >= max) {
-        if (results.length > max || page !== null) results.truncated = true;
-        results.length = max;
-        break;
+    return await gitlabUpstream.summed(async () => {
+      const results: T[] & { truncated?: true } = [];
+      for (let page: number | null = 1; page !== null;) {
+        const batch = await loader(page, 100);
+        results.push(...batch.items);
+        page = batch.nextPage;
+        if (results.length >= max) {
+          if (results.length > max || page !== null) results.truncated = true;
+          results.length = max;
+          break;
+        }
       }
-    }
-    return results;
+      return results;
+    });
   }
 
   // -- queued actions (read side) ---------------------------------------------------------
@@ -1019,7 +1023,8 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     compare: (a: GitLabIssueSummary, b: GitLabIssueSummary) => number,
   ): Promise<{ ids: Set<string>; items: GitLabIssueSummary[] }> {
     const ids = this.#pendingExistingEntityIds("issue");
-    const items = (await Promise.all([...ids].map(id => this.#getIssueDetails(id))))
+    // One read for each touched issue, counted as one sum.
+    const items = (await gitlabUpstream.summed(() => Promise.all([...ids].map(id => this.#getIssueDetails(id)))))
       .filter(predicate)
       .map(summarizeIssueDetails)
       .toSorted(compare);
@@ -1031,7 +1036,8 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     compare: (a: GitLabMergeRequestSummary, b: GitLabMergeRequestSummary) => number,
   ): Promise<{ ids: Set<string>; items: GitLabMergeRequestSummary[] }> {
     const ids = this.#pendingExistingEntityIds("mergeRequest");
-    const items = (await Promise.all([...ids].map(id => this.#getMergeRequestDetails(id))))
+    // One read or more for each touched merge request, counted as one sum.
+    const items = (await gitlabUpstream.summed(() => Promise.all([...ids].map(id => this.#getMergeRequestDetails(id)))))
       .filter(predicate)
       .map(summarizeMergeRequestDetails)
       .toSorted(compare);
@@ -1676,7 +1682,8 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       }
       return false;
     };
-    return await this.#findInMergeRequestPipelines(realId, among);
+    // A listing of trigger jobs for each parent, counted as one sum with the pipelines' own.
+    return await gitlabUpstream.summed(() => this.#findInMergeRequestPipelines(realId, among));
   }
 
   // Session-facing CI reads. Each returns data for its session to record as an observation;
@@ -1909,16 +1916,17 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         await hasProjectMembership(this.env, this.#userAccount(), id, DEVELOPER_ACCESS_LEVEL)
       ? cached : undefined;
     if (log === undefined) {
-      const body = await this.#withApi(api => api.getJobTrace(this.#projectPath(), jobId));
-      try {
-        // No log yet (a job that has not started) reads as empty.
-        log = body === null ? EMPTY_CI_LOG : await readCiLog(body, normalizeGitLabLogLine);
-      } catch (error) {
-        if (!(error instanceof CiLogTooLargeError)) throw error;
-        throw new Error(`The log of job ${jobId} is too large to read here; open it on GitLab: ${job.web_url}`, { cause: error });
-      }
+      // The log is read within its request, which is so counted by whether the log arrived.
+      const read = await this.#withApi(api =>
+        api.getJobTrace(this.#projectPath(), jobId, body => readCiLog(body, normalizeGitLabLogLine)))
+        .catch((error: unknown) => {
+          if (!(error instanceof CiLogTooLargeError)) throw error;
+          throw new Error(`The log of job ${jobId} is too large to read here; open it on GitLab: ${job.web_url}`, { cause: error });
+        });
+      // No log yet (a job that has not started) reads as empty.
+      log = read ?? EMPTY_CI_LOG;
       // An entry this account could not be served from is already stored.
-      if (complete && body !== null && cached === undefined) cache.put(cacheKey, log);
+      if (complete && read !== null && cached === undefined) cache.put(cacheKey, log);
     }
     return { jobName: job.name, page: pageCiLog(log, options, complete), subresource: projectSubresourceId(id, "developer") };
   }
@@ -2203,7 +2211,9 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       .filter(action => action.expectedOldSha === ZERO_OID)
       .map(action => action.branch))]
       .filter(branch => !filter?.search || branchNameMatchesSearch(branch, filter.search));
-    const existing = await Promise.all(created.map(branch => this.#withApi(api => api.getBranch(projectPath, branch))));
+    // One read for each branch a queued push creates, counted as one sum.
+    const existing = await gitlabUpstream.summed(() =>
+      Promise.all(created.map(branch => this.#withApi(api => api.getBranch(projectPath, branch)))));
     const injectedNames = new Set<string>();
     const injectedItems: GitLabBranchSummary[] = [];
     for (const [i, branch] of created.entries()) {
@@ -2591,8 +2601,9 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     const creates = this.#listPendingActions()
       .filter((action): action is CreateMergeRequestAction => action.type === "createMergeRequest");
     const branches = [...new Set(creates.flatMap(action => [action.options.sourceBranch, action.options.targetBranch]))];
-    const heads = new Map(await Promise.all(branches.map(async branch =>
-      [branch, (await this.#withApi(api => api.getBranch(this.#projectPath(), branch)))?.commit.id ?? null] as const)));
+    // One read for each branch a queued merge request names, counted as one sum.
+    const heads = new Map(await gitlabUpstream.summed(() => Promise.all(branches.map(async branch =>
+      [branch, (await this.#withApi(api => api.getBranch(this.#projectPath(), branch)))?.commit.id ?? null] as const))));
     let cascaded = false;
     for (const pending of creates) {
       for (const branch of [pending.options.sourceBranch, pending.options.targetBranch]) {
@@ -2686,20 +2697,22 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    */
   async #resolveAssignees(usernames: string[] | undefined): Promise<{ assigneeIds: number[]; assigneeIsBot: boolean }> {
     const names = usernames ?? [];
-    const matches = await Promise.all(names.map(username => this.#withApi(api => api.findUsersByUsername(username))));
+    // One lookup for each name here, and one for each id below, each batch counted as one sum.
+    const matches = await gitlabUpstream.summed(() =>
+      Promise.all(names.map(username => this.#withApi(api => api.findUsersByUsername(username)))));
     const assigneeIds = names.map((username, i) => {
       const user = matches[i].find(u => u.username.toLowerCase() === username.toLowerCase());
       if (!user) throw new Error(`No GitLab user named "${username}" exists on this instance.`);
       return user.id;
     });
     // A lookup that fails counts as a bot, so the create waits for a person rather than failing.
-    const bots = await Promise.all(assigneeIds.map(id => this.#withApi(api => api.isBotUser(id)).catch(error => {
+    const bots = await gitlabUpstream.summed(() => Promise.all(assigneeIds.map(id => this.#withApi(api => api.isBotUser(id)).catch(error => {
       logger.warn("failed to read whether an assignee is a bot; holding the create for a person", {
         event: "assignee.bot.read.failed",
         ...(error instanceof GitLabApiError ? { status: error.status } : { error }),
       });
       return true;
-    })));
+    }))));
     return { assigneeIds, assigneeIsBot: bots.includes(true) };
   }
 
@@ -2993,7 +3006,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         try {
           const pack = await cache.buildPack();
           await this.#withApi(api => pushGitRefUpdate(
-            body => this.#gitRequest(path => api.fetchGitReceivePack(path, body), { confirm: false }),
+            body => this.#gitRequest(path => api.fetchGitReceivePack(path, action.branch, body), { confirm: false }),
             { branch: action.branch, oldSha: action.expectedOldSha, newSha: action.newSha },
             pack));
         } catch (error) {
@@ -3231,12 +3244,15 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     } else if (entries.some(entry => entry !== "published")) {
       await this.#reconcileReviewDrafts(record, action, iid, bodies);
       await this.#createReviewDrafts(record, action, iid, bodies);
-      for (const [index, entry] of entries.entries()) {
-        if (typeof entry !== "number") continue;
-        await this.#withApi(api => api.publishDraftNote(projectPath, iid, entry));
-        entries[index] = "published";
-        this.#saveProgress(record);
-      }
+      // One request for each draft, counted as one sum.
+      await gitlabUpstream.summed(async () => {
+        for (const [index, entry] of entries.entries()) {
+          if (typeof entry !== "number") continue;
+          await this.#withApi(api => api.publishDraftNote(projectPath, iid, entry));
+          entries[index] = "published";
+          this.#saveProgress(record);
+        }
+      });
     }
 
     if (summary !== undefined) await this.#postReviewSummary(record, iid, summary);
@@ -3319,14 +3335,17 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     const comments = action.review.diffComments ?? [];
     const files = await this.#fetchAllPages((page, perPage) =>
       this.#withApi(api => api.listMergeRequestDiffs(projectPath, iid, page, perPage)));
-    for (const [index, entry] of entries.entries()) {
-      if (entry !== null) continue;
-      const position = await this.#positionFor(files, comments[index].target, action.review.revision);
-      entries[index] = "creating";
-      this.#saveProgress(record);
-      entries[index] = (await this.#withApi(api => api.createDraftNote(projectPath, iid, { note: bodies[index], position }))).id;
-      this.#saveProgress(record);
-    }
+    // One request for each draft, counted as one sum.
+    await gitlabUpstream.summed(async () => {
+      for (const [index, entry] of entries.entries()) {
+        if (entry !== null) continue;
+        const position = await this.#positionFor(files, comments[index].target, action.review.revision);
+        entries[index] = "creating";
+        this.#saveProgress(record);
+        entries[index] = (await this.#withApi(api => api.createDraftNote(projectPath, iid, { note: bodies[index], position }))).id;
+        this.#saveProgress(record);
+      }
+    });
   }
 
   /**
@@ -3360,12 +3379,15 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       // Unresolvable now means it was never sent, and then it matches no draft.
       const bodies = (action.review.diffComments ?? []).map(comment => this.#postedText(comment.bodyMarkdown, false));
       await this.#reconcileReviewDrafts(record, action, iid, bodies);
-      for (const [index, entry] of entries.entries()) {
-        if (typeof entry !== "number") continue;
-        await this.#withApi(api => api.deleteDraftNote(projectPath, iid, entry));
-        entries[index] = null;
-        this.#saveProgress(record);
-      }
+      // One request for each draft, counted as one sum.
+      await gitlabUpstream.summed(async () => {
+        for (const [index, entry] of entries.entries()) {
+          if (typeof entry !== "number") continue;
+          await this.#withApi(api => api.deleteDraftNote(projectPath, iid, entry));
+          entries[index] = null;
+          this.#saveProgress(record);
+        }
+      });
     }
 
     const approval = progress.approval;
@@ -3492,7 +3514,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         const deleting = action.expectedOldSha === ZERO_OID;
         try {
           await this.#withApi(async api => pushGitRefUpdate(
-            body => this.#gitRequest(path => api.fetchGitReceivePack(path, body), { confirm: false }),
+            body => this.#gitRequest(path => api.fetchGitReceivePack(path, action.branch, body), { confirm: false }),
             { branch: action.branch, oldSha: action.newSha, newSha: deleting ? ZERO_OID : action.expectedOldSha },
             deleting ? null : bytesToStream(await emptyPackBytes())));
         } catch (error) {
@@ -3585,22 +3607,25 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   async #newBranchProtected(branch: string): Promise<boolean | undefined> {
     const projectPath = this.#projectPath();
     try {
-      const project = await this.#withApi(api => api.getProject(projectPath));
-      if (project.empty_repo !== false || !project.default_branch || project.default_branch === branch) return true;
-      let page: number | null = 1;
-      for (let read = 0; page !== null; read++) {
-        if (read === MAX_PROTECTED_BRANCH_PAGES) return true;
-        const current: number = page;
-        const rules = await this.#withApi(api => api.listProtectedBranches(projectPath, current, 100))
-          .catch(error => {
-            if (error instanceof GitLabApiError && error.status === 403 && !error.isAuthError) return null;
-            throw error;
-          });
-        if (rules === null) return false;
-        if (rules.items.some(rule => protectedBranchMatches(rule.name, branch))) return true;
-        page = rules.nextPage;
-      }
-      return false;
+      // The pages of rules are counted as one sum.
+      return await gitlabUpstream.summed(async () => {
+        const project = await this.#withApi(api => api.getProject(projectPath));
+        if (project.empty_repo !== false || !project.default_branch || project.default_branch === branch) return true;
+        let page: number | null = 1;
+        for (let read = 0; page !== null; read++) {
+          if (read === MAX_PROTECTED_BRANCH_PAGES) return true;
+          const current: number = page;
+          const rules = await this.#withApi(api => api.listProtectedBranches(projectPath, current, 100))
+            .catch(error => {
+              if (error instanceof GitLabApiError && error.status === 403 && !error.isAuthError) return null;
+              throw error;
+            });
+          if (rules === null) return false;
+          if (rules.items.some(rule => protectedBranchMatches(rule.name, branch))) return true;
+          page = rules.nextPage;
+        }
+        return false;
+      });
     } catch (error) {
       logger.warn("failed to read whether a new branch is protected", {
         event: "push.branch.protection.read.failed",
@@ -3626,14 +3651,17 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    */
   async #readQueuedPushCommit(gitCache: RpcStub<GitCache>, oid: GitOid): Promise<GitLabCommitDetails | null> {
     if (!this.isSimulatedCommitId(oid)) {
-      for (const head of new Set(this.#pendingPushActions().map(action => action.newSha))) {
-        try {
-          await this.#collectPendingChain(gitCache, head);
-        } catch (error) {
-          logger.warn("failed to walk a queued push's commits", { event: "commits.pending.walk.failed", error });
+      // The walks of every queued push are counted as one sum.
+      await gitlabUpstream.summed(async () => {
+        for (const head of new Set(this.#pendingPushActions().map(action => action.newSha))) {
+          try {
+            await this.#collectPendingChain(gitCache, head);
+          } catch (error) {
+            logger.warn("failed to walk a queued push's commits", { event: "commits.pending.walk.failed", error });
+          }
+          if (this.#servedSimulatedCommitIds.has(oid)) break;
         }
-        if (this.#servedSimulatedCommitIds.has(oid)) break;
-      }
+      });
       if (!this.#servedSimulatedCommitIds.has(oid)) return null;
     }
     const details = await this.#tryReadCachedCommitDetails(gitCache, oid);
@@ -3666,46 +3694,49 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     /** Every commit the walk found GitLab lacks, side branches' included: none may be advertised. */
     pending: GitOid[];
   }> {
-    // A push's expectedOldSha is usually known to GitLab without a probe: it was read from the
-    // remote at queue time. Stacked pushes bind each expectedOldSha to the previous queued push's
-    // newSha (a pending commit), so those are excluded and the walk continues to the real anchor.
-    // Rejecting a push retires the pushes stacked on it (`#rejectActionsStrandedByPush`), so no
-    // pending push is left bound to a head that will never exist, which this would take for GitLab's.
-    const pendingNewShas = new Set(this.#pendingPushActions().map(action => action.newSha));
-    const knownShas = new Set(this.#pendingPushActions()
-      .map(action => action.expectedOldSha)
-      .filter(sha => sha !== ZERO_OID && !pendingNewShas.has(sha)));
+    // The probes of the walk, one for each commit GitLab may have, are counted as one sum.
+    return await gitlabUpstream.summed(async () => {
+      // A push's expectedOldSha is usually known to GitLab without a probe: it was read from the
+      // remote at queue time. Stacked pushes bind each expectedOldSha to the previous queued push's
+      // newSha (a pending commit), so those are excluded and the walk continues to the real anchor.
+      // Rejecting a push retires the pushes stacked on it (`#rejectActionsStrandedByPush`), so no
+      // pending push is left bound to a head that will never exist, which this would take for GitLab's.
+      const pendingNewShas = new Set(this.#pendingPushActions().map(action => action.newSha));
+      const knownShas = new Set(this.#pendingPushActions()
+        .map(action => action.expectedOldSha)
+        .filter(sha => sha !== ZERO_OID && !pendingNewShas.has(sha)));
 
-    const onGitLab = async (oid: GitOid) => knownShas.has(oid) || await this.#isCommitOnGitLab(oid);
-    const commits: { summary: GitLabCommitSummary; tree: GitOid }[] = [];
-    const sideParents: GitOid[] = [];
-    let current = head;
-    let projectUrl: string | undefined;
-    while (commits.length <= MAX_PENDING_CHAIN_COMMITS) {
-      if (await onGitLab(current)) {
-        const chainIds = commits.map(commit => commit.summary.id);
-        const side = await this.#recordPendingSideParents(gitCache, sideParents, new Set([...chainIds, current]), onGitLab);
-        return { commits, anchor: current, frontier: [current, ...side.frontier], pending: [...chainIds, ...side.pending] };
+      const onGitLab = async (oid: GitOid) => knownShas.has(oid) || await this.#isCommitOnGitLab(oid);
+      const commits: { summary: GitLabCommitSummary; tree: GitOid }[] = [];
+      const sideParents: GitOid[] = [];
+      let current = head;
+      let projectUrl: string | undefined;
+      while (commits.length <= MAX_PENDING_CHAIN_COMMITS) {
+        if (await onGitLab(current)) {
+          const chainIds = commits.map(commit => commit.summary.id);
+          const side = await this.#recordPendingSideParents(gitCache, sideParents, new Set([...chainIds, current]), onGitLab);
+          return { commits, anchor: current, frontier: [current, ...side.frontier], pending: [...chainIds, ...side.pending] };
+        }
+        const payload = await gitObjectBytes(await gitCache.get(current), "commit");
+        if (payload === null) {
+          throw new Error(`Commit ${current} is not available from the workspace git cache.`);
+        }
+        const parsed = parseGitCommitPayload(payload, current);
+        this.#servedSimulatedCommitIds.add(current);
+        projectUrl ??= (await this.#currentProjectRef()).url;
+        const commitBase = projectUrl;
+        commits.push({
+          summary: commitDetailsFromGitObject(current, payload, id => `${commitBase}/-/commit/${id}`),
+          tree: parsed.tree,
+        });
+        if (parsed.parents.length === 0) {
+          throw new Error(`Commit ${current} has no ancestor known to GitLab.`);
+        }
+        sideParents.push(...parsed.parents.slice(1));
+        current = parsed.parents[0];
       }
-      const payload = await gitObjectBytes(await gitCache.get(current), "commit");
-      if (payload === null) {
-        throw new Error(`Commit ${current} is not available from the workspace git cache.`);
-      }
-      const parsed = parseGitCommitPayload(payload, current);
-      this.#servedSimulatedCommitIds.add(current);
-      projectUrl ??= (await this.#currentProjectRef()).url;
-      const commitBase = projectUrl;
-      commits.push({
-        summary: commitDetailsFromGitObject(current, payload, id => `${commitBase}/-/commit/${id}`),
-        tree: parsed.tree,
-      });
-      if (parsed.parents.length === 0) {
-        throw new Error(`Commit ${current} has no ancestor known to GitLab.`);
-      }
-      sideParents.push(...parsed.parents.slice(1));
-      current = parsed.parents[0];
-    }
-    throw new Error(`More than ${MAX_PENDING_CHAIN_COMMITS} commits are queued for push.`);
+      throw new Error(`More than ${MAX_PENDING_CHAIN_COMMITS} commits are queued for push.`);
+    });
   }
 
   /**
@@ -3834,7 +3865,10 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     ]);
 
     const newTree = chain.commits.length > 0 ? chain.commits[0].tree : await this.#treeOidOfCommit(gitCache, simulatedHead);
-    const files = await diffGitTrees(this.#treeDiffSource(gitCache), await this.#treeOidOfCommit(gitCache, mergeBase), newTree);
+    // A blob the cache lacks is one request to GitLab, for either side of every changed file: the
+    // requests of the diff are counted as one sum.
+    const files = await gitlabUpstream.summed(async () =>
+      diffGitTrees(this.#treeDiffSource(gitCache), await this.#treeOidOfCommit(gitCache, mergeBase), newTree));
 
     const result: SimulatedMergeRequestComparison = {
       revision: { baseSha: targetHead, headSha: simulatedHead, mergeBaseSha: mergeBase },

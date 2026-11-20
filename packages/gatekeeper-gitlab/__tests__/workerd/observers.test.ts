@@ -473,9 +473,9 @@ describe("reads", () => {
     expect(await gk.read([{ method: "getMetadata" }])).toEqual({ error: expect.any(String) });
     expect(await gk.read([{ method: "listIssues", drain: true }])).toEqual({ error: expect.any(String) });
     expect(await gk.observations()).toEqual([]);
-    // Nothing was read in the meantime, by path or by any id.
-    expect(gitlab.requestsWith(OWNER_TOKEN))
-      .toEqual(["/api/v4/projects/group%2Fsub%2Fproject", "/api/v4/projects/group%2Fsub%2Fproject"]);
+    // Nothing was read in the meantime, by path or by any id: each of the two reads asked for the
+    // project alone, three times, since a GET answered 502 is sent again.
+    expect(gitlab.requestsWith(OWNER_TOKEN)).toEqual(Array(6).fill("/api/v4/projects/group%2Fsub%2Fproject"));
 
     gitlab.probeStatus = undefined;
     expect(await gk.read([{ method: "getMetadata" }])).toMatchObject({ ok: {} });

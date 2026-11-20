@@ -67,6 +67,7 @@ import {
   type GitLabApiRunner,
   type GitLabGatekeeperImplProps,
 } from "./gitlab-env";
+import { gitlabUpstream } from "./gitlab-upstream";
 import { parseResourceUrl } from "./gitlab-normalize";
 import { parseProjectSubresource } from "./project-subresources";
 import {
@@ -528,14 +529,17 @@ export class UserAccount extends DurableObject<Env> implements AccountCredential
     // GitLab answers for one project's membership per request, so each ID is cached on its own, and
     // a later failure keeps what earlier requests learned. One at a time, though a binding's reads
     // report at most its one project's IDs.
-    const answers: boolean[] = [];
-    for (const [index, subresource] of subresources.entries()) {
-      const { projectId, minAccessLevel } = required[index];
-      answers.push(await this.#access.cached(subresource,
-        allowed => allowed ? PROJECT_ACCESS_ALLOWED_TTL_MS : PROJECT_ACCESS_DENIED_TTL_MS,
-        () => hasProjectMembership(this.env, this, projectId, minAccessLevel)));
-    }
-    return answers;
+    // The requests of every ID are counted as one sum.
+    return await gitlabUpstream.summed(async () => {
+      const answers: boolean[] = [];
+      for (const [index, subresource] of subresources.entries()) {
+        const { projectId, minAccessLevel } = required[index];
+        answers.push(await this.#access.cached(subresource,
+          allowed => allowed ? PROJECT_ACCESS_ALLOWED_TTL_MS : PROJECT_ACCESS_DENIED_TTL_MS,
+          () => hasProjectMembership(this.env, this, projectId, minAccessLevel)));
+      }
+      return answers;
+    });
   }
 
   /**
