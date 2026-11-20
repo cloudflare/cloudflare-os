@@ -697,10 +697,9 @@ see [A listing over a simulation store](#a-listing-over-a-simulation-store).
 The store runs no callback but the reducer's. A reducer that cannot replay a record on the entity
 returns `refused` with its reason and the fold goes on; the result lists what that call refused, and
 the gatekeeper marks those records after the fold and leaves marked records out of the lists it
-folds. A mark outlives the read, so it is made only over a copy no resolution may have overtaken:
-for a record pending before the copy was fetched, and for none where a record pending then left the
-journal while it was fetched. Inside a resource Durable Object that reads a document one tab at a
-time, where `#journal` is the gatekeeper's own pending store:
+folds. A mark outlives the read, so the fetch, the fold and the marks run against apply and reject
+(`runExclusive`): a read then waits for an apply in flight. Inside a resource Durable Object that
+reads a document one tab at a time, where `#journal` is the gatekeeper's own pending store:
 
 ```ts
 // `invalidatedReason` is the mark, stored with the record under the same id.
@@ -720,33 +719,29 @@ type Queued = { id: number; action: Change };
   },
 });
 
-async read(tabId: string): Promise<string> {
-  const before = new Set(this.#journal.listPending().map(({ id }) => id));
-  const doc = await this.#api.get();
-  const tab = doc.tabs.find(tab => tab.id === tabId);
-  // A record that left the journal while the document was fetched may have applied after the
-  // fetch read it, and one staged meanwhile may build on a record that did: either way a refusal
-  // over this copy may be the copy's age and not the record's. So a refusal is marked only for a
-  // record pending before the fetch, and none where a record pending then has left; the next
-  // read, over a fresh copy, decides the rest.
-  const pending = new Set(this.#journal.listPending().map(({ id }) => id));
-  const overtaken = [...before].some(id => !pending.has(id));
-  return render(this.#fold(tabId, tab, overtaken ? new Set() : before)); // once authorized
+// The fetch, the fold and the marks run on the queue apply and reject run on (`#actions`, the
+// bound action set): a record that applied, or was staged and applied, while the document was
+// fetched would leave the fold a copy that holds it beside a journal that still lists it, or
+// one that lacks it beside a record built on it, and a mark outlives the read.
+read(tabId: string): Promise<string> {
+  return this.#actions.runExclusive(async () => {
+    const doc = await this.#api.get();
+    const tab = doc.tabs.find(tab => tab.id === tabId);
+    return render(this.#fold(tabId, tab)); // once the observation is authorized, as for any read
+  });
 }
 
 // Folds the records of one tab over the provider's copy of it, or over nothing where the document
-// has no such tab, then marks what the fold refused of the records `decided` names, with no
-// `await` in between.
-#fold(tabId: string, tab: Tab | undefined, decided: ReadonlySet<number>): Tab | undefined {
+// has no such tab, then marks what the fold refused, with no `await` in between.
+#fold(tabId: string, tab: Tab | undefined): Tab | undefined {
   const view = createSimulationView(this.#journal.listPending(), action => [action.tabId]);
   const { entity, refused } = this.#replay.fold(
     tabId, tab, view.forTarget(tabId).filter(record => !record.action.invalidatedReason));
-  for (const { record, refusal } of refused) {
-    if (decided.has(record.id)) this.#journal.markInvalid(record.id, refusal);
-  }
+  for (const { record, refusal } of refused) this.#journal.markInvalid(record.id, refusal);
   return entity;
 }
 
+// The action set's `reject` and `apply`, which its queue runs one at a time.
 reject(id: number): void {
   this.ctx.storage.transactionSync(() => {
     this.#journal.remove(id);
@@ -1362,7 +1357,9 @@ const list = simulatedList({
   id: row => row.id,
   compare: newestFirst,
   keeps: row => matchesFilter(row, filter),
-  created: () => pending.flatMap(({ action }) =>
+  // The journal as it is now, not as at the last refresh: a create rejected or applied while a
+  // page is fetched drops its stand-in.
+  created: () => journal.listPending().flatMap(({ action }) =>
     action.kind === "createIncident" && !ids.isResolved(action.ref) ? [action.ref] : []),
 });
 return new OffsetCursor<Incident>({

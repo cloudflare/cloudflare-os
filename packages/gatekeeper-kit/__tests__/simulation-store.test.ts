@@ -1046,6 +1046,29 @@ describe("simulatedList", () => {
     expect(list.inject.revalidate(standIn)).toBeNull();
   });
 
+  it("asks the listing's filter of a stand-in as it is served, not only at a refresh", () => {
+    let shown = true;
+    const store = createSimulationStore<string, Task, Task, Staged>({
+      initial: row => row,
+      reduce: (row, { action }) => action.kind === "open" && row === undefined
+        ? { kind: "applied", value: task(action.ref, action.at) }
+        : { kind: "known-no-effect" },
+    });
+    const list = simulatedList({
+      store,
+      view: () => createSimulationView([opens(1, "~1", 5)], taskIds),
+      id: row => row.id,
+      compare: newestFirst,
+      keeps: () => shown,
+      created: () => ["~1"],
+    });
+    const [standIn] = list.inject.items;
+    expect(list.inject.revalidate(standIn)).toEqual(task("~1", 5));
+    // The filter changes while a page is fetched, after the cursor's refresh.
+    shown = false;
+    expect(list.inject.revalidate(standIn)).toBeNull();
+  });
+
   it("revalidates a stand-in as the records staged since leave it", () => {
     const { journal, list } = listing([opens(1, "~1", 5)], ["~1"]);
     const [standIn] = list.inject.items;
