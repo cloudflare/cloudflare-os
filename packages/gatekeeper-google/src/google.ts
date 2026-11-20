@@ -3085,7 +3085,9 @@ export class GoogleDriveGatekeeperImpl
   async #applyToken(opts?: AccessTokenRequest): Promise<string> {
     let approval = this.#approvalToken;
     if (approval === undefined) return this.#getAccessToken(opts);
-    // Asked plainly: a refresh or a reload is the approval's to refuse, not the connection's.
+    // A refresh or a reload, asked after Drive refused a request, answers the same token, which
+    // sends nothing again: checking the connection then could only hide Drive's answer.
+    if (opts?.forceRefresh || opts?.reloadStored) return approval;
     await this.#getAccessToken();
     return approval;
   }

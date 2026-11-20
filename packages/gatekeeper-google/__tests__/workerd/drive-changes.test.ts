@@ -228,6 +228,8 @@ class DriveProvider {
    * or `lost`, which makes the change and then answers 503.
    */
   nextWrite?: Answer | "lost";
+  /** What happens as the next write arrives, before it is answered. */
+  duringWrite?: () => void | Promise<void>;
   /** How `about` answers: with a failure, or with the permission ID alone. */
   readonly about: { fail?: Answer; omitAddress?: boolean } = {};
   /** Tokens Google no longer accepts, though their recorded expiry has not come: every request answers 401. */
@@ -486,6 +488,9 @@ class DriveProvider {
     call: string, url: URL, token: string, body: Record<string, unknown>, make: () => Response,
   ): Promise<Response> {
     this.writes.push({ call, query: Object.fromEntries(url.searchParams), body, token });
+    let during = this.duringWrite;
+    this.duringWrite = undefined;
+    await during?.();
     let outcome = this.nextWrite;
     this.nextWrite = undefined;
     if (outcome !== undefined && outcome !== "lost") return driveError(outcome);
@@ -1569,6 +1574,25 @@ describe("sharing", () => {
       vi.restoreAllMocks();
     }
     expect(provider.writes).toEqual([]);
+    expect(await drive.attempts()).toEqual({});
+  });
+
+  // Drive's refusal says the change was not made, whatever the connection answers meanwhile.
+  it("reports Drive's refusal of a change whose connection was disconnected while it was sent", async () => {
+    let drive = binding();
+    let { actionId } = await drive.queued("share", "doc-1", BOB, "reader");
+    provider.nextWrite = { status: 403, reason: "shareOutNotPermitted" };
+    provider.duringWrite = async () => {
+      await account().disconnectDrive();
+      vi.spyOn(Date, "now").mockReturnValue(Date.now() + ACCESS_TOKEN_MEMO_MAX_AGE_MS);
+    };
+
+    try {
+      expect(await drive.apply(actionId)).toBe(SHARE_OUT_REFUSED);
+    } finally {
+      vi.restoreAllMocks();
+    }
+    expect(sent(CREATE_ON_DOC)).toHaveLength(1);
     expect(await drive.attempts()).toEqual({});
   });
 
