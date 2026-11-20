@@ -1287,6 +1287,24 @@ describe("Google grants after the deployment moved to another OAuth client", () 
     expect(await unknown.stored("pendingRevocation")).not.toHaveProperty("subject");
   });
 
+  // Nor does a later try forget the client its own refresh showed, though the account can't be read.
+  it("keeps the client a retry's refresh showed in the revocation it tries again", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const google = fakeGoogle();
+    const {ada} = googleAccounts();
+    const unknown = await storedAccount(google, "unknown", ada);
+    await unknown.run((_instance, state) => {
+      state.storage.kv.put("accessToken", {token: "access-unknown", expires: new Date(Date.now() + 3_600_000)});
+    });
+    google.profileFails = true;
+    google.revocationFails = true;
+    await unknown.disconnect();
+    expect(await unknown.stored("pendingRevocation")).not.toHaveProperty("clientId");
+
+    expect(await unknown.alarm()).toBe(true);
+    expect(await unknown.stored("pendingRevocation")).toEqual(expect.objectContaining({clientId: "test-client"}));
+  });
+
   // A revocation that can't tell whose grant it would end, and can't learn it with a client its
   // token wasn't issued to, is given up rather than taken for one Google ended.
   it("gives up a revocation of the former client's whose Google account isn't known", async () => {

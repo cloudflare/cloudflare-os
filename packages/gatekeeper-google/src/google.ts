@@ -1687,9 +1687,12 @@ export class UserAccount extends DurableObject<Env> {
   /**
    * The Google account a pending revocation's refresh token belongs to, read with a token it
    * mints, or null when Google refuses it for good, leaving no grant to revoke. Throws when Google
-   * cannot say.
+   * cannot say. A mint that works shows the client the token was issued to, which `issuedTo`
+   * hears even when the account then can't be read.
    */
-  async #revocationSubject(refreshToken: string): Promise<string | null> {
+  async #revocationSubject(
+    refreshToken: string, issuedTo: (clientId: string) => void,
+  ): Promise<string | null> {
     let { CLIENT_ID: clientId, CLIENT_SECRET: clientSecret } = this.env;
     if (!clientId || !clientSecret) throw new Error("The Google Gatekeeper is not configured.");
     let result = await getAccessToken(refreshToken, clientId, clientSecret,
@@ -1698,6 +1701,7 @@ export class UserAccount extends DurableObject<Env> {
       if (result.reason === "revoked" && !isCloudSessionExpiry(result)) return null;
       throw new Error("Google would not refresh the token of a revocation to try again.");
     }
+    issuedTo(clientId);
     return (await getGoogleAccountProfile(
         result.token.token, AbortSignal.timeout(GRANT_SUBJECT_TIMEOUT_MS))).sub;
   }
@@ -1729,7 +1733,9 @@ export class UserAccount extends DurableObject<Env> {
         this.ctx.storage.deleteAll();
         return;
       }
-      let subject = pending.subject ?? await this.#revocationSubject(pending.refreshToken);
+      // A client the mint shows is kept for the next try, the account read or not.
+      let subject = pending.subject ?? await this.#revocationSubject(
+          pending.refreshToken, clientId => { pending = { ...pending, clientId }; });
       if (subject === null) {
         logger.info("dropped a revocation of a grant Google had already ended", {
           event: "google.grant.revoke.moot",
