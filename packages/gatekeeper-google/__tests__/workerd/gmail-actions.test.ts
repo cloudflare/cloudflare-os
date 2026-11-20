@@ -1000,55 +1000,78 @@ describe("Gmail session API surface", () => {
     expect(writes).toBe(1);
   });
 
-  // A reply whose token could not be had was not sent, so approving it again sends it, not
-  // refuses it as one that may have been sent.
-  it("sends a reply again whose earlier approval could not get its token", async () => {
+  // A reply that sent nothing, its token not to be had or Gmail refusing it outright, is approved
+  // again as a new send, though its message is built anew with another Date.
+  describe("a reply approved again after its first send sent nothing", () => {
     const sourceId = "abc123";
-    let sends = 0;
-    const {gatekeeper, account, values} = actionHarness(async (url, init) => {
-      if (url.pathname === `/gmail/v1/users/me/messages/${sourceId}` && !init.method) {
-        return json(messageMetadata(sourceId, "source-thread", "<source@example.com>"));
-      }
-      if (url.pathname === "/gmail/v1/users/me/threads/source-thread" && !init.method) {
-        return json(threadMinimal("source-thread", [sourceId]));
-      }
-      if (url.pathname === "/gmail/v1/users/me/messages/send" && init.method === "POST") {
-        sends++;
-        return json({id: "def789", threadId: "source-thread"});
-      }
-      if (url.pathname === "/gmail/v1/users/me/labels" && !init.method) return json({labels: []});
-      throw new Error(`Unexpected request: ${url}`);
-    });
-    // A token the memo serves for the reply's queueing, and no longer a moment later: the send
-    // then asks the account, whose refresh fails, so nothing is sent.
-    account.kv.put("accessToken", {
-      token: "access-token", expires: new Date(Date.now() + ACCESS_TOKEN_EXPIRY_SAFETY_MS + 800),
-    });
-    const session = await gatekeeper.startSession(approvalQueue());
-    const source = await session.getMessage(sourceId);
-    await source.reply("Reply body");
-    // The approval checks whose account it is first, under the memoized token, and the send comes
-    // after that answer has waited.
-    const inner = globalThis.fetch;
-    let held = false;
-    vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
-      const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
-      if (url.pathname === "/oauth2/v3/userinfo" && !held) {
-        held = true;
-        await new Promise(resolve => setTimeout(resolve, 1500));
-      }
-      return inner(input, init);
-    });
-    await expect(gatekeeper.applyAction(1)).rejects.toThrow();
-    expect(held).toBe(true);
-    expect(sends).toBe(0);
-    expect(await values.has("gmail:applying:1")).toBe(false);
+    const replyHarness = (firstSend: () => Response | undefined) => {
+      let sends = 0;
+      let attempts = 0;
+      const harness = actionHarness(async (url, init) => {
+        if (url.pathname === `/gmail/v1/users/me/messages/${sourceId}` && !init.method) {
+          return json(messageMetadata(sourceId, "source-thread", "<source@example.com>"));
+        }
+        if (url.pathname === "/gmail/v1/users/me/threads/source-thread" && !init.method) {
+          return json(threadMinimal("source-thread", [sourceId]));
+        }
+        if (url.pathname === "/gmail/v1/users/me/messages/send" && init.method === "POST") {
+          const refused = attempts++ === 0 ? firstSend() : undefined;
+          if (refused) return refused;
+          sends++;
+          return json({id: "def789", threadId: "source-thread"});
+        }
+        if (url.pathname === "/gmail/v1/users/me/labels" && !init.method) return json({labels: []});
+        throw new Error(`Unexpected request: ${url}`);
+      });
+      return {...harness, sends: () => sends};
+    };
+    afterEach(() => vi.useRealTimers());
 
-    account.kv.put("accessToken", {token: "access-token", expires: new Date(Date.now() + 3_600_000)});
-    // Later, so the message built anew carries another Date than the one that never left.
-    await new Promise(resolve => setTimeout(resolve, 1500));
-    await gatekeeper.applyAction(1);
-    expect(sends).toBe(1);
+    it("sends a reply whose earlier approval could not get its token", async () => {
+      vi.useFakeTimers({toFake: ["Date"]});
+      const start = Date.now();
+      const {gatekeeper, account, values, sends} = replyHarness(() => undefined);
+      // A token the memo serves for the reply's queueing and its account check, and no longer
+      // once the clock moves on: the send then asks the account, whose refresh fails.
+      account.kv.put("accessToken", {
+        token: "access-token", expires: new Date(start + ACCESS_TOKEN_EXPIRY_SAFETY_MS + 1000),
+      });
+      const session = await gatekeeper.startSession(approvalQueue());
+      await (await session.getMessage(sourceId)).reply("Reply body");
+      const inner = globalThis.fetch;
+      let moved = false;
+      vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
+        const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
+        if (url.pathname === "/oauth2/v3/userinfo" && !moved) {
+          moved = true;
+          vi.setSystemTime(start + 2000);
+        }
+        return inner(input, init);
+      });
+      await expect(gatekeeper.applyAction(1)).rejects.toThrow();
+      expect(moved).toBe(true);
+      expect(sends()).toBe(0);
+      expect(await values.has("gmail:applying:1")).toBe(false);
+
+      account.kv.put("accessToken", {token: "access-token", expires: new Date(start + 3_600_000)});
+      vi.setSystemTime(start + 10_000);
+      await gatekeeper.applyAction(1);
+      expect(sends()).toBe(1);
+    });
+
+    it("sends a reply Gmail refused outright the first time", async () => {
+      vi.useFakeTimers({toFake: ["Date"]});
+      const start = Date.now();
+      const {gatekeeper, sends} = replyHarness(() => json({error: {code: 400, message: "Bad"}}, 400));
+      const session = await gatekeeper.startSession(approvalQueue());
+      await (await session.getMessage(sourceId)).reply("Reply body");
+      await expect(gatekeeper.applyAction(1)).rejects.toThrow();
+      expect(sends()).toBe(0);
+
+      vi.setSystemTime(start + 10_000);
+      await gatekeeper.applyAction(1);
+      expect(sends()).toBe(1);
+    });
   });
 
   it("admits a sent message created through a restricted binding", async () => {
