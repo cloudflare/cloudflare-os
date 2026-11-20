@@ -111,6 +111,10 @@ the form is shown and give the form a second one:
 
 ```ts
 // GET /<account>/<linkNonce>
+const formNonce = advanceToOAuth(kv, linkNonce, Date.now(), {
+  startedUnder: this.#creds.connectionGeneration(),
+});
+if (formNonce === null) throw new Error("This connect link has expired. Start again.");
 return formPageResponse(connectFormHtml({
   title: "Connect Vendor",
   intro: "Create an API key in Vendor, under Settings, and paste it here.",

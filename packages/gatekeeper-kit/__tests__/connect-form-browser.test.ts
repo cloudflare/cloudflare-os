@@ -189,6 +189,10 @@ describe("the connect form in Chromium", () => {
     const key = page.getByLabel("API key");
     expect(await key.getAttribute("type")).toBe("password");
     expect(await page.evaluate("document.activeElement?.id")).toBe("key");
+    // Focus lands past the intro, so the input carries it.
+    expect(await page.evaluate(
+      "document.getElementById(document.activeElement.getAttribute('aria-describedby')).textContent",
+    )).toBe("Paste a key.");
   });
 
   // Why the form is not served through `htmlResponse`: under `no-referrer` the browser names no

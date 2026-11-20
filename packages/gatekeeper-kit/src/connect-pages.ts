@@ -166,12 +166,22 @@ const FORM_STYLE = `
 /** The error line's id. It has a `.`, which no field name can, so it is never an input's id. */
 const ERROR_ID = "form.error";
 
+/** The intro's id, out of a field name's reach as `ERROR_ID` is. */
+const INTRO_ID = "form.intro";
+
 /**
  * Disables the button once the form is submitted. A second click would post the nonce again, and
  * the browser shows the answer to the last request, which may be the one that lost. It reaches the
  * button through the event, because a field's name can hide any property of the form itself.
  */
 const SUBMIT_ONCE = "if(event.submitter)event.submitter.disabled=true";
+
+/** Renders an element's attributes in order: `true` is a bare name, `false` or `undefined` is left out. */
+const attributes = (values: Record<string, string | boolean | undefined>): string =>
+  Object.entries(values)
+    .filter(([, value]) => value !== undefined && value !== false)
+    .map(([name, value]) => value === true ? name : `${name}="${escapeHtml(String(value))}"`)
+    .join(" ");
 
 /** The name of the hidden field `connectFormHtml` carries the flow's nonce in. */
 export const CONNECT_FORM_NONCE_FIELD = "nonce";
@@ -229,21 +239,33 @@ export function connectFormHtml(options: {
       + `"-", none of them "${CONNECT_FORM_NONCE_FIELD}".`);
   }
   const title = escapeHtml(options.title);
-  const inputs = options.fields.map(({ name, label, secret, placeholder }, index) =>
-    `<label for="${name}">${escapeHtml(label)}</label>\n`
-    + `<input id="${name}" name="${name}" type="${secret ? "password" : "text"}" required`
-    // "off" is ignored on a password input, and the Workshop's own sign-in is on this origin.
-    + (secret ? ' autocomplete="new-password" data-1p-ignore data-lpignore="true"' : "")
-    + (placeholder !== undefined ? ` placeholder="${escapeHtml(placeholder)}"` : "")
-    // Tied to the input: an alert already on the page when it loads is not reliably announced.
-    + (options.error !== undefined ? ` aria-invalid="true" aria-describedby="${ERROR_ID}"` : "")
-    + (index === 0 ? " autofocus" : "") + ">").join("\n");
+  const refused = options.error !== undefined;
+  const inputs = options.fields.map((field, index) => {
+    const first = index === 0;
+    return `<label for="${field.name}">${escapeHtml(field.label)}</label>\n<input ${attributes({
+      id: field.name,
+      name: field.name,
+      type: field.secret ? "password" : "text",
+      required: true,
+      // "off" is ignored on a password input, and the Workshop's own sign-in is on this origin.
+      autocomplete: field.secret ? "new-password" : undefined,
+      "data-1p-ignore": field.secret,
+      "data-lpignore": field.secret ? "true" : undefined,
+      placeholder: field.placeholder,
+      "aria-invalid": refused ? "true" : undefined,
+      // Focus skips both lines: the first input takes it as the page loads, and an alert already
+      // on the page then is not reliably announced.
+      "aria-describedby":
+        [refused && ERROR_ID, first && INTRO_ID].filter(Boolean).join(" ") || undefined,
+      autofocus: first,
+    })}>`;
+  }).join("\n");
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${title}</title><style>${PAGE_STYLE}${FORM_STYLE}</style></head>
 <body><main><h1>${title}</h1>
-<p class="sub">${escapeHtml(options.intro)}</p>
+<p class="sub" id="${INTRO_ID}">${escapeHtml(options.intro)}</p>
 ${options.error !== undefined ? `<p class="err" id="${ERROR_ID}" role="alert">${escapeHtml(options.error)}</p>\n` : ""}<form method="post" action="${escapeHtml(options.action)}" onsubmit="${SUBMIT_ONCE}">
 <input type="hidden" name="${CONNECT_FORM_NONCE_FIELD}" value="${escapeHtml(options.nonce)}">
 ${inputs}

@@ -210,7 +210,7 @@ describe("connect forms", () => {
     const html = form({ fields: [{ name: "host", label: "Host", placeholder: "https://x" }, { name: "key", label: "Key", secret: true }] });
     expect(html).toContain(`<form method="post" action="${ORIGIN}/abc/key" onsubmit="if(event.submitter)event.submitter.disabled=true">`);
     expect(html).toContain(`<input type="hidden" name="${CONNECT_FORM_NONCE_FIELD}" value="${"f".repeat(64)}">`);
-    expect(html).toContain('<input id="host" name="host" type="text" required placeholder="https://x" autofocus>');
+    expect(html).toContain('<input id="host" name="host" type="text" required placeholder="https://x" aria-describedby="form.intro" autofocus>');
     expect(html).toContain('<input id="key" name="key" type="password" required autocomplete="new-password" data-1p-ignore data-lpignore="true">');
     expect(html).toContain('<button type="submit">Connect</button>');
   });
@@ -226,10 +226,13 @@ describe("connect forms", () => {
 
   it("says why the last submission was refused, when given an error, and ties it to the inputs", () => {
     expect(form()).not.toContain('class="err"');
-    expect(form()).not.toContain("aria-");
+    expect(form()).not.toContain("aria-invalid");
+    expect(form()).not.toContain("form.error");
     const html = form({ error: "Vendor refused <that> key." });
     expect(html).toContain('<p class="err" id="form.error" role="alert">Vendor refused &lt;that&gt; key.</p>');
-    expect(html).toContain('data-lpignore="true" aria-invalid="true" aria-describedby="form.error" autofocus>');
+    expect(html).toContain('data-lpignore="true" aria-invalid="true" aria-describedby="form.error form.intro" autofocus>');
+    const second = form({ error: "No.", fields: [{ name: "host", label: "Host" }, { name: "key", label: "Key" }] });
+    expect(second).toContain('<input id="key" name="key" type="text" required aria-invalid="true" aria-describedby="form.error">');
   });
 
   // A quote with no `<` or `>` after it: what closes an attribute and opens another.
