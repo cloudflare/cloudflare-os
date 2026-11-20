@@ -613,9 +613,11 @@ export function defineUpstream(options: UpstreamOptions): Upstream {
         // An attempt begun once its caller's signal has aborted is failed by `fetch` unsent.
         const unsent = caller?.aborted === true;
         const startedAt = Date.now();
+        // Read once for the attempt: what failed is told below by the fetch that was asked.
+        const own = options.fetch;
         let response: Response;
         try {
-          response = await (options.fetch ?? globalThis.fetch)(input, sent);
+          response = await (own ?? globalThis.fetch)(input, sent);
         } catch (error) {
           // A request its caller gave up is not one the service failed, and is not counted. A
           // caller that times its own wait aborts with a `TimeoutError`, though, and that is the
@@ -625,7 +627,7 @@ export function defineUpstream(options: UpstreamOptions): Upstream {
           // What is no URL the runtime's own `fetch` sent nowhere: its failure is the caller's,
           // not the service's. A `fetch` of the gatekeeper's may take such an input for a path
           // of its own, and its `thrown` says whether anything was sent.
-          const nowhere = !url && !options.fetch;
+          const nowhere = !url && !own;
           const counted = !nowhere && !unsent && (!caller?.aborted || waitedOut);
           // A `null` is the gatekeeper saying that nothing was sent: there is no attempt to count
           // or to make again.
