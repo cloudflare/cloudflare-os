@@ -68,9 +68,9 @@ export type RetryPolicy = {
    */
   baseDelayMs?: number;
   /**
-   * The longest wait in milliseconds. Not negative. Default 10 000. An answer whose
-   * `Retry-After` asks for longer is not sent again, unless the policy has a `delayMs` of its
-   * own, whose wait is cut to this. No wait is longer than 2 147 483 647 ms, the longest a timer
+   * The longest wait in milliseconds. Not negative. Default 10 000. A wait that `delayMs` gives
+   * is cut to this, and an answer whose `Retry-After` asks for longer is not sent again where
+   * `delayMs` gives no wait for it. No wait is longer than 2 147 483 647 ms, the longest a timer
    * takes.
    */
   maxDelayMs?: number;
@@ -93,12 +93,14 @@ export type RetryPolicy = {
   /**
    * The wait in milliseconds before the send after an answered attempt, for a provider that names
    * its wait otherwise than by a `Retry-After` in delta-seconds, or that waits by a rule of its
-   * own where the answer names none. It is given the answer, whose body is cancelled, and how
-   * many of the policy's `attempts` were made, the answered one included: a replay is none of
-   * them. The wait is not negative and at most `maxDelayMs`. Undefined, a throw or what is no
-   * number takes the wait `Upstream` describes. It is not asked about an attempt that threw.
+   * own where the answer names none. It is given the status and a copy of the headers of an
+   * answer that `retryable` would send again, and how many of the policy's `attempts` were made,
+   * the answered one included: a replay is none of them. The wait is not negative and at most
+   * `maxDelayMs`. Undefined, a throw or what is no number takes the wait `Upstream` describes,
+   * which a `Retry-After` longer than `maxDelayMs` makes no send at all. It is not asked about
+   * an attempt that threw.
    */
-  delayMs?: (response: Response, attempts: number) => number | undefined;
+  delayMs?: (answered: AnsweredWith, attempts: number) => number | undefined;
 };
 
 /** Configures an `Upstream`. */
@@ -255,11 +257,12 @@ export type UpstreamRequestInit = RequestInit & {
  *   once gives no `replay`. Nothing is sent again once the caller's signal has aborted, whether
  *   before `authorize` is asked for the headers of that send or while it is. The wait is what
  *   the policy's `delayMs` gives for the answer, cut to `maxDelayMs`, else what the answer's
- *   `Retry-After` asks for. An answer whose `Retry-After` asks for longer than `maxDelayMs` is
- *   not sent again under a policy with no `delayMs` of its own, since a send before that time
- *   would come too soon: it is the answer returned. A `Retry-After` asks for its count of seconds, or the time
- *   left until its HTTP date (in any of the three forms RFC 9110 gives one, as `Sun, 06 Nov 1994
- *   08:49:37 GMT`), which is nothing once the date is past. With no `Retry-After`, or one that
+ *   `Retry-After` asks for. Where `delayMs` gives no wait and the `Retry-After` asks for longer
+ *   than `maxDelayMs`, the answer is not sent again, since a send before that time would come
+ *   too soon: it is the answer returned, its body as it came. A `Retry-After` asks for its
+ *   count of seconds, or the time left until its HTTP date (in any of the three forms RFC 9110
+ *   gives one, as `Sun, 06 Nov 1994 08:49:37 GMT`), which is nothing once the date is past.
+ *   With no `Retry-After`, or one that
  *   is neither (a day that its month does not have makes no date), and after a throw, the wait
  *   is `Math.random() * min(baseDelayMs * 2 ** attempt, maxDelayMs)`. The body of the answer is
  *   cancelled before the wait, which ends at once when the caller's signal aborts, after an
@@ -645,7 +648,7 @@ export function defineUpstream(options: UpstreamOptions): Upstream {
           // that is safe.
           if (given !== null && resendable && idempotent && retry && attempt < retry.attempts - 1
               && !caller?.aborted) {
-            await pause(backoffMs(retry, attempt, null), caller);
+            await pause(jitterMs(retry, attempt), caller);
             attempt++;
             continue;
           }
@@ -686,10 +689,17 @@ export function defineUpstream(options: UpstreamOptions): Upstream {
           replays++;
           continue;
         }
-        if (resendable && retry && attempt < retry.attempts - 1 && !asksTooLong(retry, response)
-            && await sendsAgain(() => retry.retryable(
-              response.status, { method, operation, idempotent }, response.headers))) {
-          await pause(backoffMs(retry, attempt, response), caller);
+        // The wait is settled with the rule, before the body is let go: an answer that asks for
+        // a longer wait than is made is returned as it came.
+        let wait: number | undefined;
+        if (resendable && retry && attempt < retry.attempts - 1 && await sendsAgain(() => {
+          if (!retry.retryable(response.status, { method, operation, idempotent }, response.headers)) {
+            return false;
+          }
+          wait = waitAfter(retry, attempt, response);
+          return wait !== undefined;
+        })) {
+          await pause(wait ?? 0, caller);
           attempt++;
           continue;
         }
@@ -709,7 +719,7 @@ export function defineUpstream(options: UpstreamOptions): Upstream {
           again: () => {
             if (!success || !timeout?.aborted || caller?.aborted || !resendable || !idempotent
                 || !retry || attempt >= retry.attempts - 1) return undefined;
-            return pause(backoffMs(retry, attempt++, null), caller).then(sending);
+            return pause(jitterMs(retry, attempt++), caller).then(sending);
           },
         };
       }
@@ -981,35 +991,34 @@ function delayOf(label: string, value: number): number {
   return value;
 }
 
-// The wait before the attempt after `attempt`, whose answer is `response` (null where it threw):
-// what the policy's `delayMs` gives for the answer, else what the server's `Retry-After` asks
-// for, else exponential backoff with full jitter. Never longer than the policy's longest delay.
-function backoffMs(retry: Required<RetryPolicy>, attempt: number, response: Response | null): number {
-  const own = response ? ownDelayMs(retry, response, attempt + 1) : undefined;
+// The wait before the attempt after `attempt`, whose answer is `response`: what the policy's
+// `delayMs` gives for the answer, cut to the policy's longest delay, else what the server's
+// `Retry-After` asks for, else exponential backoff with full jitter. Undefined where the
+// `Retry-After` asks for longer than the longest delay and the policy gave no wait of its own:
+// a send after a shorter wait would come before the service is ready for it, so there is none.
+function waitAfter(retry: Required<RetryPolicy>, attempt: number, response: Response): number | undefined {
+  const own = ownDelayMs(retry, response, attempt + 1);
   if (own !== undefined) return Math.min(Math.max(own, 0), retry.maxDelayMs);
-  const retryAfter = response ? response.headers.get("Retry-After") : null;
+  const retryAfter = response.headers.get("Retry-After");
   const askedFor = retryAfter === null ? undefined : retryAfterMs(retryAfter);
-  if (askedFor !== undefined) return Math.min(askedFor, retry.maxDelayMs);
+  if (askedFor !== undefined) return askedFor > retry.maxDelayMs ? undefined : askedFor;
+  return jitterMs(retry, attempt);
+}
+
+// The wait where no answer names one, and after an attempt that threw: exponential backoff with
+// full jitter, never longer than the policy's longest delay.
+function jitterMs(retry: Required<RetryPolicy>, attempt: number): number {
   return Math.random() * Math.min(retry.baseDelayMs * 2 ** attempt, retry.maxDelayMs);
 }
 
-// Whether an answer's `Retry-After` asks for a longer wait than the policy's longest. Such an
-// answer is not sent again: a send after a shorter wait would come before the service is ready
-// for it. A policy with a `delayMs` of its own decides its waits itself.
-function asksTooLong(retry: Required<RetryPolicy>, response: Response): boolean {
-  if (retry.delayMs !== DEFAULT_RETRY.delayMs) return false;
-  const retryAfter = response.headers.get("Retry-After");
-  const askedFor = retryAfter === null ? undefined : retryAfterMs(retryAfter);
-  return askedFor !== undefined && askedFor > retry.maxDelayMs;
-}
-
 // The wait the policy's `delayMs` gives for an answer, or undefined where it gives none, throws
-// or gives what is no number.
+// or gives what is no number. It is asked before the body of the answer is let go, and so is
+// given the status and a copy of the headers alone.
 function ownDelayMs(
   retry: Required<RetryPolicy>, response: Response, attempts: number,
 ): number | undefined {
   try {
-    const given = retry.delayMs(response, attempts);
+    const given = retry.delayMs(answeredWith(response), attempts);
     return typeof given === "number" && !Number.isNaN(given) ? given : undefined;
   } catch {
     return undefined;

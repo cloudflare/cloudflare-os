@@ -877,6 +877,59 @@ describe("retry", () => {
       expect(outcomes()).toEqual([["error", "http", 503]]);
     });
 
+    it.each<[string, RetryPolicy["delayMs"]]>([
+      ["gives none", () => undefined],
+      ["throws", () => { throw new Error("no wait"); }],
+      ["gives what is no number", () => Number.NaN],
+    ])("sends nothing again after a longer Retry-After where the policy's `delayMs` %s", async (_name, delayMs) => {
+      vi.useFakeTimers();
+      const refused = new Response("slow down", { status: 429, headers: { "Retry-After": "60" } });
+      const times = sendTimes(() => refused);
+
+      const response = untimed.request(THREAD, { retry: { maxDelayMs: 5, delayMs } });
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      // The answer as it came: its body was not cancelled for a send that is not made.
+      expect(await response).toBe(refused);
+      expect(await refused.text()).toBe("slow down");
+      expect(times).toHaveLength(1);
+      expect(outcomes()).toEqual([["refused", "rate", 429]]);
+    });
+
+    it("gives `delayMs` the status and a copy of the headers, and no body to read", async () => {
+      vi.useFakeTimers();
+      const refused = new Response("slow down", { status: 429, headers: { "Retry-After": "60" } });
+      const times = sendTimes(() => refused);
+      const seen: unknown[] = [];
+
+      const response = untimed.request(THREAD, {
+        retry: {
+          delayMs: answered => {
+            seen.push(Object.keys(answered).toSorted(), answered.status, answered.headers.get("Retry-After"));
+            answered.headers.delete("Retry-After");
+            return undefined;
+          },
+        },
+      });
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      // What the hook did to its copy changed neither the wait asked for nor the answer.
+      expect(await response).toBe(refused);
+      expect(refused.headers.get("Retry-After")).toBe("60");
+      expect(times).toHaveLength(1);
+      expect(seen).toEqual([["headers", "status"], 429, "60"]);
+    });
+
+    it("does not ask `delayMs` about an answer that `retryable` would not send again", async () => {
+      const delayMs = vi.fn(() => 0);
+      sendTimes(() => answer(503));
+
+      const response = await untimed.request(THREAD, { retry: { retryable: () => false, delayMs } });
+
+      expect(response.status).toBe(503);
+      expect(delayMs).not.toHaveBeenCalled();
+    });
+
     it("leaves a longer Retry-After to a policy that gives its own wait, cut to the longest", async () => {
       vi.useFakeTimers();
       const times = sendTimes(send => send === 1
