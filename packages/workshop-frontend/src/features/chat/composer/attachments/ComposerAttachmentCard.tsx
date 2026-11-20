@@ -46,6 +46,7 @@ export const ComposerAttachmentCard = ({
   const { ref, thumbnail, loading } = useAttachmentThumbnail<HTMLDivElement>(
     attachment.previewUrl ? undefined : previewFormat(attachment.mimeType, attachment.name),
     loadContent,
+    attachment.mimeType,
   );
 
   return (

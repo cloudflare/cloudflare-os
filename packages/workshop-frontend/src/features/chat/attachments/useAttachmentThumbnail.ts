@@ -26,6 +26,7 @@ const view = (drawn: ReactNode): AttachmentThumbnail | null => (drawn ? { type: 
 const makeThumbnail = async (
   format: PreviewFormat,
   bytes: Uint8Array,
+  mimeType: string,
   signal: AbortSignal,
 ): Promise<AttachmentThumbnail | null> => {
   switch (format) {
@@ -57,13 +58,16 @@ const makeThumbnail = async (
       return { type: "image", url: URL.createObjectURL(image), whole: landscape };
     }
     case "image":
-      return null;
+      return { type: "image", url: URL.createObjectURL(new Blob([bytes as BlobPart], { type: mimeType })), whole: false };
   }
 };
 
-/** Whether a file of this format gets a thumbnail, which costs fetching the file. */
-export const hasThumbnail = (format: PreviewFormat | undefined): format is PreviewFormat =>
-  format !== undefined && format !== "image";
+/**
+ * Whether a file of this format gets a thumbnail, which costs fetching the file. A card that can
+ * draw its image without one passes no format.
+ */
+const hasThumbnail = (format: PreviewFormat | undefined): format is PreviewFormat =>
+  format !== undefined;
 
 /**
  * A thumbnail for the card `ref` is attached to, made once the card nears the viewport: a long
@@ -74,6 +78,7 @@ export const hasThumbnail = (format: PreviewFormat | undefined): format is Previ
 export const useAttachmentThumbnail = <E extends Element>(
   format: PreviewFormat | undefined,
   load: () => Promise<Uint8Array>,
+  mimeType: string,
 ) => {
   const ref = useRef<E>(null);
   const [thumbnail, setThumbnail] = useState<AttachmentThumbnail | null>(null);
@@ -92,7 +97,7 @@ export const useAttachmentThumbnail = <E extends Element>(
       if (!entries.some((entry) => entry.isIntersecting)) return;
       observer.disconnect();
       loadRef.current()
-        .then((bytes) => (cancelled ? null : makeThumbnail(format, bytes, abort.signal)))
+        .then((bytes) => (cancelled ? null : makeThumbnail(format, bytes, mimeType, abort.signal)))
         .then((made) => {
           if (made?.type === "image") url = made.url;
           if (cancelled) {
@@ -112,7 +117,7 @@ export const useAttachmentThumbnail = <E extends Element>(
       observer.disconnect();
       if (url) URL.revokeObjectURL(url);
     };
-  }, [format]);
+  }, [format, mimeType]);
 
   return { ref, thumbnail, loading: hasThumbnail(format) && !settled };
 };

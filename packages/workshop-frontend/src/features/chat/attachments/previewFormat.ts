@@ -17,6 +17,12 @@ const BROWSER_IMAGE_TYPES = new Set([
   "image/x-icon", "image/vnd.microsoft.icon",
 ]);
 
+/**
+ * The largest file, other than an image, that is previewed or given a thumbnail: a previewer
+ * fetches and parses the whole file in the page. A larger one can still be downloaded.
+ */
+export const MAX_PREVIEW_BYTES = 25 * 1024 * 1024;
+
 const DELIMITED_TYPES = new Set(["text/csv", "text/tab-separated-values"]);
 const MARKDOWN_TYPES = new Set(["text/markdown", "text/x-markdown"]);
 

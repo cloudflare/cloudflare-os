@@ -12,14 +12,17 @@ export const ChatAttachmentGrid = ({
   loadContent,
 }: {
   attachments: readonly ChatAttachmentRef[];
-  /** Fetches the bytes of an attachment the message does not carry inline. */
-  loadContent: (attachment: ChatAttachmentRef) => Promise<Uint8Array>;
+  /**
+   * Fetches the bytes of an attachment the message does not carry inline. `signal` aborts when
+   * the grid goes.
+   */
+  loadContent: (attachment: ChatAttachmentRef, signal: AbortSignal) => Promise<Uint8Array>;
 }) => {
   const [openId, setOpenId] = useState<string | null>(null);
-  const { content, forgetFailures } = useAttachmentContents(async (id) => {
+  const { content, forgetFailures } = useAttachmentContents(async (id, signal) => {
     const attachment = attachments.find((candidate) => candidate.id === id);
     if (!attachment) throw new Error("The attachment is no longer part of this message.");
-    return attachment.content ?? loadContent(attachment);
+    return attachment.content ?? loadContent(attachment, signal);
   }, attachments.map((attachment) => attachment.id));
 
   return (

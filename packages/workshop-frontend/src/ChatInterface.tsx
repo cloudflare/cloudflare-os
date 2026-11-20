@@ -145,6 +145,7 @@ import { formatFullTimestamp } from "./utils/formatTimestamp";
 import { copyToClipboard } from "./clipboard";
 import { isImeComposing } from "./keyboardEvent";
 import { ChatAttachmentGrid } from "./features/chat/attachments/ChatAttachmentGrid";
+import { readChatAttachment } from "./features/chat/attachments/readChatAttachment";
 import { ChatComposer } from "./features/chat/composer/ChatComposer";
 import { composerDraftStorageKey } from "./features/chat/composer/draft/composerDraft";
 import {
@@ -6348,8 +6349,8 @@ function ChatInterface({
                               {msg.attachments && msg.attachments.length > 0 && (
                                 <ChatAttachmentGrid
                                   attachments={msg.attachments}
-                                  loadContent={(attachment) =>
-                                    overseer.getChatAttachmentContent(msg.chatId, attachment.id)}
+                                  loadContent={(attachment, signal) =>
+                                    readChatAttachment(overseer, msg.chatId, attachment, signal)}
                                 />
                               )}
                               {/* A message that is only attachments has no bubble. */}
@@ -6657,7 +6658,8 @@ function ChatInterface({
                                       </button>
                                     </Tooltip>
                                   )}
-                                  {isLast && msg.code !== "usage_limit" && (
+                                  {/* A retry can't run while the workspace's storage is full. */}
+                                  {isLast && msg.code !== "usage_limit" && msg.code !== "storage_full" && (
                                     <Tooltip content={msg.code === "stopped" ? "Continue where the agent stopped." : "Retry the last action."} asChild>
                                       <button
                                         type="button"

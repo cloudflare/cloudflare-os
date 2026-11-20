@@ -646,6 +646,25 @@ describe('send and retry failures', () => {
         { title: 'Failed to retry agent', description: undefined, variant: 'error' })
   })
 
+  it('offers no Retry for a turn refused because the workspace storage is full', async () => {
+    const server = makeOverseer()
+    const chat = withChatApi(server, undefined, [openChat])
+    await renderChat(server.overseer, { selectedChatId: 1 })
+    chat.emitMessage({
+      chatId: 1,
+      sequence: 0,
+      timestamp: new Date(),
+      author: { type: 'agent', id: 'model', name: 'Model' },
+      type: 'error',
+      message: "This workspace's storage is full (9.6 of 10 GB used), so the agent can't run.",
+      code: 'storage_full',
+    })
+
+    expect(document.body.textContent).toContain("This workspace's storage is full")
+    const buttons = [...document.querySelectorAll('button')].map(b => b.textContent)
+    expect(buttons).not.toContain('Retry')
+  })
+
   it('shows a turn the user stopped as stopped, not as an error, and offers Continue', async () => {
     const server = makeOverseer()
     const chat = withChatApi(server, undefined, [openChat])

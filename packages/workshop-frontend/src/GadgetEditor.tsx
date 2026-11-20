@@ -72,6 +72,7 @@ import { reportVisibleChat } from './features/notifications/visibleChat'
 import { WorkspaceNotificationsMenu } from './features/notifications/WorkspaceNotificationsMenu'
 import { logRpcFailure } from './rpcErrors'
 import TopBarNotice from './TopBarNotice'
+import { WorkspaceStorageBanner } from './features/workspace-storage/WorkspaceStorageBanner'
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from './components/WorkshopControls'
 import { useActionEntries, useActions } from './useActions'
 import DeleteConfirmationDialog from './components/DeleteConfirmationDialog'
@@ -2175,6 +2176,12 @@ export default function GadgetEditor() {
           </DropdownMenu.Content>
         </DropdownMenu>
       </div>
+
+      {metadata.storageBytes !== undefined && (
+        <div className="shrink-0 px-4 pt-3 sm:px-6">
+          <WorkspaceStorageBanner storageBytes={metadata.storageBytes} />
+        </div>
+      )}
 
       {/* ═══ BODY ═════════════════════════════════════════════════════════════ */}
       <div className="flex flex-1 min-h-0 relative overflow-hidden">

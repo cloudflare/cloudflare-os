@@ -3,7 +3,7 @@ import { Tooltip } from "@cloudflare/kumo";
 import type { ChatAttachmentRef } from "@gadgets/workshop-shared/api";
 import { AttachmentCardFace } from "./AttachmentCardFace";
 import { attachmentKind } from "./attachmentKind";
-import { previewFormat } from "./previewFormat";
+import { MAX_PREVIEW_BYTES, previewFormat } from "./previewFormat";
 import { useAttachmentThumbnail } from "./useAttachmentThumbnail";
 import { useObjectUrl } from "./useObjectUrl";
 
@@ -43,8 +43,11 @@ export const ChatAttachmentCard = ({
     kind === "image" ? attachment.content : undefined, attachment.mimeType);
   const [imageFailed, setImageFailed] = useState(false);
   const showsImage = imageUrl !== null && !imageFailed;
+  const format = attachment.size <= MAX_PREVIEW_BYTES
+    ? previewFormat(attachment.mimeType, attachment.name) : undefined;
+  // An image the message carries draws itself; one too large to carry is fetched as a thumbnail.
   const { ref, thumbnail, loading } = useAttachmentThumbnail<HTMLDivElement>(
-    previewFormat(attachment.mimeType, attachment.name), loadContent);
+    kind === "image" && attachment.content ? undefined : format, loadContent, attachment.mimeType);
 
   return (
     <Tooltip content={name} side="top" asChild>
