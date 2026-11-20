@@ -4,8 +4,9 @@
 //   /                                         the library
 //   /collections/<collectionId>               a collection's overview
 //   /collections/<collectionId>/files/<path>  a document in it, by its full document path
-
-import { validateDocumentPath } from "../src/context-types";
+//
+// A document path is only required to be non-empty. Reads are lenient (a path that names nothing
+// reads as missing), and Git-mirrored files can have paths the web editor's mutation rules reject.
 
 /** What an app-local path addresses. */
 export type ContextView =
@@ -21,13 +22,8 @@ export function parseContextPath(path: string): ContextView {
   const [empty, collections, collectionId, files, ...documentSegments] = path.split("/");
   if (empty !== "" || collections !== "collections" || !collectionId) return INVALID;
   if (files === undefined) return { kind: "collection", collectionId, documentPath: null };
-  if (files !== "files") return INVALID;
   const documentPath = documentSegments.join("/");
-  try {
-    validateDocumentPath(documentPath);
-  } catch {
-    return INVALID;
-  }
+  if (files !== "files" || !documentPath) return INVALID;
   return { kind: "collection", collectionId, documentPath };
 }
 

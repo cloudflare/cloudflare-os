@@ -193,7 +193,7 @@ describe("ContextLibraryPage deep links", () => {
 
   it("reads nothing for a malformed path", async () => {
     const api = new FakeContextApi();
-    const { navigate } = await render(api, "/collections/c1/files/../secret.md");
+    const { navigate } = await render(api, "/collections/c1/docs/a.md");
     expect(text()).toContain("This page doesn't exist");
     expect(api.getContextCollectionMetadata).not.toHaveBeenCalled();
     expect(api.getContextDocument).not.toHaveBeenCalled();
