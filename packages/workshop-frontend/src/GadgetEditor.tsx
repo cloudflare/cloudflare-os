@@ -966,6 +966,20 @@ export default function GadgetEditor() {
   const showOutputRail = layoutModeReady && hasAnyApps && !showFullEditor
   const paneShowsActivity = showingActivity || activityClosing
   const panePreview = paneShowsActivity ? connectionPreview : null
+  const previewLabel = panePreview && (
+    <PaneLabel icon={FileText} iconUrl={panePreview.iconUrl} title={panePreview.title} />
+  )
+  const previewOriginal = panePreview?.url && (
+    <a
+      href={panePreview.url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="flex flex-shrink-0 items-center gap-1 rounded-lg px-2 py-1 text-[13px] font-medium text-kumo-default hover:bg-kumo-tint"
+    >
+      Open original
+      <ArrowSquareOut size={14} />
+    </a>
+  )
   useEffect(() => {
     if (!activityClosing) return
     const timeout = window.setTimeout(() => setActivityClosing(false), WORKSPACE_TRANSITION_MS)
@@ -2328,9 +2342,7 @@ export default function GadgetEditor() {
             style={{ height: TABBAR_H }}
           >
             <div className="flex min-w-0 flex-1 items-center overflow-hidden">
-              {panePreview ? (
-                <PaneLabel icon={FileText} iconUrl={panePreview.iconUrl} title={panePreview.title} />
-              ) : paneShowsActivity ? (
+              {previewLabel ?? (paneShowsActivity ? (
                 <PaneLabel icon={Pulse} title="Activity" />
               ) : visibleWorkpieces.length > 1 ? (
                 <PaneWorkpieceTabs
@@ -2355,21 +2367,11 @@ export default function GadgetEditor() {
               ) : selectedWorkpieceSummary && (
                 // A worktree, which is its chat's own and goes with it.
                 <PaneLabel workpiece={selectedWorkpieceSummary} title={selectedWorkpieceSummary.title} />
-              )}
+              ))}
             </div>
 
             <div className="flex flex-shrink-0 items-center gap-1.5">
-              {panePreview?.url && (
-                <a
-                  href={panePreview.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-1 rounded-lg px-2 py-1 text-[13px] font-medium text-kumo-default hover:bg-kumo-tint"
-                >
-                  Open original
-                  <ArrowSquareOut size={14} />
-                </a>
-              )}
+              {previewOriginal}
               <div className={panePreview ? 'hidden' : 'flex items-center rounded-lg border border-kumo-line p-0.5'}>
                 {paneShowsActivity
                   ? ACTIVITY_TABS.map(tab => (
@@ -2449,6 +2451,13 @@ export default function GadgetEditor() {
                     onClick={() => setActivityView(tab.value)}
                   />
                 ))}
+              </div>
+            )}
+            {panePreview && (
+              // The header above is the wide layout's: here the preview says what it is of.
+              <div className="flex h-11 flex-shrink-0 items-center gap-2 border-b border-kumo-line px-3 md:hidden">
+                <div className="flex min-w-0 flex-1 items-center overflow-hidden">{previewLabel}</div>
+                {previewOriginal}
               </div>
             )}
             {panePreview && overseer && (
