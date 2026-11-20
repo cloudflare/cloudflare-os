@@ -139,6 +139,8 @@ export function scaffold(options: ScaffoldOptions): Map<string, ScaffoldFile> {
   if (!AUTH_KINDS.includes(options.auth)) throw new Error(`Unknown --auth "${options.auth}": use ${AUTH_KINDS.join(" or ")}.`);
   const files = new Map<string, ScaffoldFile>();
   const { openapi } = options;
+  // The entrypoint would be `src/openapi.ts`, which `./openapi` finds before the generated schema.
+  if (openapi && names.name === "openapi") throw new Error('"openapi" names the generated schema\'s directory: use another name.');
   const features = new Set([...(options.hooks ? ["hooks"] : []), ...(openapi ? ["openapi"] : [])]);
   // A package whose schema is generated calls through it: that layer replaces the invented schema.
   const layers = ["base", `auth-${options.auth}`, ...(options.hooks ? ["hooks"] : []), ...(openapi?.generated ? ["openapi-schema"] : [])];

@@ -11,4 +11,5 @@ export default withVitestTask({
       build: { command: "tsc" },
     },
   },
-}, ["vitest run", "vitest run -c vitest.worker.config.ts"]);
+  // The Node suite is one file that compiles five generated packages, and reports only when it ends.
+}, [{ command: "vitest run", idleSeconds: 240 }, "vitest run -c vitest.worker.config.ts"]);
