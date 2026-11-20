@@ -691,18 +691,22 @@ describe("Google Slides shapes the API reports no outline for", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     let arrive!: (response: Response) => void;
     exportOf = () => new Promise(resolve => { arrive = resolve; });
-    let { session } = newSession();
+    let { session } = newSession(undefined, [{ id: 1, action: { kind: "duplicateSlide", payload: {
+      slideId: "s1", newSlideId: "copy", objectIds: { box: "box-2", free: "free-2", arc: "arc-2" }, slide: { number: 1 },
+    } } }]);
     using _session = session;
 
     let state = { done: false };
-    let read = Promise.resolve(session.readSlideDrawings(["s1", "s2"])).finally(() => { state.done = true; });
+    let read = Promise.resolve(session.readSlideDrawings(["s1", "s2", "copy"])).finally(() => { state.done = true; });
     while (!state.done) await vi.advanceTimersByTimeAsync(1000);
-    let { slides: [first, second] } = await read;
+    let { slides: [first, second, copied] } = await read;
 
     // The read did not wait for it past its few seconds; the slide with no such shape waits for nothing.
     expect(first).toMatchObject({ slideId: "s1", outlinesPending: true });
     expect(first.drawing!.elements[1]).not.toHaveProperty("paths");
     expect(second).not.toHaveProperty("outlinesPending");
+    // A queued copy of the slide holds the same shape, and waits with it.
+    expect(copied).toMatchObject({ slideId: "copy", outlinesPending: true });
 
     arrive(new Response(await pptx()));
     let { slides: [again] } = await session.readSlideDrawings(["s1"]);

@@ -601,7 +601,14 @@ export class GooglePresentationSessionImpl extends RpcTarget
     let none = { geometry: new Map<string, ShapeGeometry>(), waiting: new Set<string | undefined>() };
     if (wanting.length === 0) return none;
     let deck = await exportFor(this, outline.revisionId, () => this.#api.exportPptx(this.#presentationId));
-    if (deck === "pending") return { ...none, waiting: new Set(wanting.map(page => page.objectId)) };
+    if (deck === "pending") {
+      let waiting = new Set<string | undefined>(wanting.map(page => page.objectId));
+      // A queued copy of a slide waits as the slide does, and a copy of that copy.
+      for (let { action } of changes) {
+        if (action.kind === "duplicateSlide" && waiting.has(action.payload.slideId)) waiting.add(action.payload.newSlideId);
+      }
+      return { ...none, waiting };
+    }
     let geometry = deck && resolveGeometry(deck, (outline.slides ?? []).map(slide => ({
       id: slide.objectId ?? "", layout: slide.slideProperties?.layoutObjectId,
       master: slide.slideProperties?.masterObjectId, skipped: slide.slideProperties?.isSkipped,
