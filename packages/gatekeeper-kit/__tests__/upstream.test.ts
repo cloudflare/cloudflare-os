@@ -304,6 +304,27 @@ describe("names", () => {
     expect(seen).toEqual([undefined, new URL(THREAD)]);
   });
 
+  it("sends the URL it was given, whatever a namer or a service function does to the one it is given", async () => {
+    const fetch = answering(200);
+    const paged = new URL(`${THREAD}?page=2`);
+    const stripping = upstream.with({
+      operation: (_method, url) => {
+        url.search = "";
+        return undefined;
+      },
+      service: url => {
+        if (url) url.pathname = "/";
+        return "vendor-api";
+      },
+    });
+
+    await stripping.request(paged);
+
+    expect(fetch.mock.calls[0][0]).toBe(paged);
+    expect(paged.href).toBe(`${THREAD}?page=2`);
+    expect(calls()).toEqual([["vendor-api", "threads.get", "success", "", 200]]);
+  });
+
   it("names by `OTHER` a request whose method is not one of HTTP's own", async () => {
     answering(200, 200);
     await upstream.request(`${API}/labels`, { method: "secret-word" });
@@ -1613,7 +1634,7 @@ describe("counting", () => {
     ]);
   });
 
-  it("gives the request's `answer` the status and the answer's own headers, and no body to read or lock", async () => {
+  it("gives the request's `answer` the status and a copy of the headers, and no body to read or lock", async () => {
     const answers = [answer(200, "read"), answer(200, "requested")];
     answering(...answers);
     const seen: AnsweredWith[] = [];
@@ -1633,13 +1654,33 @@ describe("counting", () => {
     expect(seen.map(answered => Reflect.ownKeys(answered).toSorted())).toEqual(rows(2, ["headers", "status"]));
     for (const answered of seen) expect(Object.getPrototypeOf(answered)).toBe(Object.prototype);
     expect(seen.map(answered => answered.status)).toEqual([200, 200]);
-    expect(seen[0].headers).toBe(answers[0].headers);
-    expect(seen[1].headers).toBe(answers[1].headers);
+    for (const [at, answered] of seen.entries()) {
+      expect(answered.headers).not.toBe(answers[at].headers);
+      expect([...answered.headers]).toEqual([...answers[at].headers]);
+    }
     // The body is left to `parse`, and to the caller of `request`.
     expect(text).toBe("read");
     expect(response.body?.locked).toBe(false);
     expect(await response.text()).toBe("requested");
     expect(outcomes()).toEqual(rows(2, ["refused", "busy", 200]));
+  });
+
+  it("sends nothing again, and answers no other headers, for what `answer` does to the headers it is given", async () => {
+    const refused = new Response("{}", { status: 503 });
+    const fetch = answering(refused);
+
+    const response = await upstream.request(THREAD, {
+      // A rule that sends again only an answer that names its wait.
+      retry: { retryable: (_status, _request, headers) => headers.has("Retry-After") },
+      answer: answered => {
+        answered.headers.set("Retry-After", "0");
+        return undefined;
+      },
+    });
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(response).toBe(refused);
+    expect(response.headers.has("Retry-After")).toBe(false);
   });
 
   it("counts by the status an answer whose `answer` throws, or returns what is no answer", async () => {

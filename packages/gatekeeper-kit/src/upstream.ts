@@ -49,9 +49,9 @@ export type CallAnswer = {
 
 /**
  * What a request's `answer` hook is given of an answered attempt: the status of the answer and
- * its headers, which are the answer's own `Headers` object. It holds nothing of the body, which
- * the hook can so neither read nor lock. The hook reads the headers and does not change them:
- * they are the ones the retry rule reads and the caller is answered with.
+ * a copy of its headers. It holds nothing of the body, which the hook can so neither read nor
+ * lock, and what the hook does to the copy changes neither what the retry rule reads nor what
+ * the caller is answered with.
  */
 export type AnsweredWith = { status: number; headers: Headers };
 
@@ -108,7 +108,7 @@ export type UpstreamOptions = {
   vendorId: string;
   /**
    * The service a request goes to: a literal, or a function returning a literal or a value of a
-   * closed table, never a host. The function is given the request's parsed URL, or undefined
+   * closed table, never a host. The function is given a copy of the request's URL, or undefined
    * where the URL cannot be parsed or the call has none; where it throws, the service is the
    * vendor id. Default `vendorId`.
    */
@@ -116,9 +116,9 @@ export type UpstreamOptions = {
   /** The paths the gatekeeper calls, by which a request is named (`routeOperation`). */
   routes?: Routes;
   /**
-   * A namer of the gatekeeper's own, asked before `routes` with the method in upper case. It
-   * returns a literal, or undefined for a request it does not name. A request it throws on is
-   * named by its method.
+   * A namer of the gatekeeper's own, asked before `routes` with the method in upper case and a
+   * copy of the request's URL. It returns a literal, or undefined for a request it does not
+   * name. A request it throws on is named by its method.
    */
   operation?: (method: string, url: URL) => string | undefined;
   /**
@@ -503,7 +503,8 @@ export function defineUpstream(options: UpstreamOptions): Upstream {
     const fallback = HTTP_METHODS.has(method) ? method : "OTHER";
     if (!url) return fallback;
     try {
-      const named = options.operation?.(method, url);
+      // A copy, so that a namer that changes its URL changes nothing of what is sent.
+      const named = options.operation?.(method, new URL(url));
       if (typeof named === "string") return named;
       return (options.routes && routeOperation(options.routes, method, url)) ?? fallback;
     } catch {
@@ -517,7 +518,7 @@ export function defineUpstream(options: UpstreamOptions): Upstream {
     const { service } = options;
     if (typeof service !== "function") return service ?? vendorId;
     try {
-      return service(url) ?? vendorId;
+      return service(url && new URL(url)) ?? vendorId;
     } catch {
       return vendorId;
     }
@@ -626,7 +627,7 @@ export function defineUpstream(options: UpstreamOptions): Upstream {
         const success = succeeded(status, operation, manual);
         // The hook answers at once: nothing between an answer and its count is waited for. It is
         // given the status and the headers alone, so that it leaves the body as it came.
-        const verdict = askedNow(() => answer?.({ status, headers: response.headers }))
+        const verdict = askedNow(() => answer?.({ status, headers: new Headers(response.headers) }))
           ?? byStatus(status, success);
         let counted = false;
         const countOnce = (given: CallAnswer) => {
