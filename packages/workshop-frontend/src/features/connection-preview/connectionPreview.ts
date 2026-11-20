@@ -36,7 +36,8 @@ export const previewOf = (
     gatekeeperId,
     item: item?.id,
     title: item?.title ?? entry.resourceTitle,
-    url: safeExternalUrl(item?.url ?? entry.resourceUrl) ?? undefined,
+    // An item with no address of its own has no link out: the connection's is to something else.
+    url: safeExternalUrl(item ? item.url : entry.resourceUrl) ?? undefined,
     iconUrl: offer?.iconUrl,
   }
 }
