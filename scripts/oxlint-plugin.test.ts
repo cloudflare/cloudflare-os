@@ -157,8 +157,11 @@ ruleTester.run("self-contained-agent-types", plugin.rules["self-contained-agent-
 });
 
 const gatekeeper = (members: string) => `class GatekeeperImpl {\n  async startSession() {}\n${members}\n}`;
-const contract = "  async getHistoricalSubresources() { return []; }\n" +
-  "  async addObserver(_id: string) {}\n  async removeObserver(_id: string) {}";
+const observers = "  async addObserver(_id: string) {}\n  async removeObserver(_id: string) {}";
+const history = "  async getHistoricalSubresources() { return []; }\n";
+const contract = history + observers;
+const call = (description: string) => `await queue.authorizeObservation(${description});`;
+const unreported = (description: string) => ({ code: call(description), errors: [{ messageId: "unreported" }] });
 
 ruleTester.run("new-gatekeeper-observer-contract", plugin.rules["new-gatekeeper-observer-contract"], {
   valid: [
@@ -166,48 +169,55 @@ ruleTester.run("new-gatekeeper-observer-contract", plugin.rules["new-gatekeeper-
     gatekeeper(`${contract}\n  async verifyObserverAccess(observers, ids) { return check(observers, ids); }`),
     // Not a gatekeeper: it starts no session.
     "class Roster {\n  async addObserver(id: string) { this.ids.add(id); }\n}",
-    "await queue.authorizeObservation({ title, subresources: [] });",
-    "await queue.authorizeObservation({ ...observation, subresources: [id] });",
-    "await queue.authorizeObservation({ title, subresources });",
-    "await queue.authorizeObservation({ title, \"subresources\": [id] });",
-    "await queue.authorizeObservation({ title, subresources: [id] } satisfies ObservationDescription);",
     // A base class may supply the session and the history; what this one defines is still checked.
     "class Facet extends Base implements Gatekeeper<Session> {\n  async addObserver(_id: string) {}\n}",
-    // A description built elsewhere is checked by its helper's type, not here.
-    "await queue.authorizeObservation(observation);",
-    "await queue.authorizeObservation(scoped ? { title, subresources: ids } : observation);",
-    "await queue.authorizeObservation({ title, subresources: id ? [id] : [] });",
+    // The implementation is the method that runs, not the overload signature before it.
+    gatekeeper("  getHistoricalSubresources(): Promise<string[]>;\n" +
+      `  async getHistoricalSubresources() { return [] as string[]; }\n${observers}`),
+    ...[
+      "{ title, subresources: [] }",
+      "{ ...observation, subresources: [id] }",
+      "{ title, subresources }",
+      "{ title, \"subresources\": [id] }",
+      "{ title, subresources: [id] } satisfies ObservationDescription",
+      "{ title, subresources: id ? [id] : [] }",
+      // A description built elsewhere is checked by its helper's type, not here.
+      "observation",
+      "scoped ? { title, subresources: ids } : observation",
+    ].map(call),
     // A private helper of the same name is not the queue's method.
     "class Session {\n  #authorizeObservation(description, ids) {}\n" +
       "  read() { return this.#authorizeObservation({ title }, ids); }\n}",
-    // The implementation is the method that runs, not the overload signature before it.
-    gatekeeper("  getHistoricalSubresources(): Promise<string[]>;\n" +
-      "  async getHistoricalSubresources() { return [] as string[]; }\n" +
-      "  async addObserver(_id: string) {}\n  async removeObserver(_id: string) {}"),
   ],
   invalid: [
+    { code: gatekeeper(observers), errors: [{ messageId: "missingHistory" }] },
     {
-      code: gatekeeper("  async addObserver(_id: string) {}\n  async removeObserver(_id: string) {}"),
-      errors: [{ messageId: "missingHistory" }],
-    },
-    {
-      code: gatekeeper("  async getHistoricalSubresources() { return this.tracker.ids(); }\n" +
-        "  async addObserver(_id: string) {}\n  async removeObserver(_id: string) {}"),
+      code: gatekeeper(`  async getHistoricalSubresources() { return this.tracker.ids(); }\n${observers}`),
       errors: [{ messageId: "history" }],
     },
     {
-      code: gatekeeper("  async getHistoricalSubresources() { return [this.id]; }\n" +
-        "  async addObserver(_id: string) {}\n  async removeObserver(_id: string) {}"),
+      code: gatekeeper(`  async getHistoricalSubresources() { return [this.id]; }\n${observers}`),
       errors: [{ messageId: "history" }],
     },
     {
-      code: gatekeeper("  async getHistoricalSubresources() { return []; }\n" +
+      code: gatekeeper(`  async getHistoricalSubresources() { return ready ? [] : []; }\n${observers}`),
+      errors: [{ messageId: "history" }],
+    },
+    {
+      code: gatekeeper(history +
         "  async addObserver(id: string, user) { await this.verify(user); }\n" +
         "  async removeObserver(id: string) { this.observers.delete(id); }"),
       errors: [
         { messageId: "observerState", data: { name: "addObserver" } },
         { messageId: "observerState", data: { name: "removeObserver" } },
       ],
+    },
+    {
+      code: gatekeeper(history +
+        "  addObserver(id: string, user: Verifier): Promise<void>;\n" +
+        "  async addObserver(id: string, user?: Verifier) { this.observers.add(id); }\n" +
+        "  async removeObserver(_id: string) {}"),
+      errors: [{ messageId: "observerState", data: { name: "addObserver" } }],
     },
     {
       code: "class Facet extends Base implements Gatekeeper<Session> {\n" +
@@ -217,42 +227,6 @@ ruleTester.run("new-gatekeeper-observer-contract", plugin.rules["new-gatekeeper-
     {
       code: "class Facet implements Gatekeeper<Session> {\n  async addObserver(_id: string) {}\n}",
       errors: [{ messageId: "missingHistory" }],
-    },
-    // Each branch written at the call is one that may be sent.
-    {
-      code: "await queue.authorizeObservation(scoped ? { title, subresources: ids } : { title });",
-      errors: [{ messageId: "unreported" }],
-    },
-    {
-      code: "await queue.authorizeObservation(scoped ? { title } : ({ title } satisfies ObservationDescription));",
-      errors: [{ messageId: "unreported" }, { messageId: "unreported" }],
-    },
-    {
-      code: "await queue.authorizeObservation({ title, subresources: id ? [id] : undefined });",
-      errors: [{ messageId: "unreported" }],
-    },
-    {
-      code: "await queue.authorizeObservation({ title, subresources: (id ? undefined : [id]) as string[] });",
-      errors: [{ messageId: "unreported" }],
-    },
-    {
-      code: "await queue.authorizeObservation({ title, subresources: ids ?? undefined });",
-      errors: [{ messageId: "unreported" }],
-    },
-    {
-      code: "await queue.authorizeObservation(given ?? { title });",
-      errors: [{ messageId: "unreported" }],
-    },
-    {
-      code: "observation.excludeObservers = denied;\nawait queue.authorizeObservation(observation);",
-      errors: [{ messageId: "excludeObservers" }],
-    },
-    {
-      code: gatekeeper("  async getHistoricalSubresources() { return []; }\n" +
-        "  addObserver(id: string, user: Verifier): Promise<void>;\n" +
-        "  async addObserver(id: string, user?: Verifier) { this.observers.add(id); }\n" +
-        "  async removeObserver(_id: string) {}"),
-      errors: [{ messageId: "observerState", data: { name: "addObserver" } }],
     },
     // A static method is not the facet's.
     {
@@ -265,38 +239,34 @@ ruleTester.run("new-gatekeeper-observer-contract", plugin.rules["new-gatekeeper-
       code: "class Facet extends DurableObject<Env> implements Gatekeeper<Session> {\n  async addObserver(_id: string) {}\n}",
       errors: [{ messageId: "missingHistory" }],
     },
+    ...[
+      "{ ...observation }",
+      "{ title } satisfies ObservationDescription",
+      "{ title } as ObservationDescription",
+      "{ title }!",
+      // The spread comes last, and can carry `subresources: undefined`.
+      "{ subresources: [id], ...observation }",
+      // The kernel reads `undefined` as the field left out, in any branch of the value.
+      "{ title, subresources: undefined }",
+      "{ title, subresources: id ? [id] : undefined }",
+      "{ title, subresources: (id ? undefined : [id]) as string[] }",
+      "{ title, subresources: ids ?? undefined }",
+      // Each branch written at the call is one that may be sent.
+      "scoped ? { title, subresources: ids } : { title }",
+      "given ?? { title }",
+    ].map(unreported),
     {
-      code: "await queue.authorizeObservation({ title } satisfies ObservationDescription);",
-      errors: [{ messageId: "unreported" }],
-    },
-    {
-      code: "await queue.authorizeObservation({ title } as ObservationDescription);",
-      errors: [{ messageId: "unreported" }],
-    },
-    // The spread comes last, and can carry `subresources: undefined`.
-    {
-      code: "await queue.authorizeObservation({ subresources: [id], ...observation });",
-      errors: [{ messageId: "unreported" }],
-    },
-    {
-      code: "await queue.authorizeObservation({ title, subresources: undefined });",
-      errors: [{ messageId: "unreported" }],
-    },
-    {
-      code: "await queue.authorizeObservation({ title, subresources: [], \"excludeObservers\": [id] });",
-      errors: [{ messageId: "excludeObservers" }],
+      code: call("scoped ? { title } : ({ title } satisfies ObservationDescription)"),
+      errors: [{ messageId: "unreported" }, { messageId: "unreported" }],
     },
     {
       code: "await this.queue.authorizeObservation({ title: \"Read inbox\" });",
       errors: [{ messageId: "unreported" }],
     },
-    {
-      code: "await queue.authorizeObservation({ ...observation });",
-      errors: [{ messageId: "unreported" }],
-    },
-    {
-      code: "await queue.authorizeObservation({ title, subresources: [], excludeObservers: [id] });",
-      errors: [{ messageId: "excludeObservers" }],
-    },
+    ...[
+      call("{ title, subresources: [], excludeObservers: [id] }"),
+      call("{ title, subresources: [], \"excludeObservers\": [id] }"),
+      `observation.excludeObservers = denied;\n${call("observation")}`,
+    ].map(code => ({ code, errors: [{ messageId: "excludeObservers" }] })),
   ],
 });
