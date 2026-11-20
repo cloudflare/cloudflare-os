@@ -19,8 +19,6 @@ vi.mock("isomorphic-git", () => ({
   resolveRef: git.resolveRef,
 }));
 
-vi.mock("isomorphic-git/http/web", () => ({ request: vi.fn() }));
-
 import { readArtifactRepoDocuments } from "../src/artifact-sync.js";
 
 let artifactsDir: string;

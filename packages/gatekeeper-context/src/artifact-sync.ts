@@ -1,13 +1,17 @@
-import { clone, fetch, listFiles as listGitFiles, listServerRefs, readBlob, resolveRef } from "isomorphic-git";
-import { request as baseHttpRequest } from "isomorphic-git/http/web";
-import type { GitHttpResponse, HttpClient } from "isomorphic-git/http/web";
+import {
+  clone, fetch as fetchRemote, listFiles as listGitFiles, listServerRefs, readBlob, resolveRef,
+} from "isomorphic-git";
+import type { GitHttpResponse, HttpClient } from "isomorphic-git";
 import * as fs from "node:fs";
 import { promises as fsp } from "node:fs";
 import { posix as posixPath } from "node:path";
+import { readBytesCapped, ResponseTooLargeError } from "@gadgets/gatekeeper-kit/response-body";
+import type { AnsweredWith, CallAnswer, UpstreamRequestInit } from "@gadgets/gatekeeper-kit/upstream";
 import {
   MAX_DOCUMENT_BODY_BYTES, contentTypeFromPath, isTextContentType, VENDOR_ID,
 } from "./context-types.js";
 import { truncateContextDescription } from "./context-storage.js";
+import { artifactsCall, contextUpstream } from "./context-upstream.js";
 import { extractDescription } from "./description-extractors.js";
 import { obsContext } from "./observability.js";
 
@@ -25,6 +29,12 @@ const logger = obsContext.createLogger({
 // this limit when unpacked.
 const MAX_GIT_DIR_BYTES = 64 * 1024 * 1024;
 
+// The most bytes a list of refs may hold, which is read whole into memory before it is parsed. A
+// ref is a line of a hundred bytes or so, and a list is the branch a collection mirrors or, in
+// the advertisement a clone asks for, every ref of its repository: a few MiB hold tens of
+// thousands of them.
+const MAX_REF_LIST_BYTES = 4 * 1024 * 1024;
+
 class GitTransferTooLargeError extends Error {
   constructor(readonly maxBytes: number) {
     super(`Repository too large: Git transfer exceeded ${maxBytes} bytes.`);
@@ -32,7 +42,9 @@ class GitTransferTooLargeError extends Error {
   }
 }
 
-async function* limitBody(body: AsyncIterableIterator<Uint8Array>, maxBytes: number): AsyncIterableIterator<Uint8Array> {
+async function* limitBody(
+  body: AsyncIterable<Uint8Array> | Iterable<Uint8Array>, maxBytes: number,
+): AsyncIterableIterator<Uint8Array> {
   let seenBytes = 0;
   for await (let chunk of body) {
     seenBytes += chunk.byteLength;
@@ -41,15 +53,157 @@ async function* limitBody(body: AsyncIterableIterator<Uint8Array>, maxBytes: num
   }
 }
 
-// Creates a wrapped HTTP client implementation that enforces transfer
-// size limits.
-function makeHttp(maxBytes: number): HttpClient {
+// The body of a git request as one piece: isomorphic-git hands it over in chunks, and `fetch`
+// sends bytes it can read whole.
+async function collectBody(body: AsyncIterable<Uint8Array> | Iterable<Uint8Array>): Promise<Uint8Array> {
+  let chunks: Uint8Array[] = [];
+  let size = 0;
+  for await (let chunk of body) {
+    chunks.push(chunk);
+    size += chunk.byteLength;
+  }
+  let collected = new Uint8Array(size);
+  let offset = 0;
+  for (let chunk of chunks) {
+    collected.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return collected;
+}
+
+// How the answer to a git request that carries no credentials is counted. A remote asks for them
+// with a 401, and isomorphic-git, which sends every discovery without them first, then sends it
+// with the token: that 401 is a step of a discovery and no failure of the remote. A 401 to a
+// request that carries the token is one, and is counted by its status.
+const challenge = ({ status }: AnsweredWith): CallAnswer | undefined =>
+  status === 401 ? { outcome: "success" } : undefined;
+
+// The options of `contextUpstream` that one kind of git request is sent with.
+type GitFetch = Pick<UpstreamRequestInit, "timeoutMs" | "answer">;
+
+/**
+ * How a git HTTP client sends its requests through `contextUpstream`: `authorized` is for a
+ * request that carries credentials, and `unauthorized` for one that carries none.
+ */
+export type GitFetches = { authorized: GitFetch; unauthorized: GitFetch };
+
+/**
+ * The options a git HTTP client sends its requests with. The two kinds differ in one thing: a 401
+ * that answers a request with no credentials is counted as the challenge it is, a success.
+ * @param defaults The timeout of every request, where it is not the upstream's.
+ * @returns The options of each kind of request.
+ */
+export function gitFetches(defaults: Pick<UpstreamRequestInit, "timeoutMs"> = {}): GitFetches {
+  return { authorized: defaults, unauthorized: { ...defaults, answer: challenge } };
+}
+
+// The git requests of a clone and of a fetch, sent through the upstream with no timeout: either
+// reads a pack for as long as that takes, and the byte cap is what bounds it.
+const sendTransfer = gitFetches({ timeoutMs: null });
+// The git requests that list a remote's refs, sent through the upstream with its timeout.
+const sendRefs = gitFetches();
+
+// The first packet line of a git request's body, without the line feed that may end it: four
+// hexadecimal digits of its length, themselves included, then the line. Undefined for a body that
+// begins with none.
+function firstPacketLine(body: Uint8Array): string | undefined {
+  let decoder = new TextDecoder();
+  let digits = decoder.decode(body.subarray(0, 4));
+  if (!/^[0-9a-f]{4}$/i.test(digits)) return undefined;
+  let length = Number.parseInt(digits, 16);
+  if (length <= 4 || length > body.byteLength) return undefined;
+  return decoder.decode(body.subarray(4, length)).replace(/\n$/, "");
+}
+
+// Whether a git request asks for a list of refs and not for a pack. Two requests do: the
+// discovery, a GET that is answered with the advertisement of the remote's refs, and the
+// `ls-refs` command of protocol version 2, which the first packet line of a body POSTed to the
+// upload endpoint names. Any other request to that endpoint (the `want` lines of a version 1
+// negotiation, the `fetch` command of version 2) asks for a pack.
+function listsRefs(method: string, url: string, body: Uint8Array | undefined): boolean {
+  let operation = contextUpstream.operationOf(method, url);
+  if (operation === "git.info-refs") return true;
+  return operation === "git.upload-pack" && body !== undefined
+    && firstPacketLine(body) === "command=ls-refs";
+}
+
+// The answer to a request for a list of refs, with its body read whole where it holds one: a 200
+// is the one answer isomorphic-git parses, and the body of any other is left to it as it came.
+// isomorphic-git reads a body that fails halfway as one that ended there, and so a list that was
+// cut off as a remote with fewer refs, or with none. The list is read here, inside the request,
+// so that one cut off fails the request instead.
+async function refList(
+  response: Response, maxBytes: number,
+): Promise<{ response: Response; refs?: Uint8Array }> {
+  if (response.status !== 200) return { response };
+  let refs = await readBytesCapped(response, maxBytes).catch((err: unknown) => {
+    if (err instanceof ResponseTooLargeError) throw new GitTransferTooLargeError(maxBytes);
+    throw err;
+  });
+  // A body may end cleanly short of the list: git ends one with a flush packet, which isomorphic-git
+  // does not wait for. A list that does not end so was cut short, and fails the request.
+  if (!endsWithFlush(refs)) throw new Error("git ref list ended before its flush packet; the list is incomplete.");
+  return { response, refs };
+}
+
+// Whether `body` is a run of whole packet lines (git's pkt-line format) whose last is a flush
+// packet, `0000`: the end of a list of refs. No list of refs holds another special packet (a
+// delimiter, `0001`, or an end of response, `0002`), which isomorphic-git stops reading at.
+function endsWithFlush(body: Uint8Array): boolean {
+  let decoder = new TextDecoder();
+  let at = 0;
+  let flushed = false;
+  while (at < body.byteLength) {
+    if (at + 4 > body.byteLength) return false;
+    let digits = decoder.decode(body.subarray(at, at + 4));
+    if (!/^[0-9a-f]{4}$/i.test(digits)) return false;
+    let length = Number.parseInt(digits, 16);
+    if (length === 0) {
+      flushed = true;
+      at += 4;
+      continue;
+    }
+    if (length < 4 || at + length > body.byteLength) return false;
+    flushed = false;
+    at += length;
+  }
+  return flushed;
+}
+
+/**
+ * The HTTP client isomorphic-git sends a remote's requests with. isomorphic-git's own web client
+ * calls the global `fetch`; this one sends the same request through `contextUpstream`, so that
+ * every git request is counted, and enforces the transfer size limit on the answer's body. A
+ * pack is handed to isomorphic-git as it arrives. A list of refs is read whole first, inside its
+ * request: one that is cut off, by the timeout of its attempt or by its connection, fails the
+ * request and is counted an error, where isomorphic-git would have read it as a shorter list.
+ * @param maxBytes The most bytes one answer's body may hold. A list of refs may hold
+ * `MAX_REF_LIST_BYTES` at most.
+ * @param send The options each request is sent with, by whether it carries credentials.
+ * @returns The client.
+ */
+export function makeHttp(maxBytes: number, send: GitFetches): HttpClient {
   return {
-    async request(request): Promise<GitHttpResponse> {
-      let response = await baseHttpRequest(request);
-      return response.body
-        ? { ...response, body: limitBody(response.body, maxBytes) }
-        : response;
+    async request({ url, method = "GET", headers = {}, body, signal }): Promise<GitHttpResponse> {
+      let authorized = Object.keys(headers).some(name => name.toLowerCase() === "authorization");
+      let sent = body ? await collectBody(body) : undefined;
+      let init: UpstreamRequestInit = {
+        ...(authorized ? send.authorized : send.unauthorized), method, headers, body: sent, signal,
+      };
+      let { response, refs } = listsRefs(method, url, sent)
+        ? await contextUpstream.read(url, init,
+            answer => refList(answer, Math.min(maxBytes, MAX_REF_LIST_BYTES)))
+        : { response: await contextUpstream.request(url, init), refs: undefined };
+      return {
+        url: response.url,
+        statusCode: response.status,
+        statusMessage: response.statusText,
+        headers: Object.fromEntries(response.headers.entries()),
+        // An answer that has no body is read as one empty chunk.
+        body: limitBody(
+          refs ? [refs] : response.body ?? [new Uint8Array(await response.arrayBuffer())],
+          maxBytes),
+      };
     },
   };
 }
@@ -130,7 +284,7 @@ async function cloneRepo(dir: string, url: string, branch: string, onAuth: () =>
     await fsp.mkdir(dir, { recursive: true });
     await clone({
       fs,
-      http: makeHttp(MAX_GIT_DIR_BYTES),
+      http: makeHttp(MAX_GIT_DIR_BYTES, sendTransfer),
       dir,
       url,
       ref: branch,
@@ -158,9 +312,9 @@ async function recloneRepo(dir: string, url: string, branch: string, onAuth: () 
 }
 
 async function fetchRepo(dir: string, url: string, branch: string, onAuth: () => { username: string; password: string }, maxBytes: number): Promise<string> {
-  let result = await fetch({
+  let result = await fetchRemote({
     fs,
-    http: makeHttp(maxBytes),
+    http: makeHttp(maxBytes, sendTransfer),
     dir,
     url,
     ref: branch,
@@ -206,10 +360,11 @@ export function readArtifactRepoDocuments(
   currentCommit?: string,
 ): Promise<ArtifactRepoReadResult> {
   const dir = `/tmp/artifacts/${repoName}`;
-  return obsContext.with({
+  // One read makes a dozen calls or so, counted as one point per kind.
+  return contextUpstream.summed(() => obsContext.with({
     operation: "artifacts.repo.read", repoName, branch, dir,
   }, () => readArtifactRepoDocumentsWithContext(
-      artifacts, repoName, url, branch, dir, currentCommit));
+      artifacts, repoName, url, branch, dir, currentCommit)));
 }
 
 async function readArtifactRepoDocumentsWithContext(
@@ -220,14 +375,16 @@ async function readArtifactRepoDocumentsWithContext(
   dir: string,
   currentCommit?: string,
 ): Promise<ArtifactRepoReadResult> {
-  let repo = await artifacts.get(repoName);
+  let repo = await artifactsCall("repos.get", () => artifacts.get(repoName));
   // Create a temporary read token just for this function call.
-  let token = await repo.createToken("read", 3600);
+  let token = await artifactsCall("tokens.create", () => repo.createToken("read", 3600));
 
   try {
     let onAuth = () => ({ username: "x-access-token", password: token.plaintext });
     let branchRefName = `refs/heads/${branch}`;
-    let refs = await listServerRefs({ http: makeHttp(MAX_GIT_DIR_BYTES), url, prefix: branchRefName, onAuth });
+    let refs = await listServerRefs({
+      http: makeHttp(MAX_GIT_DIR_BYTES, sendRefs), url, prefix: branchRefName, onAuth,
+    });
     let branchRef = refs.find(ref => ref.ref === branchRefName);
     if (!branchRef) {
       return currentCommit === ""
@@ -270,7 +427,7 @@ async function readArtifactRepoDocumentsWithContext(
 
     return { commit, changed: true, documents };
   } finally {
-    await repo.revokeToken(token.id).catch((err) => {
+    await artifactsCall("tokens.revoke", () => repo.revokeToken(token.id)).catch((err) => {
       logger.warn("failed to revoke temporary Artifacts read token for context collection sync", {
         event: "artifacts.read.token.revoke.failed",
         repoName,

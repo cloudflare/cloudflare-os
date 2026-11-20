@@ -23,6 +23,7 @@ import {
   isSkillManifestPath, parseSkillManifest, updateSkillManifestName, type SkillIndexEntry,
   type SkillManifestMetadata,
 } from "./agent-skill.js";
+import { artifactsCall, contextUpstream } from "./context-upstream.js";
 import { obsContext } from "./observability.js";
 import {
   decodeStoredContextBody, encodeStoredContextBody, truncateContextDescription,
@@ -248,14 +249,14 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
   async #createArtifactRepo(metadata: ContextCollectionMetadata): Promise<string> {
     // Artifact repo id is always set to collection id.
     let artifacts = this.#artifacts();
-    let created = await artifacts.create(metadata.id, {
+    let created = await artifactsCall("repos.create", () => artifacts.create(metadata.id, {
       setDefaultBranch: DEFAULT_GIT_BRANCH,
-    });
+    }));
 
-    let repo = await artifacts.get(metadata.id);
+    let repo = await artifactsCall("repos.get", () => artifacts.get(metadata.id));
     // Artifacts auto-creates an initial write token when the repo is first
     // created. We don't want or need this token, so we immediately revoke it.
-    await repo.revokeToken(created.token).catch((err) => {
+    await artifactsCall("tokens.revoke", () => repo.revokeToken(created.token)).catch((err) => {
       logger.warn("failed to revoke initial Artifacts token for context collection", {
         event: "artifacts.initial.token.revoke.failed",
         collectionId: metadata.id,
@@ -521,65 +522,71 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
    * schedules an alarm to retry, whatever becomes of the grant meanwhile. Returns the issuers with
    * tokens still live.
    */
-  async #revokeUnauthorizedGitTokens(): Promise<Set<string>> {
-    let unrevoked = new Set<string>();
-    let meta = this.getMetadata();
-    // Public collections have no grants; admins' tokens are not tied to one.
-    if (meta.visibility !== "private") return unrevoked;
-    // Read the records before deleting from the same storage collection.
-    let records = Array.from(this.storage.gitTokenIssuers.list());
-    let revocable = records.filter(record => !this.#canEdit(record.accountId));
-    let creator = this.storage.ownerAccountId.get();
-    let sweepLegacyTokens = meta.content.source === "git" && !!creator && !this.#canEdit(creator)
-      && !this.storage.legacyGitTokensSwept.get();
+  #revokeUnauthorizedGitTokens(): Promise<Set<string>> {
+    // One revocation for each token: counted as one point per kind of call, however many.
+    return contextUpstream.summed(async () => {
+      let unrevoked = new Set<string>();
+      let meta = this.getMetadata();
+      // Public collections have no grants; admins' tokens are not tied to one.
+      if (meta.visibility !== "private") return unrevoked;
+      // Read the records before deleting from the same storage collection.
+      let records = Array.from(this.storage.gitTokenIssuers.list());
+      let revocable = records.filter(record => !this.#canEdit(record.accountId));
+      let creator = this.storage.ownerAccountId.get();
+      let sweepLegacyTokens = meta.content.source === "git" && !!creator && !this.#canEdit(creator)
+        && !this.storage.legacyGitTokensSwept.get();
 
-    if (revocable.length > 0 || sweepLegacyTokens) {
-      // Rearm retries too, in case the runtime stops while an alarm's external call is pending.
-      await this.#armAccessCleanup();
-      let repo: ArtifactsRepo | undefined;
-      try {
-        repo = await this.#artifacts().get(meta.id);
-        if (sweepLegacyTokens) {
-          let recorded = new Set(records.map(record => record.tokenId));
-          let legacy = (await repo.listTokens()).tokens
-            .filter(token => token.scope === "write" && token.state === "active" && !recorded.has(token.id))
-            .map(token => ({ tokenId: token.id, accountId: creator }));
-          // Make the sweep's work durable before revoking; a restart resumes from issuer records.
-          this.storage.transaction(() => {
-            for (let record of legacy) this.storage.gitTokenIssuers.put(record);
-            this.storage.legacyGitTokensSwept.put(true);
-          });
-          revocable.push(...legacy);
-        }
-      } catch (err) {
-        if (sweepLegacyTokens) unrevoked.add(creator);
-        logger.error("failed to list git tokens to revoke", {
-          event: "artifacts.issuer.token.list.failed", collectionId: meta.id, error: err,
-        });
-      }
-      for (let record of revocable) {
+      if (revocable.length > 0 || sweepLegacyTokens) {
+        // Rearm retries too, in case the runtime stops while an alarm's external call is pending.
+        await this.#armAccessCleanup();
+        let repo: ArtifactsRepo | undefined;
         try {
-          if (!repo) throw new Error("Artifacts repo unavailable.");
-          await repo.revokeToken(record.tokenId);
-          this.storage.gitTokenIssuers.delete(record.tokenId);
+          let artifacts = this.#artifacts();
+          let found = await artifactsCall("repos.get", () => artifacts.get(meta.id));
+          repo = found;
+          if (sweepLegacyTokens) {
+            let recorded = new Set(records.map(record => record.tokenId));
+            let legacy = (await artifactsCall("tokens.list", () => found.listTokens())).tokens
+              .filter(token => token.scope === "write" && token.state === "active" && !recorded.has(token.id))
+              .map(token => ({ tokenId: token.id, accountId: creator }));
+            // Make the sweep's work durable before revoking; a restart resumes from issuer records.
+            this.storage.transaction(() => {
+              for (let record of legacy) this.storage.gitTokenIssuers.put(record);
+              this.storage.legacyGitTokensSwept.put(true);
+            });
+            revocable.push(...legacy);
+          }
         } catch (err) {
-          unrevoked.add(record.accountId);
-          logger.error("failed to revoke a git token after its issuer lost write access", {
-            event: "artifacts.issuer.token.revoke.failed", collectionId: meta.id, error: err,
+          if (sweepLegacyTokens) unrevoked.add(creator);
+          logger.error("failed to list git tokens to revoke", {
+            event: "artifacts.issuer.token.list.failed", collectionId: meta.id, error: err,
           });
         }
+        for (let record of revocable) {
+          try {
+            if (!repo) throw new Error("Artifacts repo unavailable.");
+            let found = repo;
+            await artifactsCall("tokens.revoke", () => found.revokeToken(record.tokenId));
+            this.storage.gitTokenIssuers.delete(record.tokenId);
+          } catch (err) {
+            unrevoked.add(record.accountId);
+            logger.error("failed to revoke a git token after its issuer lost write access", {
+              event: "artifacts.issuer.token.revoke.failed", collectionId: meta.id, error: err,
+            });
+          }
+        }
       }
-    }
 
-    let attempts = this.storage.gitTokenRevokeAttempts.get();
-    if (unrevoked.size === 0) {
-      if (attempts > 0) this.storage.gitTokenRevokeAttempts.put(0);
-    } else {
-      this.storage.gitTokenRevokeAttempts.put(attempts + 1);
-      await this.ctx.storage.setAlarm(Date.now() + Math.min(
-        GIT_TOKEN_REVOKE_RETRY_MS * 2 ** attempts, GIT_TOKEN_REVOKE_RETRY_MAX_MS));
-    }
-    return unrevoked;
+      let attempts = this.storage.gitTokenRevokeAttempts.get();
+      if (unrevoked.size === 0) {
+        if (attempts > 0) this.storage.gitTokenRevokeAttempts.put(0);
+      } else {
+        this.storage.gitTokenRevokeAttempts.put(attempts + 1);
+        await this.ctx.storage.setAlarm(Date.now() + Math.min(
+          GIT_TOKEN_REVOKE_RETRY_MS * 2 ** attempts, GIT_TOKEN_REVOKE_RETRY_MAX_MS));
+      }
+      return unrevoked;
+    });
   }
 
   #assertGitTokensRevoked(unrevoked: Set<string>, accountId: string): void {
@@ -1109,8 +1116,10 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
       if (meta.visibility === "private" && !this.#canEdit(issuerId)) {
         throw new Error("Only editors and owners can create Git tokens.");
       }
-      let repo = await this.#artifacts().get(meta.id);
-      let token = await repo.createToken("write", GIT_TOKEN_TTL_SECONDS);
+      let artifacts = this.#artifacts();
+      let repo = await artifactsCall("repos.get", () => artifacts.get(meta.id));
+      let token = await artifactsCall(
+        "tokens.create", () => repo.createToken("write", GIT_TOKEN_TTL_SECONDS));
       this.storage.gitTokenIssuers.put({ tokenId: token.id, accountId: issuerId });
       return {
         id: token.id,
@@ -1123,8 +1132,9 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
   async listGitTokens(): Promise<ContextGitTokenList> {
     if (!this.#isGitBased()) throw new Error("Collection is not git-based.");
     let meta = this.getMetadata();
-    let repo = await this.#artifacts().get(meta.id);
-    let result = await repo.listTokens();
+    let artifacts = this.#artifacts();
+    let repo = await artifactsCall("repos.get", () => artifacts.get(meta.id));
+    let result = await artifactsCall("tokens.list", () => repo.listTokens());
     return {
       tokens: result.tokens
         // User-created tokens for mirror setup are always write tokens. This DO
@@ -1141,8 +1151,9 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
   async revokeGitToken(tokenId: string): Promise<boolean> {
     if (!this.#isGitBased()) throw new Error("Collection is not git-based.");
     let meta = this.getMetadata();
-    let repo = await this.#artifacts().get(meta.id);
-    let revoked = await repo.revokeToken(tokenId);
+    let artifacts = this.#artifacts();
+    let repo = await artifactsCall("repos.get", () => artifacts.get(meta.id));
+    let revoked = await artifactsCall("tokens.revoke", () => repo.revokeToken(tokenId));
     this.storage.gitTokenIssuers.delete(tokenId);
     return revoked;
   }
@@ -1334,8 +1345,9 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
       }
     }
 
-    if (meta.content.source === "git" && this.env.ARTIFACTS) {
-      await this.env.ARTIFACTS.delete(id).catch((err) => {
+    let artifacts = this.env.ARTIFACTS;
+    if (meta.content.source === "git" && artifacts) {
+      await artifactsCall("repos.delete", () => artifacts.delete(id)).catch((err) => {
         logger.warn("failed to delete Artifacts repo for context collection", {
           event: "artifacts.repo.delete.failed",
           collectionId: id,
