@@ -1092,10 +1092,15 @@ async function readChanges() {
     title = (sheets.find(listed => !listed.hidden) ?? sheets[0]).title;
   }
   const read = await gadget.getPendingChanges(title);
-  const titled = read.sheets.pending.find(listed => listed.title === title);
+  const { pending } = read.sheets;
+  // A pending change may rename the sheet shown, and give another its title: it is the same sheet
+  // by its ID, and is read again under the title it is to have.
+  const renamed = pending.find(listed => listed.id === sheet?.id);
+  if (renamed && renamed.title !== title) return { read: await gadget.getPendingChanges(renamed.title), title: renamed.title };
+  const titled = pending.find(listed => listed.title === title);
   // One there already before one a change adds, which is empty until more is written to it.
   const saved = new Set(read.sheets.saved.map(listed => listed.id));
-  const changed = read.sheets.pending.filter(listed => listed.touched && !listed.hidden);
+  const changed = pending.filter(listed => listed.touched && !listed.hidden);
   const touched = changed.find(listed => saved.has(listed.id)) ?? changed[0];
   if (sheet || !touched || touched === titled) return { read, title };
   return { read: await gadget.getPendingChanges(touched.title), title: touched.title };

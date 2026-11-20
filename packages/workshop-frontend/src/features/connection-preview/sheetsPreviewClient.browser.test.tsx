@@ -104,7 +104,8 @@ async function draw(book: Book, width = 900) {
       await book.wait
       const failure = book.fail ?? book.failChanges?.(title)
       if (failure) throw new Error(failure)
-      if (!book.sheets.some(sheet => sheet.title === title)) throw new Error(`no sheet named "${title}"`)
+      // A title is one a sheet has with the changes made, or failing that as saved.
+      if (![...book.sheets, ...book.saved ?? []].some(sheet => sheet.title === title)) throw new Error(`no sheet named "${title}"`)
       return {
         changes: [], areas: [], ...book.pending?.[title],
         sheets: { saved: book.saved ?? book.sheets.map(info), pending: book.sheets.map(pendingInfo) },
@@ -701,6 +702,29 @@ it('stays on the sheet shown when its changes cannot be read, and leaves it only
   await expect.poll(title).toBe('Sales')
   await expect.poll(() => cell('A1')?.textContent).toBe('Sales A1')
   expect(tabs().map(tab => tab.getAttribute('aria-pressed'))).toContain('true')
+})
+
+it('stays on the sheet shown when a pending change renames it, and when another is given its title', async () => {
+  const book: Book = { sheets: [small(1, 'Sales', 0), small(2, 'Costs', 1), small(9, 'Plan', 2)] }
+  const { doc, asked, cell, tabs, refresh } = await draw(book, 1100)
+  const title = () => doc.querySelector('#strip b')!.textContent
+  tabs()[1].click()
+  await expect.poll(() => cell('A1')?.textContent).toBe('Costs A1')
+
+  // Google still has it as Costs, so that title is still answered for.
+  book.saved = book.sheets.map(info)
+  book.sheets[1] = small(2, 'Spend', 1, { touched: true })
+  asked.length = 0
+  refresh()
+  await expect.poll(title).toBe('Spend')
+  expect(asked).toEqual(['Costs', 'Spend'])
+  expect(cell('A1').textContent).toBe('Spend A1')
+
+  book.sheets[1] = small(2, 'Archive', 1, { touched: true })
+  book.sheets.push(small(10, 'Spend', 3, { touched: true }))
+  refresh()
+  await expect.poll(title).toBe('Archive')
+  expect(tabs().map(tab => tab.getAttribute('aria-pressed'))).toEqual(['false', 'true', 'false', 'false'])
 })
 
 it('keeps the grid under the outline and clear of the buttons in a narrow pane', async () => {
