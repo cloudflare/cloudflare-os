@@ -2478,6 +2478,23 @@ describe("read", () => {
       expect(outcomes()[0]).toEqual(["error", "timeout", status]);
     });
 
+    it.each<[string, RetryPolicy]>([
+      ["under the default wait", {}],
+      ["where the policy's `delayMs` gives no wait", { delayMs: () => undefined }],
+    ])("sends once a success the rule would send again, whose Retry-After asks for longer than is waited: %s", async (_name, policy) => {
+      const times = stalled([202, { "Retry-After": "60" }], answer(200, "payload"));
+
+      const text = expect(upstream.read(THREAD, {
+        retry: { ...policy, maxDelayMs: 5, retryable: status => status === 202 },
+      }, bodyText)).rejects.toMatchObject({ name: "TimeoutError" });
+      await vi.advanceTimersByTimeAsync(200_000);
+
+      await text;
+      // The answer asked for a minute: no send comes before it, for a body that stalled either.
+      expect(times).toHaveLength(1);
+      expect(outcomes()).toEqual([["error", "timeout", 202]]);
+    });
+
     it.each<[string, Parameters<Upstream["with"]>[0], RequestInit & { idempotent?: boolean }, number]>([
       ["a 200 that `succeeded` takes for no success", { succeeded: status => status === 204 }, {}, 200],
       ["a 302 where redirects are not followed", {}, {}, 302],

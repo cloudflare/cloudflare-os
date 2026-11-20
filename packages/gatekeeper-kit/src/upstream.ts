@@ -248,10 +248,11 @@ export type UpstreamRequestInit = RequestInit & {
  *   one that threw, where the status of that answer is a success: by `succeeded` and the
  *   redirect mode, as under Counting, and whatever the request's `answer` counts it as. An
  *   answer of any other status is not sent again for a body that timed out: this rule decided
- *   on it when it came, by `retryable`, and that stands. Nor is an answer sent again whose body
- *   fails as it is read for any reason but that timeout, a connection lost after the headers
- *   included: `read` cannot tell a transport's failure there from a parser's, and counts the
- *   attempt as `parse` says below. A write is never sent twice unless it is
+ *   on it when it came, by `retryable`, and that stands, as does a `Retry-After` longer than
+ *   `maxDelayMs` that kept an answer of any status from being sent again. Nor is an answer sent
+ *   again whose body fails as it is read for any reason but that timeout, a connection lost
+ *   after the headers included: `read` cannot tell a transport's failure there from a parser's,
+ *   and counts the attempt as `parse` says below. A write is never sent twice unless it is
  *   marked `idempotent`, the gatekeeper's `retryable` says so, or its `replay` hook does: a
  *   `retry` of `null` turns off this rule and not the Replay one, so a request that must be sent
  *   once gives no `replay`. Nothing is sent again once the caller's signal has aborted, whether
@@ -692,12 +693,15 @@ export function defineUpstream(options: UpstreamOptions): Upstream {
         // The wait is settled with the rule, before the body is let go: an answer that asks for
         // a longer wait than is made is returned as it came.
         let wait: number | undefined;
+        // Whether the rule would have sent the answer again and its `Retry-After` kept it from.
+        let asksLonger = false;
         if (resendable && retry && attempt < retry.attempts - 1 && await sendsAgain(() => {
           if (!retry.retryable(response.status, { method, operation, idempotent }, response.headers)) {
             return false;
           }
           wait = waitAfter(retry, attempt, response);
-          return wait !== undefined;
+          asksLonger = wait === undefined;
+          return !asksLonger;
         })) {
           await pause(wait ?? 0, caller);
           attempt++;
@@ -715,8 +719,10 @@ export function defineUpstream(options: UpstreamOptions): Upstream {
           },
           // A success that the attempt's own timeout kept from being read is an attempt that
           // timed out, and is sent again as one that threw is. An answer that is no success was
-          // put to the retry rule when it came, and what the rule said of it stands.
+          // put to the retry rule when it came, and what the rule said of it stands. So does a
+          // wait it asked for that is longer than is made: no send comes before that time.
           again: () => {
+            if (asksLonger) return undefined;
             if (!success || !timeout?.aborted || caller?.aborted || !resendable || !idempotent
                 || !retry || attempt >= retry.attempts - 1) return undefined;
             return pause(jitterMs(retry, attempt++), caller).then(sending);
