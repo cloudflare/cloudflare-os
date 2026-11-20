@@ -732,11 +732,15 @@ const FIELDS = {
   horizontalAlignment: 'alignment', verticalAlignment: 'vertical alignment', wrap: 'wrapping', borders: 'borders',
 };
 
+// Whether `range`, with or without its sheet, holds the cell at `row` and `column`.
+function holdsCell(range, row, column) {
+  const { r0, r1, c0, c1 } = rectOf(range.slice(range.lastIndexOf('!') + 1));
+  return row >= r0 && row < r1 && column >= c0 && column < c1;
+}
+
 // The areas of kind `op` that hold the cell at `row` and `column`, latest first.
-const areasAt = (row, column, op) => info.areas.filter(area => {
-  const { r0, r1, c0, c1 } = rectOf(area.range);
-  return area.op === op && row >= r0 && row < r1 && column >= c0 && column < c1;
-}).toReversed();
+const areasAt = (row, column, op) =>
+  info.areas.filter(area => area.op === op && holdsCell(area.range, row, column)).toReversed();
 
 // Which of the pending changes one is, counted as the person sees them listed.
 const nameOf = id => {
@@ -763,8 +767,12 @@ function describe({ row, column, cell }) {
     card.append(make('p', '', 'This shows what is saved. The pending changes may alter it.'));
   }
   if (cell.formatted && format) {
-    const batch = info.changes.find(change => change.id === format.change);
-    const set = new Set(batch?.changes.flatMap(change => change.op === 'formatCells' ? Object.keys(change.format) : []));
+    const formats = info.changes.find(change => change.id === format.change)?.changes
+      .filter(change => change.op === 'formatCells') ?? [];
+    // What its batch set on this cell. A batch names each range as it lay when it was made, so
+    // where later changes have moved the cell out of them all, all that it set is named.
+    const here = formats.filter(change => holdsCell(change.range, row, column));
+    const set = new Set((here.length ? here : formats).flatMap(change => Object.keys(change.format)));
     const line = card.appendChild(make('p', '', 'Formatting set: '));
     line.append(make('b', '', [...set].map(field => FIELDS[field] ?? field).join(', ') || 'changed'));
   }
