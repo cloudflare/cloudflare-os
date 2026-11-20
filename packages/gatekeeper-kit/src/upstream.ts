@@ -244,7 +244,10 @@ export type UpstreamRequestInit = RequestInit & {
  *   one that threw, where the status of that answer is a success: by `succeeded` and the
  *   redirect mode, as under Counting, and whatever the request's `answer` counts it as. An
  *   answer of any other status is not sent again for a body that timed out: this rule decided
- *   on it when it came, by `retryable`, and that stands. A write is never sent twice unless it is
+ *   on it when it came, by `retryable`, and that stands. Nor is an answer sent again whose body
+ *   fails as it is read for any reason but that timeout, a connection lost after the headers
+ *   included: `read` cannot tell a transport's failure there from a parser's, and counts the
+ *   attempt as `parse` says below. A write is never sent twice unless it is
  *   marked `idempotent`, the gatekeeper's `retryable` says so, or its `replay` hook does: a
  *   `retry` of `null` turns off this rule and not the Replay one, so a request that must be sent
  *   once gives no `replay`. Nothing is sent again once the caller's signal has aborted, whether
@@ -416,6 +419,10 @@ const DEFAULT_RETRY: Required<RetryPolicy> = {
 const MAX_REPLAYS = 2;
 // The longest wait a timer takes: a longer one fires at once.
 const LONGEST_TIMER_MS = 2 ** 31 - 1;
+// The options of an upstream beside its vendor id, which `with` replaces or carries over.
+const OPTION_NAMES = [
+  "service", "routes", "operation", "timeoutMs", "retry", "redirect", "succeeded", "fetch", "thrown",
+] satisfies (keyof UpstreamOptions)[];
 // The members the Workers runtime's `fetch` reads of its init. It reads no other, a browser's
 // (`duplex`, `mode`, `credentials`) included.
 const FETCH_MEMBERS = [
@@ -778,7 +785,13 @@ export function defineUpstream(options: UpstreamOptions): Upstream {
         (await send(input, { ...fetchInit(init), ...given }, false)).response;
     },
     with(overrides) {
-      return defineUpstream({ ...options, ...overrides, vendorId });
+      // Each option is read by its name, as this upstream reads its own, so that one behind a
+      // getter is carried over as any other is.
+      const carried: UpstreamOptions = { vendorId };
+      for (const name of OPTION_NAMES) {
+        Object.assign(carried, { [name]: name in overrides ? overrides[name] : options[name] });
+      }
+      return defineUpstream(carried);
     },
   };
   return upstream;

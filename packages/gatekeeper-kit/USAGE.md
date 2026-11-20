@@ -478,8 +478,8 @@ When a provider does not fit, step down one rung at a time:
 `defineUpstream` in `./upstream` is the one client a gatekeeper sends its provider calls through.
 Each attempt has a timeout, 30 seconds by default. A request that is safe to send twice (a GET or
 HEAD, or one marked `idempotent`) is sent again after a 429, 502, 503 or 504, a network failure or
-a timeout. No redirect is followed unless the upstream or a request says `redirect: "follow"`:
-a redirect followed to another origin carries the request's other headers there, a cookie or an
+a timeout (a connection lost once an answer has begun is not sent again). No redirect is followed
+unless the upstream or a request says `redirect: "follow"`: a redirect followed to another origin carries the request's other headers there, a cookie or an
 API key included, and for a 307 or 308 its method and body. `Authorization` is dropped, unless the
 Worker has the `retain_authorization_on_cross_origin_redirect` compatibility flag or a
 compatibility date from before the runtime dropped it. A gatekeeper that must keep its requests to

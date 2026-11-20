@@ -2902,6 +2902,23 @@ describe("fetcher", () => {
 });
 
 describe("with", () => {
+  it("carries over an option its upstream holds behind a getter", async () => {
+    const global = answering(200);
+    const guarded = vi.fn<UpstreamFetch>(async () => answer(200));
+    // Options built by a class, whose members are its prototype's getters.
+    const options = new (class {
+      get vendorId() { return "vendor"; }
+      get fetch() { return guarded; }
+    })();
+
+    await defineUpstream(options).with({ service: "identity" }).request(THREAD);
+    expect(guarded).toHaveBeenCalledTimes(1);
+    await defineUpstream(options).with({ fetch: undefined }).request(THREAD);
+
+    expect(guarded).toHaveBeenCalledTimes(1);
+    expect(global).toHaveBeenCalledTimes(1);
+  });
+
   it("takes the options given in place of its own and keeps the rest, the vendor included", async () => {
     const global = answering(200);
     const bound = vi.fn<UpstreamFetch>(async () => answer(302));
