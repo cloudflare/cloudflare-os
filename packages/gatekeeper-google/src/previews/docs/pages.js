@@ -161,19 +161,21 @@ function takePast(container, bottom) {
 
 /** Ends a table's row at `bottom`, if any cell of it has a line that fits: answers with the row that carries it on. */
 function splitRow(row, bottom) {
-  const starts = [...row.cells].some(cell => {
+  const cells = [...row.cells];
+  const starts = cells.some(cell => {
     const first = cell.firstElementChild;
     const line = first?.matches('.para') ? linesOf(first)[0] : first && boxOf(first);
     return line && line.bottom <= bottom + SLACK;
   });
   if (!starts) return undefined;
+  const taken = cells.map(cell => takePast(cell, bottom - parseFloat(getComputedStyle(cell).paddingBottom)));
+  // A row that would keep nothing is not ended here: one whose paragraph must stay whole, and
+  // is taller than a page, would be carried on from every page, never drawn.
+  if (cells.every((cell, n) => taken[n][0] === cell.firstElementChild)) return undefined;
   const rest = row.cloneNode(false);
   rest.style.height = '';
   delete rest.dataset.least;
-  for (const cell of row.cells) {
-    const room = bottom - parseFloat(getComputedStyle(cell).paddingBottom);
-    rest.appendChild(cell.cloneNode(false)).append(...takePast(cell, room));
-  }
+  for (const [n, cell] of cells.entries()) rest.appendChild(cell.cloneNode(false)).append(...taken[n]);
   // What stays is as tall as what is left in it.
   fitRows([row]);
   return rest;
@@ -182,14 +184,19 @@ function splitRow(row, bottom) {
 /** Ends a table at `bottom`, between two rows or inside one: answers as splitParagraph() does. */
 function splitTable(table, bottom, forced) {
   const rows = [...table.tBodies[0].rows];
-  const heads = rows.filter(row => 'header' in row.dataset);
+  let heads = rows.filter(row => 'header' in row.dataset);
   let at = rows.findIndex(row => boxOf(row).bottom > bottom + SLACK);
   if (at < 0) return undefined;
   const whole = 'unbroken' in rows[at].dataset || 'header' in rows[at].dataset;
   const part = whole ? undefined : splitRow(rows[at], bottom);
   if (!part && at <= heads.length) {
     if (!forced) return table;
-    // A row taller than its page stays, and the table goes on after it.
+    // A row taller than its page stays, and the table goes on after it: without the rows it
+    // repeats, where it is those that are too tall, as each page would hold nothing else.
+    if (at < heads.length) {
+      for (const head of heads) delete head.dataset.header;
+      heads = [];
+    }
     if (++at >= rows.length) return undefined;
   }
   const rest = table.cloneNode(false);

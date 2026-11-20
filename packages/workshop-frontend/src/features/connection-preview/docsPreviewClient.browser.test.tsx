@@ -232,6 +232,26 @@ it('sets the body on as many sheets as it fills, each under the header with its 
   }
 })
 
+// Either was carried on from every page, without end.
+it.each([
+  ['a row it repeats that is taller than a page', [{ words: 'Head', header: true, minHeight: 400 }, { words: 'One' }, { words: 'Two' }]],
+  ['a paragraph kept whole that is taller than a page', [{ words: 'Long '.repeat(600).trim() }, { words: 'After' }]],
+])('ends a table with %s, and draws each row once', async (_name, rows) => {
+  const table = {
+    type: 'table', line: 0, columns: [120],
+    rows: rows.map(({ words, ...row }) => ({ ...row, cells: [{ ...CELL, column: 0, blocks: [paragraph(undefined, words)] }] })),
+  }
+  const markup = ['<table>', ...rows.flatMap(({ words }) => ['  <tr>', `    <td><p>${words}</p></td>`, '  </tr>']), '</table>', '']
+  const { sheets, page } = await draw({
+    savedMarkdown: markup.join('\n'),
+    drawing: drawing([table], { paragraphLooks: Array.from({ length: 4 }, () => ({ lineSpacing: 1, keepLinesTogether: true })) }),
+  })
+
+  expect(sheets()).toHaveLength(2)
+  const cells = [...page.querySelectorAll('td')].map(cell => text(cell).replace(/\s+/g, ' ').trim())
+  expect(cells.filter(Boolean)).toEqual(rows.map(({ words }) => words))
+})
+
 it('sets each line as tall as Google Docs does in any font, with the larger space between two paragraphs', async () => {
   const lines = ['Body', 'Code', 'Large heading', 'Small heading', 'Body', 'Two\u000blines']
   const set = drawing(lines.map((line, index) => paragraph(index * 2, line, { look: [0, 1, 2, 3, 0, 4][index] })), {
