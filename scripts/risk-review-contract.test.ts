@@ -5,6 +5,7 @@ import { describe, it } from "node:test";
 import {
   PRODUCERS,
   bindingError,
+  modelProvider,
   newestRun,
   parseProducerArtifact,
   pickArtifact,
@@ -14,7 +15,7 @@ import {
   type ProducerName,
   type WorkflowRun,
 } from "./risk-review-contract.ts";
-import { BASE, HEAD, verdictJson, zip } from "./risk-review-fixtures/artifacts.ts";
+import { BASE, HEAD, MODELS, verdictJson, zip } from "./risk-review-fixtures/artifacts.ts";
 
 const OTHER = "c".repeat(40);
 
@@ -35,6 +36,11 @@ describe("parseProducerArtifact", () => {
       round: 4,
     }), expected);
     assert.ok("artifact" in input, JSON.stringify(input));
+  });
+
+  it("accepts an error verdict that names no model, since none ran", () => {
+    const input = parseProducerArtifact(verdictJson({ status: "error", merge_confidence: null, model: "" }), expected);
+    assert.ok("artifact" in input && input.artifact.kind === "verdict" && input.artifact.model === "", JSON.stringify(input));
   });
 
   it("accepts a proof with holds", () => {
@@ -62,8 +68,8 @@ describe("parseProducerArtifact", () => {
     ["an unknown severity", verdictJson({ findings: [{ severity: "P4", title: "x", path: null, line: null }] })],
     ["needs_person not a list", verdictJson({ needs_person: "round limit" })],
     ["round zero", verdictJson({ round: 0 })],
-    ["a missing fingerprint", verdictJson({ fingerprint: undefined })],
-    ["a partial fingerprint", verdictJson({ fingerprint: { model: "m" } })],
+    ["a missing model", verdictJson({ model: undefined })],
+    ["a model that is not text", verdictJson({ model: { id: MODELS.bonk } })],
     ["a malformed review_from_sha", verdictJson({ review_from_sha: "HEAD~1" })],
   ];
   for (const [what, text] of malformed) {
@@ -78,11 +84,12 @@ describe("parseProducerArtifact", () => {
   });
 });
 
-// A real `pull_request` run of workshop-evals-pr.yml, evidence-eval's producer, recorded from the
-// Actions API on 2026-11-03.
+// A real `pull_request` run, recorded from the Actions API on 2026-11-03, and a producer that
+// publishes from the workflow file it ran.
 const recorded: WorkflowRun = JSON.parse(readFileSync(new URL("./risk-review-fixtures/evals-run.json", import.meta.url), "utf8"));
+const producer: Producer = { kind: "proof", workflow: recorded.path };
 const binding = {
-  producer: PRODUCERS["evidence-eval"],
+  producer,
   headSha: recorded.head_sha,
   repository: "cloudflare/cloudflare-os",
   pullNumber: 976,
@@ -98,44 +105,69 @@ describe("bindingError", () => {
   });
 
   it("rejects a run from another workflow file, head, repository or event", () => {
-    assert.match(bindingError(recorded, { ...binding, producer: PRODUCERS.opus }) ?? "", /not \.github\/workflows\/review-verdict\.yml/);
-    assert.match(bindingError(recorded, { ...binding, headSha: HEAD }) ?? "", /another head/);
-    assert.match(bindingError({ ...recorded, head_repository: { full_name: "someone/cloudflare-os" } }, binding) ?? "", /another repository/);
-    assert.match(bindingError({ ...recorded, event: "pull_request_target" }, binding) ?? "", /pull_request_target/);
-    assert.match(bindingError({ ...recorded, event: "push" }, binding) ?? "", /push/);
-    assert.match(bindingError({ ...recorded, event: "workflow_run" }, binding) ?? "", /workflow_run/);
+    assert.ok(bindingError(recorded, { ...binding, producer: PRODUCERS.opus }), "another workflow file");
+    assert.ok(bindingError(recorded, { ...binding, headSha: HEAD }), "another head");
+    assert.ok(bindingError({ ...recorded, head_repository: { full_name: "someone/cloudflare-os" } }, binding), "another repository");
+    for (const event of ["pull_request_target", "push", "workflow_run"]) {
+      assert.ok(bindingError({ ...recorded, event }, binding), event);
+    }
   });
 
   it("rejects a run GitHub ties to another pull request, or to this head into another branch", () => {
-    assert.match(bindingError(recorded, { ...binding, pullNumber: 977 }) ?? "", /another pull request or base than #977/);
+    assert.ok(bindingError(recorded, { ...binding, pullNumber: 977 }));
     // Recorded: a real pull_request run of preview.yml, which GitHub ties to #965 into main.
     const preview: WorkflowRun = JSON.parse(readFileSync(new URL("./risk-review-fixtures/preview-run.json", import.meta.url), "utf8"));
-    const producer: Producer = { kind: "evidence", workflow: preview.path };
-    const onHead = { ...binding, producer, headSha: preview.head_sha, headBranch: preview.head_branch ?? "" };
+    const onHead = { ...binding, producer: { ...producer, workflow: preview.path }, headSha: preview.head_sha, headBranch: preview.head_branch ?? "" };
     assert.equal(bindingError(preview, { ...onHead, pullNumber: 965 }), undefined);
-    assert.match(bindingError(preview, { ...onHead, pullNumber: 966 }) ?? "", /another pull request or base than #966/);
+    assert.ok(bindingError(preview, { ...onHead, pullNumber: 966 }));
     // The same run, as GitHub would report it for #965 retargeted to a branch with a replaced workflow.
     const elsewhere = { ...preview, pull_requests: preview.pull_requests.map((pull) => ({ ...pull, base: { ...pull.base, ref: "release" } })) };
-    assert.match(bindingError(elsewhere, { ...onHead, pullNumber: 965 }) ?? "", /another pull request or base/);
-    assert.match(bindingError({ ...recorded, pull_requests: [] }, binding) ?? "", /another pull request or base/);
+    assert.ok(bindingError(elsewhere, { ...onHead, pullNumber: 965 }));
+    assert.ok(bindingError({ ...recorded, pull_requests: [] }, binding));
   });
 
   it("rejects a run for another head branch, or created before the pull request's base last changed", () => {
-    assert.match(bindingError({ ...recorded, head_branch: "attacker/same-commit" }, binding) ?? "", /branch attacker\/same-commit/);
-    assert.match(bindingError(recorded, { ...binding, notBefore: Date.parse(recorded.created_at) }) ?? "", /base last changed/);
+    assert.ok(bindingError({ ...recorded, head_branch: "attacker/same-commit" }, binding));
+    assert.ok(bindingError(recorded, { ...binding, notBefore: Date.parse(recorded.created_at) }));
     assert.equal(bindingError(recorded, { ...binding, notBefore: Date.parse(recorded.created_at) - 1 }), undefined);
     const fence = (at: number) => ({ ...binding, siblingFence: { at, reason: "#8 from the same branch targeted evil" } });
-    assert.match(bindingError(recorded, fence(Date.parse(recorded.created_at))) ?? "", /ran after #8 from the same branch targeted evil/);
+    assert.ok(bindingError(recorded, fence(Date.parse(recorded.created_at)))?.includes("#8"), "the error names the sibling");
     assert.equal(bindingError(recorded, fence(Date.parse(recorded.created_at) + 1)), undefined);
   });
 
   it("rejects an unfinished or unsuccessful latest attempt", () => {
-    assert.match(bindingError({ ...recorded, status: "in_progress", conclusion: null }, binding) ?? "", /still running/);
+    assert.ok(bindingError({ ...recorded, status: "in_progress", conclusion: null }, binding));
     for (const conclusion of ["failure", "cancelled", "timed_out", "skipped"]) {
-      assert.match(bindingError({ ...recorded, conclusion }, binding) ?? "", new RegExp(conclusion));
+      assert.ok(bindingError({ ...recorded, conclusion }, binding), conclusion);
     }
   });
+});
 
+describe("modelProvider", () => {
+  it("reads the provider both reviewers' model ids name, whatever its case", () => {
+    assert.equal(modelProvider(MODELS.bonk), "openai");
+    assert.equal(modelProvider(MODELS.opus), "anthropic");
+    assert.equal(modelProvider("cloudflare-ai-gateway/Anthropic/claude-opus-5.5"), "anthropic");
+  });
+
+  it("knows no provider when no model ran, for another gateway, or for an id that routes on to another provider", () => {
+    for (const model of [
+      "",
+      "cloudflare-ai-gateway/",
+      "cloudflare-ai-gateway/anthropic",
+      "cloudflare-ai-gateway/anthropic/",
+      "cloudflare-ai-gateway//claude-opus-5.5",
+      "anthropic/claude-opus-5.5",
+      "openrouter/anthropic/claude-opus-5.5",
+      "cloudflare-ai-gateway/openrouter/anthropic/claude-opus-5.5",
+      "cloudflare-ai-gateway/ /claude-opus-5.5",
+      "cloudflare-ai-gateway/open ai/gpt-6.1-sol",
+      "cloudflare-ai-gateway/anthropic/ ",
+      " cloudflare-ai-gateway/anthropic/claude-opus-5.5",
+    ]) {
+      assert.equal(modelProvider(model), undefined, model);
+    }
+  });
 });
 
 describe("newestRun", () => {

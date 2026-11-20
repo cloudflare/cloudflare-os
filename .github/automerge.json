@@ -1,0 +1,9 @@
+{
+  "mode": "shadow",
+  "app_approvals_count": false,
+  "threshold": 10,
+  "rungs": {
+    "proven": false,
+    "scored": false
+  }
+}

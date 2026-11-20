@@ -2,16 +2,15 @@ name: Risk review
 
 # Posts the `risk-review` check run on each pull request head into `main` and on each merge group,
 # as the risk-review GitHub App. scripts/risk-review.ts holds the rules and the reasons behind them;
-# .github/automerge-bands.json sets whether the check mirrors today's rule (shadow) or reports the
-# gate's own decision (enforce).
+# .github/automerge.json sets whether the check mirrors today's rule (shadow) or reports the gate's
+# own decision (enforce), and which rungs are on.
 #
 # The gate is the only publisher of `risk-review`. Producer workflows (Bonk PR Review, Review verdict,
-# Automerge proofs, Automerge evidence, Workshop eval comparison) upload one JSON artifact each; the
-# gate reads an artifact only from a run bound to the pull request's head. Their completion, and the
-# review relay, wake this workflow through `workflow_run`; maintainer comments wake it through
-# `issue_comment`. Both run this file and check out the script from the default branch, never the
-# pull request's copy, so a change cannot rewrite its own gate. Nothing here checks out or runs pull
-# request code.
+# Automerge proofs, Automerge evidence) upload one JSON artifact each; the gate reads an artifact
+# only from a run bound to the pull request's head. Their completion, and the review relay, wake
+# this workflow through `workflow_run`; maintainer comments wake it through `issue_comment`. Both
+# run this file and check out the script from the default branch, never the pull request's copy, so
+# a change cannot rewrite its own gate. Nothing here checks out or runs pull request code.
 #
 # Merge groups reach the gate through the relay too, rather than through `merge_group` here: that
 # event runs on a `gh-readonly-queue/main/*` ref, and anyone who can push can create a branch under
@@ -25,7 +24,7 @@ on:
   workflow_run:
     # CI runs the required checks: when it finishes last, the gate tries again the enqueue GitHub
     # refused while they were running.
-    workflows: [Risk review trigger, Bonk PR Review, Review verdict, Automerge proofs, Automerge evidence, Workshop eval comparison, CI]
+    workflows: [Risk review trigger, Bonk PR Review, Review verdict, Automerge proofs, Automerge evidence, CI]
     types: [completed]
   issue_comment:
     types: [created, deleted]

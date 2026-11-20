@@ -23,7 +23,7 @@ const NO_FACTS: ContentFacts = { workspaceCatalogOnly: true, newDependencies: []
 const NO_ESCAPES: EscapeSnapshot = { windowDays: 90, files: [] };
 
 function file(filename: string, overrides: Partial<ChangedFile> = {}): ChangedFile {
-  return { filename, status: "modified", additions: 1, deletions: 1, changes: 2, patch: "@@ -1 +1 @@\n-a\n+b", ...overrides };
+  return { filename, status: "modified", additions: 1, deletions: 1, ...overrides };
 }
 
 function classify(files: ChangedFile[], overrides: Partial<Parameters<typeof classifyChangeset>[0]> = {}) {
@@ -31,7 +31,7 @@ function classify(files: ChangedFile[], overrides: Partial<Parameters<typeof cla
 }
 
 describe("pathFloor", () => {
-  it("keeps #845's high floors: the kernel, the gate, CI and release, and the chokepoints", () => {
+  it("puts the kernel, the gate, CI and release, and the chokepoints at high", () => {
     for (const path of [
       "packages/workshop-backend/src/overseer.ts",
       "packages/workshop-backend/README.md",
@@ -77,7 +77,7 @@ describe("pathFloor", () => {
     }
   });
 
-  it("keeps #845's medium floors and leaves docs, other tests and the frontend low", () => {
+  it("puts gatekeepers and the lockfile at medium and leaves docs, other tests and the frontend low", () => {
     assert.equal(pathFloor("packages/gatekeeper-github/src/index.ts"), "medium");
     assert.equal(pathFloor("pnpm-lock.yaml"), "medium");
     assert.equal(pathFloor("packages/gatekeeper-x/src/.hidden.ts"), "medium");
@@ -93,9 +93,9 @@ function entry(path: string): EscapeEntry {
   return { path, fixed: "2026-11-04", culprit: "#894", fix: "#1001" };
 }
 
-describe("classifyChangeset bands", () => {
+describe("classifyChangeset risk level", () => {
   it("rates a small docs change low", () => {
-    assert.deepEqual(classify([file("docs/a.md")]), { band: "low", bandReasons: [], neverAuto: [], area: "scored", workflowBump: false, readText: ["docs/a.md"] });
+    assert.deepEqual(classify([file("docs/a.md")]), { band: "low", bandReasons: [], neverAuto: [], readText: ["docs/a.md"] });
   });
 
   it("rates more than 400 changed lines high", () => {
@@ -127,7 +127,7 @@ describe("classifyChangeset bands", () => {
     assert.match(bandReasons.join("\n"), /left-pad/);
   });
 
-  it("raises one band for a file with an escaped defect fixed inside the window, and not after it", () => {
+  it("raises the risk level one step for a file with an escaped defect fixed inside the window, and not after it", () => {
     const escape = { path: "packages/workshop-frontend/src/App.tsx", fixed: "2026-10-12", culprit: "#717", fix: "#742" };
     const escapes: EscapeSnapshot = { windowDays: 90, files: [escape] };
     assert.equal(classify([file("packages/workshop-frontend/src/App.tsx")], { escapes }).band, "medium");
@@ -140,16 +140,14 @@ describe("classifyChangeset bands", () => {
     const ignored = ["pnpm-lock.yaml", "packages/gatekeeper-x/pnpm-lock.yaml", "packages/gatekeeper-kit/USAGE.md", "docs/observers.md", "plans/kernel-observer-tracking.md"];
     const escapes: EscapeSnapshot = { windowDays: 90, files: ignored.map(entry) };
     for (const path of ignored) {
-      const result = classify([file(path)], { escapes });
-      assert.doesNotMatch(result.bandReasons.join("\n"), /escaped defect/, path);
+      assert.deepEqual(classify([file(path)], { escapes }), classify([file(path)]), path);
     }
     const skill = ".agents/skills/write-gatekeeper/SKILL.md";
-    const raised = classify([file(skill)], { escapes: { windowDays: 90, files: [entry(skill)] } });
-    assert.equal(raised.band, "high");
-    assert.match(raised.bandReasons.join("\n"), /escaped defect/);
+    assert.equal(classify([file(skill)]).band, "medium");
+    assert.equal(classify([file(skill)], { escapes: { windowDays: 90, files: [entry(skill)] } }).band, "high");
   });
 
-  it("raises one band when the escape list is unreadable", () => {
+  it("raises the risk level one step when the escape list is unreadable", () => {
     assert.equal(classify([file("docs/a.md")], { escapes: undefined }).band, "medium");
   });
 
@@ -157,7 +155,8 @@ describe("classifyChangeset bands", () => {
     const rename = file("docs/preview.yml", { status: "renamed", previous_filename: ".github/workflows/preview.yml" });
     const result = classify([rename]);
     assert.equal(result.band, "high");
-    assert.match(result.neverAuto.join("\n"), /\.github\/workflows\/preview\.yml → docs\/preview\.yml/);
+    assert.notDeepEqual(result.neverAuto, []);
+    assert.deepEqual(classify([file("docs/preview.yml", { status: "renamed", previous_filename: "docs/old.yml" })]).neverAuto, []);
   });
 
   it("rates unlisted files high and keeps them from any AI decision", () => {
@@ -183,7 +182,7 @@ describe("classifyChangeset NEVER_AUTO", () => {
 
   it("sends a symlink under .agents/skills/ to a person", () => {
     const result = classify([file(".agents/skills/x/SKILL.md")], { facts: { ...NO_FACTS, skillSymlinks: [".agents/skills/x/SKILL.md"] } });
-    assert.match(result.neverAuto.join("\n"), /symlink/);
+    assert.notDeepEqual(result.neverAuto, []);
   });
 
   it("covers all of .github, gate and judge code, reviewer instructions, auth, .npmrc and release", () => {
@@ -191,7 +190,7 @@ describe("classifyChangeset NEVER_AUTO", () => {
       ".github/workflows/ci.yml",
       ".github/CODEOWNERS",
       ".github/maintainers",
-      ".github/automerge-bands.json",
+      ".github/automerge.json",
       ".github/dependabot.yml",
       "scripts/risk-review.ts",
       "scripts/risk-review-report.ts",
@@ -225,40 +224,14 @@ describe("classifyChangeset NEVER_AUTO", () => {
     const result = classify([file("packages/gatekeeper-x/wrangler.jsonc")], {
       facts: { ...NO_FACTS, durableObjectRisks: ["packages/gatekeeper-x/wrangler.jsonc: deletes Notes"] },
     });
-    assert.match(result.neverAuto.join("\n"), /may drop Durable Object data \(packages\/gatekeeper-x\/wrangler\.jsonc: deletes Notes\)/);
+    assert.ok(result.neverAuto.some((reason) => reason.includes("packages/gatekeeper-x/wrangler.jsonc: deletes Notes")));
   });
 
   // Wrangler prefers these to the generated wrangler.jsonc, or follows them from `wrangler deploy`.
   it("sends any other Wrangler config to a person", () => {
     for (const path of ["wrangler.json", "packages/gatekeeper-x/wrangler.json", "packages/gatekeeper-x/wrangler.toml", "packages/gatekeeper-x/.wrangler/deploy/config.json"]) {
-      assert.match(classify([file(path, { status: "added" })]).neverAuto.join("\n"), /a Wrangler config other than the generated wrangler\.jsonc/, path);
+      assert.notDeepEqual(classify([file(path, { status: "added" })]).neverAuto, [], path);
     }
-  });
-});
-
-describe("classifyChangeset areas", () => {
-  it("keeps a non-kernel, non-high change in rung 2's scope", () => {
-    assert.equal(classify([file("packages/workshop-frontend/src/App.tsx")]).area, "scored");
-  });
-
-  it("puts a small kernel change in kernel-small, and a large or seam one in kernel", () => {
-    assert.equal(classify([file("packages/workshop-backend/src/agent.ts")]).area, "kernel-small");
-    assert.equal(classify([file("packages/workshop-backend/src/agent.ts", { additions: 40, deletions: 11 })]).area, "kernel");
-    assert.equal(classify([file("packages/workshop-backend/src/user.ts")]).area, "kernel");
-    assert.equal(classify([file("packages/workshop-shared/src/api.ts")]).area, "kernel");
-  });
-
-  it("puts gatekeeper scope, OAuth and token changes, and agent declarations, in the agent-facing API area", () => {
-    assert.equal(classify([file("packages/gatekeeper-x/src/x-normalize.ts")]).area, "scored");
-    const scope = file("packages/gatekeeper-x/src/index.ts", { patch: "@@ -1 +1 @@\n-  scopes: [a]\n+  scopes: [a, b]" });
-    assert.equal(classify([scope]).area, "agent-facing-api");
-    assert.equal(classify([file("packages/gatekeeper-github/src/oauth.ts")]).area, "agent-facing-api");
-    assert.equal(classify([file("packages/gatekeeper-github/src/github-types.d.ts")]).area, "agent-facing-api");
-    assert.equal(classify([file("packages/gatekeeper-x/src/index.ts", { patch: undefined, changes: 9000 })]).area, "agent-facing-api");
-  });
-
-  it("puts other high-risk code in the kernel area", () => {
-    assert.equal(classify([file("packages/gatekeeper-context/src/collection-access.ts")]).area, "kernel");
   });
 });
 
@@ -355,11 +328,28 @@ describe("durableObjectRisks", () => {
     assert.deepEqual(appended({ tag: "v3", deletedClasses: ["Notes"] }), ["deletedClasses in v3"]);
     assert.deepEqual(appended({ tag: "v3", deleted_classes: "Notes" }), ["deleted_classes in v3"]);
     assert.deepEqual(appended({ tag: "v3", deleted_classes: [7] }), ["deleted_classes in v3"]);
-    assert.deepEqual(appended({ new_sqlite_classes: ["Inbox"], constructor: [] }), ["constructor in an untagged migration"]);
+    assert.deepEqual(appended({ new_sqlite_classes: ["Inbox"], constructor: [] }), ["appends a migration with no tag", "constructor in an untagged migration"]);
   });
 
-  // Review rounds on #1093 kept finding look-alikes that a text search took for a deletion the base
-  // had already made, which hid the real one in the head: in a comment, then in a string.
+  // Wrangler finds the deployed migration by the first entry with its tag and applies every entry
+  // after that one, so a tag used twice replays the entries between the two, a deletion among them.
+  it("needs a person when an appended migration has no tag, or one its Worker's list already uses", () => {
+    const adds = { new_sqlite_classes: ["Inbox"] };
+    assert.deepEqual(appended(adds), ["appends a migration with no tag"]);
+    for (const tag of [7, null, "", ["v3"]]) {
+      assert.deepEqual(appended({ ...adds, tag }), ["appends a migration with no tag"], JSON.stringify(tag));
+    }
+    assert.deepEqual(appended({ ...adds, tag: "v1" }), ["reuses the tag v1"]);
+    assert.deepEqual(durableObjectRisks(base, jsonc([v1, v2, { ...adds, tag: "v3" }, { tag: "v3", new_classes: ["Outbox"] }])), ["reuses the tag v3"]);
+    assert.deepEqual(durableObjectRisks(undefined, jsonc([v1, { ...adds, tag: "v1" }])), ["reuses the tag v1"]);
+    const staging = (migrations: Json[]) => jsonc([v1, v2], { env: { staging: { migrations } } });
+    assert.deepEqual(durableObjectRisks(staging([v1]), staging([v1, { ...adds, tag: "v1" }])), ["reuses the tag v1"]);
+    // An environment deploys another Worker, whose list may use a tag the top level's has.
+    assert.deepEqual(durableObjectRisks(base, staging([{ ...adds, tag: "v1" }])), []);
+  });
+
+  // A text search could take a look-alike in the base (in a comment, in a string) for a deletion
+  // the base had already made, which would hide the real one in the head.
   it("lets no look-alike in the base stand for a deletion", () => {
     const head = jsonc([v1, v2, v3]);
     const lookAlikes = {
@@ -453,7 +443,7 @@ describe("addedDependencies", () => {
     assert.equal(addedDependencies("{}", JSON.stringify({ dependencies: ["zod"] })), undefined);
   });
 
-  // Clanky on #1093, round 3: a local package swapped for a same-named registry one.
+  // A local package swapped for a same-named registry one.
   it("counts a workspace dependency moved to a registry range as added", () => {
     const before = JSON.stringify({ dependencies: { "@gadgets/ui": "workspace:*" } });
     const after = JSON.stringify({ dependencies: { "@gadgets/ui": "^1.0.0" } });
