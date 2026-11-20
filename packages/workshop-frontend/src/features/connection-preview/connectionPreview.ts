@@ -18,8 +18,8 @@ export type ConnectionPreview = {
 /** Lists the vendors with their types of resource, as `AuthenticatedApi.listGatekeeperVendors()` does. */
 export type ListVendors = () => PromiseLike<GatekeeperVendorInfo[]>
 
-/** What a connection that offers a preview says of it. */
-export type PreviewOffer = Pick<ConnectionPreview, 'iconUrl'>
+/** What a connection that offers a preview says of it: its file as it is now, not as a change waiting recorded it. */
+export type PreviewOffer = Pick<ConnectionPreview, 'iconUrl' | 'url'>
 
 /** The preview `offer`ed by the connection `entry` was logged on. */
 export const previewOf = (
@@ -46,7 +46,8 @@ export type OffersPreview = (
 /**
  * The asking of one workspace's connections, where a number means one connection. Each is asked
  * until it answers, then no more for as long as this is kept, by whichever overseer reaches it:
- * describing a resource can cost its gatekeeper calls to its provider.
+ * describing a resource can cost its gatekeeper calls to its provider. A connection whose
+ * resource is yet to be created is asked each time, as what it says changes when it is.
  */
 export const previewOffers = (listVendors: ListVendors): OffersPreview => {
   const known = new Map<WorkpieceId, Promise<PreviewOffer | undefined>>()
@@ -59,12 +60,14 @@ export const previewOffers = (listVendors: ListVendors): OffersPreview => {
   const describes = async (overseer: RpcStub<Overseer>, gatekeeperId: WorkpieceId) => {
     const client = overseer.getGatekeeperById(gatekeeperId)
     try {
-      const { hasPreview } = await client.describe()
+      const { hasPreview, url } = await client.describe()
       if (!hasPreview) return undefined
+      const spec = await client.getCreationSpec().catch(() => undefined)
+      if (spec?.type === 'gatekeeper' && !spec.resourceUrl) known.delete(gatekeeperId)
       // A preview whose type cannot be told is drawn without an icon.
-      const iconUrl = await Promise.all([client.getCreationSpec(), listed()])
-        .then(([spec, list]) => typeIcon(spec, list), () => undefined)
-      return { iconUrl }
+      const iconUrl = spec && typeIcon(spec, await listed().catch(() => []))
+      const file = safeExternalUrl(url)
+      return { iconUrl, ...file ? { url: file } : {} }
     } finally {
       client[Symbol.dispose]()
     }
