@@ -2,6 +2,7 @@
 // can be read. ConnectionPreviewPane's test runs it in the real sandbox, where it cannot.
 
 import { afterEach, expect, it } from 'vitest'
+import FONT_URL from 'pdfjs-dist/standard_fonts/LiberationSans-Bold.ttf?url'
 import { prepareUiPage } from '@gadgets/workshop-shared/ui-page'
 import { DOCS_PREVIEW_BUNDLE } from './docsPreviewBundle'
 
@@ -53,7 +54,8 @@ async function draw(doc: Doc, session: { [method: string]: (...given: never[]) =
     client.main(parent.docsPreviewGadget)
   </script>`
   const page = () => frame!.contentDocument?.getElementById('page')
-  await expect.poll(() => page() && !page()!.hasAttribute('aria-busy')).toBe(true)
+  // The first drawing waits a moment for its fonts.
+  await expect.poll(() => page() && !page()!.hasAttribute('aria-busy'), { timeout: 5_000 }).toBe(true)
   const blocks = () => [...page()!.querySelectorAll<HTMLElement>('.col > *')]
   return {
     page: page()!,
@@ -355,6 +357,22 @@ it('asks again, after a while, for a font that could not be read', async () => {
   for (const run of later) run()
   await refresh({ markdown: 'Words\n\nMore\n' })
   await expect.poll(() => asked).toBe(2)
+})
+
+it('sets the text in a font that arrives after a later read has drawn it', async () => {
+  const set = (text: string) => drawing([paragraph(0, text)], { textLooks: [{ ...ARIAL, fontFamily: 'Open Sans' }] })
+  let arrive!: (bytes: ArrayBuffer) => void
+  const { blocks, refresh } = await draw({ savedMarkdown: 'Words\n', drawing: set('Words'), revisionId: 'a' }, {
+    readFont: () => new Promise(resolve => { arrive = resolve }),
+  })
+  await refresh({ savedMarkdown: 'Wide words\n', drawing: set('Wide words'), revisionId: 'b' })
+  await expect.poll(() => text(blocks()[0])).toBe('Wide words')
+  const width = () => run(blocks()[0], 'Wide words').getBoundingClientRect().width
+  const before = width()
+
+  arrive(await (await fetch(FONT_URL)).arrayBuffer())
+
+  await expect.poll(width).not.toBe(before)
 })
 
 it('draws a tab again once it is saved anew, though its Markdown reads the same', async () => {
