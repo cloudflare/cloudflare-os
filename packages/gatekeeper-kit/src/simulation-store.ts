@@ -165,7 +165,7 @@ export type SimulationStore<
  *   reduce: (deck, change) => step(deck!, change.action),
  * });
  *
- * const deck = this.#replay.fold("deck", fetched, this.#journal.listUndecided());
+ * const deck = this.#replay.fold("deck", fetched, this.#journal.listPending());
  * return deck.stopped
  *   ? { deck: deck.entity, conflict: conflictReason(deck.stopped.record, deck.stopped.reason) }
  *   : { deck: deck.entity };
