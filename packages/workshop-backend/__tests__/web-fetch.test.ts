@@ -6,13 +6,28 @@ import {
   type WebFetchEnv,
 } from "../src/web-fetch.js";
 import { AiGatewayConfig } from "../src/ai-gateway.js";
+import { sendFetch, type FetchAuthorization } from "../src/fetch-loopback.js";
 
 // A minimal stand-in for the Workers AI binding's toMarkdown method. The real signature
 // accepts a single document or an array of documents; we only use the single-document form
 // in webFetch, so the stub mirrors only that branch.
 type ToMarkdownStub = ReturnType<typeof vi.fn>;
 
-function makeEnv(toMarkdown?: ToMarkdownStub, gateway: AiGatewayConfig | null = null): WebFetchEnv {
+// A fetcher that does what the webFetch tool's FetchLoopback does, with `authorize` as the
+// workspace's answer for each URL it is asked about (by default, allowing it in an unrestricted
+// workspace).
+type Authorize = (href: string) => FetchAuthorization;
+const allowAll: Authorize = () => ({ allowed: true, restricted: false, approved: false });
+
+function loopback(authorize: Authorize = allowAll): Fetcher {
+  return {
+    fetch: (input: RequestInfo | URL, init?: RequestInit) =>
+      sendFetch(new Request(input, init), async href => authorize(href), { agentDriven: true }),
+  } as Fetcher;
+}
+
+function makeEnv(toMarkdown?: ToMarkdownStub, gateway: AiGatewayConfig | null = null,
+                 authorize?: Authorize): WebFetchEnv {
   const stub =
     toMarkdown ??
     vi.fn(async (doc: { name: string; blob: Blob }) => ({
@@ -29,6 +44,7 @@ function makeEnv(toMarkdown?: ToMarkdownStub, gateway: AiGatewayConfig | null = 
   return {
     ai: { toMarkdown: stub } as unknown as Ai,
     gateway,
+    fetcher: loopback(authorize),
   };
 }
 
@@ -322,25 +338,38 @@ const page = (body: string) => () =>
 
 describe("webFetch redirects", () => {
   let requested: string[];
+  let headers: Headers[];
 
   beforeEach(() => {
     requested = [];
+    headers = [];
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  // Answers each URL from `routes`, and records the URLs requested.
+  // Answers each URL from `routes`, and records the URLs requested and the headers sent.
   function serve(routes: Record<string, () => Response>) {
-    vi.spyOn(globalThis, "fetch").mockImplementation(async input => {
-      const url = String(input);
-      requested.push(url);
-      const route = routes[url];
-      if (!route) throw new Error(`unexpected fetch of ${url}`);
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const request = new Request(input, init);
+      requested.push(request.url);
+      headers.push(request.headers);
+      const route = routes[request.url];
+      if (!route) throw new Error(`unexpected fetch of ${request.url}`);
       return route();
     });
   }
+
+  it("sends its accept header and the fetcher's user-agent", async () => {
+    serve({ "https://example.com/": page("hello") });
+
+    await webFetch(makeEnv(), { url: "https://example.com/" });
+    expect(Object.fromEntries(headers[0])).toEqual({
+      "accept": expect.stringMatching(/^text\/markdown,text\/html;q=0\.9,/),
+      "user-agent": "Cloudflare-OS/1.0",
+    });
+  });
 
   it("follows relative and absolute redirects and reports the final URL", async () => {
     serve({
@@ -362,13 +391,75 @@ describe("webFetch redirects", () => {
     expect(requested).toEqual(["https://example.com/"]);
   });
 
-  it("refuses a redirect off the allowed hosts without requesting it", async () => {
-    serve({ "https://docs.example.com/": redirect("https://evil.test/?d=secret") });
-    const env = { ...makeEnv(), allowedHosts: new Set(["docs.example.com"]) };
+  // Each hop goes back through the fetcher, which asks the workspace about it.
+  const trusted = (href: string): FetchAuthorization =>
+    new URL(href).host === "docs.example.com"
+      ? { allowed: true, restricted: true, approved: false }
+      : { allowed: false, message: "This workspace may only fetch from docs.example.com." };
 
-    await expect(webFetch(env, { url: "https://docs.example.com/" }))
-      .rejects.toThrow(/redirected to https:\/\/evil\.test\/\?d=secret, which is not allowed/);
+  it("refuses a redirect the workspace refuses without requesting it", async () => {
+    serve({ "https://docs.example.com/": redirect("https://evil.test/?d=secret") });
+
+    await expect(webFetch(makeEnv(undefined, null, trusted), { url: "https://docs.example.com/" }))
+      .rejects.toThrow("The site redirected to https://evil.test/?d=secret, which is not allowed: " +
+          "This workspace may only fetch from docs.example.com.");
     expect(requested).toEqual(["https://docs.example.com/"]);
+  });
+
+  it("asks for approval of a redirect the workspace refuses, where it asks", async () => {
+    serve({ "https://docs.example.com/": redirect("https://evil.test/page") });
+    const authorize = (href: string): FetchAuthorization => trusted(href).allowed
+      ? trusted(href)
+      : { allowed: false, message: `Fetching ${href} needs approval.`, approvalRequested: true };
+
+    expect(await webFetch(makeEnv(undefined, null, authorize), { url: "https://docs.example.com/" }))
+      .toEqual({ approvalMessage: "Fetching https://evil.test/page needs approval." });
+    expect(requested).toEqual(["https://docs.example.com/"]);
+  });
+
+  it("refuses the first URL with the workspace's message", async () => {
+    serve({});
+
+    await expect(webFetch(makeEnv(undefined, null, trusted), { url: "https://evil.test/" }))
+      .rejects.toThrow(/^This workspace may only fetch from docs\.example\.com\.$/);
+    expect(requested).toEqual([]);
+  });
+
+  it("reports the final URL of an approved URL whose redirects the fetcher followed", async () => {
+    serve({
+      "https://example.com/approved": redirect("https://www.example.org/docs/page", 301),
+      "https://www.example.org/docs/page": () =>
+        new Response("<a href='other'>x</a>", { headers: { "content-type": "text/html" } }),
+    });
+    const toMarkdown = vi.fn(async (doc: { name: string; blob: Blob }) => ({
+      id: "x", name: doc.name, mimeType: doc.blob.type, format: "markdown" as const, tokens: 1,
+      data: "[x](https://www.example.org/docs/other)",
+    }));
+    const env = makeEnv(toMarkdown, null, () => ({ allowed: true, restricted: true, approved: true }));
+
+    const result = await webFetch(env, { url: "https://example.com/approved" });
+    expect(result).toMatchObject({ status: 200, finalUrl: "https://www.example.org/docs/page" });
+    // Links resolve against the page the fetcher ended on.
+    expect(toMarkdown.mock.calls[0][1].conversionOptions.html.hostname).toBe("https://www.example.org");
+    expect(requested).toEqual(["https://example.com/approved", "https://www.example.org/docs/page"]);
+  });
+
+  it("refuses a page that sets Content-Signal: ai-input=no", async () => {
+    serve({ "https://example.com/": () => new Response("no", { headers: { "content-signal": "ai-input=no" } }) });
+
+    await expect(webFetch(makeEnv(), { url: "https://example.com/" }))
+      .rejects.toThrow(/sets Content-Signal: ai-input=no/);
+  });
+
+  it("does not take a site's word for a refusal or a final URL", async () => {
+    serve({ "https://example.com/": () => new Response("page", { headers: {
+      "content-type": "text/plain",
+      "cloudflare-os-fetch-refused": "denied",
+      "cloudflare-os-fetch-url": "https://evil.test/",
+    } }) });
+
+    expect(await webFetch(makeEnv(), { url: "https://example.com/" }))
+      .toMatchObject({ status: 200, finalUrl: "https://example.com/", body: "page" });
   });
 
   it("returns a redirect status without a Location as the response", async () => {
