@@ -120,6 +120,8 @@ export const PAGE_STYLE = `
     --brand: #ff4801;
     /* Darker than Kumo's danger: small error text on --base needs 4.5:1, and this reaches 6.2:1. */
     --danger: oklch(50.5% 0.213 27.518);
+    /* An input's border, the only cue for where to type: 3:1 or more on --base and --control. */
+    --field-line: oklch(62% 0.006 60);
     /* Kumo's primary button is "contrast": near-black in light mode, the accent in dark. */
     --contrast: #14110f;
     --on-contrast: #ffffff;
@@ -134,6 +136,7 @@ export const PAGE_STYLE = `
       --subtle: oklch(0.66 0.02 285);
       --brand: #b84e00;
       --danger: oklch(70.4% 0.191 22.216);
+      --field-line: oklch(52% 0.022 285);
       --contrast: #b84e00;
     }
   }
@@ -152,7 +155,7 @@ export const PAGE_STYLE = `
 const FORM_STYLE = `
   label { display: block; font-size: 13px; font-weight: 500; margin: 16px 0 6px; }
   input:not([type=hidden]) { width: 100%; box-sizing: border-box; padding: 8px 10px; font: inherit;
-         color: var(--text); background: var(--control); border: 1px solid var(--line);
+         color: var(--text); background: var(--control); border: 1px solid var(--field-line);
          border-radius: 6px; }
   button { margin-top: 20px; padding: 8px 14px; font: inherit; font-weight: 500; cursor: pointer;
          color: var(--on-contrast); background: var(--contrast); border: 0; border-radius: 6px; }

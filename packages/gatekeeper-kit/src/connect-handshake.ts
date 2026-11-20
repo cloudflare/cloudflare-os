@@ -174,12 +174,13 @@ export function reofferOAuth<Extra extends object>(
   claim: StoredNonce<Extra>,
   now: number,
 ): string | null {
-  if (claim.stage !== "oauth" || !Number.isFinite(now) || !(now < claim.expiresAt)) return null;
   // Only the claim the slot still names: a newer link overwrote it, and a teardown deleted it.
   const named = kv.get<StoredNonce>(NONCE_KEY);
-  if (named?.stage !== "claimed" || named.value !== claim.value) return null;
+  if (claim.stage !== "oauth" || named?.stage !== "claimed" || named.value !== claim.value) return null;
+  // The deadline is the stored one: `claim` has been in the caller's hands since it was made.
+  if (!Number.isFinite(now) || !(now < named.expiresAt)) return null;
   const oauthNonce = generateNonce();
-  kv.put(NONCE_KEY, { ...claim, value: oauthNonce } satisfies StoredNonce);
+  kv.put(NONCE_KEY, { ...claim, value: oauthNonce, expiresAt: named.expiresAt, stage: "oauth" } satisfies StoredNonce);
   return oauthNonce;
 }
 

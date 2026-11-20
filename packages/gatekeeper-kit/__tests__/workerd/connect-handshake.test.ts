@@ -174,6 +174,18 @@ describe("reoffering a claimed attempt", () => {
     expect(kv.get<StoredNonce>(NONCE_KEY)?.stage).toBe("claimed");
   });
 
+  // The claim is the caller's object by then; the deadline that counts is the stored one.
+  it("keeps the stored expiry when the claim it is handed says otherwise", () => {
+    const kv = makeKv();
+    const { claim } = claimed(kv);
+    claim.expiresAt = OAUTH_STAGE_EXPIRY + 60_000;
+
+    expect(reofferOAuth(kv, claim, OAUTH_STAGE_EXPIRY)).toBeNull();
+    const nonce = reofferOAuth(kv, claim, OAUTH_STAGE_EXPIRY - 1);
+    expect(kv.get<StoredNonce>(NONCE_KEY)?.expiresAt).toBe(OAUTH_STAGE_EXPIRY);
+    expect(claimOAuth(kv, nonce!, OAUTH_STAGE_EXPIRY)).toBeNull();
+  });
+
   it("leaves nothing a caller can present after a retryable claim, and keeps no metadata", () => {
     const kv = makeKv();
     const { first, claim } = claimed(kv);
