@@ -1,6 +1,10 @@
 // The operations the gatekeeper calls, as the kit's typed client takes them.
 
 import type { WireItem, WireUser } from "./acme-api";
+// #if hooks-subscription
+// A separate import, so the template parses where it lies.
+import type { WireWebhook } from "./acme-api";
+// #endif
 
 // STOP(api): These operations are invented. Write the provider's here, or generate them from its
 // OpenAPI description: list the operations the gatekeeper calls in a file, run
@@ -11,6 +15,14 @@ export type Api = {
   get: [
     { path: "/me"; response: WireUser },
     { path: "/items/{id}"; response: WireItem },
+    // #if hooks-subscription
+    { path: "/items/{id}/webhooks/{webhook}"; response: WireWebhook },
+    // #endif
   ];
   patch: [{ path: "/items/{id}"; body: { title: string }; response: WireItem }];
+  // #if hooks-subscription
+  /** The webhooks the hook driver adds and deletes. */
+  post: [{ path: "/items/{id}/webhooks"; body: { url: string; secret: string }; response: WireWebhook }];
+  delete: [{ path: "/items/{id}/webhooks/{webhook}"; response: undefined }];
+  // #endif
 };

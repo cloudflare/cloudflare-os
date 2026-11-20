@@ -3,13 +3,14 @@
 A new gatekeeper starts from a command, not from copied code:
 
 ```bash
-pnpm create-gatekeeper <name> --auth <oauth|api-key> [--hooks] --display "<Provider Name>" \
+pnpm create-gatekeeper <name> --auth <oauth|api-key> [--hooks <app|subscription>] --display "<Provider Name>" \
   [--openapi <description.json> [--operations <operationId>,<operationId>,...|<lines.jsonl>]]
 ```
 
 `--auth oauth` is an authorization-code grant with PKCE; `--auth api-key` is a key the user pastes
-into the connect page, for a provider with no OAuth. `--hooks` adds event hooks fed by a webhook
-the provider delivers to. `--openapi` takes the provider's OpenAPI description as a local JSON
+into the connect page, for a provider with no OAuth. `--hooks` adds event hooks fed by webhooks
+the provider delivers to: `app` for one webhook for the deployment, `subscription` for webhooks
+the gatekeeper adds itself (see [Hooks](#hooks)). `--openapi` takes the provider's OpenAPI description as a local JSON
 file (nothing is fetched): the package keeps a copy as `openapi.json`, a `generate:openapi` script
 that pins it by hash, and `openapi-operations.jsonl`, the list the schema is generated for. With
 `--operations` the list is filled and the schema is generated into `src/openapi/`, and the client
@@ -75,7 +76,8 @@ are marked, and a provider with organizations or workspaces needs the tenant in 
 | `src/<name>-gatekeeper.ts` | the per-binding Durable Object | |
 | `src/<name>-session.ts` | the capability a gadget holds | |
 | `src/<name>-actions.ts`, `action-table.json` | actions and their committed table | `actions` |
-| `src/<name>-hooks.ts` (`--hooks`) | webhook route, hook driver, controller and delivery | `webhook-signature`, `webhook-payload`, `webhook-limits` |
+| `src/<name>-hooks.ts` (`--hooks`) | a hook's delivery, and reading a webhook delivery | `webhook-signature`, `webhook-payload`, `webhook-limits` |
+| `src/<name>-hook-driver.ts` (`--hooks`) | webhook route, hook driver and controller | `webhook-source`; `webhook-tenant` (`app`); `webhook-subscription`, `webhook-upkeep` (`subscription`) |
 | `src/<name>.ts` | HTTP entrypoint, vendor, account entrypoint, verifier | `vendor-description` |
 | `src/configurator/` | the resource configurator frame | `configurator` |
 
@@ -129,15 +131,32 @@ state and expose only narrow read-only helper methods.
 
 ## Hooks
 
-`--hooks` writes `src/<name>-hooks.ts`, modelled on `gatekeeper-pagerduty`: one webhook for the
-deployment, delivering to `POST {BASE_URL}/webhook` and signed with the `<NAME>_WEBHOOK_SECRET`
-secret, which is set outside the deploy wizard; while it is unset, subscribing is refused and the
-route answers 404. The session's `subscribe()` binds a controller whose props carry a persistent
-stub back to the binding's facet; the driver queues each verified event for the hooks that may
-watch it; and the facet re-reads what the event names as the hook's owner, authorizes the
-observation with its subresources, and only then calls the hook. Keep that order when you replace
-the invented event: take identifiers from the webhook and nothing else.
+`--hooks` writes `src/<name>-hooks.ts`, what every hook shares, and `src/<name>-hook-driver.ts`,
+where its events come from. Pick the kind by how the provider delivers:
 
-A provider that has no deployment-wide webhook (one that needs a subscription per resource, or
-polling) needs a different event source; keep the controller, registry and delivery, and replace
-`handleWebhook`.
+- **`--hooks app`**, modelled on `gatekeeper-pagerduty`: one webhook for the deployment, which an
+  admin sets up by hand or in the provider's OAuth app, delivering to `POST {BASE_URL}/webhook` and
+  signed with the `<NAME>_WEBHOOK_SECRET` secret, which is set outside the deploy wizard; while it
+  is unset, subscribing is refused and the route answers 404. One driver serves every connection,
+  so `STOP(webhook-tenant)` asks which account an event belongs to.
+- **`--hooks subscription`**, modelled on `gatekeeper-github`: the gatekeeper adds a webhook
+  through the provider's API, as the connected user, when the first hook on an object is enabled,
+  and deletes it with the last. One driver per connection signs its webhooks with a secret of its
+  own, receives at `POST {BASE_URL}/webhook/{driver id}`, checks hourly that each webhook is still
+  there, and deletes them all on disconnect, before the credential is dropped: a disconnect the
+  provider fails to finish stays connected until it is tried again. The provider must reach the
+  route over `https`: at `BASE_URL`, or where that is not `https`, as under `pnpm dev-server`, at
+  the `<NAME>_WEBHOOK_ORIGIN` of a tunnel.
+  `STOP(webhook-subscription)` and `STOP(webhook-upkeep)` cover the provider's calls, expiry and
+  redelivery; GitHub's driver shows each in full.
+
+Either way, the session's `subscribe()` binds a controller whose props carry a persistent stub
+back to the binding's facet; the driver queues each verified event for the hooks that may watch
+it; and the facet re-reads what the event names as the hook's owner, authorizes the observation
+with its subresources, and only then calls the hook. Keep that order when you replace the invented
+event: take identifiers from the webhook and nothing else.
+
+A provider whose push carries no content, only a prompt to read what changed since a cursor (a
+mailbox, a calendar, a drive), has neither shape. Start from `subscription`, and see
+`gatekeeper-google/src/gmail-hooks.ts` and `gatekeeper-microsoft/src/outlook-hooks.ts` for the
+cursor, the renewal and the fallback to polling.
