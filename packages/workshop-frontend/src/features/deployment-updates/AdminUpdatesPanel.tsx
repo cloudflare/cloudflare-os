@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import { Banner, Button, LinkButton, Switch, useKumoToastManager } from '@cloudflare/kumo'
+import { Banner, Button, Link, LinkButton, Switch, useKumoToastManager } from '@cloudflare/kumo'
 import { ArrowSquareOut, ArrowsClockwise, Warning } from '@phosphor-icons/react'
 import type { RpcStub } from 'capnweb'
 import { MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS } from '@gadgets/workshop-shared/api'
@@ -23,6 +23,12 @@ const CHECK_INTERVAL_LABEL = 'Check for updates every (minutes)'
 const MINIMUM_AGE_LABEL = 'Minimum release age (hours)'
 const SNOOZE_LABEL = 'Hide a closed notice for (hours)'
 
+// Explains taking over a deployment the deploy flow installed: managing and updating it from the
+// starter repository instead. The command that does it is specific to the deployment, and only
+// the deploy flow can show it.
+const TAKE_OVER_DOC_URL =
+  'https://github.com/cloudflare/cloudflare-os-starter/blob/main/docs/migrate-from-hosted.md'
+
 // The link comes from the service that installed this deployment; anything but a web URL (a
 // `javascript:` one, say) is not rendered as a link.
 const webUrl = (raw: string): string | null => {
@@ -40,6 +46,13 @@ const WORKER_LIST = new Intl.ListFormat('en', { type: 'conjunction' })
 const workerList = (workers: string[]): string =>
   WORKER_LIST.format(workers.map((worker) =>
     worker === 'backend' || worker === 'router' ? `the ${worker}` : `the “${worker}” gatekeeper`))
+
+// How the copy refers to the Workers changed outside the deploy flow once it has named them: in
+// the singular when there is one, so that the warning and the unfinished update agree in number.
+const changedWorkerWords = (count: number) =>
+  count === 1
+    ? { workers: 'this Worker', them: 'it', versions: 'version', changes: 'the change' }
+    : { workers: 'these Workers', them: 'them', versions: 'versions', changes: 'the changes' }
 
 const updateAvailability = (status: DeploymentUpdateStatus): string => {
   if (status.updateAvailable) return 'Yes'
@@ -64,6 +77,12 @@ export const AdminUpdatesPanel = ({ admin, status, onChanged }: AdminUpdatesPane
   const [checking, setChecking] = useState(false)
   const checksHelp = useId()
   const updateUrl = webUrl(status.updateUrl)
+  const changed = changedWorkerWords(status.modifiedWorkers.length)
+  // Where the command that takes the deployment over is shown, naming the control that opens the
+  // deploy flow when the page has it.
+  const takeOverCommand = updateUrl !== null
+    ? 'Update opens the deploy flow, which shows the command for taking over.'
+    : 'The deploy flow shows the command for taking over.'
   // The switch and Check now are disabled while their call is in flight, and a browser takes focus
   // from a control that becomes disabled without giving it back. So the control that had focus
   // when the last call began gets it again once no call is in flight, unless focus has gone
@@ -139,8 +158,21 @@ export const AdminUpdatesPanel = ({ admin, status, onChanged }: AdminUpdatesPane
           icon={<Warning />}
           title="This deployment was changed outside the deploy flow"
           description={
-            `Not running what the deploy flow installed: ${workerList(status.modifiedWorkers)}. The ` +
-            'deploy flow will refuse to upgrade this deployment until that change is undone.'
+            <div className="space-y-1.5">
+              <p>
+                {`Not running what the deploy flow installed: ${workerList(status.modifiedWorkers)}. ` +
+                  `An update stops at ${changed.workers} until the deploy flow is allowed to replace ` +
+                  `${changed.them} with the release’s ${changed.versions}, which discards ${changed.changes}.`}
+              </p>
+              <p>
+                {`To keep ${changed.changes}, the deployment has to be taken over: from then on its ` +
+                  `updates come from the cloudflare-os-starter repository. ${takeOverCommand} `}
+                <Link href={TAKE_OVER_DOC_URL} variant="current" target="_blank" rel="noopener noreferrer">
+                  How taking over works
+                  <Link.ExternalIcon />
+                </Link>
+              </p>
+            </div>
           }
         />
       )}
@@ -176,7 +208,9 @@ export const AdminUpdatesPanel = ({ admin, status, onChanged }: AdminUpdatesPane
             description={
               `Still running another release of this deployment: ${workerList(status.unfinishedWorkers)}. ` +
               (status.modifiedWorkers.length > 0
-                ? 'The deploy flow can finish the update once the Workers changed outside it are restored.'
+                ? 'The deploy flow can finish the update once it is allowed to replace ' +
+                  `${workerList(status.modifiedWorkers)}, which discards ${changed.changes} made outside ` +
+                  'the deploy flow.'
                 : 'The deploy flow can finish the update.')
             }
           />

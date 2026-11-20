@@ -119,6 +119,10 @@ describe('AdminUpdatesPanel', () => {
   const updateLink = () =>
     [...container.querySelectorAll('a')].find(link => link.textContent?.trim() === 'Update')
 
+  // The link by its accessible name, which is all of its text.
+  const takeOverLink = () =>
+    [...container.querySelectorAll('a')].find(link => link.textContent === 'How taking over works')
+
   // The outermost element whose text begins with the notice's title: the notice itself.
   const unfinishedNotice = () =>
     [...container.querySelectorAll('div')]
@@ -243,7 +247,7 @@ describe('AdminUpdatesPanel', () => {
       expect(container.querySelector('a')).toBeNull()
     })
 
-    it('warns, as an alert, that a modified deployment cannot be upgraded, naming its modified Workers', async () => {
+    it('warns, as an alert, that an update stops at the modified Workers it names, and says what can be done', async () => {
       await render(testUpdateStatus({
         modified: true,
         modifiedWorkers: ['backend', 'google2', 'router'],
@@ -254,9 +258,63 @@ describe('AdminUpdatesPanel', () => {
       expect(alert?.textContent).toContain('This deployment was changed outside the deploy flow')
       expect(alert?.textContent)
         .toContain('Not running what the deploy flow installed: the backend, the “google2” gatekeeper, and the router.')
-      expect(alert?.textContent).toContain('refuse to upgrade')
-      // Still offered: the deploy flow explains the refusal itself.
+      expect(alert?.textContent).toContain(
+        'An update stops at these Workers until the deploy flow is allowed to replace them with ' +
+        'the release’s versions, which discards the changes.')
+      expect(alert?.textContent).toContain(
+        'To keep the changes, the deployment has to be taken over: from then on its updates come ' +
+        'from the cloudflare-os-starter repository.')
+      // The deploy flow does not turn a changed deployment away.
+      expect(alert?.textContent).not.toContain('refuse')
+      expect(alert?.textContent).not.toContain('undone')
+      // Still offered, and named as the way in: the deploy flow offers both choices.
+      expect(alert?.textContent)
+        .toContain('Update opens the deploy flow, which shows the command for taking over.')
       expect(updateLink()).toBeDefined()
+    })
+
+    it('speaks of a single modified Worker in the singular', async () => {
+      await render(testUpdateStatus({ modified: true, modifiedWorkers: ['google2'], notify: false }))
+
+      const alert = container.querySelector('[role="alert"]')?.textContent
+      expect(alert).toContain('Not running what the deploy flow installed: the “google2” gatekeeper.')
+      expect(alert).toContain(
+        'An update stops at this Worker until the deploy flow is allowed to replace it with the ' +
+        'release’s version, which discards the change.')
+      expect(alert).toContain('To keep the change, the deployment has to be taken over:')
+      expect(alert).not.toContain('Workers')
+      expect(alert).not.toContain('changes')
+    })
+
+    it('links, from the warning, to how taking over works, in a new tab', async () => {
+      await render(testUpdateStatus({ modified: true, modifiedWorkers: ['backend'], notify: false }))
+
+      const link = takeOverLink()
+      expect(link?.closest('[role="alert"]')).not.toBeNull()
+      expect(link?.getAttribute('href'))
+        .toBe('https://github.com/cloudflare/cloudflare-os-starter/blob/main/docs/migrate-from-hosted.md')
+      expect(link?.getAttribute('target')).toBe('_blank')
+      expect(link?.getAttribute('rel')?.split(' ')).toEqual(expect.arrayContaining(['noopener', 'noreferrer']))
+      // Named by its text alone.
+      expect(link?.getAttribute('aria-label')).toBeNull()
+      expect(link?.getAttribute('aria-labelledby')).toBeNull()
+    })
+
+    // The doc is the same for every deployment, whatever link the deploy service sent.
+    it('links to how taking over works, naming no Update, when the deploy flow’s link is not a web URL', async () => {
+      await render(testUpdateStatus({
+        modified: true,
+        modifiedWorkers: ['backend'],
+        notify: false,
+        updateUrl: 'javascript:alert(1)',
+      }))
+
+      expect(updateLink()).toBeUndefined()
+      expect(takeOverLink()).toBeDefined()
+      expect(container.querySelectorAll('a')).toHaveLength(1)
+      const alert = container.querySelector('[role="alert"]')?.textContent
+      expect(alert).toContain('The deploy flow shows the command for taking over.')
+      expect(alert).not.toContain('Update opens')
     })
 
     it('says, apart from any warning, that an update did not finish, naming the Workers behind', async () => {
@@ -271,7 +329,7 @@ describe('AdminUpdatesPanel', () => {
       expect(updateLink()).toBeDefined()
     })
 
-    it('shows both the warning and the unfinished update when both apply, without contradicting the refusal', async () => {
+    it('shows both the warning and the unfinished update when both apply, without contradicting each other', async () => {
       await render(testUpdateStatus({
         modified: true,
         modifiedWorkers: ['backend'],
@@ -279,19 +337,44 @@ describe('AdminUpdatesPanel', () => {
         notify: false,
       }))
 
-      expect(container.querySelector('[role="alert"]')?.textContent)
-        .toContain('Not running what the deploy flow installed: the backend.')
+      const alert = container.querySelector('[role="alert"]')?.textContent
+      expect(alert).toContain('Not running what the deploy flow installed: the backend.')
+      expect(alert).toContain(
+        'An update stops at this Worker until the deploy flow is allowed to replace it with the ' +
+        'release’s version, which discards the change.')
+      expect(alert).not.toContain('refuse')
       const notice = unfinishedNotice()?.textContent
       expect(notice).toContain('Still running another release of this deployment: the router.')
-      expect(notice)
-        .toContain('The deploy flow can finish the update once the Workers changed outside it are restored.')
+      // The Worker to replace is the one the warning names, not the one behind.
+      expect(notice).toContain(
+        'The deploy flow can finish the update once it is allowed to replace the backend, which ' +
+        'discards the change made outside the deploy flow.')
       expect(notice).not.toContain('The deploy flow can finish the update.')
+      // Finishing does not wait for the change to be undone by hand.
+      expect(notice).not.toContain('restored')
+      expect(notice).not.toContain('Workers')
+    })
+
+    it('names every modified Worker the deploy flow would replace to finish an update', async () => {
+      await render(testUpdateStatus({
+        modified: true,
+        modifiedWorkers: ['backend', 'google2'],
+        unfinishedWorkers: ['router'],
+        notify: false,
+      }))
+
+      expect(container.querySelector('[role="alert"]')?.textContent)
+        .toContain('An update stops at these Workers until the deploy flow is allowed to replace them')
+      expect(unfinishedNotice()?.textContent).toContain(
+        'The deploy flow can finish the update once it is allowed to replace the backend and the ' +
+        '“google2” gatekeeper, which discards the changes made outside the deploy flow.')
     })
 
     it('shows neither a warning nor an unfinished update for a deployment that runs what was installed', async () => {
       await render(testUpdateStatus({ modified: false, modifiedWorkers: [], unfinishedWorkers: [] }))
 
       expect(container.querySelector('[role="alert"]')).toBeNull()
+      expect(takeOverLink()).toBeUndefined()
       expect(unfinishedNotice()).toBeUndefined()
       expect(container.textContent).not.toContain('Still running another release')
     })
