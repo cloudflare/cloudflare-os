@@ -406,10 +406,13 @@ export default function CodeDiffEditor({
     let leader = modified
     const syncScroll = (from: EditorView, to: EditorView) => {
       const handler = () => {
-        const echo = placed.get(from.scrollDOM) === from.scrollDOM.scrollTop
+        const top = from.scrollDOM.scrollTop
+        const echo = placed.get(from.scrollDOM) === top
         placed.delete(from.scrollDOM)
-        if (echo) {
-          handled.set(from.scrollDOM, from.scrollDOM.scrollTop)
+        // The echo of this sync's own write, or a sideways scroll, gives the other side nothing to
+        // follow.
+        if (echo || top === handled.get(from.scrollDOM)) {
+          handled.set(from.scrollDOM, top)
           return
         }
         leader = from

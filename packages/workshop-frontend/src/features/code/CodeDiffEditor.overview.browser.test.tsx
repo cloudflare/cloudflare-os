@@ -198,8 +198,9 @@ const frames = (count: number) => new Promise<void>(resolve => {
 it('keeps a jump in split view that the original side cannot follow all the way', async () => {
   // The Find panel shortens the chat side alone, so it scrolls further than the original side,
   // which stops short of a jump to the end; as an offscreen height estimate does on a slow load.
-  // A change near the end, not on the last line, whose mark the panel cannot cover.
-  const original = lines(400)
+  // A change near the end, not on the last line, whose mark the panel cannot cover; and a line
+  // long enough to scroll sideways.
+  const original = lines(400).with(0, `const wide = '${'x'.repeat(400)}'`)
   mount('split', original.join('\n'), original.with(394, 'const line395 = 395 + changed').join('\n'))
   await vi.waitFor(() => expect(marks('modified')).toHaveLength(1))
   act(() => { openSearchPanel(EditorView.findFromDOM(chatScroller())!) })
@@ -216,6 +217,10 @@ it('keeps a jump in split view that the original side cannot follow all the way'
   // The original side's scroll, stopped short, must not take the chat side back with it.
   await frames(5)
   const chat = chatScroller()
+  expect(chat.scrollTop).toBeCloseTo(chat.scrollHeight - chat.clientHeight, 0)
+  // Nor must scrolling it sideways, which leaves it where it stopped.
+  host!.querySelectorAll<HTMLElement>('.cm-scroller')[0].scrollLeft = 200
+  await frames(5)
   expect(chat.scrollTop).toBeCloseTo(chat.scrollHeight - chat.clientHeight, 0)
 })
 
