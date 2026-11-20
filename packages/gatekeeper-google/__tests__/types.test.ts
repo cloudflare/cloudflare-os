@@ -5,6 +5,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import ts from "typescript6";
+import { RENDER_LIMITS } from "@gadgets/pdf-renderer/api";
+import { READ_AHEAD } from "../src/pdf-read-ahead";
 import {
   DOCS_TYPES_MODULE_PREFIX, DRIVE_READ_TYPES_MODULE_PREFIX, DRIVE_TYPES_MODULE_PREFIX,
   GMAIL_TYPES_MODULE_PREFIX, SHEETS_TYPES_MODULE_PREFIX, SLIDES_TYPES_MODULE_PREFIX,
@@ -85,6 +87,17 @@ function topLevelNames(sourceText: string): string[] {
 
 function duplicates(names: string[]): string[] {
   return names.filter((name, i) => names.indexOf(name) !== i);
+}
+
+/** What a PDF's types say of the pages read ahead of the text's reader: how many, and that they are billed. */
+const PAGES_AHEAD = [
+  `up to ${READ_AHEAD.pages} pages that are drawn, and up to ${READ_AHEAD.storedPages} of a scan read as the file stores it`,
+  "billed, for a page begun ahead of you also when you never read it",
+];
+
+/** The lines in square brackets that `text` holds in double quotes, after any line breaks, sorted. */
+function quotedNotes(text: string): string[] {
+  return [...text.matchAll(/"(?:\\n)*(\[[^"\]]+\])"/g)].map(match => match[1]!).toSorted();
 }
 
 function docBundle(): string {
@@ -685,14 +698,67 @@ async function read(): Promise<string> {
   const reader = (await folder.readPdf("file-2")).text.getReader();
   const first: Uint8Array | undefined = (await reader.read()).value;
   await reader.cancel();
+  const scan = await folder.readPdf("file-3");
+  const read: boolean = scan.transcribed && !scan.hasText;
   return new Response(text).text();
 }
+// @ts-expect-error Pages without text are read without being asked for: there is no option.
+void drive.readPdf("file-4", { ocr: true });
 // @ts-expect-error The text is a stream, not a string.
-const whole: DrivePdfText = { text: "", hasText: true };
+const whole: DrivePdfText = { text: "", hasText: true, transcribed: false };
 // @ts-expect-error Nothing is cut, so there is no truncation flag.
-const cut: DrivePdfText = { text: new ReadableStream(), hasText: true, truncated: false };
+const cut: DrivePdfText = { text: new ReadableStream(), hasText: true, transcribed: false, truncated: false };
+// @ts-expect-error Whether the text was transcribed is always said.
+const unsaid: DrivePdfText = { text: new ReadableStream(), hasText: true };
 `), account).toEqual([]);
     }
+  });
+
+  it("quotes the notes a PDF's text can carry as they are given, and the size a PDF is drawn to", () => {
+    // The comments are wrapped, so a note they quote may run over two of their lines.
+    const driveTypes = source("drive-read-types.d.ts").replace(/\n\s*\* ?/g, " ");
+    const given = quotedNotes(source("drive-pdf.ts"));
+    expect(given).not.toEqual([]);
+    expect(quotedNotes(driveTypes)).toEqual(given);
+    expect(driveTypes).toContain(`up to ${RENDER_LIMITS.fileBytes / (1024 * 1024)} MiB`);
+    for (const said of PAGES_AHEAD) expect(driveTypes).toContain(said);
+  });
+
+  it("streams a PDF's text from a Gmail attachment, a draft's too, and takes no argument", () => {
+    const types = source("types.txt");
+    expect(types).toContain("export type GmailPdfText = {");
+    expect(compileAgentTypes(types + `
+declare const attachment: GmailAttachment;
+declare const draftAttachment: GmailDraftAttachment;
+async function read(): Promise<string> {
+  const { text, hasText } = await attachment.readPdf();
+  const flag: boolean = hasText;
+  const reader = (await draftAttachment.readPdf()).text.getReader();
+  const first: Uint8Array | undefined = (await reader.read()).value;
+  await reader.cancel();
+  const scan = await attachment.readPdf();
+  const read: boolean = scan.transcribed && !scan.hasText;
+  return new Response(text).text();
+}
+// @ts-expect-error Pages without text are read without being asked for: there is no option.
+void attachment.readPdf({ ocr: true });
+// @ts-expect-error The text is a stream, not a string.
+const whole: GmailPdfText = { text: "", hasText: true, transcribed: false };
+// @ts-expect-error Nothing is cut, so there is no truncation flag.
+const cut: GmailPdfText = { text: new ReadableStream(), hasText: true, transcribed: false, truncated: false };
+// @ts-expect-error Whether the text was transcribed is always said.
+const unsaid: GmailPdfText = { text: new ReadableStream(), hasText: true };
+`).filter(message => !message.includes("'cloudflare:workers'"))).toEqual([]);
+  });
+
+  it("quotes the notes a PDF attachment's text can carry as they are given, and the size a PDF is drawn to", () => {
+    // The comments are wrapped, so a note they quote may run over two of their lines.
+    const gmailTypes = source("types.d.ts").replace(/\n\s*\* ?/g, " ");
+    const given = quotedNotes(source("drive-pdf.ts"));
+    expect(given).not.toEqual([]);
+    expect(quotedNotes(gmailTypes)).toEqual(given);
+    expect(gmailTypes).toContain(`up to ${RENDER_LIMITS.fileBytes / (1024 * 1024)} MiB`);
+    for (const said of PAGES_AHEAD) expect(gmailTypes).toContain(said);
   });
 
   it("streams a file's bytes from both Drive sessions, whole or by range", () => {

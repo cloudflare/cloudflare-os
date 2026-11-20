@@ -29,8 +29,8 @@ caller is an admin. The admin check runs once, when the capability is minted, fo
 method except inspection, which checks again, of a workspace (see [Inspection](#inspection)) and of
 a user's account (see [User inspection](#user-inspection)) alike.
 
-- **Settings**: the setters (signups, user search, site name and logo, instructions,
-  resource and gatekeeper availability, models, update checks, ...), plus
+- **Settings**: the setters (signups, user search, view-only gadget sharing, site name and logo,
+  instructions, resource and gatekeeper availability, models, update checks, ...), plus
   `setAdminWorkspaceAccess()` and `setAdminAuditRetentionDays()`. Every setter is audited.
 - **The directory**: `listUsers()` and `listWorkspaces()`.
 - **Inspection**: `inspectWorkspace(workspaceId, reason, { lifetimeSeconds })`, which returns an
@@ -76,7 +76,7 @@ objects themselves:
 - **The Overseer** reports its workspace's title, owner and creation time:
   - on every `open()`, a no-op once the directory has acknowledged the title's revision;
   - when the title changes, whoever changes it (a rename, an agent-chosen title, initialisation
-    from a blueprint or an external message): the `title` singleton is the one chokepoint, and its
+    from a blueprint): the `title` singleton is the one chokepoint, and its
     subscriber bumps the revision inside the write's transaction and defers the sync;
   - with `lastActive` when the workspace is active, at most hourly, alongside its
     last-active report to the owner's user DO.
@@ -85,8 +85,8 @@ objects themselves:
   initialised before it recorded its creation time reads it once from its owner's record of it
   (`GadgetRecord.created`) and stores it.
 - **The revision is time-based.** `#initializeNewWorkspace()` sets it to at least the current time.
-  An external message names its workspace by key, so a deleted workspace can be initialised again
-  under the same id; its new life then outranks whatever its earlier one left in the directory.
+  A workspace initialised again under the same id then outranks whatever its earlier life left in
+  the directory.
 
 ### Deletion
 

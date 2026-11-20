@@ -26,6 +26,8 @@ All four are minted by `OverseerImpl.makeFetchLoopback()`. Nothing else can fetc
 
 - A gadget's client code and views run in the browser's sandboxed frame and still have no network.
 - The restore forger keeps `globalOutbound: null`.
+- A shared gadget snapshot's worker (`#loadSnapshotWorker()`, see `docs/sharing.md`) keeps
+  `globalOutbound: null`: it runs for a viewer, not as the gadget.
 - `connect()` from a sandbox stays blocked, because `FetchLoopback` has no `connect` handler.
 - A gatekeeper's own calls to its vendor are not subject to this policy; they use the
   gatekeeper's own `fetch()`.

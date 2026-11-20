@@ -144,7 +144,7 @@ describe("UserDurableObject model editing", () => {
       expect(await user.listModels()).toEqual([PROFILE]);
       await user.setPreferredModel(PROFILE.id);
       expect((await user.getChatContext(PROFILE.id)).aiModel?.config).toEqual(CONFIG);
-      expect((await user.getExternalMessageChatContext(null)).aiModel?.profile).toEqual(PROFILE);
+      expect(await user.getPreferredModel()).toBe(PROFILE.id);
       await user.deleteModel(PROFILE.id);
       expect(await user.listModels()).toEqual([]);
       // The Auto Router model runs only through a gateway, so it can't be added without one.
@@ -214,7 +214,7 @@ describe("UserDurableObject gateway model modes", () => {
   }));
 
   it("keeps an existing chat on a hidden model", () => inGatewayUser(async user => {
-    const context = await user.getExternalMessageChatContext(HIDDEN_ID);
+    const context = await user.getChatContext(HIDDEN_ID);
     expect(context.aiModel?.profile.id).toBe(HIDDEN_ID);
   }));
 
@@ -253,15 +253,6 @@ describe("UserDurableObject gateway model modes", () => {
     expect(await user.getQuickModel()).toBeNull();
     expect((await user.getChatContext(null)).quickModel?.provider).toBe("cloudflare");
   }, DISABLED));
-
-  it("starts a new conversation on the first offered model when the preference is hidden",
-      () => inGatewayUser(async user => {
-    await user.setPreferredModel(HIDDEN_ID);
-    const [first] = await user.listModels();
-    expect(first.id).not.toBe(HIDDEN_ID);
-    const context = await user.getExternalMessageChatContext(null);
-    expect(context.aiModel?.profile.id).toBe(first.id);
-  }));
 
   it("gives a model the user added none of the deployment's default reasoning level",
       () => inGatewayUser(async user => {
@@ -323,9 +314,6 @@ describe("UserDurableObject gateway model modes", () => {
 
   it("lists a superseded model the admin enabled", () => inGatewayUser(async user => {
     expect(await listedIds(user)).toContain(HIDDEN_ID);
-    await user.setPreferredModel(HIDDEN_ID);
-    const context = await user.getExternalMessageChatContext(null);
-    expect(context.aiModel?.profile.id).toBe(HIDDEN_ID);
   }, { modelModes: { [HIDDEN_ID]: "enabled" } }));
 
   it("refuses a disabled model with the administrator's message", () => inGatewayUser(async user => {
@@ -369,17 +357,6 @@ describe("UserDurableObject gateway model modes", () => {
     ],
     modelModes: { [ENABLED_ID]: "disabled", "claude-test": "hidden" },
   }));
-
-  it("moves an existing chat off a disabled model", () => inGatewayUser(async user => {
-    const [first] = await user.listModels();
-    expect(first.id).not.toBe(ENABLED_ID);
-    expect((await user.getExternalMessageChatContext(ENABLED_ID)).aiModel?.profile.id)
-        .toBe(first.id);
-
-    await user.setPreferredModel("claude-haiku-5-5");
-    expect((await user.getExternalMessageChatContext(ENABLED_ID)).aiModel?.profile.id)
-        .toBe("claude-haiku-5-5");
-  }, DISABLED));
 
   describe("once users may not add their own models", () => {
     const MINE = { ...PROFILE, id: "mine", name: "Mine" };
@@ -435,16 +412,6 @@ describe("UserDurableObject gateway model modes", () => {
       expect(storedModel(user, MINE.id)).toEqual({ profile: MINE, config: MINE_CONFIG });
     }));
 
-    it("moves a conversation off a stored model",
-        () => withStoredModel(async (user, _, offered) => {
-      // The preference is the stored model too, so neither an existing chat nor a new one keeps it.
-      expect(await user.getPreferredModel()).toBe(MINE.id);
-      for (let chatModel of [MINE.id, null]) {
-        expect((await user.getExternalMessageChatContext(chatModel)).aiModel?.profile.id)
-            .toBe(offered[0]);
-      }
-    }));
-
     it("keeps a stored model, which still reads, until its user deletes it",
         () => withStoredModel(async user => {
       expect(storedModel(user, MINE.id)).toEqual({ profile: MINE, config: MINE_CONFIG });
@@ -466,7 +433,6 @@ describe("UserDurableObject gateway model modes", () => {
       expect((await user.getChatContext(MINE.id)).aiModel)
           .toEqual({ profile: MINE, config: MINE_CONFIG });
       expect(await user.getPreferredModel()).toBe(MINE.id);
-      expect((await user.getExternalMessageChatContext(null)).aiModel?.profile).toEqual(MINE);
       await user.updateModel({ ...MINE, name: "Renamed" }, MINE_CONFIG);
       expect(storedModel(user, MINE.id)).toMatchObject({ profile: { name: "Renamed" } });
     }));
@@ -477,8 +443,7 @@ describe("UserDurableObject gateway model modes", () => {
       expect(offered).not.toContain(HIDDEN_ID);
       expect((await user.getChatContext(HIDDEN_ID)).aiModel?.profile.id).toBe(HIDDEN_ID);
       await user.setPreferredModel(HIDDEN_ID);
-      expect((await user.getExternalMessageChatContext(HIDDEN_ID)).aiModel?.profile.id)
-          .toBe(HIDDEN_ID);
+      expect(await user.getPreferredModel()).toBe(HIDDEN_ID);
 
       // A stored model that a gateway model shadows gets that model's answer, not its own.
       storeModel(user, ENABLED_ID);
@@ -489,8 +454,7 @@ describe("UserDurableObject gateway model modes", () => {
     }, DISABLED));
   });
 
-  // Chats, spawners and the external-message default all take the language models, which no
-  // decision model can serve.
+  // Chats and spawners take the language models, which no decision model can serve.
   it("lists decision models apart from language models", () => inGatewayUser(async user => {
     await user.addModel({ ...PROFILE, id: "my-clef" },
         { provider: "cloudflare", model: "@cf/cloudflare/clef", apiToken: "" });

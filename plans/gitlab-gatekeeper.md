@@ -996,10 +996,10 @@ constructor before anything else touches storage, whether its roster is complete
 without the `observerRoster` marker is empty on a new binding (`"complete"`) and holds keys on
 one an earlier version used (`"legacy"`); the answer is stored. A legacy binding refuses
 `readLog()`, `getTestReport()` and `listFailedTests()` before fetching anything — the connection
-must be removed and added again — and serves every other CI read. And a cap: the tracker keeps
-at most 50 observers (`maxObservers`; the kit's default of 10 would refuse collaborators
-existing bindings already had), because each such read re-checks every stored observer's
-membership with GitLab, and the cap bounds that fan-out under the Workers subrequest limit.
+must be removed and added again — and serves every other CI read. The tracker once capped its
+roster at 50 observers, because each such read re-checked every stored observer's membership
+with GitLab; reads now report subresources, nothing fans out over the roster, and the kit no
+longer caps admission.
 
 The owner's own access is checked too: the job read that revalidates a cached log is Reporter's,
 a debug trace Developer's, so a cached log is served only while the connected account holds
@@ -1023,6 +1023,23 @@ of the history once the owner's grant lapsed; a binding without an id has read n
 reported id is only true if the read came from it, so REST is addressed by id (§5, redirects), git
 by the path the id has now, and caches filled while reads followed the path are discarded once on
 upgrade.
+
+**Per-job CI subresources** (superseding the role IDs above). The role IDs overreported: every
+job log demanded Developer though GitLab gates only debug-trace (and Duo workflow) jobs' logs,
+and every test report read through a Maintainer demanded Maintainer though `artifacts:access` is
+set per job and rarely, so project members were refused workspaces they could otherwise read.
+Neither setting is exposed to the reading account (REST's job and artifact entities and GraphQL's
+`CiJobArtifact` carry neither), so reads now name the job and let the observer's token ask:
+`project/<projectId>/jobTrace/<jobId>` for a log (the observer reads the job, then `/trace`; 403
+denies) and `project/<projectId>/jobArtifacts/<jobId>` for each job a test report holds (GraphQL
+`job.userPermissions.readJobArtifacts`), each in place of `project/<projectId>`, since each checks
+that membership first (a report holding no jobs' reports still reports the project). An erased or
+deleted job allows, as there is nothing left to withhold. The summary
+names its jobs (`build_ids`); the whole report does not, and summaries can lag it, so its jobs
+are listed after it is read: every job with a `junit` report in the pipeline and its same-project
+children, retried attempts included, the read refused if a listing is cut short.
+Recorded `role/*` IDs and the legacy `ci-logs`/`ci-test-reports` sets now need the baseline alone,
+a deliberate loosening for existing workspaces.
 
 New bindings carry `reportsSubresources: true` in their immutable props. No read of theirs
 predates reporting, so their `addObserver` and `removeObserver` are no-ops: no check, no stored
@@ -1409,9 +1426,9 @@ kernel bar doesn't apply — no `workshop-backend`/`workshop-shared` lines chang
   same-project downstreams, `test_report_summary` and the failed cases of `test_report`;
   `GitLabJob.readLog()` over `GET /jobs/:id/trace` through the kit's `ci` leaf (streamed
   whole, tail kept, refused past 128 MiB; finished logs cached in chunks and revalidated against
-  `erased_at` and the account's Developer access). Reading a log or a test report raises observer
-  admission to Developer, or Maintainer for a test report read as one (§8). Still open:
-  per-artifact checks in place of that Maintainer bar; `retry`/`cancel`/`play` on jobs and pipelines
+  `erased_at` and the account's Developer access). A log or a test report names the jobs it came
+  from, which the observer's own account is asked about (§8). Still open:
+  `retry`/`cancel`/`play` on jobs and pipelines
   (non-revertible actions with their own kinds, simulated as `pending`/`canceling`, a retried job
   as a provisional `~N`); `autoMerge` on `merge()` (below); and GitLab hooks, which this gatekeeper
   has no infrastructure for, so agents poll `ci.phase`. Unprobed still: the trace endpoint's `Range`

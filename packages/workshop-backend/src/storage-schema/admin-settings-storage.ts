@@ -32,6 +32,13 @@ export type AdminConfig = {
    */
   userSearchEnabled: boolean;
   /**
+   * Whether gadgets may be shared to view only, as static snapshots (default true; see
+   * Overseer.getGadgetSnapshot). A view grant shows its holder what the gadget stored without
+   * verifying them as an observer. While false, no one may make a view grant or open or refresh a
+   * snapshot; the view grants already made are kept, and open again once it is true.
+   */
+  snapshotSharingEnabled: boolean;
+  /**
    * Site name shown next to the top-bar logo, or "" to use DEFAULT_SITE_NAME. Resolve it for
    * display with `resolveSiteName()`.
    */
@@ -184,6 +191,7 @@ export type FormatCuration = {
 export const DEFAULT_ADMIN_CONFIG: AdminConfig = {
   signupsEnabled: true,
   userSearchEnabled: false,
+  snapshotSharingEnabled: true,
   siteName: "",
   siteLogoConfigured: false,
   instanceInstructions: "",

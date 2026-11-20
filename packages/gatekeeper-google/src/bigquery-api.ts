@@ -433,11 +433,14 @@ export class BigQueryApi {
     };
   }
 
-  /** Validate `sql` and estimate its cost as a dry-run job in `billingProject`. */
+  /**
+   * Validate `sql` and estimate its cost as a dry-run job in `billingProject`. `signal` ends the
+   * request it is in flight for, and keeps a retry from being sent.
+   */
   async dryRun(
     billingProject: string,
     sql: string,
-    opts: Pick<BigQueryJobOptions, "defaultDataset" | "params"> = {},
+    opts: Pick<BigQueryJobOptions, "defaultDataset" | "params"> & { signal?: AbortSignal } = {},
   ): Promise<BigQueryDryRunResult & {
     statementType?: string;
     ddlOperationPerformed?: string;
@@ -468,6 +471,7 @@ export class BigQueryApi {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      signal: opts.signal,
     }, this.getAccessToken);
 
     if (resp.status?.errorResult) {

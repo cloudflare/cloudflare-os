@@ -634,6 +634,24 @@ export const createGatekeeperError = gatekeeperErrors.create;
 /** Reads the machine-readable code from a gatekeeper refusal. */
 export const getGatekeeperErrorCode = gatekeeperErrors.getCode;
 
+/** Stable error codes attached to the refusals made while the deployment forbids sharing gadgets
+ * to view only (see ServerConfig.snapshotSharingEnabled). */
+export const SNAPSHOT_SHARING_ERROR_CODES = {
+  disabled: "SNAPSHOT_SHARING_DISABLED",
+} as const;
+
+const snapshotSharingErrors = codedErrorFamily({
+  [SNAPSHOT_SHARING_ERROR_CODES.disabled]:
+      "Sharing gadget snapshots is disabled on this deployment by an administrator.",
+});
+
+/** Creates a refusal made while the deployment forbids sharing gadgets to view only. */
+export const createSnapshotSharingError = snapshotSharingErrors.create;
+
+/** Reads the machine-readable code from a refusal made while the deployment forbids sharing
+ * gadgets to view only. */
+export const getSnapshotSharingErrorCode = snapshotSharingErrors.getCode;
+
 /**
  * Stable error codes attached to expected refusals of AdminApi.inspectWorkspace() and
  * AdminApi.inspectUser(), and of AdminWorkspaceView and AdminUserView calls.
@@ -906,9 +924,8 @@ export interface AuthenticatedApi extends RpcTarget {
   getPreferredModel(): Promise<string | null>;
 
   /**
-   * Set the user's preferred model. Pass null to indicate "No agent". Any model that resolves is
-   * accepted, including one hidden from pickers, but a new external conversation uses the
-   * preference only while it is offered, and otherwise the first offered model.
+   * Set the user's preferred model: any model ID that resolves, including one hidden from
+   * pickers, or null to clear the saved preference.
    */
   setPreferredModel(id: string | null): Promise<void>;
 
@@ -1144,10 +1161,20 @@ export interface AuthenticatedApi extends RpcTarget {
   /**
    * Get the UI in which the approver of a creation of the type `resourceTypeId` configures it
    * in their connected account `accountId` (see SupportedResource.creationConfigurator). The
-   * frame's collectResourceUrl() gives CreationApproval.configuration.
+   * frame's collectResourceUrl() gives CreationApproval.configuration, or with `purpose` "save"
+   * (omitted means "create") the `destination` of saveFile().
    */
-  startCreationConfigurator(accountId: number, resourceTypeId: string)
+  startCreationConfigurator(accountId: number, resourceTypeId: string, purpose?: "create" | "save")
       : Promise<GatekeeperUiFrame>;
+
+  /**
+   * Save `file` as a resource of the type `resourceTypeId` in the user's connected account
+   * `accountId` (see GatekeeperUser.saveFile(), which defines the other parameters). Pass the
+   * promise GadgetClient.export() returns as `file`, so the export goes straight to the
+   * gatekeeper instead of through the client.
+   */
+  saveFile(accountId: number, resourceTypeId: string, destination: string, name: string,
+      contentType: string, file: ReadableStream<Uint8Array>): Promise<{ url: string }>;
 
   /**
    * Remove a shared workspace from the user's home page listing. Does NOT revoke the user's
@@ -1489,6 +1516,8 @@ export type AdminSettingsView = {
   signupsEnabled: boolean;
   /** Whether users may search the user directory to find collaborators. */
   userSearchEnabled: boolean;
+  /** Whether gadgets may be shared to view only (see AdminApi.setSnapshotSharingEnabled). */
+  snapshotSharingEnabled: boolean;
   /**
    * How much of a workspace or of a user's account an admin may inspect (see
    * AdminApi.setAdminWorkspaceAccess): inspectWorkspace() and inspectUser() are refused while
@@ -1879,7 +1908,7 @@ export const ADMIN_SETTING_METHODS = [
   "setUpdateChecksEnabled", "setUpdateCheckIntervalMinutes", "setUpdateMinimumAgeHours",
   "setUpdateNoticeSnoozeHours", "setRestrictedWebFetchHosts", "setRestrictedWebFetchApprovals",
   "setAdminWorkspaceAccess", "setAdminAuditRetentionDays", "setGatewayProviderOrder",
-  "setGatewayModelOrder",
+  "setGatewayModelOrder", "setSnapshotSharingEnabled",
 ] as const satisfies readonly (keyof AdminApi)[];
 
 /** One of ADMIN_SETTING_METHODS. */
@@ -2138,6 +2167,15 @@ export interface AdminApi {
    * either way, and this switch just controls user access.
    */
   setUserSearchEnabled(enabled: boolean): Promise<void>;
+
+  /**
+   * Allow or forbid sharing gadgets to view only, as static snapshots (see
+   * Overseer.getGadgetSnapshot()). While forbidden, view grants can't be made, fresh keys can't be
+   * minted for view links, and no snapshot can be opened or refreshed, the owner's preview
+   * included; existing view grants are kept, and open again once it is allowed. Each refusal
+   * carries SNAPSHOT_SHARING_ERROR_CODES.disabled.
+   */
+  setSnapshotSharingEnabled(enabled: boolean): Promise<void>;
 
   /**
    * Set the site name shown next to the top-bar logo. Pass "" to reset to DEFAULT_SITE_NAME.
@@ -2620,8 +2658,6 @@ export type AdminWorkspaceDiagnostics = {
   present: PresenceParticipant[];
   /** When the workspace's alarm next fires. Absent while none is set. */
   nextAlarm?: Date;
-  /** Whether an external message created the workspace before its owner's account recorded it. */
-  ownerRegistrationPending: boolean;
 };
 
 /** One call made on a chat's callable agent that is not in the chat yet, as
@@ -3193,6 +3229,12 @@ export type ServerConfig = {
    * only an exact username/email field.
    */
   userSearchEnabled: boolean;
+
+  /**
+   * Whether gadgets may be shared to view only, as static snapshots (see
+   * AdminApi.setSnapshotSharingEnabled). When false the share UI offers only live use.
+   */
+  snapshotSharingEnabled: boolean;
 
   /**
    * Site name shown next to the top-bar logo (admin-configurable). Empty falls back to
@@ -4408,9 +4450,31 @@ export interface Overseer extends RpcTarget {
    * rather than when opening the workspace, so `configureObservers` is invoked as described for
    * AuthenticatedApi.openWorkspace(). Failing to verify for one gadget leaves the others that
    * collaborator holds untouched. Ignored for everyone else, whom opening the workspace verified.
+   * Throws, revealing nothing more, for a gadget the caller may only view (see isViewOnly()).
    */
   getGadget(id: WorkpieceId, configureObservers?: RpcStub<ObserverConfigCallback>)
       : Promise<RpcStub<GadgetClient>>;
+
+  /**
+   * Open a static snapshot of a gadget: for the owner and "build" collaborators, and for a "use"
+   * collaborator only when they may only view it (see isViewOnly()). One who holds the gadget live
+   * is refused, and opens it with getGadget(). A snapshot is a private copy of the gadget's stored
+   * state, taken now, served by the gadget's mainline code as of now, with no bindings and no
+   * network access. Because it can reach nothing the gadget can, opening one verifies nobody as an
+   * observer. Writes stay in the copy, and the copy is discarded when the returned capability is
+   * disposed (or the workspace restarts, or the gadget is deleted). Throws, like getGadget(), for a
+   * gadget the caller may not open, and for everyone while the deployment forbids snapshot sharing
+   * (see ServerConfig.snapshotSharingEnabled).
+   */
+  getGadgetSnapshot(id: WorkpieceId): Promise<RpcStub<GadgetSnapshotClient>>;
+
+  /**
+   * Whether the caller may only view the gadget, as a static snapshot (see getGadgetSnapshot()):
+   * true when the caller is a "use" collaborator none of whose grants of it is a live one (see
+   * CollaboratorGrant), in which case getGadget() refuses it. False for the owner and "build"
+   * collaborators. Throws for a gadget the caller may not open.
+   */
+  isViewOnly(id: WorkpieceId): Promise<boolean>;
 
   /**
    * Read a commit's whole tree as nested TreeNodes: the root directory's entries, each
@@ -5075,8 +5139,8 @@ export interface Overseer extends RpcTarget {
 
   /**
    * List the connections a recipient of `grant` must verify before opening what it grants, in
-   * the order the connections were created. Reports what sharing will cost the recipient; it
-   * grants nothing and mints no capability.
+   * the order the connections were created: none for a view grant, which verifies nothing.
+   * Reports what sharing will cost the recipient; it grants nothing and mints no capability.
    */
   listObserverRequirements(grant: CollaboratorGrant): Promise<ObserverBindingNeed[]>;
 
@@ -5090,8 +5154,9 @@ export interface Overseer extends RpcTarget {
    * Share this workspace, or one of its gadgets (see CollaboratorGrant), with another user: invite
    * them as a collaborator by username/email, or grant an existing one more access. The caller must
    * be the owner or a "build" collaborator, since only their grants confer anything.
-   * A grant the caller already gave them covers (e.g. a gadget, after "build") changes nothing but
-   * the note; one that covers the caller's earlier grants to them replaces those. Returns the
+   * A grant the caller already gave them covers (e.g. a gadget, after "build", or a view of a
+   * gadget, after the live gadget) changes nothing but the note, so sharing never narrows
+   * anyone; one that covers the caller's earlier grants to them replaces those. Returns the
    * collaborator's info, or null if the username doesn't correspond to an existing account.
    */
   addCollaborator(username: string, grant: CollaboratorGrant,
@@ -5109,12 +5174,16 @@ export interface Overseer extends RpcTarget {
    * retained: each is given fresh edges from the caller restoring the access they lost. Users
    * reachable only through the removed grants who are NOT in `keepUsers` lose that access too.
    *
+   * With `gadgetId` and `keepView`, the target is left a view of that gadget instead, as if then
+   * given `{gadgetId, mode: "view"}` by addCollaborator(), in the same mutation, so the
+   * restart that narrowing their access schedules cannot fall between the two.
+   *
    * Returns the list of users whose access actually narrowed, including the primary target. An
    * empty array means no one's effective access changed (the target retained it through other
    * edges).
    */
-  removeCollaborator(profileId: string, keepUsers: string[], gadgetId?: WorkpieceId)
-      : Promise<AffectedCollaborator[]>;
+  removeCollaborator(profileId: string, keepUsers: string[], gadgetId?: WorkpieceId,
+                     keepView?: boolean): Promise<AffectedCollaborator[]>;
 
   /**
    * Preview what removeCollaborator() would do with the same arguments: the users whose access
@@ -5150,6 +5219,8 @@ export interface Overseer extends RpcTarget {
   /**
    * Mint a fresh secret for an existing link so the user can copy a new URL without creating a
    * whole new link. The old secrets remain valid, and revoking the link revokes them all together.
+   * Throws for a view link while the deployment forbids snapshot sharing (see
+   * ServerConfig.snapshotSharingEnabled).
    */
   newShareLinkKey(linkId: string): Promise<{ key: string }>;
 
@@ -5627,10 +5698,20 @@ export type AiChatMessage = {
   author: AiChatAuthorInfo;
 } & AiChatMessageBody;
 
+/**
+ * Worktree file URLs in links and image embeds, pinned when an agent emits them; Markdown keys use the renderer's URI
+ * encoding. Values are immutable Git blob OIDs; null records an unavailable file and prevents
+ * a later view from resolving a newer file.
+ */
+export type ChatEmbeds = Record<string, string | null>;
+
 export type AiChatMessageBody = {
   /** A regular chat message. */
   type: "message";
   message: string;
+
+  /** Files snapshotted by the host parser, independent of subsequent edits to their paths. */
+  embeds?: ChatEmbeds;
 
   /**
    * The message may contain "capsules", which are embedded capabilities that reference external
@@ -6308,8 +6389,8 @@ export type AiToolCall = {
   output?: {gadgetId: WorkpieceId, changeId?: number, blueprintNotes?: string};
 } | {
   /**
-   * Create a new worktree workpiece: a file tree rooted at a git commit, private to the creating
-   * chat, whose files the agent then reads and edits with the regular file tools. Unlike a
+   * Create a new worktree workpiece: an empty file tree or one rooted at a git commit, private
+   * to the creating chat, whose files the agent then reads and edits with the regular file tools. Unlike a
    * gadget, a worktree has no output, no bindings, and cannot execute; its name lives only in
    * the chat's binding map, never in the workspace default binding list.
    */
@@ -6325,13 +6406,13 @@ export type AiToolCall = {
     bindingName: string;
 
     /**
-     * The git commit to root the worktree at: a full 40-hex oid, resolved against the
-     * workspace's local git store and its gatekeeper-provided metadata (never a remote lookup --
-     * remote refs resolve through gatekeeper APIs first). Abbreviated ids are refused, since
-     * knowing a commit's id is the capability to read it; logs written before that may carry an
+     * Omit to create an empty worktree. Otherwise the git commit to root it at: a full 40-hex oid,
+     * resolved against the workspace's local git store and its gatekeeper-provided metadata
+     * (never a remote lookup -- remote refs resolve through gatekeeper APIs first). Abbreviated ids
+     * are refused, since knowing a commit's id is the capability to read it; logs written before that may carry an
      * unambiguous prefix.
      */
-    commitId: string;
+    commitId?: string;
   };
 
   /**
@@ -6341,10 +6422,10 @@ export type AiToolCall = {
    * `changeId` is the change number of the "changes" batch that records the creation (see
    * `createdWorktrees` on the "changes" message body), like createGadget's.
    *
-   * `baseCommit` is the full oid `input.commitId` resolved to -- the commit the worktree is
-   * rooted at, and its accepted commit until the chat's first accept of changes to it. Recorded
-   * because the input of an older log may be a prefix and the model is told the resolved oid. The creation pins
-   * nothing: the worktree reads as its accepted commit until its first modification pins it
+   * `baseCommit` is the full oid `input.commitId` resolved to, or the empty root commit when
+   * omitted -- the commit the worktree is rooted at, and its accepted commit until the chat's
+   * first accept of changes to it. Recorded because the input of an older log may be a prefix and
+   * the model is told the resolved oid. The creation pins nothing: the worktree reads as its accepted commit until its first modification pins it
    * (see ChatGadgetPin), so replay serves untouched files from the pin when there is one and
    * from the accepted commit otherwise, never from this field.
    */
@@ -6624,6 +6705,8 @@ export type AiChatStreamEvent = {
 } | {
   type: "textDelta";
   delta: string;
+  /** Newly pinned embeds in this delta; persisted with the completed message as embeds. */
+  embeds?: ChatEmbeds;
 } | {
   type: "reasoningDelta";
   delta: string;
@@ -7611,6 +7694,26 @@ export interface GadgetClient extends WorkpieceClient {
 }
 
 /**
+ * A static snapshot of one gadget (see Overseer.getGadgetSnapshot()). It permits rendering,
+ * interacting with and exporting the snapshot, mainline-only (`chatId` must be omitted), and has
+ * none of GadgetClient's other methods.
+ */
+export interface GadgetSnapshotClient extends RpcTarget, Pick<GadgetClient,
+    "getId" | "getTitle" | "getUiBundle" | "connectToGadget" | "getExportFormats" | "export"> {
+  /** When the snapshot's state and code were copied from the gadget. */
+  getRefreshedAt(): Promise<Date>;
+
+  /**
+   * Replace the snapshot with a new copy of the gadget's current state and code, discarding
+   * anything written to the old copy, and return when the new copy was taken. Stubs returned by
+   * earlier connectToGadget() calls stop working; connect again. Throws, keeping the old copy,
+   * once the caller may no longer open the snapshot (see Overseer.getGadgetSnapshot()), and while
+   * the deployment forbids snapshot sharing (see ServerConfig.snapshotSharingEnabled).
+   */
+  refresh(): Promise<Date>;
+}
+
+/**
  * Capability representing one gatekeeper (connection) workpiece. Note that binding-edge
  * operations -- binding names and blueprint annotations -- live on GadgetClient, since a
  * gatekeeper may be bound by several gadgets under different names.
@@ -7638,24 +7741,30 @@ export interface GatekeeperClient<Session extends RpcCompatible<Session>> extend
  *   same access the owner has, modulo the owner-only exceptions documented in sharing.md).
  * - "use": may only render, interact with, and export the deployed UIs of certain gadgets
  *   (getUiBundle(), connectToGadget(), getExportFormats(), and export()), plus read basic
- *   metadata. Which gadgets is part of the grant (see CollaboratorGrant, CollaboratorAccess).
+ *   metadata. Which gadgets is part of the grant, as is whether each may be opened live or only
+ *   viewed as a static snapshot (see CollaboratorGrant, CollaboratorAccess).
  */
 export type CollaboratorRole = "build" | "use";
 
 /**
  * Access a new grant confers: "workspace" ("build" on the whole workspace), or "use" of one
- * gadget's deployed UI.
+ * gadget's deployed UI. A gadget grant opens the live gadget, verifying its recipient as an observer
+ * of what it reaches, and never its snapshot; with `mode: "view"`, it opens only a static snapshot
+ * (see Overseer.getGadgetSnapshot()), verifying nothing. A view grant can't be made while the
+ * deployment forbids snapshot sharing (see ServerConfig.snapshotSharingEnabled).
  */
-export type CollaboratorGrant = "workspace" | {gadgetId: WorkpieceId};
+export type CollaboratorGrant = "workspace" | {gadgetId: WorkpieceId, mode?: "view"};
 
 /**
  * A collaborator's effective access: the union of their valid grants reachable from the owner.
  * A grant counts only while its sharer (or share link creator) holds "build"; the owner is the
- * implicit root with "build". `gadgetIds` lists the gadgets a "use" collaborator may open.
+ * implicit root with "build". `gadgetIds` lists the gadgets a "use" collaborator may open, and
+ * `viewOnly` (absent when empty) those of them they may only view, as a static snapshot,
+ * since none of their grants of it is a live one.
  */
 export type CollaboratorAccess =
   | {role: "build"}
-  | {role: "use", gadgetIds: WorkpieceId[]};
+  | {role: "use", gadgetIds: WorkpieceId[], viewOnly?: WorkpieceId[]};
 
 /** One person currently connected to a gadget. */
 export type PresenceParticipant = {
@@ -7690,6 +7799,9 @@ export type PermissionEdge = {
    * a share link to several gadgets gives its recipient, one per gadget.
    */
   gadgetId?: WorkpieceId;
+
+  /** Set on a "use" edge that grants only a view of its gadget (see CollaboratorGrant). */
+  mode?: "view";
 } & ({
   /** Granted directly by another user. */
   type: "user";
@@ -7749,6 +7861,9 @@ export type ShareLinkInfo = {
 
   /** The one gadget a "use" link grants, unless it grants several (see `gadgets`). */
   gadgetId?: WorkpieceId;
+
+  /** Set on a "use" link that grants only a view of its gadget (see CollaboratorGrant). */
+  mode?: "view";
 
   /**
    * The gadgets a "use" link to several gadgets grants, those of them that can still be shared,

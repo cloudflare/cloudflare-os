@@ -3,6 +3,8 @@ import { applyCodeChange, codeChangeSerializedSize, MAX_CODE_CHANGE_SIZE, replac
   validateCodeChangeContent, type FileContent, type CodeContent, type CodeChange,
   type FileChange } from '@gadgets/workshop-shared/code-change';
 import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
+import { snapshotChatEmbeds } from './chat-embeds';
+import type { ChatEmbeds } from '@gadgets/workshop-shared/api';
 import { canInlineChatAttachmentImage, decodeChatAttachmentText, isAllowedChatAttachmentImageMimeType } from './chat-attachment-validation';
 import { AgentCatalog } from '@gadgets/workshop-shared/gatekeeper';
 import { createWorkshopLogger, obsContext } from "./observability";
@@ -340,6 +342,9 @@ export function makeStoredAssistantMessage(message: AssistantMessage): StoredAss
  *   overseer.ts?
  */
 export interface AgentHooks {
+  /** In-process output-file pinning against the running turn; never exposed to the agent or UI. */
+  getWorktreeFileOid(chatId: number, id: WorkpieceId, path: string,
+      turn: WorktreeTurnAccess): Promise<string | undefined>;
   getChatAgentContext(chatId: number): AiChatAgentContext;
 
   /** Records the chat's AiChatAgentContext.workspacePrompt. */
@@ -470,15 +475,15 @@ export interface AgentHooks {
                blueprint?: {output?: BlueprintOutput}): {id: WorkpieceId, title: string};
 
   /**
-   * Create a new worktree workpiece rooted at the given commit id (a full oid, resolved against
-   * the workspace's local git knowledge -- never a remote lookup), provisional to and permanently
-   * private to the given chat. Performs the initial pull when the commit is known only from a
-   * gatekeeper. Like createGadget, the creation becomes durable via the step's "changes" message
+   * Create a new worktree workpiece, empty when commitId is omitted, otherwise rooted at the
+   * given commit id (a full oid, resolved against the workspace's local git knowledge -- never a
+   * remote lookup), provisional to and permanently private to the given chat. Performs the initial
+   * pull when the commit is known only from a gatekeeper. Like createGadget, the creation becomes durable via the step's "changes" message
    * (`createdWorktrees`); a step that dies before its barrier leaves an unstamped record that
    * reconciliation reaps. The new worktree is unpinned: it reads as its base commit until the
    * first modification pins it. Returns the base commit alongside the id.
    */
-  createWorktree(title: string, chatId: number, commitId: string)
+  createWorktree(title: string, chatId: number, commitId?: string)
       : Promise<{id: WorkpieceId, title: string, baseCommit: string}>;
 
   /**
@@ -725,6 +730,23 @@ Note that users rarely ask for "a Gadget" in those words. They ask for a thing: 
 Tools refer to Gadgets by their binding name in your env: the file tools (\`readFile\`, \`writeFile\`, \`editFile\`, \`grep\`) take a \`workpiece\` parameter naming the Gadget that owns the file, and \`setGadgetBinding\` takes a \`gadget\` parameter naming the Gadget whose bindings to modify. Some older workspaces have a "default" Gadget (noted in the gadget list) which the file tools fall back to when \`workpiece\` is omitted; even so, prefer passing the name explicitly.
 
 # Live views in your answers
+
+Reference any worktree file with a Markdown link:
+\`[Download CSV](worktree://OUTPUTS/results.csv)\`. Clicking downloads the original file.
+To display an image inline instead, use Markdown:
+\`![Mandelbrot set](worktree://OUTPUTS/mandelbrot.png)\`.
+Use the actual worktree binding name and a relative path (percent-encode special characters).
+The host snapshots the current file when you emit either reference: later edits or deletion do
+not change the file in this reply. A later reply can reference the path for a new snapshot.
+No attachment tool, OID lookup or Gadget is needed. Use an existing suitable worktree, or
+create an empty one with \`createWorktree\` (omit \`commitId\`) for generated files. The upload
+worktree identified in attachment notes is for attachments; use a separate worktree for generated
+files and working notes. For container outputs, mount that worktree, write the file inside it,
+and wait for the command to return its
+files before referencing them. Ignored files and files outside mounts stay in the container.
+Do not put image bytes or base64 in your reply.
+The same URLs work in literal \`<img src="worktree://BINDING/path">\` tags in \`<inline-html>\`
+for custom layouts; construct the file references in the markup, not dynamically in a script.
 
 You can draw an interactive view inside your answer, with no tool call, by writing HTML between \`<inline-html>\` tags. The Workshop draws it in place, in a sandboxed frame, as you write it, and runs its module scripts as soon as its closing tag arrives, while the rest of your answer streams. Show a view when it beats prose: comparisons, choices between options, numbers over time, or a one-off demo or tool. A short answer or an explanation stays plain text.
 
@@ -1301,7 +1323,7 @@ async function formatBlueprintProposal(
 }
 
 let READ_FILE_TOOL_DESCRIPTION = `
-Read the content of a file owned by a workpiece (a gadget or worktree) in your \`env\`. If a file changes after you read it, you will either be informed of the change or the outdated result will be replaced with a note telling you to re-read the file; otherwise there is no need to read a file again after you have already read it once. Uploaded files are also available in the chat's scratch worktree when the system prompt lists one; use it for plans and other working files too. Use byte-aware binding operations for binary files.
+Read the content of a file owned by a workpiece (a gadget or worktree) in your \`env\`. If a file changes after you read it, you will either be informed of the change or the outdated result will be replaced with a note telling you to re-read the file; otherwise there is no need to read a file again after you have already read it once. Uploaded files are available at the workspace paths shown in their attachment notes. Use byte-aware binding operations for binary files.
 
 A file of any size can be read, by window: for a large file, pass \`startLine\` and \`lineCount\` to read a window of it; the result then ends with a line giving the range shown and the \`startLine\` to continue from. Use \`grep\` to find the lines you need first. A single line too long to show whole is cut, with a note giving its length. A window whose lines contain binary data (a NUL byte) is an error naming those lines; invalid UTF-8 is shown as U+FFFD.
 `.trim();
@@ -1315,9 +1337,9 @@ By default the new gadget is empty. Pass \`blueprintId\` (discovered with the \`
 `.trim();
 
 let CREATE_WORKTREE_TOOL_DESCRIPTION = `
-Create a worktree: a file tree rooted at a git commit, which you can then read and edit with the regular file tools (\`readFile\`, \`writeFile\`, \`editFile\`, \`grep\`) by passing the \`bindingName\` you choose as their \`workpiece\` parameter. Unlike a gadget, a worktree has no runnable code of its own and is private to this conversation.
+Create a worktree: an empty file tree, or one rooted at a git commit, which you can then read and edit with the regular file tools (\`readFile\`, \`writeFile\`, \`editFile\`, \`grep\`) by passing the \`bindingName\` you choose as their \`workpiece\` parameter. Unlike a gadget, a worktree has no runnable code of its own and is private to this conversation.
 
-\`commitId\` is a full git commit id (40 hex digits; abbreviated ids are not accepted) already known to this workspace — typically one returned by a connection's API (e.g. a repository's branch or commit listing). Look the commit up through the connection first if you only know a branch or tag name.
+Omit \`commitId\` to start empty, for example for generated images, scripts, or other working files. Reuse a suitable existing worktree when available. Otherwise \`commitId\` is a full git commit id (40 hex digits; abbreviated ids are not accepted) already known to this workspace — typically one returned by a connection's API (e.g. a repository's branch or commit listing). Look the commit up through the connection first if you only know a branch or tag name.
 
 In \`executeCode\`, the worktree's env binding additionally offers a programmatic API — \`listFiles\`, \`grep\`, \`commit\` (write a git commit of the worktree's content), \`diff\`, and more; use \`describeBinding\` to see it.
 `.trim();
@@ -1999,9 +2021,11 @@ async function runAgentPass(
 
   // Resolve a file tool's optional `workpiece` parameter -- the chat binding name of the target
   // workpiece -- to a workpiece id (or undefined, meaning the workspace's default gadget,
-  // resolved downstream by resolveWorkpieceRoot).
+  // resolved downstream by resolveWorkpieceRoot). Prompts write workpieces as `env.NAME`, so a
+  // model that copies that form is understood rather than refused.
   let resolveToolWorkpieceId = (workpiece?: string): WorkpieceId | undefined => {
     if (workpiece === undefined) return undefined;
+    workpiece = workpiece.replace(/^env\./, "");
     let entry = chatBindings.get(workpiece);
     if (!entry) {
       throw new Error(
@@ -3949,11 +3973,12 @@ async function runAgentPass(
               "refer to it (their `workpiece` parameter). Must be a JavaScript identifier not " +
               "already in use; style: ALL_CAPS_WITH_UNDERSCORES.",
         }),
-        commitId: Type.String({
+        commitId: Type.Optional(Type.String({
           description:
-              "The git commit to root the worktree at: its full 40-hex SHA-1, exactly as " +
-              "returned by the API that provided it. Abbreviated ids are not accepted.",
-        }),
+              "Omit to create an empty worktree. Otherwise the git commit to root it at: its " +
+              "full 40-hex SHA-1, exactly as returned by the API that provided it. " +
+              "Abbreviated ids are not accepted.",
+        })),
       }),
       execute: async (toolCallId, {title, bindingName, commitId}) => {
         try {
@@ -4229,6 +4254,15 @@ async function runAgentPass(
   let capturedActionsForStep: ReturnType<AgentHooks["consumeCapturedActions"]>;
   let decisionRequestsForStep: AiChatMessageBody[] = [];
 
+  let answerText = "";
+  let embeds: ChatEmbeds = {};
+  const snapshotEmbeds = (text: string, streaming: boolean) => snapshotChatEmbeds(
+      text, embeds, async (binding, path) => {
+        const entry = chatBindings.get(binding);
+        return entry?.type === "workpiece"
+            ? hooks.getWorktreeFileOid(chatId, entry.id, path, worktreeTurnAccess) : undefined;
+      }, streaming);
+
   // The awaited event sink driving both the client stream fan-out and the persistence barrier.
   let emit = async (event: AgentEvent): Promise<void> => {
     switch (event.type) {
@@ -4236,9 +4270,15 @@ async function runAgentPass(
         // Live streaming fan-out to connected clients.
         let ev = event.assistantMessageEvent;
         switch (ev.type) {
-          case "text_delta":
-            emitStreamEvent({type: "textDelta", delta: ev.delta});
+          case "text_delta": {
+            answerText += ev.delta;
+            // Only syntax that can complete a file reference can add a pin. Ordinary prose
+            // must not reparse the accumulated answer; the final pass also handles EOF.
+            const newEmbeds = /[)\]>\r\n]/.test(ev.delta)
+                ? await snapshotEmbeds(answerText, true) : undefined;
+            emitStreamEvent({type: "textDelta", delta: ev.delta, embeds: newEmbeds});
             break;
+          }
           case "thinking_delta":
             emitStreamEvent({type: "reasoningDelta", delta: ev.delta});
             break;
@@ -4276,6 +4316,15 @@ async function runAgentPass(
             }
             break;
         }
+        break;
+      }
+
+      case "message_end": {
+        const message = event.message;
+        if (message.role !== "assistant" || message.stopReason === "error" || message.stopReason === "aborted") break;
+        const finalEmbeds = await snapshotEmbeds(message.content.filter(block => block.type === "text")
+            .map(block => block.text).join(""), false);
+        if (finalEmbeds) emitStreamEvent({type: "textDelta", delta: "", embeds: finalEmbeds});
         break;
       }
 
@@ -4323,6 +4372,7 @@ async function runAgentPass(
             message: message.content.filter(block => block.type === "text")
                 .map(block => block.text).join(""),
           };
+          if (Object.keys(embeds).length) msg.embeds = embeds;
           let reasoning = message.content
               .flatMap(block =>
                   block.type === "thinking" && !block.redacted ? [block.thinking] : [])
@@ -4421,6 +4471,8 @@ async function runAgentPass(
         });
 
         // Reset per-step streaming state.
+        answerText = "";
+        embeds = {};
         toolCallNotes.clear();
         executeCodeStreamManager.clear();
         break;

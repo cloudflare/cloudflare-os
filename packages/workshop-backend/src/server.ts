@@ -26,7 +26,6 @@ import { OverseerDurableObject, GatekeeperLoopback, CodeModeTailLoopback, AgentS
 import { FetchLoopback } from "./fetch-loopback";
 import { UserDirectoryDurableObject } from "./user-directory.js";
 import { AdminAuditDurableObject } from "./admin-audit.js";
-import { ExternalMessageGateway } from "./external-message-gateway";
 import { RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { recordAnalytics } from "./analytics";
 import { handleClientErrorRequest } from "./client-errors.js";
@@ -84,9 +83,6 @@ export { OverseerDurableObject, GatekeeperLoopback, GatekeeperHookLoopback,
 
 // Re-export the loopback that applies the workspace's fetch policy.
 export { FetchLoopback };
-
-// Re-export service-binding entrypoint for external channel integrations.
-export { ExternalMessageGateway };
 
 // Declare optional environment variables here since they may be omitted from wrangler.jsonc.
 type Env = Cloudflare.Env & {
@@ -458,8 +454,13 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     return this.#user.startResourceConfigurator(accountId, resourceTypeId);
   }
 
-  startCreationConfigurator(accountId: number, resourceTypeId: string) {
-    return this.#user.startCreationConfigurator(accountId, resourceTypeId);
+  startCreationConfigurator(accountId: number, resourceTypeId: string, purpose?: "create" | "save") {
+    return this.#user.startCreationConfigurator(accountId, resourceTypeId, purpose);
+  }
+
+  saveFile(accountId: number, resourceTypeId: string, destination: string, name: string,
+      contentType: string, file: ReadableStream<Uint8Array>) {
+    return this.#user.saveFile(accountId, resourceTypeId, destination, name, contentType, file);
   }
 
   async dismissSharedWorkspace(workspaceId: string): Promise<void> {

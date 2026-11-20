@@ -1,8 +1,8 @@
 import {
-  Decoration, EditorView, GutterMarker, WidgetType, gutter, lineNumberMarkers,
+  BlockType, Decoration, EditorView, GutterMarker, WidgetType, gutter, lineNumberMarkers,
   lineNumberWidgetMarker,
 } from '@codemirror/view'
-import type { DecorationSet } from '@codemirror/view'
+import type { BlockInfo, DecorationSet } from '@codemirror/view'
 import { RangeSet, StateEffect, StateField } from '@codemirror/state'
 import type { Extension, Range, Text } from '@codemirror/state'
 import {
@@ -14,6 +14,7 @@ import {
   MAX_DELETED_ROWS,
   MAX_INLINE_DIFF_LINE_LENGTH,
 } from './diffModel'
+import { diffOverview, type OverviewKind, type OverviewSegment } from './diffOverview'
 
 // The diff view's renderer: turns a DiffModel (see ./diffModel) into CodeMirror decorations
 // and gutter markers for one side of the view.
@@ -29,6 +30,9 @@ import {
 // - In the split layout, each side instead gets hatched blank-zone widgets where the other
 //   side has more lines, keeping unchanged lines vertically aligned (both editors disable
 //   wrapping and share a fixed line height).
+// - The modified side also gets the overview strip (./diffOverview) beside its scrollbar, with
+//   marks taken from the same markers and zone widgets. That side is the right-hand pane in the
+//   split layout, and its zones stand in for the deleted lines in both layouts.
 //
 // The host component dispatches `setDiffRender` whenever the model, layout, or expansion state
 // changes (rAF-coalesced per keystroke); between dispatches the decorations map through
@@ -60,8 +64,8 @@ const EMPTY_STATE: DiffRenderState = { deco: Decoration.none, gutter: RangeSet.e
 
 /**
  * The diff layer for one editor: a state field holding the decorations plus the change-bar
- * gutter and line-number gutter hooks. Place before `lineNumbers()` in the editor's extension
- * list so the bar gutter renders leftmost.
+ * gutter and line-number gutter hooks, and on the modified side the overview strip. Place
+ * before `lineNumbers()` in the editor's extension list so the bar gutter renders leftmost.
  */
 export function diffRenderExtension(side: Side): Extension {
   const field = StateField.define<DiffRenderState>({
@@ -89,6 +93,11 @@ export function diffRenderExtension(side: Side): Extension {
     }),
     lineNumberMarkers.compute([field], state => state.field(field).gutter),
     lineNumberWidgetMarker.of((_view, widget) => widgetGutterMarker(widget, 'num')),
+    side === 'modified'
+      ? diffOverview(
+        view => overviewSegments(view, view.state.field(field)),
+        update => update.startState.field(field) !== update.state.field(field))
+      : [],
   ]
 }
 
@@ -108,14 +117,14 @@ function buildRenderState(side: Side, input: DiffRenderInput, doc: Text): DiffRe
         }
       } else if (run.originalCount > run.modifiedCount) {
         pushZoneAfter(deco, doc, run.modifiedStart + run.modifiedCount - 1,
-          new BlankZoneWidget(run.originalCount - run.modifiedCount))
+          new BlankZoneWidget(run.originalCount - run.modifiedCount, run.modifiedCount > 0))
       }
     } else {
       pushLineDecorations({ deco, gutterMarks, doc, run, side })
       pushInlineMarks(deco, doc, run, side)
       if (run.modifiedCount > run.originalCount) {
         pushZoneAfter(deco, doc, run.originalStart + run.originalCount - 1,
-          new BlankZoneWidget(run.modifiedCount - run.originalCount))
+          new BlankZoneWidget(run.modifiedCount - run.originalCount, run.originalCount > 0))
       }
     }
   }
@@ -124,6 +133,51 @@ function buildRenderState(side: Side, input: DiffRenderInput, doc: Text): DiffRe
     deco: Decoration.set(deco, true),
     gutter: RangeSet.of(gutterMarks, true),
   }
+}
+
+// ---- overview strip ------------------------------------------------------------------------
+
+function overviewSegments(view: EditorView, render: DiffRenderState): OverviewSegment[] {
+  const segments: OverviewSegment[] = []
+  render.gutter.between(0, view.state.doc.length, (from, _to, marker) => {
+    const kind = marker === ADD_MARKER ? 'add' : marker === MODIFIED_MARKER ? 'modified' : null
+    if (kind === null) return
+    for (const block of subBlocks(view.lineBlockAt(from))) {
+      if (block.type === BlockType.Text) segments.push({ ...blockSpan(block), kind })
+    }
+  })
+  // Zones are block widgets inside their anchor line's block. Read each widget off the block
+  // itself (the decoration's instance may have been swapped for an equal one), deduplicating
+  // by position because two zone decorations can share a line block.
+  const seenTops = new Set<number>()
+  for (const cursor = render.deco.iter(); cursor.value !== null; cursor.next()) {
+    const widget: unknown = cursor.value.spec.widget
+    if (!(widget instanceof DeletionZoneWidget || widget instanceof BlankZoneWidget)) continue
+    for (const block of subBlocks(view.lineBlockAt(cursor.from))) {
+      const kind = zoneOverviewKind(block.widget)
+      if (kind === null || seenTops.has(block.top)) continue
+      seenTops.add(block.top)
+      segments.push({ ...blockSpan(block), kind })
+    }
+  }
+  return segments
+}
+
+function blockSpan({ top, bottom, from, to }: BlockInfo) {
+  return { top, bottom, from, to }
+}
+
+function subBlocks(block: BlockInfo): readonly BlockInfo[] {
+  return Array.isArray(block.type) ? block.type : [block]
+}
+
+function zoneOverviewKind(widget: WidgetType | null): OverviewKind | null {
+  // A replacement's deleted lines match the yellow of the lines replacing them, in both layouts.
+  if (widget instanceof DeletionZoneWidget) {
+    return widget.run.modifiedCount > 0 ? 'modified' : 'delete'
+  }
+  if (widget instanceof BlankZoneWidget) return widget.replacement ? 'modified' : 'delete'
+  return null
 }
 
 // ---- line + inline decorations -------------------------------------------------------------
@@ -226,11 +280,15 @@ function widgetGutterMarker(widget: WidgetType, kind: 'bar' | 'num'): GutterMark
 
 /** Hatched filler aligning this side with the other side's extra lines (split layout). */
 class BlankZoneWidget extends WidgetType {
-  constructor(readonly lines: number) {
+  constructor(
+    readonly lines: number,
+    /** The zone pads out a replacement (both sides have lines), not a pure add or delete. */
+    readonly replacement: boolean,
+  ) {
     super()
   }
   override eq(other: BlankZoneWidget): boolean {
-    return other.lines === this.lines
+    return other.lines === this.lines && other.replacement === this.replacement
   }
   override get estimatedHeight(): number {
     return Math.max(1, this.lines) * LINE_HEIGHT_PX

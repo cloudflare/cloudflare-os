@@ -140,13 +140,14 @@ describe("Slack resource binding identity", () => {
         .startSession(queue as never);
     let cursor = await session.listUsers();
     expect(await cursor.next()).toMatchObject([{ id: "WSELF" }]);
+    let reads = read.mock.calls.length;
     installation = { teamId: "TTWO", isEnterpriseInstall: false };
     workspaces = [{ id: "TTWO", name: "Two" }];
     currentToken = { token: "workspace-token", expires: new Date(Date.now() + 12 * 60 * 60 * 1000) };
     vi.setSystemTime(Date.now() + 2 * 60 * 60 * 1000);
     await expect(cursor.next()).rejects.toMatchObject({ code: "team_access_not_granted" });
     expect(getAccessToken).toHaveBeenCalledTimes(2);
-    expect(read).toHaveBeenCalledTimes(1);
+    expect(read).toHaveBeenCalledTimes(reads);
     expect(queue.authorizeObservation).toHaveBeenCalledTimes(1);
     expect(ctx.storage.kv.get("boundTeamId")).toBe("TONE");
   });

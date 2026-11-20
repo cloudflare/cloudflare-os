@@ -1,0 +1,13 @@
+is_clang = false
+is_component_build = false
+is_debug = false
+pdf_enable_v8 = false
+pdf_enable_xfa = false
+pdf_is_complete_lib = true
+pdf_is_standalone = true
+pdf_use_libyuv = false
+pdf_use_partition_alloc = false
+target_cpu = "wasm"
+target_os = "emscripten"
+treat_warnings_as_errors = false
+use_custom_libcxx = false

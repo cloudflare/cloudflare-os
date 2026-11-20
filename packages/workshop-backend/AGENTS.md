@@ -109,6 +109,7 @@ them:
   gatekeepers/resources are enforced before a capability is minted. Both mints call it:
   `getGatekeeperClassFor()` (gadget/agent code can't reach it directly) and
   `createResourceGatekeeper()` (reached only through the agent's `createExternalResource` tool).
+  `saveFile()` mints nothing but writes to the vendor directly, so it calls it too.
 - In AI Gateway mode the deployment's models are admin settings too (`AdminConfig.modelModes`,
   `addedModels`, `modelSettings`, `addedProviders`, `providerOrder`, `modelOrder`,
   `userModelsEnabled`). `GatewayModels` in

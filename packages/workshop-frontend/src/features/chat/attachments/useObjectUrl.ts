@@ -10,10 +10,10 @@ interface SharedUrl {
 }
 
 /**
- * The URLs handed out for each array of bytes, by type. A file's readers share one array for a
- * picture it uses many times, and the URL is shared the same way: one Blob, not one per use.
+ * The URLs handed out for each byte array or Blob, by type. A file's readers share their data,
+ * and the URL is shared the same way: one Blob, not one per use.
  */
-const shared = new WeakMap<Uint8Array, Map<string, SharedUrl>>();
+const shared = new WeakMap<Uint8Array | Blob, Map<string, SharedUrl>>();
 
 const dataUrl = (blob: Blob): Promise<string> => new Promise((resolve, reject) => {
   const reader = new FileReader();
@@ -22,13 +22,13 @@ const dataUrl = (blob: Blob): Promise<string> => new Promise((resolve, reject) =
   reader.readAsDataURL(blob);
 });
 
-const acquire = (bytes: Uint8Array, mimeType: string): { url: Promise<string>; release: () => void } => {
+const acquire = (bytes: Uint8Array | Blob, mimeType: string): { url: Promise<string>; release: () => void } => {
   const type = mimeType || "application/octet-stream";
   let byType = shared.get(bytes);
   if (!byType) shared.set(bytes, byType = new Map());
   let entry = byType.get(type);
   if (!entry) {
-    const blob = new Blob([bytes as BlobPart], { type });
+    const blob = bytes instanceof Blob ? bytes.slice(0, bytes.size, type) : new Blob([bytes as BlobPart], { type });
     // Compared without parameters: `image/svg+xml; charset=utf-8` is an SVG too.
     if (type.split(";")[0]!.trim().toLowerCase() === SVG) {
       entry = { url: dataUrl(blob), release: () => {}, users: 0 };
@@ -56,7 +56,7 @@ const acquire = (bytes: Uint8Array, mimeType: string): { url: Promise<string>; r
  * `<img>` never runs its script, but opened on its own (say in a new tab) an object URL would run
  * it as the Workshop, and a data URL has no origin.
  */
-export const useObjectUrl = (bytes: Uint8Array | undefined, mimeType: string): string | null => {
+export const useObjectUrl = (bytes: Uint8Array | Blob | undefined, mimeType: string): string | null => {
   const [url, setUrl] = useState<string | null>(null);
   useEffect(() => {
     if (!bytes) {
