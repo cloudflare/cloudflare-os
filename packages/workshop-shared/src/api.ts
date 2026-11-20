@@ -5207,11 +5207,13 @@ export interface Overseer extends RpcTarget {
    * Anyone who redeems the link receives `grant`. The caller must be the owner or a "build"
    * collaborator.
    *
-   * With `default`, the link is the caller's *default* link for `grant`: each sharer has at
-   * most one live default link per grant, which the share dialog presents apart from the named
-   * links. If the caller already has one, this mints another key for it (as `newShareLinkKey`
-   * does) instead of creating a second, and returns that link's id. Otherwise it behaves as any
-   * other link, and revoking it leaves the caller with none until they create another.
+   * With `default`, the link is the caller's *default* link for the target of `grant` (a gadget,
+   * or the workspace): each sharer has at most one live default link per target, which the share
+   * dialog presents apart from the named links. If the caller already has one for `grant`, this
+   * mints another key for it (as `newShareLinkKey` does) instead of creating a second, and returns
+   * that link's id; if theirs gives different access, this throws, and `changeDefaultShareLink`
+   * changes it instead. Otherwise it behaves as any other link, and revoking it leaves the caller
+   * with none until they create another.
    *
    * A signed-in user redeems the key by passing it as `shareKey` to
    * AuthenticatedApi.openWorkspace(), which adds them as a collaborator and opens the workspace.
@@ -5243,6 +5245,18 @@ export interface Overseer extends RpcTarget {
    * caller. Returns the list of users whose access actually narrowed.
    */
   revokeShareLink(linkId: string, keepUsers: string[]): Promise<AffectedCollaborator[]>;
+
+  /**
+   * Replace the caller's own default link `linkId` (see `createShareLink`) with a new default link
+   * to the same target giving `grant` instead, e.g. a gadget's view rather than its use, in one
+   * step: the old link is revoked as `revokeShareLink(linkId, keepUsers)` revokes it, so its keys
+   * stop working and `previewRevokeShareLink` previews who loses access. Returns the new link's
+   * first key and id, as `createShareLink` does, and the users whose access actually narrowed.
+   * Throws, changing nothing, unless `linkId` is the caller's live default link to the target of
+   * `grant`.
+   */
+  changeDefaultShareLink(linkId: string, grant: CollaboratorGrant, keepUsers: string[])
+      : Promise<{ key: string; linkId: string; affected: AffectedCollaborator[] }>;
 
   /**
    * Preview what would happen if a share link were revoked. Returns the list of users whose access
@@ -7876,6 +7890,6 @@ export type ShareLinkInfo = {
    */
   gadgets?: {id: WorkpieceId; title: string}[];
 
-  /** Whether this is its creator's default link for what it grants (see `createShareLink`). */
+  /** Whether this is its creator's default link for its target (see `createShareLink`). */
   default?: true;
 };

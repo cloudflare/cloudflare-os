@@ -179,6 +179,7 @@ type OverseerOverrides = {
   removeCollaborator?: Overseer['removeCollaborator']
   previewRevokeShareLink?: Overseer['previewRevokeShareLink']
   revokeShareLink?: Overseer['revokeShareLink']
+  changeDefaultShareLink?: Overseer['changeDefaultShareLink']
   listModels?: Overseer['listModels']
   newChat?: Overseer['newChat']
 }
@@ -199,6 +200,8 @@ function fakeOverseer(overrides: OverseerOverrides = {}): RpcStub<Overseer> {
     removeCollaborator: overrides.removeCollaborator ?? (async () => []),
     previewRevokeShareLink: overrides.previewRevokeShareLink ?? (async () => []),
     revokeShareLink: overrides.revokeShareLink ?? (async () => []),
+    changeDefaultShareLink: overrides.changeDefaultShareLink ??
+      (async () => ({ key: 'secret', linkId: 'link-1', affected: [] })),
     listModels: overrides.listModels ?? (async () => []),
     newChat: overrides.newChat ?? (async () => 1),
     // The snapshot page's preview, which these tests leave taking its snapshot.
@@ -1883,26 +1886,33 @@ describe('ShareModal', () => {
       expect(removeCollaborator).not.toHaveBeenCalled()
     })
 
-    it('switches my link to view by creating the new link before revoking the old', async () => {
+    it('switches my link to view in one change, and copies the new link', async () => {
       const mine: ShareLinkInfo = {
         linkId: 'link-mine', created: CREATED, createdBy: CURRENT_USER, role: 'use', gadgetId: 0, default: true,
       }
-      const calls: string[] = []
-      const createShareLink = vi.fn<Overseer['createShareLink']>(async () => {
-        calls.push('create')
-        return { key: 'secret', linkId: 'link-view' }
+      const shareLinks = [mine]
+      const changeDefaultShareLink = vi.fn<Overseer['changeDefaultShareLink']>(async () => {
+        shareLinks.splice(0, 1, { ...mine, linkId: 'link-view', mode: 'view' })
+        return { key: 'secret', linkId: 'link-view', affected: [] }
       })
-      const revokeShareLink = vi.fn<Overseer['revokeShareLink']>(async () => {
-        calls.push('revoke')
-        return []
-      })
-      const rendered = await renderGadget(fakeOverseer({ shareLinks: [mine], createShareLink, revokeShareLink }))
+      const createShareLink = vi.fn<Overseer['createShareLink']>(async () => ({ key: 'secret', linkId: 'link-view' }))
+      const revokeShareLink = vi.fn<Overseer['revokeShareLink']>(async () => [])
+      const newShareLinkKey = vi.fn<Overseer['newShareLinkKey']>(async () => ({ key: 'fresh' }))
+      const rendered = await renderGadget(fakeOverseer({
+        shareLinks, changeDefaultShareLink, createShareLink, revokeShareLink, newShareLinkKey,
+      }))
 
       expect(linkAccess(rendered)).toBe('Can use')
       await chooseLinkAccess(rendered, 'Can view')
-      expect(createShareLink).toHaveBeenCalledWith(VIEW_GRANT, undefined, { default: true })
-      expect(revokeShareLink).toHaveBeenCalledWith(mine.linkId, [])
-      expect(calls).toEqual(['create', 'revoke'])
+      expect(changeDefaultShareLink).toHaveBeenCalledWith(mine.linkId, VIEW_GRANT, [])
+      expect(createShareLink).not.toHaveBeenCalled()
+      expect(revokeShareLink).not.toHaveBeenCalled()
+      expect(linkAccess(rendered)).toBe('Can view')
+
+      // The key minted by the change is the one copied, so the first copy costs no round trip.
+      await click(footerCopyLink(rendered))
+      expect(copyToClipboard).toHaveBeenLastCalledWith(`${GADGET_URL}#share=secret`)
+      expect(newShareLinkKey).not.toHaveBeenCalled()
     })
 
     it('asks whom to keep before switching my link when someone joined through it', async () => {
@@ -1915,19 +1925,17 @@ describe('ShareModal', () => {
       const previewRevokeShareLink = vi.fn<Overseer['previewRevokeShareLink']>(async () => [{
         profile: joined.profile, addedBy: joined.addedBy, oldAccess: joined.access, newAccess: null,
       }])
-      const createShareLink = vi.fn<Overseer['createShareLink']>(async () => ({ key: 'secret', linkId: 'link-view' }))
-      const revokeShareLink = vi.fn<Overseer['revokeShareLink']>(async () => [])
+      const changeDefaultShareLink = vi.fn<Overseer['changeDefaultShareLink']>(
+        async () => ({ key: 'secret', linkId: 'link-view', affected: [] }))
       const rendered = await renderGadget(fakeOverseer({
-        collaborators: [joined], shareLinks: [mine], previewRevokeShareLink, createShareLink, revokeShareLink,
+        collaborators: [joined], shareLinks: [mine], previewRevokeShareLink, changeDefaultShareLink,
       }))
 
       await chooseLinkAccess(rendered, 'Can view')
-      expect(createShareLink).not.toHaveBeenCalled()
-      expect(revokeShareLink).not.toHaveBeenCalled()
+      expect(changeDefaultShareLink).not.toHaveBeenCalled()
 
       await click(button(sectionFor(rendered, 'people-heading'), 'Change'))
-      expect(createShareLink).toHaveBeenCalledWith(VIEW_GRANT, undefined, { default: true })
-      expect(revokeShareLink).toHaveBeenCalledWith(mine.linkId, [])
+      expect(changeDefaultShareLink).toHaveBeenCalledWith(mine.linkId, VIEW_GRANT, [])
     })
 
     const snapshotCard = (rendered: HTMLElement) => [...rendered.querySelectorAll('button')]

@@ -920,6 +920,68 @@ describe("default share links", () => {
     expect(fresh.linkId).not.toBe(revoked.linkId);
     expect(mgr.listShareLinkRecords().map(record => record.id)).toEqual([fresh.linkId]);
   });
+
+  it("refuses a second default to the same target with different access", async () => {
+    let { mgr } = makeManager();
+    let use = await mgr.createShareLink({ caller: owner, grant: { gadgetId: 1 }, default: true });
+    await expect(mgr.createShareLink(
+        { caller: owner, grant: { gadgetId: 1, mode: "view" }, default: true }))
+        .rejects.toThrow(/Change that link instead/);
+
+    let again = await mgr.createShareLink({ caller: owner, grant: { gadgetId: 1 }, default: true });
+    expect(again.linkId).toBe(use.linkId);
+    expect(mgr.listShareLinkRecords().map(record => record.id)).toEqual([use.linkId]);
+  });
+
+  it("changes a default's access in one step, keeping only the users asked for", async () => {
+    let { storage, mgr } = makeManager();
+    let old = await mgr.createShareLink({ caller: owner, grant: { gadgetId: 1 }, default: true });
+    for (let profileId of ["a", "b"]) {
+      await mgr.redeemShareKey(
+          { rawKey: old.key, profileId, fetchProfile: async () => profile(profileId) });
+    }
+
+    let changed = await mgr.changeDefaultShareLink({
+      caller: owner, linkId: old.linkId, grant: { gadgetId: 1, mode: "view" }, keepUsers: ["a"],
+    });
+    expect(ids(changed.affected)).toEqual(["b"]);
+    expect(mgr.getEffectiveAccess("a")).toEqual(only(1));
+    expect(mgr.getEffectiveAccess("b")).toBeUndefined();
+
+    expect(link(storage, old.linkId).revoked).toBe(true);
+    expect(mgr.listShareLinkRecords()).toEqual([expect.objectContaining(
+        { id: changed.linkId, role: "use", gadgetId: 1, mode: "view", default: true })]);
+
+    // The old key is dead; the new one grants the view.
+    await mgr.redeemShareKey({ rawKey: old.key, profileId: "c", fetchProfile: async () => profile("c") });
+    expect(mgr.getEffectiveAccess("c")).toBeUndefined();
+    await mgr.redeemShareKey(
+        { rawKey: changed.key, profileId: "c", fetchProfile: async () => profile("c") });
+    expect(mgr.getEffectiveAccess("c")).toEqual({ role: "use", gadgetIds: [1], viewOnly: [1] });
+  });
+
+  it("changes only the caller's own live default to the same target", async () => {
+    let { storage, mgr } = makeManager();
+    seedCollaborator(storage, "bob", [userEdge(OWNER)]);
+    let named = await mgr.createShareLink({ caller: owner, grant: { gadgetId: 1 } });
+    let bobs = await mgr.createShareLink({ caller: collab("bob"), grant: { gadgetId: 1 }, default: true });
+    let mine = await mgr.createShareLink({ caller: owner, grant: { gadgetId: 1 }, default: true });
+    let revoked = await mgr.createShareLink({ caller: owner, grant: { gadgetId: 2 }, default: true });
+    mgr.revokeShareLink(owner, revoked.linkId, []);
+    let before = mgr.listShareLinkRecords();
+
+    for (let [linkId, grant] of [
+      [named.linkId, { gadgetId: 1, mode: "view" }],
+      [bobs.linkId, { gadgetId: 1, mode: "view" }],
+      [revoked.linkId, { gadgetId: 2, mode: "view" }],
+      [mine.linkId, { gadgetId: 2, mode: "view" }],
+      [mine.linkId, "workspace"],
+    ] as const) {
+      await expect(mgr.changeDefaultShareLink({ caller: owner, linkId, grant, keepUsers: [] }))
+          .rejects.toThrow(/Only your own default link/);
+    }
+    expect(mgr.listShareLinkRecords()).toEqual(before);
+  });
 });
 
 describe("newShareLinkKey", () => {
