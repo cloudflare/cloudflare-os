@@ -72,20 +72,36 @@ const METHOD_VERBS = new Map([
  * ```
  */
 export function routeOperation(routes: Routes, method: string, url: URL): string | undefined {
+  return walk(routes, method, url)?.name;
+}
+
+// Where the walk of a request's path stops: the request's name, and the end that the walk stopped
+// at, where it stopped at one (see `routeEnds`), as the place of its tree in the routes and the
+// keys from that tree's root down to the end.
+type Walked = { name: string; end?: { tree: number; keys: readonly string[] } };
+
+// Walks the path of a request down the tree of the first root its URL starts with. Undefined
+// where the routes have no name for the request. `routeOperation` and `unreachedRouteEnds` read
+// this one walk, so that a request is named and an end is reached by the same rules.
+function walk(routes: Routes, method: string, url: URL): Walked | undefined {
   let address = url.origin + url.pathname;
-  let route = routes.find(([prefix]) => address.startsWith(prefix));
-  if (!route) return undefined;
+  let tree = routes.findIndex(([prefix]) => address.startsWith(prefix));
+  if (tree < 0) return undefined;
+  let [root, node] = routes[tree];
   // A `word:verb` segment is two steps, the verb keeping its colon.
-  let steps = address.slice(route[0].length).split("/").flatMap(segment => {
+  let steps = address.slice(root.length).split("/").flatMap(segment => {
     let colon = segment.indexOf(":");
     return colon < 0 ? segment : [segment.slice(0, colon), segment.slice(colon)];
   }).filter(step => step !== "");
 
-  let node = route[1];
   let resource: string | undefined;
   let verb: string | undefined;
   // Whether the path ends at an item, and not at the resource that holds it.
   let item = false;
+  // The tree's keys down to `node`, and those down to the end the walk stopped at where that is
+  // not `node`.
+  let keys: string[] = [];
+  let end: string[] | undefined;
   for (let at = 0; at < steps.length; at++) {
     let step = steps[at];
     // An own property only, so that an ID spelling `constructor` finds no child. The keys in
@@ -96,19 +112,24 @@ export function routeOperation(routes: Routes, method: string, url: URL): string
       resource = step;
       item = false;
       node = child;
+      keys.push(step);
     } else if (child === ONE && at === steps.length - 1) {
       resource = step;
       item = true;
+      end = [...keys, step];
     } else if (child === method && at === steps.length - 1) {
       // A verb is one under its own method and at the end of the path, and an ID anywhere else.
       verb = step.startsWith(":") ? step.slice(1) : step;
+      end = [...keys, step];
     } else if (step.startsWith(":")) {
       return undefined;
     } else if (typeof items === "object") {
       item = true;
       node = items;
+      keys.push(ID);
     } else if (Object.hasOwn(node, REST)) {
       item = true;
+      end = [...keys, REST];
       break;
     } else {
       return undefined;
@@ -121,20 +142,27 @@ export function routeOperation(routes: Routes, method: string, url: URL): string
     verb = method === "GET" ? (item ? "get" : "list") : METHOD_VERBS.get(method);
     if (verb === undefined) return undefined;
   }
-  return resource === undefined ? verb : `${resource}.${verb}`;
+  // A resource or an item is an end where it has nothing under it.
+  if (end === undefined && Object.keys(node).length === 0) end = keys;
+  return {
+    name: resource === undefined ? verb : `${resource}.${verb}`,
+    end: end === undefined ? undefined : { tree, keys: end },
+  };
 }
 
-/** Where one path of a tree ends (see {@link routeEnds}). */
+// `path` with `key` under it. A verb after a colon joins the segment before it, and a root ends
+// in its own slash.
+function under(path: string, key: string): string {
+  return path + (key.startsWith(":") || path.endsWith("/") ? "" : "/") + key;
+}
+
+/**
+ * Where one path of a tree ends (see {@link routeEnds}). Which requests end there is for
+ * `routeOperation`'s walk to say, which is what `unreachedRouteEnds` asks.
+ */
 export type RouteEnd = {
   /** The root joined with the tree's keys down to the end, an ID as its `{id}` or `{id+}` word. */
   path: string;
-  /**
-   * Matches exactly the address (origin and pathname) of a request that ends there, written with
-   * no empty segment: an `ID` is one path segment with no `:` in it, and a `REST` ID one or more
-   * characters. `routeOperation` passes over the empty segments that a doubled or a closing slash
-   * makes, and this does not: it matches no address that has one.
-   */
-  url: RegExp;
   /** The HTTP method that calls the verb the path ends at; absent where it ends at no verb. */
   method?: string;
 };
@@ -149,48 +177,55 @@ export type RouteEnd = {
  * @example
  * ```ts
  * routeEnds([["https://api.example.com/v1/", { threads: { [ID]: { modify: "POST" } } }]]);
- * // One end: its path is "https://api.example.com/v1/threads/{id}/modify", its method "POST", and
- * // its url matches "https://api.example.com/v1/threads/18c2/modify".
+ * // One end: its path is "https://api.example.com/v1/threads/{id}/modify" and its method "POST".
  * ```
  */
 export function routeEnds(routes: Routes): RouteEnd[] {
-  return routes.flatMap(([root, tree]) => endsOf(tree, root, literal(root)));
+  return routes.flatMap(([root, tree]) => endsOf(tree, []).map(({ keys, method }): RouteEnd => {
+    const path = pathOf(root, keys);
+    return method === undefined ? { path } : { path, method };
+  }));
 }
 
-// The ends of `tree`, which is at `path`, whose addresses `pattern` matches.
-function endsOf(tree: Tree, path: string, pattern: string): RouteEnd[] {
+// An end of a tree, as the keys from the tree's root down to it and, of a verb, its method. The
+// keys tell an end from every other of its tree, which its `path` does not: the key `a:x` and the
+// key `:x` under `a` spell one path, and the walk of a request goes down the second alone.
+type End = { keys: readonly string[]; method?: Method };
+
+// The ends of `tree`, which is `keys` down from the root of its tree.
+function endsOf(tree: Tree, keys: readonly string[]): End[] {
   const children = Object.entries(tree);
-  if (children.length === 0) return [{ path, url: new RegExp(`^${pattern}$`) }];
-  return children.flatMap(([key, child]): RouteEnd[] => {
-    // A verb after a colon joins the segment before it, and a root ends in its own slash.
-    const joint = key.startsWith(":") || path.endsWith("/") ? "" : "/";
-    const to = path + joint + key;
-    const segment = key === ID ? "[^/:]+" : key === REST ? ".+" : literal(key);
-    const toPattern = pattern + joint + segment;
-    const url = new RegExp(`^${toPattern}$`);
+  if (children.length === 0) return [{ keys }];
+  return children.flatMap(([key, child]): End[] => {
+    const to = [...keys, key];
     // The rest of a path is an ID whatever it holds, so nothing under `REST` is walked to.
-    if (key === REST || child === ONE) return [{ path: to, url }];
-    return typeof child === "object" ? endsOf(child, to, toPattern) : [{ path: to, url, method: child }];
+    if (key === REST || child === ONE) return [{ keys: to }];
+    return typeof child === "object" ? endsOf(child, to) : [{ keys: to, method: child }];
   });
 }
 
-// `text` as the source of a pattern that matches it alone.
-function literal(text: string): string {
-  return text.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
+// The `path` of an end: its root joined with its keys.
+function pathOf(root: string, keys: readonly string[]): string {
+  return keys.reduce(under, root);
 }
 
 /**
  * The `path` of every end of `routes` (`routeEnds`) that no row of `requests` reaches. A row
- * reaches an end when its URL's address (origin and pathname, so without the query) matches the
- * end's `url` and, where the end has a method, the row's method is that method. The address is
- * matched without the empty segments under its root, which `routeOperation` passes over, so a
- * row may end in a slash. A row whose URL cannot be parsed reaches none.
+ * reaches the end that `routeOperation`'s own walk of it stops at: the verb or the `ONE` its path
+ * ends with, the `REST` ID its path runs into, or the resource or item with nothing under it that
+ * its path ends at. The walk decides, and not the look of an address: a row to a verb or to a
+ * resource does not reach the end at an item beside it, a verb is reached under its own method
+ * alone, and a row may end in a slash, as the walk passes over empty segments.
  *
- * An ID is whatever a segment spells, so a row can reach an end that `routeOperation` does not
- * end its path at: a row to a verb, or to a resource, reaches the end at an item beside it as
- * well, and a row reaches a `REST` end though the rest of its path begins with a colon, which
- * has no name. A gatekeeper's test of its request table asserts each row's name, and that the
- * result of this is empty, so that its tree and its table cannot drift apart.
+ * A row that `routeOperation` gives no name reaches nothing: one under a method that has no verb,
+ * or one whose URL cannot be parsed. A URL is read under the first root it starts with, so no row
+ * reaches an end of a tree whose root comes after another that its URLs start with. Nor does any
+ * row reach the end at the root of an empty tree, where nothing has a name, or an end that the
+ * walk stops at for no request, as that of a `REST` ID beside an `ID` is, and that of a key
+ * that holds a slash, which no segment does. An end is the keys down to it, and not the path
+ * they spell: the key `a:x` and the key `:x` under `a` spell one path, and a row to it reaches
+ * the second alone. A gatekeeper's test of its request table asserts each row's name, and that
+ * the result of this is empty, so that its tree and its table cannot drift apart.
  * @param routes The trees whose ends are to be reached.
  * @param requests Rows of an HTTP method in upper case, a URL, and anything further, which is not
  *   read.
@@ -208,21 +243,15 @@ export function unreachedRouteEnds(
   routes: Routes,
   requests: readonly (readonly [method: string, url: string | URL, ...rest: unknown[]])[],
 ): string[] {
-  const sent = requests.flatMap(([method, url]) => {
+  // The ends reached, tree by tree, each as its keys written out so that no two ends are written
+  // alike: two trees may hold the same keys, and a URL is read under the first alone.
+  const reached = routes.map(() => new Set<string>());
+  for (const [method, url] of requests) {
     const parsed = typeof url === "string" ? URL.parse(url) : url;
-    if (!parsed) return [];
-    return [{ method, address: withoutEmptySegments(routes, parsed.origin + parsed.pathname) }];
-  });
-  return routeEnds(routes)
-      .filter(end => !sent.some(({ method, address }) =>
-        (end.method === undefined || end.method === method) && end.url.test(address)))
-      .map(end => end.path);
-}
-
-// `address` without the empty segments under the root it is read under, which a doubled or a
-// closing slash makes. An address under no root is left as it is.
-function withoutEmptySegments(routes: Routes, address: string): string {
-  const root = routes.find(([prefix]) => address.startsWith(prefix))?.[0];
-  if (root === undefined) return address;
-  return root + address.slice(root.length).split("/").filter(segment => segment !== "").join("/");
+    const end = parsed ? walk(routes, method, parsed)?.end : undefined;
+    if (end) reached[end.tree].add(JSON.stringify(end.keys));
+  }
+  return routes.flatMap(([root, tree], at) => endsOf(tree, [])
+    .filter(({ keys }) => !reached[at].has(JSON.stringify(keys)))
+    .map(({ keys }) => pathOf(root, keys)));
 }

@@ -277,15 +277,16 @@ describe("routeOperation", () => {
   });
 });
 
-// The ends of the sample, with an address that ends at each and addresses that do not.
+// The ends of the sample, with an address whose walk ends at each, under the end's method or a
+// GET, and addresses whose walk does not.
 const ENDS: { path: string; method?: string; at: string; notAt: string[] }[] = [
   {
     path: `${SHOP}/orders/export`, method: "POST", at: `${SHOP}/orders/export`,
-    notAt: [`${SHOP}/orders/exports`, `${SHOP}/orders/export/`, `${SHOP}/orders/o-1001/export`],
+    notAt: [`${SHOP}/orders/exports`, `${SHOP}/orders/o-1001/export`],
   },
   {
     path: `${SHOP}/orders:search`, method: "GET", at: `${SHOP}/orders:search`,
-    notAt: [`${SHOP}/orders/search`, `${SHOP}/orders/:search`, `${SHOP}/orders:searches`],
+    notAt: [`${SHOP}/orders/search`, `${SHOP}/orders:searches`],
   },
   {
     path: `${SHOP}/orders/{id}/cancel`, method: "POST", at: `${SHOP}/orders/o-1001/cancel`,
@@ -323,19 +324,21 @@ const ENDS: { path: string; method?: string; at: string; notAt: string[] }[] = [
   },
 ];
 
+// The ends of `routes` that one request reaches: the one its walk stops at, or none.
+function reachedBy(routes: Routes, method: string, url: string): string[] {
+  const unreached = unreachedRouteEnds(routes, [[method, url]]);
+  return routeEnds(routes).map(({ path }) => path).filter(path => !unreached.includes(path));
+}
+
 describe("routeEnds", () => {
   it("lists where each path of every tree ends, with the method of a verb", () => {
     expect(routeEnds(ROUTES).map(({ path, method }) => ({ path, method })))
       .toEqual(ENDS.map(({ path, method }) => ({ path, method })));
   });
 
-  it.each(ENDS)("matches the addresses that end at $path, and no other", ({ path, at, notAt }) => {
-    const end = routeEnds(ROUTES).find(candidate => candidate.path === path);
-    expect(end?.url.test(at)).toBe(true);
-    for (const address of notAt) expect(end?.url.test(address), address).toBe(false);
-    // A dot of the root is a dot, and the address is matched from its start.
-    expect(end?.url.test(at.replace("shop.example", "shopxexample"))).toBe(false);
-    expect(end?.url.test(`https://attacker.example/${at}`)).toBe(false);
+  it("lists a path and, of a verb, its method, and nothing else", () => {
+    expect(routeEnds(ROUTES).map(end => Object.keys(end).toSorted())).toEqual(
+      ENDS.map(({ method }) => method === undefined ? ["path"] : ["method", "path"]));
   });
 
   it.each(ENDS)("ends $path where routeOperation names a request", ({ path, method, at }) => {
@@ -357,30 +360,36 @@ describe("routeEnds", () => {
       { path: "https://api.shop.example/v2.1/(beta)/what?", method: undefined },
       { path: "https://api.shop.example/v2.1/(beta)/$batch", method: "POST" },
     ]);
-    expect(ends[0].url.test("https://api.shop.example/v2.1/(beta)/a+b/x")).toBe(true);
-    expect(ends[0].url.test("https://api.shop.example/v2x1/(beta)/a+b/x")).toBe(false);
-    expect(ends[0].url.test("https://api.shop.example/v2.1/beta/a+b/x")).toBe(false);
-    expect(ends[0].url.test("https://api.shop.example/v2.1/(beta)/aab/x")).toBe(false);
-    expect(ends[1].url.test("https://api.shop.example/v2.1/(beta)/what?")).toBe(true);
-    expect(ends[1].url.test("https://api.shop.example/v2.1/(beta)/wha")).toBe(false);
-    expect(ends[2].url.test("https://api.shop.example/v2.1/(beta)/$batch")).toBe(true);
+    const reached = (method: string, url: string) => reachedBy(routes, method, url);
+    expect(reached("GET", "https://api.shop.example/v2.1/(beta)/a+b/x")).toEqual([ends[0].path]);
+    expect(reached("GET", "https://api.shop.example/v2x1/(beta)/a+b/x")).toEqual([]);
+    expect(reached("GET", "https://api.shop.example/v2.1/beta/a+b/x")).toEqual([]);
+    expect(reached("GET", "https://api.shop.example/v2.1/(beta)/aab/x")).toEqual([]);
+    expect(reached("POST", "https://api.shop.example/v2.1/(beta)/$batch")).toEqual([ends[2].path]);
+    // A key is a path segment as a URL holds it: one with a `?` in it is found by no request,
+    // whose path ends at that mark or holds it percent-encoded.
+    expect(reached("GET", "https://api.shop.example/v2.1/(beta)/what?")).toEqual([]);
+    expect(reached("GET", "https://api.shop.example/v2.1/(beta)/what%3F")).toEqual([]);
+    expect(reached("GET", "https://api.shop.example/v2.1/(beta)/wha")).toEqual([]);
   });
 
   it("joins a verb after a colon to the root, and ends an empty tree at its root", () => {
-    const ends = routeEnds([
+    const routes: Routes = [
       [`${SHOP}/`, { ":batch": "POST" }],
       [`${FILES}/`, {}],
-    ]);
+    ];
+    const ends = routeEnds(routes);
     expect(ends.map(({ path, method }) => ({ path, method }))).toEqual([
       { path: `${SHOP}/:batch`, method: "POST" },
       { path: `${FILES}/`, method: undefined },
     ]);
-    expect(ends[0].url.test(`${SHOP}/:batch`)).toBe(true);
-    expect(ends[0].url.test(`${SHOP}:batch`)).toBe(false);
+    expect(reachedBy(routes, "POST", `${SHOP}/:batch`)).toEqual([`${SHOP}/:batch`]);
+    expect(reachedBy(routes, "POST", `${SHOP}:batch`)).toEqual([]);
     expect(routeOperation([[`${SHOP}/`, { ":batch": "POST" }]], "POST", new URL(`${SHOP}/:batch`)))
       .toBe("batch");
-    expect(ends[1].url.test(`${FILES}/`)).toBe(true);
-    expect(ends[1].url.test(`${FILES}/blobs`)).toBe(false);
+    // Nothing under the root of an empty tree has a name, so no request reaches its end.
+    expect(reachedBy(routes, "GET", `${FILES}/`)).toEqual([]);
+    expect(reachedBy(routes, "GET", `${FILES}/blobs`)).toEqual([]);
   });
 
   it("ends a path at the rest of it, whatever is written under that", () => {
@@ -388,7 +397,7 @@ describe("routeEnds", () => {
     const ends = routeEnds(routes);
     expect(ends.map(({ path, method }) => ({ path, method })))
       .toEqual([{ path: `${FILES}/blobs/{id+}`, method: undefined }]);
-    expect(ends[0].url.test(`${FILES}/blobs/a/versions/3`)).toBe(true);
+    expect(reachedBy(routes, "GET", `${FILES}/blobs/a/versions/3`)).toEqual([`${FILES}/blobs/{id+}`]);
     expect(routeOperation(routes, "GET", new URL(`${FILES}/blobs/a/versions/3`))).toBe("blobs.get");
   });
 
@@ -421,14 +430,55 @@ describe("unreachedRouteEnds", () => {
     expect(unreachedRouteEnds(ROUTES, [])).toEqual(ENDS.map(({ path }) => path));
   });
 
+  it.each(ENDS)("reaches $path by a request whose walk ends there, and by no other", ({ path, method, at, notAt }) => {
+    expect(reachedBy(ROUTES, method ?? "GET", at)).toEqual([path]);
+    for (const address of notAt) expect(reachedBy(ROUTES, method ?? "GET", address), address).not.toContain(path);
+    // A dot of the root is a dot, and the address is read from its start.
+    expect(reachedBy(ROUTES, method ?? "GET", at.replace("shop.example", "shopxexample"))).toEqual([]);
+    expect(reachedBy(ROUTES, method ?? "GET", `https://attacker.example/${at}`)).toEqual([]);
+  });
+
   it.each(ENDS)("has $path once the rows that reach it are removed", ({ path, method, at }) => {
-    const end = routeEnds(ROUTES).find(candidate => candidate.path === path);
-    const kept = REQUESTS.filter(([rowMethod, rowUrl]) =>
-      !(end?.url.test(rowUrl.split("?")[0]) && (method ?? rowMethod) === rowMethod));
+    const kept = REQUESTS.filter(([rowMethod, rowUrl]) => !reachedBy(ROUTES, rowMethod, rowUrl).includes(path));
     expect(kept.length).toBeLessThan(REQUESTS.length);
     expect(unreachedRouteEnds(ROUTES, kept)).toEqual([path]);
     // And not once a row to it is back.
     expect(unreachedRouteEnds(ROUTES, [...kept, [method ?? "GET", at]])).toEqual([]);
+  });
+
+  it("reaches by each row of the sample the end its walk stops at, and none by a row to what has more under it", () => {
+    // The end each row of the sample reaches, by the name the row has.
+    const reached = new Map(REQUESTS.map(([method, url, name]) => [name, reachedBy(ROUTES, method, url)]));
+    expect(Object.fromEntries(reached)).toEqual({
+      // A resource or an item that has something under it is no end.
+      "orders.list": [], "orders.get": [], "orders.create": [], "orders.update": [], "orders.patch": [],
+      "orders.delete": [], "items.list": [], "items.get": [], "items.create": [], "items.delete": [],
+      "customers.list": [], "blobs.list": [], "buckets.list": [], "buckets.get": [], "objects.list": [],
+      "orders.export": [`${SHOP}/orders/export`],
+      "orders.search": [`${SHOP}/orders:search`],
+      "orders.cancel": [`${SHOP}/orders/{id}/cancel`],
+      "orders.archive": [`${SHOP}/orders/{id}:archive`],
+      "notes.list": [`${SHOP}/orders/{id}/items/{id}/notes`],
+      "notes.create": [`${SHOP}/orders/{id}/items/{id}/notes`],
+      "customers.get": [`${SHOP}/customers/{id}`],
+      "customers.patch": [`${SHOP}/customers/{id}`],
+      "settings.get": [`${SHOP}/settings`],
+      "settings.patch": [`${SHOP}/settings`],
+      ping: [`${SHOP}/ping`],
+      "blobs.get": [`${FILES}/blobs/{id+}`],
+      "blobs.update": [`${FILES}/blobs/{id+}`],
+      "blobs.delete": [`${FILES}/blobs/{id+}`],
+      "objects.get": [`${FILES}/buckets/{id}/objects/{id}`],
+      "objects.batchDelete": [`${FILES}/buckets/{id}/objects:batchDelete`],
+    });
+  });
+
+  it("has exactly the end of a row that is removed from a table of one row for each end", () => {
+    const table: [method: string, url: string][] = ENDS.map(({ method, at }) => [method ?? "GET", at]);
+    expect(unreachedRouteEnds(ROUTES, table)).toEqual([]);
+    for (const [removed, { path }] of ENDS.entries()) {
+      expect(unreachedRouteEnds(ROUTES, table.filter((_row, at) => at !== removed)), path).toEqual([path]);
+    }
   });
 
   it("removing one row leaves its end unreached", () => {
@@ -440,7 +490,7 @@ describe("unreachedRouteEnds", () => {
       .toEqual([`${FILES}/buckets/{id}/objects:batchDelete`]);
   });
 
-  it("reaches a verb under its own method alone, and any other end under any", () => {
+  it("reaches a verb under its own method alone, and any other end under a method that names the request", () => {
     const routes: Routes = [[`${SHOP}/`, { orders: { export: "POST" }, customers: { [ID]: {} } }]];
     const verb = `${SHOP}/orders/export`;
     const item = `${SHOP}/customers/{id}`;
@@ -448,55 +498,120 @@ describe("unreachedRouteEnds", () => {
     expect(unreachedRouteEnds(routes, [["post", verb]])).toEqual([verb, item]);
     expect(unreachedRouteEnds(routes, [["POST", verb]])).toEqual([item]);
     expect(unreachedRouteEnds(routes, [["DELETE", `${SHOP}/customers/c-7`]])).toEqual([verb]);
+    // A HEAD has no name, and a request that has none reaches nothing.
+    expect(routeOperation(routes, "HEAD", new URL(`${SHOP}/customers/c-7`))).toBeUndefined();
     expect(unreachedRouteEnds(routes, [["HEAD", `${SHOP}/customers/c-7`], ["POST", verb]]))
+      .toEqual([item]);
+    expect(unreachedRouteEnds(routes, [["PATCH", `${SHOP}/customers/c-7`], ["POST", verb]]))
       .toEqual([]);
   });
 
-  it("reaches the end of an item by a row to a verb beside it, an ID being any segment", () => {
+  it("does not reach the end of an item by a row to a verb beside it, which is no item", () => {
     const routes: Routes = [[`${SHOP}/`, { orders: { export: "POST", [ID]: {} } }]];
-    expect(unreachedRouteEnds(routes, [["POST", `${SHOP}/orders/export`]])).toEqual([]);
+    expect(unreachedRouteEnds(routes, [["POST", `${SHOP}/orders/export`]])).toEqual([`${SHOP}/orders/{id}`]);
+    // Under any other method, the verb's word is an ID.
     expect(unreachedRouteEnds(routes, [["GET", `${SHOP}/orders/export`]]))
       .toEqual([`${SHOP}/orders/export`]);
   });
 
-  it("reaches the end of an item by a row to a resource beside it, and a REST end by any rest", () => {
-    const beside: Routes = [[`${SHOP}/`, { orders: { [ID]: {}, drafts: { [ID]: {} } } }]];
+  it("does not reach the end of an item by a row to a resource beside it, which is no item", () => {
+    const beside: Routes = [[`${SHOP}/`, { orders: { [ID]: {}, drafts: {} } }]];
+    expect(routeOperation(beside, "GET", new URL(`${SHOP}/orders/drafts`))).toBe("drafts.list");
+    expect(unreachedRouteEnds(beside, [["GET", `${SHOP}/orders/drafts`]])).toEqual([`${SHOP}/orders/{id}`]);
+    expect(unreachedRouteEnds(beside, [["GET", `${SHOP}/orders/o-1001`]])).toEqual([`${SHOP}/orders/drafts`]);
+
+    const nested: Routes = [[`${SHOP}/`, { orders: { [ID]: {}, drafts: { [ID]: {} } } }]];
     // No row is an item of `orders`: the first is named `drafts.list`.
     const rows: [method: string, url: string][] = [
       ["GET", `${SHOP}/orders/drafts`], ["GET", `${SHOP}/orders/drafts/d-1`],
     ];
-    expect(rows.map(([method, url]) => routeOperation(beside, method, new URL(url))))
+    expect(rows.map(([method, url]) => routeOperation(nested, method, new URL(url))))
       .toEqual(["drafts.list", "drafts.get"]);
-    expect(unreachedRouteEnds(beside, rows)).toEqual([]);
-    expect(unreachedRouteEnds(beside, rows.slice(1))).toEqual([`${SHOP}/orders/{id}`]);
+    expect(unreachedRouteEnds(nested, rows)).toEqual([`${SHOP}/orders/{id}`]);
+    expect(unreachedRouteEnds(nested, rows.slice(1))).toEqual([`${SHOP}/orders/{id}`]);
+    expect(unreachedRouteEnds(nested, [...rows, ["GET", `${SHOP}/orders/o-1001`]])).toEqual([]);
+  });
 
-    // The rest of a path that begins with a colon has no name, and reaches the end all the same.
+  it("does not reach a REST end by a rest that begins with a colon, which has no name", () => {
     expect(named("GET", `${FILES}/blobs/:b`)).toBeUndefined();
-    expect(unreachedRouteEnds(ROUTES, [...without("blobs.get").filter(([, , name]) =>
-      !name.startsWith("blobs.")), ["GET", `${FILES}/blobs/:b`]])).toEqual([]);
+    const others = REQUESTS.filter(([, , name]) => !["blobs.get", "blobs.update", "blobs.delete"].includes(name));
+    expect(unreachedRouteEnds(ROUTES, others)).toEqual([`${FILES}/blobs/{id+}`]);
+    expect(unreachedRouteEnds(ROUTES, [...others, ["GET", `${FILES}/blobs/:b`]]))
+      .toEqual([`${FILES}/blobs/{id+}`]);
+    // A colon further on is part of the rest.
+    expect(unreachedRouteEnds(ROUTES, [...others, ["GET", `${FILES}/blobs/a:b/:c`]])).toEqual([]);
   });
 
   it("reads a row's address without the empty segments under its root, as routeOperation does", () => {
     const routes: Routes = [
-      [`${SHOP}/`, { orders: { export: "POST", [ID]: { items: {} } } }],
+      [`${SHOP}/`, { orders: { export: "POST", ":search": "GET", [ID]: { items: {} } } }],
       [`${FILES}/`, {}],
     ];
-    const ends = [`${SHOP}/orders/export`, `${SHOP}/orders/{id}/items`, `${FILES}/`];
+    const ends = [`${SHOP}/orders/export`, `${SHOP}/orders:search`, `${SHOP}/orders/{id}/items`, `${FILES}/`];
     const rows: [method: string, url: string, name: string | undefined][] = [
       ["POST", `${SHOP}/orders/export/?format=csv`, "orders.export"],
+      // A verb after a colon in a segment of its own is read as joined to the segment before it.
+      ["GET", `${SHOP}/orders/:search`, "orders.search"],
       ["GET", `${SHOP}//orders//o-1001/items//`, "items.list"],
       ["GET", `${FILES}//`, undefined],
     ];
     expect(rows.map(([method, url]) => routeOperation(routes, method, new URL(url))))
       .toEqual(rows.map(([, , name]) => name));
-    expect(unreachedRouteEnds(routes, rows)).toEqual([]);
-    expect(unreachedRouteEnds(routes, rows.slice(1))).toEqual([ends[0]]);
-    expect(unreachedRouteEnds(routes, [rows[0], rows[2]])).toEqual([ends[1]]);
+    // The root of an empty tree is an end that no row reaches, as none there has a name.
+    expect(unreachedRouteEnds(routes, rows)).toEqual([ends[3]]);
+    expect(unreachedRouteEnds(routes, rows.slice(1))).toEqual([ends[0], ends[3]]);
+    expect(unreachedRouteEnds(routes, [rows[0], rows[2]])).toEqual([ends[1], ends[3]]);
+    expect(unreachedRouteEnds(routes, rows.slice(0, 2))).toEqual([ends[2], ends[3]]);
 
     // An empty segment that is not under the root is not passed over: the URL is under no root.
     const before = "https://api.shop.example//v2/orders/export";
     expect(routeOperation(routes, "POST", new URL(before))).toBeUndefined();
     expect(unreachedRouteEnds(routes, [["POST", before]])).toEqual(ends);
+  });
+
+  it("reaches an end under the first root a row's URL starts with, and under no root after it", () => {
+    // The second root's tree holds the same paths, and no URL is read under it.
+    const shared: Tree = { orders: { [ID]: {} } };
+    const routes: Routes = [
+      [`${SHOP}/`, { me: shared }], [`${SHOP}/me/`, shared], [`${SHOP}/`, { me: shared }],
+    ];
+    const end = `${SHOP}/me/orders/{id}`;
+    expect(routeEnds(routes).map(({ path }) => path)).toEqual([end, end, end]);
+    expect(unreachedRouteEnds(routes, [["GET", `${SHOP}/me/orders/o-1001`]])).toEqual([end, end]);
+  });
+
+  it("reaches the end of one path alone where a tree is written under two", () => {
+    const items: Tree = { [ID]: {} };
+    const routes: Routes = [[`${SHOP}/`, { orders: items, customers: items }]];
+    expect(unreachedRouteEnds(routes, [["GET", `${SHOP}/orders/o-1001`]])).toEqual([`${SHOP}/customers/{id}`]);
+    expect(unreachedRouteEnds(routes, [["GET", `${SHOP}/customers/c-7`]])).toEqual([`${SHOP}/orders/{id}`]);
+  });
+
+  it("reaches by a row one of two ends that spell the same path, the one its walk goes down", () => {
+    // A key that holds a colon past its start, or a slash, is one that no step of a path spells.
+    const colon: Routes = [[`${SHOP}/`, { "a:x": "GET", a: { ":x": "GET" } }]];
+    const slash: Routes = [[`${SHOP}/`, { "a/b": {}, a: { b: {} } }]];
+    for (const [routes, path] of [[colon, `${SHOP}/a:x`], [slash, `${SHOP}/a/b`]] as const) {
+      expect(routeEnds(routes).map(end => end.path)).toEqual([path, path]);
+      expect(routeOperation(routes, "GET", new URL(path))).toBeDefined();
+      expect(unreachedRouteEnds(routes, [["GET", path]])).toEqual([path]);
+      expect(unreachedRouteEnds(routes, [["GET", path], ["GET", path]])).toEqual([path]);
+      expect(unreachedRouteEnds(routes, [])).toEqual([path, path]);
+    }
+    // Such a key alone is reached by no row, and the key beside it by a row to the path.
+    expect(unreachedRouteEnds([[`${SHOP}/`, { "a:x": "GET" }]], [["GET", `${SHOP}/a:x`]]))
+      .toEqual([`${SHOP}/a:x`]);
+    expect(unreachedRouteEnds([[`${SHOP}/`, { a: { ":x": "GET" } }]], [["GET", `${SHOP}/a:x`]])).toEqual([]);
+  });
+
+  it("reaches no end that the walk cannot stop at, though routeEnds lists it", () => {
+    // An item where the tree gives items no tree, and the rest of a path beside items.
+    const routes: Routes = [[`${SHOP}/`, { orders: { [ID]: ONE }, blobs: { [ID]: {}, [REST]: {} } }]];
+    const ends = [`${SHOP}/orders/{id}`, `${SHOP}/blobs/{id}`, `${SHOP}/blobs/{id+}`];
+    expect(routeEnds(routes).map(({ path }) => path)).toEqual(ends);
+    expect(unreachedRouteEnds(routes, [
+      ["GET", `${SHOP}/orders/o-1001`], ["GET", `${SHOP}/blobs/b-1`], ["GET", `${SHOP}/blobs/2024/b-1`],
+    ])).toEqual([ends[0], ends[2]]);
   });
 
   it("reads a row's method and URL alone, the URL as an address", () => {
