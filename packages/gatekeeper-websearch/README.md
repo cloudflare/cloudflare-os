@@ -59,6 +59,10 @@ written this way than for the queries a model wrote without the guidance.
    throws `Web search failed with HTTP <status>.` without the provider's body, which can quote the
    query back. The record stays.
 
+Steps 3 and 4 run through the kit's upstream client (`websearchUpstream` in `src/search.ts`), which
+counts each search as a [subservice metric](../observability/README.md#subservice-calls) under the
+source `gatekeeper.websearch.api`, by the one name in `WEBSEARCH_OPERATIONS`, `search`.
+
 ## Security
 
 A query goes only to the provider that `search.ts` pins. The agent cannot choose where it goes, as
