@@ -178,15 +178,10 @@ export interface GoogleDocSession extends GoogleDocEditSession {
   readImage(imageId: string, tabId: string): Promise<GoogleDocImageBytes>;
 
   /**
-   * Read the file of one font of `family`, a `fontFamily` the tab's drawing returned, from Google
-   * Fonts: `weight` from 100 to 900, upright or `italic`. Throws when Google Fonts has no such font.
-   */
-  readFont(family: string, weight: number, italic: boolean): Promise<Uint8Array>;
-
-  /**
-   * Return the declarations of the read that these types leave out, as TypeScript: `readDrawing()`,
+   * Return the declarations of the reads that these types leave out, as TypeScript: `readDrawing()`,
    * which gives what it takes to render a tab as Google Docs draws it, with its pages, headers,
-   * footers and wrapped images. Call it before writing or changing code that renders the document.
+   * footers and wrapped images, and `readFont()`. Call it before writing or changing code that
+   * renders the document.
    */
   getRenderingTypes(): Promise<string>;
 }

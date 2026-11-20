@@ -682,6 +682,9 @@ folder.move("file-1", "folder-9");
       expect(bundle(), name).toContain("getRenderingTypes(): Promise<string>;");
       expect(bundle(), name).not.toContain(read);
       expect(rendering, name).toContain(read);
+      // A font is read only to render, so it is declared with the drawing that names it.
+      expect(bundle(), name).not.toContain("readFont(family");
+      expect(rendering, name).toContain("readFont(family");
       expect(rendering, name).not.toContain("import ");
       expect(compileAgentTypes([bundle(), rendering].join("\n")), name).toEqual([]);
     }
