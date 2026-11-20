@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import type {
-  AdminAccessRecord,
-  AdminSettingRecord,
-  AdminUserAccessRecord,
+import {
+  ADMIN_SETTING_METHODS,
+  ADMIN_USER_METHODS,
+  ADMIN_WORKSPACE_METHODS,
+  ADMIN_WRITE_ACTIONS,
+  type AdminAccessRecord,
+  type AdminSettingRecord,
+  type AdminUserAccessRecord,
 } from '@gadgets/workshop-shared/api'
 import { AUDIT_METHOD_GROUPS, auditFilterOf, targetUserOf } from './auditFilter'
 
@@ -72,6 +76,20 @@ describe('auditFilterOf', () => {
     expect(auditFilterOf({ kind: 'content' })).toEqual({})
     expect(auditFilterOf({ kind: 1 })).toEqual({})
     expect(auditFilterOf({ sensitivity: 'content' })).toEqual({})
+  })
+
+  it('keeps a write action as a method, and "write" as a kind', () => {
+    for (const method of ADMIN_WRITE_ACTIONS) expect(auditFilterOf({ method })).toEqual({ method })
+    expect(auditFilterOf({ kind: 'write' })).toEqual({ kind: 'write' })
+  })
+})
+
+describe('the write actions', () => {
+  // One method filter selects records of every kind (AdminAuditQuery.method), so a write action
+  // names write records alone only while no other kind of record has a method of its name.
+  it('share no name with a method of another kind of record', () => {
+    const others = new Set<string>([...ADMIN_WORKSPACE_METHODS, ...ADMIN_USER_METHODS, ...ADMIN_SETTING_METHODS])
+    expect(ADMIN_WRITE_ACTIONS.filter((action) => others.has(action))).toEqual([])
   })
 })
 

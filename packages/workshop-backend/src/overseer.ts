@@ -8,7 +8,7 @@ import {
   type AdminAccessRecord, type AdminAutoApproval, type AdminChatAttachment, type AdminChatState,
   type AdminGatekeeperInfo, type AdminObserver, type AdminPendingChange,
   type AdminWorkspaceDescription, type AdminWorkspaceDiagnostics, type AdminWorkspaceMethod,
-  type AdminWorkspaceView,
+  type AdminWorkspaceView, type AdminWriteAction, type AdminWriteArgs, type AdminWriteRecord,
 } from "@gadgets/workshop-shared/api";
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
@@ -67,13 +67,15 @@ import WORKTREE_BINDING_TYPES from "./worktree-binding.txt";
 import EXPORTS_BINDING_TYPES from "./exports-binding.txt";
 import { deploymentOutputForBlueprint, FormatOffer, listFormatOffers, readAdminConfig } from "./admin-config";
 import {
-  adminCommitLogDepth, assertAdminViewLive, cutAdminAuditText, redactAdminAuditArgs,
-  withholdActionContent, withholdBlueprintContent, withholdChatContent, withholdCommitContent,
-  withholdCreationContent, withholdHookContent,
+  adminCommitLogDepth, adminWorkspaceWritesEnabled, assertAdminViewLive, cutAdminAuditText, redactAdminAuditArgs, validateAdminAccessReason, withholdActionContent,
+  withholdBlueprintContent, withholdChatContent, withholdCommitContent, withholdCreationContent,
+  withholdHookContent,
   type AdminViewTerms,
 } from "./admin-access";
 import { adminViewCall } from "./admin-view";
 import type { AdminAuditDurableObject } from "./admin-audit";
+import { adminWriteArgs, type AdminWriteCall } from "./admin-writes";
+import { isDeploymentAdmin } from "./auth/config";
 import { DIRECTORY_ACTIVITY_INTERVAL_MS, type UserDirectoryDurableObject } from "./user-directory";
 import { chatChangeStatuses, foldCompactedCode, isTurnPrompt } from "./agent-compaction";
 import type { CachedRequest } from "./ai-models";
@@ -12007,6 +12009,96 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   /**
+   * Run an admin write (AdminApiImpl.writeWorkspace()). Reachable only over the Workshop's Durable
+   * Object binding, never through a capability a user holds. Reads its environment only through
+   * the OverseerImpl.
+   *
+   * As for openForAdmin(), by explicit policy the admin is not checked by authorizeCollaborator()
+   * or observer verification and joins no session, presence or outputs fan-out. Unlike
+   * openForAdmin(), a write does to the workspace what its operation does for a member.
+   *
+   * Refuses, writing and recording nothing:
+   *   - a workspace never initialised or since deleted (`workspaceNotFound`), before anything else
+   *     and again once its owner has been read;
+   *   - a malformed call (TypeError): a blank or over-long reason, a `via` that is not "api" or
+   *     "cli", or arguments that are not the action's;
+   *   - an admin who is no longer a deployment admin (`notAdmin`), and writes turned off
+   *     (`writesOff`), both read from this workspace's own environment.
+   *
+   * Then, in this order:
+   *   1. The AdminWriteRecord is appended to the deployment-wide log. A write whose record cannot
+   *      be written does not happen. Nor does one whose workspace was deleted while the record was
+   *      appended (`workspaceNotFound`): the record is kept, and nothing follows it.
+   *   2. The operation runs (see runAdminWrite()). If it throws, the error is rethrown; the
+   *      record stays.
+   * The workspace keeps no note of the write: the record is its only trace, and members see only
+   * what the operation did.
+   */
+  async applyAdminWrite(call: AdminWriteCall): Promise<void> {
+    let impl = this.impl;
+    if (!impl.ownerId) {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
+    }
+
+    let reason = validateAdminAccessReason(call.reason);
+    if (call.via !== "api" && call.via !== "cli") {
+      throw new TypeError("An admin write's via must be \"api\" or \"cli\".");
+    }
+    let args = adminWriteArgs(call.action, call.args);
+
+    // Read from the OverseerImpl's environment, so that the checks hold for this workspace's
+    // isolate even if the Worker that called ran an older config.
+    if (!isDeploymentAdmin(impl.env, call.admin)) {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.notAdmin);
+    }
+    if (!adminWorkspaceWritesEnabled(impl.env)) {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.writesOff);
+    }
+
+    // Resolved before the record, so that nothing but its append is awaited between the record
+    // and the effect.
+    let ownerId = await impl.getOwnerProfileId();
+    // Deleted during that read: a deleted workspace gets no record, as for a view's call.
+    if (!impl.ownerId) {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
+    }
+
+    let record: AdminWriteRecord = {
+      kind: "write",
+      at: new Date(),
+      admin: call.admin,
+      sessionId: call.sessionId,
+      via: call.via,
+      workspaceId: impl.ctx.id.toString(),
+      workspaceOwner: ownerId,
+      workspaceTitle: cutAdminAuditText(impl.storage.title.get(), MAX_ADMIN_AUDIT_ARG_LENGTH),
+      method: call.action,
+      args: redactAdminAuditArgs(args),
+      reason,
+    };
+    try {
+      // No retention, as for a view's call (see adminViewCall()).
+      await impl.adminAudits.getByName("").append(record);
+    } catch (err) {
+      // Nothing has changed.
+      impl.logger.warn("failed to append to the admin audit log", {
+        event: "admin.audit.append.failed", operation: call.action, error: err,
+      });
+      throw err;
+    }
+    // Deleted while the record was appended.
+    if (!impl.ownerId) {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
+    }
+
+    await runAdminWrite(impl, call.action, args);
+    // Never the reason or the arguments.
+    impl.logger.info("admin write applied", {
+      event: "admin.write.applied", operation: call.action,
+    });
+  }
+
+  /**
    * Initialize this workspace's default gadget from the release of a blueprint that `metadata`
    * describes. Called by AuthenticatedApi.newWorkspaceFromBlueprint() after creating (and opening)
    * the DO, with the metadata it goes on to set up the gadget's bindings from: the blueprint may
@@ -14726,6 +14818,34 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
       };
     });
   }
+}
+
+// Runs the operation of an admin write (see OverseerDurableObject.applyAdminWrite()): for each
+// action, the one a member's session runs for it, but for a stop that keeps the chat's queued
+// messages (see AdminApi.writeWorkspace()). `args` are as adminWriteArgs() kept them.
+async function runAdminWrite(impl: OverseerImpl, action: AdminWriteAction, args: AdminWriteArgs)
+    : Promise<void> {
+  // adminWriteArgs() checked that every argument the action needs was given.
+  let {chatId} = args as Required<AdminWriteArgs>;
+
+  switch (action) {
+    case "stopAgent":
+      impl.getChatMetaOrThrow(chatId);
+      // A stop drops the chat's queued steers, which the client that stops puts in its draft. No
+      // client stops this turn, so they are logged first, as when a turn fails: they stay in the
+      // chat as their senders' messages, and the agent reads them when it next runs.
+      impl.takeSteers(chatId);
+      impl.cancelAgent(chatId);
+      return;
+
+    case "restartWorkspace":
+      // Not awaited: the restart ends every call on the workspace, and this one is answered
+      // first.
+      impl.scheduleAccessRestart("Gadget restarted.");
+      return;
+  }
+  // Reached by no action: one without an operation above does not compile.
+  action satisfies never;
 }
 
 // Capability representing one gadget workpiece, handed to "build"-role sessions via

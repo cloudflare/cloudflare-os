@@ -414,13 +414,12 @@ function applyBackend(
   // Cloudflare Access pair are uploaded as *secrets* instead, out of band, because Wrangler prints
   // every plain-text var's value in its deploy summary and this workflow's logs are public. See
   // {@link backendSecrets} and preview.ts.
-  config.vars = {
-    ...config.vars,
-    PUBLIC_BASE_URL: baseUrl,
-  };
+  config.vars = { ...config.vars, PUBLIC_BASE_URL: baseUrl };
   config.previews = {
     observability: previewObservability(config),
-    vars: { ...config.vars },
+    // Writes on, so that they can be tried on a preview (docs/admin-access.md), but only there:
+    // the top-level vars are also the shared baseline's (see deployBaselineWorker() in preview.ts).
+    vars: { ...config.vars, ADMIN_WORKSPACE_WRITES: "on" },
     ...(config.unsafe ? { unsafe: config.unsafe } : {}),
     // preview.ts patches each entry's preview_id once the gatekeeper previews exist.
     services: backendGatekeeperServices(gatekeepers, baseUrl),
