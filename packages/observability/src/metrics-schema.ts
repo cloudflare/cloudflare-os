@@ -81,3 +81,58 @@ export const UNATTRIBUTED_ACTOR = "sys_unattributed";
 export function activityIndex(scope: MetricScope, entityRef?: string): string {
   return entityRef === undefined ? `activity|${scope}` : `activity|${scope}|${entityRef}`;
 }
+
+/**
+ * Family-specific columns of `subservice/v1`, after the common ones: the calls a deployment makes
+ * to the services behind it. Every string column holds a closed word, never anything of a user's.
+ */
+export const SUBSERVICE_V1_SLOTS = {
+  /** The recording logger's `component`. */
+  source: "blob8",
+  /** The service called, from a closed set. */
+  service: "blob9",
+  /** What was asked of it, a literal. */
+  operation: "blob10",
+  /** A closed word for why it did not succeed, or `""`. */
+  reason: "blob11",
+  /** An operation's own qualifier, or `""`. */
+  detail: "blob12",
+  /** 0 when there is none. */
+  httpStatus: "double3",
+  /** The service's numeric error code, 0 when there is none. */
+  providerCode: "double4",
+  /** How many identical calls the point stands for. */
+  calls: "double5",
+  /** Payload bytes sent, summed over `calls`. */
+  bytes: "double6",
+} as const satisfies Record<string, BlobSlot | DoubleSlot>;
+
+/** The blob1 value of every `subservice/v1` point. */
+export const SUBSERVICE_V1_DISCRIMINATOR = "subservice/v1";
+
+/** Every event type a `subservice/v1` point can carry in its `eventType` column. */
+export const SUBSERVICE_EVENT_TYPES = ["call", "release"] as const;
+
+/** What a `subservice/v1` point counts: a call made, or something a service held being let go. */
+export type SubserviceEventType = (typeof SUBSERVICE_EVENT_TYPES)[number];
+
+/** Every outcome of a `subservice/v1` point. `refused` is declined for rate or capacity. */
+export const SUBSERVICE_OUTCOMES = ["success", "refused", "error"] as const;
+
+/** How a call recorded as `subservice/v1` ended. */
+export type SubserviceOutcome = (typeof SUBSERVICE_OUTCOMES)[number];
+
+/**
+ * The index of a `subservice/v1` point: `subservice|<service>|<operation>|<outcome>`, or as much
+ * of it as is given, which is the prefix shared by those points. Analytics Engine samples rows
+ * by index, so each kind of call has an index of its own: a rare kind (a PDF opened again) is
+ * then not sampled away among a frequent one of the same service.
+ */
+export function subserviceIndex(service?: string, operation?: string, outcome?: string): string {
+  let index = "subservice";
+  for (const part of [service, operation, outcome]) {
+    if (part === undefined) break;
+    index += `|${part}`;
+  }
+  return index;
+}

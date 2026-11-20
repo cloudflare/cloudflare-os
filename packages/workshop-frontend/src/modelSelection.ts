@@ -139,7 +139,7 @@ export function getStoredSelectedModel(
  * stands, and the ID is undefined if the user couldn't be confirmed either.
  *
  * The server holds "No agent" as no preference, so other browsers keep their own choice rather than
- * following it, and a new external conversation starts on the first model offered.
+ * following it.
  */
 export async function syncSelectedModel(api: RpcStub<AuthenticatedApi>): Promise<string | undefined> {
   let userId: string | undefined;

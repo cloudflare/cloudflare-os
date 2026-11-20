@@ -398,6 +398,14 @@ export type SupportedResource = {
   creationConfigurationDescription?: string;
 
   /**
+   * With `creationConfigurator`: the content types (MIME) of files the user can save as a resource
+   * of this type through GatekeeperUser.saveFile(), best first, e.g. a word processor's document
+   * type lists the docx MIME type. The Workshop offers a save for a gadget export whose content
+   * type is exactly a listed one. Callers gate on this rather than probing.
+   */
+  savableFrom?: string[];
+
+  /**
    * The stable ID of the type whose connect card this type appears on, instead of a card of its
    * own. A card's types share one configurator, which may return a URL of any of them, so
    * startResourceConfigurator must return that configurator for each of them.
@@ -951,9 +959,23 @@ export interface GatekeeperUser extends WorkerEntrypoint {
    * default, or on the configuration the agent suggested (see ResourceConfiguratorHost.
    * getInitialResource()), and its collectResourceUrl() returns the vendor-defined value passed to
    * Gatekeeper.applyCreation(). The choice must not change the simulated resource's interface.
-   * Present when the type sets SupportedResource.creationConfigurator.
+   * With `purpose` "save" (omitted means "create") the user is instead choosing where saveFile()
+   * puts a new resource, there is no agent, and the frame is ready only once this account can save
+   * there. Present when the type sets SupportedResource.creationConfigurator.
    */
-  startCreationConfigurator?(resourceTypeId: string): Promise<GatekeeperUiFrame>;
+  startCreationConfigurator?(resourceTypeId: string, purpose?: "create" | "save")
+      : Promise<GatekeeperUiFrame>;
+
+  /**
+   * Save `file`, of the MIME type `contentType`, as a resource of the type `resourceTypeId` in
+   * this account, at the user's own request: no agent is involved and nothing is simulated.
+   * `destination` is either what the creation configurator returned for purpose "save", which
+   * makes a new resource named `name`, or the URL an earlier save returned, which replaces that
+   * resource's content and keeps its name. Returns the saved resource's URL. Present when the type
+   * sets SupportedResource.savableFrom, which lists `contentType`.
+   */
+  saveFile?(resourceTypeId: string, destination: string, name: string, contentType: string,
+      file: ReadableStream<Uint8Array>): Promise<{ url: string }>;
 
   /**
    * Revoke this account connection. The GatekeeperUser, and all Gatekeepers created through it,

@@ -340,6 +340,7 @@ it("a thread's hook receives only that thread's messages", async () => {
   // A firing reports the thread's conversation, whose access control covers its threads.
   expect(observations).toContainEqual(expect.objectContaining({
     title: "Receive a new Google Chat message", subresources: [`chat/space/${SPACE.slice("spaces/".length)}`],
+    description: expect.stringContaining("quoted message, cards, buttons"),
   }));
 });
 

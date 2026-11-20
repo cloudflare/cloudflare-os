@@ -182,10 +182,11 @@ function scriptUrl(source: string): string {
 
 const CAPNWEB_URL = scriptUrl(CAPNWEB_MODULE);
 
-function makeExportHtml(bundle: UiBundle, formatId: string): string {
+function makeExportHtml(bundle: UiBundle, formatId: string, renderMode?: "snapshot"): string {
   let { entryUrl, callsMain, importMap } = prepareUiPage(bundle, CAPNWEB_URL);
   let runtimeUrl = scriptUrl(
       `globalThis.gadgetExportFormatId = ${JSON.stringify(formatId)};\n` +
+      (renderMode ? `globalThis.gadgetRenderMode = ${JSON.stringify(renderMode)};\n` : "") +
       `globalThis.__workshopExportClientUrl = ${JSON.stringify(entryUrl)};\n` +
       `globalThis.__workshopExportCallsMain = ${callsMain};\n` +
       BROWSER_EXPORT_RUNTIME);
@@ -203,7 +204,8 @@ function makeExportHtml(bundle: UiBundle, formatId: string): string {
 }
 
 /**
- * Renders a Gadget's browser-mode export and streams the bytes back.
+ * Renders a Gadget's browser-mode export and streams the bytes back. `renderMode` is set for a
+ * snapshot, and the client reads it as `globalThis.gadgetRenderMode`.
  *
  * Takes ownership of `gadget` and disposes it once the export settles. The
  * returned stream must be consumed or cancelled: the browser session stays open
@@ -215,6 +217,7 @@ export async function renderGadgetInBrowser(
   documentTitle: string,
   gadget: RpcStub<any>,
   format: GadgetExportFormat,
+  renderMode?: "snapshot",
 ): Promise<ReadableStream<Uint8Array>> {
   const deadline = createExportDeadline("Browser export timed out.");
 
@@ -267,7 +270,7 @@ export async function renderGadgetInBrowser(
               status: 200,
               contentType: "text/html",
               headers: {"Content-Security-Policy": EXPORT_DOCUMENT_CSP},
-              body: makeExportHtml(bundle, format.id),
+              body: makeExportHtml(bundle, format.id, renderMode),
             });
           } else {
             void request.abort();

@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  CONNECT_FORM_NONCE_FIELD,
+  connectFormHtml,
   connectHandoffPageHtml,
   connectMutationError,
   errorPageHtml,
   escapeHtml,
+  formPageResponse,
   htmlResponse,
+  readConnectForm,
   INVALID_LINK_HTML,
 } from "../src/connect-pages";
 
@@ -176,4 +180,132 @@ describe("connectMutationError", () => {
         .toBe("unsupported-content-type");
     }
   });
+});
+
+describe("connect forms", () => {
+  const ORIGIN = "https://os.example/gatekeeper/vendor";
+  const form = (overrides: Partial<Parameters<typeof connectFormHtml>[0]> = {}) => connectFormHtml({
+    title: "Connect Vendor", intro: "Paste a key.", action: `${ORIGIN}/abc/key`, nonce: "f".repeat(64),
+    fields: [{ name: "key", label: "API key", secret: true }], ...overrides,
+  });
+  const submission = (body: string, headers: Record<string, string> = {}, method = "POST") =>
+    new Request(`${ORIGIN}/abc/key`, {
+      method,
+      headers: { Origin: "https://os.example", "Content-Type": "application/x-www-form-urlencoded", ...headers },
+      ...(method === "POST" ? { body } : {}),
+    });
+
+  // Under `no-referrer` a browser posts the page's forms with `Origin: null`, which
+  // `connectMutationError` refuses: the form could never be submitted.
+  it("serves a form page whose submissions name their origin", () => {
+    const response = formPageResponse(form());
+    expect(response.headers.get("Referrer-Policy")).toBe("same-origin");
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(response.headers.get("Content-Security-Policy")).toBe("frame-ancestors 'none'; form-action 'self'");
+    expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    expect(htmlResponse(form()).headers.get("Referrer-Policy")).toBe("no-referrer");
+  });
+
+  it("posts the nonce in a hidden field beside the inputs", () => {
+    const html = form({ fields: [{ name: "host", label: "Host", placeholder: "https://x" }, { name: "key", label: "Key", secret: true }] });
+    expect(html).toContain(`<form method="post" action="${ORIGIN}/abc/key" onsubmit="if(event.submitter)event.submitter.disabled=true">`);
+    expect(html).toContain(`<input type="hidden" name="${CONNECT_FORM_NONCE_FIELD}" value="${"f".repeat(64)}">`);
+    expect(html).toContain('<input id="host" name="host" type="text" required placeholder="https://x" aria-describedby="form.intro" autofocus>');
+    expect(html).toContain('<input id="key" name="key" type="password" required autocomplete="new-password" data-1p-ignore data-lpignore="true">');
+    expect(html).toContain('<button type="submit">Connect</button>');
+  });
+
+  it("escapes everything it is given", () => {
+    const hostile = '"><script>alert(1)</script>';
+    const html = form({
+      title: hostile, intro: hostile, action: hostile, nonce: hostile, submitLabel: hostile,
+      fields: [{ name: "key", label: hostile, placeholder: hostile }],
+    });
+    expect(html).not.toContain("<script>");
+  });
+
+  it("says why the last submission was refused, when given an error, and ties it to the inputs", () => {
+    expect(form()).not.toContain('class="err"');
+    expect(form()).not.toContain("aria-invalid");
+    expect(form()).not.toContain("form.error");
+    const html = form({ error: "Vendor refused <that> key." });
+    expect(html).toContain('<p class="err" id="form.error" role="alert">Vendor refused &lt;that&gt; key.</p>');
+    expect(html).toContain('data-lpignore="true" aria-invalid="true" aria-describedby="form.error form.intro" autofocus>');
+    const second = form({ error: "No.", fields: [{ name: "host", label: "Host" }, { name: "key", label: "Key" }] });
+    expect(second).toContain('<input id="key" name="key" type="text" required aria-invalid="true" aria-describedby="form.error">');
+  });
+
+  // A quote with no `<` or `>` after it: what closes an attribute and opens another.
+  it("escapes quotes in attribute values", () => {
+    const hostile = 'x" onfocus="alert(1)';
+    const html = form({
+      title: "t", intro: "i", action: hostile, nonce: hostile,
+      fields: [{ name: "key", label: "l", placeholder: hostile }],
+    });
+    expect(html).not.toContain('" onfocus="');
+    expect(html.split("x&quot; onfocus=&quot;alert(1)")).toHaveLength(4);
+  });
+
+  it.each([
+    [[]],
+    [[{ name: "nonce", label: "x" }]],
+    [[{ name: "a b", label: "x" }]],
+    [[{ name: 'a"', label: "x" }]],
+    [[{ name: "key", label: "x" }, { name: "key", label: "y" }]],
+  ])("refuses the fields %j", fields => {
+    expect(() => form({ fields })).toThrow("connect form needs fields");
+  });
+
+  it("reads a submission from the gatekeeper's own page", async () => {
+    const read = await readConnectForm(submission("nonce=abc&key=s%20k"), { origin: ORIGIN });
+    expect(read).toBeInstanceOf(URLSearchParams);
+    expect((read as URLSearchParams).get(CONNECT_FORM_NONCE_FIELD)).toBe("abc");
+    expect((read as URLSearchParams).get("key")).toBe("s k");
+  });
+
+  it.each([
+    ["from another site", { Origin: "https://evil.example" }, "POST", 403],
+    ["from a page that sends no referrer", { Origin: "null" }, "POST", 403],
+    ["in another encoding", { "Content-Type": "text/plain" }, "POST", 415],
+    ["by another method", {}, "GET", 405],
+  ])("refuses a submission %s", async (_name, headers, method, status) => {
+    const read = await readConnectForm(submission("nonce=abc&key=k", headers, method), { origin: ORIGIN });
+    expect(read).toBeInstanceOf(Response);
+    expect((read as Response).status).toBe(status);
+    expect((read as Response).headers.get("Cache-Control")).toBe("no-store");
+  });
+
+  it("names the method a submission must use", async () => {
+    const read = await readConnectForm(submission("", {}, "GET"), { origin: ORIGIN });
+    expect((read as Response).headers.get("Allow")).toBe("POST");
+  });
+
+  it("accepts a body of exactly the cap and refuses one byte more", async () => {
+    const body = `key=${"k".repeat(60)}`;
+    expect(await readConnectForm(submission(body), { origin: ORIGIN, maxBytes: 64 })).toBeInstanceOf(URLSearchParams);
+    const read = await readConnectForm(submission(`${body}k`), { origin: ORIGIN, maxBytes: 64 });
+    expect((read as Response).status).toBe(413);
+  });
+
+  it("refuses a submission whose body cannot be read", async () => {
+    const body = new ReadableStream({ start: controller => controller.error(new TypeError("client went away")) });
+    const req = new Request(`${ORIGIN}/abc/key`, {
+      method: "POST", body, duplex: "half",
+      headers: { Origin: "https://os.example", "Content-Type": "application/x-www-form-urlencoded" },
+    } as RequestInit);
+    const read = await readConnectForm(req, { origin: ORIGIN });
+    expect((read as Response).status).toBe(400);
+  });
+
+  it("does not read the body of a submission it refuses", async () => {
+    const req = submission("nonce=abc&key=k", { Origin: "https://evil.example" });
+    await readConnectForm(req, { origin: ORIGIN });
+    expect(req.bodyUsed).toBe(false);
+  });
+
+  it("throws on a cap that is not a positive integer", async () => {
+    await expect(readConnectForm(submission("key=k"), { origin: ORIGIN, maxBytes: 0 })).rejects.toThrow("maxBytes");
+    await expect(readConnectForm(submission("", {}, "GET"), { origin: ORIGIN, maxBytes: 0 })).rejects.toThrow("maxBytes");
+  });
+
 });

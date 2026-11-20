@@ -236,25 +236,27 @@ describe("ObserverTracker", () => {
     expect(kv.get("observed:secret")).toBe("pending");
   });
 
-  it("refuses an observer past the cap, and still re-admits one it already answers for", async () => {
-    // Every observer costs a verifier call per read, and a request may make only 32 Worker
-    // invocations, so admission is where the ceiling has to be legible.
-    const kv = makeKv();
-    const instance = tracker(kv, { maxObservers: 2 });
-    await instance.addObserver("x", verifier());
-    await instance.addObserver("y", verifier());
+  it("admits and checks any number of observers", async () => {
+    // The Workers limits a fan-out could meet are on call depth, not on how many calls are made.
+    let checks = 0;
+    const instance = tracker(makeKv(), {
+      hasCollectionAccess: async (value, collectionIds) => {
+        checks++;
+        return collectionIds.map(collectionId => value.allowed.includes(collectionId));
+      },
+    });
+    for (let index = 0; index < 40; index++) await instance.addObserver(`o${index}`, verifier("a"));
 
-    await expect(instance.addObserver("z", verifier())).rejects.toThrow(/already answers for 2/);
-    await expect(instance.addObserver("x", verifier())).resolves.toBeUndefined();
+    await expect(observe(instance, ["a"])).resolves.toBeUndefined();
+    expect(checks).toBe(40);
   });
 
-  it("reclaims the slot of an admission a crash stranded, once the attempt ages out", async () => {
+  it("sweeps an admission a crash stranded, once the attempt ages out", async () => {
     vi.useFakeTimers();
     const kv = makeKv();
     const gate = Promise.withResolvers<void>();
     let batches = 0;
     const instance = tracker(kv, {
-      maxObservers: 1,
       hasCollectionAccess: async (value, collectionIds) => {
         if (++batches === 1) await gate.promise;
         return collectionIds.map(collectionId => value.allowed.includes(collectionId));
@@ -262,7 +264,7 @@ describe("ObserverTracker", () => {
     });
     await observe(instance, ["a"]);
 
-    // The ghost's activation "dies" parked in its ACL check, holding the only slot.
+    // The ghost's activation "dies" parked in its ACL check.
     const stranded = instance.addObserver("ghost", verifier("a"));
     vi.advanceTimersByTime(OBSERVER_ATTEMPT_LIFETIME_MS);
 
@@ -290,30 +292,10 @@ describe("ObserverTracker", () => {
     kv.put("observer-nonce:ghost", "stale");
 
     await expect(instance.addObserver("next", verifier())).rejects.toThrow("storage unavailable");
-    // The cancellation landed even though the removal did not, so the surviving attempt still
-    // holds its slot and the stale admission fails closed at its next nonce check.
+    // The cancellation landed even though the removal did not, so the surviving attempt waits for
+    // the next sweep and the stale admission fails closed at its next nonce check.
     expect(kv.get("observer-nonce:ghost")).toBeUndefined();
     expect(kv.get("observer-attempt:ghost")).toBeDefined();
-  });
-
-  it("keeps a fresh in-flight admission counted against the cap", async () => {
-    const gate = Promise.withResolvers<void>();
-    let batches = 0;
-    const instance = tracker(makeKv(), {
-      maxObservers: 1,
-      hasCollectionAccess: async (value, collectionIds) => {
-        if (++batches === 1) await gate.promise;
-        return collectionIds.map(collectionId => value.allowed.includes(collectionId));
-      },
-    });
-    await observe(instance, ["a"]);
-
-    const admitting = instance.addObserver("first", verifier("a"));
-    await expect(instance.addObserver("second", verifier("a")))
-      .rejects.toThrow(/already answers for 1/);
-    gate.resolve();
-    await admitting;
-    expect(instance.observerIds()).toEqual(["first"]);
   });
 
   it("leaves a set alone once another read has revealed it", async () => {

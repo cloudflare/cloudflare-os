@@ -70,7 +70,33 @@ class TestResizeObserver {
   disconnect() {}
 }
 
-vi.stubGlobal("ResizeObserver", TestResizeObserver);
+class TestSpeechRecognition extends EventTarget {
+  static current: TestSpeechRecognition;
+  #processLocally = false;
+  get processLocally() { return this.#processLocally; }
+  set processLocally(value: boolean) { this.#processLocally = value; }
+  interimResults = false;
+  lang = "";
+  startedLocally = false;
+  start = vi.fn<() => void>(() => {
+    TestSpeechRecognition.current = this;
+    this.startedLocally = this.processLocally;
+    this.dispatchEvent(new Event("start"));
+  });
+  stop = vi.fn<() => void>();
+  abort = vi.fn<() => void>();
+
+  report(resultIndex: number, ...parts: { text: string; final: boolean }[]) {
+    this.dispatchEvent(Object.assign(new Event("result"), {
+      resultIndex,
+      results: parts.map(({ text, final }) => ({ isFinal: final, 0: { transcript: text } })),
+    }));
+  }
+
+  fail(error: string) {
+    this.dispatchEvent(Object.assign(new Event("error"), { error }));
+  }
+}
 
 const typeText = async (textarea: HTMLTextAreaElement, text: string) => {
   await act(async () => {
@@ -84,18 +110,420 @@ const typeText = async (textarea: HTMLTextAreaElement, text: string) => {
   });
 };
 
+const pressEscape = (target: Element) => act(async () => target.dispatchEvent(
+  new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+));
+
+const addConnectionOption = () =>
+  Array.from(document.querySelectorAll<HTMLButtonElement>('[role="option"]'))
+    .find((option) => option.textContent?.includes("Add a new connection"));
+
 describe("ChatComposer", () => {
   let container: HTMLDivElement | undefined;
   let root: Root | undefined;
 
+  beforeEach(() => vi.stubGlobal("ResizeObserver", TestResizeObserver));
+
   afterEach(async () => {
     await act(async () => root?.unmount());
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
     container?.remove();
     sessionStorage.clear();
     testState.addToast.mockClear();
     testState.closeToast.mockClear();
     testState.gatekeeperModalProps = undefined;
     testState.capsuleOverlayProps = undefined;
+  });
+
+  const renderDictationComposer = async (props: Partial<Parameters<typeof ChatComposer>[0]> = {}) => {
+    if (!container?.isConnected) {
+      container = document.createElement("div");
+      document.body.append(container);
+      root = createRoot(container);
+    }
+    await act(async () => root!.render(
+      <ChatComposer
+        createCapsuleGatekeeper={async () => null}
+        getOverseer={() => ({} as RpcStub<Overseer>)}
+        onSend={() => {}}
+        isAgentActive={false}
+        models={[]}
+        selectedModel={null}
+        onModelChange={() => {}}
+        {...props}
+      />,
+    ));
+    return container.querySelector<HTMLTextAreaElement>("textarea")!;
+  };
+
+  const voiceButton = (action: "Start" | "Stop") =>
+    container?.querySelector<HTMLButtonElement>(`button[aria-label="${action} voice typing"]`);
+  const strip = () => container?.querySelector<HTMLElement>('[role="group"][aria-label="Voice typing"]');
+  const stripText = () => strip()?.querySelector("p")?.textContent;
+  const stripButton = (label: "Add to message" | "Discard what you said") =>
+    strip()?.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
+  // The strip dims the guess the recognizer may still revise.
+  const guess = () => strip()?.querySelector("p .text-kumo-subtle")?.textContent;
+  const stopAndFinish = async (speech: TestSpeechRecognition) => {
+    await act(async () => voiceButton("Stop")!.click());
+    await act(async () => speech.dispatchEvent(new Event("end")));
+  };
+
+  it("shows speech apart from the draft and adds it when the user stops", async () => {
+    vi.stubGlobal("webkitSpeechRecognition", TestSpeechRecognition);
+    const onSend = vi.fn<Parameters<typeof ChatComposer>[0]["onSend"]>();
+    const textarea = await renderDictationComposer({ onSend });
+    await typeText(textarea, "Build");
+    await act(async () => voiceButton("Start")!.click());
+    const speech = TestSpeechRecognition.current;
+    expect(speech.startedLocally).toBe(true);
+    expect(speech.interimResults).toBe(true);
+    expect(stripText()).toBe("Listening…");
+
+    await act(async () => speech.report(0, { text: "a dash", final: false }));
+    expect(textarea.value).toBe("Build");
+    expect(guess()).toBe("a dash");
+    expect(document.getElementById(textarea.getAttribute("aria-describedby")!)?.textContent)
+      .toBe("a dash");
+    const first = { text: "a dashboard", final: true };
+    await act(async () => speech.report(0, first, { text: " with fil", final: false }));
+    expect(guess()).toBe(" with fil");
+    await act(async () => speech.report(1, first, { text: " with filters", final: false }));
+    expect(stripText()).toBe("a dashboard with filters");
+
+    await act(async () => voiceButton("Stop")!.click());
+    expect(speech.stop).toHaveBeenCalledOnce();
+    // The browser finishes what it heard first, and the strip stays until it has.
+    expect(textarea.value).toBe("Build");
+    expect(stripText()).toBe("a dashboard with filters");
+    await act(async () => {
+      speech.report(1, first, { text: " with filters", final: true });
+      speech.dispatchEvent(new Event("end"));
+    });
+    expect(textarea.value).toBe("Build a dashboard with filters");
+    expect(strip()).toBeNull();
+    expect(voiceButton("Start")).not.toBeNull();
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("adds the words with the check, and discards them with the cross or Escape", async () => {
+    vi.stubGlobal("SpeechRecognition", TestSpeechRecognition);
+    const textarea = await renderDictationComposer();
+    await typeText(textarea, "Keep this");
+    for (const discard of [
+      () => act(async () => stripButton("Discard what you said")!.click()),
+      () => pressEscape(textarea),
+      () => pressEscape(voiceButton("Stop")!),
+    ]) {
+      await act(async () => voiceButton("Start")!.click());
+      const speech = TestSpeechRecognition.current;
+      await act(async () => speech.report(
+        0,
+        { text: "spoken words", final: true },
+        { text: " and more", final: false },
+      ));
+      await discard();
+      expect(speech.abort).toHaveBeenCalledOnce();
+      expect(strip()).toBeNull();
+      expect(textarea.value).toBe("Keep this");
+    }
+
+    await act(async () => voiceButton("Start")!.click());
+    await act(async () => TestSpeechRecognition.current.report(0, { text: "for later", final: true }));
+    await act(async () => stripButton("Add to message")!.click());
+    expect(textarea.value).toBe("Keep this for later");
+    expect(strip()).toBeNull();
+  });
+
+  it("leaves the draft's value, selection and typing to the user while listening", async () => {
+    vi.stubGlobal("SpeechRecognition", TestSpeechRecognition);
+    const textarea = await renderDictationComposer();
+    await typeText(textarea, "Build a dashboard");
+    await act(async () => voiceButton("Start")!.click());
+    const speech = TestSpeechRecognition.current;
+    textarea.setSelectionRange(0, 5);
+    await act(async () => speech.report(0, { text: "with filters", final: true }));
+    expect(textarea.value).toBe("Build a dashboard");
+    expect([textarea.selectionStart, textarea.selectionEnd]).toEqual([0, 5]);
+
+    await typeText(textarea, "Create a dashboard");
+    expect(speech.abort).not.toHaveBeenCalled();
+    expect(stripText()).toBe("with filters");
+    await stopAndFinish(speech);
+    expect(textarea.value).toBe("Create a dashboard with filters");
+  });
+
+  it("lets Add connection finish while listening", async () => {
+    vi.stubGlobal("SpeechRecognition", TestSpeechRecognition);
+    const overseer = { listSlashCommands: async () => [] } as unknown as RpcStub<Overseer>;
+    const textarea = await renderDictationComposer({ getOverseer: () => overseer });
+    await typeText(textarea, "Summarize");
+    await act(async () => voiceButton("Start")!.click());
+    const speech = TestSpeechRecognition.current;
+    await act(async () => container!
+      .querySelector<HTMLButtonElement>('[aria-label="Add to conversation"]')!.click());
+    await act(async () => vi.waitFor(() => expect(addConnectionOption()).toBeDefined()));
+    await act(async () => addConnectionOption()!.click());
+    expect(testState.gatekeeperModalProps?.open).toBe(true);
+
+    await act(async () => speech.report(0, { text: "the plan", final: true }));
+    const gatekeeper = {
+      getId: async () => 9,
+      describe: async () => ({ title: "Project", url: "https://example.com/project" }),
+      getCreationSpec: async () => ({ type: "gatekeeper", vendorId: "example" }),
+      [Symbol.dispose]: vi.fn<() => void>(),
+    };
+    await act(async () => {
+      await testState.gatekeeperModalProps!.onCreated(gatekeeper);
+      await new Promise(requestAnimationFrame);
+    });
+    expect(textarea.value).toContain("Project");
+    expect(testState.addToast).not.toHaveBeenCalled();
+    await stopAndFinish(speech);
+    expect(textarea.value.endsWith(" the plan")).toBe(true);
+  });
+
+  it("sends the words on screen with the draft, and drops a chat's words on leaving it", async () => {
+    vi.stubGlobal("SpeechRecognition", TestSpeechRecognition);
+    const onSend = vi.fn<Parameters<typeof ChatComposer>[0]["onSend"]>();
+    const textarea = await renderDictationComposer({ chatKey: 1, onSend });
+    await act(async () => voiceButton("Start")!.click());
+    const first = TestSpeechRecognition.current;
+    const sentence = { text: "Show me the", final: true };
+    await act(async () => first.report(0, sentence, { text: " forecast", final: false }));
+    expect(textarea.value).toBe("");
+    expect(container!.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.disabled)
+      .toBe(false);
+    const lateResult = { text: " Late", final: true };
+    await act(async () => {
+      // Recognized, but not yet rendered, when Enter arrives.
+      first.report(1, sentence, { text: " four cats", final: false });
+      textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      first.report(1, sentence, lateResult);
+    });
+    expect(first.abort).toHaveBeenCalledOnce();
+    expect(onSend).toHaveBeenCalledWith("Show me the forecast", null, {});
+    expect(textarea.value).toBe("");
+    expect(strip()).toBeNull();
+
+    await act(async () => voiceButton("Start")!.click());
+    const second = TestSpeechRecognition.current;
+    await act(async () => second.report(0, { text: "Previous chat", final: true }));
+    expect(stripText()).toBe("Previous chat");
+    await renderDictationComposer({ chatKey: 2, onSend });
+    await act(async () => second.report(0, lateResult));
+    expect(second.abort).toHaveBeenCalledOnce();
+    expect(strip()).toBeNull();
+    expect(textarea.value).toBe("");
+  });
+
+  // None of these is the user keeping the latest guess, and none of them touches the draft.
+  it.each(["ends on its own", "fails", "is blocked"])(
+    "keeps only finalized words waiting when recognition %s",
+    async (cause) => {
+      vi.stubGlobal("SpeechRecognition", TestSpeechRecognition);
+      const textarea = await renderDictationComposer();
+      await typeText(textarea, "Note:");
+      await act(async () => voiceButton("Start")!.click());
+      const speech = TestSpeechRecognition.current;
+      await act(async () => speech.report(
+        0,
+        { text: "call the bank", final: true },
+        { text: " tomorrow maybe", final: false },
+      ));
+      if (cause === "is blocked") {
+        await renderDictationComposer({ blockedReason: "Approve the request first" });
+      } else {
+        await act(async () => {
+          // Chrome reports a lost local recognizer as "aborted", which the user never asked for.
+          if (cause === "fails") speech.fail("aborted");
+          else speech.dispatchEvent(new Event("end"));
+        });
+      }
+      expect(speech.abort).toHaveBeenCalledOnce();
+      expect(textarea.value).toBe("Note:");
+      expect(stripText()).toBe("call the bank");
+      expect(voiceButton("Start")).not.toBeNull();
+      expect(testState.addToast).not.toHaveBeenCalled();
+    },
+  );
+
+  it("adds the words at once, or drops them, while Stop is still finishing", async () => {
+    vi.stubGlobal("SpeechRecognition", TestSpeechRecognition);
+    const textarea = await renderDictationComposer();
+    await act(async () => voiceButton("Start")!.click());
+    const first = TestSpeechRecognition.current;
+    await act(async () => first.report(0, { text: "Quick note", final: true }));
+    await act(async () => voiceButton("Stop")!.click());
+    await act(async () => stripButton("Add to message")!.click());
+    expect(first.abort).toHaveBeenCalledOnce();
+    expect(textarea.value).toBe("Quick note");
+    await act(async () => first.dispatchEvent(new Event("end")));
+    expect(textarea.value).toBe("Quick note");
+
+    await act(async () => voiceButton("Start")!.click());
+    const second = TestSpeechRecognition.current;
+    await act(async () => second.report(0, { text: "never mind", final: true }));
+    await act(async () => voiceButton("Stop")!.click());
+    await pressEscape(textarea);
+    await act(async () => second.dispatchEvent(new Event("end")));
+    expect(textarea.value).toBe("Quick note");
+    expect(strip()).toBeNull();
+  });
+
+  it("keeps the space a finalized segment ends with before the guess", async () => {
+    vi.stubGlobal("SpeechRecognition", TestSpeechRecognition);
+    const textarea = await renderDictationComposer();
+    await act(async () => voiceButton("Start")!.click());
+    await act(async () => TestSpeechRecognition.current.report(
+      0,
+      { text: "Open the ", final: true },
+      { text: "dashboard", final: false },
+    ));
+    expect(stripText()).toBe("Open the dashboard");
+    await act(async () => stripButton("Add to message")!.click());
+    expect(textarea.value).toBe("Open the dashboard");
+  });
+
+  it("returns focus to the draft when the strip's discard button takes itself away", async () => {
+    vi.stubGlobal("SpeechRecognition", TestSpeechRecognition);
+    const textarea = await renderDictationComposer();
+    await act(async () => voiceButton("Start")!.click());
+    await act(async () => TestSpeechRecognition.current.report(0, { text: "scratch that", final: true }));
+    const discard = stripButton("Discard what you said")!;
+    discard.focus();
+    await act(async () => discard.click());
+    expect(strip()).toBeNull();
+    expect(document.activeElement).toBe(textarea);
+  });
+
+  it("joins speech segments with the spacing the recognizer gives them", async () => {
+    vi.stubGlobal("SpeechRecognition", TestSpeechRecognition);
+    const textarea = await renderDictationComposer();
+    await act(async () => voiceButton("Start")!.click());
+    const speech = TestSpeechRecognition.current;
+    const first = { text: "明日の", final: true };
+    await act(async () => speech.report(0, first));
+    await act(async () => speech.report(1, first, { text: "予定を確認", final: true }));
+    expect(stripText()).toBe("明日の予定を確認");
+    await stopAndFinish(speech);
+    expect(textarea.value).toBe("明日の予定を確認");
+  });
+
+  // Chrome ignores abort() and stop() until recognition has started.
+  it("aborts a session the user dropped while the browser was still starting it", async () => {
+    class SlowRecognition extends TestSpeechRecognition {
+      start = vi.fn<() => void>(() => {
+        TestSpeechRecognition.current = this;
+      });
+    }
+    vi.stubGlobal("SpeechRecognition", SlowRecognition);
+    await renderDictationComposer();
+    await act(async () => voiceButton("Start")!.click());
+    await act(async () => voiceButton("Stop")!.click());
+    const speech = TestSpeechRecognition.current;
+    const aborts = speech.abort.mock.calls.length;
+    await act(async () => speech.dispatchEvent(new Event("start")));
+    expect(speech.abort).toHaveBeenCalledTimes(aborts + 1);
+    expect(voiceButton("Start")).not.toBeNull();
+  });
+
+  it("keeps typing available without speech support or microphone permission", async () => {
+    vi.stubGlobal("SpeechRecognition", undefined);
+    vi.stubGlobal("webkitSpeechRecognition", undefined);
+    const textarea = await renderDictationComposer();
+    expect(voiceButton("Start")).toBeNull();
+
+    vi.stubGlobal("SpeechRecognition", TestSpeechRecognition);
+    await renderDictationComposer();
+    await act(async () => voiceButton("Start")!.click());
+    await act(async () => TestSpeechRecognition.current.fail("not-allowed"));
+    expect(testState.addToast).toHaveBeenCalledWith(expect.objectContaining({
+      title: expect.stringContaining("microphone permissions"),
+      variant: "error",
+    }));
+    expect(voiceButton("Start")).not.toBeNull();
+    await typeText(textarea, "Typed prompt");
+    expect(textarea.value).toBe("Typed prompt");
+  });
+
+  it("never falls back to a cloud recognizer when local recognition is unavailable", async () => {
+    const legacyStart = vi.fn<() => void>();
+    vi.stubGlobal("SpeechRecognition", undefined);
+    vi.stubGlobal("webkitSpeechRecognition", class { start = legacyStart; });
+    await renderDictationComposer();
+    expect(voiceButton("Start")).toBeNull();
+
+    vi.stubGlobal("SpeechRecognition", TestSpeechRecognition);
+    await renderDictationComposer();
+    await act(async () => voiceButton("Start")!.click());
+    const speech = TestSpeechRecognition.current;
+    expect(speech.startedLocally).toBe(true);
+    await act(async () => speech.fail("language-not-supported"));
+    expect(testState.addToast).toHaveBeenCalledWith(expect.objectContaining({
+      title: expect.stringContaining("language pack"),
+    }));
+    expect(speech.start).toHaveBeenCalledOnce();
+    expect(legacyStart).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("downloads a language pack without turning the mic on (switched chats: %s)", async (switched) => {
+    const download = Promise.withResolvers<boolean>();
+    const started = vi.fn<() => void>();
+    class DownloadableRecognition extends TestSpeechRecognition {
+      static available = vi.fn<(options: { langs: string[]; processLocally: boolean }) => Promise<string>>()
+        .mockResolvedValueOnce("downloadable")
+        .mockResolvedValue("available");
+      static install = vi.fn<(options: { langs: string[]; processLocally: boolean }) => Promise<boolean>>()
+        .mockReturnValue(download.promise);
+
+      constructor() {
+        super();
+        this.addEventListener("start", () => started());
+      }
+    }
+    vi.stubGlobal("SpeechRecognition", DownloadableRecognition);
+    const textarea = await renderDictationComposer({ chatKey: 1 });
+    expect(DownloadableRecognition.install).not.toHaveBeenCalled();
+    await act(async () => voiceButton("Start")!.click());
+    const options = { langs: ["en-US"], processLocally: true };
+    expect(DownloadableRecognition.available).toHaveBeenCalledWith(options);
+    expect(DownloadableRecognition.install).toHaveBeenCalledWith(options);
+    expect(container!.querySelector('[role="status"].sr-only')?.textContent)
+      .toBe("Downloading the voice typing language pack…");
+
+    if (switched) await renderDictationComposer({ chatKey: 2 });
+    await act(async () => download.resolve(true));
+    expect(started).not.toHaveBeenCalled();
+    expect(voiceButton("Start")).not.toBeNull();
+    expect(testState.addToast.mock.calls.map(([toast]) => toast.title))
+      .toEqual(switched ? [] : ["Voice typing is ready"]);
+
+    await act(async () => voiceButton("Start")!.click());
+    expect(started).toHaveBeenCalledOnce();
+    expect(DownloadableRecognition.install).toHaveBeenCalledOnce();
+    const speech = TestSpeechRecognition.current;
+    await act(async () => speech.report(0, { text: "Build a dashboard", final: true }));
+    await stopAndFinish(speech);
+    expect(textarea.value).toBe("Build a dashboard");
+  });
+
+  it("falls back to English (US) when the browser's language has no on-device pack", async () => {
+    const language = vi.spyOn(navigator, "language", "get").mockReturnValue("de-DE");
+    onTestFinished(() => language.mockRestore());
+    const available = vi.fn<(options: { langs: string[]; processLocally: boolean }) => Promise<string>>(
+      async ({ langs }) => langs[0] === "de-DE" ? "unavailable" : "available",
+    );
+    class LocalizedRecognition extends TestSpeechRecognition {
+      static available = available;
+    }
+    vi.stubGlobal("SpeechRecognition", LocalizedRecognition);
+    await renderDictationComposer();
+    await act(async () => voiceButton("Start")!.click());
+    expect(available.mock.calls.map(([options]) => options.langs)).toEqual([["de-DE"], ["en-US"]]);
+    expect(TestSpeechRecognition.current.lang).toBe("en-US");
+    expect(TestSpeechRecognition.current.start).toHaveBeenCalledOnce();
   });
 
   it("sends on Enter without clearing document changes made while sending", async () => {

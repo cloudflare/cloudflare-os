@@ -44,7 +44,7 @@ import {
   type PathBase,
 } from "./sharepoint-overlay";
 import * as reads from "./sharepoint-reads";
-import { UnresolvableUrlError, checkSharePointUrl, resolveSharePointUrl } from "./sharepoint-resolve";
+import { OtherOrganizationError, UnresolvableUrlError, checkSharePointUrl, resolveSharePointUrl } from "./sharepoint-resolve";
 import { OutsideScopeError, ScopeGuard, decodeItemRef, decodeListRef, decodePageRef, decodeSiteId, encodeItemRef, encodeListRef, encodePageRef, scopeNoun, type ItemRef, type ListRef, type PageRef, type SharePointScope } from "./sharepoint-scope";
 import { allUrl } from "./sharepoint-urls";
 import { checkShape, formatRange, parseRange as parseCellRange, rangeColumns, rangeRows, withPendingCells } from "./workbook-ranges";
@@ -487,12 +487,12 @@ export class SharePointReaderImpl extends RpcTarget implements SharePointReader 
 
   async resolveUrl(url: string): Promise<ResolvedLink> {
     const owner = await this.ctx.host.owner();
-    const tenant = owner.sharePointTenant;
-    if (tenant === undefined) throw new Error("This Microsoft 365 account has no SharePoint.");
+    if (owner.sharePointTenant === undefined) throw new Error("This Microsoft 365 account has no SharePoint.");
+    const tenant = { name: owner.sharePointTenant, id: owner.tenantId };
     const scope = this.ctx.host.scope;
     let parsed: URL;
     try {
-      parsed = checkSharePointUrl(url, tenant);
+      parsed = checkSharePointUrl(url);
     } catch (error) {
       if (error instanceof UnresolvableUrlError) throw new Error(error.message, { cause: error });
       throw error;
@@ -507,8 +507,11 @@ export class SharePointReaderImpl extends RpcTarget implements SharePointReader 
       resolved = await this.ctx.host.read(api => resolveSharePointUrl(api, url, tenant, { selected: this.ctx.host.sites === "selected" }));
     } catch (error) {
       if (!(error instanceof UnresolvableUrlError)) throw error;
-      // "all" covers whatever the owner can open, so there the reason gives nothing away.
-      if (scope.kind === "all") throw new Error(error.message, { cause: error });
+      // "all" covers whatever the owner can open in the tenant, so there the reason gives nothing
+      // away, unless it is that the link resolved outside it: that reads as one leading nowhere,
+      // down to the error having no cause to tell them apart by.
+      // oxlint-disable-next-line eslint/preserve-caught-error -- the cause would say which refusal it was.
+      if (scope.kind === "all") throw new Error((error instanceof OtherOrganizationError ? new UnresolvableUrlError() : error).message);
       throw new OutsideScopeError();
     }
     const target = resolved.scope;

@@ -7,6 +7,7 @@ import { obsContext } from "./observability";
 const logger = obsContext.createLogger({ component: "gatekeeper.google.drive", vendorId: "google" });
 
 const DRIVE_API_BASE = "https://www.googleapis.com/drive/v3";
+const DRIVE_UPLOAD_BASE = "https://www.googleapis.com/upload/drive/v3";
 const DRIVE_BATCH_URL = "https://www.googleapis.com/batch/drive/v3";
 /** The most files one Drive batch request asks about. */
 export const MAX_BATCH_FILES = 100;
@@ -14,6 +15,15 @@ const MAX_BATCH_RESPONSE_BYTES = 1_000_000;
 const MAX_JSON_RESPONSE_BYTES = 5_000_000;
 /** Per-attempt budget for a file download, which carries far more than a metadata read. */
 const DOWNLOAD_TIMEOUT_MS = 60_000;
+/** Covers the conversion too, which Drive finishes before it answers an upload's last chunk. */
+const UPLOAD_TIMEOUT_MS = 120_000;
+/** For opening an upload session and for each chunk but the last, which Drive only stores. */
+const UPLOAD_CHUNK_TIMEOUT_MS = 30_000;
+/** What an upload session is sent at a time: a multiple of the 256 KiB Drive asks of all but the last chunk. */
+const UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024;
+/** Requests to an upload session that may fail, or leave it holding no more, before a chunk is given up. */
+const UPLOAD_ATTEMPTS = 3;
+const UPLOAD_RETRY_DELAY_MS = 500;
 /**
  * Parents one `q` may name. Drive documents no query-length limit, so this is ours: the batched
  * parent proof chunks at 100, and without a cap here a longer set would pass that and then fail
@@ -380,7 +390,66 @@ async function driveError(response: Response): Promise<Error> {
   return new DriveApiRequestError(response.status, reason);
 }
 
-function megabytes(bytes: number): string {
+/** Whether Drive refused for now, with the 403 it throttles with: like a 429, worth waiting out. */
+const isThrottle = (error: Error) => error instanceof DriveApiRequestError && error.status === 403 &&
+  (error.reason === "rateLimitExceeded" || error.reason === "userRateLimitExceeded");
+
+/**
+ * Sends `bytes`, which start at `start` of the file, to the upload session at `session`, whose URL
+ * is its own credential; `total` is the file's size, given with its last chunk. Returns the body
+ * of Drive's answer to the last chunk, or nothing once it holds every byte of an earlier one, and
+ * throws its refusal. After a reply that is lost, failed or cut short it waits, asks what the
+ * session holds, and sends only the rest, so nothing Drive finished is sent again.
+ */
+async function putUploadChunk(
+  session: string, bytes: Uint8Array, start: number, total?: number,
+): Promise<string | undefined> {
+  let ask = false;
+  for (let failures = 0; failures < UPLOAD_ATTEMPTS;) {
+    let range = ask || !bytes.length ? "*" : `${start}-${start + bytes.length - 1}`;
+    let response = await fetch(session, {
+      // Drive asks for more with a 308, which is not a redirect to follow.
+      method: "PUT", headers: { "Content-Range": `bytes ${range}/${total ?? "*"}` }, redirect: "manual",
+      body: ask ? undefined : bytes,
+      signal: AbortSignal.timeout(total === undefined ? UPLOAD_CHUNK_TIMEOUT_MS : UPLOAD_TIMEOUT_MS),
+    }).catch(() => undefined);
+    if (response?.ok) {
+      // The file is made by now, so a body that fails to arrive is asked for again, not given up.
+      let made = await readBoundedText(response, MAX_JSON_RESPONSE_BYTES, "Google Drive response was too large")
+        .catch(() => undefined);
+      if (made !== undefined) return made;
+      response = undefined;
+    }
+    if (response?.status === 308) {
+      void response.body?.cancel();
+      // What the session holds: `Range: bytes=0-N`, or no header when it holds nothing.
+      let held = Number(/-(\d+)$/.exec(response.headers.get("Range") ?? "")?.[1] ?? -1) + 1;
+      if (held < start || held > start + bytes.length) break;
+      if (held === start && !ask) failures++;
+      bytes = bytes.subarray(held - start);
+      start = held;
+      ask = false;
+      if (!bytes.length && total === undefined) return undefined;
+    } else {
+      if (response && response.status < 500 && response.status !== 429) {
+        // The session is gone, which says nothing of the folder or file it was opened for.
+        if (response.status === 404 || response.status === 410) {
+          throw new Error("Google Drive ended the upload before the file was sent. Save it again.");
+        }
+        let refusal = await driveError(response);
+        if (!isThrottle(refusal)) throw refusal;
+      } else {
+        void response?.body?.cancel();
+      }
+      await new Promise(resolve => setTimeout(resolve, UPLOAD_RETRY_DELAY_MS * 2 ** failures++));
+      ask = true;
+    }
+  }
+  throw new Error("Google Drive did not take the upload");
+}
+
+/** `bytes` in whole megabytes, rounded up, for a size limit's message. */
+export function megabytes(bytes: number): string {
   return String(Math.ceil(bytes / (1024 * 1024)));
 }
 
@@ -1375,6 +1444,66 @@ export class DriveApi {
     if (!isRecord(sizes)) return undefined;
     let size = Number(optionalString(sizes[mimeType], "maxImportSizes"));
     return Number.isSafeInteger(size) && size > 0 ? size : undefined;
+  }
+
+  /**
+   * Uploads `file`, of the Office type `contentType`, for Drive to convert into native `mimeType`:
+   * as a new file with the name, folder and app properties `target` gives, or, when `target` is a
+   * file's ID, as that native file's new content, which keeps its name. Returns the file's ID.
+   *
+   * It goes through an upload session, a chunk at a time, so only a chunk is held in memory and a
+   * lost reply is recovered by asking the session what it holds: sending again never makes a second
+   * file. Nothing is made or changed until the last chunk arrives; any failure cancels `file` and
+   * abandons the session.
+   */
+  async uploadConverted(
+    file: ReadableStream<Uint8Array>, contentType: string, mimeType: string,
+    target: string | { name: string; parents: string[]; appProperties?: Record<string, string> },
+  ): Promise<string> {
+    let params = new URLSearchParams({ uploadType: "resumable", supportsAllDrives: "true", fields: "id,mimeType" });
+    let path = typeof target === "string" ? `/files/${encodeURIComponent(target)}` : "/files";
+    let session: string | undefined;
+    try {
+      // Opening a session makes no file, so it is safe to send again.
+      let opened = await fetchWithAuthRetry(`${DRIVE_UPLOAD_BASE}${path}?${params}`, {
+        method: typeof target === "string" ? "PATCH" : "POST",
+        headers: { "Content-Type": "application/json; charset=UTF-8", "X-Upload-Content-Type": contentType },
+        body: JSON.stringify(typeof target === "string" ? {} : { ...target, mimeType }),
+      }, this.getAccessToken, { idempotent: true, timeoutMs: UPLOAD_CHUNK_TIMEOUT_MS });
+      if (!opened.ok) throw await driveError(opened);
+      let location = opened.headers.get("Location");
+      if (!location?.startsWith(`${DRIVE_UPLOAD_BASE}/`)) throw new Error("Google Drive did not open an upload session");
+      session = location;
+
+      let chunk = new Uint8Array(UPLOAD_CHUNK_BYTES);
+      let filled = 0;
+      let sent = 0;
+      for await (let bytes of file) {
+        for (let offset = 0; offset < bytes.length;) {
+          // A full chunk is sent only once more follows it, so the last one always carries the total.
+          if (filled === chunk.length) {
+            await putUploadChunk(session, chunk, sent);
+            sent += filled;
+            filled = 0;
+          }
+          let taken = bytes.subarray(offset, offset + chunk.length - filled);
+          chunk.set(taken, filled);
+          filled += taken.length;
+          offset += taken.length;
+        }
+      }
+      let made = parseDriveJson(
+        (await putUploadChunk(session, chunk.subarray(0, filled), sent, sent + filled))!, "response");
+      if (!isRecord(made) || typeof made.id !== "string" || made.mimeType !== mimeType) {
+        throw new Error("Google Drive did not convert the uploaded file into the type asked for");
+      }
+      return made.id;
+    } catch (error) {
+      // Stops the file being produced, and the session, which is awaited so that it is sent at all.
+      void file.cancel(error).catch(() => {});
+      if (session) await fetch(session, { method: "DELETE", signal: AbortSignal.timeout(5_000) }).catch(() => {});
+      throw error;
+    }
   }
 
   /**

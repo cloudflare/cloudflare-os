@@ -165,6 +165,15 @@ test("roots the table at authenticate()'s result, with the entry as public, less
   assert.equal(withPassword.nodes.FixtureAuthedApi!.commands["change-password"], undefined);
 });
 
+test("write-workspace's own help says what each action does, and what refuses the call", () => {
+  // Only what a method's doc says reaches its command's help: a constant's doc is not in the schema.
+  const { doc, args } = real.nodes.AdminApi!.commands["write-workspace"]!;
+  const actions = args.find((arg) => arg.name === "action")?.choices ?? [];
+  assert.equal(actions.length, 2);
+  for (const action of actions) assert.ok(doc.includes(`- "${action}": `), action);
+  for (const refusal of ["notAdmin", "writesOff"]) assert.ok(doc.includes(`\`${refusal}\``), refusal);
+});
+
 test("makes required parameters positional and optional ones flags, clear of the runtime's", () => {
   const { args } = buildTable(fixture()).nodes.FixtureAuthedApi!.commands["find-notes"]!;
   assert.deepEqual(args.map(({ name, index, flag, encoding }) => ({ name, index, flag, encoding })), [
