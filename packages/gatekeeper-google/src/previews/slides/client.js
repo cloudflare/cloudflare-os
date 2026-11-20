@@ -301,10 +301,10 @@ function wordChanges(before, after) {
 // ---------------------------------------------------------------------------------------------
 // Fonts: the presentation's own, which the session reads from Google Fonts for this frame
 
-// The families listFonts() named, which are the ones readFont() reads, and the ones it did not.
+// The families listFonts() named, which are the ones readFont() reads.
 let listed = new Set();
-const unlisted = new Set();
-// The listing, asked for at most once each time the presentation is loaded.
+// The listing, asked for at most once each time the presentation is loaded: a family a pending
+// change names is listed once the change is saved.
 let listing;
 
 function* looksOf(slide) {
@@ -346,13 +346,8 @@ async function readFonts(slides) {
     .filter(font => !SYSTEM_FONT.test(font[0]) && !faces.asked(...font));
   if (!wanted.length) return false;
   const families = [...new Set(wanted.map(([family]) => family))];
-  if (families.some(family => !listed.has(family) && !unlisted.has(family))) {
-    listing ??= gadget.listFonts().then(fonts => {
-      listed = new Set(fonts.map(font => font.family));
-      return true;
-    }, () => false);
-    // A family the listing leaves out is not asked about again.
-    if (await listing) for (const family of families) if (!listed.has(family)) unlisted.add(family);
+  if (families.some(family => !listed.has(family))) {
+    await (listing ??= gadget.listFonts().then(fonts => { listed = new Set(fonts.map(font => font.family)); }, () => {}));
   }
   return faces.read(wanted.filter(([family]) => listed.has(family)));
 }
