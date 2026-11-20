@@ -1138,6 +1138,17 @@ describe("abort", () => {
     expect(outcomes()).toEqual([]);
   });
 
+  it("counts and sends again a path its own fetch takes, where that fetch throws", async () => {
+    const bound = vi.fn<UpstreamFetch>()
+        .mockRejectedValueOnce(new Error("lost")).mockResolvedValueOnce(answer(200));
+
+    const response = await upstream.with({ fetch: bound }).request("/v1/threads?page=2");
+
+    expect(response.status).toBe(200);
+    expect(bound).toHaveBeenCalledTimes(2);
+    expect(outcomes()).toEqual([["error", "network", 0], ["success", "", 200]]);
+  });
+
   it("does not count an attempt whose caller's wait ran out while its headers were asked for", async () => {
     const fetch = unanswered();
     const wait = new AbortController();
@@ -2783,8 +2794,10 @@ describe("summed", () => {
 describe("fetcher", () => {
   it("takes a default held behind a getter", async () => {
     const fetch = answering(302);
+    let reads = 0;
     const defaults = new (class {
-      get redirect() { return "manual" as const; }
+      // Gives its mode once, as a default computed on its first reading may.
+      get redirect() { return reads++ === 0 ? "manual" as const : undefined; }
       get operation() { return "keys.send"; }
     })();
 

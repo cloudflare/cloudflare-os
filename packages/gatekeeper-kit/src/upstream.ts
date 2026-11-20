@@ -286,7 +286,8 @@ export type UpstreamRequestInit = RequestInit & {
  *   caller's signal aborted with a `TimeoutError`, and with the reason `network` otherwise,
  *   unless the upstream's `thrown` says otherwise. It is not counted when the caller's signal had
  *   aborted before it was sent, nor when the caller aborted it for any other reason, nor where
- *   its input is no URL, which was sent nowhere and is not sent again. Counting
+ *   its input is no URL and the upstream has no `fetch` of its own: the runtime's sent it
+ *   nowhere, and it is not sent again. Counting
  *   never throws, never waits and never changes what a request answers or throws.
  */
 export interface Upstream {
@@ -621,11 +622,14 @@ export function defineUpstream(options: UpstreamOptions): Upstream {
           // service not answering, unless the wait ran out before this attempt was sent.
           const waitedOut = errorName(caller?.reason) === "TimeoutError";
           const durationMs = Date.now() - startedAt;
-          // What is no URL was sent nowhere: its failure is the caller's, not the service's.
-          const counted = url !== undefined && !unsent && (!caller?.aborted || waitedOut);
+          // What is no URL the runtime's own `fetch` sent nowhere: its failure is the caller's,
+          // not the service's. A `fetch` of the gatekeeper's may take such an input for a path
+          // of its own, and its `thrown` says whether anything was sent.
+          const nowhere = !url && !options.fetch;
+          const counted = !nowhere && !unsent && (!caller?.aborted || waitedOut);
           // A `null` is the gatekeeper saying that nothing was sent: there is no attempt to count
           // or to make again.
-          const given = !url ? null : counted ? askedNow(() => options.thrown?.(error)) : undefined;
+          const given = nowhere ? null : counted ? askedNow(() => options.thrown?.(error)) : undefined;
           if (counted && given !== null) {
             count({ ...call, durationMs }, given ?? {
               outcome: "error", reason: timeout?.aborted || waitedOut ? "timeout" : "network",
@@ -790,7 +794,9 @@ export function defineUpstream(options: UpstreamOptions): Upstream {
       // Read by name, as a request's own options are, so that one behind a getter counts.
       const given: Pick<UpstreamRequestInit, typeof DEFAULT_NAMES[number]> = {};
       for (const name of DEFAULT_NAMES) {
-        if (defaults[name] !== undefined) Object.assign(given, { [name]: defaults[name] });
+        // Read once: a getter may give another value the next time.
+        const value = defaults[name];
+        if (value !== undefined) Object.assign(given, { [name]: value });
       }
       // An async function, so that a member of the init that throws on being read fails the call
       // as it fails a `fetch`: by a rejection.
