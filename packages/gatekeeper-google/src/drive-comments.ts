@@ -49,6 +49,7 @@ import {
   type writeAttempts,
 } from "./drive-writes";
 import { obsContext } from "./observability";
+import { googleUpstream } from "./upstream";
 
 const logger = obsContext.createLogger({
   component: "gatekeeper.google.drive.comments", vendorId: "google",
@@ -460,19 +461,21 @@ async function requireStillAllowed(
 async function readAll<T>(
   read: (pageToken?: string) => Promise<{ items: T[]; nextPageToken?: string | undefined }>,
 ): Promise<T[]> {
-  let items: T[] = [];
-  let seen = new Set<string>();
-  let pageToken: string | undefined;
-  for (let page = 0; page < MAX_RECONCILE_PAGES; page++) {
-    let result = await read(pageToken);
-    items.push(...result.items);
-    pageToken = result.nextPageToken;
-    if (pageToken === undefined) return items;
-    if (seen.has(pageToken)) throw new Error("Google Drive returned a repeated page token.");
-    seen.add(pageToken);
-  }
-  throw new Error(
-    "Google Drive listed more comments than one check reads. Approve it again later.");
+  return googleUpstream.summed(async () => {
+    let items: T[] = [];
+    let seen = new Set<string>();
+    let pageToken: string | undefined;
+    for (let page = 0; page < MAX_RECONCILE_PAGES; page++) {
+      let result = await read(pageToken);
+      items.push(...result.items);
+      pageToken = result.nextPageToken;
+      if (pageToken === undefined) return items;
+      if (seen.has(pageToken)) throw new Error("Google Drive returned a repeated page token.");
+      seen.add(pageToken);
+    }
+    throw new Error(
+      "Google Drive listed more comments than one check reads. Approve it again later.");
+  });
 }
 
 /** Whether `item` is the connected account's, not deleted, and dated within `from`..`until`. */

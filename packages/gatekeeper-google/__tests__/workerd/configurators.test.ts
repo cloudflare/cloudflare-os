@@ -19,6 +19,7 @@ import {
   OFFICE_IMPORT_GRANT, SUPPORTED_RESOURCES,
   SHARED_DRIVES_GRANT, resourceUrlPatternsToOAuthScopes,
 } from "../../src/resources";
+import { unbindWrittenCalls, writtenCalls } from "../written-calls";
 
 const token = (value: string): GoogleAccessToken => ({
   token: value,
@@ -26,6 +27,7 @@ const token = (value: string): GoogleAccessToken => ({
 });
 
 afterEach(() => {
+  unbindWrittenCalls();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -430,6 +432,24 @@ describe("Google resource configurators", () => {
           { id: "folder:A", title: "Archive", listable: false },
         ],
       });
+    });
+
+    it("writes the reads of a pre-filled file's folders, one for each level, as one point", async () => {
+      const folder = { mimeType: FOLDER, trashed: false, capabilities: { canListChildren: true } };
+      stubDrive({
+        "/files/F9": { id: "F9", name: "Q3.pdf", mimeType: "application/pdf", parents: ["A"] },
+        "/files/A": { id: "A", name: "Archive", parents: ["0AMyRoot"], ...folder },
+        "/files/0AMyRoot": { id: "0AMyRoot", name: "My Drive", ...folder },
+        "/files/root": { id: "0AMyRoot", name: "My Drive", ...folder },
+      });
+      const written = writtenCalls();
+
+      await expect(picker().getDriveNode("file:F9")).resolves.toMatchObject({ id: "file:F9", path: [{}, {}] });
+
+      // The file itself, and then its two folders and My Drive's root.
+      expect(written()).toEqual([
+        ["google-drive", "files.get", "success", 200, 1], ["google-drive", "files.get", "success", 200, 3],
+      ]);
     });
 
     it("places a pre-filled folder in its shared drive, without asking for My Drive", async () => {

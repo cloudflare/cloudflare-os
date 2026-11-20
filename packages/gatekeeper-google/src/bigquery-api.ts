@@ -9,7 +9,8 @@ import type {
   BigQueryDataset, BigQueryDryRunResult, BigQueryField, BigQueryParam, BigQueryProject,
   BigQueryQueryOptions, BigQueryQueryResult, BigQueryTable,
 } from "./bigquery-types";
-import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
+import { AccessTokenProvider, readCheckedWithAuthRetry } from "./auth-retry";
+import { googleUpstream } from "./upstream";
 
 const API_BASE = "https://bigquery.googleapis.com/bigquery/v2";
 const REQUEST_TIMEOUT_MS = 60_000;
@@ -255,49 +256,91 @@ function buildQueryParameters(params: Record<string, BigQueryParam> | undefined)
   });
 }
 
-async function callRest<T>(
+// What the answer to a query's submission, or to a poll of its results, holds: the query's
+// result where its job is complete, and else the job to poll.
+type QueryAnswer =
+  | { result: BigQueryQueryResult }
+  | { job: { projectId: string; jobId: string; location?: string } };
+
+// Reads the answer to a query's submission, or to a poll of its results. A query BigQuery
+// rejected inside the 200 it answered with is thrown.
+function queryAnswer(resp: RestQueryResultsResponse): QueryAnswer {
+  if (resp.errors && resp.errors.length > 0) {
+    throw new Error(`BigQuery query failed: ${resp.errors[0].message ?? "unknown error"}`);
+  }
+  if (!resp.jobComplete) {
+    return {
+      job: {
+        projectId: resp.jobReference.projectId,
+        jobId: resp.jobReference.jobId,
+        location: resp.jobReference.location,
+      },
+    };
+  }
+
+  let schema = convertSchema(resp.schema);
+  let restFields = resp.schema?.fields ?? [];
+  let rows = (resp.rows ?? []).map(r => convertRow(r, restFields));
+  return {
+    result: {
+      schema,
+      rows,
+      totalRows: resp.totalRows ? Number(resp.totalRows) : rows.length,
+      bytesProcessed: resp.totalBytesProcessed ? Number(resp.totalBytesProcessed) : 0,
+      cacheHit: !!resp.cacheHit,
+      jobId: resp.jobReference.jobId,
+    },
+  };
+}
+
+// Sends one request and gives the JSON of its answer to `made`, the check of the method that
+// sent it, within the request: what `made` throws on a 200 is thrown, and the attempt is counted
+// an error with the reason `api`, so that the point says what the caller is told.
+async function callRest<T, R>(
   url: string,
   init: RequestInit,
   getAccessToken: AccessTokenProvider,
-): Promise<T> {
+  made: (answer: T) => R,
+): Promise<R> {
   let headers = new Headers(init.headers);
   headers.set("Accept", "application/json");
 
   // retries: 1 — no transient retry. query() promises a single absolute deadline covering the submit
   // and every poll, and a retried submit would burn it before the first poll, leaving the caller
-  // with "query took too long" for a query that never ran.
-  let response = await fetchWithAuthRetry(url, {
+  // with "query took too long" for a query that never ran. The answer is read within the request,
+  // which so counts a success that cannot be read as the failure it is thrown as.
+  return readCheckedWithAuthRetry(url, {
     ...init,
     headers,
-  }, { getAccessToken, timeoutMs: REQUEST_ABORT_TIMEOUT_MS, retries: 1 });
-
-  let contentType = response.headers.get("Content-Type") ?? "";
-  let isJson = contentType.includes("application/json");
-  if (!response.ok) {
-    let detail: string;
-    let rawBody: GoogleErrorResponse = {};
-    if (isJson) {
-      rawBody = (await response.json().catch(() => ({}))) as GoogleErrorResponse;
-      detail = rawBody.error?.message ?? `${response.status} ${response.statusText}`;
-    } else {
-      detail = (await response.text().catch(() => "")).slice(0, 500)
-          || `${response.status} ${response.statusText}`;
+  }, { getAccessToken, timeoutMs: REQUEST_ABORT_TIMEOUT_MS, retries: 1 }, async response => {
+    let contentType = response.headers.get("Content-Type") ?? "";
+    let isJson = contentType.includes("application/json");
+    if (!response.ok) {
+      let detail: string;
+      let rawBody: GoogleErrorResponse = {};
+      if (isJson) {
+        rawBody = (await response.json().catch(() => ({}))) as GoogleErrorResponse;
+        detail = rawBody.error?.message ?? `${response.status} ${response.statusText}`;
+      } else {
+        detail = (await response.text().catch(() => "")).slice(0, 500)
+            || `${response.status} ${response.statusText}`;
+      }
+      detail += ` [http=${response.status}]`;
+      if (rawBody.error?.status) {
+        detail += ` [status=${rawBody.error.status}]`;
+      }
+      if (rawBody.error?.errors && rawBody.error.errors.length > 0) {
+        detail += ` [errors=${rawBody.error.errors.map(
+            e => `${e.reason ?? "?"}:${e.message ?? "?"}`).join(" | ")}]`;
+      }
+      throw new BigQueryApiError(
+          `BigQuery API error: ${detail}`, response.status, rawBody.error?.errors?.[0]?.reason);
     }
-    detail += ` [http=${response.status}]`;
-    if (rawBody.error?.status) {
-      detail += ` [status=${rawBody.error.status}]`;
+    if (!isJson) {
+      throw new Error(`BigQuery API: expected JSON, got ${contentType}`);
     }
-    if (rawBody.error?.errors && rawBody.error.errors.length > 0) {
-      detail += ` [errors=${rawBody.error.errors.map(
-          e => `${e.reason ?? "?"}:${e.message ?? "?"}`).join(" | ")}]`;
-    }
-    throw new BigQueryApiError(
-        `BigQuery API error: ${detail}`, response.status, rawBody.error?.errors?.[0]?.reason);
-  }
-  if (!isJson) {
-    throw new Error(`BigQuery API: expected JSON, got ${contentType}`);
-  }
-  return response.json() as Promise<T>;
+    return response.json() as Promise<T>;
+  }, made);
 }
 
 // =============================================================================
@@ -307,27 +350,33 @@ export class BigQueryApi {
   constructor(private getAccessToken: AccessTokenProvider) {}
 
   async listProjects(options?: ListOptions): Promise<BigQueryProject[]> {
-    let projects: BigQueryProject[] = [];
-    let pageToken: string | undefined;
-    let pages = 0;
-    let pageLimit = listPageLimit(options);
-    do {
-      let url = new URL(`${API_BASE}/projects`);
-      url.searchParams.set("maxResults", listMaxResults(options));
-      if (pageToken) url.searchParams.set("pageToken", pageToken);
-      let resp = await callRest<RestProjectsListResponse>(
-        url.toString(), { method: "GET" }, this.getAccessToken);
-      for (let p of resp.projects ?? []) {
-        projects.push({
-          projectId: p.projectReference?.projectId ?? p.id,
-          friendlyName: p.friendlyName,
-          numericId: p.numericId,
-        });
-      }
-      pageToken = resp.nextPageToken;
-      pages++;
-    } while (pageToken && pages < pageLimit);
-    return projects;
+    return googleUpstream.summed(async () => {
+      let projects: BigQueryProject[] = [];
+      let pageToken: string | undefined;
+      let pages = 0;
+      let pageLimit = listPageLimit(options);
+      do {
+        let url = new URL(`${API_BASE}/projects`);
+        url.searchParams.set("maxResults", listMaxResults(options));
+        if (pageToken) url.searchParams.set("pageToken", pageToken);
+        let page = await callRest(
+          url.toString(), { method: "GET" }, this.getAccessToken, (resp: RestProjectsListResponse) => {
+            let found: BigQueryProject[] = [];
+            for (let p of resp.projects ?? []) {
+              found.push({
+                projectId: p.projectReference?.projectId ?? p.id,
+                friendlyName: p.friendlyName,
+                numericId: p.numericId,
+              });
+            }
+            return { found, nextPageToken: resp.nextPageToken };
+          });
+        projects.push(...page.found);
+        pageToken = page.nextPageToken;
+        pages++;
+      } while (pageToken && pages < pageLimit);
+      return projects;
+    });
   }
 
   async #getQueryResults(
@@ -336,15 +385,14 @@ export class BigQueryApi {
     location: string | undefined,
     maxResults: number | undefined,
     timeoutMs: number,
-  ): Promise<RestQueryResultsResponse> {
+  ): Promise<QueryAnswer> {
     let url = new URL(
         `${API_BASE}/projects/${encodeURIComponent(projectId)}` +
         `/queries/${encodeURIComponent(jobId)}`);
     url.searchParams.set("timeoutMs", String(timeoutMs));
     if (location) url.searchParams.set("location", location);
     if (maxResults !== undefined) url.searchParams.set("maxResults", String(maxResults));
-    return callRest<RestQueryResultsResponse>(
-      url.toString(), { method: "GET" }, this.getAccessToken);
+    return callRest(url.toString(), { method: "GET" }, this.getAccessToken, queryAnswer);
   }
 
   async #cancelJob(projectId: string, jobId: string, location?: string): Promise<void> {
@@ -352,7 +400,7 @@ export class BigQueryApi {
         `${API_BASE}/projects/${encodeURIComponent(projectId)}` +
         `/jobs/${encodeURIComponent(jobId)}/cancel`);
     if (location) url.searchParams.set("location", location);
-    await callRest<unknown>(url.toString(), { method: "POST" }, this.getAccessToken);
+    await callRest(url.toString(), { method: "POST" }, this.getAccessToken, () => undefined);
   }
 
   /** Run a synchronous query via jobs.query, as a job in `billingProject`. */
@@ -361,76 +409,59 @@ export class BigQueryApi {
     sql: string,
     opts: BigQueryJobOptions = {},
   ): Promise<BigQueryQueryResult> {
-    // Single absolute deadline for the whole query (initial submit + any poll iterations).
-    // Each individual server call is capped at the remaining time so total wall-clock stays
-    // bounded.
-    let deadline = Date.now() + REQUEST_TIMEOUT_MS;
+    return googleUpstream.summed(async () => {
+      // Single absolute deadline for the whole query (initial submit + any poll iterations).
+      // Each individual server call is capped at the remaining time so total wall-clock stays
+      // bounded.
+      let deadline = Date.now() + REQUEST_TIMEOUT_MS;
 
-    let body: Record<string, unknown> = {
-      query: sql,
-      useLegacySql: false,
-      maxResults: opts.maxResults ?? DEFAULT_MAX_RESULTS,
-      maximumBytesBilled: String(opts.maximumBytesBilled ?? DEFAULT_MAX_BYTES_BILLED),
-      timeoutMs: REQUEST_TIMEOUT_MS,
-    };
+      let body: Record<string, unknown> = {
+        query: sql,
+        useLegacySql: false,
+        maxResults: opts.maxResults ?? DEFAULT_MAX_RESULTS,
+        maximumBytesBilled: String(opts.maximumBytesBilled ?? DEFAULT_MAX_BYTES_BILLED),
+        timeoutMs: REQUEST_TIMEOUT_MS,
+      };
 
-    if (opts.defaultDataset) body.defaultDataset = opts.defaultDataset;
+      if (opts.defaultDataset) body.defaultDataset = opts.defaultDataset;
 
-    let parameters = buildQueryParameters(opts.params);
-    if (parameters) {
-      body.queryParameters = parameters;
-      body.parameterMode = "NAMED";
-    }
-
-    let url = `${API_BASE}/projects/${encodeURIComponent(billingProject)}/queries`;
-    let resp = await callRest<RestQueryResultsResponse>(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }, this.getAccessToken);
-
-    if (resp.errors && resp.errors.length > 0) {
-      throw new Error(`BigQuery query failed: ${resp.errors[0].message ?? "unknown error"}`);
-    }
-
-    while (!resp.jobComplete) {
-      let remaining = deadline - Date.now();
-      if (remaining <= 0) break;
-      resp = await this.#getQueryResults(
-        resp.jobReference.projectId,
-        resp.jobReference.jobId,
-        resp.jobReference.location,
-        opts.maxResults ?? DEFAULT_MAX_RESULTS,
-        remaining,
-      );
-      if (resp.errors && resp.errors.length > 0) {
-        throw new Error(
-          `BigQuery query failed: ${resp.errors[0].message ?? "unknown error"}`);
+      let parameters = buildQueryParameters(opts.params);
+      if (parameters) {
+        body.queryParameters = parameters;
+        body.parameterMode = "NAMED";
       }
-    }
 
-    if (!resp.jobComplete) {
-      await this.#cancelJob(
-        resp.jobReference.projectId,
-        resp.jobReference.jobId,
-        resp.jobReference.location,
-      ).catch(() => {});
-      throw new Error(
-        "Query took too long to complete. Try a more selective WHERE clause or a smaller LIMIT.");
-    }
+      let url = `${API_BASE}/projects/${encodeURIComponent(billingProject)}/queries`;
+      // Each answer is read within its request, which so counts one that rejects the query, or
+      // that holds neither a result nor a job to poll, as the failure it is thrown as.
+      let answer = await callRest(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }, this.getAccessToken, queryAnswer);
 
-    let schema = convertSchema(resp.schema);
-    let restFields = resp.schema?.fields ?? [];
-    let rows = (resp.rows ?? []).map(r => convertRow(r, restFields));
+      while ("job" in answer) {
+        let remaining = deadline - Date.now();
+        if (remaining <= 0) break;
+        let { job } = answer;
+        answer = await this.#getQueryResults(
+          job.projectId,
+          job.jobId,
+          job.location,
+          opts.maxResults ?? DEFAULT_MAX_RESULTS,
+          remaining,
+        );
+      }
 
-    return {
-      schema,
-      rows,
-      totalRows: resp.totalRows ? Number(resp.totalRows) : rows.length,
-      bytesProcessed: resp.totalBytesProcessed ? Number(resp.totalBytesProcessed) : 0,
-      cacheHit: !!resp.cacheHit,
-      jobId: resp.jobReference.jobId,
-    };
+      if ("job" in answer) {
+        let { job } = answer;
+        await this.#cancelJob(job.projectId, job.jobId, job.location).catch(() => {});
+        throw new Error(
+          "Query took too long to complete. Try a more selective WHERE clause or a smaller LIMIT.");
+      }
+
+      return answer.result;
+    });
   }
 
   /**
@@ -467,103 +498,117 @@ export class BigQueryApi {
     };
 
     let url = `${API_BASE}/projects/${encodeURIComponent(billingProject)}/jobs`;
-    let resp = await callRest<RestJob>(url, {
+    return callRest(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
       signal: opts.signal,
-    }, this.getAccessToken);
+    }, this.getAccessToken, (resp: RestJob) => {
+      // A job BigQuery failed inside the 200 it answered with.
+      if (resp.status?.errorResult) {
+        throw new Error(
+          `BigQuery dry run failed: ${resp.status.errorResult.message ?? "unknown error"}`);
+      }
 
-    if (resp.status?.errorResult) {
-      throw new Error(
-        `BigQuery dry run failed: ${resp.status.errorResult.message ?? "unknown error"}`);
-    }
+      let stats = resp.statistics?.query;
+      let referencedTables = (stats?.referencedTables ?? []).map(
+          t => `${t.projectId}.${t.datasetId}.${t.tableId}`);
+      let referencedRoutines = (stats?.referencedRoutines ?? []).map(
+          r => `${r.projectId}.${r.datasetId}.${r.routineId}`);
 
-    let stats = resp.statistics?.query;
-    let referencedTables = (stats?.referencedTables ?? []).map(
-        t => `${t.projectId}.${t.datasetId}.${t.tableId}`);
-    let referencedRoutines = (stats?.referencedRoutines ?? []).map(
-        r => `${r.projectId}.${r.datasetId}.${r.routineId}`);
-
-    return {
-      bytesProcessed: stats?.totalBytesProcessed ? Number(stats.totalBytesProcessed) : 0,
-      referencedTables,
-      referencedRoutines,
-      schema: convertSchema(stats?.schema),
-      statementType: stats?.statementType,
-      ddlOperationPerformed: stats?.ddlOperationPerformed,
-      hasScript: !!stats?.scriptStatistics,
-      hasDmlStats: !!stats?.dmlStats,
-    };
+      return {
+        bytesProcessed: stats?.totalBytesProcessed ? Number(stats.totalBytesProcessed) : 0,
+        referencedTables,
+        referencedRoutines,
+        schema: convertSchema(stats?.schema),
+        statementType: stats?.statementType,
+        ddlOperationPerformed: stats?.ddlOperationPerformed,
+        hasScript: !!stats?.scriptStatistics,
+        hasDmlStats: !!stats?.dmlStats,
+      };
+    });
   }
 
   async listDatasets(projectId: string, options?: ListOptions): Promise<BigQueryDataset[]> {
-    let datasets: BigQueryDataset[] = [];
-    let pageToken: string | undefined;
-    let pages = 0;
-    let pageLimit = listPageLimit(options);
-    do {
-      let url = new URL(
-          `${API_BASE}/projects/${encodeURIComponent(projectId)}/datasets`);
-      url.searchParams.set("maxResults", listMaxResults(options));
-      if (pageToken) url.searchParams.set("pageToken", pageToken);
-      let resp = await callRest<RestDatasetsListResponse & { nextPageToken?: string }>(
-        url.toString(), { method: "GET" }, this.getAccessToken);
-      for (let d of resp.datasets ?? []) {
-        datasets.push({
-          datasetId: d.datasetReference.datasetId,
-          projectId: d.datasetReference.projectId,
-          friendlyName: d.friendlyName,
-          location: d.location,
-        });
-      }
-      pageToken = resp.nextPageToken;
-      pages++;
-    } while (pageToken && pages < pageLimit);
-    return datasets;
+    return googleUpstream.summed(async () => {
+      let datasets: BigQueryDataset[] = [];
+      let pageToken: string | undefined;
+      let pages = 0;
+      let pageLimit = listPageLimit(options);
+      do {
+        let url = new URL(
+            `${API_BASE}/projects/${encodeURIComponent(projectId)}/datasets`);
+        url.searchParams.set("maxResults", listMaxResults(options));
+        if (pageToken) url.searchParams.set("pageToken", pageToken);
+        let page = await callRest(
+          url.toString(), { method: "GET" }, this.getAccessToken,
+          (resp: RestDatasetsListResponse & { nextPageToken?: string }) => {
+            let found: BigQueryDataset[] = [];
+            for (let d of resp.datasets ?? []) {
+              found.push({
+                datasetId: d.datasetReference.datasetId,
+                projectId: d.datasetReference.projectId,
+                friendlyName: d.friendlyName,
+                location: d.location,
+              });
+            }
+            return { found, nextPageToken: resp.nextPageToken };
+          });
+        datasets.push(...page.found);
+        pageToken = page.nextPageToken;
+        pages++;
+      } while (pageToken && pages < pageLimit);
+      return datasets;
+    });
   }
 
   async getDataset(projectId: string, datasetId: string): Promise<BigQueryDataset> {
     let url =
         `${API_BASE}/projects/${encodeURIComponent(projectId)}` +
         `/datasets/${encodeURIComponent(datasetId)}`;
-    let resp = await callRest<RestDatasetResource>(url, { method: "GET" }, this.getAccessToken);
-    return {
+    return callRest(url, { method: "GET" }, this.getAccessToken, (resp: RestDatasetResource) => ({
       datasetId: resp.datasetReference.datasetId,
       projectId: resp.datasetReference.projectId,
       friendlyName: resp.friendlyName,
       description: resp.description,
       location: resp.location,
-    };
+    }));
   }
 
   async listTables(projectId: string, datasetId: string, options?: ListOptions): Promise<BigQueryTable[]> {
-    let tables: BigQueryTable[] = [];
-    let pageToken: string | undefined;
-    let pages = 0;
-    let pageLimit = listPageLimit(options);
-    do {
-      let url = new URL(
-          `${API_BASE}/projects/${encodeURIComponent(projectId)}` +
-          `/datasets/${encodeURIComponent(datasetId)}/tables`);
-      url.searchParams.set("maxResults", listMaxResults(options));
-      if (pageToken) url.searchParams.set("pageToken", pageToken);
-      let resp = await callRest<RestTablesListResponse & { nextPageToken?: string }>(
-        url.toString(), { method: "GET" }, this.getAccessToken);
-      for (let t of resp.tables ?? []) {
-        tables.push({
-          tableId: t.tableReference.tableId,
-          datasetId: t.tableReference.datasetId,
-          projectId: t.tableReference.projectId,
-          type: t.type ?? "TABLE",
-          friendlyName: t.friendlyName,
-          creationTime: t.creationTime ? Number(t.creationTime) : undefined,
-        });
-      }
-      pageToken = resp.nextPageToken;
-      pages++;
-    } while (pageToken && pages < pageLimit);
-    return tables;
+    return googleUpstream.summed(async () => {
+      let tables: BigQueryTable[] = [];
+      let pageToken: string | undefined;
+      let pages = 0;
+      let pageLimit = listPageLimit(options);
+      do {
+        let url = new URL(
+            `${API_BASE}/projects/${encodeURIComponent(projectId)}` +
+            `/datasets/${encodeURIComponent(datasetId)}/tables`);
+        url.searchParams.set("maxResults", listMaxResults(options));
+        if (pageToken) url.searchParams.set("pageToken", pageToken);
+        let page = await callRest(
+          url.toString(), { method: "GET" }, this.getAccessToken,
+          (resp: RestTablesListResponse & { nextPageToken?: string }) => {
+            let found: BigQueryTable[] = [];
+            for (let t of resp.tables ?? []) {
+              found.push({
+                tableId: t.tableReference.tableId,
+                datasetId: t.tableReference.datasetId,
+                projectId: t.tableReference.projectId,
+                type: t.type ?? "TABLE",
+                friendlyName: t.friendlyName,
+                creationTime: t.creationTime ? Number(t.creationTime) : undefined,
+              });
+            }
+            return { found, nextPageToken: resp.nextPageToken };
+          });
+        tables.push(...page.found);
+        pageToken = page.nextPageToken;
+        pages++;
+      } while (pageToken && pages < pageLimit);
+      return tables;
+    });
   }
 
   async getTable(projectId: string, datasetId: string, tableId: string):
@@ -572,8 +617,7 @@ export class BigQueryApi {
         `${API_BASE}/projects/${encodeURIComponent(projectId)}` +
         `/datasets/${encodeURIComponent(datasetId)}` +
         `/tables/${encodeURIComponent(tableId)}`;
-    let resp = await callRest<RestTableResource>(url, { method: "GET" }, this.getAccessToken);
-    return {
+    return callRest(url, { method: "GET" }, this.getAccessToken, (resp: RestTableResource) => ({
       table: {
         tableId: resp.tableReference.tableId,
         datasetId: resp.tableReference.datasetId,
@@ -587,6 +631,6 @@ export class BigQueryApi {
         lastModifiedTime: resp.lastModifiedTime ? Number(resp.lastModifiedTime) : undefined,
       },
       schema: convertSchema(resp.schema),
-    };
+    }));
   }
 }

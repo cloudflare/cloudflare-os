@@ -9,8 +9,12 @@ import {
 import { createMimeMessage } from "mimetext/browser";
 import PostalMime, { addressParser } from "postal-mime";
 import type {Attachment as PostalAttachment} from "postal-mime";
-import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
+import type { CallAnswer } from "@gadgets/gatekeeper-kit/upstream";
+import {
+  AccessTokenProvider, fetchWithAuthRetry, readCheckedWithAuthRetry, readWithAuthRetry,
+} from "./auth-retry";
 import { reportGoogleRequestFailure, safeProviderCode } from "./google-response";
+import { googleUpstream, TRANSFER_TIMEOUT_MS } from "./upstream";
 
 /**
  * Internal type for parsed message info with raw label IDs (not yet resolved
@@ -104,6 +108,28 @@ export type GoogleOAuthGrant = {
   grantedScopes: string[];
 };
 
+// What a token request's answer is counted by: the access token it holds, or the OAuth error
+// it names.
+type TokenAnswerBody = { access_token?: unknown; error?: unknown };
+
+// How the answer to a token request is counted where its status is a success: one that names
+// an OAuth error, or holds no access token, is an error inside a success.
+function tokenAnswer(body: TokenAnswerBody): CallAnswer | undefined {
+  return typeof body.error === "string" || typeof body.access_token !== "string" || !body.access_token
+    ? { outcome: "error", reason: "api" } : undefined;
+}
+
+/**
+ * Whether a grant's refresh token is one. A code's exchange is sent for a refresh token: its
+ * answer is counted as an error of the call where this says it holds none, and the connect flow
+ * refuses that grant by this same check. A refresh may hold none.
+ * @param refreshToken The refresh token of a grant.
+ * @returns Whether the grant holds a refresh token.
+ */
+export function isRefreshToken(refreshToken: string | null | undefined): refreshToken is string {
+  return Boolean(refreshToken);
+}
+
 /** `signal` lets the caller bound the round trip; UserAccount holds the credential mutex across this. */
 export async function exchangeAuthCode(
     code: string, clientId: string, clientSecret: string, redirectUri: string,
@@ -117,41 +143,52 @@ export async function exchangeAuthCode(
   params.set("grant_type", "authorization_code");
 
   // No token is sent with a request that obtains one. The exchange and the refresh share a URL,
-  // so each is named here.
-  let response = await fetchWithAuthRetry(
+  // so each is named here. The answer is read inside the client's `read`, which counts the
+  // attempt by what its body holds: a 200 that cannot be read is no success.
+  let { grant } = await readWithAuthRetry(
       "https://oauth2.googleapis.com/token",
       {method: "POST", body: params, ...(signal ? { signal } : {})},
-      { getAccessToken: null, operation: "token.exchange" });
+      { getAccessToken: null, operation: "token.exchange" },
+      async response => {
+        let contentType = response.headers.get("Content-Type");
+        let isJson = contentType && contentType.startsWith("application/json");
 
-  let contentType = response.headers.get("Content-Type");
-  let isJson = contentType && contentType.startsWith("application/json");
+        if (!response.ok) {
+          if (isJson) {
+            let body = await response.json<{ error?: unknown; error_description?: unknown }>();
+            throw new Error(`Failed to obtain refresh token: ${body.error} ${body.error_description}`);
+          } else {
+            throw new Error(
+                `Failed to obtain refresh token: ${response.status} ${response.statusText}`);
+          }
+        }
 
-  if (!response.ok) {
-    if (isJson) {
-      let body = await response.json<any>();
-      throw new Error(`Failed to obtain refresh token: ${body.error} ${body.error_description}`);
-    } else {
-      throw new Error(
-          `Failed to obtain refresh token: ${response.status} ${response.statusText}`);
-    }
-  }
+        if (!isJson) {
+          throw new Error("Token endpoint didn't return JSON?");
+        }
 
-  if (!isJson) {
-    throw new Error("Token endpoint didn't return JSON?");
-  }
+        let body = await response.json<{
+          access_token: string; expires_in: number; refresh_token: string; scope?: unknown;
+        }>();
 
-  let body = await response.json<any>();
-
-  return {
-    accessToken: {
-      token: body.access_token,
-      expires: new Date(Date.now() + body.expires_in * 1000),
-    },
-    refreshToken: body.refresh_token,
-    grantedScopes: typeof body.scope === "string"
-        ? body.scope.split(" ").filter(Boolean)
-        : [],
-  };
+        return {
+          grant: {
+            accessToken: {
+              token: body.access_token,
+              expires: new Date(Date.now() + body.expires_in * 1000),
+            },
+            refreshToken: body.refresh_token,
+            grantedScopes: typeof body.scope === "string"
+                ? body.scope.split(" ").filter(Boolean)
+                : [],
+          },
+          // An exchange answered without a refresh token is refused by its caller, by this check.
+          counted: tokenAnswer(body) ?? (isRefreshToken(body.refresh_token)
+              ? undefined : { outcome: "error", reason: "api" }),
+        };
+      },
+      read => read.counted);
+  return grant;
 }
 
 export type RefreshFailure =
@@ -165,7 +202,8 @@ export type AccessTokenResult = { ok: true; token: GoogleAccessToken } | Refresh
 export async function getAccessToken(
     refreshToken: string, clientId: string, clientSecret: string, signal?: AbortSignal)
     : Promise<AccessTokenResult> {
-  const response = await fetchWithAuthRetry('https://oauth2.googleapis.com/token', {
+  // The answer is read inside the client's `read`, as the exchange's is.
+  const { result } = await readWithAuthRetry('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
@@ -177,44 +215,50 @@ export async function getAccessToken(
       grant_type: 'refresh_token',
     }),
     ...(signal ? { signal } : {}),
-  }, { getAccessToken: null, operation: "token.refresh" });
+  }, { getAccessToken: null, operation: "token.refresh" }, async (response): Promise<{
+    result: AccessTokenResult; counted?: CallAnswer;
+  }> => {
+    if (!response.ok) {
+      let contentType = response.headers.get("Content-Type");
+      let isJson = contentType && contentType.startsWith("application/json");
 
-  if (!response.ok) {
-    let contentType = response.headers.get("Content-Type");
-    let isJson = contentType && contentType.startsWith("application/json");
+      if (isJson) {
+        let body = await response.json<{
+          error?: string, error_description?: string, error_subtype?: unknown,
+        }>();
+        if (body.error === "invalid_grant") {
+          let subtype = safeProviderCode(body.error_subtype);
+          return { result: { ok: false, reason: "revoked", ...(subtype !== undefined ? { subtype } : {}) } };
+        }
+        if (body.error === "admin_policy_enforced") {
+          return { result: { ok: false, reason: "policyBlocked",
+                             detail: body.error_description ?? "admin_policy_enforced" } };
+        }
+        throw new Error(
+            `Failed to refresh access token: ${body.error} ${body.error_description}`);
+      }
 
-    if (isJson) {
-      let body = await response.json<{
-        error?: string, error_description?: string, error_subtype?: unknown,
-      }>();
-      if (body.error === "invalid_grant") {
-        let subtype = safeProviderCode(body.error_subtype);
-        return { ok: false, reason: "revoked", ...(subtype !== undefined ? { subtype } : {}) };
-      }
-      if (body.error === "admin_policy_enforced") {
-        return { ok: false, reason: "policyBlocked",
-                 detail: body.error_description ?? "admin_policy_enforced" };
-      }
-      throw new Error(
-          `Failed to refresh access token: ${body.error} ${body.error_description}`);
+      let errorText = await readErrorText(response);
+      throw new Error(`Failed to refresh access token: ${response.status} ${errorText}`);
     }
 
-    let errorText = await readErrorText(response);
-    throw new Error(`Failed to refresh access token: ${response.status} ${errorText}`);
-  }
+    const data = await response.json() as {
+      access_token: string;
+      expires_in: number;
+    };
 
-  const data = await response.json() as {
-    access_token: string;
-    expires_in: number;
-  };
-
-  return {
-    ok: true,
-    token: {
-      token: data.access_token,
-      expires: new Date(Date.now() + data.expires_in * 1000),
-    },
-  };
+    return {
+      result: {
+        ok: true,
+        token: {
+          token: data.access_token,
+          expires: new Date(Date.now() + data.expires_in * 1000),
+        },
+      },
+      counted: tokenAnswer(data),
+    };
+  }, read => read.counted);
+  return result;
 }
 
 export type GoogleAccountProfile = {
@@ -226,19 +270,22 @@ export type GoogleAccountProfile = {
 };
 
 export async function getGoogleAccountProfile(accessToken: string | AccessTokenProvider): Promise<GoogleAccountProfile> {
-  const response = await fetchWithAuthRetry('https://www.googleapis.com/oauth2/v3/userinfo', {
+  // Read inside the client's `read`: a 200 that names no account is no success.
+  return readWithAuthRetry('https://www.googleapis.com/oauth2/v3/userinfo', {
     method: 'GET',
     headers: { 'Accept': 'application/json' },
-  }, { getAccessToken: typeof accessToken === "string" ? async () => accessToken : accessToken });
+  }, {
+    getAccessToken: typeof accessToken === "string" ? async () => accessToken : accessToken,
+  }, async response => {
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw new Error(`Failed to fetch user info: ${response.status} ${response.statusText}`);
+    }
 
-  if (!response.ok) {
-    await response.body?.cancel();
-    throw new Error(`Failed to fetch user info: ${response.status} ${response.statusText}`);
-  }
-
-  const data = await response.json() as Partial<GoogleAccountProfile>;
-  if (!data.sub) throw new Error("Google user info did not include a stable account ID.");
-  return data as GoogleAccountProfile;
+    const data = await response.json() as Partial<GoogleAccountProfile>;
+    if (!data.sub) throw new Error("Google user info did not include a stable account ID.");
+    return data as GoogleAccountProfile;
+  });
 }
 
 /** Return the stable Google subject used to pin long-lived Gmail capabilities to one account. */
@@ -264,21 +311,30 @@ export async function getGoogleAccountDescription(accessToken: string)
  * unverified address.
  */
 export async function getGoogleVerifiedEmail(accessToken: string): Promise<string | null> {
-  // Asked once, with the token just obtained: a sign-in is not held up by retries.
-  const response = await fetchWithAuthRetry('https://www.googleapis.com/oauth2/v3/userinfo', {
+  // Asked once, with the token just obtained: a sign-in is not held up by retries. Read inside
+  // the client's `read`: a 200 that cannot be read is no success.
+  return readWithAuthRetry('https://www.googleapis.com/oauth2/v3/userinfo', {
     method: 'GET',
     headers: { 'Accept': 'application/json' },
-  }, { getAccessToken: async () => accessToken, retries: 1 });
+  }, { getAccessToken: async () => accessToken, retries: 1 }, async response => {
+    if (!response.ok) {
+      response.body?.cancel();
+      throw new Error(`Failed to fetch user info: ${response.status} ${response.statusText}`);
+    }
 
-  if (!response.ok) {
-    response.body?.cancel();
-    throw new Error(`Failed to fetch user info: ${response.status} ${response.statusText}`);
-  }
-
-  let data: any = await response.json();
-  if (!data.email || data.email_verified !== true) return null;
-  return data.email;
+    let data = await response.json<{ email?: string; email_verified?: unknown }>();
+    if (!data.email || data.email_verified !== true) return null;
+    return data.email;
+  });
 }
+
+// Whether an answer says its body is JSON, as an OAuth error's is.
+const saysJson = (response: Response) =>
+  response.headers.get("Content-Type")?.startsWith("application/json") === true;
+
+// Whether an answer to a revocation, with its JSON body, says the token is not one Google holds.
+const notHeld = (response: Response, body: {error: string}) =>
+  response.status === 400 && body.error === "invalid_token";
 
 /** `signal` lets the caller bound the round trip; UserAccount holds the credential mutex across this. */
 export async function revokeGoogleToken(
@@ -288,32 +344,34 @@ export async function revokeGoogleToken(
   const body = new URLSearchParams();
   body.append('token', refreshToken);
 
-  const response = await fetchWithAuthRetry('https://oauth2.googleapis.com/revoke', {
+  // The answer is read inside the client's `read`, which counts the attempt by what was read: a
+  // 400 that says the token is not held is the revocation's success, as it is taken here, and
+  // any other answer is counted by its status, or as a failed read where a 200 could not be read.
+  await readWithAuthRetry('https://oauth2.googleapis.com/revoke', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
     },
     body: body.toString(),
     ...(signal ? { signal } : {}),
-  }, { getAccessToken: null });
-
-  let contentType = response.headers.get("Content-Type");
-  let isJson = contentType && contentType.startsWith("application/json");
-
-  if (response.ok) {
-    // Read response body to be polite, but we don't really need it.
-    await response.text();
-  } else if (isJson) {
-    let body = await response.json<{error: string}>();
-    if (response.status === 400 && body.error === "invalid_token") {
-      // Token may have been revoked previously, or may have never been valid. We don't really
-      // know. But for the sake of idempotency, treat this as success.
+  }, { getAccessToken: null }, async (response): Promise<CallAnswer | undefined> => {
+    if (response.ok) {
+      // Read response body to be polite, but we don't really need it.
+      await response.text();
+      return undefined;
+    } else if (saysJson(response)) {
+      let body = await response.json<{error: string}>();
+      if (notHeld(response, body)) {
+        // Token may have been revoked previously, or may have never been valid. We don't really
+        // know. But for the sake of idempotency, treat this as success.
+        return { outcome: "success" };
+      } else {
+        throw new Error(`Failed to revoke token: ${body.error}`);
+      }
     } else {
-      throw new Error(`Failed to revoke token: ${body.error}`);
+      throw new Error(`Failed to revoke token: ${response.status} ${response.statusText}`);
     }
-  } else {
-    throw new Error(`Failed to revoke token: ${response.status} ${response.statusText}`);
-  }
+  }, counted => counted);
 }
 
 // =======================================================================================
@@ -2521,6 +2579,12 @@ function gmailHistoryId(value: unknown): string {
   return value;
 }
 
+/** The bytes of an attachment's encoded data, which a snapshot or an answer that holds none is refused for. */
+function attachmentBytes(encoded: string | undefined): Uint8Array {
+  if (encoded === undefined) throw new Error("Attachment content is no longer available.");
+  return decodeBase64UrlToBytes(encoded);
+}
+
 export class GmailApi {
   private selfEmail: string;
 
@@ -2528,11 +2592,26 @@ export class GmailApi {
     this.selfEmail = selfEmail;
   }
 
-  // All Gmail API calls go through this for auth + retry: it injects the Bearer token, retries
-  // once on a 401 with a force-refreshed token, and retries transient failures (429 / 5xx) with
-  // backoff on GETs only. Callers must not set the Authorization header themselves.
-  private authedFetch(url: string, init?: RequestInit): Promise<Response> {
-    return fetchWithAuthRetry(url, init ?? {}, { getAccessToken: this.getAccessToken });
+  // All Gmail API calls go through this, `authedRead` or, for an attachment's data, which is
+  // checked within its request, `readCheckedWithAuthRetry` for auth + retry: each injects the Bearer
+  // token, retries once on a 401 with a force-refreshed token, and retries transient failures
+  // (429 / 5xx) with backoff on GETs only. Callers must not set the Authorization header
+  // themselves. `timeoutMs` is for a request that carries a message or an attachment whole, or
+  // `null` for an answer read as a stream; any other has the client's 30 seconds an attempt.
+  // This one is for a success that holds nothing to read: a stream handed on, or a body let go.
+  private authedFetch(url: string, init?: RequestInit, timeoutMs?: number | null): Promise<Response> {
+    return fetchWithAuthRetry(url, init ?? {}, { getAccessToken: this.getAccessToken, timeoutMs });
+  }
+
+  // Sends as `authedFetch` does a request whose answer is read: `read` reads it within the
+  // request, which so counts a success that cannot be read, or that `read` throws on, as the
+  // failure it is thrown as. A GET whose answer its own timeout cuts off is sent again.
+  private authedRead<T>(
+    url: string, init: RequestInit & { timeoutMs?: number | null },
+    read: (response: Response) => Promise<T>,
+  ): Promise<T> {
+    const { timeoutMs, ...sent } = init;
+    return readWithAuthRetry(url, sent, { getAccessToken: this.getAccessToken, timeoutMs }, read);
   }
 
   // ─────────────────────────────────────────────────────────────────
@@ -2558,20 +2637,20 @@ export class GmailApi {
     }
     if (shouldIncludeSpamTrash(query, labelIds)) url += "&includeSpamTrash=true";
 
-    const response = await this.authedFetch(url);
+    return this.authedRead(url, {}, async response => {
+      if (!response.ok) {
+        await gmailApiFailure("threads.list", response);
+      }
 
-    if (!response.ok) {
-      await gmailApiFailure("threads.list", response);
-    }
-
-    const data = await response.json() as {
-      threads?: Array<{ id: string; snippet?: string }>;
-      nextPageToken?: string;
-    };
-    return {
-      threads: data.threads || [],
-      nextPageToken: data.nextPageToken,
-    };
+      const data = await response.json() as {
+        threads?: Array<{ id: string; snippet?: string }>;
+        nextPageToken?: string;
+      };
+      return {
+        threads: data.threads || [],
+        nextPageToken: data.nextPageToken,
+      };
+    });
   }
 
   /**
@@ -2581,26 +2660,27 @@ export class GmailApi {
   async getThread(threadId: string): Promise<GmailThreadRaw> {
     validateGmailId(threadId, "thread ID");
 
-    const response = await this.authedFetch(
+    return this.authedRead(
       `https://gmail.googleapis.com/gmail/v1/users/me/threads/${threadId}?format=minimal`,
-    );
+      {},
+      async response => {
+        if (!response.ok) {
+          await gmailApiFailure("threads.get", response);
+        }
 
-    if (!response.ok) {
-      await gmailApiFailure("threads.get", response);
-    }
+        const thread = await response.json() as {
+          id: string;
+          snippet?: string;
+          messages?: Array<{ id: string }>;
+        };
 
-    const thread = await response.json() as {
-      id: string;
-      snippet?: string;
-      messages?: Array<{ id: string }>;
-    };
+        const messages = (thread.messages ?? []).map(message => ({
+          id: message.id,
+          threadId: thread.id,
+        }));
 
-    const messages = (thread.messages ?? []).map(message => ({
-      id: message.id,
-      threadId: thread.id,
-    }));
-
-    return { id: thread.id, snippet: thread.snippet ?? '', messages };
+        return { id: thread.id, snippet: thread.snippet ?? '', messages };
+      });
   }
 
   /**
@@ -2615,18 +2695,18 @@ export class GmailApi {
     for (const header of ["From", "To", "Cc", "Bcc", "Subject"]) {
       url.searchParams.append("metadataHeaders", header);
     }
-    const response = await this.authedFetch(url.toString());
+    return this.authedRead(url.toString(), {}, async response => {
+      if (!response.ok) {
+        await gmailApiFailure("threads.get", response);
+      }
 
-    if (!response.ok) {
-      await gmailApiFailure("threads.get", response);
-    }
-
-    const thread = await response.json() as GmailThreadMetadata;
-    return {
-      id: threadId,
-      snippet: thread.snippet,
-      messages: (thread.messages ?? []).map(parseGmailMessageMetadata),
-    };
+      const thread = await response.json() as GmailThreadMetadata;
+      return {
+        id: threadId,
+        snippet: thread.snippet,
+        messages: (thread.messages ?? []).map(parseGmailMessageMetadata),
+      };
+    });
   }
 
   /** Modify thread labels (for archive, trash, read/unread). */
@@ -2702,16 +2782,17 @@ export class GmailApi {
     if (shouldIncludeSpamTrash(query, labelIds)) {
       url.searchParams.set("includeSpamTrash", "true");
     }
-    const response = await this.authedFetch(url.toString());
-    if (!response.ok) await gmailApiFailure("messages.list", response);
-    const data = await response.json() as {
-      messages?: GmailMessageRef[];
-      nextPageToken?: string;
-    };
-    return {
-      messages: data.messages ?? [],
-      ...(data.nextPageToken ? {nextPageToken: data.nextPageToken} : {}),
-    };
+    return this.authedRead(url.toString(), {}, async response => {
+      if (!response.ok) await gmailApiFailure("messages.list", response);
+      const data = await response.json() as {
+        messages?: GmailMessageRef[];
+        nextPageToken?: string;
+      };
+      return {
+        messages: data.messages ?? [],
+        ...(data.nextPageToken ? {nextPageToken: data.nextPageToken} : {}),
+      };
+    });
   }
 
   /** Find a message by the stable RFC Message-ID assigned before an approved write. */
@@ -2742,32 +2823,34 @@ export class GmailApi {
 
   /** Reconcile a draft create whose provider response may have been lost. */
   async findDraftByRfcMessageId(messageId: string): Promise<GmailDraftRef | undefined> {
-    const message = await this.findMessageByRfcMessageId(messageId, "drafts");
-    if (!message) return undefined;
-    let pageToken: string | undefined;
-    const seenTokens = new Set<string>();
-    let pages = 0;
-    do {
-      if (++pages > MAX_GMAIL_DRAFT_LOOKUP_PAGES) {
-        throw new Error("Gmail returned too many pages while finding a pending draft.");
-      }
-      const page = await this.listDrafts(100, pageToken);
-      for (const draft of page.drafts) {
-        if (draft.message?.id === message.id) return draft;
-        if (!draft.message) {
-          const full = await this.getDraft(draft.id);
-          if (full.message.id === message.id) {
-            return {id: draft.id, message: {id: full.message.id, threadId: full.message.threadId}};
+    return googleUpstream.summed(async () => {
+      const message = await this.findMessageByRfcMessageId(messageId, "drafts");
+      if (!message) return undefined;
+      let pageToken: string | undefined;
+      const seenTokens = new Set<string>();
+      let pages = 0;
+      do {
+        if (++pages > MAX_GMAIL_DRAFT_LOOKUP_PAGES) {
+          throw new Error("Gmail returned too many pages while finding a pending draft.");
+        }
+        const page = await this.listDrafts(100, pageToken);
+        for (const draft of page.drafts) {
+          if (draft.message?.id === message.id) return draft;
+          if (!draft.message) {
+            const full = await this.getDraft(draft.id);
+            if (full.message.id === message.id) {
+              return {id: draft.id, message: {id: full.message.id, threadId: full.message.threadId}};
+            }
           }
         }
-      }
-      pageToken = page.nextPageToken;
-      if (pageToken) {
-        if (seenTokens.has(pageToken)) throw new Error("Gmail returned a repeated page token.");
-        seenTokens.add(pageToken);
-      }
-    } while (pageToken);
-    return undefined;
+        pageToken = page.nextPageToken;
+        if (pageToken) {
+          if (seenTokens.has(pageToken)) throw new Error("Gmail returned a repeated page token.");
+          seenTokens.add(pageToken);
+        }
+      } while (pageToken);
+      return undefined;
+    });
   }
 
   /** Fetch message headers and labels without downloading bodies or attachments. */
@@ -2782,18 +2865,22 @@ export class GmailApi {
     ]) {
       url.searchParams.append("metadataHeaders", header);
     }
-    const response = await this.authedFetch(url.toString());
-    if (!response.ok) await gmailApiFailure("messages.get", response);
-    return await response.json() as GmailMessageFull;
+    return this.authedRead(url.toString(), {}, async response => {
+      if (!response.ok) await gmailApiFailure("messages.get", response);
+      return await response.json() as GmailMessageFull;
+    });
   }
 
   /** Fetch the MIME tree while leaving detached attachment data lazy. */
   async getMessageFull(messageId: string): Promise<GmailMessageFull> {
     validateGmailId(messageId, "message ID");
-    const response = await this.authedFetch(
-      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}?format=full`);
-    if (!response.ok) await gmailApiFailure("messages.get", response);
-    return await response.json() as GmailMessageFull;
+    return this.authedRead(
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}?format=full`,
+      { timeoutMs: TRANSFER_TIMEOUT_MS.download },
+      async response => {
+        if (!response.ok) await gmailApiFailure("messages.get", response);
+        return await response.json() as GmailMessageFull;
+      });
   }
 
   async getAttachmentContent(snapshot: GmailAttachmentSnapshot): Promise<ArrayBuffer> {
@@ -2801,17 +2888,22 @@ export class GmailApi {
       throw new Error(
         `Attachment content is unavailable or exceeds the ${MAX_GMAIL_ATTACHMENT_BYTES}-byte safe limit.`);
     }
-    let encoded = snapshot.inlineData;
+    let bytes: Uint8Array;
     if (snapshot.attachmentId) {
       validateGmailId(snapshot.messageId, "message ID");
       validateGmailId(snapshot.attachmentId, "attachment ID");
-      const response = await this.authedFetch(
-        `https://gmail.googleapis.com/gmail/v1/users/me/messages/${snapshot.messageId}/attachments/${snapshot.attachmentId}`);
-      if (!response.ok) await gmailApiFailure("attachments.get", response);
-      encoded = (await response.json() as {data?: string}).data;
+      // The data is decoded within the request, which so counts an answer that holds none, or
+      // none that can be decoded, as the failure it is thrown as.
+      bytes = await readCheckedWithAuthRetry(
+        `https://gmail.googleapis.com/gmail/v1/users/me/messages/${snapshot.messageId}/attachments/${snapshot.attachmentId}`,
+        {}, { getAccessToken: this.getAccessToken, timeoutMs: TRANSFER_TIMEOUT_MS.download },
+        async response => {
+          if (!response.ok) await gmailApiFailure("attachments.get", response);
+          return (await response.json() as {data?: string}).data;
+        }, attachmentBytes);
+    } else {
+      bytes = attachmentBytes(snapshot.inlineData);
     }
-    if (encoded === undefined) throw new Error("Attachment content is no longer available.");
-    const bytes = decodeBase64UrlToBytes(encoded);
     if (bytes.byteLength > MAX_GMAIL_ATTACHMENT_BYTES || bytes.byteLength !== snapshot.info.size) {
       throw new Error("Attachment content no longer matches the authorized snapshot.");
     }
@@ -2833,9 +2925,10 @@ export class GmailApi {
       validateGmailId(snapshot.messageId, "message ID");
       validateGmailId(snapshot.attachmentId, "attachment ID");
       const begin = new AbortController();
+      // No timeout of the attempt's own, which would end the reading of the body with it.
       const opening = this.authedFetch(
         `https://gmail.googleapis.com/gmail/v1/users/me/messages/${snapshot.messageId}/attachments/${snapshot.attachmentId}?fields=data`,
-        {signal: begin.signal});
+        {signal: begin.signal}, null);
       let timer!: ReturnType<typeof setTimeout>;
       // The signal ends a request that was made. The wait for a token to make it with heeds no
       // signal, so the open itself is given up when the time is out, and an answer that comes
@@ -2955,37 +3048,39 @@ export class GmailApi {
       url.searchParams.append("metadataHeaders", header);
     }
 
-    const response = await this.authedFetch(url.toString());
-    if (!response.ok) {
-      await gmailApiFailure("messages.get", response);
-    }
-
-    const data = await response.json() as {
-      payload?: { headers?: Array<{name: string; value: string}> };
-    };
-    const participants = new Set<string>();
-    for (const header of data.payload?.headers ?? []) {
-      if (!["from", "to", "cc", "bcc"].includes(header.name.toLowerCase())) continue;
-      for (const address of postalAddressListToEmailAddresses(parseAddressList(header.value))) {
-        if (address.address) participants.add(address.address.toLowerCase());
+    return this.authedRead(url.toString(), {}, async response => {
+      if (!response.ok) {
+        await gmailApiFailure("messages.get", response);
       }
-    }
-    return participants;
+
+      const data = await response.json() as {
+        payload?: { headers?: Array<{name: string; value: string}> };
+      };
+      const participants = new Set<string>();
+      for (const header of data.payload?.headers ?? []) {
+        if (!["from", "to", "cc", "bcc"].includes(header.name.toLowerCase())) continue;
+        for (const address of postalAddressListToEmailAddresses(parseAddressList(header.value))) {
+          if (address.address) participants.add(address.address.toLowerCase());
+        }
+      }
+      return participants;
+    });
   }
 
   /** Get a single message with raw MIME content. */
   async getMessage(messageId: string): Promise<GmailMessageRaw> {
     validateGmailId(messageId, "message ID");
 
-    const response = await this.authedFetch(
+    return this.authedRead(
       `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}?format=raw`,
-    );
+      { timeoutMs: TRANSFER_TIMEOUT_MS.download },
+      async response => {
+        if (!response.ok) {
+          await gmailApiFailure("messages.get", response);
+        }
 
-    if (!response.ok) {
-      await gmailApiFailure("messages.get", response);
-    }
-
-    return await response.json() as GmailMessageRaw;
+        return await response.json() as GmailMessageRaw;
+      });
   }
 
   /**
@@ -3314,7 +3409,7 @@ export class GmailApi {
     const message: { raw: string; threadId?: string } =
       threadId !== undefined ? { raw, threadId } : { raw };
 
-    const response = await this.authedFetch(
+    return this.authedRead(
       'https://gmail.googleapis.com/gmail/v1/users/me/messages/send',
       {
         method: 'POST',
@@ -3322,18 +3417,19 @@ export class GmailApi {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(message),
-      }
-    );
+        timeoutMs: TRANSFER_TIMEOUT_MS.upload,
+      },
+      async response => {
+        if (!response.ok) {
+          await gmailApiFailure("messages.send", response);
+        }
 
-    if (!response.ok) {
-      await gmailApiFailure("messages.send", response);
-    }
-
-    const result = await response.json() as { id?: string; threadId?: string };
-    if (!result.id || !result.threadId) {
-      throw new Error("Gmail accepted the send request but returned an invalid response.");
-    }
-    return {id: result.id, threadId: result.threadId};
+        const result = await response.json() as { id?: string; threadId?: string };
+        if (!result.id || !result.threadId) {
+          throw new Error("Gmail accepted the send request but returned an invalid response.");
+        }
+        return {id: result.id, threadId: result.threadId};
+      });
   }
 
   // ─────────────────────────────────────────────────────────────────
@@ -3347,49 +3443,58 @@ export class GmailApi {
     const url = new URL("https://gmail.googleapis.com/gmail/v1/users/me/drafts");
     url.searchParams.set("maxResults", String(count));
     if (pageToken) url.searchParams.set("pageToken", pageToken);
-    const response = await this.authedFetch(url.toString());
-    if (!response.ok) await gmailApiFailure("drafts.list", response);
-    const data = await response.json() as {drafts?: GmailDraftRef[]; nextPageToken?: string};
-    return {
-      drafts: data.drafts ?? [],
-      ...(data.nextPageToken ? {nextPageToken: data.nextPageToken} : {}),
-    };
+    return this.authedRead(url.toString(), {}, async response => {
+      if (!response.ok) await gmailApiFailure("drafts.list", response);
+      const data = await response.json() as {drafts?: GmailDraftRef[]; nextPageToken?: string};
+      return {
+        drafts: data.drafts ?? [],
+        ...(data.nextPageToken ? {nextPageToken: data.nextPageToken} : {}),
+      };
+    });
   }
 
   async getDraft(draftId: string): Promise<GmailDraftRaw> {
     validateGmailId(draftId, "draft ID");
-    const response = await this.authedFetch(
-      `https://gmail.googleapis.com/gmail/v1/users/me/drafts/${draftId}?format=raw`);
-    if (!response.ok) await gmailApiFailure("drafts.get", response);
-    const draft = await response.json() as GmailDraftRaw;
-    if (!draft.id || !draft.message?.id || !draft.message.raw) {
-      throw new Error("Gmail returned an invalid draft resource.");
-    }
-    return draft;
+    return this.authedRead(
+      `https://gmail.googleapis.com/gmail/v1/users/me/drafts/${draftId}?format=raw`,
+      { timeoutMs: TRANSFER_TIMEOUT_MS.download },
+      async response => {
+        if (!response.ok) await gmailApiFailure("drafts.get", response);
+        const draft = await response.json() as GmailDraftRaw;
+        if (!draft.id || !draft.message?.id || !draft.message.raw) {
+          throw new Error("Gmail returned an invalid draft resource.");
+        }
+        return draft;
+      });
   }
 
   /** Fetch a draft MIME tree while retaining detached attachment bodies as lazy IDs. */
   async getDraftFull(draftId: string): Promise<GmailDraftFull> {
     validateGmailId(draftId, "draft ID");
-    const response = await this.authedFetch(
-      `https://gmail.googleapis.com/gmail/v1/users/me/drafts/${draftId}?format=full`);
-    if (!response.ok) await gmailApiFailure("drafts.get", response);
-    const draft = await response.json() as GmailDraftFull;
-    if (!draft.id || !draft.message?.id) throw new Error("Gmail returned an invalid draft resource.");
-    return draft;
+    return this.authedRead(
+      `https://gmail.googleapis.com/gmail/v1/users/me/drafts/${draftId}?format=full`,
+      { timeoutMs: TRANSFER_TIMEOUT_MS.download },
+      async response => {
+        if (!response.ok) await gmailApiFailure("drafts.get", response);
+        const draft = await response.json() as GmailDraftFull;
+        if (!draft.id || !draft.message?.id) throw new Error("Gmail returned an invalid draft resource.");
+        return draft;
+      });
   }
 
   async createDraft(
       raw: string, threadId?: string): Promise<{id: string; message: {id: string; threadId?: string}}> {
     if (threadId) validateGmailId(threadId, "thread ID");
-    const response = await this.authedFetch(
+    return this.authedRead(
       "https://gmail.googleapis.com/gmail/v1/users/me/drafts", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({message: {raw, ...(threadId ? {threadId} : {})}}),
+        timeoutMs: TRANSFER_TIMEOUT_MS.upload,
+    }, async response => {
+      if (!response.ok) await gmailApiFailure("drafts.create", response);
+      return readGmailDraftWriteResult(response, "creation");
     });
-    if (!response.ok) await gmailApiFailure("drafts.create", response);
-    return readGmailDraftWriteResult(response, "creation");
   }
 
   async updateDraft(
@@ -3397,14 +3502,16 @@ export class GmailApi {
       Promise<{id: string; message: {id: string; threadId?: string}}> {
     validateGmailId(draftId, "draft ID");
     if (threadId) validateGmailId(threadId, "thread ID");
-    const response = await this.authedFetch(
+    return this.authedRead(
       `https://gmail.googleapis.com/gmail/v1/users/me/drafts/${draftId}`, {
         method: "PUT",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({message: {raw, ...(threadId ? {threadId} : {})}}),
+        timeoutMs: TRANSFER_TIMEOUT_MS.upload,
+    }, async response => {
+      if (!response.ok) await gmailApiFailure("drafts.update", response);
+      return readGmailDraftWriteResult(response, "update");
     });
-    if (!response.ok) await gmailApiFailure("drafts.update", response);
-    return readGmailDraftWriteResult(response, "update");
   }
 
   async deleteDraft(draftId: string): Promise<void> {
@@ -3419,7 +3526,7 @@ export class GmailApi {
       draftId: string, raw: string, threadId?: string): Promise<{id: string; threadId: string}> {
     validateGmailId(draftId, "draft ID");
     if (threadId) validateGmailId(threadId, "thread ID");
-    const response = await this.authedFetch(
+    return this.authedRead(
       "https://gmail.googleapis.com/gmail/v1/users/me/drafts/send", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
@@ -3427,11 +3534,13 @@ export class GmailApi {
           id: draftId,
           message: {raw, ...(threadId ? {threadId} : {})},
         }),
+        timeoutMs: TRANSFER_TIMEOUT_MS.upload,
+      }, async response => {
+        if (!response.ok) await gmailApiFailure("drafts.send", response);
+        const sent = await response.json() as {id?: string; threadId?: string};
+        if (!sent.id || !sent.threadId) throw new Error("Gmail returned an invalid sent draft resource.");
+        return {id: sent.id, threadId: sent.threadId};
       });
-    if (!response.ok) await gmailApiFailure("drafts.send", response);
-    const sent = await response.json() as {id?: string; threadId?: string};
-    if (!sent.id || !sent.threadId) throw new Error("Gmail returned an invalid sent draft resource.");
-    return {id: sent.id, threadId: sent.threadId};
   }
 
   // ─────────────────────────────────────────────────────────────────
@@ -3439,69 +3548,75 @@ export class GmailApi {
   // ─────────────────────────────────────────────────────────────────
 
   async listLabelRecords(): Promise<GmailLabelRaw[]> {
-    const response = await this.authedFetch(
+    return this.authedRead(
       'https://gmail.googleapis.com/gmail/v1/users/me/labels',
-    );
+      {},
+      async response => {
+        if (!response.ok) {
+          await gmailApiFailure("labels.list", response);
+        }
 
-    if (!response.ok) {
-      await gmailApiFailure("labels.list", response);
-    }
-
-    const data = await response.json() as {
-      labels?: GmailLabelRaw[];
-    };
-    return (data.labels ?? []).filter(label =>
-      typeof label.id === "string" && typeof label.name === "string" &&
-      (label.type === "system" || label.type === "user"));
+        const data = await response.json() as {
+          labels?: GmailLabelRaw[];
+        };
+        return (data.labels ?? []).filter(label =>
+          typeof label.id === "string" && typeof label.name === "string" &&
+          (label.type === "system" || label.type === "user"));
+      });
   }
 
   async getLabel(labelId: string): Promise<GmailLabelRaw> {
     validateGmailId(labelId, "label ID");
-    const response = await this.authedFetch(
-      `https://gmail.googleapis.com/gmail/v1/users/me/labels/${labelId}`);
-    if (!response.ok) await gmailApiFailure("labels.get", response);
-    const label = parseGmailLabelResponse(await response.json(), "get");
-    if (label.id !== labelId) throw new Error("Gmail labels.get returned a different label ID.");
-    return label;
+    return this.authedRead(
+      `https://gmail.googleapis.com/gmail/v1/users/me/labels/${labelId}`,
+      {},
+      async response => {
+        if (!response.ok) await gmailApiFailure("labels.get", response);
+        const label = parseGmailLabelResponse(await response.json(), "get");
+        if (label.id !== labelId) throw new Error("Gmail labels.get returned a different label ID.");
+        return label;
+      });
   }
 
   async createLabel(name: string): Promise<GmailLabelRaw> {
-    const response = await this.authedFetch(
+    return this.authedRead(
       "https://gmail.googleapis.com/gmail/v1/users/me/labels", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({name}),
+    }, async response => {
+      if (!response.ok) await gmailApiFailure("labels.create", response);
+      let value: unknown;
+      try {
+        value = await response.json();
+      } catch {
+        throw new Error("Gmail labels.create returned invalid JSON.");
+      }
+      return parseGmailLabelResponse(value, "create");
     });
-    if (!response.ok) await gmailApiFailure("labels.create", response);
-    let value: unknown;
-    try {
-      value = await response.json();
-    } catch {
-      throw new Error("Gmail labels.create returned invalid JSON.");
-    }
-    return parseGmailLabelResponse(value, "create");
   }
 
   async renameLabel(labelId: string, name: string): Promise<GmailLabelRaw> {
     validateGmailId(labelId, "label ID");
-    const response = await this.authedFetch(
+    return this.authedRead(
       `https://gmail.googleapis.com/gmail/v1/users/me/labels/${labelId}`, {
         method: "PATCH",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({name}),
+    }, async response => {
+      if (!response.ok) await gmailApiFailure("labels.update", response);
+      let value: unknown;
+      try {
+        value = await response.json();
+      } catch {
+        throw new Error("Gmail labels.update returned invalid JSON.");
+      }
+      const label = parseGmailLabelResponse(value, "update");
+      if (label.id !== labelId) {
+        throw new Error("Gmail labels.update returned a different label ID.");
+      }
+      return label;
     });
-    if (!response.ok) await gmailApiFailure("labels.update", response);
-    let value: unknown;
-    try {
-      value = await response.json();
-    } catch {
-      throw new Error("Gmail labels.update returned invalid JSON.");
-    }
-    const label = parseGmailLabelResponse(value, "update");
-    if (label.id !== labelId) {
-      throw new Error("Gmail labels.update returned a different label ID.");
-    }
-    return label;
   }
 
   async deleteLabel(labelId: string): Promise<void> {
@@ -3518,11 +3633,15 @@ export class GmailApi {
 
   /** The mailbox's primary address and its current history ID. */
   async getProfile(): Promise<{emailAddress: string; historyId: string}> {
-    const response = await this.authedFetch("https://gmail.googleapis.com/gmail/v1/users/me/profile");
-    if (!response.ok) await gmailApiFailure("users.getProfile", response);
-    const profile = await response.json() as {emailAddress?: unknown; historyId?: unknown};
-    if (typeof profile.emailAddress !== "string") throw new Error("Gmail returned an invalid profile.");
-    return {emailAddress: profile.emailAddress, historyId: gmailHistoryId(profile.historyId)};
+    return this.authedRead(
+      "https://gmail.googleapis.com/gmail/v1/users/me/profile",
+      {},
+      async response => {
+        if (!response.ok) await gmailApiFailure("users.getProfile", response);
+        const profile = await response.json() as {emailAddress?: unknown; historyId?: unknown};
+        if (typeof profile.emailAddress !== "string") throw new Error("Gmail returned an invalid profile.");
+        return {emailAddress: profile.emailAddress, historyId: gmailHistoryId(profile.historyId)};
+      });
   }
 
   /**
@@ -3530,14 +3649,15 @@ export class GmailApi {
    * Cloud project already has on it. Unfiltered: readers decide which changes matter.
    */
   async watch(topicName: string): Promise<{historyId: string; expiration: number}> {
-    const response = await this.authedFetch("https://gmail.googleapis.com/gmail/v1/users/me/watch", {
+    return this.authedRead("https://gmail.googleapis.com/gmail/v1/users/me/watch", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({topicName}),
+    }, async response => {
+      if (!response.ok) await gmailApiFailure("users.watch", response);
+      const watch = await response.json() as {historyId?: unknown; expiration?: unknown};
+      return {historyId: gmailHistoryId(watch.historyId), expiration: Number(watch.expiration)};
     });
-    if (!response.ok) await gmailApiFailure("users.watch", response);
-    const watch = await response.json() as {historyId?: unknown; expiration?: unknown};
-    return {historyId: gmailHistoryId(watch.historyId), expiration: Number(watch.expiration)};
   }
 
   /**
@@ -3555,23 +3675,24 @@ export class GmailApi {
     url.searchParams.set("historyTypes", "messageAdded");
     url.searchParams.set("maxResults", "500");
     if (pageToken) url.searchParams.set("pageToken", pageToken);
-    const response = await this.authedFetch(url.toString());
-    if (!response.ok) await gmailApiFailure("history.list", response);
-    const data = await response.json() as {
-      history?: Array<{
-        id?: unknown;
-        messagesAdded?: Array<{message: {id: string; threadId: string; labelIds?: string[]}}>;
-      }>;
-      historyId?: unknown;
-      nextPageToken?: string;
-    };
-    return {
-      records: (data.history ?? []).map(record => ({
-        id: gmailHistoryId(record.id),
-        messages: (record.messagesAdded ?? []).map(added => added.message),
-      })),
-      historyId: gmailHistoryId(data.historyId),
-      nextPageToken: data.nextPageToken,
-    };
+    return this.authedRead(url.toString(), {}, async response => {
+      if (!response.ok) await gmailApiFailure("history.list", response);
+      const data = await response.json() as {
+        history?: Array<{
+          id?: unknown;
+          messagesAdded?: Array<{message: {id: string; threadId: string; labelIds?: string[]}}>;
+        }>;
+        historyId?: unknown;
+        nextPageToken?: string;
+      };
+      return {
+        records: (data.history ?? []).map(record => ({
+          id: gmailHistoryId(record.id),
+          messages: (record.messagesAdded ?? []).map(added => added.message),
+        })),
+        historyId: gmailHistoryId(data.historyId),
+        nextPageToken: data.nextPageToken,
+      };
+    });
   }
 }

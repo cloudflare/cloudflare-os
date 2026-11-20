@@ -12,6 +12,7 @@ import type {
   ActionDescription, ApprovalQueue, Cursor, HookController, HookDescription, ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import type { Pager } from "./cursor";
+import { googleUpstream } from "./upstream";
 
 export class SharedApprovalQueue {
   #stub: RpcStub<ApprovalQueue>;
@@ -84,9 +85,13 @@ export class RpcCursor<Entry> extends ApprovalQueueRpcTarget implements Cursor<E
     this.#pager = pager;
   }
 
-  /** `next()` takes no arguments, so there is no argument surface to validate. */
+  /**
+   * `next()` takes no arguments, so there is no argument surface to validate. One call walks
+   * provider pages until one has entries and reads what each entry needs, so its requests are
+   * summed.
+   */
   @skipRpcValidation()
   next(): Promise<Entry[] | null> {
-    return this.#pager.next();
+    return googleUpstream.summed(() => this.#pager.next());
   }
 }

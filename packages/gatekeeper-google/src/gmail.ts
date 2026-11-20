@@ -72,6 +72,7 @@ import {
 } from "./drive-pdf";
 import {forwardRangeReader, type PdfOpener} from "./pdf-forward-reader";
 import TYPES_CODE from "./types.txt";
+import { googleUpstream } from "./upstream";
 
 type Env = Cloudflare.Env & PushHooksEnv;
 
@@ -2356,27 +2357,29 @@ function hasHistoricalDraftUpdate(store: GmailStore, canonicalId: string): boole
 async function walkRestrictedMessages(
     ctx: GmailContext, visit: (messages: readonly GmailMessageRef[]) => boolean,
     allowPartial = false): Promise<void> {
-  if (!ctx.restricted) throw new Error("Expected a restricted Gmail binding.");
-  const labelIds = ctx.labelId ? [ctx.labelId] : undefined;
-  if (!ctx.searchQuery && !labelIds) throw new Error("Restricted Gmail binding has no restriction.");
-  const seenTokens = new Set<string>();
-  let pages = 0;
-  let pageToken: string | undefined;
-  do {
-    const result = await ctx.api.listMessages(
-      GMAIL_RESTRICTED_THREAD_PROVIDER_PAGE_SIZE, ctx.searchQuery, pageToken, labelIds);
-    if (visit(result.messages)) return;
-    pages++;
-    pageToken = result.nextPageToken;
-    if (pageToken) {
-      if (seenTokens.has(pageToken)) throw new Error("Gmail returned a repeated page token.");
-      seenTokens.add(pageToken);
-      if (pages === MAX_GMAIL_RESTRICTED_THREAD_PROVIDER_PAGES) {
-        if (allowPartial) return;
-        throw new Error("The Gmail restriction contains too many messages to verify this capability.");
+  return googleUpstream.summed(async () => {
+    if (!ctx.restricted) throw new Error("Expected a restricted Gmail binding.");
+    const labelIds = ctx.labelId ? [ctx.labelId] : undefined;
+    if (!ctx.searchQuery && !labelIds) throw new Error("Restricted Gmail binding has no restriction.");
+    const seenTokens = new Set<string>();
+    let pages = 0;
+    let pageToken: string | undefined;
+    do {
+      const result = await ctx.api.listMessages(
+        GMAIL_RESTRICTED_THREAD_PROVIDER_PAGE_SIZE, ctx.searchQuery, pageToken, labelIds);
+      if (visit(result.messages)) return;
+      pages++;
+      pageToken = result.nextPageToken;
+      if (pageToken) {
+        if (seenTokens.has(pageToken)) throw new Error("Gmail returned a repeated page token.");
+        seenTokens.add(pageToken);
+        if (pages === MAX_GMAIL_RESTRICTED_THREAD_PROVIDER_PAGES) {
+          if (allowPartial) return;
+          throw new Error("The Gmail restriction contains too many messages to verify this capability.");
+        }
       }
-    }
-  } while (pageToken);
+    } while (pageToken);
+  });
 }
 
 async function messagesAvailableThroughRestriction(
@@ -2445,15 +2448,18 @@ async function restrictedThreadScope(
   if (!admitted.length) {
     throw new Error("This Gmail thread is not available through this restricted binding.");
   }
-  for (let i = 0; i < admitted.length; i += 5) {
-    await Promise.all(admitted.slice(i, i + 5).map(async messageId => {
-      const metadata = await ctx.api.getMessageMetadata(messageId);
-      if (metadata.threadId !== threadId) {
-        throw new Error("Gmail message thread identity changed unexpectedly.");
-      }
-      return undefined;
-    }));
-  }
+  // One read for each admitted message, summed.
+  await googleUpstream.summed(async () => {
+    for (let i = 0; i < admitted.length; i += 5) {
+      await Promise.all(admitted.slice(i, i + 5).map(async messageId => {
+        const metadata = await ctx.api.getMessageMetadata(messageId);
+        if (metadata.threadId !== threadId) {
+          throw new Error("Gmail message thread identity changed unexpectedly.");
+        }
+        return undefined;
+      }));
+    }
+  });
   return gmailRestrictedScope(admitted);
 }
 
@@ -2638,34 +2644,36 @@ function gmailFullThreadCursor(
 async function collectRestrictedThreadGroups(
     ctx: GmailContext, query: string | undefined,
     labelIds: string[] | undefined): Promise<Array<{threadId: string; messages: GmailMessageRef[]}>> {
-  const messages: GmailMessageRef[] = [];
-  const seenTokens = new Set<string>();
-  let pages = 0;
-  let pageToken: string | undefined;
-  do {
-    pages++;
-    const page = await ctx.api.listMessages(
-      GMAIL_RESTRICTED_THREAD_PROVIDER_PAGE_SIZE, query, pageToken, labelIds);
-    const total = messages.length + page.messages.length;
-    if (total > MAX_GMAIL_RESTRICTED_THREAD_MESSAGES ||
-        (total >= MAX_GMAIL_RESTRICTED_THREAD_MESSAGES && page.nextPageToken)) {
-      throw new Error(
-        `This restricted Gmail thread search matches more than ` +
-        `${MAX_GMAIL_RESTRICTED_THREAD_MESSAGES} messages. Narrow the query or use searchMessages().`);
-    }
-    messages.push(...page.messages);
-    pageToken = page.nextPageToken;
-    if (pageToken) {
-      if (pages >= MAX_GMAIL_RESTRICTED_THREAD_PROVIDER_PAGES) {
+  return googleUpstream.summed(async () => {
+    const messages: GmailMessageRef[] = [];
+    const seenTokens = new Set<string>();
+    let pages = 0;
+    let pageToken: string | undefined;
+    do {
+      pages++;
+      const page = await ctx.api.listMessages(
+        GMAIL_RESTRICTED_THREAD_PROVIDER_PAGE_SIZE, query, pageToken, labelIds);
+      const total = messages.length + page.messages.length;
+      if (total > MAX_GMAIL_RESTRICTED_THREAD_MESSAGES ||
+          (total >= MAX_GMAIL_RESTRICTED_THREAD_MESSAGES && page.nextPageToken)) {
         throw new Error(
-          `Gmail returned more than ${MAX_GMAIL_RESTRICTED_THREAD_PROVIDER_PAGES} pages while ` +
-          "collecting restricted thread results. Narrow the query or use searchMessages().");
+          `This restricted Gmail thread search matches more than ` +
+          `${MAX_GMAIL_RESTRICTED_THREAD_MESSAGES} messages. Narrow the query or use searchMessages().`);
       }
-      if (seenTokens.has(pageToken)) throw new Error("Gmail returned a repeated page token.");
-      seenTokens.add(pageToken);
-    }
-  } while (pageToken);
-  return groupGmailMessagesByThread(messages);
+      messages.push(...page.messages);
+      pageToken = page.nextPageToken;
+      if (pageToken) {
+        if (pages >= MAX_GMAIL_RESTRICTED_THREAD_PROVIDER_PAGES) {
+          throw new Error(
+            `Gmail returned more than ${MAX_GMAIL_RESTRICTED_THREAD_PROVIDER_PAGES} pages while ` +
+            "collecting restricted thread results. Narrow the query or use searchMessages().");
+        }
+        if (seenTokens.has(pageToken)) throw new Error("Gmail returned a repeated page token.");
+        seenTokens.add(pageToken);
+      }
+    } while (pageToken);
+    return groupGmailMessagesByThread(messages);
+  });
 }
 
 function gmailRestrictedThreadCursor(
@@ -3214,10 +3222,13 @@ class GmailThreadStub extends ApprovalQueueRpcTarget implements GmailThread {
     // A draft message that is being sent or deleted may be gone from Gmail already.
     const admitted = scope.admittedMessageIds.filter(id => !overlay.hiddenMessageIds.has(id));
     const metadata: GmailMessageFull[] = [];
-    for (let i = 0; i < admitted.length; i += 5) {
-      metadata.push(...await Promise.all(
-        admitted.slice(i, i + 5).map(id => this.#ctx.api.getMessageMetadata(id))));
-    }
+    // One read for each admitted message, summed.
+    await googleUpstream.summed(async () => {
+      for (let i = 0; i < admitted.length; i += 5) {
+        metadata.push(...await Promise.all(
+          admitted.slice(i, i + 5).map(id => this.#ctx.api.getMessageMetadata(id))));
+      }
+    });
     const info = await threadInfo(this.#ctx, {
       id: this.#threadId,
       snippet: metadata[0]?.snippet,
@@ -3279,14 +3290,17 @@ class GmailThreadStub extends ApprovalQueueRpcTarget implements GmailThread {
     }
     const target = emailRecipientToAddress(normalized).address.toLowerCase();
     const visible: string[] = [];
-    for (let i = 0; i < ids.length; i += 5) {
-      const batch = ids.slice(i, i + 5);
-      const participants = await Promise.all(
-        batch.map(id => this.#ctx.api.getMessageParticipants(id)));
-      for (let j = 0; j < batch.length; j++) {
-        if (participants[j].has(target)) visible.push(batch[j]);
+    // One read for each message of the thread, summed.
+    await googleUpstream.summed(async () => {
+      for (let i = 0; i < ids.length; i += 5) {
+        const batch = ids.slice(i, i + 5);
+        const participants = await Promise.all(
+          batch.map(id => this.#ctx.api.getMessageParticipants(id)));
+        for (let j = 0; j < batch.length; j++) {
+          if (participants[j].has(target)) visible.push(batch[j]);
+        }
       }
-    }
+    });
     // Mail waiting to be sent is matched on the sender and recipients it will be sent with.
     const visiblePending = pending.filter(({info}) =>
       [info.from, ...info.to, ...info.cc, ...info.bcc].some(
@@ -4936,18 +4950,22 @@ async function applyMessageMutation(
       return;
     }
     const ids = action.target.messageIds;
-    for (let i = 0; i < ids.length; i += GMAIL_BATCH_MODIFY_MAX_IDS) {
-      const chunk = ids.slice(i, i + GMAIL_BATCH_MODIFY_MAX_IDS);
-      try {
-        await api.batchModifyMessages(chunk, add, remove);
-      } catch (error) {
-        if (!(reconciling && error instanceof GmailApiError && error.status === 404)) throw error;
-        // A retry must not wedge on a message deleted since the first attempt, so modify the rest.
-        const remaining = await existingMessageIds(api, chunk);
-        if (remaining.length) await api.batchModifyMessages(remaining, add, remove);
+    // One write for each chunk and, where a retry finds a message gone, one read for each of the
+    // chunk's messages (existingMessageIds()), summed.
+    await googleUpstream.summed(async () => {
+      for (let i = 0; i < ids.length; i += GMAIL_BATCH_MODIFY_MAX_IDS) {
+        const chunk = ids.slice(i, i + GMAIL_BATCH_MODIFY_MAX_IDS);
+        try {
+          await api.batchModifyMessages(chunk, add, remove);
+        } catch (error) {
+          if (!(reconciling && error instanceof GmailApiError && error.status === 404)) throw error;
+          // A retry must not wedge on a message deleted since the first attempt, so modify the rest.
+          const remaining = await existingMessageIds(api, chunk);
+          if (remaining.length) await api.batchModifyMessages(remaining, add, remove);
+        }
+        mayHaveWritten = true;
       }
-      mayHaveWritten = true;
-    }
+    });
   } catch (error) {
     if (!mayHaveWritten && isDefinitiveWriteRejection(error)) store.clearApplying(actionId);
     throw error;

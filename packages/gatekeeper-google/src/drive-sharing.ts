@@ -31,6 +31,7 @@ import {
   type QueuedWrite, type RefusalRow,
 } from "./drive-writes";
 import { obsContext } from "./observability";
+import { googleUpstream } from "./upstream";
 
 const logger = obsContext.createLogger({
   component: "gatekeeper.google.drive.sharing", vendorId: "google",
@@ -125,19 +126,21 @@ export class PermissionListTooLong extends Error {
 export async function readPermissions(
   api: Pick<DriveApi, "listPermissions">, fileId: string,
 ): Promise<DrivePermissionRecord[]> {
-  let permissions: DrivePermissionRecord[] = [];
-  let seen = new Set<string>();
-  let pageToken: string | undefined;
-  for (let page = 0; page < MAX_PERMISSION_PAGES; page++) {
-    let result = await api.listPermissions(fileId, pageToken === undefined ? {} : { pageToken });
-    permissions.push(...result.permissions);
-    pageToken = result.nextPageToken;
-    if (pageToken === undefined) return permissions;
-    // A token handed back twice would be read until the page limit and prove nothing more.
-    if (seen.has(pageToken)) break;
-    seen.add(pageToken);
-  }
-  throw new PermissionListTooLong();
+  return googleUpstream.summed(async () => {
+    let permissions: DrivePermissionRecord[] = [];
+    let seen = new Set<string>();
+    let pageToken: string | undefined;
+    for (let page = 0; page < MAX_PERMISSION_PAGES; page++) {
+      let result = await api.listPermissions(fileId, pageToken === undefined ? {} : { pageToken });
+      permissions.push(...result.permissions);
+      pageToken = result.nextPageToken;
+      if (pageToken === undefined) return permissions;
+      // A token handed back twice would be read until the page limit and prove nothing more.
+      if (seen.has(pageToken)) break;
+      seen.add(pageToken);
+    }
+    throw new PermissionListTooLong();
+  });
 }
 
 /** A grantee as Drive listed them when a change was queued, for the approver. */

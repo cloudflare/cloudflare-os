@@ -1,10 +1,13 @@
 import { readBytesCapped, ResponseTooLargeError } from "@gadgets/gatekeeper-kit/response-body";
-import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
+import {
+  AccessTokenProvider, fetchWithAuthRetry, readCheckedWithAuthRetry, readWithAuthRetry,
+} from "./auth-retry";
 import { readGoogleJson } from "./google-response";
 import {
   LAYOUT_PAGE_FIELDS, OUTLINE_FIELDS, SLIDE_FIELDS, SUMMARY_FIELDS,
 } from "./slides-fields";
 import BLANK_RECORDING from "./blank-presentation.json";
+import { googleUpstream } from "./upstream";
 
 const API_BASE = "https://slides.googleapis.com/v1/presentations";
 // 10 MiB matches the Docs bound for a document body.
@@ -284,45 +287,61 @@ function pagePath(presentationId: string, pageId: string): string {
 export class GoogleSlidesApi {
   constructor(private getAccessToken: AccessTokenProvider) {}
 
-  async #send<T>(url: URL, init: RequestInit, operation: string, maxBytes: number): Promise<T> {
-    let response = await fetchWithAuthRetry(
+  /**
+   * One request, whose answer's JSON is given to `made`, the check of the method that sent it.
+   * Both are read within the request, which so counts a success that cannot be read, or that
+   * `made` throws on, as the failure it is thrown as.
+   */
+  async #send<T, R>(
+    url: URL, init: RequestInit, operation: string, maxBytes: number,
+    made: (answer: T) => R | Promise<R>,
+  ): Promise<R> {
+    return readCheckedWithAuthRetry(
       url.toString(), init, { getAccessToken: this.getAccessToken, timeoutMs: REQUEST_TIMEOUT_MS },
+      response => readGoogleJson<T>(response, { provider: "Google Slides", operation, maxBytes }),
+      made,
     );
-    return readGoogleJson<T>(response, { provider: "Google Slides", operation, maxBytes });
   }
 
-  async #get<T>(
-    path: string, params: Record<string, string>, operation: string, maxBytes = MAX_RESPONSE_BYTES,
-  ): Promise<T> {
+  async #get<T, R>(
+    path: string, params: Record<string, string>, operation: string, maxBytes: number,
+    made: (answer: T) => R | Promise<R>,
+  ): Promise<R> {
     let url = new URL(`${API_BASE}/${path}`);
     for (let [name, value] of Object.entries(params)) url.searchParams.set(name, value);
-    return this.#send<T>(url, {}, operation, maxBytes);
+    return this.#send(url, {}, operation, maxBytes, made);
   }
 
   /** Create a presentation titled `title` in the caller's My Drive, returning its ID. */
   async createPresentation(title: string): Promise<string> {
     let url = new URL(API_BASE);
     url.searchParams.set("fields", "presentationId");
-    let { presentationId } = await this.#send<{ presentationId?: unknown }>(url, {
+    return this.#send(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ title }),
-    }, "create presentation", MAX_RESPONSE_BYTES);
-    if (typeof presentationId !== "string" || presentationId.length === 0) {
-      throw new Error("Google Slides returned no presentation ID");
-    }
-    return presentationId;
+    }, "create presentation", MAX_RESPONSE_BYTES, async (answer: { presentationId?: unknown }) => {
+      // The answer is taken apart from an awaited value: what is thrown of one that is no
+      // object is then a `TypeError` that names no variable of this method.
+      let { presentationId } = await answer;
+      if (typeof presentationId !== "string" || presentationId.length === 0) {
+        throw new Error("Google Slides returned no presentation ID");
+      }
+      return presentationId;
+    });
   }
 
   async #presentation(
     presentationId: string, fields: string, operation: string,
   ): Promise<RestPresentation> {
-    let result = await this.#get<RestPresentation>(
-      encodeURIComponent(presentationId), { fields }, operation);
-    if (result.presentationId !== presentationId) {
-      throw new Error("Google Slides returned a different presentation");
-    }
-    return result;
+    return this.#get(
+      encodeURIComponent(presentationId), { fields }, operation, MAX_RESPONSE_BYTES,
+      (result: RestPresentation) => {
+        if (result.presentationId !== presentationId) {
+          throw new Error("Google Slides returned a different presentation");
+        }
+        return result;
+      });
   }
 
   /** Fetch what summaries need: the masters, the layouts, and each slide's shape and notes text. */
@@ -342,52 +361,68 @@ export class GoogleSlidesApi {
 
   /** Fetch one slide's content, whatever the size of the rest of the presentation. */
   async getSlide(presentationId: string, slideId: string): Promise<RestSlide> {
-    let slide = await this.#get<RestSlide>(
-      pagePath(presentationId, slideId), { fields: SLIDE_FIELDS }, "get slide", MAX_SLIDE_BYTES);
-    if (slide.objectId !== slideId) throw new Error("Google Slides returned a different slide");
-    return slide;
+    return this.#get(
+      pagePath(presentationId, slideId), { fields: SLIDE_FIELDS }, "get slide", MAX_SLIDE_BYTES,
+      (slide: RestSlide) => {
+        if (slide.objectId !== slideId) throw new Error("Google Slides returned a different slide");
+        return slide;
+      });
   }
 
   /** Fetch a layout's placeholders, as far as a slide made from it takes them. */
   async getLayout(presentationId: string, layoutId: string): Promise<RestPage> {
-    let layout = await this.#get<RestPage>(
-      pagePath(presentationId, layoutId), { fields: LAYOUT_PAGE_FIELDS }, "get layout", MAX_SLIDE_BYTES);
-    if (layout.objectId !== layoutId) throw new Error("Google Slides returned a different layout");
-    return layout;
+    return this.#get(
+      pagePath(presentationId, layoutId), { fields: LAYOUT_PAGE_FIELDS }, "get layout", MAX_SLIDE_BYTES,
+      (layout: RestPage) => {
+        if (layout.objectId !== layoutId) throw new Error("Google Slides returned a different layout");
+        return layout;
+      });
   }
 
   /** Fetch full pages of the slides among `ids` that `order`, the deck's slide IDs, still has. */
   async getSlides(
     presentationId: string, ids: Iterable<string>, order: readonly string[],
   ): Promise<Map<string, RestSlide>> {
-    let slides = await Promise.all([...ids].filter(id => order.includes(id))
-      .map(id => this.getSlide(presentationId, id)));
-    return new Map(slides.map(slide => [slide.objectId!, slide]));
+    return googleUpstream.summed(async () => {
+      let slides = await Promise.all([...ids].filter(id => order.includes(id))
+        .map(id => this.getSlide(presentationId, id)));
+      return new Map(slides.map(slide => [slide.objectId!, slide]));
+    });
   }
 
   /** Render the latest version of a page as a PNG. Google counts this as an expensive read. */
   async getThumbnail(
     presentationId: string, pageId: string, size: ThumbnailSize,
   ): Promise<PageThumbnail> {
-    let { contentUrl } = await this.#get<{ contentUrl?: string }>(
+    // The image's location is taken within the request, which so counts an answer that names
+    // none, or one outside Google's image host, as the failure it is thrown as.
+    let location = await this.#get(
       `${pagePath(presentationId, pageId)}/thumbnail`,
       { "thumbnailProperties.mimeType": "PNG", "thumbnailProperties.thumbnailSize": size },
-      "get thumbnail", MAX_THUMBNAIL_RESPONSE_BYTES);
-    // No credentials: the URL itself is the authority. A redirect could leave Google's host.
-    let image = await fetchWithAuthRetry(thumbnailContentUrl(contentUrl), {
-      redirect: "manual", signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    }, { getAccessToken: null, retries: 1, operation: "thumbnail.download" });
-    if (!image.ok) {
-      await image.body?.cancel();
-      throw new Error(`Google Slides thumbnail download failed [http=${image.status}]`);
-    }
-    let content = await readBytesCapped(image, MAX_THUMBNAIL_BYTES).catch((error: unknown) => {
-      if (!(error instanceof ResponseTooLargeError)) throw error;
-      throw new Error(
-        `Google Slides thumbnail exceeded ${MAX_THUMBNAIL_BYTES} bytes; request a smaller size.`);
+      "get thumbnail", MAX_THUMBNAIL_RESPONSE_BYTES,
+      async (answer: { contentUrl?: string }) => {
+        // Taken apart from an awaited value, as in `createPresentation`.
+        let { contentUrl } = await answer;
+        return thumbnailContentUrl(contentUrl);
+      });
+    // No credentials: the URL itself is the authority. A redirect could leave Google's host. The
+    // image is read within the request, so that one cut off after its headers, too large or no
+    // PNG is counted as no success.
+    return readWithAuthRetry(location, { redirect: "manual" }, {
+      getAccessToken: null, retries: 1, operation: "thumbnail.download", timeoutMs: REQUEST_TIMEOUT_MS,
+    }, async image => {
+      if (!image.ok) {
+        await image.body?.cancel();
+        throw new Error(`Google Slides thumbnail download failed [http=${image.status}]`);
+      }
+      let content = await readBytesCapped(image, MAX_THUMBNAIL_BYTES).catch((error: unknown) => {
+        if (!(error instanceof ResponseTooLargeError)) throw error;
+        throw new Error(
+          `Google Slides thumbnail exceeded ${MAX_THUMBNAIL_BYTES} bytes; request a smaller size.`);
+      });
+      // readBytesCapped allocates an array of exactly the body's size, never a shared buffer.
+      return { ...pngDimensions(content), content: content.buffer as ArrayBuffer };
     });
-    // readBytesCapped allocates an array of exactly the body's size, never a shared buffer.
-    return { ...pngDimensions(content), content: content.buffer as ArrayBuffer };
   }
 
   /**

@@ -1,13 +1,14 @@
 import { env } from "cloudflare:workers";
+import type { CallAnswer } from "@gadgets/gatekeeper-kit/upstream";
 import {
-  COMMON_SLOTS, SUBSERVICE_V1_SLOTS, subserviceTally, type BlobSlot, type DoubleSlot,
-  type SubserviceTally,
+  COMMON_SLOTS, SUBSERVICE_V1_SLOTS, type BlobSlot, type DoubleSlot,
 } from "@gadgets/observability/metrics";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AccessTokenCache, fetchWithAuthRetry, type AccessTokenRequest } from "../src/auth-retry";
+import {
+  AccessTokenCache, fetchWithAuthRetry, readWithAuthRetry, type AccessTokenRequest,
+} from "../src/auth-retry";
 import { BigQueryApi } from "../src/bigquery-api";
 import { GoogleCalendarApi } from "../src/calendar-api";
-import { GOOGLE_API_SOURCE, summedInto } from "../src/call-metrics";
 import { ChatApi } from "../src/chat-api";
 import { GoogleDocsApi } from "../src/docs-api";
 import { DriveApi } from "../src/drive-api";
@@ -17,9 +18,16 @@ import {
 } from "../src/google-api";
 import { GoogleSheetsApi } from "../src/sheets-api";
 import { GoogleSlidesApi } from "../src/slides-api";
+import { googleUpstream, type NamedOperation } from "../src/upstream";
 
 // The options of a request whose token never changes.
 const TOKEN = { getAccessToken: async () => "token" };
+
+// A `parse` that reads an answer as its status, and an `answer` that counts a 404 so read as a
+// success and says nothing of any other status.
+const statusOf = (response: Response) => response.status;
+const absentIsSuccess = (status: number): CallAnswer | undefined =>
+  status === 404 ? { outcome: "success" } : undefined;
 
 /** A stub authority recording every request, answering with whatever token it currently holds. */
 function authority(initial: string) {
@@ -87,7 +95,7 @@ describe("fetchWithAuthRetry", () => {
     });
     let minted = 0;
     let response = await fetchWithAuthRetry(
-      "https://chat.googleapis.com/upload/v1/spaces/AAAA/attachments:upload",
+      "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
       { method: "POST", body: new TextEncoder().encode("payload") },
       { getAccessToken: async () => `token-${++minted}` },
     );
@@ -97,41 +105,25 @@ describe("fetchWithAuthRetry", () => {
     expect(tokens).toEqual(["Bearer token-1", "Bearer token-2"]);
   });
 
-  // A GET is replayed after a network failure, but an abort is the caller saying to stop.
-  it("does not retry a request its caller's own signal aborted", async () => {
-    let requests = 0;
-    vi.stubGlobal("fetch", (_url: string, init: RequestInit = {}) => {
-      requests++;
-      return new Promise<Response>((_resolve, reject) => {
-        init.signal!.addEventListener("abort", () => reject(init.signal!.reason));
-      });
+  it("refreshes after a 401 once, and answers the 401 of the refreshed token", async () => {
+    let tokens: (string | null)[] = [];
+    vi.stubGlobal("fetch", async (_url: string, init: RequestInit = {}) => {
+      tokens.push(new Headers(init.headers).get("Authorization"));
+      return new Response(null, { status: 401 });
     });
-    let caller = new AbortController();
-    let response = fetchWithAuthRetry(
-      "https://www.googleapis.com/drive/v3/files/file-1", { signal: caller.signal },
-      TOKEN);
-    let outcome = expect(response).rejects.toThrow("stop");
-    await vi.waitFor(() => expect(requests).toBe(1));
-
-    caller.abort(new Error("stop"));
-
-    await outcome;
-    expect(requests).toBe(1);
-  });
-
-  it("still retries a network failure when the caller's signal has not aborted", async () => {
-    let requests = 0;
-    vi.stubGlobal("fetch", async () => {
-      if (requests++ === 0) throw new TypeError("network down");
-      return new Response("{}");
-    });
+    let asked: (AccessTokenRequest | undefined)[] = [];
+    // A provider that mints another token each time it is asked, so only the rule stops a replay.
+    let provider = async (opts?: AccessTokenRequest) => {
+      asked.push(opts);
+      return `token-${asked.length}`;
+    };
 
     let response = await fetchWithAuthRetry(
-      "https://www.googleapis.com/drive/v3/files/file-1", { signal: new AbortController().signal },
-      TOKEN);
+      "https://chat.googleapis.com/v1/spaces", {}, { getAccessToken: provider });
 
-    expect(response.status).toBe(200);
-    expect(requests).toBe(2);
+    expect(response.status).toBe(401);
+    expect(tokens).toEqual(["Bearer token-1", "Bearer token-2"]);
+    expect(asked).toEqual([undefined, { forceRefresh: true, staleToken: "token-1" }]);
   });
 
   it("does not replay a 401 when the provider cannot refresh its token", async () => {
@@ -140,6 +132,66 @@ describe("fetchWithAuthRetry", () => {
     let response = await fetchWithAuthRetry("https://chat.googleapis.com/v1/spaces", {}, { getAccessToken: async () => "fixed" });
     expect(response.status).toBe(401);
     expect(requests).toBe(1);
+  });
+
+  it("replays a 403 once with the stored token where that changed, minting nothing", async () => {
+    let tokens: (string | null)[] = [];
+    vi.stubGlobal("fetch", async (_url: string, init: RequestInit = {}) => {
+      tokens.push(new Headers(init.headers).get("Authorization"));
+      return new Response(null, { status: 403 });
+    });
+    let asked: (AccessTokenRequest | undefined)[] = [];
+    let stored = "narrow";
+    let provider = async (opts?: AccessTokenRequest) => {
+      asked.push(opts);
+      return opts?.reloadStored ? stored : "narrow";
+    };
+
+    // The stored token is the one refused: the grant itself is insufficient.
+    let unchanged = await fetchWithAuthRetry(
+      "https://chat.googleapis.com/v1/spaces", { method: "POST", body: "{}" }, { getAccessToken: provider });
+    // A reconnect stored another, which is sent once, and whose own 403 is the answer.
+    stored = "widened";
+    let regranted = await fetchWithAuthRetry(
+      "https://chat.googleapis.com/v1/spaces", { method: "POST", body: "{}" }, { getAccessToken: provider });
+
+    expect([unchanged.status, regranted.status]).toEqual([403, 403]);
+    expect(tokens).toEqual(["Bearer narrow", "Bearer narrow", "Bearer widened"]);
+    expect(asked).toEqual([undefined, { reloadStored: true }, undefined, { reloadStored: true }]);
+  });
+
+  it("asks for a token once, and sends it with every retry", async () => {
+    let tokens: (string | null)[] = [];
+    let statuses = [503, 500, 200];
+    vi.stubGlobal("fetch", async (_url: string, init: RequestInit = {}) => {
+      tokens.push(new Headers(init.headers).get("Authorization"));
+      return new Response(null, { status: statuses.shift(), headers: { "Retry-After": "0" } });
+    });
+    let provider = vi.fn(async () => "token");
+
+    let response = await fetchWithAuthRetry("https://chat.googleapis.com/v1/spaces", {}, { getAccessToken: provider });
+
+    expect(response.status).toBe(200);
+    expect(tokens).toEqual(["Bearer token", "Bearer token", "Bearer token"]);
+    expect(provider).toHaveBeenCalledTimes(1);
+  });
+
+  it("follows no redirect unless the request says so, and hands on the mode it is given", async () => {
+    let modes: (string | undefined)[] = [];
+    vi.stubGlobal("fetch", async (_url: string, init: RequestInit = {}) => {
+      modes.push(init.redirect);
+      return new Response("{}");
+    });
+
+    await fetchWithAuthRetry("https://chat.googleapis.com/v1/spaces", {}, TOKEN);
+    await fetchWithAuthRetry("https://chat.googleapis.com/v1/spaces", { redirect: "follow" }, TOKEN);
+    await fetchWithAuthRetry(
+      "https://lh3.googleusercontent.com/thumb", { redirect: "manual" },
+      { getAccessToken: null, operation: "thumbnail.download" });
+    await new DriveApi(async () => "token").openDownload("file-1");
+    await new ChatApi(async () => "token").downloadAttachment("spaces/AAAA/messages/BBB.CCC/attachments/DDD");
+
+    expect(modes).toEqual(["manual", "follow", "manual", "follow", "follow"]);
   });
 
   it("sends a request with no token provider as given, and replays no 401 or 403", async () => {
@@ -175,7 +227,9 @@ describe("fetchWithAuthRetry", () => {
     for (let method of ["POST", "PUT", "DELETE"]) {
       await fetchWithAuthRetry(SESSION, { method, body: "{}" }, { getAccessToken: null });
     }
-    await fetchWithAuthRetry("https://lh3.googleusercontent.com/thumb", {}, { getAccessToken: null, retries: 1 });
+    await fetchWithAuthRetry(
+      "https://lh3.googleusercontent.com/thumb", {},
+      { getAccessToken: null, retries: 1, operation: "thumbnail.download" });
     await fetchWithAuthRetry("https://www.googleapis.com/oauth2/v3/userinfo", {}, { ...TOKEN, retries: 1 });
 
     expect(requests).toBe(5);
@@ -248,32 +302,31 @@ describe("fetchWithAuthRetry metrics", () => {
     });
 
     let response = await fetchWithAuthRetry(
-      FILE_URL, {}, { ...TOKEN, operation: "files.get" });
+      FILE_URL, {}, { ...TOKEN, operation: "files.get.batch" });
 
     expect(response.status).toBe(200);
     expect(calls()).toEqual([
-      ["google-drive", "files.get", "refused", "rate", 429],
-      ["google-drive", "files.get", "success", "", 200],
+      ["google-drive", "files.get.batch", "refused", "rate", 429],
+      ["google-drive", "files.get.batch", "success", "", 200],
     ]);
+    expect(googleUpstream.source).toBe("gatekeeper.google.api");
     expect(points.map(point => column(point, SUBSERVICE_V1_SLOTS.source)))
-        .toEqual([GOOGLE_API_SOURCE, GOOGLE_API_SOURCE]);
+        .toEqual([googleUpstream.source, googleUpstream.source]);
     expect(points.map(point => column(point, COMMON_SLOTS.durationMs))).toEqual([250, 250]);
   });
 
   it("names a request given no operation from its method and URL, or by its method alone", async () => {
-    answering(200, 200, 200);
+    answering(200, 200);
 
     await fetchWithAuthRetry(FILE_URL, {}, TOKEN);
     await fetchWithAuthRetry(FILE_URL, { method: "patch", body: "{}" }, TOKEN);
-    // A URL that does not say what its request does.
-    await fetchWithAuthRetry(
-      "https://www.googleapis.com/batch/drive/v3", { method: "post", body: "" }, TOKEN);
 
     expect(calls()).toEqual([
       ["google-drive", "files.get", "success", "", 200],
       ["google-drive", "files.patch", "success", "", 200],
-      ["google-drive", "POST", "success", "", 200],
     ]);
+    // A URL that does not say what its request does, which is why its one caller names it.
+    expect(googleUpstream.operationOf("post", "https://www.googleapis.com/batch/drive/v3")).toBe("POST");
   });
 
   // A rejected request was a request too, though the caller never sees its answer.
@@ -292,70 +345,46 @@ describe("fetchWithAuthRetry metrics", () => {
     ]);
   });
 
-  it("counts an answer below 400 as a success and a 5xx as an error, retried or not", async () => {
-    answering(302, 500, 503, 200);
+  it("counts a redirect as an error but of a request that follows them, and a 5xx as an error, retried or not", async () => {
+    answering(302, 302, 500, 503, 200);
 
     await fetchWithAuthRetry(FILE_URL, { method: "POST" }, TOKEN);
+    await fetchWithAuthRetry(`${FILE_URL}?alt=media`, { redirect: "follow" }, TOKEN);
     await fetchWithAuthRetry(FILE_URL, { method: "POST" }, TOKEN);
     await fetchWithAuthRetry(FILE_URL, {}, TOKEN);
 
     expect(calls()).toEqual([
-      ["google-drive", "files.create", "success", "", 302],
+      ["google-drive", "files.create", "error", "http", 302],
+      ["google-drive", "files.get.media", "success", "", 302],
       ["google-drive", "files.create", "error", "http", 500],
       ["google-drive", "files.get", "error", "http", 503],
       ["google-drive", "files.get", "success", "", 200],
     ]);
   });
 
-  it("counts a request that threw and its retry, each with how long it took", async () => {
-    let now = 1_000;
-    vi.spyOn(Date, "now").mockImplementation(() => now);
-    vi.spyOn(Math, "random").mockReturnValue(0);
-    let failures = [new TypeError("network down")];
-    vi.stubGlobal("fetch", async () => {
-      now += 250;
-      if (failures.length > 0) throw failures.shift();
-      return new Response("{}");
-    });
+  // Google's own rule: the client's default leaves a 500 and a 501 alone.
+  it("sends a request that is safe to send twice again after a 429 and any 5xx, three times in all", async () => {
+    answering(500, 501, 599, 429, 500, 500, 500, 500);
 
-    let response = await fetchWithAuthRetry(FILE_URL, {}, TOKEN);
+    let read = await fetchWithAuthRetry(FILE_URL, {}, TOKEN);
+    let marked = await fetchWithAuthRetry(
+      FILE_URL, { method: "POST", body: "{}" }, { ...TOKEN, idempotent: true, retries: 2 });
+    let write = await fetchWithAuthRetry(FILE_URL, { method: "POST", body: "{}" }, TOKEN);
+    let once = await fetchWithAuthRetry(FILE_URL, {}, { ...TOKEN, retries: 1 });
+    let none = await fetchWithAuthRetry(FILE_URL, {}, { getAccessToken: null, retries: 1 });
 
-    expect(response.status).toBe(200);
+    expect([read.status, marked.status, write.status, once.status, none.status])
+        .toEqual([599, 500, 500, 500, 500]);
     expect(calls()).toEqual([
-      ["google-drive", "files.get", "error", "network", 0],
-      ["google-drive", "files.get", "success", "", 200],
+      ["google-drive", "files.get", "error", "http", 500],
+      ["google-drive", "files.get", "error", "http", 501],
+      ["google-drive", "files.get", "error", "http", 599],
+      ["google-drive", "files.create", "refused", "rate", 429],
+      ["google-drive", "files.create", "error", "http", 500],
+      ["google-drive", "files.create", "error", "http", 500],
+      ["google-drive", "files.get", "error", "http", 500],
+      ["google-drive", "files.get", "error", "http", 500],
     ]);
-    expect(points.map(point => column(point, COMMON_SLOTS.durationMs))).toEqual([250, 250]);
-  });
-
-  it("does not count a request its caller's own signal aborted", async () => {
-    let fetch = unanswered();
-    let caller = new AbortController();
-    let response = fetchWithAuthRetry(
-      FILE_URL, { signal: caller.signal }, { ...TOKEN, timeoutMs: 60_000 });
-    let outcome = expect(response).rejects.toThrow("stop");
-    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
-
-    caller.abort(new Error("stop"));
-
-    await outcome;
-    expect(calls()).toEqual([]);
-  });
-
-  // A caller that times its own wait for an answer does it through its signal, and has not given
-  // the request up: the service did not answer it.
-  it("counts a request its caller's signal timed out as a timeout, and does not retry it", async () => {
-    let fetch = unanswered();
-    let wait = new AbortController();
-    let response = fetchWithAuthRetry(FILE_URL, { signal: wait.signal }, TOKEN);
-    let outcome = expect(response).rejects.toThrow("too slow");
-    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
-
-    wait.abort(new DOMException("too slow", "TimeoutError"));
-
-    await outcome;
-    expect(fetch).toHaveBeenCalledTimes(1);
-    expect(calls()).toEqual([["google-drive", "files.get", "error", "timeout", 0]]);
   });
 
   it("counts a Drive range read that Drive never answers", async () => {
@@ -368,36 +397,6 @@ describe("fetchWithAuthRetry metrics", () => {
 
     await outcome;
     expect(calls()).toEqual([["google-drive", "files.get.media", "error", "timeout", 0]]);
-  });
-
-  // The wait can run out between attempts, while a retry pauses or a token is minted. The
-  // platform's `fetch` then fails at once with the signal's reason, having sent nothing.
-  it("does not count an attempt that began once its caller's wait had run out", async () => {
-    vi.useFakeTimers();
-    let sent = 0;
-    vi.stubGlobal("fetch", async (_url: string, init: RequestInit = {}) => {
-      init.signal!.throwIfAborted();
-      sent++;
-      return new Response("{}", { status: 503, headers: { "Retry-After": "1" } });
-    });
-    let wait = new AbortController();
-    let response = fetchWithAuthRetry(FILE_URL, { signal: wait.signal }, TOKEN);
-    let outcome = expect(response).rejects.toThrow("too slow");
-    await vi.advanceTimersByTimeAsync(500);
-    wait.abort(new DOMException("too slow", "TimeoutError"));
-    await vi.advanceTimersByTimeAsync(500);
-
-    await outcome;
-    expect(sent).toBe(1);
-    expect(calls()).toEqual([["google-drive", "files.get", "error", "http", 503]]);
-
-    let minting = new AbortController();
-    await expect(fetchWithAuthRetry(FILE_URL, { signal: minting.signal }, { getAccessToken: async () => {
-      minting.abort(new DOMException("too slow", "TimeoutError"));
-      return "token";
-    } })).rejects.toThrow("too slow");
-    expect(sent).toBe(1);
-    expect(calls()).toHaveLength(1);
   });
 
   it("counts a request that threw by whether its own timeout fired", async () => {
@@ -417,62 +416,20 @@ describe("fetchWithAuthRetry metrics", () => {
     ]);
   });
 
-  it("writes nothing inside `summedInto` until the tally is flushed", async () => {
-    answering(200, 200);
-    let tally = subserviceTally();
-
-    await summedInto(tally, async () => {
-      await fetchWithAuthRetry(FILE_URL, {}, TOKEN);
-      await fetchWithAuthRetry(FILE_URL, {}, TOKEN);
-    });
-    expect(calls()).toEqual([]);
-
-    tally.flush();
-    expect(calls()).toEqual([["google-drive", "files.get", "success", "", 200]]);
-    expect(column(points[0], SUBSERVICE_V1_SLOTS.calls)).toBe(2);
-  });
-
-  it("writes nothing with the variable off, and answers the same", async () => {
-    vi.stubGlobal("fetch", async () => new Response("answer", { status: 404 }));
-    let on = await fetchWithAuthRetry(FILE_URL, {}, TOKEN);
-    expect(calls()).toEqual([["google-drive", "files.get", "error", "http", 404]]);
-
-    ambient.SUBSERVICE_METRICS = "false";
-    let off = await fetchWithAuthRetry(FILE_URL, {}, TOKEN);
-    delete ambient.SUBSERVICE_METRICS;
-    let unset = await fetchWithAuthRetry(FILE_URL, {}, TOKEN);
-    ambient.SUBSERVICE_METRICS = "true";
-    delete ambient.METRICS;
-    let unbound = await fetchWithAuthRetry(FILE_URL, {}, TOKEN);
-
-    expect(points).toHaveLength(1);
-    let answer = [on.status, await on.text()];
-    for (let other of [off, unset, unbound]) {
-      expect([other.status, await other.text()]).toEqual(answer);
-    }
-  });
-
-  it("answers, or fails as it would have, a request that could not be counted", async () => {
-    let broken: SubserviceTally = { add() { throw new Error("no room"); }, flush() {} };
-    answering(200);
-    let response = await summedInto(broken, () =>
-      fetchWithAuthRetry(FILE_URL, {}, TOKEN));
-    expect(response.status).toBe(200);
-
-    vi.stubGlobal("fetch", async () => { throw new TypeError("network down"); });
-    await expect(summedInto(broken, () =>
-      fetchWithAuthRetry(FILE_URL, { method: "POST" }, TOKEN),
-    )).rejects.toThrow("network down");
-  });
-
   it("counts the 499 of an upload session's cancel as its success, and of no other request", async () => {
     const SESSION = "https://www.googleapis.com/upload/drive/v3/files?upload_id=session-1";
-    answering(499, 499);
-    await fetchWithAuthRetry(SESSION, { method: "DELETE" }, { getAccessToken: null, operation: "upload.cancel" });
+    answering(499, 499, 200, 302, 404);
+    let cancel = { getAccessToken: null, operation: "upload.cancel" } as const;
+    await fetchWithAuthRetry(SESSION, { method: "DELETE" }, cancel);
     await fetchWithAuthRetry(SESSION, { method: "PUT" }, { getAccessToken: null, operation: "upload.send" });
+    // Any other answer to the cancel below 400 is its success, though it follows no redirect.
+    for (let answers = 0; answers < 3; answers++) await fetchWithAuthRetry(SESSION, { method: "DELETE" }, cancel);
     expect(calls()).toEqual([
       ["google-drive", "upload.cancel", "success", "", 499],
       ["google-drive", "upload.send", "error", "http", 499],
+      ["google-drive", "upload.cancel", "success", "", 200],
+      ["google-drive", "upload.cancel", "success", "", 302],
+      ["google-drive", "upload.cancel", "error", "http", 404],
     ]);
   });
 
@@ -480,7 +437,7 @@ describe("fetchWithAuthRetry metrics", () => {
     const THUMBNAIL = "https://lh3.googleusercontent.com/thumb";
     const SESSION = "https://www.googleapis.com/upload/drive/v3/files?upload_id=session-1";
     let put = { method: "PUT", redirect: "manual" } as const;
-    let named = (operation: string) => ({ getAccessToken: null, retries: 1, operation });
+    let named = (operation: NamedOperation) => ({ getAccessToken: null, retries: 1, operation });
     answering(302, 302, 302, 308, 308, 308);
     for (let answers = 0; answers < 2; answers++) {
       await fetchWithAuthRetry(THUMBNAIL, { redirect: "manual" }, named("thumbnail.download"));
@@ -498,8 +455,7 @@ describe("fetchWithAuthRetry metrics", () => {
     ]);
   });
 
-  // These were plain fetches once, counted nowhere: none but the verified-email read carries a
-  // token, and each is sent once.
+  // None but the verified-email read carries a token, and each is sent once.
   it("counts each request made at sign-in and for a thumbnail once, with a token only where it has one", async () => {
     let sent: [string, string | null][] = [];
     vi.stubGlobal("fetch", async (url: string | URL, init: RequestInit) => {
@@ -535,6 +491,61 @@ describe("fetchWithAuthRetry metrics", () => {
       ["google-slides", "thumbnail.get", 200],
       ["google-other", "thumbnail.download", 200],
     ]);
+  });
+
+  it("counts an attempt as the request's `answer` says, with a token and without", async () => {
+    answering(404, 404, 403);
+
+    await readWithAuthRetry(FILE_URL, {}, TOKEN, statusOf, absentIsSuccess);
+    await readWithAuthRetry(FILE_URL, {}, { getAccessToken: null }, statusOf, absentIsSuccess);
+    await readWithAuthRetry(FILE_URL, {}, { getAccessToken: null }, statusOf, absentIsSuccess);
+
+    expect(calls()).toEqual([
+      ["google-drive", "files.get", "success", "", 404],
+      ["google-drive", "files.get", "success", "", 404],
+      // What `answer` says nothing of is counted by its status.
+      ["google-drive", "files.get", "error", "http", 403],
+    ]);
+  });
+
+  // A token Google does not hold is revoked, which is all a revocation is for.
+  it("counts a revocation answered 400 `invalid_token` as its success", async () => {
+    vi.stubGlobal("fetch", async () => Response.json({ error: "invalid_token" }, { status: 400 }));
+
+    await expect(revokeGoogleToken("refresh")).resolves.toBeUndefined();
+
+    expect(calls()).toEqual([["google-oauth", "revoke", "success", "", 400]]);
+  });
+
+  it.each([
+    ["another OAuth error", () => Response.json({ error: "invalid_request" }, { status: 400 }),
+      "Failed to revoke token: invalid_request"],
+    ["a JSON body that cannot be read",
+      () => new Response("<html>", { status: 400, headers: { "Content-Type": "application/json" } }), SyntaxError],
+    ["a JSON body that holds no error", () => Response.json(null, { status: 400 }), TypeError],
+    ["a body that is not JSON", () => new Response("invalid_token", { status: 400, statusText: "Bad Request" }),
+      "Failed to revoke token: 400 Bad Request"],
+  ])("counts a revocation answered 400 with %s as an error", async (_name, answer, failure) => {
+    vi.stubGlobal("fetch", async () => answer());
+
+    await expect(revokeGoogleToken("refresh")).rejects.toThrow(failure);
+
+    expect(calls()).toEqual([["google-oauth", "revoke", "error", "http", 400]]);
+  });
+
+  it.each([
+    ["is no 400", () => Response.json({ error: "invalid_token" }, { status: 403 }),
+      "Failed to revoke token: invalid_token", 403],
+    ["does not say its body is JSON", () => new Response("invalid_token", { status: 400, statusText: "Bad Request" }),
+      "Failed to revoke token: 400 Bad Request", 400],
+  ])("reads no body to count a revocation's answer that %s", async (_name, answer, failure, status) => {
+    let copied = vi.spyOn(Response.prototype, "clone");
+    vi.stubGlobal("fetch", async () => answer());
+
+    await expect(revokeGoogleToken("refresh")).rejects.toThrow(failure);
+
+    expect(calls()).toEqual([["google-oauth", "revoke", "error", "http", status]]);
+    expect(copied).not.toHaveBeenCalled();
   });
 
   it("counts a Chat request under the name its helper once passed", async () => {
@@ -601,6 +612,146 @@ describe("fetchWithAuthRetry metrics", () => {
       ["google-people", "people.searchDirectoryPeople"],
       ["google-people", "people.batchGet"],
       ["google-chat", "media.get.media"],
+    ]);
+  });
+});
+
+// Each request `work` makes: its name, the timeout it asks the client for (undefined for the
+// client's 30 seconds, null for none) and the redirect mode `fetch` is handed. Every request is
+// answered once, by `answer`, and what `work` makes of the answers is not looked at. It spies on
+// the client and stubs `fetch`, which its caller restores.
+async function requested(
+  work: () => Promise<unknown>,
+  answer: (url: URL, method: string) => Response = () => Response.json({}),
+) {
+  // A request goes through `request`, or through `read` where its answer is counted by its body.
+  let asked = [vi.spyOn(googleUpstream, "request"), vi.spyOn(googleUpstream, "read")];
+  for (let spy of asked) spy.mockClear();
+  let modes: (string | undefined)[] = [];
+  vi.stubGlobal("fetch", async (url: string | URL, init: RequestInit = {}) => {
+    modes.push(init.redirect);
+    return answer(new URL(url), init.method ?? "GET");
+  });
+  await work().catch(() => {});
+  let sent = asked.flatMap(spy => spy.mock.calls.map(([input, init], at) =>
+    ({ order: spy.mock.invocationCallOrder[at], input, init: init ?? {} })));
+  return sent.toSorted((one, other) => one.order - other.order).map(({ input, init }, at) => [
+    init.operation ?? googleUpstream.operationOf(init.method, input instanceof Request ? input.url : input),
+    init.timeoutMs, modes[at],
+  ]);
+}
+
+describe("the timeout and redirect mode each kind of request asks for", () => {
+  const SESSION = "https://www.googleapis.com/upload/drive/v3/files?upload_id=session-1";
+  const DEFAULT = undefined;
+  const token = TOKEN.getAccessToken;
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("gives a stream read for as long as it takes no timeout, and follows its download's redirect", async () => {
+    let attachment = {
+      key: "part-1", messageId: "abc123", attachmentId: "def456",
+      info: { filename: "a.pdf", mimeType: "application/pdf", size: 3, disposition: null, readable: true },
+    };
+
+    expect(await requested(() => new DriveApi(token).downloadRange("file-1", 0, 100)))
+        .toEqual([["files.get.media", null, "follow"]]);
+    expect(await requested(() => new GmailApi("me@example.com", token).openAttachmentContent(attachment)))
+        .toEqual([["attachments.get", null, "manual"]]);
+  });
+
+  it("gives a request that carries a file, a message or an attachment whole a longer timeout", async () => {
+    let drive = new DriveApi(token);
+    let gmail = new GmailApi("me@example.com", token);
+    let attachment = {
+      key: "part-1", messageId: "abc123", attachmentId: "def456",
+      info: { filename: "a.pdf", mimeType: "application/pdf", size: 3, disposition: null, readable: true },
+    };
+    let copy = { name: "Copy", mimeType: "application/vnd.google-apps.document", parents: ["folder-1"], appProperties: {} };
+
+    expect(await requested(async () => {
+      await drive.openDownload("file-1");
+      await new ChatApi(token).downloadAttachment("spaces/AAAA/messages/BBB.CCC/attachments/DDD");
+      await gmail.getAttachmentContent(attachment).catch(() => {});
+      await gmail.getMessage("abc123").catch(() => {});
+      await gmail.getMessageFull("abc123").catch(() => {});
+      await gmail.getDraft("abc123").catch(() => {});
+      await gmail.getDraftFull("abc123").catch(() => {});
+      await gmail.sendRawMessage("raw").catch(() => {});
+      await gmail.createDraft("raw").catch(() => {});
+      await gmail.updateDraft("abc123", "raw").catch(() => {});
+      await gmail.sendDraft("abc123", "raw").catch(() => {});
+      await drive.copyAsNative("file-1", copy).catch(() => {});
+    })).toEqual([
+      ["files.get.media", 60_000, "follow"],
+      ["media.get.media", 60_000, "follow"],
+      ["attachments.get", 60_000, "manual"],
+      ["messages.get", 60_000, "manual"],
+      ["messages.get", 60_000, "manual"],
+      ["drafts.get", 60_000, "manual"],
+      ["drafts.get", 60_000, "manual"],
+      ["messages.send", 120_000, "manual"],
+      ["drafts.create", 120_000, "manual"],
+      ["drafts.update", 120_000, "manual"],
+      ["drafts.send", 120_000, "manual"],
+      ["files.copy", 120_000, "manual"],
+    ]);
+  });
+
+  it("times an upload session's requests by what each does, and follows no redirect of theirs", async () => {
+    let file = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(3));
+        controller.close();
+      },
+    });
+
+    expect(await requested(
+      () => new DriveApi(token).uploadConverted(
+        file, "application/msword", "application/vnd.google-apps.document", { name: "Doc", parents: ["folder-1"] }),
+      (url, method) => {
+        // The session opens, refuses the file's one chunk, and is cancelled.
+        if (method === "POST") return new Response(null, { headers: { Location: SESSION } });
+        return method === "PUT" ? Response.json({}, { status: 403 }) : new Response(null, { status: 499 });
+      },
+    )).toEqual([
+      ["files.create.resumable", 30_000, "manual"],
+      ["upload.send", 120_000, "manual"],
+      ["upload.cancel", 5_000, "manual"],
+    ]);
+  });
+
+  it("keeps the timeout a client states for its own requests", async () => {
+    expect(await requested(async () => {
+      await new DriveApi(token).createComment("file-1", "hi").catch(() => {});
+      await new BigQueryApi(token).getDataset("project", "dataset").catch(() => {});
+    })).toEqual([
+      ["comments.create", 20_000, "manual"],
+      ["datasets.get", 70_000, "manual"],
+    ]);
+  });
+
+  it("follows no redirect of a thumbnail's download, and leaves an ordinary read the client's timeout", async () => {
+    expect(await requested(
+      () => new GoogleSlidesApi(token).getThumbnail("deck-1", "slide-1", "LARGE"),
+      () => Response.json({ contentUrl: "https://lh7-us.googleusercontent.com/slidesz/thumb" }),
+    )).toEqual([
+      ["thumbnail.get", 30_000, "manual"],
+      ["thumbnail.download", 30_000, "manual"],
+    ]);
+    expect(await requested(async () => {
+      await new GmailApi("me@example.com", token).listDrafts(1).catch(() => {});
+      await new ChatApi(token).getSpace("spaces/AAAA").catch(() => {});
+      await new GoogleCalendarApi(token).getEvent("primary", "event-1").catch(() => {});
+      await new DriveApi(token).getFile("file-1").catch(() => {});
+    })).toEqual([
+      ["drafts.list", DEFAULT, "manual"],
+      ["spaces.get", DEFAULT, "manual"],
+      ["events.get", DEFAULT, "manual"],
+      ["files.get", DEFAULT, "manual"],
     ]);
   });
 });

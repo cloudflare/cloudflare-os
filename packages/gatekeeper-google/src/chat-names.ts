@@ -1,6 +1,7 @@
 import type { ChatApi } from "./chat-api";
 import type { ChatSpaceInfo, ChatUser } from "./chat-types";
 import { obsContext } from "./observability";
+import { googleUpstream } from "./upstream";
 
 const logger = obsContext.createLogger({ component: "gatekeeper.google.chat", vendorId: "google" });
 
@@ -64,17 +65,19 @@ export function participantNames(names: readonly string[], total = names.length)
 
 /** The conversation's joined people and apps other than the connected user, in Chat's order. */
 async function otherParticipants(api: ChatApi, spaceName: string, selfId: string): Promise<ChatUser[]> {
-  const others = new Map<string, ChatUser>();
-  let pageToken: string | undefined;
-  for (let page = 0; page < MEMBER_PAGES; page++) {
-    const result = await api.listMembers(spaceName, pageToken ? { pageToken } : {});
-    for (const membership of result.items) {
-      if (membership.kind === "user" && membership.state === "joined" && membership.user.id !== selfId) {
-        others.set(membership.user.id, membership.user);
+  return googleUpstream.summed(async () => {
+    const others = new Map<string, ChatUser>();
+    let pageToken: string | undefined;
+    for (let page = 0; page < MEMBER_PAGES; page++) {
+      const result = await api.listMembers(spaceName, pageToken ? { pageToken } : {});
+      for (const membership of result.items) {
+        if (membership.kind === "user" && membership.state === "joined" && membership.user.id !== selfId) {
+          others.set(membership.user.id, membership.user);
+        }
       }
+      pageToken = result.nextPageToken;
+      if (!pageToken) break;
     }
-    pageToken = result.nextPageToken;
-    if (!pageToken) break;
-  }
-  return [...others.values()];
+    return [...others.values()];
+  });
 }

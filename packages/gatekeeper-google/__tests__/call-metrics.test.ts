@@ -1,27 +1,17 @@
-import { env } from "cloudflare:workers";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  encodeSubserviceCallPoint, subserviceTally, type SubserviceCallInput,
-} from "@gadgets/observability/metrics";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  GOOGLE_API_SOURCE, googleOperation, googleService, ID, ONE, recordCall, REST, ROUTES, summedInto,
-  type Tree,
-} from "../src/call-metrics";
+import { unreachedRouteEnds } from "@gadgets/gatekeeper-kit/route-operation";
+import { encodeSubserviceCallPoint } from "@gadgets/observability/metrics";
+import { describe, expect, it } from "vitest";
+import { googleService, ROUTES } from "../src/call-metrics";
+import { googleUpstream, NAMED_OPERATIONS } from "../src/upstream";
 
 const SOURCE_DIR = join(dirname(fileURLToPath(import.meta.url)), "../src");
 
-const CALL: SubserviceCallInput = {
-  source: GOOGLE_API_SOURCE, service: "google-drive", operation: "GET", outcome: "success",
-  httpStatus: 200,
-};
-
-// Makes a call after an await, as a client deep in the work does.
-async function later(operation: string): Promise<void> {
-  await new Promise(resolve => setTimeout(resolve, 1));
-  recordCall({ ...CALL, operation });
+// The service `url` is counted under, as the upstream is given it: parsed, or not at all.
+function serviceOf(url: string): string {
+  return googleService(URL.parse(url) ?? undefined);
 }
 
 describe("googleService", () => {
@@ -43,12 +33,12 @@ describe("googleService", () => {
     ["chat-hooks.ts", "https://workspaceevents.googleapis.com/v1", "google-events"],
   ])("%s: %s is %s", (file, base, service) => {
     expect(readFileSync(join(SOURCE_DIR, file), "utf8")).toContain(base);
-    expect(googleService(base)).toBe(service);
-    expect(googleService(`${base}/1aBcD:batchUpdate?fields=id&q=name`)).toBe(service);
+    expect(serviceOf(base)).toBe(service);
+    expect(serviceOf(`${base}/1aBcD:batchUpdate?fields=id&q=name`)).toBe(service);
   });
 
   it("names Drive's upload endpoint, one segment down like its batch endpoint", () => {
-    expect(googleService("https://www.googleapis.com/upload/drive/v3/files?uploadType=media"))
+    expect(serviceOf("https://www.googleapis.com/upload/drive/v3/files?uploadType=media"))
         .toBe("google-drive");
   });
 
@@ -63,7 +53,7 @@ describe("googleService", () => {
     "/drive/v3/files",
     "",
   ])("%j is google-other", url => {
-    expect(googleService(url)).toBe("google-other");
+    expect(serviceOf(url)).toBe("google-other");
   });
 });
 
@@ -199,36 +189,6 @@ const CHAT_REQUESTS: [method: string, url: string, name: string][] = [
   ["DELETE", `${CHAT}/spaces/AAAA/messages/BBB.CCC/reactions/RRR`, "reactions.delete"],
 ];
 
-// Where each path of the tree ends: the URLs that end there and, at a verb, its method.
-type End = { path: string; url: RegExp; method?: string };
-function ends(tree: Tree, path: string): End[] {
-  let children = Object.entries(tree);
-  if (children.length === 0) return [{ path, url: urlsOf(path) }];
-  return children.flatMap(([key, child]) => {
-    let to = key.startsWith(":") ? path + key : `${path}/${key}`;
-    if (typeof child === "object") return ends(child, to);
-    return [{ path: to, url: urlsOf(to), method: child === ONE ? undefined : child }];
-  });
-}
-function urlsOf(path: string): RegExp {
-  let source = path.split(/(\{id\+?\})/).map(part =>
-    part === REST ? ".+" : part === ID ? "[^/:]+" : part.replaceAll(".", "\\.")).join("");
-  return new RegExp(`^${source}$`);
-}
-const ENDS = ROUTES.flatMap(([root, tree]) => ends(tree, root.slice(0, -1)));
-
-function keys(tree: Tree): string[] {
-  return Object.entries(tree).flatMap(([key, child]) =>
-    [key, ...(typeof child === "object" ? keys(child) : [])]);
-}
-// Every word a name can be made of: the tree's keys, the verbs an HTTP method stands for and the
-// two suffixes.
-const WORDS = new Set([
-  ...ROUTES.flatMap(([, tree]) => keys(tree)).filter(key => key !== ID && key !== REST)
-      .map(key => key.replace(":", "")),
-  "list", "get", "create", "update", "patch", "delete", "media", "resumable",
-]);
-
 // URLs that say nothing of what their request does, each named by its method.
 const UNNAMED: [method: string, url: string][] = [
   // The same URL exchanges a code and refreshes a token, and a batch is of any request.
@@ -269,146 +229,73 @@ const UNNAMED: [method: string, url: string][] = [
   ["GET", ""],
 ];
 
-describe("googleOperation", () => {
+// The service each API's requests are counted under, by the base the rows above are built on.
+const SERVICES: [base: string, service: string][] = [
+  [GMAIL, "google-gmail"], [DRIVE, "google-drive"], [DRIVE_UPLOAD, "google-drive"],
+  [CALENDAR, "google-calendar"], [BIGQUERY, "google-bigquery"], [DOCS, "google-docs"],
+  [SHEETS, "google-sheets"], [SLIDES, "google-slides"], [CHAT, "google-chat"],
+  [PEOPLE, "google-people"], [EVENTS, "google-events"],
+  ["https://www.googleapis.com/oauth2/v3", "google-oauth"], ["https://oauth2.googleapis.com", "google-oauth"],
+];
+
+describe("the name of a request", () => {
   it.each(REQUESTS)("%s %s is %s", (method, url, name) => {
-    expect(googleOperation(method, url)).toBe(name);
+    expect(googleUpstream.operationOf(method, url)).toBe(name);
+    let service = SERVICES.find(([base]) => url.startsWith(base))?.[1];
+    expect(service).toBeDefined();
+    expect(serviceOf(url)).toBe(service);
   });
 
   it.each(CHAT_REQUESTS)("names Chat's %s %s %s, as its caller did", (method, url, name) => {
-    expect(googleService(url)).toBe("google-chat");
-    expect(googleOperation(method, url)).toBe(name);
+    expect(serviceOf(url)).toBe("google-chat");
+    expect(googleUpstream.operationOf(method, url)).toBe(name);
   });
 
   it.each(UNNAMED)("names %s %j by its method", (method, url) => {
-    expect(googleOperation(method, url)).toBe(method);
-  });
-
-  it("reads the method in either case, a GET where none is given, and a URL of either type", () => {
-    expect(googleOperation("patch", `${GMAIL}/labels/Label_1`)).toBe("labels.patch");
-    expect(googleOperation(undefined, new URL(`${GMAIL}/labels`))).toBe("labels.list");
-    expect(googleOperation("post", "https://oauth2.googleapis.com/token")).toBe("POST");
-  });
-
-  // An ID is passed over where the path has one, whatever it spells.
-  it.each([
-    ["GET", `${DRIVE}/files/root`, "files.get"],
-    ["GET", `${DRIVE}/files/files/permissions/permissions`, "permissions.get"],
-    ["GET", `${DRIVE}/files/about/comments/replies/replies`, "replies.list"],
-    ["GET", `${CALENDAR}/calendars/primary/events`, "events.list"],
-    ["GET", `${CALENDAR}/calendars/events/events/calendars`, "events.get"],
-    ["GET", `${BIGQUERY}/projects/datasets/datasets/tables/tables`, "tables.list"],
-    ["GET", `${BIGQUERY}/projects/jobs/datasets/tables/tables/tables`, "tables.get"],
-    ["GET", `${CHAT}/spaces/spaces/messages/messages`, "messages.get"],
-    ["GET", `${CHAT}/media/files/list/get?alt=media`, "media.get.media"],
-    ["DELETE", `${GMAIL}/labels/labels`, "labels.delete"],
-    // An ID that spells a verb is an ID still, where its collection has no such verb.
-    ["GET", `${BIGQUERY}/projects/warehouse/datasets/cancel`, "datasets.get"],
-    ["GET", `${BIGQUERY}/projects/warehouse/datasets/search/tables`, "tables.list"],
-    ["PATCH", `${CALENDAR}/calendars/primary/events/search`, "events.patch"],
-    ["GET", `${CALENDAR}/calendars/send/events/watch`, "events.get"],
-    ["GET", `${DRIVE}/files/copy/comments/generateIds`, "comments.get"],
-    // And where it has one, under any method but the verb's own.
-    ["GET", `${CHAT}/spaces/AAAA/messages/send`, "messages.get"],
-    ["GET", `${GMAIL}/messages/batchModify?format=full`, "messages.get"],
-    ["DELETE", `${GMAIL}/drafts/send`, "drafts.delete"],
-    ["PATCH", `${DRIVE}/files/generateIds`, "files.patch"],
-    ["POST", `${DRIVE}/files/generateIds/copy`, "files.copy"],
-    // Or under its method anywhere but at the verb's own endpoint.
-    ["POST", `${CHAT}/spaces/AAAA/messages/send/reactions`, "reactions.create"],
-    ["POST", `${CHAT}/spaces/AAAA/messages/send`, "messages.create"],
-    ["POST", `${CHAT}/spaces/AAAA/messages/batchModify/reactions`, "reactions.create"],
-    ["GET", `${DRIVE}/files/1aBcD/comments/generateIds/replies`, "replies.list"],
-    ["POST", `${GMAIL}/messages/send/attachments`, "attachments.create"],
-    // An ID that spells a property every object has, or the tree's own word for an ID.
-    ["GET", `${DRIVE}/files/constructor`, "files.get"],
-    ["GET", `${DRIVE}/files/__proto__/permissions`, "permissions.list"],
-    ["DELETE", `${GMAIL}/labels/toString`, "labels.delete"],
-    ["GET", `${DRIVE}/files/{id}`, "files.get"],
-    ["GET", `${CHAT}/media/{id+}`, "media.get"],
-  ])("%s %s is %s, with no ID in it", (method, url, name) => {
-    expect(googleOperation(method, url)).toBe(name);
+    expect(googleUpstream.operationOf(method, url)).toBe(method);
   });
 
   // So that the tree and the rows above cannot drift apart.
-  it.each(ENDS)("has a row above for $path", ({ url, method }) => {
-    let rows = [...REQUESTS, ...CHAT_REQUESTS].filter(([rowMethod, rowUrl]) =>
-      (method ?? rowMethod) === rowMethod && url.test(rowUrl.split("?")[0]));
-    expect(rows).not.toEqual([]);
+  it("has a row above for the end of every path of the tree", () => {
+    expect(unreachedRouteEnds(ROUTES, [...REQUESTS, ...CHAT_REQUESTS])).toEqual([]);
   });
 
-  it("makes a name of the tree's words alone, which the metrics write as given", () => {
+  it("adds a suffix for `alt=media` and for `uploadType=resumable`, and for no other value", () => {
+    let file = `${DRIVE}/files/1aBcD`;
+    expect(googleUpstream.operationOf("GET", `${file}?alt=media`)).toBe("files.get.media");
+    expect(googleUpstream.operationOf("GET", `${file}?alt=json&q=media`)).toBe("files.get");
+    expect(googleUpstream.operationOf("GET", `${file}?alt=1aBcD`)).toBe("files.get");
+    expect(googleUpstream.operationOf("PATCH", `${DRIVE_UPLOAD}/files/1aBcD?uploadType=resumable`))
+        .toBe("files.patch.resumable");
+    expect(googleUpstream.operationOf("PATCH", `${DRIVE_UPLOAD}/files/1aBcD?uploadType=media`))
+        .toBe("files.patch");
+    // A URL the tree does not name gets no suffix either.
+    expect(googleUpstream.operationOf("GET", `${DRIVE}/files/1aBcD/revisions/7?alt=media`)).toBe("GET");
+  });
+
+  it("gives names that the metrics write as given", () => {
     let names = [...REQUESTS, ...CHAT_REQUESTS].map(([, , name]) => name);
-    // Each ID a path can hold, where a word is looked for and where an ID is.
-    let ids = ["secret-id", "ada%40example.com", "users%2F123", "a.b", "a:b", "1aBcD:batchUpdate", "-"];
-    for (let method of ["GET", "POST", "PATCH", "PUT", "DELETE"]) {
-      for (let id of ids) {
-        for (let url of [
-          `${DRIVE}/files/${id}`, `${DRIVE}/${id}/files`, `${DRIVE}/files/${id}/${id}`,
-          `${DRIVE}/files/${id}/comments/${id}/replies/${id}`, `${CHAT}/spaces/${id}/messages/${id}`,
-          `${CHAT}/media/${id}/${id}`, `${CHAT}/${id}`,
-        ]) {
-          names.push(googleOperation(method, `${url}?alt=${id}&q=${id}`));
-        }
-      }
-    }
-    for (let name of new Set(names)) {
-      if (["GET", "POST", "PATCH", "PUT", "DELETE"].includes(name)) continue;
-      expect(name.split(".").filter(word => !WORDS.has(word)), name).toEqual([]);
-      expect(encodeSubserviceCallPoint({ ...CALL, operation: name }).blobs![9]).toBe(name);
+    for (let name of new Set([...names, ...NAMED_OPERATIONS])) {
+      let point = encodeSubserviceCallPoint({
+        source: googleUpstream.source, service: "google-drive", operation: name, outcome: "success",
+      });
+      expect(point.blobs?.[9]).toBe(name);
     }
   });
 });
 
-describe("recordCall", () => {
-  let ambient = env as { METRICS?: AnalyticsEngineDataset; SUBSERVICE_METRICS?: string };
-  let points: AnalyticsEngineDataPoint[];
-  beforeEach(() => {
-    points = [];
-    ambient.METRICS = { writeDataPoint: point => { points.push(point!); } };
-    ambient.SUBSERVICE_METRICS = "true";
-  });
-  afterEach(() => {
-    delete ambient.METRICS;
-    delete ambient.SUBSERVICE_METRICS;
+describe("the names given where a request is made", () => {
+  // Every `.ts` file of the clients, but the one that lists the names.
+  let sources = readdirSync(SOURCE_DIR)
+      .filter(file => file.endsWith(".ts") && !file.endsWith(".d.ts") && file !== "upstream.ts")
+      .map(file => readFileSync(join(SOURCE_DIR, file), "utf8"));
+
+  it.each(NAMED_OPERATIONS)("%s is given by a request", name => {
+    expect(sources.some(source => source.includes(`"${name}"`))).toBe(true);
   });
 
-  // The `calls` column of each point written, beside its operation.
-  function written(): [unknown, unknown][] {
-    return points.map(point => [point.blobs![9], point.doubles![4]]);
-  }
-
-  it("writes a call at once outside `summedInto`", () => {
-    recordCall(CALL);
-    expect(written()).toEqual([["GET", 1]]);
-  });
-
-  it("sums the calls made in `summedInto`, across an await and in a nested call", async () => {
-    let tally = subserviceTally();
-    let answer = await summedInto(tally, async () => {
-      recordCall(CALL);
-      await later("GET");
-      await Promise.all([later("GET"), later("POST")]);
-      return "answer";
-    });
-    expect(answer).toBe("answer");
-    expect(written()).toEqual([]);
-
-    tally.flush();
-    expect(written()).toEqual([["GET", 3], ["POST", 1]]);
-  });
-
-  it("keeps apart the calls of two tallies at once, and of work under neither", async () => {
-    let first = subserviceTally();
-    let second = subserviceTally();
-    await Promise.all([
-      summedInto(first, () => later("GET")),
-      summedInto(second, async () => { await later("POST"); await later("POST"); }),
-      later("DELETE"),
-    ]);
-    expect(written()).toEqual([["DELETE", 1]]);
-
-    first.flush();
-    second.flush();
-    expect(written()).toEqual([["DELETE", 1], ["GET", 1], ["POST", 2]]);
+  it.each(NAMED_OPERATIONS)("%s is no name the tree gives a URL", name => {
+    let rows = [...REQUESTS, ...CHAT_REQUESTS].filter(([, , row]) => row === name);
+    expect(rows).toEqual([]);
   });
 });

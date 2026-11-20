@@ -8,6 +8,7 @@
 // A Gmail attachment's PDF is read the same way, in words and under log names of its own: see
 // PdfSource.
 
+import { summedInto } from "@gadgets/gatekeeper-kit/upstream";
 import type { Logger } from "@gadgets/observability/logger";
 import {
   subserviceTally, type SubserviceCallInput, type SubserviceTally,
@@ -16,7 +17,6 @@ import {
   RENDER_LIMITS, type PdfDocument, type PdfRendering, type RenderedPage, type RenderRefusalReason,
   type RenderRefused,
 } from "@gadgets/pdf-renderer/api";
-import { summedInto } from "./call-metrics";
 import { FILE_CHANGED } from "./drive-file-read";
 import { PDF_MIME_TYPE } from "./drive-session";
 import type { DrivePdfText } from "./drive-types";

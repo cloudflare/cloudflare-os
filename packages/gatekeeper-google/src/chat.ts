@@ -68,6 +68,7 @@ import { verifyGoogleSubresourceAccess, type GoogleVerifierApi } from "./google-
 import CHAT_TYPES_CODE from "./chat-types.txt";
 import { describeConversation, needsDescription, participantNames } from "./chat-names";
 import { obsContext } from "./observability";
+import { googleUpstream } from "./upstream";
 
 const logger = obsContext.createLogger({ component: "gatekeeper.google.chat", vendorId: "google" });
 
@@ -619,7 +620,8 @@ async function readThreadPage(
       metadata ? `Read the newest and first messages of ${name}.` : `Read a page of messages in ${name}.`,
       spaceSubresources([thread.spaceName])),
   });
-  const page = await pager.next();
+  // One call walks provider pages until one has a visible message, so its requests are summed.
+  const page = await googleUpstream.summed(() => pager.next());
   if (page?.length === 0) {
     throw new Error("Thread lookup exceeded its page budget. Use listMessages() to scan the history.");
   }
@@ -843,11 +845,14 @@ async function queueDirectMessage(
   const emails = users.filter(user => user.includes("@")).map(user => user.slice("users/".length));
   const outside: string[] = [];
   // One at a time: up to 49 concurrent lookups would burst the People API's per-user quota.
-  for (const email of emails) {
-    const person = await ctx.api.findDirectoryPerson(email);
-    if (!person) outside.push(email);
-    else if (!members.some(member => member.id === person.id)) members.push(person);
-  }
+  // Their requests are summed.
+  await googleUpstream.summed(async () => {
+    for (const email of emails) {
+      const person = await ctx.api.findDirectoryPerson(email);
+      if (!person) outside.push(email);
+      else if (!members.some(member => member.id === person.id)) members.push(person);
+    }
+  });
   if (emails.length > 0) {
     await observe(ctx, "Look up people in the Google Workspace directory",
       `Checked whether ${emails.length} email address(es) belong to people in the organization's ` +

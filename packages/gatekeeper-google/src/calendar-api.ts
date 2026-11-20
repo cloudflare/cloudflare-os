@@ -10,7 +10,8 @@ import type {
   GoogleCalendarInfo,
   PersonAvailability,
 } from "./calendar-types";
-import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
+import { AccessTokenProvider, readCheckedWithAuthRetry } from "./auth-retry";
+import { googleUpstream } from "./upstream";
 
 const CALENDAR_API_BASE = "https://www.googleapis.com/calendar/v3";
 
@@ -223,7 +224,10 @@ export class GoogleCalendarApiError extends Error {
 export class GoogleCalendarApi {
   constructor(private getAccessToken: AccessTokenProvider) {}
 
-  async #fetch<T>(path: string, init?: RequestInit): Promise<T> {
+  // One request, whose answer's JSON is given to `made`, the reading of the method that sent it.
+  // Both are read within the request, which so counts a success that cannot be read, or that
+  // `made` throws on, as the failure it is thrown as.
+  async #fetch<T, R>(path: string, init: RequestInit | undefined, made: (answer: T) => R): Promise<R> {
     // Built from the caller's headers so anything they set wins; these are only defaults. Note a
     // plain `{...init?.headers}` would silently drop everything if a caller passed a Headers.
     let headers = new Headers(init?.headers);
@@ -232,60 +236,65 @@ export class GoogleCalendarApi {
       headers.set("Content-Type", "application/json");
     }
 
-    let response = await fetchWithAuthRetry(`${CALENDAR_API_BASE}${path}`, {
+    return readCheckedWithAuthRetry(`${CALENDAR_API_BASE}${path}`, {
       ...init,
       headers,
-    }, { getAccessToken: this.getAccessToken });
+    }, { getAccessToken: this.getAccessToken }, async response => {
+      if (!response.ok) {
+        let text = await response.text();
+        throw new GoogleCalendarApiError(response.status, text);
+      }
 
-    if (!response.ok) {
-      let text = await response.text();
-      throw new GoogleCalendarApiError(response.status, text);
-    }
-
-    if (response.status === 204) return undefined as T;
-    return await response.json<T>();
+      if (response.status === 204) return undefined as T;
+      return await response.json<T>();
+    }, made);
   }
 
   async listCalendars(opts: GoogleCalendarListOptions = {}): Promise<GoogleCalendarInfo[]> {
-    let cap = opts.maxResults ?? 250;
-    let calendars: GoogleCalendarInfo[] = [];
-    let pageToken: string | undefined;
+    return googleUpstream.summed(async () => {
+      let cap = opts.maxResults ?? 250;
+      let calendars: GoogleCalendarInfo[] = [];
+      let pageToken: string | undefined;
 
-    do {
-      let params = new URLSearchParams({
-        maxResults: "250",
-        // Only surface calendars the user can edit. Google filters on its role ordering, so a
-        // limited writer's calendars are included but a reader's are not.
-        minAccessRole: CALENDAR_PICKER_MIN_ACCESS_ROLE,
-        fields: "items(id,summary,description,timeZone,accessRole,primary),nextPageToken",
-      });
-      if (pageToken) params.set("pageToken", pageToken);
+      do {
+        let params = new URLSearchParams({
+          maxResults: "250",
+          // Only surface calendars the user can edit. Google filters on its role ordering, so a
+          // limited writer's calendars are included but a reader's are not.
+          minAccessRole: CALENDAR_PICKER_MIN_ACCESS_ROLE,
+          fields: "items(id,summary,description,timeZone,accessRole,primary),nextPageToken",
+        });
+        if (pageToken) params.set("pageToken", pageToken);
 
-      let body = await this.#fetch<{items?: GoogleCalendarInfo[]; nextPageToken?: string}>(
-        `/users/me/calendarList?${params}`);
-      calendars.push(...(body.items ?? []));
-      pageToken = body.nextPageToken;
-    } while (pageToken && calendars.length < cap);
+        // A page's calendars are taken within the request: a page whose `items` is no list is an
+        // answer the request is counted an error for.
+        pageToken = await this.#fetch(
+          `/users/me/calendarList?${params}`, undefined,
+          (body: {items?: GoogleCalendarInfo[]; nextPageToken?: string}) => {
+            calendars.push(...(body.items ?? []));
+            return body.nextPageToken;
+          });
+      } while (pageToken && calendars.length < cap);
 
-    return calendars
-      .toSorted((a, b) =>
-        calendarPickerRank(a) - calendarPickerRank(b) ||
-        (a.summary ?? a.id).localeCompare(b.summary ?? b.id))
-      .slice(0, cap);
+      return calendars
+        .toSorted((a, b) =>
+          calendarPickerRank(a) - calendarPickerRank(b) ||
+          (a.summary ?? a.id).localeCompare(b.summary ?? b.id))
+        .slice(0, cap);
+    });
   }
 
   async getCalendar(calendarId: string): Promise<GoogleCalendarInfo> {
-    let cal = await this.#fetch<GoogleCalendarInfo>(
-      `/users/me/calendarList/${encodeCalendarId(calendarId)}`,
-    );
-    return {
-      id: cal.id,
-      summary: cal.summary ?? cal.id,
-      ...(cal.description ? { description: cal.description } : {}),
-      ...(cal.timeZone ? { timeZone: cal.timeZone } : {}),
-      ...(cal.accessRole ? { accessRole: cal.accessRole } : {}),
-      ...(cal.primary ? { primary: cal.primary } : {}),
-    };
+    return this.#fetch(
+      `/users/me/calendarList/${encodeCalendarId(calendarId)}`, undefined,
+      (cal: GoogleCalendarInfo) => ({
+        id: cal.id,
+        summary: cal.summary ?? cal.id,
+        ...(cal.description ? { description: cal.description } : {}),
+        ...(cal.timeZone ? { timeZone: cal.timeZone } : {}),
+        ...(cal.accessRole ? { accessRole: cal.accessRole } : {}),
+        ...(cal.primary ? { primary: cal.primary } : {}),
+      }));
   }
 
   /**
@@ -304,35 +313,45 @@ export class GoogleCalendarApi {
 
   /** Lists all events in the window, paginating fully. */
   async listEvents(calendarId: string, opts: CalendarListEventsOptions): Promise<CalendarEvent[]> {
-    let events: CalendarEvent[] = [];
-    let pageToken: string | undefined;
+    return googleUpstream.summed(async () => {
+      let events: CalendarEvent[] = [];
+      let pageToken: string | undefined;
 
-    do {
-      let params = new URLSearchParams({
-        timeMin: opts.timeMin.toISOString(),
-        timeMax: opts.timeMax.toISOString(),
-        singleEvents: "true",
-        orderBy: "startTime",
-        maxResults: "2500",
-      });
-      if (pageToken) params.set("pageToken", pageToken);
+      do {
+        let params = new URLSearchParams({
+          timeMin: opts.timeMin.toISOString(),
+          timeMax: opts.timeMax.toISOString(),
+          singleEvents: "true",
+          orderBy: "startTime",
+          maxResults: "2500",
+        });
+        if (pageToken) params.set("pageToken", pageToken);
 
-      let body = await this.#fetch<{items?: GoogleCalendarEvent[]; nextPageToken?: string}>(
-        `/calendars/${encodeCalendarId(calendarId)}/events?${params}`);
-      let items = body.items ?? [];
-      if (events.length + items.length > MAX_LIST_EVENTS) {
-        throw new Error(
-          "Too many events in the requested window. Narrow timeMin/timeMax and try again.");
-      }
-      for (let event of items) {
-        events.push(calendarEventFromGoogle(event, {
-          includeDescriptions: opts.includeDescriptions,
-        }));
-      }
-      pageToken = body.nextPageToken;
-    } while (pageToken);
+        // A page's events are read within the request, unless they are more than a listing
+        // holds: that is this client's own limit of an answer Google gave, and is thrown below.
+        let page = await this.#fetch(
+          `/calendars/${encodeCalendarId(calendarId)}/events?${params}`, undefined,
+          (body: {items?: GoogleCalendarEvent[]; nextPageToken?: string}) => {
+            let items = body.items ?? [];
+            if (events.length + items.length > MAX_LIST_EVENTS) return undefined;
+            let found: CalendarEvent[] = [];
+            for (let event of items) {
+              found.push(calendarEventFromGoogle(event, {
+                includeDescriptions: opts.includeDescriptions,
+              }));
+            }
+            return { found, nextPageToken: body.nextPageToken };
+          });
+        if (!page) {
+          throw new Error(
+            "Too many events in the requested window. Narrow timeMin/timeMax and try again.");
+        }
+        for (let event of page.found) events.push(event);
+        pageToken = page.nextPageToken;
+      } while (pageToken);
 
-    return events;
+      return events;
+    });
   }
 
   async freeBusy(opts: {
@@ -341,12 +360,22 @@ export class GoogleCalendarApi {
     timeMax: Date;
     timeZone?: string;
   }): Promise<PersonAvailability[]> {
+    return this.#freeBusy(opts, availability => availability);
+  }
+
+  // One free/busy query. `made` is given each calendar's availability, with the error Google
+  // reports for it, within the request: a query whose caller throws on such an error is so
+  // counted as the failure it is thrown as, and one whose caller hands the errors on is not.
+  async #freeBusy<R>(opts: {
+    people: string[];
+    timeMin: Date;
+    timeMax: Date;
+    timeZone?: string;
+  }, made: (availability: PersonAvailability[]) => R): Promise<R> {
     if (opts.people.length > MAX_FREE_BUSY_CALENDARS) {
       throw new Error(`At most ${MAX_FREE_BUSY_CALENDARS} people/calendars can be checked at once.`);
     }
-    let body = await this.#fetch<{
-      calendars?: Record<string, { busy?: { start: string; end: string }[]; errors?: {reason?: string; domain?: string}[] }>;
-    }>("/freeBusy", {
+    return this.#fetch("/freeBusy", {
       method: "POST",
       body: JSON.stringify({
         timeMin: opts.timeMin.toISOString(),
@@ -354,22 +383,24 @@ export class GoogleCalendarApi {
         ...(opts.timeZone ? { timeZone: opts.timeZone } : {}),
         items: opts.people.map(id => ({ id })),
       }),
-    });
-
-    let calendars = body.calendars ?? {};
-    return opts.people.map(email => {
-      let entry = calendars[email];
-      let error = entry
-          ? entry.errors?.map(item => item.reason ?? item.domain ?? "unknown").join(", ")
-          : "notFound";
-      return {
-        email,
-        busy: (entry?.busy ?? []).map(block => ({
-          start: new Date(block.start),
-          end: new Date(block.end),
-        })),
-        ...(error ? { error } : {}),
-      };
+    }, (body: {
+      calendars?: Record<string, { busy?: { start: string; end: string }[]; errors?: {reason?: string; domain?: string}[] }>;
+    }) => {
+      let calendars = body.calendars ?? {};
+      return made(opts.people.map(email => {
+        let entry = calendars[email];
+        let error = entry
+            ? entry.errors?.map(item => item.reason ?? item.domain ?? "unknown").join(", ")
+            : "notFound";
+        return {
+          email,
+          busy: (entry?.busy ?? []).map(block => ({
+            start: new Date(block.start),
+            end: new Date(block.end),
+          })),
+          ...(error ? { error } : {}),
+        };
+      }));
     });
   }
 
@@ -380,18 +411,17 @@ export class GoogleCalendarApi {
    */
   async hasFreeBusyAccess(calendarIds: readonly string[]): Promise<boolean[]> {
     let timeMin = new Date();
-    let availability = await this.freeBusy({
+    return this.#freeBusy({
       people: [...calendarIds],
       timeMin,
       timeMax: new Date(timeMin.valueOf() + 60_000),
-    });
-    return availability.map(({email, error}) => {
+    }, availability => availability.map(({email, error}) => {
       if (error === "notFound") return false;
       if (error) {
         throw new Error(`Google Calendar free/busy access check failed for ${email}: ${error}`);
       }
       return true;
-    });
+    }));
   }
 
   async createEvent(
@@ -399,11 +429,11 @@ export class GoogleCalendarApi {
     event: CalendarEventDraft,
     sendUpdates: CalendarSendUpdates = "all",
   ): Promise<CalendarEvent> {
-    let created = await this.#fetch<GoogleCalendarEvent>(
+    return this.#fetch(
       `/calendars/${encodeCalendarId(calendarId)}/events?sendUpdates=${encodeURIComponent(sendUpdates)}`,
       { method: "POST", body: JSON.stringify(googleEventFromDraft(event)) },
+      (created: GoogleCalendarEvent) => calendarEventFromGoogle(created, { includeDescriptions: true }),
     );
-    return calendarEventFromGoogle(created, { includeDescriptions: true });
   }
 
   /**
@@ -417,28 +447,27 @@ export class GoogleCalendarApi {
     sendUpdates: CalendarSendUpdates = "all",
     ifMatch?: string,
   ): Promise<CalendarEvent> {
-    let updated = await this.#fetch<GoogleCalendarEvent>(
+    return this.#fetch(
       `/calendars/${encodeCalendarId(calendarId)}/events/${encodeURIComponent(eventId)}?sendUpdates=${encodeURIComponent(sendUpdates)}`,
       {
         method: "PATCH",
         body: JSON.stringify(patch),
         ...(ifMatch ? { headers: { "If-Match": ifMatch } } : {}),
       },
+      (updated: GoogleCalendarEvent) => calendarEventFromGoogle(updated, { includeDescriptions: true }),
     );
-    return calendarEventFromGoogle(updated, { includeDescriptions: true });
   }
 
   async getEvent(calendarId: string, eventId: string): Promise<LiveCalendarEvent> {
-    let event = await this.#fetch<GoogleCalendarEvent>(
-      `/calendars/${encodeCalendarId(calendarId)}/events/${encodeURIComponent(eventId)}`,
-    );
-    return {
-      ...calendarEventFromGoogle(event, { includeDescriptions: true }),
-      ...(event.eventType ? { eventType: event.eventType } : {}),
-      ...(event.attendeesOmitted ? { attendeesOmitted: true } : {}),
-      ...(event.organizer ? { organizer: { self: event.organizer.self === true } } : {}),
-      ...(event.etag ? { etag: event.etag } : {}),
-    };
+    return this.#fetch(
+      `/calendars/${encodeCalendarId(calendarId)}/events/${encodeURIComponent(eventId)}`, undefined,
+      (event: GoogleCalendarEvent): LiveCalendarEvent => ({
+        ...calendarEventFromGoogle(event, { includeDescriptions: true }),
+        ...(event.eventType ? { eventType: event.eventType } : {}),
+        ...(event.attendeesOmitted ? { attendeesOmitted: true } : {}),
+        ...(event.organizer ? { organizer: { self: event.organizer.self === true } } : {}),
+        ...(event.etag ? { etag: event.etag } : {}),
+      }));
   }
 
   async deleteEvent(
@@ -446,9 +475,9 @@ export class GoogleCalendarApi {
     eventId: string,
     sendUpdates: CalendarSendUpdates = "all",
   ): Promise<void> {
-    await this.#fetch<void>(
+    await this.#fetch(
       `/calendars/${encodeCalendarId(calendarId)}/events/${encodeURIComponent(eventId)}?sendUpdates=${encodeURIComponent(sendUpdates)}`,
-      { method: "DELETE" },
+      { method: "DELETE" }, () => undefined,
     );
   }
 }

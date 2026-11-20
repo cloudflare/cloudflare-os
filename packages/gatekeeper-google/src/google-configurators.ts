@@ -36,6 +36,7 @@ import {
   BIGQUERY_HOST, CREATED_FILES_GRANT, DRIVE_WRITES_GRANT, OFFICE_IMPORT_GRANT, parseResourceUrl,
   SHARED_DRIVES_GRANT, type ResourceTarget,
 } from "./resources";
+import { googleUpstream } from "./upstream";
 
 /**
  * Mints an access token for a configurator, forwarding `AccessTokenRequest` to the `UserAccount`
@@ -594,28 +595,31 @@ async function driveFilePage(
  * would misstate where the file lives. My Drive's root is read only for a path that could end there.
  */
 async function drivePath(drive: DriveApi, file: DriveFile): Promise<DriveNodeAncestor[] | undefined> {
-  let ancestors: DriveFile[] = [];
-  let top = file;
-  for (let parentId = top.parents?.[0]; parentId; parentId = top.parents?.[0]) {
-    if (ancestors.length === MAX_DRIVE_PATH_DEPTH) return undefined;
-    try {
-      top = await drive.getFile(parentId);
-    } catch (error) {
-      if (isFileInvisible(error)) return undefined;
-      throw error;
+  // One read for each level of the walk, summed.
+  return googleUpstream.summed(async () => {
+    let ancestors: DriveFile[] = [];
+    let top = file;
+    for (let parentId = top.parents?.[0]; parentId; parentId = top.parents?.[0]) {
+      if (ancestors.length === MAX_DRIVE_PATH_DEPTH) return undefined;
+      try {
+        top = await drive.getFile(parentId);
+      } catch (error) {
+        if (isFileInvisible(error)) return undefined;
+        throw error;
+      }
+      ancestors.unshift(top);
     }
-    ancestors.unshift(top);
-  }
-  // Judged as `readFolderRoot` judges a folder binding, so the picker offers only folders that connect.
-  let folders = ancestors.map(folder => ({
-    id: `folder:${folder.id}`, title: folder.name, listable: isListableFolderFile(folder),
-    ...folder.capabilities?.canAddChildren && { addable: true as const },
-  }));
-  if (top.driveId === top.id) return [SHARED_DRIVES, ...folders];
-  if (top.driveId === undefined && top.id === await myDriveId(drive)) {
-    return folders.map((folder, index) => index === 0 ? { ...folder, title: "My Drive" } : folder);
-  }
-  return undefined;
+    // Judged as `readFolderRoot` judges a folder binding, so the picker offers only folders that connect.
+    let folders = ancestors.map(folder => ({
+      id: `folder:${folder.id}`, title: folder.name, listable: isListableFolderFile(folder),
+      ...folder.capabilities?.canAddChildren && { addable: true as const },
+    }));
+    if (top.driveId === top.id) return [SHARED_DRIVES, ...folders];
+    if (top.driveId === undefined && top.id === await myDriveId(drive)) {
+      return folders.map((folder, index) => index === 0 ? { ...folder, title: "My Drive" } : folder);
+    }
+    return undefined;
+  });
 }
 
 /**
