@@ -118,7 +118,7 @@ function scanInline(text) {
       pieces.push({ kind: 'br' });
       i++;
     } else if (text.startsWith('<hr>', i)) {
-      pieces.push({ kind: 'hr' });
+      pieces.push({ kind: 'hr', text: '<hr>' });
       i += 4;
     } else if (character === '[') {
       const close = findUnescaped(text, ']', i + 1);

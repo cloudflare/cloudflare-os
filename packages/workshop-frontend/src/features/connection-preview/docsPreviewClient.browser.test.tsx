@@ -429,6 +429,16 @@ it('starts a new sheet at a page break the tab has, and draws one a pending chan
   expect(sheets()[0].querySelectorAll('.pagebreak')).toHaveLength(1)
 })
 
+it('draws a rule the tab has, and one a pending change names as the text it writes', async () => {
+  const { page, blocks, refresh } = await draw({ savedMarkdown: 'Above\n\n<hr>\n\nBelow\n' })
+  expect(blocks()[1].querySelector('.rule')).not.toBeNull()
+
+  // Google is sent the name as text, in a paragraph changed as in one added: no pending change can make a rule.
+  await refresh({ markdown: 'Above\n\n<hr>\n\nBelow <hr> it\n\nUse <hr> here\n' })
+  await expect.poll(() => blocks().slice(2).map(text)).toEqual(['Below <hr> it', 'Use <hr> here'])
+  expect(page.querySelectorAll('.rule')).toHaveLength(1)
+})
+
 it('steps from page to page with a navigator at the foot of the frame, where there are pages', async () => {
   const savedMarkdown = 'One\n\n\\[Page break\\]\n\nTwo\n\n\\[Page break\\]\n\nThree\n'
   const { sheets, refresh, show } = await draw({ savedMarkdown })

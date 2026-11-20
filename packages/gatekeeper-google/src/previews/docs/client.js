@@ -274,9 +274,10 @@ function written(item, words, saved, was, mark, hidden, state) {
     left = [];
   };
   for (const piece of pieces) {
-    // Google holds an image, an equation or a page break where the saved Markdown names one. A
-    // pending change cannot write one: where it writes the name, the name is the text it writes.
-    const chip = piece.kind === 'chip' && piece.mark !== 'added' && mark !== 'added';
+    // Google holds an image, an equation, a page break or a rule where the saved Markdown names
+    // one. A pending change cannot write one: where it writes the name, the name is the text it writes.
+    const native = piece.mark !== 'added' && mark !== 'added';
+    const chip = piece.kind === 'chip' && native;
     const held = chip && piece.text === 'Image' ? images[image++] : undefined;
     const spaced = apart && !piece.kind && !piece.text.trim();
     apart = held !== undefined && image <= tethered.length;
@@ -290,7 +291,7 @@ function written(item, words, saved, was, mark, hidden, state) {
     if (stays(piece)) beside = piece.run;
     const text = piece.run ? textLooks[piece.run.look] : typed(piece);
     const change = piece.mark;
-    if (piece.kind === 'hr') runs.push({ rule: true, look: text });
+    if (piece.kind === 'hr' && native) runs.push({ rule: true, look: text });
     else if (held !== undefined) runs.push({ object: held, look: text });
     else if (chip && piece.text === 'Page break') runs.push({ break: 'page', look: text });
     else if (chip) runs.push({ chip: piece.text, look: text, change });
