@@ -631,6 +631,26 @@ describe("retry", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
+  it("gives `retryable` the answer's headers, by which a rule tells apart two answers of one status", async () => {
+    // Sends a 503 again only where it names a wait, and gives up where the wait is a long one.
+    const waited = upstream.with({
+      retry: {
+        retryable: (status, _request, headers) => {
+          const wait = headers.get("Retry-After");
+          return status === 503 && wait !== null && Number(wait) <= 1;
+        },
+      },
+    });
+    const fetch = answering(answer(503, "{}", "0"), answer(503, "{}", "120"), new Response("{}", { status: 503 }));
+
+    const long = await waited.request(THREAD, { method: "POST", body: "{}" });
+    const unnamed = await waited.request(THREAD, { method: "POST", body: "{}" });
+
+    expect([long.status, long.headers.get("Retry-After")]).toEqual([503, "120"]);
+    expect([unnamed.status, unnamed.headers.get("Retry-After")]).toEqual([503, null]);
+    expect(fetch).toHaveBeenCalledTimes(3);
+  });
+
   it("fails a request whose `retryable` throws, its answer counted and its body cancelled", async () => {
     const refused = open(503);
     answering(refused.response);
@@ -833,6 +853,70 @@ describe("retry", () => {
 
       expect((await response).status).toBe(503);
       expect(gaps(times)).toEqual([0, 0]);
+    });
+
+    it("waits what the policy's `delayMs` gives for an answer, capped, and as it would without where that is no wait", async () => {
+      vi.useFakeTimers();
+      vi.spyOn(Math, "random").mockReturnValue(0.5);
+      const asked: [number, string | null, number][] = [];
+      const given = [
+        700, 60_000, Number.POSITIVE_INFINITY, -5, Number.NEGATIVE_INFINITY, undefined, Number.NaN,
+      ];
+      const retry: RetryPolicy = {
+        attempts: 9,
+        maxDelayMs: 5_000,
+        delayMs: (response, sends) => {
+          asked.push([response.status, response.headers.get("Retry-After"), sends]);
+          if (sends === 8) throw new Error("no wait");
+          return given[sends - 1];
+        },
+      };
+      const times = sendTimes(() => new Response(null, { status: 503, headers: { "Retry-After": "2" } }));
+
+      const response = untimed.request(THREAD, { retry });
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect((await response).status).toBe(503);
+      // Its own wait, the longest delay twice, nothing twice, then the Retry-After three times.
+      expect(gaps(times)).toEqual([700, 5_000, 5_000, 0, 0, 2_000, 2_000, 2_000]);
+      expect(asked).toEqual([1, 2, 3, 4, 5, 6, 7, 8].map(sends => [503, "2", sends]));
+    });
+
+    it("gives `delayMs` the attempts of the retry policy, a replay being none of them", async () => {
+      vi.useFakeTimers();
+      const asked: number[] = [];
+      const times = sendTimes(send => answer([401, 503, 401, 503, 200][send - 1] ?? 200));
+
+      const response = untimed.request(THREAD, {
+        replay: reply => reply.status === 401,
+        retry: {
+          retryable: status => status === 503,
+          delayMs: (_response, attempts) => {
+            asked.push(attempts);
+            return 1_000 * attempts;
+          },
+        },
+      });
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect((await response).status).toBe(200);
+      // Five sends: the two replays wait nothing and count for nothing in the two waits.
+      expect(asked).toEqual([1, 2]);
+      expect(gaps(times)).toEqual([0, 1_000, 0, 2_000]);
+    });
+
+    it("does not ask `delayMs` about an attempt that threw", async () => {
+      vi.useFakeTimers();
+      vi.spyOn(Math, "random").mockReturnValue(0.5);
+      const delayMs = vi.fn(() => 4_000);
+      const times = sendTimes(send => send === 1 ? new TypeError("network down") : answer(200));
+
+      const response = untimed.request(THREAD, { retry: { delayMs } });
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect((await response).status).toBe(200);
+      expect(gaps(times)).toEqual([250]);
+      expect(delayMs).not.toHaveBeenCalled();
     });
   });
 });

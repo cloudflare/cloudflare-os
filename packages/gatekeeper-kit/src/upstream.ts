@@ -70,11 +70,23 @@ export type RetryPolicy = {
    * or 504, so the policy never sends a write twice unless it is marked or this says so. It is
    * asked only while attempts remain and the body can be sent again, and is not asked about an
    * attempt that threw, nor about one whose answer `read` could not read before its timeout:
-   * those are sent again only when the request is idempotent.
+   * those are sent again only when the request is idempotent. `headers` are the answer's, for a
+   * rule that turns on what the answer says beside its status, such as whether it names a wait
+   * and how long a one.
    */
   retryable?: (
     status: number, request: { method: string; operation: string; idempotent: boolean },
+    headers: Headers,
   ) => boolean;
+  /**
+   * The wait in milliseconds before the send after an answered attempt, for a provider that names
+   * its wait otherwise than by a `Retry-After` in delta-seconds, or that waits by a rule of its
+   * own where the answer names none. It is given the answer, whose body is cancelled, and how
+   * many of the policy's `attempts` were made, the answered one included: a replay is none of
+   * them. The wait is not negative and at most `maxDelayMs`. Undefined, a throw or what is no
+   * number takes the wait `Upstream` describes. It is not asked about an attempt that threw.
+   */
+  delayMs?: (response: Response, attempts: number) => number | undefined;
 };
 
 /** Configures an `Upstream`. */
@@ -218,8 +230,9 @@ export type UpstreamRequestInit = RequestInit & {
  *   one that threw. A write is never sent twice unless it is marked `idempotent`, the
  *   gatekeeper's `retryable` says so, or its `replay` hook does: a `retry` of `null` turns off
  *   this rule and not the Replay one, so a request that must be sent once gives no `replay`.
- *   Nothing is sent again once the caller's signal has aborted. The wait is what the answer's
- *   `Retry-After` asks for, capped at `maxDelayMs`: its count of seconds, or the time left until
+ *   Nothing is sent again once the caller's signal has aborted. The wait is what the policy's
+ *   `delayMs` gives for the answer, else what the answer's `Retry-After` asks for, either capped
+ *   at `maxDelayMs`. A `Retry-After` asks for its count of seconds, or the time left until
  *   its HTTP date (in any of the three forms RFC 9110 gives one, as `Sun, 06 Nov 1994 08:49:37
  *   GMT`), which is nothing once the date is past. With no `Retry-After`, or one that is neither
  *   (a day that its month does not have makes no date), and after a throw, the wait is
@@ -375,6 +388,7 @@ const DEFAULT_RETRY: Required<RetryPolicy> = {
   baseDelayMs: 500,
   maxDelayMs: 10_000,
   retryable: (status, request) => request.idempotent && RETRIED_STATUSES.has(status),
+  delayMs: () => undefined,
 };
 // A replay answers a 401 with a fresh token and a 403 with a reloaded one: two, and no loop.
 const MAX_REPLAYS = 2;
@@ -615,8 +629,9 @@ export function defineUpstream(options: UpstreamOptions): Upstream {
           continue;
         }
         if (resendable && retry && attempt < retry.attempts - 1
-            && await sendsAgain(() => retry.retryable(response.status, { method, operation, idempotent }))) {
-          await pause(backoffMs(retry, attempt, response.headers.get("Retry-After")), caller);
+            && await sendsAgain(() => retry.retryable(
+              response.status, { method, operation, idempotent }, response.headers))) {
+          await pause(backoffMs(retry, attempt, response), caller);
           attempt++;
           continue;
         }
@@ -876,6 +891,7 @@ function retryOf(
     baseDelayMs: delayOf("retry.baseDelayMs", given.baseDelayMs ?? base.baseDelayMs),
     maxDelayMs: delayOf("retry.maxDelayMs", given.maxDelayMs ?? base.maxDelayMs),
     retryable: given.retryable ?? base.retryable,
+    delayMs: given.delayMs ?? base.delayMs,
   };
 }
 
@@ -886,12 +902,29 @@ function delayOf(label: string, value: number): number {
   return value;
 }
 
-// The wait before the attempt after `attempt`: what the server's `Retry-After` asks for, else
-// exponential backoff with full jitter. Never longer than the policy's longest delay.
-function backoffMs(retry: Required<RetryPolicy>, attempt: number, retryAfter: string | null): number {
+// The wait before the attempt after `attempt`, whose answer is `response` (null where it threw):
+// what the policy's `delayMs` gives for the answer, else what the server's `Retry-After` asks
+// for, else exponential backoff with full jitter. Never longer than the policy's longest delay.
+function backoffMs(retry: Required<RetryPolicy>, attempt: number, response: Response | null): number {
+  const own = response ? ownDelayMs(retry, response, attempt + 1) : undefined;
+  if (own !== undefined) return Math.min(Math.max(own, 0), retry.maxDelayMs);
+  const retryAfter = response ? response.headers.get("Retry-After") : null;
   const askedFor = retryAfter === null ? undefined : retryAfterMs(retryAfter);
   if (askedFor !== undefined) return Math.min(askedFor, retry.maxDelayMs);
   return Math.random() * Math.min(retry.baseDelayMs * 2 ** attempt, retry.maxDelayMs);
+}
+
+// The wait the policy's `delayMs` gives for an answer, or undefined where it gives none, throws
+// or gives what is no number.
+function ownDelayMs(
+  retry: Required<RetryPolicy>, response: Response, attempts: number,
+): number | undefined {
+  try {
+    const given = retry.delayMs(response, attempts);
+    return typeof given === "number" && !Number.isNaN(given) ? given : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
