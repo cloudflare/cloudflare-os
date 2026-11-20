@@ -2770,8 +2770,8 @@ whose entities are small do.
 **No stored base.** The leaf keeps none of a provider's state in Durable Object storage, and the
 kit ships no store for a value larger than one stored value. A gatekeeper that keeps a copy of a
 provider's state keeps the copy's lifecycle with it (the fetch, the revision pin, noting a write,
-the recheck, the drop): by the package's rule a leaf is for behaviour several gatekeepers share.
-The fold needs neither.
+the recheck, the drop): one does today, for a Google Doc, and by the package's rule a leaf is for
+behaviour several gatekeepers share. The fold needs neither.
 
 The list hooks:
 
@@ -2823,7 +2823,7 @@ Who uses what:
 
 | | Entities | List hooks | Status |
 |---|---|---|---|
-| Docs | a tab; and the tab tree as one outline entity, which a pending tab create targets beside its provisional tab id | none | planned |
+| Docs | a tab; and the tab tree as one outline entity, which a pending tab create targets beside its provisional tab id | none | in the tree |
 | Sheets | one: the grid | none | planned |
 | Slides | one: the deck | none | planned |
 | PagerDuty | incidents | the incident listing | planned |
