@@ -50,8 +50,8 @@ export function artifactName(name: ProducerName): string {
   return PRODUCERS[name].kind === "verdict" ? `automerge-verdict-${name}` : `automerge-${name}`;
 }
 
-/** The gateway both reviewers reach their model through: the first segment of a verdict's `model`. */
-const GATEWAY = "cloudflare-ai-gateway";
+/** A verdict's `model`: the gateway both reviewers reach their model through, a provider, a model. */
+const MODEL_ID = /^cloudflare-ai-gateway\/([a-z0-9-]+)\/[^\s/]+$/i;
 
 /**
  * The provider a verdict's `model` names, lowercased: `anthropic` for
@@ -59,8 +59,7 @@ const GATEWAY = "cloudflare-ai-gateway";
  * another gateway, or a longer id, which routes through one provider to a model this cannot name.
  */
 export function modelProvider(model: string): string | undefined {
-  const [gateway, provider, name, ...rest] = model.split("/");
-  return gateway === GATEWAY && provider && name && rest.length === 0 ? provider.toLowerCase() : undefined;
+  return MODEL_ID.exec(model)?.[1]?.toLowerCase();
 }
 
 /** A finding in a verdict. */

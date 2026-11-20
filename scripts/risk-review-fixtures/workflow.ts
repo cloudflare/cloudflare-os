@@ -61,19 +61,28 @@ function splitItems(text: string): string[] {
   return items.filter((item) => item !== "");
 }
 
+/** A mapping with each key as its own property, whatever the key, and no key twice. */
+function mappingOf(entries: [string, Json][]): Json {
+  const keys = new Set(entries.map(([key]) => key));
+  if (keys.size < entries.length) throw new Error(`a key is set twice among ${[...keys].join(", ")}`);
+  return Object.fromEntries(entries);
+}
+
 /** A value written on one line: quoted or plain text, `[a, b]` or `{ a: b }`. */
 function scalar(text: string): Json {
   if (text.length > 1 && text.startsWith('"') && text.endsWith('"')) return text.slice(1, -1).replace(/\\(.)/g, "$1");
   if (text.length > 1 && text.startsWith("'") && text.endsWith("'")) return text.slice(1, -1).replaceAll("''", "'");
   if (text.startsWith("[") && text.endsWith("]")) return splitItems(text.slice(1, -1)).map(scalar);
   if (text.startsWith("{") && text.endsWith("}")) {
-    return Object.fromEntries(splitItems(text.slice(1, -1)).map((item) => {
+    return mappingOf(splitItems(text.slice(1, -1)).map((item) => {
       const entry = splitKey(item);
       if (!entry) throw new Error(`cannot read ${item} in ${text}`);
       return [entry.key, scalar(entry.rest)];
     }));
   }
   if (/^["'[{]/.test(text)) throw new Error(`cannot read a value that spans lines: ${text}`);
+  // An anchor, alias or tag stands for a value this does not resolve.
+  if (/^[&*!]/.test(text)) throw new Error(`cannot read an anchor, alias or tag: ${text}`);
   return text;
 }
 
@@ -124,16 +133,16 @@ export function parseWorkflow(source: string): Json {
   };
 
   const mapping = (indent: number): Json => {
-    const entries: { [key: string]: Json } = {};
+    const entries: [string, Json][] = [];
     for (let line = peek(); line && line.indent === indent; line = peek()) {
       const entry = isItem(line.text) ? undefined : splitKey(line.text);
       if (!entry) throw new Error(`line ${next + 1}: expected a key, read ${line.text}`);
       next += 1;
       const child = entry.rest === "" ? peek() : undefined;
       // A sequence may sit at its key's own indent.
-      entries[entry.key] = child && child.indent === indent && isItem(child.text) ? sequence(indent) : valueOf(entry.rest, indent);
+      entries.push([entry.key, child && child.indent === indent && isItem(child.text) ? sequence(indent) : valueOf(entry.rest, indent)]);
     }
-    return entries;
+    return mappingOf(entries);
   };
 
   const sequence = (indent: number): Json => {

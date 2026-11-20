@@ -160,6 +160,10 @@ describe("modelProvider", () => {
       "anthropic/claude-opus-5.5",
       "openrouter/anthropic/claude-opus-5.5",
       "cloudflare-ai-gateway/openrouter/anthropic/claude-opus-5.5",
+      "cloudflare-ai-gateway/ /claude-opus-5.5",
+      "cloudflare-ai-gateway/open ai/gpt-6.1-sol",
+      "cloudflare-ai-gateway/anthropic/ ",
+      " cloudflare-ai-gateway/anthropic/claude-opus-5.5",
     ]) {
       assert.equal(modelProvider(model), undefined, model);
     }

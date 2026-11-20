@@ -604,6 +604,7 @@ describe("decide", () => {
       [MODELS.bonk, ""],
       ["openai/gpt-6.1-sol", MODELS.opus],
       ["cloudflare-ai-gateway/openrouter/anthropic/claude-opus-5.5", MODELS.opus],
+      ["cloudflare-ai-gateway/ /gpt-6.1-sol", MODELS.opus],
     ] as const) {
       assert.equal(decide(inputs({ producers: models(bonk, opus) }), SCORED, NOW).would.decision, "person", `${bonk} and ${opus}`);
     }
@@ -1429,7 +1430,18 @@ describe("parseWorkflow", () => {
   });
 
   it("refuses a file it cannot read, rather than passing it", () => {
-    for (const text of ["on:\n  workflow_run:\n    workflows: [Relay,\n      Proofs]\n", "jobs:\n  gate:\n      steps: []\n    name: x\n"]) {
+    for (const text of [
+      "on:\n  workflow_run:\n    workflows: [Relay,\n      Proofs]\n",
+      "jobs:\n  gate:\n      steps: []\n    name: x\n",
+      // Anchors, aliases and tags give a value this would read as plain text.
+      "jobs:\n  a:\n    permissions: &grant { checks: write }\n",
+      "jobs:\n  a:\n    permissions: &grant\n      checks: write\n",
+      "jobs:\n  a:\n    permissions: *grant\n",
+      "jobs:\n  a:\n    <<: *base\n",
+      "jobs:\n  a:\n    permissions: !!map { checks: write }\n",
+      "permissions: {}\npermissions: write-all\n",
+      "permissions: { checks: read, checks: write }\n",
+    ]) {
       assert.throws(() => parseWorkflow(text), JSON.stringify(text));
     }
   });
@@ -1514,6 +1526,8 @@ describe("risk-review workflows", () => {
     assert.deepEqual(jobsOf(gate).map((job) => dig(job, "environment")), ["risk-review"]);
     const [minted, ...others] = stepsUsing(gate, "actions/create-github-app-token");
     assert.ok(typeof minted?.id === "string" && others.length === 0, "one step mints the App's token");
+    // Without these two the App can neither post the check run nor enqueue.
+    assert.deepEqual([dig(minted, "with", "permission-checks"), dig(minted, "with", "permission-merge-queues")], ["write", "write"]);
     assert.deepEqual(stepsUsing(gate, "actions/github-script").map((step) => expression(dig(step, "with", "github-token"))),
       [`\${{steps.${minted.id}.outputs.token}}`]);
     assert.deepEqual(texts(gate).filter((text) => /\bgithub\.token\b|\bsecrets\.GITHUB_TOKEN\b/.test(text)), []);
@@ -1543,5 +1557,7 @@ describe("risk-review workflows", () => {
     assert.equal(mayWriteChecks(parseWorkflow("jobs:\n  a:\n    permissions:\n      checks: write\n")), true);
     assert.equal(mayWriteChecks(parseWorkflow("permissions: write-all\njobs:\n  a:\n    steps: []\n")), true);
     assert.equal(mayWriteChecks(parseWorkflow("jobs:\n  a:\n    steps: []\n")), true);
+    // A job id that is also the name of an object's prototype is a job like any other.
+    assert.equal(mayWriteChecks(parseWorkflow("permissions: {}\njobs:\n  __proto__:\n    permissions:\n      checks: write\n")), true);
   });
 });
