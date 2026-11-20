@@ -372,8 +372,8 @@ describe("attachment worktree ingress", () => {
     const chatId = await impl.newChat(user, {profile: USER}, "Inspect", undefined,
       [{oid: ref.oid, mimeType: "text/plain", name: "notes.txt"}]);
     const requests = await scriptedTurn(impl, chatId, [
-      fauxToolCall("readFile", {workpiece: "env.SCRATCH", filename: "notes.txt"}),
-      fauxToolCall("grep", {workpiece: "env.SCRATCH", pattern: "needle"}),
+      fauxToolCall("readFile", {workpiece: "env.ATTACHMENTS", filename: "notes.txt"}),
+      fauxToolCall("grep", {workpiece: "env.ATTACHMENTS", pattern: "needle"}),
     ]);
     const results = fileToolResults(requests.at(-1)!);
     expect(results).toHaveLength(2);
