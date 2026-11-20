@@ -165,6 +165,9 @@ export const ShareSnapshotPreview = ({
             <GadgetUI
               key={ready.refreshedAt?.getTime()}
               gadget={ready.stub}
+              // A snapshot reports no errors to the workspace: they are a viewer's.
+              overseer={null}
+              gadgetId={gadgetId}
               renderMode="snapshot"
               height="100%"
               onIframeEscape={fullscreen ? () => onFullscreenChange(false) : undefined}

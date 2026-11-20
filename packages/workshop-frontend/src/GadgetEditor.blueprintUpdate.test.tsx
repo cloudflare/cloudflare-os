@@ -20,7 +20,8 @@ import {
 // the one a gadget's UI names), how a spawned agent's chat is shown over the chat the gadget pane
 // follows,
 // which gadget stub a use-only collaborator's view is given while gadgets are admitted or viewed
-// as snapshots, and which workspace a gadget's deletion is confirmed in.
+// as snapshots, which workspace a gadget's deletion is confirmed in, and where each gadget view is
+// told to report its uncaught errors.
 // Everything the editor composes is stubbed down to the callbacks that drive its layout.
 
 const testGlobal = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -42,6 +43,7 @@ globalThis.ResizeObserver ??= class {
 const PROPOSAL_CHAT_ID = 7
 
 const GADGET: GadgetSummary = { id: 1, type: 'gadget', title: 'Itinerary', commitId: 'head' }
+const BUDGET: GadgetSummary = { id: 2, type: 'gadget', title: 'Budget', commitId: 'head' }
 
 const mocks = vi.hoisted(() => {
   const disposable = { [Symbol.dispose]() {} }
@@ -68,17 +70,26 @@ const mocks = vi.hoisted(() => {
     },
     codeView: null as null | { selectedChatId?: number | null },
     connections: null as null | { chatId?: number },
-    gadgetUi: null as null | { onConsoleLog?: (log: unknown) => void },
+    gadgetUi: null as null | {
+      overseer: unknown
+      gadget: unknown
+      gadgetId: WorkpieceId
+      onConsoleLog?: (log: unknown) => void
+    },
     // The props the use-only view was last rendered with.
     useView: null as null | {
+      overseer: unknown
       gadget: unknown
       snapshot: { refreshedAt: Date; onRefresh: () => Promise<void> } | null
+      selectedGadgetId: WorkpieceId | null
       gadgetOpenFailure: string | null
       onRetryGadget: () => void
     },
     // The props the account prompt was last rendered with.
     observerModal: null as null | { subject: 'workspace' | 'gadget' },
     workspace: {
+      // An opened workspace: its views report their errors through its stub.
+      overseerOpened: true,
       overseer: {
         stub: {
           subscribeToWorkpieces: async (subscriber: WorkpiecesSubscriber) => {
@@ -211,12 +222,15 @@ vi.mock('./Connections', () => ({
 }))
 vi.mock('./GadgetExportMenu', () => ({ default: () => null }))
 vi.mock('./GadgetUI', () => ({
-  default: ({ onOpenAgentChat, onConsoleLog }: {
+  default: (props: {
+    overseer: unknown
+    gadget: unknown
+    gadgetId: WorkpieceId
     onOpenAgentChat?: typeof mocks.onOpenAgentChat
     onConsoleLog?: (log: unknown) => void
   }) => {
-    mocks.onOpenAgentChat = onOpenAgentChat ?? null
-    mocks.gadgetUi = { onConsoleLog }
+    mocks.onOpenAgentChat = props.onOpenAgentChat ?? null
+    mocks.gadgetUi = props
     return null
   },
 }))
@@ -691,7 +705,6 @@ describe("GadgetEditor, showing a spawned agent's chat over the working chat", (
 // A use-only collaborator is verified as each gadget opens, so the view gets a gadget's stub only
 // once its admission resolves, and never one disposed when an earlier admission was abandoned.
 describe('GadgetEditor, admitting a use-only collaborator to gadgets', () => {
-  const BUDGET: GadgetSummary = { id: 2, type: 'gadget', title: 'Budget', commitId: 'head' }
   type Client = { gadgetId: WorkpieceId; disposed: boolean }
   const workspace = mocks.workspace
   const original = { overseer: workspace.overseer, metadata: workspace.metadata }
@@ -878,6 +891,66 @@ describe('GadgetEditor, admitting a use-only collaborator to gadgets', () => {
     await act(async () => snapshots[0].resolve())
     expect(shownClient()).toBe(snapshots[0].client)
     expect(admissions).toHaveLength(0)
+  })
+
+  it("gives the use view the workspace's connection and the selected gadget, also after a reconnect", async () => {
+    mocks.search = { w: GADGET.id }
+    await openEditor('desktop')
+    await act(async () => admissions.at(-1)!.resolve())
+    expect(mocks.useView?.overseer).toBe(workspace.overseer.stub)
+    expect(mocks.useView?.selectedGadgetId).toBe(GADGET.id)
+
+    workspace.overseer = useOnlyOverseer()
+    await openEditor('desktop')
+    expect(mocks.useView?.overseer).toBe(workspace.overseer.stub)
+    expect(mocks.useView?.selectedGadgetId).toBe(GADGET.id)
+  })
+})
+
+// `overseer` may be null by its type and an id is only a number, so a mount site that passed no
+// workspace, or another gadget's id, would type-check and report nothing.
+describe('GadgetEditor, telling a gadget view where its uncaught errors go', () => {
+  const workspace = mocks.workspace
+  const original = workspace.overseer
+  const stub: typeof original.stub = {
+    ...original.stub,
+    subscribeToWorkpieces: async (subscriber: WorkpiecesSubscriber) => {
+      await subscriber.entry(GADGET)
+      await subscriber.entry(BUDGET)
+      await subscriber.ready()
+      return { [Symbol.dispose]() {} }
+    },
+    getGadget: (gadgetId?: WorkpieceId) => ({ gadgetId, [Symbol.dispose]() {} }),
+  }
+
+  beforeEach(() => {
+    workspace.overseer = { stub }
+    // Two gadgets make the editor render its pane tabs, which observe their own size.
+    vi.stubGlobal('ResizeObserver', class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    })
+  })
+
+  afterEach(() => {
+    workspace.overseer = original
+    vi.unstubAllGlobals()
+  })
+
+  // No chat is selected here: the editor says where the errors go whether or not one is open.
+  it("gives the pane's view the workspace's connection and the selected gadget", async () => {
+    mocks.search = { w: BUDGET.id }
+    await openEditor('desktop')
+    expect(mocks.gadgetUi?.overseer).toBe(stub)
+    expect(mocks.gadgetUi?.gadgetId).toBe(BUDGET.id)
+    expect(mocks.gadgetUi?.gadget).toMatchObject({ gadgetId: BUDGET.id })
+
+    mocks.search = { w: GADGET.id }
+    await openEditor('desktop')
+    expect(mocks.gadgetUi?.gadgetId).toBe(GADGET.id)
+    expect(mocks.gadgetUi?.gadget).toMatchObject({ gadgetId: GADGET.id })
+    expect(mocks.gadgetUi?.overseer).toBe(stub)
   })
 })
 
