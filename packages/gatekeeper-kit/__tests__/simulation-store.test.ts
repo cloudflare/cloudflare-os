@@ -5,7 +5,6 @@ import type { CursorInjection } from "../src/cursors";
 import { createSimulationView, ProvisionalIds, type SimulationRecord } from "../src/simulation";
 import {
   createSimulationStore,
-  SimulatedListStopped,
   simulatedList,
   type EntityContext,
   type EntityFold,
@@ -935,7 +934,7 @@ function draftListing(staged: Staged[], created: string[] = []) {
 }
 
 describe("simulatedList", () => {
-  it("fails a row whose fold stopped, provider row or stand-in, rather than show part of it", () => {
+  it("does not show a row whose fold stopped, provider row or stand-in, and throws nothing", () => {
     const stuck = (stuckOn: string) => {
       const store = createSimulationStore<string, Task, Task, Staged>({
         initial: row => row,
@@ -959,11 +958,13 @@ describe("simulatedList", () => {
     };
 
     const onRow = stuck("a")();
-    expect(() => onRow.overlay(task("a", 1))).toThrow(
-      new SimulatedListStopped("a", "it cannot be replayed"));
+    expect(onRow.overlay(task("a", 1))).toEqual([]);
     expect(onRow.overlay(task("b", 2))).toEqual([task("b", 2)]);
     // A stand-in is folded when the hooks are made and at every refresh.
-    expect(stuck("~1")).toThrow(SimulatedListStopped);
+    const onStandIn = stuck("~1")();
+    expect(onStandIn.inject.items).toEqual([]);
+    onStandIn.refresh();
+    expect(onStandIn.inject.revalidate(task("~1", 5))).toBeNull();
   });
 
   it("folds a provider row and drops one its records delete or the listing no longer keeps", () => {
