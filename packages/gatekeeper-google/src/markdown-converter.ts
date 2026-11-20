@@ -2,9 +2,13 @@
 // with source mapping to allow Markdown-level edits to be translated back
 // to Google Docs batchUpdate operations.
 
-import type {
-  GoogleDocsTab, Paragraph, ParagraphElement, StructuralElement, Table, TableCell, TextStyle,
+import {
+  docsLinkDestination,
+  type EmbeddedObject, type GoogleDocsTab, type Paragraph, type ParagraphElement,
+  type StructuralElement, type Table, type TableCell, type TextStyle,
 } from "./docs-api";
+import { docTabDrawing, drawnTableCells, type DocBlockPlace } from "./docs-drawing";
+import type { GoogleDocDrawing } from "./docs-rendering-types";
 
 // ---------------------------------------------------------------------------
 // Source map types
@@ -33,6 +37,23 @@ export type DocTabSnapshot = {
   sourceMap: SourceMap;
   /** The endIndex of the last structural element in this tab's body. */
   bodyEndIndex: number;
+  /** One entry per `[Image]` placeholder in `markdown`, in the order they appear. */
+  images: DocTabImage[];
+  /** The tab as Google Docs draws it. Absent from a stored snapshot too large to hold it. */
+  drawing?: GoogleDocDrawing;
+  /** Where Google serves, for a short while, each image `drawing` names that has bytes. */
+  imageUris: Record<string, string>;
+}
+
+/** An image, drawing or chart that `markdown` shows as an `[Image]` placeholder. */
+export type DocTabImage = {
+  id: string;
+  /** Displayed size in points. */
+  width: number;
+  height: number;
+  description?: string;
+  /** Where Google serves the bytes for a short while. Absent for a drawing, which has none. */
+  contentUri?: string;
 }
 
 export type SourceMap = {
@@ -50,7 +71,7 @@ export type MarkdownRange = { mdStart: number; mdEnd: number };
  * produces changes, so callers caching a {@link DocTabSnapshot} discard entries built by older
  * code. It lives here because edits to this file are what invalidate them.
  */
-export const MARKDOWN_RENDERING_VERSION = 6;
+export const MARKDOWN_RENDERING_VERSION = 7;
 
 type ListType = "bullet" | "numbered";
 
@@ -142,9 +163,10 @@ class MarkdownWriter {
 }
 
 /** Convert one document tab to Markdown with a source map into that tab's index space. */
-export function docTabToMarkdown(tab: GoogleDocsTab): DocTabSnapshot {
+export function docTabToMarkdown(tab: GoogleDocsTab): DocTabSnapshot & { drawing: GoogleDocDrawing } {
   let writer = new MarkdownWriter();
   let blocks: BlockMapping[] = [];
+  let places = new Map<StructuralElement, DocBlockPlace>();
   let protectedRanges: MarkdownRange[] = [];
   let previousListId: string | undefined;
   let listNumbers = new Map<string, number[]>();
@@ -161,6 +183,7 @@ export function docTabToMarkdown(tab: GoogleDocsTab): DocTabSnapshot {
     if (structure !== undefined) {
       let mdStart = writer.length;
       if (writer.length > 0) writer.append("\n");
+      places.set(elem, { mdStart: writer.length });
       writer.append(`${structure}\n`);
       protectedRanges.push({ mdStart, mdEnd: writer.length });
       previousListId = undefined;
@@ -199,6 +222,7 @@ export function docTabToMarkdown(tab: GoogleDocsTab): DocTabSnapshot {
       }
     }
     let mdStart = writer.length;
+    places.set(elem, { mdStart, segments });
 
     // Paragraph prefix (heading markers, list markers, etc.).
     let prefix = getParagraphPrefix(para, listItem, markdownListNumber);
@@ -237,26 +261,45 @@ export function docTabToMarkdown(tab: GoogleDocsTab): DocTabSnapshot {
     markdown: writer.text,
     sourceMap: { blocks, protectedRanges },
     bodyEndIndex,
+    images: tabImages(tab, elements),
+    ...docTabDrawing(tab, writer.text, places),
   };
 }
 
-function internalDocsDestination(kind: "bookmark" | "heading", id: string, tabId?: string): string {
-  let tab = tabId ? `?tab=${encodeURIComponent(tabId)}` : "";
-  return `${tab}#${kind}=${encodeURIComponent(id)}`;
-}
-
-function docsLinkDestination(link: TextStyle["link"]): string | undefined {
-  if (!link) return undefined;
-  if ("url" in link) return link.url;
-  if ("tabId" in link) return `?tab=${encodeURIComponent(link.tabId)}`;
-  if ("bookmark" in link) {
-    return internalDocsDestination("bookmark", link.bookmark.id, link.bookmark.tabId);
+/**
+ * The objects `elements` render as `[Image]`, in the order both renderings write the
+ * placeholders: a paragraph's positioned objects first, then its inline ones.
+ */
+function tabImages(
+  tab: GoogleDocsTab,
+  elements: StructuralElement[],
+  images: DocTabImage[] = [],
+): DocTabImage[] {
+  let add = (id: string | undefined, object: EmbeddedObject | undefined) => {
+    let contentUri = object?.imageProperties?.contentUri;
+    images.push({
+      id: id ?? `image-${images.length}`,
+      width: object?.size?.width?.magnitude ?? 0,
+      height: object?.size?.height?.magnitude ?? 0,
+      ...object?.description ? { description: object.description } : {},
+      ...contentUri ? { contentUri } : {},
+    });
+  };
+  for (let element of elements) {
+    for (let row of element.table?.tableRows ?? []) {
+      for (let cell of row.tableCells ?? []) tabImages(tab, cell.content ?? [], images);
+    }
+    for (let id of element.paragraph?.positionedObjectIds ?? []) {
+      add(id, tab.positionedObjects?.[id]?.positionedObjectProperties?.embeddedObject);
+    }
+    for (let { inlineObjectElement } of element.paragraph?.elements ?? []) {
+      if (!inlineObjectElement) continue;
+      let id = inlineObjectElement.inlineObjectId;
+      add(id, id === undefined
+        ? undefined : tab.inlineObjects?.[id]?.inlineObjectProperties?.embeddedObject);
+    }
   }
-  if ("heading" in link) {
-    return internalDocsDestination("heading", link.heading.id, link.heading.tabId);
-  }
-  if ("bookmarkId" in link) return internalDocsDestination("bookmark", link.bookmarkId);
-  return internalDocsDestination("heading", link.headingId);
+  return images;
 }
 
 /**
@@ -352,11 +395,9 @@ function tableToHtml(
   listNumbers: Map<string, number[]>,
 ): string {
   let lines = ["<table>"];
-  for (let row of table.tableRows ?? []) {
+  for (let row of drawnTableCells(table)) {
     lines.push("  <tr>");
-    for (let cell of row.tableCells ?? []) {
-      lines.push(tableCellToHtml(cell, lists, listNumbers));
-    }
+    for (let cell of row) lines.push(tableCellToHtml(cell, lists, listNumbers));
     lines.push("  </tr>");
   }
   lines.push("</table>");

@@ -65,6 +65,7 @@ const TAB_GUIDANCE = [
 const TAB_SHAPE_CHECK = `
 type ExpectedGoogleDocTab = {
   id: string; title: string; parentTabId?: string; index: number; nestingLevel: number;
+  pending?: true;
 };
 type Mutual<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
 const tabShapeIsExact: Mutual<GoogleDocTab, ExpectedGoogleDocTab> = true;
@@ -668,6 +669,16 @@ folder.unshare("file-1", "1");
 // @ts-expect-error A read-only folder binding has no move().
 folder.move("file-1", "folder-9");
 `)).toEqual([]);
+  });
+
+  it("declares what renders a document apart from its bundle, which it compiles against", () => {
+    // It declares every type it names, so it has no module prefix.
+    let rendering = source("docs-rendering-types.txt");
+    expect(docBundle()).toContain("getRenderingTypes(): Promise<string>;");
+    expect(docBundle()).not.toContain("readDrawing(tabId");
+    expect(rendering).toContain("readDrawing(tabId");
+    expect(rendering).not.toContain("import ");
+    expect(compileAgentTypes([docBundle(), rendering].join("\n"))).toEqual([]);
   });
 
   it("points each Sheets and Slides session at its comments with a read-only Drive URL", () => {

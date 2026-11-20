@@ -12,6 +12,7 @@ import {
   blankDocsTab, docsWriteFailure, GoogleDocsApi, type DocsBatchReply, type GoogleDocReader,
   type GoogleDocsDocument, type GoogleDocsTab,
 } from "./docs-api";
+import { DOC_DRAWING_VERSION } from "./docs-drawing";
 import { insertDocTab, type DocTabPlacement } from "./docs-tabs";
 import {
   applyMarkdownEdit, assertMarkdownWriteComplexity, canonicalizeMarkdownForWrite,
@@ -183,6 +184,8 @@ export type GoogleDocTabSnapshot = DocTabSnapshot & { committedWriteIds: string[
 export type GoogleDocSnapshot = {
   /** Rendering schema of `tabs`; bumped by the converter that produced them. */
   formatVersion: typeof MARKDOWN_RENDERING_VERSION;
+  /** Schema of each tab's `drawing`. */
+  drawingVersion: typeof DOC_DRAWING_VERSION;
   title: string;
   /** Absent unless the caller can edit the document; see `GoogleDocsDocument.revisionId`. */
   revisionId?: string;
@@ -194,6 +197,7 @@ export type GoogleDocSnapshot = {
 export function googleDocSnapshot(document: GoogleDocsDocument): GoogleDocSnapshot {
   return {
     formatVersion: MARKDOWN_RENDERING_VERSION,
+    drawingVersion: DOC_DRAWING_VERSION,
     title: document.title,
     revisionId: document.revisionId,
     tabs: document.tabs.map(tab => ({
@@ -204,11 +208,32 @@ export function googleDocSnapshot(document: GoogleDocsDocument): GoogleDocSnapsh
   };
 }
 
+/**
+ * Stores `snapshot`, and answers with what was stored. A snapshot too large for one stored value
+ * is stored without its tabs' drawings: only a preview reads those, where every read and edit of
+ * the document needs the rest.
+ */
+export async function storeGoogleDocSnapshot(
+  storage: DurableObjectStorage, snapshot: GoogleDocSnapshot,
+): Promise<GoogleDocSnapshot> {
+  try {
+    await storage.put(DOC_SNAPSHOT_KEY, snapshot);
+    return snapshot;
+  } catch (error) {
+    if (!String(error).includes("SQLITE_TOOBIG")) throw error;
+    let undrawn = { ...snapshot, tabs: snapshot.tabs.map(({ drawing: _, ...tab }) => tab) };
+    await storage.put(DOC_SNAPSHOT_KEY, undrawn);
+    return undrawn;
+  }
+}
+
 /** Accept a cached snapshot only if it predates nothing this code depends on. */
 export function isGoogleDocSnapshot(value: unknown): value is GoogleDocSnapshot {
   if (!value || typeof value !== "object") return false;
-  let {formatVersion, title, tabs, revisionId, fetchedAt} = value as Partial<GoogleDocSnapshot>;
-  return formatVersion === MARKDOWN_RENDERING_VERSION && typeof title === "string" &&
+  let {formatVersion, drawingVersion, title, tabs, revisionId, fetchedAt} =
+    value as Partial<GoogleDocSnapshot>;
+  return formatVersion === MARKDOWN_RENDERING_VERSION && drawingVersion === DOC_DRAWING_VERSION &&
+      typeof title === "string" &&
       Array.isArray(tabs) && (revisionId === undefined || typeof revisionId === "string") &&
       typeof fetchedAt === "number" && Number.isFinite(fetchedAt);
 }
@@ -238,7 +263,9 @@ export async function googleDocRevisionUnchanged(
 export function resolveGoogleDocTab(
   snapshot: GoogleDocSnapshot,
   tabId: string | undefined,
-  operation: "getContent" | "replaceText" | "appendText",
+  operation:
+    "getContent" | "getPendingChanges" | "readDrawing" | "listImages" | "readImage" | "replaceText" |
+    "appendText",
 ): GoogleDocTabSnapshot {
   if (tabId === undefined) {
     if (snapshot.tabs.length !== 1) {
@@ -556,7 +583,7 @@ function googleDocActionTabs<T extends { tabId: string }>(tabs: T[], action: Goo
 }
 
 /** Whether `snapshot` already holds `action`'s write, which landed though its reply was lost. */
-function googleDocActionCommitted(snapshot: GoogleDocSnapshot, action: GoogleDocAction): boolean {
+export function googleDocActionCommitted(snapshot: GoogleDocSnapshot, action: GoogleDocAction): boolean {
   let { writeId } = action;
   return writeId !== undefined && googleDocActionTabs(snapshot.tabs, action)
     .some(tab => tab.committedWriteIds.includes(writeId));

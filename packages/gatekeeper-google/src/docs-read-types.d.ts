@@ -34,6 +34,9 @@ export type GoogleDocTab = {
 
   /** Depth in the tab tree: 0 for a top-level tab, 1 for its child, and so on. */
   nestingLevel: number;
+
+  /** Set while edits to this tab are pending: queued, and not yet in the document. */
+  pending?: true;
 }
 
 /**

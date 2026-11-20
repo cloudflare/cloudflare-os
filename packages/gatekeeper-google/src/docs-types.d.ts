@@ -157,4 +157,101 @@ export interface GoogleDocSession extends GoogleDocEditSession {
    * edited after the resolve was queued.
    */
   resolve(commentId: string, text?: string): Promise<DriveCommentReply>;
+
+  /**
+   * Return tab `tabId` as Google Docs has it saved, alongside what `getContent()` returns for it,
+   * and the changes that make the difference. A change made here may reach Google Docs later;
+   * until it does it is pending, and `getContent()` already shows it.
+   */
+  getPendingChanges(tabId: string): Promise<GoogleDocPendingChanges>;
+
+  /**
+   * Return the images in tab `tabId`, one for each `[Image]` placeholder in `getContent()`, in
+   * the order the placeholders appear.
+   */
+  listImages(tabId: string): Promise<GoogleDocImage[]>;
+
+  /**
+   * Read one image `listImages()` returned for tab `tabId`, or one its drawing names. Throws if
+   * the image is not readable or is larger than 10 MB.
+   */
+  readImage(imageId: string, tabId: string): Promise<GoogleDocImageBytes>;
+
+  /**
+   * Return the declarations of the read that these types leave out, as TypeScript: `readDrawing()`,
+   * which gives what it takes to render a tab as Google Docs draws it, with its pages, headers,
+   * footers and wrapped images. Call it before writing or changing code that renders the document.
+   */
+  getRenderingTypes(): Promise<string>;
+}
+
+/** An image, drawing or chart in a tab. */
+export type GoogleDocImage = {
+  /** Identifies this image within its tab. Pass it to `readImage()`. */
+  id: string;
+
+  /** Displayed width, in points. */
+  width: number;
+
+  /** Displayed height, in points. */
+  height: number;
+
+  /** The image's alt text, when it has any. */
+  description?: string;
+
+  /** False for a drawing, which has a size but no content `readImage()` could return. */
+  readable: boolean;
+}
+
+/** One image's content, streamed. */
+export type GoogleDocImageBytes = {
+  /** `image/png`, `image/jpeg`, `image/gif` or `image/webp`. */
+  mimeType: string;
+
+  /**
+   * The image file's bytes, read from Google as you read them. Read it whole with
+   * `await new Response(content).arrayBuffer()`. Read it straight away, and cancel it if you
+   * will not. It fails partway for an image larger than 10 MB whose size Google did not state.
+   */
+  content: ReadableStream<Uint8Array>;
+}
+
+/**
+ * One change that Google Docs has not saved yet: the method that made it and the arguments it was
+ * given.
+ */
+export type GoogleDocPendingChange = {
+  /** Identifies this change among the document's pending changes. */
+  id: number;
+
+  /**
+   * Set when the document has changed so that this change no longer fits. A stale change is left
+   * out of `markdown` and will not be saved.
+   */
+  stale?: true;
+} & ({
+  type: "replaceText";
+  oldMarkdown: string;
+  newMarkdown: string;
+} | {
+  type: "appendText";
+  markdown: string;
+});
+
+/** One tab before and after its pending changes. */
+export type GoogleDocPendingChanges = {
+  /** The tab as Google Docs has it saved, as Markdown. */
+  savedMarkdown: string;
+
+  /** The tab with its pending changes, exactly as `getContent()` returns it. */
+  markdown: string;
+
+  /** The tab's pending changes, oldest first. */
+  changes: GoogleDocPendingChange[];
+
+  /**
+   * Names the document as saved: another after any change to it, one to how it is drawn included,
+   * which `savedMarkdown` may not show. Absent where the connection cannot edit the document.
+   */
+  revisionId?: string;
 }

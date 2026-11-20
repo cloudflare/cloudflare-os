@@ -7,11 +7,13 @@ import { DurableObject, RpcTarget, RpcStub } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import {
   GatekeeperUserVerifier, Gatekeeper, ResourceDescription, ApprovalQueue, ActionKind, GitCache,
+  type UiFile,
 } from '@gadgets/workshop-shared/gatekeeper';
 import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
 import {
   GoogleDocSession, DocMetadata, type GoogleDocEditSession, type DocCommentOptions, type DocSuggestEditOptions,
-  type GoogleDocReadSession, type GoogleDocTab,
+  type GoogleDocImage, type GoogleDocImageBytes,
+  type GoogleDocPendingChange, type GoogleDocPendingChanges, type GoogleDocReadSession, type GoogleDocTab,
 } from "./docs-types";
 import {
   DOC_COMMENT_ACTIONS, DocCommentSession, docsThreads, type DocCommentQueue,
@@ -34,7 +36,15 @@ import type { DocSuggestion, DriveComment, DriveCommentReply } from "./drive-typ
 import { verifyGoogleSubresourceAccess, type GoogleVerifierApi } from "./google-verifier-types";
 import DOCS_READ_TYPES_CODE from "./docs-read-types.txt";
 import DOCS_TYPES_CODE from "./docs-types.txt";
+import DOCS_RENDERING_TYPES_CODE from "./docs-rendering-types.txt";
+import type { GoogleDocDrawing, GoogleDocRenderingReads } from "./docs-rendering-types";
 import COMMENT_TYPES_CODE from "./comment-types.txt";
+import DOCS_PREVIEW_CLIENT from "./previews/docs/client.txt";
+import DOCS_PREVIEW_DRAW from "./previews/docs/draw.txt";
+import DOCS_PREVIEW_PAGES from "./previews/docs/pages.txt";
+import DOCS_PREVIEW_TEXT from "./previews/docs/text.txt";
+import { SHARED_PREVIEW_FILES } from "./previews/shared-files";
+import { cappedStream } from "./byte-stream";
 import { obsContext } from "./observability.js";
 import { AccessTokenCache, AccessTokenRequest } from "./auth-retry";
 import { Mutex } from "./mutex";
@@ -48,14 +58,14 @@ import {
   ADD_DOCUMENT_TAB_ACTION, adoptedGoogleDocTabId, assertGoogleDocActionMarkdownSize,
   describeDocEdit, DOC_ADDED_TABS_KEY, DOC_METADATA_REVISION_KEY, DOC_SNAPSHOT_KEY,
   DOC_SNAPSHOT_TTL_MS, DOC_WRITE_RECEIPT_KEY, docDefinition, EDIT_DOCUMENT_ACTION,
-  findUniqueMarkdown, GoogleDocAction, GoogleDocAddTabAction, GoogleDocMetadataRevision,
+  findUniqueMarkdown, GoogleDocAction, googleDocActionCommitted, GoogleDocAddTabAction, GoogleDocMetadataRevision,
   GoogleDocPendingAction, googleDocPendingFingerprint, googleDocRevisionUnchanged,
   googleDocSimulatedContent, GoogleDocSimulatedContent, GoogleDocSimulation,
   GoogleDocSimulationCacheHolder, GoogleDocSnapshot, googleDocSnapshot, googleDocTabLabel,
   googleDocTabMetadata, GoogleDocTabSnapshot, GoogleDocWriteMarker, GoogleDocWriteReceipt,
   invalidateGoogleDocAction, invalidateUnreplayableGoogleDocActions, isGoogleDocSnapshot,
   MAX_DOC_ADDED_TABS, newGoogleDocTab, parseGoogleDocWriteReceipt, PROVISIONAL_TAB_PREFIX,
-  requireGoogleDocAppendIndex, resolveGoogleDocTab, storeInvalidator,
+  requireGoogleDocAppendIndex, resolveGoogleDocTab, storeGoogleDocSnapshot, storeInvalidator,
 } from "./doc-actions";
 
 const logger = obsContext.createLogger({ component: "gatekeeper.google", vendorId: "google" });
@@ -230,6 +240,7 @@ export class GoogleDocGatekeeperImpl
         snippet: `Google Doc: ${title} (not created yet)`,
         suggestedBindingName: "GOOGLE_DOC",
         tsType: "GoogleDocSession",
+        hasPreview: true,
       };
     }
     let api = new GoogleDocsApi(opts => this.#getAccessToken(opts));
@@ -245,11 +256,22 @@ export class GoogleDocGatekeeperImpl
       snippet: `Google Doc: ${doc.title}`,
       suggestedBindingName: "GOOGLE_DOC",
       tsType: "GoogleDocSession",
+      hasPreview: true,
     };
   }
 
   async getTypeScriptTypes(): Promise<string> {
     return getGoogleDocTypesCode();
+  }
+
+  async getPreviewUi(): Promise<UiFile[]> {
+    return [
+      { path: "client.js", code: DOCS_PREVIEW_CLIENT },
+      { path: "draw.js", code: DOCS_PREVIEW_DRAW },
+      { path: "pages.js", code: DOCS_PREVIEW_PAGES },
+      { path: "text.js", code: DOCS_PREVIEW_TEXT },
+      ...SHARED_PREVIEW_FILES,
+    ];
   }
 
   async getAutoApprovableActions(): Promise<ActionKind[]> {
@@ -408,7 +430,7 @@ export class GoogleDocGatekeeperImpl
       unapplyable: async (id, unapplied, reason, snapshot) => {
         invalidateGoogleDocAction(pendingActions, { id, action: unapplied }, reason);
         this.#simulationCache.current = undefined;
-        await this.ctx.storage.put(DOC_SNAPSHOT_KEY, snapshot);
+        await storeGoogleDocSnapshot(this.ctx.storage, snapshot);
       },
     }, { id: actionId });
     let { writeMarker, snapshot } = landed!;
@@ -436,7 +458,7 @@ export class GoogleDocGatekeeperImpl
       if (writeMarker) {
         refreshedSnapshot = googleDocSnapshot(await api.getDocument(documentId));
       }
-      await this.ctx.storage.put(DOC_SNAPSHOT_KEY, refreshedSnapshot);
+      await storeGoogleDocSnapshot(this.ctx.storage, refreshedSnapshot);
       invalidateUnreplayableGoogleDocActions(
           storeInvalidator(pendingActions),
           refreshedSnapshot,
@@ -589,6 +611,11 @@ function noDocChanges(): DocChangeQueue {
 export type DocSource = {
   /** The document to replay pending edits over. */
   snapshot(): Promise<GoogleDocSnapshot>;
+  /**
+   * The document read from Google again, for an image address in the last snapshot that lapsed.
+   * Absent on a source that keeps no snapshot.
+   */
+  refetched?(): Promise<GoogleDocSnapshot>;
   /** Called with the snapshot of every read once that read is authorized. */
   approved(snapshot: GoogleDocSnapshot): void;
   /** The document's title and modification time, before pending edits move the time. */
@@ -602,6 +629,47 @@ const DOC_CONTENT_OBSERVATION: NativeObservation = {
   title: "Read Google Doc content",
   description: "Read the content of one tab of the document.",
 };
+
+/** What a failed read of a tab's images says it read. */
+const DOC_IMAGES_OBSERVATION: NativeObservation = {
+  title: "Read Google Doc images",
+  description: "Read the images of one tab of the document.",
+};
+
+const DOC_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+const MAX_DOC_IMAGE_BYTES = 10 * 1024 * 1024;
+const DOC_IMAGE_TIMEOUT_MS = 30_000;
+
+/**
+ * Open the image Google serves at `contentUri`, or return undefined when it no longer serves it:
+ * the address lasts minutes, and a snapshot can outlive it.
+ */
+async function openGoogleDocImage(contentUri: string): Promise<GoogleDocImageBytes | undefined> {
+  let url = new URL(contentUri);
+  if (url.protocol !== "https:" || !/(^|\.)(google|googleusercontent)\.com$/.test(url.hostname)) {
+    throw new Error("Google Docs returned an image address outside Google");
+  }
+  // The preview reads a tab's images one after another, so one that stalls holds up the rest.
+  let response = await fetch(url, { signal: AbortSignal.timeout(DOC_IMAGE_TIMEOUT_MS) });
+  let refuse = async (reason: string | undefined) => {
+    await response.body?.cancel().catch(() => undefined);
+    if (reason) throw new Error(`readImage: ${reason}`);
+    return undefined;
+  };
+  // Only a lapsed address is worth reading the document again for.
+  if (response.status === 403 || response.status === 404) return refuse(undefined);
+  if (!response.ok) return refuse(`Google did not return this image [http=${response.status}].`);
+  let mimeType = response.headers.get("content-type")?.split(";")[0].trim().toLowerCase() ?? "";
+  if (!DOC_IMAGE_TYPES.has(mimeType)) return refuse("this image's format cannot be read.");
+  let tooLarge = "this image is larger than 10 MB.";
+  // Refused here where Google states the length, and as it is read where it does not.
+  if (Number(response.headers.get("content-length")) > MAX_DOC_IMAGE_BYTES) return refuse(tooLarge);
+  if (!response.body) return refuse("Google returned no image.");
+  return {
+    mimeType,
+    content: cappedStream(response.body.getReader(), MAX_DOC_IMAGE_BYTES, `readImage: ${tooLarge}`),
+  };
+}
 
 /** What a read of the tab list says it read. */
 const DOC_TABS_OBSERVATION: NativeObservation = {
@@ -640,7 +708,8 @@ type GoogleDocSelectedContent = GoogleDocSimulatedContent & {
  * GoogleDocEditSessionImpl, with no comment method, read and write.
  */
 @validateRpc()
-export class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
+export class GoogleDocSessionImpl extends RpcTarget
+    implements GoogleDocSession, GoogleDocRenderingReads {
   #docsApi: GoogleDocReader;
   #driveApi: DriveApi;
   #documentId: string;
@@ -736,6 +805,24 @@ export class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession 
   }
 
   /**
+   * {@link #readDocument} of what `use` makes of the settled snapshot, behind the writes called
+   * before it. A refusal `use` throws is authorized as `failed`, since it says something of a tab.
+   */
+  async #readSettled<T>(
+    use: (snapshot: GoogleDocSnapshot) => T, observe: (value: T) => NativeObservation,
+    failed: NativeObservation,
+  ): Promise<T> {
+    await this.#changes.afterTurns();
+    return this.#readDocument(async snapshot => {
+      try {
+        return await this.#settled(snapshot, use);
+      } catch (error) {
+        return new ReadFailure(error);
+      }
+    }, observe, failed);
+  }
+
+  /**
    * Runs `use`, which replays pending edits, over the snapshot `snapshot` resolves to, with the
    * same writes landed and the same edits queued as when the snapshot was asked for. A write that
    * lands meanwhile leaves the queue without its edit while the snapshot predates it, and an edit
@@ -788,7 +875,7 @@ export class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession 
    */
   #simulate(
     snapshot: GoogleDocSnapshot, tabId: string | undefined,
-    operation: "getContent" | "replaceText" | "appendText",
+    operation: "getContent" | "getPendingChanges" | "replaceText" | "appendText",
   ): GoogleDocSelectedContent {
     let { tabs, contentByTabId } = this.#replay(snapshot);
     let tab = resolveGoogleDocTab({ ...snapshot, tabs }, this.#simulatedTabId(tabs, tabId), operation);
@@ -869,7 +956,17 @@ export class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession 
   async listTabs(): Promise<GoogleDocTab[]> {
     await this.#changes.afterTurns();
     return this.#readDocument(
-      snapshot => this.#settled(snapshot, taken => this.#replay(taken).tabs.map(googleDocTabMetadata)),
+      snapshot => this.#settled(snapshot, taken => {
+        let adopted = (id: string | undefined) => this.#changes.adoptedTabId(id);
+        // The tabs getPendingChanges() would list an edit for.
+        let edited = new Set(this.#changes.pending().flatMap(({ action }) =>
+          action.type === "addTab" || googleDocActionCommitted(taken, action)
+            ? [] : [adopted(action.tabId)]));
+        return this.#replay(taken).tabs.map(tab => ({
+          ...googleDocTabMetadata(tab),
+          ...edited.has(adopted(tab.tabId)) ? { pending: true as const } : {},
+        }));
+      }),
       () => DOC_TABS_OBSERVATION);
   }
 
@@ -930,6 +1027,100 @@ export class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession 
         : `Read the current content of tab ${googleDocTabLabel(result.tab)} as Markdown.`,
     }));
     return selected.markdown;
+  }
+
+  async getPendingChanges(tabId: string): Promise<GoogleDocPendingChanges> {
+    let { changes } = await this.#readSettled(taken => {
+      let { tab, markdown } = this.#simulate(taken, tabId, "getPendingChanges");
+      let adopted = (id: string | undefined) => this.#changes.adoptedTabId(id);
+      // Listed after the replay above, which is what marks an edit that no longer fits.
+      let listed = this.#changes.pending().flatMap(({ id, action }): GoogleDocPendingChange[] => {
+        // An added tab reads as saved and empty, and every edit to it is listed.
+        if (action.type === "addTab" || adopted(action.tabId) !== adopted(tab.tabId)) return [];
+        // Its write landed though the response was lost, so the saved content already holds it.
+        if (googleDocActionCommitted(taken, action)) return [];
+        let stale = action.invalidatedReason ? { stale: true as const } : {};
+        return [action.type === "replaceText"
+          ? { id, ...stale, type: action.type,
+              oldMarkdown: action.oldMarkdown, newMarkdown: action.newMarkdown }
+          : { id, ...stale, type: action.type, markdown: action.markdown }];
+      });
+      return { tab, changes: { savedMarkdown: tab.markdown, markdown, changes: listed, revisionId: taken.revisionId } };
+    }, ({ tab }) => ({
+      title: "Read Google Doc pending changes",
+      description:
+        `Read the saved and simulated content of tab ${googleDocTabLabel(tab)} as Markdown, ` +
+        `with its pending changes.`,
+    }), {
+      // As in getContent(), the error says whether that tab exists.
+      title: "Read Google Doc pending changes",
+      description: "Read the pending changes of one tab of the document.",
+    });
+    return changes;
+  }
+
+  /** The tab a read of what is saved names: one Google has, or an added one, empty until it is. */
+  #savedTab(
+    snapshot: GoogleDocSnapshot, tabId: string,
+    operation: "readDrawing" | "listImages" | "readImage",
+  ): GoogleDocTabSnapshot {
+    let { tabs } = this.#replay(snapshot);
+    return resolveGoogleDocTab({ ...snapshot, tabs }, this.#simulatedTabId(tabs, tabId), operation);
+  }
+
+  async readDrawing(tabId: string): Promise<GoogleDocDrawing> {
+    let tab = await this.#readSettled(taken => this.#savedTab(taken, tabId, "readDrawing"), tab => ({
+      title: "Read Google Doc drawing",
+      description: `Read tab ${googleDocTabLabel(tab)} as Google Docs draws it.`,
+    }), {
+      // As in getContent(), the error says whether that tab exists.
+      title: "Read Google Doc drawing",
+      description: "Read one tab of the document as Google Docs draws it.",
+    });
+    if (!tab.drawing) throw new Error("readDrawing: this document is too large to read as it is drawn.");
+    return tab.drawing;
+  }
+
+  async getRenderingTypes(): Promise<string> {
+    // The same text for every document, saying nothing of this one, so no read of it is reported.
+    return DOCS_RENDERING_TYPES_CODE;
+  }
+
+  async listImages(tabId: string): Promise<GoogleDocImage[]> {
+    let tab = await this.#readSettled(taken => this.#savedTab(taken, tabId, "listImages"), tab => ({
+      title: "Read Google Doc images",
+      description: `Read the images in tab ${googleDocTabLabel(tab)}.`,
+    }), DOC_IMAGES_OBSERVATION);
+    return tab.images.map(({ contentUri, ...image }) => ({ ...image, readable: contentUri !== undefined }));
+  }
+
+  async readImage(imageId: string, tabId: string): Promise<GoogleDocImageBytes> {
+    let find = (snapshot: GoogleDocSnapshot) => this.#savedTab(snapshot, tabId, "readImage");
+    // A listing told of the image, not its bytes: each read of them is authorized as its own.
+    let tab = await this.#readSettled(find, tab => ({
+      title: "Read Google Doc images",
+      description: `Read an image in tab ${googleDocTabLabel(tab)}.`,
+    }), DOC_IMAGES_OBSERVATION);
+    let contentUri = (tab: GoogleDocTabSnapshot) => {
+      // An image of the body's text, or one a drawing names, as a header's is.
+      let uri = tab.images.find(image => image.id === imageId)?.contentUri ?? tab.imageUris[imageId];
+      if (!uri) {
+        throw new Error(
+          `readImage: tab "${tab.tabId}" has no readable image with ID "${imageId}". ` +
+          `Call listImages("${tab.tabId}") to see its images.`);
+      }
+      return uri;
+    };
+    let image = await openGoogleDocImage(contentUri(tab));
+    if (!image) {
+      // The address has lapsed, so the document is read again for a current one, and replayed
+      // again: the replay kept for its revision holds the lapsed address.
+      this.#changes.cache.current = undefined;
+      image = await openGoogleDocImage(contentUri(await this.#settled(
+        () => this.#source.refetched?.() ?? this.#source.snapshot(), find)));
+    }
+    if (!image) throw new Error("readImage: Google Docs did not return this image.");
+    return image;
   }
 
   async replaceText(oldMarkdown: string, newMarkdown: string, tabId?: string): Promise<void> {
@@ -1021,8 +1212,7 @@ function storedDocSource(
       // What Google returned before a write landed is stale: the edit is no longer pending to be
       // replayed over it, so it would read as missing, and edits queued after it could not replay.
       if (writes !== cache.writes) continue;
-      await storage.put(DOC_SNAPSHOT_KEY, snapshot);
-      return snapshot;
+      return storeGoogleDocSnapshot(storage, snapshot);
     }
   }
 
@@ -1084,6 +1274,10 @@ function storedDocSource(
         snapshot = await fetchSnapshot();
       } while (writes !== cache.writes);
       return snapshot;
+    },
+    async refetched() {
+      await storage.delete(DOC_SNAPSHOT_KEY);
+      return this.snapshot();
     },
     approved: () => {},
     /**
@@ -1166,6 +1360,10 @@ export function driveDocSource(
   };
   return {
     snapshot: () => inFlight ??= next().finally(() => { inFlight = undefined; }),
+    refetched: () => {
+      approved = undefined;
+      return next();
+    },
     // A slow guard must not republish its older revision over a newer one already approved.
     approved: snapshot => {
       if (snapshot.fetchedAt >= (approved?.fetchedAt ?? 0)) approved = snapshot;
