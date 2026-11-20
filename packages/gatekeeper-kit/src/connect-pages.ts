@@ -168,9 +168,10 @@ const ERROR_ID = "form.error";
 
 /**
  * Disables the button once the form is submitted. A second click would post the nonce again, and
- * the browser shows the answer to the last request, which may be the one that lost.
+ * the browser shows the answer to the last request, which may be the one that lost. It reaches the
+ * button through the event, because a field's name can hide any property of the form itself.
  */
-const SUBMIT_ONCE = "this.querySelector('button').disabled=true";
+const SUBMIT_ONCE = "if(event.submitter)event.submitter.disabled=true";
 
 /** The name of the hidden field `connectFormHtml` carries the flow's nonce in. */
 export const CONNECT_FORM_NONCE_FIELD = "nonce";

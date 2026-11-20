@@ -28,11 +28,15 @@ let otherSite: string;
 const submissions: Submission[] = [];
 
 /** The form, posting to the gatekeeper's own `/key` whichever origin serves the page. */
-const form = (error?: string): string => connectFormHtml({
+const form = (error?: string, field = "key"): string => connectFormHtml({
   title: "Connect Vendor", intro: "Paste a key.", action: `${baseUrl}/key`, nonce: NONCE,
-  fields: [{ name: "key", label: "API key", secret: true }],
+  fields: [{ name: field, label: "API key", secret: true }],
   error,
 });
+
+/** A form on the gatekeeper's own page whose `action` names another origin, so it never posts. */
+const misdirected = (field?: string): Response =>
+  formPageResponse(form(undefined, field).replace(`action="${baseUrl}/key"`, `action="${otherSite}/key"`));
 
 async function toRequest(incoming: IncomingMessage): Promise<Request> {
   const chunks: Buffer[] = [];
@@ -54,10 +58,9 @@ async function respond(req: Request): Promise<Response> {
   if (pathname === "/form-without-referrer") return htmlResponse(form());
   // Another site's copy of the form, served as a site that wants its origin sent would serve it.
   if (pathname === "/copied-form") return new Response(form(), { headers: { "Content-Type": "text/html" } });
-  // The gatekeeper's own page with a mistaken `action`, which names another origin.
-  if (pathname === "/misdirected-form") {
-    return formPageResponse(form().replace(`action="${baseUrl}/key"`, `action="${otherSite}/key"`));
-  }
+  if (pathname === "/misdirected-form") return misdirected();
+  // A form reaches its controls by name, so this field hides the form's own `querySelector`.
+  if (pathname === "/shadowing-form") return misdirected("querySelector");
   if (pathname === "/key") {
     const read = await readConnectForm(req, { origin: baseUrl });
     const refused = read instanceof Response;
@@ -172,8 +175,8 @@ describe("the connect form in Chromium", () => {
   });
 
   // A second click would post the nonce again, and the browser shows the last answer.
-  it("disables its button once submitted", async () => {
-    await open(`${baseUrl}/misdirected-form`);
+  it.each(["misdirected-form", "shadowing-form"])("disables its button once submitted (%s)", async path => {
+    await open(`${baseUrl}/${path}`);
     const button = page.getByRole("button", { name: "Connect" });
     expect(await button.isDisabled()).toBe(false);
     await page.getByLabel("API key").fill("s3cret");

@@ -115,9 +115,9 @@ export function advanceToOAuth<Extra extends object>(
  * form whose pasted key is checked with the provider before anything is spent. Check the nonce
  * with this, ask the provider, then `claimOAuth()` and go on only if that claim succeeds, taking
  * the attempt's metadata from the claim. A refused key leaves the attempt as it was, so the form
- * can be shown again with the same nonce; a newer link, a disconnect or the attempt's expiry
- * while the provider was asked makes the claim fail. Two submissions may both reach the provider,
- * and only one can claim.
+ * can be shown again with the same nonce, once a second check finds it still open; a newer link,
+ * a disconnect or the attempt's expiry while the provider was asked makes the claim fail. Two
+ * submissions may both reach the provider, and only one can claim.
  * @param kv Durable Object nonce storage.
  * @param oauthNonce Nonce the form or provider returned.
  * @param now Current Unix time in milliseconds.
@@ -126,7 +126,10 @@ export function advanceToOAuth<Extra extends object>(
  * @example
  * ```ts
  * if (peekOAuth(kv, formNonce, Date.now()) === null) return null;
- * if (!(await providerAccepts(key))) return { retry: "The provider refused that key." };
+ * if (!(await providerAccepts(key))) {
+ *   // The attempt may have ended meanwhile, and a form shown for it could not be posted.
+ *   return peekOAuth(kv, formNonce, Date.now()) === null ? null : { retry: "The provider refused that key." };
+ * }
  * const attempt = claimOAuth<ConnectAttempt>(kv, formNonce, Date.now());
  * if (attempt === null) return null;
  * ```

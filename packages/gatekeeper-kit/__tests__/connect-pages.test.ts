@@ -208,7 +208,7 @@ describe("connect forms", () => {
 
   it("posts the nonce in a hidden field beside the inputs", () => {
     const html = form({ fields: [{ name: "host", label: "Host", placeholder: "https://x" }, { name: "key", label: "Key", secret: true }] });
-    expect(html).toContain(`<form method="post" action="${ORIGIN}/abc/key" onsubmit="this.querySelector('button').disabled=true">`);
+    expect(html).toContain(`<form method="post" action="${ORIGIN}/abc/key" onsubmit="if(event.submitter)event.submitter.disabled=true">`);
     expect(html).toContain(`<input type="hidden" name="${CONNECT_FORM_NONCE_FIELD}" value="${"f".repeat(64)}">`);
     expect(html).toContain('<input id="host" name="host" type="text" required placeholder="https://x" autofocus>');
     expect(html).toContain('<input id="key" name="key" type="password" required autocomplete="new-password" data-1p-ignore data-lpignore="true">');

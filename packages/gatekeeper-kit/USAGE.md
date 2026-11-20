@@ -125,7 +125,10 @@ if (form instanceof Response) return form;
 
 // In the account: check the nonce, ask the provider, and only then claim.
 if (peekOAuth(kv, formNonce, Date.now()) === null) return null;
-if (!(await providerAccepts(key))) return { retry: "Vendor refused that key." };
+if (!(await providerAccepts(key))) {
+  // The attempt may have ended meanwhile, and a form shown for it could not be posted.
+  return peekOAuth(kv, formNonce, Date.now()) === null ? null : { retry: "Vendor refused that key." };
+}
 const attempt = claimOAuth<ConnectAttempt>(kv, formNonce, Date.now());
 if (attempt === null) return null;
 ```
@@ -134,8 +137,9 @@ if (attempt === null) return null;
   posts its forms with `Origin: null`, which `readConnectForm()` refuses.
 - `action` is the handler that reads the key, on the deployment's own origin. Answer the POST with
   a page: a 307 or 308 to another origin carries the body, and not every browser stops it.
-- A refused key spends nothing, so show the form again with the same nonce and an `error`. Take
-  the attempt's metadata from the claim, not from the check: a newer link, a disconnect or the
+- A refused key spends nothing, so show the form again with the same nonce and an `error`, once a
+  second check finds the attempt still open. Take the attempt's metadata from the claim, not from
+  the check: a newer link, a disconnect or the
   attempt's expiry while the provider was asked makes the claim fail.
 
 ### Reconnect and `ensureResources`
