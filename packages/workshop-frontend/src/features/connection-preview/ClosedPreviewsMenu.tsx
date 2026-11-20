@@ -22,7 +22,7 @@ export const ClosedPreviewsMenu = ({ previews, onOpen }: ClosedPreviewsMenuProps
         </WorkshopIconButton>
       )}
     />
-    <DropdownMenu.Content className={`${MENU_CONTENT} max-h-[320px] max-w-[320px] overflow-y-auto`} style={MENU_POSITIONER_STYLE}>
+    <DropdownMenu.Content className={`${MENU_CONTENT} max-h-[min(320px,var(--available-height))] max-w-[320px] overflow-y-auto`} style={MENU_POSITIONER_STYLE}>
       {previews.map(preview => (
         <DropdownMenu.Item
           key={previewKey(preview)}
