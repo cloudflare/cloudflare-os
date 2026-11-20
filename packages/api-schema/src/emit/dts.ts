@@ -408,11 +408,11 @@ class Renderer {
 
   /**
    * A property of a service whose capability is in `position`: on a held one a call's result,
-   * optional where the property is, as capnweb types its stub's, except that a capability is
-   * pipelined without `[Symbol.dispose]()`, which capnweb's promise of a property lacks; on an
-   * implemented one the value itself, which an implementation may leave out when it is optional;
-   * on one reached both ways either, an `Awaitable<T>` that a caller reading it awaits, of
-   * `T | undefined` when it is optional, as a held one's promise is.
+   * there whether or not it is optional, except that a capability is pipelined without
+   * `[Symbol.dispose]()`, which capnweb's promise of a property lacks; on an implemented one the
+   * value itself, which an implementation may leave out when it is optional; on one reached both
+   * ways either, an `Awaitable<T>` that a caller reading it awaits, of `T | undefined` when it is
+   * optional, as a held one's promise is.
    */
   #property(property: SchemaProperty, position: Position): string {
     const doc = docComment(withTags(property.doc, [], { ...property.tags, deprecated: property.deprecated }), "  ");
@@ -423,7 +423,7 @@ class Renderer {
         return `${doc}  readonly ${key}: Promise<${service}> & Omit<${service}, typeof Symbol.dispose>;\n`;
       }
       const type = property.optional ? orUndefined(property.type) : property.type;
-      return `${doc}  readonly ${key}${property.optional ? "?" : ""}: ${this.#result(type, "  ")};\n`;
+      return `${doc}  readonly ${key}: ${this.#result(type, "  ")};\n`;
     }
     const type = position === "in" ? this.#type(property.type, "  ", position)
       : this.#awaitableOf(property.optional ? orUndefined(property.type) : property.type, "  ", position);

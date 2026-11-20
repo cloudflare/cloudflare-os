@@ -634,16 +634,16 @@ describe("properties", () => {
   }, { Meta: { kind: "object", properties: { tag: { kind: "string" } } } });
   const { full, fragments } = emitDeclarations(schema, { root: "Api" });
 
-  test("a held service's are read as a call's result, optional where they are, before its methods", () => {
+  test("a held service's are read as a call's result, there whether or not optional, before its methods", () => {
     expect(full).toContain(`export interface Api {
   /**
    * An optional property.
    * @deprecated Read version.
    */
-  readonly build?: Promise<number | undefined>;
+  readonly build: Promise<number | undefined>;
   readonly child: Promise<Child> & Omit<Child, typeof Symbol.dispose>;
   readonly meta: Promise<Meta>;
-  readonly spare?: Promise<Child | undefined>;
+  readonly spare: Promise<Child | undefined>;
   /** The version. */
   readonly version: Promise<string>;
   subscribe(sub: Sub): Promise<void>;
