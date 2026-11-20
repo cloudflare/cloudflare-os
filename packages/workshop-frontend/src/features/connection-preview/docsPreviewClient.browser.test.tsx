@@ -14,8 +14,11 @@ afterEach(() => frame?.remove())
 // What ends every paragraph, so an empty one is a line high.
 const text = (element: Element) => element.textContent!.replaceAll('⁠', '')
 
-/** Draws `doc` and resolves to the frame's document once the page has its blocks. */
-async function draw(doc: Doc) {
+/**
+ * Draws `doc` and resolves to the frame's document once the page has its blocks. What `session`
+ * holds answers in place of the scripted session's own.
+ */
+async function draw(doc: Doc, session: { [method: string]: (...given: never[]) => Promise<unknown> } = {}) {
   const gadget = {
     listTabs: async () => (doc.tabs ?? ['t.0']).map((id, index) =>
       ({ id, title: doc.titles?.[index] ?? `Tab ${index + 1}`, index, nestingLevel: 0 })),
@@ -28,6 +31,7 @@ async function draw(doc: Doc) {
     // A tab with no drawing here is drawn from its Markdown, in Google's own styles.
     readDrawing: async () => doc.drawing ?? Promise.reject(new Error('no drawing')),
     readImage: async () => Promise.reject(new Error('no image')),
+    ...session,
   }
   Object.assign(window, { docsPreviewGadget: gadget })
   frame = document.body.appendChild(document.createElement('iframe'))
@@ -685,4 +689,50 @@ it('draws a table a pending change writes as the text it is, and one the documen
   // The write inserts table markup as plain text, so that is what applying it leaves.
   expect([...page.querySelectorAll('td')].map(text)).toEqual(['Held'])
   expect(text(page)).toContain('<td><p>Written</p></td>')
+})
+
+const PICTURE = { width: 20, height: 10, readable: true }
+const PNG = { mimeType: 'image/png', bytes: new Uint8Array([137, 80, 78, 71]) }
+
+it('asks again on a refresh for a picture that could not be read', async () => {
+  let reads = 0
+  const pictured = drawing([paragraph(0, [{ object: 'pic', look: NORMAL }])], { objects: { pic: PICTURE } })
+  const { page, refresh } = await draw({ savedMarkdown: '[Image]\n', drawing: pictured }, {
+    readImage: async () => {
+      if (!reads++) throw new Error('not just now')
+      return PNG
+    },
+  })
+  await expect.poll(() => page.querySelector('.obj.wait')).toBeNull()
+  expect([reads, page.querySelector('.obj img')]).toEqual([1, null])
+
+  // Nothing of the tab moved, so the page stands, and its missing picture is read.
+  await refresh({})
+  await expect.poll(() => page.querySelector('.obj img')).not.toBeNull()
+  expect(reads).toBe(2)
+})
+
+it('reads no picture of a tab that was left while the picture waited its turn', async () => {
+  const asked: string[] = []
+  const waiting: (() => void)[] = []
+  const pictures = (...ids: string[]) => drawing([paragraph(0, ids.map(object => ({ object, look: NORMAL })))],
+    { objects: Object.fromEntries(ids.map(id => [id, PICTURE])) })
+  const { page } = await draw({ savedMarkdown: '', tabs: ['t.0', 't.1'] }, {
+    readDrawing: async (tabId: string) => tabId === 't.0' ? pictures('first', 'second') : pictures('other'),
+    readImage: async (object: string, tabId: string) => {
+      asked.push(`${tabId} ${object}`)
+      await new Promise<void>(resolve => waiting.push(resolve))
+      return PNG
+    },
+  })
+  await expect.poll(() => asked).toEqual(['t.0 first'])
+
+  frame!.contentDocument!.querySelectorAll<HTMLElement>('#outline .tab .name')[1].click()
+  await expect.poll(() => page.querySelectorAll('.obj')).toHaveLength(1)
+  waiting.shift()!()
+
+  // One picture is read at a time, and the next is the one the tab shown waits for.
+  await expect.poll(() => asked).toEqual(['t.0 first', 't.1 other'])
+  waiting.shift()!()
+  await expect.poll(() => page.querySelector('.obj img')).not.toBeNull()
 })
