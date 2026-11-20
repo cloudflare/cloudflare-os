@@ -483,7 +483,8 @@ export function drawer(drawing, width, lists) {
     // A table wider than its column is one brought in from Word, which starts it before the
     // column, so that the text of its first cells starts where the column does.
     const first = rows[0]?.cells[0];
-    if (total > room && first) element.style.marginLeft = `${-Math.round(first.padding[3] * PX + (first.borders.left ? 1 : 0))}px`;
+    // By its sized columns: the rest share what room is left, and sum to it but for rounding.
+    if (fixed - room > .01 && first) element.style.marginLeft = `${-Math.round(first.padding[3] * PX + (first.borders.left ? 1 : 0))}px`;
     const group = element.appendChild(make('colgroup'));
     for (const column of widths) group.appendChild(make('col')).style.width = pt(column);
     const body = element.appendChild(make('tbody'));
