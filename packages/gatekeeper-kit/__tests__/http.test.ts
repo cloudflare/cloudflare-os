@@ -273,6 +273,8 @@ async function typeChecks(api: ReturnType<typeof createOpenAPIClient<Api>>, id: 
   await api.get("/users", { body: {} });
   // @ts-expect-error the schema declares no put
   void api.put;
+  // @ts-expect-error a call names one path: over several, `path` would not be required
+  await api.get("/users" as "/users" | "/users/{id}");
 }
 void typeChecks;
 
