@@ -57,12 +57,13 @@ are marked, and a provider with organizations or workspaces needs the tenant in 
 | File | Holds | Marks |
 |---|---|---|
 | `src/types.d.ts` | the interface gadgets are given | `session-api` |
-| `src/<name>-env.ts` | origins, resource types and URL patterns | `origins`, `resources` |
+| `src/<name>-env.ts` | the Worker's environment and the provider's origins | `origins` |
+| `src/<name>-resources.ts` | resource types and URL patterns, subresource IDs | `resources`, `subresources` |
 | `src/<name>-urls.ts` | parsing and building resource links | |
 | `src/<name>-api.ts` | the typed client and error classification | `api`, `api-auth`, `api-errors` |
 | `src/<name>-auth.ts` | how a user connects: OAuth endpoints, scopes and client, or the key form's text | `oauth-endpoints`, `oauth-scopes`, `oauth-token-lifetime`, `oauth-client-auth`; or `key-help`, `key-format` |
 | `src/<name>-account.ts` | the `UserAccount` Durable Object and connect routes | `identity`, `observer-probe`, `observer-cache` |
-| `src/<name>-credentials.ts` | identity, subresource IDs, the verifier's interface | `subresources` |
+| `src/<name>-credentials.ts` | identity, the verifier's interface | |
 | `src/<name>-gatekeeper.ts` | the per-binding Durable Object | |
 | `src/<name>-session.ts` | the capability a gadget holds | |
 | `src/<name>-actions.ts`, `action-table.json` | actions and their committed table | `actions` |

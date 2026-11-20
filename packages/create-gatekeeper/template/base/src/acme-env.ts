@@ -1,7 +1,7 @@
-// Configuration shared by every part of the Acme Service gatekeeper: the Worker's environment,
-// the provider's origins, and the connectable resources with their URL patterns.
+// Configuration shared by every part of the Acme Service gatekeeper: the Worker's environment and
+// the provider's origins.
 
-import { stripTrailingSlashes, type SupportedResource } from "@gadgets/workshop-shared/gatekeeper";
+import { stripTrailingSlashes } from "@gadgets/workshop-shared/gatekeeper";
 import type { AuthEnv } from "./acme-auth";
 
 /** The vendor id: the router's `/gatekeeper/acme/` path segment, and the log attribution. */
@@ -37,26 +37,3 @@ export function getBasePath(env: Env): string {
   const path = new URL(getBaseUrl(env)).pathname;
   return path === "/" ? "" : path;
 }
-
-/** Props baked into the gatekeeper Durable Object class for one binding. */
-export type AcmeGatekeeperImplProps = {
-  /** The `UserAccount` Durable Object holding the connection. */
-  userObjectId: string;
-  itemId: string;
-};
-
-// STOP(resources): The connectable resource types. Choose each one's granularity and observer
-// strategy first (see the write-gatekeeper skill). An `id` is stored with every binding of its
-// type, so it can't change once shipped.
-/** One item, by its page in the web app. */
-export const ITEM_RESOURCE: SupportedResource = {
-  id: "item",
-  // The hyphen is escaped: a URL pattern's regular expressions are compiled in a mode that takes a
-  // bare one in a class for a range.
-  urlPattern: `${WEB_ORIGIN}/items/:itemId([A-Za-z0-9_\\-]+){/*}?`,
-  title: "Acme Service Item",
-  description: "One item: read it, and rename it once you approve.",
-};
-
-/** The resources in the order the picker lists them. */
-export const ALL_RESOURCES: SupportedResource[] = [ITEM_RESOURCE];

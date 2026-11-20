@@ -28,13 +28,12 @@ import { createPkce, mergeOAuthTokens, oauthRefresh, type OAuthTokens } from "@g
 import { PreviewOAuth, PreviewOAuthConfigurationError } from "@gadgets/gatekeeper-kit/preview-oauth";
 import { createApi, isAuthError, isDenial } from "./acme-api";
 import { SCOPES, isConfigured, missingScopes, oauthClient } from "./acme-auth";
-import {
-  RECONNECT_MESSAGE, accountStub, identityOf, parseSubresource, type Identity, type PublicGrant,
-} from "./acme-credentials";
+import { RECONNECT_MESSAGE, accountStub, identityOf, type Identity, type PublicGrant } from "./acme-credentials";
 import { VENDOR_ID, getBaseUrl, type Env } from "./acme-env";
 // #if hooks
 import { forgetHooks } from "./acme-hooks";
 // #endif
+import { parseSubresource } from "./acme-resources";
 import { obsContext } from "./observability";
 
 const logger = obsContext.createLogger({ component: "gatekeeper.acme", vendorId: VENDOR_ID });

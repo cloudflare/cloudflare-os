@@ -22,8 +22,8 @@ import type {
   ApprovalQueue, HookController, HookDescription, HookInitiator, HookTargetMetadata,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { isDenial, type WireItem } from "./acme-api";
-import { itemSubresourceId } from "./acme-credentials";
 import { VENDOR_ID, type Env } from "./acme-env";
+import { itemSubresourceId } from "./acme-resources";
 import { authorizeRead, toItem, type SessionHost } from "./acme-session";
 import { ITEM_ID } from "./acme-urls";
 import { obsContext } from "./observability";
