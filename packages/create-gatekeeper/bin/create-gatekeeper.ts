@@ -79,12 +79,11 @@ function register(names: Names, auth: ScaffoldOptions["auth"], hooks: ScaffoldOp
     insertAfterLast(join(ROOT, "scripts", "run-dev-server.ts"), /^  "gatekeeper-[a-z0-9-]+": \{ id: "[A-Z0-9_]+", secret: "[A-Z0-9_]+" \},$/,
       `  "gatekeeper-${names.name}": { id: "${names.constant}_CLIENT_ID", secret: "${names.constant}_CLIENT_SECRET" },`);
   }
-  if (hooks === "app") {
-    // The dev server passes the webhook's signing secret through from the shell or `.dev.vars`.
-    insertAfterLast(join(ROOT, "scripts", "run-dev-server.ts"), /^  "gatekeeper-[a-z0-9-]+": \[.*\],$/,
-      `  "gatekeeper-${names.name}": ["${names.constant}_WEBHOOK_SECRET"],`);
-  }
   if (hooks) {
+    // The dev server passes through, from the shell or `.dev.vars`, the secret an app's webhook
+    // signs with, or the origin of the tunnel a gatekeeper's own webhooks deliver to.
+    insertAfterLast(join(ROOT, "scripts", "run-dev-server.ts"), /^  "gatekeeper-[a-z0-9-]+": \[.*\],$/,
+      `  "gatekeeper-${names.name}": ["${names.constant}_WEBHOOK_${hooks === "app" ? "SECRET" : "ORIGIN"}"],`);
     // Wrangler's generated types lack `restore`, which a hook's delivery stub is made with.
     replaceOnce(join(ROOT, "scripts", "generate-worker-types.ts"), /"\]\.includes\(basename\(pkgDir\)\)/,
       `", "gatekeeper-${names.name}"].includes(basename(pkgDir))`);

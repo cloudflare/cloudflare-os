@@ -18,6 +18,13 @@ export type Env = Cloudflare.Env & AuthEnv & {
    */
   ACME_WEBHOOK_SECRET?: string;
   // #endif
+  // #if hooks-subscription
+  /**
+   * The public `https` origin the provider delivers webhooks to, such as a tunnel's in local
+   * development, where it is not `BASE_URL`'s. Hooks are refused while neither is `https`.
+   */
+  ACME_WEBHOOK_ORIGIN?: string;
+  // #endif
 };
 
 // STOP(origins): The provider's API and web origins. If either varies by account (a region, a
