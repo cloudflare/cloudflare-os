@@ -25,7 +25,7 @@ import { AcmeConfiguratorUI } from "./acme-configurator";
 import { accountStub, type AcmeVerifierApi } from "./acme-credentials";
 import { WEB_ORIGIN, getBasePath, getBaseUrl, type Env } from "./acme-env";
 // #if hooks
-import { handleWebhook } from "./acme-hooks";
+import { forgetHooks, handleWebhook } from "./acme-hook-driver";
 // #endif
 import { ALL_RESOURCES, ITEM_RESOURCE, type AcmeGatekeeperImplProps } from "./acme-resources";
 import { parseResourceUrl } from "./acme-urls";
@@ -36,7 +36,7 @@ import CONFIGURATOR_HTML from "./generated/acme-configurator-ui.txt";
 export { UserAccount } from "./acme-account";
 export { AcmeGatekeeperImpl } from "./acme-gatekeeper";
 // #if hooks
-export { AcmeHookController, AcmeHookDriver } from "./acme-hooks";
+export { AcmeHookController, AcmeHookDriver } from "./acme-hook-driver";
 // #endif
 export { AcmeItemImpl } from "./acme-session";
 
@@ -56,7 +56,7 @@ export default {
     }
     const relPath = url.pathname.slice(basePath.length);
     // #if hooks
-    if (relPath === "/webhook" && req.method === "POST") return await handleWebhook(req, env, ctx.exports);
+    if (relPath.startsWith("/webhook") && req.method === "POST") return await handleWebhook(req, relPath, env, ctx.exports);
     // #endif
     return await handleConnect(req, env, ctx, relPath) ?? new Response("Not Found", { status: 404 });
   },
@@ -138,6 +138,10 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   }
 
   async revoke(): Promise<void> {
+    // #if hooks
+    // First, while the connection's credential can still undo what its hooks set up.
+    await forgetHooks(this.ctx.exports, this.ctx.props.userObjectId);
+    // #endif
     await accountOf(this.ctx).revoke();
   }
 

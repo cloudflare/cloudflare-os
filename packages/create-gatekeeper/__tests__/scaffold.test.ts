@@ -72,7 +72,7 @@ describe("scaffold", () => {
   });
 
   it("lists the decisions the operator reviews first", () => {
-    const ids = stops(scaffold({ name: "acme", auth: "api-key", hooks: true })).map(({ id }) => id);
+    const ids = stops(scaffold({ name: "acme", auth: "api-key", hooks: "app" })).map(({ id }) => id);
     expect(ids.slice(0, 3)).toEqual(["session-api", "resources", "subresources"]);
   });
 
@@ -143,6 +143,10 @@ describe("scaffold with an OpenAPI description", () => {
     expect(stops(files).map(({ id }) => id)).toContain("api");
   });
 
+  it("refuses a kind of hooks it has no template for", () => {
+    expect(() => scaffold({ name: "acme", auth: "oauth", hooks: "polling" as "app" })).toThrow('Unknown --hooks "polling": use app or subscription.');
+  });
+
   it("refuses the name of the generated schema's directory", () => {
     expect(() => scaffold({ name: "openapi", auth: "api-key", openapi: { document: "{}" } })).toThrow("use another name");
   });
@@ -162,9 +166,12 @@ describe("scaffold with an OpenAPI description", () => {
   });
 });
 
+// Each way to connect alone, each kind of hooks once, and a generated schema.
 const VARIANTS = [
-  ...AUTH_KINDS.flatMap(auth => [{ auth, hooks: false, openapi: false }, { auth, hooks: true, openapi: false }]),
-  { auth: "api-key" as const, hooks: false, openapi: true },
+  ...AUTH_KINDS.map(auth => ({ auth, hooks: undefined, openapi: false })),
+  { auth: "oauth" as const, hooks: "app" as const, openapi: false },
+  { auth: "api-key" as const, hooks: "subscription" as const, openapi: false },
+  { auth: "api-key" as const, hooks: undefined, openapi: true },
 ];
 
 describe.each(VARIANTS)("scaffold with --auth $auth, hooks $hooks, openapi $openapi", ({ auth, hooks, openapi }) => {
@@ -180,10 +187,14 @@ describe.each(VARIANTS)("scaffold with --auth $auth, hooks $hooks, openapi $open
     expect([...files.keys()]).toContain("src/homeassistant.ts");
   });
 
-  it(hooks ? "writes the hooks module" : "writes nothing about hooks", () => {
-    expect(files.has("src/homeassistant-hooks.ts")).toBe(hooks);
+  it(hooks ? "writes the hooks module and its driver" : "writes nothing about hooks", () => {
+    expect(files.has("src/homeassistant-hooks.ts")).toBe(hooks !== undefined);
+    expect(files.has("src/homeassistant-hook-driver.ts")).toBe(hooks !== undefined);
     const text = [...files.values()].map(file => "text" in file ? file.text : "").join("\n");
-    expect(/hook/i.test(text.replaceAll("webhook", ""))).toBe(hooks);
+    expect(/hook/i.test(text)).toBe(hooks !== undefined);
+    // Only a gatekeeper that adds webhooks itself calls the provider to.
+    expect(text.includes("/items/{id}/webhooks")).toBe(hooks === "subscription");
+    expect(text.includes("WEBHOOK_SECRET")).toBe(hooks === "app");
   });
 
   it("marks what is left to decide", () => {
@@ -207,7 +218,7 @@ describe.each(VARIANTS)("scaffold with --auth $auth, hooks $hooks, openapi $open
         symlinkSync(join(repo, "packages", name), join(root, "packages", name));
       }
       run(repo, process.execPath, bin, "homeassistant", "--display", "Home Assistant", "--auth", auth, "--out", dir,
-        ...(hooks ? ["--hooks"] : []),
+        ...(hooks ? ["--hooks", hooks] : []),
         ...(openapi ? ["--openapi", spec, "--operations", "users/get, issues/list"] : []));
       if (openapi) {
         const schema = join(dir, "src", "openapi", "index.d.ts");
