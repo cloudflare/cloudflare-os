@@ -7,6 +7,8 @@
 import { SELF, env, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { generateNonce } from "@gadgets/gatekeeper-kit/connect-nonce";
+import { ALL_RESOURCES } from "#gatekeeper/acme-env";
+import { itemUrl, parseResourceUrl } from "#gatekeeper/acme-urls";
 import type { Outcome } from "./worker";
 
 const BASE_URL = "http://localhost:8787/gatekeeper/acme";
@@ -240,4 +242,12 @@ describe("a submitted key", () => {
     expect(nonceOf(answer.html)).toBeUndefined();
     expect((await account(id).getCredentials()).creds.accessToken).toBe("old-key");
   });
+});
+
+// The Workshop builds a `URLPattern` from each declared pattern, which throws for one its
+// regular expression mode refuses.
+it("declares a URL pattern that matches the URLs it makes and parses", () => {
+  const url = itemUrl("it-em_1");
+  expect(parseResourceUrl(url)).toEqual({ itemId: "it-em_1" });
+  expect(ALL_RESOURCES.map(({ urlPattern }) => new URLPattern(urlPattern).test(url))).toEqual([true]);
 });

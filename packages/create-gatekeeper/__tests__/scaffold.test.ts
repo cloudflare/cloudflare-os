@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { AUTH_KINDS, namesFor, resolveBlocks, scaffold, stops } from "../src/scaffold.ts";
 
@@ -145,7 +146,8 @@ describe.each(VARIANTS)("scaffold with --auth $auth, hooks $hooks", ({ auth, hoo
       // As `pnpm types:generate` does: the Worker config from cloudflare.config.ts, then its types.
       writeFileSync(join(dir, "wrangler.jsonc"), run(dir, process.execPath, "--input-type=module", "-e",
         "const { renderWorkerConfig } = await import(process.argv[1]); process.stdout.write(await renderWorkerConfig(process.argv[2]));",
-        join(repo, "scripts", "generate-worker-configs.ts"), dir));
+        // As a URL: `import()` takes a Windows path's drive letter for a scheme.
+        pathToFileURL(join(repo, "scripts", "generate-worker-configs.ts")).href, dir));
       run(dir, process.execPath, tool("wrangler", "bin/wrangler.js"), "types", "worker-configuration.d.ts");
       const types = join(dir, "worker-configuration.d.ts");
       // And as its post-processing does: the main module where the sources are, and the `restore`
@@ -164,7 +166,7 @@ describe.each(VARIANTS)("scaffold with --auth $auth, hooks $hooks", ({ auth, hoo
 
 describe("create-gatekeeper", () => {
   // `gatekeeper-mcp-portal` folds to this name's install slug.
-  it("refuses a name whose install slug another package has", () => {
+  it("refuses a name whose install slug another gatekeeper has", () => {
     const result = spawnSync(process.execPath, [bin, "mcpportal", "--auth", "oauth"], { encoding: "utf8" });
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('packages/gatekeeper-mcp-portal already has the install slug "mcpportal"');
