@@ -11,7 +11,7 @@ export const VENDOR_ID = "acme";
 export type Env = Cloudflare.Env & AuthEnv & {
   /** This Worker's public base URL, ending in `/gatekeeper/acme`. */
   BASE_URL?: string;
-  // #if hooks
+  // #if hooks-app
   /**
    * The secret the provider signs its webhook's deliveries to `{BASE_URL}/webhook` with. Hooks are
    * refused while it is unset.
