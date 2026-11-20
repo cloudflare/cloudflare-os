@@ -54,17 +54,27 @@ export class FakeGitRepo {
   maxBlobReadsInFlight = 0;
   #blobReadsInFlight = 0;
   #commits = 0;
+  #commitsByHash = new Map<string, ArtifactsCommitMetadata>();
 
   /** Commits `files` as the whole tree of `branch` and returns the commit hash. */
   async push(branch: string, files: Record<string, FakeGitFile>): Promise<string> {
     let treeHash = await this.#writeTree(Object.entries(files));
     let commit = await sha1(`commit ${this.#commits++} ${treeHash}`);
-    this.branches.set(branch, {
+    let metadata: ArtifactsCommitMetadata = {
       hash: commit, treeHash, message: "", parents: [],
       author: { name: "", email: "" }, committer: { name: "", email: "" },
       authoredAt: 0, committedAt: 0,
-    });
+    };
+    this.#commitsByHash.set(commit, metadata);
+    this.branches.set(branch, metadata);
     return commit;
+  }
+
+  /** Moves `branch` back to an earlier commit, as a force push would. */
+  resetBranch(branch: string, commit: string): void {
+    let metadata = this.#commitsByHash.get(commit);
+    if (!metadata) throw new Error(`No commit ${commit}.`);
+    this.branches.set(branch, metadata);
   }
 
   /** The blob hash `file` gets when pushed. */

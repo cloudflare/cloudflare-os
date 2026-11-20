@@ -11,7 +11,7 @@ async function read(fake: FakeGitRepo, currentCommit?: string, held = new Map<st
   let artifacts = { get: async () => fake.repo() } as unknown as Artifacts;
   let staged: ArtifactContextDocument[] = [];
   let result = await readArtifactRepoDocuments(artifacts, "repo", "main", currentCommit, {
-    heldBlobHashes: async () => held,
+    heldBlobHashes: async () => new Map([...held].map(([path, hash]) => [path, new Set([hash])])),
     stage: document => staged.push(document),
   });
   return {

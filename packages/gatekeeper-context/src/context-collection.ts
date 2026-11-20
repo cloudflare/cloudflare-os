@@ -183,10 +183,10 @@ function makeContextCollectionStorage(storage: DurableObjectStorage) {
       aclVersion: 0,
       // Consecutive failed attempts to revoke a token whose issuer lost write access.
       gitTokenRevokeAttempts: 0,
-      // Git syncs begun since the last one that succeeded, and when the latest began. Written as a
-      // sync starts, so one that resets the object still counts against the next attempt.
+      // Git syncs begun since the last one that succeeded, and when the latest began, or failed if it
+      // threw. Written as a sync starts, so one that resets the object still counts against the next.
       gitSyncAttempts: 0,
-      gitSyncStartedAt: new Date(0),
+      gitSyncBackoffFrom: new Date(0),
       // Once all pre-sharing tokens have issuer records, later changes need no legacy-token scan.
       legacyGitTokensSwept: false,
       // Keep deletion durable until external cleanup succeeds; pending collections are unreadable.
@@ -1174,7 +1174,7 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
     if (now - content.lastRefreshedAt.getTime() < GIT_REFRESH_MIN_INTERVAL_MS) return;
     // A sync that fails, or resets the object, waits out a growing delay before the next try.
     let attempts = this.storage.gitSyncAttempts.get();
-    if (attempts > 0 && now - this.storage.gitSyncStartedAt.get().getTime() <
+    if (attempts > 0 && now - this.storage.gitSyncBackoffFrom.get().getTime() <
         Math.min(GIT_REFRESH_MIN_INTERVAL_MS * 2 ** (attempts - 1), GIT_SYNC_RETRY_MAX_MS)) {
       return;
     }
@@ -1202,8 +1202,13 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
       });
     }
     this.storage.gitSyncAttempts.put(attempts + 1);
-    this.storage.gitSyncStartedAt.put(new Date());
-    let promise = this.#loadArtifactSnapshot().finally(() => {
+    this.storage.gitSyncBackoffFrom.put(new Date());
+    let id = this.getMetadata().id;
+    let promise = this.#loadArtifactSnapshot().catch((err: unknown) => {
+      // A slow sync that fails waits out its delay from when it failed, not when it began.
+      if (this.#isGitSyncTarget(id)) this.storage.gitSyncBackoffFrom.put(new Date());
+      throw err;
+    }).finally(() => {
       if (this.#artifactRefresh === promise) this.#artifactRefresh = undefined;
     });
     this.#artifactRefresh = promise;
@@ -1233,13 +1238,23 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
   // A sync waits on Artifacts, and its collection can be deleted meanwhile. Each of the sync's writes
   // checks first, so nothing it read is stored once deletion has begun.
   #assertGitSyncTarget(id: string): void {
-    if (this.storage.deletionPending.get() || this.storage.metadata.get().id !== id) {
-      throw new Error("The collection was deleted during its git sync.");
+    if (!this.#isGitSyncTarget(id)) throw new Error("The collection was deleted during its git sync.");
+  }
+
+  #isGitSyncTarget(id: string): boolean {
+    return !this.storage.deletionPending.get() && this.storage.metadata.get().id === id;
+  }
+
+  // Delete what an unfinished sync staged.
+  #clearGitStaged(): void {
+    // Read the paths before deleting from the same storage collection.
+    for (let path of Array.from(this.storage.gitStaged.list(), record => record.path)) {
+      this.storage.gitStaged.delete(path);
     }
   }
 
-  // Replace the documents with the files of `commit`, all at once. Each file is its staged copy if
-  // that matches, else the stored document if that matches; a file neither holds was too large to
+  // Replace the documents with the files of `commit`, all at once. Each file is the stored document
+  // if that matches, else its staged copy if that matches; a file neither holds was too large to
   // keep. `stored` and `computed` are the stored documents' hashes, as #readStoredGitBlobHashes left
   // them. Staged files are then cleared.
   #publishArtifactSync(
@@ -1251,25 +1266,25 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
     this.storage.transaction(() => {
       let published = new Set<string>();
       for (let [path, hash] of files) {
+        if (stored.get(path) === hash) {
+          // A document stored before hashes were kept keeps the one worked out for it.
+          let record = computed.has(path) ? this.storage.documents.get(path) : undefined;
+          if (record) this.storage.documents.put({ ...record, gitBlobHash: hash });
+          published.add(path);
+          continue;
+        }
         let staged = this.storage.gitStaged.get(path);
         if (staged?.gitBlobHash === hash) {
           let skill = this.#putDocument(staged);
           if (skill && "error" in skill) invalidSkills.push({ filepath: path, reason: skill.error });
           published.add(path);
-        } else if (stored.get(path) === hash) {
-          // A document stored before hashes were kept keeps the one worked out for it.
-          let record = computed.has(path) ? this.storage.documents.get(path) : undefined;
-          if (record) this.storage.documents.put({ ...record, gitBlobHash: hash });
-          published.add(path);
         }
       }
-      // Read the paths before deleting from the same storage collections.
+      // Read the paths before deleting from the same storage collection.
       for (let path of Array.from(this.storage.documents.list(), record => record.path)) {
         if (!published.has(path)) this.#deleteDocument(path);
       }
-      for (let path of Array.from(this.storage.gitStaged.list(), record => record.path)) {
-        this.storage.gitStaged.delete(path);
-      }
+      this.#clearGitStaged();
 
       this.storage.gitSyncAttempts.put(0);
       let meta = this.getMetadata();
@@ -1302,9 +1317,12 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
         this.#artifacts(), meta.id, meta.content.branch, meta.content.commit, {
           heldBlobHashes: async () => {
             await this.#readStoredGitBlobHashes(stored, computed);
-            // A file staged by an earlier sync that stopped part way is newer than the stored one.
-            let held = new Map(stored);
-            for (let record of this.storage.gitStaged.list()) held.set(record.path, record.gitBlobHash);
+            // Files staged by an earlier sync that stopped part way are held too.
+            let held = new Map<string, Set<string>>();
+            for (let [path, hash] of stored) held.set(path, new Set([hash]));
+            for (let record of this.storage.gitStaged.list()) {
+              held.set(record.path, (held.get(record.path) ?? new Set()).add(record.gitBlobHash));
+            }
             return held;
           },
           stage: (document) => {
@@ -1320,6 +1338,8 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
       latestMeta.content = { ...latestMeta.content, lastRefreshedAt: new Date() };
       this.storage.metadata.put(latestMeta);
       this.storage.gitSyncAttempts.put(0);
+      // The branch is back at the published commit, so what an unfinished sync staged is stale.
+      this.#clearGitStaged();
       return;
     }
 

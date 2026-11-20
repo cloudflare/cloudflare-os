@@ -70,8 +70,11 @@ export type ArtifactRepoReadResult =
 
 /** Where a sync finds the files the collection already holds and keeps the ones it reads. */
 export type ArtifactSyncStore = {
-  /** Blob hash of the copy held for each path. Files whose hash matches aren't read again. */
-  heldBlobHashes(): Promise<ReadonlyMap<string, string>>;
+  /**
+   * Blob hashes of the copies held for each path, published or staged. Files whose hash is among
+   * them aren't read again.
+   */
+  heldBlobHashes(): Promise<ReadonlyMap<string, ReadonlySet<string>>>;
   /** Keeps a file read from the new commit until the whole commit has been read. */
   stage(document: ArtifactContextDocument): void;
 };
@@ -117,7 +120,7 @@ async function readArtifactRepoDocumentsWithContext(
   let toRead: TreeFile[] = [];
   for (let file of await listTreeFiles(repo, tip.treeHash)) {
     files.set(file.path, file.hash);
-    if (held.get(file.path) !== file.hash) toRead.push(file);
+    if (!held.get(file.path)?.has(file.hash)) toRead.push(file);
   }
 
   await mapWithConcurrency(toRead, MAX_BLOB_READS_IN_FLIGHT, async (file) => {

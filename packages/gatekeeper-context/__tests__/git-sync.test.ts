@@ -13,7 +13,7 @@ const testEnv = env as unknown as TestEnv & Cloudflare.Env;
 // The storage fields these tests read or age; the object keeps them private.
 type SyncStorage = {
   gitSyncAttempts: { get(): number };
-  gitSyncStartedAt: { put(at: Date): void };
+  gitSyncBackoffFrom: { put(at: Date): void };
   metadata: { get(): ContextCollectionMetadata; put(meta: ContextCollectionMetadata): void };
   documents: {
     list(): Iterable<{ path: string; gitBlobHash?: string }>;
@@ -58,9 +58,9 @@ function makeStale(instance: ContextCollectionDurableObject): void {
   storage.metadata.put({ ...meta, content: { ...meta.content, lastRefreshedAt: new Date(0) } });
 }
 
-// Moves the latest sync attempt's start `ms` into the past.
+// Moves the time the backoff delay is counted from `ms` into the past.
 function attemptStartedAgo(instance: ContextCollectionDurableObject, ms: number): void {
-  storageOf(instance).gitSyncStartedAt.put(new Date(Date.now() - ms));
+  storageOf(instance).gitSyncBackoffFrom.put(new Date(Date.now() - ms));
 }
 
 // Lets a background sync against the in-memory fake, which does no I/O, run to completion.
@@ -139,6 +139,45 @@ describe("git-backed collection sync", () => {
     });
   });
 
+  it("keeps a document whose published copy matches, even with a stale copy staged", async () => {
+    let fake = new FakeGitRepo();
+    let stub = await createGitCollection(fake);
+    await fake.push("main", { "a.md": "# A", "b.md": "# B" });
+    await stub.syncArtifactSource();
+    let before = (await stub.listContextDocuments()).find(doc => doc.path === "a.md");
+    // A sync stages an edited a.md, then fails on c.md.
+    await fake.push("main", { "a.md": "# A, edited", "b.md": "# B", "c.md": "# C" });
+    fake.blobErrors.set(await fake.hashOf("# C"), artifactsError("INTERNAL_ERROR"));
+    await expect(settled(stub.syncArtifactSource())).rejects.toThrow("INTERNAL_ERROR");
+
+    // The next commit restores a.md and edits b.md.
+    await fake.push("main", { "a.md": "# A", "b.md": "# B, edited" });
+    fake.blobReads = [];
+    await stub.syncArtifactSource();
+
+    expect(fake.blobReads).toEqual([await fake.hashOf("# B, edited")]);
+    let after = (await stub.listContextDocuments()).find(doc => doc.path === "a.md");
+    expect(after?.lastUpdated).toEqual(before?.lastUpdated);
+    expect((await stub.getContextDocument("a.md"))?.body).toBe("# A");
+  });
+
+  it("clears what a failed sync staged once the branch is back at the published commit", async () => {
+    let fake = new FakeGitRepo();
+    let stub = await createGitCollection(fake);
+    let published = await fake.push("main", { "a.md": "# A" });
+    await stub.syncArtifactSource();
+    await fake.push("main", { "a.md": "# A, edited", "b.md": "# B" });
+    fake.blobErrors.set(await fake.hashOf("# B"), artifactsError("INTERNAL_ERROR"));
+    await expect(settled(stub.syncArtifactSource())).rejects.toThrow("INTERNAL_ERROR");
+
+    fake.resetBranch("main", published);
+    await stub.syncArtifactSource();
+
+    await runInDurableObject(stub, (instance: ContextCollectionDurableObject) => {
+      expect([...storageOf(instance).gitStaged.list()]).toEqual([]);
+    });
+  });
+
   it("drops a file that grew too large to keep", async () => {
     let fake = new FakeGitRepo();
     let stub = await createGitCollection(fake);
@@ -203,6 +242,28 @@ describe("git-backed collection sync", () => {
       expect(fake.logRefs).toHaveLength(3);
       expect(attempts()).toBe(0);
       expect((await instance.listContextDocuments()).map(doc => doc.path)).toEqual(["a.md"]);
+    });
+  });
+
+  it("counts the wait after a slow failed sync from when it failed", async () => {
+    let fake = new FakeGitRepo();
+    let stub = await createGitCollection(fake);
+    await fake.push("main", { "a.md": "# A" });
+    let hold = Promise.withResolvers<void>();
+    fake.blobDelay = () => hold.promise;
+    fake.blobErrors.set(await fake.hashOf("# A"), artifactsError("INTERNAL_ERROR"));
+
+    await runInDurableObject(stub, async (instance: ContextCollectionDurableObject) => {
+      let sync = instance.syncArtifactSource().catch(() => {});
+      await vi.waitFor(() => expect(fake.blobReads).toHaveLength(1));
+      // The sync has been running for over a minute when it fails.
+      attemptStartedAgo(instance, 61_000);
+      hold.resolve();
+      await sync;
+
+      makeStale(instance);
+      await instance.listContextDocuments();
+      expect(fake.logRefs).toHaveLength(1);
     });
   });
 
