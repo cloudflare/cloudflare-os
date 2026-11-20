@@ -530,6 +530,8 @@ let inFlight = Promise.resolve();
 function showPictures() {
   const id = tabId;
   for (const box of sheets.querySelectorAll('.obj[data-object]:not(.none)')) {
+    // Shown already, when the page stands as it was drawn.
+    if (box.querySelector(':scope > img')) continue;
     const object = tab.drawing.objects[box.dataset.object];
     const key = `${id}\u0000${box.dataset.object}`;
     let url = pictures.get(key);
@@ -539,6 +541,8 @@ function showPictures() {
     }
     if (!url) {
       url = inFlight.then(async () => {
+        // Its turn may come after its tab was left, and then nothing waits for it.
+        if (id !== tabId) throw new Error('This tab is no longer shown.');
         const { mimeType, bytes } = await gadget.readImage(box.dataset.object, id);
         return dataUrl(bytes, mimeType);
       });
@@ -788,6 +792,8 @@ async function load() {
     // Nothing of this tab moved, as when a change is made to another: what is drawn stands.
     if (loaded && !page.hidden && tab.drawing === drawing && tab.savedMarkdown === savedMarkdown && tab.markdown === markdown) {
       for (const arrived of document.querySelectorAll('.fresh')) arrived.classList.remove('fresh');
+      // An image that could not be read is asked for again.
+      showPictures();
       showStale(stale, 'document');
       return void status('');
     }
