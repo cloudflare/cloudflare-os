@@ -519,7 +519,32 @@ export type ObserverBindingNeed = {
    * a copy on the wire would go stale while the modal is open across an OAuth round trip.
    */
   failure?: ObserverBindingFailure;
+  /**
+   * Representative routes from the shared gadget by which this connection is in scope: one for
+   * each workpiece or hook the gadget reaches first, along a shortest route within it. A route
+   * through a gadget or agent spawner that a listed route in the same branch already passes
+   * through is left out, so removing a listed route may leave the connection in scope. Set only
+   * for a live gadget grant, by `Overseer.listObserverRequirements()` and
+   * `AdminWorkspaceView.listObserverRequirements()`.
+   */
+  paths?: ObserverBindingPathStep[][];
 };
+
+/**
+ * A step on a route from a shared gadget to the connection of the `ObserverBindingNeed` holding
+ * it. A route lists the workpieces it passes through, and the gadget it ends at (the shared one
+ * for an empty route) binds the connection, unless its last step says why else it is in scope:
+ *
+ * - `gadget`, `agentSpawner`: a workpiece the route passes through, bound by the one before it.
+ * - `hook`: an enabled hook waking the gadget before it, whose connection writes into that
+ *   gadget's state, or one whose gadget can't be resolved, which wakes every gadget.
+ * - `historicalRequirement`: the gadget before it once read data through the connection, which
+ *   its state may still hold whether or not it still binds the connection.
+ */
+export type ObserverBindingPathStep =
+  | {type: "gadget" | "agentSpawner", id: WorkpieceId, title: string}
+  | {type: "hook", id: number, title: string}
+  | {type: "historicalRequirement"};
 
 /**
  * The opening user's chosen account for a single gatekeeper binding. Returned from
@@ -2968,7 +2993,9 @@ export interface AdminWorkspaceView extends RpcTarget {
    * gadget, asks of the recipient: an account that each of those connections verifies. Read from
    * the workspace's own records: no connection is asked. Throws for a gadget that cannot be
    * shared, and when a connection `grant` reaches was made before connections could verify
-   * collaborators: any such connection for "workspace", and for a gadget only one it reaches. */
+   * collaborators: any such connection for "workspace", and for a gadget only one it reaches. A
+   * live gadget grant's needs carry their `paths`, naming the gadgets, agent spawners and hooks
+   * on the way. */
   listObserverRequirements(grant: CollaboratorGrant): Promise<ObserverBindingNeed[]>;
 
   /** The active share links, as Overseer.listShareLinks() lists them. Each has its id, note,
@@ -5216,7 +5243,8 @@ export interface Overseer extends RpcTarget {
   /**
    * List the connections a recipient of `grant` must verify before opening what it grants, in
    * the order the connections were created: none for a view grant, which verifies nothing.
-   * Reports what sharing will cost the recipient; it grants nothing and mints no capability.
+   * Live gadget grants also include paths explaining why each connection is in scope. This
+   * grants nothing and mints no capability.
    */
   listObserverRequirements(grant: CollaboratorGrant): Promise<ObserverBindingNeed[]>;
 
