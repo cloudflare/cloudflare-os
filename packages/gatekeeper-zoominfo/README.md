@@ -16,6 +16,13 @@ connected ZoomInfo account's OAuth grant and package entitlements. Through it a 
   and curated company insight signals.
 - **Usage** — read the account's credit/limit counters.
 
+`src/zoominfo-api.ts` sends every request through one upstream client, whose calls are counted as
+[subservice metrics](../observability/README.md#subservice-calls) under the source
+`gatekeeper.zoominfo.api`: an API request under its name in the route tree `ZOOMINFO_TREE` of
+`src/zoominfo-upstream.ts`, and a token request under `token.exchange` or `token.refresh`. A code's
+exchange answered a success without a refresh token, or without an ID token that names its user, is
+counted an error.
+
 A connected account corresponds to the ZoomInfo user who authorizes the OAuth consent flow, whom
 the gatekeeper identifies by the `sub` claim of the ID token ZoomInfo's token endpoint returns with
 every grant. ZoomInfo is **not** offered as a "Continue with…" sign-in method

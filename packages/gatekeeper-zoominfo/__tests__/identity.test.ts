@@ -5,8 +5,10 @@
 // attributed to whoever the connection acts for now. ZoomInfo is faked at `fetch`.
 
 import { env, runInDurableObject } from "cloudflare:test";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { env as bindings } from "cloudflare:workers";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { generateNonce } from "@gadgets/gatekeeper-kit/connect-nonce";
+import { COMMON_SLOTS, SUBSERVICE_V1_SLOTS } from "@gadgets/observability/metrics";
 import {
   ALICE, BOB, CLIENT_ID, FakeZoomInfo, accountStub, failure, hooks, reconnectAs, seedAccount,
   storedGrant, unwrap,
@@ -95,6 +97,63 @@ describe("connecting", () => {
     const { id, accepted } = await connect(fake, claims);
     expect(failure(accepted)).toMatch(/did not identify the user who signed in/);
     expect(await storedGrant(id)).toBeUndefined();
+  });
+
+  describe("with the exchange of its code counted", () => {
+    // The metrics read the Worker's bindings from `cloudflare:workers`, whose `env` this suite
+    // shares with the Durable Objects: a dataset set on it here records what they write.
+    const ambient = bindings as { METRICS?: AnalyticsEngineDataset; SUBSERVICE_METRICS?: string };
+    let points: AnalyticsEngineDataPoint[];
+
+    beforeEach(() => {
+      points = [];
+      ambient.METRICS = { writeDataPoint: point => void (point && points.push(point)) };
+      ambient.SUBSERVICE_METRICS = "true";
+    });
+
+    afterEach(() => {
+      delete ambient.METRICS;
+      delete ambient.SUBSERVICE_METRICS;
+    });
+
+    // Each point written, as its operation, outcome, reason and HTTP status.
+    function counted() {
+      return points.map(point => [
+        SUBSERVICE_V1_SLOTS.operation, COMMON_SLOTS.outcome, SUBSERVICE_V1_SLOTS.reason, SUBSERVICE_V1_SLOTS.httpStatus,
+      ].map(slot => (slot.startsWith("blob") ? point.blobs : point.doubles)?.[Number(slot.replace(/\D+/, "")) - 1]));
+    }
+
+    it("is refused on a grant that holds no refresh token, whose exchange is an error of the call", async () => {
+      const fake = new FakeZoomInfo().install();
+      fake.omitRefreshToken = true;
+      const { id, accepted } = await connect(fake, { sub: ALICE.sub, aud: CLIENT_ID });
+      expect(failure(accepted)).toBe("ZoomInfo did not return a refresh token.");
+      expect(fake.count(/^POST \/gtm\/oauth\/v1\/token$/)).toBe(1);
+      expect(await storedGrant(id)).toBeUndefined();
+      expect(counted()).toEqual([["token.exchange", "error", "api", 200]]);
+    });
+
+    it.each([
+      ["no ID token", null],
+      ["an ID token naming no user", { aud: CLIENT_ID, email: ALICE.email }],
+      ["an ID token for another client", { sub: ALICE.sub, aud: "another-client" }],
+    ])("is refused on a grant with %s, whose exchange is an error of the call", async (_label, claims) => {
+      const fake = new FakeZoomInfo().install();
+      const { id, accepted } = await connect(fake, claims);
+      expect(failure(accepted)).toBe("ZoomInfo did not identify the user who signed in, so the account can't be connected.");
+      expect(fake.count(/^POST \/gtm\/oauth\/v1\/token$/)).toBe(1);
+      expect(await storedGrant(id)).toBeUndefined();
+      expect(counted()).toEqual([["token.exchange", "error", "api", 200]]);
+    });
+
+    it("is made anew on a grant that holds one, whose exchange is a success", async () => {
+      const fake = new FakeZoomInfo().install();
+      const id = await seedAccount(fake, ALICE);
+      const before = await storedGrant(id);
+      await reconnectAs(fake, id, ALICE);
+      expect(await storedGrant(id)).not.toEqual(before);
+      expect(counted()).toEqual([["token.exchange", "success", "", 200]]);
+    });
   });
 });
 

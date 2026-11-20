@@ -37,6 +37,9 @@ export default defineConfig({
   ],
   test: {
     include: ["__tests__/*.test.ts"],
-    setupFiles: ["@gadgets/scripts/assert-workerd"],
+    // The Node project's: see vitest.node.config.ts.
+    exclude: ["__tests__/upstream.test.ts"],
+    // Asserts the pool started, and that every request a test sends to ZoomInfo has a name.
+    setupFiles: ["@gadgets/scripts/assert-workerd", "./__tests__/named-requests.ts"],
   },
 });
