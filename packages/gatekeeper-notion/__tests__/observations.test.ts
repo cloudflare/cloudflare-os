@@ -1,17 +1,19 @@
 // Observer behaviour that needs the gatekeeper and account Durable Objects themselves: what a read
-// through a shared session reports, and how an account's access check survives a reconnect. These
-// drive the real classes over in-memory storage against a stubbed Notion API.
+// through a shared session reports, how an account's access check survives a reconnect, and what
+// the legacy verifier makes of a request that fails. These drive the real classes over in-memory
+// storage against a stubbed Notion API.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
-import { NotionItemGatekeeperImpl, NotionWorkspaceGatekeeperImpl, UserAccount } from "../src/notion";
+import { NotionItemGatekeeperImpl, NotionVerifier, NotionWorkspaceGatekeeperImpl, UserAccount } from "../src/notion";
 import { MISSING_WORKSPACE_ID_MESSAGE, itemSubresourceId, workspaceSubresourceId } from "../src/notion-subresources";
 import type { NotionPage, NotionWorkspace } from "../src/types";
 
-vi.mock("cloudflare:workers", () => ({
+vi.mock("cloudflare:workers", async importOriginal => ({
+  ...await importOriginal<typeof import("cloudflare:workers")>(),
   DurableObject: class { constructor(public ctx: unknown, public env: unknown) {} },
   RpcTarget: class {},
   RpcStub: class {},
-  WorkerEntrypoint: class {},
+  WorkerEntrypoint: class { constructor(public ctx: unknown, public env: unknown) {} },
 }));
 vi.mock("capnweb-validate", () => ({
   validateRpc: () => (target: unknown) => target,
@@ -91,6 +93,7 @@ function bindingCtx(owner: unknown, props: Record<string, unknown> = {}) {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe("reads through a workspace binding", () => {
@@ -291,5 +294,43 @@ describe("UserAccount.checkSubresourceAccess", () => {
     otherDatabase.resolve(Response.json({ object: "database", id: OTHER_DATABASE }));
 
     await expect(checking).rejects.toThrow(/changed while their access was being checked/);
+  });
+});
+
+/** Notion's answer to a token it does not take. */
+const unauthorized = () => Response.json({ code: "unauthorized", message: "API token is invalid." }, { status: 401 });
+/** Notion's answer to a refresh: a fresh access token. */
+const freshToken = () => Response.json({ access_token: "token-2", refresh_token: "refresh-2", workspace_id: WORKSPACE });
+
+/** The verifier of an observer whose account can refresh its token, with that account's storage. */
+function observerVerifier() {
+  const { kv, account } = userAccount({ workspaceId: WORKSPACE });
+  kv.put("refreshToken", "refresh-1");
+  return { kv, verifier: new NotionVerifier(bindingCtx(account) as never, {} as never) };
+}
+
+describe("the legacy verifier's check of an item", () => {
+  it("denies an observer whose fresh token Notion answers 401 as well", async () => {
+    const database = vi.fn(unauthorized);
+    notionApi({ [`/v1/databases/${DATABASE}`]: database, "/v1/oauth/token": freshToken });
+    const { kv, verifier } = observerVerifier();
+
+    await expect(verifier.hasItemAccess(DATABASE)).resolves.toBe(false);
+    expect(database).toHaveBeenCalledTimes(2);
+    expect(kv.get("accessToken")).toBe("token-2");
+  });
+
+  it("throws, and denies nobody, where Notion answers the fresh token with an outage and the sends after it get no answer", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const failure = new TypeError("fetch failed");
+    const database = vi.fn((): Response => { throw failure; })
+      .mockImplementationOnce(unauthorized)
+      .mockImplementationOnce(() => Response.json({}, { status: 503, headers: { "Retry-After": "0" } }));
+    notionApi({ [`/v1/databases/${DATABASE}`]: database, "/v1/oauth/token": freshToken });
+    const { kv, verifier } = observerVerifier();
+
+    await expect(verifier.hasItemAccess(DATABASE)).rejects.toBe(failure);
+    expect(database).toHaveBeenCalledTimes(4);
+    expect(kv.get("accessToken")).toBe("token-2");
   });
 });
