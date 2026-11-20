@@ -1646,8 +1646,9 @@ export class UserAccount extends DurableObject<Env> {
       if (!refreshToken && this.ctx.storage.kv.get(PENDING_REVOCATION_KEY) !== undefined) return;
       let pending: PendingRevocation | undefined;
       if (refreshToken) {
-        let clientId = this.ctx.storage.kv.get<string>(CREDENTIALS_CLIENT_KEY);
         let release = await this.#releaseGrant(refreshToken);
+        // Read after the release, which may have refreshed the token and so learned its client.
+        let clientId = this.ctx.storage.kv.get<string>(CREDENTIALS_CLIENT_KEY);
         // Not revoked for a holder that could not be asked, which may hold nothing: the grant's
         // registry is asked again later, as for a revocation Google did not take.
         if (release.unsure) {
