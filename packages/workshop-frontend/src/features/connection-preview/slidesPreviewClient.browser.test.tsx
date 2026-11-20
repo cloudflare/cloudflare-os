@@ -339,8 +339,10 @@ it('steps from slide to slide with a navigator at the foot of the frame, countin
   next.click()
   next.click()
   await expect.poll(reading).toBe('Slide 3 of 4')
-  // The filmstrip marks the slide the navigator is on.
+  // The filmstrip marks the slide the navigator is on, and names it by its number and title,
+  // not by the words drawn in its miniature.
   expect(film('s3').getAttribute('aria-current')).toBe('true')
+  expect(film('s3').getAttribute('aria-label')).toBe('3 Three')
   previous.click()
   await expect.poll(reading).toBe('Slide 2 of 4')
 
