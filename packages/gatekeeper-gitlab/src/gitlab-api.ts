@@ -1544,9 +1544,8 @@ export class GitLabApi {
         variables: { project: [`gid://gitlab/Project/${projectId}`], job: `gid://gitlab/Ci::Build/${jobId}` },
       },
     });
-    if (data.errors?.length || !data.data?.projects) {
-      throw new GitLabApiError(502, `GitLab GraphQL failed: ${data.errors?.[0]?.message ?? "no data"}`);
-    }
+    // GitLab's error text is a response body, kept out of errors that are logged and shown.
+    if (data.errors?.length || !data.data?.projects) throw new GitLabApiError(502, "GitLab GraphQL failed.");
     const job = data.data.projects.nodes[0]?.job;
     return job == null || job.erasedAt !== null ? null : job.userPermissions.readJobArtifacts;
   }

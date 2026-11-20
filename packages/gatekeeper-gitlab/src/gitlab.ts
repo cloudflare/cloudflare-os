@@ -42,6 +42,7 @@ import { KvTtlCache } from "@gadgets/gatekeeper-kit/cache";
 import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
 import { createPkce } from "@gadgets/gatekeeper-kit/oauth-client";
 import { PreviewOAuth, PreviewOAuthConfigurationError } from "@gadgets/gatekeeper-kit/preview-oauth";
+import { mapLimit } from "@gadgets/gatekeeper-kit/observers";
 import {
   buildAuthorizeUrl,
   exchangeAuthCode,
@@ -282,6 +283,8 @@ type StoredUser = { id: number; generation: string };
 const PROJECT_ACCESS_ALLOWED_TTL_MS = 15 * 60_000;
 const PROJECT_ACCESS_DENIED_TTL_MS = 15_000;
 const projectAccessTtl = (allowed: boolean) => allowed ? PROJECT_ACCESS_ALLOWED_TTL_MS : PROJECT_ACCESS_DENIED_TTL_MS;
+/** How many jobs one access check asks GitLab about at once. */
+const JOB_CHECK_CONCURRENCY = 6;
 
 /**
  * Stands in for the identity of a token the account no longer serves, so the coordinator's
@@ -530,16 +533,19 @@ export class UserAccount extends DurableObject<Env> implements AccountCredential
     // Parsed before anything is asked, so an ID this account can't check is refused outright.
     const required = subresources.map(parseProjectSubresource);
     // GitLab answers for one project's membership, or one job, per request, so each ID is cached
-    // on its own, and a later failure keeps what earlier requests learned.
+    // on its own, and a later failure keeps what earlier requests learned. Each project's membership
+    // is asked once, first, then its jobs a few at a time: a test report can name hundreds.
     const generation = this.#creds.connectionGeneration();
-    const answers: boolean[] = [];
-    for (const [index, subresource] of subresources.entries()) {
-      const { projectId, job } = required[index];
-      const member = await this.#access.cached(projectSubresourceId(projectId), projectAccessTtl,
-        () => hasProjectMembership(this.env, this, projectId));
-      answers.push(member && (job === undefined || await this.#access.cached(subresource, projectAccessTtl,
-        () => canReadJobData(this.env, this, projectId, job.data, job.jobId))));
+    const members = new Map<number, boolean>();
+    for (const { projectId } of required) {
+      if (members.has(projectId)) continue;
+      members.set(projectId, await this.#access.cached(projectSubresourceId(projectId), projectAccessTtl,
+        () => hasProjectMembership(this.env, this, projectId)));
     }
+    const answers = await mapLimit(subresources.map((subresource, index) => ({ subresource, ...required[index] })),
+      JOB_CHECK_CONCURRENCY, async ({ subresource, projectId, job }) =>
+        members.get(projectId)! && (job === undefined || await this.#access.cached(subresource, projectAccessTtl,
+          () => canReadJobData(this.env, this, projectId, job.data, job.jobId))));
     if (this.#creds.connectionGeneration() !== generation) {
       throw new Error("GitLab credentials changed while access was being checked. Please try again.");
     }

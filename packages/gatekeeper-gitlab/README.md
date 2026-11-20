@@ -140,8 +140,9 @@ can still hold confidential issues and internal notes; job logs and test reports
   `project/<projectId>/jobTrace/<jobId>` instead, and a test report
   `project/<projectId>/jobArtifacts/<jobId>` for each job whose reports it holds (the project
   alone if none), since checking a job ID checks the membership too: the summary names them
-  (`build_ids`), and the failed-tests read, whose report does not, takes them from summaries read
-  just before and after it. The
+  (`build_ids`), and the failed-tests read, whose report does not, lists the pipeline's jobs with
+  a `junit` report after reading it, retried attempts and same-project child pipelines included,
+  refusing the read if a listing is cut short. The
   `project/<projectId>/role/developer` and `.../role/maintainer` IDs earlier releases reported
   read as `project/<projectId>` alone.
 - **Checks.** A collaborator's account is asked `GET /projects/<id>/members/all?user_ids[]=` for

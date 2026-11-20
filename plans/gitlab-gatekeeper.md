@@ -1035,8 +1035,9 @@ denies) and `project/<projectId>/jobArtifacts/<jobId>` for each job a test repor
 `job.userPermissions.readJobArtifacts`), each in place of `project/<projectId>`, since each checks
 that membership first (a report holding no jobs' reports still reports the project). An erased or
 deleted job allows, as there is nothing left to withhold. The summary
-names its jobs (`build_ids`); the whole report does not, so its jobs come from summaries read just
-before and after it, which miss only a job both created and retried while the report was read.
+names its jobs (`build_ids`); the whole report does not, and summaries can lag it, so its jobs
+are listed after it is read: every job with a `junit` report in the pipeline and its same-project
+children, retried attempts included, the read refused if a listing is cut short.
 Recorded `role/*` IDs and the legacy `ci-logs`/`ci-test-reports` sets now need the baseline alone,
 a deliberate loosening for existing workspaces.
 

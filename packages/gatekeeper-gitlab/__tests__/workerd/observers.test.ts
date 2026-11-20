@@ -590,14 +590,16 @@ describe("verifyObserverAccess", () => {
     expect(await gk.verify(everyone, [trace(9)])).toEqual({ ok: ["developer", "maintainer"] });
     expect(await gk.verify(everyone, [artifacts(10)])).toEqual({ ok: ["developer", "maintainer"] });
     expect(await gk.verify(everyone, [artifacts(11)])).toEqual({ ok: ["maintainer"] });
-    // Each observer is asked with their own token, membership by the project's id once.
-    expect(gitlab.requestsWith("reporter")).toEqual([
-      "/api/v4/user", `/api/v4/projects/${PROJECT_ID}/members/all`,
+    // Each observer is asked with their own token, membership by the project's id once and first,
+    // then its jobs, a few at a time and so in no fixed order.
+    const asked = gitlab.requestsWith("reporter");
+    expect(asked.slice(0, 2)).toEqual(["/api/v4/user", `/api/v4/projects/${PROJECT_ID}/members/all`]);
+    expect(asked.slice(2).toSorted()).toEqual([
       `/api/v4/projects/${PROJECT_ID}/jobs/8`, `/api/v4/projects/${PROJECT_ID}/jobs/8/trace`,
       `/api/v4/projects/${PROJECT_ID}/jobs/8`, "/api/graphql",
       `/api/v4/projects/${PROJECT_ID}/jobs/9`, `/api/v4/projects/${PROJECT_ID}/jobs/9/trace`,
       `/api/v4/projects/${PROJECT_ID}/jobs/10`, "/api/graphql", `/api/v4/projects/${PROJECT_ID}/jobs/11`, "/api/graphql",
-    ]);
+    ].toSorted());
     // The binding's own account was never asked.
     expect(gitlab.requestsWith(OWNER_TOKEN)).toEqual([]);
   });
