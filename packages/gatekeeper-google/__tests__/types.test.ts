@@ -9,8 +9,8 @@ import { RENDER_LIMITS } from "@gadgets/pdf-renderer/api";
 import { READ_AHEAD } from "../src/pdf-read-ahead";
 import {
   DOCS_TYPES_MODULE_PREFIX, DRIVE_READ_TYPES_MODULE_PREFIX, DRIVE_TYPES_MODULE_PREFIX,
-  GMAIL_TYPES_MODULE_PREFIX, SHEETS_TYPES_MODULE_PREFIX, SLIDES_TYPES_MODULE_PREFIX,
-  stripTypeModulePrefix,
+  GMAIL_TYPES_MODULE_PREFIX, SHEETS_RENDERING_TYPES_MODULE_PREFIX, SHEETS_TYPES_MODULE_PREFIX,
+  SLIDES_RENDERING_TYPES_MODULE_PREFIX, SLIDES_TYPES_MODULE_PREFIX, stripTypeModulePrefix,
 } from "../src/type-bundle";
 
 const SOURCE_DIR = join(dirname(fileURLToPath(import.meta.url)), "../src");
@@ -671,14 +671,23 @@ folder.move("file-1", "folder-9");
 `)).toEqual([]);
   });
 
-  it("declares what renders a document apart from its bundle, which it compiles against", () => {
-    // It declares every type it names, so it has no module prefix.
-    let rendering = source("docs-rendering-types.txt");
-    expect(docBundle()).toContain("getRenderingTypes(): Promise<string>;");
-    expect(docBundle()).not.toContain("readDrawing(tabId");
-    expect(rendering).toContain("readDrawing(tabId");
-    expect(rendering).not.toContain("import ");
-    expect(compileAgentTypes([docBundle(), rendering].join("\n"))).toEqual([]);
+  it("declares what renders a document, a spreadsheet or a presentation apart from its bundle, which it compiles against", () => {
+    for (const [bundle, name, prefix, read] of [
+      // The document's declares every type it names, so it has no module prefix.
+      [docBundle, "docs-rendering-types.txt", "", "readDrawing(tabId"],
+      [sheetsBundle, "sheets-rendering-types.txt", SHEETS_RENDERING_TYPES_MODULE_PREFIX, "readDrawing(range"],
+      [slidesBundle, "slides-rendering-types.txt", SLIDES_RENDERING_TYPES_MODULE_PREFIX, "readSlideDrawings(slideIds"],
+    ] as const) {
+      let rendering = stripTypeModulePrefix(source(name), prefix);
+      expect(bundle(), name).toContain("getRenderingTypes(): Promise<string>;");
+      expect(bundle(), name).not.toContain(read);
+      expect(rendering, name).toContain(read);
+      // A font is read only to render, so it is declared with the drawing that names it.
+      expect(bundle(), name).not.toContain("readFont(family");
+      expect(rendering, name).toContain("readFont(family");
+      expect(rendering, name).not.toContain("import ");
+      expect(compileAgentTypes([bundle(), rendering].join("\n")), name).toEqual([]);
+    }
   });
 
   it("points each Sheets and Slides session at its comments with a read-only Drive URL", () => {

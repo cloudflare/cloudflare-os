@@ -22,7 +22,7 @@ const MAX_REF_LENGTH = 64;
 const MAX_FONT_SIZE = 400;
 
 /** Every shape type Google Slides can create: its `Shape.Type` values but `CUSTOM`. */
-const SHAPE_TYPES = new Set([
+export const SHAPE_TYPES = new Set([
   "TEXT_BOX", "RECTANGLE", "ROUND_RECTANGLE", "ELLIPSE", "ARC", "BENT_ARROW", "BENT_UP_ARROW",
   "BEVEL", "BLOCK_ARC", "BRACE_PAIR", "BRACKET_PAIR", "CAN", "CHEVRON", "CHORD", "CLOUD",
   "CORNER", "CUBE", "CURVED_DOWN_ARROW", "CURVED_LEFT_ARROW", "CURVED_RIGHT_ARROW",

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { GoogleDocsApi, type GoogleDocsTab } from "../src/docs-api";
 import { GOOGLE_SHEET_MIME_TYPE } from "../src/drive-session";
 import { explainUnopenedFile } from "../src/office-conversion";
-import { GoogleSheetsApi } from "../src/sheets-api";
+import { enteredValue, GoogleSheetsApi } from "../src/sheets-api";
 import { GoogleApiError, readGoogleJson } from "../src/google-response";
 
 const token = async () => "access-token";
@@ -404,6 +404,15 @@ describe("native Google content API safety", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("enteredValue", () => {
+  it("reads a value of no kind, which is how Google returns empty text entered in a cell, as empty text", () => {
+    expect(enteredValue({})).toBe("");
+    expect(enteredValue(undefined)).toBeNull();
+    expect(enteredValue({ stringValue: "" })).toBe("");
+    expect(enteredValue({ formulaValue: "=A1" })).toEqual({ formula: "=A1" });
   });
 });
 

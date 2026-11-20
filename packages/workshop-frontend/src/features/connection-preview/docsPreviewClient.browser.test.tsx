@@ -2,6 +2,7 @@
 // can be read. ConnectionPreviewPane's test runs it in the real sandbox, where it cannot.
 
 import { afterEach, expect, it } from 'vitest'
+import FONT_URL from 'pdfjs-dist/standard_fonts/LiberationSans-Bold.ttf?url'
 import { prepareUiPage } from '@gadgets/workshop-shared/ui-page'
 import { DOCS_PREVIEW_BUNDLE } from './docsPreviewBundle'
 
@@ -23,7 +24,13 @@ const text = (element: Element) => element.textContent!.replaceAll('⁠', '')
  * holds answers in place of the scripted session's own.
  */
 async function draw(doc: Doc, session: { [method: string]: (...given: never[]) => Promise<unknown> } = {}) {
+  const fonts: [string, number, boolean][] = []
   const gadget = {
+    // No font is served here: each is asked for, and the text is drawn without.
+    readFont: async (...font: [string, number, boolean]) => {
+      fonts.push(font)
+      throw new Error('no such font')
+    },
     listTabs: async () => (doc.tabs ?? ['t.0']).map((id, index) =>
       ({ id, title: doc.titles?.[index] ?? `Tab ${index + 1}`, index, nestingLevel: 0, ...doc.edited?.includes(id) && { pending: true } })),
     getPendingChanges: async (tabId: string) => {
@@ -47,10 +54,13 @@ async function draw(doc: Doc, session: { [method: string]: (...given: never[]) =
     client.main(parent.docsPreviewGadget)
   </script>`
   const page = () => frame!.contentDocument?.getElementById('page')
-  await expect.poll(() => page() && !page()!.hasAttribute('aria-busy')).toBe(true)
+  // The first drawing waits a moment for its fonts.
+  await expect.poll(() => page() && !page()!.hasAttribute('aria-busy'), { timeout: 5_000 }).toBe(true)
   const blocks = () => [...page()!.querySelectorAll<HTMLElement>('.col > *')]
   return {
     page: page()!,
+    /** The fonts asked for, in order: family, weight and whether italic. */
+    fonts,
     blocks,
     sheets: () => [...page()!.querySelectorAll<HTMLElement>('.sheet')],
     look: (element: Element) => frame!.contentWindow!.getComputedStyle(element),
@@ -317,6 +327,57 @@ it('keeps the images of a paragraph a pending change edits, and wraps its text r
   const words = run(edited, 'Beside').getBoundingClientRect()
   expect(words.left).toBeGreaterThanOrEqual(tethered.getBoundingClientRect().right - 1)
   expect(words.top).toBeLessThan(tethered.getBoundingClientRect().bottom)
+})
+
+it('asks for the fonts the drawing is set in, each once, and none the browser has', async () => {
+  const set = drawing([paragraph(0, 'Words')], {
+    textLooks: [{ ...ARIAL, fontFamily: 'Open Sans' }, { ...ARIAL, fontFamily: 'Open Sans', weight: 700 }, ARIAL],
+  })
+  const { fonts } = await draw({ savedMarkdown: 'Words\n', drawing: set })
+
+  await expect.poll(() => fonts).toEqual([['Open Sans', 400, false], ['Open Sans', 700, false]])
+})
+
+it('asks again, after a while, for a font that could not be read', async () => {
+  const set = drawing([paragraph(0, 'Words')], { textLooks: [{ ...ARIAL, fontFamily: 'Open Sans' }] })
+  const later: (() => void)[] = []
+  let asked = 0
+  const { refresh } = await draw({ savedMarkdown: 'Words\n', drawing: set }, {
+    readFont: async () => {
+      asked++
+      // The frame's wait of a minute is held, to be ended here.
+      const { setTimeout: wait } = frame!.contentWindow!
+      frame!.contentWindow!.setTimeout = ((run: () => void, ms?: number) =>
+        ms === 60_000 ? later.push(run) : wait(run, ms)) as typeof setTimeout
+      throw new Error('Google is busy')
+    },
+  })
+  expect(asked).toBe(1)
+
+  for (const run of later) run()
+  await refresh({ markdown: 'Words\n\nMore\n' })
+  await expect.poll(() => asked).toBe(2)
+
+  // And on a refresh that finds the tab as it was.
+  for (const run of later.splice(0)) run()
+  await refresh({})
+  await expect.poll(() => asked).toBe(3)
+})
+
+it('sets the text in a font that arrives after a later read has drawn it', async () => {
+  const set = (text: string) => drawing([paragraph(0, text)], { textLooks: [{ ...ARIAL, fontFamily: 'Open Sans' }] })
+  let arrive!: (bytes: ArrayBuffer) => void
+  const { blocks, refresh } = await draw({ savedMarkdown: 'Words\n', drawing: set('Words'), revisionId: 'a' }, {
+    readFont: () => new Promise<ArrayBuffer>(resolve => { arrive = resolve }).then(bytes => new Blob([bytes]).stream()),
+  })
+  await refresh({ savedMarkdown: 'Wide words\n', drawing: set('Wide words'), revisionId: 'b' })
+  await expect.poll(() => text(blocks()[0])).toBe('Wide words')
+  const width = () => run(blocks()[0], 'Wide words').getBoundingClientRect().width
+  const before = width()
+
+  arrive(await (await fetch(FONT_URL)).arrayBuffer())
+
+  await expect.poll(width).not.toBe(before)
 })
 
 it('draws a tab again once it is saved anew, though its Markdown reads the same', async () => {

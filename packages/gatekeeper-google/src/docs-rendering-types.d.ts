@@ -10,9 +10,16 @@ export interface GoogleDocRenderingReads {
    * each block of the body here names its line of that `savedMarkdown`. To read or edit the
    * tab's text call `getContent()`, whose answer is far smaller.
    *
-   * `readImage()` reads the bytes of an object named here.
+   * `readImage()` reads the bytes of an object named here, and `readFont()` a font of a family
+   * named here.
    */
   readDrawing(tabId: string): Promise<GoogleDocDrawing>;
+
+  /**
+   * Read the file of one font of `family`, a `fontFamily` the tab's drawing returned, from Google
+   * Fonts: `weight` from 100 to 900, upright or `italic`. Throws when Google Fonts has no such font.
+   */
+  readFont(family: string, weight: number, italic: boolean): Promise<ReadableStream<Uint8Array>>;
 }
 
 /** One tab as Google Docs draws it. Lengths are in points and colors are `#rrggbb`. */

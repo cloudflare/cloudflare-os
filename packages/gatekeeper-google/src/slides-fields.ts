@@ -34,7 +34,7 @@ export const SUMMARY_FIELDS =
  */
 export const OUTLINE_FIELDS =
   `presentationId,title,revisionId,${MASTER_FIELDS},layouts(${LAYOUT_PROPERTIES}),` +
-  "slides(objectId,slideProperties(masterObjectId,isSkipped))";
+  "slides(objectId,slideProperties(layoutObjectId,masterObjectId,isSkipped))";
 /** What a new slide takes from its layout: each placeholder's type, index, shape and geometry. */
 export const LAYOUT_PAGE_FIELDS =
   "objectId,pageElements(objectId,size,transform,shape(shapeType,placeholder(type,index)))";
@@ -42,3 +42,28 @@ export const LAYOUT_PAGE_FIELDS =
 export const SLIDE_FIELDS =
   `objectId,pageProperties(${BACKGROUND_FIELDS}),pageElements,` +
   "slideProperties(layoutObjectId,masterObjectId,isSkipped,notesPage(notesProperties,pageElements))";
+/**
+ * A slide as it is drawn: as SLIDE_FIELDS, with the bearer URL of a picture background, which is
+ * read only to download the picture (see `slides-media.ts`).
+ */
+export const DRAWN_SLIDE_FIELDS = SLIDE_FIELDS.replace(BACKGROUND_FIELDS, "pageBackgroundFill");
+/**
+ * What a slide is drawn over: the page size, and every master and layout whole. A placeholder
+ * takes its place, fill and text styles from its layout's, and that from its master's, and a slide
+ * shows its layout's and master's other elements behind its own.
+ */
+export const THEME_FIELDS =
+  "presentationId,pageSize,masters(objectId,pageProperties(pageBackgroundFill),pageElements)," +
+  "layouts(objectId,pageProperties(pageBackgroundFill),pageElements)";
+// The styles that say which font text is drawn in.
+const FONT_STYLE = "bold,italic,fontFamily,weightedFontFamily";
+const FONT_TEXT =
+  `text(textElements(textRun(style(${FONT_STYLE})),autoText(style(${FONT_STYLE})),` +
+  `paragraphMarker(bullet(bulletStyle(${FONT_STYLE})))),lists)`;
+const FONT_SHAPES = `shape(${FONT_TEXT}),table(tableRows(tableCells(${FONT_TEXT})))`;
+// A mask names each depth it reaches, so text grouped more than three deep is not read.
+const FONT_ELEMENTS = `pageElements(${FONT_SHAPES},elementGroup(children(${FONT_SHAPES},` +
+  `elementGroup(children(${FONT_SHAPES},elementGroup(children(${FONT_SHAPES})))))))`;
+/** Every text style's font across the presentation, and nothing of what the text says. */
+export const FONT_FIELDS =
+  `presentationId,title,masters(${FONT_ELEMENTS}),layouts(${FONT_ELEMENTS}),slides(${FONT_ELEMENTS})`;

@@ -178,9 +178,10 @@ export interface GoogleDocSession extends GoogleDocEditSession {
   readImage(imageId: string, tabId: string): Promise<GoogleDocImageBytes>;
 
   /**
-   * Return the declarations of the read that these types leave out, as TypeScript: `readDrawing()`,
+   * Return the declarations of the reads that these types leave out, as TypeScript: `readDrawing()`,
    * which gives what it takes to render a tab as Google Docs draws it, with its pages, headers,
-   * footers and wrapped images. Call it before writing or changing code that renders the document.
+   * footers and wrapped images, and `readFont()`. Call it before writing or changing code that
+   * renders the document.
    */
   getRenderingTypes(): Promise<string>;
 }

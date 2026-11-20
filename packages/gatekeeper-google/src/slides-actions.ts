@@ -216,7 +216,10 @@ function pageName({ pageType, id }: DesignPage, themes: Record<string, ThemeLabe
   return `layout ${quoted(label?.name ?? id)}` + (label?.master ? ` of master ${quoted(label.master)}` : "");
 }
 
-/** Names an element: by its ID, as a `noun`, unless the batch describing it creates it. */
+/**
+ * Names an element as a `noun`: by its text, or by its ID without any, unless the batch describing
+ * it creates it.
+ */
 type ElementName = (id: string, noun?: string) => string;
 
 const byId: ElementName = (id, noun = "element") => `${noun} ${codeSpan(id)}`;
@@ -407,11 +410,12 @@ function describeChange(
 
 // One line per change, and the fields to show verbatim after them.
 function describeDesign(
-  { changes, slides, themes }: DesignBatch,
+  { changes, slides, themes, elements = {} }: DesignBatch,
 ): { lines: string[]; fields: [label: string, text: string][] } {
   let created = new Map<string, string>();
   let fields: [string, string][] = [];
-  let element: ElementName = (id, noun) => created.get(id) ?? byId(id, noun);
+  let element: ElementName = (id, noun = "element") => created.get(id) ??
+    (Object.hasOwn(elements, id) ? `${noun} ${quoted(elements[id])}` : byId(id, noun));
   let lines = changes.map((change, i) => {
     let label = changes.length === 1 ? "" : `Change ${i + 1}: `;
     let line = describeChange(change, element, (name, text) => fields.push([`${label}${name}`, text]));
@@ -564,7 +568,8 @@ function designBatch(kind: ActionKind, autoApprovable: boolean): ActionDefinitio
         ? `${lines[0]}.`
         : `Makes ${lines.length} changes, all or none of which are applied:\n\n` +
           lines.map((line, i) => `${i + 1}. ${line}`).join("\n"));
-      for (let [label, text] of fields) builder.verbatim(label, text);
+      // A value one line shows exactly shares it with its label; any other is a block of its own.
+      for (let [label, text] of fields) builder.inline(label, text);
       if (pageCount > 0) {
         builder.prose("Each change to a master or layout reaches every slide made from it.");
       }

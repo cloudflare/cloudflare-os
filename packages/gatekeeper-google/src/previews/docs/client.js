@@ -12,10 +12,10 @@
 // or a heading, and out to the web, in a new browser tab, from text Google Docs has saved.
 
 import {
-  addControl, dataUrl, flash, foldArrow, ghostLines, leaveOutline, lineIcon, loadOnRefresh, make, motion, outline,
-  outlineList, page, partNavigator, setOutline, setStops, showError, showPage, showStale, status, touch,
+  addControl, dataUrl, flash, foldArrow, fontReader, ghostLines, leaveOutline, lineIcon, loadOnRefresh, make, motion,
+  outline, outlineList, page, partNavigator, setOutline, setStops, showError, showPage, showStale, status, touch,
 } from './ui/chrome.js';
-import { drawer, headingLevel, newList, showPicture } from './draw.js';
+import { drawer, faceMeasures, headingLevel, newList, showPicture } from './draw.js';
 import { paginate } from './pages.js';
 import { BOLD, ITALIC, STRIKE, blockKey, diff, pairEdits, parseBlocks, tablesOf, wordsOf } from './text.js';
 
@@ -155,6 +155,10 @@ function namedOf(style) {
   const found = named[style];
   return found ? { paragraph: paragraphLooks[found.paragraph], text: textLooks[found.text] } : PLAIN[style] ?? PLAIN.NORMAL_TEXT;
 }
+
+// The most fonts read for one document, and the reader that brings them into this frame.
+const MAX_FONTS = 24;
+const fonts = fontReader((...font) => gadget.readFont(...font), MAX_FONTS, () => faceMeasures);
 
 // Per tab: the saved Markdown and the revision its drawing was read for, and the drawing. The
 // revision tells of a change to how the tab is drawn that its Markdown does not show.
@@ -778,6 +782,25 @@ function selectTab(id) {
   views.hidden = true;
 }
 
+// Asks for the fonts the tab is set in, and sets it again in each that arrives: one that could
+// not be read is asked for again after a while.
+function readFonts() {
+  const { drawing, rows } = tab;
+  // Bold and italic are read too where the pending changes write them, which no saved look may.
+  const writes = flag => rows.some(({ item, mark, words }) => mark && mark !== 'removed' && item.type !== 'table' &&
+    (words ?? wordsOf(item.text)).some(word => word.style & flag && word.mark !== 'removed'));
+  const [bold, italic] = [writes(BOLD), writes(ITALIC)];
+  return fonts.read(drawing.textLooks.flatMap(({ fontFamily, weight, italic: slanted }) => [
+    [fontFamily, weight, !!slanted],
+    ...bold ? [[fontFamily, 700, false]] : [],
+    ...italic ? [[fontFamily, 400, true]] : [],
+  ])).then(any => {
+    // Whichever read drew the tab on the page by then: a later one asked for no font that was
+    // already on its way.
+    if (any && loaded && !page.hidden) render(false, readingPlace());
+  });
+}
+
 async function load() {
   const current = ++generation;
   if (loaded) status('Updating…');
@@ -814,8 +837,9 @@ async function load() {
     // Nothing of this tab moved, as when a change is made to another: what is drawn stands.
     if (loaded && !page.hidden && tab.drawing === drawing && tab.savedMarkdown === savedMarkdown && tab.markdown === markdown) {
       for (const arrived of document.querySelectorAll('.fresh')) arrived.classList.remove('fresh');
-      // An image that could not be read is asked for again.
+      // An image or a font that could not be read is asked for again.
       showPictures();
+      void readFonts();
       showStale(stale, 'document');
       return void status('');
     }
@@ -840,6 +864,12 @@ async function load() {
     const rows = pairEdits(diff(saved, markdown === savedMarkdown ? saved : parseBlocks(markdown, text => held.has(text), plain), blockKey));
     tab = { drawing, savedMarkdown, markdown, rows, drawnOf: fits ? drawnOf : () => undefined, changed: rows.some(row => row.mark) };
     if (!tab.changed) view = 'after';
+
+    // The text is set in each font as it arrives, and the first time waits a moment for them:
+    // a page set in a stand-in breaks its lines, and so its pages, somewhere else.
+    const arriving = readFonts();
+    if (!loaded) await Promise.race([arriving, new Promise(resolve => setTimeout(resolve, 1500))]);
+    if (current !== generation) return;
 
     render(true);
     showStale(stale, 'document');

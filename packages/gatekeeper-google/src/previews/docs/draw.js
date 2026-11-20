@@ -60,6 +60,9 @@ const whole = pixels => Math.ceil(pixels - .01);
 /** How tall a line of text of `size` points is before it is rounded, in pixels. */
 const lineOf = (size, spacing) => spacing * LINE * size * PX;
 
+/** What a font read for the document is set by, so its text sits in a line where Docs puts it. */
+export const faceMeasures = { ascentOverride: `${ASCENT * 100}%`, descentOverride: `${(LINE - ASCENT) * 100}%`, lineGapOverride: '0%' };
+
 // A fixed-width family that only its owner hands out, by how wide each of its letters is
 // against its size: whatever fixed-width font stands in for it is spaced to that.
 const FIXED_WIDTHS = { Consolas: 1126 / 2048 };
