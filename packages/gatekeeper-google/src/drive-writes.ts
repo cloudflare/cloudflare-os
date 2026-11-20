@@ -18,6 +18,7 @@ import {
   type DriveWriteFailure,
   type DriveApi, type DriveScopeNode,
 } from "./drive-api";
+import { isUnsentRequest } from "./auth-retry";
 import { docsLacksScope, type GoogleDocsApi } from "./docs-api";
 import { isDirectChild, readFolderLocation } from "./drive-folder-scope";
 import { GoogleApiError } from "./google-response";
@@ -465,6 +466,13 @@ export async function sendOnce<Sent>(
   try {
     sent = await step.send();
   } catch (error) {
+    // Its token not to be had at the send itself, though `ready()` just had one: nothing was sent,
+    // so the marker is put back as it was and the account's reason is given.
+    if (isUnsentRequest(error)) {
+      if (prior) host.attempts.put(id, prior);
+      else host.attempts.delete(id);
+      throw error;
+    }
     let failure = step.failure?.(error) ?? driveWriteFailure(error, { repeatable: step.repeatable });
     log.warn("Drive write send failed", {
       event: `${events}.send.failed`, outcome: failure, error,

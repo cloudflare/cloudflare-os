@@ -11,6 +11,7 @@ import {
   readOnlyRefusal, requireWritable, sendOnce, shownFileName, WRITE_ATTEMPT_PREFIX, writeAttempts,
   writeRefusal, WRITES_GRANT_MISSING, type DriveWritesHost, type WriteAttempt, type WriteStep,
 } from "../src/drive-writes";
+import { fetchWithAuthRetry } from "../src/auth-retry";
 import { obsContext } from "../src/observability";
 
 const UNCONFIRMED = "Google Drive did not confirm whether this was made.";
@@ -272,6 +273,21 @@ describe("Drive write sends and their markers", () => {
       fileId: "F", commentId: "earlier",
     })]);
     expect(warn).not.toHaveBeenCalled();
+  });
+
+  // Its token not to be had at the send itself, past the check just before: nothing left, so the
+  // markers are as they were and the account's reason is given, the write pending.
+  it.each([
+    ["no earlier send", undefined],
+    ["an earlier send a look proved empty", { at: 1000 }],
+  ] as const)("leaves the marker as it was after a send that never left, with %s", async (_case, prior) => {
+    let { markers, host } = markerStore(prior);
+    let unsent = await fetchWithAuthRetry("https://www.googleapis.com/drive/v3/files", {},
+      async () => { throw new Error("This connection was disconnected."); })
+      .catch((error: unknown) => error);
+    let { step } = fakeStep({ send: async () => { throw unsent; } });
+    expect(await failureOf(sendOnce(host, 7, step))).toBe(unsent);
+    expect(markers.get(7)).toEqual(prior);
   });
 
   it("writes the marker before it sends, dated when the checks pass, and logs what it made", async () => {

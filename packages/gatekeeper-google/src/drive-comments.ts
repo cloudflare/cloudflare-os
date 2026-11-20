@@ -40,6 +40,7 @@ import {
   docsWriteFailure, docsWriteInvalid, type DocsRange,
   type DocsSuggestionRecord, type GoogleDocsApi, type GoogleDocsDocument,
 } from "./docs-api";
+import { isUnsentRequest } from "./auth-retry";
 import { locateQuote, selectTab } from "./drive-comment-body";
 import type { DocSuggestion, DriveComment, DriveCommentReply } from "./drive-types";
 import { GoogleApiError } from "./google-response";
@@ -697,6 +698,12 @@ async function postNote(
   try {
     await host.docs.replyToSuggestion(payload.fileId, suggestionId, note);
   } catch (error) {
+    // Its token not to be had at the send itself: the note never left, as when `ready()` refuses.
+    if (isUnsentRequest(error)) {
+      host.attempts.put(id, marked);
+      throw new Error(`The suggestion was made, but its note was not posted: ${
+        error instanceof Error ? error.message : String(error)}`, { cause: error });
+    }
     let failure = docsSendFailure(error);
     if (failure === "unknown") {
       throw new Error("The suggestion was made, but Google Docs did not confirm whether its " +
