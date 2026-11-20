@@ -5,7 +5,7 @@ import type {
 import { applyDocEdit, docEditRequests, renderTab } from "../src/docs-replay";
 import {
   addedTableCells, besideTableRefusal, changesTables, checkTabTableCells, checkTableTarget,
-  closesTableGate, commonPrefix, commonSuffix, hiddenContent, MAX_TAB_TABLE_CELLS,
+  chipCopies, closesTableGate, commonPrefix, commonSuffix, hiddenContent, MAX_TAB_TABLE_CELLS,
   MAX_TABLE_TEXT_REQUESTS, namesTable, parseCellInline, replacementPath, resolveTable,
   tableChangeRequests, tableGateRefusal, tableIdentity,
   tableShape, tableSize, tableTextRequests, textReplacementRequests,
@@ -1663,6 +1663,35 @@ const dropdownTab = () => statusTab(cellOf({ runs: [{ dropdown: "Blocked" }, "\n
 /** The deletion of that cell's row, of its column and of its table, as queued over `content`. */
 const statusDeletions = (content: DocTabSnapshot): TableChange[] =>
   [dropRows(content, 0, 1), dropColumns(content, 0, 1), dropTable(content, 0)];
+
+describe("a row insertion whose reference row has come to copy otherwise", () => {
+  /** Row 1 added before, as queued: with what Google copies from that row into it. */
+  const queuedRow = (content: DocTabSnapshot): TableChange => ({
+    type: "insertTableRows", at: 1, cells: [["", ""]], ...refOf(content, 0),
+    copies: chipCopies(content.sourceMap.tables[0], 1),
+  });
+  const cameToCopy = "insertTableRows: the row the new rows take after has come to hold, or no " +
+    "longer holds, a dropdown or other smart chip that Google Docs copies into them, which " +
+    "getContent() does not show, since this change was queued.";
+
+  it("refuses an empty row queued before its reference row came to hold a dropdown", () => {
+    // A dropdown reads as nothing, so the table reads as recorded with and without it.
+    expect(read(dropdownTab()).markdown).toBe(read(statusTab()).markdown);
+    let plain = queuedRow(read(statusTab()));
+    expect(plain).toMatchObject({ copies: "--" });
+    appliedChange(statusTab(), plain);
+    expect(refusal(dropdownTab(), plain)).toBe(cameToCopy);
+
+    let copying = queuedRow(read(dropdownTab()));
+    expect(copying).toMatchObject({ copies: "-d" });
+    appliedChange(dropdownTab(), copying);
+    expect(refusal(statusTab(), copying)).toBe(cameToCopy);
+  });
+
+  it("holds a row queued before copies were recorded to nothing of the kind", () => {
+    appliedChange(dropdownTab(), addRows(read(statusTab()), 0, 1, [["", ""]]));
+  });
+});
 
 describe("a deletion whose cells have come to hold what its card did not say", () => {
   it("refuses a deletion queued before a cell it removes came to hold a dropdown", () => {

@@ -780,7 +780,9 @@ text, Google Docs copies it into each new row, as the status tables it offers as
 need: a dropdown of the same choices set to its first, and the placeholder character for the
 others, also where spaces follow the chip, which are not copied. The new cells in that column take
 no text, and reads and the approval card show the copies. Of two or more person chips, date chips
-or rich links, Google copies nothing, and the new cells take text as any other.
+or rich links, Google copies nothing, and the new cells take text as any other. A chip alone in a
+cell reads as an empty cell, so a queued row insertion records what the row beside it copies, and
+fails without writing once that row comes to copy otherwise.
 
 What cannot be applied exactly is refused. Each of the following is refused when the call is made,
 before anything is queued:

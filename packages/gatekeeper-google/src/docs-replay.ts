@@ -395,7 +395,7 @@ type KeysOfUnion<T> = T extends unknown ? keyof T : never;
 /** Every field a `DocEdit` may carry: what `docEditRequests` builds an edit's requests from. */
 const DOC_EDIT_FIELDS: Record<KeysOfUnion<DocEdit>, true> = {
   type: true, oldMarkdown: true, newMarkdown: true, inTable: true, markdown: true, rows: true,
-  columns: true, cells: true, after: true, at: true, count: true, expected: true, unshown: true,
+  columns: true, cells: true, after: true, at: true, count: true, expected: true, unshown: true, copies: true,
   suggested: true, style: true, row: true, column: true, width: true, height: true,
 };
 

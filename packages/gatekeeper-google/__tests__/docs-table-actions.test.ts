@@ -257,11 +257,11 @@ describe("defaults", () => {
 // ---------------------------------------------------------------------------
 
 describe("the stored change", () => {
-  it("records the table's HTML and nothing else about it", () => {
+  it("records the table's HTML, and for new rows what Google copies into them", () => {
     let from = read(STATUS());
     let expected = tableAt(from.tab, 0);
     expect(prepare(from, addRows({ table: 0, cells: [["a", "b"]] })).change)
-      .toStrictEqual({ type: "insertTableRows", at: 3, cells: [["a", "b"]], expected });
+      .toStrictEqual({ type: "insertTableRows", at: 3, cells: [["a", "b"]], expected, copies: "--" });
     expect(prepare(from, addColumns({ table: 0, at: 1 })).change)
       .toStrictEqual({ type: "insertTableColumns", at: 1, cells: [[""], [""], [""]], expected });
     expect(prepare(from, dropRows({ table: 0, at: 2 })).change)
