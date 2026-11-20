@@ -286,6 +286,18 @@ export type AccountDescription = {
   providesUi?: { title: string; icon?: AvatarImage };
 }
 
+/**
+ * One source file of a UI. Files travel as a list, not as an object keyed by path: RPC drops keys
+ * that shadow an object's prototype, which a path may.
+ */
+export type UiFile = {
+  /** The file's path among the UI's files, such as `client.js` or `ui/list.js`. */
+  path: string;
+
+  /** The file's code as written, relative imports and all. */
+  code: string;
+};
+
 /** Describes metadata about a specific instance of a resource. Returned by Gatekeeper.describe(). */
 export type ResourceDescription = {
   /**
@@ -325,6 +337,9 @@ export type ResourceDescription = {
 
   /** Indicates that getSlashCommandProvider() is available. */
   hasSlashCommands?: true;
+
+  /** Indicates that getPreviewUi() is available. */
+  hasPreview?: true;
 
   /**
    * Some resources implement the ability for the client to subscribe to events. The application
@@ -1275,6 +1290,27 @@ export interface Gatekeeper<Session> extends DurableObject {
   getSlashCommandProvider?(): Promise<SlashCommandProvider>;
 
   /**
+   * Returns client-side code that draws this resource for a person, for describe().hasPreview:
+   * its files as a gadget's file tree holds its UI. `client.js` is the entry, and the import rules
+   * of a gadget's UI apply.
+   *
+   * It runs as a gadget's UI does, with a session from `startSession()` in place of the gadget's
+   * server. It therefore holds no more than a gadget bound to this resource would, and its reads
+   * and actions go through the approval queue like any other.
+   *
+   * With `previewOf`, the ID of an `ActionDescription.previewOf`, returns the code that draws
+   * that item instead, and throws for an ID that names nothing it can draw. That code runs with
+   * what the session's `openPreview(previewOf)` returns in place of the session: a method such a
+   * session has by convention with the Workshop, which no type here names.
+   *
+   * Returns code only. The Workshop calls this with no session, so nothing here is an observation,
+   * and `previewOf` is whatever a client sent. Neither the code nor the choice of it may therefore
+   * depend on anything read from the provider: what the resource holds is read by the code,
+   * through its session.
+   */
+  getPreviewUi?(previewOf?: string): Promise<UiFile[]>;
+
+  /**
    * Stream a self-contained Git pack containing the requested objects and related objects
    * selected by `options`. The stream contains raw PACK bytes, not Git protocol framing, and
    * must not require delta bases from an earlier fetch.
@@ -1809,6 +1845,27 @@ export type ActionKind = {
 };
 
 /**
+ * An item of a resource that its gatekeeper can draw by itself. See `ActionDescription.previewOf`.
+ *
+ * It is stored and sent with its action's description, to everyone who sees the workspace's
+ * action log and before any read of the item is authorized. It therefore holds nothing that
+ * description may not show them.
+ */
+export type PreviewItem = {
+  /**
+   * The gatekeeper's own name for the item, opaque to everyone else and handed back to
+   * `Gatekeeper.getPreviewUi()`.
+   */
+  id: string;
+
+  /** The item's name, shown to people. */
+  title: string;
+
+  /** Where a person opens the item itself. */
+  url?: string;
+};
+
+/**
  * Describes an action submitted to the action approval queue. This contains all the information
  * needed to:
  * - Decide whether the action needs to be approved and who can approve it.
@@ -1833,6 +1890,13 @@ export type ActionDescription = {
    * rendered as Markdown, so a value needs no escaping to display as exactly itself.
    */
   fields?: ActionField[];
+
+  /**
+   * The one item of the resource this action changes, when the gatekeeper can draw that item by
+   * itself: a file in a folder. Display only: it grants and checks nothing, and is unrelated to
+   * `ObservationDescription.subresources`.
+   */
+  previewOf?: PreviewItem;
 
   /**
    * The gatekeeper's assertion that `description` and `fields` together reproduce, verbatim, every

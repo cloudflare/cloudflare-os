@@ -727,8 +727,12 @@ export interface TestSession {
    */
   readValue(restricted?: boolean, ownerInvitesOnly?: boolean, excludeObservers?: string[],
             subresources?: string[]): Promise<number>;
-  /** `incomplete` omits the `descriptionIsComplete` claim, as a summary-only gatekeeper would. */
-  writeValue(value: number, opts?: { autoApprovable?: boolean; incomplete?: boolean }): Promise<number>;
+  /**
+   * `incomplete` omits the `descriptionIsComplete` claim, as a summary-only gatekeeper would.
+   * `previewOf` names the item the write changes, as a gatekeeper of several would.
+   */
+  writeValue(value: number, opts?: { autoApprovable?: boolean; incomplete?: boolean; previewOf?: string })
+      : Promise<number>;
   writeValues(values: number[]): Promise<number[]>;
   /** Exercises worktree capability delegation through the real code-mode bridge. */
   mountWorktree(worktree: RpcStub<ReplicableWorktree>): Promise<string>;
@@ -783,7 +787,8 @@ class TestSessionTarget extends RpcTarget implements TestSession {
   }
 
   async writeValue(
-      value: number, opts?: { autoApprovable?: boolean; incomplete?: boolean }): Promise<number> {
+      value: number, opts?: { autoApprovable?: boolean; incomplete?: boolean; previewOf?: string })
+      : Promise<number> {
     const id = await this.state.stageAction(this.label, value);
     try {
       await this.approvalQueue.submitAction(id, {
@@ -791,6 +796,7 @@ class TestSessionTarget extends RpcTarget implements TestSession {
         description: `Set the deterministic integration-test value to **${value}**.`,
         // The number is the whole content of the write.
         ...(opts?.incomplete ? {} : { descriptionIsComplete: true }),
+        ...(opts?.previewOf ? { previewOf: { id: opts.previewOf, title: `Item ${opts.previewOf}` } } : {}),
         implementsRevert: false,
         awaitDecision: true,
         actionKind: SET_VALUE_ACTION_KIND,
@@ -907,7 +913,20 @@ export class TestGatekeeper
       snippet: `The test resource ${name}.`,
       suggestedBindingName: "TEST_THING",
       tsType: "TestThing",
+      hasPreview: true,
     };
+  }
+
+  async getPreviewUi(previewOf?: string): Promise<{ path: string; code: string }[]> {
+    if (previewOf !== undefined) {
+      return [{ path: "client.js", code: `export default ${JSON.stringify({ item: previewOf })};\n` }];
+    }
+    return [
+      { path: "client.js", code: `import { text } from "./ui/text.js";\n` +
+        `export default { main() { document.body.textContent = text; } };\n` },
+      { path: "ui/text.js", code: `export const text = "test preview";\n` },
+      { path: "unused.js", code: `export {};\n` },
+    ];
   }
 
   /** Admits each observer whose verifier reports none of `subresources` denied. */

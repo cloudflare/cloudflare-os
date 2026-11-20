@@ -127,7 +127,7 @@ export const APPLY_OUTCOME_UNKNOWN_MESSAGE = "This action was interrupted after 
 
 type KitOwnedField = "awaitDecision" | "autoApprovable" | "actionKind";
 type ProviderOwnedField =
-  | "title" | "description" | "fields" | "descriptionIsComplete" | "pushedCommits"
+  | "title" | "description" | "fields" | "previewOf" | "descriptionIsComplete" | "pushedCommits"
   | "implementsRevert";
 type Unclassified = Exclude<keyof ActionDescription, KitOwnedField | ProviderOwnedField>;
 
@@ -748,7 +748,8 @@ export function defineActions<Host, M extends Record<string, unknown>>(
           // Cloned for the same reason as the payload: staging serializes behind the journal's
           // lane, and `describe` may still own what it returned.
           const {
-            title, description, fields, descriptionIsComplete, pushedCommits, implementsRevert,
+            title, description, fields, previewOf, descriptionIsComplete, pushedCommits,
+            implementsRevert,
           } = structuredClone(await definition.describe(payload, host));
           const action = { kind, payload } as TaggedAction<M>;
           return stage(journal, queue, action, {
@@ -761,6 +762,7 @@ export function defineActions<Host, M extends Record<string, unknown>>(
             // completeness puts no key on the wire at all. A push is never complete, whatever the
             // hook claims: the approver sees commit ids, not the bytes they carry.
             ...(fields?.length ? { fields } : {}),
+            ...(previewOf ? { previewOf } : {}),
             ...(pushedCommits ? { pushedCommits } : {}),
             ...(descriptionIsComplete === true && !pushedCommits?.length
               ? { descriptionIsComplete: true }

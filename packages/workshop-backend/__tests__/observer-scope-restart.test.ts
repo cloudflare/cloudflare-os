@@ -190,6 +190,8 @@ describe("restarting sessions when verification scope widens", () => {
     await expect(client.getGatekeeperById(id)).rejects.toThrow(/restarting/);
     // ...and the session chokepoint itself, which binding loopbacks also pass through.
     await expect(added.openSession()).rejects.toThrow(/restarting/);
+    // ...and its preview's code, refused before the facet, which here has none, is asked for it.
+    await expect(added.getPreviewUi()).rejects.toThrow(/restarting/);
   }));
 
   it("with nobody to sever, the added connection is immediately usable",
