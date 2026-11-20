@@ -342,6 +342,99 @@ describe('ObserverConfigModal account selection', () => {
     expect(onConfirm).toHaveBeenCalledWith([{ gatekeeperId: 12, accountId: 1 }])
   })
 
+  it('applies one account choice to every connection of a vendor', async () => {
+    const onConfirm = vi.fn<(choices: ObserverAccountChoice[]) => void>()
+    const granted = account(1, 'dan@cloudflare.com', [DOC_RESOURCE.urlPattern])
+    const second = { ...NEED, gatekeeperId: 13, resourceTitle: 'Q4 planning', resourceUrl: 'https://docs.google.com/document/d/q4' }
+    const rendered = await render([granted, account(2, 'dan.personal@gmail.com', [DOC_RESOURCE.urlPattern])], {
+      needs: [NEED, second],
+      onConfirm,
+    })
+
+    expect(rendered.querySelectorAll('[data-testid="account-select"]')).toHaveLength(1)
+    await act(async () => findButton(rendered, 'Verify and open')!.click())
+    expect(onConfirm).toHaveBeenCalledWith([
+      { gatekeeperId: 12, accountId: 1 },
+      { gatekeeperId: 13, accountId: 1 },
+    ])
+  })
+
+  describe('a vendor whose connections need different resource types', () => {
+    const SHEET_RESOURCE: SupportedResource = {
+      urlPattern: 'https://docs.google.com/spreadsheets/d/:sheetId/*',
+      title: 'Google Sheet',
+      description: 'Read and edit spreadsheets you choose.',
+      grantable: true,
+    }
+    const RESOURCES = [DOC_RESOURCE, SHEET_RESOURCE]
+    const SHEET_NEED: ObserverBindingNeed = {
+      gatekeeperId: 13,
+      vendorId: 'google',
+      resourceTitle: 'Budget',
+      resourceUrl: 'https://docs.google.com/spreadsheets/d/budget',
+    }
+
+    it('requests every type the connections need when connecting', async () => {
+      const connectAccount = vi.fn<AuthenticatedApi['connectAccount']>().mockResolvedValue(FLOW)
+      mockConnectPopup()
+      const rendered = await render([], {
+        needs: [NEED, SHEET_NEED],
+        api: fakeApi([], { connectAccount }, RESOURCES),
+      })
+
+      await act(async () => findButton(rendered, 'Connect')!.click())
+      expect(connectAccount).toHaveBeenCalledWith('google', [DOC_RESOURCE.urlPattern, SHEET_RESOURCE.urlPattern])
+    })
+
+    it('withholds Ready until the account holds both types, and grants only the missing one', async () => {
+      const ensureAccountResources = vi.fn<AuthenticatedApi['ensureAccountResources']>().mockResolvedValue(FLOW)
+      mockConnectPopup()
+      const docsOnly = account(1, 'dan@cloudflare.com', [DOC_RESOURCE.urlPattern])
+      const rendered = await render([docsOnly], {
+        needs: [NEED, SHEET_NEED],
+        api: fakeApi([docsOnly], { ensureAccountResources }, RESOURCES),
+      })
+
+      expect(rendered.textContent).not.toContain('Ready')
+      expect(findButton(rendered, 'Verify and open')?.disabled).toBe(true)
+      await act(async () => findButton(rendered, 'Grant the access needed to verify these resources')!.click())
+      expect(ensureAccountResources).toHaveBeenCalledWith(1, [SHEET_RESOURCE.urlPattern])
+    })
+
+    it('is Ready once the account holds both types', async () => {
+      const both = account(1, 'dan@cloudflare.com', [DOC_RESOURCE.urlPattern, SHEET_RESOURCE.urlPattern])
+      const rendered = await render([both], { needs: [NEED, SHEET_NEED], api: fakeApi([both], {}, RESOURCES) })
+
+      expect(rendered.textContent).toContain('Ready')
+      expect(findButton(rendered, 'Verify and open')?.disabled).toBe(false)
+    })
+
+    it('on a retry, warns only about the refused connection and offers to re-authenticate its account', async () => {
+      const both = account(1, 'dan@cloudflare.com', [DOC_RESOURCE.urlPattern, SHEET_RESOURCE.urlPattern])
+      const rendered = await render([both], {
+        needs: [{ ...NEED, failure: { accountId: 1, reason: 'Access was revoked.' } }, SHEET_NEED],
+        api: fakeApi([both], {}, RESOURCES),
+      })
+
+      const warnings = [...rendered.querySelectorAll('.text-kumo-warning')].map(el => el.textContent)
+      expect(warnings).toEqual([expect.stringContaining('Q3 planning · dan@cloudflare.com — Access was revoked.')])
+      expect(rendered.textContent).not.toContain('Ready')
+      expect(findButton(rendered, 'Re-authenticate this account')).toBeDefined()
+    })
+
+    it('words the retry by distinct accounts when one account was refused twice', async () => {
+      const both = account(1, 'dan@cloudflare.com', [DOC_RESOURCE.urlPattern, SHEET_RESOURCE.urlPattern])
+      const failure = { accountId: 1, reason: 'Access was revoked.' }
+      const rendered = await render([both], {
+        needs: [{ ...NEED, failure }, { ...SHEET_NEED, failure }],
+        api: fakeApi([both], {}, RESOURCES),
+      })
+
+      expect(rendered.textContent).toContain('the reasons below, re-authenticate this account')
+      expect(rendered.textContent).toContain('share the resources that your account can’t access')
+    })
+  })
+
   // A popup flow can end without this dialog ever hearing about it: the user closes it, the
   // provider refuses, or it signs in as an account the user already has (which adds no account).
   // None of these may leave the dialog waiting with every way forward disabled.
