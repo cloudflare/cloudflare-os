@@ -1502,6 +1502,11 @@ function expression(value: Json | undefined): string | undefined {
   return typeof value === "string" ? value.replace(/\s+/g, "") : undefined;
 }
 
+/** The values in a workflow that read a secret, and what its jobs pass on as secrets to a called workflow. */
+function secretsIn(workflow: Json): Json[] {
+  return [...texts(workflow).filter((text) => /\bsecrets\b/i.test(text)), ...jobsOf(workflow).flatMap((job) => dig(job, "secrets") ?? [])];
+}
+
 const RELAY = ".github/workflows/risk-review-trigger.yml";
 const gate = parseWorkflow(read(".github/workflows/risk-review.yml"));
 const relay = parseWorkflow(read(RELAY));
@@ -1541,7 +1546,7 @@ describe("risk-review workflows", () => {
   it("relays pull request, review and merge group events from a workflow with no permissions or secrets", () => {
     assert.deepEqual(dig(relay, "permissions"), {});
     assert.deepEqual(jobsOf(relay).map((job) => dig(job, "permissions")).filter((permissions) => permissions !== undefined), []);
-    assert.deepEqual(texts(relay).filter((text) => /\bsecrets\./.test(text)), []);
+    assert.deepEqual(secretsIn(relay), []);
     for (const event of ["pull_request", "pull_request_review", "pull_request_review_comment", "merge_group"]) {
       assert.ok(triggersOf(relay).includes(event), event);
     }
@@ -1559,5 +1564,18 @@ describe("risk-review workflows", () => {
     assert.equal(mayWriteChecks(parseWorkflow("jobs:\n  a:\n    steps: []\n")), true);
     // A job id that is also the name of an object's prototype is a job like any other.
     assert.equal(mayWriteChecks(parseWorkflow("permissions: {}\njobs:\n  __proto__:\n    permissions:\n      checks: write\n")), true);
+  });
+
+  it("gives the workflow that builds and runs the head no secret, environment or write permission", () => {
+    const paths = (["proof-equivalence", "proof-tests", "preview-smoke"] as const).map((name) => PRODUCERS[name].workflow);
+    for (const path of new Set(paths)) {
+      const workflow = parseWorkflow(read(path));
+      assert.deepEqual(secretsIn(workflow), [], path);
+      for (const job of jobsOf(workflow)) {
+        const permissions = asObject(dig(job, "permissions") ?? dig(workflow, "permissions"));
+        assert.ok(permissions && Object.values(permissions).every((grant) => grant === "read" || grant === "none"), `${path}: ${JSON.stringify(permissions)}`);
+        assert.equal(dig(job, "environment"), undefined, path);
+      }
+    }
   });
 });
