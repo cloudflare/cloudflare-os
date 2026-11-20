@@ -65,6 +65,10 @@ describe("artifact repository refresh", () => {
     expect(result).toMatchObject({ changed: true, commit: "new-commit" });
     expect(git.listFiles).toHaveBeenCalledWith(expect.objectContaining({ ref: "new-commit" }));
     expect(git.readBlob).toHaveBeenCalledWith(expect.objectContaining({ oid: "new-commit" }));
+    // The listing and every blob share one cache, so the pack is loaded once per sync.
+    const { cache } = git.listFiles.mock.calls[0][0];
+    expect(cache).toBeTypeOf("object");
+    expect(git.readBlob.mock.calls[0][0].cache).toBe(cache);
     expect(revokeToken).toHaveBeenCalledWith("token");
   });
 

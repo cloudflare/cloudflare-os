@@ -251,10 +251,13 @@ async function readArtifactRepoDocumentsWithContext(
     }
     if (!commit) return { commit: "", changed: true, documents: [] };
 
-    let filepaths = await listGitFiles({ fs, dir, ref: commit });
+    // One cache for the whole read. Without it every readBlob reloads the packfile and its index,
+    // so a sync costs files x pack size and the object answers nothing while it runs.
+    let cache = {};
+    let filepaths = await listGitFiles({ fs, dir, ref: commit, cache });
     let documents: ArtifactContextDocument[] = [];
     for (let filepath of filepaths) {
-      let { blob } = await readBlob({ fs, dir, oid: commit, filepath });
+      let { blob } = await readBlob({ fs, dir, oid: commit, filepath, cache });
       let bodyBytes = blob.byteLength;
       if (bodyBytes > MAX_DOCUMENT_BODY_BYTES) {
         logger.warn("skipping oversized mirrored context file", {
