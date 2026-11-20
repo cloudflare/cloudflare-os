@@ -864,7 +864,19 @@ export class UserAccount extends DurableObject<Env> {
         let props: GatekeeperUserImplProps = { userObjectId: this.ctx.id.toString() };
         handoff = await callback.complete(this.ctx.exports.GatekeeperUserImpl({props}));
       } catch (err) {
-        this.ctx.storage.kv.delete("refreshToken");
+        // Described before its handoff, a connection is recorded as a holder of its grant, which
+        // another connection's disconnect may have spared for it meanwhile: it lets go as a
+        // disconnect does, revoking when no other connection holds the grant. A sign-in holds none.
+        if (completion.mode === "auth") {
+          this.ctx.storage.kv.delete("refreshToken");
+        } else {
+          await this.revoke().catch(error => {
+            logger.warn("failed to let go of a connection whose handoff failed", {
+              event: "google.grant.release.failed", error,
+            });
+            this.ctx.storage.kv.delete("refreshToken");
+          });
+        }
         throw err;
       }
 

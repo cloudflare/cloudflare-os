@@ -5,7 +5,9 @@ import type {GatekeeperConnectCallback} from "@gadgets/workshop-shared/gatekeepe
 import {afterEach, describe, expect, it, vi} from "vitest";
 import type {UserAccount} from "../../src/google";
 import {GoogleGrantRegistry} from "../../src/grant-registry";
-import {connectCallbackEvents, describingConnectCallbacks} from "./worker";
+import {
+  connectCallbackEvents, describingConnectCallbacks, heldCompleteCallbacks, unreachableConnectCallbacks,
+} from "./worker";
 
 // Google revokes a grant for every client of a Google Cloud project at once, so an account that is
 // disconnected revokes it only when no other connection of the same Google account is left.
@@ -242,6 +244,36 @@ describe("Google grants shared by several connections", () => {
     await first.disconnect();
     expect(google.revoked).toEqual(["refresh-first"]);
     expect(await first.isEmpty()).toBe(true);
+  });
+
+  // Described before its handoff, a new connection is a holder, and another connection's disconnect
+  // spares the grant for it: when the handoff then fails, it lets go as a disconnect does.
+  it("revokes the grant of a connect whose handoff failed after it spared another's", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const google = fakeGoogle();
+    const {ada} = googleAccounts();
+    const first = await connection(google, "first", ada);
+    const name = `failed-${crypto.randomUUID()}`;
+    google.subjects.set(`access-${name}`, ada);
+    describingConnectCallbacks.add(name);
+    heldCompleteCallbacks.add(name);
+    const failed = accountHandle(testEnv.UserAccount.newUniqueId());
+    const connecting = failed.run(async (instance, state) => {
+      await instance.setCallback(
+        (state.exports as unknown as TestExports).TestConnectCallback({props: {name}}), "initiation", [], "connect");
+      const begun = await instance.beginOAuthFlow("initiation", "https://gatekeeper.example/oauth");
+      await instance.acceptAuthCode(name, begun!.oauthNonce);
+    }).then(() => "connected", (error: Error) => error.message);
+    await failed.holds(ada);
+    await first.disconnect();
+    expect(google.revoked).toEqual([]);
+
+    unreachableConnectCallbacks.add(name);
+    heldCompleteCallbacks.delete(name);
+    expect(await connecting).toMatch(/can't be reached/);
+    unreachableConnectCallbacks.delete(name);
+    expect(google.revoked).toEqual([`refresh-${name}`]);
+    expect(await failed.stored("refreshToken")).toBeUndefined();
   });
 
   it("revokes one Google account's grant whatever connections another has", async () => {

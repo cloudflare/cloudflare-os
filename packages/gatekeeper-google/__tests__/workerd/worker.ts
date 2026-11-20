@@ -414,6 +414,12 @@ export const heldConnectCallbacks = new Set<string>();
  */
 export const describingConnectCallbacks = new Set<string>();
 
+/**
+ * The names of the `TestConnectCallback`s whose `complete()` does not return while listed, after
+ * describing the account when it does, as while the Workshop makes the handoff's ticket.
+ */
+export const heldCompleteCallbacks = new Set<string>();
+
 /** Stands in for the Workshop's connect callback, recording each notice that reaches it. */
 export class TestConnectCallback extends WorkerEntrypoint<Cloudflare.Env, { name: string }> {
   #record(event: string): void {
@@ -424,6 +430,8 @@ export class TestConnectCallback extends WorkerEntrypoint<Cloudflare.Env, { name
 
   async complete(user: GatekeeperUser): Promise<ConnectHandoff> {
     if (describingConnectCallbacks.has(this.ctx.props.name)) await user.describe();
+    // Polled, since a promise settled by the test's request cannot be awaited from this one.
+    while (heldCompleteCallbacks.has(this.ctx.props.name)) await scheduler.wait(5);
     this.#record("complete");
     return { targetOrigin: "https://workshop.example", ticket: "ticket" };
   }
