@@ -197,7 +197,7 @@ const RowsPreview = () => {
               access={<AccessMenu label="Member" of={name} remove={{ label: 'Remove from workspace', onRemove: () => setPeople(people.filter((one) => one !== name)) }} />}
             />
           ))}
-          <MemberListItem name="Katherine Johnson" role="Uses 2 gadgets" />
+          <MemberListItem name="Katherine Johnson" role="Can use" />
           <MemberListItem icon={UsersThreeIcon} name="Everyone in Engineering Notes" detail="2 people" role="Can edit" />
           <MemberListItem
             icon={BuildingsIcon}

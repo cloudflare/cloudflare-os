@@ -17,3 +17,11 @@ export const workspaceMembers = (owner: AiChatAuthorInfo, collaborators: readonl
     .filter(({ profile }) => profile.id !== owner.id)
     .map(({ profile, access }) => ({ profile, role: access.role })),
 ]
+
+/**
+ * Those of `people` who are in the workspace, as it lists them: its owner and its members. Someone
+ * only given one of its apps to use is not, as the old app had it: they are that app's, listed where
+ * it is shared from. They still lose it with the workspace, so a count of who it is taken from is of
+ * everyone.
+ */
+export const membersOnly = (people: readonly WorkspaceMember[]): WorkspaceMember[] => people.filter(({ role }) => role !== 'use')

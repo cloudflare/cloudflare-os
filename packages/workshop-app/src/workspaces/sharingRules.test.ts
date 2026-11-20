@@ -11,7 +11,6 @@ import type {
   WorkspaceMetadata,
 } from '@gadgets/workshop-shared/api'
 import {
-  accessLabel,
   canChange,
   covers,
   grantOf,
@@ -66,12 +65,6 @@ describe('access', () => {
     expect(covers(uses(3), gadget(3))).toBe(true)
     expect(covers(uses(4), gadget(3))).toBe(false)
     expect(covers(uses(3), WHOLE)).toBe(false)
-  })
-
-  it('says what someone may do in a few words', () => {
-    expect(accessLabel(BUILD)).toBe('Member')
-    expect(accessLabel(uses(3))).toBe('Uses a gadget')
-    expect(accessLabel(uses(3, 4))).toBe('Uses 2 gadgets')
   })
 })
 

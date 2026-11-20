@@ -49,13 +49,6 @@ export const grantOf = (target: ShareTarget): CollaboratorGrant => (target.kind 
 export const covers = (access: CollaboratorAccess, target: ShareTarget) =>
   access.role === 'build' || (target.kind === 'gadget' && access.gadgetIds.includes(target.gadgetId))
 
-/** What someone is, in a few words: a "Member", or someone who uses some of its gadgets. */
-export const accessLabel = (access: CollaboratorAccess) => {
-  if (access.role === 'build') return 'Member'
-  const count = access.gadgetIds.length
-  return count === 1 ? 'Uses a gadget' : `Uses ${count} gadgets`
-}
-
 /**
  * Whether the viewer may take someone's access away: the owner may take anyone's, and anyone else
  * who can share only what they gave themselves.

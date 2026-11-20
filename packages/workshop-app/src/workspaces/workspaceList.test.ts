@@ -46,6 +46,13 @@ describe('workspaceList', () => {
     expect(narrowList(WORKSPACES, { query: 'turing', searchText: spec.searchText, filters: [] }).map(({ id }) => id)).toEqual(['team'])
   })
 
+  it('counts only members as who a workspace is shared with, not whoever only uses one of its apps', () => {
+    const withAppUser = new Map([['alone', [member('me'), { ...member('kat', 'Katherine Johnson'), role: 'use' as const }]]])
+    const appSpec = workspaceList([workspace('alone')], withAppUser, 'me')
+    expect(appSpec.filters!.some(({ facet }) => facet === 'member')).toBe(false)
+    expect(narrowList([workspace('alone')], { query: 'katherine', searchText: appSpec.searchText, filters: [] })).toEqual([])
+  })
+
   it('narrows to the workspaces with anything unread, and to none before the account has said', () => {
     expect(unreadOnly(new Set(['team', 'alone']))).toEqual(['alone', 'team'])
     expect(unreadOnly(new Set())).toEqual([])

@@ -1249,7 +1249,11 @@ its header, and its agents too, for what of theirs waits on the viewer.
 A workspace is shared to join it, and a gadget to use, alone (`ShareWorkspaceDialog`, whose
 target is a `ShareTarget`). The words are for people who have never shared software: a workspace's
 people are Members and its link lets anyone with it join; a gadget's people and link Can use it,
-and the line for the workspace's members Can edit it, as changing a gadget is editing it. A
+and the line for the workspace's members Can edit it, as changing a gadget is editing it. Whoever
+only uses some of its gadgets is not a member, as the old app had it: the workspace's dialog, its
+Members tab, its header and the Workspaces page's rows, filters and search leave them out
+(`membersOnly`), and they are listed, and taken away, in each gadget's own dialog. Deleting the
+workspace still counts them among those it is taken from. A
 gadget's Share (a menu in its pane's header, where Copy link is otherwise) has Invite user, which
 shares that gadget: its people are those who use it, under one line for everyone who can edit the
 workspace, and a template item that says where the app stands: Create template, which lets others

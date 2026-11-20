@@ -36,7 +36,7 @@ import { WorkspaceMemberList } from './WorkspaceMemberList'
 import { WorkspaceOptionsTab } from './WorkspaceOptionsTab'
 import { useRemoveWorkspace, useRenameWorkspace, useWorkspaces } from './WorkspacesContext'
 import { workspaceLabel } from './workspaceLabel'
-import { workspaceMembers } from './workspaceMembers'
+import { membersOnly, workspaceMembers } from './workspaceMembers'
 import { attentionCount, attentionOf } from './activity/overview'
 import { useWorkspaceActivity } from './activity/useWorkspaceActivity'
 import { WorkspaceHistory } from './activity/WorkspaceHistory'
@@ -124,7 +124,10 @@ const MemberWorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatHr
   const [inviting, setInviting] = useState(false)
   const shared = sharing.snapshot.status === 'ready' ? sharing.snapshot : undefined
   const standing = shared && shareStanding(shared.metadata, user)
-  const people = standing ? workspaceMembers(standing.owner, shared.collaborators).map(({ profile }) => profile) : []
+  // Everyone with access, whoever only uses one of its apps too, as deleting it takes it from them;
+  // the header shows its members.
+  const everyone = standing ? workspaceMembers(standing.owner, shared.collaborators) : []
+  const people = membersOnly(everyone).map(({ profile }) => profile)
   // Until its own metadata is read, the list's role says whether the viewer could.
   const canInvite = link !== undefined && (standing ? standing.canShare : workspace !== undefined && workspace.role !== 'use')
 
@@ -281,7 +284,7 @@ const MemberWorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatHr
               ids={devMode ? [{ title: 'Workspace ID', value: workspaceId }] : undefined}
               removal={removal && {
                 kind: removal,
-                others: standing ? people.length - 1 : undefined,
+                others: standing ? everyone.length - 1 : undefined,
                 onConfirm: async () => {
                   await removeWorkspace(workspaceId, removal)
                   onRemoved()

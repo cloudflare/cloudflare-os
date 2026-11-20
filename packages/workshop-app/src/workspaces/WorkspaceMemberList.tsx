@@ -11,11 +11,12 @@ import { UserPlusIcon } from '@phosphor-icons/react'
 import { canChange, shareStanding } from './sharingRules'
 import type { SharingSession, SharingSnapshot } from './SharingSession'
 import { useRemoval } from './useRemoval'
-import { workspaceMembers, type WorkspaceMember } from './workspaceMembers'
+import { membersOnly, workspaceMembers, type WorkspaceMember } from './workspaceMembers'
 
 const ROLE_LABELS: Record<WorkspaceMember['role'], string> = {
   owner: 'Owner',
   build: 'Member',
+  // Not listed (`membersOnly`); for the record's sake.
   use: 'Can use',
 }
 
@@ -39,7 +40,8 @@ export const WorkspaceMemberList = ({ snapshot, session, onInvite }: WorkspaceMe
   const removal = useRemoval({ session, people: [user, ...(standing ? [standing.owner] : []), ...collaborators] })
   // Someone who can only use it is not told who else can.
   const onlyUses = snapshot.status === 'ready' && snapshot.metadata.role === 'use'
-  const members = standing ? workspaceMembers(standing.owner, collaborators) : []
+  // Who is in it: whoever only uses one of its apps is that app's, listed where it is shared from.
+  const members = standing ? membersOnly(workspaceMembers(standing.owner, collaborators)) : []
   const list = useListView('workspace-members', memberList)
   const shown = list.narrow(members)
 

@@ -27,6 +27,7 @@ import { workspaceLabel } from './workspaceLabel'
 import { useWorkspaceLooks } from './useWorkspaceLooks'
 import { useWorkspaceMemberships } from './useWorkspaceMemberships'
 import { useWorkspaceRemoval } from './useWorkspaceRemoval'
+import { membersOnly } from './workspaceMembers'
 import { removalOf } from './workspaceRemoval'
 import { joinedWorkspaces, workspaceList, workspaceTitle } from './workspaceList'
 
@@ -103,24 +104,25 @@ export const WorkspacesPane = ({ onOpenWorkspace, workspaceHref, onNewWorkspace 
   // Only with all of the starred there: putting some of them in order would lose the others' places.
   const reorderStarred = list.narrowed ? undefined : keepOrder
   // What a row and a card are both given.
-  const propsOf = (workspace: WorkspaceMetadataWithTimestamps) => ({
-    workspaceLabel: workspaceLabel(workspace.title),
-    workspaceLook: looks[workspace.id],
-    title: workspaceTitle(workspace),
-    members: memberships.get(workspace.id)?.map(({ profile }) => ({ id: profile.id, name: profile.name, you: profile.id === user.id })),
-    starred: workspace.pinned === true,
-    onStarredChange: (on: boolean) => star(workspace.id, on),
-    href: workspaceHref?.(workspace.id),
-    unread: unread && unreadIds.has(workspace.id) ? { onMarkRead: () => markRead('the workspace', () => unread.markWorkspaceRead(workspace.id)) } : undefined,
-    removal: {
-      kind: removalOf(workspace),
-      onSelect: () => {
-        const members = memberships.get(workspace.id)
-        removing.ask({ id: workspace.id, title: workspace.title, removal: removalOf(workspace), others: members && members.length - 1 })
+  const propsOf = (workspace: WorkspaceMetadataWithTimestamps) => {
+    // Everyone with access, who deleting it takes it from; its row shows its members.
+    const everyone = memberships.get(workspace.id)
+    return {
+      workspaceLabel: workspaceLabel(workspace.title),
+      workspaceLook: looks[workspace.id],
+      title: workspaceTitle(workspace),
+      members: everyone && membersOnly(everyone).map(({ profile }) => ({ id: profile.id, name: profile.name, you: profile.id === user.id })),
+      starred: workspace.pinned === true,
+      onStarredChange: (on: boolean) => star(workspace.id, on),
+      href: workspaceHref?.(workspace.id),
+      unread: unread && unreadIds.has(workspace.id) ? { onMarkRead: () => markRead('the workspace', () => unread.markWorkspaceRead(workspace.id)) } : undefined,
+      removal: {
+        kind: removalOf(workspace),
+        onSelect: () => removing.ask({ id: workspace.id, title: workspace.title, removal: removalOf(workspace), others: everyone && everyone.length - 1 }),
       },
-    },
-    onSelect: () => onOpenWorkspace(workspace.id),
-  })
+      onSelect: () => onOpenWorkspace(workspace.id),
+    }
+  }
 
   // Under the list on a narrow screen, in reach of a thumb, and over it otherwise.
   const narrow = useNarrowScreen()

@@ -17,7 +17,7 @@ import { webUrl } from '@/components/webUrl'
 import { useApi } from '@/rpc/ApiContext'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { useServerConfig } from '@/rpc/serverConfig'
-import { accessLabel, canChange, covers, inviteRefusal, protectedResources, shareStanding, type ProtectedResource, type ShareTarget } from './sharingRules'
+import { canChange, covers, inviteRefusal, protectedResources, shareStanding, type ProtectedResource, type ShareTarget } from './sharingRules'
 import { useInvite } from './useInvite'
 import { useRemoval } from './useRemoval'
 import { useSharing } from './useSharing'
@@ -63,8 +63,9 @@ const ShareContent = ({ workspaceId, title: knownTitle, page, target }: ContentP
   const standing = ready && shareStanding(ready.metadata, user)
   const collaborators = (ready?.collaborators ?? []).filter(({ profile }) => profile.id !== standing?.owner.id)
   const editors = collaborators.filter(({ access }) => access.role === 'build')
-  // Shared from a gadget, its people are those who use it; whoever edits is one line above them.
-  const listedPeople = gadget ? collaborators.filter(({ access }) => access.role === 'use' && covers(access, target)) : collaborators
+  // Shared from a gadget, its people are those who use it, whoever edits being one line above them;
+  // the workspace's are its members, as whoever only uses one of its apps is not in it.
+  const listedPeople = gadget ? collaborators.filter(({ access }) => access.role === 'use' && covers(access, target)) : editors
   const siteName = resolveSiteName(config?.siteName)
 
   const invite = useInvite({
@@ -193,7 +194,7 @@ const ShareContent = ({ workspaceId, title: knownTitle, page, target }: ContentP
                   )}
                   {listedPeople.map((person) => {
                     const { id, name } = person.profile
-                    const label = gadget ? 'Can use' : accessLabel(person.access)
+                    const label = gadget ? 'Can use' : 'Member'
                     return (
                       <MemberListItem
                         key={id}

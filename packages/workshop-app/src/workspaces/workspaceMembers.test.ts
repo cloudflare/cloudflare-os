@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AiChatAuthorInfo, CollaboratorInfo } from '@gadgets/workshop-shared/api'
-import { workspaceMembers } from './workspaceMembers'
+import { membersOnly, workspaceMembers } from './workspaceMembers'
 
 const person = (id: string): AiChatAuthorInfo => ({ type: 'user', id, name: id })
 const collaborator = (id: string, role: CollaboratorInfo['access']['role']): CollaboratorInfo => ({
@@ -17,5 +17,12 @@ describe('workspaceMembers', () => {
 
   it('lists the owner once, should the collaborators include them', () => {
     expect(workspaceMembers(person('ada'), [collaborator('ada', 'build')]).map(({ role }) => role)).toEqual(['owner'])
+  })
+})
+
+describe('membersOnly', () => {
+  it('leaves out whoever was only given an app of it to use, who is not in it', () => {
+    const people = workspaceMembers(person('ada'), [collaborator('grace', 'use'), collaborator('alan', 'build')])
+    expect(membersOnly(people).map(({ profile }) => profile.id)).toEqual(['ada', 'alan'])
   })
 })

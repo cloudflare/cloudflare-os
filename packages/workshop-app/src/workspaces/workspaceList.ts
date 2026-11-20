@@ -6,7 +6,7 @@ import { Avatar } from '@/components/Avatar'
 import type { ListFilter, ListOrder } from '@/components/listView'
 import { groupByName } from '@/components/nameGroups'
 import type { ListViewSpec } from '@/hooks/useListView'
-import type { WorkspaceMember } from './workspaceMembers'
+import { membersOnly, type WorkspaceMember } from './workspaceMembers'
 
 type Workspace = WorkspaceMetadataWithTimestamps
 
@@ -52,12 +52,15 @@ const filtersFor = (unread: ReadonlySet<string>): ListFilter<Workspace>[] => [
 ]
 
 /**
- * A filter for each way the workspaces are shared, as far as is known of who has access to them
- * (`memberships`, by workspace id): with nobody, and with each person other than the viewer, by
- * name. A workspace that has not said who its members are passes none of them.
+ * A filter for each way the workspaces are shared, as far as is known of who is in them
+ * (`memberships`, by workspace id, of whom its members count): with nobody, and with each person
+ * other than the viewer, by name. A workspace that has not said who its members are passes none of them.
  */
 const memberFilters = (workspaces: Workspace[], memberships: ReadonlyMap<string, WorkspaceMember[]>, viewerId: string): ListFilter<Workspace>[] => {
-  const membersOf = ({ id }: Workspace) => memberships.get(id)
+  const membersOf = ({ id }: Workspace) => {
+    const everyone = memberships.get(id)
+    return everyone && membersOnly(everyone)
+  }
   const people = new Map<string, string>()
   for (const workspace of workspaces) {
     for (const { profile } of membersOf(workspace) ?? []) {
@@ -100,5 +103,5 @@ export const workspaceList = (
   filters: [...filtersFor(unread), ...memberFilters(workspaces, memberships, viewerId)],
   facetMenus: { member: 'Members' },
   searchText: (workspace) =>
-    [workspaceTitle(workspace), workspace.owner?.name, ...(memberships.get(workspace.id) ?? []).map(({ profile }) => profile.name)].filter(Boolean).join(' '),
+    [workspaceTitle(workspace), workspace.owner?.name, ...membersOnly(memberships.get(workspace.id) ?? []).map(({ profile }) => profile.name)].filter(Boolean).join(' '),
 })
