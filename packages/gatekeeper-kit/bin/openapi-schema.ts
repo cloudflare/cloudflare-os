@@ -103,13 +103,13 @@ if (values.out === undefined) {
 
 /** Prints each operation of the document as a line of JSON, sorted by path. */
 async function list(spec: string, sha256: string | undefined, patchFile: string | undefined): Promise<void> {
-  const doc = await readDocument(spec, sha256);
-  if (patchFile !== undefined) applyPatch(doc, JSON.parse(readFileSync(patchFile, "utf8")) as Json, patchFile);
+  const doc = await load(spec, sha256, patchFile);
   const text = (value: Json | undefined) => (typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "");
   const lines = [...operations(doc)]
     .toSorted(([, , , a], [, , , b]) => (a < b ? -1 : a > b ? 1 : 0))
     .map(([, method, operation, path]) => JSON.stringify({
-      operationId: text(operation.operationId), method: method.toUpperCase(), path,
+      // As written: the id is what an --operations file chooses by.
+      operationId: typeof operation.operationId === "string" ? operation.operationId : "", method: method.toUpperCase(), path,
       tag: text(Array.isArray(operation.tags) ? operation.tags[0] : undefined), summary: text(operation.summary),
     }));
   process.stdout.write(`${lines.join("\n")}\n`);
@@ -120,8 +120,7 @@ async function main(
   operationsFile: string | undefined, omittedHeaders: readonly string[], writable: readonly string[],
   patchFile: string | undefined, scopesExtension: string | undefined,
 ): Promise<void> {
-  const doc = await readDocument(spec, sha256);
-  if (patchFile !== undefined) applyPatch(doc, JSON.parse(readFileSync(patchFile, "utf8")) as Json, patchFile);
+  const doc = await load(spec, sha256, patchFile);
   if (operationsFile !== undefined) keepOperations(doc, readOperations(operationsFile), operationsFile);
   prepareOperations(doc, byTag, scopesExtension);
   omitHeaders(doc, new Set(omittedHeaders.map(name => name.toLowerCase())));
@@ -159,8 +158,18 @@ async function readDocument(spec: string, sha256: string | undefined): Promise<J
   }
   const parsed = JSON.parse(text) as Json;
   if (!isObject(parsed) || !isObject(parsed.paths)) fail(`${spec} is not an OpenAPI document`);
-  inlinePathItems(parsed);
   return parsed;
+}
+
+/**
+ * The document every step works on: read, then patched, then with its referenced path items
+ * copied in. In that order, so that a patch to a referenced path item reaches the copy.
+ */
+async function load(spec: string, sha256: string | undefined, patchFile: string | undefined): Promise<JsonObject> {
+  const document = await readDocument(spec, sha256);
+  if (patchFile !== undefined) applyPatch(document, JSON.parse(readFileSync(patchFile, "utf8")) as Json, patchFile);
+  inlinePathItems(document);
+  return document;
 }
 
 /** What the JSON Pointer of `ref`, a `$ref` into `document`, names. */
