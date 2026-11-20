@@ -897,7 +897,8 @@ function numbersListsAs(requested: string, rendered: string): boolean {
   return requested.split("\n").map(line => {
     let item = /^( *)(\d+)\. /.exec(line);
     if (!item) {
-      if (line.trim() && !/^ *- /.test(line)) counted = [];
+      // Anything between two numbered items, a bullet too, ends the list the first is in.
+      if (line.trim()) counted = [];
       return line;
     }
     let depth = item[1].length >> 1;
