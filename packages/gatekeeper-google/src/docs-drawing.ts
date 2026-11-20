@@ -58,10 +58,15 @@ function cssColor(color: Color | undefined): string | undefined {
   return `#${channel(rgb.red)}${channel(rgb.green)}${channel(rgb.blue)}`;
 }
 
-/** White behind text on a white page is no highlight, though pasted text often carries one. */
-const fill = (color: Color | undefined) => {
+const WHITE = "#ffffff";
+
+/**
+ * The color that fills behind text on a page of the color `page`. The page's own color is no
+ * fill: pasted text often carries a white one, which shows only on a page that is not white.
+ */
+const fill = (color: Color | undefined, page: string) => {
   let css = cssColor(color);
-  return css === "#ffffff" ? undefined : css;
+  return css === page ? undefined : css;
 };
 
 /** Whether `cell` has no text, as the cells a merged one covers have none. */
@@ -124,7 +129,7 @@ function drawnWeight({ bold, weightedFontFamily }: TextStyle): number {
   return weight < 400 ? 400 : weight < 700 ? 700 : 900;
 }
 
-function textLook(style: TextStyle): GoogleDocTextLook {
+function textLook(style: TextStyle, page: string): GoogleDocTextLook {
   return set({
     fontFamily: style.weightedFontFamily?.fontFamily ?? "Arial",
     fontSize: points(style.fontSize) ?? 11,
@@ -135,14 +140,14 @@ function textLook(style: TextStyle): GoogleDocTextLook {
     smallCaps: style.smallCaps || undefined,
     baseline: ({ SUPERSCRIPT: "super", SUBSCRIPT: "sub" } as const)[style.baselineOffset as "SUPERSCRIPT"],
     color: cssColor(style.foregroundColor),
-    highlight: fill(style.backgroundColor),
+    highlight: fill(style.backgroundColor, page),
   } satisfies { [key in keyof GoogleDocTextLook]: unknown }) as GoogleDocTextLook;
 }
 
 const ALIGNMENT = { CENTER: "center", END: "end", JUSTIFIED: "justify" } as const;
 const TAB_ALIGNMENT = { START: "start", CENTER: "center", END: "end" } as const;
 
-function paragraphLook(style: Partial<ParagraphStyle>): GoogleDocParagraphLook {
+function paragraphLook(style: Partial<ParagraphStyle>, page: string): GoogleDocParagraphLook {
   let borders = set({
     top: border(style.borderTop),
     right: border(style.borderRight),
@@ -164,7 +169,7 @@ function paragraphLook(style: Partial<ParagraphStyle>): GoogleDocParagraphLook {
       indentStart: points(style.indentStart),
       indentEnd: points(style.indentEnd),
       indentFirstLine: points(style.indentFirstLine),
-      shading: fill(style.shading?.backgroundColor),
+      shading: fill(style.shading?.backgroundColor, page),
       keepWithNext: style.keepWithNext || undefined,
       keepLinesTogether: style.keepLinesTogether || undefined,
       avoidWidowAndOrphan: style.avoidWidowAndOrphan || undefined,
@@ -243,6 +248,7 @@ export function docTabDrawing(
   markdown: string,
   places: Map<StructuralElement, DocBlockPlace>,
 ): DocTabDrawing {
+  let page = cssColor(tab.documentStyle?.background?.color) ?? WHITE;
   let named = new Map((tab.namedStyles?.styles ?? []).map(style => [style.namedStyleType, style]));
   let normal = named.get("NORMAL_TEXT");
   let paragraphStyleOf = (name: string): Partial<ParagraphStyle> =>
@@ -290,7 +296,7 @@ export function docTabDrawing(
     element: ParagraphElement, base: TextStyle, last: boolean, lineStart: number,
     segments: Segment[] | undefined,
   ): GoogleDocRun[] => {
-    let look = (style: TextStyle | undefined) => textPlace(textLook({ ...base, ...style }));
+    let look = (style: TextStyle | undefined) => textPlace(textLook({ ...base, ...style }, page));
     let { textRun } = element;
     if (textRun) {
       let { textStyle } = textRun;
@@ -374,13 +380,13 @@ export function docTabDrawing(
       ...place ? { line: lineOf(place.mdStart) } : {},
       style: name,
       ...headingId ? { headingId } : {},
-      look: paragraphPlace(paragraphLook(style)),
-      end: textPlace(textLook({ ...base, ...lastElement?.textRun?.textStyle })),
+      look: paragraphPlace(paragraphLook(style, page)),
+      end: textPlace(textLook({ ...base, ...lastElement?.textRun?.textStyle }, page)),
       ...bullet ? {
         list: {
           id: bullet.listId,
           level: bullet.nestingLevel ?? 0,
-          look: textPlace(textLook({ ...base, ...level?.textStyle, ...bullet.textStyle })),
+          look: textPlace(textLook({ ...base, ...level?.textStyle, ...bullet.textStyle }, page)),
         },
       } : {},
       runs: paragraph.elements.flatMap(part =>
@@ -412,7 +418,7 @@ export function docTabDrawing(
             ...set({
               rowSpan: (style.rowSpan ?? 1) > 1 ? style.rowSpan : undefined,
               columnSpan: (style.columnSpan ?? 1) > 1 ? style.columnSpan : undefined,
-              background: fill(style.backgroundColor),
+              background: fill(style.backgroundColor, page),
               verticalAlign: ({ MIDDLE: "middle", BOTTOM: "bottom" } as const)[style.contentAlignment as "MIDDLE"],
             }),
             padding: (["Top", "Right", "Bottom", "Left"] as const).map((side, at) =>
@@ -526,7 +532,6 @@ export function docTabDrawing(
     for (let section of sections) section[kind] ||= UNRETURNED;
   }
 
-  let background = fill(document.background?.color);
   return {
     imageUris,
     drawing: {
@@ -534,7 +539,7 @@ export function docTabDrawing(
       page: {
         width: points(document.pageSize?.width) ?? 612,
         height: points(document.pageSize?.height) ?? 792,
-        ...background ? { background } : {},
+        ...page === WHITE ? {} : { background: page },
       },
       ...document.useEvenPageHeaderFooter ? { evenPages: true as const } : {},
       sections,
@@ -547,8 +552,8 @@ export function docTabDrawing(
       paragraphLooks,
       textLooks,
       named: Object.fromEntries([...named.keys()].flatMap(name => name === undefined ? [] : [[name, {
-        paragraph: paragraphPlace(paragraphLook(paragraphStyleOf(name))),
-        text: textPlace(textLook(textStyleOf(name))),
+        paragraph: paragraphPlace(paragraphLook(paragraphStyleOf(name), page)),
+        text: textPlace(textLook(textStyleOf(name), page)),
       }]])),
     },
   };
