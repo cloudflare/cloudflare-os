@@ -547,6 +547,26 @@ describe("connect initiation nonce", () => {
     await expect(account.commitReconnect(stageId)).rejects.toThrow(/No reconnect is awaiting/);
   });
 
+  it("reports no credential expiry for a reconnect that yields a refresh token", async () => {
+    // The Workshop marks the account expired once `expiresAt` passes, so the access token's
+    // one-hour expiry would flag a healthy account that refreshes on its next use.
+    const context = fakeContext();
+    stubOAuthServer();
+    const reconnectComplete = vi.fn(async (_stageId: string, _expiresAt?: Date) => HANDOFF);
+    context.storage.kv.put("server", server("https://mcp.example/mcp"));
+    context.storage.kv.put("callback", { reconnectComplete });
+    const account = new OAuthFlowAccount(context as never, {});
+    const nonce = "6".repeat(64);
+    await account.prepareReconnect(nonce);
+
+    const outcome = await account.beginConnect(nonce, null);
+    const state = new URL((outcome as { url: string }).url).searchParams.get("state")!;
+    await account.acceptAuthCode("code", state.slice(state.indexOf(":") + 1));
+
+    expect(reconnectComplete).toHaveBeenCalledOnce();
+    expect(reconnectComplete.mock.calls[0][1]).toBeUndefined();
+  });
+
   it("discards and revokes a reconnect's parked tokens when the probe fails after the exchange", async () => {
     // The nonce is spent before the exchange, and no alarm sweeps a connected account, so without
     // this the grant the exchange parked would sit unused and unrevoked until the next reconnect.
