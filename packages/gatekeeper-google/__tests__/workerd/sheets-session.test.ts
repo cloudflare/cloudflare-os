@@ -21,8 +21,11 @@ import {
 
 class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
   readonly observations: ObservationDescription[] = [];
+  /** Set to refuse every observation. */
+  refuses = false;
 
   async authorizeObservation(description: ObservationDescription): Promise<void> {
+    if (this.refuses) throw new Error("Observation refused");
     this.observations.push(description);
   }
 
@@ -688,6 +691,17 @@ describe("Google Sheets fonts", () => {
 
     expect(refusals).toEqual(["Oxygen", "Lobster", "Oxygen"].map(family =>
       expect.stringContaining(`no drawing read names a font "${family}" that Google Fonts could serve at that weight`)));
+    expect(fontRequests).toEqual([]);
+  });
+
+  it("knows of no font from a drawing it was not let read", async () => {
+    let { queue, session } = newSession();
+    using _session = session;
+    queue.refuses = true;
+    let refusal = (call: PromiseLike<unknown>) => Promise.resolve(call).then(() => undefined, (error: Error) => error.message);
+
+    expect(await refusal(session.readDrawing("Sales!A1:B2"))).toContain("Observation refused");
+    expect(await refusal(session.readFont("Oxygen", 400, false))).toContain('no drawing read names a font "Oxygen"');
     expect(fontRequests).toEqual([]);
   });
 });

@@ -650,23 +650,28 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget
             description: "Looked up a range in the connected spreadsheet with the queued changes applied.",
           }
         : {
-            title: `Read a Google Sheets drawing of ${result.range}`,
-            description: `Read how ${(result.rows.length * result.columns.length).toLocaleString()} ` +
+            title: `Read a Google Sheets drawing of ${result.drawing.range}`,
+            description: `Read how ${(result.drawing.rows.length * result.drawing.columns.length).toLocaleString()} ` +
               "cell(s) of the connected spreadsheet are drawn.",
           });
     if (read instanceof RefusedRead) throw read.refusal;
     // Text is repeated as saved beside what a queued change enters, so the drawing can outgrow
     // what Google returned.
-    if (JSON.stringify(read).length > MAX_FORMATS_READ_LENGTH) {
+    if (JSON.stringify(read.drawing).length > MAX_FORMATS_READ_LENGTH) {
       throw new Error("The drawing of this range is too large to read at once. Request fewer cells.");
     }
-    return read;
+    // Named only by a drawing that was read: readFont() fetches these without a report of its own.
+    for (let family of read.fonts) this.#fonts.add(family);
+    return read.drawing;
   }
 
-  /** The window `parsed` names, drawn as Google holds it with the queued changes made. */
+  /**
+   * The window `parsed` names, drawn as Google holds it with the queued changes made, and the
+   * font families of its cells.
+   */
   async #drawing(
     parsed: { sheet?: string; rect: Rect }, pending: readonly QueuedChange[],
-  ): Promise<SpreadsheetDrawing> {
+  ): Promise<{ drawing: SpreadsheetDrawing; fonts: string[] }> {
     let { grid, conflict } = replayed(gridOf(await this.#reader.getMetadata(this.#spreadsheetId)), pending);
     // A refusal here names the spreadsheet's sheets and sizes.
     let drawn = refusable(() => drawnCells(grid, resolveArea(grid, parsed)));
@@ -679,10 +684,11 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget
     // And one here says what the cells hold.
     let drawing = refusable(() => simulated(grid, [...drawn.areas, ...anchors], base.entered,
       () => drawingOf(grid, drawn, base, anchors)));
-    // Only what is saved: a font a queued change sets is its author's choice, and readFont()
-    // fetches what is named here without a report of its own.
-    for (let family of fontFamiliesOf(rests)) this.#fonts.add(family);
-    return conflict ? { ...drawing, queuedChangeConflict: conflict } : drawing;
+    return {
+      drawing: conflict ? { ...drawing, queuedChangeConflict: conflict } : drawing,
+      // Only what is saved: a font a queued change sets is its author's choice.
+      fonts: fontFamiliesOf(rests),
+    };
   }
 
   async readFont(family: string, weight: number, italic: boolean): Promise<Uint8Array> {
