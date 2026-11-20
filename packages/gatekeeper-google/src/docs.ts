@@ -39,11 +39,7 @@ import DOCS_TYPES_CODE from "./docs-types.txt";
 import DOCS_RENDERING_TYPES_CODE from "./docs-rendering-types.txt";
 import type { GoogleDocDrawing, GoogleDocRenderingReads } from "./docs-rendering-types";
 import COMMENT_TYPES_CODE from "./comment-types.txt";
-import DOCS_PREVIEW_CLIENT from "./previews/docs/client.txt";
-import DOCS_PREVIEW_DRAW from "./previews/docs/draw.txt";
-import DOCS_PREVIEW_PAGES from "./previews/docs/pages.txt";
-import DOCS_PREVIEW_TEXT from "./previews/docs/text.txt";
-import { SHARED_PREVIEW_FILES } from "./previews/shared-files";
+import { PREVIEW_FILES } from "./previews/files";
 import { obsContext } from "./observability.js";
 import { AccessTokenCache, AccessTokenRequest } from "./auth-retry";
 import { Mutex } from "./mutex";
@@ -266,13 +262,7 @@ export class GoogleDocGatekeeperImpl
   }
 
   async getPreviewUi(): Promise<UiFile[]> {
-    return [
-      { path: "client.js", code: DOCS_PREVIEW_CLIENT },
-      { path: "draw.js", code: DOCS_PREVIEW_DRAW },
-      { path: "pages.js", code: DOCS_PREVIEW_PAGES },
-      { path: "text.js", code: DOCS_PREVIEW_TEXT },
-      ...SHARED_PREVIEW_FILES,
-    ];
+    return PREVIEW_FILES.docs;
   }
 
   async getAutoApprovableActions(): Promise<ActionKind[]> {
@@ -564,8 +554,8 @@ async function submitGoogleDocEdit(
 /** What a Doc session needs of its connection to show and queue edits. */
 export type DocChangeQueue = {
   /**
-   * The edits a read replays, oldest first. A connection that records an unreplayable edit in the
-   * record itself lists it too, marked with `invalidatedReason`.
+   * The edits a read replays, oldest first, and among them each that can no longer be replayed
+   * and still awaits its rejection, marked with `invalidatedReason`.
    */
   pending(): GoogleDocPendingAction[];
   /** Records that edit `record` can no longer be replayed, for `reason`. */
@@ -790,16 +780,17 @@ export class GoogleDocSessionImpl extends RpcTarget
 
   /**
    * Reads through the session's NativeRead with `fetch`, which reads the document from `source`,
-   * and tells `source` of the snapshot once the read is authorized. A failure `fetch` resolves
-   * with is authorized as `failed` and then thrown.
+   * from Google `again` where it asks, and tells `source` of the snapshot once the read is
+   * authorized. A failure `fetch` resolves with is authorized as `failed` and then thrown.
    */
   async #readDocument<T>(
-    fetch: (snapshot: () => Promise<GoogleDocSnapshot>) => Promise<T | ReadFailure>,
+    fetch: (snapshot: (again?: boolean) => Promise<GoogleDocSnapshot>) => Promise<T | ReadFailure>,
     observe: (value: T) => NativeObservation,
     failed = DOC_CONTENT_OBSERVATION,
   ): Promise<T> {
     let used: GoogleDocSnapshot | undefined;
-    let snapshot = async () => used = await this.#source.snapshot();
+    let snapshot = async (again = false) =>
+      used = await (again && this.#source.refetched?.() || this.#source.snapshot());
     let value = await this.#read(() => fetch(snapshot), result =>
       result instanceof ReadFailure ? failed : observe(result));
     if (used) this.#source.approved(used);
@@ -1110,13 +1101,8 @@ export class GoogleDocSessionImpl extends RpcTarget
   }
 
   async readImage(imageId: string, tabId: string): Promise<GoogleDocImageBytes> {
-    let find = (snapshot: GoogleDocSnapshot) => this.#savedTab(snapshot, tabId, "readImage");
-    // A listing told of the image, not its bytes: each read of them is authorized as its own.
-    let tab = await this.#readSettled(find, tab => ({
-      title: "Read Google Doc images",
-      description: `Read an image in tab ${googleDocTabLabel(tab)}.`,
-    }), DOC_IMAGES_OBSERVATION);
-    let contentUri = (tab: GoogleDocTabSnapshot) => {
+    let find = (snapshot: GoogleDocSnapshot) => {
+      let tab = this.#savedTab(snapshot, tabId, "readImage");
       // An image of the body's text, or one a drawing names, as a header's is.
       let uri = tab.images.find(image => image.id === imageId)?.contentUri ?? tab.imageUris[imageId];
       if (!uri) {
@@ -1124,17 +1110,31 @@ export class GoogleDocSessionImpl extends RpcTarget
           `readImage: tab "${tab.tabId}" has no readable image with ID "${imageId}". ` +
           `Call listImages("${tab.tabId}") to see its images.`);
       }
-      return uri;
+      return { tab, uri };
     };
-    let image = await openGoogleDocImage(contentUri(tab));
-    if (!image) {
-      // The address has lapsed, so the document is read again for a current one, and replayed
-      // again: the replay kept for its revision holds the lapsed address.
-      this.#changes.cache.current = undefined;
-      image = await openGoogleDocImage(contentUri(await this.#settled(
-        () => this.#source.refetched?.() ?? this.#source.snapshot(), find)));
-    }
-    if (!image) throw new Error("readImage: Google Docs did not return this image.");
+    await this.#changes.afterTurns();
+    // A listing told of the image, not its bytes: each read of them is authorized as its own.
+    // The bytes are read inside it, so that no document read for them is left unchecked.
+    let { image } = await this.#readDocument(async snapshot => {
+      try {
+        let { tab, uri } = await this.#settled(snapshot, find);
+        let image = await openGoogleDocImage(uri);
+        if (!image) {
+          // The address has lapsed, so the document is read again for a current one, and replayed
+          // again: the replay kept for its revision holds the lapsed address.
+          this.#changes.cache.current = undefined;
+          ({ tab, uri } = await this.#settled(() => snapshot(true), find));
+          image = await openGoogleDocImage(uri);
+        }
+        if (!image) throw new Error("readImage: Google Docs did not return this image.");
+        return { tab, image };
+      } catch (error) {
+        return new ReadFailure(error);
+      }
+    }, ({ tab }) => ({
+      title: "Read Google Doc images",
+      description: `Read an image in tab ${googleDocTabLabel(tab)}.`,
+    }), DOC_IMAGES_OBSERVATION);
     return image;
   }
 
@@ -1437,7 +1437,8 @@ export class GoogleDocReadSessionImpl extends RpcTarget implements GoogleDocRead
  * extending it, so its RPC surface has nothing else to call.
  */
 @validateRpc()
-export class GoogleDocEditSessionImpl extends RpcTarget implements GoogleDocEditSession {
+export class GoogleDocEditSessionImpl extends RpcTarget
+    implements GoogleDocEditSession, GoogleDocRenderingReads {
   #session: GoogleDocSessionImpl;
 
   constructor(options: Omit<GoogleDocSessionOptions, "comments">) {
@@ -1467,5 +1468,29 @@ export class GoogleDocEditSessionImpl extends RpcTarget implements GoogleDocEdit
 
   appendText(markdown: string, tabId?: string): Promise<void> {
     return this.#session.appendText(markdown, tabId);
+  }
+
+  getPendingChanges(tabId: string): Promise<GoogleDocPendingChanges> {
+    return this.#session.getPendingChanges(tabId);
+  }
+
+  listImages(tabId: string): Promise<GoogleDocImage[]> {
+    return this.#session.listImages(tabId);
+  }
+
+  readImage(imageId: string, tabId: string): Promise<GoogleDocImageBytes> {
+    return this.#session.readImage(imageId, tabId);
+  }
+
+  readFont(family: string, weight: number, italic: boolean): Promise<ReadableStream<Uint8Array>> {
+    return this.#session.readFont(family, weight, italic);
+  }
+
+  readDrawing(tabId: string): Promise<GoogleDocDrawing> {
+    return this.#session.readDrawing(tabId);
+  }
+
+  getRenderingTypes(): Promise<string> {
+    return this.#session.getRenderingTypes();
   }
 }

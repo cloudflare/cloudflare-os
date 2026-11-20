@@ -29,6 +29,7 @@ import {
 import { obsContext } from "./observability";
 import { isLiftable, type DriveWriteTargetPayload } from "./drive-writes";
 import { QueuedChanges } from "./queued-changes";
+import { nativeFileUrl } from "./resources";
 import type { SheetsChangeQueue } from "./sheets";
 import {
   MARKER_RETENTION_MS, retainedMarkers, SHEETS_DEFINITIONS, type MarkerEntry, type SheetsHost,
@@ -94,11 +95,35 @@ type DriveEditor<H> = {
 /** The most the two fields that name the file take of a card, in UTF-8 bytes. */
 const FILE_FIELDS_BYTES = 4 * 1024;
 
+/** Each editor's files as the resource URLs name their kind. */
+const NATIVE_KINDS = { docs: "doc", sheets: "sheets", slides: "slides" } as const;
+
+/**
+ * The name an edit gives its file for a preview (`ActionDescription.previewOf`): the file's kind,
+ * then the folders between the connected one and the file, then the file. A folder session opens
+ * only its direct children, so the way in is part of the name.
+ */
+export function drivePreviewId(editor: DriveEditorName, target: DriveWriteTargetPayload): string {
+  return `${editor}:${[...target.folderIds?.slice(1) ?? [], target.fileId].join("/")}`;
+}
+
+/** What {@link drivePreviewId} named. Throws for any other text. */
+export function parseDrivePreviewId(
+  id: string,
+): { editor: DriveEditorName; folderIds: string[]; fileId: string } {
+  let [, editor, path] = /^(docs|sheets|slides):([\w-]+(?:\/[\w-]+)*)$/.exec(id) ?? [];
+  if (!path) throw new Error("This Google Drive connection has no preview by that name.");
+  let folderIds = path.split("/");
+  return { editor: editor as DriveEditorName, fileId: folderIds.pop()!, folderIds };
+}
+
 /**
  * `presentation` with the file named first: its ID and, when known, its name, both third-party
  * text built as fields. The card is complete only if the editor's card and the two fields are.
  */
-function withFile(target: DriveWriteTargetPayload, presentation: ActionPresentation): ActionPresentation {
+function withFile(
+  editor: DriveEditorName, target: DriveWriteTargetPayload, presentation: ActionPresentation,
+): ActionPresentation {
   let builder = new ActionDescriptionBuilder(undefined, { maxBytes: FILE_FIELDS_BYTES });
   builder.inline("File", target.fileId);
   if (target.fileName !== undefined) builder.inline("File name", target.fileName);
@@ -107,6 +132,11 @@ function withFile(target: DriveWriteTargetPayload, presentation: ActionPresentat
   return {
     ...rest,
     fields: [...fields, ...presentation.fields ?? []],
+    previewOf: {
+      id: drivePreviewId(editor, target),
+      title: target.fileName ?? target.fileId,
+      url: nativeFileUrl(NATIVE_KINDS[editor], target.fileId),
+    },
     ...(editorComplete === true && descriptionIsComplete === true
       ? { descriptionIsComplete: true } : {}),
   };
@@ -134,8 +164,8 @@ export function onDriveFile<P, H>(
     autoApprovable: definition.autoApprovable,
     delivery: definition.delivery,
     ...(definition.claimBeforeApply ? { claimBeforeApply: true } : {}),
-    describe: async ({ target, change }, drive) =>
-      withFile(target, await definition.describe(change, editor.host(drive, target.fileId))),
+    describe: async ({ target, change }, drive) => withFile(
+      editor.name, target, await definition.describe(change, editor.host(drive, target.fileId))),
     apply: async ({ target, change }, drive, ctx) => {
       await drive.editors.prove(editor.name, target, ctx.id);
       let result = await definition.apply(change, editor.host(drive, target.fileId), ctx);
@@ -265,6 +295,13 @@ export const SHEETS_STATE_PREFIX = "driveSheets:file:";
  * marker is still to be deleted once the action set has retired the edit's record.
  */
 export const DOC_RECEIPT_PREFIX = "driveDocs:receipt:";
+
+/**
+ * Where the numbers of a document's edits that can no longer be applied are kept, by its file ID:
+ * those a replay or an approval found no longer fit it, and those an approval refused for good.
+ * The journal lists no failed record, and such an edit is shown, as stale, until it is rejected.
+ */
+export const DOC_STALE_PREFIX = "driveDocs:stale:";
 
 /** How often a Doc is read again after an approval while its queue keeps moving. */
 const MAX_REFRESHES = 3;
@@ -409,8 +446,9 @@ export class DriveFileEditors {
     let { fileId } = target;
     let changes = this.#changes<{ payload: GoogleDocAction }>("docs", fileId);
     return {
-      pending: () => this.#docsPending(fileId),
-      invalidate: this.#docsInvalidator(),
+      pending: () => [...this.#docsStale(fileId), ...this.#docsPending(fileId)]
+        .toSorted((a, b) => a.id - b.id),
+      invalidate: this.#docsInvalidator(fileId),
       cache: this.#docCache(fileId),
       queue: prepare => changes.queue(
         async () => {
@@ -460,8 +498,9 @@ export class DriveFileEditors {
         cache.current = undefined;
       },
       // The action set fails this edit; the edits behind it are replayed by the next read.
-      unapplyable: async () => {
+      unapplyable: async id => {
         this.#docCache(fileId).current = undefined;
+        this.#noteStale(fileId, id);
       },
     };
   }
@@ -497,7 +536,7 @@ export class DriveFileEditors {
         let snapshot = googleDocSnapshot(await this.#options.docs.getDocument(fileId));
         if (writes !== freshness.writes() || queued !== freshness.newestQueued()) continue;
         invalidateUnreplayableGoogleDocActions(
-          this.#docsInvalidator(), snapshot, this.#docsPending(fileId),
+          this.#docsInvalidator(fileId), snapshot, this.#docsPending(fileId),
           `Pending Google Doc edits could not be replayed after edit ${actionId} was applied`);
         return;
       }
@@ -518,9 +557,31 @@ export class DriveFileEditors {
       .flatMap(({ id, action }) => id === landed ? [] : [{ id, action: action.payload }]);
   }
 
-  /** Fails, in the journal, an edit that can no longer be replayed. */
-  #docsInvalidator(): GoogleDocInvalidator {
-    return ({ id }, reason) => this.#options.journal.markFailed(id, reason);
+  /** Fails, in the journal, an edit to document `fileId` that can no longer be replayed. */
+  #docsInvalidator(fileId: string): GoogleDocInvalidator {
+    return ({ id }, reason) => {
+      this.#options.journal.markFailed(id, reason);
+      this.#noteStale(fileId, id);
+    };
+  }
+
+  /** Notes that edit `id` of document `fileId` can no longer be applied, beside those still to reject. */
+  #noteStale(fileId: string, id: number): void {
+    let { kv, journal } = this.#options;
+    let key = `${DOC_STALE_PREFIX}${fileId}`;
+    let held = (kv.get<number[]>(key) ?? []).filter(other => other !== id && journal.get(other));
+    kv.put(key, [...held, id]);
+  }
+
+  /** Document `fileId`'s noted edits that the journal holds failed, each with why. */
+  #docsStale(fileId: string): GoogleDocPendingAction[] {
+    let { kv, journal } = this.#options;
+    return (kv.get<number[]>(`${DOC_STALE_PREFIX}${fileId}`) ?? []).flatMap(id => {
+      let record = journal.get(id);
+      if (record?.state !== "failed") return [];
+      let { change } = record.action.payload as DriveEdit<GoogleDocAction>;
+      return [{ id, action: { ...change, invalidatedReason: record.error } }];
+    });
   }
 
   #docReceipt(fileId: string): GoogleDocWriteReceipt | undefined {
@@ -536,11 +597,16 @@ export class DriveFileEditors {
   /**
    * Drops what no change can still need: a spreadsheet's state once the journal holds none of the
    * numbers noted in it and no marker it keeps can still land, and past those, all but the
-   * spreadsheets written most recently. A Doc's receipt is kept: it outlives its edit only while
-   * the marker it names is still in the document, which the next edit to that Doc deletes.
+   * spreadsheets written most recently, and a Doc's note of stale edits once none is left to
+   * reject. A Doc's receipt is kept: it outlives its edit only while the marker it names is still
+   * in the document, which the next edit to that Doc deletes.
    */
   sweep(): void {
     let { kv, journal } = this.#options;
+    // Listed in full first, so that no key is deleted under the list.
+    for (let [key, ids] of Array.from(kv.list<number[]>({ prefix: DOC_STALE_PREFIX }))) {
+      if (!ids.some(id => journal.get(id))) kv.delete(key);
+    }
     let now = Date.now();
     let idle: [string, SheetsFileState][] = [];
     for (let [key, state] of kv.list<SheetsFileState>({ prefix: SHEETS_STATE_PREFIX })) {
@@ -590,6 +656,7 @@ export class DriveFileEditors {
           if (!refusal.liftable) {
             this.#options.journal.markSubmitted(actionId);
             this.#options.journal.markFailed(actionId, refusal.message, { undispatched: true });
+            if (editor === "docs") this.#noteStale(target.fileId, actionId);
           }
           throw new Error(refusal.message);
         }

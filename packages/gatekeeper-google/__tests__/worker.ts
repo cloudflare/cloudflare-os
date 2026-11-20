@@ -1,7 +1,7 @@
 import { DurableObject, RpcStub, RpcTarget } from "cloudflare:workers";
 import type {
   ActionDescription, ActionField, ActionKind, ApprovalQueue, Gatekeeper, GitCache, HookController,
-  HookDescription, ObservationDescription, ResourceDescription, UiFile,
+  HookDescription, ObservationDescription, PreviewItem, ResourceDescription, UiFile,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { TestGitCache } from "./test-git-cache";
 import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
@@ -272,6 +272,7 @@ class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
 
 export class TestHooks extends DurableObject<Env> {
   #lastActionDescription = "";
+  #lastActionPreviewOf: PreviewItem | undefined;
   #lastActionFields: ActionField[] = [];
   #lastActionVerdict: { actionKind?: ActionKind; autoApprovable?: boolean } = {};
   #lastObservations: string[] = [];
@@ -288,6 +289,11 @@ export class TestHooks extends DurableObject<Env> {
   /** The structured fields of that approval description. */
   get lastActionFields(): ActionField[] {
     return this.#lastActionFields;
+  }
+
+  /** The item that edit's card names for a preview. */
+  get lastActionPreviewOf(): PreviewItem | undefined {
+    return this.#lastActionPreviewOf;
   }
 
   /** That edit's action kind and auto-approval verdict. */
@@ -391,8 +397,10 @@ export class TestHooks extends DurableObject<Env> {
       : this.#gatekeeper(facetName).describe();
   }
 
-  previewUi(facetName: string): Promise<UiFile[]> {
-    return this.#gatekeeper(facetName).getPreviewUi();
+  previewUi(facetName: string, previewOf?: string): Promise<UiFile[]> {
+    return throughDrive(facetName)
+      ? this.#drive(facetName, DRIVE_DOC).getPreviewUi(previewOf)
+      : this.#gatekeeper(facetName).getPreviewUi();
   }
 
   async #withReadSession<Session, T>(
@@ -444,6 +452,7 @@ export class TestHooks extends DurableObject<Env> {
       return await body(session, queue);
     } finally {
       this.#lastActionDescription = queue.actionDescription ?? "";
+      this.#lastActionPreviewOf = queue.action?.previewOf;
       this.#lastActionFields = queue.actionFields;
       this.#lastActionVerdict = {
         actionKind: queue.action?.actionKind, autoApprovable: queue.action?.autoApprovable,

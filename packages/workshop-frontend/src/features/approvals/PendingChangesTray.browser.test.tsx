@@ -72,6 +72,7 @@ async function render({
   failure = null,
   width = 720,
   autoApproved = false,
+  previewed = false,
 }: {
   groups: PendingChangeGroup[]
   restricted?: boolean
@@ -80,6 +81,8 @@ async function render({
   /** The chat pane's width; 280px is the narrowest GadgetEditor supports. */
   width?: number
   autoApproved?: boolean
+  /** Whether every connection offers a preview. */
+  previewed?: boolean
 }) {
   host = document.body.appendChild(document.createElement('div'))
   // The width the composer gives it, and a height that forces the tray to scroll rather than
@@ -104,6 +107,7 @@ async function render({
       bulk={{
         run: async () => {}, progress: null, failure, dismissFailure: () => {},
       }}
+      previewFor={previewed ? group => ({ title: group.title, onOpen: () => {} }) : undefined}
     />,
   ))
 }
@@ -245,6 +249,57 @@ it('keeps the connection name readable when its badges fill the row', async () =
   expect(title.getBoundingClientRect().width).toBeGreaterThanOrEqual(56)
   // The badges are there, just giving way: they are what shrinks, not the name.
   expect(host!.textContent).toContain('Asked elsewhere')
+})
+
+it('keeps the connection name readable beside its preview link', async () => {
+  // The link does not shrink, and at the narrowest chat pane the badges had room for no more than
+  // their icons, which ran out of the row's button and under the link. They leave the row there.
+  previousViewport = { width: window.innerWidth, height: window.innerHeight }
+  await page.viewport(900, 700)
+  await render({
+    groups: [group([
+      request(1, 'Append a slide', [], { origin: 'elsewhere', autoApprovable: true }),
+      request(2, 'Append another slide', [], { origin: 'elsewhere', autoApprovable: true }),
+    ], 1, 'Road trip 2026')],
+    width: 280,
+    autoApproved: true,
+    previewed: true,
+  })
+
+  const title = [...host!.querySelectorAll('span')]
+    .find(span => span.textContent === 'Road trip 2026')!
+  expect(title.getBoundingClientRect().width).toBeGreaterThanOrEqual(56)
+
+  const link = [...host!.querySelectorAll('button')].find(b => b.textContent === 'Preview')!
+  const row = host!.querySelector('button[aria-expanded]')!
+  // Whole, inside the tray, and clear of the row's own button.
+  expect(link.getBoundingClientRect().left).toBeGreaterThanOrEqual(row.getBoundingClientRect().right)
+  expect(link.getBoundingClientRect().right).toBeLessThanOrEqual(host!.getBoundingClientRect().right)
+  // Tall enough for a finger, with the row's own target all around it.
+  expect(link.getBoundingClientRect().height).toBeGreaterThanOrEqual(24)
+  // The caret closes the row, after the button, and opens the group as the rest of the row does.
+  const caret = row.parentElement!.lastElementChild!
+  expect(caret.getBoundingClientRect().left).toBeGreaterThanOrEqual(link.getBoundingClientRect().right)
+  const underCaret = () => {
+    const { x, y, width, height } = caret.getBoundingClientRect()
+    return document.elementFromPoint(x + width / 2, y + height / 2) as HTMLElement
+  }
+  expect(underCaret()).toBe(row)
+  // Nothing inside the row's button spills out under the link.
+  for (const part of row.children) {
+    expect(part.getBoundingClientRect().right).toBeLessThanOrEqual(row.getBoundingClientRect().right + 1)
+  }
+
+  // With room, the badges stand beside the link.
+  await act(async () => { host!.style.width = '720px' })
+  const badge = [...host!.querySelectorAll('span')].find(span => span.textContent === 'Asked elsewhere')!
+  expect(badge.getBoundingClientRect().width).toBeGreaterThan(0)
+
+  // Turned, the caret still closes the group it opened.
+  await act(async () => underCaret().click())
+  expect(row.getAttribute('aria-expanded')).toBe('true')
+  await act(async () => underCaret().click())
+  expect(row.getAttribute('aria-expanded')).toBe('false')
 })
 
 it('opens one group at a time, and keeps focus on the row that was pressed', async () => {
