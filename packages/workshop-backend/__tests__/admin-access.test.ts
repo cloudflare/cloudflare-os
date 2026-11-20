@@ -279,7 +279,10 @@ describe("withholding content", () => {
     let fields = [{ label: "To", value: "x@example.com" }];
     let action = {
       id: 1, resourceTitle: "r", createdAt: new Date(0), state: "pending", type: "action",
-      description: { title: "Send", description: "body", fields },
+      description: {
+        title: "Send", description: "body", fields,
+        previewOf: { id: "docs:folder/file", title: "Plan", url: "https://docs.example/file" },
+      },
     } as unknown as ActionLogEntry;
     let observation = {
       id: 2, resourceTitle: "r", createdAt: new Date(0), state: "approved", type: "observation",
@@ -296,6 +299,8 @@ describe("withholding content", () => {
       expect(withheld.description.title).toBe(entry.description.title);
       expect(withheld.description.description).toBe("");
       expect(withheld.description).not.toHaveProperty("fields");
+      // The item an action changes is named by its fields, and is withheld with them.
+      expect(withheld.description).not.toHaveProperty("previewOf");
       expect(entry).toEqual(before);
     }
 
