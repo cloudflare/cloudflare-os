@@ -226,6 +226,22 @@ function keyName(property: ESTree.Node): string | undefined {
   return key.type === "Literal" && typeof key.value === "string" ? key.value : undefined;
 }
 
+/**
+ * The object literals an argument is written as at its call: itself, or either branch of a
+ * conditional. What `satisfies` and `as` wrap is the object that is sent. One built elsewhere is
+ * its helper's type to check.
+ */
+function* writtenObjects(node: ESTree.Node | undefined): Generator<ESTree.ObjectExpression> {
+  if (node?.type === "TSSatisfiesExpression" || node?.type === "TSAsExpression") {
+    yield* writtenObjects(node.expression);
+  } else if (node?.type === "ConditionalExpression") {
+    yield* writtenObjects(node.consequent);
+    yield* writtenObjects(node.alternate);
+  } else if (node?.type === "ObjectExpression") {
+    yield node;
+  }
+}
+
 const newGatekeeperObserverContract: Rule = {
   meta: {
     type: "problem",
@@ -278,22 +294,19 @@ const newGatekeeperObserverContract: Rule = {
       },
       CallExpression(node) {
         const { callee } = node;
-        let [description] = node.arguments;
-        // What `satisfies` and `as` wrap is the object that is sent.
-        while (description?.type === "TSSatisfiesExpression" || description?.type === "TSAsExpression") {
-          description = description.expression;
-        }
         if (callee.type !== "MemberExpression" || callee.computed ||
-            callee.property.name !== "authorizeObservation" || description?.type !== "ObjectExpression") {
+            callee.property.name !== "authorizeObservation") {
           return;
         }
-        // The last word on the field: a spread after it can replace it, and the kernel reads
-        // `subresources: undefined` as the field left out.
-        const last = description.properties.findLast(property =>
-          property.type === "SpreadElement" || keyName(property) === "subresources");
-        const reported = last?.type === "Property" &&
-          !(last.value.type === "Identifier" && last.value.name === "undefined");
-        if (!reported) context.report({ node: description, messageId: "unreported" });
+        for (const description of writtenObjects(node.arguments[0])) {
+          // The last word on the field: a spread after it can replace it, and the kernel reads
+          // `subresources: undefined` as the field left out.
+          const last = description.properties.findLast(property =>
+            property.type === "SpreadElement" || keyName(property) === "subresources");
+          const reported = last?.type === "Property" &&
+            !(last.value.type === "Identifier" && last.value.name === "undefined");
+          if (!reported) context.report({ node: description, messageId: "unreported" });
+        }
       },
       Property(node) {
         if (keyName(node) === "excludeObservers") context.report({ node, messageId: "excludeObservers" });

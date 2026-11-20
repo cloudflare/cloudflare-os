@@ -175,6 +175,7 @@ ruleTester.run("new-gatekeeper-observer-contract", plugin.rules["new-gatekeeper-
     "class Facet extends Base implements Gatekeeper<Session> {\n  async addObserver(_id: string) {}\n}",
     // A description built elsewhere is checked by its helper's type, not here.
     "await queue.authorizeObservation(observation);",
+    "await queue.authorizeObservation(scoped ? { title, subresources: ids } : observation);",
   ],
   invalid: [
     {
@@ -208,6 +209,15 @@ ruleTester.run("new-gatekeeper-observer-contract", plugin.rules["new-gatekeeper-
     {
       code: "class Facet implements Gatekeeper<Session> {\n  async addObserver(_id: string) {}\n}",
       errors: [{ messageId: "missingHistory" }],
+    },
+    // Each branch written at the call is one that may be sent.
+    {
+      code: "await queue.authorizeObservation(scoped ? { title, subresources: ids } : { title });",
+      errors: [{ messageId: "unreported" }],
+    },
+    {
+      code: "await queue.authorizeObservation(scoped ? { title } : ({ title } satisfies ObservationDescription));",
+      errors: [{ messageId: "unreported" }, { messageId: "unreported" }],
     },
     // A static method is not the facet's.
     {
