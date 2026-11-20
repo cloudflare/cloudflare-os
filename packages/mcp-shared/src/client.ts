@@ -13,13 +13,16 @@
 // needs in order to stay inside the storage budget. `guardedFetch`, the capped body readers, and the
 // 401/403/404 classification below are the SSRF and response-size boundary for this connector.
 
+import type { CallAnswer, Upstream } from "@gadgets/gatekeeper-kit/upstream";
+
 import {
-  guardedFetch,
   FetchNotStartedError,
   MAX_RESPONSE_BYTES,
   readTextCapped,
   type FetchOptions,
 } from "./fetch.js";
+import { toCallResult } from "./tools.js";
+import { deadlineSignal, guardedUpstream, rpcOperation, type McpOperation } from "./upstream.js";
 import { redactSecrets, safeServerText } from "./util.js";
 import type {
   CallToolResult,
@@ -225,12 +228,65 @@ function parseResourceMetadataUrl(wwwAuthenticate: string | null): string | null
   return match ? match[1] : null;
 }
 
+// A request or, with no `id`, a notification.
+type JsonRpcMessage = {
+  jsonrpc: "2.0";
+  id?: string;
+  method: string;
+  params?: unknown;
+};
+
 type JsonRpcResponse = {
   jsonrpc: "2.0";
   id?: number | string | null;
   result?: unknown;
   error?: { code: number; message: string; data?: unknown };
 };
+
+// What the method that sent a request made of the result it was answered: what it read from the
+// result, or what it threw for a result that lacks what the request was sent for.
+type Made<R> = { value: R } | { thrown: unknown };
+
+// A JSON-RPC response, the bytes read for it, and what the method that sent the request made of
+// its result where the method reads one.
+type Measured<R> = { parsed: JsonRpcResponse; responseBytes: number; made?: Made<R> };
+
+// Reads a result as the method that sent the request does, keeping what `read` throws for the
+// request to be counted by and for the client to throw.
+function madeOf<R>(read: () => R): Made<R> {
+  try {
+    return { value: read() };
+  } catch (error) {
+    return { thrown: error };
+  }
+}
+
+// The result of `initialize`, where it is one the connection can be completed with: an object,
+// whose server, where it names itself, does so by strings. Any other is refused within the
+// request, so that it is counted an error of the API and nothing more is sent on it.
+// A response with no result at all is counted so already, and handed on as it came.
+function usableInitializeResult(result: InitializeResult): InitializeResult {
+  const info: unknown = result;
+  if (info === undefined || info === null) return result;
+  if (typeof info !== "object") throw new McpProtocolError("MCP server returned an unusable initialize result.");
+  const server = (info as { serverInfo?: unknown }).serverInfo;
+  if (server !== undefined) {
+    const named = typeof server === "object" && server !== null
+      && ["name", "title", "version"].every(field => {
+        const value = (server as Record<string, unknown>)[field];
+        return value === undefined || typeof value === "string";
+      });
+    if (!named) throw new McpProtocolError("MCP server returned an unusable initialize result.");
+  }
+  return result;
+}
+
+// Whether a response holds no result: none at all, or `null`. A reader of a result here reads a
+// member of it, and so throws on either. Such a response is counted by what it lacks and not by
+// whether it was read: a page that takes a listing past its scan limit is not read at all.
+function lacksResult(response: JsonRpcResponse): boolean {
+  return response.result === undefined || response.result === null;
+}
 
 function extractResponse(bodyText: string, id: number | string): JsonRpcResponse {
   let parsed: JsonRpcResponse;
@@ -376,6 +432,7 @@ export type AuthorizationProvider = (method: string) => Promise<string | null>;
  * across calls is the transport session id, which the caller owns (see `sessionId`).
  */
 export class McpClient {
+  #upstream: Upstream;
   #endpoint: string;
   #getAuthorization: AuthorizationProvider;
   #fetchOptions: FetchOptions;
@@ -385,7 +442,16 @@ export class McpClient {
   /** Transport session id, assigned by the server during `initialize`. Persist and pass it back. */
   sessionId: string | null;
 
+  /**
+   * @param upstream The gatekeeper's upstream, through which every request is sent, guarded, and
+   * counted.
+   * @param endpoint The MCP endpoint.
+   * @param getAuthorization Supplies the bearer token for each request.
+   * @param sessionId A transport session to continue.
+   * @param fetchOptions The operation's development relaxation and deadline.
+   */
   constructor(
+    upstream: Upstream,
     endpoint: string,
     getAuthorization: AuthorizationProvider,
     sessionId?: string | null,
@@ -397,6 +463,7 @@ export class McpClient {
     this.#fetchOptions = fetchOptions.timeoutMs !== undefined && fetchOptions.deadline === undefined
       ? { ...fetchOptions, deadline: Date.now() + fetchOptions.timeoutMs }
       : fetchOptions;
+    this.#upstream = guardedUpstream(upstream, this.#fetchOptions);
   }
 
   // The credential most recently sent, kept only so it can be recognised if it comes back. See
@@ -416,104 +483,132 @@ export class McpClient {
     return headers;
   }
 
-  async #post(body: unknown): Promise<Response> {
+  // Sends one JSON-RPC message through the upstream, which counts it under its method's name, and
+  // hands the answer to `read` once its status is known not to be a refusal. What `read` returns is
+  // what `answer` counts the request by, where its status alone does not say.
+  async #post<T>(
+    message: JsonRpcMessage,
+    read: (response: Response) => T | Promise<T>,
+    answer?: (parsed: T) => CallAnswer | undefined,
+  ): Promise<T> {
     let headers: Headers;
     try {
-      const method = typeof body === "object" && body !== null && "method" in body
-        ? String((body as { method: unknown }).method)
-        : "unknown";
-      headers = await this.#headers(method);
+      headers = await this.#headers(message.method);
     } catch (err) {
       throw new McpCallNotDispatchedError(
         err instanceof Error ? err.message : String(err), err);
     }
-    let response: Response;
     try {
-      response = await guardedFetch(this.#endpoint, {
+      return await this.#upstream.read(this.#endpoint, {
         method: "POST",
         headers,
-        body: JSON.stringify(body),
-      }, this.#fetchOptions);
+        body: JSON.stringify(message),
+        operation: rpcOperation(message.method),
+        // Any POST may be answered with an event stream, read for as long as the server takes to
+        // finish the call. Its only limit is the operation's deadline, where the caller set one.
+        timeoutMs: null,
+        signal: deadlineSignal(this.#fetchOptions),
+      }, async response => {
+        // Only 401 means the credentials are the problem. A 403 is an authenticated caller refused
+        // this particular tool; treating it as an auth failure would mark the account expired and
+        // prompt a reconnect that cannot help.
+        if (response.status === 401) {
+          await response.body?.cancel().catch(() => undefined);
+          throw new McpAuthRequiredError(
+            "The MCP server requires authorization.",
+            parseResourceMetadataUrl(response.headers.get("WWW-Authenticate")));
+        }
+        if (response.status === 403) {
+          await response.body?.cancel().catch(() => undefined);
+          throw new McpProtocolError(
+            "The MCP server refused this request. The connected account may not have access to it.",
+            undefined, "declined");
+        }
+        if (response.status === 404 && this.sessionId) {
+          await response.body?.cancel().catch(() => undefined);
+          throw new McpSessionExpiredError();
+        }
+        return read(response);
+      }, answer);
     } catch (err) {
       if (err instanceof FetchNotStartedError) {
         throw new McpCallNotDispatchedError(err.message, err);
       }
       throw err;
     }
-
-    // Only 401 means the credentials are the problem. A 403 is an authenticated caller refused this
-    // particular tool; treating it as an auth failure would mark the account expired and prompt a
-    // reconnect that cannot help.
-    if (response.status === 401) {
-      await response.body?.cancel().catch(() => undefined);
-      throw new McpAuthRequiredError(
-        "The MCP server requires authorization.",
-        parseResourceMetadataUrl(response.headers.get("WWW-Authenticate")));
-    }
-    if (response.status === 403) {
-      await response.body?.cancel().catch(() => undefined);
-      throw new McpProtocolError(
-        "The MCP server refused this request. The connected account may not have access to it.",
-        undefined, "declined");
-    }
-    if (response.status === 404 && this.sessionId) {
-      await response.body?.cancel().catch(() => undefined);
-      throw new McpSessionExpiredError();
-    }
-    return response;
   }
 
-  async #callMeasured<T>(
+  // Calls one JSON-RPC method and resolves to its result, or to what `read` makes of it. A method
+  // of this client that reads the result it is answered does so in `read`, which is given the
+  // result of an answer that holds no JSON-RPC error: what `read` throws is thrown to the caller,
+  // and counts a request the server answered a success an error of the API. So does an answer that
+  // holds neither an error nor a result, which is resolved to as it came: nothing is thrown for it
+  // here, and whoever reads the result is the one to refuse it.
+  #callMeasured<T>(method: string, params?: unknown): Promise<{ result: T; responseBytes: number }>;
+  #callMeasured<T, R>(
+    method: string, params: unknown, read: (result: T, responseBytes: number) => R,
+  ): Promise<{ result: R; responseBytes: number }>;
+  async #callMeasured<T, R>(
     method: string,
     params?: unknown,
-  ): Promise<{ result: T; responseBytes: number }> {
+    read?: (result: T, responseBytes: number) => R,
+  ): Promise<{ result: T | R; responseBytes: number }> {
     // A transport session is persisted on the account and can be used by several short-lived client
     // instances concurrently. Prefixing IDs per instance prevents two active requests from both
     // being JSON-RPC id 1 and confusing the server's SSE response routing.
     const id = `${this.#requestPrefix}:${++this.#requestId}`;
-    const response = await this.#post({ jsonrpc: "2.0", id, method, params });
+    // The response with what the method makes of its result, where the method reads one: the
+    // result this helper returns, which is that of a response with no error.
+    const measured = (parsed: JsonRpcResponse, responseBytes: number): Measured<R> => ({
+      parsed,
+      responseBytes,
+      made: read && !parsed.error ? madeOf(() => read(parsed.result as T, responseBytes)) : undefined,
+    });
+    const { parsed, responseBytes, made } = await this.#post(
+      { jsonrpc: "2.0", id, method, params },
+      async response => {
+        if (!response.ok) {
+          await response.body?.cancel().catch(() => undefined);
+          throw new McpProtocolError(
+            `MCP server returned HTTP ${response.status} for "${method}".`);
+        }
 
-    if (!response.ok) {
-      await response.body?.cancel().catch(() => undefined);
-      throw new McpProtocolError(
-        `MCP server returned HTTP ${response.status} for "${method}".`);
-    }
+        const sessionId = response.headers.get("Mcp-Session-Id");
+        if (sessionId) this.sessionId = sessionId;
 
-    const sessionId = response.headers.get("Mcp-Session-Id");
-    if (sessionId) this.sessionId = sessionId;
-
-    const contentType = (response.headers.get("Content-Type") ?? "").toLowerCase();
-    let parsed: JsonRpcResponse;
-    let responseBytes: number;
-    if (contentType.includes("text/event-stream")) {
-      const measured = await readSseResponse(response, id);
-      parsed = measured.parsed;
-      responseBytes = measured.bytes;
-    } else {
-      // Capped: a JSON tool result is server-controlled and unbounded, and has to be buffered whole
-      // before it can be parsed. The catalog limits above bound what is kept, not what arrives.
-      let bodyText: string;
-      try {
-        bodyText = await readTextCapped(response);
-      } catch (err) {
-        throw new McpProtocolError(
-          `MCP server's response to "${method}" was too large to read: ` +
-          `${err instanceof Error ? err.message : String(err)}`);
-      }
-      responseBytes = encoder.encode(bodyText).byteLength;
-      parsed = extractResponse(bodyText, id);
-    }
+        const contentType = (response.headers.get("Content-Type") ?? "").toLowerCase();
+        if (contentType.includes("text/event-stream")) {
+          const event = await readSseResponse(response, id);
+          return measured(event.parsed, event.bytes);
+        }
+        // Capped: a JSON tool result is server-controlled and unbounded, and has to be buffered
+        // whole before it can be parsed. The catalog limits above bound what is kept, not what
+        // arrives.
+        let bodyText: string;
+        try {
+          bodyText = await readTextCapped(response);
+        } catch (err) {
+          throw new McpProtocolError(
+            `MCP server's response to "${method}" was too large to read: ` +
+            `${err instanceof Error ? err.message : String(err)}`);
+        }
+        return measured(extractResponse(bodyText, id), encoder.encode(bodyText).byteLength);
+      },
+      // A JSON-RPC error arrives inside a 200, and so do a response that holds neither an error
+      // nor a result and a result the method refuses.
+      answered => (answered.parsed.error || lacksResult(answered.parsed)
+        || (answered.made && "thrown" in answered.made)
+        ? { outcome: "error", reason: "api" } : undefined),
+    );
 
     if (parsed.error) {
       throw new McpProtocolError(
         `MCP server rejected "${method}": ${this.#quoteServerText(parsed.error.message)}`,
         parsed.error.code, method === "tools/call" ? "unknown" : "declined");
     }
-    return { result: parsed.result as T, responseBytes };
-  }
-
-  async #call<T>(method: string, params?: unknown): Promise<T> {
-    return (await this.#callMeasured<T>(method, params)).result;
+    if (!made) return { result: parsed.result as T, responseBytes };
+    if ("thrown" in made) throw made.thrown;
+    return { result: made.value, responseBytes };
   }
 
   // Prepares text the server wrote for inclusion in an error message.
@@ -533,18 +628,18 @@ export class McpClient {
 
   async #notify(method: string, params?: unknown): Promise<void> {
     // Notifications carry no id and expect no body; failures here are not worth surfacing.
-    await this.#post({ jsonrpc: "2.0", method, params }).catch(() => undefined);
+    await this.#post({ jsonrpc: "2.0", method, params }, () => undefined).catch(() => undefined);
   }
 
   /** Performs the `initialize` handshake and the follow-up `notifications/initialized`. */
   async initialize(clientName: string): Promise<McpServerInfo> {
-    const info = await this.#call<InitializeResult>("initialize", {
+    const { result: info } = await this.#callMeasured("initialize", {
       protocolVersion: MCP_PROTOCOL_VERSION,
       // No client capabilities: this gatekeeper never serves roots, sampling, or elicitation, so
       // advertising them would invite requests it cannot honour.
       capabilities: {},
       clientInfo: { name: clientName, version: "1.0.0" },
-    });
+    }, usableInitializeResult);
     await this.#notify("notifications/initialized");
     return info;
   }
@@ -552,10 +647,14 @@ export class McpClient {
   /** Best-effort termination for a transport session this client no longer owns. */
   async closeSession(): Promise<void> {
     if (!this.sessionId) return;
-    const response = await guardedFetch(this.#endpoint, {
+    const response = await this.#upstream.request(this.#endpoint, {
       method: "DELETE",
       headers: await this.#headers("DELETE"),
-    }, this.#fetchOptions);
+      operation: "session.close" satisfies McpOperation,
+      // The operation's deadline, where it has one, is the request's only limit.
+      timeoutMs: this.#fetchOptions.deadline === undefined ? undefined : null,
+      signal: deadlineSignal(this.#fetchOptions),
+    });
     await response.body?.cancel();
     this.sessionId = null;
   }
@@ -606,9 +705,21 @@ export class McpClient {
     })).tools;
   }
 
+  // One listing reads up to `MAX_TOOL_PAGES` pages, so its requests are summed and written as one
+  // point per kind when it ends.
+  #list<T extends { name: string }>(options: {
+    maxTools: number;
+    include?: McpToolFilter;
+    project: (tool: McpWireTool) => T;
+    stopWhenFull?: boolean;
+    requireCompleteScan?: boolean;
+  }): Promise<{ tools: T[]; truncated: boolean }> {
+    return this.#upstream.summed(() => this.#listPages(options));
+  }
+
   // The shared listing loop. `project` decides how much of each tool is retained, and therefore how
   // much of the byte budget each one costs; the budget itself is applied to whatever it returns.
-  async #list<T extends { name: string }>({
+  async #listPages<T extends { name: string }>({
     maxTools,
     include,
     project,
@@ -634,53 +745,103 @@ export class McpClient {
       return { tools, truncated: true };
     };
 
-    for (let page = 0; page < MAX_TOOL_PAGES; page++) {
-      const measured = await this.#callMeasured<{ tools?: McpWireTool[]; nextCursor?: string }>(
-        "tools/list", cursor === undefined ? {} : { cursor });
-      const body = measured.result;
-      scannedBytes += measured.responseBytes;
-      if (scannedBytes > MAX_SCANNED_TOOL_BYTES) return scanLimit();
-      const pageTools = body.tools ?? [];
+    // What the listing makes of one page: the cursor of the page after it, or how the listing
+    // ends. A page that holds no array of tools, or whose cursor is no cursor, is refused by a
+    // throw, which counts its request an error of the API: a page with no tools holds an empty
+    // array. The scan limit is the listing's own, and no fault of the page that reaches it; nor
+    // is what the caller's `include` throws, which is thrown once the request is counted.
+    const scan = (
+      body: { tools?: McpWireTool[]; nextCursor?: string }, responseBytes: number,
+    ): { cursor: string } | { ends: "complete" | "truncated" | "scan-limit" } | { filterThrew: unknown } => {
+      scannedBytes += responseBytes;
+      if (scannedBytes > MAX_SCANNED_TOOL_BYTES) return { ends: "scan-limit" };
+      const pageTools = body.tools;
+      if (!Array.isArray(pageTools)) {
+        throw new McpProtocolError('MCP server returned a "tools/list" result with no tools array.');
+      }
       const remainingTools = Math.max(0, MAX_SCANNED_TOOLS - scannedTools);
       const scanCount = Math.min(pageTools.length, remainingTools);
       scannedTools += scanCount;
       for (let index = 0; index < scanCount; index++) {
         const tool = pageTools[index];
         if (!isValidToolName(tool?.name)) continue;
-        if (include && !include(tool)) continue;
+        if (include) {
+          let included: boolean;
+          try {
+            included = include(tool);
+          } catch (filterThrew) {
+            return { filterThrew };
+          }
+          if (!included) continue;
+        }
         // A cap was reached with tools still arriving, so the catalog is known to be incomplete.
         // Reported rather than inferred from `tools.length`, since the byte budget can stop the
         // listing well short of `maxTools` and leaves no trace in the array itself.
-        if (tools.length >= maxTools || budget <= 0) return { tools, truncated: true };
+        if (tools.length >= maxTools || budget <= 0) return { ends: "truncated" };
         const trimmed = project(tool);
         // Include a comma's byte for every array member. Brackets are covered by the 32 KiB storage
         // headroom. Refuse the whole next tool rather than storing half a schema or an invalid value.
         const bytes = encoder.encode(JSON.stringify(trimmed)).byteLength + 1;
-        if (bytes > budget) return { tools, truncated: true };
+        if (bytes > budget) return { ends: "truncated" };
         budget -= bytes;
         tools.push(trimmed);
         if (stopWhenFull && tools.length >= maxTools) {
           // Discovery only asks for a bounded prefix and does not need to prove whether another
           // match exists. The public discovery methods discard `truncated`; ordinary listings retain
           // the precise semantics above and still paginate to completion.
-          return { tools, truncated: true };
+          return { ends: "truncated" };
         }
       }
       // Inspect the bounded prefix before reporting the scan limit: an exact requested tool may be
       // the first entry in a page whose remaining entries cross the aggregate tool budget.
-      if (scanCount < pageTools.length) return scanLimit();
+      if (scanCount < pageTools.length) return { ends: "scan-limit" };
       const nextCursor = body.nextCursor;
-      if (nextCursor === undefined) return { tools, truncated: false };
+      if (nextCursor === undefined) return { ends: "complete" };
       if (typeof nextCursor !== "string") {
         throw new McpProtocolError('MCP server returned an invalid "tools/list" cursor.');
       }
-      cursor = nextCursor;
+      return { cursor: nextCursor };
+    };
+
+    for (let page = 0; page < MAX_TOOL_PAGES; page++) {
+      const { result: scanned } = await this.#callMeasured(
+        "tools/list", cursor === undefined ? {} : { cursor }, scan);
+      if ("filterThrew" in scanned) throw scanned.filterThrew;
+      if ("ends" in scanned) {
+        return scanned.ends === "scan-limit"
+          ? scanLimit() : { tools, truncated: scanned.ends === "truncated" };
+      }
+      cursor = scanned.cursor;
     }
     return scanLimit();
   }
 
-  /** Invokes one tool. A tool-level failure arrives as `isError`, not as a thrown error. */
+  /**
+   * Invokes one tool. A tool-level failure arrives as `isError`, not as a thrown error. A result
+   * that `toCallResult` cannot read is resolved to as it came, for its reader to refuse, and the
+   * request is counted an error of the API: the call was sent, and may have taken effect.
+   */
   async callTool(name: string, args: Record<string, unknown>): Promise<McpToolCallResult> {
-    return this.#call<McpToolCallResult>("tools/call", { name, arguments: args });
+    try {
+      return (await this.#callMeasured("tools/call", { name, arguments: args }, (result: McpToolCallResult) => {
+        try {
+          toCallResult(result);
+        } catch {
+          throw new UnreadableToolResult(result);
+        }
+        return result;
+      })).result;
+    } catch (err) {
+      if (err instanceof UnreadableToolResult) return err.result;
+      throw err;
+    }
+  }
+}
+
+// A tool's result that `toCallResult` threw on, thrown within the request so that it is counted
+// and caught by `callTool`, which hands the result on.
+class UnreadableToolResult extends Error {
+  constructor(readonly result: McpToolCallResult) {
+    super("The tool's result could not be read.");
   }
 }

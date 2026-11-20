@@ -54,6 +54,9 @@ describe("search words", () => {
     }]);
     expect(await searchAll(api, "plan", undefined, 25, 25)).toEqual({ hits: [{ driveId: "b!one", itemId: "01A" }], nextFrom: 50 });
     await expect(searchAll(harness(["not an object"]).api, "plan", undefined, 0, 25)).rejects.toThrow(GraphApiError);
+    // A response that holds no collection of search responses is none: not a search that hit nothing.
+    await expect(searchAll(harness([{}]).api, "plan", undefined, 0, 25)).rejects.toThrow("malformed search response");
+    expect(await searchAll(harness([{ value: [] }]).api, "plan", undefined, 0, 25)).toEqual({ hits: [] });
   });
 });
 

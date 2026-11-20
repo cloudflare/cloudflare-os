@@ -12,6 +12,7 @@ import type {ChatMessageInfo, ChatListMessagesOptions} from "../../src/chat-type
 import type {ChatMessageRaw, ChatReactionRaw, ChatMembershipRaw} from "../../src/chat-api";
 import type {TestHooks as TestHooksImpl} from "./worker";
 import { ChatSpaceConfiguratorUI } from "../../src/google-configurators";
+import { unbindWrittenCalls, writtenCalls } from "../written-calls";
 
 type TestHooks = {
   chatStartSession(
@@ -432,6 +433,7 @@ function chatHarness(
 }
 
 afterEach(() => {
+  unbindWrittenCalls();
   vi.unstubAllGlobals();
 });
 
@@ -1404,6 +1406,24 @@ describe("Google Chat thread capabilities", () => {
     expect(backend.state.gets).toEqual([]);
   });
 
+  it("writes the pages one read of a thread walks as one point", async () => {
+    const backend = chatBackend();
+    backend.state.pageSize = 1;
+    backend.state.messages.push(
+      {...threadMessage("private", "A", "2024-01-01T00:00:00Z"), privateMessageViewer: {name: "users/1"}},
+      threadMessage("visible", "A", "2024-01-02T00:00:00Z", true),
+    );
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using thread = (await space.getThread(threadName("A"))).thread;
+    const written = writtenCalls();
+
+    // The first page holds only a message hidden from this account, so the read goes on to the next.
+    expect(await thread.getRootMessage()).toBeNull();
+
+    expect(written.of("messages.list")).toEqual([["google-chat", "messages.list", "success", 200, 2]]);
+  });
+
   it("refreshes authorized thread metadata including same-page roots and pending edits", async () => {
     const backend = chatBackend();
     const reply = threadMessage("reply", "A", "2024-01-02T00:00:00Z", true);
@@ -1850,6 +1870,17 @@ describe("Starting Google Chat conversations", () => {
     expect(await message.getMetadata()).toMatchObject({id: messageName("M1"), spaceId: SPACE_NAME, text: "hello"});
     await chat.revertAction(1);
     expect(backend.state.deletes).toEqual([messageName("M1")]);
+  });
+
+  it("writes the directory lookups of the people a conversation is started with as one point", async () => {
+    const {chat} = accountChat();
+    using account = await chat.account();
+    const written = writtenCalls();
+
+    using _message = (await account.sendDirectMessage([BOB.email, CAROL.email], "hi both")).message;
+
+    expect(written.of("people.searchDirectoryPeople"))
+      .toEqual([["google-people", "people.searchDirectoryPeople", "success", 200, 2]]);
   });
 
   it("creates a direct message from a known same-organization Chat user ID", async () => {

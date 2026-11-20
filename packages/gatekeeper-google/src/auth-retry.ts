@@ -1,32 +1,32 @@
-// Shared fetch helper for the Google gatekeeper API clients.
+// The Google gatekeeper's request helper, over its upstream client (`googleUpstream` in
+// `upstream.ts`), which times, retries and counts each attempt. What this adds is the token.
 //
-// Two independent retry concerns compose here:
+// The access token we send can be stale or invalidated before its recorded expiry, e.g. after a
+// re-consent/re-grant, an explicit revoke-then-reconnect, or a refresh-token rotation. The token
+// is cached in the gatekeeper Durable Object's memory and in KV, so a stale-but-unexpired token
+// would otherwise be served on every request and the 401 could not self-heal. On a 401 we mint a
+// fresh token via `getAccessToken({ forceRefresh: true })` and replay exactly once. This is safe
+// on any HTTP method: a 401 is rejected before the request takes effect, so a write is never
+// applied twice.
 //
-//   1. Auth (401). The access token we send can be stale or invalidated before its recorded expiry
-//      — e.g. after a re-consent/re-grant, an explicit revoke-then-reconnect, or a refresh-token
-//      rotation. The token is cached in the gatekeeper Durable Object's memory and in KV, so a
-//      stale-but-unexpired token would otherwise be served on every request and the 401 could not
-//      self-heal. On a 401 we mint a fresh token via `getAccessToken({ forceRefresh: true })` and
-//      retry exactly once. This is safe on any HTTP method: a 401 is rejected before the request
-//      takes effect, so a write is never applied twice.
+// A 403 is an insufficient-scope error, so minting cannot fix it: the same grant produces the
+// same scopes. A *re-grant* can, and it always arrives as a different stored token, so on a 403
+// we re-read the authority's stored token and replay only if it actually changed, minting
+// nothing. That is what lets a binding whose resource gained scopes recover from the user's
+// reconnect instead of failing until the memoized token happens to expire.
 //
-//      A 403 is an insufficient-scope error, so minting cannot fix it: the same grant produces the
-//      same scopes. A *re-grant* can, and it always arrives as a different stored token — so on a
-//      403 we re-read the authority's stored token and replay only if it actually changed, minting
-//      nothing. That is what lets a binding whose resource gained scopes recover from the user's
-//      reconnect instead of failing until the memoized token happens to expire.
-//
-//   2. Transient failures (429 / 5xx / network timeout). Retried with exponential backoff plus full
-//      jitter, honoring `Retry-After` when present, on requests that are safe to replay: GETs, and
-//      non-GETs that opt in via `idempotent`. A 429, a 5xx and a timeout all leave it ambiguous
-//      whether the server already applied a write. Retrying writes needs a per-request idempotency
-//      key (`X-Goog-Client-Request-Id` on Gmail send, a client-supplied event id on
-//      `events.insert`); that is a follow-up, not this change.
-//
-// Both concerns share a single attempt counter, so the worst case is a predictable `retries + 2`
-// requests: `retries` transient attempts plus one each for the 401 refresh and the 403 reload.
+// Neither replay uses an attempt of the retry of transient failures (a 429, a 5xx, a network
+// failure or a timeout, of a request that is safe to send twice), so the worst case is a
+// predictable `retries + 2` requests: `retries` transient attempts plus one each for the 401
+// refresh and the 403 reload. A write is sent again after a transient failure only where its
+// caller marks it `idempotent`, as one that carries an idempotency key of its own. Gmail's send
+// (`X-Goog-Client-Request-Id`) and `events.insert` (a client-supplied event id) carry none, and
+// are sent once.
 
-import { GOOGLE_API_SOURCE, googleService, recordCall } from "./call-metrics";
+import type {
+  AnsweredWith, CallAnswer, UpstreamRequestInit,
+} from "@gadgets/gatekeeper-kit/upstream";
+import { googleUpstream, type NamedOperation } from "./upstream";
 
 /**
  * Options for requesting an access token.
@@ -48,194 +48,187 @@ export type AccessTokenRequest = {
 
 export type AccessTokenProvider = (opts?: AccessTokenRequest) => Promise<string>;
 
+/** How `fetchWithAuthRetry` and `readWithAuthRetry` send one request, beside what `fetch` takes. */
 export type FetchWithAuthRetryOptions = {
   /**
+   * Mints the request's Bearer token. `null` for a request that carries none: one that obtains or
+   * revokes a token, or whose URL is its own credential. Such a request is sent as given, with no
+   * `Authorization` header added and nothing replayed with another token.
+   */
+  getAccessToken: AccessTokenProvider | null;
+  /**
    * Total attempts for transient failures, including the first. Defaults to 3. The one-shot 401
-   * refresh does not consume this budget, so the worst case is `retries + 1` requests.
+   * refresh and 403 reload do not consume this budget, so the worst case is `retries + 2`
+   * requests.
    */
   retries?: number;
-  /** Per-attempt abort timeout in milliseconds. Omitted means no timeout is imposed. */
-  timeoutMs?: number;
+  /**
+   * Per-attempt abort timeout in milliseconds, the reading of the answer's body included.
+   * Omitted means the client's 30 seconds; `null` means no timeout, for an answer read as a
+   * stream at its reader's pace.
+   */
+  timeoutMs?: number | null;
   /**
    * Asserts this request is safe to replay on 429 / 5xx / timeout. Must only be set for a request
    * that performs no writes. Non-GET methods default to unsafe; this is the opt-in for a POST that
    * is still just a read (Drive's batch `files.get` envelope).
    */
   idempotent?: boolean;
-  /** What the request does, a literal, for the metrics. The HTTP method unless given. */
-  operation?: string;
+  /**
+   * The request's name in the metrics, one of a closed list. Left out, the name is read from the
+   * method and URL (`googleOperation`), and is the HTTP method alone where the URL is not one that
+   * can be read. Pass it only where the URL cannot say what the request does, as a token's
+   * exchange and its refresh share one URL.
+   */
+  operation?: NamedOperation;
+  /**
+   * How an answered attempt is counted where its status and headers say what its status alone
+   * does not, as an answer whose headers are not those the request was sent for. It answers at
+   * once, of each attempt, and reads no body. Left out, or where it returns undefined, the
+   * attempt is counted by its status.
+   */
+  answer?: (answered: AnsweredWith) => CallAnswer | undefined;
 };
 
-const BASE_DELAY_MS = 500;
-const MAX_DELAY_MS = 10_000;
+// What the client is given for one request: what `fetch` takes, the request's own options and,
+// where it carries a token, the token of each attempt and the replay of a 401 and a 403.
+function requestOf(init: RequestInit, opts: FetchWithAuthRetryOptions): UpstreamRequestInit {
+  let { getAccessToken } = opts;
+  let request = {
+    ...init,
+    operation: opts.operation,
+    idempotent: opts.idempotent,
+    timeoutMs: opts.timeoutMs,
+    answer: opts.answer,
+    ...(opts.retries === undefined ? {} : { retry: { attempts: opts.retries } }),
+  };
+  if (!getAccessToken) return request;
 
-/**
- * Whether a transient failure status is worth replaying.
- *
- * Neither a 429 nor a 5xx tells us whether the request took effect before the response, so both are
- * only replayed when the caller has asserted the request is safe to send twice.
- */
-function canRetry(status: number, idempotent: boolean): boolean {
-  if (status === 429 || (status >= 500 && status <= 599)) return idempotent;
-  return false;
-}
-
-function backoffDelayMs(attempt: number, retryAfter: string | null): number {
-  // Prefer the server's Retry-After when present, capped. Only the delta-seconds form is parsed;
-  // the HTTP-date form yields NaN and falls through to exponential backoff, which is fine.
-  if (retryAfter) {
-    let seconds = parseInt(retryAfter, 10);
-    if (!Number.isNaN(seconds)) return Math.min(seconds * 1000, MAX_DELAY_MS);
-  }
-  // Exponential backoff with full jitter.
-  let capped = Math.min(BASE_DELAY_MS * 2 ** attempt, MAX_DELAY_MS);
-  return Math.random() * capped;
-}
-
-// Counts one request: `answer` is the status it was answered with, or why it threw. Nothing here
-// may throw, since a metric cannot fail the request it counts.
-function recordAttempt(
-  url: string, operation: string, startedAt: number, answer: number | "timeout" | "network",
-): void {
-  try {
-    let call = {
-      source: GOOGLE_API_SOURCE, service: googleService(url), operation,
-      durationMs: Date.now() - startedAt,
-    };
-    if (typeof answer !== "number") {
-      recordCall({ ...call, outcome: "error", reason: answer });
-    } else if (answer < 400) {
-      recordCall({ ...call, outcome: "success", httpStatus: answer });
-    } else if (answer === 429) {
-      recordCall({ ...call, outcome: "refused", reason: "rate", httpStatus: answer });
-    } else {
-      recordCall({ ...call, outcome: "error", reason: "http", httpStatus: answer });
-    }
-  } catch {
-    // The request goes uncounted.
-  }
-}
-
-/**
- * Perform an authenticated fetch, injecting a Bearer token and applying both retry concerns
- * described at the top of this file. The `Authorization` header is set from the (possibly
- * refreshed) token on every attempt, so callers must NOT set it themselves; any other headers in
- * `init.headers` are preserved.
- */
-export async function fetchWithAuthRetry(
-  url: string,
-  init: RequestInit,
-  getAccessToken: AccessTokenProvider,
-  opts: FetchWithAuthRetryOptions = {},
-): Promise<Response> {
-  let method = (init.method ?? "GET").toUpperCase();
-  let retries = opts.retries ?? 3;
-  let idempotent = method === "GET" || opts.idempotent === true;
-  let operation = opts.operation ?? method;
-  // A request can only be replayed if its body can be sent again. A string or byte-array body
-  // (what the call sites use today) re-serializes fine; a stream is consumed by the first
-  // attempt, so retrying it would send an empty or errored body. Nothing to replay is likewise
-  // fine.
-  let replayable = init.body === undefined || init.body === null ||
-    typeof init.body === "string" || init.body instanceof Uint8Array;
-
-  // One-shot each: a 401 buys one refreshed retry, a 403 one reloaded retry.
+  // The token of the attempt to send: minted before the first, and kept until a 401 or a 403
+  // replaces it.
+  let token: string | undefined;
+  // Takes `minted` for the next attempt, and says whether it is another than the one refused.
+  let replaced = (minted: string) => {
+    let changed = minted !== token;
+    token = minted;
+    return changed;
+  };
+  // One-shot each: a 401 buys one refreshed replay, a 403 one reloaded replay.
   let refreshed = false;
   let reloaded = false;
-  let token = await getAccessToken();
-  let attempt = 0;
-
-  while (true) {
-    // A fresh timeout signal per attempt so a retry gets the full budget, combined with any
-    // caller-supplied signal.
-    let signals: AbortSignal[] = [];
-    let timeout = opts.timeoutMs === undefined ? undefined : AbortSignal.timeout(opts.timeoutMs);
-    if (timeout) signals.push(timeout);
-    if (init.signal) signals.push(init.signal);
-    let signal = signals.length > 0 ? AbortSignal.any(signals) : undefined;
-
-    let headers = new Headers(init.headers);
-    headers.set("Authorization", `Bearer ${token}`);
-
-    let response: Response;
-    // An attempt begun once its caller's signal has aborted is never sent.
-    let unsent = init.signal?.aborted === true;
-    let startedAt = Date.now();
-    try {
-      response = await fetch(url, {
-        ...init,
-        headers,
-        ...(signal ? { signal } : {}),
-      });
-    } catch (error) {
-      // A request its caller gave up is not one the service failed, and is not counted. A caller
-      // that times its own wait for an answer aborts with a `TimeoutError`, though, and that is
-      // the service not answering, unless the wait ran out before this attempt was sent. Only the
-      // reason's name is read.
-      let waitedOut = init.signal?.reason?.name === "TimeoutError";
-      if (!unsent && (!init.signal?.aborted || waitedOut)) {
-        recordAttempt(
-          url, operation, startedAt, timeout?.aborted || waitedOut ? "timeout" : "network");
+  return {
+    ...request,
+    authorize: async () => ({ Authorization: `Bearer ${token ??= await getAccessToken()}` }),
+    replay: async response => {
+      if (response.status === 401 && !refreshed) {
+        refreshed = true;
+        // Naming the rejected token lets the authority collapse a concurrent burst of 401s into
+        // a single token exchange (see AccessTokenRequest). A provider that cannot refresh (a
+        // fixed token) hands back the one just rejected, which is not sent again.
+        return replaced(await getAccessToken({ forceRefresh: true, staleToken: token }));
       }
-      // Network error or timeout: ambiguous, so retry only when the request is safe to replay,
-      // and never once the caller's own signal has aborted it.
-      if (replayable && idempotent && attempt < retries - 1 && !init.signal?.aborted) {
-        await new Promise(resolve => setTimeout(resolve, backoffDelayMs(attempt, null)));
-        attempt++;
-        continue;
+      if (response.status === 403 && !reloaded) {
+        // It replays only on a token that really changed: an unchanged one means the grant
+        // itself is insufficient, and re-sending it would just 403 again.
+        reloaded = true;
+        return replaced(await getAccessToken({ reloadStored: true }));
       }
-      throw error;
-    }
-    // Every answer is counted, one that is then retried with another token included.
-    recordAttempt(url, operation, startedAt, response.status);
-
-    if (response.status === 401 && !refreshed && replayable) {
-      // Deliberately does not touch `attempt`: the refresh is one-shot, so it can add at most one
-      // request to the budget rather than doubling it.
-      refreshed = true;
-      // Naming the rejected token lets the authority collapse a concurrent burst of 401s into a
-      // single token exchange — see AccessTokenRequest.
-      let fresh = await releasingOnFailure(response, getAccessToken({ forceRefresh: true, staleToken: token }));
-      // A provider that cannot refresh (a fixed token) hands back the one just rejected.
-      if (fresh !== token) {
-        token = fresh;
-        await response.body?.cancel();
-        continue;
-      }
-    }
-
-    if (response.status === 403 && !reloaded && replayable) {
-      // Also one-shot, and it replays only on a token that really changed: an unchanged one means
-      // the grant itself is insufficient, and re-sending it would just 403 again.
-      reloaded = true;
-      let stored = await releasingOnFailure(response, getAccessToken({ reloadStored: true }));
-      if (stored !== token) {
-        token = stored;
-        await response.body?.cancel();
-        continue;
-      }
-    }
-
-    if (replayable && canRetry(response.status, idempotent) && attempt < retries - 1) {
-      let delay = backoffDelayMs(attempt, response.headers.get("Retry-After"));
-      await response.body?.cancel();
-      await new Promise(resolve => setTimeout(resolve, delay));
-      attempt++;
-      continue;
-    }
-
-    return response;
-  }
+      return false;
+    },
+  };
 }
 
-/** Await `token`, cancelling the rejected response's body if it fails. */
-async function releasingOnFailure(response: Response, token: Promise<string>): Promise<string> {
-  try {
-    return await token;
-  } catch (error) {
-    await response.body?.cancel();
-    throw error;
-  }
+/**
+ * Perform a fetch to Google through `googleUpstream`, injecting a Bearer token and replaying a
+ * 401 and a 403 as described at the top of this file. The `Authorization` header is set from the
+ * (possibly refreshed) token on every attempt, so callers must NOT set it themselves; any other
+ * headers in `init.headers` are preserved. A request with no token provider gets no header and
+ * no replay with another token. No redirect is followed unless `init.redirect` is `"follow"`.
+ *
+ * The attempt returned is counted by its status when its headers arrive, so this is for a request
+ * whose success holds nothing that is read here: a stream handed on unread, or a body that is let
+ * go. A success that is read goes through `readWithAuthRetry`.
+ * @param url The request's URL.
+ * @param init What `fetch` takes: the method, headers, body, signal and redirect mode.
+ * @param opts The token provider, and the request's attempts, timeout and name.
+ * @returns The answer of the last attempt, whatever its status.
+ */
+export function fetchWithAuthRetry(
+  url: string | URL,
+  init: RequestInit,
+  opts: FetchWithAuthRetryOptions,
+): Promise<Response> {
+  return googleUpstream.request(url, requestOf(init, opts));
+}
+
+/**
+ * Sends a request as `fetchWithAuthRetry` does and reads its answer inside the client's `read`,
+ * so that the attempt is counted once `parse` has read it, by whether it could be read. An answer
+ * `parse` throws on is counted by its status where that is no success. Where it is one, the
+ * attempt is an `error` with the reason `parse`, or `timeout` where a timeout cut the reading
+ * off, and is not counted where its caller gave the request up. A request that is safe to send
+ * twice is sent again where its own timeout cut the reading off.
+ * @param url The request's URL.
+ * @param init What `fetch` takes: the method, headers, body, signal and redirect mode.
+ * @param opts The token provider, and the request's attempts, timeout and name.
+ * @param parse Reads the last attempt's answer, whatever its status. What it throws propagates.
+ * @param answer How the parsed answer is counted where its status alone does not say, given what
+ * `parse` returned and the answer's status and headers: an error inside a success is an `error`
+ * with the reason `api`. Left out, or where it returns undefined, the answer is counted by its
+ * status.
+ * @returns What `parse` returned.
+ */
+export function readWithAuthRetry<T>(
+  url: string | URL,
+  init: RequestInit,
+  opts: FetchWithAuthRetryOptions,
+  parse: (response: Response) => T | Promise<T>,
+  answer?: (parsed: T, answered: AnsweredWith) => CallAnswer | undefined,
+): Promise<T> {
+  return googleUpstream.read(url, requestOf(init, opts), parse, answer);
+}
+
+// What `readCheckedWithAuthRetry` reads of an answer: what `check` made of it, or what `check`
+// threw.
+type Checked<T> = { made: T } | { unusable: unknown };
+
+/**
+ * Sends a request as `readWithAuthRetry` does, and gives what `parse` read of its answer to
+ * `check`, within the request: the check of the method that sent it, which makes of the answer
+ * what the request was sent for and throws where the answer holds no such thing. An answer
+ * `check` throws on is counted an `error` with the reason `api` where its status is from 200 to
+ * 299, and by its status otherwise, and what `check` threw is thrown once the attempt is counted.
+ * The request is sent no more often for it: only what `parse` throws is an answer that could not
+ * be read.
+ * @param url The request's URL.
+ * @param init What `fetch` takes: the method, headers, body, signal and redirect mode.
+ * @param opts The token provider, and the request's attempts, timeout and name.
+ * @param parse Reads the last attempt's answer, whatever its status. What it throws propagates.
+ * @param check Makes of what `parse` read what the request was sent for, or throws. What it
+ * returns is awaited, and a rejection is what it threw.
+ * @param own Whether what `check` threw is the gatekeeper's own refusal of an answer that holds
+ * what was asked for, as one it does not show: such an answer is counted by its status.
+ * @returns What `check` returned.
+ */
+export async function readCheckedWithAuthRetry<P, T>(
+  url: string | URL,
+  init: RequestInit,
+  opts: FetchWithAuthRetryOptions,
+  parse: (response: Response) => P | Promise<P>,
+  check: (parsed: P) => T | Promise<T>,
+  own?: (error: unknown) => boolean,
+): Promise<T> {
+  let read = await readWithAuthRetry(url, init, opts, async (response): Promise<Checked<T>> => {
+    let parsed = await parse(response);
+    try {
+      return { made: await check(parsed) };
+    } catch (unusable) {
+      return { unusable };
+    }
+  }, (checked, { status }) => "unusable" in checked && status >= 200 && status <= 299 &&
+    !own?.(checked.unusable) ? { outcome: "error", reason: "api" } : undefined);
+  if ("unusable" in read) throw read.unusable;
+  return read.made;
 }
 
 /**

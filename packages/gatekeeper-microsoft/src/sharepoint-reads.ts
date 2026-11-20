@@ -6,7 +6,7 @@ import { GraphApiError, MAX_BATCH_REQUESTS, isGraphUrl, type GraphApi } from "./
 import {
   DRIVE_SELECT, ITEM_SELECT, LIST_SELECT, PAGE_SELECT, SITE_SELECT, optRecord, optStr,
   parseColumn, parseDrive, parseDriveItem, parseList, parseListItem, parsePage, parseRange, parseSite,
-  parseSitePage, parseVersion, parseWorksheet, record, versionOf,
+  malformed, parseSitePage, parseVersion, parseWorksheet, record, versionOf,
   type GraphColumn, type GraphDrive, type GraphDriveItem, type GraphList, type GraphListItem, type GraphRange, type GraphSite,
   type GraphSitePage, type GraphVersion, type GraphWorksheet,
 } from "./graph-parse";
@@ -15,20 +15,26 @@ import type { ItemRef, ListRef, PageRef } from "./sharepoint-scope";
 type Page<T> = { items: T[]; nextLink?: string };
 
 /** A `nextLink` Graph returned, checked to still point at Graph before it is followed. */
-function next(link: string | undefined): string | undefined {
-  if (link === undefined) return undefined;
-  if (!isGraphUrl(link)) throw new GraphApiError(502, "Microsoft Graph returned a continuation link to somewhere else.");
+function next<L extends string | undefined>(link: L): L {
+  if (link !== undefined && !isGraphUrl(link)) throw new GraphApiError(502, "Microsoft Graph returned a continuation link to somewhere else.");
   return link;
+}
+
+/** A reading of an answer that may hold nothing: `parse` of what it holds, and null where it holds nothing. */
+function ifAny<T>(parse: (body: unknown) => T): (body: unknown) => T | null {
+  return body => body === null ? null : parse(body);
 }
 
 /** One page of a collection: the first from `path` and `query`, later ones from the opaque token. */
 async function page<T>(api: GraphApi, token: string | undefined, path: string, query: Record<string, string | number | undefined>,
                        parse: (row: unknown) => T, what: string, prefer?: string[]): Promise<Page<T>> {
-  const body = token === undefined
-    ? await api.get<unknown>(path, { query, ...(prefer ? { prefer } : {}) })
-    : await api.get<unknown>(next(token)!, prefer ? { prefer } : {});
-  const parsed = parsePage(body, parse, what);
-  return { items: parsed.items, ...(parsed.nextLink ? { nextLink: next(parsed.nextLink) } : {}) };
+  const read = (body: unknown): Page<T> => {
+    const parsed = parsePage(body, parse, what);
+    return { items: parsed.items, ...(parsed.nextLink ? { nextLink: next(parsed.nextLink) } : {}) };
+  };
+  return token === undefined
+    ? await api.get(path, { query, ...(prefer ? { prefer } : {}) }, read)
+    : await api.get(next(token), prefer ? { prefer } : {}, read);
 }
 
 /** The most rows a whole collection is walked for; a site with more libraries or lists than this is truncated, not looped on. */
@@ -63,8 +69,7 @@ export async function effectiveRoles(api: GraphApi, ref: { driveId: string; item
 
 /** An item by ID, or null when it does not exist or the user cannot open it. */
 export async function getItem(api: GraphApi, ref: ItemRef): Promise<GraphDriveItem | null> {
-  const body = await api.find<unknown>(`/drives/${ref.driveId}/items/${ref.itemId}`, { query: { $select: ITEM_SELECT } });
-  return body === null ? null : parseDriveItem(body);
+  return await api.find(`/drives/${ref.driveId}/items/${ref.itemId}`, { query: { $select: ITEM_SELECT } }, ifAny(parseDriveItem));
 }
 
 /**
@@ -91,8 +96,7 @@ export function listChildren(api: GraphApi, folder: ItemRef, token: string | und
 
 /** A drive's root folder. */
 export async function getRoot(api: GraphApi, driveId: string): Promise<GraphDriveItem | null> {
-  const body = await api.find<unknown>(`/drives/${driveId}/root`, { query: { $select: ITEM_SELECT } });
-  return body === null ? null : parseDriveItem(body);
+  return await api.find(`/drives/${driveId}/root`, { query: { $select: ITEM_SELECT } }, ifAny(parseDriveItem));
 }
 
 /** Many items at once, batched; a missing or forbidden one is null. */
@@ -139,7 +143,10 @@ export type SearchHit = ItemRef;
 /** The resources a Microsoft Search response's one request hit, and whether a later page exists. */
 function searchHits(body: unknown): { resources: unknown[]; more: boolean } {
   const value = record(body, "search response").value;
-  const containers = optRecord(Array.isArray(value) ? value[0] : undefined)?.hitsContainers;
+  // Graph answers a search with a collection of responses, which a page without one is refused for,
+  // within the request: no caller takes it for a search that hit nothing.
+  if (!Array.isArray(value)) malformed("search response");
+  const containers = optRecord(value[0])?.hitsContainers;
   const resources: unknown[] = [];
   let more = false;
   for (const container of Array.isArray(containers) ? containers.map(optRecord) : []) {
@@ -178,11 +185,10 @@ export async function searchSharedWithMe(api: GraphApi, oneDrives: string, mine:
 
 async function searchDriveItems(api: GraphApi, queryString: string, from: number, size: number,
                                 sortProperties?: { name: string; isDescending: boolean }[]): Promise<{ hits: SearchHit[]; nextFrom?: number }> {
-  const body = await api.request<unknown>("POST", "/search/query", {
+  const { resources, more } = await api.request("POST", "/search/query", {
     body: { requests: [{ entityTypes: ["driveItem"], query: { queryString }, from, size, fields: ["id", "parentReference"],
       ...(sortProperties ? { sortProperties } : {}) }] },
-  });
-  const { resources, more } = searchHits(body);
+  }, searchHits);
   const hits: SearchHit[] = [];
   for (const resource of resources.map(optRecord)) {
     const itemId = optStr(resource, "id");
@@ -194,22 +200,20 @@ async function searchDriveItems(api: GraphApi, queryString: string, from: number
 
 /** A file's saved versions, newest first. */
 export async function listVersions(api: GraphApi, ref: ItemRef): Promise<GraphVersion[]> {
-  const body = await api.get<unknown>(`/drives/${ref.driveId}/items/${ref.itemId}/versions`, { query: { $top: 50 } });
-  return parsePage(body, parseVersion, "version").items;
+  return await api.get(`/drives/${ref.driveId}/items/${ref.itemId}/versions`, { query: { $top: 50 } },
+    (body: unknown) => parsePage(body, parseVersion, "version").items);
 }
 
 // -- drives and sites ---------------------------------------------------------------------------
 
 /** A drive by ID, or null. */
 export async function getDrive(api: GraphApi, driveId: string): Promise<GraphDrive | null> {
-  const body = await api.find<unknown>(`/drives/${driveId}`, { query: { $select: DRIVE_SELECT } });
-  return body === null ? null : parseDrive(body);
+  return await api.find(`/drives/${driveId}`, { query: { $select: DRIVE_SELECT } }, ifAny(parseDrive));
 }
 
 /** A site by its composite ID, or null. */
 export async function getSite(api: GraphApi, siteId: string): Promise<GraphSite | null> {
-  const body = await api.find<unknown>(`/sites/${siteId}`, { query: { $select: SITE_SELECT } });
-  return body === null ? null : parseSite(body);
+  return await api.find(`/sites/${siteId}`, { query: { $select: SITE_SELECT } }, ifAny(parseSite));
 }
 
 /**
@@ -218,15 +222,28 @@ export async function getSite(api: GraphApi, siteId: string): Promise<GraphSite 
  * listing that should offer the OneDrive adds it. Nothing it needs is worth failing a listing for.
  */
 export async function myOneDriveSite(api: GraphApi): Promise<GraphSite | null> {
-  const drive = await api.find<unknown>("/me/drive", { query: { $select: DRIVE_SELECT } })
-    .then(body => body === null ? null : parseDrive(body), () => null);
+  // A request that fails is forgiven. An answer that is not what was asked for is not: what its
+  // reading threw is kept, to be told from a failure of the request and thrown as it is.
+  const refused = new Set<unknown>();
+  const reading = <T>(parse: (body: unknown) => T) => (body: unknown): T | null => {
+    try {
+      return ifAny(parse)(body);
+    } catch (error) {
+      refused.add(error);
+      throw error;
+    }
+  };
+  const forgiven = (error: unknown): null => {
+    if (refused.has(error)) throw error;
+    return null;
+  };
+  const drive = await api.find("/me/drive", { query: { $select: DRIVE_SELECT } }, reading(parseDrive)).catch(forgiven);
   if (drive === null) return null;
   const url = new URL(drive.webUrl);
   // The library sits in the personal site: `/personal/<user>/Documents`.
   const path = /^\/personal\/[^/]+/.exec(url.pathname)?.[0];
   if (path === undefined) return null;
-  return await api.find<unknown>(`/sites/${url.hostname}:${path}`, { query: { $select: SITE_SELECT } })
-    .then(body => body === null ? null : parseSite(body), () => null);
+  return await api.find(`/sites/${url.hostname}:${path}`, { query: { $select: SITE_SELECT } }, reading(parseSite)).catch(forgiven);
 }
 
 /** A site's document libraries. */
@@ -268,10 +285,9 @@ function listFollowedSites(api: GraphApi, token: string | undefined): Promise<Pa
 async function searchSites(api: GraphApi, query: string | undefined, from: number, size: number):
     Promise<{ sites: GraphSite[]; nextFrom?: number }> {
   const queryString = (query === undefined ? "" : searchWords(query)) || "*";
-  const body = await api.request<unknown>("POST", "/search/query", {
+  const { resources, more } = await api.request("POST", "/search/query", {
     body: { requests: [{ entityTypes: ["site"], query: { queryString }, from, size }] },
-  });
-  const { resources, more } = searchHits(body);
+  }, searchHits);
   const sites: GraphSite[] = [];
   for (const resource of resources) {
     try {
@@ -348,14 +364,12 @@ export async function reachableSites(api: GraphApi, sites: readonly GraphSite[])
 
 /** A list by ID, or null. */
 export async function getList(api: GraphApi, ref: ListRef): Promise<GraphList | null> {
-  const body = await api.find<unknown>(`/sites/${ref.siteId}/lists/${ref.listId}`, { query: { $select: LIST_SELECT } });
-  return body === null ? null : parseList(body);
+  return await api.find(`/sites/${ref.siteId}/lists/${ref.listId}`, { query: { $select: LIST_SELECT } }, ifAny(parseList));
 }
 
 /** A list's columns. */
 export async function listColumns(api: GraphApi, ref: ListRef): Promise<GraphColumn[]> {
-  const body = await api.get<unknown>(`/sites/${ref.siteId}/lists/${ref.listId}/columns`);
-  return parsePage(body, parseColumn, "column").items;
+  return await api.get(`/sites/${ref.siteId}/lists/${ref.listId}/columns`, {}, (body: unknown) => parsePage(body, parseColumn, "column").items);
 }
 
 /**
@@ -374,8 +388,7 @@ export function listItems(api: GraphApi, ref: ListRef, query: Record<string, str
 /** A list item, or null. */
 export async function getListItem(api: GraphApi, ref: ListRef, itemId: string): Promise<GraphListItem | null> {
   if (!/^[0-9]{1,10}$/.test(itemId)) return null;
-  const body = await api.find<unknown>(`/sites/${ref.siteId}/lists/${ref.listId}/items/${itemId}`, { query: { $expand: "fields" } });
-  return body === null ? null : parseListItem(body);
+  return await api.find(`/sites/${ref.siteId}/lists/${ref.listId}/items/${itemId}`, { query: { $expand: "fields" } }, ifAny(parseListItem));
 }
 
 // -- pages --------------------------------------------------------------------------------------
@@ -387,20 +400,18 @@ export function listPages(api: GraphApi, siteId: string, token: string | undefin
 
 /** A page with its canvas, or null. */
 export async function getPage(api: GraphApi, ref: PageRef): Promise<{ page: GraphSitePage; body: unknown } | null> {
-  const body = await api.find<unknown>(`/sites/${ref.siteId}/pages/${ref.pageId}/microsoft.graph.sitePage`, {
+  return await api.find(`/sites/${ref.siteId}/pages/${ref.pageId}/microsoft.graph.sitePage`, {
     query: { $select: PAGE_SELECT, $expand: "canvasLayout" },
-  });
-  return body === null ? null : { page: parseSitePage(body), body };
+  }, ifAny(body => ({ page: parseSitePage(body), body })));
 }
 
 // -- workbooks ----------------------------------------------------------------------------------
 
 /** A workbook's worksheets. Reads need no workbook session (verified against SharePoint Online). */
 export async function listWorksheets(api: GraphApi, ref: ItemRef): Promise<GraphWorksheet[]> {
-  const body = await api.get<unknown>(`/drives/${ref.driveId}/items/${ref.itemId}/workbook/worksheets`, {
+  return await api.get(`/drives/${ref.driveId}/items/${ref.itemId}/workbook/worksheets`, {
     query: { $select: "id,name,visibility" },
-  });
-  return parsePage(body, parseWorksheet, "worksheet").items;
+  }, (body: unknown) => parsePage(body, parseWorksheet, "worksheet").items);
 }
 
 /** A worksheet's used range's address and size, without its cells. */
@@ -418,8 +429,7 @@ export async function usedRangeShape(api: GraphApi, ref: ItemRef, sheetId: strin
 
 /** A worksheet range's values and formulas. */
 export async function readRange(api: GraphApi, ref: ItemRef, sheetId: string, address: string): Promise<GraphRange> {
-  const body = await api.get<unknown>(
+  return await api.get(
     `/drives/${ref.driveId}/items/${ref.itemId}/workbook/worksheets/${encodeURIComponent(sheetId)}/range(address='${encodeURIComponent(address.replace(/'/g, "''"))}')`,
-    { query: { $select: "address,values,formulas" } });
-  return parseRange(body);
+    { query: { $select: "address,values,formulas" } }, parseRange);
 }

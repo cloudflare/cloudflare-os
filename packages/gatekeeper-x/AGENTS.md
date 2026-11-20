@@ -9,7 +9,8 @@ by accident:
   read limit (`X_DAILY_READ_LIMIT`, counted per UTC day in the `UserAccount` DO across all of the
   connection's bindings) and settles with what X returned. Listings use `XCursor`, one X request per
   `next()`, never the kit's `TokenCursor`, which refills a short page with up to ten more billed
-  requests.
+  requests. Every request goes through `xUpstream` (`src/x-upstream.ts`), which sends it once
+  (`retry: null`): a retried read is a billed request the limit never counted.
 - Only bookmark, mute and hide are `autoApprovable`: X's developer policy forbids automating likes,
   follows, reposts and posts. Do not widen that list.
 - A connection is pinned to the X user it was made as (a reconnect as anyone else is refused and its

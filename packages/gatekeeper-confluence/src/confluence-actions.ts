@@ -19,6 +19,7 @@ import type {
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
   ConfluenceApi,
+  ConfluenceUnnamedCreationError,
   contentBodyMarkdown,
   contentToSummary,
   type ContentResponse,
@@ -89,7 +90,20 @@ export type StoredActionRecord = {
   createdContentId?: string;
   /** For uploadAttachment: the attachment ID assigned on apply. */
   createdAttachmentId?: string;
+  /**
+   * Set where applying it sent a creation that Confluence answered without naming what it made,
+   * which leaves unknown whether it took effect: what the apply threw. Such an action is not
+   * applied again, which could create a second one, and every later apply throws this until the
+   * user discards it.
+   */
+  outcomeUnknown?: string;
 };
+
+// What applying a creation throws where Confluence's answer named nothing it created.
+const CREATION_OUTCOME_UNKNOWN =
+  "Confluence answered this creation without naming what it created, so it may or may not have " +
+  "been made. This action is not sent again, which could create a second one: check Confluence, " +
+  "then discard this action.";
 
 /** The content (provisional or real) an action targets, or null if it targets none. */
 function actionContentId(action: ConfluenceAction): string | null {
@@ -169,10 +183,47 @@ export class ConfluenceStore {
     return this.allActions().filter(r => r.state === "pending");
   }
 
-  /** Pending actions targeting a piece of content (addressed by either provisional or real ID). */
+  /**
+   * The pending actions a read shows as though they were applied. One whose outcome is unknown
+   * is none of them: it is not applied again, and what it created may be in Confluence already,
+   * where a read finds it.
+   */
+  simulatedActions(): StoredActionRecord[] {
+    const pending = this.pendingActions();
+    const unresolvable = this.unresolvableProvisionals(pending);
+    return pending.filter(r =>
+      r.outcomeUnknown === undefined && !unresolvable.has(actionContentId(r.action) ?? ""));
+  }
+
+  /**
+   * The provisional IDs that never resolve to a real one: the pages of creations whose outcome is
+   * unknown, and the pages queued beneath those, at any depth. No action on one can be applied.
+   */
+  unresolvableProvisionals(pending: StoredActionRecord[] = this.pendingActions()): Set<string> {
+    const unresolvable = new Set<string>();
+    for (const { action, outcomeUnknown } of pending) {
+      if (outcomeUnknown !== undefined && action.type === "createContent") unresolvable.add(action.provisionalId);
+    }
+    for (let grown = true; grown;) {
+      grown = false;
+      for (const { action } of pending) {
+        if (action.type === "createContent" && action.parent.type === "page" &&
+            unresolvable.has(action.parent.parentId) && !unresolvable.has(action.provisionalId)) {
+          unresolvable.add(action.provisionalId);
+          grown = true;
+        }
+      }
+    }
+    return unresolvable;
+  }
+
+  /**
+   * The actions a read simulates on a piece of content (addressed by either provisional or real
+   * ID).
+   */
   pendingForContent(contentId: string): StoredActionRecord[] {
     const target = this.resolveId(contentId);
-    return this.pendingActions().filter(r => {
+    return this.simulatedActions().filter(r => {
       const t = actionContentId(r.action);
       return t !== null && this.resolveId(t) === target;
     });
@@ -347,7 +398,7 @@ function overlayList(
   keep: (action: Extract<ConfluenceAction, { type: "createContent" }>) => boolean,
   includeProvisional: boolean,
 ): ContentSummary[] {
-  const pending = store.pendingActions();
+  const pending = store.simulatedActions();
   const trashed = new Set(
     pending
       .filter(r => r.action.type === "trash")
@@ -547,10 +598,37 @@ function describeAction(action: ConfluenceAction): Omit<ActionDescription, "acti
 // ---------------------------------------------------------------------------------------------
 // Staging
 
+// What staging an action throws where the content it needs is a creation whose outcome is unknown.
+const DEPENDS_ON_UNKNOWN_CREATION =
+  "This content's creation was answered without naming it, so whether it exists is unknown and " +
+  "nothing more can be queued on it: check Confluence, discard that creation, and work on the " +
+  "page it made, if it made one.";
+
+// Whether `action` needs content that only a creation whose outcome is unknown could supply: the
+// content it targets, or the page it would be created beneath, where that is such a creation's
+// page or one queued beneath it.
+function awaitsUnknownCreation(store: ConfluenceStore, action: ConfluenceAction): boolean {
+  const needed = (action.type === "createContent"
+    ? (action.parent.type === "page" ? [action.parent.parentId] : [])
+    : [action.contentId]).filter(ConfluenceStore.isProvisional);
+  // Content with a real ID resolves already: the actions need not be read for it.
+  if (needed.length === 0) return false;
+  const unresolvable = store.unresolvableProvisionals();
+  return needed.some(id => unresolvable.has(id) || unresolvable.has(store.resolveId(id)));
+}
+
 /** Record a pending action and submit it for approval. Rolls back the record if submit fails. */
 export async function stageAction(
   store: ConfluenceStore, approvalQueue: RpcStub<ApprovalQueue>, action: ConfluenceAction,
 ): Promise<number> {
+  // Content whose creation's outcome is unknown never resolves to a real ID here, so an action on
+  // it, or a page beneath it, could never be applied: it is refused before it is queued.
+  if (awaitsUnknownCreation(store, action)) {
+    // An upload's bytes were captured for the action before it came here, and no record is made
+    // of it that would release them.
+    if (action.type === "uploadAttachment") store.releaseAttachment(action);
+    throw new Error(DEPENDS_ON_UNKNOWN_CREATION);
+  }
   const id = store.nextActionId();
   store.putAction({ id, action, state: "pending", submittedAt: Date.now() });
   try {
@@ -712,8 +790,25 @@ export async function applyStoredAction(store: ConfluenceStore, id: number): Pro
   // The Workshop marks its side approved only after this RPC returns, so a restart in between
   // re-applies an action whose work (and attachment file) is already done and gone.
   if (record.state === "applied") return;
+  // An apply that left its outcome unknown is not made again: its creation may exist.
+  if (record.outcomeUnknown !== undefined) throw new Error(record.outcomeUnknown);
   markApplyStarted(store, record);
-  await applyAction(store, record);
+  try {
+    await applyAction(store, record);
+  } catch (error) {
+    if (!(error instanceof ConfluenceUnnamedCreationError)) throw error;
+    record.outcomeUnknown = CREATION_OUTCOME_UNKNOWN;
+    store.putAction(record);
+    // An upload that is never sent again needs its bytes no more: they are let go, as after an
+    // upload that was applied, and the record is kept for its warning and its discard. So are
+    // those of uploads queued on content that can now never be created, at any depth beneath it.
+    if (record.action.type === "uploadAttachment") store.releaseAttachment(record.action);
+    const unresolvable = store.unresolvableProvisionals();
+    for (const { action } of store.pendingActions()) {
+      if (action.type === "uploadAttachment" && unresolvable.has(action.contentId)) store.releaseAttachment(action);
+    }
+    throw new Error(CREATION_OUTCOME_UNKNOWN, { cause: error });
+  }
 }
 
 export function rejectStoredAction(store: ConfluenceStore, id: number): void | { restart?: boolean } {

@@ -5,15 +5,26 @@
 // rollback or deletion, reject cascades, and the gitPull request framing. GitLab is faked at
 // fetch; the workspace git cache is a stub the test controls.
 
-import { RpcStub, RpcTarget } from "cloudflare:workers";
+import { RpcStub, RpcTarget, env as bindings } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { COMMON_SLOTS, SUBSERVICE_V1_SLOTS } from "@gadgets/observability/metrics";
 import type { GitObjectType, GitOid } from "@gadgets/workshop-shared/gatekeeper";
 import { FLUSH_PKT, ZERO_OID, emptyPackBytes, encodePktLine, pktText } from "@gadgets/gatekeeper-kit/git-transport";
 import * as fx from "../fixtures/gitlab-docs.js";
 import { FakeGitLab, json, hooks, projectProps, seedAccount, unwrap } from "./fake-gitlab.js";
 import type { ActionPresentation, GatekeeperProps } from "./worker.js";
 
+// The dataset a test binds to read the subservice points the Durable Objects write.
+const ambient = bindings as { METRICS?: AnalyticsEngineDataset; SUBSERVICE_METRICS?: string };
+
+// A written point's value in one column.
+function column(point: AnalyticsEngineDataPoint, slot: string) {
+  return (slot.startsWith("blob") ? point.blobs : point.doubles)?.[Number(slot.replace(/\D+/, "")) - 1];
+}
+
 afterEach(() => {
+  delete ambient.METRICS;
+  delete ambient.SUBSERVICE_METRICS;
   vi.unstubAllGlobals();
 });
 
@@ -642,6 +653,34 @@ describe("simulated reads over queued pushes", () => {
     expect(diff.files.map(file => file.path)).toEqual(["README"]);
   });
 
+  it("reads the blobs the cache lacks from GitLab, and writes those requests as one point", async () => {
+    const { gitlab, props, name } = await setup();
+    gitlab.branches.set("feature", BASE);
+    const MR = { ...fx.mergeRequestResponse.data, iid: 133, source_branch: "feature", target_branch: "main", sha: BASE,
+      source_project_id: 1, target_project_id: 1, diff_refs: { base_sha: BASE, start_sha: BASE, head_sha: BASE } };
+    gitlab.on("GET", new RegExp(`^/api/v4/projects/${P}/merge_requests/133\\?`), () => json(MR));
+    const blobOld = "e".repeat(40);
+    const blobNew = "f".repeat(40);
+    gitlab.on("GET", new RegExp(`^/api/v4/projects/${P}/repository/blobs/[0-9a-f]{40}/raw$`), request =>
+      new Response(request.url.pathname.includes(blobOld) ? "hello\n" : "hello world\n"));
+    // The commits and trees are cached, as after a pull that left the blobs out.
+    const cache = cacheWithChain()
+      .withCommit(BASE, commitPayload(BASE_TREE, [], "base"))
+      .withTree(BASE_TREE, treePayload(blobOld)).withTree(TREE1, treePayload(blobNew)).withTree(TREE2, treePayload(blobNew));
+    await queuePush(name, props, "feature", HEAD2, false, cache);
+    const points: AnalyticsEngineDataPoint[] = [];
+    ambient.METRICS = { writeDataPoint: point => { if (point) points.push(point); } };
+    ambient.SUBSERVICE_METRICS = "true";
+
+    const diff = await unwrap(await hooks().diffAll(name, props, "133", stubOf(cache)));
+
+    expect(diff.files).toEqual([expect.objectContaining({ path: "README", status: "modified", additions: 1, deletions: 1 })]);
+    expect(gitlab.count("GET", /\/repository\/blobs\/[0-9a-f]{40}\/raw$/)).toBe(2);
+    expect(points.filter(point => column(point, SUBSERVICE_V1_SLOTS.operation) === "blobs.raw")
+      .map(point => [COMMON_SLOTS.outcome, SUBSERVICE_V1_SLOTS.httpStatus, SUBSERVICE_V1_SLOTS.calls].map(slot => column(point, slot))))
+      .toEqual([["success", 200, 2]]);
+  });
+
   it("takes a queued merge of the target into the source as GitLab will: the target head becomes the merge base", async () => {
     // The merge's first-parent anchor is SOURCE, whose merge base with the target is BASE -- but
     // the merge contains the target head, so once it lands GitLab diffs against that head, and
@@ -805,6 +844,68 @@ describe("applying a push", () => {
     const refused = await unwrap(await hooks().revertAction(name, props, move.approvalId));
     expect(refused).toMatchObject({ canRetry: false });
     expect(refused?.message).toMatch(/no longer at the pushed commit/);
+  });
+});
+
+/**
+ * A project whose `feature` is at BASE, with a push of HEAD1 to it queued, and the reading of the
+ * pushes counted from then on.
+ */
+async function queuedPush() {
+  const { gitlab, props, name } = await setup();
+  gitlab.branches.set("feature", BASE);
+  const cache = cacheWithChain();
+  const action = await unwrap(await hooks().queueAction(name, props, "preparePush", ["feature", HEAD1, false, stubOf(cache)], DESC));
+  const points: AnalyticsEngineDataPoint[] = [];
+  ambient.METRICS = { writeDataPoint: point => { if (point) points.push(point); } };
+  ambient.SUBSERVICE_METRICS = "true";
+  /** The pushes counted since the last look, as each one's outcome, reason and HTTP status. */
+  const pushesCounted = () => points.splice(0)
+    .filter(point => column(point, SUBSERVICE_V1_SLOTS.operation) === "git.receive-pack")
+    .map(point => [COMMON_SLOTS.outcome, SUBSERVICE_V1_SLOTS.reason, SUBSERVICE_V1_SLOTS.httpStatus].map(slot => column(point, slot)));
+  return { gitlab, props, name, cache, action, pushesCounted };
+}
+
+describe("how a push is counted", () => {
+  it("counts an applied push, and its rollback, as a success by the report on the pushed branch", async () => {
+    const { gitlab, props, name, cache, action, pushesCounted } = await queuedPush();
+
+    gitlab.respondToPush("unpack ok", "ok refs/heads/feature");
+    await unwrap(await hooks().applyAction(name, props, action.approvalId, stubOf(cache)));
+    expect(pushesCounted()).toEqual([["success", "", 200]]);
+
+    gitlab.respondToPush("unpack ok", "ok refs/heads/feature");
+    expect(await unwrap(await hooks().revertAction(name, props, action.approvalId))).toBeUndefined();
+    expect(pushesCounted()).toEqual([["success", "", 200]]);
+    expect(gitlab.receivePackBodies).toHaveLength(2);
+  });
+
+  it("counts a push, and a rollback, that git refuses for the pushed branch as an error inside a success", async () => {
+    const { gitlab, props, name, cache, action, pushesCounted } = await queuedPush();
+
+    gitlab.respondToPush("unpack ok", "ng refs/heads/feature pre-receive hook declined");
+    await expect(unwrap(await hooks().applyAction(name, props, action.approvalId, stubOf(cache))))
+      .rejects.toThrow(/branch "feature" has moved from a{40}.*GitLab said: pre-receive hook declined/);
+    expect(pushesCounted()).toEqual([["error", "api", 200]]);
+
+    gitlab.respondToPush("unpack ok", "ok refs/heads/feature");
+    await unwrap(await hooks().applyAction(name, props, action.approvalId, stubOf(cache)));
+    expect(pushesCounted()).toEqual([["success", "", 200]]);
+    gitlab.respondToPush("unpack ok", "ng refs/heads/feature fetch first");
+    expect(await unwrap(await hooks().revertAction(name, props, action.approvalId))).toMatchObject({ canRetry: false });
+    expect(pushesCounted()).toEqual([["error", "api", 200]]);
+    // Each push was sent once.
+    expect(gitlab.receivePackBodies).toHaveLength(3);
+  });
+
+  it("counts a push whose report is no report as one that could not be parsed, and throws the transport's error", async () => {
+    const { gitlab, props, name, cache, action, pushesCounted } = await queuedPush();
+
+    gitlab.respondToPush("unpack index-pack abnormal exit");
+    await expect(unwrap(await hooks().applyAction(name, props, action.approvalId, stubOf(cache))))
+      .rejects.toThrow("git push failed: unpack error: index-pack abnormal exit");
+    expect(pushesCounted()).toEqual([["error", "parse", 200]]);
+    expect(gitlab.receivePackBodies).toHaveLength(1);
   });
 });
 

@@ -64,6 +64,7 @@ IMPORTANT: All RPC interface implementations should use the annotation `@validat
 * A gatekeeper that declares `VendorDescription.autoProvisionsAccount` mints accounts with no OAuth flow, under a per-vendor mode the deployment admin picks; its account may provide an ambient agent singleton and/or a management UI. See `packages/workshop-backend/AGENTS.md`.
 * Writing or reviewing a gatekeeper: load the `write-gatekeeper` skill (`.agents/skills/write-gatekeeper/SKILL.md`); every action declares an `autoApprovable` verdict, `true` unless its opt-out policy applies.
 * New gatekeepers follow the observer contract in the `write-gatekeeper` skill: explicit `subresources` on every observation, all access checks in `verifyObserverAccess()`, a required read-only `getHistoricalSubresources()` returning `[]`, and no-op `addObserver()` / `removeObserver()`. Existing gatekeepers migrate under different rules, also in the skill.
+* Gatekeeper source sends every call to its provider through its upstream (`defineUpstream` in `@gadgets/gatekeeper-kit/upstream`), never the platform `fetch`, and lint enforces it.
 
 ## Frontend
 

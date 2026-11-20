@@ -16,11 +16,12 @@ import { validateRpc } from "capnweb-validate";
 import { HookRegistry, type HookCapabilities, type HookDelivery } from "@gadgets/gatekeeper-kit/hook-registry";
 import { SingleFlight } from "@gadgets/gatekeeper-kit/single-flight";
 import type { HookController, HookInitiator, HookTargetMetadata } from "@gadgets/workshop-shared/gatekeeper";
-import { fetchWithAuthRetry, type AccessTokenProvider } from "./auth-retry";
+import { readCheckedWithAuthRetry, type AccessTokenProvider } from "./auth-retry";
 import { ChatApiError, chatApiFailure, type ChatMessageRaw } from "./chat-api";
 import type { ChatMessageHook } from "./chat-types";
 import { obsContext } from "./observability";
 import type { PushHooksEnv } from "./pubsub-push";
+import { googleUpstream, type NamedOperation } from "./upstream";
 
 const logger = obsContext.createLogger({ component: "gatekeeper.google.chat-hooks", vendorId: "google" });
 
@@ -172,23 +173,27 @@ export class ChatHookDriver extends DurableObject<Env> {
     // invalidate a live iterator. Each is read again in its turn, as an enable handled meanwhile
     // may have subscribed again, or come to use it.
     const keys = [...this.ctx.storage.kv.list<Subscription>({ prefix: "sub:" })].map(([key]) => key);
-    for (const key of keys) {
-      const subscription = this.ctx.storage.kv.get<Subscription>(key);
-      if (!subscription) continue;
-      const authority = key.slice("sub:".length);
-      const registration = this.#hooks.entries().find(([, candidate]) => candidate.authority === authority)?.[1];
-      if (!registration) {
-        // Unused subscriptions simply lapse.
-        if (subscription.expireTime <= now) this.ctx.storage.kv.delete(key);
-      } else if (subscription.renewAt <= now) {
-        await this.#renew(registration, subscription).catch(error => {
-          logger.warn("failed to renew a Chat subscription", { event: "chat.hooks.renew.failed", error });
-          // An enable may have replaced the subscription meanwhile, which this must not overwrite.
-          if (this.ctx.storage.kv.get<Subscription>(key)?.name !== subscription.name) return;
-          this.ctx.storage.kv.put(key, { ...subscription, renewAt: now + RENEW_RETRY_MS });
-        });
+    // A renewal is a write and the polls of its operation, for each subscription that is due:
+    // their requests are summed.
+    await googleUpstream.summed(async () => {
+      for (const key of keys) {
+        const subscription = this.ctx.storage.kv.get<Subscription>(key);
+        if (!subscription) continue;
+        const authority = key.slice("sub:".length);
+        const registration = this.#hooks.entries().find(([, candidate]) => candidate.authority === authority)?.[1];
+        if (!registration) {
+          // Unused subscriptions simply lapse.
+          if (subscription.expireTime <= now) this.ctx.storage.kv.delete(key);
+        } else if (subscription.renewAt <= now) {
+          await this.#renew(registration, subscription).catch(error => {
+            logger.warn("failed to renew a Chat subscription", { event: "chat.hooks.renew.failed", error });
+            // An enable may have replaced the subscription meanwhile, which this must not overwrite.
+            if (this.ctx.storage.kv.get<Subscription>(key)?.name !== subscription.name) return;
+            this.ctx.storage.kv.put(key, { ...subscription, renewAt: now + RENEW_RETRY_MS });
+          });
+        }
       }
-    }
+    });
     await this.#reschedule();
   }
 
@@ -317,9 +322,12 @@ class WorkspaceEventsApi {
       // topic, and is renewed, since it may be in its last minutes.
       if (!(error instanceof ChatApiError && error.rpcCode === "ALREADY_EXISTS")) throw error;
       const filter = `event_types:"${MESSAGE_CREATED}" AND target_resource="${targetResource}"`;
-      const { subscriptions = [] } = await this.#request<{ subscriptions?: SubscriptionRaw[] }>(
-        "subscriptions.list", `/subscriptions?filter=${encodeURIComponent(filter)}`);
-      const existing = subscriptions.find(candidate => candidate.notificationEndpoint?.pubsubTopic === topic);
+      // The list is searched within the request: one that is no list of subscriptions is an
+      // answer the request is counted an error for. A list without ours is one Google gave.
+      const existing = await this.#request(
+        "subscriptions.list", `/subscriptions?filter=${encodeURIComponent(filter)}`, {},
+        ({ subscriptions = [] }: { subscriptions?: SubscriptionRaw[] }) =>
+          subscriptions.find(candidate => candidate.notificationEndpoint?.pubsubTopic === topic));
       if (!existing) throw error;
       return this.renew(existing);
     }
@@ -328,7 +336,7 @@ class WorkspaceEventsApi {
   /** The subscription, or null once Google no longer has it. */
   async get(name: string): Promise<SubscriptionRaw | null> {
     try {
-      return await this.#request<SubscriptionRaw>("subscriptions.get", `/${name}`);
+      return await this.#request("subscriptions.get", `/${name}`, {}, (subscription: SubscriptionRaw) => subscription);
     } catch (error) {
       if (error instanceof ChatApiError && error.status === 404) return null;
       throw error;
@@ -343,29 +351,42 @@ class WorkspaceEventsApi {
 
   /** Delete the subscription; Google finishes the operation without us. */
   async delete(name: string): Promise<void> {
-    await this.#request("subscriptions.delete", `/${name}`, { method: "DELETE" });
+    await this.#request("subscriptions.delete", `/${name}`, { method: "DELETE" }, () => undefined);
   }
 
   /** Subscription writes are long-running operations; wait briefly for one to finish. */
   async #operation(operation: string, path: string, method: string, body: object): Promise<SubscriptionRaw> {
-    let result = await this.#request<OperationRaw>(operation, path, { method, body: JSON.stringify(body) });
-    for (let attempt = 0; !result.done; attempt++) {
+    // An operation is still running, by its name, or has finished: with the subscription, or
+    // with Google's failure of the write, which is thrown from the request answered with it.
+    let settled = (result: OperationRaw): { running: string } | { made: SubscriptionRaw } => {
+      if (!result.done) return { running: result.name };
+      if (!result.response) {
+        throw new Error(`Google Workspace Events ${operation} failed [code=${result.error?.code ?? "unknown"}]`);
+      }
+      return { made: result.response };
+    };
+    let result = await this.#request(operation, path, { method, body: JSON.stringify(body) }, settled);
+    for (let attempt = 0; "running" in result; attempt++) {
       if (attempt === 5) throw new Error(`Google Workspace Events ${operation} did not finish in time.`);
       await new Promise(resolve => setTimeout(resolve, 500 * 2 ** attempt));
-      result = await this.#request<OperationRaw>(operation, `/${result.name}`);
+      result = await this.#request(operation, `/${result.running}`, {}, settled, "operations.get");
     }
-    if (!result.response) {
-      throw new Error(`Google Workspace Events ${operation} failed [code=${result.error?.code ?? "unknown"}]`);
-    }
-    return result.response;
+    return result.made;
   }
 
-  async #request<T>(operation: string, path: string, init: RequestInit = {}): Promise<T> {
-    const response = await fetchWithAuthRetry(`${EVENTS_API_BASE}${path}`, {
+  // The answer's JSON is given to `made`, the check of the method that sent the request. Both
+  // are read within the request, which so counts a success that cannot be read, or that `made`
+  // throws on, as the failure it is thrown as. `counted` names a request in the metrics whose
+  // path Google made: a poll of a write, which fails under the write's name.
+  async #request<T, R>(
+    operation: string, path: string, init: RequestInit, made: (answer: T) => R, counted?: NamedOperation,
+  ): Promise<R> {
+    return readCheckedWithAuthRetry(`${EVENTS_API_BASE}${path}`, {
       ...init, headers: { "Content-Type": "application/json" },
-    }, this.getAccessToken);
-    if (!response.ok) await chatApiFailure(operation, response);
-    return response.json<T>();
+    }, { getAccessToken: this.getAccessToken, operation: counted }, async response => {
+      if (!response.ok) await chatApiFailure(operation, response);
+      return response.json<T>();
+    }, made);
   }
 }
 

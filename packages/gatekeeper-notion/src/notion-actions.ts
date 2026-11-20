@@ -27,6 +27,7 @@ import {
   type NotionDatabaseResponse,
   type NotionPageResponse,
 } from "./notion-api";
+import { notionUpstream } from "./notion-upstream";
 import type { RpcStub } from "cloudflare:workers";
 import {
   type ActionDescriptionBuilder,
@@ -960,9 +961,12 @@ export async function revertNotionAction(
 
   switch (action.type) {
     case "appendContent": {
-      for (const blockId of record.appendedBlockIds ?? []) {
-        await api.deleteBlock(blockId);
-      }
+      // One request for each block the append created: their calls are summed.
+      await notionUpstream.summed(async () => {
+        for (const blockId of record.appendedBlockIds ?? []) {
+          await api.deleteBlock(blockId);
+        }
+      });
       store.invalidateContent(action.pageId);
       break;
     }

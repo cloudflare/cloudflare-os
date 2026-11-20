@@ -2,7 +2,9 @@
 // These drive the real gatekeeper class with an approval queue that applies before it replies.
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("cloudflare:workers", () => ({
+vi.mock("cloudflare:workers", async importOriginal => ({
+  // The shared stub's `env`, which the metrics read their bindings from.
+  ...await importOriginal<typeof import("cloudflare:workers")>(),
   DurableObject: class { constructor(public ctx: unknown, public env: unknown) {} },
   RpcTarget: class {},
   RpcStub: class {},

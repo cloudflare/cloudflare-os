@@ -3,6 +3,8 @@
 // delivery.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { env } from "cloudflare:workers";
+import { SUBSERVICE_V1_SLOTS } from "@gadgets/observability/metrics";
 import { ActionApplyError, ActionOutcomeUnknownError } from "@gadgets/gatekeeper-kit/actions";
 import { GraphApi, GraphApiError } from "../src/graph-api";
 import {
@@ -19,6 +21,7 @@ import {
 } from "../src/outlook-scope";
 import { OutlookContext, OutlookReaderImpl, OutlookSessionImpl } from "../src/outlook-session";
 import type { MessageInfo } from "../src/outlook-types";
+import { countedCalls } from "./points";
 
 const NOW = Date.parse("2026-10-17T12:00:00Z");
 const ME = { kind: "me" } as const;
@@ -473,6 +476,32 @@ describe("sending a draft", () => {
       const sent = routed({ ...bin(), "GET /messages": [{ value: [{ id: "AAMkOld", isDraft: true, parentFolderId: "bin" }, { id: "AAMkSent", isDraft: false, parentFolderId: "sent" }] }] });
       expect((await definitions.send.apply(payload(undefined), sent.host)).action.sentId).toBe("AAMkSent");
     });
+
+    describe("with Deleted Items answered a success that holds nothing", () => {
+      const counted = countedCalls();
+
+      it("builds and sends a message no leftover of which is found, and counts the read of the bin by its status", async () => {
+        const { host: h, calls } = routed({
+          "GET /mailFolders/deleteditems": [null], "GET /messages": [{ value: [] }],
+          "POST /messages": [{ id: "AAMkNew" }], "GET /messages/AAMkNew": [{ changeKey: "fresh" }], "POST /messages/AAMkNew/send": [202],
+        });
+        const { action } = await definitions.send.apply(payload(undefined), h);
+        expect(action.sentId).toBe("AAMkNew");
+        expect(calls).toEqual(["GET /messages", "GET /mailFolders/deleteditems", "POST /messages", "GET /messages/AAMkNew", "POST /messages/AAMkNew/send"]);
+        expect(counted().filter(([operation]) => operation === "mailFolders.get")).toEqual([["mailFolders.get", "success", "", 200]]);
+        expect(counted().filter(([, outcome]) => outcome !== "success")).toEqual([]);
+      });
+
+      it("fails on a leftover draft that is weighed against the bin, and sends nothing", async () => {
+        const { host: h, calls } = routed({
+          "GET /mailFolders/deleteditems": [null], "GET /messages": [{ value: [{ id: "AAMkLeft", isDraft: true, parentFolderId: "drafts" }] }],
+        });
+        const failure: unknown = await definitions.send.apply(payload(undefined), h).catch((error: unknown) => error);
+        expect(failure).toBeInstanceOf(TypeError);
+        expect(failure).toMatchObject({ message: "Cannot read properties of null (reading 'id')" });
+        expect(calls).toEqual(["GET /messages", "GET /mailFolders/deleteditems"]);
+      });
+    });
   });
 
   it("tells the approver every attachment a pending draft carries, as the provider's files", async () => {
@@ -598,6 +627,57 @@ describe("editing a draft", () => {
     expect(calls.map(entry => entry.call)).toEqual(["GET /messages/AAMk1", "PATCH /messages/AAMk1"]);
     expect(sentBody(fetch, "PATCH /messages/AAMk1").body).toEqual({ contentType: "HTML", content: replaceOwnPart(quoted, composed().html) });
   });
+
+  describe("how an answer that lacks what its request was sent for is counted", () => {
+    const counted = countedCalls();
+
+    it.each<[string, OutlookActions["createDraft"]["origin"], string, string]>([
+      ["a new draft", { kind: "new" }, "POST /messages", "messages.create"],
+      ["a reply", { kind: "reply", source: target("m1") }, "POST /messages/m1/createReply", "messages.createReply"],
+      ["a reply to all", { kind: "replyAll", source: target("m1") }, "POST /messages/m1/createReplyAll", "messages.createReplyAll"],
+      ["a forward", { kind: "forward", source: target("m1"), forwarded: { markdown: "", truncated: false, attachments: [] } }, "POST /messages/m1/createForward", "messages.createForward"],
+    ])("counts %s created with no ID as an error of the API, by the status of the answer, and sends it once", async (_what, origin, sent, operation) => {
+      const { host: h, calls } = host([json({}, 201), json({ id: "AAMkDraft" }, 201)]);
+      const error = await definitions.createDraft.apply({ mailbox: ME, ref: "~1", origin, message: composed(), submittedAt: 0 }, h).catch((caught: unknown) => caught);
+      // An answer that names no draft may be one Outlook made: the action reports an outcome it does not know.
+      expect(error).toBeInstanceOf(ActionOutcomeUnknownError);
+      expect(error).toMatchObject({ message: "Outlook may have created the draft before the connection dropped. Check Drafts before trying again." });
+      expect(calls.map(made => made.call)).toEqual([sent]);
+      expect(counted()).toEqual([[operation, "error", "api", 201]]);
+    });
+
+    it("counts a draft read without its text, which an edit must keep the quote of, as an error of the API, and one its own rule refuses as a success", async () => {
+      const kept = { ...edit("AAMkDraft", "ck1"), keepsQuote: true as const };
+      const { host: h, calls } = host([json({ changeKey: "ck1", isDraft: true, body: { contentType: "text", content: "Hi" } }), json({})]);
+      const error = await definitions.updateDraft.apply(kept, h).catch((caught: unknown) => caught);
+      expect(error).toMatchObject({ name: "GraphApiError", status: 502, message: "Outlook didn't return the draft's text." });
+      expect(calls.map(made => made.call)).toEqual(["GET /messages/AAMkDraft"]);
+      expect(counted()).toEqual([["messages.get", "error", "api", 200]]);
+      // A draft sent or changed since is refused by the action's own rule, whatever else its answer lacks: the answer is what was asked for.
+      for (const [draft, refusal] of [
+        [{ changeKey: "ck1", isDraft: false }, "The draft has been sent, so it wasn't changed."],
+        [{ changeKey: "ck2", isDraft: true }, "The draft changed after this was proposed, so it wasn't changed. Ask the agent to read it again."],
+      ] as const) {
+        const refused = host([json(draft), json({})]);
+        await expect(definitions.updateDraft.apply(kept, refused.host)).rejects.toStrictEqual(new ActionApplyError(refusal));
+        expect(refused.calls.map(made => made.call)).toEqual(["GET /messages/AAMkDraft"]);
+        expect(counted().at(-1)).toEqual(["messages.get", "success", "", 200]);
+      }
+    });
+
+    it("counts a draft read without its text, which an undo of an edit must keep the quote of, as an error of the API, and writes nothing", async () => {
+      const applied: OutlookAction = { kind: "updateDraft", payload: { ...edit("AAMkDraft", "ck1"), keepsQuote: true, appliedChangeKey: "ck2", appliedAt: 1 } };
+      const { host: h, calls } = host([json({ body: {} }), json({})]);
+      const error = await revert(applied, h).catch((caught: unknown) => caught);
+      expect(error).toMatchObject({ name: "GraphApiError", status: 502, message: "Outlook didn't return the draft's text." });
+      expect(calls.map(made => made.call)).toEqual(["GET /messages/AAMkDraft"]);
+      expect(counted()).toEqual([["messages.get", "error", "api", 200]]);
+      // A draft that is gone is one to undo nothing of: the lookup is counted by its status.
+      const gone = host([json({ error: { code: "ErrorItemNotFound" } }, 404)]);
+      expect(await revert(applied, gone.host)).toBeUndefined();
+      expect(counted().at(-1)).toEqual(["messages.get", "error", "http", 404]);
+    });
+  });
 });
 
 describe("observer units", () => {
@@ -717,14 +797,17 @@ describe("reading new mail by cursor", () => {
   const USER = "a".repeat(64);
   const MAILBOX = "809e4ddd-e400-4e3c-a7f1-24f876aa7bfc";
   const INBOX = "AAMkInbox000";
+  const ambient = env as { METRICS?: AnalyticsEngineDataset; SUBSERVICE_METRICS?: string };
 
   afterEach(() => {
+    delete ambient.METRICS;
+    delete ambient.SUBSERVICE_METRICS;
     vi.unstubAllGlobals();
     vi.useRealTimers();
   });
 
   /** The driver outside workerd: its storage, alarm and account faked, Graph at `fetch`, paging by `$skip` as Graph does. */
-  function driver(messages: { id: string; receivedDateTime: string }[]) {
+  function driver(messages: { id: string; receivedDateTime: string }[], baseUrl = "http://localhost:8787/gatekeeper/microsoft") {
     const store = new Map<string, unknown>();
     const kv = {
       get: (key: string) => store.get(key),
@@ -764,14 +847,103 @@ describe("reading new mail by cursor", () => {
       delivery: { deliver: async (_callback: unknown, _queue: unknown, id: string) => { delivered.push(id); } },
       initiator: { startHook: async () => ({ callback: {}, approvalQueue: {}, [Symbol.dispose]() {} }) },
     };
-    const instance = new OutlookHookDriver(ctx as never, { BASE_URL: "http://localhost:8787/gatekeeper/microsoft" } as never);
+    const instance = new OutlookHookDriver(ctx as never, { BASE_URL: baseUrl } as never);
     /** Runs the alarm as workerd would, at the time the driver set it for. */
     const run = async () => {
       if (alarm !== null && alarm > Date.now()) vi.setSystemTime(alarm);
       await instance.alarm();
     };
-    return { instance, capabilities, run, delivered, reads, watch: () => store.get(`watch:${INBOX}`) as { cursor: string; continueAt?: string } };
+    return { instance, capabilities, run, delivered, reads, store, watch: () => store.get(`watch:${INBOX}`) as { cursor: string; continueAt?: string } };
   }
+
+  it("sums the subscriptions a registration asks for, one for each watched folder that is due, into one point", async () => {
+    vi.useFakeTimers({ now: NOW });
+    const written: unknown[][] = [];
+    const operation = Number(SUBSERVICE_V1_SLOTS.operation.replace(/\D+/, "")) - 1;
+    const calls = Number(SUBSERVICE_V1_SLOTS.calls.replace(/\D+/, "")) - 1;
+    ambient.METRICS = {
+      writeDataPoint: point => {
+        written.push([point?.blobs?.[operation], point?.doubles?.[calls]]);
+      },
+    };
+    ambient.SUBSERVICE_METRICS = "true";
+    // A public origin, so that the driver subscribes, and a folder watched already whose subscription is due.
+    const { instance, capabilities, store } = driver([], "https://gadgets.example/gatekeeper/microsoft");
+    vi.stubGlobal("fetch", async () => Response.json({ id: "subscription-1" }, { status: 201 }));
+    store.set("watch:AAMkOther000", { renewAt: 0, cursor: new Date(NOW).toISOString() });
+    await instance.register("hook1", { userObjectId: USER, mailboxUser: MAILBOX, folderId: INBOX }, capabilities as never);
+    expect(written).toEqual([["subscriptions.create", 2]]);
+  });
+
+  describe("a subscription Graph creates with no ID", () => {
+    const counted = countedCalls();
+
+    it("is counted as an error of the API, by the status of the answer, and leaves the folder to be polled", async () => {
+      vi.useFakeTimers({ now: NOW });
+      const { instance, capabilities, store } = driver([], "https://gadgets.example/gatekeeper/microsoft");
+      const sent: string[] = [];
+      vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+        sent.push(`${init?.method ?? "GET"} ${new URL(String(input)).pathname}`);
+        return Response.json({ resource: "me/mailFolders" }, { status: 201 });
+      });
+      await instance.register("hook1", { userObjectId: USER, mailboxUser: MAILBOX, folderId: INBOX }, capabilities as never);
+      expect(sent).toEqual(["POST /v1.0/subscriptions"]);
+      expect(counted()).toEqual([["subscriptions.create", "error", "api", 201]]);
+      expect(store.get(`watch:${INBOX}`)).not.toHaveProperty("subscriptionId");
+    });
+  });
+
+  describe("a page of new mail whose link to the next leaves Graph", () => {
+    const counted = countedCalls();
+
+    it("is counted as an error of the API, by the status of the answer, and nothing is sent to that link", async () => {
+      vi.useFakeTimers({ now: NOW });
+      const { instance, capabilities, run, watch } = driver([]);
+      await instance.register("hook1", { userObjectId: USER, mailboxUser: MAILBOX, folderId: INBOX }, capabilities as never);
+      const cursor = watch().cursor;
+      const sent: string[] = [];
+      vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+        sent.push(new URL(String(input)).host);
+        return Response.json({ value: [{ id: "AAMkNew0001", receivedDateTime: new Date(NOW + 1000).toISOString() }], "@odata.nextLink": "https://evil.example/next" });
+      });
+      await run();
+      expect(sent).toEqual(["graph.microsoft.com"]);
+      expect(counted()).toEqual([["messages.list", "error", "api", 200]]);
+      // The read failed on the link it would not follow: the folder is read again from where it stood.
+      expect(watch().cursor).toBe(cursor);
+    });
+
+    it.each<[string, unknown]>([
+      ["are no list", 5],
+      ["are missing", undefined],
+      ["hold what is no message", [null]],
+    ])("counts a page whose messages %s as an error of the API, and reads the folder again from where it stood", async (_what, value) => {
+      vi.useFakeTimers({ now: NOW });
+      const { instance, capabilities, run, watch, delivered } = driver([]);
+      await instance.register("hook1", { userObjectId: USER, mailboxUser: MAILBOX, folderId: INBOX }, capabilities as never);
+      const cursor = watch().cursor;
+      const sent: string[] = [];
+      vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+        sent.push(new URL(String(input)).host);
+        return Response.json({ value });
+      });
+      await run();
+      expect(sent).toEqual(["graph.microsoft.com"]);
+      expect(counted()).toEqual([["messages.list", "error", "api", 200]]);
+      expect(delivered).toEqual([]);
+      expect(watch().cursor).toBe(cursor);
+    });
+
+    it("counts a page whose link to the next is Graph's, and the page it leads to, as the successes they are", async () => {
+      vi.useFakeTimers({ now: NOW });
+      const messages = Array.from({ length: 60 }, (_, index) => ({ id: `AAMkNew${String(index).padStart(4, "0")}`, receivedDateTime: new Date(NOW + index * 100).toISOString() }));
+      const { instance, capabilities, run, reads } = driver(messages);
+      await instance.register("hook1", { userObjectId: USER, mailboxUser: MAILBOX, folderId: INBOX }, capabilities as never);
+      await run();
+      expect(reads).toHaveLength(2);
+      expect(counted()).toEqual([["messages.list", "success", "", 200], ["messages.list", "success", "", 200]]);
+    });
+  });
 
   it("goes on from where a read cut short stopped, so a burst of mail bigger than one read all arrives", async () => {
     vi.useFakeTimers({ now: NOW });
@@ -1035,6 +1207,28 @@ describe("organizing at apply", () => {
     expect(inScope).toHaveBeenCalledWith({ folder: "F1" });
     await definitions.createFolder.apply({ mailbox: ME, ref: "~2", parent: { id: "msgfolderroot", name: "the top of the mailbox", path: "" }, name: "Vendors", submittedAt: 0 }, h);
     expect(inScope).toHaveBeenCalledTimes(1);
+  });
+
+  describe("how a folder created with no ID is counted", () => {
+    const counted = countedCalls();
+
+    it("counts it as an error of the API, by the status of the answer, and sends it once", async () => {
+      const { host: h, calls } = host([json({ displayName: "Acme" }), json({ id: "F9" })]);
+      const error = await definitions.createFolder.apply({ mailbox: ME, ref: "~1", parent: { id: "F1", name: "Inbox", path: "Inbox" }, name: "Acme", submittedAt: 0 }, h)
+        .catch((caught: unknown) => caught);
+      expect(error).toMatchObject({ name: "GraphApiError", status: 502, message: "Outlook didn't say which folder it created." });
+      expect(calls).toEqual(["POST /v1.0/me/mailFolders/F1/childFolders"]);
+      expect(counted()).toEqual([["childFolders.create", "error", "api", 200]]);
+    });
+
+    it("counts one created at the top of the mailbox with no ID the same, under the name of that request", async () => {
+      const { host: h, calls } = host([json({ displayName: "Vendors" }), json({ id: "F9" })]);
+      const error = await definitions.createFolder.apply({ mailbox: ME, ref: "~1", parent: { id: "msgfolderroot", name: "the top of the mailbox", path: "" }, name: "Vendors", submittedAt: 0 }, h)
+        .catch((caught: unknown) => caught);
+      expect(error).toMatchObject({ name: "GraphApiError", status: 502, message: "Outlook didn't say which folder it created." });
+      expect(calls).toEqual(["POST /v1.0/me/mailFolders"]);
+      expect(counted()).toEqual([["mailFolders.create", "error", "api", 200]]);
+    });
   });
 });
 

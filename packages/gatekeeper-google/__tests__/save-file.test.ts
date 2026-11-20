@@ -1,6 +1,8 @@
 // GatekeeperUser.saveFile() against a Drive that answers as Google's does: what is sent, and what
 // is refused before anything is.
 
+import { env } from "cloudflare:workers";
+import { COMMON_SLOTS, SUBSERVICE_V1_SLOTS, type BlobSlot, type DoubleSlot } from "@gadgets/observability/metrics";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE, GOOGLE_SLIDES_MIME_TYPE } from "../src/drive-session";
 import { officeLabel, type OfficeKind } from "../src/office-conversion";
@@ -9,13 +11,18 @@ import {
   GOOGLE_SLIDES_RESOURCE, parseResourceUrl, RESOURCE_BY_KIND,
 } from "../src/resources";
 import { saveFile } from "../src/save-file";
+import { unbindWrittenCalls, writtenCalls } from "./written-calls";
 
 const DOCX = GOOGLE_DOC_RESOURCE.savableFrom![0];
 const FOLDER_URL = "https://drive.google.com/drive/folders/plans-1";
 const DOC_URL = "https://docs.google.com/document/d/doc-1/edit";
 const MIB = 1024 * 1024;
 
-afterEach(() => void vi.unstubAllGlobals());
+afterEach(() => {
+  unbindWrittenCalls();
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 type Answer = Response | (() => Response);
 const refusal = (status: number, reason: string) =>
@@ -55,6 +62,24 @@ const uploaded = (calls: ReturnType<typeof stubDrive>) => ({
     .map(call => [call.headers.get("Content-Range"), call.body]),
 });
 const saved = (id: string, mimeType: string) => Response.json({ id, mimeType });
+/** Each of `answers` in turn, for a session that answers one request after another. */
+const inTurn = (...answers: (() => Response)[]) => () => {
+  let next = answers.shift();
+  if (!next) throw new Error("the session was asked more than the test answers");
+  return next();
+};
+/** A request whose reply never arrives. */
+const lostReply = (): Response => { throw new Error("connection reset"); };
+/** A success whose body fails as it is read. */
+const lostBody = () =>
+  new Response(new ReadableStream({ pull(controller) { controller.error(new Error("connection reset")); } }));
+/** Drive's answer to the cancel of a session it has cancelled. */
+const sessionCancelled = () => new Response(null, { status: 499 });
+/** A 308 with which a session says it holds the first `held` bytes of the file. */
+const took = (held: number) => () => new Response(null, { status: 308, headers: { Range: `bytes=0-${held - 1}` } });
+/** A 403 that names a reason, in a body longer than is read of an error. */
+const longRefusal = () => Response.json(
+  { error: { errors: [{ reason: "rateLimitExceeded" }], message: "x".repeat(10_000) } }, { status: 403 });
 
 const stream = (...chunks: (string | Uint8Array)[]) => new ReadableStream<Uint8Array>({
   start(controller) {
@@ -143,6 +168,22 @@ describe("saveFile", () => {
       .toEqual([`bytes 0-${8 * MIB - 1}/*`, `bytes ${8 * MIB}-${10 * MIB - 1}/${10 * MIB}`]);
   });
 
+  it("takes a 200 answered to a chunk that is not the last as that chunk held, and reads the file of the last one's answer alone", async () => {
+    let written = writtenCalls();
+    // The first chunk's 200 holds no file, and JSON of none: only the last chunk's is read for one.
+    let calls = stubDrive({
+      "PUT session": inTurn(() => new Response("<html>"), () => saved("sheet-1", GOOGLE_SHEET_MIME_TYPE)),
+    });
+    let file = stream(new Uint8Array(5 * MIB), new Uint8Array(5 * MIB));
+
+    let sheets = { type: GOOGLE_SHEETS_RESOURCE.urlPattern, contentType: GOOGLE_SHEETS_RESOURCE.savableFrom![0], file };
+    await expect(save(FOLDER_URL, sheets)).resolves.toMatchObject({ url: expect.stringContaining("/d/sheet-1/") });
+
+    expect(uploaded(calls).chunks.map(([range]) => range))
+      .toEqual([`bytes 0-${8 * MIB - 1}/*`, `bytes ${8 * MIB}-${10 * MIB - 1}/${10 * MIB}`]);
+    expect(written.of("upload.send")).toEqual([["google-drive", "upload.send", "success", 200, 2]]);
+  });
+
   it("asks the session again when the answer to the last chunk is cut short, and makes no second file", async () => {
     let cut = () => new Response(new ReadableStream({ pull(controller) { controller.error(new Error("connection reset")); } }));
     let answers = [cut, () => saved("new-1", GOOGLE_DOC_MIME_TYPE)];
@@ -200,6 +241,48 @@ describe("saveFile", () => {
     expect(cancelled).toBe(true);
   });
 
+  it("counts each request of an upload under its own name, by its answer", async () => {
+    let ambient = env as { METRICS?: AnalyticsEngineDataset; SUBSERVICE_METRICS?: string };
+    let points: AnalyticsEngineDataPoint[] = [];
+    ambient.METRICS = { writeDataPoint: point => { points.push(point!); } };
+    ambient.SUBSERVICE_METRICS = "true";
+    let column = (point: AnalyticsEngineDataPoint, slot: BlobSlot | DoubleSlot) =>
+      (slot.startsWith("blob") ? point.blobs! : point.doubles!)[Number(slot.replace(/\D+/, "")) - 1];
+    // The points of the upload itself, less the reads made before it, each as its service,
+    // operation, outcome, reason and HTTP status.
+    let counted = () => points.splice(0).map(point => [
+      SUBSERVICE_V1_SLOTS.service, SUBSERVICE_V1_SLOTS.operation, COMMON_SLOTS.outcome,
+      SUBSERVICE_V1_SLOTS.reason, SUBSERVICE_V1_SLOTS.httpStatus,
+    ].map(slot => column(point, slot))).filter(([, operation]) => /resumable|^upload\./.test(String(operation)));
+    try {
+      // A new file whose last chunk's reply is lost: the session is asked, and has the file.
+      let answers: (() => Response)[] = [() => { throw new Error("connection reset"); }, () => saved("new-1", GOOGLE_DOC_MIME_TYPE)];
+      stubDrive({ "PUT session": () => answers.shift()!() });
+      await save(FOLDER_URL);
+      expect(counted()).toEqual([
+        ["google-drive", "files.create.resumable", "success", "", 200],
+        ["google-drive", "upload.send", "error", "network", 0],
+        ["google-drive", "upload.getStatus", "success", "", 200],
+      ]);
+
+      // A saved file's new content, which the session refuses: the session is abandoned.
+      stubDrive({
+        "GET /drive/v3/files/doc-1": Response.json({ id: "doc-1", name: "Plan", mimeType: GOOGLE_DOC_MIME_TYPE, trashed: false, appProperties: { gadgetsSaved: "1" } }),
+        "PUT session": new Response(null, { status: 404 }), "DELETE session": new Response(null, { status: 499 }),
+      });
+      await expect(save(DOC_URL)).rejects.toThrow("ended the upload before the file was sent");
+      expect(counted()).toEqual([
+        ["google-drive", "files.patch.resumable", "success", "", 200],
+        ["google-drive", "upload.send", "error", "http", 404],
+        // Drive's answer to a session it has cancelled is a 499, which is the cancel's success.
+        ["google-drive", "upload.cancel", "success", "", 499],
+      ]);
+    } finally {
+      delete ambient.METRICS;
+      delete ambient.SUBSERVICE_METRICS;
+    }
+  });
+
   it("asks the session what it holds after a lost reply, and makes no second file", async () => {
     // The last chunk arrived and the file was made, but the reply was lost: the session says so.
     let answers: (() => Response)[] = [() => { throw new Error("connection reset"); }, () => saved("new-1", GOOGLE_DOC_MIME_TYPE)];
@@ -229,6 +312,142 @@ describe("saveFile", () => {
       await expect(save(FOLDER_URL)).rejects.toThrow("can't add files to that folder");
       expect(uploaded(calls).chunks).toHaveLength(1);
     });
+
+  it.each(["rateLimitExceeded", "userRateLimitExceeded"])(
+    "counts a 403 that throttles with %s as a rate refusal, of a chunk and of the status asked after it", async reason => {
+      let written = writtenCalls();
+      let calls = stubDrive({ "PUT session": inTurn(
+        () => refusal(403, reason), () => refusal(403, reason), () => saved("new-1", GOOGLE_DOC_MIME_TYPE)) });
+
+      // The upload waits both out, as it does uncounted.
+      await expect(save(FOLDER_URL)).resolves.toMatchObject({ url: expect.stringContaining("/d/new-1/") });
+
+      expect(uploaded(calls).chunks).toEqual([["bytes 0-5/6", "PKdocx"], ["bytes */6", ""], ["bytes */6", ""]]);
+      expect(written.answers(/^upload\./)).toEqual([
+        ["upload.send", "refused", "rate", 403],
+        ["upload.getStatus", "refused", "rate", 403],
+        ["upload.getStatus", "success", "", 200],
+      ]);
+    });
+
+  it.each([
+    ["refuses for the folder's permissions", () => refusal(403, "insufficientFilePermissions"), "can't add files to that folder"],
+    ["names a limit that no wait lifts", () => refusal(403, "dailyLimitExceeded"), "Google Drive API request failed: 403"],
+    ["gives no reason that can be read", () => new Response("<html>", { status: 403 }), "can't add files to that folder"],
+  ])("counts a 403 that %s as an error, of a chunk and of the status asked after it", async (_name, denied, message) => {
+    let written = writtenCalls();
+    // The chunk itself is refused, and then the status asked after a chunk whose reply was lost.
+    stubDrive({ "PUT session": denied, "DELETE session": sessionCancelled });
+    await expect(save(FOLDER_URL)).rejects.toThrow(message);
+    stubDrive({ "PUT session": inTurn(lostReply, denied), "DELETE session": sessionCancelled });
+    await expect(save(FOLDER_URL)).rejects.toThrow(message);
+
+    expect(written.answers(/^upload\.(send|getStatus)$/)).toEqual([
+      ["upload.send", "error", "http", 403],
+      ["upload.send", "error", "network", 0],
+      ["upload.getStatus", "error", "http", 403],
+    ]);
+  });
+
+  it("reads no body to count an upload's answer that is no 403", async () => {
+    let written = writtenCalls();
+    let copied = vi.spyOn(Response.prototype, "clone");
+    let answered = refusal(404, "rateLimitExceeded");
+    stubDrive({ "PUT session": answered, "DELETE session": sessionCancelled });
+
+    await expect(save(FOLDER_URL)).rejects.toThrow("ended the upload before the file was sent");
+
+    expect(written.answers(/^upload\.send$/)).toEqual([["upload.send", "error", "http", 404]]);
+    expect(copied.mock.contexts).not.toContain(answered);
+  });
+
+  it("counts a chunk's success whose body fails to arrive as a failed read, and asks the session what it holds", async () => {
+    let written = writtenCalls();
+    let calls = stubDrive({ "PUT session": inTurn(lostBody, () => saved("new-1", GOOGLE_DOC_MIME_TYPE)) });
+
+    await expect(save(FOLDER_URL)).resolves.toMatchObject({ url: expect.stringContaining("/d/new-1/") });
+
+    expect(uploaded(calls).chunks).toEqual([["bytes 0-5/6", "PKdocx"], ["bytes */6", ""]]);
+    expect(written.answers(/^upload\./)).toEqual([
+      ["upload.send", "error", "parse", 200],
+      ["upload.getStatus", "success", "", 200],
+    ]);
+  });
+
+  it.each([
+    ["a file of another type than was asked for", () => saved("new-1", "application/pdf")],
+    ["a file with no ID", () => Response.json({ mimeType: GOOGLE_DOC_MIME_TYPE })],
+    ["no file", () => Response.json([])],
+  ])("counts an upload that ends in %s as an error, and asks the session nothing more", async (_name, made) => {
+    let written = writtenCalls();
+    let calls = stubDrive({ "PUT session": inTurn(made), "DELETE session": sessionCancelled });
+
+    await expect(save(FOLDER_URL)).rejects.toThrow("Google Drive did not convert the uploaded file into the type asked for");
+
+    expect(uploaded(calls).chunks).toEqual([["bytes 0-5/6", "PKdocx"]]);
+    expect(written.answers(/^upload\./)).toEqual([
+      ["upload.send", "error", "api", 200],
+      ["upload.cancel", "success", "", 499],
+    ]);
+  });
+
+  it("counts an upload that ends in JSON that cannot be read as a failed read, and asks the session nothing more", async () => {
+    let written = writtenCalls();
+    let calls = stubDrive({ "PUT session": inTurn(() => new Response("<html>")), "DELETE session": sessionCancelled });
+
+    await expect(save(FOLDER_URL)).rejects.toThrow("Google Drive response was not valid JSON (6 UTF-16 code units)");
+
+    expect(uploaded(calls).chunks).toEqual([["bytes 0-5/6", "PKdocx"]]);
+    expect(written.answers(/^upload\./)).toEqual([
+      ["upload.send", "error", "parse", 200],
+      ["upload.cancel", "success", "", 499],
+    ]);
+  });
+
+  it("counts a file of another type that the session says it holds after a lost reply as an error of the status asked", async () => {
+    let written = writtenCalls();
+    let calls = stubDrive({
+      "PUT session": inTurn(lostReply, () => saved("new-1", "application/pdf")), "DELETE session": sessionCancelled,
+    });
+
+    await expect(save(FOLDER_URL)).rejects.toThrow("Google Drive did not convert the uploaded file into the type asked for");
+
+    expect(uploaded(calls).chunks).toEqual([["bytes 0-5/6", "PKdocx"], ["bytes */6", ""]]);
+    expect(written.answers(/^upload\./)).toEqual([
+      ["upload.send", "error", "network", 0],
+      ["upload.getStatus", "error", "api", 200],
+      ["upload.cancel", "success", "", 499],
+    ]);
+  });
+
+  it("refuses an upload answered a 403 too long to read a reason from, and counts it as an error", async () => {
+    let written = writtenCalls();
+    // The reason is given up, and the copy read for the count with it, while the upload still
+    // holds the answer.
+    let calls = stubDrive({ "PUT session": longRefusal, "DELETE session": sessionCancelled });
+
+    await expect(save(FOLDER_URL)).rejects.toThrow("can't add files to that folder");
+
+    expect(uploaded(calls).chunks).toEqual([["bytes 0-5/6", "PKdocx"]]);
+    expect(written.answers(/^upload\./)).toEqual([
+      ["upload.send", "error", "http", 403],
+      ["upload.cancel", "success", "", 499],
+    ]);
+  });
+
+  it("writes the chunks an upload is sent in as one point for each answer Drive gives them", async () => {
+    let written = writtenCalls();
+    // Drive takes two bytes of what it is sent, twice, and then the rest.
+    let calls = stubDrive({ "PUT session": inTurn(took(2), took(4), () => saved("new-1", GOOGLE_DOC_MIME_TYPE)) });
+
+    await expect(save(FOLDER_URL)).resolves.toMatchObject({ url: expect.stringContaining("/d/new-1/") });
+
+    expect(uploaded(calls).chunks).toEqual([["bytes 0-5/6", "PKdocx"], ["bytes 2-5/6", "docx"], ["bytes 4-5/6", "cx"]]);
+    expect(written.of("upload.send")).toEqual([
+      ["google-drive", "upload.send", "success", 308, 2],
+      ["google-drive", "upload.send", "success", 200, 1],
+    ]);
+  });
 
   it.each([
     ["in the trash", { mimeType: GOOGLE_DOC_MIME_TYPE, trashed: true }, /in the Drive trash/],

@@ -1,17 +1,24 @@
+import { env as bindings } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SUBSERVICE_V1_SLOTS } from "../../observability/src/metrics-schema";
 import { SlackApi, SlackApiError, type SlackInstallation, type SlackOAuthGrant } from "./slack-api";
 import { stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
+import { formatSubresourceId } from "@gadgets/gatekeeper-kit/subresource-ids";
 import { getGrantedResourceTypeIds } from "@gadgets/workshop-shared/gatekeeper";
 
 // These tests exercise binding/observer behavior in Node; the production RPC schema is checked
-// separately by the Worker prebuild. The only emulation here is the Workers hosting surface.
-vi.mock("cloudflare:workers", () => {
+// separately by the Worker prebuild. The only emulation here is the Workers hosting surface, over
+// the shared stub's `env`, which the upstream client reads to count its calls.
+vi.mock("cloudflare:workers", async importOriginal => {
   class Entrypoint {
     constructor(public ctx: unknown, public env: unknown) {}
   }
   class Target { [Symbol.dispose]() {} }
   class Stub { dup() { return this; } }
-  return { WorkerEntrypoint: Entrypoint, DurableObject: Entrypoint, RpcTarget: Target, RpcStub: Stub };
+  return {
+    ...await importOriginal<{ env: Record<string, unknown> }>(),
+    WorkerEntrypoint: Entrypoint, DurableObject: Entrypoint, RpcTarget: Target, RpcStub: Stub,
+  };
 });
 vi.mock("capnweb-validate", () => ({
   validateRpc: () => (target: unknown) => target,
@@ -300,5 +307,106 @@ describe("Slack resource type grants", () => {
     expect(prepareReconnect.mock.calls[0]![1]).not.toContain("search:read");
     await expect(user.ensureResources(["unknown"])).rejects.toThrow();
     expect(prepareReconnect).toHaveBeenCalledOnce();
+  });
+});
+
+type Point = { blobs?: unknown[]; doubles?: unknown[] };
+
+// A written point's value in one column.
+function column(point: Point, slot: string) {
+  let values = slot.startsWith("blob") ? point.blobs : point.doubles;
+  return values?.[Number(slot.replace(/\D+/, "")) - 1];
+}
+
+// A global fetch that answers each Web API method with what `answers` gives for it, and the
+// methods of the requests sent.
+function slack(answers: Record<string, (params: URLSearchParams) => Record<string, unknown>>): string[] {
+  let sent: string[] = [];
+  vi.stubGlobal("fetch", async (input: string) => {
+    let url = new URL(input);
+    let method = url.pathname.slice("/api/".length);
+    sent.push(method);
+    let answer = answers[method];
+    if (!answer) throw new Error(`Unexpected Slack request: ${method}`);
+    return Response.json({ ok: true, ...answer(url.searchParams) });
+  });
+  return sent;
+}
+
+// An approval queue that authorizes every observation.
+const queue = () => ({ dup() { return this; }, authorizeObservation: vi.fn(async () => undefined) });
+// A conversation that names its workspace, which no listing has to prove.
+const inWorkspace = (params: URLSearchParams) => ({ channel: { id: params.get("channel"), team_id: "TONE" } });
+
+describe("Slack operations that page, as metric points", () => {
+  const ambient = bindings as { METRICS?: { writeDataPoint(point: Point): void }; SUBSERVICE_METRICS?: string };
+  let points: Point[];
+
+  beforeEach(() => {
+    points = [];
+    ambient.METRICS = { writeDataPoint: point => void points.push(point) };
+    ambient.SUBSERVICE_METRICS = "true";
+  });
+  afterEach(() => {
+    delete ambient.METRICS;
+    delete ambient.SUBSERVICE_METRICS;
+  });
+
+  // How many calls each point written for `operation` stands for, in the order they were written.
+  function callsOf(operation: string) {
+    return points.filter(point => column(point, SUBSERVICE_V1_SLOTS.operation) === operation)
+        .map(point => column(point, SUBSERVICE_V1_SLOTS.calls));
+  }
+
+  it("writes the pages a cursor reads until one holds something as one point", async () => {
+    let sent = slack({
+      "users.list": params => params.get("cursor") === null
+        ? { members: [{ id: "WGONE", deleted: true }], response_metadata: { next_cursor: "two" } }
+        : { members: [{ id: "WSELF", name: "self" }] },
+    });
+    let session = await new SlackWorkspaceGatekeeperImpl(
+        context({ userObjectId: "account", teamId: "TONE" }) as never, {} as never)
+        .startSession(queue() as never);
+
+    let cursor = await session.listUsers();
+    expect(await cursor.next()).toMatchObject([{ id: "WSELF" }]);
+
+    expect(sent).toEqual(["users.list", "users.list"]);
+    expect(callsOf("users.list")).toEqual([2]);
+  });
+
+  it("writes the pages of a thread's replies as one point, after the read that finds its root", async () => {
+    let root = { ts: "1700000000.000100", thread_ts: "1700000000.000100", user: "WSELF" };
+    let sent = slack({
+      "conversations.info": inWorkspace,
+      "users.info": params => ({ user: { id: params.get("user"), name: "self" } }),
+      "conversations.replies": params => params.get("cursor") === null
+        ? { messages: [root], response_metadata: { next_cursor: "two" } }
+        : { messages: [{ ts: "1700000000.000200", thread_ts: root.ts, user: "WSELF" }] },
+    });
+    let thread = await new SlackThreadGatekeeperImpl(context({
+      userObjectId: "account", teamId: "TONE", conversationId: "CONE", threadTs: root.ts,
+      permalink: "https://one.slack.com/archives/CONE/p1700000000000100", reportsSubresources: true,
+    }) as never, {} as never).startSession(queue() as never);
+
+    expect((await thread.listReplies()).map(message => message.ts)).toEqual([root.ts, "1700000000.000200"]);
+
+    expect(sent.filter(method => method === "conversations.replies")).toHaveLength(3);
+    expect(callsOf("conversations.replies")).toEqual([1, 2]);
+  });
+
+  it("writes the lookups of the conversations an account's access is checked for as one point", async () => {
+    let sent = slack({ "conversations.info": inWorkspace });
+    let ctx = context({});
+    ctx.storage.kv.put("accessToken", token);
+    let account = new UserAccount(ctx as never, {} as never);
+    let conversations = ["CONE", "CTWO"].map(id => formatSubresourceId({
+      fragments: [{ name: "workspace", id: "TONE" }, { name: "conversation", id }],
+    }));
+
+    expect(await account.checkSubresourceAccess(conversations)).toEqual([true, true]);
+
+    expect(sent).toEqual(["conversations.info", "conversations.info"]);
+    expect(callsOf("conversations.info")).toEqual([2]);
   });
 });

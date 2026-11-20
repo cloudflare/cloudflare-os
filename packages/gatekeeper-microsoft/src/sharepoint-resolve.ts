@@ -73,10 +73,37 @@ function placeOf(body: unknown): { tenantId?: string; host?: string } {
   };
 }
 
+/**
+ * What an answer about a link was read as: what `parse` kept of it, or what `owned` refused it
+ * with. A refusal is a decision about where the object is and no fault of the answer, so it is
+ * returned for the caller to throw: only what `parse` throws is thrown where the answer is read,
+ * which counts the request as answered with what was not asked for.
+ */
+type Placed<T> = { kept: T } | { refused: unknown };
+
+/** A reading of an answer about a link, made inside its request: null for an answer that holds nothing, else a `Placed`. */
+function placed<T>(owned: Owned, parse: (body: unknown) => T): (body: unknown) => Placed<T> | null {
+  return body => {
+    if (body === null) return null;
+    try {
+      owned(body);
+    } catch (refused) {
+      return { refused };
+    }
+    return { kept: parse(body) };
+  };
+}
+
+/** What an answer about a link was read as, or the refusal of one that is another organization's. */
+function kept<T>(answer: Placed<T> | null): T | null {
+  if (answer === null) return null;
+  if ("refused" in answer) throw answer.refused;
+  return answer.kept;
+}
+
 /** Asks Graph for one facet of a URL, or null when that facet does not apply. */
-async function facet<T>(api: GraphApi, shareId: string, path: string, select: string, parse: (body: unknown) => T): Promise<T | null> {
-  const body = await api.request<unknown>("GET", `/shares/${shareId}/${path}`, { query: { $select: select }, allow: MISS });
-  return body === null ? null : parse(body);
+async function facet<T>(api: GraphApi, shareId: string, path: string, select: string, owned: Owned, parse: (body: unknown) => T): Promise<T | null> {
+  return kept(await api.request("GET", `/shares/${shareId}/${path}`, { query: { $select: select }, allow: MISS }, placed(owned, parse)));
 }
 
 /** The composite site ID of the web an item or list lives in, or null when Graph omitted it. */
@@ -89,6 +116,11 @@ function fromSite(site: GraphSite): ResolvedUrl {
   return { scope: { kind: "site", siteId: site.id }, name: site.name, webUrl: site.webUrl };
 }
 
+/**
+ * What a link to a file, a folder or a library's root resolves to. Read inside the request that
+ * answers the item, so that an item answered without the IDs of its site is counted as the error it is.
+ * @throws UnresolvableUrlError for an item Graph places in no site.
+ */
 function fromItem(host: string, item: GraphDriveItem): ResolvedUrl {
   // The host Graph gives for the item's site, not the link's: a link kept alive from before a move
   // between geographies resolves to where the item is now.
@@ -104,13 +136,31 @@ function fromItem(host: string, item: GraphDriveItem): ResolvedUrl {
   };
 }
 
-async function fromList(api: GraphApi, list: GraphList): Promise<ResolvedUrl> {
-  if (list.siteId === undefined) throw new UnresolvableUrlError();
+/** A list with the site Graph places it in. */
+type SitedList = GraphList & { siteId: string };
+
+/**
+ * A list as Graph places it in a site. Read inside the request that answers the list, so that a
+ * list answered without its site is counted as the error it is.
+ * @throws UnresolvableUrlError for a list Graph places in no site.
+ */
+function sited(list: GraphList): SitedList {
+  const { siteId } = list;
+  if (siteId === undefined) throw new UnresolvableUrlError();
+  return { ...list, siteId };
+}
+
+async function fromList(api: GraphApi, list: SitedList): Promise<ResolvedUrl> {
   if (list.template === "documentLibrary") {
     // A library's list URL means the library, which files are read through as a drive.
-    const drive = await api.find<{ id?: unknown }>(`/sites/${list.siteId}/lists/${list.id}/drive`, { query: { $select: "id" } });
-    if (typeof drive?.id !== "string") throw new UnresolvableUrlError();
-    return { scope: { kind: "library", siteId: list.siteId, driveId: drive.id }, name: list.name, webUrl: list.webUrl };
+    // The ID is read inside the request, so that a library answered without one is counted as the error it is.
+    const driveId = await api.find(`/sites/${list.siteId}/lists/${list.id}/drive`, { query: { $select: "id" } }, (drive: { id?: unknown } | null) => {
+      if (drive === null) return null;
+      if (typeof drive.id !== "string") throw new UnresolvableUrlError();
+      return drive.id;
+    });
+    if (driveId === null) throw new UnresolvableUrlError();
+    return { scope: { kind: "library", siteId: list.siteId, driveId }, name: list.name, webUrl: list.webUrl };
   }
   return { scope: { kind: "list", siteId: list.siteId, listId: list.id }, name: list.name, webUrl: list.webUrl };
 }
@@ -149,8 +199,8 @@ async function fromPageItem(api: GraphApi, shareId: string, owned: Owned): Promi
 async function fromSitePath(api: GraphApi, url: URL, owned: Owned): Promise<ResolvedUrl | null> {
   const path = sitePathNamed(url);
   if (path === null) return null;
-  const body = await api.request<unknown>("GET", `/sites/${url.hostname}:${path}`, { query: { $select: OWNED_SITE_SELECT }, allow: MISS });
-  return body === null ? null : fromSite(parseSite(owned(body)));
+  const site = kept(await api.request("GET", `/sites/${url.hostname}:${path}`, { query: { $select: OWNED_SITE_SELECT }, allow: MISS }, placed(owned, parseSite)));
+  return site === null ? null : fromSite(site);
 }
 
 /**
@@ -206,16 +256,16 @@ async function resolveUrl(api: GraphApi, raw: string, tenant: ConnectedTenant): 
   const shareId = shareIdFor(normalizeForShares(url));
   try {
     if (isSiteRootPath(url)) {
-      const site = await facet(api, shareId, "site", OWNED_SITE_SELECT, body => parseSite(owned(body)));
+      const site = await facet(api, shareId, "site", OWNED_SITE_SELECT, owned, parseSite);
       if (site !== null) return fromSite(site);
     }
     if (isSitePagesUrl(url)) {
       const page = await fromPageItem(api, shareId, owned);
       if (page !== null) return page;
     }
-    const item = await facet(api, shareId, "driveItem", ITEM_SELECT, body => parseDriveItem(owned(body)));
-    if (item !== null) return fromItem(url.hostname, item);
-    const list = await facet(api, shareId, "list", OWNED_LIST_SELECT, body => parseList(owned(body)));
+    const item = await facet(api, shareId, "driveItem", ITEM_SELECT, owned, body => fromItem(url.hostname, parseDriveItem(body)));
+    if (item !== null) return item;
+    const list = await facet(api, shareId, "list", OWNED_LIST_SELECT, owned, body => sited(parseList(body)));
     if (list !== null) return await fromList(api, list);
     const site = await fromSitePath(api, url, owned);
     if (site !== null) return site;

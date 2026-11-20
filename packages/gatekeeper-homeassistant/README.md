@@ -17,6 +17,8 @@ When the user connects an account, they paste their HA URL and an LLAT into a fo
 
 The gatekeeper makes HTTP and WebSocket calls to the configured HA URL. On a Cloudflare-hosted Gadgets deployment, that means HA must be publicly reachable (via Nabu Casa, Cloudflare Tunnel, port-forwarding, etc.). On a self-hosted (workerd) deployment, LAN addresses like `http://homeassistant.local:8123` and `http://192.168.x.x:8123` work fine — that's the intended setup for users running Gadgets on the same network as their HA.
 
+Every call goes through one upstream client ([`src/homeassistant-upstream.ts`](src/homeassistant-upstream.ts)) and is counted as a [subservice metric](../observability/README.md#subservice-calls) under the source `gatekeeper.homeassistant.api`: a REST request under its name in the route tree `HA_ROUTES`, a WebSocket call under its name in `WS_OPERATIONS`.
+
 ## Resource granularities
 
 Five granularities are exposed; each comes with its own configurator UI for picking a specific resource from the connected HA instance:
@@ -92,6 +94,7 @@ See the **APPROVAL & SIMULATION** section at the top of `src/types.d.ts` for the
 src/
 ├── homeassistant.ts        # main: Vendor, UserAccount, User, GatekeeperImpl, Session impls
 ├── homeassistant-api.ts    # REST + WS clients (incl. timeouts and error-body sanitization)
+├── homeassistant-upstream.ts  # the upstream client every call goes through: route tree, WebSocket names, timeouts
 ├── approvals.ts            # describeAction, executeAction, applyRevertForEntity, ...
 ├── auto-approval.ts        # action kinds and the per-call auto-approval verdict
 ├── simulation.ts           # pure overlay-at-read-time helpers

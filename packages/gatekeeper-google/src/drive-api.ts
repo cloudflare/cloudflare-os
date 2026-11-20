@@ -1,8 +1,12 @@
 // Structured Google Drive API client shared by configurators, sessions, and observer verification.
 
+import type { AnsweredWith, CallAnswer } from "@gadgets/gatekeeper-kit/upstream";
 import type { DriveUnit } from "./file-subresources";
-import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
+import {
+  AccessTokenProvider, fetchWithAuthRetry, readCheckedWithAuthRetry, readWithAuthRetry,
+} from "./auth-retry";
 import { obsContext } from "./observability";
+import { googleUpstream } from "./upstream";
 
 const logger = obsContext.createLogger({ component: "gatekeeper.google.drive", vendorId: "google" });
 
@@ -19,6 +23,8 @@ const DOWNLOAD_TIMEOUT_MS = 60_000;
 const UPLOAD_TIMEOUT_MS = 120_000;
 /** For opening an upload session and for each chunk but the last, which Drive only stores. */
 const UPLOAD_CHUNK_TIMEOUT_MS = 30_000;
+/** For the cancel of an upload session, which nothing waits on for longer. */
+const UPLOAD_CANCEL_TIMEOUT_MS = 5_000;
 /** What an upload session is sent at a time: a multiple of the 256 KiB Drive asks of all but the last chunk. */
 const UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024;
 /** Requests to an upload session that may fail, or leave it holding no more, before a chunk is given up. */
@@ -327,10 +333,17 @@ function googleErrorReason(value: unknown): string | undefined {
   return typeof reason === "string" && /^\w{1,64}$/.test(reason) ? reason : undefined;
 }
 
+/**
+ * The text of an answer's body, which is cancelled, and `tooLargeMessage` thrown, once it is
+ * longer than `maxBytes`. `copied` says the answer is a clone: the cancel of one settles only
+ * once the answer it was made from is read to its end or cancelled, which is for whoever holds
+ * that answer to do, so it is not waited for.
+ */
 async function readBoundedText(
   response: Response,
   maxBytes: number,
   tooLargeMessage: string,
+  copied = false,
 ): Promise<string> {
   if (!response.body) return "";
   let reader = response.body.getReader();
@@ -343,7 +356,9 @@ async function readBoundedText(
       if (done) break;
       totalBytes += value.byteLength;
       if (totalBytes > maxBytes) {
-        await reader.cancel();
+        let cancelled = reader.cancel();
+        if (copied) void cancelled.catch(() => {});
+        else await cancelled;
         throw new Error(tooLargeMessage);
       }
       chunks.push(decoder.decode(value, { stream: true }));
@@ -357,6 +372,19 @@ async function readBoundedText(
 
 /** A 206's `Content-Range`: where its bytes start and end, and the whole file's size unless `*`. */
 const CONTENT_RANGE = /^bytes (\d+)-(\d+)\/(\d+|\*)$/;
+
+/**
+ * Where a download's answer places its bytes, by its status and headers alone: the `Content-Range`
+ * of a 206, where that can be read, and whether the bytes are `misplaced`, starting elsewhere
+ * than at `offset`. Any other answer is the whole file, which starts at 0.
+ */
+function placedBytes(
+  status: number, headers: Headers, offset: number,
+): { range: RegExpExecArray | null | undefined; misplaced: boolean } {
+  let range = status === 206 ? CONTENT_RANGE.exec(headers.get("Content-Range") ?? "") : undefined;
+  let start = status === 206 ? range?.[1] : "0";
+  return { range, misplaced: start === undefined || Number(start) !== offset };
+}
 
 function googleErrorReasonFromText(text: string): string | undefined {
   try {
@@ -375,14 +403,15 @@ function parseDriveJson(text: string, context: string): unknown {
   }
 }
 
-async function errorReason(response: Response): Promise<string | undefined> {
+async function errorReason(response: Response, copied = false): Promise<string | undefined> {
   let text = await readBoundedText(
-    response, MAX_ERROR_BODY_BYTES, "Google Drive error response was too large").catch(() => "");
+    response, MAX_ERROR_BODY_BYTES, "Google Drive error response was too large", copied).catch(() => "");
   return googleErrorReasonFromText(text);
 }
 
-async function driveError(response: Response): Promise<Error> {
-  let reason = await errorReason(response);
+/** Drive's refusal, with the reason its body gives; `copied` as for `readBoundedText`. */
+async function driveError(response: Response, copied = false): Promise<Error> {
+  let reason = await errorReason(response, copied);
   if (response.status === 403 && reason === API_DISABLED_REASON) {
     return new DriveApiDisabledError(
       "the Google Drive API is not enabled for this OAuth project");
@@ -390,41 +419,130 @@ async function driveError(response: Response): Promise<Error> {
   return new DriveApiRequestError(response.status, reason);
 }
 
+/**
+ * What Drive answered a request with: the JSON of a success, and its refusal thrown. Given to
+ * `readWithAuthRetry`, which reads the answer within the request and so counts a success that
+ * cannot be read as the failure it is thrown as.
+ */
+async function readDriveJson(response: Response): Promise<unknown> {
+  if (!response.ok) throw await driveError(response);
+  let text = await readBoundedText(
+    response, MAX_JSON_RESPONSE_BYTES, "Google Drive response was too large");
+  return parseDriveJson(text, "response");
+}
+
+/** How an answer with a success status that holds no such thing as was asked for is counted. */
+const REJECTED: CallAnswer = { outcome: "error", reason: "api" };
+
+/** Whether `status` is that of an answer which holds what was asked for: what `Response.ok` says. */
+const isSuccess = (status: number) => status >= 200 && status <= 299;
+
 /** Whether Drive refused for now, with the 403 it throttles with: like a 429, worth waiting out. */
 const isThrottle = (error: Error) => error instanceof DriveApiRequestError && error.status === 403 &&
   (error.reason === "rateLimitExceeded" || error.reason === "userRateLimitExceeded");
 
 /**
- * Sends `bytes`, which start at `start` of the file, to the upload session at `session`, whose URL
- * is its own credential; `total` is the file's size, given with its last chunk. Returns the body
- * of Drive's answer to the last chunk, or nothing once it holds every byte of an earlier one, and
- * throws its refusal. After a reply that is lost, failed or cut short it waits, asks what the
- * session holds, and sends only the rest, so nothing Drive finished is sent again.
+ * How a 403 of an upload session is counted: one Drive throttles with is a rate refusal, as a
+ * 429 is, and any other is counted by its status. The reason is read from a clone, which leaves
+ * the answer to the upload: a clone longer than is read for a reason is let go without waiting,
+ * since the upload has the answer still to read. An answer of any other status is not read.
  */
-async function putUploadChunk(
-  session: string, bytes: Uint8Array, start: number, total?: number,
-): Promise<string | undefined> {
+async function throttleAnswer(response: Response): Promise<CallAnswer | undefined> {
+  if (response.status !== 403) return undefined;
+  return isThrottle(await driveError(response.clone(), true)) ? { outcome: "refused", reason: "rate" } : undefined;
+}
+
+/**
+ * The last chunk of an upload: the file's size, which is sent with it, and what Drive made of
+ * the upload, read from the JSON of its answer. `made` throws where that is nothing to use.
+ */
+type UploadEnd<T> = { total: number; made: (result: unknown) => T };
+
+/** What is read of an upload session's answer to one request. */
+type SessionAnswer<T> = {
+  answered: Response;
+  /** How the answer is counted, where its status does not say. */
+  counted?: CallAnswer;
+  /**
+   * Of a 308, which asks for more: how many bytes of the file the session says it holds, and
+   * whether that is `lost`, fewer than it held before the request or more than it was sent.
+   */
+  more?: { held: number; lost: boolean };
+  /** Of a success whose body arrived: what `made` read of it, or what `made` threw. */
+  result?: { made: T | undefined } | { unusable: unknown };
+};
+
+/**
+ * Sends `bytes`, which start at `start` of the file, to the upload session at `session`, whose URL
+ * is its own credential; `end` is given with the file's last chunk. Returns what `end.made` reads
+ * of Drive's answer to the last chunk, or nothing once Drive holds every byte of an earlier one,
+ * and throws its refusal. After a reply that is lost, failed or cut short it waits, asks what the
+ * session holds, and sends only the rest, so nothing Drive finished is sent again. An answer to
+ * the last chunk that arrived whole and cannot be used is thrown, and the session is not asked:
+ * it would answer the same.
+ */
+async function putUploadChunk(session: string, bytes: Uint8Array, start: number): Promise<undefined>;
+async function putUploadChunk<T>(
+  session: string, bytes: Uint8Array, start: number, end: UploadEnd<T>,
+): Promise<T>;
+async function putUploadChunk<T>(
+  session: string, bytes: Uint8Array, start: number, end?: UploadEnd<T>,
+): Promise<T | undefined> {
+  let total = end?.total;
   let ask = false;
   for (let failures = 0; failures < UPLOAD_ATTEMPTS;) {
     let range = ask || !bytes.length ? "*" : `${start}-${start + bytes.length - 1}`;
-    let response = await fetch(session, {
+    // Whether the body of the last chunk's answer arrived whole: what fails after is no lost reply.
+    let arrived = false;
+    // A session's URL is its own credential and one Drive made, so its requests carry no token
+    // and are named here: asking what the session holds sends no bytes, and has a name of its own.
+    let read = await readWithAuthRetry(session, {
       // Drive asks for more with a 308, which is not a redirect to follow.
       method: "PUT", headers: { "Content-Range": `bytes ${range}/${total ?? "*"}` }, redirect: "manual",
       body: ask ? undefined : bytes,
-      signal: AbortSignal.timeout(total === undefined ? UPLOAD_CHUNK_TIMEOUT_MS : UPLOAD_TIMEOUT_MS),
-    }).catch(() => undefined);
-    if (response?.ok) {
-      // The file is made by now, so a body that fails to arrive is asked for again, not given up.
-      let made = await readBoundedText(response, MAX_JSON_RESPONSE_BYTES, "Google Drive response was too large")
-        .catch(() => undefined);
-      if (made !== undefined) return made;
-      response = undefined;
+    }, {
+      getAccessToken: null, operation: ask ? "upload.getStatus" : "upload.send",
+      timeoutMs: total === undefined ? UPLOAD_CHUNK_TIMEOUT_MS : UPLOAD_TIMEOUT_MS,
+    }, async (answered): Promise<SessionAnswer<T>> => {
+      if (answered.status === 308) {
+        // What the session holds: `Range: bytes=0-N`, or no header when it holds nothing. It is
+        // read within the request, which so counts a session that holds what it cannot as the
+        // failure the upload ends in.
+        let held = Number(/-(\d+)$/.exec(answered.headers.get("Range") ?? "")?.[1] ?? -1) + 1;
+        let lost = held < start || held > start + bytes.length;
+        return { answered, more: { held, lost }, ...(lost ? { counted: REJECTED } : {}) };
+      }
+      if (!answered.ok) return { answered, counted: await throttleAnswer(answered).catch(() => undefined) };
+      // A success holds the file that was made, and is read within the request: one whose body
+      // fails to arrive is counted as no success, and is no answer here.
+      let body = await readBoundedText(answered, MAX_JSON_RESPONSE_BYTES, "Google Drive response was too large");
+      if (!end) return { answered, result: { made: undefined } };
+      // What Drive made is read within the request too, which so counts a result that cannot be
+      // used as the failure it is thrown as: JSON that cannot be read as the client counts an
+      // answer it could not parse, and a result `made` refuses as an error inside a success.
+      arrived = true;
+      let result = parseDriveJson(body, "response");
+      try {
+        return { answered, result: { made: end.made(result) } };
+      } catch (unusable) {
+        return { answered, counted: REJECTED, result: { unusable } };
+      }
+    }, ({ counted }) => counted).catch(error => {
+      if (arrived) throw error;
+      // The file may be made by now, so a reply or a body that fails to arrive is asked for
+      // again, not given up.
+      return undefined;
+    });
+    if (read?.result) {
+      if ("unusable" in read.result) throw read.result.unusable;
+      return read.result.made;
     }
-    if (response?.status === 308) {
-      void response.body?.cancel();
-      // What the session holds: `Range: bytes=0-N`, or no header when it holds nothing.
-      let held = Number(/-(\d+)$/.exec(response.headers.get("Range") ?? "")?.[1] ?? -1) + 1;
-      if (held < start || held > start + bytes.length) break;
+    let response = read?.answered;
+    let more = read?.more;
+    if (more) {
+      void response?.body?.cancel();
+      if (more.lost) break;
+      let { held } = more;
       if (held === start && !ask) failures++;
       bytes = bytes.subarray(held - start);
       start = held;
@@ -1220,33 +1338,35 @@ export class DriveApi {
     let corpus = options.corpus ?? { kind: "user" };
     params.set("corpora", corpus.kind);
     if (corpus.kind === "drive") params.set("driveId", corpus.driveId);
-    let body = await this.#getUnknown("/files", params);
-    if (!isRecord(body)) throw new Error("Invalid Google Drive file-list response");
-    // A cross-corpus search Drive could not finish is indistinguishable from a complete one.
-    if (optionalBoolean(body.incompleteSearch, "incompleteSearch")) {
-      throw new Error("Google Drive could not complete this search. Try again.");
-    }
-    let files: DriveFile[] = [];
-    if (body.files !== undefined) {
-      if (!Array.isArray(body.files)) throw new Error("Invalid Google Drive file-list response");
-      files = body.files.map(parseDriveFile);
-    }
-    let nextPageToken = optionalString(body.nextPageToken, "nextPageToken");
-    return { files, ...(nextPageToken ? { nextPageToken } : {}) };
+    return this.#getUnknown("/files", params, body => {
+      if (!isRecord(body)) throw new Error("Invalid Google Drive file-list response");
+      // A cross-corpus search Drive could not finish is indistinguishable from a complete one.
+      if (optionalBoolean(body.incompleteSearch, "incompleteSearch")) {
+        throw new Error("Google Drive could not complete this search. Try again.");
+      }
+      let files: DriveFile[] = [];
+      if (body.files !== undefined) {
+        if (!Array.isArray(body.files)) throw new Error("Invalid Google Drive file-list response");
+        files = body.files.map(parseDriveFile);
+      }
+      let nextPageToken = optionalString(body.nextPageToken, "nextPageToken");
+      return { files, ...(nextPageToken ? { nextPageToken } : {}) };
+    });
   }
 
   /** Current metadata for one file. */
   async getFile(fileId: string): Promise<DriveFile> {
     let params = new URLSearchParams({ fields: DRIVE_FILE_ITEM_FIELDS, supportsAllDrives: "true" });
-    return parseDriveFile(await this.#getUnknown(`/files/${encodeURIComponent(fileId)}`, params));
+    return this.#getUnknown(`/files/${encodeURIComponent(fileId)}`, params, parseDriveFile);
   }
 
   /** An ID Drive reserves for a file this account creates, which makes the create safe to resend. */
   async generateFileId(): Promise<string> {
-    let body = await this.#getUnknown("/files/generateIds", new URLSearchParams({ count: "1", space: "drive" }));
-    let id = isRecord(body) && Array.isArray(body.ids) ? body.ids[0] : undefined;
-    if (typeof id !== "string") throw new Error("Invalid Google Drive generated ID response");
-    return id;
+    return this.#getUnknown("/files/generateIds", new URLSearchParams({ count: "1", space: "drive" }), body => {
+      let id: unknown = isRecord(body) && Array.isArray(body.ids) ? body.ids[0] : undefined;
+      if (typeof id !== "string") throw new Error("Invalid Google Drive generated ID response");
+      return id;
+    });
   }
 
   /**
@@ -1261,7 +1381,7 @@ export class DriveApi {
       method: "POST",
       headers: { Accept: "application/json", "Content-Type": "application/json" },
       body: JSON.stringify({ id, name, mimeType: FOLDER_MIME_TYPE, parents: [parentId] }),
-    }, this.getAccessToken, { idempotent: true });
+    }, { getAccessToken: this.getAccessToken, idempotent: true });
     if (response.status !== 409 && !response.ok) throw await driveError(response);
     await response.body?.cancel();
     return response.ok;
@@ -1277,7 +1397,7 @@ export class DriveApi {
     let response = await fetchWithAuthRetry(
       `${DRIVE_API_BASE}/files/${encodeURIComponent(fileId)}?${params}`,
       { method: "PATCH", headers: { "Content-Type": "application/json" }, body: "{}" },
-      this.getAccessToken);
+      { getAccessToken: this.getAccessToken });
     if (!response.ok) throw await driveError(response);
     await response.body?.cancel();
   }
@@ -1290,20 +1410,21 @@ export class DriveApi {
       fields: "nextPageToken,drives(id,name,capabilities(canAddChildren))",
     });
     if (options.pageToken) params.set("pageToken", options.pageToken);
-    let body = await this.#getUnknown("/drives", params);
-    let rawDrives = isRecord(body) ? body.drives ?? [] : undefined;
-    if (!isRecord(body) || !Array.isArray(rawDrives)) {
-      throw new Error("Invalid Google Drive shared-drive list response");
-    }
-    let drives = rawDrives.map((drive: unknown): DriveSharedDrive => {
-      if (!isRecord(drive) || typeof drive.id !== "string" || typeof drive.name !== "string") {
-        throw new Error("Invalid Google Drive shared drive");
+    return this.#getUnknown("/drives", params, body => {
+      let rawDrives = isRecord(body) ? body.drives ?? [] : undefined;
+      if (!isRecord(body) || !Array.isArray(rawDrives)) {
+        throw new Error("Invalid Google Drive shared-drive list response");
       }
-      let { canAddChildren } = optionalCapabilities(drive.capabilities) ?? {};
-      return { id: drive.id, name: drive.name, ...(canAddChildren === undefined ? {} : { canAddChildren }) };
+      let drives = rawDrives.map((drive: unknown): DriveSharedDrive => {
+        if (!isRecord(drive) || typeof drive.id !== "string" || typeof drive.name !== "string") {
+          throw new Error("Invalid Google Drive shared drive");
+        }
+        let { canAddChildren } = optionalCapabilities(drive.capabilities) ?? {};
+        return { id: drive.id, name: drive.name, ...(canAddChildren === undefined ? {} : { canAddChildren }) };
+      });
+      let nextPageToken = optionalString(body.nextPageToken, "nextPageToken");
+      return { drives, ...(nextPageToken ? { nextPageToken } : {}) };
     });
-    let nextPageToken = optionalString(body.nextPageToken, "nextPageToken");
-    return { drives, ...(nextPageToken ? { nextPageToken } : {}) };
   }
 
   /**
@@ -1336,17 +1457,17 @@ export class DriveApi {
       DOWNLOAD_TIMEOUT_MS);
     let response: Response;
     try {
+      // No timeout of the attempt's own, which would end the reading of the body with it. The
+      // body is handed on unread, so a success whose bytes are not those asked for is counted
+      // by its status and headers, as the failure it is thrown as below.
       response = await this.#fetchMedia(fileId, {
         headers: { Range: `bytes=${offset}-${offset + length - 1}` }, signal: begin.signal,
-      });
+      }, null, ({ status, headers }) => placedBytes(status, headers, offset).misplaced ? REJECTED : undefined);
     } finally {
       clearTimeout(timer);
     }
-    let range = response.status === 206
-      ? CONTENT_RANGE.exec(response.headers.get("Content-Range") ?? "")
-      : undefined;
-    let start = response.status === 206 ? range?.[1] : "0";
-    if (start === undefined || Number(start) !== offset) {
+    let { range, misplaced } = placedBytes(response.status, response.headers, offset);
+    if (misplaced) {
       await response.body?.cancel();
       throw new Error("Google Drive did not return the requested byte range.");
     }
@@ -1363,39 +1484,56 @@ export class DriveApi {
 
   /**
    * Drive's successful answer to a download of one file's content; any other is thrown. With
-   * `timeoutMs`, the whole answer is timed, its body included.
+   * `timeoutMs`, the whole answer is timed, its body included; with `null`, nothing of it is.
+   * `answer` counts a successful answer by its status and headers where its status alone does
+   * not say.
    */
-  async #fetchMedia(fileId: string, init: RequestInit = {}, timeoutMs?: number): Promise<Response> {
+  async #fetchMedia(
+    fileId: string, init: RequestInit, timeoutMs: number | null,
+    answer?: (answered: AnsweredWith) => CallAnswer | undefined,
+  ): Promise<Response> {
     requireDriveFileId(fileId);
     let params = new URLSearchParams({ alt: "media", supportsAllDrives: "true" });
     let response = await fetchWithAuthRetry(
-      `${DRIVE_API_BASE}/files/${encodeURIComponent(fileId)}?${params}`, init,
-      this.getAccessToken, timeoutMs === undefined ? {} : { timeoutMs });
-    if (!response.ok) throw await driveError(response);
+      `${DRIVE_API_BASE}/files/${encodeURIComponent(fileId)}?${params}`,
+      // Google may answer a download (`alt=media`) with a redirect to the host that serves the
+      // file's bytes. The token is the request's one credential, and `Authorization` is not
+      // carried to another origin.
+      { ...init, redirect: "follow" },
+      {
+        getAccessToken: this.getAccessToken, timeoutMs,
+        // A request that follows redirects is counted a success below 400, and of those only
+        // an answer from 200 to 299 is the file's content: any other is counted as the failure
+        // it is thrown as below. An answer from 400 on is counted by its status.
+        answer: answered => isSuccess(answered.status) ? answer?.(answered)
+          : answered.status < 400 ? REJECTED : undefined,
+      });
+    if (!isSuccess(response.status)) throw await driveError(response);
     return response;
   }
 
   /** Whether the connected account may edit a file's content, as Drive reports it. */
   async canEdit(fileId: string): Promise<boolean> {
     let params = new URLSearchParams({ fields: "capabilities(canEdit)", supportsAllDrives: "true" });
-    let body = await this.#getUnknown(`/files/${encodeURIComponent(fileId)}`, params);
-    let capabilities = isRecord(body) ? body.capabilities : undefined;
-    if (capabilities !== undefined && !isRecord(capabilities)) {
-      throw new Error("Invalid Google Drive file capabilities");
-    }
-    return optionalBoolean(capabilities?.canEdit, "file capabilities") === true;
+    return this.#getUnknown(`/files/${encodeURIComponent(fileId)}`, params, body => {
+      let capabilities = isRecord(body) ? body.capabilities : undefined;
+      if (capabilities !== undefined && !isRecord(capabilities)) {
+        throw new Error("Invalid Google Drive file capabilities");
+      }
+      return optionalBoolean(capabilities?.canEdit, "file capabilities") === true;
+    });
   }
 
   /** What converting `fileId` needs to know about it. */
   async getConversionSource(fileId: string): Promise<DriveConversionSource> {
     let params = new URLSearchParams({ fields: CONVERSION_SOURCE_FIELDS, supportsAllDrives: "true" });
-    return parseConversionSource(await this.#getUnknown(`/files/${encodeURIComponent(fileId)}`, params));
+    return this.#getUnknown(`/files/${encodeURIComponent(fileId)}`, params, parseConversionSource);
   }
 
   /** A copy {@link copyAsNative} may have made, with the app properties that say what from. */
   async getConvertedCopy(fileId: string): Promise<DriveConvertedCopy> {
     let params = new URLSearchParams({ fields: CONVERTED_COPY_FIELDS, supportsAllDrives: "true" });
-    return parseConvertedCopy(await this.#getUnknown(`/files/${encodeURIComponent(fileId)}`, params));
+    return this.#getUnknown(`/files/${encodeURIComponent(fileId)}`, params, parseConvertedCopy);
   }
 
   /**
@@ -1415,11 +1553,13 @@ export class DriveApi {
       supportsAllDrives: "true",
       includeItemsFromAllDrives: "true",
     });
-    let body = await this.#getUnknown("/files", params);
-    if (!isRecord(body)) throw new Error("Invalid Google Drive file-list response");
-    if (body.files === undefined) return [];
-    if (!Array.isArray(body.files)) throw new Error("Invalid Google Drive file-list response");
-    return body.files.map(parseConvertedCopy).filter(copy =>
+    let copies = await this.#getUnknown("/files", params, body => {
+      if (!isRecord(body)) throw new Error("Invalid Google Drive file-list response");
+      if (body.files === undefined) return [];
+      if (!Array.isArray(body.files)) throw new Error("Invalid Google Drive file-list response");
+      return body.files.map(parseConvertedCopy);
+    });
+    return copies.filter(copy =>
       copy.appProperties?.[CONVERTED_FROM_PROPERTY] === sourceId &&
       copy.mimeType === nativeMimeType && copy.trashed !== true && copy.canEdit === true);
   }
@@ -1429,21 +1569,23 @@ export class DriveApi {
     let params = new URLSearchParams({
       fields: "capabilities(canAddChildren)", supportsAllDrives: "true",
     });
-    let body = await this.#getUnknown(`/files/${encodeURIComponent(folderId)}`, params);
-    let capabilities = isRecord(body) ? body.capabilities : undefined;
-    if (capabilities !== undefined && !isRecord(capabilities)) {
-      throw new Error("Invalid Google Drive file capabilities");
-    }
-    return optionalBoolean(capabilities?.canAddChildren, "file capabilities") === true;
+    return this.#getUnknown(`/files/${encodeURIComponent(folderId)}`, params, body => {
+      let capabilities = isRecord(body) ? body.capabilities : undefined;
+      if (capabilities !== undefined && !isRecord(capabilities)) {
+        throw new Error("Invalid Google Drive file capabilities");
+      }
+      return optionalBoolean(capabilities?.canAddChildren, "file capabilities") === true;
+    });
   }
 
   /** The largest file, in bytes, Drive converts into native `mimeType`, if it says. */
   async getMaxImportSize(mimeType: string): Promise<number | undefined> {
-    let body = await this.#getUnknown("/about", new URLSearchParams({ fields: "maxImportSizes" }));
-    let sizes = isRecord(body) ? body.maxImportSizes : undefined;
-    if (!isRecord(sizes)) return undefined;
-    let size = Number(optionalString(sizes[mimeType], "maxImportSizes"));
-    return Number.isSafeInteger(size) && size > 0 ? size : undefined;
+    return this.#getUnknown("/about", new URLSearchParams({ fields: "maxImportSizes" }), body => {
+      let sizes = isRecord(body) ? body.maxImportSizes : undefined;
+      if (!isRecord(sizes)) return undefined;
+      let size = Number(optionalString(sizes[mimeType], "maxImportSizes"));
+      return Number.isSafeInteger(size) && size > 0 ? size : undefined;
+    });
   }
 
   /**
@@ -1460,50 +1602,66 @@ export class DriveApi {
     file: ReadableStream<Uint8Array>, contentType: string, mimeType: string,
     target: string | { name: string; parents: string[]; appProperties?: Record<string, string> },
   ): Promise<string> {
-    let params = new URLSearchParams({ uploadType: "resumable", supportsAllDrives: "true", fields: "id,mimeType" });
-    let path = typeof target === "string" ? `/files/${encodeURIComponent(target)}` : "/files";
-    let session: string | undefined;
-    try {
-      // Opening a session makes no file, so it is safe to send again.
-      let opened = await fetchWithAuthRetry(`${DRIVE_UPLOAD_BASE}${path}?${params}`, {
-        method: typeof target === "string" ? "PATCH" : "POST",
-        headers: { "Content-Type": "application/json; charset=UTF-8", "X-Upload-Content-Type": contentType },
-        body: JSON.stringify(typeof target === "string" ? {} : { ...target, mimeType }),
-      }, this.getAccessToken, { idempotent: true, timeoutMs: UPLOAD_CHUNK_TIMEOUT_MS });
-      if (!opened.ok) throw await driveError(opened);
-      let location = opened.headers.get("Location");
-      if (!location?.startsWith(`${DRIVE_UPLOAD_BASE}/`)) throw new Error("Google Drive did not open an upload session");
-      session = location;
+    return googleUpstream.summed(async () => {
+      let params = new URLSearchParams({ uploadType: "resumable", supportsAllDrives: "true", fields: "id,mimeType" });
+      let path = typeof target === "string" ? `/files/${encodeURIComponent(target)}` : "/files";
+      let session: string | undefined;
+      try {
+        // Opening a session makes no file, so it is safe to send again. The session's URL is
+        // taken within the request, which so counts an answer that names none, or one outside
+        // Drive's upload endpoint, as the failure it is thrown as. The URL is its own
+        // credential, and is in neither the error nor the count.
+        session = await readCheckedWithAuthRetry(`${DRIVE_UPLOAD_BASE}${path}?${params}`, {
+          method: typeof target === "string" ? "PATCH" : "POST",
+          headers: { "Content-Type": "application/json; charset=UTF-8", "X-Upload-Content-Type": contentType },
+          body: JSON.stringify(typeof target === "string" ? {} : { ...target, mimeType }),
+        }, { getAccessToken: this.getAccessToken, idempotent: true, timeoutMs: UPLOAD_CHUNK_TIMEOUT_MS },
+        async opened => {
+          if (!opened.ok) throw await driveError(opened);
+          return opened.headers.get("Location");
+        }, location => {
+          if (!location?.startsWith(`${DRIVE_UPLOAD_BASE}/`)) throw new Error("Google Drive did not open an upload session");
+          return location;
+        });
 
-      let chunk = new Uint8Array(UPLOAD_CHUNK_BYTES);
-      let filled = 0;
-      let sent = 0;
-      for await (let bytes of file) {
-        for (let offset = 0; offset < bytes.length;) {
-          // A full chunk is sent only once more follows it, so the last one always carries the total.
-          if (filled === chunk.length) {
-            await putUploadChunk(session, chunk, sent);
-            sent += filled;
-            filled = 0;
+        let chunk = new Uint8Array(UPLOAD_CHUNK_BYTES);
+        let filled = 0;
+        let sent = 0;
+        for await (let bytes of file) {
+          for (let offset = 0; offset < bytes.length;) {
+            // A full chunk is sent only once more follows it, so the last one always carries the total.
+            if (filled === chunk.length) {
+              await putUploadChunk(session, chunk, sent);
+              sent += filled;
+              filled = 0;
+            }
+            let taken = bytes.subarray(offset, offset + chunk.length - filled);
+            chunk.set(taken, filled);
+            filled += taken.length;
+            offset += taken.length;
           }
-          let taken = bytes.subarray(offset, offset + chunk.length - filled);
-          chunk.set(taken, filled);
-          filled += taken.length;
-          offset += taken.length;
         }
+        return await putUploadChunk(session, chunk.subarray(0, filled), sent, {
+          total: sent + filled,
+          made: made => {
+            if (!isRecord(made) || typeof made.id !== "string" || made.mimeType !== mimeType) {
+              throw new Error("Google Drive did not convert the uploaded file into the type asked for");
+            }
+            return made.id;
+          },
+        });
+      } catch (error) {
+        // Stops the file being produced, and the session, which is awaited so that it is sent at all.
+        void file.cancel(error).catch(() => {});
+        if (session) {
+          await fetchWithAuthRetry(
+            session, { method: "DELETE" },
+            { getAccessToken: null, operation: "upload.cancel", timeoutMs: UPLOAD_CANCEL_TIMEOUT_MS })
+            .catch(() => {});
+        }
+        throw error;
       }
-      let made = parseDriveJson(
-        (await putUploadChunk(session, chunk.subarray(0, filled), sent, sent + filled))!, "response");
-      if (!isRecord(made) || typeof made.id !== "string" || made.mimeType !== mimeType) {
-        throw new Error("Google Drive did not convert the uploaded file into the type asked for");
-      }
-      return made.id;
-    } catch (error) {
-      // Stops the file being produced, and the session, which is awaited so that it is sent at all.
-      void file.cancel(error).catch(() => {});
-      if (session) await fetch(session, { method: "DELETE", signal: AbortSignal.timeout(5_000) }).catch(() => {});
-      throw error;
-    }
+    });
   }
 
   /**
@@ -1520,7 +1678,9 @@ export class DriveApi {
     appProperties: Record<string, string>;
   }): Promise<DriveConvertedCopy> {
     let params = new URLSearchParams({ supportsAllDrives: "true", fields: CONVERTED_COPY_FIELDS });
-    let response = await fetchWithAuthRetry(
+    // The answer is read within the request, which so counts a success that cannot be read, or
+    // that is no copy of the type asked for, as the failure it is thrown as.
+    return readWithAuthRetry(
       `${DRIVE_API_BASE}/files/${encodeURIComponent(fileId)}/copy?${params}`,
       {
         method: "POST",
@@ -1532,15 +1692,18 @@ export class DriveApi {
           appProperties: copy.appProperties,
         }),
       },
-      this.getAccessToken);
-    if (!response.ok) throw await driveError(response);
-    let text = await readBoundedText(
-      response, MAX_JSON_RESPONSE_BYTES, "Google Drive response was too large");
-    let made = parseConvertedCopy(parseDriveJson(text, "response"));
-    if (made.mimeType !== copy.mimeType) {
-      throw new Error("Google Drive made a copy of a different type than was asked for");
-    }
-    return made;
+      // Drive converts the file before it answers, as it does at an upload's last chunk.
+      { getAccessToken: this.getAccessToken, timeoutMs: UPLOAD_TIMEOUT_MS },
+      async response => {
+        if (!response.ok) throw await driveError(response);
+        let text = await readBoundedText(
+          response, MAX_JSON_RESPONSE_BYTES, "Google Drive response was too large");
+        let made = parseConvertedCopy(parseDriveJson(text, "response"));
+        if (made.mimeType !== copy.mimeType) {
+          throw new Error("Google Drive made a copy of a different type than was asked for");
+        }
+        return made;
+      });
   }
 
   /**
@@ -1602,9 +1765,10 @@ export class DriveApi {
     let params = new URLSearchParams({
       fields: `capabilities(${capability})`, supportsAllDrives: "true",
     });
-    let body = await this.#getUnknown(`/files/${encodeURIComponent(fileId)}`, params);
-    if (!isRecord(body)) throw new Error("Invalid Google Drive file response");
-    return optionalCapability(body.capabilities, capability) === true;
+    return this.#getUnknown(`/files/${encodeURIComponent(fileId)}`, params, body => {
+      if (!isRecord(body)) throw new Error("Invalid Google Drive file response");
+      return optionalCapability(body.capabilities, capability) === true;
+    });
   }
 
   /**
@@ -1615,17 +1779,18 @@ export class DriveApi {
    */
   async getAccountIdentity(): Promise<{ permissionId: string; emailAddress?: string }> {
     // `about.get` takes no `supportsAllDrives`: the account is the same in every drive.
-    let body = await this.#getUnknown(
-      "/about", new URLSearchParams({ fields: "user(permissionId,emailAddress)" }));
-    let user = isRecord(body) ? body.user : undefined;
-    if (!isRecord(user) || typeof user.permissionId !== "string" || !user.permissionId) {
-      throw new Error("Invalid Google Drive account identity response");
-    }
-    let emailAddress = user.emailAddress;
-    return {
-      permissionId: user.permissionId,
-      ...(typeof emailAddress === "string" && emailAddress ? { emailAddress } : {}),
-    };
+    return this.#getUnknown(
+      "/about", new URLSearchParams({ fields: "user(permissionId,emailAddress)" }), body => {
+        let user = isRecord(body) ? body.user : undefined;
+        if (!isRecord(user) || typeof user.permissionId !== "string" || !user.permissionId) {
+          throw new Error("Invalid Google Drive account identity response");
+        }
+        let emailAddress = user.emailAddress;
+        return {
+          permissionId: user.permissionId,
+          ...(typeof emailAddress === "string" && emailAddress ? { emailAddress } : {}),
+        };
+      });
   }
 
   /**
@@ -1640,9 +1805,8 @@ export class DriveApi {
       supportsAllDrives: "true",
     });
     if (options.pageToken) params.set("pageToken", options.pageToken);
-    let page = parseListPage(
-      await this.#getUnknown(`/files/${encodeURIComponent(fileId)}/permissions`, params),
-      "permissions", parsePermission);
+    let page = await this.#getUnknown(`/files/${encodeURIComponent(fileId)}/permissions`, params,
+      body => parseListPage(body, "permissions", parsePermission));
     return {
       permissions: page.permissions.filter(permission => permission !== undefined),
       ...(page.nextPageToken ? { nextPageToken: page.nextPageToken } : {}),
@@ -1680,8 +1844,8 @@ export class DriveApi {
       supportsAllDrives: "true",
     });
     if (options.message !== undefined) params.set("emailMessage", options.message);
-    return parseWrittenPermission(await this.#writeJson(
-      "POST", `/files/${encodeURIComponent(fileId)}/permissions`, params, body));
+    return this.#writeJson(
+      "POST", `/files/${encodeURIComponent(fileId)}/permissions`, params, body, parseWrittenPermission);
   }
 
   /**
@@ -1695,10 +1859,10 @@ export class DriveApi {
     requireDrivePermissionId(permissionId);
     requireGivableRole(role);
     let params = new URLSearchParams({ fields: PERMISSION_FIELDS, supportsAllDrives: "true" });
-    return parseWrittenPermission(await this.#writeJson(
+    return this.#writeJson(
       "PATCH",
       `/files/${encodeURIComponent(fileId)}/permissions/${encodeURIComponent(permissionId)}`,
-      params, { role }));
+      params, { role }, parseWrittenPermission);
   }
 
   /**
@@ -1712,7 +1876,8 @@ export class DriveApi {
     await this.#writeJson(
       "DELETE",
       `/files/${encodeURIComponent(fileId)}/permissions/${encodeURIComponent(permissionId)}`,
-      new URLSearchParams({ supportsAllDrives: "true" }));
+      // Nothing of the answer is read for what was removed.
+      new URLSearchParams({ supportsAllDrives: "true" }), undefined, () => undefined);
   }
 
   /**
@@ -1731,15 +1896,16 @@ export class DriveApi {
       addParents: move.addParent, removeParents: move.removeParent, fields: "id,parents",
       supportsAllDrives: "true",
     });
-    let body = await this.#writeJson("PATCH", `/files/${encodeURIComponent(fileId)}`, params, {});
-    if (!isRecord(body) || body.id !== fileId) {
-      throw new Error("Google Drive answered a move for a different file");
-    }
-    let parents = optionalParents(body.parents);
-    if (!parents?.length) {
-      throw new Error("Google Drive answered a move without the file's parents");
-    }
-    return { id: fileId, parents };
+    return this.#writeJson("PATCH", `/files/${encodeURIComponent(fileId)}`, params, {}, body => {
+      if (!isRecord(body) || body.id !== fileId) {
+        throw new Error("Google Drive answered a move for a different file");
+      }
+      let parents = optionalParents(body.parents);
+      if (!parents?.length) {
+        throw new Error("Google Drive answered a move without the file's parents");
+      }
+      return { id: fileId, parents };
+    });
   }
 
   /**
@@ -1755,9 +1921,8 @@ export class DriveApi {
     });
     if (options.pageToken) params.set("pageToken", options.pageToken);
     if (options.startModifiedTime) params.set("startModifiedTime", options.startModifiedTime);
-    return parseListPage(
-      await this.#getUnknown(`/files/${encodeURIComponent(fileId)}/comments`, params),
-      "comments", parseComment);
+    return this.#getUnknown(`/files/${encodeURIComponent(fileId)}/comments`, params,
+      body => parseListPage(body, "comments", parseComment));
   }
 
   /** One comment and its replies. */
@@ -1765,10 +1930,12 @@ export class DriveApi {
     requireDriveFileId(fileId);
     requireDriveCommentId(commentId);
     let params = new URLSearchParams({ fields: COMMENT_FIELDS });
-    let comment = parseComment(await this.#getUnknown(
-      `/files/${encodeURIComponent(fileId)}/comments/${encodeURIComponent(commentId)}`, params));
-    if (comment.id !== commentId) throw new Error("Google Drive returned a different comment");
-    return comment;
+    return this.#getUnknown(
+      `/files/${encodeURIComponent(fileId)}/comments/${encodeURIComponent(commentId)}`, params, body => {
+        let comment = parseComment(body);
+        if (comment.id !== commentId) throw new Error("Google Drive returned a different comment");
+        return comment;
+      });
   }
 
   /** One page of a comment's replies, deleted ones left out. */
@@ -1780,11 +1947,9 @@ export class DriveApi {
       pageSize: "100", fields: `nextPageToken,replies(${REPLY_FIELDS})`,
     });
     if (options.pageToken) params.set("pageToken", options.pageToken);
-    return parseListPage(
-      await this.#getUnknown(
-        `/files/${encodeURIComponent(fileId)}/comments/${encodeURIComponent(commentId)}/replies`,
-        params),
-      "replies", parseReply);
+    return this.#getUnknown(
+      `/files/${encodeURIComponent(fileId)}/comments/${encodeURIComponent(commentId)}/replies`,
+      params, body => parseListPage(body, "replies", parseReply));
   }
 
   /**
@@ -1797,9 +1962,9 @@ export class DriveApi {
   async createComment(fileId: string, content: string): Promise<DriveCommentRecord> {
     requireDriveFileId(fileId);
     checkCommentContent(content);
-    return parseComment(await this.#writeJson(
+    return this.#writeJson(
       "POST", `/files/${encodeURIComponent(fileId)}/comments`,
-      new URLSearchParams({ fields: COMMENT_FIELDS }), { content }));
+      new URLSearchParams({ fields: COMMENT_FIELDS }), { content }, parseComment);
   }
 
   /**
@@ -1818,14 +1983,14 @@ export class DriveApi {
     if (reply.content !== undefined || reply.action !== "resolve") {
       checkCommentContent(reply.content ?? "", "reply");
     }
-    return parseReply(await this.#writeJson(
+    return this.#writeJson(
       "POST",
       `/files/${encodeURIComponent(fileId)}/comments/${encodeURIComponent(commentId)}/replies`,
       new URLSearchParams({ fields: REPLY_FIELDS }),
       {
         ...(reply.content === undefined ? {} : { content: reply.content }),
         ...(reply.action === undefined ? {} : { action: reply.action }),
-      }));
+      }, parseReply);
   }
 
   /**
@@ -1865,18 +2030,21 @@ export class DriveApi {
     fields: string,
     mapPart: (part: BatchAccessPart, fileId: string, index: number) => T,
   ): Promise<T[]> {
-    let result: T[] = [];
-    for (let offset = 0; offset < fileIds.length; offset += MAX_BATCH_FILES) {
-      let chunk = fileIds.slice(offset, offset + MAX_BATCH_FILES);
-      let parts = await this.#batchGetChunk(chunk, fields);
-      result.push(...parts.map((part, index) => mapPart(part, chunk[index], offset + index)));
-    }
-    return result;
+    return googleUpstream.summed(async () => {
+      let result: T[] = [];
+      for (let offset = 0; offset < fileIds.length; offset += MAX_BATCH_FILES) {
+        let chunk = fileIds.slice(offset, offset + MAX_BATCH_FILES);
+        result.push(...await this.#batchGetChunk(
+          chunk, fields, (part, index) => mapPart(part, chunk[index], offset + index)));
+      }
+      return result;
+    });
   }
 
-  async #batchGetChunk(
-    fileIds: readonly string[], fields: string,
-  ): Promise<BatchAccessPart[]> {
+  /** One batch of `files.get`, each placed part read by `mapPart`, which is given its place. */
+  async #batchGetChunk<T>(
+    fileIds: readonly string[], fields: string, mapPart: (part: BatchAccessPart, index: number) => T,
+  ): Promise<T[]> {
     let boundary = `gadgets_drive_${crypto.randomUUID()}`;
     let parts = fileIds.map((fileId, index) => [
       `--${boundary}`,
@@ -1892,7 +2060,7 @@ export class DriveApi {
     let body = `${parts.join("")}--${boundary}--\r\n`;
 
     // Capture the token this batch actually sent so an inner 401 can invalidate the same cache
-    // entry `fetchWithAuthRetry` would have refreshed, had the outer POST not been 200.
+    // entry `readWithAuthRetry` would have refreshed, had the outer POST not been 200.
     let lastToken: string | undefined;
     let getToken: AccessTokenProvider = async opts => {
       lastToken = await this.getAccessToken(opts);
@@ -1902,19 +2070,31 @@ export class DriveApi {
     let replayed = false;
     let reloaded = false;
     for (;;) {
-      let response = await fetchWithAuthRetry(DRIVE_BATCH_URL, {
+      // The parts are read within the request, which so counts a success whose parts cannot be
+      // read as the failure it is thrown as, and one whose parts hold Drive's refusal of the
+      // batch as that refusal: a part refused for its token, which no part is then read past,
+      // and a part `mapPart` throws on.
+      let { placed, read } = await readWithAuthRetry(DRIVE_BATCH_URL, {
         method: "POST",
         headers: {
           Accept: "multipart/mixed",
           "Content-Type": `multipart/mixed; boundary=${boundary}`,
         },
         body,
-      }, getToken, { idempotent: true });
-      if (!response.ok) throw await driveError(response);
-
-      let placed = await parseBatchAccessParts(response, fileIds.length);
-      if (placed.some(part => part.status === 401)) {
-        // The batch POST itself returns 200 when a subrequest 401s, so fetchWithAuthRetry's
+      }, { getAccessToken: getToken, operation: "files.get.batch", idempotent: true }, async (response): Promise<{
+        placed: BatchAccessPart[]; read: "unauthorized" | { made: T[] } | { unusable: unknown };
+      }> => {
+        if (!response.ok) throw await driveError(response);
+        let answered = await parseBatchAccessParts(response, fileIds.length);
+        if (answered.some(part => part.status === 401)) return { placed: answered, read: "unauthorized" };
+        try {
+          return { placed: answered, read: { made: answered.map(mapPart) } };
+        } catch (unusable) {
+          return { placed: answered, read: { unusable } };
+        }
+      }, batch => batch.read === "unauthorized" || "unusable" in batch.read ? REJECTED : undefined);
+      if (read === "unauthorized") {
+        // The batch POST itself returns 200 when a subrequest 401s, so readWithAuthRetry's
         // one-shot refresh never sees it and a stale cached token would deny every file forever.
         // Force the same cache invalidation the helper uses, then replay the (read-only) batch once.
         if (replayed) {
@@ -1926,29 +2106,31 @@ export class DriveApi {
       }
 
       if (!reloaded && placed.some(batchPartLacksScope)) {
-        // Likewise a subrequest refused for a missing scope: fetchWithAuthRetry's reload of the
+        // Likewise a subrequest refused for a missing scope: readWithAuthRetry's reload of the
         // token a reconnect stored never sees it, so a memoized token from before the reconnect
         // would deny every file until it expires. Replays only on a token that really changed.
         reloaded = true;
         if (await this.getAccessToken({ reloadStored: true }) !== lastToken) continue;
       }
 
-      return placed;
+      if ("unusable" in read) throw read.unusable;
+      return read.made;
     }
   }
 
   /**
    * One write request, with its own timeout on each attempt, whose answer is read through the
-   * mask in `params`; a 204 answers `undefined`. It is never replayed on a 429, a 5xx or a
-   * timeout. The auth retry sends it again after a 401 or a 403 only when the token provider
-   * hands back another token than the one Google refused, so which writes can go out twice is
-   * decided by the provider this client was built over.
+   * mask in `params`; a 204 answers `undefined`. What was read is given to `made` within the
+   * request, which so counts an answer `made` throws on as the failure it is thrown as. It is
+   * never replayed on a 429, a 5xx or a timeout. The auth retry sends it again after a 401 or a
+   * 403 only when the token provider hands back another token than the one Google refused, so
+   * which writes can go out twice is decided by the provider this client was built over.
    */
-  async #writeJson(
+  async #writeJson<T>(
     method: "POST" | "PATCH" | "DELETE", path: string, params: URLSearchParams,
-    body?: Record<string, unknown>,
-  ): Promise<unknown> {
-    let response = await fetchWithAuthRetry(
+    body: Record<string, unknown> | undefined, made: (answer: unknown) => T,
+  ): Promise<T> {
+    return readCheckedWithAuthRetry(
       `${DRIVE_API_BASE}${path}?${params}`,
       {
         method,
@@ -1958,22 +2140,19 @@ export class DriveApi {
         },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       },
-      this.getAccessToken, { timeoutMs: WRITE_TIMEOUT_MS });
-    if (!response.ok) throw await driveError(response);
-    if (response.status === 204) return undefined;
-    let text = await readBoundedText(
-      response, MAX_JSON_RESPONSE_BYTES, "Google Drive response was too large");
-    return parseDriveJson(text, "response");
+      { getAccessToken: this.getAccessToken, timeoutMs: WRITE_TIMEOUT_MS },
+      async response => response.status === 204 ? undefined : readDriveJson(response), made);
   }
 
-  async #getUnknown(path: string, params: URLSearchParams): Promise<unknown> {
-    let response = await fetchWithAuthRetry(
+  /**
+   * One read, whose answer's JSON is given to `made` within the request: what `made` throws on
+   * is so counted as the failure it is thrown as.
+   */
+  async #getUnknown<T>(path: string, params: URLSearchParams, made: (body: unknown) => T): Promise<T> {
+    return readCheckedWithAuthRetry(
       `${DRIVE_API_BASE}${path}?${params}`,
       { headers: { Accept: "application/json" } },
-      this.getAccessToken);
-    if (!response.ok) throw await driveError(response);
-    let text = await readBoundedText(
-      response, MAX_JSON_RESPONSE_BYTES, "Google Drive response was too large");
-    return parseDriveJson(text, "response");
+      { getAccessToken: this.getAccessToken },
+      readDriveJson, made);
   }
 }

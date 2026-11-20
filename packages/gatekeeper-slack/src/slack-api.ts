@@ -1,6 +1,9 @@
 // Slack Web API client for user-token reads and OAuth lifecycle. Maps responses to public types and
 // resolves known mentions.
 
+import {
+  defineUpstream, type CallAnswer, type RetryPolicy,
+} from "@gadgets/gatekeeper-kit/upstream";
 import { AccountDescription } from "@gadgets/workshop-shared/gatekeeper";
 import {
   SlackConversationInfo, SlackConversationKind, SlackFile, SlackMessage, SlackReaction,
@@ -11,9 +14,41 @@ const SLACK_API_BASE = "https://slack.com/api";
 const SLACK_TOKEN_URL = `${SLACK_API_BASE}/oauth.v2.access`;
 const SLACK_REVOKE_URL = `${SLACK_API_BASE}/auth.revoke`;
 
+/**
+ * The Web API methods this gatekeeper calls. A call is counted under its method, which is its
+ * operation in the subservice metrics. Every one is a read, sent as a GET, so a call that got no
+ * answer is sent again (see `RATE_LIMIT_RETRY`): a method that writes is not sent that way.
+ */
+export const SLACK_METHODS = [
+  "auth.test", "auth.teams.list", "team.info", "users.info", "users.list", "users.conversations",
+  "conversations.list", "conversations.info", "conversations.members", "conversations.history",
+  "conversations.replies", "search.messages",
+] as const;
+
+/** One of the Web API methods this gatekeeper calls. */
+export type SlackMethod = (typeof SLACK_METHODS)[number];
+
+/**
+ * The client every request to Slack is sent through, counted under the source
+ * `gatekeeper.slack.api` and the service `slack`. A Web API call is named by its `SlackMethod`,
+ * and a token request `token.exchange`, `token.refresh` or `token.revoke`.
+ */
+export const slackUpstream = defineUpstream({ vendorId: "slack" });
+
 // Slack's Retry-After header is measured in seconds.
 const RATE_LIMIT_MAX_RETRIES = 2;
 const RATE_LIMIT_MAX_WAIT_MS = 30_000;
+
+// A rate-limited Web API call is sent again whatever its method, since Slack refuses it before
+// acting on it, and is the only answered call that is. The wait is the one Slack names, or a
+// second where it names none. A call that got no answer (a network failure, a timeout) is sent
+// again too, within the same three attempts, as the client sends again any GET.
+const RATE_LIMIT_RETRY: RetryPolicy = {
+  attempts: RATE_LIMIT_MAX_RETRIES + 1,
+  maxDelayMs: RATE_LIMIT_MAX_WAIT_MS,
+  retryable: status => status === 429,
+  delayMs: response => (Number(response.headers.get("Retry-After")) || 1) * 1000,
+};
 
 function nextPageCursor(cursor: string | undefined, seen: Set<string>): string | undefined {
   if (cursor && seen.has(cursor)) throw new Error("Slack repeated a pagination cursor.");
@@ -69,6 +104,20 @@ type SlackApiEnvelope = {
   ok: boolean;
   error?: string;
   response_metadata?: { next_cursor?: string; messages?: string[] };
+};
+
+type RawTokenGrant = {
+  access_token?: string;
+  refresh_token?: string;
+  expires_in?: unknown;
+  scope?: unknown;
+};
+
+type RawTokenAnswer = SlackApiEnvelope & RawTokenGrant & {
+  authed_user?: RawTokenGrant & { id: string };
+  team?: { id?: string; name?: string } | null;
+  enterprise?: { id?: string; name?: string } | null;
+  is_enterprise_install?: boolean;
 };
 
 type RawUser = {
@@ -146,7 +195,103 @@ export type SlackSearchMatch = {
   channelId: string;
 };
 
+// ── Answers ─────────────────────────────────────────────────────────
+
+// What the method that sent a call made of an envelope that says `ok`: what it read from it, or
+// what it threw for an envelope that lacks what the call was sent for. `flawed` marks one whose
+// reading the method goes on with and will refuse.
+type Made<R> = { value: R; flawed: boolean } | { thrown: unknown };
+
+// A parsed envelope and the answer it came in, with what the calling method made of the envelope
+// where it reads one.
+type Answered<T, R = never> = { data: T; response: Response; made?: Made<R> };
+
+async function readEnvelope<T extends SlackApiEnvelope>(response: Response): Promise<Answered<T>> {
+  return { data: await response.json<T>(), response };
+}
+
+// Whether a parsed body can hold an envelope. Slack answers every call with a JSON object, and
+// reading an envelope's members from a body that is JSON's `null` throws.
+function holdsEnvelope(data: unknown): boolean {
+  return typeof data === "object" && data !== null;
+}
+
+// Slack answers a failed call with a 200 whose envelope says `ok: false`: an error of the API,
+// or a refusal where the envelope names the rate limit. A 200 with no envelope is an error of the
+// API as well, and so is one whose envelope the calling method refused (`Made`). Any other answer
+// counts by its status.
+function countEnvelope({ data, response, made }: Answered<SlackApiEnvelope, unknown>): CallAnswer | undefined {
+  if (!response.ok) return undefined;
+  if (!holdsEnvelope(data)) return { outcome: "error", reason: "api" };
+  if (!data.ok) {
+    return data.error === "ratelimited"
+        ? { outcome: "refused", reason: "rate" }
+        : { outcome: "error", reason: "api" };
+  }
+  return made && ("thrown" in made || made.flawed) ? { outcome: "error", reason: "api" } : undefined;
+}
+
+// Reads an envelope that says `ok` as the method that sent the call does, keeping what `read`
+// throws for the call to be counted by and for the method to throw. A `flawed` that cannot read
+// what `read` returned says that the method cannot either.
+async function madeOf<T, R>(
+    data: T, read: (data: T) => R | Promise<R>, flawed?: (value: R) => boolean): Promise<Made<R>> {
+  let value: R;
+  try {
+    value = await read(data);
+  } catch (error) {
+    return { thrown: error };
+  }
+  try {
+    return { value, flawed: flawed?.(value) === true };
+  } catch {
+    return { value, flawed: true };
+  }
+}
+
+// Whether Slack's answer to a revocation says that the token is revoked or expired already,
+// which leaves nothing to revoke.
+function alreadyRevoked(data: SlackApiEnvelope): boolean {
+  return data.error === "token_revoked" || data.error === "token_expired";
+}
+
+// A revocation that found its token revoked already is done, and counts as a success with the
+// status Slack gave. Any other answer counts as that of any call does.
+function countRevocation(answered: Answered<SlackApiEnvelope>): CallAnswer | undefined {
+  return holdsEnvelope(answered.data) && alreadyRevoked(answered.data)
+      ? { outcome: "success" }
+      : countEnvelope(answered);
+}
+
 // ── OAuth ───────────────────────────────────────────────────────────
+
+// The user-token credentials of an answer to a token request, where they hold a token.
+type UserGrant<G extends RawTokenGrant> = G & { access_token: string };
+
+function holdsToken<G extends RawTokenGrant>(grant: G | undefined): grant is UserGrant<G> {
+  return Boolean(grant?.access_token);
+}
+
+// Slack nests user-token credentials under authed_user during code exchange.
+function exchangedGrant(data: RawTokenAnswer) {
+  return holdsToken(data.authed_user) ? data.authed_user : undefined;
+}
+
+// On refresh, the user-token fields come back at the top level (token_type "user").
+function refreshedGrant(data: RawTokenAnswer) {
+  return holdsToken(data) ? data : undefined;
+}
+
+// A token request that Slack answers a success without the user token it asks for has failed: its
+// helper throws on the same check, `grantOf`, and the call counts as an error of the API. Any
+// other answer counts as that of any call does.
+function countGrant(grantOf: (data: RawTokenAnswer) => RawTokenGrant | undefined) {
+  return (answered: Answered<RawTokenAnswer>): CallAnswer | undefined => {
+    let counted = countEnvelope(answered);
+    if (counted || !answered.response.ok || grantOf(answered.data)) return counted;
+    return { outcome: "error", reason: "api" };
+  };
+}
 
 /** Exchanges an OAuth code for Slack user-token credentials. */
 export async function exchangeAuthCode(
@@ -160,11 +305,13 @@ export async function exchangeAuthCode(
     grant_type: "authorization_code",
   });
 
-  let data = await postToken(body);
+  let { data, response } = await postToken("token.exchange", body, exchangedGrant);
+  if (!data.ok) {
+    throw new Error(`Slack OAuth exchange failed: ${data.error ?? response.status}`);
+  }
 
-  // Slack nests user-token credentials under authed_user during code exchange.
-  let authedUser = data.authed_user;
-  if (!authedUser?.access_token) {
+  let authedUser = exchangedGrant(data);
+  if (!authedUser) {
     throw new Error(
         "Slack did not return a user token. Make sure the app requests user scopes (user_scope).");
   }
@@ -196,12 +343,7 @@ export async function refreshAccessToken(
     refresh_token: refreshToken,
   });
 
-  let response = await fetch(SLACK_TOKEN_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body,
-  });
-  let data = await response.json<any>();
+  let { data, response } = await postToken("token.refresh", body, refreshedGrant);
 
   if (!data.ok) {
     if (data.error === "invalid_refresh_token" || data.error === "token_expired" ||
@@ -211,44 +353,48 @@ export async function refreshAccessToken(
     throw new Error(`Slack token refresh failed: ${data.error ?? response.status}`);
   }
 
-  // On refresh, the user-token fields come back at the top level (token_type "user").
-  if (!data.access_token) {
+  let grant = refreshedGrant(data);
+  if (!grant) {
     throw new Error("Slack token refresh returned no access token.");
   }
 
   return {
-    accessToken: { token: data.access_token, expires: expiryFrom(data.expires_in) },
-    refreshToken: data.refresh_token,
-    grantedScopes: splitScopes(data.scope),
+    accessToken: { token: grant.access_token, expires: expiryFrom(grant.expires_in) },
+    refreshToken: grant.refresh_token,
+    grantedScopes: splitScopes(grant.scope),
   };
 }
 
-/** Revokes a Slack access or refresh token. */
+/**
+ * Revokes a Slack access or refresh token. A token that Slack says is revoked or expired already
+ * is revoked: the call resolves, and is counted a success.
+ */
 export async function revokeToken(token: string): Promise<void> {
-  let response = await fetch(SLACK_REVOKE_URL, {
+  let { data, response } = await slackUpstream.read<Answered<SlackApiEnvelope>>(SLACK_REVOKE_URL, {
+    operation: "token.revoke",
     method: "POST",
     headers: {
       "Authorization": `Bearer ${token}`,
       "Content-Type": "application/x-www-form-urlencoded",
     },
     body: new URLSearchParams({ token }),
-  });
-  let data = await response.json<SlackApiEnvelope>();
-  if (data.error === "token_revoked" || data.error === "token_expired") return;
+  }, readEnvelope, countRevocation);
+  if (alreadyRevoked(data)) return;
   if (!response.ok || !data.ok) throw slackApiError(data.error, response.status);
 }
 
-async function postToken(body: URLSearchParams): Promise<any> {
-  let response = await fetch(SLACK_TOKEN_URL, {
+// Posts a form to Slack's token endpoint, which serves the exchange and the refresh alike.
+// `grantOf` gives the user-token credentials the request asks for, where the answer holds them.
+function postToken(
+    operation: "token.exchange" | "token.refresh", body: URLSearchParams,
+    grantOf: (data: RawTokenAnswer) => RawTokenGrant | undefined)
+    : Promise<Answered<RawTokenAnswer>> {
+  return slackUpstream.read<Answered<RawTokenAnswer>>(SLACK_TOKEN_URL, {
+    operation,
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body,
-  });
-  let data = await response.json<any>();
-  if (!data.ok) {
-    throw new Error(`Slack OAuth exchange failed: ${data.error ?? response.status}`);
-  }
-  return data;
+  }, readEnvelope, countGrant(grantOf));
 }
 
 function expiryFrom(expiresIn: unknown): Date {
@@ -355,6 +501,17 @@ type SlackApiOptions = {
   installation?: () => Promise<SlackInstallation>;
 };
 
+// The parameters of a Web API call. One that is undefined is left out.
+type CallParams = Record<string, string | number | undefined>;
+
+// What `auth.test` answers of the token it is asked with.
+type AuthTest = SlackApiEnvelope & {
+  team_id?: string; user_id?: string; is_enterprise_install?: boolean;
+};
+
+// Whose token a client holds: Slack's answer, and whether the app is installed on an organisation.
+type InstallationContext = { auth: AuthTest; orgInstall: boolean };
+
 export class SlackApi {
   #getToken: () => Promise<string>;
   #options: SlackApiOptions;
@@ -376,42 +533,73 @@ export class SlackApi {
     return new SlackApi(this.#getToken, { ...this.#options, teamId: async () => teamId });
   }
 
-  async #installationContext() {
-    let auth = await this.#call<SlackApiEnvelope & {
-      team_id?: string; user_id?: string; is_enterprise_install?: boolean;
-    }>("auth.test", {});
-    let saved = await this.#options.installation?.();
-    return {
-      auth,
-      orgInstall: saved?.isEnterpriseInstall ??
-          (auth.is_enterprise_install === true || !isWorkspaceId(auth.team_id)),
-    };
+  // Asks Slack whose token this is and reads the saved installation once Slack has answered.
+  // `pick` takes what its caller needs of the two and throws where the answer lacks it, which
+  // counts the call an error of the API. A saved installation that cannot be read is no fault of
+  // the answer: the call counts by its status, and what the reading threw is thrown.
+  async #installationContext<R>(pick: (context: InstallationContext) => R): Promise<R> {
+    let read = await this.#call("auth.test", {}, async (auth: AuthTest) => {
+      let saved: SlackInstallation | undefined;
+      try {
+        saved = await this.#options.installation?.();
+      } catch (error) {
+        return { unread: error };
+      }
+      return {
+        picked: pick({
+          auth,
+          orgInstall: saved?.isEnterpriseInstall ??
+              (auth.is_enterprise_install === true || !isWorkspaceId(auth.team_id)),
+        }),
+      };
+    });
+    if ("unread" in read) throw read.unread;
+    return read.picked;
   }
 
   /** Workspaces both granted to the app and joined by this user; walks every grant page. */
   async listWorkspaces(): Promise<SlackWorkspace[]> {
-    let { auth, orgInstall } = await this.#installationContext();
-    if (!orgInstall) {
-      if (!isWorkspaceId(auth.team_id)) throw new Error("Slack returned no workspace identity.");
-      let info = await this.#readWorkspaceInfo({ team: auth.team_id });
+    return slackUpstream.summed(() => this.#listWorkspaces());
+  }
+
+  async #listWorkspaces(): Promise<SlackWorkspace[]> {
+    let identity = await this.#installationContext(({ auth, orgInstall }) => {
+      if (!orgInstall) {
+        if (!isWorkspaceId(auth.team_id)) throw new Error("Slack returned no workspace identity.");
+        return { teamId: auth.team_id };
+      }
+      if (!auth.user_id) throw new Error("Slack returned no user identity.");
+      return { userId: auth.user_id };
+    });
+    if ("teamId" in identity) {
+      let info = await this.#readWorkspaceInfo({ team: identity.teamId });
       return [{ id: info.teamId, name: info.name }];
     }
-    if (!auth.user_id) throw new Error("Slack returned no user identity.");
-    let user = await this.#call<SlackApiEnvelope & { user?: RawUser }>(
-        "users.info", { user: auth.user_id });
-    let memberships = new Set(user.user?.enterprise_user?.teams ?? []);
+    // The user's workspaces are taken within the call: an answer whose list of them is none says
+    // nothing of the user's membership, and is refused, so that an access check throws as
+    // indeterminate rather than denying. It counts the call an error of the API.
+    let memberships = await this.#call("users.info", { user: identity.userId },
+        (user: SlackApiEnvelope & { user?: RawUser }) => {
+          let teams: unknown = user.user?.enterprise_user?.teams;
+          if (!Array.isArray(teams)) throw new Error("Slack returned a malformed list of the user's workspaces.");
+          return new Set<unknown>(teams);
+        });
     let workspaces = new Map<string, SlackWorkspace>();
     let cursor: string | undefined;
     let seen = new Set<string>();
     do {
-      let page = await this.#call<SlackApiEnvelope & { teams?: { id: string; name?: string }[] }>(
-          "auth.teams.list", { cursor, limit: 200 });
-      for (let team of page.teams ?? []) {
-        if (isWorkspaceId(team.id) && memberships.has(team.id)) {
-          workspaces.set(team.id, { id: team.id, name: team.name || team.id });
+      cursor = await this.#call("auth.teams.list", { cursor, limit: 200 },
+          (page: SlackApiEnvelope & { teams?: { id: string; name?: string }[] }) => {
+        // A page with no list of grants says nothing of whether the app may reach a workspace: it
+        // is refused, so that an access check throws as indeterminate rather than denying.
+        if (!Array.isArray(page.teams)) throw new Error("Slack returned a malformed list of workspaces.");
+        for (let team of page.teams) {
+          if (isWorkspaceId(team.id) && memberships.has(team.id)) {
+            workspaces.set(team.id, { id: team.id, name: team.name || team.id });
+          }
         }
-      }
-      cursor = nextPageCursor(nextCursor(page), seen);
+        return nextPageCursor(nextCursor(page), seen);
+      });
     } while (cursor);
     return [...workspaces.values()];
   }
@@ -423,11 +611,15 @@ export class SlackApi {
 
   /** Resolve a workspace permalink host without assuming the token has one workspace. */
   async workspaceIdForDomain(domain: string): Promise<string> {
-    let { auth, orgInstall } = await this.#installationContext();
-    if (!orgInstall) {
+    // The workspace of a workspace install's token, and undefined for an org install's.
+    let ownTeamId = await this.#installationContext(({ auth, orgInstall }) => {
+      if (orgInstall) return undefined;
       if (!isWorkspaceId(auth.team_id)) throw new Error("Slack returned no workspace identity.");
+      return auth.team_id;
+    });
+    if (ownTeamId !== undefined) {
       // Domain lookup is Enterprise-only; a workspace token may resolve only its own host.
-      let info = await this.#readWorkspaceInfo({ team: auth.team_id });
+      let info = await this.#readWorkspaceInfo({ team: ownTeamId });
       if (info.domain !== domain) throw new SlackApiError("team_access_not_granted", 200);
       return info.teamId;
     }
@@ -507,36 +699,47 @@ export class SlackApi {
 
   // ── Low-level request helper ──────────────────────────────────────
 
-  async #call<T extends SlackApiEnvelope>(
-      method: string, params: Record<string, string | number | undefined>): Promise<T> {
+  // Calls one Web API method and resolves to its envelope, or to what `read` makes of it. A
+  // method that checks the envelope it is answered, or takes from it what the call was sent for,
+  // does so in `read`, which is given an envelope that says `ok`: what `read` throws is thrown to
+  // the caller, and counts a call that Slack answered a success an error of the API. `flawed`
+  // says whether what `read` returned holds something the method goes on to refuse, which counts
+  // the same and throws nothing here.
+  #call<T extends SlackApiEnvelope>(method: SlackMethod, params: CallParams): Promise<T>;
+  #call<T extends SlackApiEnvelope, R>(
+      method: SlackMethod, params: CallParams, read: (data: T) => R | Promise<R>,
+      flawed?: (value: R) => boolean): Promise<R>;
+  async #call<T extends SlackApiEnvelope, R>(
+      method: SlackMethod, params: CallParams, read?: (data: T) => R | Promise<R>,
+      flawed?: (value: R) => boolean): Promise<T | R> {
     let url = new URL(`${SLACK_API_BASE}/${method}`);
     for (let [key, value] of Object.entries(params)) {
       if (value !== undefined) url.searchParams.set(key, String(value));
     }
 
-    for (let attempt = 0; ; attempt++) {
-      let token = await this.#getToken();
-      // Workspace tokens ignore team_id on some reads. Check the actual outgoing credential,
-      // including retries, rather than relying on the token used when parameters were built.
-      if (this.#options.teamId) await this.#workspaceForToken(token);
-      let response = await fetch(url.toString(), {
-        headers: { "Authorization": `Bearer ${token}` },
-      });
-
-      if (response.status === 429 && attempt < RATE_LIMIT_MAX_RETRIES) {
-        let retryAfter = Number(response.headers.get("Retry-After")) || 1;
-        let waitMs = Math.min(retryAfter * 1000, RATE_LIMIT_MAX_WAIT_MS);
-        response.body?.cancel();
-        await new Promise(resolve => setTimeout(resolve, waitMs));
-        continue;
-      }
-
-      let data = await response.json<T>();
-      if (!data.ok) {
-        throw slackApiError(data.error, response.status);
-      }
-      return data;
+    let { data, response, made } = await slackUpstream.read<Answered<T, R>>(url.toString(), {
+      operation: method,
+      retry: RATE_LIMIT_RETRY,
+      // Asked before every send. Workspace tokens ignore team_id on some reads. Check the actual
+      // outgoing credential, including retries, rather than relying on the token used when
+      // parameters were built.
+      authorize: async () => {
+        let token = await this.#getToken();
+        if (this.#options.teamId) await this.#workspaceForToken(token);
+        return { "Authorization": `Bearer ${token}` };
+      },
+    }, async answer => {
+      let answered = await readEnvelope<T>(answer);
+      // The method reads the envelope this helper returns: one that says `ok`.
+      if (!read || !holdsEnvelope(answered.data) || !answered.data.ok) return answered;
+      return { ...answered, made: await madeOf(answered.data, read, flawed) };
+    }, countEnvelope);
+    if (!data.ok) {
+      throw slackApiError(data.error, response.status);
     }
+    if (!made) return data;
+    if ("thrown" in made) throw made.thrown;
+    return made.value;
   }
 
   // ── Identity / workspace ──────────────────────────────────────────
@@ -551,17 +754,18 @@ export class SlackApi {
   }
 
   async #readWorkspaceInfo(params: { team?: string; domain?: string }): Promise<SlackWorkspaceInfo> {
-    let data = await this.#call<SlackApiEnvelope & {
+    return this.#call("team.info", params, (data: SlackApiEnvelope & {
       team?: { id: string; name: string; domain: string };
-    }>("team.info", params);
-    if (!isWorkspaceId(data.team?.id) || (params.team && data.team.id !== params.team)) {
-      throw new Error("Slack returned an enterprise or a different workspace instead of the selected workspace.");
-    }
-    return {
-      teamId: data.team?.id ?? "",
-      name: data.team?.name ?? "",
-      domain: data.team?.domain ?? "",
-    };
+    }) => {
+      if (!isWorkspaceId(data.team?.id) || (params.team && data.team.id !== params.team)) {
+        throw new Error("Slack returned an enterprise or a different workspace instead of the selected workspace.");
+      }
+      return {
+        teamId: data.team?.id ?? "",
+        name: data.team?.name ?? "",
+        domain: data.team?.domain ?? "",
+      };
+    });
   }
 
   // ── Users ─────────────────────────────────────────────────────────
@@ -569,25 +773,31 @@ export class SlackApi {
   async getUser(userId: string): Promise<SlackUser> {
     let cached = this.#userCache.get(userId);
     if (cached) return cached;
-    let data = await this.#call<SlackApiEnvelope & { user?: RawUser }>(
-        "users.info", { user: userId });
-    if (!data.user) throw new Error(`Slack user not found: ${userId}`);
-    let user = toUser(data.user);
+    let user = await this.#call("users.info", { user: userId },
+        (data: SlackApiEnvelope & { user?: RawUser }) => {
+      if (!data.user) throw new Error(`Slack user not found: ${userId}`);
+      return toUser(data.user);
+    });
     this.#userCache.set(userId, user);
     return user;
   }
 
   /** Direct profile lookup may not expand a workspace binding to the whole org directory. */
   async getWorkspaceUser(userId: string): Promise<SlackUser> {
+    return slackUpstream.summed(() => this.#findWorkspaceUser(userId));
+  }
+
+  async #findWorkspaceUser(userId: string): Promise<SlackUser> {
     // users.info translates pre-Enterprise IDs to the user's canonical ID.
     let canonical = await this.getUser(userId);
     let cursor: string | undefined;
     let seen = new Set<string>();
     do {
-      let page = await this.listUsers(cursor, 200);
-      let user = page.items.find(item => item.id === canonical.id);
-      if (user) return user;
-      cursor = nextPageCursor(page.nextCursor, seen);
+      // The user, where this page holds them, else the cursor of the page after it.
+      let found = await this.#usersPage(cursor, 200, page =>
+          page.items.find(item => item.id === canonical.id) ?? nextPageCursor(page.nextCursor, seen));
+      if (typeof found === "object") return found;
+      cursor = found;
     } while (cursor);
     throw new SlackApiError("access_denied", 200);
   }
@@ -619,13 +829,21 @@ export class SlackApi {
   }
 
   async listUsers(cursor: string | undefined, limit: number): Promise<SlackPage<SlackUser>> {
-    let data = await this.#call<SlackApiEnvelope & { members?: RawUser[] }>(
-        "users.list", { cursor, limit, team_id: await this.workspaceTeamId() });
-    let items = (data.members ?? [])
-        .filter(member => !member.deleted)
-        .map(toUser);
-    for (let user of items) this.#userCache.set(user.id, user);
-    return { items, nextCursor: nextCursor(data) };
+    return this.#usersPage(cursor, limit, page => page);
+  }
+
+  // One page of the workspace's users, as `read` takes it: what `read` throws for a page it
+  // refuses counts the call (`#call`).
+  async #usersPage<R>(
+      cursor: string | undefined, limit: number, read: (page: SlackPage<SlackUser>) => R): Promise<R> {
+    return this.#call("users.list", { cursor, limit, team_id: await this.workspaceTeamId() },
+        (data: SlackApiEnvelope & { members?: RawUser[] }) => {
+      let items = (data.members ?? [])
+          .filter(member => !member.deleted)
+          .map(toUser);
+      for (let user of items) this.#userCache.set(user.id, user);
+      return read({ items, nextCursor: nextCursor(data) });
+    });
   }
 
   // ── Conversations ─────────────────────────────────────────────────
@@ -634,13 +852,19 @@ export class SlackApi {
   async listUserConversations(
       types: SlackConversationTypeFilter[], cursor: string | undefined, limit: number)
       : Promise<SlackPage<SlackConversationInfo>> {
-    let data = await this.#call<SlackApiEnvelope & { channels?: RawConversation[] }>(
+    // The page's conversations, and the peers of its direct messages, are taken within the call:
+    // a page whose conversations are no list of them counts the call an error of the API.
+    let { data, listed, peers } = await this.#call(
         "users.conversations",
         { types: types.join(","), cursor, limit, exclude_archived: "false",
-          team_id: await this.workspaceTeamId() });
-    let raws = data.channels ?? [];
-    await this.#prefetchIds(raws.filter(raw => raw.is_im && raw.user).map(raw => raw.user!));
-    let items = raws.map(raw => {
+          team_id: await this.workspaceTeamId() },
+        (page: SlackApiEnvelope & { channels?: RawConversation[] }) => {
+      let raws = page.channels ?? [];
+      // Each peer is taken as the conversation names it, whatever it names it with.
+      return { data: page, listed: raws, peers: raws.filter(raw => raw.is_im && raw.user).flatMap(raw => raw.user ? [raw.user] : []) };
+    });
+    await this.#prefetchIds(peers);
+    let items = listed.map(raw => {
       let info = toConversationInfo(raw);
       if (raw.is_im && raw.user) info.peer = this.#userCache.get(raw.user);
       return info;
@@ -650,15 +874,18 @@ export class SlackApi {
 
   async getConversationInfo(conversationId: string): Promise<SlackConversationInfo> {
     let teamId = await this.workspaceTeamId();
-    let data = await this.#call<SlackApiEnvelope & { channel?: RawConversation }>(
-        "conversations.info", { channel: conversationId, client_context_team_id: teamId });
-    if (!data.channel || data.channel.id !== conversationId) {
-      throw new Error(`Slack conversation not found: ${conversationId}`);
-    }
-    await this.#assertConversationWorkspace(data.channel, teamId);
-    let info = toConversationInfo(data.channel);
-    if (data.channel.is_im && data.channel.user) {
-      info.peer = await this.getUser(data.channel.user).catch(() => undefined);
+    let channel = await this.#call(
+        "conversations.info", { channel: conversationId, client_context_team_id: teamId },
+        (data: SlackApiEnvelope & { channel?: RawConversation }) => {
+      if (!data.channel || data.channel.id !== conversationId) {
+        throw new Error(`Slack conversation not found: ${conversationId}`);
+      }
+      return data.channel;
+    });
+    await slackUpstream.summed(() => this.#assertConversationWorkspace(channel, teamId));
+    let info = toConversationInfo(channel);
+    if (channel.is_im && channel.user) {
+      info.peer = await this.getUser(channel.user).catch(() => undefined);
     }
     return info;
   }
@@ -680,12 +907,15 @@ export class SlackApi {
     let cursor: string | undefined;
     let seen = new Set<string>();
     do {
-      let page = await this.#call<SlackApiEnvelope & { channels?: RawConversation[] }>(
+      // True where this page lists the conversation, else the cursor of the page after it.
+      let found = await this.#call(
           channel.is_im || channel.is_mpim ? "users.conversations" : "conversations.list",
           { team_id: teamId, types: channel.is_im ? "im" : channel.is_mpim ? "mpim" :
-              "public_channel,private_channel", limit: 200, cursor, exclude_archived: "false" });
-      if (page.channels?.some(item => item.id === channel.id)) return;
-      cursor = nextPageCursor(nextCursor(page), seen);
+              "public_channel,private_channel", limit: 200, cursor, exclude_archived: "false" },
+          (page: SlackApiEnvelope & { channels?: RawConversation[] }) =>
+              page.channels?.some(item => item.id === channel.id) || nextPageCursor(nextCursor(page), seen));
+      if (found === true) return;
+      cursor = found;
     } while (cursor);
     throw new SlackApiError("access_denied", 200);
   }
@@ -706,18 +936,19 @@ export class SlackApi {
   async listHistory(
       conversationId: string, cursor: string | undefined, limit: number)
       : Promise<SlackPage<SlackMessage>> {
-    let data = await this.#call<SlackApiEnvelope & { messages?: RawMessage[] }>(
-        "conversations.history", { ...await this.#conversationParams(conversationId), cursor, limit });
-    let items = await this.#withPermalinks(conversationId, await this.#buildMessages(data.messages ?? []));
+    let { data, named } = await this.#call(
+        "conversations.history", { ...await this.#conversationParams(conversationId), cursor, limit }, namedIn);
+    let items = await this.#withPermalinks(conversationId, await this.#buildMessages(data.messages ?? [], named));
     return { items, nextCursor: nextCursor(data) };
   }
 
   async listReplies(
       conversationId: string, threadTs: string, cursor: string | undefined, limit: number)
       : Promise<SlackPage<SlackMessage>> {
-    let data = await this.#call<SlackApiEnvelope & { messages?: RawMessage[] }>(
-        "conversations.replies", { ...await this.#conversationParams(conversationId), ts: threadTs, cursor, limit });
-    let items = await this.#withPermalinks(conversationId, await this.#buildMessages(data.messages ?? []));
+    let { data, named } = await this.#call(
+        "conversations.replies", { ...await this.#conversationParams(conversationId), ts: threadTs, cursor, limit },
+        namedIn);
+    let items = await this.#withPermalinks(conversationId, await this.#buildMessages(data.messages ?? [], named));
     return { items, nextCursor: nextCursor(data) };
   }
 
@@ -728,15 +959,27 @@ export class SlackApi {
   async searchMessages(
       query: string, cursor: string | undefined, count: number, restrictChannelId?: string)
       : Promise<SlackPage<SlackSearchMatch>> {
+    return slackUpstream.summed(() => this.#searchPage(query, cursor, count, restrictChannelId));
+  }
+
+  async #searchPage(
+      query: string, cursor: string | undefined, count: number, restrictChannelId?: string)
+      : Promise<SlackPage<SlackSearchMatch>> {
     let page = cursor ? Number(cursor) : 1;
     if (!Number.isFinite(page) || page < 1) page = 1;
-    let data = await this.#call<SlackApiEnvelope & {
-      messages?: { matches?: RawMessage[]; paging?: { pages?: number; page?: number } };
-    }>("search.messages", { query, count, page, sort: "timestamp", team_id: await this.workspaceTeamId() });
-
-    let matches = (data.messages?.matches ?? [])
-        .filter(match => !restrictChannelId || match.channel?.id === restrictChannelId);
-    for (let channelId of new Set(matches.map(match => match.channel?.id))) {
+    // A match that names no conversation is refused below, once the conversations of the matches
+    // before it are looked up: the search counts an error of the API by that same check.
+    let { data, matches } = await this.#call(
+        "search.messages", { query, count, page, sort: "timestamp", team_id: await this.workspaceTeamId() },
+        (found: SlackApiEnvelope & {
+          messages?: { matches?: RawMessage[]; paging?: { pages?: number; page?: number } };
+        }) => ({
+          data: found,
+          matches: (found.messages?.matches ?? [])
+              .filter(match => !restrictChannelId || match.channel?.id === restrictChannelId),
+        }),
+        read => read.matches.some(match => !conversationIdOf(match)));
+    for (let channelId of new Set(matches.map(conversationIdOf))) {
       if (!channelId) throw new Error("Slack search returned a message without a conversation.");
       await this.getConversationInfo(channelId);
     }
@@ -754,26 +997,24 @@ export class SlackApi {
 
   // ── Message construction / name resolution ────────────────────────
 
-  async #buildMessages(raw: RawMessage[]): Promise<SlackMessage[]> {
-    await this.#prefetchUsers(raw);
+  // The messages of a page, with `named`, the users the page names (`namedUserIds`), resolved.
+  async #buildMessages(raw: RawMessage[], named: string[]): Promise<SlackMessage[]> {
+    await this.#prefetchIds(named);
     return raw.map(message => this.#toMessage(message));
   }
 
   async #prefetchUsers(messages: RawMessage[]): Promise<void> {
-    let ids = new Set<string>();
-    for (let message of messages) {
-      if (message.user) ids.add(message.user);
-      for (let mentioned of mentionedUserIds(message.text ?? "")) ids.add(mentioned);
-    }
-    await this.#prefetchIds([...ids]);
+    await this.#prefetchIds(namedUserIds(messages));
   }
 
   // Stay below the Workers limit of six concurrent outgoing requests.
   async #prefetchIds(ids: string[]): Promise<void> {
     let missing = [...new Set(ids)].filter(id => !this.#userCache.has(id));
-    for (let i = 0; i < missing.length; i += 5) {
-      await Promise.all(missing.slice(i, i + 5).map(id => this.getUser(id).catch(() => undefined)));
-    }
+    await slackUpstream.summed(async () => {
+      for (let i = 0; i < missing.length; i += 5) {
+        await Promise.all(missing.slice(i, i + 5).map(id => this.getUser(id).catch(() => undefined)));
+      }
+    });
   }
 
   #userName(userId: string): string {
@@ -806,6 +1047,31 @@ export class SlackApi {
 }
 
 // ── Pure transforms ─────────────────────────────────────────────────
+
+// The users a list of messages names: the author of each, and those its text mentions.
+function namedUserIds(messages: RawMessage[]): string[] {
+  let ids = new Set<string>();
+  for (let message of messages) {
+    if (message.user) ids.add(message.user);
+    for (let mentioned of mentionedUserIds(message.text ?? "")) ids.add(mentioned);
+  }
+  return [...ids];
+}
+
+// What Slack answers a page of a conversation's messages with.
+type MessagePage = SlackApiEnvelope & { messages?: RawMessage[] };
+
+// A page of a conversation's messages as `#call` reads it, with the users it names. The page is
+// read for them within the call: one whose messages are no list of them counts the call an error
+// of the API.
+function namedIn(data: MessagePage): { data: MessagePage; named: string[] } {
+  return { data, named: namedUserIds(data.messages ?? []) };
+}
+
+// The conversation a search match was found in, or undefined where the match names none.
+function conversationIdOf(match: RawMessage): string | undefined {
+  return match.channel?.id || undefined;
+}
 
 function nextCursor(data: SlackApiEnvelope): string | undefined {
   let cursor = data.response_metadata?.next_cursor;

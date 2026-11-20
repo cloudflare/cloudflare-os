@@ -5,7 +5,7 @@ import {
 export default defineGadgetsWorker({
   name: "gatekeeper-notion",
   entrypoint: ".wrangler/validate/src/notion.ts",
-  compatibilityFlags: ["allow_irrevocable_stub_storage"],
+  compatibilityFlags: ["allow_irrevocable_stub_storage", "nodejs_als"],
   observability: OBSERVABILITY,
 });
 

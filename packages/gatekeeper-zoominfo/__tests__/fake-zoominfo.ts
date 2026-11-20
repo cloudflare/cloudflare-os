@@ -8,6 +8,7 @@ import { env, runInDurableObject } from "cloudflare:test";
 import { vi } from "vitest";
 import { generateNonce } from "@gadgets/gatekeeper-kit/connect-nonce";
 import { CredentialCoordinator } from "@gadgets/gatekeeper-kit/credentials";
+import { zoominfoUpstream } from "../src/zoominfo-upstream";
 
 /** The OAuth client the suite's gatekeeper runs as (see vitest.config.ts). */
 export const CLIENT_ID = "test-client-id";
@@ -18,6 +19,12 @@ export const ALICE: FakeUser = { sub: "00u1alice", name: "Alice", email: "alice@
 export const BOB: FakeUser = { sub: "00u2bob", name: "Bob", email: "bob@example.com" };
 
 export type FakeRequest = { method: string; path: string; token?: string };
+
+/**
+ * The requests the gatekeeper's route tree gave no name, since they were last looked at.
+ * `named-requests.ts` fails any test that leaves one here.
+ */
+export const unnamedRequests: string[] = [];
 
 function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
@@ -39,6 +46,8 @@ export class FakeZoomInfo {
   /** The claims of the ID token a grant for `user` carries; `null` sends none. */
   idToken: (user: FakeUser) => Record<string, unknown> | null =
     user => ({ sub: user.sub, aud: CLIENT_ID, name: user.name, email: user.email });
+  /** While set, a grant holds no refresh token. */
+  omitRefreshToken = false;
   /** Enrichments fail as an outage would. */
   failEnrichment = false;
   /** How long the token endpoint takes to answer, so requests to it can overlap. */
@@ -85,6 +94,10 @@ export class FakeZoomInfo {
     const token = request.headers.get("Authorization")?.match(/^Bearer (.+)$/)?.[1];
     this.requests.push({ method: request.method, path: url.pathname, token });
     if (url.origin !== "https://api.zoominfo.com") throw new Error(`Unexpected request: ${url}`);
+    // A token request is named where it is sent; every other request is named by its route.
+    if (url.pathname !== "/gtm/oauth/v1/token" && zoominfoUpstream.operationOf(request.method, url) === request.method) {
+      unnamedRequests.push(`${request.method} ${url.pathname}`);
+    }
     if (url.pathname === "/gtm/oauth/v1/token") {
       const form = new URLSearchParams(await request.text());
       if (this.tokenLatencyMs > 0) await scheduler.wait(this.tokenLatencyMs);
@@ -134,7 +147,7 @@ export class FakeZoomInfo {
     const claims = this.idToken(user);
     return json({
       access_token: grant.accessToken,
-      refresh_token: grant.refreshToken,
+      ...(this.omitRefreshToken ? {} : { refresh_token: grant.refreshToken }),
       expires_in: 1000,
       scope: scopes.join(" "),
       token_type: "Bearer",

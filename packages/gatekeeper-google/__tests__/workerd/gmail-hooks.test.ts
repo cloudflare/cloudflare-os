@@ -8,6 +8,7 @@ import {SignJWT, exportJWK, generateKeyPair} from "jose";
 import {afterEach, beforeAll, beforeEach, expect, it, vi} from "vitest";
 import type {GmailGatekeeperImplProps} from "../../src/gmail";
 import type {TestHooks} from "./worker";
+import {unbindWrittenCalls, writtenCalls} from "../written-calls";
 
 const testEnv = env as unknown as {
   GmailGatekeeperImpl: DurableObjectNamespace;
@@ -42,6 +43,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  unbindWrittenCalls();
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
@@ -337,6 +339,21 @@ it("delivers each new inbox message once, and the hook's reply is queued for app
     title: `New Gmail message: ${subject}`, subresources: ["gmail/user/account-subject"],
   }));
   expect(hook.submissions).toHaveLength(1);
+});
+
+it("writes the requests one read of the history makes as one point for each kind", async () => {
+  const gmail = mockGmail();
+  const ada = await connect();
+  await enable(ada);
+  const written = writtenCalls();
+
+  arrive(gmail);
+  expect(await push(gmail)).toBe(204);
+  await settled();
+
+  // The mailbox's profile is read before the history and again after it.
+  expect(written.of("profile.get")).toEqual([["google-gmail", "profile.get", "success", 200, 2]]);
+  expect(written.of("history.list")).toEqual([["google-gmail", "history.list", "success", 200, 1]]);
 });
 
 it("never delivers sent mail, drafts, spam or trash, nor mail that skipped the inbox", async () => {

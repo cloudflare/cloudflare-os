@@ -56,9 +56,15 @@ function json(data: unknown, init: ResponseInit = {}): Response {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 const api = (instance = INSTANCE) => new GitLabApi(instance, async () => "tok-1");
+// Answers a read is sent again after, made anew for each attempt.
+const rateLimited = () => new Response("Retry later", { status: 429, headers: { "retry-after": "30" } });
+const errorPage = () =>
+  new Response(`<html>${"z".repeat(5000)}</html>`, { status: 502, headers: { "content-type": "text/html" } });
 const pinned = () => new GitLabApi(INSTANCE, async () => "tok-1", { path: "group/sub/project", id: 42 });
 
 describe("path encoding", () => {
@@ -244,19 +250,27 @@ describe("error bodies", () => {
   });
 
   it("appends Retry-After on a 429", async () => {
-    fakeFetch([new Response("Retry later", { status: 429, headers: { "retry-after": "30" } })]);
-    const limited = await api().getCurrentUser().catch(e => e);
+    // A read answered 429 that asks for a longer wait than the client makes is sent once: a
+    // send before the time GitLab named would be refused too.
+    vi.useFakeTimers();
+    const calls = fakeFetch([rateLimited(), rateLimited(), rateLimited()]);
+    const pending = api().getCurrentUser().catch(e => e);
+    await vi.advanceTimersByTimeAsync(60_000);
+    const limited = await pending;
+    expect(calls).toHaveLength(1);
     expect(limited.status).toBe(429);
     expect(limited.message).toBe("Retry later (retry after 30s)");
   });
 
   it("caps what it reads, and never lets an error body mask the status it came with", async () => {
     const jsonType = { "content-type": "application/json" };
-    fakeFetch([
+    // A read answered 502 is sent three times: no wait between them, and the last answer is read.
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const calls = fakeFetch([
       new Response(`"${"x".repeat(10 * 1024 * 1024)}"`, { headers: jsonType }),
       new Response(JSON.stringify({ message: "y".repeat(70 * 1024) }), { status: 422, statusText: "Unprocessable Entity", headers: jsonType }),
       new Response("{not json", { status: 500, headers: jsonType }),
-      new Response(`<html>${"z".repeat(5000)}</html>`, { status: 502, headers: { "content-type": "text/html" } }),
+      errorPage(), errorPage(), errorPage(),
     ]);
     const oversized = await api().getProject("g/p").catch(e => e);
     expect(oversized).toBeInstanceOf(GitLabApiError);
@@ -273,6 +287,7 @@ describe("error bodies", () => {
     expect(page.status).toBe(502);
     expect(page.message).toMatch(/^<html>z+$/);
     expect(page.message).toHaveLength(200);
+    expect(calls).toHaveLength(6);
   });
 });
 
@@ -560,7 +575,7 @@ describe("git smart-HTTP", () => {
       status: 200, headers: { "content-type": "application/x-git-receive-pack-result" },
     })]);
     const stream = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new Uint8Array([0x30])); c.close(); } });
-    await api().fetchGitReceivePack("g/p", stream);
+    await api().fetchGitReceivePack("g/p", "main", stream);
     expect(calls[0].url.toString()).toBe("https://gitlab.example.com/g/p.git/git-receive-pack");
     expect(calls[0].headers.has("git-protocol")).toBe(false);
     expect(calls[0].init.body).toBe(stream);
@@ -582,7 +597,7 @@ describe("git smart-HTTP", () => {
 
   it("surfaces a non-OK status with the body's first 200 chars", async () => {
     fakeFetch([new Response("Repository not found", { status: 404 })]);
-    const error = await api().fetchGitReceivePack("g/p", new ReadableStream()).catch(e => e);
+    const error = await api().fetchGitReceivePack("g/p", "main", new ReadableStream()).catch(e => e);
     expect(error.status).toBe(404);
     expect(error.message).toBe("git push failed: 404 : Repository not found");
   });

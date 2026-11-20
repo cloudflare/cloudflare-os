@@ -8,6 +8,15 @@
 // We use both. WebSocket connections are short-lived: each `withConnection()` call opens a
 // connection, performs one or more commands, and closes it. This is simple and adequate for
 // Phase 1; Phase 2 may add persistent WebSocket connections to support push-based hooks.
+//
+// Every call of either API goes through `homeassistantUpstream` (see `homeassistant-upstream.ts`),
+// which counts it, and times a REST request and sends a GET again after a transient failure.
+
+import type { CallAnswer, UpstreamRequestInit } from "@gadgets/gatekeeper-kit/upstream";
+import {
+  HA_BULK_READ_TIMEOUT_MS, HA_REST_TIMEOUT_MS, WS_CONNECT_OPERATION, homeassistantUpstream,
+  wsOperation, type WsCommandType,
+} from "./homeassistant-upstream";
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -39,10 +48,6 @@ function joinUrl(baseUrl: string, path: string): string {
   return `${baseUrl}/${path}`;
 }
 
-/** Default timeout for HTTP requests to Home Assistant. A slow / unreachable HA instance
- * otherwise stalls the Worker until the platform deadline. */
-const HA_REST_TIMEOUT_MS = 15_000;
-
 /** Default timeout for the WebSocket auth handshake. After auth, individual `send()` commands
  * are not separately timed out — long-running registry / dashboard commands legitimately take
  * a few seconds on big HA instances. If you need a per-command timeout, race manually. */
@@ -67,10 +72,38 @@ function sanitizeErrorBody(text: string, token: string): string {
   return clean;
 }
 
+/** The `name` of what was thrown, where it has one. */
+function errorName(error: unknown): unknown {
+  return typeof error === "object" && error !== null && "name" in error ? error.name : undefined;
+}
+
+/** The `message` of what was thrown, or what was thrown itself where it has none. */
+function errorMessage(error: unknown): unknown {
+  const message = typeof error === "object" && error !== null && "message" in error
+    ? error.message : undefined;
+  return message ?? error;
+}
+
+/**
+ * Sends one REST request to the instance and reads its answer: JSON where the answer says it is
+ * JSON, and text otherwise. The request goes through `homeassistantUpstream`, which gives each
+ * attempt `HA_REST_TIMEOUT_MS` unless the request asks for another `timeoutMs`, sends a GET again
+ * after a transient failure and follows no redirect, so a redirect is thrown as the HTTP error of
+ * its status.
+ * @param creds The instance's base URL and the token sent to it.
+ * @param path The path under the base URL, as `api/states`.
+ * @param init The request's method, body and headers, and its own options of the client. It
+ * holds no `signal`: the attempt's timeout is the only thing that aborts a request.
+ * @returns The answer's body.
+ * @throws A `HomeAssistantError` for an instance that cannot be reached or does not answer in
+ * time, for a rejected token (`isAuthError`) and for any other status that is no success; and
+ * what reading the body threw, for a body that is not what its content type says.
+ */
 async function fetchJson<T>(
   creds: HomeAssistantCredentials,
   path: string,
-  init: RequestInit = {},
+  init: UpstreamRequestInit = {},
+  read: (body: unknown) => T = body => body as T,
 ): Promise<T> {
   const url = joinUrl(creds.baseUrl, path);
   const headers = new Headers(init.headers ?? {});
@@ -79,53 +112,75 @@ async function fetchJson<T>(
     headers.set("Content-Type", "application/json");
   }
 
-  // Wrap the fetch in an AbortController so we don't hold the Worker open on a slow / dead HA
-  // instance. Honor a caller-supplied signal if present.
-  const controller = new AbortController();
-  const timeoutHandle = setTimeout(() => controller.abort(), HA_REST_TIMEOUT_MS);
-  // Chain caller signal if provided.
-  if (init.signal) {
-    if (init.signal.aborted) controller.abort(init.signal.reason);
-    else init.signal.addEventListener("abort", () => controller.abort(init.signal!.reason));
-  }
-
-  let response: Response;
+  // What reading the body of an answer threw, which is thrown as it is.
+  let unread: { error: unknown } | undefined;
   try {
-    response = await fetch(url, { ...init, headers, signal: controller.signal });
-  } catch (e: any) {
-    if (controller.signal.aborted && e?.name === "AbortError") {
+    return await homeassistantUpstream.read(url, { ...init, headers }, async (response) => {
+      if (response.status === 401 || response.status === 403) {
+        throw new HomeAssistantError(
+          "Home Assistant rejected the access token. The token may have been revoked.",
+          { status: response.status, isAuthError: true },
+        );
+      }
+      if (!response.ok) {
+        const rawText = await response.text().catch(() => "");
+        const safeText = sanitizeErrorBody(rawText, creds.token);
+        throw new HomeAssistantError(
+          `Home Assistant returned HTTP ${response.status}: ${safeText || response.statusText}`,
+          { status: response.status },
+        );
+      }
+
+      try {
+        const contentType = response.headers.get("Content-Type") ?? "";
+        // For template render, HA returns text/plain. `read` takes what the request was sent
+        // for out of the body, within the request: a body it throws on is none read.
+        return read(contentType.includes("application/json") ? await response.json() : await response.text());
+      } catch (error) {
+        unread = { error };
+        throw error;
+      }
+    });
+  } catch (error) {
+    if (error instanceof HomeAssistantError) throw error;
+    // The attempt's timeout fired, before the instance answered or while its answer was read. No
+    // request has a caller's signal, so an abort under either name is that timeout: a runtime
+    // may report a reading the signal cut off as an `AbortError`.
+    if (errorName(error) === "TimeoutError" || errorName(error) === "AbortError") {
+      const timeoutMs = typeof init.timeoutMs === "number" ? init.timeoutMs : HA_REST_TIMEOUT_MS;
       throw new HomeAssistantError(
-        `Home Assistant did not respond within ${HA_REST_TIMEOUT_MS}ms (${creds.baseUrl}).`,
+        `Home Assistant did not respond within ${timeoutMs}ms (${creds.baseUrl}).`,
       );
     }
+    if (unread && unread.error === error) throw error;
     throw new HomeAssistantError(
-      `Failed to reach Home Assistant at ${creds.baseUrl}: ${e?.message ?? e}`,
+      `Failed to reach Home Assistant at ${creds.baseUrl}: ${errorMessage(error)}`,
     );
-  } finally {
-    clearTimeout(timeoutHandle);
   }
+}
 
-  if (response.status === 401 || response.status === 403) {
-    throw new HomeAssistantError(
-      "Home Assistant rejected the access token. The token may have been revoked.",
-      { status: response.status, isAuthError: true },
-    );
-  }
-  if (!response.ok) {
-    const rawText = await response.text().catch(() => "");
-    const safeText = sanitizeErrorBody(rawText, creds.token);
-    throw new HomeAssistantError(
-      `Home Assistant returned HTTP ${response.status}: ${safeText || response.statusText}`,
-      { status: response.status },
-    );
-  }
+// Reads an answer that is a list, which may be empty: the states of every entity, a history, a
+// logbook, the services. A body that is none, a proxy's page included, is refused within the
+// request, so that it is counted an error and no reader of the list meets it. `what` names the
+// list in the error.
+const listOf = (what: string) => (body: unknown): any[] => {
+  if (!Array.isArray(body)) throw new HomeAssistantError(`Home Assistant answered ${what} with no list.`);
+  return body;
+};
 
-  const contentType = response.headers.get("Content-Type") ?? "";
-  if (contentType.includes("application/json")) {
-    return (await response.json()) as T;
+// Whether a command that lists a registry was answered a success that holds no list, which is an
+// empty list where it is one.
+function misses(command: WSCommand, result: WSResult): boolean {
+  return result.success === true && command.type.endsWith("/list") && !Array.isArray(result.result);
+}
+
+// The status of Home Assistant's API, as `/api/` answers it: an object with a message. A body that
+// is none, a proxy's login page included, is no API that answered, and is refused within the request.
+function apiStatus(body: unknown): { message: string } {
+  if (typeof body !== "object" || body === null || typeof (body as { message?: unknown }).message !== "string") {
+    throw new HomeAssistantError("Home Assistant answered its API's status with no status.");
   }
-  // For template render, HA returns text/plain.
-  return (await response.text()) as unknown as T;
+  return body as { message: string };
 }
 
 export class HomeAssistantRest {
@@ -136,7 +191,7 @@ export class HomeAssistantRest {
   }
 
   async getStates(): Promise<any[]> {
-    return await fetchJson(this.creds, "api/states");
+    return await fetchJson(this.creds, "api/states", { timeoutMs: HA_BULK_READ_TIMEOUT_MS }, listOf("its list of states"));
   }
 
   async getState(entityId: string): Promise<any> {
@@ -167,7 +222,7 @@ export class HomeAssistantRest {
     if (end) params.set("end_time", end.toISOString());
     if (minimal) params.set("minimal_response", "true");
     const path = `api/history/period/${start.toISOString()}?${params.toString()}`;
-    return await fetchJson(this.creds, path);
+    return await fetchJson(this.creds, path, { timeoutMs: HA_BULK_READ_TIMEOUT_MS }, listOf("a history"));
   }
 
   async getLogbook(start: Date, end?: Date, entityId?: string): Promise<any[]> {
@@ -175,16 +230,16 @@ export class HomeAssistantRest {
     if (end) params.set("end_time", end.toISOString());
     if (entityId) params.set("entity", entityId);
     const path = `api/logbook/${start.toISOString()}?${params.toString()}`;
-    return await fetchJson(this.creds, path);
+    return await fetchJson(this.creds, path, { timeoutMs: HA_BULK_READ_TIMEOUT_MS }, listOf("a logbook"));
   }
 
   async getServices(): Promise<any[]> {
-    return await fetchJson(this.creds, "api/services");
+    return await fetchJson(this.creds, "api/services", {}, listOf("its list of services"));
   }
 
   /** Quick check that the API is reachable and credentials are valid. */
   async ping(): Promise<{ message: string }> {
-    return await fetchJson(this.creds, "api/");
+    return await fetchJson(this.creds, "api/", {}, apiStatus);
   }
 }
 
@@ -201,9 +256,10 @@ export class HomeAssistantRest {
 //
 // After auth, commands have an integer `id` (incrementing); results echo the id.
 
+/** A command as its caller gives it: the `id` is `send`'s to add. */
 interface WSCommand {
-  id: number;
-  type: string;
+  /** One of the commands this gatekeeper sends, by which the command is counted. */
+  type: WsCommandType;
   [key: string]: unknown;
 }
 
@@ -231,8 +287,11 @@ function websocketUrl(baseUrl: string): string {
 export class HomeAssistantWebSocket {
   #ws: WebSocket;
   #nextId = 1;
-  #pending = new Map<number, { resolve: (v: any) => void; reject: (e: any) => void }>();
+  #pending = new Map<number, { resolve: (result: WSResult) => void; reject: (error: unknown) => void }>();
   #closed = false;
+  // Whether `close` is what closes the socket: a command left pending then was given up here,
+  // and is no call the instance failed.
+  #closing = false;
   #closePromise: Promise<void>;
 
   private constructor(ws: WebSocket) {
@@ -266,15 +325,8 @@ export class HomeAssistantWebSocket {
       const pending = this.#pending.get(msg.id);
       if (!pending) return;
       this.#pending.delete(msg.id);
-      if (msg.success) {
-        pending.resolve(msg.result);
-      } else {
-        pending.reject(
-          new HomeAssistantError(
-            `Home Assistant WS command failed (${msg.error?.code}): ${msg.error?.message}`,
-          ),
-        );
-      }
+      // A result that reports a failure is an answer too: `send` counts it and throws it.
+      pending.resolve(msg);
     });
   }
 
@@ -294,10 +346,15 @@ export class HomeAssistantWebSocket {
     // (without the integer id) so we wire up custom listeners temporarily.
     //
     // Race against a timeout so we don't hold the Worker open on a slow / unresponsive HA.
+    //
+    // The handshake is one counted call. `failure` is how the handshake's first failure is
+    // counted, set where it fails: a closed word, and nothing of the error it throws.
+    let failure: CallAnswer | undefined;
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     try {
-      await new Promise<void>((resolve, reject) => {
+      await homeassistantUpstream.call(WS_CONNECT_OPERATION, () => new Promise<void>((resolve, reject) => {
         timeoutHandle = setTimeout(() => {
+          failure ??= { outcome: "error", reason: "timeout" };
           try { ws.close(); } catch { /* ignore */ }
           reject(
             new HomeAssistantError(
@@ -307,9 +364,12 @@ export class HomeAssistantWebSocket {
         }, HA_WS_AUTH_TIMEOUT_MS);
 
         ws.addEventListener("error", () => {
+          failure ??= { outcome: "error", reason: "network" };
           reject(new HomeAssistantError(`Home Assistant WebSocket error during auth.`));
         });
         ws.addEventListener("close", (event) => {
+          // A close for a policy violation (1008) is the instance turning the token away.
+          failure ??= { outcome: "error", reason: event.code === 1008 ? "auth" : "network" };
           reject(
             new HomeAssistantError(
               `Home Assistant WebSocket closed before auth completed: ${event.code} ${event.reason}`,
@@ -332,6 +392,7 @@ export class HomeAssistantWebSocket {
             resolve();
           } else if (msg.type === "auth_invalid") {
             ws.removeEventListener("message", onMessage);
+            failure ??= { outcome: "error", reason: "auth" };
             reject(
               new HomeAssistantError(
                 `Home Assistant rejected the access token: ${msg.message ?? "unknown"}`,
@@ -341,7 +402,7 @@ export class HomeAssistantWebSocket {
           }
         };
         ws.addEventListener("message", onMessage);
-      });
+      }), { thrown: () => failure });
     } finally {
       if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
     }
@@ -349,17 +410,50 @@ export class HomeAssistantWebSocket {
     return new HomeAssistantWebSocket(ws);
   }
 
-  /** Send a command and wait for the result. */
-  async send<T = any>(command: Omit<WSCommand, "id">): Promise<T> {
+  /**
+   * Sends a command and waits for its result. The command is one counted call, named by its
+   * `type` (`wsOperation`): a result that reports a failure is an `error` with the reason `api`,
+   * and a socket that closes or fails before the result one with the reason `network`, unless
+   * `close` is what closed it: a command given up so is not counted. It has no timeout of its own
+   * and is sent once.
+   * @param command The command, without the `id` this adds.
+   * @returns The `result` of the command's answer.
+   * @throws A `HomeAssistantError` where the socket is closed, closes or fails before the
+   * result, and where the result reports a failure.
+   */
+  async send<T = any>(command: WSCommand): Promise<T> {
     if (this.#closed) {
       throw new HomeAssistantError("WebSocket is closed.");
     }
     const id = this.#nextId++;
-    const promise = new Promise<T>((resolve, reject) => {
-      this.#pending.set(id, { resolve, reject });
+    // Whether the frame left: a command the socket threw on was not sent, and is not counted.
+    let sent = false;
+    const answered = await homeassistantUpstream.call(wsOperation(command.type), () => {
+      const result = new Promise<WSResult>((resolve, reject) => {
+        this.#pending.set(id, { resolve, reject });
+      });
+      try {
+        this.#ws.send(JSON.stringify({ ...command, id }));
+      } catch (error) {
+        // No result will come for a frame that did not leave.
+        this.#pending.delete(id);
+        throw error;
+      }
+      sent = true;
+      return result;
+    }, {
+      answer: (result) => (result.success && !misses(command, result) ? undefined : { outcome: "error", reason: "api" }),
+      thrown: () => (sent && !this.#closing ? { outcome: "error", reason: "network" } : null),
     });
-    this.#ws.send(JSON.stringify({ ...command, id }));
-    return promise;
+    if (!answered.success) {
+      throw new HomeAssistantError(
+        `Home Assistant WS command failed (${answered.error?.code}): ${answered.error?.message}`,
+      );
+    }
+    if (misses(command, answered)) {
+      throw new HomeAssistantError(`Home Assistant answered ${command.type} with no list.`);
+    }
+    return answered.result;
   }
 
   /** Call a Home Assistant service via the WebSocket `call_service` command.
@@ -373,7 +467,7 @@ export class HomeAssistantWebSocket {
     serviceData?: Record<string, unknown>,
     target?: Record<string, unknown>,
   ): Promise<any> {
-    const cmd: Record<string, unknown> = {
+    const cmd: WSCommand = {
       type: "call_service",
       domain,
       service,
@@ -384,23 +478,28 @@ export class HomeAssistantWebSocket {
     if (target && Object.keys(target).length > 0) {
       cmd.target = target;
     }
-    return await this.send(cmd as Omit<WSCommand, "id">);
+    return await this.send(cmd);
   }
 
   /** Fire an event on the Home Assistant event bus via the WebSocket `fire_event` command. */
   async fireEvent(eventType: string, eventData?: Record<string, unknown>): Promise<any> {
-    const cmd: Record<string, unknown> = {
+    const cmd: WSCommand = {
       type: "fire_event",
       event_type: eventType,
     };
     if (eventData && Object.keys(eventData).length > 0) {
       cmd.event_data = eventData;
     }
-    return await this.send(cmd as Omit<WSCommand, "id">);
+    return await this.send(cmd);
   }
 
+  /**
+   * Closes the socket and waits for it to have closed. A command still pending fails as one the
+   * socket closed under, and is not counted.
+   */
   async close(): Promise<void> {
     if (this.#closed) return;
+    this.#closing = true;
     try {
       this.#ws.close();
     } catch {

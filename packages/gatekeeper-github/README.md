@@ -18,6 +18,11 @@ This package provides GitHub OAuth integration for Gadgets. It serves two purpos
 > permission — and even then login won't be minimal-scope. See [Using a GitHub App
 > instead](#using-a-github-app-instead) if you must.
 
+Every request to GitHub is sent through one client (`src/github-upstream.ts`): the route tree
+`GITHUB_ROUTES` and the `GITHUB_OPERATIONS` literals there name each request, and its calls are counted
+as [subservice metrics](../observability/README.md#subservice-calls) under the source
+`gatekeeper.github.api`.
+
 ## Auto-approval
 
 Every queued action carries a stable kind (`github.<action>`, e.g. `github.push`), and the user may

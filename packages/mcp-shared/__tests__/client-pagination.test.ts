@@ -7,6 +7,7 @@ import {
 } from "../src/client.js";
 import { MAX_RESPONSE_BYTES } from "../src/fetch.js";
 import { describeCall } from "../src/tools.js";
+import { upstream } from "./stubs/upstream.js";
 
 // Answers every `tools/list` from `pages`, in order, repeating the last one forever.
 //
@@ -64,8 +65,8 @@ describe("McpClient.listTools", () => {
         status: 200, headers: { "Content-Type": "application/json" },
       });
     });
-    const first = new McpClient("https://mcp.example.com/mcp", async () => null);
-    const second = new McpClient("https://mcp.example.com/mcp", async () => null);
+    const first = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
+    const second = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
 
     await Promise.all([first.listTools(10), second.listTools(10)]);
     expect(new Set(ids).size).toBe(2);
@@ -76,7 +77,7 @@ describe("McpClient.listTools", () => {
       { tools: [{ name: "a" }], nextCursor: "1" },
       { tools: [{ name: "b" }] },
     ]);
-    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
     const { tools, truncated } = await client.listTools(100);
     expect(tools.map(tool => tool.name)).toEqual(["a", "b"]);
     expect(truncated).toBe(false);
@@ -94,7 +95,7 @@ describe("McpClient.listTools", () => {
         status: 200, headers: { "Content-Type": "application/json" },
       });
     });
-    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
 
     const { tools, truncated } = await client.listTools(100);
 
@@ -116,6 +117,7 @@ describe("McpClient.listTools", () => {
       }), { status: 200, headers: { "Content-Type": "application/json" } });
     });
     const client = new McpClient(
+      upstream,
       "https://mcp.example.com/mcp", async () => null, null, { timeoutMs: 30 });
 
     await expect(client.listTools(10)).rejects.toThrow(/timed out|timeout/i);
@@ -136,7 +138,7 @@ describe("McpClient.listTools", () => {
           : { tools: [{ name: "b" }] },
       }), { status: 200, headers: { "Content-Type": "application/json" } });
     });
-    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
 
     await expect(client.listTools(10)).resolves.toMatchObject({
       tools: [{ name: "a" }, { name: "b" }],
@@ -145,7 +147,7 @@ describe("McpClient.listTools", () => {
 
   it("stops at maxTools even when the server has more", async () => {
     const calls = stubPages([{ tools: [{ name: "a" }, { name: "b" }, { name: "c" }], nextCursor: "1" }]);
-    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
     const { tools, truncated } = await client.listTools(2);
     expect(tools.map(tool => tool.name)).toEqual(["a", "b"]);
     expect(truncated).toBe(true);
@@ -159,7 +161,7 @@ describe("McpClient.listTools", () => {
       { name: "jira_search" },
       { name: "jira_create" },
     ] }]);
-    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
     const { tools, truncated } = await client.listTools(
       200,
       tool => tool.name.startsWith("jira_"),
@@ -173,7 +175,7 @@ describe("McpClient.listTools", () => {
       { tools: [{ name: "other_a" }], nextCursor: "1" },
       { tools: [{ name: "jira_search" }] },
     ]);
-    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
     const { tools, truncated } = await client.listTools(
       200,
       tool => tool.name.startsWith("jira_"),
@@ -188,7 +190,7 @@ describe("McpClient.listTools", () => {
       ...Array.from({ length: 250 }, (_, i) => ({ name: `other_${i}` })),
       { name: "jira_create_issue", description: "File a ticket in Jira" },
     ] }]);
-    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
     const { tools, truncated } = await client.listTools(
       20,
       tool => typeof tool.description === "string" && tool.description.includes("ticket"),
@@ -203,7 +205,7 @@ describe("McpClient.listTools", () => {
       { tools: [{ name: "jira_search" }, { name: "other_b" }], nextCursor: "2" },
       { tools: [{ name: "other_c" }] },
     ]);
-    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
 
     await expect(client.findTool("jira_search")).resolves.toMatchObject({ name: "jira_search" });
     expect(calls()).toBe(2);
@@ -214,7 +216,7 @@ describe("McpClient.listTools", () => {
       tools: Array.from({ length: 25 }, (_, i) => ({ name: `jira_tool_${i}` })),
       nextCursor: "more",
     }]);
-    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
 
     const tools = await client.listMatchingToolSummaries(
       20, tool => tool.name.startsWith("jira_"));
@@ -233,7 +235,7 @@ describe("McpClient.listTools", () => {
       { tools: wireTools.slice(0, 10), nextCursor: "more" },
       { tools: wireTools.slice(10) },
     ]);
-    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
 
     const tools = await client.listMatchingToolSummaries(20, () => true);
 
@@ -250,7 +252,7 @@ describe("McpClient.listTools", () => {
       })),
       { name: "jira_search", description: "Search Jira" },
     ] }]);
-    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
     const { tools, truncated } = await client.listTools(
       200,
       tool => tool.name.startsWith("jira_"),
@@ -268,7 +270,7 @@ describe("McpClient.listTools", () => {
       inputSchema: { type: "object", description: "y".repeat(1000) },
       annotations: { readOnlyHint: i % 2 === 0 },
     })) }]);
-    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
     const { tools, truncated } = await client.listToolIndex(500);
     expect(tools).toHaveLength(400);
     expect(truncated).toBe(false);
@@ -286,7 +288,7 @@ describe("McpClient.listTools", () => {
       inputSchema: { type: "object", description: "y".repeat(19_000) },
     }));
     stubPages([{ tools: wireTools }]);
-    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
     const selected = new Set(wireTools.map(tool => tool.name));
     const include = (tool: { name: string }) => selected.has(tool.name);
 
@@ -306,7 +308,7 @@ describe("McpClient.listTools", () => {
       tools: [{ name: "jira_search" }, { name: "jira_create" }],
       nextCursor: "more",
     }]);
-    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
     const requested = new Set(["jira_search", "jira_create"]);
 
     const index = await client.listMatchingToolIndex(
@@ -322,7 +324,7 @@ describe("McpClient.listTools", () => {
     // One tool per page stays below both the result and scan-tool caps after fifty requests. Without
     // a separate page cap, a cursor that never ends would keep the Worker walking indefinitely.
     const calls = stubPages([{ tools: [{ name: "other" }], nextCursor: "more" }]);
-    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
     const catalog = await client.listTools(200);
     expect(catalog.tools).toHaveLength(50);
     expect(catalog.truncated).toBe(true);
@@ -331,7 +333,7 @@ describe("McpClient.listTools", () => {
 
   it("reports page exhaustion as a scan limit for exact discovery", async () => {
     const calls = stubPages([{ tools: [{ name: "other" }], nextCursor: "more" }]);
-    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
 
     const error = await client.findTool("missing").catch(caught => caught);
     expect(error).toMatchObject({ message: expect.stringMatching(/scan budget/i) });
@@ -341,7 +343,7 @@ describe("McpClient.listTools", () => {
 
   it("returns a truncated matching index when small pages reach the page limit", async () => {
     const calls = stubPages([{ tools: [{ name: "match" }], nextCursor: "more" }]);
-    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
 
     const index = await client.listMatchingToolIndex(1000, () => true);
     expect(index.tools).toHaveLength(50);
@@ -356,7 +358,7 @@ describe("McpClient.listTools", () => {
       nextCursor: String(page + 1),
     }));
     const calls = stubPages(pages);
-    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
 
     await expect(client.findTool("missing")).rejects.toThrow(/scan budget/i);
     expect(calls()).toBe(6);
@@ -369,7 +371,7 @@ describe("McpClient.listTools", () => {
         ...Array.from({ length: 5000 }, (_, i) => ({ name: `other_${i}` })),
       ],
     }]);
-    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
 
     await expect(client.findTool("target")).resolves.toMatchObject({ name: "target" });
     expect(calls()).toBe(1);
@@ -381,7 +383,7 @@ describe("McpClient.listTools", () => {
       nextCursor: String(page + 1),
     }));
     const calls = stubPages(pages);
-    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
 
     await expect(client.findTool("missing")).rejects.toThrow(/scan budget/i);
     expect(calls()).toBe(5);
@@ -399,7 +401,7 @@ describe("McpClient.listTools", () => {
         result: { tools: [], nextCursor: "more" },
       }), { status: 200, headers: { "Content-Type": "application/json" } });
     });
-    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
 
     await expect(client.findTool("missing")).rejects.toThrow(/scan budget/i);
     expect(calls).toBe(5);
@@ -417,7 +419,7 @@ describe("McpClient.listTools", () => {
         result: { tools: [], nextCursor: "more" },
       }), { status: 200, headers: { "Content-Type": "application/json" } });
     });
-    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
 
     await expect(client.listToolIndex(1000)).resolves.toEqual({ tools: [], truncated: true });
     expect(calls).toBe(5);
@@ -425,7 +427,7 @@ describe("McpClient.listTools", () => {
 
   it("returns a truncated index when pagination reaches the page limit", async () => {
     const calls = stubPages([{ tools: [], nextCursor: "more" }]);
-    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
 
     await expect(client.listToolIndex(1000))
       .resolves.toEqual({ tools: [], truncated: true });
@@ -441,7 +443,7 @@ describe("McpClient.listTools", () => {
       })),
     ];
     stubPages(pages);
-    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
 
     await expect(client.listTools(200, tool => tool.name.startsWith("jira_")))
       .resolves.toEqual({ tools: [{ name: "jira_search" }], truncated: true });
@@ -456,7 +458,7 @@ describe("McpClient.listTools", () => {
       })),
     ];
     stubPages(pages);
-    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
 
     await expect(client.listMatchingToolSummaries(
       20, tool => tool.name.startsWith("jira_")))
@@ -465,7 +467,7 @@ describe("McpClient.listTools", () => {
 
   it("ignores nameless entries rather than counting them towards the cap", async () => {
     stubPages([{ tools: [{ name: "" }, { description: "no name" }, { name: "real" }] }]);
-    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
     expect((await client.listTools(10)).tools.map(tool => tool.name)).toEqual(["real"]);
   });
 
@@ -474,7 +476,7 @@ describe("McpClient.listTools", () => {
       { name: "x".repeat(MAX_TOOL_NAME_CHARS + 1) },
       { name: "real" },
     ] }]);
-    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
     expect((await client.listTools(10)).tools.map(tool => tool.name)).toEqual(["real"]);
   });
 
@@ -482,7 +484,7 @@ describe("McpClient.listTools", () => {
     // A non-string passed the length cap untouched and reached the approval prompt, where
     // `quoteUntrusted` called `.replace` on it and took down every action call for the connection.
     stubPages([{ tools: [{ name: "odd", description: 42, title: { nested: true } }] }]);
-    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
     const [tool] = (await client.listTools(10)).tools;
     expect(tool.description).toBeUndefined();
     expect(tool.title).toBeUndefined();
@@ -498,7 +500,7 @@ describe("McpClient.listTools", () => {
     // A count-only bound leaves the catalog unbounded in bytes: descriptions and schemas are
     // server-controlled, and the result is stored whole in a Durable Object and fed to the agent.
     stubPages([{ tools: [{ name: "a", description: "x".repeat(50_000) }] }]);
-    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
     const { tools: [tool] } = await client.listTools(10);
     expect(tool.description!.length).toBeLessThan(5000);
   });
@@ -507,7 +509,7 @@ describe("McpClient.listTools", () => {
     const huge = { type: "object", properties: Object.fromEntries(
       Array.from({ length: 2000 }, (_, i) => [`field${i}`, { type: "string" }])) };
     stubPages([{ tools: [{ name: "a", inputSchema: huge }] }]);
-    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
     const { tools: [tool] } = await client.listTools(10);
     expect(tool.inputSchema).toBeUndefined();
   });
@@ -519,13 +521,13 @@ describe("McpClient.listTools", () => {
     vi.stubGlobal("fetch", async () => new Response("x".repeat(MAX_RESPONSE_BYTES + 1), {
       status: 200, headers: { "Content-Type": "application/json" },
     }));
-    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
     await expect(client.callTool("anything", {})).rejects.toThrow(/too large/);
   });
 
   it("refuses a tools/list event stream larger than MAX_RESPONSE_BYTES", async () => {
     const cancelled = stubToolListPage(MAX_RESPONSE_BYTES);
-    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
 
     await expect(client.listTools(10))
       .rejects.toThrow(`MCP server's event stream exceeded ${MAX_RESPONSE_BYTES} bytes.`);
@@ -536,7 +538,7 @@ describe("McpClient.listTools", () => {
     "accepts a tools/list page larger than 1 MiB as %s",
     async contentType => {
       stubToolListPage(1.5 * PREV_MAX_RESPONSE_BYTES, contentType);
-      const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+      const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
 
       const { tools } = await client.listTools(10);
       expect(tools.map(tool => tool.name)).toEqual(["big"]);
@@ -561,7 +563,7 @@ describe("McpClient.listTools", () => {
       }), { status: 200, headers: { "Content-Type": "Text/Event-Stream" } });
     });
 
-    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
     const call = client.callTool("anything", {});
     let timer: ReturnType<typeof setTimeout>;
     const result = await Promise.race([
@@ -585,7 +587,7 @@ describe("McpClient.listTools", () => {
       name: `tool_${i}`, description: "x".repeat(4000),
     }));
     stubPages([{ tools: fat }]);
-    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
     const { tools, truncated } = await client.listTools(200);
     expect(tools.length).toBeLessThan(200);
     expect(new TextEncoder().encode(JSON.stringify(tools)).byteLength).toBeLessThan(96 * 1024);
@@ -602,7 +604,7 @@ describe("McpClient.listTools", () => {
       name: `tool_${i}`, description: "😀".repeat(2000),
     }));
     stubPages([{ tools: fat }]);
-    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
     const { tools, truncated } = await client.listTools(200);
     const bytes = new TextEncoder().encode(JSON.stringify(tools)).byteLength;
     expect(bytes).toBeLessThan(96 * 1024);
@@ -613,7 +615,7 @@ describe("McpClient.listTools", () => {
     // The MCP type only names fields this gatekeeper uses, but parsed JSON can carry anything. A
     // spread here used to retain arbitrary extensions and let one field bypass every per-field cap.
     stubPages([{ tools: [{ name: "a", vendorBlob: "x".repeat(200_000) }] }]);
-    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
     const { tools, truncated } = await client.listTools(10);
     expect(tools).toHaveLength(1);
     expect(tools[0]).not.toHaveProperty("vendorBlob");
@@ -638,7 +640,7 @@ describe("error text a server wrote", () => {
     // message, which callers log wholesale and may forward to the issue reporter.
     const token = "sk-live-000111222333444555";
     stubError(`bad request: Authorization: Bearer ${token}`);
-    const client = new McpClient("https://mcp.example.com/mcp", async () => token);
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => token);
 
     const err = await client.callTool("anything", {}).catch(caught => caught);
     expect(err.message).not.toContain(token);
@@ -653,7 +655,7 @@ describe("error text a server wrote", () => {
     // without spaces, since the sanitizer collapses whitespace and would move the boundary.
     const token = `sk-live-${"9".repeat(60)}`;
     stubError(`${"context-".repeat(19)}Authorization: Bearer ${token}`);
-    const client = new McpClient("https://mcp.example.com/mcp", async () => token);
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => token);
 
     const err = await client.callTool("send", {}).catch(caught => caught);
     expect(err.message).not.toContain(token);
@@ -662,21 +664,21 @@ describe("error text a server wrote", () => {
 
   it("keeps the server's explanation, which is usually the only clue", async () => {
     stubError("unknown tool \"send\"");
-    const client = new McpClient("https://mcp.example.com/mcp", async () => "tok-abcdefgh");
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => "tok-abcdefgh");
     const err = await client.callTool("send", {}).catch(caught => caught);
     expect(err.message).toContain('unknown tool "send"');
   });
 
   it("flattens text that could forge a second entry in a log line", async () => {
     stubError("denied\nERROR fabricated entry");
-    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
     const err = await client.callTool("send", {}).catch(caught => caught);
     expect(err.message).not.toContain("\n");
   });
 
   it("does not assume a tool failed before taking effect", async () => {
     stubError("write failed");
-    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
     const err = await client.callTool("send", {}).catch(caught => caught);
     expect(callMayHaveTakenEffect(err)).toBe(true);
   });
@@ -685,14 +687,14 @@ describe("error text a server wrote", () => {
 describe("HTTP error outcomes", () => {
   it("keeps a generic client error outcome unknown", async () => {
     vi.stubGlobal("fetch", async () => new Response("bad request", { status: 400 }));
-    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
     const err = await client.callTool("anything", {}).catch(caught => caught);
     expect(callMayHaveTakenEffect(err)).toBe(true);
   });
 
   it("keeps a server error outcome unknown", async () => {
     vi.stubGlobal("fetch", async () => new Response("failed", { status: 500 }));
-    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+    const client = new McpClient(upstream, "https://mcp.example.com/mcp", async () => null);
     const err = await client.callTool("anything", {}).catch(caught => caught);
     expect(callMayHaveTakenEffect(err)).toBe(true);
   });

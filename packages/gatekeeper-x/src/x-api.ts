@@ -1,13 +1,16 @@
-// The only place this gatekeeper talks HTTP to X's API. One `request()` carries the bearer token,
-// a timeout and a capped body read, never follows a redirect, and maps X's failures onto a few
-// error classes the rest of the gatekeeper can act on: a credential rejection (401), a rate limit,
-// exhausted credits, a refusal, and an outcome X never reported (a timeout or dropped connection).
+// The only place this gatekeeper talks HTTP to X's API. Each request goes through the gatekeeper's
+// upstream (`x-upstream.ts`), which gives it a timeout, follows no redirect, sends it once and
+// counts it. This module adds the bearer token and a capped body read, and maps X's failures onto a
+// few error classes the rest of the gatekeeper can act on: a credential rejection (401), a rate
+// limit, exhausted credits, a refusal, and an outcome X never reported (a timeout or dropped
+// connection).
 
 import { readTextCapped } from "@gadgets/gatekeeper-kit/response-body";
+import type { CallAnswer } from "@gadgets/gatekeeper-kit/upstream";
 import { X_API_ORIGIN } from "./x-env";
 import type { WireIncludes } from "./x-normalize";
+import { xUpstream } from "./x-upstream";
 
-const REQUEST_TIMEOUT_MS = 30_000;
 /** A page of 100 posts with every expansion is well under a megabyte; this is the ceiling. */
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 
@@ -200,8 +203,18 @@ export class XApi {
     this.#token = accessToken;
   }
 
-  get<T>(path: string, query: Record<string, QueryValue> = {}): Promise<XEnvelope<T>> {
-    return this.#json("GET", path, query);
+  /**
+   * Reads `path`.
+   * @param read Takes from X's envelope what the request was sent for, within the request: what
+   * it throws is thrown to the caller, and counts a request X answered a success an error of the
+   * call.
+   * @returns X's envelope, or what `read` made of it.
+   */
+  get<T>(path: string, query?: Record<string, QueryValue>): Promise<XEnvelope<T>>;
+  get<T, R>(path: string, query: Record<string, QueryValue>, read: (envelope: XEnvelope<T>) => R): Promise<R>;
+  get<T, R>(path: string, query: Record<string, QueryValue> = {},
+            read?: (envelope: XEnvelope<T>) => R): Promise<XEnvelope<T> | R> {
+    return read ? this.#send("GET", path, query, undefined, read) : this.#json("GET", path, query);
   }
 
   post<T>(path: string, body: unknown = {}): Promise<XEnvelope<T>> {
@@ -210,6 +223,17 @@ export class XApi {
 
   put<T>(path: string, body: unknown): Promise<XEnvelope<T>> {
     return this.#json("PUT", path, {}, body);
+  }
+
+  /**
+   * Creates what `path` creates, and resolves to the ID X names for it. A success that names none
+   * is thrown as `requireCreated` throws it, from within the request, so that it is counted an
+   * error of the API; whoever sent it reconciles what it may have made.
+   * @param what What is created, as the error names it.
+   */
+  create(path: string, body: unknown, what: string): Promise<string> {
+    return this.#send("POST", path, {}, JSON.stringify(body),
+      (envelope: XEnvelope<{ id: string }>) => requireCreated(envelope, what));
   }
 
   delete<T>(path: string): Promise<XEnvelope<T>> {
@@ -224,58 +248,111 @@ export class XApi {
     const form = new FormData();
     form.append("media", new Blob([bytes], { type: mediaType }), "image");
     form.append("media_category", "tweet_image");
-    const envelope = await this.#send<{ id?: string }>("POST", "/2/media/upload", {}, form);
-    const id = envelope.data?.id;
-    if (!id) throw new XApiError(502, "X accepted the image upload without returning a media ID.");
-    return id;
+    return this.#send("POST", "/2/media/upload", {}, form, (envelope: XEnvelope<{ id?: string }>) => {
+      const id = envelope.data?.id;
+      if (!id) throw new XApiError(502, "X accepted the image upload without returning a media ID.");
+      return id;
+    });
   }
 
   #json<T>(method: string, path: string, query: Record<string, QueryValue>, body?: unknown): Promise<XEnvelope<T>> {
     return this.#send<T>(method, path, query, body === undefined ? undefined : JSON.stringify(body));
   }
 
-  async #send<T>(method: string, path: string, query: Record<string, QueryValue>,
-                 body?: string | FormData): Promise<XEnvelope<T>> {
+  // Sends one request and resolves to X's envelope, or to what `read` makes of it. A method that
+  // takes from the envelope what its request was sent for does so in `read`: what `read` throws is
+  // thrown to the caller, and counts a request X answered a success an error of the call.
+  #send<T>(method: string, path: string, query: Record<string, QueryValue>,
+           body?: string | FormData): Promise<XEnvelope<T>>;
+  #send<T, R>(method: string, path: string, query: Record<string, QueryValue>,
+              body: string | FormData | undefined, read: (envelope: XEnvelope<T>) => R): Promise<R>;
+  async #send<T, R>(method: string, path: string, query: Record<string, QueryValue>,
+                    body?: string | FormData, read?: (envelope: XEnvelope<T>) => R): Promise<XEnvelope<T> | R> {
     const url = new URL(path, X_API_ORIGIN);
     for (const [key, value] of Object.entries(query)) {
       if (value !== undefined) url.searchParams.set(key, String(value));
     }
     const headers: Record<string, string> = { Authorization: `Bearer ${this.#token}` };
     if (typeof body === "string") headers["Content-Type"] = "application/json";
-    let response: Response;
+    // What is thrown before X answered is the request not reaching X, or X not answering in time.
+    let answered = false;
+    let answer: XEnvelope<T> | XApiError;
+    let made: Made<R> | undefined;
     try {
-      response = await fetch(url.toString(), {
-        method,
-        headers,
-        body,
-        redirect: "manual",
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      });
+      ({ answer, made } = await xUpstream.read(url.toString(), { method, headers, body }, async response => {
+        answered = true;
+        const envelope = await readAnswer<T>(response);
+        // The method reads the envelope this helper returns: no error an answer stands for.
+        return { answer: envelope, made: read && !(envelope instanceof XApiError) ? madeOf(envelope, read) : undefined };
+      }, counted => (counted.made && "thrown" in counted.made
+        ? { outcome: "error", reason: "api" } : countedAs(counted.answer))));
     } catch (error) {
+      if (answered) throw error;
       throw new XTransportError("X did not answer in time; please try again.", { cause: error });
     }
-    if (response.status >= 300 && response.status < 400) {
-      await response.body?.cancel();
-      throw new XApiError(response.status, "X answered with an unexpected redirect.");
-    }
-    let text: string;
-    try {
-      text = await readTextCapped(response, MAX_RESPONSE_BYTES);
-    } catch (error) {
-      throw new XTransportError("X's response could not be read; please try again.", { cause: error });
-    }
-    let parsed: unknown = undefined;
-    if (text) {
-      try {
-        parsed = JSON.parse(text);
-      } catch {
-        // Unread, as far as billing goes: X may have returned, and billed, rows in it.
-        if (response.ok) throw new XTransportError("X answered with a response that is not JSON.");
-      }
-    }
-    if (!response.ok) throw errorForResponse(response, parsed);
-    return (parsed ?? {}) as XEnvelope<T>;
+    if (answer instanceof XApiError) throw answer;
+    if (!made) return answer;
+    if ("thrown" in made) throw made.thrown;
+    return made.value;
   }
+}
+
+// What the method that sent a request made of the envelope `XApi` hands it: what it read from the
+// envelope, or what it threw for one that lacks what the request was sent for.
+type Made<R> = { value: R } | { thrown: unknown };
+
+// Reads an envelope as the method that sent the request does, keeping what `read` throws for the
+// request to be counted by and for `XApi` to throw.
+function madeOf<T, R>(envelope: XEnvelope<T>, read: (envelope: XEnvelope<T>) => R): Made<R> {
+  try {
+    return { value: read(envelope) };
+  } catch (error) {
+    return { thrown: error };
+  }
+}
+
+/**
+ * Reads X's answer: its envelope, or the error the answer stands for, which is returned for the
+ * request to be counted by (`countedAs`) and thrown by `XApi`. An answer that could not be read is
+ * thrown.
+ */
+async function readAnswer<T>(response: Response): Promise<XEnvelope<T> | XApiError> {
+  if (response.status >= 300 && response.status < 400) {
+    await response.body?.cancel();
+    return new XApiError(response.status, "X answered with an unexpected redirect.");
+  }
+  let text: string;
+  try {
+    text = await readTextCapped(response, MAX_RESPONSE_BYTES);
+  } catch (error) {
+    throw new XTransportError("X's response could not be read; please try again.", { cause: error });
+  }
+  let parsed: unknown = undefined;
+  if (text) {
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      // Unread, as far as billing goes: X may have returned, and billed, rows in it.
+      if (response.ok) throw new XTransportError("X answered with a response that is not JSON.");
+    }
+  }
+  if (!response.ok) return errorForResponse(response, parsed);
+  return (parsed ?? {}) as XEnvelope<T>;
+}
+
+/**
+ * How an answer is counted where its status alone does not say. One saying that the deployment's
+ * credits are used up or its spending limit reached, which is the one read as an `XCreditsError`,
+ * is X declining for capacity, whatever its status. Any other error is counted by its status. X
+ * answers a lookup, a listing or a write it did not make with a 2xx holding `errors` in place of
+ * `data`, which is an error of the call. Rows with partial `errors` beside them are a success.
+ */
+function countedAs(answer: XEnvelope<unknown> | XApiError): CallAnswer | undefined {
+  if (answer instanceof XCreditsError) return { outcome: "refused", reason: "capacity" };
+  if (answer instanceof XApiError) return undefined;
+  const failed = (answer.data === undefined || answer.data === null)
+    && Array.isArray(answer.errors) && answer.errors.length > 0;
+  return failed ? { outcome: "error", reason: "api" } : undefined;
 }
 
 /** Fields every post read asks for, as one place to tune what each read costs. */

@@ -10,6 +10,7 @@ import type {GoogleChatGatekeeperImplProps} from "../../src/chat";
 import type {ChatMessageRaw} from "../../src/chat-api";
 import type {ChatSubscribeOptions} from "../../src/chat-types";
 import type {TestHooks} from "./worker";
+import {unbindWrittenCalls, writtenCalls} from "../written-calls";
 
 const testEnv = env as unknown as {
   ChatHookDriver: DurableObjectNamespace;
@@ -44,6 +45,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  unbindWrittenCalls();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -583,6 +586,152 @@ it("retries a failed subscription renewal before the subscription lapses", async
     vi.useRealTimers();
   }
   expect(google.renewals).toBe(2);
+});
+
+it("writes the renewals one alarm makes of the space's subscriptions as one point", async () => {
+  const google = mockGoogle();
+  const ada = await connect("ada");
+  const bob = await connect("bob");
+  await ada.hooks.chatEnableHook();
+  await bob.hooks.chatEnableHook();
+  const written = writtenCalls();
+
+  // Both are due 3 hours into their 4.
+  vi.setSystemTime(Date.now() + 3 * 3_600_000);
+  await runDurableObjectAlarm(driver());
+
+  expect(google.renewals).toBe(2);
+  expect(written.of("subscriptions.patch")).toEqual([["google-events", "subscriptions.patch", "success", 200, 2]]);
+});
+
+it("counts a subscription's answer that cannot be read as a failed read, and sends it once", async () => {
+  mockGoogle();
+  const google = globalThis.fetch;
+  let creates = 0;
+  vi.stubGlobal("fetch", (...request: Parameters<typeof fetch>) => {
+    const [input, init] = request;
+    const url = typeof input === "string" || input instanceof URL ? String(input) : input.url;
+    if (url !== "https://workspaceevents.googleapis.com/v1/subscriptions" || init?.method !== "POST") {
+      return google(...request);
+    }
+    creates++;
+    return Promise.resolve(new Response("<html>Sign in</html>", {headers: {"Content-Type": "text/html"}}));
+  });
+  const ada = await connect("ada");
+  const written = writtenCalls();
+
+  await expect(Promise.resolve(ada.hooks.chatEnableHook())).rejects.toThrow();
+
+  expect(creates).toBe(1);
+  expect(written.answers(/^subscriptions\./)).toEqual([["subscriptions.create", "error", "parse", 200]]);
+});
+
+it.each<[string, unknown[], [string, string, string, number][]]>([
+  ["the write itself is answered with it", [{name: "operations/create", done: true, error: {code: 9}}],
+    [["subscriptions.create", "error", "api", 200]]],
+  ["a poll of the write is answered with it",
+    [{name: "operations/create", done: false}, {name: "operations/create", done: true, error: {code: 9}}],
+    [["subscriptions.create", "success", "", 200], ["operations.get", "error", "api", 200]]],
+])("counts a subscription write that Google finishes with its failure as an error, where %s", async (_what, operations, counted) => {
+  mockGoogle();
+  const google = globalThis.fetch;
+  const answers = [...operations];
+  const sent: string[] = [];
+  vi.stubGlobal("fetch", (...request: Parameters<typeof fetch>) => {
+    const [input, init] = request;
+    const url = typeof input === "string" || input instanceof URL ? String(input) : input.url;
+    const write = url === "https://workspaceevents.googleapis.com/v1/subscriptions" && init?.method === "POST";
+    if (!write && url !== "https://workspaceevents.googleapis.com/v1/operations/create") return google(...request);
+    sent.push(`${init?.method ?? "GET"} ${new URL(url).pathname}`);
+    return Promise.resolve(json(answers.shift()));
+  });
+  const ada = await connect("ada");
+  const written = writtenCalls();
+
+  await expect(Promise.resolve(ada.hooks.chatEnableHook()))
+    .rejects.toThrow("Google Workspace Events subscriptions.create failed [code=9]");
+
+  expect(sent).toEqual(["POST /v1/subscriptions", "GET /v1/operations/create"].slice(0, operations.length));
+  expect(written.answers(/^(subscriptions|operations)\./)).toEqual(counted);
+});
+
+it.each<[string, unknown, string | RegExp, [string, string, string, number]]>([
+  ["is no list", {subscriptions: 5}, "subscriptions.find is not a function",
+    ["subscriptions.list", "error", "api", 200]],
+  ["holds an entry that is no subscription", {subscriptions: [null]},
+    "Cannot read properties of null (reading 'notificationEndpoint')", ["subscriptions.list", "error", "api", 200]],
+  ["holds none that publishes to the deployment's topic", {subscriptions: []}, /ALREADY_EXISTS/,
+    ["subscriptions.list", "success", "", 200]],
+])("counts the list of subscriptions a refused create is answered by what was read of it, where it %s", async (_what, listed, thrown, counted) => {
+  const mocked = mockGoogle();
+  mocked.unrecorded = {name: "subscriptions/unrecorded", topic: "projects/test/topics/chat"};
+  const google = globalThis.fetch;
+  vi.stubGlobal("fetch", (...request: Parameters<typeof fetch>) => {
+    const [input, init] = request;
+    const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
+    const list = url.href.startsWith("https://workspaceevents.googleapis.com/v1/subscriptions?")
+      && (init?.method ?? "GET") === "GET";
+    return list ? Promise.resolve(json(listed)) : google(...request);
+  });
+  const ada = await connect("ada");
+  const written = writtenCalls();
+
+  await expect(Promise.resolve(ada.hooks.chatEnableHook())).rejects.toThrow(thrown);
+
+  expect(written.answers(/^subscriptions\./)).toEqual([["subscriptions.create", "error", "http", 409], counted]);
+});
+
+it("counts the download of the keys a push's token is checked with", async () => {
+  mockGoogle();
+  const google = globalThis.fetch;
+  // The keys are kept for ten minutes from the answer of their download, which is the push's
+  // one request. It is answered by the real clock, so that the keys are not kept for longer
+  // by whatever runs next.
+  vi.stubGlobal("fetch", (...request: Parameters<typeof fetch>) => {
+    vi.useRealTimers();
+    return google(...request);
+  });
+  const written = writtenCalls();
+
+  // Past the ten minutes for which the keys of an earlier push are kept, so that this one
+  // downloads them.
+  vi.setSystemTime(Date.now() + 11 * 60_000);
+  expect(await push("ada", [chatMessage("bob")])).toBe(204);
+
+  expect(written()).toEqual([["google-oauth", "certs.get", "success", 200, 1]]);
+  expect(written.answers(/^certs\./)).toEqual([["certs.get", "success", "", 200]]);
+});
+
+it.each<[string, () => Response, [string, string, string, number]]>([
+  ["a 200 that is a page of HTML", () => new Response("<html>Sign in</html>", {headers: {"Content-Type": "text/html"}}),
+    ["certs.get", "error", "parse", 200]],
+  ["a 200 whose JSON holds no keys", () => json({}), ["certs.get", "error", "parse", 200]],
+  ["a 200 whose keys are no list", () => json({keys: "none"}), ["certs.get", "error", "parse", 200]],
+  ["a 200 whose keys hold what is no key", () => json({keys: [null]}), ["certs.get", "error", "parse", 200]],
+  ["a 206 that holds keys, which is no 200", () => json({keys: [{kty: "RSA", kid: "k"}]}, 206), ["certs.get", "error", "http", 206]],
+  ["a 404, by its status", () => json({error: {code: 404, status: "NOT_FOUND"}}, 404), ["certs.get", "error", "http", 404]],
+])("counts the download of the keys answered %s as an error, and refuses the push", async (_what, answer, counted) => {
+  mockGoogle();
+  const google = globalThis.fetch;
+  const downloads: Array<[method: string | undefined, redirect: string | undefined, authorization: string | null]> = [];
+  vi.stubGlobal("fetch", (...request: Parameters<typeof fetch>) => {
+    const [input, init] = request;
+    const url = typeof input === "string" || input instanceof URL ? String(input) : input.url;
+    if (url !== "https://www.googleapis.com/oauth2/v3/certs") return google(...request);
+    downloads.push([init?.method, init?.redirect, new Headers(init?.headers).get("Authorization")]);
+    return Promise.resolve(answer());
+  });
+  const written = writtenCalls();
+
+  // Past the ten minutes for which the keys of an earlier push are kept, so that this one
+  // downloads them. None are kept of an answer that holds none.
+  vi.setSystemTime(Date.now() + 11 * 60_000);
+  expect(await push("ada", [chatMessage("bob")])).toBe(401);
+
+  // One GET that follows no redirect and carries no credential, as the key set's reader asks for.
+  expect(downloads).toEqual([["GET", "manual", null]]);
+  expect(written()).toEqual([["google-oauth", "certs.get", "error", counted[3], 1]]);
+  expect(written.answers(/^certs\./)).toEqual([counted]);
 });
 
 it("adopts, and reactivates, the suspended subscription an unanswered earlier create left", async () => {

@@ -4,7 +4,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { RegistrySnapshot } from "../src/homeassistant-api";
 
-vi.mock("cloudflare:workers", () => ({
+// The gatekeeper's classes are driven as plain ones, beside the shared stub's `env`, which the
+// upstream client reads.
+vi.mock("cloudflare:workers", async importOriginal => ({
+  ...await importOriginal<typeof import("cloudflare:workers")>(),
   DurableObject: class { constructor(public ctx: unknown, public env: unknown) {} },
   RpcTarget: class {},
   WorkerEntrypoint: class {},

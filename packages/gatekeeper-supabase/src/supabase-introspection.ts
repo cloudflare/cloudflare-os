@@ -1,4 +1,5 @@
 import type { SupabaseApi, SqlRow } from "./supabase-api";
+import { supabaseUpstream } from "./supabase-upstream";
 import type {
   SupabaseColumn,
   SupabaseForeignKey,
@@ -225,17 +226,23 @@ async function getForeignKeys(
   }));
 }
 
+/**
+ * Reads a table's or view's summary, columns, primary key and foreign keys: a batch of up to four
+ * catalog queries, whose calls are counted summed, as one point.
+ */
 export async function describeTable(
   api: SupabaseApi,
   ref: string,
   schema: string,
   name: string,
 ): Promise<SupabaseTableDetails> {
-  const summary = await getTableSummary(api, ref, schema, name);
-  const [columns, primaryKey, foreignKeys] = await Promise.all([
-    getColumns(api, ref, schema, name),
-    summary.kind === "table" ? getPrimaryKey(api, ref, schema, name) : Promise.resolve<string[]>([]),
-    summary.kind === "table" ? getForeignKeys(api, ref, schema, name) : Promise.resolve<SupabaseForeignKey[]>([]),
-  ]);
-  return { ...summary, columns, primaryKey, foreignKeys };
+  return await supabaseUpstream.summed(async () => {
+    const summary = await getTableSummary(api, ref, schema, name);
+    const [columns, primaryKey, foreignKeys] = await Promise.all([
+      getColumns(api, ref, schema, name),
+      summary.kind === "table" ? getPrimaryKey(api, ref, schema, name) : Promise.resolve<string[]>([]),
+      summary.kind === "table" ? getForeignKeys(api, ref, schema, name) : Promise.resolve<SupabaseForeignKey[]>([]),
+    ]);
+    return { ...summary, columns, primaryKey, foreignKeys };
+  });
 }

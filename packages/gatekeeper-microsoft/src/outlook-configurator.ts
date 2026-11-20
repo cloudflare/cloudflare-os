@@ -100,7 +100,8 @@ export async function mailboxBatch(api: GraphApi, requests: readonly BatchReques
     const retry: BatchRequest[] = [];
     for (let start = 0; start < pending.length; start += MAILBOX_CONCURRENCY) {
       const chunk = pending.slice(start, start + MAILBOX_CONCURRENCY);
-      const answered = await api.batch(chunk);
+      // A request a batch leaves out is sent again, and failed once it has been left out too often.
+      const answered = await api.batch(chunk, { whole: true });
       for (const request of chunk) {
         const answer = answered.get(request.id);
         if ((answer === undefined || answer.status === 429 || answer.status === 503) && attempt < MAX_BATCH_ATTEMPTS - 1) retry.push(request);
@@ -266,7 +267,7 @@ export class OutlookConfiguratorUI extends RpcTarget implements OutlookConfigura
       return await this.#connection.read(async api => {
         // Opening the Inbox by address tells "no such mailbox" from "not shared with you", which
         // the directory lookup that resolves the address to its owner can't.
-        const inbox = parseFolder(await new MailApi(api, { kind: "shared", id: address, address }).get<unknown>("/mailFolders/inbox", { $select: FOLDER_SELECT })
+        const inbox = await new MailApi(api, { kind: "shared", id: address, address }).get("/mailFolders/inbox", { $select: FOLDER_SELECT }, [], parseFolder)
           .catch(error => {
             if (!(error instanceof GraphApiError)) throw error;
             if (error.code === "ErrorInvalidUser") throw new Error(`There's no mailbox ${address} in your organization. Check the address.`);
@@ -274,7 +275,7 @@ export class OutlookConfiguratorUI extends RpcTarget implements OutlookConfigura
               throw new Error(`You haven't been given access to ${address}. Ask its owner or your Microsoft 365 administrator to share it with you.`);
             }
             throw error;
-          }));
+          });
         const ref = (await resolveOutlookUrl(api, `${OUTLOOK_ORIGIN}/mail/${encodeURIComponent(address)}/`, "read", me, identity.objectId)).mailbox;
         if (ref.kind === "me") return { ref, name: me, inbox };
         const user = await api.find<{ displayName?: unknown }>(`/users/${encodeURIComponent(ref.id)}`, { query: { $select: "displayName" } });
@@ -398,10 +399,9 @@ export class OutlookConfiguratorUI extends RpcTarget implements OutlookConfigura
     }
     // The link's own mailbox segment is dropped: the frame's choice is the mailbox, as checked above.
     const scope = await this.#connection.read(api => resolveOutlookUrl(api, link, "read", me, identity.objectId));
-    const latest = await this.#connection.read(api => new MailApi(api, ref).get<{ value?: unknown[] }>("/messages", {
+    const messages = await this.#connection.read(api => new MailApi(api, ref).get("/messages", {
       $filter: `conversationId eq ${odataString(scope.conversation!.id)}`, $select: CONVERSATION_SELECT, $top: 10,
-    }));
-    const messages = (latest.value ?? []).map(parseMessage).toSorted(newestFirst);
+    }, [], (latest: { value?: unknown[] }) => (latest.value ?? []).map(parseMessage).toSorted(newestFirst)));
     const newest = messages[0];
     return conversation(newest ?? { conversationId: scope.conversation!.id, subject: scope.conversation!.subject, receivedAt: "" });
   }

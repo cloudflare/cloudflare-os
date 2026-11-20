@@ -50,7 +50,8 @@ import {
 import { PreviewOAuth, PreviewOAuthConfigurationError } from "@gadgets/gatekeeper-kit/preview-oauth";
 import { CalendarApi, MAX_SCHEDULE_ADDRESSES, type GraphCalendarPermission } from "./calendar-graph";
 import { findUserByMail, organizationDomains } from "./directory";
-import { GraphApi, MAX_BATCH_REQUESTS, isGraphAuthError } from "./graph-api";
+import { GraphApi, MAX_BATCH_REQUESTS, isGraphAuthError, withGraph } from "./graph-api";
+import { graphUpstream } from "./graph-upstream";
 import { SITE_SELECT, parseMe, parseSite } from "./graph-parse";
 import {
   RECONNECT_MESSAGE, accountSource, type MicrosoftVerifierApi, type PublicGrant, type StoredIdentity, type VerifiedIdentity,
@@ -230,11 +231,21 @@ function idClaims(idToken: string | undefined, clientId: string): IdClaims {
  */
 async function fetchIdentity(accessToken: string, tenantId: string): Promise<StoredIdentity> {
   const api = new GraphApi(accessToken);
+  // Each answer is read inside its request, so that one that names no user, or no site, is counted
+  // as the error it is. What reading the root site threw is thrown once both requests have
+  // answered, so that a failure to read the user is the one thrown where both fail.
   const [me, root] = await Promise.all([
-    api.get<unknown>("/me", { query: { $select: "id,displayName,userPrincipalName,mail" } }).then(parseMe),
-    api.find<unknown>("/sites/root", { query: { $select: SITE_SELECT } }),
+    api.get("/me", { query: { $select: "id,displayName,userPrincipalName,mail" } }, parseMe),
+    api.find("/sites/root", { query: { $select: SITE_SELECT } }, (site: unknown) => {
+      try {
+        return { host: site === null ? null : parseSharePointHost(new URL(parseSite(site).webUrl).hostname) };
+      } catch (thrown) {
+        return { thrown };
+      }
+    }, read => "thrown" in read),
   ]);
-  const host = root === null ? null : parseSharePointHost(new URL(parseSite(root).webUrl).hostname);
+  if ("thrown" in root) throw root.thrown;
+  const { host } = root;
   return {
     tenantId,
     objectId: me.id,
@@ -257,6 +268,7 @@ function oauthClient(env: Env): OAuthClient {
     tokenEndpoint: endpoints.token,
     authorizationEndpoint: endpoints.authorize,
     defaultExpiresIn: DEFAULT_EXPIRES_IN_S,
+    upstream: graphUpstream,
   });
 }
 
@@ -851,7 +863,7 @@ export class UserAccount extends DurableObject<Env> {
 
   /** Runs Graph requests with this connection's own token, replayed once past a refreshed one. */
   #graph<T>(op: (api: GraphApi) => Promise<T>): Promise<T> {
-    return this.#self.run(creds => op(new GraphApi(creds.accessToken)), { replayable: true });
+    return this.#self.run(creds => withGraph(creds.accessToken, op), { replayable: true });
   }
 
   async alarm(): Promise<void> {
@@ -940,8 +952,8 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     const selected = grantedSharePoint(await this.#account().getGrantedScopes())?.sites === "selected";
     let resolved;
     try {
-      resolved = await source.run(creds => resolveSharePointUrl(new GraphApi(creds.accessToken), url,
-        { name: identity.sharePointTenant!, id: identity.tenantId }, { selected }), { replayable: true });
+      resolved = await source.run(creds => withGraph(creds.accessToken, api => resolveSharePointUrl(api, url,
+        { name: identity.sharePointTenant!, id: identity.tenantId }, { selected })), { replayable: true });
     } catch (error) {
       if (error instanceof UnresolvableUrlError) throw new Error(error.message, { cause: error });
       throw error;
@@ -961,7 +973,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     const source = accountSource(this.ctx.exports, this.ctx.props.userObjectId);
     let scope;
     try {
-      scope = await source.run(creds => resolveOutlookUrl(new GraphApi(creds.accessToken), url, ceiling, me, identity.objectId), { replayable: true });
+      scope = await source.run(creds => withGraph(creds.accessToken, api => resolveOutlookUrl(api, url, ceiling, me, identity.objectId)), { replayable: true });
     } catch (error) {
       if (error instanceof OutlookUrlError) throw new Error(error.message, { cause: error });
       throw error;
@@ -988,7 +1000,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     const source = accountSource(this.ctx.exports, this.ctx.props.userObjectId);
     let scope;
     try {
-      scope = await source.run(creds => resolveCalendarUrl(new GraphApi(creds.accessToken), url, ceiling, me), { replayable: true });
+      scope = await source.run(creds => withGraph(creds.accessToken, api => resolveCalendarUrl(api, url, ceiling, me)), { replayable: true });
     } catch (error) {
       if (error instanceof CalendarUrlError) throw new Error(error.message, { cause: error });
       throw error;
@@ -1112,8 +1124,7 @@ export class MicrosoftVerifier extends WorkerEntrypoint<Env, MicrosoftVerifierPr
     const availability = indexes("availability");
     const mail = indexes("mail");
     const files = indexes("files");
-    return await source.run(async creds => {
-      const api = new GraphApi(creds.accessToken);
+    return await source.run(creds => withGraph(creds.accessToken, async api => {
       const pick = (list: number[]) => list.map(index => units[index]!);
       const [availabilityVerdicts, mailVerdicts, fileVerdicts] = await Promise.all([
         availability.length ? probeAvailability(api, pick(availability).map(unit => {
@@ -1128,7 +1139,7 @@ export class MicrosoftVerifier extends WorkerEntrypoint<Env, MicrosoftVerifierPr
       mail.forEach((index, at) => { verdicts[index] = mailVerdicts[at] === true; });
       files.forEach((index, at) => { verdicts[index] = fileVerdicts[at] === true; });
       return verdicts;
-    }, { replayable: true });
+    }), { replayable: true });
   }
 }
 

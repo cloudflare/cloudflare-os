@@ -124,6 +124,8 @@ Endpoint split: v2 for spaces, pages, blog posts, child pages, and reading comme
 attachments; v1 (with graceful degradation) for CQL search, label add/remove, attachment upload,
 and restore-from-trash.
 
+`confluence-api.ts` sends every request through one upstream client (`confluence-upstream.ts`), whose calls are counted as [subservice metrics](../observability/README.md#subservice-calls) under the source `gatekeeper.confluence.api`: a REST request under the name `CONFLUENCE_ROUTES` gives its path, a token request or a download under its name in `CONFLUENCE_OPERATIONS`.
+
 ## Approvals, caching & simulation
 
 Every read calls `ApprovalQueue.authorizeObservation()`; every side-effecting operation

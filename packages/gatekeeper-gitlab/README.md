@@ -29,6 +29,12 @@ No encoded Git commands, ref discovery, or arbitrary clone URLs cross this inter
 optional Cloudflare Access credentials remain in the gatekeeper's transport, including on
 self-hosted instances.
 
+Every request to GitLab is sent through one client (`src/gitlab-upstream.ts`): the route tree
+`gitlabRoutes` roots at the configured instance's API and the `GITLAB_OPERATIONS` literals there
+name each request, and its calls are counted as
+[subservice metrics](../observability/README.md#subservice-calls) under the source
+`gatekeeper.gitlab.api`.
+
 ## Auto-approval
 
 As in the GitHub gatekeeper, every queued action carries a stable kind (`gitlab.<action>`), and

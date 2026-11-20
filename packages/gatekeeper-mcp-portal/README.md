@@ -240,6 +240,7 @@ the same way, by `global_fetch_strictly_public` rather than by hostname patterns
 | --- | --- |
 | `src/portal.ts` | Vendor, account DO, user, gatekeeper facet, session, configurator RPC |
 | `src/config.ts` | Reading and validating the deployment's portal configuration |
+| `src/upstream.ts` | The upstream every request to the portal goes through; its calls are counted as subservice metrics under the source `gatekeeper.mcp_portal.api`, named by the lists in [`mcp-shared`'s `upstream`](../mcp-shared/src/upstream.ts) |
 | `src/configurator/` | The grant UI (compiled into `src/generated/`) |
 
 Everything else comes from [`@gadgets/mcp-shared`](../mcp-shared/README.md).

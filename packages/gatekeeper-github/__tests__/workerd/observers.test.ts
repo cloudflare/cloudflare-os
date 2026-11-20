@@ -419,8 +419,9 @@ describe("reads", () => {
     expect(await gk.read([{ method: "getMetadata" }])).toEqual({ error: expect.any(String) });
     expect(await gk.read([{ method: "listIssues" }], true)).toEqual({ error: expect.any(String) });
     expect(gk.queue.observations).toEqual([]);
-    // Nothing was read in the meantime, by name or by any id.
-    expect(github.requestsWith("owner-token")).toEqual([`/repos/${OWNER}/${REPO}`, `/repos/${OWNER}/${REPO}`]);
+    // Nothing was read in the meantime, by name or by any id: each of the two reads asked for
+    // the repository alone, three times, since a GET answered 502 is sent again.
+    expect(github.requestsWith("owner-token")).toEqual(Array(6).fill(`/repos/${OWNER}/${REPO}`));
 
     github.probeStatus = undefined;
     expect(await gk.read([{ method: "getMetadata" }])).toMatchObject({ ok: {} });

@@ -1,14 +1,17 @@
 // Applying and reverting SharePoint actions against a fake Graph at `fetch`: what each kind sends,
 // which failures are final, what a crash may replay, and the proofs an apply makes before writing.
 
+import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ActionApplyError, ActionOutcomeUnknownError } from "@gadgets/gatekeeper-kit/actions";
+import { COMMON_SLOTS, SUBSERVICE_V1_SLOTS, type BlobSlot, type DoubleSlot } from "@gadgets/observability/metrics";
 import { ProvisionalIds, type SimulationKv } from "@gadgets/gatekeeper-kit/simulation";
-import { GraphApi } from "../src/graph-api";
+import { GraphApi, GraphApiError } from "../src/graph-api";
 import {
   definitions, revert, shownChanges, shownTexts, type FolderTarget, type ItemTarget, type SharePointActionHost, type SharePointActions,
 } from "../src/sharepoint-actions";
 import { OutsideScopeError, type ItemRef } from "../src/sharepoint-scope";
+import { countedCalls } from "./points";
 
 const DRIVE = "b!AAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const SPECS: FolderTarget = { id: `${DRIVE}/SPECS`, driveId: DRIVE, name: "Specs", location: "Engineering › Documents", path: "" };
@@ -17,21 +20,50 @@ const NOTES: ItemTarget = { ref: { driveId: DRIVE, itemId: "NOTES" }, name: "not
 const FILE = { handle: "h1", size: 9, digest: "d1" };
 const MONITOR = "https://contoso.sharepoint.com/_api/v2.0/monitor/copy-1";
 
-type Reply = { status: number; body?: unknown; headers?: Record<string, string> };
+/**
+ * A scripted reply. A status of -1 is a dropped connection, `after` the milliseconds the answer
+ * takes to come, and `stalls` an answer whose body never comes: the reading of it fails once the
+ * request's signal aborts.
+ */
+type Reply = { status: number; body?: unknown; headers?: Record<string, string>; after?: number; stalls?: true };
 type Sent = { method: string; path: string; body?: unknown; ifMatch: string | null };
 
-/** A Graph that answers each request with the next scripted reply, recording what was sent. */
-function harness(replies: Reply[] = [], options: { outside?: string[] } = {}) {
+/** The reply of a host that never answers: the request fails once its signal aborts, as `fetch` fails one. */
+const unanswered: Reply = { status: -2 };
+
+/** The reply that a copy is still running, which takes `after` milliseconds to come. */
+const slowProgress = (after: number): Reply => ({ status: 202, body: { status: "inProgress" }, after });
+
+/** Fails once `signal` aborts, with the reason of the abort. */
+function untilAborted(signal: AbortSignal | null | undefined): Promise<never> {
+  return new Promise((_, reject) => signal?.addEventListener("abort", () => reject(signal.reason)));
+}
+
+/**
+ * A Graph that answers each request with the next scripted reply, recording what was sent, and when.
+ * A request whose signal has aborted is failed unsent, as `fetch` fails one. `reaching` is the
+ * milliseconds the host takes to reach Graph, as one that loads a credential first does.
+ */
+function harness(replies: Reply[] = [], options: { outside?: string[]; reaching?: number } = {}) {
   const sent: Sent[] = [];
+  const sentAt: number[] = [];
   const fetch = async (input: string | URL | Request, init?: RequestInit) => {
+    if (init?.signal?.aborted) throw init.signal.reason;
     const url = new URL(String(input));
     sent.push({
       method: init?.method ?? "GET", path: `${url.pathname.replace(/^\/v1\.0/, "")}${url.search}`,
       body: typeof init?.body === "string" ? JSON.parse(init.body) : init?.body, ifMatch: new Headers(init?.headers).get("if-match"),
     });
+    sentAt.push(Date.now());
     const reply = replies.shift() ?? { status: 204 };
     if (reply.status === -1) throw new Error("the connection dropped");
-    return new Response(reply.status === 204 ? null : JSON.stringify(reply.body ?? {}), {
+    if (reply === unanswered) return await untilAborted(init?.signal);
+    const { after } = reply;
+    if (after !== undefined) await Promise.race([new Promise(resolve => setTimeout(resolve, after)), untilAborted(init?.signal)]);
+    const stalled = new ReadableStream({
+      start: controller => init?.signal?.addEventListener("abort", () => controller.error(init.signal?.reason)),
+    });
+    return new Response(reply.status === 204 ? null : reply.stalls ? stalled : JSON.stringify(reply.body ?? {}), {
       status: reply.status, headers: { "content-type": "application/json", ...reply.headers },
     });
   };
@@ -44,7 +76,11 @@ function harness(replies: Reply[] = [], options: { outside?: string[] } = {}) {
   const released: string[] = [];
   const host: SharePointActionHost = {
     refs: new ProvisionalIds<string>(kv, { namespace: "refs:", isProvisional: id => id.startsWith("~") }),
-    graph: op => op(api),
+    graph: op => {
+      const { reaching } = options;
+      if (reaching === undefined) return op(api);
+      return new Promise(resolve => setTimeout(resolve, reaching)).then(() => op(api));
+    },
     inScope: async (ref: ItemRef) => {
       if (options.outside?.includes(ref.itemId)) throw new OutsideScopeError();
     },
@@ -52,8 +88,37 @@ function harness(replies: Reply[] = [], options: { outside?: string[] } = {}) {
     releaseFile: file => { released.push(file.handle); },
     invalidate: async () => {},
   };
-  return { host, sent, released };
+  return { host, sent, sentAt, released };
 }
+
+/** Makes `AbortSignal.timeout` run on the fake clock, which does not reach the platform's own. */
+function fakeTimeouts() {
+  vi.spyOn(AbortSignal, "timeout").mockImplementation(ms => {
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(new DOMException("timed out", "TimeoutError")), ms);
+    return controller.signal;
+  });
+}
+
+/** The dataset the metrics write to, and the switch that has subservice calls written to it. */
+const ambient = env as { METRICS?: AnalyticsEngineDataset; SUBSERVICE_METRICS?: string };
+
+/** Has every call to Graph written as a point, and returns the points as they are written. */
+function recordedPoints(): AnalyticsEngineDataPoint[] {
+  const points: AnalyticsEngineDataPoint[] = [];
+  ambient.METRICS = { writeDataPoint: point => { if (point) points.push(point); } };
+  ambient.SUBSERVICE_METRICS = "true";
+  return points;
+}
+
+/** A written point's value in one column. */
+function column(point: AnalyticsEngineDataPoint, slot: BlobSlot | DoubleSlot) {
+  const values = slot.startsWith("blob") ? point.blobs : point.doubles;
+  return values?.[Number(slot.replace(/\D+/, "")) - 1];
+}
+
+/** The operation a written point counts. */
+const operationOf = (point: AnalyticsEngineDataPoint) => column(point, SUBSERVICE_V1_SLOTS.operation);
 
 const item = (id: string, extra: Record<string, unknown> = {}) =>
   ({ id, name: id, webUrl: `https://contoso.sharepoint.com/${id}`, parentReference: { driveId: DRIVE, id: "SPECS" }, eTag: `"{${id}},2"`, cTag: `"c:{${id}},2"`, ...extra });
@@ -62,7 +127,10 @@ const versions = { status: 200, body: { value: [{ id: "3.0" }, { id: "2.0" }] } 
 const named = (name: string) => ({ status: 200, body: { name } });
 
 afterEach(() => {
+  delete ambient.METRICS;
+  delete ambient.SUBSERVICE_METRICS;
   vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 describe("creating", () => {
@@ -89,8 +157,13 @@ describe("creating", () => {
 
   it("keeps an upload whose content tag couldn't be read afterwards, and won't undo it blind", async () => {
     const upload = { ...payload, file: FILE, name: "book.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", writing: { as: "excel" as const } };
-    const { host, released } = harness([{ status: 201, body: item("NEW", { file: { mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }, size: 9, cTag: "c-up" }) }, { status: 204 }, { status: -1 }]);
-    const { action } = await definitions.uploadFile.apply(upload, host);
+    // The read of the content tag is a GET, so it is sent three times before it is given up.
+    const dropped = { status: -1 };
+    const { host, released } = harness([{ status: 201, body: item("NEW", { file: { mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }, size: 9, cTag: "c-up" }) }, { status: 204 }, dropped, dropped, dropped]);
+    vi.useFakeTimers();
+    const applying = definitions.uploadFile.apply(upload, host);
+    await vi.advanceTimersByTimeAsync(2_000);
+    const { action } = await applying;
     expect(action).toMatchObject({ createdId: "NEW" });
     expect(action.cTag).toBeUndefined();
     expect(released).toEqual([FILE.handle]);
@@ -361,9 +434,225 @@ describe("copying", () => {
   });
 
   it("treats a progress check that fails after SharePoint accepted the copy as an unknown outcome, not a failure to retry", async () => {
-    const { host, sent } = harness([named("notes.txt"), started, { status: -1 }]);
-    await expect(definitions.copyFile.apply(payload, host)).rejects.toThrow(ActionOutcomeUnknownError);
-    expect(sent.map(request => request.method)).toEqual(["GET", "POST", "GET"]);
+    // The progress check is a GET, so it is sent three times before it is given up.
+    const dropped = { status: -1 };
+    const { host, sent } = harness([named("notes.txt"), started, dropped, dropped, dropped]);
+    vi.useFakeTimers();
+    const applied = expect(definitions.copyFile.apply(payload, host)).rejects.toThrow(ActionOutcomeUnknownError);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await applied;
+    expect(sent.map(request => request.method)).toEqual(["GET", "POST", "GET", "GET", "GET"]);
+  });
+
+  /**
+   * Starts a copy on the test's clock, with the timeout of each request on that clock too and the
+   * wait before a request is sent again fixed at half its ceiling: 250 ms after a first send.
+   * `outcome` is the applied action or what the copy threw, `ended.after` the milliseconds the
+   * copy took, `sentAfter()` the milliseconds into the copy at which each request was sent, and
+   * `asksCounted()` how the asks of the copy's progress are counted once the copy has ended: the
+   * outcome, reason and HTTP status of each kind, and how many asks were of it. `lookupsCounted()`
+   * is the same of the reads of an item made once the copy has started: the lookups of a finished
+   * copy by its name and, where the copy landed, the read of its content tag.
+   */
+  function copying(progress: Reply[], options: { reaching?: number } = {}) {
+    const { host, sent, sentAt } = harness([named("notes.txt"), started, ...progress], options);
+    const points = recordedPoints();
+    const countedAs = (operation: string, counted = points) => counted
+      .filter(point => operationOf(point) === operation)
+      .map(point => [COMMON_SLOTS.outcome, SUBSERVICE_V1_SLOTS.reason, SUBSERVICE_V1_SLOTS.httpStatus, SUBSERVICE_V1_SLOTS.calls].map(slot => column(point, slot)));
+    const asksCounted = () => countedAs("copy.progress");
+    const lookupsCounted = () => countedAs("items.get", points.slice(points.findIndex(point => operationOf(point) === "items.copy") + 1));
+    vi.useFakeTimers();
+    fakeTimeouts();
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    const startedAt = Date.now();
+    const ended: { after?: number } = {};
+    const outcome = definitions.copyFile.apply(payload, host)
+      .then(applied => applied.action, (error: unknown) => error)
+      .finally(() => { ended.after = Date.now() - startedAt; });
+    return { sent, outcome, ended, asksCounted, lookupsCounted, sentAfter: () => sentAt.map(at => at - startedAt) };
+  }
+
+  /** The reply that a copy finished, which does not say where the copy is. */
+  const finishedSomewhere: Reply = { status: 200, body: { status: "completed" } };
+
+  it("stops waiting 45 seconds in for a copy whose progress link never answers, having asked the twice that fit", async () => {
+    const { sent, outcome, ended, asksCounted, sentAfter } = copying([unanswered, unanswered, unanswered]);
+    await vi.advanceTimersByTimeAsync(44_999);
+    expect(ended.after).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(ended.after).toBe(45_000);
+    const error = await outcome;
+    expect(error).toBeInstanceOf(ActionOutcomeUnknownError);
+    expect(error).toMatchObject({ message: expect.stringMatching(/whether it has finished couldn't be checked/) });
+    // The first ask has the 30 seconds of any request, and the second what is left of the wait.
+    expect(sent.map(request => request.method)).toEqual(["GET", "POST", "GET", "GET"]);
+    expect(sentAfter().slice(2)).toEqual([0, 30_250]);
+    // The ask that the end of the wait cut off is SharePoint not answering, as the first is.
+    expect(asksCounted()).toEqual([["error", "timeout", 0, 2]]);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(sent).toHaveLength(4);
+  });
+
+  it("gives a progress link that stops answering what is left of the wait, not a wait of its own", async () => {
+    const progress = { status: 202, body: { status: "inProgress" } };
+    const { outcome, ended, sentAfter } = copying([progress, progress, unanswered, unanswered, unanswered]);
+    await vi.advanceTimersByTimeAsync(44_999);
+    expect(ended.after).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(ended.after).toBe(45_000);
+    expect(await outcome).toBeInstanceOf(ActionOutcomeUnknownError);
+    expect(sentAfter().slice(2)).toEqual([0, 500, 1_500, 31_750]);
+  });
+
+  it("lands a copy whose progress link answers the second time it is asked, within the wait", async () => {
+    const { outcome, ended, sentAfter } = copying([unanswered, { status: 200, body: { status: "completed", resourceId: "COPY" } }]);
+    await vi.advanceTimersByTimeAsync(45_000);
+    expect(ended.after).toBe(30_250);
+    expect(await outcome).toMatchObject({ createdId: "COPY" });
+    expect(sentAfter().slice(2, 4)).toEqual([0, 30_250]);
+  });
+
+  it("sends no ask that falls due as the wait ends, which leaves it no time, and counts none", async () => {
+    // The host reaches Graph 5 ms after it is asked to, so the copy starts 10 ms in and its wait
+    // ends 45 010 ms in. The second ask is answered a second before that, so that the third falls
+    // due as the wait ends: the wait's signal has aborted by the time the host reaches Graph.
+    const { sent, outcome, ended, asksCounted, sentAfter } = copying(
+      [slowProgress(29_000), slowProgress(14_490), { status: 200, body: { status: "completed", resourceId: "COPY" } }], { reaching: 5 });
+    await vi.advanceTimersByTimeAsync(120_000);
+    const error = await outcome;
+    expect(error).toBeInstanceOf(ActionOutcomeUnknownError);
+    expect(error).toMatchObject({ message: expect.stringMatching(/whether it has finished couldn't be checked/) });
+    expect(ended.after).toBe(45_015);
+    expect(sent.map(request => request.method)).toEqual(["GET", "POST", "GET", "GET"]);
+    expect(sentAfter().slice(2)).toEqual([15, 29_520]);
+    expect(asksCounted()).toEqual([["success", "", 202, 2]]);
+  });
+
+  it("stops waiting as the wait ends for an ask made just before that gets no answer", async () => {
+    // Answered 29 and 43.99 seconds in, so that the next ask is made 10 ms before the 45 seconds end.
+    const { sent, outcome, ended, asksCounted, sentAfter } = copying([slowProgress(29_000), slowProgress(14_490), unanswered, unanswered]);
+    await vi.advanceTimersByTimeAsync(44_999);
+    expect(ended.after).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(ended.after).toBe(45_000);
+    expect(await outcome).toBeInstanceOf(ActionOutcomeUnknownError);
+    expect(sentAfter().slice(2)).toEqual([0, 29_500, 44_990]);
+    expect(asksCounted()).toEqual([["success", "", 202, 2], ["error", "timeout", 0, 1]]);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(sent).toHaveLength(5);
+  });
+
+  it("stops at a progress link that answers without a status as an unknown outcome, the ask counted an answer that cannot be read", async () => {
+    const { sent, outcome, asksCounted } = copying([{ status: 202, body: { status: "inProgress" } }, { status: 200, body: {} }]);
+    await vi.advanceTimersByTimeAsync(2_000);
+    const error = await outcome;
+    expect(error).toBeInstanceOf(ActionOutcomeUnknownError);
+    expect(error).toMatchObject({ message: expect.stringMatching(/whether it has finished couldn't be checked/) });
+    expect(sent.map(request => request.method)).toEqual(["GET", "POST", "GET", "GET"]);
+    expect(asksCounted()).toEqual([["success", "", 202, 1], ["error", "parse", 200, 1]]);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(sent).toHaveLength(4);
+  });
+
+  it("stops waiting 45 seconds in for a finished copy whose lookup by name never answers, having looked the twice that fit", async () => {
+    const { sent, outcome, ended, lookupsCounted, sentAfter } = copying([finishedSomewhere, unanswered, unanswered, unanswered]);
+    await vi.advanceTimersByTimeAsync(44_999);
+    expect(ended.after).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(ended.after).toBe(45_000);
+    const error = await outcome;
+    expect(error).toBeInstanceOf(ActionOutcomeUnknownError);
+    expect(error).toMatchObject({ message: expect.stringMatching(/whether it has finished couldn't be checked/) });
+    // The first lookup has the 30 seconds of any request, and the second what is left of the wait.
+    expect(sent.map(request => request.method)).toEqual(["GET", "POST", "GET", "GET", "GET"]);
+    const lookup = `/drives/${DRIVE}/items/ARCHIVE:/notes%20(copy).txt?%24select=id`;
+    expect(sent.slice(3).map(request => request.path)).toEqual([lookup, lookup]);
+    expect(sentAfter().slice(2)).toEqual([0, 0, 30_250]);
+    // The lookup that the end of the wait cut off is Graph not answering, as the first is.
+    expect(lookupsCounted()).toEqual([["error", "timeout", 0, 2]]);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(sent).toHaveLength(5);
+  });
+
+  it("gives the lookup of a copy that finished late what is left of the wait, not a wait of its own", async () => {
+    const { sent, outcome, ended, lookupsCounted, sentAfter } = copying([{ ...finishedSomewhere, after: 29_000 }, unanswered, unanswered]);
+    await vi.advanceTimersByTimeAsync(44_999);
+    expect(ended.after).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(ended.after).toBe(45_000);
+    expect(await outcome).toBeInstanceOf(ActionOutcomeUnknownError);
+    expect(sentAfter().slice(2)).toEqual([0, 29_000]);
+    expect(lookupsCounted()).toEqual([["error", "timeout", 0, 1]]);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(sent).toHaveLength(4);
+  });
+
+  it("lands a finished copy whose lookup by name answers the second time it is sent, within the wait", async () => {
+    const { outcome, ended, lookupsCounted, sentAfter } = copying([finishedSomewhere, unanswered, { status: 200, body: { id: "COPY" } }]);
+    await vi.advanceTimersByTimeAsync(45_000);
+    expect(ended.after).toBe(30_250);
+    expect(await outcome).toMatchObject({ createdId: "COPY" });
+    expect(sentAfter().slice(2, 5)).toEqual([0, 0, 30_250]);
+    // The two lookups, and the read of the landed copy's content tag after them.
+    expect(lookupsCounted()).toEqual([["error", "timeout", 0, 1], ["success", "", 200, 1], ["success", "", 204, 1]]);
+  });
+
+  it("sends no lookup that falls due as the wait ends, which leaves it no time, and counts none", async () => {
+    // The host reaches Graph 5 ms after it is asked to, so the copy starts 10 ms in and its wait
+    // ends 45 010 ms in. The copy is reported finished 2 ms before that: the wait's signal has
+    // aborted by the time the host reaches Graph for the lookup.
+    const { sent, outcome, ended, lookupsCounted, sentAfter } = copying(
+      [slowProgress(29_000), { ...finishedSomewhere, after: 15_488 }, { status: 200, body: { id: "COPY" } }], { reaching: 5 });
+    await vi.advanceTimersByTimeAsync(120_000);
+    const error = await outcome;
+    expect(error).toBeInstanceOf(ActionOutcomeUnknownError);
+    expect(error).toMatchObject({ message: expect.stringMatching(/whether it has finished couldn't be checked/) });
+    expect(ended.after).toBe(45_013);
+    expect(sent.map(request => request.method)).toEqual(["GET", "POST", "GET", "GET"]);
+    expect(sentAfter().slice(2)).toEqual([15, 29_520]);
+    expect(lookupsCounted()).toEqual([]);
+  });
+
+  it.each<[answered: string, reply: Reply, counted: unknown[]]>([
+    ["a 503 that names no wait", { status: 503 }, ["error", "http", 503, 1]],
+    ["a 504", { status: 504 }, ["error", "http", 504, 1]],
+    ["a 429 that asks for 5 seconds", { status: 429, headers: { "retry-after": "5" } }, ["refused", "rate", 429, 1]],
+    ["a 503 that asks for 2 seconds", { status: 503, headers: { "retry-after": "2" } }, ["refused", "rate", 503, 1]],
+    ["a dropped connection", { status: -1 }, ["error", "network", 0, 1]],
+  ])("stops waiting 45 seconds in for a finished copy whose lookup, answered %s, would be sent again after that", async (_, reply, counted) => {
+    // The copy is reported finished 100 ms before the wait ends, and the pause before the lookup
+    // is sent again is longer than that: 250 ms after a dropped connection, a second or more after an answer.
+    const { sent, outcome, ended, lookupsCounted, sentAfter } = copying(
+      [slowProgress(29_000), { ...finishedSomewhere, after: 15_400 }, reply, { status: 200, body: { id: "COPY" } }]);
+    await vi.advanceTimersByTimeAsync(44_999);
+    expect(ended.after).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(ended.after).toBe(45_000);
+    const error = await outcome;
+    expect(error).toBeInstanceOf(ActionOutcomeUnknownError);
+    expect(error).toMatchObject({ message: expect.stringMatching(/whether it has finished couldn't be checked/) });
+    expect(sentAfter().slice(2)).toEqual([0, 29_500, 44_900]);
+    expect(lookupsCounted()).toEqual([counted]);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(sent).toHaveLength(5);
+  });
+
+  it("stops waiting 45 seconds in for a finished copy whose lookup is answered and never read to its end, having looked the twice that fit", async () => {
+    const stalled: Reply = { status: 200, stalls: true };
+    const { sent, outcome, ended, lookupsCounted, sentAfter } = copying([finishedSomewhere, stalled, stalled, { status: 200, body: { id: "COPY" } }]);
+    await vi.advanceTimersByTimeAsync(44_999);
+    expect(ended.after).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(ended.after).toBe(45_000);
+    const error = await outcome;
+    expect(error).toBeInstanceOf(ActionOutcomeUnknownError);
+    expect(error).toMatchObject({ message: expect.stringMatching(/whether it has finished couldn't be checked/) });
+    // The first answer has the 30 seconds of any request to be read in, and the second what is left of the wait.
+    expect(sentAfter().slice(2)).toEqual([0, 0, 30_250]);
+    expect(lookupsCounted()).toEqual([["error", "timeout", 200, 2]]);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(sent).toHaveLength(5);
   });
 
   it("undoes a copy only while it still holds what was copied", async () => {
@@ -412,6 +701,98 @@ describe("copying", () => {
     const { host, sent } = harness([named("report.zip")]);
     await expect(definitions.copyFile.apply({ ...payload, source: { ...NOTES, name: "report.xlsx" }, name: "copy.xlsx" }, host)).rejects.toThrow(/renamed into another format/);
     expect(sent.map(request => request.method)).toEqual(["GET"]);
+  });
+});
+
+/** What an action throws: its class and message. */
+type Thrown = { type: abstract new (...args: never[]) => Error; message: string };
+
+/** What an action throws for a success that is not the shape it asked for. */
+const malformed = (what: string): Thrown => ({ type: GraphApiError, message: `Microsoft Graph sent a malformed ${what}.` });
+
+/** What an action throws for a file whose format it cannot tell is the one it was proposed for. */
+const reformatted = (done: string): Thrown => ({
+  type: ActionApplyError, message: `The file has been renamed into another format since this was proposed, so it wasn't ${done}. Ask the agent to read it again.`,
+});
+
+describe("how a success that is not what its request was sent for is counted", () => {
+  const counted = countedCalls();
+  const folder: SharePointActions["createFolder"] = { ref: "~1", parent: SPECS, name: "Drafts", submittedAt: 1 };
+  const listItem: SharePointActions["createListItem"] = {
+    ref: "~1", list: { siteId: "contoso.sharepoint.com,11111111-1111-1111-1111-111111111111,33333333-3333-3333-3333-333333333333", listId: "44444444-4444-4444-4444-444444444444", name: "Tasks" },
+    fields: { Title: "Ship it" }, labels: { Title: "Title" }, submittedAt: 1,
+  };
+  const replace: SharePointActions["replaceFile"] = { target: NOTES, file: FILE, mimeType: "text/plain", ifMatch: `"c:{NOTES},2"`, submittedAt: 1 };
+  const cells: SharePointActions["updateCells"] = {
+    target: NOTES, worksheet: "Costs", sheetId: "{00000000-0001-0000-0000-000000000000}", address: "B2:C2",
+    values: [["=SUM(B3:B9)", null]], before: [[1, 2]], ifMatch: `"c:{NOTES},2"`, submittedAt: 1,
+  };
+
+  // Each write and read an action makes whose answer it checks: the replies that lead to it, the
+  // success it refuses, the request that answer is to, the name it is counted under and what the
+  // action throws.
+  it.each<[string, (host: SharePointActionHost) => Promise<unknown>, Reply[], Reply, string, string, Thrown]>([
+    ["a folder created with no ID", host => definitions.createFolder.apply(folder, host), [], { status: 201, body: { name: "Drafts" } },
+      "POST", "children.create", malformed("file")],
+    ["a file uploaded with no ID", host => definitions.uploadFile.apply({ ...folder, file: FILE, mimeType: "text/plain" }, host), [],
+      { status: 201, body: { name: "Drafts" } }, "PUT", "content.update", malformed("file")],
+    ["the versions a replaced file supersedes that hold no list", host => definitions.replaceFile.apply(replace, host), [named("notes.txt")],
+      { status: 200, body: {} }, "GET", "versions.list", malformed("version list")],
+    ["the workbook whose cells are written that names no drive", host => definitions.updateCells.apply(cells, host), [],
+      { status: 200, body: { id: "NOTES" } }, "GET", "items.get", malformed("file")],
+    ["the versions a write of cells supersedes that hold no list", host => definitions.updateCells.apply(cells, host), [{ status: 200, body: item("NOTES") }],
+      { status: 200, body: { value: {} } }, "GET", "versions.list", malformed("version list")],
+    ["the file a replacement is fenced on that has no name", host => definitions.replaceFile.apply(replace, host), [], { status: 200, body: { id: "NOTES" } },
+      "GET", "items.get", reformatted("replaced")],
+    ["the file a rename is fenced on that has no name", host => definitions.rename.apply({ target: NOTES, name: "n.txt", submittedAt: 1 }, host), [], { status: 200, body: { id: "NOTES" } },
+      "GET", "items.get", reformatted("renamed")],
+    ["the file a copy is fenced on that has no name", host => definitions.copyFile.apply({ ref: "~2", source: NOTES, parent: ARCHIVE, name: "notes (copy).txt", submittedAt: 1 }, host), [],
+      { status: 200, body: { id: "NOTES" } }, "GET", "items.get", reformatted("copied")],
+    ["a list item added with no ID", host => definitions.createListItem.apply(listItem, host), [], { status: 201, body: { fields: {} } },
+      "POST", "items.create", { type: ActionOutcomeUnknownError, message: "SharePoint may have added the item before the connection dropped. Check the list before trying again." }],
+    ["the list item an undo is to delete that has no ID", host => revert({ kind: "createListItem", payload: { ...listItem, createdId: "9", createdETag: '"e1"', appliedAt: 2 } }, host), [],
+      { status: 200, body: { eTag: '"e1"' } }, "GET", "items.get", malformed("list item")],
+  ])("counts %s as an error of the API, by the status of the answer, and sends nothing after it", async (_what, act, before, refused, method, operation, thrown) => {
+    const { host, sent } = harness([...before, refused, { status: 200, body: item("NOTES") }]);
+    const error = await act(host).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(thrown.type);
+    expect(error).toMatchObject({ message: thrown.message });
+    expect(sent).toHaveLength(before.length + 1);
+    expect(sent.at(-1)?.method).toBe(method);
+    expect(counted().at(-1)).toEqual([operation, "error", "api", refused.status]);
+    expect(counted().slice(0, -1).map(([, outcome]) => outcome)).toEqual(before.map(() => "success"));
+  });
+
+  it("counts the read of a file since renamed into another format as the success it is, and refuses the change as it does a file with no name", async () => {
+    for (const [act, done] of [
+      [(host: SharePointActionHost) => definitions.replaceFile.apply(replace, host), "replaced"],
+      [(host: SharePointActionHost) => definitions.rename.apply({ target: NOTES, name: "n.txt", submittedAt: 1 }, host), "renamed"],
+      [(host: SharePointActionHost) => definitions.copyFile.apply({ ref: "~2", source: NOTES, parent: ARCHIVE, name: "notes (copy).txt", submittedAt: 1 }, host), "copied"],
+    ] as const) {
+      const { host, sent } = harness([named("notes.docx"), { status: 200, body: item("NOTES") }]);
+      const error = await act(host).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(ActionApplyError);
+      expect(error).toMatchObject({ message: reformatted(done).message });
+      expect(sent).toHaveLength(1);
+      expect(counted().at(-1)).toEqual(["items.get", "success", "", 200]);
+    }
+  });
+
+  it("counts the lookup of a finished copy that names no item as an error of the API, and one that finds none by its status", async () => {
+    const copy: SharePointActions["copyFile"] = { ref: "~2", source: NOTES, parent: ARCHIVE, name: "notes (copy).txt", submittedAt: 1 };
+    const started = { status: 202, headers: { location: MONITOR } };
+    const nowhere = { message: "SharePoint says the copy finished, but it couldn't be found in the folder. Check there before asking for it again." };
+    for (const [found, count] of [
+      [{ status: 200, body: { name: "notes (copy).txt" } }, ["items.get", "error", "api", 200]],
+      [{ status: 404, body: { error: { code: "itemNotFound" } } }, ["items.get", "error", "http", 404]],
+    ] as const) {
+      const { host, sent } = harness([named("notes.txt"), started, { status: 200, body: { status: "completed" } }, found]);
+      const error = await definitions.copyFile.apply(copy, host).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(ActionOutcomeUnknownError);
+      expect(error).toMatchObject(nowhere);
+      expect(sent).toHaveLength(4);
+      expect(counted().at(-1)).toEqual(count);
+    }
   });
 });
 

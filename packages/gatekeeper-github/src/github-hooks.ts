@@ -26,6 +26,7 @@ import {
   GitHubApiError, isConnectionExpired, withAccountApi,
   type GitHubApi, type GitHubRepoWebhookResponse, type GitHubWebhookDeliveryResponse, type PinnedRepo,
 } from "./github-api";
+import { githubUpstream } from "./github-upstream";
 import { getBasePath, webhookOrigin, type Env } from "./github-env";
 import { parseWebhookEvent, type GitHubWebhookEvent, type WebhookPayload } from "./github-webhook-events";
 import { obsContext } from "./observability";
@@ -204,35 +205,38 @@ export class GitHubHookDriver extends DurableObject<Env> {
    *   yet delete one, which needs the account's token: the hourly check tries again meanwhile.
    */
   async revoke(): Promise<boolean> {
-    const kv = this.ctx.storage.kv;
-    const account = kv.get<string>("account");
-    if (account === undefined) {
-      // Never used, or done. Refused from now on all the same: a first enable could otherwise come
-      // between this answer and the token's revocation, and add a webhook nothing would delete.
-      kv.put("revoked", true);
-      return true;
-    }
-    if (!kv.get("revoked")) {
-      // Listed in full before any is deleted. The webhooks, and the account that deletes them, stay
-      // until they are gone.
-      for (const [key, value] of Array.from(kv.list())) {
-        if (key === "account" || key.startsWith("webhook:") || key.startsWith("unrecorded:")) continue;
-        if (key.startsWith("caps:")) disposeStubs(value as Capabilities);
-        kv.delete(key);
+    // One or more requests for each webhook deleted: their calls are summed.
+    return await githubUpstream.summed(async () => {
+      const kv = this.ctx.storage.kv;
+      const account = kv.get<string>("account");
+      if (account === undefined) {
+        // Never used, or done. Refused from now on all the same: a first enable could otherwise come
+        // between this answer and the token's revocation, and add a webhook nothing would delete.
+        kv.put("revoked", true);
+        return true;
       }
-      kv.put("revoked", true);
-    }
-    // A change in flight finishes first, recording what it added for this to delete.
-    const gone = await this.#webhookChanges.run(async () => {
-      await Promise.all([
-        ...this.#webhooks().map(webhook => this.#deleteWebhook(account, webhook)),
-        ...this.#unrecorded().map(unrecorded => this.#deleteUnrecorded(account, unrecorded)),
-      ]);
-      return this.#webhooks().length === 0 && this.#unrecorded().length === 0;
+      if (!kv.get("revoked")) {
+        // Listed in full before any is deleted. The webhooks, and the account that deletes them, stay
+        // until they are gone.
+        for (const [key, value] of Array.from(kv.list())) {
+          if (key === "account" || key.startsWith("webhook:") || key.startsWith("unrecorded:")) continue;
+          if (key.startsWith("caps:")) disposeStubs(value as Capabilities);
+          kv.delete(key);
+        }
+        kv.put("revoked", true);
+      }
+      // A change in flight finishes first, recording what it added for this to delete.
+      const gone = await this.#webhookChanges.run(async () => {
+        await Promise.all([
+          ...this.#webhooks().map(webhook => this.#deleteWebhook(account, webhook)),
+          ...this.#unrecorded().map(unrecorded => this.#deleteUnrecorded(account, unrecorded)),
+        ]);
+        return this.#webhooks().length === 0 && this.#unrecorded().length === 0;
+      });
+      if (gone) kv.delete("account");
+      await this.#reschedule();
+      return gone;
     });
-    if (gone) kv.delete("account");
-    await this.#reschedule();
-    return gone;
   }
 
   /**
@@ -318,64 +322,67 @@ export class GitHubHookDriver extends DurableObject<Env> {
    * deliver to them, sharing one budget among them so that a busy repository can't starve the rest.
    */
   async #checkWebhooks(): Promise<void> {
-    const kv = this.ctx.storage.kv;
-    kv.put("checkAt", Date.now() + CHECK_INTERVAL_MS);
-    const account = kv.get<string>("account");
-    if (account === undefined) return;
-    // Undefined while this deployment has hooks turned off, when only deletions go on.
-    const url = this.#webhookUrl();
-    // In case a reconnect's notice to this driver was lost.
-    if (url !== undefined && !kv.get("revoked")) {
-      await this.#readViewer(account).catch((error: unknown) => {
-        logger.warn("failed to read who a GitHub account is", { event: "hooks.viewer.read.failed", error });
-      });
-    }
-    for (const unrecorded of this.#unrecorded()) {
-      // Unless it is the webhook of the hooks there, at the URL they deliver to, which just went
-      // unrecorded: one at another, as before WEBHOOK_ORIGIN changed, is no hook's.
-      const needed = () => this.#registrations(unrecorded.repo).length > 0 && (url === undefined || unrecorded.url === url);
-      if (needed()) continue;
-      await this.#webhookChanges.run(async () => {
-        if (!needed()) await this.#deleteUnrecorded(account, unrecorded);
-      }).catch((error: unknown) => {
-        logger.warn("failed to delete a GitHub webhook", { event: "hooks.webhook.delete.failed", error });
-      });
-    }
-    const checked: { webhook: Webhook; failed: GitHubWebhookDeliveryResponse[] }[] = [];
-    for (const webhook of this.#webhooks()) {
-      try {
-        if (this.#registrations(webhook.repo).length === 0) {
-          // No hook needs it any more: GitHub failed to delete it as the last was disabled, or as
-          // the account was disconnected.
-          await this.#webhookChanges.run(async () => {
-            if (this.#registrations(webhook.repo).length === 0) await this.#deleteWebhook(account, webhook);
-          });
-          continue;
-        }
-        if (url !== undefined) checked.push({ webhook, failed: await this.#checkWebhook(account, url, webhook) });
-      } catch (error) {
-        // Tried again at the next check.
-        logger.warn("failed to check a GitHub webhook", { event: "hooks.webhook.check.failed", error });
-      }
-    }
-    // Started where the last check's split stopped: when more repositories need redeliveries than
-    // a check makes, those one check leaves out go first in the next.
-    const from = Math.max(0, checked.findIndex(({ webhook }) => webhook.repo.id === kv.get<number>("redeliverFrom")));
-    const { shares, next } = fairShares(checked.map(({ failed }) => failed.length), MAX_REDELIVERIES_PER_CHECK, from);
-    if (checked.length > 0) kv.put("redeliverFrom", checked[next]!.webhook.repo.id);
-    for (const [i, { webhook: { id, repo }, failed }] of checked.entries()) {
-      if (shares[i] === 0) continue;
-      try {
-        await this.#api(account, repo, async api => {
-          for (const { id: deliveryId } of failed.slice(0, shares[i])) {
-            await api.redeliverRepoWebhookDelivery(repo.id, id, deliveryId);
-          }
+    // Several requests for each webhook checked: their calls are summed.
+    return await githubUpstream.summed(async () => {
+      const kv = this.ctx.storage.kv;
+      kv.put("checkAt", Date.now() + CHECK_INTERVAL_MS);
+      const account = kv.get<string>("account");
+      if (account === undefined) return;
+      // Undefined while this deployment has hooks turned off, when only deletions go on.
+      const url = this.#webhookUrl();
+      // In case a reconnect's notice to this driver was lost.
+      if (url !== undefined && !kv.get("revoked")) {
+        await this.#readViewer(account).catch((error: unknown) => {
+          logger.warn("failed to read who a GitHub account is", { event: "hooks.viewer.read.failed", error });
         });
-      } catch (error) {
-        // The rest are asked for again at the next check, while it still reads them.
-        logger.warn("failed to have GitHub redeliver to a webhook", { event: "hooks.webhook.redeliver.failed", error });
       }
-    }
+      for (const unrecorded of this.#unrecorded()) {
+        // Unless it is the webhook of the hooks there, at the URL they deliver to, which just went
+        // unrecorded: one at another, as before WEBHOOK_ORIGIN changed, is no hook's.
+        const needed = () => this.#registrations(unrecorded.repo).length > 0 && (url === undefined || unrecorded.url === url);
+        if (needed()) continue;
+        await this.#webhookChanges.run(async () => {
+          if (!needed()) await this.#deleteUnrecorded(account, unrecorded);
+        }).catch((error: unknown) => {
+          logger.warn("failed to delete a GitHub webhook", { event: "hooks.webhook.delete.failed", error });
+        });
+      }
+      const checked: { webhook: Webhook; failed: GitHubWebhookDeliveryResponse[] }[] = [];
+      for (const webhook of this.#webhooks()) {
+        try {
+          if (this.#registrations(webhook.repo).length === 0) {
+            // No hook needs it any more: GitHub failed to delete it as the last was disabled, or as
+            // the account was disconnected.
+            await this.#webhookChanges.run(async () => {
+              if (this.#registrations(webhook.repo).length === 0) await this.#deleteWebhook(account, webhook);
+            });
+            continue;
+          }
+          if (url !== undefined) checked.push({ webhook, failed: await this.#checkWebhook(account, url, webhook) });
+        } catch (error) {
+          // Tried again at the next check.
+          logger.warn("failed to check a GitHub webhook", { event: "hooks.webhook.check.failed", error });
+        }
+      }
+      // Started where the last check's split stopped: when more repositories need redeliveries than
+      // a check makes, those one check leaves out go first in the next.
+      const from = Math.max(0, checked.findIndex(({ webhook }) => webhook.repo.id === kv.get<number>("redeliverFrom")));
+      const { shares, next } = fairShares(checked.map(({ failed }) => failed.length), MAX_REDELIVERIES_PER_CHECK, from);
+      if (checked.length > 0) kv.put("redeliverFrom", checked[next]!.webhook.repo.id);
+      for (const [i, { webhook: { id, repo }, failed }] of checked.entries()) {
+        if (shares[i] === 0) continue;
+        try {
+          await this.#api(account, repo, async api => {
+            for (const { id: deliveryId } of failed.slice(0, shares[i])) {
+              await api.redeliverRepoWebhookDelivery(repo.id, id, deliveryId);
+            }
+          });
+        } catch (error) {
+          // The rest are asked for again at the next check, while it still reads them.
+          logger.warn("failed to have GitHub redeliver to a webhook", { event: "hooks.webhook.redeliver.failed", error });
+        }
+      }
+    });
   }
 
   /**

@@ -32,8 +32,11 @@ import {
   exchangeAuthCode,
   generateCodeVerifier,
   isGrantRefused,
+  isRefreshToken,
+  readIdToken,
   refreshAccessToken,
   resolveOAuthConfig,
+  type IdTokenIdentity,
   type JsonApiDoc,
   type JsonApiResource,
   type QueryParams,
@@ -115,10 +118,7 @@ type StoredNonce = {
   reconnect?: true;
 };
 
-type StoredIdentity = {
-  displayName?: string;
-  uniqueName?: string;
-};
+type StoredIdentity = IdTokenIdentity;
 
 /**
  * The values a token grant is persisted as, in the kit's CredentialCoordinator (see UserAccount);
@@ -255,35 +255,6 @@ function getBasePath(env: Env): string {
 function ensureConfigured(env: Env): asserts env is Env & { CLIENT_ID: string; CLIENT_SECRET: string } {
   if (!env.CLIENT_ID || !env.CLIENT_SECRET) {
     throw new Error("The ZoomInfo gatekeeper is not configured.");
-  }
-}
-
-// Decodes the OIDC ID token ZoomInfo's token endpoint returns with every grant. It came straight
-// from that endpoint over TLS, answering this client's own authenticated request, so its signature
-// needs no check (OpenID Connect Core §3.1.3.7), though it must be addressed to this client. Its
-// `sub`, which the identity provider never reassigns, is the connected user's ID (`userId`); the
-// other claims only name them for display, and may change.
-function readIdToken(idToken: string | null, clientId: string): { userId?: string; identity: StoredIdentity } {
-  if (!idToken) return { identity: {} };
-  try {
-    const payload = idToken.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
-    const json = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(payload), c => c.charCodeAt(0)))) as {
-      aud?: string | string[];
-      name?: string;
-      email?: string;
-      preferred_username?: string;
-      sub?: string;
-    };
-    if (![json.aud].flat().includes(clientId)) return { identity: {} };
-    return {
-      userId: typeof json.sub === "string" && json.sub !== "" ? json.sub : undefined,
-      identity: {
-        displayName: json.name || json.email || json.preferred_username,
-        uniqueName: json.email || json.preferred_username || json.sub,
-      },
-    };
-  } catch {
-    return { identity: {} };
   }
 }
 
@@ -550,7 +521,7 @@ export class UserAccount extends DurableObject<Env> {
       this.env.CLIENT_SECRET,
       oauth.tokenUrl,
     );
-    if (!grant.refreshToken) {
+    if (!isRefreshToken(grant.refreshToken)) {
       throw new Error("ZoomInfo did not return a refresh token.");
     }
 

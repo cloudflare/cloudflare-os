@@ -6,6 +6,7 @@ import {
   McpClient,
 } from "../src/client.js";
 import { withClient, type ConnectionAccount } from "../src/connection.js";
+import { upstream } from "./stubs/upstream.js";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -21,7 +22,7 @@ it("keeps a direct credential rejection classified as not dispatched", async () 
     async noteCredentialsExpired() { expired++; },
   };
 
-  const error = await withClient({}, account, "https://mcp.example.com",
+  const error = await withClient(upstream, {}, account, "https://mcp.example.com",
     client => client.callTool("send", {}), { retryOnExpiry: false }).catch(err => err);
 
   expect(error).toBeInstanceOf(McpCallNotDispatchedError);
@@ -40,7 +41,7 @@ it("keeps credential rejection classified when expiry notification fails", async
     async noteCredentialsExpired() { throw new Error("callback unavailable"); },
   };
 
-  const error = await withClient({}, account, "https://mcp.example.com",
+  const error = await withClient(upstream, {}, account, "https://mcp.example.com",
     client => client.callTool("send", {}), { retryOnExpiry: false }).catch(err => err);
 
   expect(error).toBeInstanceOf(McpCallNotDispatchedError);
@@ -55,7 +56,7 @@ it("classifies credential lookup failure as not dispatched", async () => {
     async noteCredentialsExpired() {},
   };
 
-  const error = await withClient({}, account, "https://mcp.example.com",
+  const error = await withClient(upstream, {}, account, "https://mcp.example.com",
     client => client.callTool("send", {}), { retryOnExpiry: false }).catch(err => err);
 
   expect(error).toBeInstanceOf(McpCallNotDispatchedError);
@@ -73,7 +74,7 @@ it("classifies initialization failure as not dispatched", async () => {
     async noteCredentialsExpired() {},
   };
 
-  const error = await withClient({}, account, "https://mcp.example.com",
+  const error = await withClient(upstream, {}, account, "https://mcp.example.com",
     client => client.callTool("send", {}), { retryOnExpiry: false }).catch(err => err);
 
   expect(error).toBeInstanceOf(McpCallNotDispatchedError);
@@ -82,7 +83,7 @@ it("classifies initialization failure as not dispatched", async () => {
 
 it("classifies an expired pre-fetch deadline as not dispatched", async () => {
   const client = new McpClient(
-    "https://mcp.example.com", async () => "token", null, { deadline: 0 });
+    upstream, "https://mcp.example.com", async () => "token", null, { deadline: 0 });
 
   const error = await client.callTool("send", {}).catch(err => err);
 
@@ -108,7 +109,7 @@ it("rechecks account generation immediately before the tool request", async () =
     async noteCredentialsExpired() {},
   };
 
-  const error = await withClient({}, account, "https://mcp.example.com", async client => {
+  const error = await withClient(upstream, {}, account, "https://mcp.example.com", async client => {
     current = false;
     return client.callTool("send", {});
   }, { retryOnExpiry: false }).catch(err => err);
@@ -140,7 +141,7 @@ it("persists a successful initialization before running the requested operation"
     async noteCredentialsExpired() {},
   };
 
-  await expect(withClient({}, account, "https://mcp.example.com", async () => {
+  await expect(withClient(upstream, {}, account, "https://mcp.example.com", async () => {
     throw new Error("operation failed");
   })).rejects.toThrow(/operation failed/);
 
@@ -157,7 +158,7 @@ it("does not persist a transport session changed after the requested operation",
     async noteCredentialsExpired() {},
   };
 
-  await expect(withClient({}, account, "https://mcp.example.com", async client => {
+  await expect(withClient(upstream, {}, account, "https://mcp.example.com", async client => {
     client.sessionId = "rotated-session";
     return "completed";
   }, { retryOnExpiry: false })).resolves.toBe("completed");
@@ -179,7 +180,7 @@ it("reports credentials expired when session recovery is rejected", async () => 
     async noteCredentialsExpired() { expired++; },
   };
 
-  const error = await withClient({}, account, "https://mcp.example.com",
+  const error = await withClient(upstream, {}, account, "https://mcp.example.com",
     client => client.listTools(1)).catch(err => err);
 
   expect(error).toBeInstanceOf(McpCallNotDispatchedError);
@@ -228,7 +229,7 @@ it("gives a retried listing a fresh discovery budget after session recovery", as
     async noteCredentialsExpired() {},
   };
 
-  const catalog = await withClient({}, account, "https://mcp.example.com", client =>
+  const catalog = await withClient(upstream, {}, account, "https://mcp.example.com", client =>
     client.listTools(10));
   expect(catalog.tools.map(tool => tool.name)).toEqual(["first", "second"]);
   expect(catalog.truncated).toBe(false);

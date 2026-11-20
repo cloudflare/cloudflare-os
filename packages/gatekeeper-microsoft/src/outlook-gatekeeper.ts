@@ -14,7 +14,7 @@ import { KvTtlCache } from "@gadgets/gatekeeper-kit/cache";
 import { ProvisionalIds } from "@gadgets/gatekeeper-kit/simulation";
 import TYPES_CODE from "./outlook-types.txt";
 import { DESCRIPTION_TTL_MS, RETAINED_ACTION_TTL_MS, housekeep, isProvisional, legacyHistory, PinnedUser, provisionalId, revertRefused } from "./binding";
-import { GraphApi } from "./graph-api";
+import { withGraph, type GraphApi } from "./graph-api";
 import { accountSource } from "./microsoft-credentials";
 import { effectiveOutlookAccess, fixedTenant, grantsSharedMailboxes, type Env, type OutlookGatekeeperProps } from "./microsoft-env";
 import {
@@ -263,7 +263,7 @@ export class OutlookGatekeeper extends DurableObject<Env, OutlookGatekeeperProps
 
   async #graph<T>(op: (api: GraphApi) => Promise<T>, replayable: boolean): Promise<T> {
     await this.#user.get();
-    return await this.#creds.run(creds => op(new GraphApi(creds.accessToken)), { replayable });
+    return await this.#creds.run(creds => withGraph(creds.accessToken, op), { replayable });
   }
 
   /** Proves what an approved action is about to write is still the binding's: see `OutlookActionHost.inScope`. */

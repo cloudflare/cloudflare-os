@@ -8,6 +8,8 @@ import type { ToolScope } from "../src/scope.js";
 import type { ScopedCatalog } from "../src/catalog.js";
 import type { ConnectionAccount } from "../src/connection.js";
 import type { ResourceDescription } from "@gadgets/workshop-shared/gatekeeper";
+import { mcpUpstream } from "../src/upstream.js";
+import { upstream } from "./stubs/upstream.js";
 
 const log = {
   debug() {}, info() {}, error() {},
@@ -40,6 +42,7 @@ class TestFacet extends McpFacetBase<object, {
   protected get actionScopeTag() { return "test"; }
   protected get observerName() { return "the test server"; }
   protected account(): ConnectionAccount { throw new Error("not used"); }
+  protected [mcpUpstream]() { return upstream; }
   get observationSubresources() { return undefined; }
   describe(): Promise<ResourceDescription> { throw new Error("not used"); }
   getTypeScriptTypes(): Promise<string> { throw new Error("not used"); }

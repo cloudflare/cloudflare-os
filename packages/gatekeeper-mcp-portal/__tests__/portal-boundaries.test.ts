@@ -41,7 +41,7 @@ function makeSubject(hiddenServerIds = "jira"): {
     listMatchingToolSummaries: vi.fn(),
   };
   mocks.withClient.mockImplementation(async (...args: unknown[]) => {
-    const callback = args[3] as (value: FakeClient) => unknown;
+    const callback = args[4] as (value: FakeClient) => unknown;
     return callback(client);
   });
 

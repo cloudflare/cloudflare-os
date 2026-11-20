@@ -2,7 +2,9 @@ import type {
   SpreadsheetCellValue, SpreadsheetFormats, SpreadsheetInfo, SpreadsheetRange, SpreadsheetSheetInfo,
   SpreadsheetValueMode,
 } from "./sheets-read-types";
-import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
+import {
+  AccessTokenProvider, fetchWithAuthRetry, readCheckedWithAuthRetry, readWithAuthRetry,
+} from "./auth-retry";
 import { readGoogleJson } from "./google-response";
 import {
   baseFormats, FORMAT_READ_FIELDS, type BaseFormats, type RestFormatSheet,
@@ -238,13 +240,21 @@ const BLANK_SHEET = { sheetId: 0, title: "Sheet1", rowCount: 1000, columnCount: 
 export class GoogleSheetsApi {
   constructor(private getAccessToken: AccessTokenProvider) {}
 
-  async #request<T>(url: URL, operation: string, init: RequestInit = {}): Promise<T> {
-    let response = await fetchWithAuthRetry(
-      url.toString(), init, this.getAccessToken, { timeoutMs: REQUEST_TIMEOUT_MS },
+  /**
+   * One request, whose answer's JSON is given to `made`, the check of the method that sent it.
+   * Both are read within the request, which so counts a success that cannot be read, or that
+   * `made` throws on, as the failure it is thrown as.
+   */
+  async #request<T, R>(
+    url: URL, operation: string, init: RequestInit, made: (answer: T) => R | Promise<R>,
+  ): Promise<R> {
+    return readCheckedWithAuthRetry(
+      url.toString(), init, { getAccessToken: this.getAccessToken, timeoutMs: REQUEST_TIMEOUT_MS },
+      response => readGoogleJson<T>(response, {
+        provider: "Google Sheets", operation, maxBytes: MAX_RESPONSE_BYTES,
+      }),
+      made,
     );
-    return readGoogleJson<T>(response, {
-      provider: "Google Sheets", operation, maxBytes: MAX_RESPONSE_BYTES,
-    });
   }
 
   /** Create a spreadsheet titled `title` in the caller's My Drive, holding one empty sheet. */
@@ -252,24 +262,28 @@ export class GoogleSheetsApi {
     let url = new URL(API_BASE);
     url.searchParams.set("fields", "spreadsheetId");
     let { sheetId, title: sheetTitle, rowCount, columnCount } = BLANK_SHEET;
-    let { spreadsheetId } = await this.#request<{ spreadsheetId?: unknown }>(url, "create spreadsheet", {
+    return this.#request(url, "create spreadsheet", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         properties: { title },
         sheets: [{ properties: { sheetId, title: sheetTitle, gridProperties: { rowCount, columnCount } } }],
       }),
+    }, async (answer: { spreadsheetId?: unknown }) => {
+      // The answer is taken apart from an awaited value: what is thrown of one that is no
+      // object is then a `TypeError` that names no variable of this method.
+      let { spreadsheetId } = await answer;
+      if (typeof spreadsheetId !== "string" || spreadsheetId.length === 0) {
+        throw new Error("Google Sheets returned no spreadsheet ID");
+      }
+      return spreadsheetId;
     });
-    if (typeof spreadsheetId !== "string" || spreadsheetId.length === 0) {
-      throw new Error("Google Sheets returned no spreadsheet ID");
-    }
-    return spreadsheetId;
   }
 
   async getSpreadsheet(spreadsheetId: string): Promise<SpreadsheetInfo> {
     let url = new URL(`${API_BASE}/${encodeURIComponent(spreadsheetId)}`);
     url.searchParams.set("fields", `${SPREADSHEET_FIELDS},sheets(${SHEET_PROPERTIES_FIELDS})`);
-    return spreadsheetInfo(await this.#request<RestSpreadsheet>(url, "get spreadsheet"));
+    return this.#request(url, "get spreadsheet", {}, spreadsheetInfo);
   }
 
   /** A spreadsheet's metadata and the ranges it protects, but not who may edit them. */
@@ -277,29 +291,30 @@ export class GoogleSheetsApi {
     let url = new URL(`${API_BASE}/${encodeURIComponent(spreadsheetId)}`);
     url.searchParams.set(
       "fields", `${SPREADSHEET_FIELDS},sheets(${METADATA_PROPERTIES_FIELDS},${PROTECTED_RANGE_FIELDS})`);
-    let result = await this.#request<RestSpreadsheet>(url, "get spreadsheet metadata");
-    let protectedRanges = (result.sheets ?? []).flatMap(sheet => {
-      let sheetId = sheet.properties?.sheetId;
-      if (sheetId === undefined) return [];
-      return (sheet.protectedRanges ?? []).map(protection => ({
-        area: areaOf(protection.range, sheetId),
-        unprotected: (protection.unprotectedRanges ?? []).map(range => areaOf(range, sheetId)),
-        requestingUserCanEdit: protection.requestingUserCanEdit === true,
-        warningOnly: protection.warningOnly === true,
-      }));
+    return this.#request(url, "get spreadsheet metadata", {}, (result: RestSpreadsheet) => {
+      let protectedRanges = (result.sheets ?? []).flatMap(sheet => {
+        let sheetId = sheet.properties?.sheetId;
+        if (sheetId === undefined) return [];
+        return (sheet.protectedRanges ?? []).map(protection => ({
+          area: areaOf(protection.range, sheetId),
+          unprotected: (protection.unprotectedRanges ?? []).map(range => areaOf(range, sheetId)),
+          requestingUserCanEdit: protection.requestingUserCanEdit === true,
+          warningOnly: protection.warningOnly === true,
+        }));
+      });
+      let info = spreadsheetInfo(result);
+      let frozen = new Map((result.sheets ?? []).map(({ properties }) =>
+        [properties?.sheetId, properties?.gridProperties] as const));
+      let sheets = info.sheets.map(sheet => {
+        let { frozenRowCount, frozenColumnCount } = frozen.get(sheet.id) ?? {};
+        return {
+          ...sheet,
+          ...(frozenRowCount ? { frozenRowCount } : {}),
+          ...(frozenColumnCount ? { frozenColumnCount } : {}),
+        };
+      });
+      return { ...info, sheets, protectedRanges };
     });
-    let info = spreadsheetInfo(result);
-    let frozen = new Map((result.sheets ?? []).map(({ properties }) =>
-      [properties?.sheetId, properties?.gridProperties] as const));
-    let sheets = info.sheets.map(sheet => {
-      let { frozenRowCount, frozenColumnCount } = frozen.get(sheet.id) ?? {};
-      return {
-        ...sheet,
-        ...(frozenRowCount ? { frozenRowCount } : {}),
-        ...(frozenColumnCount ? { frozenColumnCount } : {}),
-      };
-    });
-    return { ...info, sheets, protectedRanges };
   }
 
   async readRanges(
@@ -314,12 +329,10 @@ export class GoogleSheetsApi {
     url.searchParams.set("valueRenderOption", valueRenderOption(valueMode));
     if (valueMode === "raw") url.searchParams.set("dateTimeRenderOption", "SERIAL_NUMBER");
 
-    let result = await this.#request<{ valueRanges?: RestValueRange[] }>(
-      url,
-      "read ranges",
-    );
-    let returned = result.valueRanges ?? [];
-    return validated.map((range, index) => normalizeRange(returned[index] ?? {}, range));
+    return this.#request(url, "read ranges", {}, (result: { valueRanges?: RestValueRange[] }) => {
+      let returned = result.valueRanges ?? [];
+      return validated.map((range, index) => normalizeRange(returned[index] ?? {}, range));
+    });
   }
 
   /**
@@ -336,7 +349,9 @@ export class GoogleSheetsApi {
     let url = new URL(`${API_BASE}/${encodeURIComponent(spreadsheetId)}:getByDataFilter`);
     url.searchParams.set("fields", ENTERED_FIELDS);
     url.searchParams.set("prettyPrint", "false");
-    let response = await fetchWithAuthRetry(
+    // The answer is read within the request, which so counts a success that cannot be read, or
+    // that lacks a range asked for, as the failure it is thrown as.
+    return readWithAuthRetry(
       url.toString(),
       {
         method: "POST",
@@ -355,33 +370,35 @@ export class GoogleSheetsApi {
         }),
       },
       // A read, however it is sent.
-      this.getAccessToken, { timeoutMs: REQUEST_TIMEOUT_MS, idempotent: true },
+      { getAccessToken: this.getAccessToken, timeoutMs: REQUEST_TIMEOUT_MS, idempotent: true },
+      async response => {
+        let result = await readGoogleJson<{ sheets?: RestGridSheet[] }>(response, {
+          provider: "Google Sheets", operation: "read entered values", maxBytes: MAX_RESPONSE_BYTES,
+        });
+        // Each range's cells are placed by the position Google gives them, whichever order they come
+        // in, so a range is answered when its sheet holds data starting where it does. A cell Google
+        // trims from the end of a row or range is blank.
+        let starts = new Set<string>();
+        let cells = new Map<string, EnteredValue>();
+        for (let sheet of result.sheets ?? []) {
+          let sheetId = sheet.properties?.sheetId ?? 0;
+          for (let { startRow = 0, startColumn = 0, rowData } of sheet.data ?? []) {
+            starts.add(`${sheetId}:${startRow}:${startColumn}`);
+            rowData?.forEach((row, r) => row.values?.forEach((cell, c) => {
+              cells.set(`${sheetId}:${startRow + r}:${startColumn + c}`, enteredValue(cell.userEnteredValue));
+            }));
+          }
+        }
+        return areas.map(({ sheetId, rect }) => {
+          if (!starts.has(`${sheetId}:${rect.startRow}:${rect.startColumn}`)) {
+            throw new Error("Google Sheets did not return every range it was asked for.");
+          }
+          return Array.from({ length: rect.endRow - rect.startRow }, (_row, r) =>
+            Array.from({ length: rect.endColumn - rect.startColumn }, (_cell, c) =>
+              cells.get(`${sheetId}:${rect.startRow + r}:${rect.startColumn + c}`) ?? null));
+        });
+      },
     );
-    let result = await readGoogleJson<{ sheets?: RestGridSheet[] }>(response, {
-      provider: "Google Sheets", operation: "read entered values", maxBytes: MAX_RESPONSE_BYTES,
-    });
-    // Each range's cells are placed by the position Google gives them, whichever order they come
-    // in, so a range is answered when its sheet holds data starting where it does. A cell Google
-    // trims from the end of a row or range is blank.
-    let starts = new Set<string>();
-    let cells = new Map<string, EnteredValue>();
-    for (let sheet of result.sheets ?? []) {
-      let sheetId = sheet.properties?.sheetId ?? 0;
-      for (let { startRow = 0, startColumn = 0, rowData } of sheet.data ?? []) {
-        starts.add(`${sheetId}:${startRow}:${startColumn}`);
-        rowData?.forEach((row, r) => row.values?.forEach((cell, c) => {
-          cells.set(`${sheetId}:${startRow + r}:${startColumn + c}`, enteredValue(cell.userEnteredValue));
-        }));
-      }
-    }
-    return areas.map(({ sheetId, rect }) => {
-      if (!starts.has(`${sheetId}:${rect.startRow}:${rect.startColumn}`)) {
-        throw new Error("Google Sheets did not return every range it was asked for.");
-      }
-      return Array.from({ length: rect.endRow - rect.startRow }, (_row, r) =>
-        Array.from({ length: rect.endColumn - rect.startColumn }, (_cell, c) =>
-          cells.get(`${sheetId}:${rect.startRow + r}:${rect.startColumn + c}`) ?? null));
-    });
   }
 
   /**
@@ -394,7 +411,9 @@ export class GoogleSheetsApi {
     spreadsheetId: string, areas: readonly SheetArea[], valueMode: SpreadsheetValueMode,
   ): Promise<SpreadsheetCellValue[][][]> {
     if (areas.length === 0) return [];
-    let response = await fetchWithAuthRetry(
+    // The answer is read within the request, which so counts a success that cannot be read, or
+    // that lacks a range asked for, as the failure it is thrown as.
+    return readWithAuthRetry(
       `${API_BASE}/${encodeURIComponent(spreadsheetId)}/values:batchGetByDataFilter`,
       {
         method: "POST",
@@ -415,21 +434,23 @@ export class GoogleSheetsApi {
         }),
       },
       // A read, however it is sent.
-      this.getAccessToken, { timeoutMs: REQUEST_TIMEOUT_MS, idempotent: true },
+      { getAccessToken: this.getAccessToken, timeoutMs: REQUEST_TIMEOUT_MS, idempotent: true },
+      async response => {
+        let result = await readGoogleJson<{
+          valueRanges?: { valueRange?: RestValueRange; dataFilters?: { gridRange?: RestGridRange }[] }[];
+        }>(response, { provider: "Google Sheets", operation: "read cells", maxBytes: MAX_RESPONSE_BYTES });
+        // Google answers in an order of its own, so each answer is found by the filter it echoes.
+        let returned = result.valueRanges ?? [];
+        return areas.map(area => {
+          let answer = returned.find(({ dataFilters }) => echoes(dataFilters?.[0]?.gridRange, area));
+          if (!answer) throw new Error("Google Sheets did not return every range it was asked for.");
+          let { rect } = area;
+          return normalizeRange(answer.valueRange ?? {}, {
+            range: "", rows: rect.endRow - rect.startRow, columns: rect.endColumn - rect.startColumn,
+          }).values;
+        });
+      },
     );
-    let result = await readGoogleJson<{
-      valueRanges?: { valueRange?: RestValueRange; dataFilters?: { gridRange?: RestGridRange }[] }[];
-    }>(response, { provider: "Google Sheets", operation: "read cells", maxBytes: MAX_RESPONSE_BYTES });
-    // Google answers in an order of its own, so each answer is found by the filter it echoes.
-    let returned = result.valueRanges ?? [];
-    return areas.map(area => {
-      let answer = returned.find(({ dataFilters }) => echoes(dataFilters?.[0]?.gridRange, area));
-      if (!answer) throw new Error("Google Sheets did not return every range it was asked for.");
-      let { rect } = area;
-      return normalizeRange(answer.valueRange ?? {}, {
-        range: "", rows: rect.endRow - rect.startRow, columns: rect.endColumn - rect.startColumn,
-      }).values;
-    });
   }
 
   /**
@@ -443,32 +464,33 @@ export class GoogleSheetsApi {
     url.searchParams.set("fields", FORMAT_READ_FIELDS);
     // Each colour comes back in two forms, so a pretty-printed answer reaches the size cap early.
     url.searchParams.set("prettyPrint", "false");
-    let result = await this.#request<{ sheets?: RestFormatSheet[] }>(url, "read formats");
-    let sheets = (result.sheets ?? []).map(sheet => ({
-      sheet,
-      title: sheet.properties?.title ?? "",
-      index: sheet.properties?.index ?? 0,
-      hidden: sheet.properties?.hidden,
-    }));
-    // Google returns the sheet the range is on, which is the first visible one when it names none.
-    let found = findSheet(sheets, name)?.sheet;
-    if (!found?.properties?.title) {
-      throw new Error("Google Sheets did not return the range it was asked for.");
-    }
-    let formats = baseFormats([found]);
-    let sheetId = found.properties.sheetId ?? 0;
-    let grid = found.properties.gridProperties;
-    let clipped = {
-      ...rect,
-      endRow: Math.min(rect.endRow, grid?.rowCount ?? rect.endRow),
-      endColumn: Math.min(rect.endColumn, grid?.columnCount ?? rect.endColumn),
-    };
-    return {
-      range: a1Of(found.properties.title, clipped),
-      formats: Array.from({ length: rect.endRow - rect.startRow }, (_row, r) =>
-        Array.from({ length: rect.endColumn - rect.startColumn }, (_column, c) =>
-          formats(sheetId, rect.startRow + r, rect.startColumn + c))),
-    };
+    return this.#request(url, "read formats", {}, (result: { sheets?: RestFormatSheet[] }) => {
+      let sheets = (result.sheets ?? []).map(sheet => ({
+        sheet,
+        title: sheet.properties?.title ?? "",
+        index: sheet.properties?.index ?? 0,
+        hidden: sheet.properties?.hidden,
+      }));
+      // Google returns the sheet the range is on, which is the first visible one when it names none.
+      let found = findSheet(sheets, name)?.sheet;
+      if (!found?.properties?.title) {
+        throw new Error("Google Sheets did not return the range it was asked for.");
+      }
+      let formats = baseFormats([found]);
+      let sheetId = found.properties.sheetId ?? 0;
+      let grid = found.properties.gridProperties;
+      let clipped = {
+        ...rect,
+        endRow: Math.min(rect.endRow, grid?.rowCount ?? rect.endRow),
+        endColumn: Math.min(rect.endColumn, grid?.columnCount ?? rect.endColumn),
+      };
+      return {
+        range: a1Of(found.properties.title, clipped),
+        formats: Array.from({ length: rect.endRow - rect.startRow }, (_row, r) =>
+          Array.from({ length: rect.endColumn - rect.startColumn }, (_column, c) =>
+            formats(sheetId, rect.startRow + r, rect.startColumn + c))),
+      };
+    });
   }
 
   /**
@@ -483,7 +505,9 @@ export class GoogleSheetsApi {
     url.searchParams.set("fields", FORMAT_READ_FIELDS);
     // Each colour comes back in two forms, so a pretty-printed answer reaches the size cap early.
     url.searchParams.set("prettyPrint", "false");
-    let response = await fetchWithAuthRetry(
+    // The answer is read within the request, which so counts a success that cannot be read, or
+    // that lacks a range asked for, as the failure it is thrown as.
+    return readWithAuthRetry(
       url.toString(),
       {
         method: "POST",
@@ -502,19 +526,21 @@ export class GoogleSheetsApi {
         }),
       },
       // A read, however it is sent.
-      this.getAccessToken, { timeoutMs: REQUEST_TIMEOUT_MS, idempotent: true },
+      { getAccessToken: this.getAccessToken, timeoutMs: REQUEST_TIMEOUT_MS, idempotent: true },
+      async response => {
+        let result = await readGoogleJson<{ sheets?: RestFormatSheet[] }>(response, {
+          provider: "Google Sheets", operation: "read formats", maxBytes: MAX_RESPONSE_BYTES,
+        });
+        let sheets = result.sheets ?? [];
+        // Each range's cells are placed by the position Google gives them, whichever order they come
+        // in, so a range is answered when its sheet holds data starting where it does.
+        let answered = areas.every(({ sheetId, rect }) => sheets.some(sheet =>
+          (sheet.properties?.sheetId ?? 0) === sheetId && (sheet.data ?? []).some(data =>
+            (data.startRow ?? 0) === rect.startRow && (data.startColumn ?? 0) === rect.startColumn)));
+        if (!answered) throw new Error("Google Sheets did not return every range it was asked for.");
+        return baseFormats(sheets);
+      },
     );
-    let result = await readGoogleJson<{ sheets?: RestFormatSheet[] }>(response, {
-      provider: "Google Sheets", operation: "read formats", maxBytes: MAX_RESPONSE_BYTES,
-    });
-    let sheets = result.sheets ?? [];
-    // Each range's cells are placed by the position Google gives them, whichever order they come
-    // in, so a range is answered when its sheet holds data starting where it does.
-    let answered = areas.every(({ sheetId, rect }) => sheets.some(sheet =>
-      (sheet.properties?.sheetId ?? 0) === sheetId && (sheet.data ?? []).some(data =>
-        (data.startRow ?? 0) === rect.startRow && (data.startColumn ?? 0) === rect.startColumn)));
-    if (!answered) throw new Error("Google Sheets did not return every range it was asked for.");
-    return baseFormats(sheets);
   }
 
   /** A developer metadata entry's value, or undefined if the spreadsheet has none with that ID. */
@@ -524,16 +550,18 @@ export class GoogleSheetsApi {
     let url = new URL(
       `${API_BASE}/${encodeURIComponent(spreadsheetId)}/developerMetadata/${metadataId}`);
     url.searchParams.set("fields", "metadataValue");
-    let response = await fetchWithAuthRetry(
-      url.toString(), {}, this.getAccessToken, { timeoutMs: REQUEST_TIMEOUT_MS },
+    return readWithAuthRetry(
+      url.toString(), {}, { getAccessToken: this.getAccessToken, timeoutMs: REQUEST_TIMEOUT_MS },
+      async response => {
+        if (response.status === 404) {
+          await response.body?.cancel();
+          return undefined;
+        }
+        return readGoogleJson<{ metadataValue?: string }>(response, {
+          provider: "Google Sheets", operation: "get developer metadata", maxBytes: MAX_RESPONSE_BYTES,
+        });
+      },
     );
-    if (response.status === 404) {
-      await response.body?.cancel();
-      return undefined;
-    }
-    return readGoogleJson<{ metadataValue?: string }>(response, {
-      provider: "Google Sheets", operation: "get developer metadata", maxBytes: MAX_RESPONSE_BYTES,
-    });
   }
 
   /**
@@ -549,7 +577,7 @@ export class GoogleSheetsApi {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ requests }),
       },
-      this.getAccessToken, { timeoutMs: REQUEST_TIMEOUT_MS },
+      { getAccessToken: this.getAccessToken, timeoutMs: REQUEST_TIMEOUT_MS },
     );
     if (response.ok) {
       await response.body?.cancel();

@@ -11,9 +11,10 @@
 // domain-wide delegation, and no import mode. A caller can only ever reach what the connected
 // user could reach in the Chat UI.
 
-import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
+import { AccessTokenProvider, readCheckedWithAuthRetry, readWithAuthRetry } from "./auth-retry";
 import { chatButtonsFromRaw, chatCardsFromRaw } from "./chat-cards";
 import { readGoogleJson } from "./google-response";
+import { googleUpstream, TRANSFER_TIMEOUT_MS } from "./upstream";
 import type {
   ChatAttachmentInfo, ChatListMessagesOptions, ChatListSpacesOptions,
   ChatMembership, ChatMessageInfo, ChatMessageSearch, ChatPerson, ChatQuotedMessage, ChatReaction,
@@ -664,30 +665,40 @@ export type ChatSearchMessagesRequest = {
 export class ChatApi {
   constructor(private getAccessToken: AccessTokenProvider) {}
 
-  async #request<T>(
+  /**
+   * One request, whose answer's JSON is given to `made`, the check of the method that sent it.
+   * Both are read within the request, which so counts a success that cannot be read, or that
+   * `made` throws on, as the failure it is thrown as. A message the gatekeeper does not show is
+   * none: the answer holds the message asked for, and is counted by its status.
+   */
+  async #request<T, R>(
     operation: string,
     path: string,
-    init?: RequestInit & { idempotent?: boolean },
-  ): Promise<T> {
+    init: (RequestInit & { idempotent?: boolean }) | undefined,
+    made: (body: T) => R,
+  ): Promise<R> {
     const headers = new Headers(init?.headers);
     if (!headers.has("Accept")) headers.set("Accept", "application/json");
     if (init?.body && !headers.has("Content-Type")) {
       headers.set("Content-Type", "application/json");
     }
     const { idempotent, ...rest } = init ?? {};
-    const response = await fetchWithAuthRetry(
+    return readCheckedWithAuthRetry(
       `${CHAT_API_BASE}${path}`,
       { ...rest, headers },
-      this.getAccessToken,
-      idempotent === undefined ? { operation } : { operation, idempotent },
+      { getAccessToken: this.getAccessToken, idempotent },
+      async response => {
+        if (!response.ok) await chatApiFailure(operation, response);
+        if (response.status === 204) return undefined as T;
+        try {
+          return await response.json<T>();
+        } catch {
+          throw new Error(`Google Chat API ${operation} returned invalid JSON.`);
+        }
+      },
+      made,
+      error => error instanceof PrivateChatMessageError || error instanceof DeletedChatMessageError,
     );
-    if (!response.ok) await chatApiFailure(operation, response);
-    if (response.status === 204) return undefined as T;
-    try {
-      return await response.json<T>();
-    } catch {
-      throw new Error(`Google Chat API ${operation} returned invalid JSON.`);
-    }
   }
 
   // ── Spaces ────────────────────────────────────────────────────────
@@ -697,12 +708,12 @@ export class ChatApi {
     const filter = chatSpacesListFilter(options.spaceTypes);
     if (filter) params.set("filter", filter);
     if (options.pageToken) params.set("pageToken", options.pageToken);
-    const body = await this.#request<{ spaces?: ChatSpaceRaw[]; nextPageToken?: string }>(
-      "spaces.list", `/spaces?${params}`);
-    return {
-      items: (body.spaces ?? []).map(chatSpaceInfoFromRaw),
-      ...(body.nextPageToken ? { nextPageToken: body.nextPageToken } : {}),
-    };
+    return this.#request(
+      "spaces.list", `/spaces?${params}`, undefined,
+      (body: { spaces?: ChatSpaceRaw[]; nextPageToken?: string }) => ({
+        items: (body.spaces ?? []).map(chatSpaceInfoFromRaw),
+        ...(body.nextPageToken ? { nextPageToken: body.nextPageToken } : {}),
+      }));
   }
 
   /**
@@ -720,32 +731,32 @@ export class ChatApi {
       pageSize: String(options.pageSize ?? 100),
     });
     if (options.pageToken) params.set("pageToken", options.pageToken);
-    const body = await this.#request<{
+    return this.#request("spaces.search", `/spaces:search?${params}`, undefined, (body: {
       results?: { space?: ChatSpaceRaw }[];
       spaces?: ChatSpaceRaw[];
       nextPageToken?: string;
-    }>("spaces.search", `/spaces:search?${params}`);
-    const spaces = body.results !== undefined
-      ? body.results.map(result => result.space).filter((s): s is ChatSpaceRaw => s !== undefined)
-      : body.spaces ?? [];
-    return {
-      items: spaces.map(chatSpaceInfoFromRaw),
-      ...(body.nextPageToken ? { nextPageToken: body.nextPageToken } : {}),
-    };
+    }) => {
+      const spaces = body.results !== undefined
+        ? body.results.map(result => result.space).filter((s): s is ChatSpaceRaw => s !== undefined)
+        : body.spaces ?? [];
+      return {
+        items: spaces.map(chatSpaceInfoFromRaw),
+        ...(body.nextPageToken ? { nextPageToken: body.nextPageToken } : {}),
+      };
+    });
   }
 
   async getSpace(spaceName: string): Promise<ChatSpaceInfo> {
     const spaceId = chatSpaceId(spaceName);
-    return chatSpaceInfoFromRaw(
-      await this.#request<ChatSpaceRaw>("spaces.get", `/spaces/${spaceId}`));
+    return this.#request("spaces.get", `/spaces/${spaceId}`, undefined, chatSpaceInfoFromRaw);
   }
 
   /** Returns null when the connected user has no direct message with `user`. */
   async findDirectMessage(user: string): Promise<ChatSpaceInfo | null> {
     const params = new URLSearchParams({ name: chatUserName(user) });
     try {
-      return chatSpaceInfoFromRaw(await this.#request<ChatSpaceRaw>(
-        "spaces.findDirectMessage", `/spaces:findDirectMessage?${params}`));
+      return await this.#request(
+        "spaces.findDirectMessage", `/spaces:findDirectMessage?${params}`, undefined, chatSpaceInfoFromRaw);
     } catch (error) {
       if (isChatUserNotFound(error)) return null;
       throw error;
@@ -759,27 +770,34 @@ export class ChatApi {
    * user or is blocked by them. So each match is checked, every page of them.
    */
   async findGroupChat(users: readonly string[]): Promise<{ spaceName: string; ids: string[] } | null> {
-    // A person an email address resolved to in one match is the same person in the next.
-    const resolved = new Map<string, string>();
-    let pageToken: string | undefined;
-    do {
-      const params = new URLSearchParams({ pageSize: "30", ...(pageToken ? { pageToken } : {}) });
-      for (const user of users) params.append("users", chatUserName(user));
-      type Page = { spaces?: ChatSpaceRaw[]; nextPageToken?: string };
-      const page = await this.#request<Page>("spaces.findGroupChats", `/spaces:findGroupChats?${params}`)
-        .catch((error: unknown): Page => {
-          if (isChatUserNotFound(error)) return {};
-          throw error;
-        });
-      for (const { name } of page.spaces ?? []) {
-        if (name === undefined) continue;
-        const spaceName = `spaces/${chatSpaceId(name)}`;
-        const ids = await this.#onlyIn(spaceName, users, resolved);
-        if (ids) return { spaceName, ids };
-      }
-      pageToken = page.nextPageToken;
-    } while (pageToken);
-    return null;
+    return googleUpstream.summed(async () => {
+      // A person an email address resolved to in one match is the same person in the next.
+      const resolved = new Map<string, string>();
+      let pageToken: string | undefined;
+      do {
+        const params = new URLSearchParams({ pageSize: "30", ...(pageToken ? { pageToken } : {}) });
+        for (const user of users) params.append("users", chatUserName(user));
+        type Page = { spaces?: ChatSpaceRaw[]; nextPageToken?: string };
+        // The page's matches and its token are taken within the request, which so counts an
+        // answer that is no page as the failure it is thrown as. Each match's name is checked
+        // as the match is reached, since one before it can end the search.
+        const page = await this.#request(
+          "spaces.findGroupChats", `/spaces:findGroupChats?${params}`, undefined,
+          (found: Page): Page => ({ spaces: found.spaces, nextPageToken: found.nextPageToken }))
+          .catch((error: unknown): Page => {
+            if (isChatUserNotFound(error)) return {};
+            throw error;
+          });
+        for (const { name } of page.spaces ?? []) {
+          if (name === undefined) continue;
+          const spaceName = `spaces/${chatSpaceId(name)}`;
+          const ids = await this.#onlyIn(spaceName, users, resolved);
+          if (ids) return { spaceName, ids };
+        }
+        pageToken = page.nextPageToken;
+      } while (pageToken);
+      return null;
+    });
   }
 
   /** The `users/{user}` ids of `users`, if they and the connected user are everyone in `spaceName`. */
@@ -812,7 +830,7 @@ export class ChatApi {
     const space = members.length === 1
       ? { spaceType: "DIRECT_MESSAGE", singleUserBotDm: false }
       : { spaceType: "GROUP_CHAT" };
-    const raw = await this.#request<ChatSpaceRaw>("spaces.setup", "/spaces:setup", {
+    return this.#request("spaces.setup", "/spaces:setup", {
       method: "POST",
       body: JSON.stringify({
         space,
@@ -820,9 +838,10 @@ export class ChatApi {
         memberships: members.map(user => ({ member: { name: chatUserName(user), type: "HUMAN" } })),
       }),
       idempotent: true,
+    }, (raw: ChatSpaceRaw) => {
+      if (!raw.name) throw new Error("Google Chat returned a space with no resource name.");
+      return `spaces/${chatSpaceId(raw.name)}`;
     });
-    if (!raw.name) throw new Error("Google Chat returned a space with no resource name.");
-    return `spaces/${chatSpaceId(raw.name)}`;
   }
 
   // ── Directory ─────────────────────────────────────────────────────
@@ -868,15 +887,17 @@ export class ChatApi {
       pageSize: String(options.pageSize ?? 50),
     });
     if (options.pageToken) params.set("pageToken", options.pageToken);
-    const response = await fetchWithAuthRetry(`${PEOPLE_API_BASE}/people:searchDirectoryPeople?${params}`,
-      { headers: { Accept: "application/json" } }, this.getAccessToken);
-    const body = await readGoogleJson<{ people?: DirectoryPersonRaw[]; nextPageToken?: string }>(response, {
-      provider: "Google People", operation: "people.searchDirectoryPeople", maxBytes: 256 * 1024,
-    });
-    return {
-      items: (body.people ?? []).flatMap(raw => directoryEntryFromRaw(raw) ?? []),
-      ...(body.nextPageToken ? { nextPageToken: body.nextPageToken } : {}),
-    };
+    // The page is read within the request, which so counts an answer it cannot be read from as
+    // the failure it is thrown as.
+    return readCheckedWithAuthRetry(`${PEOPLE_API_BASE}/people:searchDirectoryPeople?${params}`,
+      { headers: { Accept: "application/json" } }, { getAccessToken: this.getAccessToken },
+      response => readGoogleJson<{ people?: DirectoryPersonRaw[]; nextPageToken?: string }>(response, {
+        provider: "Google People", operation: "people.searchDirectoryPeople", maxBytes: 256 * 1024,
+      }),
+      body => ({
+        items: (body.people ?? []).flatMap(raw => directoryEntryFromRaw(raw) ?? []),
+        ...(body.nextPageToken ? { nextPageToken: body.nextPageToken } : {}),
+      }));
   }
 
   // ── Messages ──────────────────────────────────────────────────────
@@ -894,25 +915,22 @@ export class ChatApi {
     if (filter) params.set("filter", filter);
     params.set("orderBy", options.order === "newestFirst" ? "createTime DESC" : "createTime ASC");
     if (options.pageToken) params.set("pageToken", options.pageToken);
-    const body = await this.#request<{ messages?: ChatMessageRaw[]; nextPageToken?: string }>(
-      "messages.list", `/spaces/${spaceId}/messages?${params}`);
-    return {
-      items: (body.messages ?? [])
-        .filter(message => message.privateMessageViewer === undefined && !isDeletedChatMessage(message))
-        .map(chatMessageInfoFromRaw)
-        .filter(message => message.spaceId === spaceName &&
-          (!options.threadName || message.threadId === options.threadName) &&
-          chatTimeInWindow(message.createdAt, options)),
-      ...(body.nextPageToken ? { nextPageToken: body.nextPageToken } : {}),
-    };
+    return this.#request(
+      "messages.list", `/spaces/${spaceId}/messages?${params}`, undefined,
+      (body: { messages?: ChatMessageRaw[]; nextPageToken?: string }) => ({
+        items: (body.messages ?? [])
+          .filter(message => message.privateMessageViewer === undefined && !isDeletedChatMessage(message))
+          .map(chatMessageInfoFromRaw)
+          .filter(message => message.spaceId === spaceName &&
+            (!options.threadName || message.threadId === options.threadName) &&
+            chatTimeInWindow(message.createdAt, options)),
+        ...(body.nextPageToken ? { nextPageToken: body.nextPageToken } : {}),
+      }));
   }
 
   /** Google only searches `spaces/-`; the filter's `space.name` terms narrow it to a space. */
   async searchMessages(request: ChatSearchMessagesRequest): Promise<ChatPage<ChatMessageInfo>> {
-    const body = await this.#request<{
-      results?: { message?: ChatMessageRaw }[];
-      nextPageToken?: string;
-    }>("messages.search", "/spaces/-/messages:search", {
+    return this.#request("messages.search", "/spaces/-/messages:search", {
       method: "POST",
       // A search is a read; opting in lets a 429 or 5xx be retried like a GET.
       idempotent: true,
@@ -922,8 +940,7 @@ export class ChatApi {
         orderBy: "createTime desc",
         ...(request.pageToken ? { pageToken: request.pageToken } : {}),
       }),
-    });
-    return {
+    }, (body: { results?: { message?: ChatMessageRaw }[]; nextPageToken?: string }) => ({
       items: (body.results ?? [])
         .map(result => result.message)
         .filter((message): message is ChatMessageRaw =>
@@ -931,21 +948,26 @@ export class ChatApi {
           !isDeletedChatMessage(message))
         .map(chatMessageInfoFromRaw),
       ...(body.nextPageToken ? { nextPageToken: body.nextPageToken } : {}),
-    };
+    }));
   }
 
   async getMessage(messageName: string): Promise<ChatMessageInfo> {
-    return chatMessageInfoFromRaw(await this.getRawMessage(messageName));
+    return this.#message(messageName, chatMessageInfoFromRaw);
   }
 
   /** The raw message, needed where attachment data references matter. */
   async getRawMessage(messageName: string): Promise<ChatMessageRaw> {
+    return this.#message(messageName, raw => {
+      if (raw.privateMessageViewer !== undefined) throw new PrivateChatMessageError();
+      if (isDeletedChatMessage(raw)) throw new DeletedChatMessageError();
+      return raw;
+    });
+  }
+
+  /** One message, as `made` reads it within the request. */
+  async #message<R>(messageName: string, made: (raw: ChatMessageRaw) => R): Promise<R> {
     const { spaceId, messageId } = chatMessageParts(messageName);
-    const raw = await this.#request<ChatMessageRaw>(
-      "messages.get", `/spaces/${spaceId}/messages/${messageId}`);
-    if (raw.privateMessageViewer !== undefined) throw new PrivateChatMessageError();
-    if (isDeletedChatMessage(raw)) throw new DeletedChatMessageError();
-    return raw;
+    return this.#request("messages.get", `/spaces/${spaceId}/messages/${messageId}`, undefined, made);
   }
 
   /**
@@ -977,27 +999,29 @@ export class ChatApi {
       }
       body.thread = { name: `spaces/${threadSpaceId}/threads/${threadId}` };
     }
-    return chatMessageInfoFromRaw(await this.#request<ChatMessageRaw>(
+    return this.#request(
       "messages.create",
       `/spaces/${spaceId}/messages${query ? `?${query}` : ""}`,
-      { method: "POST", body: JSON.stringify(body), idempotent: options.requestId !== undefined }));
+      { method: "POST", body: JSON.stringify(body), idempotent: options.requestId !== undefined },
+      chatMessageInfoFromRaw);
   }
 
   /** Returns the text as Chat stored it, in the `formattedText` form a later read compares against. */
   async updateMessageText(messageName: string, text: string): Promise<string> {
     const { spaceId, messageId } = chatMessageParts(messageName);
-    const updated = await this.#request<ChatMessageRaw>(
+    const formattedText = await this.#request(
       "messages.patch",
       `/spaces/${spaceId}/messages/${messageId}?updateMask=text`,
-      { method: "PATCH", body: JSON.stringify({ text }), idempotent: true });
+      { method: "PATCH", body: JSON.stringify({ text }), idempotent: true },
+      (updated: ChatMessageRaw) => updated.formattedText);
     // The plain `text` is no substitute: undo and queued edits compare this with `formattedText`.
-    return updated.formattedText ?? (await this.getMessage(messageName)).formattedText;
+    return formattedText ?? (await this.getMessage(messageName)).formattedText;
   }
 
   async deleteMessage(messageName: string): Promise<void> {
     const { spaceId, messageId } = chatMessageParts(messageName);
-    await this.#request<void>(
-      "messages.delete", `/spaces/${spaceId}/messages/${messageId}`, { method: "DELETE" });
+    await this.#request(
+      "messages.delete", `/spaces/${spaceId}/messages/${messageId}`, { method: "DELETE" }, () => undefined);
   }
 
   // ── Memberships ───────────────────────────────────────────────────
@@ -1013,14 +1037,12 @@ export class ChatApi {
       showInvited: "true",
     });
     if (options.pageToken) params.set("pageToken", options.pageToken);
-    const body = await this.#request<{
-      memberships?: ChatMembershipRaw[];
-      nextPageToken?: string;
-    }>("members.list", `/spaces/${spaceId}/members?${params}`);
-    return {
-      items: (body.memberships ?? []).flatMap(raw => chatMembershipFromRaw(raw) ?? []),
-      ...(body.nextPageToken ? { nextPageToken: body.nextPageToken } : {}),
-    };
+    return this.#request(
+      "members.list", `/spaces/${spaceId}/members?${params}`, undefined,
+      (body: { memberships?: ChatMembershipRaw[]; nextPageToken?: string }) => ({
+        items: (body.memberships ?? []).flatMap(raw => chatMembershipFromRaw(raw) ?? []),
+        ...(body.nextPageToken ? { nextPageToken: body.nextPageToken } : {}),
+      }));
   }
 
   /**
@@ -1029,17 +1051,19 @@ export class ChatApi {
    * Google Group.
    */
   async audienceIn(spaceName: string): Promise<Set<string>> {
-    const audience = new Set<string>();
-    let pageToken: string | undefined;
-    do {
-      const page = await this.listMembers(spaceName, pageToken ? { pageToken } : {});
-      for (const membership of page.items) {
-        if (membership.state === "notMember") continue;
-        audience.add(membership.kind === "group" ? membership.groupId : membership.user.id);
-      }
-      pageToken = page.nextPageToken;
-    } while (pageToken);
-    return audience;
+    return googleUpstream.summed(async () => {
+      const audience = new Set<string>();
+      let pageToken: string | undefined;
+      do {
+        const page = await this.listMembers(spaceName, pageToken ? { pageToken } : {});
+        for (const membership of page.items) {
+          if (membership.state === "notMember") continue;
+          audience.add(membership.kind === "group" ? membership.groupId : membership.user.id);
+        }
+        pageToken = page.nextPageToken;
+      } while (pageToken);
+      return audience;
+    });
   }
 
   /** Returns null when the named user is not a member of the space or does not exist. */
@@ -1048,8 +1072,9 @@ export class ChatApi {
     // A person's membership ID is their user ID.
     const member = chatUserName(user).slice("users/".length);
     try {
-      return chatMembershipFromRaw(await this.#request<ChatMembershipRaw>(
-        "members.get", `/spaces/${spaceId}/members/${encodeURIComponent(member)}`)) ?? null;
+      return await this.#request(
+        "members.get", `/spaces/${spaceId}/members/${encodeURIComponent(member)}`, undefined,
+        (raw: ChatMembershipRaw) => chatMembershipFromRaw(raw) ?? null);
     } catch (error) {
       // 404 is "not a member".
       if (isChatUserNotFound(error)) return null;
@@ -1071,15 +1096,20 @@ export class ChatApi {
     if (byResource.size === 0) return names;
     const params = new URLSearchParams({ personFields: "names", sources: "READ_SOURCE_TYPE_PROFILE" });
     for (const resource of byResource.keys()) params.append("resourceNames", resource);
-    const response = await fetchWithAuthRetry(`${PEOPLE_API_BASE}/people:batchGet?${params}`,
-      { headers: { Accept: "application/json" } }, this.getAccessToken);
-    if (!response.ok) {
-      await response.body?.cancel();
-      return names;
-    }
-    const body = await readGoogleJson<{ responses?: unknown } | null>(response, {
-      provider: "Google People", operation: "people.batchGet", maxBytes: 256 * 1024,
-    });
+    // An answer that is no success holds no names and is not read: it is answered as undefined,
+    // which no JSON is read as.
+    const body = await readWithAuthRetry(`${PEOPLE_API_BASE}/people:batchGet?${params}`,
+      { headers: { Accept: "application/json" } }, { getAccessToken: this.getAccessToken },
+      async response => {
+        if (!response.ok) {
+          await response.body?.cancel();
+          return undefined;
+        }
+        return readGoogleJson<{ responses?: unknown } | null>(response, {
+          provider: "Google People", operation: "people.batchGet", maxBytes: 256 * 1024,
+        });
+      });
+    if (body === undefined) return names;
     for (const entry of (Array.isArray(body?.responses) ? body.responses : []) as PersonResponseRaw[]) {
       // A profile linked to a contact can answer under a different resource name, so match each
       // response by the name that was requested.
@@ -1100,28 +1130,29 @@ export class ChatApi {
     const params = new URLSearchParams({ pageSize: String(options.pageSize ?? 100) });
     if (options.filter) params.set("filter", options.filter);
     if (options.pageToken) params.set("pageToken", options.pageToken);
-    const body = await this.#request<{ reactions?: ChatReactionRaw[]; nextPageToken?: string }>(
-      "reactions.list", `/spaces/${spaceId}/messages/${messageId}/reactions?${params}`);
-    return {
-      items: (body.reactions ?? []).map(chatReactionFromRaw),
-      ...(body.nextPageToken ? { nextPageToken: body.nextPageToken } : {}),
-    };
+    return this.#request(
+      "reactions.list", `/spaces/${spaceId}/messages/${messageId}/reactions?${params}`, undefined,
+      (body: { reactions?: ChatReactionRaw[]; nextPageToken?: string }) => ({
+        items: (body.reactions ?? []).map(chatReactionFromRaw),
+        ...(body.nextPageToken ? { nextPageToken: body.nextPageToken } : {}),
+      }));
   }
 
   async createReaction(messageName: string, emoji: string): Promise<ChatReaction> {
     const { spaceId, messageId } = chatMessageParts(messageName);
-    return chatReactionFromRaw(await this.#request<ChatReactionRaw>(
+    return this.#request(
       "reactions.create",
       `/spaces/${spaceId}/messages/${messageId}/reactions`,
-      { method: "POST", body: JSON.stringify({ emoji: { unicode: validateChatEmoji(emoji) } }) }));
+      { method: "POST", body: JSON.stringify({ emoji: { unicode: validateChatEmoji(emoji) } }) },
+      chatReactionFromRaw);
   }
 
   async deleteReaction(reactionName: string): Promise<void> {
     const { spaceId, messageId, reactionId } = chatReactionParts(reactionName);
-    await this.#request<void>(
+    await this.#request(
       "reactions.delete",
       `/spaces/${spaceId}/messages/${messageId}/reactions/${reactionId}`,
-      { method: "DELETE" });
+      { method: "DELETE" }, () => undefined);
   }
 
   /** Find the connected user's own reaction with one emoji, so it can be removed. */
@@ -1143,38 +1174,50 @@ export class ChatApi {
     if (!MEDIA_RESOURCE_RE.test(resourceName)) {
       throw new Error("Invalid Google Chat attachment resource name.");
     }
-    const response = await fetchWithAuthRetry(
+    // The bytes are read within the request, so that a transfer cut off after its headers is
+    // counted as no success.
+    return readWithAuthRetry(
       `${CHAT_API_BASE}/media/${resourceName.split("/").map(encodeURIComponent).join("/")}` +
         "?alt=media",
-      {},
-      this.getAccessToken);
-    if (!response.ok) await chatApiFailure("media.download", response);
-    const declared = Number(response.headers.get("Content-Length") ?? "");
-    if (Number.isFinite(declared) && declared > MAX_CHAT_DOWNLOAD_BYTES) {
-      await response.body?.cancel();
-      throw new Error(
-        `Attachment exceeds the ${MAX_CHAT_DOWNLOAD_BYTES}-byte safe-read limit.`);
-    }
-    const reader = response.body?.getReader();
-    if (!reader) return new ArrayBuffer(0);
-    const chunks: Uint8Array[] = [];
-    let total = 0;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > MAX_CHAT_DOWNLOAD_BYTES) {
-        await reader.cancel();
-        throw new Error(`Attachment exceeds the ${MAX_CHAT_DOWNLOAD_BYTES}-byte safe-read limit.`);
-      }
-      chunks.push(value);
-    }
-    const bytes = new Uint8Array(total);
-    let offset = 0;
-    for (const chunk of chunks) {
-      bytes.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-    return bytes.buffer;
+      // Google may answer a download (`alt=media`) with a redirect to the host that serves the
+      // attachment's bytes. The token is the request's one credential, and `Authorization` is
+      // not carried to another origin.
+      { redirect: "follow" },
+      { getAccessToken: this.getAccessToken, timeoutMs: TRANSFER_TIMEOUT_MS.download },
+      async response => {
+        if (!response.ok) await chatApiFailure("media.download", response);
+        const declared = Number(response.headers.get("Content-Length") ?? "");
+        if (Number.isFinite(declared) && declared > MAX_CHAT_DOWNLOAD_BYTES) {
+          await response.body?.cancel();
+          throw new Error(
+            `Attachment exceeds the ${MAX_CHAT_DOWNLOAD_BYTES}-byte safe-read limit.`);
+        }
+        const reader = response.body?.getReader();
+        if (!reader) return new ArrayBuffer(0);
+        const chunks: Uint8Array[] = [];
+        let total = 0;
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            total += value.byteLength;
+            if (total > MAX_CHAT_DOWNLOAD_BYTES) {
+              await reader.cancel();
+              throw new Error(`Attachment exceeds the ${MAX_CHAT_DOWNLOAD_BYTES}-byte safe-read limit.`);
+            }
+            chunks.push(value);
+          }
+        } finally {
+          // The body is the request's to let go of once its reader no longer holds it.
+          reader.releaseLock();
+        }
+        const bytes = new Uint8Array(total);
+        let offset = 0;
+        for (const chunk of chunks) {
+          bytes.set(chunk, offset);
+          offset += chunk.byteLength;
+        }
+        return bytes.buffer;
+      });
   }
 }

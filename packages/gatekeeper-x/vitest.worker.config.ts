@@ -36,7 +36,8 @@ export default defineConfig({
   ],
   test: {
     include: ["__tests__/workerd/*.test.ts"],
-    // Asserts the pool actually started, rather than trusting a green run to mean workerd.
-    setupFiles: ["../../scripts/assert-workerd.ts"],
+    // Asserts the pool actually started, rather than trusting a green run to mean workerd, and
+    // that every request a test sends to X has a name in the route tree.
+    setupFiles: ["../../scripts/assert-workerd.ts", "./__tests__/workerd/named-requests.ts"],
   },
 });

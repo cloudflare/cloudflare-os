@@ -282,11 +282,16 @@ describe("CloudflareObservabilityApi", () => {
   });
 
   it("retries a timeout while reading the response body", async () => {
-    const timeout = new Error("timed out while reading");
-    timeout.name = "TimeoutError";
+    // The first attempt's own timeout, which fires as its body is read and fails that reading: a
+    // body is asked for again only where the attempt's timeout is what cut it off.
+    const attempt = new AbortController();
+    vi.spyOn(AbortSignal, "timeout").mockReturnValueOnce(attempt.signal);
     const fetchSpy = vi.fn()
       .mockResolvedValueOnce(new Response(new ReadableStream({
-        pull(controller) { controller.error(timeout); },
+        pull(controller) {
+          attempt.abort(new DOMException("timed out while reading", "TimeoutError"));
+          controller.error(attempt.signal.reason);
+        },
       })))
       .mockResolvedValueOnce(Response.json({ success: true, result: [] }));
     vi.stubGlobal("fetch", fetchSpy);

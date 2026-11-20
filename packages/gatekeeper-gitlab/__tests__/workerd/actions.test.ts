@@ -528,6 +528,8 @@ describe("merge requests", () => {
     let timedOut = true;
     gitlab.on("GET", new RegExp(`^/api/v4/projects/${P}/repository/compare`), () =>
       json({ ...fx.compareResponse.data, compare_timeout: timedOut }));
+    // The diff's revision names the merge base of the two branches.
+    gitlab.on("GET", new RegExp(`^/api/v4/projects/${P}/repository/merge_base`), () => json(fx.mergeBaseResponse.data));
     gitlab.install();
     await unwrap(await hooks().queueAction(name, props, "prepareCreateMergeRequest",
       [{ title: "x", sourceBranch: "feature", targetBranch: "main" }], DESC));

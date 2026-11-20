@@ -6,7 +6,7 @@ import {
 export default defineGadgetsWorker({
   name: "gatekeeper-homeassistant",
   entrypoint: ".wrangler/validate/src/homeassistant.ts",
-  compatibilityFlags: ["allow_irrevocable_stub_storage"],
+  compatibilityFlags: ["allow_irrevocable_stub_storage", "nodejs_als"],
   observability: OBSERVABILITY,
 });
 

@@ -12,7 +12,7 @@ export default defineGadgetsWorker({
   // `WWW-Authenticate` header and then an issuer, both chosen by the far side.
   // `global_fetch_strictly_public` makes workerd reject reserved IP ranges after DNS resolution,
   // which no hostname check can do.
-  compatibilityFlags: ["allow_irrevocable_stub_storage", "global_fetch_strictly_public"],
+  compatibilityFlags: ["allow_irrevocable_stub_storage", "global_fetch_strictly_public", "nodejs_als"],
 
   // Every var here is deployment configuration, so this file deliberately sets none of them to a
   // real value. `MCP_PORTAL_URL` in particular must come from the deployment's own config -- for

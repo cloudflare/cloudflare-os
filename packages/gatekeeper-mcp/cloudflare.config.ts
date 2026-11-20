@@ -15,7 +15,7 @@ export default defineGadgetsWorker({
   //
   // `wrangler dev` reconfigures its global outbound to permit any address, so this takes effect in
   // production only; that is what keeps `MCP_ALLOW_INSECURE` usable against a localhost server.
-  compatibilityFlags: ["allow_irrevocable_stub_storage", "global_fetch_strictly_public"],
+  compatibilityFlags: ["allow_irrevocable_stub_storage", "global_fetch_strictly_public", "nodejs_als"],
 
   env: {
     // Set to "true" to permit http:// and private-network endpoints. Local development only.

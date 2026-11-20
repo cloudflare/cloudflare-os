@@ -5,7 +5,8 @@
   "main": ".wrangler/validate/src/zoominfo.ts",
   "compatibility_date": "2026-09-04",
   "compatibility_flags": [
-    "allow_irrevocable_stub_storage"
+    "allow_irrevocable_stub_storage",
+    "nodejs_als"
   ],
   "observability": {
     "enabled": true,

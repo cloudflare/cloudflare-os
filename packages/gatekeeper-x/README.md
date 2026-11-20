@@ -48,6 +48,11 @@ Two limits keep a gadget from running up the bill:
 Reads are cached briefly (a post for 5 minutes, a profile for an hour, a listing's first page for a
 minute), so a gadget polling one page pays at most once a minute.
 
+Every request to X is sent once, never retried, and counted as a
+[subservice metric](../observability/README.md#subservice-calls) under the source
+`gatekeeper.x.api`, named by the route tree in [`src/x-upstream.ts`](src/x-upstream.ts). An image
+upload X answers a success without a media ID is counted an error.
+
 ## Setting up an X app
 
 1. In the [X Developer Console](https://console.x.com), create a Project and an App.

@@ -3,8 +3,9 @@ import { vitestTask } from "@gadgets/scripts/vitest-task";
 
 /**
  * Vite+ per-package settings: the shared configurator `build`/`build:configurator` tasks plus a
- * `test` task for the workerd suite. The suite imports the generated configurator module, so `test`
- * generates it first rather than rely on an earlier build having left it.
+ * two-pass `test` task: the workerd suite, then the request table in Node. The workerd suite
+ * imports the generated configurator module, so `test` generates it first rather than rely on an
+ * earlier build having left it.
  */
 export default {
   ...gatekeeperConfiguratorConfig,
@@ -13,7 +14,7 @@ export default {
     tasks: {
       ...gatekeeperConfiguratorConfig.run.tasks,
       test: {
-        ...vitestTask("vitest run"),
+        ...vitestTask(["vitest run", "vitest run -c vitest.node.config.ts"]),
         dependsOn: ["build:configurator"],
       },
     },

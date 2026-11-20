@@ -2,6 +2,8 @@
 // parameterized by instance: every request goes to a caller-supplied `apiOrigin` (the browser-
 // facing instance URL, or a separate Worker-facing hostname when the two differ) and carries the
 // caller's extra headers (a Cloudflare Access service-token pair, for instances behind Access).
+// Every request is sent through the gatekeeper's upstream client (gitlab-upstream.ts), which gives
+// each attempt its timeout, sends a read again after a transient failure, and counts it.
 //
 // Response shapes below are the fields this gatekeeper reads, taken from the GitLab REST API
 // documentation. Everything in this module is provider plumbing; gitlab.ts owns the agent-facing
@@ -9,7 +11,12 @@
 
 import { CredentialsExpiredError } from "@gadgets/gatekeeper-kit/credentials";
 import { hexEncode } from "@gadgets/gatekeeper-kit/connect-nonce";
+import {
+  GitRefUpdateRejectedError, MAX_RECEIVE_PACK_RESPONSE_BYTES, parseReceivePackResponse,
+} from "@gadgets/gatekeeper-kit/git-transport";
 import { readBytesCapped, readTextCapped, ResponseTooLargeError } from "@gadgets/gatekeeper-kit/response-body";
+import type { CallAnswer, Upstream, UpstreamRequestInit } from "@gadgets/gatekeeper-kit/upstream";
+import { API_PATH, gitlabApiBase, gitlabUpstreamAt, type GitLabOperation } from "./gitlab-upstream";
 
 /** A grant returned by the token endpoint. GitLab's documented response carries no `scope`. */
 export type GitLabOAuthGrant = {
@@ -461,8 +468,10 @@ type Query = Record<string, QueryValue | QueryValue[]>;
 type RequestOptions = {
   query?: Query;
   body?: unknown;
-  /** Overall deadline, body included; defaults to `REQUEST_TIMEOUT_MS`. */
+  /** Each attempt's deadline, body included, in place of the upstream's 30 seconds. */
   timeoutMs?: number;
+  /** One deadline over every attempt of the request and the waits between them. */
+  signal?: AbortSignal;
   headers?: Record<string, string | undefined>;
   okStatuses?: number[];
 };
@@ -478,9 +487,8 @@ export type GitLabPage<T> = { items: T[]; nextPage: number | null };
 
 export const DEFAULT_INSTANCE_URL = "https://gitlab.com";
 const USER_AGENT = "Cloudflare-Gadgets";
-const REQUEST_TIMEOUT_MS = 30_000;
 const GIT_TIMEOUT_MS = 120_000;
-/** Longer than REQUEST_TIMEOUT_MS: the signal also covers streaming a job's whole log. */
+/** Longer than a request's 30 seconds: the timeout also covers streaming a job's whole log. */
 const LOG_TIMEOUT_MS = 120_000;
 /**
  * The most of one REST or OAuth response body the Worker holds. Generous, because a page of diffs
@@ -680,22 +688,51 @@ function redirectTarget(method: string, path: string, requested: URL, response: 
     ? new URL(`${moved.pathname}${requested.search}`, instance.apiOrigin) : undefined;
 }
 
+/** The upstream the requests to `instance` are sent through, which names them by its API's paths. */
+function upstreamOf(instance: GitLabInstance): Upstream {
+  return gitlabUpstreamAt(gitlabApiBase(instance.apiOrigin));
+}
+
+/** The error a status the caller did not list as acceptable is thrown as, carrying GitLab's message. */
+async function apiError(response: Response, path: string): Promise<GitLabApiError> {
+  const parsed = await parseErrorBody(response);
+  let message = errorMessageFromBody(parsed, `${response.status} ${response.statusText}`);
+  if (response.status === 429) {
+    const retryAfter = response.headers.get("retry-after");
+    if (retryAfter) message += ` (retry after ${retryAfter}s)`;
+  }
+  return new GitLabApiError(response.status, message, {
+    details: parsed,
+    isAuthError: response.status === 401 && path === CREDENTIAL_PROBE_PATH,
+  });
+}
+
+/** One answer of the API, read: the URL its request is re-issued to, or what `read` made of it. */
+type Answered<T> = { moved?: URL; value?: T };
+
 /**
- * Send one request to the API: the instance's headers and the bearer token attached, the
- * documented redirect behaviour applied (see `redirectMessage`), and any status the caller did not
- * list as acceptable turned into a `GitLabApiError` carrying GitLab's message. The response is
- * returned unread so the caller decides how to consume the body -- as JSON (`request`), or as a
- * capped byte stream (`GitLabApi.getBlob`). `okStatuses` names non-2xx statuses that are answers
- * rather than failures (a 404 that means "none", say).
+ * Send one request to the API through the upstream, and read its answer: the instance's headers
+ * and the bearer token attached, the documented redirect behaviour applied (see `redirectMessage`),
+ * and any status the caller did not list as acceptable turned into a `GitLabApiError` carrying
+ * GitLab's message. `read` is given the answer that is accepted and decides how to consume the
+ * body -- as JSON (`request`), as bytes up to a cap (`GitLabApi.getBlob`), as a stream its caller
+ * reads a chunk at a time (`GitLabApi.getJobTrace`), or not at all, where the status is the whole
+ * answer (`GitLabApi.fileExists`). The request is counted by how that reading ends: a body `read`
+ * throws on is no success, and `counted` says how what `read` returned is counted where the
+ * status does not.
+ * `okStatuses` names non-2xx statuses that are answers rather than failures (a 404 that means
+ * "none", say). The token is asked for once, and every attempt of the request presents it.
  */
-async function send(
+async function send<T>(
   instance: GitLabInstance,
   method: string,
   path: string,
   options: RequestOptions & { accept?: string },
-  credentials?: GitLabCredentialSource,
-): Promise<Response> {
-  const url = new URL(`/api/v4${path}`, instance.apiOrigin);
+  credentials: GitLabCredentialSource | undefined,
+  read: (response: Response) => T | Promise<T>,
+  counted?: (value: T) => CallAnswer | undefined,
+): Promise<T> {
+  const url = new URL(`${API_PATH}${path}`, instance.apiOrigin);
   appendQuery(url, options.query);
 
   const headers = new Headers({ "User-Agent": USER_AGENT, ...instance.headers });
@@ -711,53 +748,81 @@ async function send(
     body = JSON.stringify(options.body);
   }
 
-  const attempt = async (target: URL) => await fetch(target.toString(), {
-    method,
-    headers,
-    body,
-    // Never followed automatically: a followed 301 turns a POST into a GET, and a redirect beneath
-    // a project could lead into another one. See redirectTarget for the one that is re-issued.
-    redirect: "manual",
-    signal: AbortSignal.timeout(options.timeoutMs ?? REQUEST_TIMEOUT_MS),
-  }).catch((error: unknown) => {
-    throw transportError(error);
-  });
-
-  let response = await attempt(url);
-  const moved = redirectTarget(method, path, url, response, instance);
-  if (moved !== undefined) {
-    await response.body?.cancel().catch(() => {});
-    response = await attempt(moved);
-  }
-  await throwOnRedirect(response, moved ?? url);
-
-  if (!response.ok && !(options.okStatuses ?? []).includes(response.status)) {
-    const parsed = await parseErrorBody(response);
-    let message = errorMessageFromBody(parsed, `${response.status} ${response.statusText}`);
-    if (response.status === 429) {
-      const retryAfter = response.headers.get("retry-after");
-      if (retryAfter) message += ` (retry after ${retryAfter}s)`;
+  const upstream = upstreamOf(instance);
+  // What reading an answer threw, kept to tell it from what sending the request threw: only the
+  // second is a request GitLab never answered.
+  let unread: { error: unknown } | undefined;
+  // Sends to `target` and reads the answer. `reissued` is the request a redirect was re-issued
+  // as, which follows no redirect of its own.
+  const attempt = async (target: URL, reissued: boolean): Promise<Answered<T>> => {
+    try {
+      return await upstream.read<Answered<T>>(target.toString(), {
+        method,
+        headers,
+        body,
+        // Never followed automatically: a followed 301 turns a POST into a GET, and a redirect beneath
+        // a project could lead into another one. See redirectTarget for the one that is re-issued.
+        redirect: "manual",
+        timeoutMs: options.timeoutMs,
+        signal: options.signal,
+      }, async response => {
+        try {
+          const moved = reissued ? undefined : redirectTarget(method, path, url, response, instance);
+          if (moved !== undefined) {
+            await response.body?.cancel().catch(() => {});
+            return { moved };
+          }
+          await throwOnRedirect(response, target);
+          if (!response.ok && !(options.okStatuses ?? []).includes(response.status)) {
+            throw await apiError(response, path);
+          }
+          return { value: await read(response) };
+        } catch (error) {
+          unread = { error };
+          throw error;
+        }
+      },
+      // A redirect that is re-issued is what its request was sent for. Any other answer is counted
+      // by what was read of it, else by its status: a redirect that is refused is an error.
+      answered => answered.moved === undefined ? counted?.(answered.value as T) : { outcome: "success" });
+    } catch (error) {
+      throw unread?.error === error ? error : transportError(error);
     }
-    throw new GitLabApiError(response.status, message, {
-      details: parsed,
-      isAuthError: response.status === 401 && path === CREDENTIAL_PROBE_PATH,
-    });
-  }
+  };
 
-  return response;
+  let answered = await attempt(url, false);
+  if (answered.moved !== undefined) answered = await attempt(answered.moved, true);
+  return answered.value as T;
 }
 
-/** `send`, with the JSON (or text) body read -- leniently for an `okStatuses` answer, which is error-shaped. */
-async function request<T>(
+/** What `request` read of an answer: its result, or what the caller's `read` threw on the body of a success. */
+type Requested<T> = RequestResult<T> | { unread: { thrown: unknown } };
+
+/**
+ * `send`, with the JSON (or text) body read -- leniently for an `okStatuses` answer, which is error-shaped.
+ * `read` takes what the request was sent for out of the body of a 2xx answer, within the request:
+ * a body it throws on is counted as an error of the API, and what it threw is thrown.
+ */
+async function request<T, B = T>(
   instance: GitLabInstance,
   method: string,
   path: string,
   options: RequestOptions = {},
   credentials?: GitLabCredentialSource,
+  read?: (body: B, headers: Headers) => T,
 ): Promise<RequestResult<T>> {
-  const response = await send(instance, method, path, { ...options, accept: "application/json" }, credentials);
-  const parsed = response.ok ? await parseBody(response) : await parseErrorBody(response);
-  return { data: parsed as T, headers: response.headers, status: response.status };
+  const requested = await send<Requested<T>>(instance, method, path, { ...options, accept: "application/json" }, credentials, async response => {
+    const parsed = response.ok ? await parseBody(response) : await parseErrorBody(response);
+    const { headers, status } = response;
+    if (!response.ok || !read) return { data: parsed as T, headers, status };
+    try {
+      return { data: read(parsed as B, headers), headers, status };
+    } catch (thrown) {
+      return { unread: { thrown } };
+    }
+  }, answered => "unread" in answered ? { outcome: "error", reason: "api" } : undefined);
+  if ("unread" in requested) throw requested.unread.thrown;
+  return requested;
 }
 
 // ---------------------------------------------------------------------------
@@ -794,13 +859,23 @@ type RawTokenResponse = {
   error_description?: string;
 };
 
-async function postForm(
+/**
+ * POST a form to one of the instance's OAuth endpoints through the upstream, counted under
+ * `operation`, and read the answer with `parse`, which is given any answer but a redirect: that
+ * one is refused (see `redirectMessage`). `answer` counts what `parse` returned, where the status
+ * alone does not say. Sent once, whatever it is answered.
+ */
+async function postForm<T>(
   instance: GitLabInstance,
   path: string,
+  operation: GitLabOperation,
   form: Record<string, string>,
-): Promise<Response> {
+  parse: (response: Response) => Promise<T>,
+  answer?: (parsed: T) => CallAnswer | undefined,
+): Promise<T> {
   const url = new URL(path, instance.apiOrigin);
-  const response = await fetch(url.toString(), {
+  return await upstreamOf(instance).read(url.toString(), {
+    operation,
     method: "POST",
     headers: {
       Accept: "application/json",
@@ -810,10 +885,16 @@ async function postForm(
     },
     body: new URLSearchParams(form).toString(),
     redirect: "manual",
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  });
-  await throwOnRedirect(response, url);
-  return response;
+  }, async response => {
+    await throwOnRedirect(response, url);
+    return await parse(response);
+  }, answer);
+}
+
+/** How a token response that a 2xx carried is counted: one without both tokens is an error. */
+function grantAnswer(parsed: unknown): CallAnswer | undefined {
+  const result = typeof parsed === "object" && parsed !== null ? parsed as RawTokenResponse : {};
+  return result.access_token && result.refresh_token ? undefined : { outcome: "error", reason: "api" };
 }
 
 function grantFromResponse(parsed: unknown, now: number): GitLabOAuthGrant {
@@ -837,20 +918,22 @@ export async function exchangeAuthCode(
   params: { code: string; clientId: string; clientSecret: string; redirectUri: string; codeVerifier: string },
   now = Date.now(),
 ): Promise<GitLabOAuthGrant> {
-  const response = await postForm(instance, "/oauth/token", {
+  const parsed = await postForm(instance, "/oauth/token", "token.exchange", {
     grant_type: "authorization_code",
     code: params.code,
     client_id: params.clientId,
     client_secret: params.clientSecret,
     redirect_uri: params.redirectUri,
     code_verifier: params.codeVerifier,
-  });
-  if (!response.ok) {
-    const parsed = await parseErrorBody(response);
-    throw new GitLabApiError(response.status,
-      errorMessageFromBody(parsed, "GitLab OAuth token exchange failed"), { details: parsed });
-  }
-  return grantFromResponse(await parseBody(response), now);
+  }, async response => {
+    if (!response.ok) {
+      const details = await parseErrorBody(response);
+      throw new GitLabApiError(response.status,
+        errorMessageFromBody(details, "GitLab OAuth token exchange failed"), { details });
+    }
+    return await parseBody(response);
+  }, grantAnswer);
+  return grantFromResponse(parsed, now);
 }
 
 /**
@@ -865,23 +948,25 @@ export async function refreshAccessToken(
   params: { refreshToken: string; clientId: string; clientSecret: string },
   now = Date.now(),
 ): Promise<GitLabOAuthGrant> {
-  const response = await postForm(instance, "/oauth/token", {
+  const parsed = await postForm(instance, "/oauth/token", "token.refresh", {
     grant_type: "refresh_token",
     refresh_token: params.refreshToken,
     client_id: params.clientId,
     client_secret: params.clientSecret,
-  });
-  if (!response.ok) {
-    const parsed = await parseErrorBody(response);
-    const refused = response.status >= 400 && response.status < 500 && response.status !== 429;
-    if (refused && (parsed as RawTokenResponse | undefined)?.error === "invalid_grant") {
-      throw new CredentialsExpiredError(
-        `GitLab refused the refresh token (${errorMessageFromBody(parsed, "invalid_grant")}).`);
+  }, async response => {
+    if (!response.ok) {
+      const details = await parseErrorBody(response);
+      const refused = response.status >= 400 && response.status < 500 && response.status !== 429;
+      if (refused && (details as RawTokenResponse | undefined)?.error === "invalid_grant") {
+        throw new CredentialsExpiredError(
+          `GitLab refused the refresh token (${errorMessageFromBody(details, "invalid_grant")}).`);
+      }
+      throw new GitLabApiError(response.status,
+        errorMessageFromBody(details, "GitLab OAuth token refresh failed"), { details });
     }
-    throw new GitLabApiError(response.status,
-      errorMessageFromBody(parsed, "GitLab OAuth token refresh failed"), { details: parsed });
-  }
-  return grantFromResponse(await parseBody(response), now);
+    return await parseBody(response);
+  }, grantAnswer);
+  return grantFromResponse(parsed, now);
 }
 
 /** `POST /oauth/revoke`. Returns 200 with `{}` on success; a failure throws. */
@@ -889,17 +974,18 @@ export async function revokeToken(
   instance: GitLabInstance,
   params: { token: string; clientId: string; clientSecret: string },
 ): Promise<void> {
-  const response = await postForm(instance, "/oauth/revoke", {
+  await postForm(instance, "/oauth/revoke", "token.revoke", {
     token: params.token,
     client_id: params.clientId,
     client_secret: params.clientSecret,
+  }, async response => {
+    if (!response.ok) {
+      const parsed = await parseErrorBody(response);
+      throw new GitLabApiError(response.status,
+        errorMessageFromBody(parsed, "GitLab OAuth token revocation failed"), { details: parsed });
+    }
+    await response.body?.cancel().catch(() => {});
   });
-  if (!response.ok) {
-    const parsed = await parseErrorBody(response);
-    throw new GitLabApiError(response.status,
-      errorMessageFromBody(parsed, "GitLab OAuth token revocation failed"), { details: parsed });
-  }
-  await response.body?.cancel().catch(() => {});
 }
 
 // ---------------------------------------------------------------------------
@@ -911,6 +997,14 @@ export async function revokeToken(
  * project root by id, re-issued to the configured API origin (see `redirectTarget`). All other
  * redirects are refused (see `redirectMessage`).
  */
+// The rows of a listing GitLab answers as a list. An answer that is none is refused within the
+// request, so that it is counted an error and no reader of the rows meets it; an empty list is
+// a page.
+function listedRows<T>(rows: T[]): T[] {
+  if (!Array.isArray(rows)) throw new GitLabApiError(502, "GitLab answered a listing with no list.");
+  return rows;
+}
+
 export class GitLabApi {
   #instance: GitLabInstance;
   #credentials: GitLabCredentialSource;
@@ -926,22 +1020,34 @@ export class GitLabApi {
     return this.#instance;
   }
 
+  /** `send` as this account, beneath its pinned project: `read` consumes the answer within the request. */
+  async #read<T>(
+    method: string, path: string, options: RequestOptions & { accept?: string },
+    read: (response: Response) => T | Promise<T>,
+  ): Promise<T> {
+    return await send(this.#instance, method, requestPath(path, this.#project), options, this.#credentials, read);
+  }
+
+  /** `send`, answering the response unread: its body is the caller's to stream or cancel. */
   async #send(method: string, path: string, options: RequestOptions & { accept?: string }): Promise<Response> {
-    return await send(this.#instance, method, requestPath(path, this.#project), options, this.#credentials);
+    return await this.#read(method, path, options, response => response);
   }
 
-  async #request<T>(method: string, path: string, options: RequestOptions = {}): Promise<RequestResult<T>> {
-    return await request<T>(this.#instance, method, requestPath(path, this.#project), options, this.#credentials);
+  /** `request` as this account, beneath its pinned project: `read` reads the body of a success within the request. */
+  async #request<T, B = T>(
+    method: string, path: string, options: RequestOptions = {}, read?: (body: B, headers: Headers) => T,
+  ): Promise<RequestResult<T>> {
+    return await request<T, B>(this.#instance, method, requestPath(path, this.#project), options, this.#credentials, read);
   }
 
-  async #get<T>(path: string, query?: Query): Promise<T> {
-    return (await this.#request<T>("GET", path, { query })).data;
+  async #get<T, B = T>(path: string, query?: Query, read?: (body: B) => T): Promise<T> {
+    return (await this.#request<T, B>("GET", path, { query }, read)).data;
   }
 
   /** One page of a paginated listing; see `nextPageOf` for where the listing ends. */
   async #getPage<T>(path: string, query: Query, page: number, perPage: number): Promise<GitLabPage<T>> {
-    const { data, headers } = await this.#request<T[]>("GET", path, { query: { ...query, page, per_page: perPage } });
-    return { items: data, nextPage: nextPageOf(headers, page, perPage, data.length) };
+    return (await this.#request("GET", path, { query: { ...query, page, per_page: perPage } },
+      (data: T[], headers): GitLabPage<T> => ({ nextPage: nextPageOf(headers, page, perPage, data.length), items: listedRows(data) }))).data;
   }
 
   // -- users
@@ -957,12 +1063,12 @@ export class GitLabApi {
    * changes only with an upgrade, so callers cache it.
    */
   async getVersion(): Promise<string> {
-    return (await this.#get<{ version: string }>("/metadata")).version;
+    return await this.#get("/metadata", undefined, (metadata: { version: string }) => metadata.version);
   }
 
   /** Users matching a username exactly (case-insensitive). Empty when none. */
   async findUsersByUsername(username: string): Promise<GitLabSimpleUser[]> {
-    return await this.#get<GitLabSimpleUser[]>("/users", { username });
+    return await this.#get<GitLabSimpleUser[], GitLabSimpleUser[]>("/users", { username }, listedRows);
   }
 
   /**
@@ -970,7 +1076,7 @@ export class GitLabApi {
    * username listing leaves out for anyone but an administrator. Absent reads as a bot.
    */
   async isBotUser(id: number): Promise<boolean> {
-    return (await this.#get<{ bot?: boolean }>(`/users/${id}`)).bot !== false;
+    return await this.#get(`/users/${id}`, undefined, (user: { bot?: boolean }) => user.bot !== false);
   }
 
   // -- projects
@@ -998,14 +1104,16 @@ export class GitLabApi {
    * The highest is taken anyway, should a version return several.
    */
   async getProjectMember(project: number | string, userId: number): Promise<GitLabMemberResponse | null> {
-    const rows = await this.#get<GitLabMemberResponse[]>(
+    return await this.#get(
       `/projects/${typeof project === "number" ? project : encodeProjectPath(project)}/members/all`,
-      { user_ids: [userId], per_page: 100 });
-    let best: GitLabMemberResponse | null = null;
-    for (const row of rows) {
-      if (row.id === userId && (best === null || row.access_level > best.access_level)) best = row;
-    }
-    return best;
+      { user_ids: [userId], per_page: 100 },
+      (rows: GitLabMemberResponse[]) => {
+        let best: GitLabMemberResponse | null = null;
+        for (const row of rows) {
+          if (row.id === userId && (best === null || row.access_level > best.access_level)) best = row;
+        }
+        return best;
+      });
   }
 
   /**
@@ -1229,8 +1337,8 @@ export class GitLabApi {
    * -- walked as pages, every page would be the whole list again.
    */
   async listDraftNotes(projectPath: string, iid: number): Promise<GitLabDraftNoteResponse[]> {
-    return await this.#get<GitLabDraftNoteResponse[]>(
-      `/projects/${encodeProjectPath(projectPath)}/merge_requests/${iid}/draft_notes`);
+    return await this.#get<GitLabDraftNoteResponse[], GitLabDraftNoteResponse[]>(
+      `/projects/${encodeProjectPath(projectPath)}/merge_requests/${iid}/draft_notes`, undefined, listedRows);
   }
 
   /** Create one draft note; `position` makes it a diff comment, omitting it a plain one. */
@@ -1357,22 +1465,25 @@ export class GitLabApi {
    * abandoned the moment it exceeds the cap: the JSON endpoint carries the whole blob as base64
    * in one body that would have to be buffered before its `size` could be read, and a blob a
    * simulated diff touches can be far larger than any Worker should hold. GitLab rate-limits
-   * blobs over 10 MB to 5 requests a minute.
+   * blobs over 10 MB to 5 requests a minute. The bytes are read within the request, so that a
+   * transfer cut off after its headers is counted as no success.
    */
   async getBlob(projectPath: string, sha: string, maxBytes: number): Promise<Uint8Array | "oversized" | null> {
-    const response = await this.#send("GET",
+    return await this.#read("GET",
       `/projects/${encodeProjectPath(projectPath)}/repository/blobs/${encodeURIComponent(sha)}/raw`,
-      { okStatuses: [404] });
-    if (response.status === 404) {
-      await response.body?.cancel().catch(() => {});
-      return null;
-    }
-    try {
-      return await readBytesCapped(response, maxBytes);
-    } catch (error) {
-      if (error instanceof ResponseTooLargeError) return "oversized";
-      throw error;
-    }
+      { okStatuses: [404] },
+      async (response): Promise<Uint8Array | "oversized" | null> => {
+        if (response.status === 404) {
+          await response.body?.cancel().catch(() => {});
+          return null;
+        }
+        try {
+          return await readBytesCapped(response, maxBytes);
+        } catch (error) {
+          if (error instanceof ResponseTooLargeError) return "oversized";
+          throw error;
+        }
+      });
   }
 
   /**
@@ -1491,18 +1602,27 @@ export class GitLabApi {
   }
 
   /**
-   * A job's raw log as a byte stream for the caller to read incrementally, or null on 404 ("job
-   * not found or no log file"). An archived log is streamed through Workhorse, not redirected.
+   * What `read` makes of a job's raw log, handed to it as a byte stream to read a chunk at a time,
+   * or null on 404 ("job not found or no log file"). An archived log is streamed through
+   * Workhorse, not redirected. `read` runs within the request, which is so counted by how the
+   * reading ends: a transfer cut off after its headers is no success, nor is a log `read` refuses,
+   * and what `read` threw is thrown. Two minutes cover the whole of it, every attempt and its
+   * reading included: an attempt that fails early is sent again as any read is, and a log that
+   * stalls ends the request at those two minutes, with nothing asked for again. `read` is given
+   * the stream of each answer, and keeps nothing of one it threw on.
    */
-  async getJobTrace(projectPath: string, jobId: number): Promise<ReadableStream<Uint8Array> | null> {
-    const response = await this.#send("GET",
+  async getJobTrace<T>(projectPath: string, jobId: number, read: (log: ReadableStream<Uint8Array>) => Promise<T>):
+      Promise<T | null> {
+    return await this.#read("GET",
       `/projects/${encodeProjectPath(projectPath)}/jobs/${jobId}/trace`,
-      { okStatuses: [404], timeoutMs: LOG_TIMEOUT_MS });
-    if (response.status === 404) {
-      await response.body?.cancel().catch(() => {});
-      return null;
-    }
-    return response.body ?? new ReadableStream<Uint8Array>({ start: controller => controller.close() });
+      { okStatuses: [404], timeoutMs: LOG_TIMEOUT_MS, signal: AbortSignal.timeout(LOG_TIMEOUT_MS) },
+      async (response): Promise<T | null> => {
+        if (response.status === 404) {
+          await response.body?.cancel().catch(() => {});
+          return null;
+        }
+        return await read(response.body ?? new ReadableStream<Uint8Array>({ start: controller => controller.close() }));
+      });
   }
 
   async getPipelineTestReportSummary(projectPath: string, pipelineId: number): Promise<GitLabTestReportSummaryResponse> {
@@ -1531,31 +1651,45 @@ export class GitLabApi {
       "Content-Type": "application/x-git-upload-pack-request",
       Accept: "application/x-git-upload-pack-result",
       "Git-Protocol": "version=2",
-    }, "fetch");
+    });
   }
 
   /**
    * POST a git smart-HTTP `receive-pack` request (classic protocol -- there is no v2 for
-   * receive-pack) and return the raw `Response`, whose report-status body the caller parses.
-   * The request body streams (the pack may be large). Requires the `write_repository` scope.
+   * receive-pack) that updates `branch`, and return its answer, whose report-status body the
+   * caller parses -- see `@gadgets/gatekeeper-kit/git-transport`. The request body streams (the
+   * pack may be large). Requires the `write_repository` scope.
+   *
+   * Git answers a ref update it refused with a 200 and says so in that report, so the request is
+   * counted by what the report says of `branch` (see `pushAnswer`). The report is read for that
+   * within the request, so that one whose transfer is cut off is no success either, and what is
+   * returned is an answer of the status and the headers GitLab gave over the report that was read.
    */
-  async fetchGitReceivePack(projectPath: string, requestBody: ReadableStream<Uint8Array>): Promise<Response> {
+  async fetchGitReceivePack(
+    projectPath: string, branch: string, requestBody: ReadableStream<Uint8Array>,
+  ): Promise<Response> {
     return await this.#gitPost(projectPath, "git-receive-pack", requestBody, {
       "Content-Type": "application/x-git-receive-pack-request",
       Accept: "application/x-git-receive-pack-result",
-    }, "push");
+    }, branch);
   }
 
+  // Sends a git request: a fetch, or a push of the branch `pushed`, by whose report it is counted.
   async #gitPost(
     projectPath: string,
     service: "git-upload-pack" | "git-receive-pack",
     body: Uint8Array | ReadableStream<Uint8Array>,
     headers: Record<string, string>,
-    verb: "fetch" | "push",
+    pushed?: string,
   ): Promise<Response> {
+    const verb = pushed === undefined ? "fetch" : "push";
     const url = `${this.#instance.apiOrigin}/${gitRepoPath(projectPath)}.git/${service}`;
     const token = await this.#credentials();
-    const response = await fetch(url, {
+    const upstream = upstreamOf(this.#instance);
+    // Whether an answer says it is the git result asked for.
+    const isResult = (answered: Headers) => (answered.get("content-type") ?? "").startsWith(headers.Accept);
+    const init: UpstreamRequestInit = {
+      operation: GIT_OPERATIONS[service],
       method: "POST",
       headers: {
         ...headers,
@@ -1565,9 +1699,37 @@ export class GitLabApi {
       },
       body,
       redirect: "manual",
-      // Longer than REQUEST_TIMEOUT_MS: the signal also covers streaming the pack.
-      signal: AbortSignal.timeout(GIT_TIMEOUT_MS),
-    });
+      // Longer than a request's 30 seconds: the timeout also covers streaming the pack.
+      timeoutMs: GIT_TIMEOUT_MS,
+      // A push is never sent twice. A fetch is a POST too, which the upstream's policy sends once.
+      retry: verb === "push" ? null : undefined,
+      // A success that is not the git result asked for is thrown below as a login page or a proxy
+      // answering in GitLab's place, and is counted as the error it is thrown as.
+      answer: ({ status, headers: answered }) =>
+        status >= 200 && status < 300 && !isResult(answered) ? { outcome: "error", reason: "parse" } : undefined,
+    };
+    let response: Response;
+    if (pushed === undefined) {
+      // A fetch's answer is handed on unread, for the transport to stream the pack of. One that
+      // says it is a pack and holds no body is none, which the transport refuses in its own
+      // words: it is counted as the error it is thrown as there.
+      response = await upstream.read(url, init, async answered => answered,
+        answered => answered.ok && isResult(answered.headers) && answered.body === null
+          ? { outcome: "error", reason: "parse" } : undefined);
+    } else {
+      ({ response } = await upstream.read<Pushed>(url, init, async answered => {
+        // Only a git result holds a report: any other answer is thrown below, its body unread.
+        if (!answered.ok || !isResult(answered.headers)) return { response: answered };
+        const report = await readPushReport(answered);
+        // The transport is handed the report to parse, and no body where GitLab sent none, which
+        // it refuses in its own words.
+        const reported = answered.body === null ? null : report;
+        return {
+          response: new Response(reported, { status: answered.status, headers: answered.headers }),
+          report,
+        };
+      }, ({ report }) => report && pushAnswer(report, `refs/heads/${pushed}`)));
+    }
     if (response.status >= 300 && response.status < 400) {
       await response.body?.cancel().catch(() => {});
       throw new GitLabApiError(response.status,
@@ -1582,8 +1744,8 @@ export class GitLabApi {
         `git ${verb} failed: ${response.status} ${response.statusText}${detail ? `: ${detail}` : ""}`,
         { isAuthError: response.status === 401 });
     }
-    const contentType = response.headers.get("content-type") ?? "";
-    if (!contentType.startsWith(headers.Accept)) {
+    if (!isResult(response.headers)) {
+      const contentType = response.headers.get("content-type") ?? "";
       await response.body?.cancel().catch(() => {});
       throw new GitLabApiError(502,
         `git ${verb} failed: expected ${headers.Accept} but the endpoint answered ${contentType || "no content type"}; ` +
@@ -1592,6 +1754,42 @@ export class GitLabApi {
     return response;
   }
 }
+
+// A push's answer, read: the answer to hand the transport and, where it is a git result of a
+// successful status, the report-status body that answer holds.
+type Pushed = { response: Response; report?: Uint8Array };
+
+// Reads the report-status body of a push's answer as the transport reads one: up to the size it
+// takes, and refused beyond that in the transport's words.
+async function readPushReport(answer: Response): Promise<Uint8Array> {
+  return await readBytesCapped(answer, MAX_RECEIVE_PACK_RESPONSE_BYTES).catch((error: unknown) => {
+    if (error instanceof ResponseTooLargeError) {
+      throw new Error(`git push response exceeded the ${MAX_RECEIVE_PACK_RESPONSE_BYTES}-byte limit`);
+    }
+    throw error;
+  });
+}
+
+// How a push that GitLab answered with a success is counted: git reports a ref update it refused
+// inside that answer, in the report the transport's parser reads. An update the parser reads as
+// refused is an error of the API inside a success, and one it reads as applied is counted by its
+// status. A body the parser throws on for any other reason (one that is no report, that does not
+// mention `refName`, or that says the pack did not unpack) is counted as one that could not be
+// parsed: the parser gives none of them a class of its own.
+function pushAnswer(report: Uint8Array, refName: string): CallAnswer | undefined {
+  try {
+    parseReceivePackResponse(report, refName);
+    return undefined;
+  } catch (error) {
+    return { outcome: "error", reason: error instanceof GitRefUpdateRejectedError ? "api" : "parse" };
+  }
+}
+
+/** The name each git smart-HTTP endpoint's request is counted under. */
+const GIT_OPERATIONS = {
+  "git-upload-pack": "git.upload-pack",
+  "git-receive-pack": "git.receive-pack",
+} as const satisfies Record<string, GitLabOperation>;
 
 /** The project path as it appears in a git URL: segments individually encoded, slashes kept. */
 export function gitRepoPath(projectPath: string): string {

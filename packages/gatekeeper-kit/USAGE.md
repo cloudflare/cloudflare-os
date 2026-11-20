@@ -431,7 +431,9 @@ same `run` callback that issues the request.
 refresh: authorization URLs with PKCE, code exchange, refresh, and RFC 7009 revocation. Every
 request refuses redirects, is bounded in time and size, and reports a rejection as
 `OAuthResponseError`, whose message carries no provider text beyond a validated `error` code;
-transport, abort, and oversize failures propagate unchanged. The `oauth-client with the connect
+transport, abort, and oversize failures propagate unchanged. Its requests are sent through the
+gatekeeper's `upstream` (see [Upstream calls](#upstream-calls)), a required option, which counts
+each one: a client takes no `fetch` of its own. The `oauth-client with the connect
 handshake and CredentialCoordinator` suite in
 [`__tests__/workerd/oauth-client.test.ts`](__tests__/workerd/oauth-client.test.ts) is the
 executable reference.
@@ -442,6 +444,7 @@ executable reference.
   client: { method: "basic", id: this.env.CLIENT_ID, secret: this.env.CLIENT_SECRET },
   authorizationEndpoint: "https://vendor.example/oauth/authorize",
   tokenEndpoint: "https://vendor.example/oauth/token",
+  upstream: vendorUpstream,
 });
 ```
 
@@ -476,6 +479,8 @@ When a provider does not fit, step down one rung at a time:
 ## Upstream calls
 
 `defineUpstream` in `./upstream` is the one client a gatekeeper sends its provider calls through.
+Gatekeeper source sends through its upstream and never calls the platform `fetch`, which lint
+enforces: a `fetch` or `globalThis.fetch` in a gatekeeper's `src/` is an error.
 Each attempt has a timeout, 30 seconds by default. A request that is safe to send twice (a GET or
 HEAD, or one marked `idempotent`) is sent again after a 429, 502, 503 or 504, a network failure or
 a timeout (a connection lost once an answer has begun is not sent again). No redirect is followed
@@ -521,9 +526,9 @@ async function vendorJson<T>(token: string, path: string, init?: UpstreamRequest
   drift apart.
 - The kit writes these words itself: an HTTP method or `OTHER` as the operation of a request
   that has no name, the reasons `rate` (a 429, counted as `refused`), `http`, `timeout`,
-  `network`, `parse` and `exception`, and, from an `OAuthClient` given the `upstream`, the reason
-  `api` and the operations `token.exchange`, `token.refresh`, `token.revoke`, `token.client` and
-  `token.request`.
+  `network`, `parse` and `exception`, and, from an `OAuthClient`, which sends through the
+  `upstream` it is constructed with, the reason `api` and the operations `token.exchange`,
+  `token.refresh`, `token.revoke`, `token.client` and `token.request`.
 
 ## Storage
 

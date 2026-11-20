@@ -10,6 +10,7 @@ import type {
   GoogleCalendarGatekeeperImpl, GoogleCalendarGatekeeperImplProps, UserAccount,
 } from "../../src/google";
 import type {TestHooks} from "./worker";
+import {unbindWrittenCalls, writtenCalls} from "../written-calls";
 
 const testEnv = env as unknown as {
   GoogleCalendarGatekeeperImpl: DurableObjectNamespace<GoogleCalendarGatekeeperImpl>;
@@ -168,6 +169,7 @@ function calendarHarness(availabilityMode: GoogleCalendarGatekeeperImplProps["av
 }
 
 afterEach(() => {
+  unbindWrittenCalls();
   vi.unstubAllGlobals();
   vi.useRealTimers();
 });
@@ -278,6 +280,17 @@ describe("Google Calendar verifyObserverAccess", () => {
     expect(calendar.backend.lookups.filter(lookup => lookup.token === "writer")
       .map(lookup => lookup.calendarId)).toEqual([BOUND, ALICE]);
     expect(calendar.backend.queries).toEqual([]);
+  });
+
+  it("writes the lookups one check of an observer's account makes as one point", async () => {
+    const calendar = calendarHarness();
+    calendar.backend.roles.writer = "writer";
+    const written = writtenCalls();
+
+    await expect(calendar.verify({writer: "writer"}, [BOUND_CALENDAR, ALICE_CALENDAR]))
+      .resolves.toEqual({allowedObserverIds: ["writer"]});
+
+    expect(written()).toEqual([["google-calendar", "calendarList.get", "success", 200, 2]]);
   });
 
   it("caches each answer of a mixed verification under its own subresource", async () => {

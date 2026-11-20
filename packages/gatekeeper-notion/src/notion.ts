@@ -55,6 +55,7 @@ import {
   userResponseToUser,
   type NotionOAuthGrant,
 } from "./notion-api";
+import { notionUpstream } from "./notion-upstream";
 import {
   AUTO_APPROVABLE_KINDS,
   NotionStore,
@@ -570,11 +571,12 @@ export class UserAccount extends DurableObject<Env> {
    */
   async checkSubresourceAccess(subresources: string[]): Promise<boolean[]> {
     const installed = credentialsId(this.ctx.storage.kv);
-    const answers = await checkNotionSubresourceAccess({
+    // One or two requests for each item asked about: their calls are summed.
+    const answers = await notionUpstream.summed(() => checkNotionSubresourceAccess({
       access: this.#access,
       workspaceId: () => this.getWorkspaceId(),
       api: this.#api(),
-    }, subresources);
+    }, subresources));
     if (this.ctx.storage.kv.get<string>("credentialsId") !== installed) {
       throw new Error("This collaborator's Notion connection changed while their access was being checked.");
     }

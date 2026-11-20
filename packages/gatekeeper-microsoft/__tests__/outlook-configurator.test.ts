@@ -1,12 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { OutlookDraft } from "../src/configurator/outlook-configurator-types";
 import { normalizeAddress, type ConfiguratorConnection } from "../src/configurator-connection";
-import { GraphApi } from "../src/graph-api";
+import { GraphApi, GraphApiError } from "../src/graph-api";
 import type { StoredIdentity } from "../src/microsoft-credentials";
 import {
   OutlookConfiguratorUI, accessLevels, draftUrl, mailboxBatch, subjectSearch,
 } from "../src/outlook-configurator";
 import { bindingLink, parseOutlookUrl } from "../src/outlook-scope";
+import { countedCalls } from "./points";
 
 const NOW = Date.parse("2026-10-17T12:00:00Z");
 const ALL_SCOPES = ["User.Read", "Mail.ReadWrite", "Mail.ReadWrite.Shared", "Mail.Send", "Mail.Send.Shared", "MailboxSettings.ReadWrite", "People.Read", "User.ReadBasic.All"];
@@ -380,6 +381,71 @@ describe("openSharedMailbox", () => {
     await expect(ui.openSharedMailbox("sarah@contoso.com")).rejects.toThrow("haven't been given access");
     graph.users["sarah@contoso.com"]!.shared = true;
     await expect(ui.openSharedMailbox("sarah@contoso.com")).resolves.toMatchObject({ name: "Sarah James" });
+  });
+});
+
+describe("how a success that is not what its request was sent for is counted", () => {
+  const counted = countedCalls();
+
+  it("counts a shared mailbox's Inbox answered with no ID as an error of the API, by the status of the answer", async () => {
+    const graph = new FakeGraph();
+    const original = graph.answer.bind(graph);
+    let inboxes = 0;
+    graph.answer = url => {
+      if (!decodeURIComponent(url.pathname).endsWith("/mailFolders/inbox")) return original(url);
+      inboxes += 1;
+      return { status: 200, body: { displayName: "Inbox" } };
+    };
+    await expect(configurator({ graph }).ui.openSharedMailbox("support@contoso.com")).rejects.toThrow(new GraphApiError(502, "Microsoft Graph sent a malformed folder."));
+    expect([inboxes, graph.requests]).toEqual([1, []]);
+    expect(counted()).toEqual([["mailFolders.get", "error", "api", 200]]);
+  });
+
+  it("counts a linked conversation's messages, one of which has no ID, as an error of the API, by the status of the answer", async () => {
+    const graph = new FakeGraph();
+    const original = graph.answer.bind(graph);
+    graph.answer = url => url.searchParams.get("$filter")?.startsWith("conversationId eq") ? { status: 200, body: { value: [{ subject: "Apollo launch" }] } } : original(url);
+    await expect(configurator({ graph }).ui.findConversations(null, "https://outlook.office.com/mail/inbox/id/AAMkM4"))
+      .rejects.toThrow(new GraphApiError(502, "Microsoft Graph sent a malformed message."));
+    expect(counted().at(-1)).toEqual(["messages.list", "error", "api", 200]);
+    // The requests answered ahead of it, which the fake records, are the successes they were.
+    expect(graph.requests.length).toBeGreaterThan(0);
+    expect(counted().slice(0, -1).map(([, outcome]) => outcome)).toEqual(graph.requests.map(() => "success"));
+  });
+});
+
+// A client whose batches are answered from a script, in order, and the IDs of the requests each was sent with.
+function batched(...answers: { id: string; status: number; body: unknown }[][]) {
+  const sent: unknown[] = [];
+  const api = new GraphApi("token", {
+    fetch: async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as { requests: { id: string }[] };
+      sent.push(body.requests.map(request => request.id));
+      return Response.json({ responses: answers.shift() ?? [] });
+    },
+  });
+  return { api, sent };
+}
+
+describe("how a batch from one mailbox that leaves a request out is counted", () => {
+  const counted = countedCalls();
+  const requests = ["inbox", "archive"].map(name => ({ id: name, method: "GET" as const, url: `me/mailFolders/${name}?$select=id` }));
+
+  it("counts each send that leaves it out as an error of the API, sends it again as often as a throttled one, and stands a failure in for it", async () => {
+    const inbox = { id: "inbox", status: 200, body: { id: "AAMkInbox" } };
+    const { api, sent } = batched([inbox]);
+    const answers = await mailboxBatch(api, requests, async () => {});
+    expect([...answers.values()]).toEqual([inbox, { id: "archive", status: 502, body: null }]);
+    expect(sent).toEqual([["inbox", "archive"], ["archive"], ["archive"], ["archive"]]);
+    expect(counted()).toEqual(Array.from({ length: 4 }, () => ["batch", "error", "api", 200]));
+  });
+
+  it("counts a send that answers each of its requests as the success it is, whatever each is answered", async () => {
+    const answered = [{ id: "inbox", status: 200, body: { id: "AAMkInbox" } }, { id: "archive", status: 404, body: {} }];
+    const { api, sent } = batched(answered);
+    expect([...(await mailboxBatch(api, requests, async () => {})).values()]).toEqual(answered);
+    expect(sent).toEqual([["inbox", "archive"]]);
+    expect(counted()).toEqual([["batch", "success", "", 200]]);
   });
 });
 

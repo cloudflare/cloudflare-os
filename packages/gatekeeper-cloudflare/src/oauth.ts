@@ -10,6 +10,7 @@ const CF_OAUTH_TOKEN_URL = "https://dash.cloudflare.com/oauth2/token";
 import {
   createPkce, isInvalidGrant, OAuthClient, OAuthResponseError, type OAuthTokens,
 } from "@gadgets/gatekeeper-kit/oauth-client";
+import { cloudflareUpstream } from "./cloudflare-upstream.js";
 import { observabilityScopesForResources } from "./resources.js";
 
 /**
@@ -72,6 +73,9 @@ function oauthClient(config: CloudflareOAuthConfig): OAuthClient {
     tokenEndpoint: config.tokenUrl,
     authorizationEndpoint: config.authUrl,
     defaultExpiresIn: 3600,
+    // Token requests are sent through the gatekeeper's upstream, which counts each as
+    // `token.exchange` or `token.refresh`.
+    upstream: cloudflareUpstream,
   });
 }
 

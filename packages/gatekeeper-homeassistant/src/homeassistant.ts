@@ -45,6 +45,7 @@ import {
   type HomeAssistantCredentials,
   type RegistrySnapshot,
 } from "./homeassistant-api";
+import { homeassistantUpstream } from "./homeassistant-upstream";
 import {
   applyRevertForEntity,
   canRevert,
@@ -1210,6 +1211,12 @@ export class HomeAssistantGatekeeperImpl
   }
 
   async applyAction(actionId: number): Promise<void> {
+    // An apply reads the registry up to twice, each time over a socket of its own, before the
+    // socket of the call itself: its calls are summed into one point per kind.
+    return await homeassistantUpstream.summed(() => this.#applyAction(actionId));
+  }
+
+  async #applyAction(actionId: number): Promise<void> {
     // The overseer only knows the numeric action ID; the full action lives in DO storage.
     const pending = this.#getPending(actionId);
     if (!pending) {
@@ -1268,6 +1275,14 @@ export class HomeAssistantGatekeeperImpl
   }
 
   async revertAction(
+    actionId: number,
+  ): Promise<void | { message?: string; canRetry?: boolean; restart?: boolean }> {
+    // A revert calls services for every entity the action reached: its calls are summed into
+    // one point per kind.
+    return await homeassistantUpstream.summed(() => this.#revertAction(actionId));
+  }
+
+  async #revertAction(
     actionId: number,
   ): Promise<void | { message?: string; canRetry?: boolean; restart?: boolean }> {
     // The overseer passes back only the action ID; we stored everything we need (including the

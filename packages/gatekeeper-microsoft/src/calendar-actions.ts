@@ -302,10 +302,13 @@ async function noteVersionLeft(host: CalendarActionHost, calendar: CalendarRef, 
 async function create<P extends CalendarActions["createEvent"]>(payload: P, host: CalendarActionHost): Promise<{ action: P }> {
   let created: { id: string; changeKey?: string };
   try {
-    const body = await host.graph(api => calendarApi(api, payload.calendar).request<{ id?: unknown; changeKey?: unknown }>("POST",
-      `/calendars/${idPath(payload.calendar.id)}/events`, { ...eventJson(payload.event, payload.zone), transactionId: payload.transactionId }), { replayable: true });
-    if (typeof body?.id !== "string") throw new GraphApiError(502, "Outlook didn't say which event it created.");
-    created = { id: body.id, ...(typeof body.changeKey === "string" ? { changeKey: body.changeKey } : {}) };
+    // The answer is read inside the request, so that one that names no event is counted as the error it is.
+    created = await host.graph(api => calendarApi(api, payload.calendar).request("POST",
+      `/calendars/${idPath(payload.calendar.id)}/events`, { ...eventJson(payload.event, payload.zone), transactionId: payload.transactionId }, undefined,
+      (body: { id?: unknown; changeKey?: unknown } | null) => {
+        if (typeof body?.id !== "string") throw new GraphApiError(502, "Outlook didn't say which event it created.");
+        return { id: body.id, ...(typeof body.changeKey === "string" ? { changeKey: body.changeKey } : {}) };
+      }), { replayable: true });
   } catch (error) {
     exchangeRefusal(error, "The event");
   }

@@ -46,3 +46,9 @@ private data by its own generated `accountId`). The account exposes the agent re
 (`getSession()`), collection discovery metadata (`getAgentCatalog()`), and a management UI
 (`startAppUi({ isAdmin })`). The UI is a single-file React SPA in `app/` (Vite + Tailwind + Kumo)
 bundled by `build-app.ts` into `src/generated/app.txt`.
+
+## Artifacts calls
+
+Git-backed collections call the optional `ARTIFACTS` binding and the git remote of its repositories
+through `contextUpstream` (`src/context-upstream.ts`, which lists the name of each call), so those
+calls are counted as subservice metrics under the source `gatekeeper.context.api`.

@@ -28,6 +28,7 @@ does so through a named hook (`staticToken`, `mintAccount`), not a private copy.
 | `scope` | The resource-URL scope grammar, and the check every call passes through |
 | `endpoint` | Validation and host blocklist for a user-supplied endpoint |
 | `fetch` | Every outbound request; redirects are followed by hand and each hop re-checked, including SDK OAuth fetches |
+| `upstream` | Sends each request through the calling gatekeeper's kit upstream, guarded, under a name from the closed lists `MCP_OPERATIONS` and `OAUTH_OPERATIONS`; its calls are counted as subservice metrics under the source `gatekeeper.<vendorId>.api` |
 | `account` | Durable Object base and persisted SDK OAuth state: connect, refresh, revocation |
 | `facet` | Common session, catalog, action, and sharing behavior for connector-owned Durable Object facets |
 | `catalog` | One binding's tool list: fetched, cached, scoped to the grant, classified; plus the cache for tools hydrated past that list |

@@ -18,6 +18,7 @@ import type { ApprovalQueue, Cursor } from "@gadgets/workshop-shared/gatekeeper"
 import { authorizeRead, isProvisional, type ReadAuthority } from "./binding";
 import { convertToText } from "@gadgets/office-content";
 import { GraphApiError, type GraphApi } from "./graph-api";
+import { graphUpstream } from "./graph-upstream";
 import { parseCanvas, splitSiteId, type GraphColumn, type GraphDrive, type GraphDriveItem, type GraphList, type GraphListItem, type GraphSite, type GraphSitePage } from "./graph-parse";
 import type { SharePointAccess, SharePointSites } from "./microsoft-env";
 import { editDocx } from "./content/docx-edit";
@@ -1389,7 +1390,7 @@ export class SharePointSessionImpl extends SharePointReaderImpl implements Share
 
   async editPresentation(id: string, edits: PresentationEdit[], options?: ChangeOptions): Promise<DriveEntry> {
     const markdown = edits.flatMap(edit => "addSlides" in edit ? [edit.addSlides] : "setText" in edit ? [edit.setText.markdown] : []);
-    const images = await this.#slideImages(markdown.join("\n\n"));
+    const images = await graphUpstream.summed(() => this.#slideImages(markdown.join("\n\n")));
     return await this.#editInPlace(id, "presentation", edits, options, async bytes => {
       const result = await editPptx(bytes, edits, images ? { images } : {});
       return {
@@ -1524,7 +1525,7 @@ export class SharePointSessionImpl extends SharePointReaderImpl implements Share
         units.fileRead({ driveId: item.driveId, itemId: item.id }, shown.version, shown.moderation));
       template = { name: item.name, bytes: download.bytes };
     }
-    const images = typeof content === "string" && writtenAs(name) === "powerpoint" ? await this.#slideImages(content) : undefined;
+    const images = typeof content === "string" && writtenAs(name) === "powerpoint" ? await graphUpstream.summed(() => this.#slideImages(content)) : undefined;
     const owner = await this.ctx.host.owner();
     return await encodeContent(name, content, { ...(template ? { template } : {}), ...(images ? { images } : {}), author: owner.name })
       .catch(error => { throw editFailure(error); });

@@ -3,7 +3,8 @@
 // runs in one isolate. The fake keeps state: tokens name users, a created post is visible to the
 // reads that follow (reconciliation depends on that), and likes, follows and the rest are recorded
 // as X would hold them. A test injects a failure with `on()`, whose routes answer before the
-// built-in ones, latest first. Anything unrouted, or sent anywhere but X, fails the test.
+// built-in ones, latest first. Anything unrouted, sent anywhere but X, or that the gatekeeper's
+// route tree gives no name, fails the test.
 
 import { env, runInDurableObject } from "cloudflare:test";
 import { vi } from "vitest";
@@ -12,12 +13,20 @@ import type { StoredIdentity } from "../../src/x-credentials";
 import { getRedirectUri, scopesFor, type Env } from "../../src/x-env";
 import type { WireList, WirePost, WireUser } from "../../src/x-normalize";
 import { extractUrls } from "../../src/x-text";
+import { xUpstream } from "../../src/x-upstream";
 
 type WireLink = NonNullable<NonNullable<WirePost["entities"]>["urls"]>[number];
 
 export const API = "https://api.x.com";
 
 export type FakeRequest = { method: string; url: URL; headers: Headers; body?: string; form?: FormData };
+/**
+ * The requests the gatekeeper's route tree gave no name, since they were last looked at. The
+ * error such a request is failed with reaches the gatekeeper as a failed transport, which a test
+ * may expect, so `named-requests.ts` fails any test that leaves one here.
+ */
+export const unnamedRequests: string[] = [];
+
 type Handler = (request: FakeRequest) => Response | Promise<Response> | undefined | Promise<Response | undefined>;
 
 export function json(data: unknown, init: ResponseInit = {}): Response {
@@ -136,6 +145,11 @@ export class FakeX {
     if (url.origin !== API) throw new Error(`fake X: ${request.method} ${url} was not sent to ${API}`);
     if (request.redirect !== "manual" && !url.pathname.startsWith("/2/oauth2/")) {
       throw new Error(`fake X: ${request.method} ${url} would follow redirects`);
+    }
+    // The OAuth client names its token requests itself; every other request is named by its route.
+    if (!url.pathname.startsWith("/2/oauth2/") && xUpstream.operationOf(request.method, url) === request.method) {
+      unnamedRequests.push(`${request.method} ${url.pathname}`);
+      throw new Error(`fake X: ${request.method} ${url.pathname} has no name in X_ROUTES`);
     }
     const recorded: FakeRequest = { method: request.method, url, headers: new Headers(request.headers) };
     if (request.headers.get("content-type")?.startsWith("multipart/form-data")) {

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   ConfluenceStore,
   applyStoredAction,
@@ -10,7 +10,7 @@ import {
   type UploadAttachmentAction,
 } from "../src/confluence-actions";
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
-import type { ConfluenceApi } from "../src/confluence-api";
+import { ConfluenceUnnamedCreationError, type ConfluenceApi } from "../src/confluence-api";
 
 type Storage = ConstructorParameters<typeof ConfluenceStore>[0];
 
@@ -119,6 +119,53 @@ describe("applyStoredAction", () => {
     expect(calls.addComment).toEqual([{ id: "555", type: "page" }]);
   });
 
+  it("sends a creation once where Confluence answers it without naming what it made, and says the outcome is unknown", async () => {
+    const { api, calls } = makeApi("page");
+    // The comment may have been made: its POST was answered a success that names nothing.
+    const unnamed = new ConfluenceUnnamedCreationError("comment");
+    api.addComment = async (id: string, _storage: string, type: string) => {
+      calls.addComment.push({ id, type });
+      throw unnamed;
+    };
+    const store = storeWith(api);
+    const id = stage(store, { type: "addComment", contentId: "555", text: "hi" });
+
+    const first = await applyStoredAction(store, id).catch((error: unknown) => error);
+    const second = await applyStoredAction(store, id).catch((error: unknown) => error);
+
+    expect(first).toMatchObject({ message: expect.stringContaining("may or may not have been made"), cause: unnamed });
+    expect(second).toMatchObject({ message: expect.stringContaining("may or may not have been made") });
+    // No second POST: the action stays pending, to be discarded.
+    expect(calls.addComment).toHaveLength(1);
+    expect(store.getAction(id)).toMatchObject({ state: "pending", outcomeUnknown: expect.any(String) });
+    // It is kept for that guard and for its discard, and no read simulates it any more: the
+    // comment may be in Confluence already, where a read finds it.
+    expect(store.pendingActions().map(record => record.id)).toEqual([id]);
+    expect(store.simulatedActions()).toEqual([]);
+    expect(store.pendingForContent("555")).toEqual([]);
+    rejectStoredAction(store, id);
+    expect(store.getAction(id)).toBeUndefined();
+  });
+
+  it("sends a creation again after a failure that says it was not made", async () => {
+    const { api, calls } = makeApi("page");
+    let failed = false;
+    const add = api.addComment.bind(api);
+    api.addComment = async (...args: Parameters<ConfluenceApi["addComment"]>) => {
+      if (failed) return add(...args);
+      failed = true;
+      throw new Error("service unavailable");
+    };
+    const store = storeWith(api);
+    const id = stage(store, { type: "addComment", contentId: "555", text: "hi" });
+
+    await expect(applyStoredAction(store, id)).rejects.toThrow("service unavailable");
+    await applyStoredAction(store, id);
+
+    expect(calls.addComment).toHaveLength(1);
+    expect(store.getAction(id)).toMatchObject({ state: "applied" });
+  });
+
   it("keeps a draft page a draft when editing its content (does not publish it)", async () => {
     const { api, calls } = makeApi("page", "draft");
     const store = storeWith(api);
@@ -186,6 +233,79 @@ describe("applyStoredAction", () => {
 });
 
 describe("staging an action", () => {
+  it("refuses one beneath a page queued under a creation whose outcome is unknown, and simulates none of them", async () => {
+    const { api } = makeApi();
+    api.createPage = async () => { throw new ConfluenceUnnamedCreationError("page"); };
+    const store = storeWith(api);
+    store.getSpaceId = async () => "10";
+    const page = (provisionalId: string, parent: object) => ({
+      type: "createContent", kind: "page", provisionalId, title: provisionalId, status: "current", parent,
+    }) as ConfluenceAction;
+    const parent = stage(store, page("~1", { type: "space", spaceKey: "ENG" }));
+    // A child queued while its parent could still be created.
+    const child = stage(store, page("~2", { type: "page", parentId: "~1", spaceKey: "ENG" }));
+    const comment = stage(store, { type: "addComment", contentId: "~2", text: "hi" });
+    await applyStoredAction(store, parent).catch(() => undefined);
+    const submitted: number[] = [];
+    const queue = { submitAction: async (id: number) => void submitted.push(id) };
+
+    await expect(stageAction(store, queue as never, page("~3", { type: "page", parentId: "~2", spaceKey: "ENG" })))
+      .rejects.toThrow("whether it exists is unknown");
+    await expect(stageAction(store, queue as never, { type: "addComment", contentId: "~2", text: "more" }))
+      .rejects.toThrow("whether it exists is unknown");
+
+    expect(submitted).toEqual([]);
+    // The records stay for their discard, and no read shows what can never be applied.
+    expect(store.pendingActions().map(record => record.id)).toEqual([parent, child, comment]);
+    expect(store.simulatedActions()).toEqual([]);
+    expect(store.pendingForContent("~2")).toEqual([]);
+    rejectStoredAction(store, parent);
+    expect(store.pendingActions()).toEqual([]);
+  });
+
+  it("reads no action of the store for one on content that has a real ID", async () => {
+    const { api } = makeApi();
+    const store = storeWith(api);
+    const pending = vi.spyOn(store, "pendingActions");
+    const queue = { submitAction: async () => {} };
+
+    await stageAction(store, queue as never, { type: "addComment", contentId: "555", text: "hi" });
+    await stageAction(store, queue as never, {
+      type: "createContent", provisionalId: "~1", kind: "page", title: "Top", status: "current",
+      parent: { type: "space", spaceKey: "ENG" },
+    } as ConfluenceAction);
+
+    expect(pending).not.toHaveBeenCalled();
+  });
+
+  it("refuses one on content whose creation's outcome is unknown, and queues nothing", async () => {
+    const { api } = makeApi();
+    api.createPage = async () => { throw new ConfluenceUnnamedCreationError("page"); };
+    const store = storeWith(api);
+    store.getSpaceId = async () => "10";
+    const parent = stage(store, {
+      type: "createContent", kind: "page", provisionalId: "~1", title: "Parent", status: "current",
+      parent: { type: "space", spaceKey: "ENG" },
+    } as ConfluenceAction);
+    await applyStoredAction(store, parent).catch(() => undefined);
+    const submitted: number[] = [];
+    const queue = { submitAction: async (id: number) => void submitted.push(id) };
+
+    // A page beneath it, and an action on it: neither could ever be applied.
+    await expect(stageAction(store, queue as never, {
+      type: "createContent", kind: "page", provisionalId: "~2", title: "Child", status: "current",
+      parent: { type: "page", parentId: "~1", spaceKey: "ENG" },
+    } as ConfluenceAction)).rejects.toThrow("whether it exists is unknown");
+    await expect(stageAction(store, queue as never, { type: "addComment", contentId: "~1", text: "hi" }))
+      .rejects.toThrow("whether it exists is unknown");
+
+    expect(submitted).toEqual([]);
+    expect(store.pendingActions().map(record => record.id)).toEqual([parent]);
+    // Content the unknown creation has nothing to do with is queued as ever.
+    await stageAction(store, queue as never, { type: "addComment", contentId: "555", text: "hi" });
+    expect(submitted).toHaveLength(1);
+  });
+
   it("keeps one applied before a lost submit reply, and reports it submitted", async () => {
     const { api, calls } = makeApi();
     const store = storeWith(api);
@@ -226,6 +346,71 @@ describe("attachment files", () => {
     await expect(stageAction(store, queue as never, action)).rejects.toThrow("submission failed");
 
     expect(store.getAction(1)).toBeUndefined();
+    await expect(store.readAttachment(action)).rejects.toThrow(/incomplete or corrupted/);
+  });
+
+  it("are deleted when an upload's outcome becomes unknown, and the record kept for its discard", async () => {
+    const { api, calls } = makeApi();
+    api.uploadAttachment = async (id: string, file: { filename: string; data: Uint8Array }) => {
+      calls.uploadAttachment.push({ id, filename: file.filename, data: file.data.slice() });
+      throw new ConfluenceUnnamedCreationError("attachment");
+    };
+    const store = storeWith(api);
+    const action = await uploadAction(store, Uint8Array.from([1, 2, 3]));
+    const id = stage(store, action);
+
+    await expect(applyStoredAction(store, id)).rejects.toThrow("may or may not have been made");
+
+    expect(calls.uploadAttachment).toHaveLength(1);
+    expect(store.getAction(id)).toMatchObject({ state: "pending", outcomeUnknown: expect.any(String) });
+    await expect(store.readAttachment(action)).rejects.toThrow(/incomplete or corrupted/);
+    rejectStoredAction(store, id);
+    expect(store.getAction(id)).toBeUndefined();
+  });
+
+  it("are deleted where they were queued beneath a creation whose outcome becomes unknown", async () => {
+    const { api } = makeApi();
+    api.createPage = async () => { throw new ConfluenceUnnamedCreationError("page"); };
+    const store = storeWith(api);
+    store.getSpaceId = async () => "10";
+    const parent = stage(store, {
+      type: "createContent", provisionalId: "~parent", kind: "page",
+      parent: { type: "space", spaceKey: "ENG" }, title: "Parent", status: "current",
+    });
+    stage(store, {
+      type: "createContent", provisionalId: "~child", kind: "page",
+      parent: { type: "page", parentId: "~parent", spaceKey: "ENG" }, title: "Child", status: "current",
+    });
+    const onChild = await uploadAction(store, Uint8Array.from([1]), "~child");
+    const elsewhere = await uploadAction(store, Uint8Array.from([2]), "555");
+    stage(store, onChild);
+    stage(store, elsewhere);
+
+    await applyStoredAction(store, parent).catch(() => undefined);
+
+    await expect(store.readAttachment(onChild)).rejects.toThrow(/incomplete or corrupted/);
+    // An upload to content that exists keeps its bytes for its apply.
+    await expect(store.readAttachment(elsewhere)).resolves.toEqual(Uint8Array.from([2]));
+    expect(store.pendingActions()).toHaveLength(4);
+  });
+
+  it("are deleted when staging refuses an upload to a page whose creation's outcome is unknown", async () => {
+    const { api } = makeApi();
+    api.createPage = async () => { throw new ConfluenceUnnamedCreationError("page"); };
+    const store = storeWith(api);
+    store.getSpaceId = async () => "10";
+    const parent = stage(store, {
+      type: "createContent", provisionalId: "~parent", kind: "page",
+      parent: { type: "space", spaceKey: "ENG" }, title: "Parent", status: "current",
+    });
+    await applyStoredAction(store, parent).catch(() => undefined);
+    const action = await uploadAction(store, Uint8Array.from([1, 2, 3]), "~parent");
+    const queue = { submitAction: async () => {} };
+
+    await expect(stageAction(store, queue as never, action)).rejects.toThrow("whether it exists is unknown");
+
+    // No record was made of the upload, so nothing else would release its bytes.
+    expect(store.pendingActions().map(record => record.id)).toEqual([parent]);
     await expect(store.readAttachment(action)).rejects.toThrow(/incomplete or corrupted/);
   });
 

@@ -12,7 +12,7 @@ import {
   type PreviewOAuthState,
 } from "@gadgets/gatekeeper-kit/preview-oauth";
 import { formatSubresourceId, parseSubresourceId } from "@gadgets/gatekeeper-kit/subresource-ids";
-import { exchangeAuthCode, getAccessToken, getGoogleAccountDescription, getGoogleAccountProfile, getGoogleVerifiedEmail, GoogleAccessToken, RefreshFailure, revokeGoogleToken } from "./google-api";
+import { exchangeAuthCode, getAccessToken, getGoogleAccountDescription, getGoogleAccountProfile, getGoogleVerifiedEmail, GoogleAccessToken, isRefreshToken, RefreshFailure, revokeGoogleToken } from "./google-api";
 import type { GoogleDocEditSession, GoogleDocReadSession } from "./docs-types";
 import { GoogleDocsApi } from "./docs-api";
 import { GoogleSheetsApi } from "./sheets-api";
@@ -118,6 +118,7 @@ import type {
   GoogleCalendarInfo, GoogleCalendarSession, PersonAvailability,
 } from "./calendar-types";
 import TYPES_CODE from "./types.txt";
+import { googleUpstream } from "./upstream";
 import CHAT_TYPES_CODE from "./chat-types.txt";
 import DOCS_READ_TYPES_CODE from "./docs-read-types.txt";
 import BIGQUERY_TYPES_CODE from "./bigquery-types.txt";
@@ -718,7 +719,7 @@ export class UserAccount extends DurableObject<Env> {
           code, clientId, clientSecret, flow.oauthRedirectUri,
           AbortSignal.timeout(AUTH_CODE_EXCHANGE_TIMEOUT_MS));
 
-      if (!response.refreshToken) {
+      if (!isRefreshToken(response.refreshToken)) {
         throw new Error("OAuth exchange didn't return refresh token?");
       }
 
@@ -791,97 +792,99 @@ export class UserAccount extends DurableObject<Env> {
    * determined, which is never reused.
    */
   async checkSubresourceAccess(subresources: string[]): Promise<boolean[]> {
-    // Parsed before anything is asked, so an ID this account can't check is refused outright.
-    let parsed = new Map(subresources.map(subresource =>
-        [subresource, parseAccountSubresource(subresource)] as const));
-    let getToken = async (opts?: AccessTokenRequest) => (await this.getAccessToken(opts)).token;
-    let freeBusy = new Map<string, string>();
-    let calendars = new Map<string, string>();
-    let datasets = new Map<string, BigQueryDatasetRef>();
-    let owners = new Map<string, string>();
-    let conversations = new Map<string, { spaceName: string; members: boolean }>();
-    let driveUnits = new Map<string, DriveUnit>();
-    let nativeFiles = new Map<string, NativeFileSubresource>();
-    for (let [subresource, resource] of parsed) {
-      if (resource.kind === "bigQueryDataset") datasets.set(subresource, resource.dataset);
-      else if (resource.kind === "gmailUser" || resource.kind === "chatUser") {
-        owners.set(subresource, resource.subject);
-      } else if (resource.kind === "chatSpace" || resource.kind === "chatSpaceMembers") {
-        conversations.set(subresource,
-          { spaceName: resource.spaceName, members: resource.kind === "chatSpaceMembers" });
-      } else if (
-        resource.kind === "file" || resource.kind === "folder" || resource.kind === "content"
-      ) {
-        driveUnits.set(subresource, resource);
-      } else if ("calendarId" in resource) {
-        (resource.kind === "freeBusy" ? freeBusy : calendars).set(subresource, resource.calendarId);
-      } else nativeFiles.set(subresource, resource);
-    }
-    let api = new GoogleCalendarApi(getToken);
-    let ttl = (allowed: boolean) =>
-        allowed ? SUBRESOURCE_ACCESS_ALLOWED_TTL_MS : SUBRESOURCE_ACCESS_DENIED_TTL_MS;
-    let access = new Map<string, boolean>();
-    // Each Google request is cached on its own, so a later failure keeps what earlier ones learned,
-    // and the free/busy queries carry only the calendars without a recent answer. One request at a
-    // time, so a long list doesn't trip Google's per-user rate limit. A query Google refuses
-    // outright (expired credentials, a missing scope, a rate limit) says nothing about the
-    // account's access, so it throws rather than reading as a denial.
-    let freeBusyIds = [...freeBusy.keys()];
-    let freeBusyAnswers = await this.#access.cachedMany(freeBusyIds, ttl, missing =>
-        api.hasFreeBusyAccess(missing.map(subresource => freeBusy.get(subresource)!)),
-        {batchSize: MAX_FREE_BUSY_CALENDARS});
-    freeBusyIds.forEach((subresource, index) => access.set(subresource, freeBusyAnswers[index]));
-    for (let [subresource, calendarId] of calendars) {
-      access.set(subresource, await this.#access.cached(subresource, ttl,
-          () => hasCalendarDetailAccess(api, calendarId)));
-    }
-    if (datasets.size > 0) {
-      let bigQuery = new BigQueryApi(getToken);
-      for (let [subresource, dataset] of datasets) {
-        access.set(subresource, await this.#access.cached(subresource, ttl,
-            () => hasBigQueryDatasetAccess(bigQuery, dataset)));
+    return googleUpstream.summed(async () => {
+      // Parsed before anything is asked, so an ID this account can't check is refused outright.
+      let parsed = new Map(subresources.map(subresource =>
+          [subresource, parseAccountSubresource(subresource)] as const));
+      let getToken = async (opts?: AccessTokenRequest) => (await this.getAccessToken(opts)).token;
+      let freeBusy = new Map<string, string>();
+      let calendars = new Map<string, string>();
+      let datasets = new Map<string, BigQueryDatasetRef>();
+      let owners = new Map<string, string>();
+      let conversations = new Map<string, { spaceName: string; members: boolean }>();
+      let driveUnits = new Map<string, DriveUnit>();
+      let nativeFiles = new Map<string, NativeFileSubresource>();
+      for (let [subresource, resource] of parsed) {
+        if (resource.kind === "bigQueryDataset") datasets.set(subresource, resource.dataset);
+        else if (resource.kind === "gmailUser" || resource.kind === "chatUser") {
+          owners.set(subresource, resource.subject);
+        } else if (resource.kind === "chatSpace" || resource.kind === "chatSpaceMembers") {
+          conversations.set(subresource,
+            { spaceName: resource.spaceName, members: resource.kind === "chatSpaceMembers" });
+        } else if (
+          resource.kind === "file" || resource.kind === "folder" || resource.kind === "content"
+        ) {
+          driveUnits.set(subresource, resource);
+        } else if ("calendarId" in resource) {
+          (resource.kind === "freeBusy" ? freeBusy : calendars).set(subresource, resource.calendarId);
+        } else nativeFiles.set(subresource, resource);
       }
-    }
-    if (conversations.size > 0) {
-      let chat = new ChatApi(getToken);
-      // Chat answers for one space per request, so a few run at a time.
-      let entries = [...conversations];
-      let answers = await mapWithConcurrency(entries, DEFAULT_CONCURRENCY,
-        ([subresource, { spaceName, members }]) =>
-          this.#access.cached(subresource, ttl, () => hasChatAccess(chat, spaceName, members)));
-      entries.forEach(([subresource], index) => access.set(subresource, answers[index]));
-    }
-    if (driveUnits.size > 0) {
-      // As verifyDriveObservations does, an account without a Drive grant is denied every Drive
-      // unit, and Drive is asked about each unit (100 to a batch) only for one with it.
-      let drive = new DriveApi(getToken);
-      let unitIds = [...driveUnits.keys()];
-      let answers = await this.#access.cachedMany(unitIds, ttl, async missing => {
-        let units = missing.map(subresource => driveUnits.get(subresource)!);
-        return hasDriveResourceGrant(await this.getGrantedResourceUrlPatterns())
-          ? drive.checkObservations(units)
-          : units.map(() => false);
-      }, { batchSize: MAX_BATCH_FILES });
-      unitIds.forEach((subresource, index) => access.set(subresource, answers[index]));
-    }
-    if (nativeFiles.size > 0) {
-      // Docs, Sheets and Slides answer for one file per request, so a few run at a time.
-      let entries = [...nativeFiles];
-      let answers = await mapWithConcurrency(entries, DEFAULT_CONCURRENCY, ([subresource, file]) =>
-          this.#access.cached(subresource, ttl, () => hasNativeFileAccess(getToken, file)));
-      entries.forEach(([subresource], index) => access.set(subresource, answers[index]));
-    }
-    if (owners.size > 0) {
-      // A mailbox or a Chat account is private to its owner, so only that same Google account can
-      // read it.
-      let ownerIds = [...owners.keys()];
-      let answers = await this.#access.cachedMany(ownerIds, ttl, async missing => {
-        let { sub } = await getGoogleAccountProfile(getToken);
-        return missing.map(subresource => owners.get(subresource) === sub);
-      });
-      ownerIds.forEach((subresource, index) => access.set(subresource, answers[index]));
-    }
-    return subresources.map(subresource => access.get(subresource)!);
+      let api = new GoogleCalendarApi(getToken);
+      let ttl = (allowed: boolean) =>
+          allowed ? SUBRESOURCE_ACCESS_ALLOWED_TTL_MS : SUBRESOURCE_ACCESS_DENIED_TTL_MS;
+      let access = new Map<string, boolean>();
+      // Each Google request is cached on its own, so a later failure keeps what earlier ones learned,
+      // and the free/busy queries carry only the calendars without a recent answer. One request at a
+      // time, so a long list doesn't trip Google's per-user rate limit. A query Google refuses
+      // outright (expired credentials, a missing scope, a rate limit) says nothing about the
+      // account's access, so it throws rather than reading as a denial.
+      let freeBusyIds = [...freeBusy.keys()];
+      let freeBusyAnswers = await this.#access.cachedMany(freeBusyIds, ttl, missing =>
+          api.hasFreeBusyAccess(missing.map(subresource => freeBusy.get(subresource)!)),
+          {batchSize: MAX_FREE_BUSY_CALENDARS});
+      freeBusyIds.forEach((subresource, index) => access.set(subresource, freeBusyAnswers[index]));
+      for (let [subresource, calendarId] of calendars) {
+        access.set(subresource, await this.#access.cached(subresource, ttl,
+            () => hasCalendarDetailAccess(api, calendarId)));
+      }
+      if (datasets.size > 0) {
+        let bigQuery = new BigQueryApi(getToken);
+        for (let [subresource, dataset] of datasets) {
+          access.set(subresource, await this.#access.cached(subresource, ttl,
+              () => hasBigQueryDatasetAccess(bigQuery, dataset)));
+        }
+      }
+      if (conversations.size > 0) {
+        let chat = new ChatApi(getToken);
+        // Chat answers for one space per request, so a few run at a time.
+        let entries = [...conversations];
+        let answers = await mapWithConcurrency(entries, DEFAULT_CONCURRENCY,
+          ([subresource, { spaceName, members }]) =>
+            this.#access.cached(subresource, ttl, () => hasChatAccess(chat, spaceName, members)));
+        entries.forEach(([subresource], index) => access.set(subresource, answers[index]));
+      }
+      if (driveUnits.size > 0) {
+        // As verifyDriveObservations does, an account without a Drive grant is denied every Drive
+        // unit, and Drive is asked about each unit (100 to a batch) only for one with it.
+        let drive = new DriveApi(getToken);
+        let unitIds = [...driveUnits.keys()];
+        let answers = await this.#access.cachedMany(unitIds, ttl, async missing => {
+          let units = missing.map(subresource => driveUnits.get(subresource)!);
+          return hasDriveResourceGrant(await this.getGrantedResourceUrlPatterns())
+            ? drive.checkObservations(units)
+            : units.map(() => false);
+        }, { batchSize: MAX_BATCH_FILES });
+        unitIds.forEach((subresource, index) => access.set(subresource, answers[index]));
+      }
+      if (nativeFiles.size > 0) {
+        // Docs, Sheets and Slides answer for one file per request, so a few run at a time.
+        let entries = [...nativeFiles];
+        let answers = await mapWithConcurrency(entries, DEFAULT_CONCURRENCY, ([subresource, file]) =>
+            this.#access.cached(subresource, ttl, () => hasNativeFileAccess(getToken, file)));
+        entries.forEach(([subresource], index) => access.set(subresource, answers[index]));
+      }
+      if (owners.size > 0) {
+        // A mailbox or a Chat account is private to its owner, so only that same Google account can
+        // read it.
+        let ownerIds = [...owners.keys()];
+        let answers = await this.#access.cachedMany(ownerIds, ttl, async missing => {
+          let { sub } = await getGoogleAccountProfile(getToken);
+          return missing.map(subresource => owners.get(subresource) === sub);
+        });
+        ownerIds.forEach((subresource, index) => access.set(subresource, answers[index]));
+      }
+      return subresources.map(subresource => access.get(subresource)!);
+    });
   }
 
   /**
@@ -1580,10 +1583,11 @@ class RpcCursor<Entry> extends RpcTarget implements Cursor<Entry> {
     this.#owned?.[Symbol.dispose]();
   }
 
-  // `next()` takes no arguments, so there is no argument surface to validate.
+  // `next()` takes no arguments, so there is no argument surface to validate. One call walks
+  // provider pages until one has entries, so its requests are summed.
   @skipRpcValidation()
   next(): Promise<Entry[] | null> {
-    return this.#pager.next();
+    return googleUpstream.summed(() => this.#pager.next());
   }
 }
 

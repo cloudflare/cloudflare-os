@@ -97,6 +97,11 @@ Notion's newer model splits a database into one or more **data sources**. Databa
 `2025-09-03`; pages/blocks/comments/search use `2022-06-28` so user-facing IDs/URLs stay
 consistent. This split is hidden from the Session API.
 
+`src/notion-api.ts` sends every request through one upstream client, whose calls are counted as
+[subservice metrics](../observability/README.md#subservice-calls) under the source
+`gatekeeper.notion.api`: an API request under its name from the route tree `NOTION_ROUTES` in
+`src/notion-upstream.ts`, a token request under `token.exchange` or `token.refresh`.
+
 ## Build & test
 
 ```

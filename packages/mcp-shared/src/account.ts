@@ -20,6 +20,7 @@ import {
   discardStagedCredentials,
   stageCredentials,
 } from "@gadgets/gatekeeper-kit/credential-stage";
+import type { Upstream } from "@gadgets/gatekeeper-kit/upstream";
 import {
   auth,
   refreshAuthorization,
@@ -45,9 +46,10 @@ import {
   safeOAuthError,
   type OAuthTokens,
 } from "./oauth.js";
-import { fetchOptions, isAllowedUrl, sdkFetch, type FetchOptions } from "./fetch.js";
+import { fetchOptions, isAllowedUrl, type FetchOptions } from "./fetch.js";
 import type { McpLog } from "./log.js";
 import { sameEndpoint } from "./scope.js";
+import { mcpUpstream, sdkFetch } from "./upstream.js";
 import { hostOf } from "./util.js";
 
 /**
@@ -200,6 +202,12 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
 
   /** Logger for connect-flow events, already carrying the connector's component field. */
   protected abstract log(): McpLog;
+
+  /**
+   * Supplies the connector's upstream, through which every request to the endpoint and to its
+   * authorization server is sent and counted.
+   */
+  protected abstract [mcpUpstream](): Upstream;
 
   /**
    * Mints the account capability handed to the Workshop on a successful connect. Per-connector
@@ -467,7 +475,8 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
    */
   protected async probe(server: ConnectedServer, accessToken: string | null): Promise<Probed> {
     const token = accessToken ?? (server.auth === "token" ? this.staticToken(server) : null);
-    const client = new McpClient(server.endpoint, async () => token, null, this.fetchOptions());
+    const client = new McpClient(
+      this[mcpUpstream](), server.endpoint, async () => token, null, this.fetchOptions());
     const info = await client.initialize(clientName(this.env));
     return { info, sessionId: client.sessionId ?? null };
   }
@@ -618,11 +627,13 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
       try {
         const provider =
           this.oauthProvider(server, generation, reconnect, url => { redirectUrl = url; });
-        result = await auth(provider, {
+        const upstream = this[mcpUpstream]();
+        // Discovery tries several metadata URLs before it registers or refreshes: summed.
+        result = await upstream.summed(() => auth(provider, {
           serverUrl: server.endpoint,
           resourceMetadataUrl: resourceMetadataUrl ? new URL(resourceMetadataUrl) : undefined,
-          fetchFn: sdkFetch(this.fetchOptions()),
-        });
+          fetchFn: sdkFetch(upstream, this.fetchOptions()),
+        }));
       } catch (err) {
         throw this.redactedOAuthError(err, reconnect);
       }
@@ -685,12 +696,14 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     if (!this.isCurrentConnection(server, pending.generation)) return null;
     let result: Awaited<ReturnType<typeof auth>>;
     try {
-      result = await auth(this.oauthProvider(server, pending.generation, reconnect), {
+      const upstream = this[mcpUpstream]();
+      const provider = this.oauthProvider(server, pending.generation, reconnect);
+      result = await upstream.summed(() => auth(provider, {
         serverUrl: server.endpoint,
         authorizationCode: code,
         iss: issuer,
-        fetchFn: sdkFetch(this.fetchOptions()),
-      });
+        fetchFn: sdkFetch(upstream, this.fetchOptions()),
+      }));
     } catch (err) {
       throw this.redactedOAuthError(err, reconnect, code);
     }
@@ -746,7 +759,7 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     tokens: OAuthTokens, discovery: OAuthDiscoveryState, client: StoredOAuthClientInformation,
   ): Promise<void> {
     try {
-      const fetchFn = sdkFetch(this.fetchOptions());
+      const fetchFn = sdkFetch(this[mcpUpstream](), this.fetchOptions(), "token.revoke");
       await revokeToken(discovery, client, tokens.access_token, "access_token", fetchFn);
       if (tokens.refresh_token) {
         await revokeToken(discovery, client, tokens.refresh_token, "refresh_token", fetchFn);
@@ -1000,7 +1013,7 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
         clientInformation: client,
         refreshToken,
         resource: new URL(server.endpoint),
-        fetchFn: sdkFetch(this.fetchOptions()),
+        fetchFn: sdkFetch(this[mcpUpstream](), this.fetchOptions(), "token.refresh"),
       });
       if (!this.isCurrentConnection(server, generation)) {
         throw new Error("Discarded credentials refreshed for a previous MCP connection.");

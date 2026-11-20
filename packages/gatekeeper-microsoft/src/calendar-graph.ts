@@ -14,7 +14,7 @@ import { malformed, optStr, parsePage, record, type GraphPage } from "./graph-pa
 import { graphInstant, ianaZone } from "./calendar-time";
 import type { CalendarOwnerRef } from "./calendar-scope";
 import { visibleText } from "./outlook-content";
-import { idPath, isMailId, type GraphAddress } from "./outlook-graph";
+import { idPath, isMailId, isNextLink, strands, type GraphAddress } from "./outlook-graph";
 
 /** The `Prefer` values every calendar request sends: immutable IDs, times in UTC. */
 export const CALENDAR_PREFER = ['IdType="ImmutableId"', 'outlook.timezone="UTC"'];
@@ -296,26 +296,43 @@ export class CalendarApi {
     this.base = ownerPath(owner);
   }
 
-  async get<T>(path: string, query?: Record<string, string | number | undefined>): Promise<T> {
-    return await this.api.get<T>(this.base + path, { query: query ?? {}, prefer: CALENDAR_PREFER });
+  /**
+   * A GET of a path under the owner, returning JSON; a missing resource throws.
+   * @param read Reads the answer inside the request (see `GraphApi.request`).
+   * @param unusable Says whether what was read is not what was asked for (see `GraphApi.request`).
+   */
+  async get<T, R = T>(path: string, query?: Record<string, string | number | undefined>, read?: (answer: T) => R, unusable?: (value: R) => boolean): Promise<R> {
+    return await this.api.get(this.base + path, { query: query ?? {}, prefer: CALENDAR_PREFER }, read, unusable);
   }
 
-  /** A GET answering null for 400, 403 and 404: an ID that isn't Exchange's, isn't here, or can't be opened. */
-  async find<T>(path: string, query?: Record<string, string | number | undefined>): Promise<T | null> {
-    return await this.api.request<T>("GET", this.base + path, { query: query ?? {}, prefer: CALENDAR_PREFER, allow: [400, 403, 404] });
+  /**
+   * A GET answering null for 400, 403 and 404: an ID that isn't Exchange's, isn't here, or can't be opened.
+   * @param read Reads the answer inside the request (see `GraphApi.request`), null for those statuses.
+   */
+  async find<T, R = T | null>(path: string, query?: Record<string, string | number | undefined>, read?: (answer: T | null) => R): Promise<R> {
+    return await this.api.request("GET", this.base + path, { query: query ?? {}, prefer: CALENDAR_PREFER, allow: [400, 403, 404] }, read);
   }
 
-  async request<T>(method: string, path: string, body?: unknown, ifMatch?: string): Promise<T | null> {
-    return await this.api.request<T>(method, this.base + path, {
+  /**
+   * A write (or any other method) on a path under the owner, with a JSON body; null for a 204.
+   * @param read Reads the answer inside the request (see `GraphApi.request`).
+   */
+  async request<T, R = T | null>(method: string, path: string, body?: unknown, ifMatch?: string, read?: (answer: T | null) => R): Promise<R> {
+    return await this.api.request(method, this.base + path, {
       ...(body === undefined ? {} : { body }), ...(ifMatch ? { ifMatch } : {}), prefer: CALENDAR_PREFER,
-    });
+    }, read);
   }
 
+  /**
+   * A page of results from a path under the owner, or the `nextLink` a previous page gave. A page
+   * whose `nextLink` leaves Graph is returned as it came, and its request is counted as an error
+   * of the API (`strands`): the client refuses that link once it is asked for the page after.
+   */
   async page<T>(pathOrNext: string, parse: (row: unknown) => T, what: string, query?: Record<string, string | number | undefined>): Promise<GraphPage<T>> {
-    const body = pathOrNext.startsWith("https://")
-      ? await this.api.get<unknown>(pathOrNext, { prefer: CALENDAR_PREFER })
-      : await this.get<unknown>(pathOrNext, query);
-    return parsePage(body, parse, what);
+    const read = (body: unknown) => parsePage(body, parse, what);
+    return isNextLink(pathOrNext)
+      ? await this.api.get(pathOrNext, { prefer: CALENDAR_PREFER }, read, strands)
+      : await this.get(pathOrNext, query, read, strands);
   }
 
   /** Every calendar in the owner's list, with entry IDs. */
@@ -337,17 +354,16 @@ export class CalendarApi {
   /** One calendar by ID, or the default (`calendar`), or null when it isn't the owner's or can't be opened. */
   async calendar(id: string | "default"): Promise<GraphCalendar | null> {
     const path = id === "default" ? "/calendar" : `/calendars/${idPath(id)}`;
-    const body = await this.find<unknown>(path, { $select: CALENDAR_SELECT, $expand: `singleValueExtendedProperties($filter=id eq '${ENTRY_ID}')` });
-    return body === null ? null : parseCalendar(body);
+    return await this.find(path, { $select: CALENDAR_SELECT, $expand: `singleValueExtendedProperties($filter=id eq '${ENTRY_ID}')` },
+      (body: unknown) => body === null ? null : parseCalendar(body));
   }
 
   /** One event or occurrence with its parent's entry ID, or null when it isn't in this mailbox. */
   async event(id: string): Promise<GraphEvent | null> {
     if (!isMailId(id)) return null;
-    const body = await this.find<unknown>(`/events/${idPath(id)}`, {
+    return await this.find(`/events/${idPath(id)}`, {
       $select: EVENT_SELECT, $expand: `singleValueExtendedProperties($filter=id eq '${PARENT_ENTRY_ID}')`,
-    });
-    return body === null ? null : parseEvent(body);
+    }, (body: unknown) => body === null ? null : parseEvent(body));
   }
 
   /**
@@ -356,13 +372,14 @@ export class CalendarApi {
    */
   async placement(id: string): Promise<{ parentEntryId?: string; ownMeeting: boolean } | null> {
     if (!isMailId(id)) return null;
-    const body = await this.find<unknown>(`/events/${idPath(id)}`, {
+    return await this.find(`/events/${idPath(id)}`, {
       $select: "isOrganizer,attendees", $expand: `singleValueExtendedProperties($filter=id eq '${PARENT_ENTRY_ID}')`,
+    }, (body: unknown) => {
+      if (body === null) return null;
+      const json = record(body, "event");
+      const parent = extended(json, PARENT_ENTRY_ID);
+      return { ...(parent ? { parentEntryId: parent } : {}), ownMeeting: json.isOrganizer === true && Array.isArray(json.attendees) && json.attendees.length > 0 };
     });
-    if (body === null) return null;
-    const json = record(body, "event");
-    const parent = extended(json, PARENT_ENTRY_ID);
-    return { ...(parent ? { parentEntryId: parent } : {}), ownMeeting: json.isOrganizer === true && Array.isArray(json.attendees) && json.attendees.length > 0 };
   }
 
   /**
@@ -378,7 +395,7 @@ export class CalendarApi {
         id: String(index), method: "GET", url: `${this.base.slice(1)}/events/${idPath(id)}?$select=id&$expand=${expand}`,
         headers: { prefer: CALENDAR_PREFER.join(", ") },
       }));
-      const answers = await this.api.batch(requests);
+      const answers = await this.api.batch(requests, { whole: true });
       chunk.forEach((id, index) => {
         const answer = answers.get(String(index));
         if (answer === undefined) throw new GraphApiError(502, "Microsoft Graph left an event out of a batch.");
@@ -402,7 +419,7 @@ export class CalendarApi {
   }
 
   async body(id: string): Promise<{ contentType: "html" | "text"; content: string }> {
-    const json = record(await this.get<unknown>(`/events/${idPath(id)}`, { $select: "body" }), "event");
+    const json = await this.get(`/events/${idPath(id)}`, { $select: "body" }, (answer: unknown) => record(answer, "event"));
     const body = json.body !== null && typeof json.body === "object" ? json.body as { contentType?: unknown; content?: unknown } : {};
     return { contentType: body.contentType === "html" ? "html" : "text", content: typeof body.content === "string" ? body.content : "" };
   }
@@ -418,7 +435,9 @@ export class CalendarApi {
     const found: GraphSchedule[] = [];
     for (let start = 0; start < addresses.length; start += MAX_SCHEDULE_ADDRESSES) {
       const chunk = addresses.slice(start, start + MAX_SCHEDULE_ADDRESSES);
-      const body = await this.api.request<{ value?: unknown }>("POST", "/me/calendar/getSchedule", {
+      // An answer that holds no list of schedules gives none of the people asked about, each of
+      // whom is then answered as unreadable: its request is counted as an error of the API.
+      const { parsed } = await this.api.request("POST", "/me/calendar/getSchedule", {
         body: {
           schedules: chunk,
           startTime: { dateTime: new Date(startMs).toISOString().replace(/Z$/, ""), timeZone: "UTC" },
@@ -426,9 +445,10 @@ export class CalendarApi {
           availabilityViewInterval: 15,
         },
         prefer: CALENDAR_PREFER,
-      });
-      const rows = Array.isArray(body?.value) ? body.value : [];
-      const parsed = rows.map(parseSchedule);
+      }, (body: { value?: unknown } | null) => {
+        const listed = Array.isArray(body?.value) ? body.value : undefined;
+        return { parsed: (listed ?? []).map(parseSchedule), unlisted: listed === undefined };
+      }, read => read.unlisted);
       // Matched back by address: Exchange answers in order, but nothing says it must.
       for (const wanted of chunk) {
         const answer = parsed.find(schedule => schedule.address.toLowerCase() === wanted.toLowerCase());

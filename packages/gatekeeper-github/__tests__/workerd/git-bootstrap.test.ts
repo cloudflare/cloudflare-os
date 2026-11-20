@@ -18,6 +18,8 @@ const sideband = (band: number, payload: Uint8Array) => new Uint8Array([
 const response = () => new Blob([
   encodePktLine("packfile"), sideband(1, PACK), FLUSH_PKT,
 ]);
+/** The headers of a fetch's answer that says it is a pack. */
+const PACK_RESULT = { "Content-Type": "application/x-git-upload-pack-result" };
 /** The repository, by name or by id: git is addressed by the name its id has now. */
 const REPOSITORY = {id: 1, name: "widgets", owner: {login: "acme"}};
 
@@ -44,7 +46,7 @@ describe("unified GitHub pack stream", () => {
       expect(upstream.headers.get("git-protocol")).toBe("version=2");
       expect(upstream.headers.get("authorization")).toBe(`Basic ${btoa("x-access-token:test-token")}`);
       expect(new Uint8Array(await upstream.arrayBuffer())).toEqual(body);
-      return new Response(response(), { headers: { "Content-Type": "application/x-git-upload-pack-result" } });
+      return new Response(response(), { headers: PACK_RESULT });
     });
     const hooks = env.TEST_HOOKS.get(env.TEST_HOOKS.idFromName("hooks"));
     const outcome = await hooks.gitPull(`bootstrap-${kind}`, props, [COMMIT], OPTIONS);
@@ -96,7 +98,7 @@ describe("unified GitHub pack stream", () => {
     const props = await propsFor("repo");
     vi.stubGlobal("fetch", async (input: string | URL | Request) => {
       if (String(input).includes("git-upload-pack")) {
-        return new Response(body());
+        return new Response(body(), { headers: PACK_RESULT });
       }
       return Response.json(REPOSITORY);
     });
@@ -106,5 +108,22 @@ describe("unified GitHub pack stream", () => {
     using transfer = outcome.ok as RpcStub<GitPullTransfer>;
     await expect(new Response(await transfer.stream()).arrayBuffer()).rejects.toThrow();
     expect(await transfer.status()).toEqual({state: "failed", message});
+  });
+
+  it.each<[string, () => Response, string]>([
+    ["an error page", () => new Response("<html>Bad gateway</html>", { headers: { "Content-Type": "text/html" } }),
+      "git fetch failed: expected application/x-git-upload-pack-result but GitHub answered another content type"],
+    ["a pack of no content type", () => new Response(response()),
+      "git fetch failed: expected application/x-git-upload-pack-result but GitHub answered no content type"],
+    ["a missing body", () => new Response(null, { headers: PACK_RESULT }), "git fetch failed: response had no body"],
+  ])("fails closed on %s answered with a 200, after the one request", async (label, answer, message) => {
+    const props = await propsFor("repo");
+    const fetch = vi.fn(async (input: string | URL | Request) =>
+      String(input).includes("git-upload-pack") ? answer() : Response.json(REPOSITORY));
+    vi.stubGlobal("fetch", fetch);
+    const hooks = env.TEST_HOOKS.get(env.TEST_HOOKS.idFromName("hooks"));
+    const outcome = await hooks.gitPull(`bootstrap-upstream-${label}`, props, [COMMIT], OPTIONS);
+    expect(outcome).toEqual({ error: expect.stringContaining(message) });
+    expect(fetch.mock.calls.filter(([input]) => String(input).includes("git-upload-pack"))).toHaveLength(1);
   });
 });

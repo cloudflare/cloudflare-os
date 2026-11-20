@@ -35,8 +35,8 @@ function memoryKv() {
   };
 }
 
-function json(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+function json(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
+  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
 }
 
 function project(ref: string, organizationSlug: string) {
@@ -404,13 +404,17 @@ describe("UserAccount.checkSubresourceAccess", () => {
     const { account } = connectedAccount();
 
     await expect(account.checkSubresourceAccess([PROJECT_ID])).rejects.toThrow(/expired or been revoked/);
-    response = () => json({ message: "slow down" }, 429);
-    await expect(account.checkSubresourceAccess([PROJECT_ID])).rejects.toThrow();
-    response = () => json({ message: "unavailable" }, 503);
-    await expect(account.checkSubresourceAccess([PROJECT_ID])).rejects.toThrow();
+    expect(requests).toHaveLength(1);
+    // A rate limit and an outage are each asked three times, at once where Supabase asks for no wait.
+    response = () => json({ message: "slow down" }, 429, { "Retry-After": "0" });
+    await expect(account.checkSubresourceAccess([PROJECT_ID])).rejects.toThrow("slow down");
+    expect(requests).toHaveLength(4);
+    response = () => json({ message: "unavailable" }, 503, { "Retry-After": "0" });
+    await expect(account.checkSubresourceAccess([PROJECT_ID])).rejects.toThrow("unavailable");
+    expect(requests).toHaveLength(7);
     response = () => json([project(REF, "acme")]);
     await expect(account.checkSubresourceAccess([PROJECT_ID])).resolves.toEqual([true]);
-    expect(requests).toHaveLength(4);
+    expect(requests).toHaveLength(8);
   });
 
   it("throws without asking when the account has no credentials or an ID is not its own", async () => {

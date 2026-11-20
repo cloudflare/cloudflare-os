@@ -1,7 +1,7 @@
 // What the Outlook and Calendar configurator frames share: how they reach the connection, and the
 // short-lived cache that saves a frame asking Graph the same thing twice while it is open.
 
-import { GraphApi } from "./graph-api";
+import { withGraph, type GraphApi } from "./graph-api";
 import { accountSource, type StoredIdentity } from "./microsoft-credentials";
 
 /** How a configurator reaches the connection: the account Durable Object, or a token in tests. */
@@ -18,7 +18,7 @@ export function accountConnection(exports: Cloudflare.Exports, userObjectId: str
   return {
     identity: async () => await account().getIdentity(),
     grantedScopes: async () => await account().getGrantedScopes(),
-    read: async op => await creds.run(credentials => op(new GraphApi(credentials.accessToken)), { replayable: true }),
+    read: async op => await creds.run(credentials => withGraph(credentials.accessToken, op), { replayable: true }),
   };
 }
 

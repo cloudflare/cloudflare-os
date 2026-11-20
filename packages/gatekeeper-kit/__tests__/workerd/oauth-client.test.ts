@@ -1,6 +1,6 @@
 // End-to-end interop of `./oauth-client` with the connect handshake and `CredentialCoordinator`,
 // in workerd because `claimOAuth` compares nonces with `crypto.subtle.timingSafeEqual`, and the
-// counting of its requests through an upstream, on the runtime's own answers.
+// counting of its requests through its upstream, on the runtime's own answers.
 
 import type { SubserviceCallInput, SubserviceTally } from "@gadgets/observability/metrics";
 import { describe, expect, it } from "vitest";
@@ -38,7 +38,7 @@ function fakeProvider() {
     revoked: [] as string[],
     respond: (_: URLSearchParams): Response | Promise<Response> =>
       json({ access_token: "at", expires_in: 3600 }),
-    fetch: async (url: string, init: RequestInit): Promise<Response> => {
+    fetch: async (url: string | URL | Request, init: RequestInit = {}): Promise<Response> => {
       const form = new URLSearchParams(String(init.body));
       if (url === REVOKE_URL) {
         provider.revoked.push(form.get("token")!);
@@ -59,7 +59,7 @@ function setup() {
     authorizationEndpoint: "https://vendor.example/oauth/authorize",
     tokenEndpoint: TOKEN_URL,
     revocationEndpoint: REVOKE_URL,
-    fetch: provider.fetch,
+    upstream: defineUpstream({ vendorId: "vendor", fetch: provider.fetch }),
   });
   const kv = fakeKv();
   const creds = new CredentialCoordinator<Grant>(kv, {

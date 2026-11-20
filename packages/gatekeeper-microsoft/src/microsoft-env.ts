@@ -6,9 +6,9 @@ import type { PreviewOAuthEnv } from "@gadgets/gatekeeper-kit/preview-oauth";
 import { CALENDAR_ACCESS_LEVELS, lowerAccess as lowerCalendarAccess, type CalendarAccessLevel, type CalendarScope } from "./calendar-scope";
 import { ACCESS_LEVELS, lowerAccess, type OutlookAccessLevel, type OutlookScope } from "./outlook-scope";
 import type { SharePointScope } from "./sharepoint-scope";
+import { GRAPH_BASE, GRAPH_ORIGIN, VENDOR_ID } from "./vendor";
 
-/** The vendor id: the router's `/gatekeeper/microsoft/` path segment, and the log attribution. */
-export const VENDOR_ID = "microsoft";
+export { GRAPH_BASE, VENDOR_ID };
 
 /** The Worker's environment. Every value is optional: each has a default or turns a feature off. */
 export type Env = Cloudflare.Env & PreviewOAuthEnv & {
@@ -48,10 +48,6 @@ export type Env = Cloudflare.Env & PreviewOAuthEnv & {
   AI?: Ai;
 };
 
-/** Where every API request goes. */
-const GRAPH_ORIGIN = "https://graph.microsoft.com";
-/** The Graph version this gatekeeper speaks. */
-export const GRAPH_BASE = `${GRAPH_ORIGIN}/v1.0`;
 /** Entra ID's sign-in host. */
 export const LOGIN_ORIGIN = "https://login.microsoftonline.com";
 

@@ -17,6 +17,7 @@ import {
   type OAuthClientOptions,
   type OAuthGrant,
   OAuthResponseError,
+  type OAuthTokens,
   oauthRefresh,
   parseTokenResponse,
   pkceChallenge,
@@ -27,12 +28,26 @@ import { fakeKv } from "./fake-kv";
 
 const TOKEN_URL = "https://vendor.example/oauth/token";
 const REDIRECT_URI = "https://gatekeeper.example/oauth";
-const BASE = {
+const REVOKE_URL = "https://vendor.example/oauth/revoke";
+// A client's options but its upstream.
+const ENDPOINTS = {
   label: "Vendor",
   client: { method: "basic", id: "client", secret: "secret" },
   tokenEndpoint: TOKEN_URL,
   authorizationEndpoint: "https://vendor.example/oauth/authorize",
-  revocationEndpoint: "https://vendor.example/oauth/revoke",
+  revocationEndpoint: REVOKE_URL,
+} satisfies Omit<OAuthClientOptions, "upstream">;
+
+/** The upstream a client sends through: one over a fake endpoint's `fetch`. */
+function over(fetch: UpstreamFetch): Upstream {
+  return defineUpstream({ vendorId: "vendor", fetch });
+}
+
+// The options of a client that sends nothing. One that sends is given an upstream over its
+// endpoint in place of this one.
+const BASE = {
+  ...ENDPOINTS,
+  upstream: over(() => Promise.reject(new Error("This client was to send nothing."))),
 } satisfies OAuthClientOptions;
 
 type Call = { url: string; init: RequestInit; headers: Headers; body: string };
@@ -47,7 +62,8 @@ function json(body: unknown, status = 200): Response {
 function provider(respond: (call: Call) => Response | Promise<Response> = () =>
   json({ access_token: "at" })) {
   const calls: Call[] = [];
-  const fetch = async (url: string, init: RequestInit) => {
+  const fetch: UpstreamFetch = async (url, init = {}) => {
+    if (typeof url !== "string") throw new Error("The endpoint's URL was not handed on as a string.");
     const call = { url, init, headers: new Headers(init.headers), body: String(init.body) };
     calls.push(call);
     return respond(call);
@@ -75,15 +91,11 @@ async function responseError(promise: Promise<unknown>): Promise<OAuthResponseEr
 }
 
 /** A fetch that never answers, rejecting only when its signal aborts. */
-function hanging(_: string, init: RequestInit): Promise<Response> {
-  return new Promise((_resolve, reject) => {
-    init.signal!.addEventListener("abort", () => reject(init.signal!.reason));
-  });
-}
+const hanging: UpstreamFetch = (_, init = {}) => unanswered(init);
 
 function refreshFor(respond: (call: Call) => Response | Promise<Response>) {
   const { calls, fetch } = provider(respond);
-  return { calls, client: new OAuthClient({ ...BASE, fetch }) };
+  return { calls, client: new OAuthClient({ ...BASE, upstream: over(fetch) }) };
 }
 
 afterEach(() => {
@@ -128,9 +140,28 @@ describe("OAuthClient configuration", () => {
       .toThrow(/may not contain ":"/);
   });
 
+  // What a caller that is not type-checked may construct a client with.
+  it.each<[string, Record<string, unknown>]>([
+    ["no upstream", {}],
+    ["an undefined upstream", { upstream: undefined }],
+    ["a null upstream", { upstream: null }],
+    ["an upstream that cannot read", { upstream: { vendorId: "vendor" } }],
+    ["a fetch and no upstream", { fetch: provider().fetch }],
+  ])("refuses %s, which would count nothing", (_, given) => {
+    expect(() => Reflect.construct(OAuthClient, [{ ...ENDPOINTS, ...given }])).toThrow(
+      "OAuthClient requires an upstream (defineUpstream), which sends and counts its requests.");
+  });
+
+  it("refuses a fetch of its own beside its upstream, sending nothing", () => {
+    const { calls, fetch } = provider();
+    expect(() => Reflect.construct(OAuthClient, [{ ...BASE, fetch }]))
+      .toThrow("OAuthClient takes no fetch: it sends with its upstream's.");
+    expect(calls).toHaveLength(0);
+  });
+
   it("keeps the endpoint's query string", async () => {
     const { calls, fetch } = provider();
-    await new OAuthClient({ ...BASE, tokenEndpoint: `${TOKEN_URL}?tenant=a`, fetch })
+    await new OAuthClient({ ...BASE, tokenEndpoint: `${TOKEN_URL}?tenant=a`, upstream: over(fetch) })
       .exchangeCode({ code: "c", redirectUri: REDIRECT_URI });
     expect(calls[0].url).toBe(`${TOKEN_URL}?tenant=a`);
   });
@@ -149,7 +180,8 @@ describe("OAuthClient request shape", () => {
   it("sends Basic credentials as the raw base64 of UTF-8 id:secret", async () => {
     const { calls, fetch } = provider();
     await new OAuthClient({ ...BASE, client: { method: "basic", id: "client", secret: "sëcret" },
-      fetch }).exchangeCode({ code: "the-code", redirectUri: REDIRECT_URI, codeVerifier: "v" });
+      upstream: over(fetch) })
+      .exchangeCode({ code: "the-code", redirectUri: REDIRECT_URI, codeVerifier: "v" });
 
     const [{ url, init, headers }] = calls;
     expect(url).toBe(TOKEN_URL);
@@ -168,7 +200,7 @@ describe("OAuthClient request shape", () => {
 
   it("form-encodes Basic credentials on request, and only inside the header", async () => {
     const { calls, fetch } = provider();
-    const client = new OAuthClient({ ...BASE, fetch,
+    const client = new OAuthClient({ ...BASE, upstream: over(fetch),
       client: { method: "basic", id: "app:1", secret: "a+b/c= ë", encoding: "form" } });
     await client.refresh({ refreshToken: "rt" });
 
@@ -183,7 +215,7 @@ describe("OAuthClient request shape", () => {
   it("sends post credentials in the body", async () => {
     const { calls, fetch } = provider();
     await new OAuthClient({ ...BASE, client: { method: "post", id: "client", secret: "secret" },
-      fetch }).refresh({ refreshToken: "rt" });
+      upstream: over(fetch) }).refresh({ refreshToken: "rt" });
     expect(calls[0].headers.has("Authorization")).toBe(false);
     expect(form(calls[0])).toEqual({
       grant_type: "refresh_token", refresh_token: "rt", client_id: "client", client_secret: "secret",
@@ -192,7 +224,7 @@ describe("OAuthClient request shape", () => {
 
   it("sends only the client id for a public client", async () => {
     const { calls, fetch } = provider();
-    await new OAuthClient({ ...BASE, client: { method: "none", id: "client" }, fetch })
+    await new OAuthClient({ ...BASE, client: { method: "none", id: "client" }, upstream: over(fetch) })
       .refresh({ refreshToken: "rt" });
     expect(calls[0].headers.has("Authorization")).toBe(false);
     expect(form(calls[0])).toEqual({
@@ -203,7 +235,7 @@ describe("OAuthClient request shape", () => {
   it("encodes JSON bodies and forwards extra headers", async () => {
     const { calls, fetch } = provider();
     await new OAuthClient({ ...BASE, client: { method: "post", id: "client", secret: "secret" },
-      bodyEncoding: "json", headers: { "Notion-Version": "2022-06-28" }, fetch })
+      bodyEncoding: "json", headers: { "Notion-Version": "2022-06-28" }, upstream: over(fetch) })
       .exchangeCode({ code: "c", redirectUri: REDIRECT_URI, params: { owner: "user" } });
     expect(calls[0].headers.get("Content-Type")).toBe("application/json");
     expect(calls[0].headers.get("Notion-Version")).toBe("2022-06-28");
@@ -219,7 +251,7 @@ describe("OAuthClient request shape", () => {
 
   it("joins refresh scopes and omits an empty set", async () => {
     const { calls, fetch } = provider();
-    const client = new OAuthClient({ ...BASE, scopeSeparator: ",", fetch });
+    const client = new OAuthClient({ ...BASE, scopeSeparator: ",", upstream: over(fetch) });
     await client.refresh({ refreshToken: "rt", scopes: ["read", "write"] });
     await client.refresh({ refreshToken: "rt", scopes: [] });
     expect(form(calls[0]).scope).toBe("read,write");
@@ -228,9 +260,9 @@ describe("OAuthClient request shape", () => {
 
   it("reports requested refresh scopes the response omits, and only those", async () => {
     let reported: string | undefined;
-    const client = new OAuthClient({ ...BASE, fetch: provider(() =>
+    const client = new OAuthClient({ ...BASE, upstream: over(provider(() =>
       json(reported === undefined ? { access_token: "at" } : { access_token: "at", scope: reported }),
-    ).fetch });
+    ).fetch) });
     const requested = ["read"];
 
     const tokens = await client.refresh({ refreshToken: "rt", scopes: requested });
@@ -248,7 +280,7 @@ describe("OAuthClient request shape", () => {
   it.each(["client_secret", "grant_type", "redirect_uri", "code_verifier", "scope"])(
     "rejects the reserved body parameter %s without a request", async key => {
       const { calls, fetch } = provider();
-      const client = new OAuthClient({ ...BASE, fetch });
+      const client = new OAuthClient({ ...BASE, upstream: over(fetch) });
       await expect(client.exchangeCode({ code: "c", redirectUri: REDIRECT_URI,
         params: { [key]: "x" } })).rejects.toThrow(`reserved key "${key}"`);
       await expect(client.revoke({ token: "t", params: { [key]: "x" } }))
@@ -258,19 +290,19 @@ describe("OAuthClient request shape", () => {
 
   it("leaves request() unreserved and skips the access-token check", async () => {
     const { calls, fetch } = provider(() => json({ authed_user: { access_token: "user" } }));
-    const body = await new OAuthClient({ ...BASE, fetch })
+    const body = await new OAuthClient({ ...BASE, upstream: over(fetch) })
       .request("token", { code: "c", scope: "chat:write" });
     expect(body).toEqual({ authed_user: { access_token: "user" } });
     expect(form(calls[0])).toEqual({ code: "c", scope: "chat:write" });
     expect(calls[0].headers.get("Authorization")).toMatch(/^Basic /);
   });
 
-  it("calls fetch detached and reads the global at request time", async () => {
+  it("calls its upstream's fetch detached, the global read at request time", async () => {
     const fetch = vi.fn(async () => json({ access_token: "at" }));
-    await new OAuthClient({ ...BASE, fetch }).refresh({ refreshToken: "rt" });
+    await new OAuthClient({ ...BASE, upstream: over(fetch) }).refresh({ refreshToken: "rt" });
     expect(fetch.mock.contexts).toEqual([undefined]);
 
-    const global = new OAuthClient(BASE);
+    const global = new OAuthClient({ ...BASE, upstream: defineUpstream({ vendorId: "vendor" }) });
     const stubbed = provider();
     vi.stubGlobal("fetch", stubbed.fetch);
     await global.refresh({ refreshToken: "rt" });
@@ -393,14 +425,14 @@ describe("parseTokenResponse", () => {
       vi.setSystemTime(requestedAt + 5_000);
       return json({ access_token: "at", expires_in: 60 });
     });
-    const tokens = await new OAuthClient({ ...BASE, fetch }).refresh({ refreshToken: "rt" });
+    const tokens = await new OAuthClient({ ...BASE, upstream: over(fetch) }).refresh({ refreshToken: "rt" });
     expect(tokens.expiresAt).toBe(requestedAt + 60_000);
   });
 
   it("applies the client's default lifetime", async () => {
     const { fetch } = provider(() => json({ access_token: "at" }));
     const before = Date.now();
-    const tokens = await new OAuthClient({ ...BASE, defaultExpiresIn: 3600, fetch })
+    const tokens = await new OAuthClient({ ...BASE, defaultExpiresIn: 3600, upstream: over(fetch) })
       .refresh({ refreshToken: "rt" });
     expect(tokens.expiresAt).toBeGreaterThanOrEqual(before + 3_600_000);
   });
@@ -408,7 +440,7 @@ describe("parseTokenResponse", () => {
 
 describe("OAuthResponseError", () => {
   const failing = (response: () => Response) =>
-    new OAuthClient({ ...BASE, fetch: async () => response() });
+    new OAuthClient({ ...BASE, upstream: over(async () => response()) });
 
   it.each<[string, () => Response, boolean]>([
     ["a 400 invalid_grant", () => json({ error: "invalid_grant" }, 400), true],
@@ -457,7 +489,7 @@ describe("OAuthResponseError", () => {
   it("refuses to follow a redirect", async () => {
     const { calls, fetch } = provider(() => new Response(null,
       { status: 307, headers: { Location: "https://attacker.example/token" } }));
-    const error = await responseError(new OAuthClient({ ...BASE, fetch })
+    const error = await responseError(new OAuthClient({ ...BASE, upstream: over(fetch) })
       .exchangeCode({ code: "c", redirectUri: REDIRECT_URI }));
     expect(error.httpStatus).toBe(307);
     expect(error.oauthError).toBeUndefined();
@@ -501,8 +533,8 @@ describe("OAuthResponseError", () => {
   it("keeps secrets and the description out of the message and enumerable props", async () => {
     const secrets = ["the-code", "the-secret", "v".repeat(43), "provider says"];
     const client = new OAuthClient({ ...BASE, client: { method: "post", id: "client",
-      secret: "the-secret" }, fetch: async () => json({ error: "invalid_grant",
-      error_description: "provider says the-code is bad\u0000‮" }, 400) });
+      secret: "the-secret" }, upstream: over(async () => json({ error: "invalid_grant",
+      error_description: "provider says the-code is bad\u0000‮" }, 400)) });
     const error = await responseError(client.exchangeCode({ code: "the-code",
       redirectUri: REDIRECT_URI, codeVerifier: "v".repeat(43) }));
 
@@ -521,20 +553,20 @@ describe("OAuthResponseError", () => {
 describe("request hardening", () => {
   it("propagates an oversized body as ResponseTooLargeError", async () => {
     const client = new OAuthClient({ ...BASE, maxResponseBytes: 16,
-      fetch: async () => json({ access_token: "a".repeat(100) }) });
+      upstream: over(async () => json({ access_token: "a".repeat(100) })) });
     const error = await rejection(client.refresh({ refreshToken: "rt" }));
     expect(error).toBeInstanceOf(ResponseTooLargeError);
     expect(error).not.toBeInstanceOf(OAuthResponseError);
   });
 
   it("times out", async () => {
-    const error = await rejection(new OAuthClient({ ...BASE, timeoutMs: 10, fetch: hanging })
+    const error = await rejection(new OAuthClient({ ...BASE, timeoutMs: 10, upstream: over(hanging) })
       .refresh({ refreshToken: "rt" }));
     expect((error as Error).name).toBe("TimeoutError");
   });
 
   it("times out a revoke", async () => {
-    const error = await rejection(new OAuthClient({ ...BASE, timeoutMs: 10, fetch: hanging })
+    const error = await rejection(new OAuthClient({ ...BASE, timeoutMs: 10, upstream: over(hanging) })
       .revoke({ token: "rt" }));
     expect((error as Error).name).toBe("TimeoutError");
   });
@@ -542,7 +574,7 @@ describe("request hardening", () => {
   it("propagates the caller's abort reason as the same instance", async () => {
     const controller = new AbortController();
     const reason = new Error("stop");
-    const pending = new OAuthClient({ ...BASE, fetch: hanging })
+    const pending = new OAuthClient({ ...BASE, upstream: over(hanging) })
       .refresh({ refreshToken: "rt", signal: controller.signal });
     controller.abort(reason);
     expect(await rejection(pending)).toBe(reason);
@@ -550,7 +582,7 @@ describe("request hardening", () => {
 
   it("propagates a network error as the same instance", async () => {
     const failure = new TypeError("fetch failed");
-    const client = new OAuthClient({ ...BASE, fetch: () => Promise.reject(failure) });
+    const client = new OAuthClient({ ...BASE, upstream: over(() => Promise.reject(failure)) });
     expect(await rejection(client.exchangeCode({ code: "c", redirectUri: REDIRECT_URI })))
       .toBe(failure);
   });
@@ -559,7 +591,7 @@ describe("request hardening", () => {
 describe("revoke", () => {
   it("posts an RFC 7009 request and accepts an empty 200", async () => {
     const { calls, fetch } = provider(() => new Response(null, { status: 200 }));
-    await expect(new OAuthClient({ ...BASE, fetch })
+    await expect(new OAuthClient({ ...BASE, upstream: over(fetch) })
       .revoke({ token: "rt", tokenTypeHint: "refresh_token" })).resolves.toBeUndefined();
     expect(calls[0].url).toBe("https://vendor.example/oauth/revoke");
     expect(calls[0].headers.get("Authorization")).toMatch(/^Basic /);
@@ -567,7 +599,7 @@ describe("revoke", () => {
   });
 
   it("accepts a non-JSON 200", async () => {
-    await expect(new OAuthClient({ ...BASE, fetch: async () => new Response("revoked") })
+    await expect(new OAuthClient({ ...BASE, upstream: over(async () => new Response("revoked")) })
       .revoke({ token: "rt" })).resolves.toBeUndefined();
   });
 
@@ -576,7 +608,7 @@ describe("revoke", () => {
     ["a 400 unsupported_token_type", () => json({ error: "unsupported_token_type" }, 400),
       "unsupported_token_type"],
   ])("rejects %s", async (_, response, oauthError) => {
-    const error = await responseError(new OAuthClient({ ...BASE, fetch: async () => response() })
+    const error = await responseError(new OAuthClient({ ...BASE, upstream: over(async () => response()) })
       .revoke({ token: "rt" }));
     expect(error.oauthError).toBe(oauthError);
   });
@@ -732,7 +764,7 @@ describe("oauthRefresh with CredentialCoordinator", () => {
   });
 });
 
-// The client the two paths are compared with. Nothing of PRIVATE may reach a metric.
+// The client whose calls are counted. Nothing of PRIVATE may reach a metric.
 const COUNTED = {
   ...BASE,
   client: { method: "basic", id: "client-1", secret: "s3cret-value" },
@@ -745,6 +777,8 @@ const PRIVATE = [
 ];
 // The reason the caller of an aborted request aborts with.
 const STOP = new Error("stop");
+// The instant every counted call is made at, which anchors the expiry of the tokens it returns.
+const NOW = 1_000_000;
 
 // What one call of `fetch` was handed, the signal aside.
 type Handed = {
@@ -776,6 +810,42 @@ function endpoint(respond: (init: RequestInit) => Response | Promise<Response>) 
   };
   return { handed, fetch };
 }
+
+// What a client puts in each of its requests beside the call's own parameters: its headers
+// beside `Accept` and `Content-Type`, the parameters that authenticate it, and a JSON body.
+type Sender = {
+  headers: Record<string, string>;
+  authenticates?: Record<string, string>;
+  json?: boolean;
+};
+
+/** The whole of what `fetch` is handed for one request of `sender`, whose call sends `sends`. */
+function requestOf(url: string, sends: Record<string, string>, sender: Sender): Handed {
+  const encoded = sender.json === true;
+  const fields = { ...sends, ...sender.authenticates };
+  const headers = {
+    accept: "application/json",
+    "content-type": encoded ? "application/json" : "application/x-www-form-urlencoded",
+    ...sender.headers,
+  };
+  return {
+    input: url,
+    keys: ["body", "headers", "method", "redirect", "signal"],
+    method: "POST",
+    redirect: "manual",
+    // As `Headers` lists them: by name.
+    headers: Object.entries(headers).toSorted(([a], [b]) => (a < b ? -1 : 1)),
+    body: encoded ? JSON.stringify(fields) : new URLSearchParams(fields).toString(),
+    form: !encoded,
+    signalled: true,
+  };
+}
+
+// How `BASE` and `COUNTED` send: their id and secret as raw Basic credentials.
+const BASE_SENDER: Sender = { headers: { authorization: `Basic ${btoa("client:secret")}` } };
+const COUNTED_SENDER: Sender = {
+  headers: { authorization: `Basic ${btoa("client-1:s3cret-value")}`, "user-agent": "kit-suite" },
+};
 
 /** An answer that never comes: it fails with the reason of the request's signal once that aborts. */
 function unanswered(init: RequestInit): Promise<Response> {
@@ -819,46 +889,102 @@ function told(settled: Settled): Settled {
 // One call of the client, with its caller's signal.
 type Run = (client: OAuthClient, signal: AbortSignal) => Promise<unknown>;
 
-function tokenRequest(grantType?: string): Run {
-  const params = { code: "the-code", ...(grantType === undefined ? {} : { grant_type: grantType }) };
-  return (client, signal) => client.request("token", params, { signal });
+// A 2xx answer that a call returns from: its body, and the tokens that body holds.
+type Accepted = { body: Record<string, unknown>; tokens?: OAuthTokens };
+
+// One call: the operation it is counted as, whether its method requires an access token, the
+// endpoint and the parameters it sends, and what it returns of an answer it accepts.
+type CountedCall = {
+  call: string;
+  operation: string;
+  tokenRequired: boolean;
+  run: Run;
+  url: string;
+  sends: Record<string, string>;
+  returns: (answer: Accepted) => unknown;
+};
+
+function tokenRequest(grantType?: string): Omit<CountedCall, "call" | "operation"> {
+  const sends = { code: "the-code", ...(grantType === undefined ? {} : { grant_type: grantType }) };
+  return {
+    tokenRequired: false,
+    run: (client, signal) => client.request("token", sends, { signal }),
+    url: TOKEN_URL,
+    sends,
+    returns: answer => answer.body,
+  };
 }
 
-// Each call, the operation it is counted as, and whether its method requires an access token.
-const CALLS: [call: string, operation: string, tokenRequired: boolean, run: Run][] = [
-  ["exchangeCode", "token.exchange", true, (client, signal) => client.exchangeCode({
-    code: "the-code", redirectUri: REDIRECT_URI, codeVerifier: "the-verifier", signal })],
-  ["refresh", "token.refresh", true, (client, signal) => client.refresh({
-    refreshToken: "the-refresh-token", scopes: ["read"], signal })],
-  ["revoke", "token.revoke", false, (client, signal) => client.revoke({
-    token: "the-refresh-token", tokenTypeHint: "refresh_token", signal })],
-  ['request("token") for authorization_code', "token.exchange", false,
-    tokenRequest("authorization_code")],
-  ['request("token") for refresh_token', "token.refresh", false, tokenRequest("refresh_token")],
-  ['request("token") for client_credentials', "token.client", false,
-    tokenRequest("client_credentials")],
-  ['request("token") for a grant type outside the table', "token.request", false,
-    tokenRequest(DEVICE_GRANT)],
-  ['request("token") for the grant type "constructor"', "token.request", false,
-    tokenRequest("constructor")],
-  ['request("token") with no grant type', "token.request", false, tokenRequest()],
-  ['request("revocation")', "token.revoke", false, (client, signal) =>
-    client.request("revocation", { token: "the-refresh-token" }, { signal })],
-  ['request("revocation") with a grant type of the table', "token.revoke", false, (client, signal) =>
-    client.request("revocation", { token: "the-refresh-token", grant_type: "authorization_code" },
-      { signal })],
+function revocationRequest(sends: Record<string, string>): Omit<CountedCall, "call"> {
+  return {
+    operation: "token.revoke",
+    tokenRequired: false,
+    run: (client, signal) => client.request("revocation", sends, { signal }),
+    url: REVOKE_URL,
+    sends,
+    returns: answer => answer.body,
+  };
+}
+
+const CALLS: CountedCall[] = [
+  {
+    call: "exchangeCode",
+    operation: "token.exchange",
+    tokenRequired: true,
+    run: (client, signal) => client.exchangeCode({
+      code: "the-code", redirectUri: REDIRECT_URI, codeVerifier: "the-verifier", signal }),
+    url: TOKEN_URL,
+    sends: { grant_type: "authorization_code", code: "the-code", redirect_uri: REDIRECT_URI,
+      code_verifier: "the-verifier" },
+    returns: answer => answer.tokens,
+  },
+  {
+    call: "refresh",
+    operation: "token.refresh",
+    tokenRequired: true,
+    run: (client, signal) => client.refresh({
+      refreshToken: "the-refresh-token", scopes: ["read"], signal }),
+    url: TOKEN_URL,
+    sends: { grant_type: "refresh_token", refresh_token: "the-refresh-token", scope: "read" },
+    // With the scopes it requested, where the answer names none.
+    returns: answer => ({ scopes: ["read"], ...answer.tokens }),
+  },
+  {
+    call: "revoke",
+    operation: "token.revoke",
+    tokenRequired: false,
+    run: (client, signal) => client.revoke({
+      token: "the-refresh-token", tokenTypeHint: "refresh_token", signal }),
+    url: REVOKE_URL,
+    sends: { token: "the-refresh-token", token_type_hint: "refresh_token" },
+    returns: () => undefined,
+  },
+  { call: 'request("token") for authorization_code', operation: "token.exchange",
+    ...tokenRequest("authorization_code") },
+  { call: 'request("token") for refresh_token', operation: "token.refresh",
+    ...tokenRequest("refresh_token") },
+  { call: 'request("token") for client_credentials', operation: "token.client",
+    ...tokenRequest("client_credentials") },
+  { call: 'request("token") for a grant type outside the table', operation: "token.request",
+    ...tokenRequest(DEVICE_GRANT) },
+  { call: 'request("token") for the grant type "constructor"', operation: "token.request",
+    ...tokenRequest("constructor") },
+  { call: 'request("token") with no grant type', operation: "token.request", ...tokenRequest() },
+  { call: 'request("revocation")', ...revocationRequest({ token: "the-refresh-token" }) },
+  { call: 'request("revocation") with a grant type of the table',
+    ...revocationRequest({ token: "the-refresh-token", grant_type: "authorization_code" }) },
 ];
 
 // A point's outcome, reason and HTTP status.
 type Counted = [outcome: string, reason: string, httpStatus: number];
 
-// What an endpoint does with a request, and what that makes of a call: the error it throws
-// (none: it returns) and the point an upstream counts it as (none: it is not counted).
+// What an endpoint does with a request, and what that makes of a call: what it returns or
+// throws, and the point its upstream counts it as (none: it is not counted).
 type Scenario = {
   name: string;
   options?: Pick<OAuthClientOptions, "timeoutMs" | "maxResponseBytes">;
   respond: (init: RequestInit, abort: () => void) => Response | Promise<Response>;
-  expected: (tokenRequired: boolean) => { threw?: unknown; counted?: Counted };
+  expected: (call: CountedCall) => { settled: Settled; counted?: Counted };
 };
 
 function rejected(httpStatus: number, oauthError?: string, description?: string) {
@@ -872,66 +998,90 @@ function rejected(httpStatus: number, oauthError?: string, description?: string)
   };
 }
 
+/** What a caller can tell of the error for a body over `maxBytes`. */
+function tooLarge(maxBytes: number) {
+  return { type: "ResponseTooLargeError", name: "Error",
+    message: `The server's response exceeded ${maxBytes} bytes.` };
+}
+
+// An answer with every field of a token response, and one with the fields a refresh needs.
+const GRANT = { access_token: "at", token_type: "bearer", refresh_token: "rt2", expires_in: 3600,
+  scope: "read write" };
+const GRANTED: Accepted = {
+  body: GRANT,
+  tokens: { accessToken: "at", tokenType: "bearer", refreshToken: "rt2",
+    expiresAt: NOW + 3_600_000, scopes: ["read", "write"], raw: GRANT },
+};
+const ISSUE = { access_token: "at", refresh_token: "rt2", expires_in: 3600 };
+const ISSUED: Accepted = {
+  body: ISSUE,
+  tokens: { accessToken: "at", refreshToken: "rt2", expiresAt: NOW + 3_600_000, raw: ISSUE },
+};
+
 const SCENARIOS: Scenario[] = [
   {
     name: "with tokens",
-    respond: () => json({ access_token: "at", token_type: "bearer", refresh_token: "rt2",
-      expires_in: 3600, scope: "read write" }),
-    expected: () => ({ counted: ["success", "", 200] }),
+    respond: () => json(GRANT),
+    expected: call => ({
+      settled: { returned: call.returns(GRANTED) }, counted: ["success", "", 200] }),
   },
   {
     name: "with a 400 and an OAuth error",
     respond: () => json({ error: "invalid_grant", error_description: "expired" }, 400),
     expected: () => ({
-      threw: rejected(400, "invalid_grant", "expired"), counted: ["error", "http", 400] }),
+      settled: { threw: rejected(400, "invalid_grant", "expired") },
+      counted: ["error", "http", 400],
+    }),
   },
   {
     name: "with a 429",
     respond: () => json({ error: "slow_down" }, 429),
-    expected: () => ({ threw: rejected(429, "slow_down"), counted: ["refused", "rate", 429] }),
+    expected: () => ({
+      settled: { threw: rejected(429, "slow_down") }, counted: ["refused", "rate", 429] }),
   },
   {
     name: "with a 200 carrying an error",
     respond: () => json({ error: "bad_verification_code" }),
     expected: () => ({
-      threw: rejected(200, "bad_verification_code"), counted: ["error", "api", 200] }),
+      settled: { threw: rejected(200, "bad_verification_code") }, counted: ["error", "api", 200] }),
   },
   {
     name: "with a 200 and no access token",
     respond: () => json({ token_type: "bearer" }),
-    expected: tokenRequired => tokenRequired
-      ? { threw: rejected(200), counted: ["error", "api", 200] }
-      : { counted: ["success", "", 200] },
+    expected: call => call.tokenRequired
+      ? { settled: { threw: rejected(200) }, counted: ["error", "api", 200] }
+      : { settled: { returned: call.returns({ body: { token_type: "bearer" } }) },
+        counted: ["success", "", 200] },
   },
   {
     name: "with a redirect",
     respond: () => new Response(null,
       { status: 307, headers: { Location: "https://attacker.example/token" } }),
-    expected: () => ({ threw: rejected(307), counted: ["error", "http", 307] }),
+    expected: () => ({ settled: { threw: rejected(307) }, counted: ["error", "http", 307] }),
   },
   {
     name: "with an oversized body",
     options: { maxResponseBytes: 16 },
     respond: () => json({ access_token: "a".repeat(100) }),
-    expected: () => ({
-      threw: { type: "ResponseTooLargeError", name: "Error",
-        message: "The server's response exceeded 16 bytes." },
-      counted: ["error", "parse", 200],
-    }),
+    expected: () => ({ settled: { threw: tooLarge(16) }, counted: ["error", "parse", 200] }),
   },
   {
     name: "by nothing before its timeout",
     options: { timeoutMs: 10 },
     respond: unanswered,
     expected: () => ({
-      threw: expect.objectContaining({ name: "TimeoutError" }), counted: ["error", "timeout", 0] }),
+      settled: { threw: expect.objectContaining({ name: "TimeoutError" }) },
+      counted: ["error", "timeout", 0],
+    }),
   },
   {
     name: "with a body its timeout cuts off",
     options: { timeoutMs: 10 },
     respond: stalled,
     expected: () => ({
-      threw: expect.objectContaining({ name: "TimeoutError" }), counted: ["error", "timeout", 200] }),
+      settled: { threw: expect.objectContaining({ name: "TimeoutError" }) },
+      counted: ["error", "timeout", 200],
+    }),
   },
   {
     name: "with a body its caller's abort cuts off",
@@ -939,7 +1089,7 @@ const SCENARIOS: Scenario[] = [
       setTimeout(abort, 1);
       return stalled(init);
     },
-    expected: () => ({ threw: "the caller's reason itself" }),
+    expected: () => ({ settled: { threw: "the caller's reason itself" } }),
   },
   {
     name: "by nothing before its caller aborts",
@@ -948,7 +1098,7 @@ const SCENARIOS: Scenario[] = [
       abort();
       return pending;
     },
-    expected: () => ({ threw: "the caller's reason itself" }),
+    expected: () => ({ settled: { threw: "the caller's reason itself" } }),
   },
 ];
 
@@ -977,24 +1127,34 @@ function slow(init: RequestInit): Promise<Response> {
   ]);
 }
 
-// Other ways a client authenticates and encodes its body than `COUNTED`'s.
+// Other ways a client authenticates and encodes its body than `COUNTED`'s, each with how it
+// sends.
 const SECRET_IN_BODY = { method: "post", id: "client-1", secret: "s3cret-value" } as const;
-const CLIENTS: [name: string, options: Pick<OAuthClientOptions, "client" | "bodyEncoding">][] = [
+const IN_BODY = { client_id: "client-1", client_secret: "s3cret-value" };
+const AGENT = { "user-agent": "kit-suite" };
+const CLIENTS: [
+  name: string, options: Pick<OAuthClientOptions, "client" | "bodyEncoding">, sender: Sender,
+][] = [
   ["form-encoded basic credentials",
-    { client: { method: "basic", id: "client-1", secret: "s3cret+/=value", encoding: "form" } }],
-  ["its secret in the body", { client: SECRET_IN_BODY }],
-  ["no secret", { client: { method: "none", id: "client-1" } }],
-  ["a JSON body", { client: COUNTED.client, bodyEncoding: "json" }],
-  ["its secret in a JSON body", { client: SECRET_IN_BODY, bodyEncoding: "json" }],
+    { client: { method: "basic", id: "client-1", secret: "s3cret+/=value", encoding: "form" } },
+    { headers: { ...AGENT, authorization: `Basic ${btoa("client-1:s3cret%2B%2F%3Dvalue")}` } }],
+  ["its secret in the body", { client: SECRET_IN_BODY }, { headers: AGENT, authenticates: IN_BODY }],
+  ["no secret", { client: { method: "none", id: "client-1" } },
+    { headers: AGENT, authenticates: { client_id: "client-1" } }],
+  ["a JSON body", { client: COUNTED.client, bodyEncoding: "json" },
+    { ...COUNTED_SENDER, json: true }],
+  ["its secret in a JSON body", { client: SECRET_IN_BODY, bodyEncoding: "json" },
+    { headers: AGENT, authenticates: IN_BODY, json: true }],
 ];
 
 /** Answers with tokens. */
 function withTokens(): Response {
-  return json({ access_token: "at", refresh_token: "rt2", expires_in: 3600 });
+  return json(ISSUE);
 }
 
-/** One refresh, with its caller's signal. */
+/** One refresh, with its caller's signal, and the parameters it sends. */
 const refreshing: Run = (client, signal) => client.refresh({ refreshToken: "the-refresh-token", signal });
+const REFRESHING = { grant_type: "refresh_token", refresh_token: "the-refresh-token" };
 
 /** A module factory for a module that `oauth-client` may not load. */
 function refused(module: string) {
@@ -1003,7 +1163,7 @@ function refused(module: string) {
   };
 }
 
-describe("OAuthClient through an upstream", () => {
+describe("OAuthClient through its upstream", () => {
   const ambient = env as { METRICS?: AnalyticsEngineDataset; SUBSERVICE_METRICS?: string };
   let points: AnalyticsEngineDataPoint[];
 
@@ -1011,9 +1171,9 @@ describe("OAuthClient through an upstream", () => {
     points = [];
     ambient.METRICS = { writeDataPoint: point => { if (point) points.push(point); } };
     ambient.SUBSERVICE_METRICS = "true";
-    // One instant for both paths, so that the expiry of the tokens they return is the same.
+    // One instant for every call, so that the expiry of the tokens it returns is known.
     vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(1_000_000);
+    vi.setSystemTime(NOW);
   });
 
   afterEach(() => {
@@ -1035,111 +1195,78 @@ describe("OAuthClient through an upstream", () => {
   }
 
   describe.each(SCENARIOS)("answered $name", ({ options, respond, expected }) => {
-    it.each(CALLS)("%s hands fetch the same request, settles the same, and is counted as %s",
-      async (_, operation, tokenRequired, run) => {
-        const { threw, counted } = expected(tokenRequired);
+    it.each(CALLS)("$call hands fetch its one request, settles as the answer says, and is counted as $operation",
+      async call => {
+        const { settled: settles, counted } = expected(call);
 
-        const plain = await attempt(
-          fetch => new OAuthClient({ ...COUNTED, ...options, fetch }), respond, run);
-        expect(points).toEqual([]);
-        const through = await attempt(fetch => new OAuthClient({
-          ...COUNTED, ...options, upstream: defineUpstream({ vendorId: "vendor", fetch }),
-        }), respond, run);
+        const { handed, settled } = await attempt(fetch => new OAuthClient({
+          ...COUNTED, ...options, upstream: over(fetch),
+        }), respond, call.run);
 
-        expect(plain.handed).toHaveLength(1);
-        expect(plain.handed[0]).toMatchObject({
-          method: "POST", redirect: "manual", signalled: true,
-          keys: ["body", "headers", "method", "redirect", "signal"],
-        });
-        expect(through.handed).toEqual(plain.handed);
+        expect(handed).toEqual([requestOf(call.url, call.sends, COUNTED_SENDER)]);
 
-        expect(Object.keys(plain.settled)).toEqual([threw === undefined ? "returned" : "threw"]);
-        if (threw !== undefined) expect(told(plain.settled)).toEqual({ threw });
-        expect(told(through.settled)).toEqual(told(plain.settled));
+        expect(Object.keys(settled)).toEqual(Object.keys(settles));
+        expect(told(settled)).toEqual(settles);
 
         expect(written()).toEqual(counted === undefined
-          ? [] : [["gatekeeper.vendor.api", "vendor", operation, ...counted]]);
+          ? [] : [["gatekeeper.vendor.api", "vendor", call.operation, ...counted]]);
         for (const secret of PRIVATE) expect(JSON.stringify(points)).not.toContain(secret);
       });
   });
 
-  describe.each(CLIENTS)("of a client with %s", (_name, options) => {
-    it.each(CALLS)("%s hands fetch the same request and returns the same", async (_, operation, __, run) => {
-      const plain = await attempt(
-        fetch => new OAuthClient({ ...COUNTED, ...options, fetch }), withTokens, run);
-      const through = await attempt(fetch => new OAuthClient({
-        ...COUNTED, ...options, upstream: defineUpstream({ vendorId: "vendor", fetch }),
-      }), withTokens, run);
+  describe.each(CLIENTS)("of a client with %s", (_name, options, sender) => {
+    it.each(CALLS)("$call hands fetch the client's own request and returns what the answer holds", async call => {
+      const { handed, settled } = await attempt(fetch => new OAuthClient({
+        ...COUNTED, ...options, upstream: over(fetch),
+      }), withTokens, call.run);
 
-      expect(plain.handed).toHaveLength(1);
+      expect(handed).toEqual([requestOf(call.url, call.sends, sender)]);
       // The request is this client's own, and not that of the client the table above runs on.
-      expect(plain.handed[0].form).toBe(options.bodyEncoding !== "json");
-      expect(plain.handed[0].headers.some(([name]) => name === "authorization"))
+      expect(handed[0].form).toBe(options.bodyEncoding !== "json");
+      expect(handed[0].headers.some(([name]) => name === "authorization"))
         .toBe(options.client.method === "basic");
-      expect(plain.handed[0].body.includes("s3cret-value")).toBe(options.client.method === "post");
-      expect(through.handed).toEqual(plain.handed);
-      expect(Object.keys(plain.settled)).toEqual(["returned"]);
-      expect(through.settled).toEqual(plain.settled);
-      expect(written()).toEqual([["gatekeeper.vendor.api", "vendor", operation, "success", "", 200]]);
+      expect(handed[0].body.includes("s3cret-value")).toBe(options.client.method === "post");
+      expect(Object.keys(settled)).toEqual(["returned"]);
+      expect(settled).toEqual({ returned: call.returns(ISSUED) });
+      expect(written()).toEqual([["gatekeeper.vendor.api", "vendor", call.operation, "success", "", 200]]);
     });
   });
 
-  it.each([undefined, null])(
-    'sends a request("token") whose parameters are %s, with an upstream and without', async params => {
-      const plain = endpoint(() => json({}));
-      const through = endpoint(() => json({}));
-      const clients = [
-        new OAuthClient({ ...COUNTED, client: SECRET_IN_BODY, fetch: plain.fetch }),
-        new OAuthClient({
-          ...COUNTED, client: SECRET_IN_BODY,
-          upstream: defineUpstream({ vendorId: "vendor", fetch: through.fetch }),
-        }),
-      ];
+  it.each([undefined, null])('sends a request("token") whose parameters are %s', async params => {
+    const { handed, fetch } = endpoint(() => json({}));
+    const client = new OAuthClient({ ...COUNTED, client: SECRET_IN_BODY, upstream: over(fetch) });
 
-      // What a caller that is not type-checked may pass.
-      for (const client of clients) {
-        expect(await Reflect.apply(client.request, client, ["token", params])).toEqual({});
-      }
+    // What a caller that is not type-checked may pass.
+    expect(await Reflect.apply(client.request, client, ["token", params])).toEqual({});
 
-      expect(plain.handed).toHaveLength(1);
-      expect(plain.handed[0].body).toBe("client_id=client-1&client_secret=s3cret-value");
-      expect(through.handed).toEqual(plain.handed);
-      expect(written()).toEqual([["gatekeeper.vendor.api", "vendor", "token.request", "success", "", 200]]);
-    });
+    expect(handed).toEqual([requestOf(TOKEN_URL, {}, { headers: AGENT, authenticates: IN_BODY })]);
+    expect(handed[0].body).toBe("client_id=client-1&client_secret=s3cret-value");
+    expect(written()).toEqual([["gatekeeper.vendor.api", "vendor", "token.request", "success", "", 200]]);
+  });
 
-  it("cancels the body of a redirect once, with an upstream and without", async () => {
+  it("cancels the body of a redirect once", async () => {
     let cancels = 0;
     const { fetch } = endpoint(() => new Response(
       new ReadableStream<Uint8Array>({ cancel() { cancels++; } }),
       { status: 307, headers: { Location: "https://attacker.example/token" } }));
 
-    const plain = await responseError(
-      new OAuthClient({ ...BASE, fetch }).refresh({ refreshToken: "rt" }));
-    expect(cancels).toBe(1);
-    const through = await responseError(new OAuthClient({
-      ...BASE, upstream: defineUpstream({ vendorId: "vendor", fetch }),
-    }).refresh({ refreshToken: "rt" }));
+    const error = await responseError(
+      new OAuthClient({ ...BASE, upstream: over(fetch) }).refresh({ refreshToken: "rt" }));
 
-    expect(cancels).toBe(2);
-    expect([plain.httpStatus, through.httpStatus]).toEqual([307, 307]);
+    expect(cancels).toBe(1);
+    expect(error.httpStatus).toBe(307);
   });
 
-  it("returns the tokens of a client without one", async () => {
+  it("returns the tokens its answer holds", async () => {
     const { fetch } = endpoint(() => json({ access_token: "at", refresh_token: "rt2",
       expires_in: 3600, scope: "read write" }));
-    const client = new OAuthClient({ ...BASE, upstream: defineUpstream({ vendorId: "vendor", fetch }) });
+    const client = new OAuthClient({ ...BASE, upstream: over(fetch) });
 
     expect(await client.exchangeCode({ code: "c", redirectUri: REDIRECT_URI })).toEqual({
-      accessToken: "at", refreshToken: "rt2", expiresAt: 1_000_000 + 3_600_000,
+      accessToken: "at", refreshToken: "rt2", expiresAt: NOW + 3_600_000,
       scopes: ["read", "write"],
       raw: { access_token: "at", refresh_token: "rt2", expires_in: 3600, scope: "read write" },
     });
-  });
-
-  it("refuses an upstream beside a fetch", () => {
-    const { fetch } = endpoint(() => json({ access_token: "at" }));
-    expect(() => new OAuthClient({ ...BASE, fetch, upstream: defineUpstream({ vendorId: "vendor" }) }))
-      .toThrow("Pass upstream or fetch, not both");
   });
 
   it("sends once and refuses redirects under an upstream that retries and follows them", async () => {
@@ -1160,29 +1287,33 @@ describe("OAuthClient through an upstream", () => {
     ]);
   });
 
-  it.each<[string, () => Response, Counted]>([
-    ["a 403", () => json({ error: "access_denied" }, 403), ["error", "http", 403]],
+  it.each<[string, () => Response, Settled, Counted]>([
+    ["a 403", () => json({ error: "access_denied" }, 403),
+      { threw: rejected(403, "access_denied") }, ["error", "http", 403]],
     ["a redirect", () => new Response(null, { status: 302, headers: { Location: TOKEN_URL } }),
-      ["error", "http", 302]],
-    ["a 500", () => new Response("down", { status: 500 }), ["error", "http", 500]],
-    ["a 429", () => json({ error: "slow_down" }, 429), ["refused", "rate", 429]],
-    ["a 403 whose body is too large", () => json({ error: "a".repeat(100) }, 403), ["error", "http", 403]],
-    ["a 200", withTokens, ["success", "", 200]],
-    ["a 200 whose body is too large", () => json({ access_token: "a".repeat(100) }), ["error", "parse", 200]],
-  ])("counts %s by its own rule, whatever the upstream's `succeeded` says of a status", async (_name, respond, counted) => {
+      { threw: rejected(302) }, ["error", "http", 302]],
+    ["a 500", () => new Response("down", { status: 500 }),
+      { threw: rejected(500) }, ["error", "http", 500]],
+    ["a 429", () => json({ error: "slow_down" }, 429),
+      { threw: rejected(429, "slow_down") }, ["refused", "rate", 429]],
+    ["a 403 whose body is too large", () => json({ error: "a".repeat(100) }, 403),
+      { threw: tooLarge(64) }, ["error", "http", 403]],
+    ["a 200", withTokens, { returned: ISSUED.tokens }, ["success", "", 200]],
+    ["a 200 whose body is too large", () => json({ access_token: "a".repeat(100) }),
+      { threw: tooLarge(64) }, ["error", "parse", 200]],
+  ])("counts %s by its own rule, whatever the upstream's `succeeded` says of a status", async (_name, respond, settles, counted) => {
     const options = { ...COUNTED, maxResponseBytes: 64 };
-    const plain = await attempt(fetch => new OAuthClient({ ...options, fetch }), respond, refreshing);
 
     // The rule of a provider's API that takes every status for a success, and of one that takes none.
     for (const succeeded of [() => true, () => false]) {
       points = [];
-      const through = await attempt(fetch => new OAuthClient({
+      const { handed, settled } = await attempt(fetch => new OAuthClient({
         ...options, upstream: defineUpstream({ vendorId: "vendor", fetch, succeeded }),
       }), respond, refreshing);
 
-      expect(through.handed).toEqual(plain.handed);
-      expect(told(through.settled)).toEqual(told(plain.settled));
-      expect(Object.keys(through.settled)).toEqual([counted[0] === "success" ? "returned" : "threw"]);
+      expect(handed).toEqual([requestOf(TOKEN_URL, REFRESHING, COUNTED_SENDER)]);
+      expect(told(settled)).toEqual(settles);
+      expect(Object.keys(settled)).toEqual([counted[0] === "success" ? "returned" : "threw"]);
       expect(written()).toEqual([["gatekeeper.vendor.api", "vendor", "token.refresh", ...counted]]);
     }
   });
@@ -1215,18 +1346,18 @@ describe("OAuthClient through an upstream", () => {
   });
 
   it("times a request by its own timeoutMs under an upstream with a shorter one", async () => {
-    const plain = endpoint(slow);
-    const through = endpoint(slow);
-    const upstream = defineUpstream({ vendorId: "vendor", fetch: through.fetch, timeoutMs: 1 });
+    const { handed, fetch } = endpoint(slow);
+    const upstream = defineUpstream({ vendorId: "vendor", fetch, timeoutMs: 1 });
 
-    const tokens = await new OAuthClient({ ...BASE, fetch: plain.fetch }).refresh({ refreshToken: "rt" });
     expect(await new OAuthClient({ ...BASE, upstream }).refresh({ refreshToken: "rt" }))
-      .toEqual(tokens);
+      .toEqual({ accessToken: "at", raw: { access_token: "at" } });
 
-    // A caller that gives no signal: `fetch` is handed the timeout's alone, on both paths.
-    expect(plain.handed).toHaveLength(1);
-    expect(plain.handed[0].signalled).toBe(true);
-    expect(through.handed).toEqual(plain.handed);
+    // A caller that gives no signal: `fetch` is handed the timeout's alone.
+    expect(handed).toHaveLength(1);
+    expect(handed[0].signalled).toBe(true);
+    expect(handed).toEqual([
+      requestOf(TOKEN_URL, { grant_type: "refresh_token", refresh_token: "rt" }, BASE_SENDER),
+    ]);
   });
 
   it("sends with the upstream's fetch, the global read at each request", async () => {
@@ -1243,14 +1374,16 @@ describe("OAuthClient through an upstream", () => {
   });
 
   it("loads without the upstream leaf, node:async_hooks or cloudflare:workers", async () => {
+    // The upstream is its gatekeeper's: defined here, by the leaf as this file loaded it.
+    const { calls, fetch } = provider();
+    const upstream = over(fetch);
     vi.resetModules();
     vi.doMock("../src/upstream", refused("./upstream"));
     vi.doMock("node:async_hooks", refused("node:async_hooks"));
     vi.doMock("cloudflare:workers", refused("cloudflare:workers"));
 
     const loaded = await import("../src/oauth-client");
-    const { calls, fetch } = provider();
-    await new loaded.OAuthClient({ ...BASE, fetch }).refresh({ refreshToken: "rt" });
+    await new loaded.OAuthClient({ ...BASE, upstream }).refresh({ refreshToken: "rt" });
 
     expect(loaded.OAuthClient).not.toBe(OAuthClient);
     expect(calls).toHaveLength(1);

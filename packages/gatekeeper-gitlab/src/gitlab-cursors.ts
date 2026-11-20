@@ -8,6 +8,7 @@ import { validateRpc } from "capnweb-validate";
 import type { Cursor } from "@gadgets/workshop-shared/gatekeeper";
 import { SerialTaskQueue } from "@gadgets/gatekeeper-kit/serial-queue";
 import type { GitLabPage } from "./gitlab-api";
+import { gitlabUpstream } from "./gitlab-upstream";
 
 /** A page with each row mapped, keeping where the listing continues. */
 export function mapPage<T, U>(page: GitLabPage<T>, map: (item: T) => U): GitLabPage<U> {
@@ -85,9 +86,12 @@ export class StreamingCursor<T> extends RpcTarget implements Cursor<T> {
     this.#identity = options.identity;
   }
 
-  /** Serialized: interleaved calls would serve a buffered row twice or fetch one page twice. */
+  /**
+   * Serialized: interleaved calls would serve a buffered row twice or fetch one page twice. The
+   * remote pages one call fetches are counted as one sum.
+   */
   next(): Promise<T[] | null> {
-    const page = this.#queue.then(() => this.#fill());
+    const page = this.#queue.then(() => gitlabUpstream.summed(() => this.#fill()));
     this.#queue = page.catch(() => {});
     return page;
   }

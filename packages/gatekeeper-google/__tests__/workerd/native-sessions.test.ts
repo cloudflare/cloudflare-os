@@ -36,6 +36,7 @@ import { presentation, shape, SIMPLE_LIGHT, slide, text } from "../slides-fixtur
 import {
   eventResponse, fakeAi, markdownJson, sentImage, streamedResponse, tokenEvents,
 } from "../workers-ai-fixture";
+import { unbindWrittenCalls, writtenCalls } from "../written-calls";
 
 const DOC_MIME = "application/vnd.google-apps.document";
 const SHEET_MIME = "application/vnd.google-apps.spreadsheet";
@@ -456,6 +457,7 @@ beforeEach(() => {
   providerUrls = installProvider();
 });
 afterEach(() => {
+  unbindWrittenCalls();
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
@@ -553,6 +555,21 @@ describe("Drive nested native sessions", () => {
 
     doc[Symbol.dispose]();
     await expect(Promise.resolve(doc.getContent())).rejects.toThrow();
+  });
+
+  it("writes the provider pages one page of a listing walks as one point", async () => {
+    let pages = 0;
+    vi.stubGlobal("fetch", async () => ++pages === 1
+      // A page with nothing on it and more to come, which the cursor walks past.
+      ? Response.json({ files: [], nextPageToken: "page-2" })
+      : Response.json({ files: [providerFile("doc-1", DOC_MIME)] }));
+    using session = newSession().session;
+    using cursor = await session.list();
+    const written = writtenCalls();
+
+    expect(await cursor.next()).toEqual([expect.objectContaining({ id: "doc-1" })]);
+
+    expect(written()).toEqual([["google-drive", "files.list", "success", 200, 2]]);
   });
 
   it("keeps a returned cursor paging after its session is disposed", async () => {

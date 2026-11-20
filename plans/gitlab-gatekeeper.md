@@ -863,7 +863,7 @@ substitutes transport endpoints and REST lookups:
   `#simulateBranchHead` (the kit's `simulateBranchHead` over the queued pushes), no-ops when already at `commitId`, checks `isAncestor` unless `force` or
   creating, queues `{branch, expectedOldSha, newSha, force}` with `pushedCommits: [commitId]`.
   Apply: `cache.buildPack()` → `pushGitRefUpdate(body => api.fetchGitReceivePack(projectPath,
-  body), …)`; `GitRefUpdateRejectedError` → re-read head; equal to `newSha` → desired-state
+  branch, body), …)`; `GitRefUpdateRejectedError` → re-read head; equal to `newSha` → desired-state
   success, else "branch moved / was created" (GitLab's pre-receive hook text — protected
   branch, push rules — is appended from the `ng` status line so the agent sees *why*). Revert:
   rollback to `expectedOldSha`, or delete when the push created the branch.

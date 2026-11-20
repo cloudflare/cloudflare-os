@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { guardedFetch, isAllowedUrl, MAX_RESPONSE_BYTES, sdkFetch } from "../src/fetch.js";
+import { guardedFetch, isAllowedUrl, MAX_RESPONSE_BYTES } from "../src/fetch.js";
+import { sdkFetch } from "../src/upstream.js";
+import { upstream } from "./stubs/upstream.js";
 
 type Hop = {
   url: string;
@@ -192,7 +194,7 @@ describe("sdkFetch", () => {
       now += 20;
       return new Response("{}");
     });
-    const fetchFn = sdkFetch({ timeoutMs: 30 });
+    const fetchFn = sdkFetch(upstream, { timeoutMs: 30 });
 
     await fetchFn("https://auth.example.com/one");
     await fetchFn("https://auth.example.com/two");
@@ -202,7 +204,7 @@ describe("sdkFetch", () => {
 
   it("refuses an OAuth response larger than the shared response limit", async () => {
     vi.stubGlobal("fetch", async () => new Response("x".repeat(MAX_RESPONSE_BYTES + 1)));
-    await expect(sdkFetch()("https://auth.example.com/metadata"))
+    await expect(sdkFetch(upstream)("https://auth.example.com/metadata"))
       .rejects.toThrow(/response exceeded/i);
   });
 
@@ -212,7 +214,7 @@ describe("sdkFetch", () => {
       statusText: "Created",
       headers: { "Content-Type": "application/json", "X-Test": "kept" },
     }));
-    const response = await sdkFetch()("https://auth.example.com/metadata");
+    const response = await sdkFetch(upstream)("https://auth.example.com/metadata");
     expect(response.status).toBe(201);
     expect(response.statusText).toBe("Created");
     expect(response.headers.get("X-Test")).toBe("kept");

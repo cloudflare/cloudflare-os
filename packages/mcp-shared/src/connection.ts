@@ -7,6 +7,8 @@
 // landed. A write is left to fail as outcome-unknown; its approved action is closed, and a person
 // must deliberately stage a new one after checking whether the first took effect.
 
+import type { Upstream } from "@gadgets/gatekeeper-kit/upstream";
+
 import {
   McpAuthRequiredError,
   McpCallNotDispatchedError,
@@ -83,8 +85,12 @@ function notDispatched(err: unknown): McpCallNotDispatchedError {
   );
 }
 
-/** Runs `fn` against an initialized client for `endpoint`, using the account's credentials. */
+/**
+ * Runs `fn` against an initialized client for `endpoint`, using the account's credentials. Every
+ * request is sent and counted through `upstream`, the calling gatekeeper's own.
+ */
 export async function withClient<T>(
+  upstream: Upstream,
   env: ConnectionEnv,
   account: ConnectionAccount,
   endpoint: string,
@@ -101,7 +107,7 @@ export async function withClient<T>(
   }
   const { authorization, sessionId, generation } = connection;
   const client = new McpClient(
-    endpoint, async method => {
+    upstream, endpoint, async method => {
       if (method === "tools/call") {
         await account.assertConnectionCurrent(endpoint, generation);
       }
@@ -192,12 +198,13 @@ export async function withClient<T>(
  * listing short, since callers infer what the endpoint is from what it does and does not offer.
  */
 export async function fetchTools(
+  upstream: Upstream,
   env: ConnectionEnv,
   account: ConnectionAccount,
   endpoint: string,
   include?: McpToolFilter,
   options?: WithClientOptions,
 ): Promise<ToolCatalog> {
-  return withClient(env, account, endpoint,
+  return withClient(upstream, env, account, endpoint,
     client => client.listTools(MAX_TOOLS_PER_SERVER, include), options);
 }

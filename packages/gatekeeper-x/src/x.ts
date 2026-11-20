@@ -78,6 +78,7 @@ import {
 } from "./x-env";
 import { XListConfiguratorUI, XPlaceholderConfiguratorUI } from "./x-configurators";
 import type { WireUser } from "./x-normalize";
+import { xUpstream } from "./x-upstream";
 import { parseXUrl } from "./x-urls";
 import { obsContext } from "./observability";
 import X_LOGO_SVG from "./x-logo.svg";
@@ -131,9 +132,12 @@ const NOT_CONFIGURED_HTML = errorPageHtml(
 
 const IDENTITY_FIELDS = "id,name,username,profile_image_url,protected,verified,subscription_type";
 
-/** Reads the X user a token belongs to. */
+/**
+ * Reads the X user a token belongs to. The answer is read within the request, which so counts
+ * one that names no account an error of the call.
+ */
 async function fetchIdentity(accessToken: string): Promise<StoredIdentity> {
-  return identityOf(await new XApi(accessToken).get<WireUser>("/2/users/me", { "user.fields": IDENTITY_FIELDS }));
+  return new XApi(accessToken).get("/2/users/me", { "user.fields": IDENTITY_FIELDS }, identityOf);
 }
 
 /** The connected account as X's `/2/users/me` answer describes it. */
@@ -164,6 +168,7 @@ function oauthClient(env: Env): OAuthClient {
     revocationEndpoint: X_REVOKE_URL,
     // X's documented access-token lifetime, for a response that omits `expires_in`.
     defaultExpiresIn: 7200,
+    upstream: xUpstream,
   });
 }
 

@@ -2,12 +2,13 @@
 // for immutable IDs (`Prefer: IdType="ImmutableId"`), since default IDs change whenever a message
 // moves, and every response is parsed into checked shapes.
 
-import { GraphApiError, MAX_BATCH_REQUESTS, type BatchRequest, type GraphApi, type RequestOptions } from "./graph-api";
+import { GraphApiError, MAX_BATCH_REQUESTS, refusesPath, type BatchRequest, type GraphApi, type RequestOptions } from "./graph-api";
 import { optStr, parsePage, record, str, type GraphPage } from "./graph-parse";
 import { visibleText } from "./outlook-content";
 import type { GuardedMessage, OutlookMailboxRef } from "./outlook-scope";
 
-const IMMUTABLE_IDS = 'IdType="ImmutableId"';
+/** The `Prefer` value every request to a mailbox carries: IDs that stay the same when an item moves. */
+export const IMMUTABLE_IDS = 'IdType="ImmutableId"';
 
 /** A Graph ID as Exchange issues it: URL-safe base64, never a path or query. */
 const GRAPH_ID = /^[A-Za-z0-9+/=_-]{1,512}$/;
@@ -199,6 +200,20 @@ const WELL_KNOWN_FOLDERS = [
 /** The most attachments one message is read with; Outlook's own limit is far lower. */
 const MAX_ATTACHMENTS_LISTED = 500;
 
+/** Whether a page is asked for by the `nextLink` a previous page gave, which Graph is asked for as it is, and not by a path under its owner. */
+export function isNextLink(pathOrNext: string): boolean {
+  return pathOrNext.startsWith("https://");
+}
+
+/**
+ * Whether a page links to its next page at a URL the client refuses to request (`refusesPath`),
+ * which leaves a caller that pages on with an error and nothing sent. The `unusable` of the
+ * request that answers a page, by the check the client makes of the link once it is followed.
+ */
+export function strands(page: GraphPage<unknown>): boolean {
+  return page.nextLink !== undefined && isNextLink(page.nextLink) && refusesPath(page.nextLink);
+}
+
 /** Graph for one mailbox. Cheap to construct. */
 export class MailApi {
   readonly base: string;
@@ -207,36 +222,49 @@ export class MailApi {
     this.base = mailboxPath(mailbox);
   }
 
-  /** A GET of a path under the mailbox, returning JSON; a missing resource throws. */
-  async get<T>(path: string, query?: Record<string, string | number | undefined>, prefer: string[] = []): Promise<T> {
-    return await this.api.get<T>(this.base + path, { query: query ?? {}, prefer: [IMMUTABLE_IDS, ...prefer] });
+  /**
+   * A GET of a path under the mailbox, returning JSON; a missing resource throws.
+   * @param read Reads the answer inside the request (see `GraphApi.request`).
+   * @param unusable Says whether what was read is not what was asked for (see `GraphApi.request`).
+   */
+  async get<T, R = T>(path: string, query?: Record<string, string | number | undefined>, prefer: string[] = [], read?: (answer: T) => R,
+                      unusable?: (value: R) => boolean): Promise<R> {
+    return await this.api.get(this.base + path, { query: query ?? {}, prefer: [IMMUTABLE_IDS, ...prefer] }, read, unusable);
   }
 
   /**
    * A GET answering null for a 404 or 403, which Exchange gives for an ID in another mailbox, and
    * for a 400, which it gives for an ID that isn't one of its own (`ErrorInvalidIdMalformed`).
+   * @param read Reads the answer inside the request (see `GraphApi.request`), null for those statuses.
    */
-  async find<T>(path: string, query?: Record<string, string | number | undefined>): Promise<T | null> {
-    return await this.api.request<T>("GET", this.base + path, { query: query ?? {}, prefer: [IMMUTABLE_IDS], allow: [400, 403, 404] });
+  async find<T, R = T | null>(path: string, query?: Record<string, string | number | undefined>, read?: (answer: T | null) => R): Promise<R> {
+    return await this.api.request("GET", this.base + path, { query: query ?? {}, prefer: [IMMUTABLE_IDS], allow: [400, 403, 404] }, read);
   }
 
-  /** A write (or any other method) on a path under the mailbox, with a JSON body; null for a 204. */
-  async request<T>(method: string, path: string, body?: unknown, options: Pick<RequestOptions, "ifMatch" | "allow"> = {}): Promise<T | null> {
-    return await this.api.request<T>(method, this.base + path, { ...options, ...(body === undefined ? {} : { body }), prefer: [IMMUTABLE_IDS] });
+  /**
+   * A write (or any other method) on a path under the mailbox, with a JSON body; null for a 204.
+   * @param read Reads the answer inside the request (see `GraphApi.request`).
+   */
+  async request<T, R = T | null>(method: string, path: string, body?: unknown, options: Pick<RequestOptions, "ifMatch" | "allow"> = {},
+                                 read?: (answer: T | null) => R): Promise<R> {
+    return await this.api.request(method, this.base + path, { ...options, ...(body === undefined ? {} : { body }), prefer: [IMMUTABLE_IDS] }, read);
   }
 
-  /** A page of results from a path in this mailbox, or the `nextLink` a previous page gave. */
+  /**
+   * A page of results from a path in this mailbox, or the `nextLink` a previous page gave. A page
+   * whose `nextLink` leaves Graph is returned as it came, and its request is counted as an error
+   * of the API (`strands`): the client refuses that link once it is asked for the page after.
+   */
   async page<T>(pathOrNext: string, parse: (row: unknown) => T, what: string, query?: Record<string, string | number | undefined>, prefer: string[] = []): Promise<GraphPage<T>> {
-    const body = pathOrNext.startsWith("https://")
-      ? await this.api.get<unknown>(pathOrNext, { prefer: [IMMUTABLE_IDS, ...prefer] })
-      : await this.get<unknown>(pathOrNext, query, prefer);
-    return parsePage(body, parse, what);
+    const read = (body: unknown) => parsePage(body, parse, what);
+    return isNextLink(pathOrNext)
+      ? await this.api.get(pathOrNext, { prefer: [IMMUTABLE_IDS, ...prefer] }, read, strands)
+      : await this.get(pathOrNext, query, prefer, read, strands);
   }
 
   /** One message's metadata, or null when it isn't in this mailbox. */
   async message(id: string): Promise<GraphMessage | null> {
-    const body = await this.find<unknown>(`/messages/${idPath(id)}`, { $select: MESSAGE_SELECT });
-    return body === null ? null : parseMessage(body);
+    return await this.find(`/messages/${idPath(id)}`, { $select: MESSAGE_SELECT }, (body: unknown) => body === null ? null : parseMessage(body));
   }
 
   /**
@@ -244,14 +272,15 @@ export class MailApi {
    * it: separate reads could fence a send on a version nobody saw. Null when it isn't in this mailbox.
    */
   async draft(id: string): Promise<{ message: GraphMessage; body: GraphBody; changeKey?: string; conversationIndex: string } | null> {
-    const row = await this.find<unknown>(`/messages/${idPath(id)}`, { $select: `${MESSAGE_SELECT},body,changeKey,conversationIndex` });
-    if (row === null) return null;
-    const json = record(row, "message");
-    return {
-      message: parseMessage(json), body: parseBody(json.body),
-      ...(typeof json.changeKey === "string" ? { changeKey: json.changeKey } : {}),
-      conversationIndex: typeof json.conversationIndex === "string" ? json.conversationIndex : "",
-    };
+    return await this.find(`/messages/${idPath(id)}`, { $select: `${MESSAGE_SELECT},body,changeKey,conversationIndex` }, (row: unknown) => {
+      if (row === null) return null;
+      const json = record(row, "message");
+      return {
+        message: parseMessage(json), body: parseBody(json.body),
+        ...(typeof json.changeKey === "string" ? { changeKey: json.changeKey } : {}),
+        conversationIndex: typeof json.conversationIndex === "string" ? json.conversationIndex : "",
+      };
+    });
   }
 
   /** Several messages' metadata in one round trip, by ID; a message not in the mailbox is absent. */
@@ -263,7 +292,7 @@ export class MailApi {
         id: String(index), method: "GET", url: `${this.base.slice(1)}/messages/${idPath(id)}?$select=${MESSAGE_SELECT}`,
         headers: { prefer: IMMUTABLE_IDS },
       }));
-      const answers = await this.api.batch(requests);
+      const answers = await this.api.batch(requests, { whole: true });
       chunk.forEach((id, index) => {
         const answer = answers.get(String(index));
         if (answer === undefined) throw new GraphApiError(502, "Microsoft Graph left a message out of a batch.");
@@ -279,8 +308,7 @@ export class MailApi {
   /** A folder by ID or well-known name, or null when it isn't in this mailbox. */
   async folder(idOrWellKnown: string): Promise<GraphFolder | null> {
     const segment = (WELL_KNOWN_FOLDERS as readonly string[]).includes(idOrWellKnown) ? idOrWellKnown : idPath(idOrWellKnown);
-    const body = await this.find<unknown>(`/mailFolders/${segment}`, { $select: FOLDER_SELECT });
-    return body === null ? null : parseFolder(body);
+    return await this.find(`/mailFolders/${segment}`, { $select: FOLDER_SELECT }, (body: unknown) => body === null ? null : parseFolder(body));
   }
 
   /** A folder's subfolders, every page. */
@@ -302,7 +330,7 @@ export class MailApi {
     const requests: BatchRequest[] = WELL_KNOWN_FOLDERS.map(name => ({
       id: name, method: "GET", url: `${this.base.slice(1)}/mailFolders/${name}?$select=id`, headers: { prefer: IMMUTABLE_IDS },
     }));
-    const answers = await this.api.batch(requests);
+    const answers = await this.api.batch(requests, { whole: true });
     const ids = new Map<string, string>();
     for (const name of WELL_KNOWN_FOLDERS) {
       const answer = answers.get(name);
@@ -318,8 +346,7 @@ export class MailApi {
   /** A message's body, or with `unique` only what it added to its conversation (`uniqueBody`). */
   async body(id: string, unique = false): Promise<GraphBody> {
     const field = unique ? "uniqueBody" : "body";
-    const json = record(await this.get<unknown>(`/messages/${idPath(id)}`, { $select: field }), "message");
-    return parseBody(json[field]);
+    return await this.get(`/messages/${idPath(id)}`, { $select: field }, [], (body: unknown) => parseBody(record(body, "message")[field]));
   }
 
   /** A message's attachments' metadata, every page up to `MAX_ATTACHMENTS_LISTED`. */

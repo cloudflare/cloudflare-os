@@ -2,8 +2,9 @@
 // client, parsing, guard, redaction, overlay, observations and staging all run: what each binding
 // shows, what it refuses, what it names to observers, and what it proposes.
 
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import type { RpcStub } from "cloudflare:workers";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { env, type RpcStub } from "cloudflare:workers";
+import { SUBSERVICE_V1_SLOTS } from "@gadgets/observability/metrics";
 import type { ObserverStrategy } from "@gadgets/gatekeeper-kit/observers";
 import type { ApprovalQueue, ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { definitions, type CalendarAction, type CalendarActions } from "../src/calendar-actions";
@@ -350,6 +351,33 @@ describe("an all-calendars binding", () => {
       ["Standup **now**", TEAM.id], ["Vendor sync", DEFAULT.id], ["Offsite planning", TEAM.id], ["Doctor", DEFAULT.id], ["1:1", DEFAULT.id],
     ]);
     expect(reported.at(-1)).toEqual([everything]);
+  });
+
+  describe("the requests of a listing, as metric points", () => {
+    const ambient = env as { METRICS?: AnalyticsEngineDataset; SUBSERVICE_METRICS?: string };
+
+    afterEach(() => {
+      delete ambient.METRICS;
+      delete ambient.SUBSERVICE_METRICS;
+    });
+
+    it("sums the batches that confirm one page's rows, a calendar at a time, into one point", async () => {
+      const batches: (number | undefined)[] = [];
+      const operation = Number(SUBSERVICE_V1_SLOTS.operation.replace(/\D+/, "")) - 1;
+      const calls = Number(SUBSERVICE_V1_SLOTS.calls.replace(/\D+/, "")) - 1;
+      ambient.METRICS = {
+        writeDataPoint: point => {
+          if (point?.blobs?.[operation] === "batch") batches.push(point.doubles?.[calls]);
+        },
+      };
+      ambient.SUBSERVICE_METRICS = "true";
+      const { reader } = session(scope("read"));
+
+      await all(await reader.listEvents(window));
+
+      // The rows of the page are in two calendars: a batch for each, written as one point.
+      expect(batches).toEqual([2]);
+    });
   });
 
   it("refuses an event whose calendar isn't in the user's list, and a series whose master is in another calendar", async () => {

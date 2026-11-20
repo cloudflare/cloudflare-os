@@ -9,7 +9,14 @@
 // read the schema / query rows of a data source — required because newer multi-source / Meeting
 // Notes / wiki databases return no rows from the legacy `databases/{id}/query` endpoint. The
 // database→data-source split is hidden from the Session API.
+//
+// Every request goes through `notionUpstream` (`./notion-upstream`), which gives each attempt its
+// timeout, sends a GET again after a transient failure, follows no redirect, and counts each
+// attempt as a subservice call.
 
+import { readTextCapped } from "@gadgets/gatekeeper-kit/response-body";
+import type { CallAnswer } from "@gadgets/gatekeeper-kit/upstream";
+import { NOTION_API_ORIGIN, notionUpstream, type NotionOperation } from "./notion-upstream";
 import type {
   NotionComment,
   NotionDatabaseSchema,
@@ -26,7 +33,6 @@ import type {
   NotionUser,
 } from "./types";
 
-const API_BASE_URL = "https://api.notion.com";
 // Default version: pages/blocks/comments/search/users keep reporting `database_id` parents and
 // `database` search objects, which keeps user-facing IDs/URLs consistent.
 const NOTION_VERSION = "2022-06-28";
@@ -34,7 +40,18 @@ const NOTION_VERSION = "2022-06-28";
 // and row queries. Required because newer multi-source / Meeting Notes / wiki databases return no
 // rows from the legacy `databases/{id}/query` endpoint.
 const DATA_SOURCE_VERSION = "2025-09-03";
-const REQUEST_TIMEOUT_MS = 30_000;
+
+// A page of a listing as Notion answers one. An answer with no list is refused within the request,
+// so that it is counted an error and no reader of the page meets it; an empty list is a page.
+// So is one that says more follows and names no cursor for it, which would end the listing early;
+// a last page with no cursor is a page.
+function listed<T>(page: NotionListResponse<T>): NotionListResponse<T> {
+  if (!Array.isArray(page.results)) throw new NotionApiError(502, "Notion answered a listing with no list.");
+  if (page.has_more === true && (typeof page.next_cursor !== "string" || page.next_cursor.length === 0)) {
+    throw new NotionApiError(502, "Notion answered a page that names no cursor for the page after it.");
+  }
+  return page;
+}
 
 export class NotionApiError extends Error {
   status: number;
@@ -75,13 +92,17 @@ type NotionTokenResponse = {
   error_description?: string;
 };
 
+// Posts a grant request to the token endpoint, counted under `operation`. The request is a POST,
+// which the client sends once. A refusal inside a success is counted as an error of the API.
 async function postToken(
+  operation: NotionOperation,
   body: Record<string, string>,
   clientId: string,
   clientSecret: string,
 ): Promise<NotionOAuthGrant> {
-  const response = await fetch(`${API_BASE_URL}/v1/oauth/token`, {
+  const parsed = await notionUpstream.read(`${NOTION_API_ORIGIN}/v1/oauth/token`, {
     method: "POST",
+    operation,
     headers: {
       Accept: "application/json",
       "Content-Type": "application/json",
@@ -89,16 +110,20 @@ async function postToken(
       Authorization: `Basic ${btoa(`${clientId}:${clientSecret}`)}`,
     },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  });
-
-  const parsed = (await response.json().catch(() => null)) as NotionTokenResponse | null;
-  if (!response.ok || !parsed || !parsed.access_token || parsed.error) {
+  }, async (response): Promise<NotionTokenResponse | NotionApiError> => {
+    const answer = (await response.json().catch(() => null)) as NotionTokenResponse | null;
+    if (response.ok && answer && answer.access_token && !answer.error) return answer;
     const message =
-      [parsed?.error, parsed?.error_description].filter(Boolean).join(": ") ||
+      [answer?.error, answer?.error_description].filter(Boolean).join(": ") ||
       `Notion OAuth token request failed: ${response.status} ${response.statusText}`;
-    throw new NotionApiError(response.status, message, parsed?.error);
-  }
+    const refusal = new NotionApiError(response.status, message, answer?.error);
+    // A refusal that a success carries is returned, so that the call is counted by what its body
+    // says. Any other is thrown, and counted by its status or as an answer that is no JSON.
+    if (response.ok && answer) return refusal;
+    throw refusal;
+  }, (answer): CallAnswer | undefined =>
+    answer instanceof NotionApiError ? { outcome: "error", reason: "api" } : undefined);
+  if (parsed instanceof NotionApiError) throw parsed;
 
   return {
     accessToken: parsed.access_token,
@@ -111,7 +136,7 @@ async function postToken(
   };
 }
 
-/** Exchange an authorization code for an access token + refresh token. */
+/** Exchange an authorization code for an access token + refresh token. Counted as `token.exchange`. */
 export async function exchangeAuthCode(
   code: string,
   clientId: string,
@@ -119,19 +144,21 @@ export async function exchangeAuthCode(
   redirectUri: string,
 ): Promise<NotionOAuthGrant> {
   return await postToken(
+    "token.exchange",
     { grant_type: "authorization_code", code, redirect_uri: redirectUri },
     clientId,
     clientSecret,
   );
 }
 
-/** Refresh an access token using a stored refresh token. */
+/** Refresh an access token using a stored refresh token. Counted as `token.refresh`. */
 export async function refreshAccessToken(
   refreshToken: string,
   clientId: string,
   clientSecret: string,
 ): Promise<NotionOAuthGrant> {
   return await postToken(
+    "token.refresh",
     { grant_type: "refresh_token", refresh_token: refreshToken },
     clientId,
     clientSecret,
@@ -1014,6 +1041,68 @@ function inlineMarkdownToRichText(text: string): unknown[] {
 // ---------------------------------------------------------------------------------------------
 // API client
 
+// The error an answer that is no success is thrown as: Notion's message and code where its body,
+// which `body` gives as it is parsed, is JSON that holds them, and its status line otherwise.
+async function errorOf(
+  response: Response, body: Promise<unknown> = response.json(),
+): Promise<NotionApiError> {
+  const parsed = (await body.catch(() => null)) as
+    | { code?: string; message?: string }
+    | null;
+  return new NotionApiError(
+    response.status,
+    parsed?.message ?? `${response.status} ${response.statusText}`,
+    parsed?.code,
+  );
+}
+
+/**
+ * The most bytes of a 401's body that are kept for its error while a fresh token is asked for and
+ * sent. An error of Notion's is a few hundred bytes: a 401 with a longer body is thrown by its
+ * status alone.
+ */
+export const MAX_HELD_ERROR_BYTES = 16 * 1024;
+
+// The error of a 401 whose body is read from a copy while a fresh token is asked for and sent:
+// `release` stops that reading and lets go of the copy.
+type HeldError = { of: Response; error: Promise<NotionApiError>; release: () => void };
+
+// Starts reading a copy of `response` for its error, which nothing waits for until `error` is.
+// The reading starts here because the runtime fails whatever is read of an answer, a copy of it
+// included, once the timeout of its attempt has fired: an error asked for after that holds what
+// the body said all the same. At most `MAX_HELD_ERROR_BYTES` are kept: the reading of a longer
+// body stops with the piece that passes the cap, its copy is let go there, and its error is that
+// of the status alone.
+function heldErrorOf(response: Response): HeldError {
+  const reader = response.clone().body?.getReader();
+  // Not waited for: the cancelling of one side of a copied body ends only once the other side is
+  // cancelled too.
+  const release = () => void reader?.cancel().catch(() => undefined);
+  // The copy as the capped reader takes it, with the length the answer declares. The reader waits
+  // for the cancelling of the body it reads, so this one's cancelling lets go of the copy and
+  // waits for nothing. It asks the copy for bytes only as it is read.
+  const copy = new Response(reader && new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      const { done, value } = await reader.read();
+      if (done) controller.close();
+      else controller.enqueue(value);
+    },
+    cancel: release,
+  }, { highWaterMark: 0 }), { headers: response.headers });
+  const parsed = readTextCapped(copy, MAX_HELD_ERROR_BYTES).then((text): unknown => JSON.parse(text));
+  return { of: response, error: errorOf(response, parsed), release };
+}
+
+// Lets go of the body of an answer that nothing reads, so that its connection is not held.
+function discard(response: Response): void {
+  response.body?.cancel().catch(() => undefined);
+}
+
+// What a method's `read` threw on the body of a success.
+class Unread {
+  constructor(readonly thrown: unknown) {}
+}
+
 export class NotionApi {
   #getToken: () => Promise<string>;
   // Optional: rotate credentials when a request hits 401. Returns a fresh access token.
@@ -1024,53 +1113,112 @@ export class NotionApi {
     this.#refresh = refresh;
   }
 
+  // A request that answers what a success holds, as it is.
   async #request<T>(method: string, path: string, body?: unknown, version?: string): Promise<T> {
-    let token = await this.#getToken();
-    let response = await this.#send(method, path, token, body, version);
-
-    // On auth failure, try once to refresh the token, then retry the request. If refresh fails
-    // (e.g. no/invalid refresh token), keep the original 401 so the caller sees a clean auth error
-    // — the refresh callback is responsible for notifying the Workshop of credential expiry.
-    if (response.status === 401 && this.#refresh) {
-      try {
-        token = await this.#refresh();
-        response = await this.#send(method, path, token, body, version);
-      } catch {
-        // fall through with the original 401 response
-      }
-    }
-
-    if (!response.ok) {
-      const parsed = (await response.json().catch(() => null)) as
-        | { code?: string; message?: string }
-        | null;
-      throw new NotionApiError(
-        response.status,
-        parsed?.message ?? `${response.status} ${response.statusText}`,
-        parsed?.code,
-      );
-    }
-    if (response.status === 204) return undefined as T;
-    return (await response.json()) as T;
+    return await this.#read<T, T>(method, path, answer => answer, body, version);
   }
 
-  async #send(method: string, path: string, token: string, body: unknown, version?: string): Promise<Response> {
+  // A request that is answered a page of a listing, which `listed` reads within it.
+  async #listing<T>(method: string, path: string, body?: unknown, version?: string): Promise<NotionListResponse<T>> {
+    return await this.#read<NotionListResponse<T>, NotionListResponse<T>>(method, path, listed, body, version);
+  }
+
+  // Sends one request through the upstream and reads its answer: what `read` makes of what a
+  // success holds, or the error of any other status, which is thrown. `read` runs within the
+  // request: a success it throws on is counted as an error of the API, and what it threw is
+  // thrown.
+  async #read<T, R>(
+    method: string, path: string, read: (answer: T) => R, body?: unknown, version?: string,
+  ): Promise<R> {
+    let token = await this.#getToken();
     const headers = new Headers({
       Accept: "application/json",
       "Notion-Version": version ?? NOTION_VERSION,
-      Authorization: `Bearer ${token}`,
     });
     let payload: string | undefined;
     if (body !== undefined) {
       headers.set("Content-Type", "application/json");
       payload = JSON.stringify(body);
     }
-    return await fetch(`${API_BASE_URL}${path}`, {
-      method,
-      headers,
-      body: payload,
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
+    const refresh = this.#refresh;
+    // The 401 that the one refresh was asked for after, with its error.
+    const held: { unauthorized?: HeldError } = {};
+    // The token of that refresh: whether it was given, whether the attempt last sent carries it,
+    // and whether an attempt that carried it was answered, whatever the status of the answer.
+    const fresh = { given: false, sent: false, answered: false };
+
+    // Reads what a success holds with `read`. What that throws is returned, not thrown, so that
+    // the request is counted by it and is not sent again for it.
+    const reading = (success: T): R | Unread => {
+      try {
+        return read(success);
+      } catch (thrown) {
+        return new Unread(thrown);
+      }
+    };
+    let answer: R | NotionApiError | Unread;
+    try {
+      answer = await notionUpstream.read(`${NOTION_API_ORIGIN}${path}`, {
+        method,
+        headers,
+        body: payload,
+        authorize: () => {
+          fresh.sent = fresh.given;
+          return { Authorization: `Bearer ${token}` };
+        },
+        // Notes each answer as it comes, and counts none otherwise than by its status.
+        answer: () => {
+          if (fresh.sent) fresh.answered = true;
+          return undefined;
+        },
+        // On auth failure, try once to refresh the token, then send the request again. The 401's
+        // status decides it: the refresh is asked for at once, and neither it nor the send after
+        // it waits for the 401's body, which is read meanwhile as far as its cap. The sends before
+        // the 401 and after it share the attempts of one request's retry policy.
+        replay: async response => {
+          if (response.status !== 401 || !refresh || held.unauthorized) return false;
+          const refreshing = (async () => refresh())();
+          held.unauthorized = heldErrorOf(response);
+          try {
+            token = await refreshing;
+          } catch {
+            // If refresh fails (e.g. no/invalid refresh token), keep the 401 so the caller sees
+            // a clean auth error — the refresh callback is responsible for notifying the
+            // Workshop of credential expiry.
+            return false;
+          }
+          fresh.given = true;
+          return true;
+        },
+      }, async (response): Promise<R | NotionApiError | Unread> => {
+        if (!response.ok) {
+          if (held.unauthorized?.of !== response) return await errorOf(response);
+          // The 401 that the refresh failed after: its error is the one its copy was read for.
+          discard(response);
+          return await held.unauthorized.error;
+        }
+        if (response.status === 204) return reading(undefined as T);
+        return reading((await response.json()) as T);
+      }, (made): CallAnswer | undefined => made instanceof Unread ? { outcome: "error", reason: "api" } : undefined);
+    } catch (error) {
+      // A request that fails before any 401 throws what it failed with. So does one of which a
+      // send with the fresh token was answered, whatever the status of that answer: the 401 is
+      // then not the last that Notion said of the request, and an answer that could not be
+      // read, or sends after it that got none, are the failure it ended with. Where no send with
+      // the fresh token was answered, the 401 they were sent after is thrown, with what its body
+      // said where that is within the cap. No other failure follows a 401 that is held: one whose
+      // refresh failed is read, not thrown on.
+      if (!held.unauthorized || fresh.answered) {
+        held.unauthorized?.release();
+        throw error;
+      }
+      throw await held.unauthorized.error;
+    }
+    held.unauthorized?.release();
+
+    if (answer instanceof NotionApiError) throw answer;
+    if (answer instanceof Unread) throw answer.thrown;
+    return answer;
   }
 
   // --- Observations ---
@@ -1080,16 +1228,15 @@ export class NotionApi {
    * answer names none.
    */
   async getBotUser(): Promise<NotionUser & { workspaceName?: string; workspaceId?: string }> {
-    const me = await this.#request<
-      NotionUserResponse & { bot?: { workspace_name?: string; workspace_id?: string } }>(
+    return await this.#read(
       "GET",
       "/v1/users/me",
+      (me: NotionUserResponse & { bot?: { workspace_name?: string; workspace_id?: string } }) => ({
+        ...userResponseToUser(me),
+        workspaceName: me.bot?.workspace_name,
+        workspaceId: me.bot?.workspace_id || undefined,
+      }),
     );
-    return {
-      ...userResponseToUser(me),
-      workspaceName: me.bot?.workspace_name,
-      workspaceId: me.bot?.workspace_id || undefined,
-    };
   }
 
   async retrievePage(id: string): Promise<NotionPageResponse> {
@@ -1132,7 +1279,7 @@ export class NotionApi {
     start_cursor?: string;
     page_size?: number;
   }): Promise<NotionListResponse<NotionPageResponse | NotionDatabaseResponse>> {
-    return await this.#request("POST", "/v1/search", body);
+    return await this.#listing("POST", "/v1/search", body);
   }
 
   async queryDataSource(
@@ -1144,7 +1291,7 @@ export class NotionApi {
       page_size?: number;
     },
   ): Promise<NotionListResponse<NotionPageResponse>> {
-    return await this.#request(
+    return await this.#listing(
       "POST", `/v1/data_sources/${dataSourceId}/query`, body, DATA_SOURCE_VERSION);
   }
 
@@ -1153,15 +1300,23 @@ export class NotionApi {
     startCursor?: string,
     pageSize?: number,
   ): Promise<NotionListResponse<NotionBlockResponse>> {
+    return await this.#blockChildren(blockId, startCursor, pageSize, listed);
+  }
+
+  // A page of a block's children, and what `read` makes of it within the request.
+  async #blockChildren<R>(
+    blockId: string, startCursor: string | undefined, pageSize: number | undefined,
+    read: (page: NotionListResponse<NotionBlockResponse>) => R,
+  ): Promise<R> {
     const params = new URLSearchParams();
     if (startCursor) params.set("start_cursor", startCursor);
     if (pageSize) params.set("page_size", String(pageSize));
     const qs = params.toString();
-    return await this.#request("GET", `/v1/blocks/${blockId}/children${qs ? `?${qs}` : ""}`);
+    return await this.#read("GET", `/v1/blocks/${blockId}/children${qs ? `?${qs}` : ""}`, read);
   }
 
   async retrieveUser(id: string): Promise<NotionUser> {
-    return userResponseToUser(await this.#request<NotionUserResponse>("GET", `/v1/users/${id}`));
+    return await this.#read("GET", `/v1/users/${id}`, userResponseToUser);
   }
 
   async listUsers(
@@ -1172,7 +1327,7 @@ export class NotionApi {
     if (startCursor) params.set("start_cursor", startCursor);
     if (pageSize) params.set("page_size", String(pageSize));
     const qs = params.toString();
-    return await this.#request("GET", `/v1/users${qs ? `?${qs}` : ""}`);
+    return await this.#listing("GET", `/v1/users${qs ? `?${qs}` : ""}`);
   }
 
   async listComments(
@@ -1183,26 +1338,48 @@ export class NotionApi {
     const params = new URLSearchParams({ block_id: blockId });
     if (startCursor) params.set("start_cursor", startCursor);
     if (pageSize) params.set("page_size", String(pageSize));
-    return await this.#request("GET", `/v1/comments?${params.toString()}`);
+    return await this.#listing("GET", `/v1/comments?${params.toString()}`);
   }
 
   /** Recursively fetch a page's blocks and their children up to MAX_BLOCK_DEPTH. */
   async fetchBlockTree(blockId: string, depth = 0): Promise<BlockWithChildren[]> {
+    // One request for each page of each block's children: their calls are summed.
+    return await notionUpstream.summed(() => this.#blockTree(blockId, depth));
+  }
+
+  // The blocks under `blockId`, page after page, each with its children down to MAX_BLOCK_DEPTH.
+  async #blockTree(blockId: string, depth: number): Promise<BlockWithChildren[]> {
     const out: BlockWithChildren[] = [];
     let cursor: string | undefined;
     do {
-      const page = await this.listBlockChildren(blockId, cursor);
-      for (const block of page.results) {
+      // The blocks of a page are read within its request, each with whether its children are
+      // read: a page whose blocks cannot be read is counted as an error of the API. The blocks
+      // before the one that could not be read have their children read all the same, and what
+      // the request failed with is thrown after them.
+      const blocks: { block: NotionBlockResponse; descends: boolean }[] = [];
+      let failed: { thrown: unknown } | undefined;
+      let next: string | undefined;
+      try {
+        next = await this.#blockChildren(blockId, cursor, undefined, answered => {
+          const page = listed(answered);
+          for (const block of page.results) {
+            // Don't descend into child pages/databases — those are separate documents, not inline
+            // content. Their bodies would otherwise be duplicated into this page's Markdown.
+            const isNestedDoc = block.type === "child_page" || block.type === "child_database";
+            blocks.push({ block, descends: Boolean(block.has_children && !isNestedDoc && depth < MAX_BLOCK_DEPTH) });
+          }
+          return page.has_more ? page.next_cursor ?? undefined : undefined;
+        });
+      } catch (thrown) {
+        failed = { thrown };
+      }
+      for (const { block, descends } of blocks) {
         const node: BlockWithChildren = { block };
-        // Don't descend into child pages/databases — those are separate documents, not inline
-        // content. Their bodies would otherwise be duplicated into this page's Markdown.
-        const isNestedDoc = block.type === "child_page" || block.type === "child_database";
-        if (block.has_children && !isNestedDoc && depth < MAX_BLOCK_DEPTH) {
-          node.children = await this.fetchBlockTree(block.id, depth + 1);
-        }
+        if (descends) node.children = await this.#blockTree(block.id, depth + 1);
         out.push(node);
       }
-      cursor = page.has_more ? page.next_cursor ?? undefined : undefined;
+      if (failed) throw failed.thrown;
+      cursor = next;
     } while (cursor);
     return out;
   }
@@ -1219,12 +1396,12 @@ export class NotionApi {
 
   /** Appends children and returns the IDs of the newly created top-level blocks (used to revert). */
   async appendBlockChildren(blockId: string, children: unknown[]): Promise<string[]> {
-    const result = await this.#request<NotionListResponse<NotionBlockResponse>>(
+    return await this.#read(
       "PATCH",
       `/v1/blocks/${blockId}/children`,
+      (result: NotionListResponse<NotionBlockResponse>) => result.results.map(b => b.id),
       { children },
     );
-    return result.results.map(b => b.id);
   }
 
   /** Archives (deletes) a single block. Used to revert appendContent. */

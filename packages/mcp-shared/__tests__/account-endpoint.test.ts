@@ -1,3 +1,5 @@
+import { env } from "cloudflare:workers";
+import { SUBSERVICE_V1_SLOTS } from "@gadgets/observability/metrics";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
@@ -6,6 +8,9 @@ import { McpAuthRequiredError } from "../src/client.js";
 import {
   McpAccountBase, resolveConnectTarget, type AccountEnv, type ConnectedServer,
 } from "../src/account.js";
+import { mcpUpstream } from "../src/upstream.js";
+// Named apart from the tests' own `upstream`, the fetch a stub passes a request on to.
+import { upstream as gatekeeperUpstream } from "./stubs/upstream.js";
 
 function fakeContext() {
   const values = new Map<string, unknown>();
@@ -31,6 +36,7 @@ class InterleavingAccount extends McpAccountBase<AccountEnv> {
 
   protected baseUrl(): string { return "https://gatekeeper.example"; }
   protected log(): never { return testLog as never; }
+  protected [mcpUpstream]() { return gatekeeperUpstream; }
   protected mintAccount(): never { throw new Error("not reached"); }
   protected override staticToken(): string { return "new-portal-token"; }
   protected override async probe(): Promise<never> {
@@ -54,6 +60,7 @@ class ConfiguredTokenAccount extends McpAccountBase<AccountEnv> {
 
   protected baseUrl(): string { return "https://gatekeeper.example"; }
   protected log(): never { return testLog as never; }
+  protected [mcpUpstream]() { return gatekeeperUpstream; }
   protected mintAccount(): never { throw new Error("not reached"); }
   protected override staticToken(server: ConnectedServer): string | null {
     // The real portal's rule: only answer for the endpoint configuration currently names.
@@ -70,6 +77,7 @@ class ExpiringAccount extends McpAccountBase<AccountEnv> {
 
   protected baseUrl(): string { return "https://gatekeeper.example"; }
   protected log(): never { return testLog as never; }
+  protected [mcpUpstream]() { return gatekeeperUpstream; }
   protected mintAccount(): never { throw new Error("not reached"); }
   protected override async probe(): Promise<never> { throw new Error("not probed"); }
 
@@ -87,6 +95,7 @@ class ExpiringAccount extends McpAccountBase<AccountEnv> {
 class UnconfiguredTokenAccount extends McpAccountBase<AccountEnv> {
   protected baseUrl(): string { return "https://gatekeeper.example"; }
   protected log(): never { return testLog as never; }
+  protected [mcpUpstream]() { return gatekeeperUpstream; }
   protected mintAccount(): never { throw new Error("not reached"); }
   protected override staticToken(): string | null { return null; }
   protected override async probe(): Promise<never> {
@@ -101,6 +110,7 @@ class UnconfiguredTokenAccount extends McpAccountBase<AccountEnv> {
 class AuthChallengeAccount extends McpAccountBase<AccountEnv> {
   protected baseUrl(): string { return "https://gatekeeper.example"; }
   protected log(): never { return testLog as never; }
+  protected [mcpUpstream]() { return gatekeeperUpstream; }
   protected mintAccount(): never { throw new Error("not reached"); }
   protected override async probe(): Promise<never> {
     throw new McpAuthRequiredError("authorization required", null);
@@ -110,6 +120,7 @@ class AuthChallengeAccount extends McpAccountBase<AccountEnv> {
 class OAuthFlowAccount extends McpAccountBase<AccountEnv> {
   protected baseUrl(): string { return "https://gatekeeper.example"; }
   protected log(): never { return testLog as never; }
+  protected [mcpUpstream]() { return gatekeeperUpstream; }
   protected mintAccount(): never { return {} as never; }
   protected override async probe(
     _server: ConnectedServer, accessToken: string | null,
@@ -126,6 +137,7 @@ class OAuthFlowAccount extends McpAccountBase<AccountEnv> {
 class PublicServerAccount extends McpAccountBase<AccountEnv> {
   protected baseUrl(): string { return "https://gatekeeper.example"; }
   protected log(): never { return testLog as never; }
+  protected [mcpUpstream]() { return gatekeeperUpstream; }
   protected mintAccount(): never { return {} as never; }
   protected override async probe(): Promise<never> {
     return { info: { serverInfo: { name: "Acme" } }, sessionId: "public-session" } as never;
@@ -957,6 +969,98 @@ describe("connect initiation nonce", () => {
     expect(context.storage.kv.get("server")).toBeUndefined();
     expect(context.storage.kv.get("oauthClient")).toBeUndefined();
     expect(context.storage.kv.get("expiredNotified")).toBeUndefined();
+  });
+});
+
+// The place of a metric column among a point's blobs or doubles.
+function slot(name: string): number {
+  return Number(name.replace(/\D+/, "")) - 1;
+}
+
+describe("the account's OAuth requests, as metric points", () => {
+  const ambient = env as { METRICS?: AnalyticsEngineDataset; SUBSERVICE_METRICS?: string };
+
+  // Each point written, as its operation, HTTP status and number of calls.
+  function recorded(): unknown[][] {
+    const written: unknown[][] = [];
+    ambient.METRICS = {
+      writeDataPoint: point => {
+        written.push([
+          point?.blobs?.[slot(SUBSERVICE_V1_SLOTS.operation)],
+          point?.doubles?.[slot(SUBSERVICE_V1_SLOTS.httpStatus)],
+          point?.doubles?.[slot(SUBSERVICE_V1_SLOTS.calls)],
+        ]);
+      },
+    };
+    ambient.SUBSERVICE_METRICS = "true";
+    return written;
+  }
+
+  afterEach(() => {
+    delete ambient.METRICS;
+    delete ambient.SUBSERVICE_METRICS;
+  });
+
+  it("counts each revocation of a disconnect as a token's revocation", async () => {
+    const written = recorded();
+    const context = fakeContext();
+    const { revoked } = stubOAuthServer();
+    context.storage.kv.put("server", server("https://mcp.example/mcp"));
+    context.storage.kv.put("tokens", {
+      access_token: "old-token", refresh_token: "old-refresh", token_type: "Bearer", expiresAt: 1,
+    });
+    context.storage.kv.put("oauthClient", { client_id: "client-id" });
+    context.storage.kv.put("oauthDiscovery", {
+      authorizationServerMetadata: { revocation_endpoint: "https://auth.example/revoke" },
+    });
+
+    await new PublicServerAccount(context as never, {}).revoke();
+
+    expect(revoked).toHaveLength(2);
+    expect(written).toEqual([["token.revoke", 200, 1], ["token.revoke", 200, 1]]);
+  });
+
+  it("sums the requests of one connect's discovery into a point per kind and status", async () => {
+    const written = recorded();
+    const context = fakeContext();
+    const base = (stubOAuthServer(), globalThis.fetch);
+    // An issuer with a path, whose metadata is at the third place the discovery looks.
+    const asked: string[] = [];
+    vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("oauth-protected-resource")) {
+        return Response.json({
+          resource: "https://mcp.example/mcp", authorization_servers: ["https://auth.example/tenant"],
+        });
+      }
+      if (url.startsWith("https://auth.example/.well-known/")) {
+        asked.push(url);
+        return new Response("", { status: 404 });
+      }
+      if (url === "https://auth.example/tenant/.well-known/openid-configuration") {
+        return Response.json({
+          issuer: "https://auth.example/tenant",
+          authorization_endpoint: "https://auth.example/authorize",
+          token_endpoint: "https://auth.example/token",
+          registration_endpoint: "https://auth.example/register",
+          jwks_uri: "https://auth.example/keys",
+          response_types_supported: ["code"],
+          subject_types_supported: ["public"],
+          id_token_signing_alg_values_supported: ["RS256"],
+          code_challenge_methods_supported: ["S256"],
+        });
+      }
+      return await base(input, init);
+    });
+    const account = new OAuthFlowAccount(context as never, {});
+    const nonce = "7".repeat(64);
+    await account.setCallback({ complete: async () => HANDOFF } as never, nonce);
+
+    expect((await account.beginConnect(nonce, server("https://mcp.example/mcp"))).kind).toBe("redirect");
+
+    expect(asked).toHaveLength(2);
+    expect(written.filter(([operation]) => operation === "metadata.server"))
+      .toEqual([["metadata.server", 404, 2], ["metadata.server", 200, 1]]);
   });
 });
 

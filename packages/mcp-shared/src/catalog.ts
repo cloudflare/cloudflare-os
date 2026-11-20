@@ -6,6 +6,8 @@
 // `tools/list` calls, but a shared cache would be a channel between two otherwise unrelated
 // bindings, and a scoped grant is meant not to see what a wider one fetched.
 
+import type { Upstream } from "@gadgets/gatekeeper-kit/upstream";
+
 import { isValidToolName, type McpTool } from "./client.js";
 import { fetchTools, type ConnectionAccount, type ConnectionEnv } from "./connection.js";
 import { looksLikePortal, toolBelongsToServer } from "./portal.js";
@@ -46,6 +48,8 @@ export interface CatalogStore {
 export type CatalogRequest = {
   store: CatalogStore;
   log: McpLog;
+  /** The gatekeeper's upstream, through which the endpoint is asked for its tools. */
+  upstream: Upstream;
   env: ConnectionEnv;
   account: ConnectionAccount;
   endpoint: string;
@@ -86,6 +90,7 @@ export async function scopedCatalog(request: CatalogRequest): Promise<ScopedCata
     try {
       const serverId = request.scope.serverId;
       const fetched = await fetchTools(
+        request.upstream,
         request.env,
         request.account,
         request.endpoint,

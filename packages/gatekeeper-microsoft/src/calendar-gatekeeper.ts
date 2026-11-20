@@ -15,7 +15,7 @@ import { KvTtlCache } from "@gadgets/gatekeeper-kit/cache";
 import { ProvisionalIds } from "@gadgets/gatekeeper-kit/simulation";
 import TYPES_CODE from "./calendar-types.txt";
 import { DESCRIPTION_TTL_MS, RETAINED_ACTION_TTL_MS, housekeep, isProvisional, legacyHistory, PinnedUser, provisionalId, revertRefused } from "./binding";
-import { GraphApi } from "./graph-api";
+import { withGraph, type GraphApi } from "./graph-api";
 import { accountSource } from "./microsoft-credentials";
 import { effectiveCalendarAccess, fixedTenant, grantsSharedCalendars, type CalendarGatekeeperProps, type Env } from "./microsoft-env";
 import {
@@ -231,6 +231,6 @@ export class CalendarGatekeeper extends DurableObject<Env, CalendarGatekeeperPro
 
   async #graph<T>(op: (api: GraphApi) => Promise<T>, replayable: boolean): Promise<T> {
     await this.#user.get();
-    return await this.#creds.run(creds => op(new GraphApi(creds.accessToken)), { replayable });
+    return await this.#creds.run(creds => withGraph(creds.accessToken, op), { replayable });
   }
 }

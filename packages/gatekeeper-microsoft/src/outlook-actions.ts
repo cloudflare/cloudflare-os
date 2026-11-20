@@ -16,7 +16,7 @@ import { exchangeRefusal, isProvisional, realId } from "./binding";
 import { GraphApiError, isOutcomeUnknown, type GraphApi } from "./graph-api";
 import { VENDOR_ID } from "./microsoft-env";
 import { obsContext } from "./observability";
-import { MailApi, idPath, type GraphAddress } from "./outlook-graph";
+import { IMMUTABLE_IDS, MailApi, idPath, type GraphAddress } from "./outlook-graph";
 import { odataString } from "./outlook-query";
 import type { OutlookAccessLevel, OutlookMailboxRef } from "./outlook-scope";
 
@@ -354,7 +354,10 @@ async function findByMessageId(api: MailApi, internetMessageId: string): Promise
     api.get<{ value?: Row[] }>("/messages", {
       $filter: `internetMessageId eq ${odataString(internetMessageId)}`, $select: "id,isDraft,parentFolderId,changeKey", $top: 10,
     }),
-    api.get<{ id?: unknown }>("/mailFolders/deleteditems", { $select: "id" }),
+    // Asked as what may answer nothing, and counted by its status: the bin is read only where a
+    // draft is weighed against it, so one that holds nothing is refused there and not here.
+    api.api.request<{ id?: unknown }, { id?: unknown }>(
+      "GET", `${api.base}/mailFolders/deleteditems`, { query: { $select: "id" }, prefer: [IMMUTABLE_IDS] }),
   ]);
   const found = (page.value ?? []).filter((row): row is Row & { id: string } => typeof row.id === "string");
   // A sent copy wins over a draft, wherever it is: it means the send happened. A draft in Deleted
@@ -423,28 +426,33 @@ async function requireSourceCovered(host: OutlookActionHost, origin: Origin): Pr
   if (origin.kind !== "new") await host.inScope({ messages: [origin.source.id] });
 }
 
+/**
+ * Reads the ID of the draft a request created. It is read inside that request, so that an answer
+ * that names no draft is counted as the error it is.
+ */
+function createdDraftId(created: { id?: unknown } | null): string {
+  if (typeof created?.id !== "string") throw new GraphApiError(502, "Outlook didn't say which draft it created.");
+  return created.id;
+}
+
 /** Creates the draft for a send or draft action: a new message, or Outlook's own reply or forward of the source. */
 async function createComposed(api: MailApi, host: OutlookActionHost, origin: Origin, message: Composed, internetMessageId?: string): Promise<string> {
   const identity = internetMessageId ? { internetMessageId } : {};
   let draftId: string;
   if (origin.kind === "new") {
-    const created = await api.request<{ id?: unknown }>("POST", "/messages", {
+    draftId = await api.request("POST", "/messages", {
       ...identity, subject: message.subject, importance: message.importance,
       body: { contentType: "HTML", content: message.html },
       toRecipients: recipientsJson(message.to), ccRecipients: recipientsJson(message.cc), bccRecipients: recipientsJson(message.bcc),
-    });
-    if (typeof created?.id !== "string") throw new GraphApiError(502, "Outlook didn't say which draft it created.");
-    draftId = created.id;
+    }, {}, createdDraftId);
   } else {
     // Outlook writes the reply or forward itself: threading headers, the quoted original, and, for a
     // forward, the original's attachments. The agent's text goes above the quote as its `comment`.
     const action = origin.kind === "reply" ? "createReply" : origin.kind === "replyAll" ? "createReplyAll" : "createForward";
-    const created = await api.request<{ id?: unknown }>("POST", `/messages/${idPath(origin.source.id)}/${action}`, {
+    draftId = await api.request("POST", `/messages/${idPath(origin.source.id)}/${action}`, {
       message: { ...identity, ...(origin.kind === "forward" ? { toRecipients: recipientsJson(message.to) } : {}) },
       comment: message.html,
-    });
-    if (typeof created?.id !== "string") throw new GraphApiError(502, "Outlook didn't say which draft it created.");
-    draftId = created.id;
+    }, {}, createdDraftId);
     // The recipients the session computed (the reply's own plus any added) and the importance.
     await api.request("PATCH", `/messages/${idPath(draftId)}`, {
       toRecipients: recipientsJson(message.to), ccRecipients: recipientsJson(message.cc), bccRecipients: recipientsJson(message.bcc),
@@ -626,10 +634,13 @@ export const definitions = {
       if (parent !== "msgfolderroot") await host.inScope({ folder: parent });
       let id: string;
       try {
-        const created = await host.graph(api => mail(api, payload.mailbox).request<{ id?: unknown }>("POST",
-          parent === "msgfolderroot" ? "/mailFolders" : `/mailFolders/${idPath(parent)}/childFolders`, { displayName: payload.name }));
-        if (typeof created?.id !== "string") throw new GraphApiError(502, "Outlook didn't say which folder it created.");
-        id = created.id;
+        // The answer is read inside the request, so that one that names no folder is counted as the error it is.
+        id = await host.graph(api => mail(api, payload.mailbox).request("POST",
+          parent === "msgfolderroot" ? "/mailFolders" : `/mailFolders/${idPath(parent)}/childFolders`, { displayName: payload.name }, {},
+          (created: { id?: unknown } | null) => {
+            if (typeof created?.id !== "string") throw new GraphApiError(502, "Outlook didn't say which folder it created.");
+            return created.id;
+          }));
       } catch (error) {
         exchangeRefusal(error, "The folder");
       }
@@ -696,18 +707,24 @@ export const definitions = {
           const box = mail(api, payload.mailbox);
           // Fenced on the key the approver's view was read at, or for a draft created by an earlier
           // action, the key this binding's last write left; a send of it would be fenced the same way.
-          const current = await box.get<{ changeKey?: unknown; isDraft?: unknown; body?: { contentType?: unknown; content?: unknown } }>(`/messages/${idPath(id)}`,
-            { $select: payload.keepsQuote ? "changeKey,isDraft,body" : "changeKey,isDraft" });
-          if (current.isDraft === false) throw new ActionApplyError("The draft has been sent, so it wasn't changed.");
-          const expected = payload.changeKey ?? host.draftVersion(id)?.changeKey;
-          if (expected === undefined || current.changeKey !== expected) {
-            throw new ActionApplyError("The draft changed after this was proposed, so it wasn't changed. Ask the agent to read it again.");
-          }
-          let html = payload.message.html;
-          if (payload.keepsQuote) {
-            if (typeof current.body?.content !== "string" || !/html/i.test(String(current.body.contentType))) throw new GraphApiError(502, "Outlook didn't return the draft's text.");
-            html = replaceOwnPart(current.body.content, html);
-          }
+          // The draft is read inside the request. One sent or changed since is refused by this
+          // action's own rule, which is no fault of the answer, so that refusal is returned and
+          // thrown below; a draft answered without the text to keep is thrown here, which counts
+          // the request as answered with what was not asked for.
+          const fenced = await box.get(`/messages/${idPath(id)}`, { $select: payload.keepsQuote ? "changeKey,isDraft,body" : "changeKey,isDraft" }, [],
+            (current: { changeKey?: unknown; isDraft?: unknown; body?: { contentType?: unknown; content?: unknown } }) => {
+              if (current.isDraft === false) return { refused: new ActionApplyError("The draft has been sent, so it wasn't changed.") };
+              const expected = payload.changeKey ?? host.draftVersion(id)?.changeKey;
+              if (expected === undefined || current.changeKey !== expected) {
+                return { refused: new ActionApplyError("The draft changed after this was proposed, so it wasn't changed. Ask the agent to read it again.") };
+              }
+              if (!payload.keepsQuote) return { expected };
+              if (typeof current.body?.content !== "string" || !/html/i.test(String(current.body.contentType))) throw new GraphApiError(502, "Outlook didn't return the draft's text.");
+              return { expected, quoted: current.body.content };
+            });
+          if ("refused" in fenced) throw fenced.refused;
+          const { expected } = fenced;
+          const html = fenced.quoted === undefined ? payload.message.html : replaceOwnPart(fenced.quoted, payload.message.html);
           await box.request("PATCH", `/messages/${idPath(id)}`, {
             subject: payload.message.subject, importance: payload.message.importance,
             body: { contentType: "HTML", content: html },
@@ -1004,10 +1021,14 @@ export async function revert(action: OutlookAction, host: OutlookActionHost): Pr
         let html = payload.before.html;
         if (payload.keepsQuote) {
           // `before` is the draft's own part alone: it goes back above the quoted original the draft has now.
-          const current = await box.find<{ body?: { content?: unknown } }>(`/messages/${idPath(id)}`, { $select: "body" });
-          if (current === null) return true;
-          if (typeof current.body?.content !== "string") throw new GraphApiError(502, "Outlook didn't return the draft's text.");
-          html = replaceOwnPart(current.body.content, html);
+          // The text is read inside the request, so that a draft answered without it is counted as the error it is.
+          const content = await box.find(`/messages/${idPath(id)}`, { $select: "body" }, (current: { body?: { content?: unknown } } | null) => {
+            if (current === null) return null;
+            if (typeof current.body?.content !== "string") throw new GraphApiError(502, "Outlook didn't return the draft's text.");
+            return current.body.content;
+          });
+          if (content === null) return true;
+          html = replaceOwnPart(content, html);
         }
         const patched = await box.request("PATCH", `/messages/${idPath(id)}`, {
           subject: payload.before.subject, importance: payload.before.importance,

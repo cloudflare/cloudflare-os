@@ -37,6 +37,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   vi.useRealTimers();
 });
 
@@ -520,6 +521,29 @@ describe("UserAccount.checkSubresourceAccess", () => {
     refreshes();
 
     expect(await observer.checkSubresourceAccess(["site/cloud-1/content/1"])).toEqual([false]);
+  });
+
+  it("throws, rather than denying, when the refreshed token is answered an outage and the sends after it get no answer", async () => {
+    // No wait between the sends of a read that is sent again.
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const { account: asked } = account();
+    const lost = new TypeError("network connection lost");
+    let sends = 0;
+    routes.unshift(url => {
+      if (url !== PAGE_1) return undefined;
+      sends += 1;
+      if (sends === 1) return new Response("refused", { status: 401 });
+      if (sends === 2) return new Response("unavailable", { status: 503 });
+      throw lost;
+    });
+    // A listing that leaves the site out denies a resource whose retrieval ends in a 401.
+    answer(RESOURCES_URL, [{ ...RESOURCE, id: "cloud-2" }]);
+    refreshes();
+
+    await expect(asked.checkSubresourceAccess(["site/cloud-1/content/1"])).rejects.toBe(lost);
+    expect(count(PAGE_1)).toBe(4);
+    expect(count(TOKEN_URL)).toBe(1);
+    expect(count(RESOURCES_URL)).toBe(0);
   });
 
   it("throws without credentials, and for an ID it can't check before asking anything", async () => {

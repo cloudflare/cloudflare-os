@@ -19,6 +19,7 @@ import type {
   GmailDraftInput, GmailDraftPatch, GmailMessageInfo, GmailReplyOptions, GmailThreadInfo,
 } from "../../src/types";
 import {containsBytes} from "../gmail-test-utils";
+import {unbindWrittenCalls, writtenCalls} from "../written-calls";
 
 // The field an approver reads under `label`, from a submitted description.
 function fieldOf(description: unknown, label: string): ActionField | undefined {
@@ -768,7 +769,10 @@ async function captureForwardSnapshot(
     instance.captureForwardSnapshot(storage.facetName!, storage.id!, storage.props!, bytes));
 }
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  unbindWrittenCalls();
+  vi.unstubAllGlobals();
+});
 
 describe("Gmail session API surface", () => {
   it("advertises scoped and mailbox session types according to the binding", async () => {
@@ -7978,5 +7982,101 @@ describe("Gmail draft dependency reconciliation", () => {
 
     expect(await values.has("pending:action:1")).toBe(false);
     expect(await values.get(`gmail:draft:${providerId}`)).toMatchObject({status: "deleted"});
+  });
+});
+
+describe("Gmail requests that an operation loops over", () => {
+  const threadId = "1a03a1e31ecc5e70";
+  const messageIds = ["1a03a1e31ecc5e7a", "1a03a1e31ecc5e7b", "1a03a1e31ecc5e7c"];
+  const batchModifyPath = "/gmail/v1/users/me/messages/batchModify";
+
+  // A mailbox whose one thread holds every message of `messageIds`, each matched by any search.
+  const mailbox = (url: URL, init: RequestInit): Response => {
+    const message = /^\/gmail\/v1\/users\/me\/messages\/([a-f0-9]+)$/.exec(url.pathname)?.[1];
+    if (message && !init.method) return json(messageMetadata(message, threadId, `<${message}@example.com>`));
+    if (url.pathname === "/gmail/v1/users/me/messages" && !init.method) {
+      // Listed a page at a time to a binding's own walk of what it matches, which asks for 500.
+      const listed = url.searchParams.get("maxResults") !== "500" ? messageIds
+        : url.searchParams.has("pageToken") ? messageIds.slice(2) : messageIds.slice(0, 2);
+      return json({
+        messages: listed.map(id => ({id, threadId})),
+        ...(listed.length === 2 ? {nextPageToken: "page-2"} : {}),
+      });
+    }
+    if (url.pathname === `/gmail/v1/users/me/threads/${threadId}` && !init.method) {
+      return json(threadMinimal(threadId, messageIds));
+    }
+    if (url.pathname === "/gmail/v1/users/me/labels" && !init.method) return json({labels: []});
+    throw new Error(`Unexpected request: ${url}`);
+  };
+  // The reads of every message of `messageIds`, written as one point.
+  const messageReads = [["google-gmail", "messages.get", "success", 200, messageIds.length]];
+
+  it("writes the reads a cursor's page makes of its entries as one point", async () => {
+    const {gatekeeper} = actionHarness(mailbox);
+    const session = await gatekeeper.startSession(approvalQueue());
+    const written = writtenCalls();
+
+    const entries = await (await session.searchMessages("anything")).next();
+
+    expect(entryIds(entries)).toEqual(messageIds);
+    expect(written.of("messages.get")).toEqual(messageReads);
+  });
+
+  it("writes the reads that open and summarize a restricted thread as one point each", async () => {
+    const {gatekeeper} = actionHarness(mailbox, {searchQuery: "from:sender@example.com"});
+    const session = await gatekeeper.startSession(approvalQueue());
+    const written = writtenCalls();
+
+    // Opening the thread walks the pages of what the binding matches, and reads each admitted
+    // message once, to check the thread it is in.
+    const thread = await session.getThread(threadId);
+    expect(written.of("messages.list")).toEqual([["google-gmail", "messages.list", "success", 200, 2]]);
+    expect(written.of("messages.get")).toEqual(messageReads);
+
+    // The summary opens the thread again, and then reads each admitted message for itself.
+    written.drop();
+    await expect(thread.getMetadata()).resolves.toMatchObject({id: threadId, messageCount: 3});
+    expect(written.of("messages.get")).toEqual([...messageReads, ...messageReads]);
+  });
+
+  it("writes the reads that filter a thread's messages by participant as one point", async () => {
+    const {gatekeeper} = actionHarness(mailbox);
+    const session = await gatekeeper.startSession(approvalQueue());
+    const thread = await session.getThread(threadId);
+    const written = writtenCalls();
+
+    // Nobody the messages name, so that no message is read again as one found.
+    await expect(thread.messagesVisibleTo("nobody@example.com")).resolves.toEqual([]);
+
+    expect(written.of("messages.get")).toEqual(messageReads);
+  });
+
+  it("writes the reads that find which messages of a retried mutation are left as one point", async () => {
+    const [gone, ...left] = messageIds;
+    const {gatekeeper, storage} = actionHarness((url, init) => {
+      if (url.pathname === batchModifyPath && init.method === "POST") {
+        const {ids} = JSON.parse(String(init.body)) as {ids: string[]};
+        return ids.includes(gone) ? json({error: "missing"}, 404) : new Response(null, {status: 204});
+      }
+      if (url.pathname === `/gmail/v1/users/me/messages/${gone}`) return json({error: "missing"}, 404);
+      return mailbox(url, init);
+    });
+    storage.kv.put("pending:action:1", {
+      type: "messageMutation", operation: "markRead", target: {kind: "messages", messageIds},
+    });
+    storage.kv.put("gmail:applying:1", Date.now());
+    const written = writtenCalls();
+
+    await gatekeeper.applyAction(1);
+
+    // The account's identity is read before the action is applied. Each read is counted once its
+    // answer has been read, and a refusal's explanation takes the longer to read.
+    expect(written().filter(([service]) => service === "google-gmail")).toEqual([
+      ["google-gmail", "messages.batchModify", "error", 404, 1],
+      ["google-gmail", "messages.get", "success", 200, left.length],
+      ["google-gmail", "messages.get", "error", 404, 1],
+      ["google-gmail", "messages.batchModify", "success", 204, 1],
+    ]);
   });
 });

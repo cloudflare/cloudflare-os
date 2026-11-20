@@ -3,6 +3,8 @@
 This package provides Supabase integration for Gadgets via the [Supabase Management
 API](https://supabase.com/docs/reference/api/introduction), using OAuth2.
 
+`src/supabase-api.ts` sends every request through one upstream client, whose calls are counted as [subservice metrics](../observability/README.md#subservice-calls) under the source `gatekeeper.supabase.api`: a Management API request under its name in the route tree of [`src/supabase-upstream.ts`](src/supabase-upstream.ts), a token request under `token.exchange`, `token.refresh` or `token.revoke`.
+
 It exposes two resource granularities:
 
 - **Project** (`https://supabase.com/dashboard/project/:ref`) — the recommended unit. A project is a

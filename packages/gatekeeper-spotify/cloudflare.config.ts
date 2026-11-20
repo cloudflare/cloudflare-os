@@ -5,7 +5,7 @@ import {
 export default defineGadgetsWorker({
   name: "gatekeeper-spotify",
   entrypoint: ".wrangler/validate/src/spotify.ts",
-  compatibilityFlags: ["allow_irrevocable_stub_storage"],
+  compatibilityFlags: ["allow_irrevocable_stub_storage", "nodejs_als"],
   observability: OBSERVABILITY,
 });
 

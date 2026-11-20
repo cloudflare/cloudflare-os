@@ -18,6 +18,7 @@ import { GmailApi, GmailApiError } from "./google-api";
 import { obsContext } from "./observability";
 import type { PushHooksEnv } from "./pubsub-push";
 import type { GmailMessageHook } from "./types";
+import { googleUpstream } from "./upstream";
 
 const logger = obsContext.createLogger({ component: "gatekeeper.google.gmail-hooks", vendorId: "google" });
 
@@ -227,77 +228,79 @@ export class GmailHookDriver extends DurableObject<Env> {
    * has been offered every record in `(since, cursor]`.
    */
   async #sync(): Promise<void> {
-    const kv = this.ctx.storage.kv;
-    const now = Date.now();
-    const startedSyncAt = kv.get<number>("syncAt");
-    const startedSince = new Map(this.#registrations().map(([key, registration]) => [key, registration.since]));
-    const startedCursor = kv.get<string>("cursor");
-    try {
-      const { api, profile } = await this.#mailboxApi();
-      let next = profile.historyId;
-      let nextSyncAt = now + SAFETY_SYNC_INTERVAL_MS;
-      if (startedCursor !== undefined) {
-        try {
-          let highest: string | undefined;
-          let pageToken: string | undefined;
-          for (let pages = 0; ; pages++) {
-            if (pages === MAX_HISTORY_PAGES_PER_SYNC) {
-              // The highest record read rather than the last page's last, so an empty final page
-              // can't stall progress.
-              next = highest ?? startedCursor;
-              nextSyncAt = Date.now();
-              break;
+    return googleUpstream.summed(async () => {
+      const kv = this.ctx.storage.kv;
+      const now = Date.now();
+      const startedSyncAt = kv.get<number>("syncAt");
+      const startedSince = new Map(this.#registrations().map(([key, registration]) => [key, registration.since]));
+      const startedCursor = kv.get<string>("cursor");
+      try {
+        const { api, profile } = await this.#mailboxApi();
+        let next = profile.historyId;
+        let nextSyncAt = now + SAFETY_SYNC_INTERVAL_MS;
+        if (startedCursor !== undefined) {
+          try {
+            let highest: string | undefined;
+            let pageToken: string | undefined;
+            for (let pages = 0; ; pages++) {
+              if (pages === MAX_HISTORY_PAGES_PER_SYNC) {
+                // The highest record read rather than the last page's last, so an empty final page
+                // can't stall progress.
+                next = highest ?? startedCursor;
+                nextSyncAt = Date.now();
+                break;
+              }
+              const page = await api.listMessagesAdded(startedCursor, pageToken);
+              const registrations = this.#registrations();
+              for (const record of page.records) {
+                for (const message of record.messages) this.#enqueue(registrations, record.id, message);
+                if (highest === undefined || BigInt(record.id) > BigInt(highest)) highest = record.id;
+              }
+              if (!page.nextPageToken) {
+                next = page.historyId;
+                break;
+              }
+              pageToken = page.nextPageToken;
             }
-            const page = await api.listMessagesAdded(startedCursor, pageToken);
-            const registrations = this.#registrations();
-            for (const record of page.records) {
-              for (const message of record.messages) this.#enqueue(registrations, record.id, message);
-              if (highest === undefined || BigInt(record.id) > BigInt(highest)) highest = record.id;
-            }
-            if (!page.nextPageToken) {
-              next = page.historyId;
-              break;
-            }
-            pageToken = page.nextPageToken;
+          } catch (error) {
+            if (!(error instanceof GmailApiError && error.status === 404)) throw error;
+            // Mail that arrived in the gap is not delivered.
+            logger.warn("Gmail history expired; watching from now", { event: "gmail.hooks.history.expired" });
+            next = profile.historyId;
+            nextSyncAt = now + SAFETY_SYNC_INTERVAL_MS;
           }
-        } catch (error) {
-          if (!(error instanceof GmailApiError && error.status === 404)) throw error;
-          // Mail that arrived in the gap is not delivered.
-          logger.warn("Gmail history expired; watching from now", { event: "gmail.hooks.history.expired" });
-          next = profile.historyId;
-          nextSyncAt = now + SAFETY_SYNC_INTERVAL_MS;
+          // Every request takes the connection's current token, so a reconnect to another Google
+          // account during the read would have read that account's history instead.
+          if ((await api.getProfile()).emailAddress !== profile.emailAddress) {
+            throw new Error("The connection changed Google accounts while reading Gmail history.");
+          }
         }
-        // Every request takes the connection's current token, so a reconnect to another Google
-        // account during the read would have read that account's history instead.
-        if ((await api.getProfile()).emailAddress !== profile.emailAddress) {
-          throw new Error("The connection changed Google accounts while reading Gmail history.");
-        }
-      }
 
-      const registrations = this.#registrations();
-      if (registrations.length === 0) return;
-      for (const [key, registration] of registrations) {
-        // Enabled during this sync, so not offered the pages read before it existed.
-        if (startedSince.get(key) === registration.since) continue;
-        if (BigInt(registration.since) < BigInt(next)) {
-          next = registration.since;
-          nextSyncAt = Date.now();
+        const registrations = this.#registrations();
+        if (registrations.length === 0) return;
+        for (const [key, registration] of registrations) {
+          // Enabled during this sync, so not offered the pages read before it existed.
+          if (startedSince.get(key) === registration.since) continue;
+          if (BigInt(registration.since) < BigInt(next)) {
+            next = registration.since;
+            nextSyncAt = Date.now();
+          }
+        }
+        kv.put("cursor", next);
+        // A push or an enable during the sync set its own time, which must stand.
+        if (kv.get("syncAt") === startedSyncAt) kv.put("syncAt", nextSyncAt);
+      } catch (error) {
+        const changed = error instanceof MailboxChangedError;
+        if (changed) {
+          logger.error("Gmail hooks' mailbox changed address", { event: "gmail.hooks.mailbox.changed" });
+        } else {
+          logger.warn("failed to read new Gmail history", { event: "gmail.hooks.sync.failed", error });
+        }
+        if (kv.get("syncAt") === startedSyncAt) {
+          kv.put("syncAt", Date.now() + (changed ? SAFETY_SYNC_INTERVAL_MS : SYNC_RETRY_MS));
         }
       }
-      kv.put("cursor", next);
-      // A push or an enable during the sync set its own time, which must stand.
-      if (kv.get("syncAt") === startedSyncAt) kv.put("syncAt", nextSyncAt);
-    } catch (error) {
-      const changed = error instanceof MailboxChangedError;
-      if (changed) {
-        logger.error("Gmail hooks' mailbox changed address", { event: "gmail.hooks.mailbox.changed" });
-      } else {
-        logger.warn("failed to read new Gmail history", { event: "gmail.hooks.sync.failed", error });
-      }
-      if (kv.get("syncAt") === startedSyncAt) {
-        kv.put("syncAt", Date.now() + (changed ? SAFETY_SYNC_INTERVAL_MS : SYNC_RETRY_MS));
-      }
-    }
+    });
   }
 
   /** Queue one added message for each hook that watches for it. */

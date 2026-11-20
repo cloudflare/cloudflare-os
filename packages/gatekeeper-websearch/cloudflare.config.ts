@@ -5,7 +5,7 @@ import {
 
 export default defineGadgetsWorker({
   name: "gatekeeper-websearch",
-  compatibilityFlags: ["allow_irrevocable_stub_storage"],
+  compatibilityFlags: ["allow_irrevocable_stub_storage", "nodejs_als"],
   entrypoint: ".wrangler/validate/src/worker.ts",
   observability: OBSERVABILITY,
   env: {

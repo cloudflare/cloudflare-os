@@ -1,13 +1,15 @@
 // The only place the gatekeeper talks HTTP to PagerDuty's REST API. One request carries the bearer
 // token, PagerDuty's versioned `Accept` header and, on writes, the `From` header naming the
-// connected user; it has a timeout and a capped body read, never follows a redirect, and turns a
-// non-2xx answer into a `PagerDutyApiError`.
+// connected user; it is sent through the gatekeeper's upstream client (`pagerdutyUpstream`), which
+// times it, follows no redirect and counts it, has a capped body read, and turns a non-2xx answer
+// into a `PagerDutyApiError`.
 
 import { HttpError } from "@gadgets/gatekeeper-kit/http-errors";
 import { readTextCapped } from "@gadgets/gatekeeper-kit/response-body";
+import type { CallAnswer } from "@gadgets/gatekeeper-kit/upstream";
 import { apiOrigin, type Region } from "./pagerduty-env";
+import { pagerdutyUpstream, rateLimitResetSeconds, rateLimitSpent } from "./pagerduty-upstream";
 
-const REQUEST_TIMEOUT_MS = 30_000;
 /** A page of 100 incidents with their references is well under this. */
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 /** PagerDuty's largest page. */
@@ -62,6 +64,14 @@ export function isRefusal(error: unknown): error is PagerDutyApiError {
   return error instanceof PagerDutyApiError && error.status < 500 && error.status !== 401 && error.status !== 429;
 }
 
+/**
+ * What a caller requires of a success's body, beyond its being JSON, for the request to have got
+ * what it was sent for: the check the caller rejects the answer by. A body it refuses, or throws
+ * on, is counted as an error of the call with the reason `api`. The request returns the body
+ * either way: the caller is the one that rejects it.
+ */
+export type Accepts<T> = (body: T) => boolean;
+
 /** One page of a classic offset listing. */
 export type Page<T> = { items: T[]; more: boolean };
 
@@ -82,7 +92,8 @@ export const scheduleListings = <W, T>(query: Query, convert: (wire: W, shiftBas
 
 /**
  * Up to `limit` rows of `sources`, walked in turn from `token`, `<source>:<offset>`, where the last
- * page stopped. The next source starts once one runs out, or reaches PagerDuty's offset cap.
+ * page stopped. The next source starts once one runs out, or reaches PagerDuty's offset cap. The
+ * requests of one walk are counted as one sum (`Upstream.summed`).
  * @throws Error for a token no walk of `sources` hands out.
  */
 export async function chainedPage<T>(api: PagerDutyApi, sources: readonly OffsetSource<T>[], token: string | undefined,
@@ -92,14 +103,16 @@ export async function chainedPage<T>(api: PagerDutyApi, sources: readonly Offset
     || offset < 0 || offset >= MAX_OFFSET) {
     throw new Error("That page has expired. Try again.");
   }
-  const items: T[] = [];
-  while (index < sources.length && items.length < limit) {
-    const page = await sources[index]!(api, offset, Math.min(MAX_LIMIT, limit - items.length, MAX_OFFSET - offset));
-    items.push(...page.items);
-    offset += page.items.length;
-    if (!page.more || page.items.length === 0 || offset >= MAX_OFFSET) [index, offset] = [index + 1, 0];
-  }
-  return { items, ...(index < sources.length ? { nextToken: `${index}:${offset}` } : {}) };
+  return await pagerdutyUpstream.summed(async () => {
+    const items: T[] = [];
+    while (index < sources.length && items.length < limit) {
+      const page = await sources[index]!(api, offset, Math.min(MAX_LIMIT, limit - items.length, MAX_OFFSET - offset));
+      items.push(...page.items);
+      offset += page.items.length;
+      if (!page.more || page.items.length === 0 || offset >= MAX_OFFSET) [index, offset] = [index + 1, 0];
+    }
+    return { items, ...(index < sources.length ? { nextToken: `${index}:${offset}` } : {}) };
+  });
 }
 
 type ErrorBody = { error?: { message?: unknown; errors?: unknown } };
@@ -107,8 +120,8 @@ type ErrorBody = { error?: { message?: unknown; errors?: unknown } };
 /** A display-safe error for a non-2xx answer. */
 function errorFor(response: Response, text: string): PagerDutyApiError {
   if (response.status === 429) {
-    const reset = Number(response.headers.get("ratelimit-reset"));
-    const wait = Number.isFinite(reset) && reset > 0 ? `in ${Math.ceil(reset)} seconds` : "shortly";
+    const reset = rateLimitResetSeconds(response.headers);
+    const wait = reset === undefined ? "shortly" : `in ${reset} seconds`;
     return new PagerDutyApiError(429, `PagerDuty is rate limiting this connection; try again ${wait}.`);
   }
   let body: ErrorBody = {};
@@ -142,42 +155,61 @@ export class PagerDutyApi {
     this.#from = from;
   }
 
-  get<T>(path: string, query: Query = {}): Promise<T> {
-    return this.#send<T>("GET", path, query);
+  /**
+   * Reads `path`.
+   * @param accepts What the caller requires of the body, by which the read is counted (`Accepts`).
+   */
+  get<T>(path: string, query: Query = {}, accepts?: Accepts<T>): Promise<T> {
+    return this.#send<T>("GET", path, query, undefined, accepts);
   }
 
-  /** A change, attributed by `From` to the connected user. */
-  write<T = unknown>(method: "POST" | "PUT" | "DELETE", path: string, body?: unknown): Promise<T> {
+  /**
+   * A change, attributed by `From` to the connected user.
+   * @param accepts What the caller requires of the answer's body, by which the change is counted
+   * (`Accepts`).
+   */
+  write<T = unknown>(method: "POST" | "PUT" | "DELETE", path: string, body?: unknown, accepts?: Accepts<T>): Promise<T> {
     if (!this.#from) throw new Error("A PagerDuty write needs the connected user's email.");
-    return this.#send<T>(method, path, {}, body);
+    return this.#send<T>(method, path, {}, body, accepts);
   }
 
   /**
    * Schedule `id`, read without parameters from the API of its generation, and whether it is
    * shift-based. v3 is asked first, as PagerDuty recommends: it answers 400 for a layer-based
    * schedule, which v2 then serves.
+   * @param accepts What the caller requires of the schedule's body, by which the read that
+   * answered with it is counted (`Accepts`).
    */
-  async schedule<T>(id: string): Promise<{ body: T; shiftBased: boolean }> {
+  async schedule<T>(id: string, accepts?: Accepts<T>): Promise<{ body: T; shiftBased: boolean }> {
     try {
-      return { body: await this.get<T>(schedulePath(id, true)), shiftBased: true };
+      return { body: await this.get<T>(schedulePath(id, true), {}, accepts), shiftBased: true };
     } catch (error) {
       if (!(error instanceof PagerDutyApiError && error.status === 400)) throw error;
     }
-    return { body: await this.get<T>(schedulePath(id, false)), shiftBased: false };
+    return { body: await this.get<T>(schedulePath(id, false), {}, accepts), shiftBased: false };
   }
 
-  /** The object `id` of `kind`, under a key named for its kind; a schedule of either generation. */
-  async object(kind: keyof typeof OBJECT_PATHS | "schedule", id: string): Promise<Record<string, unknown>> {
+  /**
+   * The object `id` of `kind`, under a key named for its kind; a schedule of either generation.
+   * @param accepts What the caller requires of the body, by which the read is counted (`Accepts`).
+   */
+  async object(kind: keyof typeof OBJECT_PATHS | "schedule", id: string,
+               accepts?: Accepts<Record<string, unknown>>): Promise<Record<string, unknown>> {
     return kind === "schedule"
-      ? (await this.schedule<Record<string, unknown>>(id)).body
-      : await this.get<Record<string, unknown>>(`${OBJECT_PATHS[kind]}${id}`);
+      ? (await this.schedule<Record<string, unknown>>(id, accepts)).body
+      : await this.get<Record<string, unknown>>(`${OBJECT_PATHS[kind]}${id}`, {}, accepts);
   }
 
-  /** One page of the listing at `path`, whose rows PagerDuty returns under `key`. */
+  /**
+   * One page of the listing at `path`, whose rows PagerDuty returns under `key`. A page whose body
+   * holds no list there is counted as an error of the call.
+   * @throws Error for a body that holds no list under `key`.
+   */
   async page<T>(path: string, key: string, query: Query, offset: number, limit: number): Promise<Page<T>> {
-    const body = await this.get<Record<string, unknown>>(path, { ...query, offset, limit });
-    const items = body[key];
-    if (!Array.isArray(items)) throw new Error(`PagerDuty's listing of ${key} was malformed.`);
+    const body = await this.get<Record<string, unknown>>(path, { ...query, offset, limit },
+      listed => rowsOf(listed, key) !== undefined);
+    const items = rowsOf(body, key);
+    if (!items) throw new Error(`PagerDuty's listing of ${key} was malformed.`);
     return { items: items as T[], more: body.more === true };
   }
 
@@ -186,7 +218,7 @@ export class PagerDutyApi {
     return (await chainedPage<T>(this, [(api, offset, limit) => api.page<T>(path, key, query, offset, limit)], undefined, max)).items;
   }
 
-  async #send<T>(method: string, path: string, query: Query, body?: unknown): Promise<T> {
+  async #send<T>(method: string, path: string, query: Query, body?: unknown, accepts?: Accepts<T>): Promise<T> {
     const url = new URL(path, this.#origin);
     for (const [name, value] of Object.entries(query)) {
       if (value === undefined) continue;
@@ -199,36 +231,92 @@ export class PagerDutyApi {
     };
     if (method !== "GET") headers.From = this.#from!;
     if (body !== undefined) headers["Content-Type"] = "application/json";
-    let response: Response;
+    // What reading an answer threw, which is thrown as it is: anything else is the request not
+    // reaching PagerDuty, or PagerDuty not answering in time.
+    let unread: unknown;
     try {
-      response = await fetch(url.toString(), {
+      const read = await pagerdutyUpstream.read<{ value: T } | { lost: unknown }>(url.toString(), {
         method,
         headers,
         body: body === undefined ? undefined : JSON.stringify(body),
-        redirect: "manual",
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      });
+      }, async response => {
+        try {
+          return { value: await readAnswer<T>(response) };
+        } catch (error) {
+          unread = error;
+          // The client asks again for a success whose body its timeout cut off. Not for one that
+          // spent the rate limit: a request sent before the limit resets is refused, and that
+          // refusal would be thrown in place of this failure. It is handed on, counted as the
+          // client would count it, and thrown.
+          if (!response.ok || !rateLimitSpent(response.headers)) throw error;
+          void response.body?.cancel().catch(() => undefined);
+          return { lost: error };
+        }
+      }, answered => "lost" in answered
+        ? { outcome: "error", reason: timedOut(answered.lost) ? "timeout" : "parse" }
+        : countedAs(answered.value, accepts));
+      if ("lost" in read) throw read.lost;
+      return read.value;
     } catch (error) {
+      if (unread !== undefined && error === unread) throw error;
       const timedOut = error instanceof DOMException && error.name === "TimeoutError";
       throw new Error(timedOut ? "PagerDuty did not answer in time; please try again." : "Could not reach PagerDuty; please try again.",
         { cause: error });
     }
-    if (response.status >= 300 && response.status < 400) {
-      await response.body?.cancel();
-      throw new PagerDutyApiError(response.status, "PagerDuty answered with an unexpected redirect.");
-    }
-    let text: string;
-    try {
-      text = await readTextCapped(response, MAX_RESPONSE_BYTES);
-    } catch (error) {
-      throw new Error("PagerDuty's response could not be read; please try again.", { cause: error });
-    }
-    if (!response.ok) throw errorFor(response, text);
-    if (!text) return undefined as T;
-    try {
-      return JSON.parse(text) as T;
-    } catch (error) {
-      throw new Error("PagerDuty answered with a response that is not JSON.", { cause: error });
-    }
+  }
+}
+
+// Whether what reading an answer threw is a timeout, or was caused by one.
+function timedOut(error: unknown): boolean {
+  const named = (thrown: unknown) => thrown instanceof DOMException && thrown.name === "TimeoutError";
+  return named(error) || (error instanceof Error && named(error.cause));
+}
+
+/** Reads PagerDuty's answer as its JSON body, or throws the error it stands for. */
+async function readAnswer<T>(response: Response): Promise<T> {
+  if (response.status >= 300 && response.status < 400) {
+    await response.body?.cancel();
+    throw new PagerDutyApiError(response.status, "PagerDuty answered with an unexpected redirect.");
+  }
+  let text: string;
+  try {
+    text = await readTextCapped(response, MAX_RESPONSE_BYTES);
+  } catch (error) {
+    throw new Error("PagerDuty's response could not be read; please try again.", { cause: error });
+  }
+  if (!response.ok) throw errorFor(response, text);
+  if (!text) return undefined as T;
+  try {
+    return JSON.parse(text) as T;
+  } catch (error) {
+    throw new Error("PagerDuty answered with a response that is not JSON.", { cause: error });
+  }
+}
+
+/** The rows a listing's body holds under `key`, or undefined for a body that holds no list there. */
+function rowsOf(body: Record<string, unknown>, key: string): unknown[] | undefined {
+  const items = body[key];
+  return Array.isArray(items) ? items : undefined;
+}
+
+/**
+ * How a success is counted where its status alone does not say. PagerDuty answers a batch of
+ * schedule overrides with a 201 holding a result for each, with a status of its own, and one it
+ * refused is an error of the call. So is a body the caller's own check rejects (`Accepts`): a
+ * check that throws on a body rejects it, as its caller then does.
+ */
+function countedAs<T>(body: T, accepts?: Accepts<T>): CallAnswer | undefined {
+  const refused = Array.isArray(body) && body.some((result: unknown) =>
+    typeof result === "object" && result !== null && "status" in result
+    && typeof result.status === "number" && result.status >= 400);
+  return refused || (accepts !== undefined && !accepted(accepts, body)) ? { outcome: "error", reason: "api" } : undefined;
+}
+
+/** Whether `accepts` takes `body`: a check that throws on it does not. */
+function accepted<T>(accepts: Accepts<T>, body: T): boolean {
+  try {
+    return accepts(body);
+  } catch {
+    return false;
   }
 }

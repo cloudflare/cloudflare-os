@@ -22,6 +22,7 @@ import { diffTextLines, type GitDiffHunk } from "@gadgets/gatekeeper-kit/git-dif
 import type { ProvisionalIds } from "@gadgets/gatekeeper-kit/simulation";
 import { isProvisional, realId } from "./binding";
 import { GraphApiError, isOutcomeUnknown, type GraphApi } from "./graph-api";
+import { graphUpstream } from "./graph-upstream";
 import { ITEM_SELECT, parseDriveItem, parseListItem, parseVersion, parsePage } from "./graph-parse";
 import { VENDOR_ID } from "./microsoft-env";
 import { obsContext } from "./observability";
@@ -268,26 +269,62 @@ async function calculateWorkbook(host: Pick<SharePointActionHost, "graph">, ref:
   }
 }
 
+/**
+ * What an action refuses a file with whose format is not the one it was proposed for, or cannot be told.
+ * @param left What was not done to the file: `replaced`, `renamed` or `copied`.
+ */
+function reformatted(left: string): ActionApplyError {
+  return new ActionApplyError(`The file has been renamed into another format since this was proposed, so it wasn't ${left}. Ask the agent to read it again.`);
+}
+
+/**
+ * Reads the name of the file a request asked for, inside that request, so that a file answered
+ * without one is counted as the error it is.
+ * @param left What the action leaves undone to a file answered with no name (see `reformatted`).
+ */
+function nameRead(left: string): (current: { name?: unknown }) => string {
+  return current => {
+    if (typeof current.name !== "string") throw reformatted(left);
+    return current.name;
+  };
+}
+
+/** What a wait for a copy fails with where SharePoint says the copy finished and the folder it went to holds none by its name. */
+function copyNowhere(): ActionOutcomeUnknownError {
+  return new ActionOutcomeUnknownError("SharePoint says the copy finished, but it couldn't be found in the folder. Check there before asking for it again.");
+}
+
 /** How long an approval waits for SharePoint to finish a copy. */
 const COPY_WAIT_MS = 45_000;
 
 /**
  * Waits for a copy to finish, and returns the new file's ID. One still running at the deadline, or
  * whose progress can't be read, is an unknown outcome, not a failure: SharePoint has accepted the
- * copy, which lands regardless, so a replay would make a second one.
+ * copy, which lands regardless, so a replay would make a second one. What is left of the wait bounds
+ * each request made in it, a read of the progress and the lookup of a finished copy by its name
+ * alike, however often either is sent for want of an answer. The host's loading of a credential for
+ * a request is the account's own work, which no signal of this wait reaches.
  */
 async function awaitCopy(host: SharePointActionHost, monitor: string, landing: ItemRef & { name: string }): Promise<string> {
   const deadline = Date.now() + COPY_WAIT_MS;
   for (let wait = 500; ; wait = Math.min(wait * 2, 4_000)) {
     let progress: Awaited<ReturnType<GraphApi["copyProgress"]>>;
     try {
-      progress = await host.graph(api => api.copyProgress(monitor), { replayable: true });
+      // A request that gets no answer is sent again, each send with a timeout of its own: the end
+      // of the wait ends them all, and the pauses between them.
+      const waited = AbortSignal.timeout(Math.max(deadline - Date.now(), 0));
+      progress = await host.graph(api => api.copyProgress(monitor, waited), { replayable: true });
       // Finished without saying where: the copy is under its name in the folder it went to.
       if (progress.status === "completed" && !progress.resourceId) {
-        const found = await host.graph(api => api.find<{ id?: unknown }>(`/drives/${landing.driveId}/items/${landing.itemId}:/${pathSegment(landing.name)}`,
-          { query: { $select: "id" } }), { replayable: true });
-        if (typeof found?.id === "string") return found.id;
-        throw new ActionOutcomeUnknownError("SharePoint says the copy finished, but it couldn't be found in the folder. Check there before asking for it again.");
+        // The ID is read inside the request, so that an item answered without one is counted as the error it is.
+        const found = await host.graph(api => api.find(`/drives/${landing.driveId}/items/${landing.itemId}:/${pathSegment(landing.name)}`,
+          { query: { $select: "id" }, signal: waited }, (item: { id?: unknown } | null) => {
+            if (item === null) return null;
+            if (typeof item.id !== "string") throw copyNowhere();
+            return item.id;
+          }), { replayable: true });
+        if (found !== null) return found;
+        throw copyNowhere();
       }
     } catch (error) {
       if (error instanceof ActionOutcomeUnknownError) throw error;
@@ -452,9 +489,9 @@ export const definitions = {
       await requireInScope(host, parent, "The folder this goes in");
       let id: string;
       try {
-        id = await host.graph(async api => parseDriveItem(await api.request<unknown>("POST", `/drives/${parent.driveId}/items/${parent.itemId}/children`, {
+        id = await host.graph(async api => (await api.request("POST", `/drives/${parent.driveId}/items/${parent.itemId}/children`, {
           body: { name: payload.name, folder: {}, "@microsoft.graph.conflictBehavior": "fail" },
-        })).id);
+        }, parseDriveItem)).id);
       } catch (error) {
         refusal(error, "The folder");
       }
@@ -491,12 +528,12 @@ export const definitions = {
       let id: string;
       let cTag: string | undefined;
       try {
-        const created = await host.graph(async api => parseDriveItem(await api.request<unknown>("PUT",
+        const created = await host.graph(api => api.request("PUT",
           `/drives/${parent.driveId}/items/${parent.itemId}:/${pathSegment(payload.name)}:/content`, {
             query: { "@microsoft.graph.conflictBehavior": "fail", $select: ITEM_SELECT },
             rawBody: bytes,
             contentType: payload.mimeType,
-          })));
+          }, parseDriveItem));
         id = created.id;
         cTag = created.cTag;
       } catch (error) {
@@ -559,14 +596,11 @@ export const definitions = {
       try {
         // The bytes were checked as the format the name said at proposal, and a rename leaves the
         // content tag alone: a file since renamed into another format isn't given them.
-        const current = await host.graph(api => api.get<{ name?: unknown }>(`/drives/${driveId}/items/${itemId}`, { query: { $select: "name" } }), { replayable: true });
-        if (typeof current.name !== "string" || extensionOf(current.name) !== extensionOf(payload.target.name)) {
-          throw new ActionApplyError("The file has been renamed into another format since this was proposed, so it wasn't replaced. Ask the agent to read it again.");
-        }
+        const current = await host.graph(api => api.get(`/drives/${driveId}/items/${itemId}`, { query: { $select: "name" } }, nameRead("replaced")), { replayable: true });
+        if (extensionOf(current) !== extensionOf(payload.target.name)) throw reformatted("replaced");
         // The current version, recorded first: it is what a revert restores.
-        previousVersionId = await host.graph(async api => parsePage(
-          await api.get<unknown>(`/drives/${driveId}/items/${itemId}/versions`, { query: { $top: 1 } }),
-          parseVersion, "version").items[0]?.id, { replayable: true });
+        previousVersionId = await host.graph(api => api.get(`/drives/${driveId}/items/${itemId}/versions`, { query: { $top: 1 } },
+          (body: unknown) => parsePage(body, parseVersion, "version").items[0]?.id), { replayable: true });
         const written = await host.graph(api => api.request<{ cTag?: unknown }>("PUT", `/drives/${driveId}/items/${itemId}/content`, {
           rawBody: bytes, contentType: payload.mimeType, ...(payload.ifMatch ? { ifMatch: payload.ifMatch } : {}),
         }));
@@ -609,10 +643,8 @@ export const definitions = {
         if (payload.target.kind !== "folder") {
           // The new name was checked against the file's format at proposal: one since renamed into
           // another format isn't given a name that would pass its bytes off as an unchecked Office file.
-          const current = await host.graph(api => api.get<{ name?: unknown }>(`/drives/${driveId}/items/${itemId}`, { query: { $select: "name" } }), { replayable: true });
-          if (typeof current.name !== "string" || extensionOf(current.name) !== extensionOf(payload.target.name)) {
-            throw new ActionApplyError("The file has been renamed into another format since this was proposed, so it wasn't renamed. Ask the agent to read it again.");
-          }
+          const current = await host.graph(api => api.get(`/drives/${driveId}/items/${itemId}`, { query: { $select: "name" } }, nameRead("renamed")), { replayable: true });
+          if (extensionOf(current) !== extensionOf(payload.target.name)) throw reformatted("renamed");
         }
         const renamed = await host.graph(api => api.request<{ cTag?: unknown }>("PATCH", `/drives/${driveId}/items/${itemId}`, {
           body: { name: payload.name }, ...(payload.ifMatch ? { ifMatch: payload.ifMatch } : {}),
@@ -730,13 +762,12 @@ export const definitions = {
         // The workbook API has no If-Match, so the fence is checked just before the write. It is the
         // content tag a read saw, or the eTag an agent passed as `ifUnchanged`, as Graph's If-Match takes either.
         if (payload.ifMatch) {
-          const current = await host.graph(async api => parseDriveItem(await api.get<unknown>(`/drives/${driveId}/items/${itemId}`,
-            { query: { $select: ITEM_SELECT } })), { replayable: true });
+          const current = await host.graph(api => api.get(`/drives/${driveId}/items/${itemId}`,
+            { query: { $select: ITEM_SELECT } }, parseDriveItem), { replayable: true });
           if (current.cTag !== payload.ifMatch && current.eTag !== payload.ifMatch) throw changedSince("The workbook");
         }
-        previousVersionId = await host.graph(async api => parsePage(
-          await api.get<unknown>(`/drives/${driveId}/items/${itemId}/versions`, { query: { $top: 1 } }),
-          parseVersion, "version").items[0]?.id, { replayable: true });
+        previousVersionId = await host.graph(api => api.get(`/drives/${driveId}/items/${itemId}/versions`, { query: { $top: 1 } },
+          (body: unknown) => parsePage(body, parseVersion, "version").items[0]?.id), { replayable: true });
         const written = await host.graph(api => api.request<{ formulas?: unknown }>("PATCH",
           `/drives/${driveId}/items/${itemId}/workbook/worksheets/${encodeURIComponent(payload.sheetId)}/range(address='${payload.address}')`, {
             body: { formulas: payload.values.map(row => row.map(value => value ?? "")) },
@@ -779,14 +810,12 @@ export const definitions = {
         // The copy's name was checked against the source's format at proposal, and the copy takes
         // the source's current bytes: a source since renamed into another format isn't copied under
         // a name that would pass them off as an unchecked Office file.
-        const current = await host.graph(api => api.get<{ name?: unknown }>(`/drives/${driveId}/items/${itemId}`, { query: { $select: "name" } }), { replayable: true });
-        if (typeof current.name !== "string" || extensionOf(current.name) !== extensionOf(payload.source.name)) {
-          throw new ActionApplyError("The file has been renamed into another format since this was proposed, so it wasn't copied. Ask the agent to read it again.");
-        }
+        const current = await host.graph(api => api.get(`/drives/${driveId}/items/${itemId}`, { query: { $select: "name" } }, nameRead("copied")), { replayable: true });
+        if (extensionOf(current) !== extensionOf(payload.source.name)) throw reformatted("copied");
         const monitor = await host.graph(api => api.startCopy(`/drives/${driveId}/items/${itemId}/copy`,
           { parentReference: { driveId: parent.driveId, id: parent.itemId }, name: payload.name },
           { "@microsoft.graph.conflictBehavior": "fail" }));
-        createdId = await awaitCopy(host, monitor, { driveId: parent.driveId, itemId: parent.itemId, name: payload.name });
+        createdId = await graphUpstream.summed(() => awaitCopy(host, monitor, { driveId: parent.driveId, itemId: parent.itemId, name: payload.name }));
       } catch (error) {
         refusal(error, "The file");
       }
@@ -815,8 +844,8 @@ export const definitions = {
     apply: async (payload, host) => {
       let created: { id: string; eTag?: string };
       try {
-        created = await host.graph(async api => listItemTag(await api.request<unknown>("POST",
-          `/sites/${payload.list.siteId}/lists/${payload.list.listId}/items`, { body: { fields: payload.fields } })));
+        created = await host.graph(api => api.request("POST",
+          `/sites/${payload.list.siteId}/lists/${payload.list.listId}/items`, { body: { fields: payload.fields } }, listItemTag));
       } catch (error) {
         // Nothing identifies the row for a retry to find, so one that may have been added isn't added again.
         if (isOutcomeUnknown(error)) throw new ActionOutcomeUnknownError("SharePoint may have added the item before the connection dropped. Check the list before trying again.");
@@ -1073,9 +1102,10 @@ export async function revert(action: SharePointAction, host: SharePointActionHos
         return { message: "SharePoint didn't say which version the item was created at, so it wasn't deleted. Delete it in SharePoint if you need to.", canRetry: false };
       }
       const path = `/sites/${payload.list.siteId}/lists/${payload.list.listId}/items/${payload.createdId}`;
-      const current = await host.graph(api => api.find<unknown>(path), { replayable: true });
+      // The item is read inside the request, so that one answered without its ID is counted as the error it is.
+      const current = await host.graph(api => api.find(path, {}, (body: unknown) => body === null ? null : listItemTag(body)), { replayable: true });
       if (current === null) return;
-      if (listItemTag(current).eTag !== payload.createdETag) {
+      if (current.eTag !== payload.createdETag) {
         return { message: "The item has been changed since it was created, so it wasn't deleted. Delete it in SharePoint if you need to.", canRetry: false };
       }
       await host.graph(api => api.request("DELETE", path, { allow: [404] }), { replayable: true });
