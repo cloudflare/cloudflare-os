@@ -39,7 +39,7 @@ export const PendingChangeGroupRow = ({
   onToggle,
   actions,
   bulk,
-  onPreview,
+  preview,
 }: {
   group: PendingChangeGroup
   vendorId?: string
@@ -52,8 +52,11 @@ export const PendingChangeGroupRow = ({
   actions: PendingChangeActions
   /** Absent for a group nothing here can resolve in bulk, such as one holding a pending creation. */
   bulk?: { onApplyAll: () => void, onDiscardAll: () => void, disabled: boolean }
-  /** Opens the connection's content beside the chat. Absent when it has none to draw. */
-  onPreview?: () => void
+  /**
+   * What `onOpen` draws beside the chat, by its name: the connection's content, or one file of a
+   * connection that reaches several. Absent when there is nothing to draw.
+   */
+  preview?: { title: string, onOpen: () => void }
 }) => {
   const autoApprovedCount = group.entries.filter(entry => isAutoApproved(entry, rules)).length
   // Nothing in this group is something the open chat asked for, so the row says so once rather
@@ -62,7 +65,7 @@ export const PendingChangeGroupRow = ({
   const allElsewhere = isFromElsewhere(group)
   // The preview button does not shrink, so in a narrow pane the badges leave the row to it: there
   // they had no room for more than their icons, and those ran under the button.
-  const badgeClass = `flex min-w-0 shrink items-center gap-1 text-[11.5px] leading-4 text-kumo-inactive ${onPreview ? '@max-xs:hidden' : ''}`
+  const badgeClass = `flex min-w-0 shrink items-center gap-1 text-[11.5px] leading-4 text-kumo-inactive ${preview ? '@max-xs:hidden' : ''}`
 
   return (
     <div className="@container border-t border-kumo-line/70 first:border-t-0">
@@ -109,12 +112,12 @@ export const PendingChangeGroupRow = ({
             </span>
           )}
         </button>
-        {onPreview && (
+        {preview && (
           <Button
             variant="secondary"
-            size="xs"
-            onClick={onPreview}
-            aria-label={`Preview ${group.title}`}
+            size="sm"
+            onClick={preview.onOpen}
+            aria-label={`Preview ${preview.title}`}
             className="relative flex-shrink-0"
           >
             Preview

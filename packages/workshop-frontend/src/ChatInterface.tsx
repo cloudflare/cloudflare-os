@@ -4723,7 +4723,7 @@ function ChatInterface({
       previewFor={group => {
         const key = previewKey(previewOf(group.gatekeeperId, group.entries[0]));
         const preview = connectionPreviews?.offered.find(offered => previewKey(offered) === key);
-        return preview && (() => connectionPreviews?.onOpen(preview));
+        return preview && { title: preview.title, onOpen: () => connectionPreviews?.onOpen(preview) };
       }}
     />
   );
