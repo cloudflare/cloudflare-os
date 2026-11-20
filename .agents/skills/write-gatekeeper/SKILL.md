@@ -55,6 +55,16 @@ Study the service's API docs. Identify:
 - Which operations are observations (read-only) vs. actions (side effects)
 - For each action, its kind (the group a user would enable together, labelled like "Edit labels") and its auto-approval verdict (see the [opt-out policy](#action-kinds-and-auto-approval))
 
+An OpenAPI description, where the service publishes one, gives paths, parameters and request bodies. It does not answer the following. Find each answer in the service's documentation and confirm it with the operator before designing the Session types; do not guess from the description:
+
+- **Which server.** A region, a data-residency host or a self-hosted URL, and whether the account or the deployment picks it.
+- **Which security scheme**, when the description lists several, and which scopes each operation needs. A description lists an operation's scopes without saying whether it needs all of them or any one.
+- **Which operation identifies the caller**, for the account's stable identity and label.
+- **How a rate limit and a rejected credential answer.** Many services rate-limit with a 403, and some answer an expired token with a 403 or a 404.
+- **Whether a 404 hides a denial**, so that "not found" can mean "not yours".
+- **How the last page is marked**: a missing link, a flag, an empty page or a missing cursor.
+- **Which path parameters a connection fixes**, such as an organization or an account. The binding supplies those and a caller never does.
+
 ### Step 2: Design the Session types
 
 Create `src/types.d.ts` defining the Session interface (and Hook interface if the service pushes events — see [Hooks](#hooks-push-notifications)).
@@ -105,6 +115,43 @@ packages/gatekeeper-<name>/
 ├── package.json
 └── tsconfig.json
 ```
+
+#### Calling the provider's API
+
+When the service publishes an OpenAPI description, generate request types from it and call the service through `createOpenAPIClient` (`@gadgets/gatekeeper-kit/http`) instead of writing a `fetch` call per endpoint. `packages/gatekeeper-pagerduty` is the worked example, and the kit's [README](../../../packages/gatekeeper-kit/README.md#schema-generation) documents the generator's flags.
+
+- **List the operations.** `openapi-operations.jsonl` lists the operations the gatekeeper calls, one JSON object per line. Choose the lines from the generator's `--list`, which prints one for every operation with its `operationId`, `method`, `path`, `tag` and `summary`, and not by reading the description, which can run to megabytes. Keep a line whole: the generator fails when its method or path is no longer the description's. Add one when the design needs it and regenerate; do not hand-write a call for an operation the description has. The generator fails for a listed operation it cannot put in the schema (a body that is not JSON, for example) and says why: take that one out of the list, write its call by hand, and say beside that call why it is not generated.
+- **Check an operation's scopes when you add it.** Its comment in the generated schema names the scopes the description declares, where it declares any (pass `--scopes-extension` for a description that keeps them in an extension, as PagerDuty's does). Compare them with the scopes the gatekeeper requests at connect; a missing one compiles and fails as a 403. Read the line, do not copy it: some descriptions list alternatives as if each were needed, and the weakest that serves is the one to request.
+- **Make one client for the API.** The generator writes one schema; create one client from its `Api`, so the transport, a scope and a read-only type are each applied once. A provider's tags arrange its documentation; they are not where a gatekeeper's authority divides.
+- **Pin the description** in the package's `generate:openapi` script: a URL that names a commit, and the document's hash in `--sha256`, which the generator requires for a URL and checks. A regeneration then changes only what you changed. Commit the generated `src/openapi/` files and never edit them.
+- **Correct the description in `openapi-patch.json`**, a JSON Patch, where it disagrees with the API. The generator refuses an entry without a `reason`; say in it what the description gets wrong and what shows it.
+- **Trust the request side more than the response side.** A description is often looser than the API: a field the API always sends can be optional, and one that can be null can lack `null`. Map each reply to your own type, checking the fields you depend on, and never return or spread a provider reply. Where a description leaves nearly every reply field optional, keep your own reply types, as PagerDuty's `Replying` does.
+- **Session code cannot write.** Refuse every method but `GET` in the `fetch` option of the client a session uses, as PagerDuty's `#exchange` refuses a write from a session, and create a client that can write only where an approved action is applied. Typing the session's client as `Client<Pick<Api, "get">>` also catches a mistake at compile time; that is a convention, not a boundary. Two exceptions need the service's documentation:
+  - A `POST` that only reads (a search or a query): declare it in a schema the session writes out, let the session's `fetch` through for that path alone, and where the body decides whether the call changes anything, narrow the body type to the reading form (`body: Query & { dry: true }`).
+  - A `GET` that changes something or returns a secret: leave it out of the session's schema.
+- **Fix what the binding fixes.** Give a session bound to one organization or project a client made with the kit's `scopeTo`, from its own pinned identifiers:
+
+  ```ts
+  const project = scopeTo(api, { "/orgs/{org}/projects/{project}": { org, project } });
+  await project.get("/orgs/{org}/projects/{project}/issues/{id}", { path: { id } });
+  ```
+
+  The result refuses a path outside its prefixes and another value for a fixed parameter, so no call can name another organization. Type a field that holds it as `ScopedClient<Api, "/orgs/{org}/projects/{project}">`. List every prefix the binding reaches, each with its own values, where a service spreads one organization over several roots. `scopeTo` covers paths only: where an operation selects the organization or project in its query or body, the session passes its pinned identifier there and never takes it from the caller.
+- **Send the credential last.** Set it in the `fetch` option, after the request's own headers, so no operation's header can replace it, and set a timeout there too: the client has none.
+
+**Failures.** The client throws `HttpError` with the status and no provider text. Classify it in one place, from what the service documents:
+
+- A status is not enough. Decide a rate limit, a rejected credential and a denial from the service's documented headers and error codes where its statuses overlap.
+- Only a definite denial means "no access" (see [the verifier pattern](#the-verifier-non-standard-method-pattern)). The kit's `isNoAccessError` and `probeAccess` take any 401, 403 or 404 for one, so use them alone only where the service's statuses mean exactly that.
+- Only a rejected credential is an auth error for `CredentialSource`. A 403 or 404 for one resource is not.
+- The provider's error text and body never go into an error an agent can read, or into a log. They can hold another user's data. Write your own message per kind of failure.
+- A 2xx can report a failure in its body, and a 2xx body can lack what its type promises. Check before you map.
+
+**Paging.** Wrap the provider's paging in one of the kit's cursors (`@gadgets/gatekeeper-kit/cursors`) and [authorize every page](../../../packages/gatekeeper-kit/USAGE.md#a-cursor-authorizes-everything-it-hands-out).
+
+- A page shorter than the requested limit is not the last page. A service can cap a page below what a call asks for, so end the walk on the service's own marker.
+- Stop at the largest offset or page count the service documents, and bound how many pages one call reads.
+- A provider's cursor, link or offset stays inside the gatekeeper's cursor object. If a continuation value must cross to the caller and come back, it is the caller's input when it returns: validate its shape, and never let it choose the host, the path or the binding's fixed parameters.
 
 #### Authorizing observations
 
@@ -199,7 +246,28 @@ Go through all the API methods and decide where to insert `submitAction()` calls
 
 - Any operation which has visible side effects on the world must call submitAction(), and must not actually apply the action until approved.
 
+- An action's payload is a type you design for the agent, not the provider's request type. The apply handler builds the request from the payload. A stored payload outlives a regeneration that changes the request type.
+- Only the code that applies an approved action creates a client that can write (see [Calling the provider's API](#calling-the-providers-api)). A read made to build an action's description goes through the session's read client.
+- A write is not replayable. After the provider was reached, a timeout leaves the outcome unknown: throw the kit's `ActionOutcomeUnknownError`, on a definition with `claimBeforeApply`, and `ActionApplyError` only when the effect is known to be absent.
+
 Study the `ApprovalQueue` API in `gatekeeper.ts` for details.
+
+#### STOP — Present the action table for review
+
+**Do not implement actions without operator approval.** These decisions are hard to change once actions ship: stored records resolve by definition name, and users' rules are stored by kind tag. Present one row per action:
+
+| Column | What to state |
+|---|---|
+| Session method | The method, or methods, that submit it. |
+| Definition name | Permanent once it ships. |
+| Kind | The tag and the label a user would enable, such as "Edit labels". |
+| `autoApprovable` | `true`; `false` with the number of the [opt-out rule](#action-kinds-and-auto-approval); or how it is computed from the payload. Check all seven rules, not only deletion. |
+| What the approver sees | The description's title and details, and the reads that build them. |
+| While pending | How reads show it before it is applied (see [Simulation](#simulation)), or the gap the agent has to know about. |
+| Second attempt and timeout | Whether applying twice is safe, and what a timeout after the provider was reached means. |
+| Revert | Whether `revertAction()` undoes it (`implementsRevert`), and what it leaves for the user to do by hand. |
+
+One provider operation can serve several actions, and one action can call several operations; the table is by action. Give an answer several actions share once.
 
 #### Action kinds and auto-approval
 
@@ -457,7 +525,13 @@ Reviews tend to stop at general correctness. The most important review is of the
   - A typed helper requires `subresources`; child capabilities, cursor pages, cache hits, empty results, and hook deliveries cannot bypass it.
   - Runtime coverage exercises denied observers, distinct permission classes, derived/empty results, cached/buffered pages, account-relative aliases and reconnect identity, and hooks where applicable; a successful build alone is not evidence of this contract.
   - Existing migrations instead preserve old checks until replaced and export complete historical requirements; do not apply the new-gatekeeper empty-history/no-op shortcut to them.
-- **Auto-approval.** Check every action's verdict against [the opt-out policy](#action-kinds-and-auto-approval) in both directions: a `false` names its rule, and nothing a rule covers is `true` unless it is a listed exception. Ask whether a blanket `false` could be computed from the payload. Flag a renamed tag or definition name, a newly `true` action added to a tag that already had a `true` one, and a `getAutoApprovableActions()` that lists a kind the binding cannot submit as `true`.
+- **Provider calls.** Check [Calling the provider's API](#calling-the-providers-api) in both directions:
+  - Session code holds no client that can write, and no session method takes a path parameter the binding fixes.
+  - No error message, log line or action description carries provider error text.
+  - Every status-based decision (denial, rejected credential, rate limit) cites what the service documents, and an indeterminate failure is never a denial.
+  - No walk ends on a short page, and nothing a caller hands back is sent to the provider unchecked.
+  - Every `openapi-patch.json` reason says what shows the description is wrong, and every call written by hand is for an operation the generator refused. The generator itself checks that each entry has a reason, that the description matches its pinned hash, and that every listed operation is in the schema.
+- **Auto-approval.** Check every action's verdict against [the opt-out policy](#action-kinds-and-auto-approval) in both directions: a `false` names its rule, and nothing a rule covers is `true` unless it is a listed exception. Ask whether a blanket `false` could be computed from the payload. Flag a renamed tag or definition name (a changed line in the package's `action-table.json`, where it has one), a newly `true` action added to a tag that already had a `true` one, and a `getAutoApprovableActions()` that lists a kind the binding cannot submit as `true`.
 
 ## Tips
 
