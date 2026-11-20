@@ -1219,21 +1219,47 @@ describe("GoogleGrantRegistry", () => {
     }
   });
 
-  // A revocation tried again asks once more, from further along, so a slow holder listed first
-  // cannot keep a later one unasked every time.
+  // A revocation tried again asks once more, from further along, so slow holders listed first
+  // cannot keep a later one unasked every time, more of them than are asked at once included.
   it("asks from further along the holders each time it is asked again", async () => {
     const google = fakeGoogle();
     const {ada} = googleAccounts();
-    const holders = await Promise.all(["first", "second"].map(name => connection(google, name, ada)));
-    const [slow] = holders.toSorted((a, b) => a.id < b.id ? -1 : 1);
+    const holders = await Promise.all(Array.from({length: 10}, (_, i) => connection(google, `h${i}`, ada)));
+    const sorted = holders.toSorted((a, b) => a.id < b.id ? -1 : 1);
+    const slow = sorted.slice(0, 9);
     const registry = registryOf(ada);
-    await slow.run((_instance, state) => { state.storage.kv.put("test:holdGrantCheck", true); });
+    for (const holder of slow) {
+      await holder.run((_instance, state) => { state.storage.kv.put("test:holdGrantCheck", true); });
+    }
     try {
       const asking = testEnv.UserAccount.newUniqueId().toString();
       expect(await registry.remove(asking, 200, 0)).toEqual({last: false, unsure: true});
-      expect(await registry.remove(asking, 200, 1)).toEqual({last: false});
+      expect(await registry.remove(asking, 200, 9)).toEqual({last: false});
     } finally {
-      await slow.run((_instance, state) => { state.storage.kv.delete("test:holdGrantCheck"); });
+      for (const holder of slow) {
+        await holder.run((_instance, state) => { state.storage.kv.delete("test:holdGrantCheck"); });
+      }
+    }
+  });
+
+  // However many slow holders are listed before it, one that answers is heard in time.
+  it("asks holders several at a time, and goes by the first that says it holds the grant", async () => {
+    const google = fakeGoogle();
+    const {ada} = googleAccounts();
+    const holders = await Promise.all(["a", "b", "c", "d"].map(name => connection(google, name, ada)));
+    const sorted = holders.toSorted((a, b) => a.id < b.id ? -1 : 1);
+    const slow = sorted.slice(0, 3);
+    const registry = registryOf(ada);
+    for (const holder of slow) {
+      await holder.run((_instance, state) => { state.storage.kv.put("test:holdGrantCheck", true); });
+    }
+    try {
+      expect(await registry.remove(testEnv.UserAccount.newUniqueId().toString(), 500, 0))
+        .toEqual({last: false});
+    } finally {
+      for (const holder of slow) {
+        await holder.run((_instance, state) => { state.storage.kv.delete("test:holdGrantCheck"); });
+      }
     }
   });
 

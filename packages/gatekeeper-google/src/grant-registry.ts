@@ -19,6 +19,9 @@ const HOLDER_PREFIX = "holder:";
 // what is left unasked then is asked again later, by the revocation it keeps (see `unsure`).
 const HOLDER_SCAN_MS = 20 * 1000;
 
+// How many holders are asked at once.
+const HOLDER_ASKS_AT_ONCE = 8;
+
 /** One Google account's grant holders; the object is named by the account's stable subject (`sub`). */
 export class GoogleGrantRegistry extends DurableObject<Env> {
   /** Records the `UserAccount` with this id as a holder of the grant. */
@@ -55,30 +58,49 @@ export class GoogleGrantRegistry extends DurableObject<Env> {
     // Holders that could not say, each with the record it was asked under: passed over, so that
     // one listed after them can still say it holds the grant.
     let unknown = new Map<string, string | boolean>();
-    // Holders can be recorded while one is asked, so the list is read afresh after each answer,
+    // Holders can be recorded while they are asked, so the list is read afresh after each round,
     // and "none left" is answered only straight after a read that found none.
     for (;;) {
       let listed = [...kv.list<string | boolean>({ prefix: HOLDER_PREFIX })];
       let first = listed.length === 0 ? 0 : startAt % listed.length;
-      let holder = [...listed.slice(first), ...listed.slice(0, first)]
-          .find(([key, recorded]) => unknown.get(key) !== recorded);
-      if (holder === undefined) {
+      let toAsk = [...listed.slice(first), ...listed.slice(0, first)]
+          .filter(([key, recorded]) => unknown.get(key) !== recorded);
+      if (toAsk.length === 0) {
         let unsure = [...unknown].some(([key, recorded]) => kv.get<string | boolean>(key) === recorded);
         return unsure ? { last: false, unsure: true } : { last: true };
       }
-      let [key, recorded] = holder;
-      let holds = await within(this.#stillHolds(key.slice(HOLDER_PREFIX.length)), deadline);
-      if (holds === undefined) return { last: false, unsure: true };
-      // The answer stands only for the holder as it was recorded when asked. One that let go, or
-      // was recorded again, while it was asked is looked at afresh.
-      if (kv.get<string | boolean>(key) !== recorded) continue;
-      if (holds === "unknown") {
-        unknown.set(key, recorded);
-        continue;
-      }
-      if (holds) return { last: false };
-      kv.delete(key);
+      // Several at a time, so that slow holders do not keep a later one unasked, and a round ends
+      // as soon as one says it holds the grant.
+      let round = await this.#askRound(toAsk.slice(0, HOLDER_ASKS_AT_ONCE), deadline, unknown);
+      if (round === "holds") return { last: false };
+      if (round === "late") return { last: false, unsure: true };
     }
+  }
+
+  /**
+   * Asks `holders` at once whether they still hold the grant: "holds" as soon as one says it does,
+   * "late" when `deadline` passes first, else "done", with each that holds nothing dropped and each
+   * that cannot say noted in `unknown`. An answer stands only for the holder as it was recorded
+   * when asked: one that let go, or was recorded again, meanwhile is looked at in the next round.
+   */
+  #askRound(
+      holders: [string, string | boolean][], deadline: number,
+      unknown: Map<string, string | boolean>): Promise<"holds" | "late" | "done"> {
+    let kv = this.ctx.storage.kv;
+    return new Promise(resolve => {
+      let left = holders.length;
+      let late = false;
+      for (let [key, recorded] of holders) {
+        void within(this.#stillHolds(key.slice(HOLDER_PREFIX.length)), deadline).then(holds => {
+          let current = kv.get<string | boolean>(key) === recorded;
+          if (holds === undefined) late = true;
+          else if (current && holds === "unknown") unknown.set(key, recorded);
+          else if (current && holds) resolve("holds");
+          else if (current) kv.delete(key);
+          if (--left === 0) resolve(late ? "late" : "done");
+        });
+      }
+    });
   }
 
   /**
