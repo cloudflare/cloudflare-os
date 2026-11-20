@@ -150,6 +150,21 @@ describe("createOpenAPIClient", () => {
     });
     await expect(api.get("/users")).rejects.toThrow("exceeded 4 bytes");
   });
+
+  it("calls the headers and fetch of options that are a class's", async () => {
+    const requests: Request[] = [];
+    class Transport {
+      baseUrl = "https://api.example.com/v2//";
+      headers() { return { Authorization: "Bearer token" }; }
+      async fetch(request: Request) {
+        requests.push(request);
+        return Response.json([]);
+      }
+    }
+    await createOpenAPIClient<Api>(new Transport()).get("/users");
+    expect(requests[0].url).toBe("https://api.example.com/v2/users");
+    expect(requests[0].headers.get("Authorization")).toBe("Bearer token");
+  });
 });
 
 describe("scopeTo", () => {
