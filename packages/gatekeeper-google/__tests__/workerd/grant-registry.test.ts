@@ -1146,6 +1146,30 @@ describe("Google grants shared by several connections", () => {
     expect(google.revoked).toEqual(["refresh-leaving"]);
   });
 
+  // The check runs outside the account's lock, so a refresh of its own can work meanwhile.
+  it("does not take a check's refusal for dead once a refresh worked while it was out", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const google = fakeGoogle();
+    const {ada} = googleAccounts();
+    const idle = await connection(google, "idle", ada);
+    await idle.run((_instance, state) => {
+      state.storage.kv.put("accessToken", {token: "access-idle", expires: new Date(Date.now() - 1000)});
+    });
+    const leaving = await connection(google, "leaving", ada);
+    google.refreshHeld = true;
+    const disconnecting = leaving.disconnect();
+    await vi.waitFor(() => expect(google.refreshesWaiting).toBe(1), {timeout: 5000});
+    // A refresh of its own stores a new token, and the check's answer then comes back refused.
+    await idle.run((_instance, state) => {
+      state.storage.kv.put("accessToken", {token: "access-idle-new", expires: new Date(Date.now() + 3_600_000)});
+    });
+    google.refused.set("refresh-idle", null);
+    google.refreshHeld = false;
+    await disconnecting;
+    expect(google.revoked).toEqual([]);
+    expect(await idle.stored("refreshTokenDead")).toBeUndefined();
+  });
+
   it("stops counting a refused connection whose removal the registry never received", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const google = fakeGoogle();

@@ -1102,6 +1102,7 @@ export class UserAccount extends DurableObject<Env> {
    */
   async #readAccountSubject(refreshToken: string): Promise<string | null> {
     let kv = this.ctx.storage.kv;
+    let tokenBefore = kv.get<GoogleAccessToken>("accessToken")?.token;
     let { CLIENT_ID: clientId, CLIENT_SECRET: clientSecret } = this.env;
     // A refresh token Google refuses for good holds no grant: null, below.
     let dead = false;
@@ -1125,7 +1126,8 @@ export class UserAccount extends DurableObject<Env> {
           AbortSignal.timeout(GRANT_SUBJECT_TIMEOUT_MS))).sub;
     } catch (error) {
       if (!dead) throw error;
-      this.#markRefreshTokenDead(refreshToken);
+      // Refused, unless a refresh of the connection's own worked while Google was asked.
+      if (!this.#markRefreshTokenDead(refreshToken, tokenBefore)) throw error;
       return null;
     }
   }
@@ -1134,13 +1136,17 @@ export class UserAccount extends DurableObject<Env> {
   /**
    * Records `refreshToken`, while it is the one installed, as one Google refuses for good, which
    * the registry drops when it asks; and so its record of being listed there goes too, so that a
-   * refresh that works after all lists it again.
+   * refresh that works after all lists it again. Says whether it did: not once the access token
+   * stored is another than `tokenBefore`, the one stored when Google was asked, since a refresh
+   * of the connection's own then worked, outside the lock this check runs without.
    */
-  #markRefreshTokenDead(refreshToken: string): void {
+  #markRefreshTokenDead(refreshToken: string, tokenBefore: string | undefined): boolean {
     let kv = this.ctx.storage.kv;
-    if (kv.get<string>("refreshToken") !== refreshToken) return;
+    if (kv.get<string>("refreshToken") !== refreshToken) return false;
+    if (kv.get<GoogleAccessToken>("accessToken")?.token !== tokenBefore) return false;
     kv.put<boolean>(REFRESH_TOKEN_DEAD_KEY, true);
     kv.delete(GRANT_CREDENTIALS_KEY);
+    return true;
   }
 
   /**
@@ -1151,6 +1157,7 @@ export class UserAccount extends DurableObject<Env> {
    * which the registry counts as holding.
    */
   async #refreshTokenLives(refreshToken: string): Promise<boolean> {
+    let tokenBefore = this.ctx.storage.kv.get<GoogleAccessToken>("accessToken")?.token;
     let { CLIENT_ID: clientId, CLIENT_SECRET: clientSecret } = this.env;
     if (!clientId || !clientSecret) throw new Error("The Google Gatekeeper is not configured.");
     let result = await getAccessToken(refreshToken, clientId, clientSecret,
@@ -1158,8 +1165,8 @@ export class UserAccount extends DurableObject<Env> {
     // A Google Cloud session that ran out, or an admin's restriction, leaves the refresh token
     // standing, as at a mint.
     if (result.ok || result.reason !== "revoked" || isCloudSessionExpiry(result)) return true;
-    this.#markRefreshTokenDead(refreshToken);
-    return false;
+    // Refused, unless a refresh of the connection's own worked while Google was asked.
+    return !this.#markRefreshTokenDead(refreshToken, tokenBefore);
   }
 
   /**
