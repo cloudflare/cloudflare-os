@@ -22,7 +22,7 @@ import type { CutRun, RunSizes } from "./docs-runs";
  * would go on lacking a field the rendering or the model reads. What code derives of a stored
  * tab is versioned apart, by the digest of that code (`DOC_DERIVED`).
  */
-export const DOC_COPY_FORMAT_VERSION = 6;
+export const DOC_COPY_FORMAT_VERSION = 7;
 
 // ---------------------------------------------------------------------------
 // Named ranges and write markers
@@ -150,7 +150,12 @@ type Keep =
    * A map keyed by id, each value pruned to `fields`. Google refuses a selection inside such a
    * map, so it is asked for whole.
    */
-  | { readonly kind: "map"; readonly fields: Fields }
+  | {
+    readonly kind: "map";
+    readonly fields: Fields;
+    /** Absent from the copy where Google leaves it out; otherwise its absence is refused. */
+    readonly absent?: "skip";
+  }
   /**
    * Asked of Google for a reader other than the pruning, and `{}` in the copy: the named ranges,
    * of which `fetchedDoc` keeps the write markers beside the tab.
@@ -260,6 +265,8 @@ const CELL = {
   content: { kind: "parts", fields: (): Fields => BODY_ELEMENT, nested: true },
   tableCellStyle: whole(CELL_STYLE),
   ...SUGGESTIONS,
+  // Which style changes are suggested, by ID: a deletion of the cell would discard them.
+  suggestedTableCellStyleChanges: { kind: "map", fields: {}, absent: "skip" },
 } satisfies FieldsOf<TableCell>;
 
 const ROW = {
@@ -268,6 +275,7 @@ const ROW = {
   tableCells: parts(CELL),
   tableRowStyle: part({ tableHeader: value, minRowHeight: DIMENSION }),
   ...SUGGESTIONS,
+  suggestedTableRowStyleChanges: { kind: "map", fields: {}, absent: "skip" },
 } satisfies FieldsOf<TableRow>;
 
 const TABLE = {
@@ -372,6 +380,9 @@ function prunedPart(source: Part, fields: Fields): Part {
         break;
       }
       case "map":
+        // A map Google leaves out where it is empty, as a cell's suggested style changes, is left
+        // out of the copy too; the lists of a tab are always sent.
+        if (held == null && keep.absent === "skip") break;
         // `Object.fromEntries` defines each id as a key of its own, whatever the id is.
         out[field] = Object.fromEntries(
           Object.entries(held as Record<string, Part>)

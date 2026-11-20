@@ -809,7 +809,8 @@ before anything is queued:
   (a chip after a space, a dropdown beside another chip), since what Google Docs copies of them
   into the new row has not been seen, or giving text for a cell that takes a copied chip;
 - changing the rows or columns of a table that holds suggested changes to its rows, columns or
-  cells, or to those of a table inside one of its cells, since deleting a suggested row or column
+  cells (their insertion, their deletion or their style), or to those of a table inside one of its
+  cells, since deleting a suggested row or column
   would discard the suggestion, or merging or splitting its cells. The text of such a table's
   cells can still be replaced, and the
   table deleted, with a note on its approval card. A table that comes to hold suggested changes,

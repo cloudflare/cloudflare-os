@@ -136,6 +136,8 @@ export type TableRow = {
   suggestedInsertionIds?: string[];
   /** IDs of the suggestions that would delete this row. */
   suggestedDeletionIds?: string[];
+  /** The suggested changes to the row's style, by suggestion ID: the copy keeps the IDs alone. */
+  suggestedTableRowStyleChanges?: Record<string, object>;
 }
 
 /** A length; Google leaves out a magnitude of 0. Table lengths are in points (`PT`). */
@@ -199,6 +201,8 @@ export type TableCell = {
    * cells as well as the row.
    */
   suggestedDeletionIds?: string[];
+  /** The suggested changes to the cell's style, by suggestion ID: the copy keeps the IDs alone. */
+  suggestedTableCellStyleChanges?: Record<string, object>;
 }
 
 /** A paragraph (including headings, list items, etc.). */

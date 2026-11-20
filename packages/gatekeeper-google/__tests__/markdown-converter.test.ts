@@ -1788,6 +1788,18 @@ describe("Google Docs table map", () => {
       "      <p>Notes</p>\n      <p></p>\n    </td>\n");
   });
 
+  it("counts a suggested change to a row's or a cell's style as a suggestion of the table", () => {
+    let rows = [["a\n", "b\n"], ["c\n", "d\n"]];
+    let plain = buildTab([{ table: rows }]);
+    let styled = buildTab([{ table: rows }]);
+    fixtureCell(styled, 1, 1, 0).suggestedTableCellStyleChanges = { "suggest.a": {}, "suggest.b": {} };
+    (fixtureTable(styled, 1).tableRows ?? [])[0].suggestedTableRowStyleChanges = { "suggest.c": {} };
+    // The view shows none of it.
+    expect(docTabToMarkdown(styled).markdown).toBe(docTabToMarkdown(plain).markdown);
+    expect(firstTableMap(plain).suggested).toBeUndefined();
+    expect(firstTableMap(styled).suggested).toBe(3);
+  });
+
   it("marks a table that holds suggestions and counts its pinned rows", () => {
     let rows = [["a\n", "b\n"], ["c\n", "d\n"], ["e\n", "f\n"]];
     let plain = firstTableMap(buildTab([{ table: rows }]));
