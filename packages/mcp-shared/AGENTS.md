@@ -11,3 +11,7 @@ and the queued-action store. See `README.md` and each connector's README.
   portal can produce, via `MCP_PORTAL_TRUST_ANNOTATIONS`.
 - OAuth uses the official `@modelcontextprotocol/client`; always give SDK OAuth operations
   `sdkFetch(...)` so every request and redirect retains endpoint and SSRF checks.
+- Every outbound request goes through the calling gatekeeper's kit upstream (`upstream.ts`), with
+  `guardedFetch` as its `fetch` and a name from the closed lists there. The library declares no
+  upstream of its own; a new kind of request gets a name in those lists and a row in
+  `__tests__/upstream.test.ts`.

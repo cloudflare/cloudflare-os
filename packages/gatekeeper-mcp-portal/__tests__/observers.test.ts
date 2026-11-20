@@ -75,7 +75,7 @@ beforeEach(() => {
   mocks.withClient.mockReset();
   // The endpoint answers every call with one line of text.
   mocks.withClient.mockImplementation(async (...args: unknown[]) => {
-    const fn = args[3] as (client: object) => unknown;
+    const fn = args[4] as (client: object) => unknown;
     return fn({
       callTool: async () => ({ content: [{ type: "text", text: "PROJ-1" }] }),
     });

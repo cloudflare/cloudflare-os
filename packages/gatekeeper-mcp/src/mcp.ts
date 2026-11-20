@@ -53,6 +53,7 @@ import {
 } from "@gadgets/mcp-shared/scope";
 import { validateCustomEndpoint } from "@gadgets/mcp-shared/endpoint";
 import { fetchOptions } from "@gadgets/mcp-shared/fetch";
+import { mcpUpstream } from "@gadgets/mcp-shared/upstream";
 import {
   connectHandoffPageHtml,
   htmlResponse,
@@ -68,6 +69,7 @@ import { connectFormHtml } from "./connect-form.js";
 import { serverIdFromEndpoint } from "./server-id.js";
 import { assertOwnServerSubresources, serverSubresourceId } from "./server-subresources.js";
 import { mcpResourceFor, mcpResources } from "./resources.js";
+import { mcpServerUpstream } from "./upstream.js";
 import type { ConfiguratorUIOption } from "@gadgets/configurator-ui";
 import { MCP_BASE_TYPES } from "@gadgets/mcp-shared/base-types";
 import MCP_LOGO_SVG from "./mcp-logo.svg";
@@ -233,6 +235,10 @@ export class McpAccount extends McpAccountBase<Env> {
     return logger;
   }
 
+  protected [mcpUpstream]() {
+    return mcpServerUpstream;
+  }
+
   protected mintAccount(): Fetcher<GatekeeperUser> {
     const props: McpGatekeeperUserProps = { accountObjectId: this.ctx.id.toString() };
     return this.ctx.exports.GatekeeperUserImpl({ props });
@@ -304,6 +310,7 @@ export class GatekeeperUserImpl
         selected.size === 0
           ? { tools: [], truncated: false }
           : await withClient(
+            mcpServerUpstream,
             this.env,
             this.#account(),
             server.endpoint,
@@ -374,7 +381,7 @@ class McpServerConfiguratorUI extends RpcTarget implements McpServerConfigurator
   #tools(): Promise<ToolCatalog> {
     this.#toolsPromise ??= (async () => {
       const server = await this.#account.getServer();
-      return await fetchTools(this.#env, this.#account, server.endpoint);
+      return await fetchTools(mcpServerUpstream, this.#env, this.#account, server.endpoint);
     })();
     return this.#toolsPromise;
   }
@@ -441,6 +448,10 @@ export class McpGatekeeperImpl
   protected account(): ConnectionAccount {
     return this.ctx.exports.McpAccount.get(
       this.ctx.exports.McpAccount.idFromString(this.ctx.props.accountObjectId));
+  }
+
+  protected [mcpUpstream]() {
+    return mcpServerUpstream;
   }
 
   protected get trust(): ServerTrust {

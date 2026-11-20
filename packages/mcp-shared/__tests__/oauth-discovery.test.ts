@@ -6,7 +6,8 @@ import {
   startAuthorization,
 } from "@modelcontextprotocol/client";
 
-import { sdkFetch } from "../src/fetch.js";
+import { sdkFetch } from "../src/upstream.js";
+import { upstream } from "./stubs/upstream.js";
 
 function stubFetch(responses: Record<string, unknown>): string[] {
   const seen: string[] = [];
@@ -40,7 +41,7 @@ describe("SDK OAuth discovery through the guarded fetch adapter", () => {
         response_types_supported: ["code"],
       },
     });
-    const info = await discoverOAuthServerInfo(endpoint, { fetchFn: sdkFetch() });
+    const info = await discoverOAuthServerInfo(endpoint, { fetchFn: sdkFetch(upstream) });
     expect(info.authorizationServerUrl).toBe("https://auth.example.com");
     expect(seen[0]).toBe(
       "https://mcp.example.com/.well-known/oauth-protected-resource/mcp?tenant=one");
@@ -50,7 +51,7 @@ describe("SDK OAuth discovery through the guarded fetch adapter", () => {
     const seen = stubFetch({});
     const info = await discoverOAuthServerInfo("https://mcp.example.com/mcp", {
       resourceMetadataUrl: new URL("http://169.254.169.254/latest/meta-data/"),
-      fetchFn: sdkFetch(),
+      fetchFn: sdkFetch(upstream),
     });
     expect(info.authorizationServerUrl).toBe("https://mcp.example.com/");
     expect(seen).not.toContain("http://169.254.169.254/latest/meta-data/");
@@ -66,7 +67,7 @@ describe("SDK OAuth discovery through the guarded fetch adapter", () => {
       },
     });
     await expect(discoverAuthorizationServerMetadata("https://auth.example.com", {
-      fetchFn: sdkFetch(),
+      fetchFn: sdkFetch(upstream),
     })).rejects.toBeInstanceOf(IssuerMismatchError);
   });
 });

@@ -7,7 +7,6 @@
 // opt-in, since a caller forgetting to opt in is the failure mode.
 
 import { isBlockedHost } from "./endpoint.js";
-import type { FetchLike } from "@modelcontextprotocol/client";
 
 // Enough for the http->https and apex->www hops real deployments use. Discovery already tries
 // several candidate URLs, so a longer chain is more likely a loop than a working server.
@@ -97,24 +96,6 @@ export async function readTextCapped(
     offset += chunk.byteLength;
   }
   return new TextDecoder().decode(joined);
-}
-
-/** Gives SDK OAuth helpers the same redirect and response-size policy as the local MCP transport. */
-export function sdkFetch(options: FetchOptions = {}): FetchLike {
-  const operationOptions: FetchOptions = {
-    ...options,
-    deadline: options.deadline
-      ?? Date.now() + (options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS),
-  };
-  return async (url, init) => {
-    const response = await guardedFetch(String(url), init ?? {}, operationOptions);
-    const body = await readTextCapped(response);
-    return new Response(body || null, {
-      status: response.status,
-      statusText: response.statusText,
-      headers: response.headers,
-    });
-  };
 }
 
 /**

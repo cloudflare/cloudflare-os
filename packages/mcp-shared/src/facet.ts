@@ -2,6 +2,7 @@
 // identity, props, labels, trust source, and account lookup.
 
 import { DurableObject, type RpcStub } from "cloudflare:workers";
+import type { Upstream } from "@gadgets/gatekeeper-kit/upstream";
 import type {
   ActionKind,
   ApprovalQueue,
@@ -28,6 +29,7 @@ import type { McpLog } from "./log.js";
 import { DEFAULT_REQUEST_TIMEOUT_MS } from "./fetch.js";
 import { formatToolScope, scopeAllows, type ToolScope } from "./scope.js";
 import { matchesToolQuery, toolQueryTerms, MAX_SEARCH_RESULTS } from "./tool-search.js";
+import { mcpUpstream } from "./upstream.js";
 import { McpSessionBase, type McpSessionHost, type StoredAction } from "./session.js";
 import { installToolMethods } from "./session-methods.js";
 import { observerRefusalMessage } from "./sharing-policy.js";
@@ -51,9 +53,15 @@ type SessionConstructor<Session extends McpSessionBase> = new (
 const MAX_CONCURRENT_DISCOVERIES = 4;
 const MAX_QUEUED_DISCOVERIES = 32;
 
-/** Common session, catalog, action, and sharing behavior for connector-owned MCP facets. */
+/**
+ * Common session, catalog, action, and sharing behavior for connector-owned MCP facets.
+ *
+ * `Env` is a Worker's own, so it extends `Cloudflare.Env` beside what this library reads:
+ * `Gatekeeper` types a Durable Object's `env` as that, and the optional metrics bindings declared
+ * on it are no members of `ConnectionEnv`.
+ */
 export abstract class McpFacetBase<
-  Env extends ConnectionEnv,
+  Env extends ConnectionEnv & Cloudflare.Env,
   Props extends FacetProps,
   Session extends McpSessionBase,
 > extends DurableObject<Env, Props> implements Gatekeeper<Session>, McpSessionHost {
@@ -92,6 +100,9 @@ export abstract class McpFacetBase<
   /** Connector-owned account capability used for endpoint calls. */
   protected abstract account(): ConnectionAccount;
 
+  /** Supplies the connector's upstream, through which every endpoint call is sent and counted. */
+  protected abstract [mcpUpstream](): Upstream;
+
   /** Human-readable server label used in observations and action prompts. */
   abstract get serverName(): string;
 
@@ -129,6 +140,7 @@ export abstract class McpFacetBase<
       const load = (operationDeadline: number) => scopedCatalog({
         store: this.ctx.storage.kv,
         log: this.log,
+        upstream: this[mcpUpstream](),
         env: this.env,
         account: this.account(),
         endpoint: this.endpoint,
@@ -290,7 +302,7 @@ export abstract class McpFacetBase<
     fn: (client: McpClient) => Promise<T>,
     options?: WithClientOptions,
   ): Promise<T> {
-    return withClient(this.env, this.account(), this.endpoint, fn, options);
+    return withClient(this[mcpUpstream](), this.env, this.account(), this.endpoint, fn, options);
   }
 
   /** Namespaces one tool's approval kind to this facet. */

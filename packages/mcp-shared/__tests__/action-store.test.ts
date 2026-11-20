@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 
 import { ActionStore } from "../src/action-store.js";
-import { McpProtocolError, McpSessionExpiredError } from "../src/client.js";
+import { McpClient, McpProtocolError, McpSessionExpiredError } from "../src/client.js";
+import { upstream } from "./stubs/upstream.js";
 
 type TestSql = ConstructorParameters<typeof ActionStore>[0];
 
@@ -28,6 +29,10 @@ function fakeSql(): TestSql {
 
 const log = { debug() {}, info() {}, warn() {}, error() {}, with() { return log; } };
 const ok = async () => ({ content: [{ type: "text" as const, text: "done" }] });
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("ActionStore", () => {
   it("keeps a decided action available until the Gadget collects it", async () => {
@@ -377,6 +382,38 @@ describe("ActionStore", () => {
     // And the settled state is what stops a re-drive: a second apply must not call the tool again.
     await store.apply(staged.id, fn => fn({ callTool: poison } as never), log);
     expect(calls).toBe(1);
+  });
+
+  it("settles a write whose reply holds no result as applied, and sends it once", async () => {
+    // The server answered the call it was sent, so the write may have landed: the record is closed
+    // as applied with a result that says it could not be read, and a second apply sends nothing.
+    const sent: string[] = [];
+    vi.stubGlobal("fetch", async (_input: string | URL, init: RequestInit = {}) => {
+      const message = JSON.parse(String(init.body)) as { id: string; method: string };
+      sent.push(message.method);
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: message.id }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    const client = new McpClient(
+      upstream, "https://mcp.action-store-test.example/mcp", async () => null);
+    const store = new ActionStore(fakeSql());
+    const staged = store.stage("send", {});
+
+    await store.apply(staged.id, fn => fn(client), log);
+    const record = store.get(staged.id);
+    expect(record).toMatchObject({
+      state: "applied",
+      result: {
+        status: "ok", content: [],
+        text: "(The call succeeded, but its response could not be read back.)",
+      },
+    });
+    expect(record?.retryable).toBeUndefined();
+    expect(record?.error).toBeUndefined();
+
+    await store.apply(staged.id, fn => fn(client), log);
+    expect(sent).toEqual(["tools/call"]);
   });
 
   it("bounds retained results by UTF-8 bytes", async () => {

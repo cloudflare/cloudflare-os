@@ -222,6 +222,7 @@ connect their own server.
 | `src/mcp.ts` | Vendor, account DO, user, verifier, gatekeeper facet, session |
 | `src/connect-form.ts` | The endpoint prompt served during connect |
 | `src/server-id.ts` | Endpoint to display slug, for the binding name and session type |
+| `src/upstream.ts` | The upstream every request to a server goes through; its calls are counted as subservice metrics under the source `gatekeeper.mcp.api`, named by the lists in [`mcp-shared`'s `upstream`](../mcp-shared/src/upstream.ts) |
 | `src/configurator/` | The grant UI (compiled into `src/generated/`) |
 
 The MCP client, OAuth, tool classification, generated TypeScript, and the scope grammar come from

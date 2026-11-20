@@ -21,6 +21,7 @@
     "./session": "./src/session.ts",
     "./tools": "./src/tools.ts",
     "./types": "./src/types.d.ts",
+    "./upstream": "./src/upstream.ts",
     "./user": "./src/user.ts",
     "./util": "./src/util.ts"
   },

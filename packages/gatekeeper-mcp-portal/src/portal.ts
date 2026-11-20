@@ -65,6 +65,7 @@ import {
   mcpGatekeeperUserContext,
   type McpGatekeeperUserProps,
 } from "@gadgets/mcp-shared/user";
+import { mcpUpstream } from "@gadgets/mcp-shared/upstream";
 import {
   isPortalServerHidden,
   portalAuthRequiresReconnect,
@@ -79,6 +80,7 @@ import {
   isPortalToolGrantable,
   toolGrantOptions,
 } from "./config.js";
+import { portalUpstream } from "./upstream.js";
 import type { ConfiguratorUIOption } from "@gadgets/configurator-ui";
 import { MCP_BASE_TYPES } from "@gadgets/mcp-shared/base-types";
 import PORTAL_LOGO_SVG from "./portal-logo.svg";
@@ -118,7 +120,7 @@ async function listPortalServers(
   account: DurableObjectStub<McpAccount>,
   endpoint: string,
 ): Promise<PortalServerListing> {
-  const result = await withClient(env, account, endpoint,
+  const result = await withClient(portalUpstream, env, account, endpoint,
     client => client.callTool(PORTAL_LIST_SERVERS_TOOL, {}));
   if (result.isError) throw new Error("The portal could not list its upstream servers.");
   return parsePortalServers(result);
@@ -169,7 +171,7 @@ async function validatePortalScope(
 
   const listing = await tryListPortalServers(env, account, endpoint);
   if (listing === null) {
-    const portalTool = await withClient(env, account, endpoint,
+    const portalTool = await withClient(portalUpstream, env, account, endpoint,
       client => client.findTool(PORTAL_LIST_SERVERS_TOOL));
     if (!portalTool) {
       throw new Error("The configured MCP endpoint does not expose the portal server-list tool.");
@@ -181,7 +183,7 @@ async function validatePortalScope(
   let catalog: ToolIndex;
   switch (portalCatalogValidationMode(scope, servers)) {
     case "named-tools":
-      catalog = await withClient(env, account, endpoint,
+      catalog = await withClient(portalUpstream, env, account, endpoint,
         client => client.listMatchingToolIndex(
           requestedTools.size,
           tool => requestedTools.has(tool.name),
@@ -191,7 +193,7 @@ async function validatePortalScope(
       catalog = { tools: [], truncated: false };
       break;
     case "server-evidence":
-      catalog = await withClient(env, account, endpoint,
+      catalog = await withClient(portalUpstream, env, account, endpoint,
         client => client.listMatchingToolIndex(
           1,
           tool => isPortalToolGrantable(tool.name, scope.serverId),
@@ -214,7 +216,7 @@ async function listAvailablePortalServers(
   const reported = await tryListPortalServers(env, account, endpoint);
   if (reported?.complete) return reported.servers;
 
-  const index = await withClient(env, account, endpoint,
+  const index = await withClient(portalUpstream, env, account, endpoint,
     client => client.listToolIndex(MAX_PORTAL_TOOL_INDEX));
   if (!looksLikePortal(
     index.tools, { truncated: index.truncated, cap: MAX_PORTAL_TOOL_INDEX })) return [];
@@ -338,6 +340,10 @@ export class McpAccount extends McpAccountBase<Env> {
 
   protected log(): McpLog {
     return logger;
+  }
+
+  protected [mcpUpstream]() {
+    return portalUpstream;
   }
 
   protected mintAccount(): Fetcher<GatekeeperUser> {
@@ -518,7 +524,7 @@ class McpServerConfiguratorUI extends RpcTarget implements McpServerConfigurator
     if (!isValidToolName(serverId) || isPortalServerHidden(this.#env, serverId)) return [];
     if (!(await this.#portalServers()).some(server => server.id === serverId)) return [];
     const server = await this.#server();
-    const tools = await withClient(this.#env, this.#account, server.endpoint,
+    const tools = await withClient(portalUpstream, this.#env, this.#account, server.endpoint,
       client => client.listMatchingToolSummaries(
         MAX_TOOLS_PER_SERVER,
         tool => isPortalToolGrantable(tool.name, serverId),
@@ -568,6 +574,10 @@ export class McpGatekeeperImpl
   protected account(): ConnectionAccount {
     return this.ctx.exports.McpAccount.get(
       this.ctx.exports.McpAccount.idFromString(this.ctx.props.accountObjectId));
+  }
+
+  protected [mcpUpstream]() {
+    return portalUpstream;
   }
 
   protected get trust(): ServerTrust {
