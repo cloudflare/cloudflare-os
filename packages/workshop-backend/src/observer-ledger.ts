@@ -45,7 +45,7 @@ const MAX_SUBRESOURCES_TOTAL_LENGTH = 500_000;
 
 /**
  * Most observers sent to `verifyObserverAccess()` in one call, bounding the verifier fan-out each
- * call asks of the gatekeeper (gatekeeper-kit caps a binding's per-read fan-out the same way).
+ * call asks of the gatekeeper.
  */
 const CHECK_OBSERVER_BATCH_SIZE = 10;
 

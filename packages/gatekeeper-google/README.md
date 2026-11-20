@@ -53,8 +53,9 @@ You'll need to enable the Google APIs that you want to use. Currently supported:
 20. Go back to the Library, search for "BigQuery API"
 21. Click on **BigQuery API** in the results
 22. Click **Enable**
-23. For Chat, enable **Google Chat API**, plus **People API** so direct messages and group chats can be named when Chat omits a participant's name, and so a whole-account Chat connection can search the organization's directory and confirm that everyone in a conversation it starts belongs to the organization.
-24. On the Google Chat API's **Configuration** tab, set an app name, avatar URL, and description, turn off **Interactive features**, and click **Save**. Reads work without this, but Google refuses every Chat send, edit, and reaction until a Chat app is configured.
+23. To offer **Google Group** connections (mail addressed to a group, shareable with its members), enable **Cloud Identity API**. Without it, that card reports the API is off, and everything else works.
+24. For Chat, enable **Google Chat API**, plus **People API** so direct messages and group chats can be named when Chat omits a participant's name, and so a whole-account Chat connection can search the organization's directory and confirm that everyone in a conversation it starts belongs to the organization.
+25. On the Google Chat API's **Configuration** tab, set an app name, avatar URL, and description, turn off **Interactive features**, and click **Save**. Reads work without this, but Google refuses every Chat send, edit, and reaction until a Chat app is configured.
 
 The Google Drive API powers the Drive resource picker, which also chooses Docs, Sheets and Slides files, Drive discovery, and Drive scope checks. Native document, spreadsheet, or presentation content opened from a Drive binding is read through the Google Docs, Google Sheets, or Google Slides API. Direct Google Doc reads and edits still go through the Docs API, direct spreadsheet reads and edits go through the Sheets API, and direct presentation reads and edits go through the Slides API.
 
@@ -88,6 +89,8 @@ Across all resource types, the gatekeeper can request:
 - `drive.readonly` for the shared-drives grant (`https://drive.google.com/drive/shared-drives`), which lets the Drive picker list the shared drives the account belongs to, since Drive's `drives.list` accepts no narrower scope. Only the picker's **Allow access** button asks for it, by incremental consent, the first time an account opens Shared drives; once held, a reconnect asks for it again. It is private to the gatekeeper as the Office import grant is, and an account holding that grant is still asked once, since a private grant counts only once it has been asked for, not because its scopes happen to be held.
 - `drive.file` for the created-files grant (`https://drive.google.com/drive/created-files`), which lets the gatekeeper put what a creation makes where its approver chose: move a new Doc, spreadsheet or presentation out of My Drive into a folder, or make a new Drive folder. `drive.file` reaches only files this OAuth client created or the user opened or shared with it. Only the creation dialog's **Allow access** button asks for it, by incremental consent, the first time an approver picks a folder (or approves a new folder); a file kept in My Drive needs no Drive call and asks for nothing. Saving a file to Drive (see [Saving files](#saving-files)) uploads it under this grant too, and asks for it in every folder. It is private to the gatekeeper as the Office import grant is.
 - `drive` for the Drive writes grant (`https://drive.google.com/drive/writes`), which lets a Drive binding with read and write access change files (see [Drive comments](#drive-comments), [Moving and sharing](#moving-and-sharing) and [Editing Docs, Sheets and Slides](#editing-docs-sheets-and-slides)): edits, comment writes, sharing and moves need full `drive`, and `drive.file` does not reach a file picked in Drive. Every consent that asks for a Drive resource type (Google Drive, Drive Folder or Drive File) asks for it too, so a Drive account can make read and write connections without a second consent, and **Read only** in the connect dialog is how one connection is kept from changing anything. An account that declined it on Google's consent screen, or was connected without it, gets it from the Drive connect dialog's **Allow changes** action, by incremental consent; an account with no Drive resource type is never asked. Once a consent asking for it has completed, the grant is among the account's recorded grants whether or not Google granted `drive`, so every later consent for the account asks for `drive` again: a reconnect, **Allow editing**, **Allow access**, **Convert**, or granting another Google resource type. A deployment that keeps Google Drive read-only asks for it at no consent (see [Keeping Drive read-only](#keeping-drive-read-only)). One grant covers every Drive write on the account. It is private to the gatekeeper as the Office import grant is, so Workshop does not list it among an account's grants and the admin page cannot turn it off separately from the Drive resource types; a deployment turns Drive writes off with `GOOGLE_DRIVE_ACCESS` (see [Keeping Drive read-only](#keeping-drive-read-only)). The token it yields can read and write every Drive file the account can, and every Google binding of the account uses that token, so a binding's scope, its access level and the grant itself are enforced in the gatekeeper's code, when a write is queued and again when it is approved. The Drive writes a binding's session can queue are comments and replies, permission changes (`permissions.create`, `permissions.update`, `permissions.delete`), a move (`files.update` of a file's parents), and the edits of a Doc, Sheet or Slides presentation it reaches (each editor's `batchUpdate`), and no other. The grant counts only while the scopes Google last returned for the account include `drive`: a consent that comes back without it withdraws the grant, and the account keeps its read and write bindings, which go on reading while it still holds a Drive read scope and whose writes are refused until **Allow changes** succeeds again; a write queued before that stays pending when it is approved, and is posted by an approval made after. Disconnecting the Google account revokes its token and forgets its recorded grants, this one included; what the app may do is shown, and can be removed, on the Google Account's own page of third-party access. Because the gatekeeper takes `drive` to cover `drive.readonly`, `drive.file` and `spreadsheets`, an account that holds it also satisfies those scopes for grants it had already recorded: the Office import, shared-drives and created-files grants, and a Sheets grant whose `spreadsheets` scope was declined or retracted, so a spreadsheet then binds as its editable type with no **Allow editing** step, while a Docs or Slides grant still needs its own scope. A verified OAuth app must add `drive` to its consent screen, where Google words it as "See, edit, create, and delete all your Google Drive files"; it is a restricted scope.
+- `cloud-identity.groups.readonly` for the Google Group resource, its only scope. The owner's account uses it to list their groups and look the chosen one up; each member's own account uses it, on every open of a shared gadget, to show its own membership. A member is asked for nothing else, never for Gmail. Google classifies this as a sensitive scope, so a verified OAuth app must add it to its verification.
+- `gmail.readonly` for the group mail grant (`https://groups.google.com/mail`), which the owner's Google Group connections read their mail with. Private as the Office import grant is: only the Google Group dialog's **Allow access** button asks for it, by incremental consent, and an owner holding the Gmail Mailbox grant, whose scopes read mail too, is never asked.
 - `spreadsheets` to read metadata, bounded cell ranges and their formatting from directly selected spreadsheets, edit their values, sheets, rows, columns and formatting with approval, and create spreadsheets. The switch from `spreadsheets.readonly` retracted every existing Sheets grant, including one derived from `drive.readonly`: owners re-consent the next time they connect a spreadsheet, and collaborators observing an existing Sheets binding are asked to grant read-write `spreadsheets` the next time they open its workspace. A `spreadsheets` grant covers the Drive resources' `spreadsheets.readonly`.
 - `spreadsheets.readonly` to read native Sheets opened from account-wide, folder, or exact-file Drive bindings.
 - `presentations` to read, edit, and create directly selected presentations, and to render slide thumbnails; `presentations.readonly` to read and render native Slides opened from account-wide, folder, or exact-file Drive bindings. Google counts each thumbnail as an expensive read, limited to 60 a minute per user and 300 per project.
@@ -95,7 +98,7 @@ Across all resource types, the gatekeeper can request:
 - `calendar.events` to read and manage the selected calendar. Creating or changing an event nobody else is on can be auto-approved ("Add and change calendar events"). A change waits for approval when it would make the event public or otherwise widen who can see it, or when the event is an out-of-office, focus-time or other special event. Anything Google would tell attendees about, meaning an event that has or gains attendees, one organized by someone else, or one whose guest list Google hides, is "Send event invitations and updates", a separate kind a user may also opt into auto-approving, whatever `sendUpdates` is; the same visibility and special-event holds apply to it. An auto-approvable change is checked again when it applies, and fails without changing anything if the event has gained or lost guests, so that it would now fall under the other kind, or the change would now widen its visibility; the write is conditional on the version it checked, so a change made in between also fails it.
 - `calendar.events.freebusy` to check availability, which `calendar.events` does not cover. Adding it retracted every existing Calendar grant that lacks a whole-calendar scope: owners re-consent the next time they connect a calendar, and an existing binding checks availability only after its account reconnects or grants Calendar again.
 - `chat.spaces.readonly`, `chat.messages`, and `chat.memberships.readonly` for every Chat resource. A whole-account Chat connection adds `chat.users.readstate.readonly` for its unread-only search, and `chat.spaces.create` and `directory.readonly` to start direct messages and group chats with people in the connected account's Workspace directory. Starting a conversation is its own approval kind, separate from sending in an existing one, and people outside the organization can't be added to a new conversation.
-- `bigquery` for BigQuery dry-runs and queries. This is intentionally broader than `bigquery.readonly` because dry-runs use `jobs.insert`; the gatekeeper enforces read-only SQL and resource scope checks before running queries. Query jobs run in the connected project, which must grant the account `bigquery.jobs.create`; a dataset shared from a project that doesn't (a dataset-level grant never does) is connected with `?queryProject=<own-project>` on its resource URL, which runs and bills the jobs there while the data scope stays on the shared dataset.
+- `bigquery` for BigQuery dry-runs and queries. This is intentionally broader than `bigquery.readonly` because dry-runs use `jobs.insert`; the gatekeeper enforces read-only SQL and resource scope checks before running queries. Query jobs run in the connected project, which must grant the account `bigquery.jobs.create`; a dataset shared from a project that doesn't (a dataset-level grant never does) is connected with `?queryProject=<own-project>` on its resource URL, which runs and bills the jobs there while the data scope stays on the shared dataset. The configurator asks for that project only when BigQuery neither lists the data's project for the account nor accepts a dry-run job from it there, since its project list can omit a project the account may run jobs in.
 
 ### Step 4: Test Users
 
@@ -333,10 +336,77 @@ fetch; and the decode's cost as a Worker's CPU (about 50 ms for 10 MiB in Node).
 the last page image, short of the answer's end where the byte count is checked, so on a pass an
 attachment that ends short of an image fails as changed and no other change of size is noticed.
 
+## Sharing Gmail with a Google Group
+
+A **Google Group** connection reads only the mail addressed to that group, live from the owner's
+own Gmail mailbox, and is read only (`GmailGroupSession` in `src/types.d.ts`). If the owner shares
+a gadget or workspace using it, the group's members can open it, and nobody else can. It is its own
+resource type rather than a Gmail view, so a member is asked only to show their membership, never
+for Gmail access, and an admin can switch it off alone. `plans/gmail-group-sharing.md` is the
+design record.
+
+- **Only the group's mail.** A message is shown when Google's headers prove it came through the
+  group, when the owner sent it to the group, or when it names the group as a recipient and DMARC
+  or DKIM authenticates it as from the group's own domain. Authenticated mail from any other
+  domain that only names the group is shown as a reply in such a conversation, never on its own,
+  so nobody outside can start a conversation members see unless the group delivers it. Nothing
+  else in a conversation is shown or described: no side replies, labels or unread state, and
+  the snippet and count are those of the shown messages.
+- **Only members.** Every read reports the group as a subresource (`gmail/group/<groupId>`, see
+  [docs/observers.md](../../docs/observers.md) §10), and the Workshop asks Cloud Identity, with each
+  collaborator's own Google account, whether that account is a direct member, refusing otherwise
+  or when the check fails. A member sees all of the group's mail the owner has, including mail
+  from before they joined. An account's answer is reused for up to 15 minutes, so someone removed
+  from the group can still open the gadget for that long. Membership is checked when a gadget is
+  opened, not while it is open: someone removed keeps a session they already have, new group mail
+  included, until they reopen it.
+- **Searches test only what a message says.** `label:`, `is:`, `in:`, `category:`, `deliveredto:`,
+  `bcc:` and most `has:` terms are refused, since they would reveal the owner's own mailbox through
+  what matches, and a message with a Bcc never counts as the match.
+- **Not restricted data.** As with a Gmail Mailbox, reading group mail leaves the workspace's web
+  fetches and auto-approval rules on, so a hook can act on new mail unattended. Who can open the
+  gadget is decided by group membership alone.
+
+Things to know:
+
+- Workspace groups only, and direct members only; people in it through another group are refused.
+- The group's "Who can view members" setting must include its members, or every member is refused.
+  The dialog doesn't offer a group that hides its members from the owner, and warns when it can.
+  An owner who manages the group sees its members whatever the setting, so the dialog can't check
+  it for them and says so.
+- A copy of a message that some other mailing list delivered is never shown, even when it names
+  the group: when one message goes to two lists the owner is on, Gmail may keep only the other
+  list's copy.
+- The group's domain must sign with its own DKIM key (Workspace's default `gappssmtp.com` key
+  doesn't count), and an inbound gateway Workspace doesn't trust can leave mail unvouched for too.
+  Either way none of it is shown; the dialog checks the group's recent mail and says so.
+- Mail that names the group is shown even if the group rejected or held it, when a colleague on
+  the group's domain sent it or it is a reply in one of the group's conversations, since it is
+  still the sender's own authenticated mail. It wakes the group's hooks as well.
+- A new message from outside that was sent to the owner and the group both can reach the owner
+  without the group's headers. It appears once someone replies to the group, and no hook fires
+  for it. For a group that outsiders write to, such as a feedback or support address, choose
+  **Who emails this group? Anyone, including people outside** when connecting (`?senders=anyone` on the resource URL):
+  authenticated mail from anyone that names the group is then shown, and wakes hooks, at once.
+  Leave it off for an internal group, where it would let anyone outside put mail in front of
+  the team's gadget by naming the group.
+- Google Groups resends some outside senders' mail under the group's own address ("Name via
+  Group"), and who wrote it is then not always given. `replyTo` is where replies are asked to
+  go, which the group's settings can point at the whole group or its owners, not who wrote it.
+- The mail comes from the owner's own copies: nothing from before they joined the group, nothing
+  they have binned, and nothing at all if they get the group as a digest or read it only on the
+  web.
+- An owner who leaves the group keeps sharing the copies they already have. Remove the connection
+  to stop.
+- A team gadget should carry no personal bindings: what a gadget stores reaches every collaborator.
+- Members' reads spend the owner's Gmail quota.
+- Switching off the Gmail Mailbox resource doesn't stop Google Group connections, which read mail
+  with their own read-only grant; switch off Google Group as well.
+
 ## Google Chat and Gmail new-message hooks (optional)
 
 Gadgets can watch a Chat conversation for new messages (see `docs/google-chat-capabilities.md`),
-and a Gmail inbox, label or thread for new mail (`subscribeNewMessages()` in `src/types.d.ts`).
+and a Gmail inbox, label, thread or group for new mail (`subscribeNewMessages()` in `src/types.d.ts`).
 Google delivers both through Pub/Sub, Chat's by Workspace Events and Gmail's by `users.watch`, so
 this needs a public URL and these steps in the same Cloud project as the OAuth client:
 

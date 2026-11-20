@@ -104,6 +104,50 @@ must decide locally when the flow is dead, clear it only if the credential ident
 still current, and apply provider cleanup only when that cannot invalidate an alias or successor.
 Workshop revokes a staged connect whose ticket is never redeemed.
 
+### A pasted key instead of OAuth
+
+Where the provider has no OAuth flow, the connect link opens a form. Spend the link's nonce when
+the form is shown and give the form a second one:
+
+```ts
+// GET /<account>/<linkNonce>
+const formNonce = advanceToOAuth(kv, linkNonce, Date.now(), {
+  startedUnder: this.#creds.connectionGeneration(),
+});
+if (formNonce === null) throw new Error("This connect link has expired. Start again.");
+return formPageResponse(connectFormHtml({
+  title: "Connect Vendor",
+  intro: "Create an API key in Vendor, under Settings, and paste it here.",
+  action: `${baseUrl}/${accountId}/key`,
+  nonce: formNonce,
+  fields: [{ name: "key", label: "API key", secret: true }],
+}));
+
+// POST /<account>/key
+const form = await readConnectForm(req, { origin: baseUrl });
+if (form instanceof Response) return form;
+const submittedNonce = form.get(CONNECT_FORM_NONCE_FIELD) ?? "";
+const key = form.get("key") ?? "";
+
+// In the account: check the submitted nonce, ask the provider, and only then claim.
+if (peekOAuth(kv, submittedNonce, Date.now()) === null) return null;
+if (!(await providerAccepts(key))) {
+  // The attempt may have ended meanwhile, and a form shown for it could not be posted.
+  return peekOAuth(kv, submittedNonce, Date.now()) === null ? null : { retry: "Vendor refused that key." };
+}
+const attempt = claimOAuth<ConnectAttempt>(kv, submittedNonce, Date.now());
+if (attempt === null) return null;
+```
+
+- Serve the form with `formPageResponse()`, never `htmlResponse()`: a page that sends no referrer
+  posts its forms with `Origin: null`, which `readConnectForm()` refuses.
+- `action` is the handler that reads the key, on the deployment's own origin. Answer the POST with
+  a page: a 307 or 308 to another origin carries the body, and not every browser stops it.
+- A refused key spends nothing, so show the form again with the same nonce and an `error`, once a
+  second check finds the attempt still open. Take the attempt's metadata from the claim, not from
+  the check: a newer link, a disconnect or the
+  attempt's expiry while the provider was asked makes the claim fail.
+
 ### Reconnect and `ensureResources`
 
 A reconnect or resource expansion must not write the new grant live. Stage the complete canonical
@@ -1180,7 +1224,6 @@ The kit supplies defaults where they apply across consumers:
 | --- | ---: |
 | `maxPending` | 50 |
 | `maxTrackedCollections` | 1000 |
-| `maxObservers` | 10 |
 | `remotePageSize` | 100 |
 | cursor `maxProviderPagesPerCall` | 10 |
 | `OAuthClient` `timeoutMs` | 30 000 ms |
@@ -1196,8 +1239,12 @@ The kit requires values where no general default is safe:
 Size limits from the provider and the disclosure shape. `maxTrackedCollections` is a cumulative budget: it
 bounds the distinct collections this binding has *ever* disclosed, including markers a fail-closed read
 left behind, so size it from the whole resource rather than one page — a per-page value starts
-refusing valid reads once later pages reveal new collections. `maxObservers` must account for the Workers
-subrequest ceiling because every observer costs a verifier call on each read. `remotePageSize`
+refusing valid reads once later pages reveal new collections. Observers are not capped: each costs a verifier call on a
+`collections` read, throttled by `concurrency`. The fan-out adds no call depth. A check that opens a
+request to another Worker or Durable Object spends one of the calling invocation's subrequests,
+whose limit depends on the plan and the Worker's `limits.subrequests`; what the verifier does to
+answer runs under its own invocation's budget. A check that fails for that reason excludes its
+observer, as any failed check does. `remotePageSize`
 cannot exceed the provider's page cap. Lower `maxProviderPagesPerCall` for a provider that bills
 each row it returns: a filter that drops whole pages otherwise pays for up to ten per `next()`, and
 `1` with a `pageSize` no provider page exceeds makes each `next()` one provider request.
@@ -1311,7 +1358,9 @@ The API is
   `nextDue()` and its own deadlines. `remove()` only forgets the hook, so provider teardown stays
   in the driver's `unregister`. Delete a hook's records directly only when clearing all of the
   driver's storage: on their own, its queued messages outlive them and are delivered if the hook
-  is enabled again.
+  is enabled again. Where the provider can't narrow what it pushes to what a hook watches for, pass
+  `screen`, which is asked before each firing is started, so that an event no hook wants wakes no
+  workspace; the binding's `deliver` still decides.
 - Every callback the kit invokes must throw display-safe errors. `discardMint`, the rejection heal,
   and the expiry notification all log what they catch, so a thrown token, header, or response body
   lands in the deployment's logs.
