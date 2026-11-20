@@ -1908,6 +1908,8 @@ export class GoogleChatGatekeeperImpl
             text = updated.formattedText;
           } else {
             store.setLandedEdit(actionId, updated.lastUpdateTime);
+            // With no time for the edit, no read can tell it from a later one.
+            if (updated.lastUpdateTime === undefined) return { type: "unverifiedEdit" };
             // Read once the edit has landed, outside its attempt: a failed read says nothing of it.
             const read = await api.getRawMessage(target.committed);
             if (!sameEdit(updated.lastUpdateTime, read.lastUpdateTime)) return { type: "unverifiedEdit" };

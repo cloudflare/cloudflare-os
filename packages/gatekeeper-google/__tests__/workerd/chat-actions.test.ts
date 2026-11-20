@@ -1210,6 +1210,8 @@ describe("Google Chat gatekeeper behaviors", () => {
     using space = await chat.session();
     using message = (await space.getMessage(messageName("root"))).message;
     await message.edit("Resolved");
+    // No read is needed to finish it, so one that would fail does not hold it back.
+    backend.state.getStatusAfterEdit = 403;
     await chat.applyAction(1);
     expect(await chat.revertAction(1)).toEqual({message: expect.stringContaining("can't be undone automatically")});
     expect(backend.state.edits).toEqual([{name: messageName("root"), text: "Resolved"}]);
