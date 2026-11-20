@@ -12,10 +12,11 @@ import { appendFileSync, existsSync, readFileSync, realpathSync, rmSync, writeFi
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { git } from "../git.ts";
 import { parseReview, REPORT_FORMAT } from "./parse-review.ts";
 import { replaceInstructionFiles } from "./review-copy.ts";
 import { fetchReviewedHeads, fetchTimeline, githubJson, planRound, readyAt, roundLimitReasons } from "./rounds.ts";
-import { env, eventPullRequest, git, type Verdict } from "./verdict.ts";
+import { env, eventPullRequest, type Verdict } from "./verdict.ts";
 
 const WORKFLOW_FILE = "bonk-pr.yml";
 /** Bonk's job in that workflow. It has no `name:`, so the jobs API lists it by its id. */
@@ -117,7 +118,7 @@ async function verdictFromJob(repo: string, temp: string, model: string,
   return buildBonkVerdict({
     headSha: pr.headSha,
     baseSha: pr.baseSha,
-    reviewedSha: git(repo, ["rev-parse", "HEAD"]).trim(),
+    reviewedSha: git(["rev-parse", "HEAD"], repo).trim(),
     round: planRound(pr.headSha, reviewed.filter(head => ready(head.reviewedAt)), () => false).round,
     report: existsSync(reportPath) ? readFileSync(reportPath, "utf8") : null,
     model,
@@ -130,12 +131,12 @@ async function main(command: string | undefined): Promise<void> {
   const reportPath = join(temp, REPORT_FILE);
   if (command === "prepare") {
     const pr = eventPullRequest();
-    git(repo, ["fetch", "--no-tags", "--depth=1", "origin", pr.baseSha]);
+    git(["fetch", "--no-tags", "--depth=1", "origin", pr.baseSha], repo);
     const replaced = replaceInstructionFiles(repo, pr.headSha, pr.baseSha);
     console.log(`Replaced ${replaced.length} head instruction paths with the base's.`);
     rmSync(reportPath, { force: true });
     const delimiter = `EOF_${randomBytes(16).toString("hex")}`;
-    const prompt = bonkPrompt(git(repo, ["show", `${pr.baseSha}:REVIEW.md`]), reportPath);
+    const prompt = bonkPrompt(git(["show", `${pr.baseSha}:REVIEW.md`], repo), reportPath);
     appendFileSync(env("GITHUB_OUTPUT"), `value<<${delimiter}\n${prompt}\n${delimiter}\n`);
     return;
   }

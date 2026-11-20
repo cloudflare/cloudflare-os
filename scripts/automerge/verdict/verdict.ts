@@ -5,12 +5,13 @@
 // This runner posts nothing on the pull request. REVIEW.md's "after round 3, post only the findings
 // still open" is for reviewers that post: from round ROUND_LIMIT on, this runner runs no model and
 // writes an `ok` verdict with no findings whose `needs_person` sends the pull request to a person.
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { field, list, parseJson, type Json } from "./json.ts";
+import { git, mergeBase } from "../git.ts";
+import { field, list, parseJson, type Json } from "../json.ts";
 import { parseReview, REPORT_FORMAT, type Finding } from "./parse-review.ts";
 import { buildReviewCopy } from "./review-copy.ts";
 import { fetchReviewedHeads, githubJson, planRound, ROUND_LIMIT, roundLimitReasons, type RoundPlan } from "./rounds.ts";
@@ -98,10 +99,6 @@ function fill(template: string, values: Record<string, string>): string {
   return template.replaceAll(/\{\{(\w+)\}\}/g, (match, key: string) => values[key] ?? match);
 }
 
-export function git(repo: string, args: string[]): string {
-  return execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", maxBuffer: 1024 * 1024 * 1024 });
-}
-
 /** What prepare records for finalize. */
 interface Meta {
   head_sha: string;
@@ -163,11 +160,11 @@ export function prepareInputs(repo: string, workDir: string, pr: PullRequest, pl
     const range = plan.reviewFromSha === null ? `${pr.baseSha}...${pr.headSha}` : `${plan.reviewFromSha}..${pr.headSha}`;
     // Attributes come from the empty tree, so no `-diff` or binary diff driver can blank a text
     // file; git's own content check alone decides what is binary.
-    const emptyTree = git(repo, ["hash-object", "-t", "tree", "/dev/null"]).trim();
-    const diff = (args: string[]) => git(repo, [`--attr-source=${emptyTree}`, "-c", "core.attributesFile=/dev/null", "diff",
-      "--no-ext-diff", "--no-textconv", "--no-color", ...args, range]);
+    const emptyTree = git(["hash-object", "-t", "tree", "/dev/null"], repo).trim();
+    const diff = (args: string[]) => git([`--attr-source=${emptyTree}`, "-c", "core.attributesFile=/dev/null", "diff",
+      "--no-ext-diff", "--no-textconv", "--no-color", ...args, range], repo);
     writeFileSync(files.diff, diff([]));
-    const from = plan.reviewFromSha ?? git(repo, ["merge-base", pr.baseSha, pr.headSha]).trim();
+    const from = plan.reviewFromSha ?? mergeBase(pr.baseSha, pr.headSha, repo);
     meta.binary_files = diff(["--numstat", "-z", "--no-renames"]).split("\0").flatMap(record => {
       const match = /^-\t-\t(.+)$/s.exec(record);
       if (!match) return [];
@@ -175,14 +172,14 @@ export function prepareInputs(repo: string, workDir: string, pr: PullRequest, pl
       // The head's blob, or the old one when the head deleted it or put a directory in its place.
       const headType = spawnSync("git", ["-C", repo, "cat-file", "-t", `${pr.headSha}:${path}`], { encoding: "utf8" }).stdout.trim();
       const side = headType === "blob" ? pr.headSha : from;
-      return [{ path, bytes: Number(git(repo, ["cat-file", "-s", `${side}:${path}`]).trim()) }];
+      return [{ path, bytes: Number(git(["cat-file", "-s", `${side}:${path}`], repo).trim()) }];
     });
     writeFileSync(files.pullRequest, `# ${pr.title}\n\n${pr.body}\n`);
     writeFileSync(files.prompt, fill(PROMPT_TEMPLATE, {
       round: String(plan.round),
       inputs: files.inputs,
       scope: plan.reviewFromSha === null ? SCOPE_FULL : fill(SCOPE_SINCE, { from: plan.reviewFromSha }),
-      review_md: git(repo, ["show", `${pr.baseSha}:REVIEW.md`]),
+      review_md: git(["show", `${pr.baseSha}:REVIEW.md`], repo),
     }));
     const copy = buildReviewCopy(repo, pr.headSha, pr.baseSha, files.review);
     meta.head_instruction_paths = copy.headInstructionPaths;
@@ -405,7 +402,7 @@ export function buildVerdict(workDir: string, pr: Pick<PullRequest, "headSha" | 
 export function canReviewSince(repo: string, previousSha: string, pr: Pick<PullRequest, "headSha" | "baseSha">): boolean {
   const ok = (args: string[]) => spawnSync("git", ["-C", repo, ...args]).status === 0;
   return ok(["merge-base", "--is-ancestor", previousSha, pr.headSha]) &&
-    git(repo, ["rev-list", "--merges", `${previousSha}..${pr.headSha}`]).trim() === "" &&
+    git(["rev-list", "--merges", `${previousSha}..${pr.headSha}`], repo).trim() === "" &&
     ok(["diff", "--quiet", pr.baseSha, previousSha, "--", `.github/workflows/${WORKFLOW_FILE}`]);
 }
 

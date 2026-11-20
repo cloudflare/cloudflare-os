@@ -6,7 +6,7 @@ import {
   type DepsInput, type PackageVersion,
 } from "./deps.ts";
 import { parseDiff, type FileDiff, type Hunk } from "./diff.ts";
-import { asArray, asNumber, asObject, asString, parseJson } from "./json.ts";
+import { asArray, asNumber, asObject, asString, parseJson } from "../json.ts";
 
 // Each fixture is a real Dependabot pull request merged into main: the `git diff -U0` of its
 // squash commit against its parent, the package.json files it touched at both commits, which of

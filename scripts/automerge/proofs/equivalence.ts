@@ -18,7 +18,7 @@ import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { decide, runProducer, type Outcome } from "./artifact.ts";
-import { asObject, isObject, jsonEqual, parseJson, type Json, type JsonObject } from "./json.ts";
+import { asObject, isObject, jsonEqual, parseJson, type Json, type JsonObject } from "../json.ts";
 
 /** Manifest fields that name the build rather than what it contains. */
 const BUILD_IDENTITY = ["commit", "createdAt", "releaseId"];

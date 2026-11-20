@@ -1,4 +1,4 @@
-import type { Json } from "../risk-review-policy.ts";
+import type { Json } from "../automerge/json.ts";
 
 /** For each character: whether it is inside quotes, and how many brackets and braces enclose it. */
 function nesting(text: string): { quoted: boolean; depth: number }[] {

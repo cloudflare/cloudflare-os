@@ -4,10 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 
+import type { Json } from "../json.ts";
+import { createTestRepo } from "../test-repo.ts";
 import { fetchReviewedHeads, planRound, readyAt } from "./rounds.ts";
-import { createTestRepo } from "./test-repo.ts";
 import { buildVerdict, canReviewSince, prepareInputs, readEvents } from "./verdict.ts";
-import type { Json } from "./json.ts";
 
 const always = () => true;
 

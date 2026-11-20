@@ -33,9 +33,9 @@ import { cpSync, existsSync, readFileSync, rmSync, statSync, writeFileSync } fro
 import { dirname, isAbsolute, join, normalize, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { decide, errored, notApplicable, runProducer, type Outcome } from "./artifact.ts";
-import type { FileDiff } from "./diff.ts";
-import { fileAt, git, mergeBase, pullRequestDiff } from "./git.ts";
-import { asArray, asObject, asString, isObject, parseJson, type Json, type JsonObject } from "./json.ts";
+import { pullRequestDiff, type FileDiff } from "./diff.ts";
+import { fileAt, git, mergeBase } from "../git.ts";
+import { asArray, asObject, asString, isObject, parseJson, type Json, type JsonObject } from "../json.ts";
 
 /** Paths that hold tests, fixtures, helpers or setup rather than shipped code. */
 const TEST_PATH = /(^|\/)(__tests__|test|tests|fixtures|testdata)\/|\.(test|spec)\.[cm]?[jt]sx?$/;

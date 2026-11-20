@@ -17,7 +17,7 @@
 import { spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { decide, errored, runProducer, type Outcome } from "./artifact.ts";
-import { isObject, parseJson } from "./json.ts";
+import { isObject, parseJson } from "../json.ts";
 
 /** One response, as much of it as the checks read. */
 export interface Answer {

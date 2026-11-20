@@ -29,9 +29,9 @@
 
 import { pathToFileURL } from "node:url";
 import { decide, notApplicable, runProducer, type Outcome } from "./artifact.ts";
-import type { FileDiff, Hunk } from "./diff.ts";
-import { fileAt, mergeBase, pullRequestDiff } from "./git.ts";
-import { asArray, asObject, isObject, jsonEqual, parseJson, type Json, type JsonObject } from "./json.ts";
+import { pullRequestDiff, type FileDiff, type Hunk } from "./diff.ts";
+import { fileAt, mergeBase } from "../git.ts";
+import { asArray, asObject, isObject, jsonEqual, parseJson, type Json, type JsonObject } from "../json.ts";
 import { isMinorOrPatch, parseVersion, rangeVersion } from "./semver.ts";
 
 export const DEPENDABOT_LOGIN = "dependabot[bot]";

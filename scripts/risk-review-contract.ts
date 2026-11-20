@@ -6,7 +6,7 @@
 
 import { inflateRawSync } from "node:zlib";
 
-import { asObject, parseJson, type Json } from "./risk-review-policy.ts";
+import { maybeJson, maybeObject, type Json } from "./automerge/json.ts";
 
 type ProducerKind = "verdict" | "proof" | "evidence";
 
@@ -115,7 +115,7 @@ function isInteger(value: Json | undefined, min: number, max: number): value is 
 }
 
 function parseFinding(value: Json): Finding | undefined {
-  const finding = asObject(value);
+  const finding = maybeObject(value);
   const severity = oneOf(finding?.severity, SEVERITIES);
   const { title, path, line } = finding ?? {};
   if (!severity || typeof title !== "string") return undefined;
@@ -134,7 +134,7 @@ export function parseProducerArtifact(
   text: string,
   expected: { name: ProducerName; headSha: string; baseSha: string },
 ): ProducerInput {
-  const root = asObject(parseJson(text));
+  const root = maybeObject(maybeJson(text));
   if (!root) return { absent: "not a JSON object" };
   const { kind } = PRODUCERS[expected.name];
   if (root.schema !== 1) return { absent: "unknown schema" };
@@ -147,7 +147,7 @@ export function parseProducerArtifact(
   if (base_sha !== expected.baseSha) return { absent: "made against another base commit" };
   const status = oneOf(root.status, STATUSES);
   if (!status) return { absent: "malformed status" };
-  const details = asObject(root.details ?? {});
+  const details = maybeObject(root.details ?? {});
   if (!details) return { absent: "malformed details" };
   const base = { name: expected.name, head_sha, base_sha, status, details };
 

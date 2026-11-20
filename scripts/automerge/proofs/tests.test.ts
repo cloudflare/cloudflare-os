@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import { pathToFileURL } from "node:url";
 import type { FileDiff } from "./diff.ts";
-import { asObject, parseJson, type JsonObject } from "./json.ts";
+import { asObject, parseJson, type JsonObject } from "../json.ts";
 import {
   budgetMinutes, DEFAULT_BUDGET_MINUTES, editedSupportFiles, evaluateKills, killedMutants, narrowedConfig, OverBudget,
   planScope, runBounded, selfImportPath, sourceGraph,
@@ -56,10 +56,10 @@ describe("proof-tests verdict", () => {
 const files = (entries: Record<string, string>) => (path: string) => entries[path];
 
 /** Checks that each problem, in order, starts with the importing file and names what it could not follow. */
-function assertProblems(problems: string[], expected: [file: string, names: string][]): void {
+function assertProblems(problems: string[], expected: [importer: string, names: string][]): void {
   assert.equal(problems.length, expected.length, problems.join("\n"));
-  expected.forEach(([file, names], i) => {
-    assert.ok(problems[i].startsWith(`${file}: `) && problems[i].includes(names), problems[i]);
+  expected.forEach(([importer, names], i) => {
+    assert.ok(problems[i].startsWith(`${importer}: `) && problems[i].includes(names), problems[i]);
   });
 }
 

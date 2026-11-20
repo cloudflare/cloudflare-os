@@ -1,17 +1,14 @@
-// The git reads the proofs make. Every one names commits by SHA, so the result does not depend on
+// The one way judge code runs git. Callers name commits by SHA, so a result does not depend on
 // what is checked out.
 
 import { execFileSync } from "node:child_process";
-import { DIFF_ARGS, parseDiff, type FileDiff } from "./diff.ts";
 
-/** Runs git and returns its stdout. */
+/** The largest single read: a pull request's whole diff, or every path in a tree. */
+const MAX_OUTPUT_BYTES = 1024 * 1024 * 1024;
+
+/** Runs git in `cwd` and returns its stdout; throws when git fails. */
 export function git(args: string[], cwd = process.cwd()): string {
-  return execFileSync("git", args, { cwd, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
-}
-
-/** The pull request's own change: `base...head`, the diff from their merge base. */
-export function pullRequestDiff(base: string, head: string, cwd?: string): FileDiff[] {
-  return parseDiff(git([...DIFF_ARGS, `${base}...${head}`], cwd));
+  return execFileSync("git", args, { cwd, encoding: "utf8", maxBuffer: MAX_OUTPUT_BYTES });
 }
 
 /** The merge base of two commits. */

@@ -2,7 +2,7 @@
 
 import { crc32, deflateRawSync } from "node:zlib";
 
-import type { Json } from "../risk-review-policy.ts";
+import type { Json } from "../automerge/json.ts";
 
 /** The head and base commits the artifact builders bind to. */
 export const HEAD = "a".repeat(40);

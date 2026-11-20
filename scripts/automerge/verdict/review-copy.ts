@@ -5,6 +5,8 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, lstatSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
+import { git } from "../git.ts";
+
 /**
  * File names an agent reads as instructions, matched at any depth and in any case. opencode 1.18.33
  * attaches the nearest AGENTS.md, CLAUDE.md or CONTEXT.md to every file its read tool returns, even
@@ -32,9 +34,7 @@ interface TreeEntry {
 }
 
 function listTree(repo: string, commit: string): TreeEntry[] {
-  const output = execFileSync("git", ["-C", repo, "ls-tree", "-r", "-z", "--full-tree", commit],
-    { encoding: "utf8", maxBuffer: MAX_TREE_BYTES });
-  return output.split("\0").filter(record => record !== "").map(record => {
+  return git(["ls-tree", "-r", "-z", "--full-tree", commit], repo).split("\0").filter(record => record !== "").map(record => {
     const tab = record.indexOf("\t");
     const [mode, , object] = record.slice(0, tab).split(" ");
     return { mode, object, path: record.slice(tab + 1) };
@@ -147,8 +147,7 @@ export function replaceInstructionFiles(worktree: string, headSha: string, baseS
   const tracked = new Set(head);
   const untracked = base.map(entry => entry.path).filter(path => !tracked.has(path));
   if (untracked.length > 0) {
-    const exclude = resolve(worktree, execFileSync("git", ["-C", worktree, "rev-parse", "--git-path", "info/exclude"],
-      { encoding: "utf8" }).trim());
+    const exclude = resolve(worktree, git(["rev-parse", "--git-path", "info/exclude"], worktree).trim());
     mkdirSync(dirname(exclude), { recursive: true });
     // Anchored, with gitignore's special characters escaped, so each line matches only its path.
     appendFileSync(exclude, `\n${untracked.map(path => `/${path.replaceAll(/[\\*?[]/g, "\\$&").replace(/ +$/, spaces =>

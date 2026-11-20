@@ -2,12 +2,14 @@
 // always need a person. Everything here is a pure function of the changed files and of policy
 // files read from the base branch, so the gate can apply it without running pull request code.
 //
-// Imports are limited to `node:` builtins and other `scripts/risk-review*` modules (see
-// risk-review-imports.test.ts): the gate runs this file from the base branch, and a dependency
-// resolved from the workspace could come from the pull request's lockfile.
+// Imports are limited to `node:` builtins and other judge modules, `scripts/risk-review*` and
+// `scripts/automerge/` (see risk-review-imports.test.ts): the gate runs this file from the base
+// branch, and a dependency resolved from the workspace could come from the pull request's lockfile.
 
 import { matchesGlob } from "node:path/posix";
 import { isDeepStrictEqual } from "node:util";
+
+import { maybeJson, maybeObject, type Json, type JsonObject } from "./automerge/json.ts";
 
 /** A risk level, lowest first. */
 export type Band = "low" | "medium" | "high";
@@ -428,26 +430,6 @@ export function addedDependencies(base: string | undefined, head: string | undef
   return [...new Set(added.map(([key]) => key.slice(key.indexOf(" ") + 1)))];
 }
 
-/** A JSON value, as `JSON.parse` returns it. */
-export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
-
-/** Narrows a JSON value to an object. */
-export function asObject(value: Json | undefined): { [key: string]: Json } | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : undefined;
-}
-
-/** Parses JSON text, or returns `undefined` when it is not JSON. */
-export function parseJson(text: string): Json | undefined {
-  try {
-    const value: Json = JSON.parse(text);
-    return value;
-  } catch (error) {
-    // Malformed JSON is a named domain case: every caller treats it as a missing input.
-    if (error instanceof SyntaxError) return undefined;
-    throw error;
-  }
-}
-
 /**
  * Manifest settings that can swap a package, the package manager or the runtime, or run code at
  * install, without declaring a dependency: the package manager and runtime pins pnpm switches to
@@ -465,11 +447,11 @@ const INSTALL_SCRIPTS = ["pnpm:devPreinstall", "preinstall", "install", "postins
  * @returns The changed names, or `undefined` when either side is not a JSON object.
  */
 export function changedInstallSettings(base: string | undefined, head: string | undefined): string[] | undefined {
-  const before = base === undefined ? {} : asObject(parseJson(base));
-  const after = head === undefined ? {} : asObject(parseJson(head));
+  const before = base === undefined ? {} : maybeObject(maybeJson(base));
+  const after = head === undefined ? {} : maybeObject(maybeJson(head));
   if (!before || !after) return undefined;
-  const scriptsBefore = asObject(before.scripts) ?? {};
-  const scriptsAfter = asObject(after.scripts) ?? {};
+  const scriptsBefore = maybeObject(before.scripts) ?? {};
+  const scriptsAfter = maybeObject(after.scripts) ?? {};
   return [
     ...INSTALL_FIELDS.filter((field) => jsonDiffers(before[field], after[field])),
     ...INSTALL_SCRIPTS.filter((name) => jsonDiffers(scriptsBefore[name], scriptsAfter[name])).map((name) => `scripts.${name}`),
@@ -482,13 +464,13 @@ function jsonDiffers(a: Json | undefined, b: Json | undefined): boolean {
 
 /** Every declared dependency's spec, keyed `<field> <name>`. */
 function dependencyMap(text: string): Map<string, string> | undefined {
-  const manifest = asObject(parseJson(text));
+  const manifest = maybeObject(maybeJson(text));
   if (!manifest) return undefined;
   const map = new Map<string, string>();
   for (const field of DEPENDENCY_FIELDS) {
     const entries = manifest[field];
     if (entries === undefined) continue;
-    const object = asObject(entries);
+    const object = maybeObject(entries);
     if (!object) return undefined;
     for (const [name, spec] of Object.entries(object)) {
       if (typeof spec !== "string") return undefined;
@@ -511,17 +493,17 @@ function readGeneratedConfig(text: string): { value: Json; strings: Json[] } | u
   if (/[\r\u2028\u2029]/.test(text)) return undefined;
   const lines = text.split("\n");
   const json = lines.slice(lines.findIndex((line) => !line.startsWith("//"))).join("\n");
-  const value = parseJson(json);
+  const value = maybeJson(json);
   if (value === undefined) return undefined;
   // In valid JSON a quote only ever opens or closes a string, so this finds each one.
-  return { value, strings: (json.match(/"(?:[^"\\]|\\.)*"/g) ?? []).map((string) => parseJson(string) ?? null) };
+  return { value, strings: (json.match(/"(?:[^"\\]|\\.)*"/g) ?? []).map((string) => maybeJson(string) ?? null) };
 }
 
 /** A migration's keys that only add Durable Object classes. Any other operation needs a person. */
 const ADDS_CLASSES = ["tag", "new_classes", "new_sqlite_classes"];
 
 /** One Durable Object migration, as `wrangler.jsonc` holds it. */
-type Migration = { [key: string]: Json };
+type Migration = JsonObject;
 
 /** What one place in a `wrangler.jsonc` (the top level, or an environment) deploys. */
 interface Deployment {
@@ -543,22 +525,22 @@ interface Deployment {
  */
 function readWorkerConfig(text: string): Map<string | null, Deployment> | undefined {
   const config = readGeneratedConfig(text);
-  const root = asObject(config?.value);
-  const environments = root?.env === undefined ? {} : asObject(root.env);
+  const root = maybeObject(config?.value);
+  const environments = root?.env === undefined ? {} : maybeObject(root.env);
   if (!config || !root || !environments) return undefined;
   const places: [string | null, Json][] = [[null, root], ...Object.entries(environments)];
   const deployments = new Map<string | null, Deployment>();
   let lists = 0;
   let deletions = 0;
   for (const [place, value] of places) {
-    const holder = asObject(value);
+    const holder = maybeObject(value);
     if (!holder) return undefined;
     const migrations: Migration[] = [];
     if (holder.migrations !== undefined) {
       lists++;
       if (!Array.isArray(holder.migrations)) return undefined;
       for (const entry of holder.migrations) {
-        const migration = asObject(entry);
+        const migration = maybeObject(entry);
         if (!migration) return undefined;
         if (migration.deleted_classes !== undefined) deletions++;
         migrations.push(migration);
@@ -653,7 +635,7 @@ export function parseMaintainers(text: string | undefined): ReadonlySet<string> 
 
 /** Parses the escape snapshot, or returns `undefined` when it is missing or malformed. */
 export function parseEscapeSnapshot(text: string | undefined): EscapeSnapshot | undefined {
-  const root = asObject(text === undefined ? undefined : parseJson(text));
+  const root = maybeObject(text === undefined ? undefined : maybeJson(text));
   const windowDays = root?.window_days;
   const files = root?.files;
   if (root?.schema !== 1 || typeof windowDays !== "number" || !Number.isInteger(windowDays) || windowDays < 1) {
@@ -662,7 +644,7 @@ export function parseEscapeSnapshot(text: string | undefined): EscapeSnapshot | 
   if (!Array.isArray(files)) return undefined;
   const entries: EscapeEntry[] = [];
   for (const value of files) {
-    const entry = asObject(value);
+    const entry = maybeObject(value);
     const { path, fixed, culprit, fix } = entry ?? {};
     if (
       typeof path !== "string" || typeof culprit !== "string" || typeof fix !== "string" ||

@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { after, describe, it } from "node:test";
 
+import { createTestRepo } from "../test-repo.ts";
 import { buildReviewCopy, isInstructionPath, replaceInstructionFiles } from "./review-copy.ts";
-import { createTestRepo } from "./test-repo.ts";
 
 function listFiles(root: string, dir = root): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap(entry =>

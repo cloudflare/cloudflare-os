@@ -37,24 +37,22 @@
 
 import { basename } from "node:path/posix";
 
+import { maybeJson, maybeObject, type Json } from "./automerge/json.ts";
 import {
   addedDependencies,
   changedInstallSettings,
   isCatalogVersionBump,
   isSkillPath,
-  asObject,
   classifyChangeset,
   durableObjectRisks,
   needsContents,
   parseEscapeSnapshot,
-  parseJson,
   parseMaintainers,
   type Band,
   type ChangedFile,
   type ContentFacts,
   type ContentsKind,
   type EscapeSnapshot,
-  type Json,
 } from "./risk-review-policy.ts";
 import {
   PRODUCERS,
@@ -128,7 +126,7 @@ function shadowBecause(problem: string): { config: Config; problem: string } {
  */
 export function parseConfig(text: string | undefined): { config: Config; problem?: string } {
   if (text === undefined) return shadowBecause("the file is missing");
-  const root = asObject(parseJson(text));
+  const root = maybeObject(maybeJson(text));
   if (!root) return shadowBecause("the file is not a JSON object");
   const { mode, app_approvals_count, threshold } = root;
   if (mode !== "shadow" && mode !== "enforce") return shadowBecause("mode is not shadow or enforce");
@@ -136,7 +134,7 @@ export function parseConfig(text: string | undefined): { config: Config; problem
   if (typeof threshold !== "number" || !Number.isInteger(threshold) || threshold < 0 || threshold > 10) {
     return shadowBecause("threshold is not an integer from 0 to 10");
   }
-  const { proven, scored } = asObject(root.rungs) ?? {};
+  const { proven, scored } = maybeObject(root.rungs) ?? {};
   if (typeof proven !== "boolean" || typeof scored !== "boolean") return shadowBecause("rungs.proven or rungs.scored is not a boolean");
   return { config: { mode, appApprovalsCount: app_approvals_count, threshold, rungs: { proven, scored } } };
 }
@@ -849,7 +847,7 @@ async function readReviewDecision(github: GitHubClient, repo: RepoRef, number: n
     }`,
     { owner: repo.owner, repo: repo.repo, number },
   );
-  const decision = asObject(asObject(asObject(response)?.repository)?.pullRequest)?.reviewDecision;
+  const decision = maybeObject(maybeObject(maybeObject(response)?.repository)?.pullRequest)?.reviewDecision;
   return typeof decision === "string" ? decision : null;
 }
 
@@ -890,15 +888,15 @@ async function readBaseHistory(github: GitHubClient, repo: RepoRef, number: numb
     }`,
     { owner: repo.owner, repo: repo.repo, number },
   );
-  const pull = asObject(asObject(asObject(response)?.repository)?.pullRequest);
-  const items = asObject(pull?.timelineItems);
+  const pull = maybeObject(maybeObject(maybeObject(response)?.repository)?.pullRequest);
+  const items = maybeObject(pull?.timelineItems);
   const nodes = items?.nodes;
   const { createdAt, baseRefName } = pull ?? {};
   if (typeof createdAt !== "string" || typeof baseRefName !== "string" || !Array.isArray(nodes)) return undefined;
-  if (asObject(items?.pageInfo)?.hasNextPage !== false) return undefined;
+  if (maybeObject(items?.pageInfo)?.hasNextPage !== false) return undefined;
   const changes: BaseHistory["changes"] = [];
   for (const value of nodes) {
-    const { createdAt: at, previousRefName: from, currentRefName: to } = asObject(value) ?? {};
+    const { createdAt: at, previousRefName: from, currentRefName: to } = maybeObject(value) ?? {};
     if (typeof at !== "string" || typeof from !== "string" || typeof to !== "string") return undefined;
     changes.push({ at: Date.parse(at), from, to });
   }
@@ -1087,14 +1085,14 @@ async function openPullIntoDefault(github: GitHubClient, context: ActionsContext
  */
 export function mergeGroupPulls(entries: Json, headSha: string):
   { pulls: { number: number; base: string }[]; baseSha: string } | undefined {
-  const nodes = asObject(asObject(asObject(asObject(entries)?.repository)?.mergeQueue)?.entries)?.nodes;
+  const nodes = maybeObject(maybeObject(maybeObject(maybeObject(entries)?.repository)?.mergeQueue)?.entries)?.nodes;
   if (!Array.isArray(nodes)) return undefined;
   const byHead = new Map<string, { base: string; number: number }>();
   for (const node of nodes) {
-    const entry = asObject(node);
-    const head = asObject(entry?.headCommit)?.oid;
-    const base = asObject(entry?.baseCommit)?.oid;
-    const number = asObject(entry?.pullRequest)?.number;
+    const entry = maybeObject(node);
+    const head = maybeObject(entry?.headCommit)?.oid;
+    const base = maybeObject(entry?.baseCommit)?.oid;
+    const number = maybeObject(entry?.pullRequest)?.number;
     if (typeof head === "string" && typeof base === "string" && typeof number === "number") {
       byHead.set(head, { base, number });
     }
@@ -1201,7 +1199,7 @@ async function execute(github: GitHubClient, context: ActionsContext, { inputs, 
     }`,
     { owner: repo.owner, repo: repo.repo, number: decision.number },
   );
-  const queued = asObject(asObject(asObject(asObject(response)?.repository)?.pullRequest)?.mergeQueueEntry) !== undefined;
+  const queued = maybeObject(maybeObject(maybeObject(maybeObject(response)?.repository)?.pullRequest)?.mergeQueueEntry) !== undefined;
   if (queued) return;
   await github.graphql(
     `mutation($id: ID!, $head: GitObjectID!) {

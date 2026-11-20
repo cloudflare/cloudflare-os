@@ -29,7 +29,8 @@ import {
   type PullRequest,
   type Review,
 } from "./risk-review.ts";
-import { asObject, parseMaintainers, type ChangedFile, type Json } from "./risk-review-policy.ts";
+import { maybeObject, type Json } from "./automerge/json.ts";
+import { parseMaintainers, type ChangedFile } from "./risk-review-policy.ts";
 
 const ROOT = new URL("../", import.meta.url);
 const read = (path: string) => readFileSync(new URL(path, ROOT), "utf8");
@@ -452,6 +453,11 @@ function verdictInput(name: "bonk" | "opus", overrides: Record<string, Json | un
 
 const PERFECT = { bonk: verdictInput("bonk"), opus: verdictInput("opus") };
 
+/** Both verdicts, differing from `PERFECT` in one field. */
+function verdictsWith(key: "merge_confidence" | "model", bonk: Json, opus: Json) {
+  return { bonk: verdictInput("bonk", { [key]: bonk }), opus: verdictInput("opus", { [key]: opus }) };
+}
+
 function proofInput(name: "proof-deps" | "proof-equivalence" | "proof-tests" | "preview-smoke", holds = true) {
   return { artifact: { ...JSON.parse(proofJson(name, name === "preview-smoke" ? "evidence" : "proof", holds)), name } };
 }
@@ -574,13 +580,13 @@ describe("decide", () => {
   });
 
   it("takes the lower of the two scores, which must be at least the threshold", () => {
-    const scores = (bonk: number, opus: number) =>
-      ({ bonk: verdictInput("bonk", { merge_confidence: bonk }), opus: verdictInput("opus", { merge_confidence: opus }) });
-    assert.equal(SCORED.config.threshold, 7);
-    assert.deepEqual(decide(inputs({ producers: scores(7, 10) }), SCORED, NOW).would, AUTO_SCORED);
-    assert.deepEqual(decide(inputs({ producers: scores(10, 7) }), SCORED, NOW).would, AUTO_SCORED);
-    assert.equal(decide(inputs({ producers: scores(6, 10) }), SCORED, NOW).would.decision, "person");
-    assert.equal(decide(inputs({ producers: scores(10, 6) }), SCORED, NOW).would.decision, "person");
+    const scores = [7, 10, 6] as const;
+    const [threshold, high, under] = scores;
+    assert.equal(SCORED.config.threshold, threshold);
+    for (const [bonk, opus, decision] of [[threshold, high, "auto"], [high, threshold, "auto"], [under, high, "person"], [high, under, "person"]] as const) {
+      const { would } = decide(inputs({ producers: verdictsWith("merge_confidence", bonk, opus) }), SCORED, NOW);
+      assert.equal(would.decision, decision, `${bonk} and ${opus}`);
+    }
   });
 
   it("sends a diff-only re-review to a person", () => {
@@ -592,9 +598,7 @@ describe("decide", () => {
   // Bonk's model is a repository variable no pull request reviews, so nothing else keeps the two
   // reviewers from being one model family.
   it("sends verdicts whose models share a provider, or name none the gate can read, to a person", () => {
-    const models = (bonk: string, opus: string) =>
-      ({ bonk: verdictInput("bonk", { model: bonk }), opus: verdictInput("opus", { model: opus }) });
-    assert.deepEqual(decide(inputs({ producers: models(MODELS.bonk, MODELS.opus) }), SCORED, NOW).would, AUTO_SCORED);
+    assert.deepEqual(decide(inputs({ producers: verdictsWith("model", MODELS.bonk, MODELS.opus) }), SCORED, NOW).would, AUTO_SCORED);
     for (const [bonk, opus] of [
       [MODELS.opus, MODELS.opus],
       ["cloudflare-ai-gateway/anthropic/claude-sonnet-5", MODELS.opus],
@@ -606,7 +610,7 @@ describe("decide", () => {
       ["cloudflare-ai-gateway/openrouter/anthropic/claude-opus-5.5", MODELS.opus],
       ["cloudflare-ai-gateway/ /gpt-6.1-sol", MODELS.opus],
     ] as const) {
-      assert.equal(decide(inputs({ producers: models(bonk, opus) }), SCORED, NOW).would.decision, "person", `${bonk} and ${opus}`);
+      assert.equal(decide(inputs({ producers: verdictsWith("model", bonk, opus) }), SCORED, NOW).would.decision, "person", `${bonk} and ${opus}`);
     }
   });
 
@@ -1426,7 +1430,7 @@ describe("parseWorkflow", () => {
     ].join("\n");
     assert.deepEqual(parseWorkflow(dressed), parseWorkflow(plain));
     assert.deepEqual(dig(parseWorkflow(plain), "on", "workflow_run", "workflows"), ["Relay", "Proofs"]);
-    assert.deepEqual(stepsOf(parseWorkflow(plain)).map((step) => Object.keys(step).sort()), [["uses", "with"], ["run"]]);
+    assert.deepEqual(stepsOf(parseWorkflow(plain)).map((step) => Object.keys(step).toSorted()), [["uses", "with"], ["run"]]);
   });
 
   it("refuses a file it cannot read, rather than passing it", () => {
@@ -1450,18 +1454,18 @@ describe("parseWorkflow", () => {
 /** The value at `keys` in a parsed workflow; `undefined` where a key is missing. */
 function dig(root: Json | undefined, ...keys: string[]): Json | undefined {
   let value = root;
-  for (const key of keys) value = asObject(value)?.[key];
+  for (const key of keys) value = maybeObject(value)?.[key];
   return value;
 }
 
 /** Every text value in a parsed workflow, wherever it sits. */
 function texts(value: Json | undefined): string[] {
   if (typeof value === "string") return [value];
-  return (Array.isArray(value) ? value : Object.values(asObject(value) ?? {})).flatMap(texts);
+  return (Array.isArray(value) ? value : Object.values(maybeObject(value) ?? {})).flatMap(texts);
 }
 
 function jobsOf(workflow: Json): Json[] {
-  return Object.values(asObject(dig(workflow, "jobs")) ?? {});
+  return Object.values(maybeObject(dig(workflow, "jobs")) ?? {});
 }
 
 function stepsOf(workflow: Json): { [key: string]: Json }[] {
@@ -1469,7 +1473,7 @@ function stepsOf(workflow: Json): { [key: string]: Json }[] {
     const steps = dig(job, "steps");
     return Array.isArray(steps) ? steps : [];
   }).flatMap((entry) => {
-    const step = asObject(entry);
+    const step = maybeObject(entry);
     return step ? [step] : [];
   });
 }
@@ -1482,7 +1486,7 @@ function stepsUsing(workflow: Json, action: string): { [key: string]: Json }[] {
 /** The events that start a workflow, however `on` is written. */
 function triggersOf(workflow: Json): string[] {
   const on = dig(workflow, "on");
-  return typeof on === "string" || Array.isArray(on) ? texts(on) : Object.keys(asObject(on) ?? {});
+  return typeof on === "string" || Array.isArray(on) ? texts(on) : Object.keys(maybeObject(on) ?? {});
 }
 
 /**
@@ -1513,7 +1517,7 @@ const relay = parseWorkflow(read(RELAY));
 
 describe("risk-review workflows", () => {
   it("runs only from main's definition: workflow_run and issue_comment are its only triggers", () => {
-    assert.deepEqual(triggersOf(gate).sort(), ["issue_comment", "workflow_run"]);
+    assert.deepEqual(triggersOf(gate).toSorted(), ["issue_comment", "workflow_run"]);
   });
 
   it("wakes on the relay, every producer workflow and CI, and on nothing else", () => {
@@ -1524,7 +1528,7 @@ describe("risk-review workflows", () => {
       const name = dig(parseWorkflow(read(path)), "name");
       return typeof name === "string" ? name : path;
     });
-    assert.deepEqual(texts(dig(gate, "on", "workflow_run", "workflows")).sort(), [...new Set(names)].sort());
+    assert.deepEqual(texts(dig(gate, "on", "workflow_run", "workflows")).toSorted(), [...new Set(names)].toSorted());
   });
 
   it("posts only as the App, from the environment that holds its key, with no job-token fallback", () => {
@@ -1572,7 +1576,7 @@ describe("risk-review workflows", () => {
       const workflow = parseWorkflow(read(path));
       assert.deepEqual(secretsIn(workflow), [], path);
       for (const job of jobsOf(workflow)) {
-        const permissions = asObject(dig(job, "permissions") ?? dig(workflow, "permissions"));
+        const permissions = maybeObject(dig(job, "permissions") ?? dig(workflow, "permissions"));
         assert.ok(permissions && Object.values(permissions).every((grant) => grant === "read" || grant === "none"), `${path}: ${JSON.stringify(permissions)}`);
         assert.equal(dig(job, "environment"), undefined, path);
       }

@@ -1,4 +1,10 @@
-// JSON values as they arrive from files, registries and APIs, with the narrowing the proofs need.
+// JSON read from outside the process: files, GitHub's API, event payloads, registries, opencode's
+// event stream. Two families narrow it, and a caller picks by what malformed input must do:
+//
+// - `parseJson` and the `as*` functions throw, naming what was malformed. Producers use them: the
+//   error becomes an `error` artifact, which the gate counts as absent.
+// - `maybeJson`, `maybeObject`, `field` and `list` return `undefined`, `null` or an empty list.
+//   The gate and the verdict readers use them, and treat that value as a missing input.
 
 /** Any value `JSON.parse` can return. */
 export type Json = null | boolean | number | string | Json[] | JsonObject;
@@ -8,7 +14,7 @@ export interface JsonObject {
   [key: string]: Json;
 }
 
-/** Parses JSON text into a `Json` value. */
+/** Parses JSON text; throws when it is not JSON. */
 export function parseJson(text: string): Json {
   const value: Json = JSON.parse(text);
   return value;
@@ -41,6 +47,32 @@ export function asString(value: Json | undefined, what: string): string {
 export function asNumber(value: Json | undefined, what: string): number {
   if (typeof value !== "number") throw new Error(`${what} is not a number`);
   return value;
+}
+
+/** Parses JSON text, or returns `undefined` when it is not JSON. */
+export function maybeJson(text: string): Json | undefined {
+  try {
+    return parseJson(text);
+  } catch (error) {
+    // Malformed JSON is a named domain case: every caller treats it as a missing input.
+    if (error instanceof SyntaxError) return undefined;
+    throw error;
+  }
+}
+
+/** `value` as an object, or `undefined` when it is not one. */
+export function maybeObject(value: Json | undefined): JsonObject | undefined {
+  return isObject(value) ? value : undefined;
+}
+
+/** The value under `key`, or `null` when `value` is not an object or has no such key. */
+export function field(value: Json, key: string): Json {
+  return isObject(value) ? (value[key] ?? null) : null;
+}
+
+/** `value` as an array, or an empty one when it is not an array. */
+export function list(value: Json): Json[] {
+  return Array.isArray(value) ? value : [];
 }
 
 /** Deep equality of two JSON values; object key order does not matter. */

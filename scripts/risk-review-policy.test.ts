@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
+import type { Json } from "./automerge/json.ts";
 import {
   addedDependencies,
   changedInstallSettings,
@@ -15,7 +16,6 @@ import {
   type ContentFacts,
   type EscapeEntry,
   type EscapeSnapshot,
-  type Json,
 } from "./risk-review-policy.ts";
 
 const NOW = new Date("2026-11-02T12:00:00Z");

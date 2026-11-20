@@ -13,7 +13,8 @@ import {
   type MergedPull,
 } from "./risk-review-report.ts";
 import { decide, parseConfig, renderOutput, type DecisionRecord, type PullInputs } from "./risk-review.ts";
-import { parseMaintainers, type Json } from "./risk-review-policy.ts";
+import type { Json } from "./automerge/json.ts";
+import { parseMaintainers } from "./risk-review-policy.ts";
 
 const REPOSITORY = "cloudflare/cloudflare-os";
 

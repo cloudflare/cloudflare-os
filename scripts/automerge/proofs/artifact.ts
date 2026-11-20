@@ -4,7 +4,7 @@
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { JsonObject } from "./json.ts";
+import type { JsonObject } from "../json.ts";
 
 type Kind = "proof" | "evidence";
 
