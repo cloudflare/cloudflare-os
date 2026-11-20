@@ -12,6 +12,7 @@ import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint, restore } from "cl
 import type {
   ActionDescription, ConnectHandoff, GatekeeperConnectCallback, HookController, HookDescription, ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
+import { PagerDutyConfiguratorUI } from "../../src/pagerduty-configurator.js";
 import type { PagerDutyGatekeeperImplProps } from "../../src/pagerduty-env.js";
 import type { HookScope } from "../../src/pagerduty-session-shared.js";
 import type { PagerDutyEvent, PagerDutySubscribeOptions } from "../../src/types.js";
@@ -210,6 +211,11 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
   /** Calls `method` on the account entrypoint for `userObjectId`. */
   async user(userObjectId: string, method: string, ...args: unknown[]): Promise<Outcome<unknown>> {
     return await outcome(() => this.#exports.TestUser({ props: { userObjectId } })[method](...args));
+  }
+
+  /** Opens what `ref` names in the resource configurator of the account `userObjectId`, as its frame does. */
+  async locate(userObjectId: string, ref: string): Promise<Outcome<unknown>> {
+    return await outcome(() => new PagerDutyConfiguratorUI(this.ctx.exports, userObjectId).locate(ref));
   }
 
   // -- hooks ------------------------------------------------------------------------------

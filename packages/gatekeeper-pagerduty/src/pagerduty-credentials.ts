@@ -3,13 +3,15 @@
 // a credential source over one account. Kept apart from pagerduty.ts so the facet and configurator
 // modules can use them without an import cycle.
 
-import { createRemoteJWKSet, jwtVerify } from "jose";
+import { createRemoteJWKSet, customFetch, jwtVerify } from "jose";
 import { CredentialSource } from "@gadgets/gatekeeper-kit/credentials";
+import { readTextCapped } from "@gadgets/gatekeeper-kit/response-body";
 import { formatSubresourceId, parseSubresourceId } from "@gadgets/gatekeeper-kit/subresource-ids";
 import type { GatekeeperUserVerifier } from "@gadgets/workshop-shared/gatekeeper";
 import { isAuthError } from "./pagerduty-api";
 import { ID_TOKEN_ISSUER, ID_TOKEN_JWKS_URL, VENDOR_ID, type Region, type Tenant } from "./pagerduty-env";
 import { toUser, type WireUser } from "./pagerduty-normalize";
+import { pagerdutyUpstream, type PagerDutyOperation } from "./pagerduty-upstream";
 import { OBJECT_ID, regionOf } from "./pagerduty-urls";
 import type { PagerDutyUser } from "./types";
 
@@ -76,7 +78,54 @@ export function identityOf(grant: GrantIdentity, user: WireUser): Identity {
   };
 }
 
-const JWKS = createRemoteJWKSet(new URL(ID_TOKEN_JWKS_URL));
+// The most that is read of the keys' answer. PagerDuty publishes a handful of keys in a few KiB:
+// a body past this is no key set, and is refused before it is buffered whole.
+const JWKS_MAX_BYTES = 256 * 1024;
+
+// Whether a body is the JSON of a key set: an object that holds a list of keys.
+function holdsKeys(body: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    // Each key an object, as jose requires of every entry; which keys it uses is jose's to say.
+    return typeof parsed === "object" && parsed !== null && "keys" in parsed && Array.isArray(parsed.keys)
+      && parsed.keys.every((key: unknown) => typeof key === "object" && key !== null && !Array.isArray(key));
+  } catch {
+    return false;
+  }
+}
+
+// The fetch `jose` downloads the keys with, sent through the upstream as the GET `jose` asks
+// for, with no credential. The body of a success is read within the request, so that the request
+// is counted by what it holds: one that is no JSON, or holds no list of keys, is an error. `jose`
+// is handed that answer all the same, as a copy with the same status, headers and body, and so
+// reads, keeps and refuses the keys as it does those of any fetch. An answer of any other status
+// is handed on as it came: `jose` reads no body of it.
+async function fetchKeys(url: string, init: RequestInit): Promise<Response> {
+  const answered = await pagerdutyUpstream.read(url, {
+    ...init, operation: "certs.get" satisfies PagerDutyOperation,
+  }, async response => {
+    // A failure is handed on as it came and counted by its status. So is a success that is no 200,
+    // which jose refuses without reading it: it is counted an error by its status.
+    if (!response.ok) return { response, usable: true };
+    if (response.status !== 200) return { response, usable: true, unexpected: true };
+    // An answer that has no body is copied with none: a status such as 204 takes no other.
+    const bodiless = response.body === null;
+    const body = await readTextCapped(response, JWKS_MAX_BYTES);
+    const { status, statusText, headers } = response;
+    return {
+      response: new Response(bodiless ? null : body, { status, statusText, headers }),
+      usable: holdsKeys(body),
+    };
+  }, ({ usable, unexpected }) => unexpected ? { outcome: "error", reason: "http" }
+    : usable ? undefined : { outcome: "error", reason: "parse" });
+  return answered.response;
+}
+
+// The keys PagerDuty signs its ID tokens with, fetched through the upstream so that the fetch is
+// counted.
+const JWKS = createRemoteJWKSet(new URL(ID_TOKEN_JWKS_URL), {
+  [customFetch]: fetchKeys,
+});
 
 /**
  * Which user, account and region an ID token, as the token endpoint returned it, names. Its

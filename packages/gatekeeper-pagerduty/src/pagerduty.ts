@@ -79,6 +79,7 @@ import {
 import { PagerDutyConfiguratorUI } from "./pagerduty-configurator";
 import { forgetHooks, handleWebhook } from "./pagerduty-hooks";
 import type { WireUser } from "./pagerduty-normalize";
+import { pagerdutyUpstream } from "./pagerduty-upstream";
 import { parseResourceUrl, sameTenant } from "./pagerduty-urls";
 import { obsContext } from "./observability";
 import PAGERDUTY_LOGO_SVG from "./pagerduty-logo.svg";
@@ -158,6 +159,7 @@ function oauthClient(env: Env): OAuthClient {
     tokenEndpoint: TOKEN_URL,
     authorizationEndpoint: AUTHORIZE_URL,
     defaultExpiresIn: ACCESS_TOKEN_SECONDS,
+    upstream: pagerdutyUpstream,
   });
 }
 
@@ -530,12 +532,15 @@ export class UserAccount extends DurableObject<Env> {
     const objects = [...new Set(parsed.filter(key => key.object && accounts.get(subresourceId(key)))
       .map(key => subresourceId(key, key.object)))];
     const allowed = new Map<string, boolean>();
-    for (let start = 0; start < objects.length; start += PROBE_CONCURRENCY) {
-      await Promise.all(objects.slice(start, start + PROBE_CONCURRENCY).map(async id => {
-        allowed.set(id, await this.#access.cached(id, accessTtl, () =>
-          this.#source.run(creds => probe(creds.accessToken, parseSubresource(id)), { replayable: true })));
-      }));
-    }
+    // One probe an object, however many a read reported: counted as one sum.
+    await pagerdutyUpstream.summed(async () => {
+      for (let start = 0; start < objects.length; start += PROBE_CONCURRENCY) {
+        await Promise.all(objects.slice(start, start + PROBE_CONCURRENCY).map(async id => {
+          allowed.set(id, await this.#access.cached(id, accessTtl, () =>
+            this.#source.run(creds => probe(creds.accessToken, parseSubresource(id)), { replayable: true })));
+        }));
+      }
+    });
     return parsed.map(key =>
       accounts.get(subresourceId(key))! && (!key.object || allowed.get(subresourceId(key, key.object))!));
   }

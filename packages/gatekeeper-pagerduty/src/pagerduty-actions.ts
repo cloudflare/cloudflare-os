@@ -230,6 +230,17 @@ const CREATE = { tag: "create-incidents", label: "Open incidents" };
 export const OVERRIDES = { tag: "manage-overrides", label: "Add schedule overrides" };
 export const DELETE_OVERRIDES = { tag: "delete-overrides", label: "Remove schedule overrides" };
 
+/** PagerDuty's result for one override of a batch: the override it added, or why it refused it. */
+type OverrideResult = { status: number; errors?: string[]; override?: WireOverride };
+
+/**
+ * The ID PagerDuty gave the override a batch of one asked for, or undefined where the batch's
+ * first result holds none: PagerDuty refused the override, or answered without it.
+ */
+function addedOverrideId(result: OverrideResult | undefined): string | undefined {
+  return result?.override?.id || undefined;
+}
+
 /** An override's approval text and its REST call, shared by the kinds for oneself and for others. */
 function overrideDefinition(autoApprovable: boolean) {
   return {
@@ -246,13 +257,17 @@ function overrideDefinition(autoApprovable: boolean) {
         .inline("Until", payload.end)),
     apply: async (payload: NewOverride, host: PagerDutyActionHost) => {
       await host.requireInScope({ kind: "schedule", id: payload.scheduleId }, payload.within);
-      const [result] = await once(host, api => api.write<{ status: number; errors?: string[]; override?: WireOverride }[]>(
+      // An answer whose first result holds no ID for the override, or that is no list of results,
+      // is counted as an error of the call.
+      const [result] = await once(host, api => api.write<OverrideResult[]>(
         "POST", `/schedules/${payload.scheduleId}/overrides`,
-        { overrides: [{ start: payload.start, end: payload.end, user: userReference(payload.user) }] }));
-      if (!result?.override?.id) {
+        { overrides: [{ start: payload.start, end: payload.end, user: userReference(payload.user) }] },
+        ([first]) => addedOverrideId(first) !== undefined));
+      const id = addedOverrideId(result);
+      if (!id) {
         throw new ActionApplyError(`PagerDuty refused the override${result?.errors?.length ? `: ${result.errors.join("; ")}` : "."}`);
       }
-      host.refs.bind(payload.ref, result.override.id);
+      host.refs.bind(payload.ref, id);
     },
   };
 }

@@ -39,6 +39,15 @@ function parseRef(ref: string): Ref {
   return { kind: match[1] as ObjectKind, id: match[2]! };
 }
 
+/**
+ * What a body describes an object of `kind` as, under the key named for its kind, or undefined for
+ * a body that holds no object there.
+ */
+function describedIn(body: Record<string, unknown>, kind: ObjectKind): object | undefined {
+  const wire = body[kind];
+  return typeof wire === "object" && wire !== null ? wire : undefined;
+}
+
 const OPEN_STATUSES = ["triggered", "acknowledged"];
 
 const shortDate = (iso: string) => new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
@@ -170,13 +179,16 @@ export class PagerDutyConfiguratorUI extends RpcTarget implements PagerDutyConfi
     return { items, ...(nextToken ? { nextCursor: nextToken } : {}) };
   }
 
-  /** The object a ref names, or null when this connection can't open it. */
+  /**
+   * The object a ref names, or null when this connection can't open it. A read whose body does not
+   * describe the object is counted as an error of the call.
+   */
   async #node(ref: Ref): Promise<PagerDutyNode | null> {
     if (ref.kind === "account") return { ref: "account", kind: "account", title: webHost(await this.#me()) };
     try {
-      const body = await this.#read(api => api.object(ref.kind, ref.id));
-      const wire = body[ref.kind];
-      if (typeof wire !== "object" || wire === null) throw new Error(`PagerDuty's ${ref.kind} was malformed.`);
+      const body = await this.#read(api => api.object(ref.kind, ref.id, answered => describedIn(answered, ref.kind) !== undefined));
+      const wire = describedIn(body, ref.kind);
+      if (!wire) throw new Error(`PagerDuty's ${ref.kind} was malformed.`);
       switch (ref.kind) {
         case "team": return teamNode(wire as WireTeam);
         case "service": return serviceNode(wire as WireService);

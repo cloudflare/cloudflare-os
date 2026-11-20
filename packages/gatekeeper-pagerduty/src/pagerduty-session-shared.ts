@@ -25,6 +25,7 @@ import {
   changedIncidents, matchesQuery, newestFirst, overlayIncident, overlayOnCalls, overridingUsers, pendingIncidents,
   type IncidentQuery, type Pending,
 } from "./pagerduty-simulation";
+import { pagerdutyUpstream } from "./pagerduty-upstream";
 import { OBJECT_ID, objectId } from "./pagerduty-urls";
 import type { PagerDutyEventHookTarget } from "./pagerduty-hooks";
 import type {
@@ -323,15 +324,17 @@ export async function priorityNamed(ctx: SessionContext, name: string): Promise<
 /** Users named by email or ID, for an action's payload or a filter. */
 export async function usersNamed(ctx: SessionContext, given: readonly string[], what: string): Promise<UserTarget[]> {
   if (given.length === 0) throw new Error(`${what} must name at least one user.`);
-  return await Promise.all(given.map(async value => {
+  // A lookup for each user named: counted as one sum. A lookup by ID whose answer holds no user is
+  // counted as an error of the call.
+  return await pagerdutyUpstream.summed(() => Promise.all(given.map(async value => {
     text(value, what);
     const user = OBJECT_ID.test(value)
-      ? (await ctx.host.read(api => api.get<{ user: WireUser }>(`/users/${value}`))).user
+      ? (await ctx.host.read(api => api.get<{ user: WireUser }>(`/users/${value}`, {}, described => Boolean(described.user)))).user
       : (await ctx.host.read(api => api.all<WireUser>("/users", "users", { query: value }, MAX_USERS)))
         .find(({ email }) => email.toLowerCase() === value.toLowerCase());
     if (!user) throw new Error(`No PagerDuty user has the email ${value}.`);
     return { ...toUserRef(user), given: value };
-  }));
+  })));
 }
 
 /**
@@ -473,7 +476,9 @@ export async function listIncidents(ctx: SessionContext, filter: PagerDutyIncide
     if (!isDenial(error)) throw error;
     return undefined;
   });
-  const reads = nothing ? [] : await Promise.all(changedIncidents(host.pending(), resolve).map(current));
+  // A read for each incident a pending action is on: counted as one sum.
+  const reads = nothing ? []
+    : await pagerdutyUpstream.summed(() => Promise.all(changedIncidents(host.pending(), resolve).map(current)));
   const changed = new Map(reads.flatMap(wire => wire ? [[wire.id, toIncidentSummary(wire)] as const] : []));
   // The capability's services and the pending actions as of the page being served: a service can
   // leave the team, and actions can change, while the walk is open.

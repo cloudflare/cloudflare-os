@@ -49,6 +49,13 @@ user, so "my incidents" is `listIncidents({ assignedToMe: true })`.
 Account, Team, Service and Incident bindings can also `subscribe()` a gadget's hook to incident
 events; see [Event hooks](#event-hooks).
 
+Every request to PagerDuty is counted as a
+[subservice metric](../observability/README.md#subservice-calls) under the source
+`gatekeeper.pagerduty.api`, named by the route tree in
+[`src/pagerduty-upstream.ts`](src/pagerduty-upstream.ts). A success whose body lacks what the
+request was sent for (a listing's rows, the object a picker opens, a user looked up by ID, an added override's ID) is
+counted an error.
+
 ## Actions
 
 Each kind is a rule a user can enable for auto-approval. Kinds that page or email people outside
