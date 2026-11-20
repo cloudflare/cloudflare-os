@@ -924,9 +924,8 @@ export interface AuthenticatedApi extends RpcTarget {
   getPreferredModel(): Promise<string | null>;
 
   /**
-   * Set the user's preferred model. Pass null to indicate "No agent". Any model that resolves is
-   * accepted, including one hidden from pickers, but a new chat uses the preference only while
-   * it is offered, and otherwise the first offered model.
+   * Set the user's preferred model: any model ID that resolves, including one hidden from
+   * pickers, or null to clear the saved preference.
    */
   setPreferredModel(id: string | null): Promise<void>;
 

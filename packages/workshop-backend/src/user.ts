@@ -1592,8 +1592,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   async setPreferredModel(id: string | null): Promise<void> {
     if (id !== null) {
-      // Any model that resolves is accepted, hidden ones included: a new chat takes the preference
-      // only while it is offered (see AuthenticatedApi.setPreferredModel()).
+      // Any model that resolves is accepted, hidden ones included (see
+      // AuthenticatedApi.setPreferredModel()).
       if (!this.#resolveModel(id, await getGatewayModels(this.env))) {
         throw new Error(`No such model: ${id}`);
       }

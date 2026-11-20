@@ -800,6 +800,49 @@ describe("decision handoff using the existing execution row", () => {
     expect(requests()).toBe(0);
   });
 
+  it("re-arms failed unread fan-out after the platform's last retry, then recovers", async () => {
+    const s = await scenario(null);
+    await s.visit(async impl => {
+      // Settle the fan-out the fixture's chat started, which the failure below must not join.
+      await impl.deliverDirtyChats();
+      expect(impl.storage.dirtyChats.get(CHAT)).toBeUndefined();
+
+      // The owner's user DO refuses the chat's unread handoff until it recovers.
+      let recipientDown = true;
+      const users = impl.users;
+      impl.users = new Proxy(users, {
+        get(target, key) {
+          if (key === "get") return (id: DurableObjectId) => new Proxy(target.get(id), {
+            get(user, member) {
+              if (member !== "messageArrived") return Reflect.get(user, member);
+              return (...args: Parameters<UserDurableObject["messageArrived"]>) => recipientDown
+                ? Promise.reject(new Error("Recipient unavailable")) : user.messageArrived(...args);
+            },
+          });
+          if (key === "idFromString") return (id: string) => target.idFromString(id);
+          if (key === "idFromName") return (name: string) => target.idFromName(name);
+          return Reflect.get(target, key);
+        },
+      });
+      impl.addChatMessages(CHAT, USER, [{type: "message", message: "Hello"}]);
+      await expect(impl.deliverDirtyChats()).rejects.toThrow("Recipient unavailable");
+      expect(impl.storage.dirtyChats.get(CHAT)).toBeDefined();
+
+      // A failed alarm arms nothing of its own: the platform retries it, until its last retry.
+      for (let retry = 0; retry <= 6; retry++) {
+        await impl.ctx.storage.deleteAlarm(); // The platform consumed the scheduled alarm.
+        await expect(impl.runAlarmTasks(retry)).rejects.toThrow("Recipient unavailable");
+        expect(impl.storage.dirtyChats.get(CHAT)).toBeDefined();
+        if (retry < 6) expect(await impl.ctx.storage.getAlarm()).toBeNull();
+      }
+      expect(await impl.ctx.storage.getAlarm()).toBeGreaterThan(Date.now()); // Not a failure loop.
+
+      recipientDown = false;
+      await impl.runAlarmTasks();
+      expect(impl.storage.dirtyChats.get(CHAT)).toBeUndefined();
+    });
+  });
+
   it("preserves the scheduled alarm while constructor recovery is running", async () => {
     const s = await scenario("connection", true), gate = Promise.withResolvers<void>();
     const requests = inference(gate.promise);
