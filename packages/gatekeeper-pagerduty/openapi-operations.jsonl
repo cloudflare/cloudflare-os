@@ -1,0 +1,31 @@
+{"operationId":"createIncident","method":"POST","path":"/incidents","tag":"Incidents","summary":"Create an Incident"}
+{"operationId":"createIncidentNote","method":"POST","path":"/incidents/{id}/notes","tag":"Incidents","summary":"Create a note on an incident"}
+{"operationId":"createIncidentResponderRequest","method":"POST","path":"/incidents/{id}/responder_requests","tag":"Incidents","summary":"Create a responder request for an incident"}
+{"operationId":"createIncidentSnooze","method":"POST","path":"/incidents/{id}/snooze","tag":"Incidents","summary":"Snooze an incident"}
+{"operationId":"createIncidentStatusUpdate","method":"POST","path":"/incidents/{id}/status_updates","tag":"Incidents","summary":"Create a status update on an incident"}
+{"operationId":"getIncident","method":"GET","path":"/incidents/{id}","tag":"Incidents","summary":"Get an incident"}
+{"operationId":"listIncidentAlerts","method":"GET","path":"/incidents/{id}/alerts","tag":"Incidents","summary":"List alerts for an incident"}
+{"operationId":"listIncidentLogEntries","method":"GET","path":"/incidents/{id}/log_entries","tag":"Incidents","summary":"List log entries for an incident"}
+{"operationId":"listIncidentNotes","method":"GET","path":"/incidents/{id}/notes","tag":"Incidents","summary":"List notes for an incident"}
+{"operationId":"listIncidents","method":"GET","path":"/incidents","tag":"Incidents","summary":"List incidents"}
+{"operationId":"updateIncident","method":"PUT","path":"/incidents/{id}","tag":"Incidents","summary":"Update an incident"}
+{"operationId":"getCurrentUser","method":"GET","path":"/users/me","tag":"Users","summary":"Get the current user"}
+{"operationId":"getUser","method":"GET","path":"/users/{id}","tag":"Users","summary":"Get a user"}
+{"operationId":"listUsers","method":"GET","path":"/users","tag":"Users","summary":"List users"}
+{"operationId":"getTeam","method":"GET","path":"/teams/{id}","tag":"Teams","summary":"Get a team"}
+{"operationId":"listTeams","method":"GET","path":"/teams","tag":"Teams","summary":"List teams"}
+{"operationId":"listTeamUsers","method":"GET","path":"/teams/{id}/members","tag":"Teams","summary":"List members of a team"}
+{"operationId":"getService","method":"GET","path":"/services/{id}","tag":"Services","summary":"Get a service"}
+{"operationId":"listServices","method":"GET","path":"/services","tag":"Services","summary":"List services"}
+{"operationId":"getEscalationPolicy","method":"GET","path":"/escalation_policies/{id}","tag":"Escalation Policies","summary":"Get an escalation policy"}
+{"operationId":"listEscalationPolicies","method":"GET","path":"/escalation_policies","tag":"Escalation Policies","summary":"List escalation policies"}
+{"operationId":"listOnCalls","method":"GET","path":"/oncalls","tag":"On-Calls","summary":"List all of the on-calls"}
+{"operationId":"listPriorities","method":"GET","path":"/priorities","tag":"Priorities","summary":"List priorities"}
+{"operationId":"createScheduleOverride","method":"POST","path":"/schedules/{id}/overrides","tag":"Schedules","summary":"Create one or more overrides"}
+{"operationId":"deleteScheduleOverride","method":"DELETE","path":"/schedules/{id}/overrides/{override_id}","tag":"Schedules","summary":"Delete an override"}
+{"operationId":"getSchedule","method":"GET","path":"/schedules/{id}","tag":"Schedules","summary":"Get a schedule"}
+{"operationId":"listScheduleOverrides","method":"GET","path":"/schedules/{id}/overrides","tag":"Schedules","summary":"List overrides"}
+{"operationId":"listSchedules","method":"GET","path":"/schedules","tag":"Schedules","summary":"List schedules"}
+{"operationId":"getScheduleV3","method":"GET","path":"/v3/schedules/{id}","tag":"Schedules_v3","summary":"Get a schedule"}
+{"operationId":"listOverrides","method":"GET","path":"/v3/schedules/{id}/overrides","tag":"Schedules_v3","summary":"List overrides"}
+{"operationId":"listSchedulesV3","method":"GET","path":"/v3/schedules","tag":"Schedules_v3","summary":"List schedules"}
