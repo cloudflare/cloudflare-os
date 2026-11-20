@@ -234,16 +234,16 @@ class ChatStore {
   }
 
   /**
-   * Record that edit `id` landed, Chat's markup for it unread, with the edit's time when Chat gave
-   * one: its retry never sends it again.
+   * Record that edit `id` landed, Chat's markup for it unread, with the edit's `lastUpdateTime` as
+   * Google gave it, when it did: its retry never sends it again.
    */
-  setLandedEdit(id: number, editedAt: Date | undefined): void {
-    this.#kv.put(`chat:edited:${id}`, editedAt ? { editedAt: editedAt.toISOString() } : {});
+  setLandedEdit(id: number, lastUpdateTime: string | undefined): void {
+    this.#kv.put(`chat:edited:${id}`, lastUpdateTime ? { lastUpdateTime } : {});
   }
 
   /** What setLandedEdit() recorded of edit `id`, if anything. */
-  landedEdit(id: number): { editedAt?: string } | undefined {
-    return this.#kv.get<{ editedAt?: string }>(`chat:edited:${id}`);
+  landedEdit(id: number): { lastUpdateTime?: string } | undefined {
+    return this.#kv.get<{ lastUpdateTime?: string }>(`chat:edited:${id}`);
   }
 
   /**
@@ -444,11 +444,12 @@ async function submitChatAction(
 }
 
 /**
- * Whether a message whose last edit was at `now` is still as an edit at `edited` left it. With
- * either time unknown it can't be told, and counts as changed.
+ * Whether a message whose `lastUpdateTime` is `now` is still as an edit at `edited` left it, both
+ * as Google gave them: a `Date` keeps only milliseconds, and two edits can share one. With either
+ * time unknown it can't be told, and counts as changed.
  */
-function sameEdit(edited: string | undefined, now: Date | undefined): boolean {
-  return edited !== undefined && now?.toISOString() === edited;
+function sameEdit(edited: string | undefined, now: string | undefined): boolean {
+  return edited !== undefined && now === edited;
 }
 
 /** Manual approval can run out of order, and an older change applied later would undo this one. */
@@ -1810,9 +1811,10 @@ export class GoogleChatGatekeeperImpl
     const api = this.#api();
     const scope = { store, boundSpace: this.#boundSpaceName(), boundThread: this.#boundThreadName() };
     const retried = store.wasAttempted(actionId);
-    const readTarget = (name: string) => api.getMessage(name).catch((error: unknown) => {
+    const readRawTarget = (name: string) => api.getRawMessage(name).catch((error: unknown) => {
       throw isChatMessageGone(error) ? deletedTarget(store, actionId, error) : error;
     });
+    const readTarget = async (name: string) => chatMessageInfoFromRaw(await readRawTarget(name));
     if (action.type === "addReaction" || action.type === "removeReaction") {
       requireOldestChange(store, actionId, action, other => "emoji" in other &&
         other.messageName === action.messageName && other.emoji === action.emoji);
@@ -1875,14 +1877,15 @@ export class GoogleChatGatekeeperImpl
         if ("queued" in target) throw new Error("Post the message before applying its edits.");
         requireOldestChange(store, actionId, action, other =>
           other.type === "updateMessage" && other.messageName === target.committed);
-        const current = await readTarget(target.committed);
+        const raw = await readRawTarget(target.committed);
+        const current = chatMessageInfoFromRaw(raw);
         requireMessageInScope(scope, current);
         let text = current.formattedText;
         const landed = store.landedEdit(actionId);
         if (landed) {
           // The edit landed before, only Chat's markup for it unread: never sent again, and the text
           // is its own only while the message is as that edit left it.
-          if (!sameEdit(landed.editedAt, current.editedAt)) return { type: "none" };
+          if (!sameEdit(landed.lastUpdateTime, raw.lastUpdateTime)) return { type: "none" };
         } else if (text === action.text && !retried) {
           return { type: "none" };
         } else if (text !== action.text) {
@@ -1897,11 +1900,11 @@ export class GoogleChatGatekeeperImpl
           if (updated.formattedText !== undefined) {
             text = updated.formattedText;
           } else {
-            store.setLandedEdit(actionId, updated.editedAt);
+            store.setLandedEdit(actionId, updated.lastUpdateTime);
             // Read once the edit has landed, outside its attempt: a failed read says nothing of it.
-            const read = await api.getMessage(target.committed);
-            if (!sameEdit(updated.editedAt?.toISOString(), read.editedAt)) return { type: "none" };
-            text = read.formattedText;
+            const read = await api.getRawMessage(target.committed);
+            if (!sameEdit(updated.lastUpdateTime, read.lastUpdateTime)) return { type: "none" };
+            text = chatMessageInfoFromRaw(read).formattedText;
           }
         }
         store.rebaseEdits(chatActionSpaceName(action), target.committed, action.text, text);

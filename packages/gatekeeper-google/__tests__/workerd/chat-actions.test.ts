@@ -115,6 +115,8 @@ function chatBackend() {
     getMessageStatus: 200,
     /** The status message reads answer with once an edit lands, until changed. */
     getStatusAfterEdit: undefined as number | undefined,
+    /** The `lastUpdateTime` an edit leaves, in place of the clock's. */
+    editTime: undefined as string | undefined,
     deleteAfterGet: false,
     rejectedToken: undefined as string | undefined,
     sentRequests: new Map<string, string>(),
@@ -326,7 +328,7 @@ function chatBackend() {
         const {text} = JSON.parse(init.body as string) as {text: string};
         state.edits.push({name, text});
         Object.assign(state.messages[index], storedText(state.storeText(text)));
-        state.messages[index].lastUpdateTime = new Date().toISOString();
+        state.messages[index].lastUpdateTime = state.editTime ?? new Date().toISOString();
         if (state.getStatusAfterEdit !== undefined) state.getMessageStatus = state.getStatusAfterEdit;
         if (state.editFailure) return json({}, state.editFailure);
         const {formattedText: _omitted, ...plain} = state.messages[index];
@@ -1191,6 +1193,33 @@ describe("Google Chat gatekeeper behaviors", () => {
       lastUpdateTime: new Date(Date.now() + 60_000).toISOString(),
     });
     await chat.applyAction(1);
+    expect(backend.state.edits).toEqual([{name: messageName("root"), text: "Resolved"}]);
+    expect(backend.state.messages[0].formattedText).toBe("Changed by hand");
+  });
+
+  // Google times an edit to the nanosecond, and two edits can share a millisecond: the later one
+  // is not taken for the edit that landed, so undo cannot overwrite it.
+  it("tells a landed edit from a later one in the same millisecond", async () => {
+    const backend = chatBackend();
+    backend.state.storeText = text => text.endsWith("\n") ? text : `${text}\n`;
+    backend.state.editsOmitFormattedText = true;
+    backend.state.editTime = "2026-11-20T06:00:00.123100Z";
+    backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using message = (await space.getMessage(messageName("root"))).message;
+    await message.edit("Resolved");
+    backend.state.getStatusAfterEdit = 403;
+    await expect(chat.applyAction(1)).rejects.toThrow(/http=403/);
+
+    backend.state.getStatusAfterEdit = undefined;
+    backend.state.getMessageStatus = 200;
+    Object.assign(backend.state.messages[0], {
+      text: "Changed by hand", formattedText: "Changed by hand",
+      lastUpdateTime: "2026-11-20T06:00:00.123900Z",
+    });
+    await chat.applyAction(1);
+    await chat.revertAction(1).catch(() => undefined);
     expect(backend.state.edits).toEqual([{name: messageName("root"), text: "Resolved"}]);
     expect(backend.state.messages[0].formattedText).toBe("Changed by hand");
   });

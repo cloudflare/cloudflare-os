@@ -986,20 +986,20 @@ export class ChatApi {
   /**
    * Returns the text as Chat stored it, in the `formattedText` form a later read compares against,
    * or no `formattedText` when Chat's reply leaves it out (the plain `text` is no substitute for
-   * it), and the edit's time, by which a later read tells whether the message changed since.
+   * it), and the edit's `lastUpdateTime` as Google gave it, to the nanosecond, by which a later
+   * raw read tells whether the message changed since.
    */
   async updateMessageText(
     messageName: string, text: string,
-  ): Promise<{ formattedText?: string; editedAt?: Date }> {
+  ): Promise<{ formattedText?: string; lastUpdateTime?: string }> {
     const { spaceId, messageId } = chatMessageParts(messageName);
-    const updated = await this.#request<ChatMessageRaw>(
+    const { formattedText, lastUpdateTime } = await this.#request<ChatMessageRaw>(
       "messages.patch",
       `/spaces/${spaceId}/messages/${messageId}?updateMask=text`,
       { method: "PATCH", body: JSON.stringify({ text }), idempotent: true });
-    const editedAt = chatTime(updated.lastUpdateTime);
     return {
-      ...(updated.formattedText !== undefined ? { formattedText: updated.formattedText } : {}),
-      ...(editedAt ? { editedAt } : {}),
+      ...(formattedText !== undefined ? { formattedText } : {}),
+      ...(lastUpdateTime ? { lastUpdateTime } : {}),
     };
   }
 
