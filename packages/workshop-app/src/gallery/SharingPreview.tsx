@@ -11,7 +11,7 @@ import type {
 } from '@gadgets/workshop-shared/api'
 import { BuildingsIcon, UsersThreeIcon } from '@phosphor-icons/react'
 import { AccessMenu } from '@/blocks/AccessMenu'
-import { ConfirmAccessDialog, type ConfirmAccessRow } from '@/blocks/ConfirmAccessDialog'
+import { ConfirmAccessForm, type ConfirmAccessRow } from '@/blocks/ConfirmAccessForm'
 import { InviteField } from '@/blocks/InviteField'
 import { ListGroup } from '@/blocks/ListGroup'
 import { MemberListItem } from '@/blocks/MemberListItem'
@@ -299,35 +299,35 @@ const ACCESS: Record<'first' | 'again', { label: string; rows: ConfirmAccessRow[
     label: 'Confirming access',
     rows: [
       { key: 'doc', title: 'Q3 budget', service: GOOGLE, accounts: [{ id: 1, name: 'ada@example.com', expired: false }], chosen: 1, ready: true, connect: idle },
-      { key: 'sheet', title: 'Forecast', service: GOOGLE, accounts: [{ id: 1, name: 'ada@example.com', expired: false }, { id: 2, name: 'ada@work.example.com', expired: true }], chosen: 2, ready: false, fix: { kind: 'reconnect', ...idle }, connect: idle },
+      { key: 'sheet', title: 'Forecast', service: GOOGLE, accounts: [{ id: 1, name: 'ada@example.com', expired: false }, { id: 2, name: 'ada@work.example.com', expired: true }], chosen: 2, ready: false, issue: { kind: 'signed-out', signIn: idle }, connect: idle },
       { key: 'repos', title: 'All repositories', service: GITLAB, accounts: [], ready: false, connect: idle },
     ],
   },
   again: {
     label: 'Asked again, with why',
     rows: [
-      { key: 'doc', title: 'Q3 budget', service: GOOGLE, accounts: [{ id: 1, name: 'ada@example.com', expired: false }], chosen: 1, ready: true, refusal: { account: 'ada@example.com', reason: 'This account can’t open the file.' }, fix: { kind: 'reconnect', worthATry: true, ...idle }, connect: idle },
+      { key: 'doc', title: 'Q3 budget', service: GOOGLE, accounts: [{ id: 1, name: 'ada@example.com', expired: false }], chosen: 1, ready: false, issue: { kind: 'refused', reason: 'This account can’t open the file.' }, connect: idle },
     ],
   },
 }
 
 const ConfirmAccessDemo = ({ which }: { which: keyof typeof ACCESS }) => {
-  const [open, setOpen] = useState(false)
   const [chosen, setChosen] = useState<Record<string, number>>({})
   const { label, rows } = ACCESS[which]
   return (
-    <>
-      <Button onClick={() => setOpen(true)}>{label}</Button>
-      <ConfirmAccessDialog
-        open={open}
-        what="this workspace"
-        again={which === 'again'}
-        rows={rows.map((row) => ({ ...row, chosen: chosen[row.key] ?? row.chosen, ready: row.ready || chosen[row.key] === 1 }))}
-        onChoose={(key, id) => setChosen((current) => ({ ...current, [key]: id }))}
-        onConfirm={() => setOpen(false)}
-        onCancel={() => setOpen(false)}
-      />
-    </>
+    <figure className="flex flex-col gap-2">
+      <figcaption className="text-sm text-kumo-subtle">{label}</figcaption>
+      {/* As a gadget's pane has it, on its tint, at about a pane's height. */}
+      <div className="flex h-[32rem] w-[36rem] max-w-full flex-col rounded-2xl bg-kumo-tint ring-1 ring-kumo-line">
+        <ConfirmAccessForm
+          what="Q3 planning"
+          again={which === 'again'}
+          rows={rows.map((row) => ({ ...row, chosen: chosen[row.key] ?? row.chosen, ready: row.ready || chosen[row.key] === 1 }))}
+          onChoose={(key, id) => setChosen((current) => ({ ...current, [key]: id }))}
+          onConfirm={() => setChosen({})}
+        />
+      </div>
+    </figure>
   )
 }
 
@@ -337,7 +337,7 @@ export const SharingPreview = () => (
     <Section title="ShareWorkspaceDialog (invite by username, grace or katherine, say, to edit everything in it; a name that changes nothing says why without asking; what its connections ask of whoever joins; remove from a person's menu, which asks first and lists who they let in; your own link, on or off, and Copy link follows it; from a gadget, people added use that gadget alone, under one line for everyone who can edit; restricted data and owner-only cautions; someone who can only use it is told they can't share; one that can't be read says so with Try again)">
       {Object.keys(SETUPS).map((setup) => <DialogDemo key={setup} setup={setup} />)}
     </Section>
-    <Section title="ConfirmAccessDialog (someone it was shared with confirms their own accounts can see what it reads before it opens: each protected resource once, however many connections read it, with the one account they have there, a choice of several, or Connect; what would make the one chosen do, such as signing in again; asked again, why each was refused; Confirm only once each will do)">
+    <Section title="ConfirmAccessForm (someone it was shared with confirms their own accounts can see what it reads before it opens, as the page, where it would be: each protected resource once, however many connections read it, with the one account they have there, a choice of several, or Connect; what would make the one chosen do, such as signing in again; asked again, why each was refused; Confirm only once each will do)">
       {(Object.keys(ACCESS) as (keyof typeof ACCESS)[]).map((which) => <ConfirmAccessDemo key={which} which={which} />)}
     </Section>
     <RowsPreview />

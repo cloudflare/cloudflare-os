@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AiChatAuthorInfo, AiChatMetadata, ConsoleLogEvent, AiChatSubscriber, PresenceSubscriber, UiBundle, WorkpieceSummary, WorkpiecesSubscriber } from '@gadgets/workshop-shared/api'
+import { createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, type AiChatAuthorInfo, type AiChatMetadata, type ConsoleLogEvent, type AiChatSubscriber, type PresenceSubscriber, type UiBundle, type WorkpieceSummary, type WorkpiecesSubscriber } from '@gadgets/workshop-shared/api'
 import { GadgetConnection, type GadgetHandle, type GadgetOverseer, type GadgetUi } from './GadgetConnection'
 import { pipelined } from '@/chat/mock/pipelined'
 
@@ -41,7 +41,7 @@ afterEach(() => {
   roots.length = 0
 })
 
-const setUp = ({ bundle = Promise.resolve<UiBundle | null>({ jsCode: 'render()' }) } = {}) => {
+const setUp = ({ bundle = Promise.resolve<UiBundle | null>({ jsCode: 'render()' }), waitsOnViewer }: { bundle?: Promise<UiBundle | null>; waitsOnViewer?: () => boolean } = {}) => {
   const disposed: string[] = []
   const servers: { [Symbol.dispose]: () => void }[] = []
   const lease = (name: string) => ({ [Symbol.dispose]: () => disposed.push(name) })
@@ -82,7 +82,7 @@ const setUp = ({ bundle = Promise.resolve<UiBundle | null>({ jsCode: 'render()' 
   const onEscape = vi.fn<() => void>()
   const onConsoleLog = vi.fn<(log: ConsoleLogEvent) => void>()
   const onPointerAt = vi.fn<(y: number) => void>()
-  const connection = new GadgetConnection(() => overseer, 41, { chatId: 3, viewerId: 'me', onEscape, onConsoleLog, onPointerAt })
+  const connection = new GadgetConnection(() => overseer, 41, { chatId: 3, viewerId: 'me', onEscape, onConsoleLog, onPointerAt, waitsOnViewer })
   const frame = {} as Window
   connection.showIn(() => frame)
   /** The stub named `name` can no longer reach what it did, as when the workspace restarted. */
@@ -120,6 +120,29 @@ describe('GadgetConnection', () => {
     broken.connection.start()
     await vi.waitFor(() => expect(broken.connection.getSnapshot().ui).toEqual({ status: 'failed', message: 'No such gadget' }))
     broken.connection.stop()
+  })
+
+  it('says when its workspace does not let the viewer in, or is not there', async () => {
+    for (const [code, reason] of [[OPEN_WORKSPACE_ERROR_CODES.workspaceAccessDenied, 'refused'], [OPEN_WORKSPACE_ERROR_CODES.workspaceNotFound, 'gone']] as const) {
+      const { connection } = setUp({ bundle: Promise.reject(createOpenWorkspaceError(code)) })
+      connection.start()
+      await vi.waitFor(() => expect(connection.getSnapshot().ui).toMatchObject({ status: 'failed', reason }))
+      connection.stop()
+    }
+  })
+
+  it('waits as long as it takes while the viewer is asked something its loading waits on, and times out after', async () => {
+    vi.useFakeTimers()
+    let asked = true
+    const { connection } = setUp({ bundle: new Promise(() => {}), waitsOnViewer: () => asked })
+    connection.start()
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(connection.getSnapshot().ui).toEqual({ status: 'loading' })
+    asked = false
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(connection.getSnapshot().ui).toEqual({ status: 'failed', message: 'Timed out loading this view.' })
+    connection.stop()
+    vi.useRealTimers()
   })
 
   it('connects only the page in its own frame, which has no origin', async () => {

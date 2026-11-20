@@ -52,14 +52,17 @@ export const ShareLinkGate = ({ children }: { children: ReactNode }) => {
 
   if (state.status === 'done') return children
   if (state.status === 'redeeming') return <div className="flex h-dvh"><PaneNotice title="Opening the shared link…" /></div>
-  return (
-    <div className="flex h-dvh">
-      <PaneNotice
-        icon={LinkBreakIcon}
-        title="This link doesn’t work any more"
-        description="It may have been turned off. Ask whoever sent it to share it with you instead."
-        action={{ label: 'Continue', onClick: () => setState({ status: 'done' }) }}
-      />
-    </div>
-  )
+  return <BrokenShareLink onContinue={() => setState({ status: 'done' })} />
 }
+
+/** A shared link the server would not take, in place of the page: `onContinue` goes on to the page without it. */
+export const BrokenShareLink = ({ onContinue }: { onContinue: () => void }) => (
+  <div className="flex h-dvh">
+    <PaneNotice
+      icon={LinkBreakIcon}
+      title="This link doesn’t work any more"
+      description="It may have been turned off. Ask whoever sent it to share it with you instead."
+      action={{ label: 'Continue', onClick: onContinue }}
+    />
+  </div>
+)

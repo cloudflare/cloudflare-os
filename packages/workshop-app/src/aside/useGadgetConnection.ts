@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useApi } from '@/rpc/ApiContext'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
+import { useAccessWaiting } from '@/connections/ObserverAccessProvider'
 import type { AsideOutput } from './asideItems'
 import { capturedLogs, CapturedLogs } from '@/chat/capturedLogs'
 import { GadgetConnection, type GadgetSnapshot } from './GadgetConnection'
@@ -18,6 +19,7 @@ const nothing = () => NOTHING
 export const useGadgetConnection = (output: AsideOutput | undefined, onEscape: () => void, onPointerAt?: (y: number) => void) => {
   const { api, user } = useApi()
   const notice = useConnectionNotice()
+  const waiting = useAccessWaiting()
   // The API the connection opens the workspace with, read when it connects.
   const latestApi = useRef(api)
   const key = output?.type === 'gadget' ? `${output.workspaceId}/${output.workpieceId}/${output.chatId}` : undefined
@@ -35,6 +37,8 @@ export const useGadgetConnection = (output: AsideOutput | undefined, onEscape: (
             ? undefined
             : (log) => capturedLogs.add(CapturedLogs.key(output.workspaceId, output.chatId!), [{ ...log, source: 'page' }]),
           connection: notice ?? undefined,
+          // While the user is asked to confirm their access to it, which its loading waits on.
+          waitsOnViewer: () => waiting(output.workspaceId, output.workpieceId),
         })
       : undefined
     setCurrent({ key, connection })

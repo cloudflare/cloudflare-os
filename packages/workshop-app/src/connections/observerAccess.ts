@@ -52,6 +52,12 @@ export const missingAccess = (account: ConnectedAccount, required: readonly stri
   return granted === undefined ? [...required] : required.filter((id) => !granted.includes(id))
 }
 
+/** The kinds of access of `ids` by the names their service gives them ("Channels"), those it does not name left out. */
+export const accessNames = (ids: readonly string[], vendor: GatekeeperVendorInfo | undefined, account?: ConnectedAccount): string[] => {
+  const supported = account?.supportedResources.length ? account.supportedResources : vendor?.supportedResources ?? []
+  return ids.flatMap((id) => supported.find((each) => getResourceTypeId(each) === id)?.title ?? [])
+}
+
 /** Whether an account will do for a resource: signed in, and given what it needs to show it can see it. */
 export const accountWillDo = (resource: Pick<ProtectedResource, 'needs'>, vendor: GatekeeperVendorInfo | undefined, account: ConnectedAccount | undefined) =>
   account !== undefined && account.credentialsValid && missingAccess(account, requiredAccess(resource, vendor, account)).length === 0

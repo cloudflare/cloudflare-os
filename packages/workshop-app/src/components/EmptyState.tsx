@@ -49,8 +49,9 @@ export type EmptyStateProps = {
 }
 
 const SIZE = {
-  page: { root: 'my-auto gap-5 px-4 py-10', tile: 'size-14', glyph: 'size-7', title: 'text-lg', description: 'max-w-md text-base' },
-  section: { root: 'gap-4 px-4 py-6', tile: 'size-12', glyph: 'size-6', title: 'text-base', description: 'max-w-sm text-sm' },
+  // Small text's own line height is a heading's, too tight for a sentence or two.
+  page: { root: 'my-auto gap-5 px-4 py-10', tile: 'size-14', glyph: 'size-7', title: 'text-lg', description: 'max-w-md text-base', copy: '' },
+  section: { root: 'gap-4 px-4 py-6', tile: 'size-12', glyph: 'size-6', title: 'text-base', description: 'max-w-sm text-sm', copy: 'leading-normal' },
 } as const
 
 /**
@@ -74,7 +75,7 @@ export const EmptyState = ({ icon: Glyph, badge: Badge, title, description, acti
       </span>
       <div className={cn('flex flex-col items-center gap-1.5', sized.description)}>
         <Heading className={cn('font-medium text-balance text-kumo-default', sized.title)}>{title}</Heading>
-        {description && <p className="text-pretty text-kumo-subtle">{description}</p>}
+        {description && <p className={cn('text-pretty text-kumo-subtle', sized.copy)}>{description}</p>}
       </div>
       {actions && actions.length > 0 && (
         <div className="flex flex-wrap items-center justify-center gap-2">

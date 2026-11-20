@@ -3,7 +3,7 @@ import type { GatekeeperVendorInfo, ObserverBindingNeed } from '@gadgets/worksho
 import type { SupportedResource } from '@gadgets/workshop-shared/gatekeeper'
 import { protectedResources } from '@/workspaces/sharingRules'
 import type { ConnectedAccount } from './connectionList'
-import { accountChoices, accountWillDo, defaultChoices, missingAccess, requiredAccess } from './observerAccess'
+import { accessNames, accountChoices, accountWillDo, defaultChoices, missingAccess, requiredAccess } from './observerAccess'
 
 const DOCS: SupportedResource = { id: 'docs', urlPattern: 'https://docs.google.com/*', grantable: true } as SupportedResource
 const google = { id: 'google', description: { displayName: 'Google' }, supportedResources: [DOCS] } as unknown as GatekeeperVendorInfo
@@ -47,5 +47,13 @@ describe('confirming access to protected resources', () => {
     const ungranted = account(7, { description: { displayName: 'Ada', grantedResourceTypeIds: [] } as unknown as ConnectedAccount['description'] })
     expect(missingAccess(ungranted, ['docs'])).toEqual(['docs'])
     expect(accountWillDo(resource!, google, ungranted)).toBe(false)
+  })
+
+  it('names the kinds of access an account was not given as its service does, the account’s own list first', () => {
+    const titled = { ...DOCS, title: 'Google Doc' } as SupportedResource
+    const vendor = { ...google, supportedResources: [titled] } as GatekeeperVendorInfo
+    expect(accessNames(['docs', 'sheets'], vendor)).toEqual(['Google Doc'])
+    expect(accessNames(['docs'], vendor, account(7, { supportedResources: [{ ...titled, title: 'Doc' } as SupportedResource] }))).toEqual(['Doc'])
+    expect(accessNames(['docs'], undefined)).toEqual([])
   })
 })

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, Link } from '@tanstack/react-router'
 import { Checkbox, Input, Tabs } from '@cloudflare/kumo'
 import { CaretLeftIcon, CirclesFourIcon, FileTextIcon, MagnifyingGlassIcon, PlusIcon, PresentationIcon, SignOutIcon, TableIcon } from '@phosphor-icons/react'
 import { Composer } from '@/blocks/Composer'
@@ -284,6 +284,10 @@ function Gallery() {
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-8 p-8">
       <h1 className="text-xl font-medium">Components</h1>
+      <p className="text-sm text-kumo-subtle">
+        Whole pages, over a fake backend:{' '}
+        <Link to="/gallery/no-access" className="underline underline-offset-2">opening a link to an app without access</Link>
+      </p>
       <Section title="Button">
         <Button>Refactor conditional rendering logic</Button>
         <Button icon={CaretLeftIcon}>Back to chat</Button>

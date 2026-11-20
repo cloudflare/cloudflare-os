@@ -1,16 +1,18 @@
 import { RpcTarget, newMessagePortRpcSession, type RpcStub } from 'capnweb'
-import type {
-  AiChatAuthorInfo,
-  AiChatMetadata,
-  AiChatSubscriber,
-  ConsoleLogEvent,
-  GadgetUpstream,
-  Overseer,
-  PresenceParticipant,
-  PresenceSubscriber,
-  UiBundle,
-  WorkpieceSummary,
-  WorkpiecesSubscriber,
+import {
+  getOpenWorkspaceErrorCode,
+  OPEN_WORKSPACE_ERROR_CODES,
+  type AiChatAuthorInfo,
+  type AiChatMetadata,
+  type AiChatSubscriber,
+  type ConsoleLogEvent,
+  type GadgetUpstream,
+  type Overseer,
+  type PresenceParticipant,
+  type PresenceSubscriber,
+  type UiBundle,
+  type WorkpieceSummary,
+  type WorkpiecesSubscriber,
 } from '@gadgets/workshop-shared/api'
 import type { CodeChange } from '@gadgets/workshop-shared/code-change'
 import { GadgetFrameRoot, HANDSHAKE_MESSAGE, WorkshopGadgetHost, gadgetPage, logLocation } from './gadgetSandbox'
@@ -25,7 +27,11 @@ export type GadgetUi =
   | { status: 'ready'; page: string; load: number }
   /** The gadget has no UI: it is new, or an agent with no code. */
   | { status: 'none' }
-  | { status: 'failed'; message: string }
+  /**
+   * It could not be loaded, and why: `refused` where its workspace does not let the viewer in, and
+   * `gone` where there is no such workspace, as one that was deleted.
+   */
+  | { status: 'failed'; message: string; reason?: 'refused' | 'gone' }
 
 export type GadgetSnapshot = {
   ui: GadgetUi
@@ -84,6 +90,11 @@ export type GadgetConnectionOptions = {
    * what is shown stays as it is, and `reconnect()` follows once it is back.
    */
   connection?: { readonly down: boolean }
+  /**
+   * Whether loading it waits on the viewer, as while they are asked to confirm their access to it:
+   * meanwhile it takes as long as it takes, rather than timing out.
+   */
+  waitsOnViewer?: () => boolean
 }
 
 // Not a latency budget: past this, the reply is taken to be never coming, and a retry is offered.
@@ -358,7 +369,11 @@ export class GadgetConnection {
       const bundle = await Promise.race([
         this.#gadget!.getUiBundle(this.options.chatId),
         new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new Error('Timed out loading this view.')), UI_TIMEOUT)
+          const expire = () => {
+            if (this.options.waitsOnViewer?.()) timer = setTimeout(expire, UI_TIMEOUT)
+            else reject(new Error('Timed out loading this view.'))
+          }
+          timer = setTimeout(expire, UI_TIMEOUT)
         }),
       ])
       if (!current()) return
@@ -371,7 +386,9 @@ export class GadgetConnection {
       // Still loading, or showing what it did, until the connection is back.
       if (!current() || this.options.connection?.down) return
       this.#unlink()
-      this.#publish({ ui: { status: 'failed', message: messageOf(error) } })
+      const code = getOpenWorkspaceErrorCode(error)
+      const reason = code === OPEN_WORKSPACE_ERROR_CODES.workspaceAccessDenied ? 'refused' : code === OPEN_WORKSPACE_ERROR_CODES.workspaceNotFound ? 'gone' : undefined
+      this.#publish({ ui: { status: 'failed', message: messageOf(error), ...(reason ? { reason } : {}) } })
     } finally {
       clearTimeout(timer)
     }

@@ -18,6 +18,7 @@ import { Route as AppConnectionsRouteImport } from './routes/_app/connections'
 import { Route as AppSettingsRouteImport } from './routes/_app/settings'
 import { Route as AppWorkspacesRouteImport } from './routes/_app/workspaces'
 import { Route as ConnectHandoffRouteImport } from './routes/connect.handoff'
+import { Route as GalleryNoAccessRouteImport } from './routes/gallery_.no-access'
 import { Route as MockIndexRouteImport } from './routes/mock.index'
 import { Route as MockScenarioRouteImport } from './routes/mock.$scenario'
 import { Route as AppAppItemIdRouteImport } from './routes/_app/app.$itemId'
@@ -76,6 +77,11 @@ const AppWorkspacesRoute = AppWorkspacesRouteImport.update({
 const ConnectHandoffRoute = ConnectHandoffRouteImport.update({
   id: '/connect/handoff',
   path: '/connect/handoff',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const GalleryNoAccessRoute = GalleryNoAccessRouteImport.update({
+  id: '/gallery_/no-access',
+  path: '/gallery/no-access',
   getParentRoute: () => rootRouteImport,
 } as any)
 const MockIndexRoute = MockIndexRouteImport.update({
@@ -171,6 +177,7 @@ export interface FileRoutesByFullPath {
   '/settings': typeof AppSettingsRoute
   '/workspaces': typeof AppWorkspacesRoute
   '/connect/handoff': typeof ConnectHandoffRoute
+  '/gallery/no-access': typeof GalleryNoAccessRoute
   '/mock/$scenario': typeof MockScenarioRoute
   '/mock/': typeof MockIndexRoute
   '/app/$itemId': typeof AppAppItemIdRoute
@@ -195,6 +202,7 @@ export interface FileRoutesByTo {
   '/settings': typeof AppSettingsRoute
   '/workspaces': typeof AppWorkspacesRoute
   '/connect/handoff': typeof ConnectHandoffRoute
+  '/gallery/no-access': typeof GalleryNoAccessRoute
   '/mock/$scenario': typeof MockScenarioRoute
   '/': typeof AppIndexRoute
   '/mock': typeof MockIndexRoute
@@ -222,6 +230,7 @@ export interface FileRoutesById {
   '/_app/settings': typeof AppSettingsRoute
   '/_app/workspaces': typeof AppWorkspacesRoute
   '/connect/handoff': typeof ConnectHandoffRoute
+  '/gallery_/no-access': typeof GalleryNoAccessRoute
   '/mock/$scenario': typeof MockScenarioRoute
   '/_app/': typeof AppIndexRoute
   '/mock/': typeof MockIndexRoute
@@ -250,6 +259,7 @@ export interface FileRouteTypes {
     | '/settings'
     | '/workspaces'
     | '/connect/handoff'
+    | '/gallery/no-access'
     | '/mock/$scenario'
     | '/mock/'
     | '/app/$itemId'
@@ -274,6 +284,7 @@ export interface FileRouteTypes {
     | '/settings'
     | '/workspaces'
     | '/connect/handoff'
+    | '/gallery/no-access'
     | '/mock/$scenario'
     | '/'
     | '/mock'
@@ -300,6 +311,7 @@ export interface FileRouteTypes {
     | '/_app/settings'
     | '/_app/workspaces'
     | '/connect/handoff'
+    | '/gallery_/no-access'
     | '/mock/$scenario'
     | '/_app/'
     | '/mock/'
@@ -323,6 +335,7 @@ export interface RootRouteChildren {
   GalleryRoute: typeof GalleryRoute
   SignupRoute: typeof SignupRoute
   ConnectHandoffRoute: typeof ConnectHandoffRoute
+  GalleryNoAccessRoute: typeof GalleryNoAccessRoute
   MockScenarioRoute: typeof MockScenarioRoute
   MockIndexRoute: typeof MockIndexRoute
 }
@@ -390,6 +403,13 @@ declare module '@tanstack/react-router' {
       path: '/connect/handoff'
       fullPath: '/connect/handoff'
       preLoaderRoute: typeof ConnectHandoffRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/gallery_/no-access': {
+      id: '/gallery_/no-access'
+      path: '/gallery/no-access'
+      fullPath: '/gallery/no-access'
+      preLoaderRoute: typeof GalleryNoAccessRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/mock/': {
@@ -552,6 +572,7 @@ const rootRouteChildren: RootRouteChildren = {
   GalleryRoute: GalleryRoute,
   SignupRoute: SignupRoute,
   ConnectHandoffRoute: ConnectHandoffRoute,
+  GalleryNoAccessRoute: GalleryNoAccessRoute,
   MockScenarioRoute: MockScenarioRoute,
   MockIndexRoute: MockIndexRoute,
 }

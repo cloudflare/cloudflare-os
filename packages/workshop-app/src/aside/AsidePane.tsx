@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type RefObject } from 'react'
+import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { useNavigate, useRouter } from '@tanstack/react-router'
 import { useGadgetAgents } from '@/automations/useGadgetAgents'
 import { cn } from '@cloudflare/kumo/utils'
@@ -8,11 +8,12 @@ import { GadgetFrame } from '@/blocks/GadgetFrame'
 import { UiUnderway } from '@/blocks/UiUnderway'
 import { PaneNotice } from '@/blocks/PaneNotice'
 import { PaneStatus } from '@/blocks/PaneStatus'
+import { TemplateOffer } from '@/blocks/TemplateOffer'
 import { SidePane, type SidePaneItem } from '@/blocks/SidePane'
 import { WorktreeView } from '@/blocks/WorktreeView'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { usePointerNearTop } from '@/hooks/usePointerNearTop'
-import { accessNotConfirmed, useAskAccessAgain } from '@/connections/ObserverAccessProvider'
+import { accessNotConfirmed, useAccessQuestion, useAskAccessAgain } from '@/connections/ObserverAccessProvider'
 import type { CodeLines } from '@/components/CodeEditor'
 import { agentKeyOf } from '@/automations/agents'
 import { historyEntry } from '@/gadgets/codeHistory'
@@ -165,8 +166,13 @@ export const AsidePane = (props: AsidePaneProps) => {
   const page = link && new URL(link)
   if (page) page.search = ''
   const builds = item.kind === 'output' && item.output.type !== 'worktree' && listed !== undefined && listed.role !== 'use' ? { output: item.output, workspace: listed } : undefined
-  // Where it stands as a template, which the Share menu's item says. Read again once the dialog that changes it has closed.
-  const made = useMadeTemplates(builds?.output.workspaceId, creating === true)
+  // Opening it asks the user to confirm their access, which is asked here, as the pane.
+  const question = useAccessQuestion(gadget, title, snapshot.ui.status === 'loading')
+  // It can't be opened as it is: not theirs to open, gone, or waiting on them to confirm their access.
+  const blocked = gadget !== undefined && (question !== null || (snapshot.ui.status === 'failed' && (snapshot.ui.reason !== undefined || accessNotConfirmed(snapshot.ui.message))))
+  // Where it stands as a template, which the Share menu's item says, and which is offered where it
+  // can't be opened, where the workspace says. Read again once the dialog that changes it has closed.
+  const made = useMadeTemplates(builds?.output.workspaceId ?? (blocked ? gadget?.workspaceId : undefined), creating === true)
   const stands: 'none' | 'changes' | 'current' = !made.templates || made.templates.length === 0 ? 'none' : made.templates.some(({ changes }) => changes) ? 'changes' : 'current'
   const templateId = made.templates?.[0]?.id
   const share = builds && (
@@ -205,7 +211,16 @@ export const AsidePane = (props: AsidePaneProps) => {
     <>
       {/* One or the other, never both: the gadget is hidden, not gone, while its code is shown, so it keeps running. */}
       <div className={cn('min-h-0 flex-1 flex-col', viewingCode ? 'hidden' : 'flex')}>
-        <GadgetView key={item.key} title={title} ui={snapshot.ui} frame={frame} onReload={connection?.reload} onAskAccess={connection && (() => { askAccessAgain(); connection.reconnect() })} />
+        <GadgetView
+          key={item.key}
+          title={title}
+          ui={snapshot.ui}
+          frame={frame}
+          question={question}
+          offer={blocked && templateId ? () => void navigate({ to: '/library/templates/$templateId', params: { templateId } }) : undefined}
+          onReload={connection?.reload}
+          onAskAccess={connection && (() => { askAccessAgain(); connection.reconnect() })}
+        />
       </div>
       {viewingCode && gadget && (
         <div className="flex min-h-0 flex-1 flex-col">
@@ -385,17 +400,32 @@ const NEAR_TOP = 100
 
 const NO_GADGETS: number[] = []
 
-const GadgetView = ({ title, ui, frame, onReload, onAskAccess }: {
+const GadgetView = ({ title, ui, frame, question, offer, onReload, onAskAccess }: {
   title: string
   ui: GadgetUi
   frame: RefObject<HTMLIFrameElement | null>
+  /** What its opening asks the user, as the pane, while it loads (`useAccessQuestion`). */
+  question?: ReactNode
+  /** Goes to the template made from it, offered at the top where it can't be opened. */
+  offer?: () => void
   onReload?: () => void
   /** Opens it again, asking the user to confirm their access, which they did not. */
   onAskAccess?: () => void
 }) => {
+  const body = gadgetBody({ title, ui, frame, question, onReload, onAskAccess })
+  if (!offer) return body
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex shrink-0 justify-center px-4 pt-4"><TemplateOffer onOpen={offer} /></div>
+      {body}
+    </div>
+  )
+}
+
+const gadgetBody = ({ title, ui, frame, question, onReload, onAskAccess }: Omit<Parameters<typeof GadgetView>[0], 'offer'>) => {
   switch (ui.status) {
     case 'loading':
-      return <PaneNotice title="Loading…" />
+      return question || <PaneNotice title="Loading…" />
     case 'none':
       return <UiUnderway title="Its UI shows here" description="As soon as the gadget builds one." />
     case 'failed':

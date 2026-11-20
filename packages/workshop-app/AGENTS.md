@@ -8,7 +8,7 @@ Follow `../../AGENTS.md` and the `frontend-conventions` skill in addition to thi
 Dev server: `pnpm --filter @gadgets/workshop-app dev` (port 3001; the old frontend uses 3000).
 `src/routeTree.gen.ts` is generated and committed, like the old app's; do not edit it.
 
-The gallery (`/gallery`) and the scripted chats (`/mock/*`) are for development only, and a build
+The gallery (`/gallery`, and its whole pages at `/gallery/*`) and the scripted chats (`/mock/*`) are for development only, and a build
 leaves them out: `vite.config.ts` has the router plugin skip their route files for the tree a build
 uses, which it generates outside `src/` so the committed one stays whole. Nothing they import is
 bundled, so keep anything only they need (fakes, previews) out of what ships. The dev auto-login is
@@ -1183,12 +1183,32 @@ which goes on to a page of its own listing each once under its service's logo, h
 connections read it (`protectedResources`, by its address, else its title): what whoever it is
 shared with will be asked about. They are asked as they open it (`connections/ObserverAccessProvider`,
 beneath `RpcGate`, which hands every `openWorkspace()` and `getGadget()` the overseer's
-`ObserverConfigCallback`), in `ConfirmAccessDialog`: each resource once with the account to show it
-with, a choice of theirs, or the way to connect one, what would make the one chosen do, and, asked
-again, why it was refused. Only the workspace on screen asks (`viewedWorkspace`): those the sidebar
-and the sweeps open in the background are refused, as is what the user cancelled, until they ask
-again. A gadget that was not confirmed says so in its pane, with Confirm access, which asks again
+`ObserverConfigCallback`), by `ConfirmAccessForm`, never in a dialog: as the page, in the pane of
+the gadget being opened, which shows it while it loads (`useAccessQuestion`), or, where no pane is
+showing one of that workspace's, as the whole window, as the first run is, with the app kept out
+of sight under it and Cancel, its only way out. Each resource once with the account to show it with,
+a choice of theirs, or the way to connect one, what would make the one chosen do, and, asked again,
+which were refused; on a phone, a card for each service instead, its account and what is to be done
+about it once for the resources it reads, which are chips under it. Only the workspace on screen asks (`viewedWorkspace`): those the sidebar and the
+sweeps open in the background are refused, as is what the user cancelled, until they ask again, and
+going to another workspace leaves what it asked unanswered, which is asked again on coming back. A
+gadget's loading waits on the answer as long as it takes (`GadgetConnection`'s `waitsOnViewer`). A
+gadget that was not confirmed says so in its pane, with Confirm access, which asks again
 (`useAskAccessAgain`).
+
+Where a gadget can't be opened, as its workspace does not let the viewer in or is gone
+(`GadgetUi`'s `reason`, from the open's error code), or they are yet to confirm their access, and a
+template was made from it, the top of its pane offers that (`TemplateOffer`), going to its page.
+The backend tells only whoever builds in a workspace of its templates (`listBlueprints()`), so
+today that is never someone who can't open the app: it is offered wherever it can be read.
+
+What a link to an app shows someone who can't simply open it is at `/gallery/no-access`
+(`?case=`, `&template=off`, development only): the real page in the app's frame, over a fake
+backend that refuses or asks as the real one does (`gallery/noAccessApi.ts`): not invited, a share
+link it no longer takes (`BrokenShareLink`), deleted, and shared to use with a dozen resources to
+confirm, first and again after an account was refused, with the real `ObserverAccessProvider`
+(given the workspace on screen as `viewing`, which the address does not say there), through to the
+app, and the template offered as it would be were the backend to say so.
 
 A workspace goes from the user's list from its page's Settings tab (`WorkspaceOptionsTab`), which
 also marks everything in it read, or from the More menu (`WorkspaceMoreMenu`) on its row or card on
