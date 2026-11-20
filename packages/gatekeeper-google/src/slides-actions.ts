@@ -17,6 +17,7 @@ import {
   buildDescription, codeSpan, plainInline, sanitizeTitle,
 } from "@gadgets/gatekeeper-kit/action-description";
 import type { ActionKind } from "@gadgets/workshop-shared/gatekeeper";
+import { isUnsentRequest } from "./auth-retry";
 import { obsContext } from "./observability";
 import { SlidesWriteRefused, type GoogleSlidesApi, type RestSlide } from "./slides-api";
 import {
@@ -175,6 +176,9 @@ async function write(
       await host.api.batchUpdate(host.presentationId, current.requests, current.revisionId);
       return;
     } catch (error) {
+      // Never sent, its token not to be had: unless an earlier dispatch's outcome is unknown,
+      // nothing can have landed, and the action stays pending for its next approval.
+      if (isUnsentRequest(error) && !sent) throw error;
       if (!(error instanceof SlidesWriteRefused)) {
         sent = current;
         continue;
