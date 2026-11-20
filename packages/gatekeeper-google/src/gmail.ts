@@ -24,7 +24,7 @@ import type {
   EmailAddress, EmailContent, GmailAttachment, GmailAttachmentEntry, GmailAttachmentInfo, GmailAttachmentInput,
   GmailComposeOptions, GmailCustomLabel,
   GmailDraft, GmailDraftAttachment, GmailDraftAttachmentEntry, GmailDraftEntry, GmailDraftInfo, GmailDraftInput, GmailDraftPatch, GmailHeader,
-  GmailLabel, GmailMessage, GmailMessageEntry, GmailMessageInfo, GmailMutableLabel, GmailPdfText,
+  GmailGroupSession, GmailLabel, GmailMessage, GmailMessageEntry, GmailMessageInfo, GmailMutableLabel, GmailPdfText,
   GmailReplyOptions, GmailScopedSession, GmailSession, GmailSystemLabel, GmailThread, GmailThreadEntry,
   GmailThreadInfo,
 } from "./types";
@@ -71,6 +71,14 @@ import {
   type PdfRangeReader, type PdfRead,
 } from "./drive-pdf";
 import {forwardRangeReader, type PdfOpener} from "./pdf-forward-reader";
+import {
+  GmailGroupGone, GmailGroupHookDelivery, GmailGroupSessionImpl, GmailGroupState, type GmailGroupContext,
+  type GmailGroupReadContext,
+} from "./gmail-group";
+import {
+  CloudIdentityApi, CloudIdentityApiError, GROUP_NAME_PREFIX, validateGroupName, type CloudIdentityGroup,
+} from "./cloud-identity-api";
+import {groupResourceUrl} from "./resources";
 import TYPES_CODE from "./types.txt";
 
 type Env = Cloudflare.Env & PushHooksEnv;
@@ -97,7 +105,14 @@ export type GmailGatekeeperImplProps = {
   userObjectId: string;
   searchQuery?: string;
   labelName?: string;
+  /** Shares the mail addressed to this Google Group with the group's members; see gmail-group.ts. */
+  groupAddress?: string;
+  /** With `groupAddress`: the group takes mail from outside its domain (see gmail-group-admission.ts). */
+  groupOutsideSenders?: true;
 };
+
+/** How long a group binding's session reads on before asking again whether the group's addresses still stand. */
+const GROUP_REVALIDATE_MS = 5_000;
 
 /** The namespace of the subresource IDs Gmail reads report. */
 export const GMAIL_SUBRESOURCE_NAMESPACE = "gmail";
@@ -114,14 +129,36 @@ function gmailUserSubresourceId(subject: string): string {
   });
 }
 
-/** The Google account subject a {@link gmailUserSubresourceId} ID names; throws for any other ID. */
-export function parseGmailUserSubresource(id: string): string {
+/**
+ * The subresource ID every read through a Google Group binding reports instead:
+ * `gmail/group/<groupId>`, naming the group by its Cloud Identity resource name (`groups/<groupId>`),
+ * which no other group ever takes. The group's mail is its members', so an observer whose own
+ * account is a direct member can read it.
+ */
+function gmailGroupSubresourceId(group: CloudIdentityGroup): string {
+  return formatSubresourceId({
+    namespace: GMAIL_SUBRESOURCE_NAMESPACE,
+    fragments: [{name: "group", id: group.name.slice(GROUP_NAME_PREFIX.length)}],
+  });
+}
+
+/**
+ * What a Gmail read can depend on: the mailbox's owner (see gmailUserSubresourceId), or on a Google
+ * Group binding the group (see gmailGroupSubresourceId).
+ */
+export type GmailSubresource =
+  | {kind: "gmailUser"; subject: string}
+  | {kind: "gmailGroup"; groupName: string};
+
+/** What a Gmail subresource ID names; throws for any other ID. */
+export function parseGmailSubresource(id: string): GmailSubresource {
   const {namespace, fragments} = parseSubresourceId(id);
-  if (namespace !== GMAIL_SUBRESOURCE_NAMESPACE || fragments.length !== 1 ||
-      fragments[0].name !== "user") {
-    throw new Error("Not a Gmail user subresource ID.");
+  if (namespace === GMAIL_SUBRESOURCE_NAMESPACE && fragments.length === 1) {
+    const [{name, id: value}] = fragments;
+    if (name === "user") return {kind: "gmailUser", subject: value};
+    if (name === "group") return {kind: "gmailGroup", groupName: validateGroupName(GROUP_NAME_PREFIX + value)};
   }
-  return fragments[0].id;
+  throw new Error("Not a Gmail subresource ID.");
 }
 
 type GmailSourceAttachment = GmailForwardSnapshotReference & {
@@ -3898,6 +3935,9 @@ class GmailPendingMessageStub extends ApprovalQueueRpcTarget implements GmailMes
   }
 }
 
+/** What an attachment's capability needs of its binding, a Google Group's included. */
+type GmailAttachmentContext = Pick<GmailContext, "approvalQueue" | "convertPdf">;
+
 /** Opens an attachment's bytes from their start, as a stream that is read only as it is read. */
 type AttachmentOpener = () => Promise<ReadableStream<Uint8Array>>;
 
@@ -3945,14 +3985,14 @@ function storedAttachmentOpener(read: () => Promise<ArrayBuffer>, size: number):
 
 @validateRpc()
 class GmailAttachmentStub extends ApprovalQueueRpcTarget implements GmailAttachment {
-  #ctx: GmailContext;
+  #ctx: GmailAttachmentContext;
   #info: GmailAttachmentInfo;
   #read: () => Promise<ArrayBuffer>;
   #open: AttachmentOpener;
   #validate?: () => void;
 
   constructor(
-      ctx: GmailContext, info: GmailAttachmentInfo, read: () => Promise<ArrayBuffer>,
+      ctx: GmailAttachmentContext, info: GmailAttachmentInfo, read: () => Promise<ArrayBuffer>,
       open: AttachmentOpener, validate?: () => void) {
     super(ctx.approvalQueue);
     this.#ctx = ctx;
@@ -4974,7 +5014,7 @@ async function existingMessageIds(api: GmailApi, ids: readonly string[]): Promis
 
 @validateRpc()
 export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplProps>
-    implements Gatekeeper<GmailScopedSession | GmailSession> {
+    implements Gatekeeper<GmailScopedSession | GmailSession | GmailGroupSession> {
   #applying = new Set<number>();
   #verifiedToken?: string;
   #subjectToken?: string;
@@ -5051,6 +5091,19 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
   }
 
   async describe(): Promise<ResourceDescription> {
+    if (this.ctx.props.groupAddress !== undefined) {
+      const address = this.ctx.props.groupAddress;
+      const outside = this.ctx.props.groupOutsideSenders === true;
+      return {
+        url: groupResourceUrl(address, outside),
+        title: `Google Group: ${address}`,
+        snippet: `Mail addressed to ${address}${outside ? ", from outside the organization included" : ""}, ` +
+          "readable by the group's members",
+        suggestedBindingName: "GMAIL_GROUP",
+        tsType: "GmailGroupSession",
+        hookTsType: "GmailGroupMessageHook",
+      };
+    }
     if (this.ctx.props.labelName !== undefined) {
       validateGmailLabelName(this.ctx.props.labelName);
       return {
@@ -5084,17 +5137,27 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
 
   async getTypeScriptTypes(): Promise<string> { return TYPES_CODE; }
   async getAutoApprovableActions(): Promise<ActionKind[]> {
+    if (this.ctx.props.groupAddress !== undefined) return [];
     return [...actionKinds(MESSAGE_MUTATION_LABELS), ...actionKinds(RESOURCE_ACTION_LABELS)];
   }
 
   async startSession(
       approvalQueue: RpcStub<ApprovalQueue>,
-  ): Promise<GmailScopedSession | GmailSession> {
+  ): Promise<GmailScopedSession | GmailSession | GmailGroupSession> {
+    if (this.ctx.props.groupAddress !== undefined) {
+      return new GmailGroupSessionImpl(this.#groupContext(await this.#groupReadContext(), approvalQueue));
+    }
     const ctx = this.#context(await this.#readContext(), approvalQueue);
     return ctx.restricted ? new GmailScopedSessionImpl(ctx) : new GmailSessionImpl(ctx);
   }
 
   [restore](params: GmailHookParams): GmailHookDelivery {
+    if (this.ctx.props.groupAddress !== undefined) {
+      if (params.threadId !== undefined) throw new TypeError("A group binding has no thread hooks.");
+      return new GmailGroupHookDelivery(
+        () => this.#groupReadContext(), () => this.#pinnedGroupReadContext(),
+        (read, approvalQueue) => this.#groupContext(read, approvalQueue));
+    }
     // The binding's own props decide admission; `params` can only narrow it to a thread.
     if (params.threadId !== undefined && !GMAIL_PROVIDER_ID_RE.test(params.threadId)) {
       throw new TypeError("Invalid Gmail thread ID.");
@@ -5165,7 +5228,116 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
     });
   }
 
+  /**
+   * The group, as Cloud Identity names it now. Pinned by its resource name on first use, so a group
+   * deleted and recreated at the same address is refused rather than taken for the original.
+   */
+  async #groupReadContext(): Promise<GmailGroupReadContext> {
+    const address = this.ctx.props.groupAddress!;
+    const {email: selfEmail} = await this.#getAccount();
+    const identity = new CloudIdentityApi(opts => this.#getAccessToken(opts));
+    const state = new GmailGroupState(this.ctx.storage);
+    const pinned = state.pinnedGroup;
+    let group: CloudIdentityGroup;
+    try {
+      group = pinned ? await identity.getGroup(pinned.name) : await identity.lookupGroup(address);
+    } catch (error) {
+      // A connection whose account has since withdrawn the Google Group grant.
+      if (error instanceof CloudIdentityApiError && error.reason === "ACCESS_TOKEN_SCOPE_INSUFFICIENT") {
+        throw new Error("This account no longer lets this app see its groups. Connect the group again.", {cause: error});
+      }
+      // The pinned group's own name answers 404 only once the group is deleted. Remembered, so
+      // hook screening stops taking the owner's mail for its.
+      if (pinned && error instanceof CloudIdentityApiError && error.status === 404) {
+        state.markGone();
+        throw new GmailGroupGone();
+      }
+      throw error;
+    }
+    if (group.address !== address) {
+      throw new Error("The connected Google Group now answers at another address. Connect it again.");
+    }
+    // Kept current for hook screening, which reads the group from here.
+    state.pinGroup(group);
+    let checked = Date.now();
+    const revalidate = async (force = false) => {
+      if (!force && Date.now() - checked < GROUP_REVALIDATE_MS) return;
+      const now = await identity.getGroup(group.name);
+      if (now.address !== group.address || now.aliases.toSorted().join() !== group.aliases.toSorted().join()) {
+        throw new Error("The connected Google Group's addresses have changed. Start again.");
+      }
+      checked = Date.now();
+    };
+    return {
+      api: new GmailApi(selfEmail, opts => this.#getAccessToken(opts)), group: this.#bound(group), revalidate,
+    };
+  }
+
+  /**
+   * The group as {@link #groupReadContext} last resolved it and the mailbox as {@link #getAccount}
+   * last verified it, with no Google request. For screening, which `deliver` re-checks in full.
+   */
+  async #pinnedGroupReadContext(): Promise<GmailGroupReadContext> {
+    const state = new GmailGroupState(this.ctx.storage);
+    if (state.gone) throw new GmailGroupGone();
+    const group = state.pinnedGroup;
+    const selfEmail = this.ctx.storage.kv.get<string>("selfEmail");
+    if (!group || !selfEmail) return await this.#groupReadContext();
+    return {
+      api: new GmailApi(selfEmail, opts => this.#getAccessToken(opts)), group: this.#bound(group),
+      // Screening decides only whether to start a firing; the delivery resolves the group again.
+      revalidate: async () => {},
+    };
+  }
+
+  /** `group` with what this binding's own URL says of it. */
+  #bound(group: CloudIdentityGroup): GmailGroupReadContext["group"] {
+    return {...group, outsideSenders: this.ctx.props.groupOutsideSenders === true};
+  }
+
+  #groupContext(read: GmailGroupReadContext, approvalQueue: RpcStub<ApprovalQueue>): GmailGroupContext {
+    const attachments: GmailAttachmentContext = {
+      approvalQueue: new SharedApprovalQueue(approvalQueue.dup(), [gmailGroupSubresourceId(read.group)]),
+      convertPdf: pdfConverter(this.env, GMAIL_PDF),
+    };
+    const ctx: GmailGroupContext = {
+      ...read,
+      approvalQueue: attachments.approvalQueue,
+      subscribe: hook => this.#groupSubscribe(ctx, hook),
+      attachment: (snapshot, readmit) => new GmailAttachmentStub(
+        attachments, snapshot.info,
+        async () => {
+          await readmit();
+          return await read.api.getAttachmentContent(snapshot);
+        },
+        async () => {
+          await readmit();
+          return await read.api.openAttachmentContent(snapshot);
+        }),
+    };
+    return ctx;
+  }
+
+  async #groupSubscribe(ctx: GmailGroupContext, hook: RpcStub<GmailMessageHookTarget>): Promise<void> {
+    if (!gmailHooksConfigured(this.env)) throw new Error("Gmail hooks are not configured on this deployment.");
+    const {emailAddress} = await ctx.api.getProfile();
+    using delivery: RpcStub<GmailHookDelivery> = await this.ctx.restore({});
+    const controller = this.ctx.exports.GmailHookController({props: {
+      key: crypto.randomUUID(),
+      mailbox: emailAddress.toLowerCase(),
+      userObjectId: this.ctx.props.userObjectId,
+      screened: true,
+      delivery,
+    }});
+    await ctx.approvalQueue.bindHook(controller, hook, {
+      title: `Watch for new ${ctx.group.address} mail`,
+      description: `Call this hook with each new message sent to ${ctx.group.address}, letting it ` +
+        "read that message.",
+    });
+  }
+
   async applyAction(actionId: number, _cache: RpcStub<GitCache>): Promise<void> {
+    if (this.ctx.props.groupAddress !== undefined) throw new Error("A Google Group binding has no actions.");
     const store = new GmailStore(this.ctx.storage);
     const initialAction = store.getAction(actionId);
     if (!initialAction) throw new Error(`Unknown pending Gmail action: ${actionId}`);
@@ -5670,10 +5842,13 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
   }
 
   /**
-   * Refuses every observer: reads made before reads reported their owner's account recorded
-   * nothing to check an observer against.
+   * Refuses every observer of a mailbox, label or search binding: reads made before reads reported
+   * their owner's account recorded nothing to check an observer against. A Google Group binding has
+   * no such reads, every one of its having reported the group, so it leaves the check to
+   * verifyObserverAccess.
    */
   async addObserver(_id: string, _user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
+    if (this.ctx.props.groupAddress !== undefined) return;
     throw new Error(
       "Gmail data is private to the connected account owner and cannot be shared with observers.");
   }
@@ -5681,14 +5856,18 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
   async removeObserver(_id: string): Promise<void> {}
 
   /**
-   * Checks the `gmail/user/<sub>` subresource every read reports, failing the whole call for any
-   * other ID. An observer is allowed only when their account is that same Google account, as their
-   * UserAccount answers (see UserAccount.checkSubresourceAccess).
+   * Checks the subresource every read reports, `gmail/group/<groupId>` on a Google Group binding
+   * and `gmail/user/<sub>` on any other, failing the whole call for any other ID. An observer is
+   * allowed only when their own account is a direct member of that group, or is that same Google
+   * account, as their UserAccount answers (see UserAccount.checkSubresourceAccess).
    */
   async verifyObserverAccess(
       observers: {id: string; verifier: Fetcher<GatekeeperUserVerifier>}[],
       subresources: string[]): Promise<{allowedObserverIds: string[]}> {
-    for (const id of subresources) parseGmailUserSubresource(id);
+    const reported = this.ctx.props.groupAddress !== undefined ? "gmailGroup" : "gmailUser";
+    for (const id of subresources) {
+      if (parseGmailSubresource(id).kind !== reported) throw new Error("Not a subresource this Gmail binding reports.");
+    }
     return verifyGoogleSubresourceAccess(observers, subresources);
   }
 }

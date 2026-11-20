@@ -260,6 +260,13 @@ export async function getGoogleAccountDescription(accessToken: string)
  * verified (`email_verified`). Returns null otherwise, so the Workshop never keys an account by an
  * unverified address.
  */
+/** Google's userinfo endpoint refused the token. */
+export class GoogleUserInfoError extends Error {
+  constructor(readonly status: number, statusText: string) {
+    super(`Failed to fetch user info: ${status} ${statusText}`);
+  }
+}
+
 export async function getGoogleVerifiedEmail(accessToken: string): Promise<string | null> {
   const response = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
     method: 'GET',
@@ -271,7 +278,7 @@ export async function getGoogleVerifiedEmail(accessToken: string): Promise<strin
 
   if (!response.ok) {
     response.body?.cancel();
-    throw new Error(`Failed to fetch user info: ${response.status} ${response.statusText}`);
+    throw new GoogleUserInfoError(response.status, response.statusText);
   }
 
   let data: any = await response.json();
@@ -1986,12 +1993,12 @@ async function gmailApiFailure(operation: string, response: Response): Promise<n
   throw new GmailApiError(response.status, operation, providerReasons);
 }
 
-function headerValue(
+export function headerValue(
     headers: Array<{name: string; value: string}> | undefined, name: string): string | undefined {
   return headers?.find(header => header.name.toLowerCase() === name.toLowerCase())?.value;
 }
 
-function parseAddressHeader(value: string | undefined): EmailAddress[] {
+export function parseAddressHeader(value: string | undefined): EmailAddress[] {
   return value ? postalAddressListToEmailAddresses(parseAddressList(value)) : [];
 }
 
@@ -2784,6 +2791,30 @@ export class GmailApi {
     const response = await this.authedFetch(url.toString());
     if (!response.ok) await gmailApiFailure("messages.get", response);
     return await response.json() as GmailMessageFull;
+  }
+
+  /** Fetch only the named headers, every instance in message order, and the labels. */
+  async getMessageHeaders(messageId: string, names: readonly string[]): Promise<GmailMessageFull> {
+    validateGmailId(messageId, "message ID");
+    const url = new URL(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}`);
+    url.searchParams.set("format", "metadata");
+    for (const name of names) url.searchParams.append("metadataHeaders", name);
+    const response = await this.authedFetch(url.toString());
+    if (!response.ok) await gmailApiFailure("messages.get", response);
+    return await response.json() as GmailMessageFull;
+  }
+
+  /** Every message in a thread with only the named headers, as {@link getMessageHeaders} fetches one. */
+  async getThreadHeaders(threadId: string, names: readonly string[]): Promise<GmailMessageFull[]> {
+    validateGmailId(threadId, "thread ID");
+    const url = new URL(`https://gmail.googleapis.com/gmail/v1/users/me/threads/${threadId}`);
+    url.searchParams.set("format", "metadata");
+    for (const name of names) url.searchParams.append("metadataHeaders", name);
+    const response = await this.authedFetch(url.toString());
+    if (!response.ok) await gmailApiFailure("threads.get", response);
+    const thread = await response.json() as {id?: string; messages?: GmailMessageFull[]};
+    if (thread.id !== threadId) throw new Error("Gmail returned a different thread.");
+    return thread.messages ?? [];
   }
 
   /** Fetch the MIME tree while leaving detached attachment data lazy. */

@@ -10,6 +10,7 @@ import { findResourceType } from "@gadgets/workshop-shared/gatekeeper";
 import type { AvatarImage, SupportedResource } from "@gadgets/workshop-shared/gatekeeper";
 import type { CalendarAvailabilityMode } from "./calendar-types";
 import { validateChatSpaceId, validateChatThreadId } from "./chat-api";
+import { validateGroupMemberAddress } from "./cloud-identity-api";
 import { validateGmailLabelName, validateGmailQueryForGrouping } from "./gmail-validate";
 
 /** Host serving the synthetic BigQuery resource URLs. */
@@ -32,6 +33,25 @@ export const GMAIL_RESOURCE: SupportedResource = {
   urlPattern: "https://mail.google.com/*",
   title: "Gmail Mailbox",
   description: "Read email and, after approval, send or manage messages, drafts, and labels.",
+  grantable: true,
+};
+
+/**
+ * Mail addressed to one Google Group, read from the connected account's own mailbox and shareable
+ * with the group's members (see `gmail-group.ts`).
+ *
+ * Its only scope is Cloud Identity's: the owner reads the mail with the Gmail grant they hold
+ * already, and a member who opens a shared gadget needs nothing more than to show their own
+ * membership. Its own type, not a Gmail view, so an admin can switch it off alone and a member is
+ * never asked for Gmail access.
+ */
+export const GOOGLE_GROUP_RESOURCE: SupportedResource = {
+  id: "group",
+  urlPattern: "https://groups.google.com/a/:domain/g/:name",
+  title: "Google Group",
+  description:
+      "Read mail addressed to one Google Group you're in, from your own inbox. Can be shared with " +
+      "the group's members, who see only that mail.",
   grantable: true,
 };
 
@@ -316,6 +336,10 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
     ],
   },
   {
+    resource: GOOGLE_GROUP_RESOURCE,
+    scopes: ["https://www.googleapis.com/auth/cloud-identity.groups.readonly"],
+  },
+  {
     resource: GOOGLE_DOC_RESOURCE,
     scopes: [
       "https://www.googleapis.com/auth/documents",
@@ -471,12 +495,21 @@ export const CREATED_FILES_GRANT = "https://drive.google.com/drive/created-files
  */
 export const DRIVE_WRITES_GRANT = "https://drive.google.com/drive/writes";
 
+/**
+ * The grant a Google Group connection reads the owner's mail with: `gmail.readonly`, since the
+ * binding only reads. Private, as {@link OFFICE_IMPORT_GRANT} is, and asked for only by the Google
+ * Group dialog's Allow access button, from an owner who holds no Gmail Mailbox grant; one who does
+ * is never asked, since that grant's scopes read mail too.
+ */
+export const GROUP_MAIL_GRANT = "https://groups.google.com/mail";
+
 /** Grants requested and recorded like resources, but never bindable or shown to the Workshop. */
 const PRIVATE_GRANT_SCOPES: {urlPattern: string, scopes: string[]}[] = [
   { urlPattern: OFFICE_IMPORT_GRANT, scopes: [DRIVE_READONLY_SCOPE, DRIVE_FILE_SCOPE] },
   { urlPattern: SHARED_DRIVES_GRANT, scopes: [DRIVE_READONLY_SCOPE] },
   { urlPattern: CREATED_FILES_GRANT, scopes: [DRIVE_FILE_SCOPE] },
   { urlPattern: DRIVE_WRITES_GRANT, scopes: [DRIVE_READWRITE_SCOPE] },
+  { urlPattern: GROUP_MAIL_GRANT, scopes: ["https://www.googleapis.com/auth/gmail.readonly"] },
 ];
 
 /** Every grant's scopes, resources first: what consent asks for and what coverage is checked on. */
@@ -587,6 +620,12 @@ const SCOPE_COVERED_BY: Record<string, readonly string[]> = {
   "https://www.googleapis.com/auth/chat.users.readstate.readonly": [
     "https://www.googleapis.com/auth/chat.users.readstate",
   ],
+  "https://www.googleapis.com/auth/cloud-identity.groups.readonly": [
+    "https://www.googleapis.com/auth/cloud-identity.groups",
+  ],
+  "https://www.googleapis.com/auth/gmail.readonly": [
+    "https://www.googleapis.com/auth/gmail.modify", "https://mail.google.com/",
+  ],
 };
 
 function oauthScopeCovers(required: string, granted: ReadonlySet<string>): boolean {
@@ -691,6 +730,7 @@ export type DriveAccessLevel = "write";
 /** A resource URL resolved to the binding parameters its gatekeeper takes. */
 export type ResourceTarget =
   | { kind: "gmail"; searchQuery?: string; labelName?: string }
+  | { kind: "group"; groupAddress: string; outsideSenders?: true }
   | { kind: "doc"; documentId: string }
   | { kind: "sheets"; spreadsheetId: string }
   | { kind: "slides"; presentationId: string }
@@ -711,6 +751,7 @@ export type ResourceTarget =
 /** The grantable resource each {@link ResourceTarget} kind belongs to. */
 export const RESOURCE_BY_KIND: Record<ResourceTarget["kind"], SupportedResource> = {
   gmail: GMAIL_RESOURCE,
+  group: GOOGLE_GROUP_RESOURCE,
   doc: GOOGLE_DOC_RESOURCE,
   sheets: GOOGLE_SHEETS_RESOURCE,
   slides: GOOGLE_SLIDES_RESOURCE,
@@ -798,6 +839,7 @@ export function parseResourceUrl(url: string): ResourceTarget {
 
   switch (parsed.hostname) {
     case "mail.google.com": return parseGmailUrl(parsed);
+    case "groups.google.com": return parseGroupsUrl(parsed);
     case "docs.google.com": return parseDocsUrl(parsed);
     case "calendar.google.com": return parseCalendarUrl(parsed);
     case BIGQUERY_HOST: return parseBigQueryUrl(parsed);
@@ -844,6 +886,43 @@ function parseGmailUrl(parsed: URL): ResourceTarget {
       "Unsupported Gmail view. Connect the inbox, an explicit search, or an explicit label.");
   }
   return { kind: "gmail" };
+}
+
+/** What a Google Group URL ends in when the group takes mail from outside its own domain. */
+const GROUP_OUTSIDE_SENDERS = "?senders=anyone";
+
+/**
+ * A Workspace group's page in Google Groups, `/a/<domain>/g/<name>`, which is its address.
+ * `?senders=anyone` says the group takes mail from outside its own domain, so such mail that
+ * names the group is shown at once rather than only as a reply (see `gmail-group-admission.ts`);
+ * without it the binding is the stricter one. The URL is the binding, so any other query string
+ * and any fragment, which would make two spellings of one binding, is refused rather than ignored.
+ */
+function parseGroupsUrl(parsed: URL): ResourceTarget {
+  if ((parsed.search && parsed.search !== GROUP_OUTSIDE_SENDERS) || parsed.hash) {
+    throw new Error(
+      `A Google Groups resource URL takes no query string but ${GROUP_OUTSIDE_SENDERS}, and no fragment.`);
+  }
+  if (parsed.pathname.startsWith("/g/")) {
+    throw new Error(
+      "Only Workspace groups, at groups.google.com/a/<domain>/g/<name>, can be connected.");
+  }
+  let match = /^\/a\/([^/]+)\/g\/([^/]+)\/?$/.exec(parsed.pathname);
+  if (!match) throw new Error(`Unsupported Google Groups resource URL: ${describeUrl(parsed)}`);
+  let groupAddress = `${decodeURIComponent(match[2])}@${decodeURIComponent(match[1])}`.toLowerCase();
+  validateGroupMemberAddress(groupAddress);
+  return { kind: "group", groupAddress, ...(parsed.search ? { outsideSenders: true as const } : {}) };
+}
+
+/**
+ * The resource URL of the Google Group at `address`, taking mail from outside its domain or not,
+ * as {@link parseResourceUrl} reads it back.
+ */
+export function groupResourceUrl(address: string, outsideSenders = false): string {
+  validateGroupMemberAddress(address);
+  let at = address.lastIndexOf("@");
+  return `https://groups.google.com/a/${encodeURIComponent(address.slice(at + 1))}/g/` +
+    encodeURIComponent(address.slice(0, at)) + (outsideSenders ? GROUP_OUTSIDE_SENDERS : "");
 }
 
 function parseDocsUrl(parsed: URL): ResourceTarget {

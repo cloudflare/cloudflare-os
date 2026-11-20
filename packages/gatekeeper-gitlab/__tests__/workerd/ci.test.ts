@@ -9,14 +9,13 @@
 // (Maintainer for a Maintainer's test report), admission still holding the bar the CI data an
 // earlier version marked raised, and those reads served on a binding an earlier version created.
 
-import { env, runInDurableObject } from "cloudflare:test";
 import { RpcStub, RpcTarget } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GitObjectType, GitOid } from "@gadgets/workshop-shared/gatekeeper";
 import { FLUSH_PKT, encodePktLine } from "@gadgets/gatekeeper-kit/git-transport";
 import type { GitLabJobSummary, GitLabLogPage, GitLabPipelineSummary, GitLabTestCase } from "../../src/types.js";
 import * as fx from "../fixtures/gitlab-docs.js";
-import { FakeGitLab, hooks, json, projectProps, seedAccount, stageReconnect, unwrap } from "./fake-gitlab.js";
+import { FakeGitLab, hooks, json, projectProps, seedAccount, unwrap } from "./fake-gitlab.js";
 import type { ActionPresentation, GatekeeperProps, SessionStep } from "./worker.js";
 
 afterEach(() => {
@@ -760,6 +759,13 @@ describe("listJobs", () => {
   });
 });
 
+/** Pipeline 6's jobs as a whole-report read lists them: job 66004, with a test report, and no children. */
+function testReportJobs(fake: CiFake): void {
+  fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6/jobs\\?`), request =>
+    json(request.url.searchParams.get("page") === "1" ? [job(66004, { artifacts: [{ file_type: "junit" }] })] : []));
+  fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6/bridges\\?`), () => json([]));
+}
+
 describe("test reports", () => {
   it("pages the failed and errored cases, their output cut short", async () => {
     const fake = new CiFake();
@@ -775,6 +781,7 @@ describe("test reports", () => {
       ],
     }));
     fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6/test_report_summary$`), () => json(fx.testReportSummaryResponse.data));
+    testReportJobs(fake);
     const { props, name } = await setup(fake);
     const cases = await session<GitLabTestCase[]>(name, props,
       { method: "getPipeline", args: ["6"] }, { method: "listFailedTests", args: [{ resultsPerPage: 2 }], drain: true });
@@ -791,6 +798,7 @@ describe("test reports", () => {
     fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6/test_report$`), () => new Response(new ReadableStream<Uint8Array>({
       pull(controller) { controller.enqueue(new Uint8Array(1024 * 1024).fill(0x20)); },
     }), { headers: { "content-type": "application/json" } }));
+    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6/test_report_summary$`), () => json(fx.testReportSummaryResponse.data));
     const { props, name } = await setup(fake);
     await expect(session(name, props, { method: "getPipeline", args: ["6"] }, { method: "listFailedTests" }))
       .rejects.toThrow(/too large to read here\. Use getTestReport\(\) for its totals, and the failing jobs' logs/);
@@ -917,8 +925,9 @@ describe("job logs", () => {
 
 describe("what CI reads disclose to observers", () => {
   const PROJECT_SUBRESOURCE = `project/${P}`;
-  const DEVELOPER = `project/${P}/role/developer`;
-  const MAINTAINER = `project/${P}/role/maintainer`;
+  const TRACE = `project/${P}/jobTrace/8`;
+  /** The job whose test report pipeline 6's reports come from. */
+  const ARTIFACTS = `project/${P}/jobArtifacts/66004`;
 
   function gateFake(): CiFake {
     const fake = new CiFake();
@@ -927,6 +936,7 @@ describe("what CI reads disclose to observers", () => {
     fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6$`), () => json(pipeline(6)));
     fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6/test_report_summary$`), () => json(fx.testReportSummaryResponse.data));
     fake.on("GET", new RegExp(`^/api/v4/projects/${P}/pipelines/6/test_report$`), () => json(fx.testReportResponse.data));
+    testReportJobs(fake);
     return fake;
   }
 
@@ -943,143 +953,82 @@ describe("what CI reads disclose to observers", () => {
     return (await hooks().queueLog(name)).subresources.slice(before).filter(ids => ids?.[0] !== PROJECT_SUBRESOURCE);
   }
 
-  it("reports a job log as needing Developer, leaving the observers and the admission bar to the Workshop", async () => {
-    // The Workshop checks each observer against the role a read reports, so the binding neither
-    // hides the read from a Reporter already observing nor stops admitting Reporters after it.
+  it("reports a job log by its job, leaving the observers and the admission bar to the Workshop", async () => {
+    // The Workshop asks each observer's account about the job, so the binding neither hides the
+    // read from a Reporter already observing nor stops admitting Reporters after it.
     const { props, name } = await setup(gateFake(), { reporter: 20, reporter2: 20 });
     await observer(name, props, "reporter");
     await session(name, props, { method: "getPipeline", args: ["6"] }, { method: "getDetails" });
     await session(name, props, { method: "getJob", args: ["8"] }, { method: "readLog" });
     const log = await hooks().queueLog(name);
     expect(log.observations).toEqual(["Read pipeline #6", "Read log of job `rubocop` #8, lines 1–1"]);
-    expect(log.subresources).toEqual([[PROJECT_SUBRESOURCE], [DEVELOPER]]);
+    expect(log.subresources).toEqual([[PROJECT_SUBRESOURCE], [TRACE]]);
     expect(log.excluded).toEqual([undefined, undefined]);
     await observer(name, props, "reporter2");
   });
 
-  it("reports a test report a Developer read as needing Developer", async () => {
-    // GitLab has already left out what a Developer may not download.
-    const fake = gateFake();
-    fake.ownerAccess = 30;
-    const { props, name } = await setup(fake, { reporter: 20, reporter2: 20 });
-    await observer(name, props, "reporter");
-    const reported = await readTestReports(name, props);
-    expect(reported.length).toBeGreaterThanOrEqual(2);
-    expect(reported).toEqual(reported.map(() => [DEVELOPER]));
-    expect((await hooks().queueLog(name)).excluded.every(ids => ids === undefined)).toBe(true);
-    await observer(name, props, "reporter2");
-  });
-
-  it.each([
-    ["a Maintainer", 40, false],
-    ["no member", null, false],
-    ["an administrator holding a Developer membership", 30, true],
-  ] as const)("reports a test report read by %s as needing Maintainer", async (_, access, admin) => {
-    // Through a Maintainer, GitLab includes reports a job restricts to Maintainers. It grants an
-    // administrator Maintainer access whatever its membership row says, so that one downloads them
-    // too; "no row" is not "below Maintainer" either.
-    const fake = gateFake();
-    fake.ownerAccess = access;
-    fake.ownerIsAdmin = admin;
-    const { props, name } = await setup(fake, { developer: 30 });
-    const reported = await readTestReports(name, props);
-    expect(reported.length).toBeGreaterThanOrEqual(2);
-    expect(reported).toEqual(reported.map(() => [MAINTAINER]));
-    // Admission is the baseline alone: the Workshop holds the Developer back from these reads.
-    await observer(name, props, "developer");
-  });
-
-  it.each(["getTestReport", "listFailedTests"] as const)(
-    "refuses %s when a reconnect lands mid-read, rather than reporting the role it found", async method => {
-      // The role probe may read the new connection's user (a Developer, say) while the report beside
-      // it was fetched with the replaced Maintainer's token.
+  it.each([["a Developer", 30, false], ["a Maintainer", 40, false], ["an administrator", 30, true]] as const)(
+    "reports a test report read by %s by the jobs it came from", async (_, access, admin) => {
       const fake = gateFake();
-      fake.on("POST", /^\/oauth\/token/, () => json({ access_token: "bob", refresh_token: "bob-refresh", expires_in: 7200 }));
-      let reconnected = false;
-      fake.on("GET", new RegExp(`^/api/v4/projects/${P}/members/all\\?`), async request => {
-        if (Number(request.url.searchParams.get("user_ids[]")) !== fx.currentUserResponse.data.id) return json([]);
-        if (!reconnected) {
-          reconnected = true;
-          // Made here: the handler runs in the gatekeeper's object, not the test's context.
-          const account = env.USER_ACCOUNT.get(env.USER_ACCOUNT.idFromString(props.userObjectId));
-          await runInDurableObject(account, async instance => {
-            await instance.commitReconnect(await stageReconnect(instance, "code-bob"));
-          });
-        }
-        return json([{ id: fx.currentUserResponse.data.id, access_level: 40 }]);
-      });
-      const { props, name } = await setup(fake);
-      await hooks().installCallback(props.userObjectId);
-      const read: SessionStep = method === "listFailedTests" ? { method, drain: true } : { method };
-      await expect(session(name, props, { method: "getPipeline", args: ["6"] }, read))
-        .rejects.toThrow(/GitLab connection changed during this read/);
-      expect((await hooks().queueLog(name)).observations).toEqual([]);
-      // Under the new connection the read goes through.
-      await session(name, props, { method: "getPipeline", args: ["6"] }, read);
-      expect((await hooks().queueLog(name)).subresources.at(-1)).toEqual([MAINTAINER]);
+      fake.ownerAccess = access;
+      fake.ownerIsAdmin = admin;
+      const { props, name } = await setup(fake, { reporter: 20 });
+      const reported = await readTestReports(name, props);
+      expect(reported.length).toBeGreaterThanOrEqual(2);
+      expect(reported).toEqual(reported.map(() => [ARTIFACTS]));
+      await observer(name, props, "reporter");
     });
 
-  it("shares a binding with up to 50 collaborators", async () => {
+  it("shares a binding with more collaborators than a read could once check", async () => {
     const names = Array.from({ length: 51 }, (_, i) => `member${i}`);
     const { props, name } = await setup(gateFake(), Object.fromEntries(names.map(member => [member, 20])));
-    for (const member of names.slice(0, 50)) await observer(name, props, member);
-    await expect(observer(name, props, names[50]!)).rejects.toThrow(/already answers for 50 collaborators/);
+    for (const member of names) await observer(name, props, member);
   }, 10_000);
 
   describe("after CI data an earlier version marked", () => {
-    // Those versions marked the binding when it read job logs or test reports, and checked every
-    // observer only against the marks, so what they read is still held to the mark's role.
-    it.each([
-      ["job logs", "ci-logs", { below: 20, at: 30 }, /Developer role or above/],
-      ["a Maintainer's test reports", "ci-test-reports", { below: 30, at: 40 }, /may have Maintainer access.*Maintainer role or above/],
-    ] as const)("admits only the role %s needed", async (_, set, { below, at }, denied) => {
-      const { props, name } = await setup(gateFake(), { below, at });
+    // Those versions marked the binding when it read job logs or test reports, and held observers
+    // to a role for the marks; they now need only the baseline membership.
+    it.each(["ci-logs", "ci-test-reports"])("admits any member for %s", async set => {
+      const { props, name } = await setup(gateFake(), { reporter: 20 });
       await hooks().startOnEarlierStorage(name, props, { [`observedSet:${set}`]: "observed" });
-      await expect(observer(name, props, "below")).rejects.toThrow(denied);
-      await observer(name, props, "at");
+      await observer(name, props, "reporter");
     });
 
     it.each([["the pinned id", false], ["the project its path names now", true]] as const)(
-      "needs the role, and Reporter at all, on %s as well", async (_, pathMoved) => {
+      "needs Reporter on %s as well", async (_, pathMoved) => {
         // The marked reads followed the path, which may since name another project than the one
         // the binding has pinned since: a membership of either alone does not show the observer may
         // see what was read.
         const fake = gateFake();
-        const { props, name } = await setup(fake, { reporter: 20, developer: 30 });
+        const { props, name } = await setup(fake, { reporter: 20 });
         await hooks().startOnEarlierStorage(name, props, { "observedSet:ci-logs": "observed", projectId: PROJECT_ID });
-        // CiFake numbers its members from 100 in order.
-        const developerId = 100 + [...fake.members.keys()].indexOf("developer");
         const address = pathMoved ? String(PROJECT_ID + 1000) : P;
         if (pathMoved) {
           fake.on("GET", new RegExp(`^/api/v4/projects/${PATH}$`), () =>
             json({ ...fx.projectResponse.data, id: Number(address), path_with_namespace: PROJECT }));
         }
-        fake.on("GET", new RegExp(`^/api/v4/projects/${address}/members/all\\?`), request => {
-          const id = Number(request.url.searchParams.get("user_ids[]"));
-          // Here the Reporter is no member, and the Developer only a Reporter.
-          return json(id === developerId ? [{ id, username: "developer", access_level: 20 }] : []);
-        });
+        // Here the Reporter is no member.
+        fake.on("GET", new RegExp(`^/api/v4/projects/${address}/members/all\\?`), () => json([]));
         await expect(observer(name, props, "reporter")).rejects.toThrow(/does not have read access to the GitLab project group\/sub\/project/);
-        await expect(observer(name, props, "developer")).rejects.toThrow(/Developer role or above/);
       });
   });
 
-  it("serves job logs and test reports on a binding an earlier version created, reporting their role", async () => {
+  it("serves job logs and test reports on a binding an earlier version created, reporting their jobs", async () => {
     // That version stored no observers, and refused these reads on bindings it had made before; the
-    // role each read reports lets the Workshop check whoever observes the binding instead.
+    // jobs each read reports let the Workshop check whoever observes the binding instead.
     const { props, name } = await setup(gateFake());
     await hooks().startOnEarlierStorage(name, props, { cachesByProjectId: null, observerRoster: "legacy", cacheGeneration: 1 });
     expect(await session<GitLabLogPage>(name, props, { method: "getJob", args: ["8"] }, { method: "readLog" }))
       .toMatchObject({ totalLines: 1 });
-    expect((await hooks().queueLog(name)).subresources.at(-1)).toEqual([DEVELOPER]);
+    expect((await hooks().queueLog(name)).subresources.at(-1)).toEqual([TRACE]);
     expect(await session(name, props, { method: "getPipeline", args: ["6"] }, { method: "getTestReport" })).toMatchObject({ total: 3363 });
-    expect((await hooks().queueLog(name)).subresources.at(-1)).toEqual([MAINTAINER]);
+    expect((await hooks().queueLog(name)).subresources.at(-1)).toEqual([ARTIFACTS]);
     await session(name, props, { method: "getPipeline", args: ["6"] }, { method: "listFailedTests", drain: true });
-    expect((await hooks().queueLog(name)).subresources.at(-1)).toEqual([MAINTAINER]);
+    expect((await hooks().queueLog(name)).subresources.at(-1)).toEqual([ARTIFACTS]);
     // And still after a restart.
     await hooks().restart(name);
     expect(await session<GitLabLogPage>(name, props, { method: "getJob", args: ["8"] }, { method: "readLog" }))
       .toMatchObject({ totalLines: 1 });
-    expect((await hooks().queueLog(name)).subresources.at(-1)).toEqual([DEVELOPER]);
+    expect((await hooks().queueLog(name)).subresources.at(-1)).toEqual([TRACE]);
   });
 });
