@@ -22,6 +22,7 @@ import {
   type TreeNodeResponse,
   type TreeParent,
 } from "./confluence-api";
+import { confluenceUpstream } from "./confluence-upstream";
 import type {
   ConfluenceBrowsePage,
   ConfluenceBrowseRequest,
@@ -309,11 +310,12 @@ export class ConfluenceConfiguratorUI extends RpcTarget implements ConfluenceCon
       return parsed;
     });
     if (wanted.length > AVATAR_BATCH) throw new Error("Ask for fewer avatars at a time.");
-    const found = await mapLimit(wanted, ICON_CONCURRENCY, async ref => {
+    // A batch asks for up to three requests an avatar, so its calls are counted summed.
+    const found = await confluenceUpstream.summed(() => mapLimit(wanted, ICON_CONCURRENCY, async ref => {
       const site = await this.#site(ref.cloudId);
       const space = await this.#space(site, ref.key).catch(() => undefined);
       return { ref: `space:${ref.cloudId}/${ref.key}`, avatar: space && await this.#avatar(site, space) };
-    });
+    }));
     const avatars: Record<string, string> = {};
     for (const { ref, avatar } of found) if (avatar !== undefined) avatars[ref] = avatar;
     return avatars;

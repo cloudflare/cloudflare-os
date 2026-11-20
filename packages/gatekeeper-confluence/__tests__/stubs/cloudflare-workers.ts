@@ -2,7 +2,10 @@
 //
 // Modules here that define a Durable Object or an `RpcTarget` cannot be imported under plain vitest
 // without it. Only the base classes are provided, and only so that `import` and `extends` resolve --
-// anything that actually needs the runtime belongs in a Workers-pool test, not here.
+// anything that actually needs the runtime belongs in a Workers-pool test, not here. `env` is the
+// shared stub's: the Worker's bindings, none until a test sets one.
+
+export { env } from "@gadgets/scripts/cloudflare-workers-stub";
 
 export class DurableObject<E = unknown, P = unknown> {
   constructor(readonly ctx: unknown, readonly env: E, readonly props?: P) {}

@@ -18,6 +18,7 @@ import {
   type ConfluenceApi,
 } from "./confluence-api";
 import type { ConfluenceObservedSet } from "./confluence-observers";
+import { confluenceUpstream } from "./confluence-upstream";
 
 const SITE_FRAGMENT = "site";
 const SPACE_FRAGMENT = "space";
@@ -144,8 +145,10 @@ export async function checkConfluenceSubresourceAccess(
   parsed.forEach((resource, index) => {
     if (resource.kind !== "site") retrieved.set(subresources[index], resource);
   });
-  const verdicts = await mapLimit([...retrieved], ACCESS_CHECK_CONCURRENCY, ([subresource, resource]) =>
-    cache.cached(subresource, ttl, () => canRetrieve(account, resource, accessibleSites)));
+  // One request or more for each resource, so the calls of a check are counted summed.
+  const verdicts = await confluenceUpstream.summed(() =>
+    mapLimit([...retrieved], ACCESS_CHECK_CONCURRENCY, ([subresource, resource]) =>
+      cache.cached(subresource, ttl, () => canRetrieve(account, resource, accessibleSites))));
   [...retrieved.keys()].forEach((subresource, index) => answers.set(subresource, verdicts[index]));
   return subresources.map(subresource => answers.get(subresource)!);
 }

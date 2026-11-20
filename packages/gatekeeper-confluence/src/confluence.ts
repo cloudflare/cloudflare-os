@@ -743,7 +743,7 @@ type SiteGatekeeperProps = BaseProps;
 type SpaceGatekeeperProps = BaseProps & { spaceKey: string };
 type ContentGatekeeperProps = BaseProps & { contentId: string };
 
-function makeApi(ctx: { exports: Cloudflare.Env }, props: BaseProps): ConfluenceApi {
+function makeApi(ctx: { exports: Cloudflare.Exports }, props: BaseProps): ConfluenceApi {
   const account = () =>
     (ctx.exports as any).UserAccount.get((ctx.exports as any).UserAccount.idFromString(props.userObjectId));
   return new ConfluenceApi({
@@ -984,7 +984,7 @@ export class ConfluenceContentGatekeeperImpl extends DurableObject<Env, ContentG
   async revertAction(action: number) { return await revertStoredAction(this.#store(), action); }
 }
 
-function accountFor(ctx: { exports: Cloudflare.Env }, userObjectId: string) {
+function accountFor(ctx: { exports: Cloudflare.Exports }, userObjectId: string) {
   return (ctx.exports as any).UserAccount.get((ctx.exports as any).UserAccount.idFromString(userObjectId));
 }
 
