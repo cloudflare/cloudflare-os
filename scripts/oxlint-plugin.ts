@@ -211,10 +211,10 @@ const selfContainedAgentTypes: Rule = {
 
 type ClassMember = ESTree.ClassBody["body"][number];
 
-/** The class's method named `name`, when it is declared with a plain name and a body. */
+/** The class's instance method named `name`, when it is declared with a plain name and a body. */
 function methodNamed(body: ESTree.ClassBody, name: string): ESTree.MethodDefinition | undefined {
   return body.body.find((member: ClassMember): member is ESTree.MethodDefinition =>
-    member.type === "MethodDefinition" && !member.computed &&
+    member.type === "MethodDefinition" && !member.static && !member.computed &&
     member.key.type === "Identifier" && member.key.name === name);
 }
 

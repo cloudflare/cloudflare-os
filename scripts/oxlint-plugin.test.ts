@@ -209,6 +209,12 @@ ruleTester.run("new-gatekeeper-observer-contract", plugin.rules["new-gatekeeper-
       code: "class Facet implements Gatekeeper<Session> {\n  async addObserver(_id: string) {}\n}",
       errors: [{ messageId: "missingHistory" }],
     },
+    // A static method is not the facet's.
+    {
+      code: "class Facet implements Gatekeeper<Session> {\n  async addObserver(_id: string) {}\n" +
+        "  static async getHistoricalSubresources() { return []; }\n}",
+      errors: [{ messageId: "missingHistory" }],
+    },
     // The shape the skeleton writes: Cloudflare's base class supplies no history.
     {
       code: "class Facet extends DurableObject<Env> implements Gatekeeper<Session> {\n  async addObserver(_id: string) {}\n}",
