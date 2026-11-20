@@ -400,15 +400,14 @@ export function decide(inputs: PullInputs, policy: Policy, now: Date): PullDecis
   if (blockers.length > 0) common.push(`changes requested by ${blockers.map((login) => `@${login}`).join(", ")}`);
   // No proof judges text that people or agents read; such a change can only be AI-scored.
   const provable = classification.readText.length === 0;
-  // Someone who can push to a Dependabot branch keeps its author, so its proof also needs every
-  // commit to be Dependabot's.
   const proven = provable && (dependabotAuthor
-    ? commitProblem === undefined && holding(inputs.producers["proof-deps"]) && holding(inputs.producers["preview-smoke"])
+    ? holding(inputs.producers["proof-deps"]) && holding(inputs.producers["preview-smoke"])
     : MAINTAINER_PROOFS.some((name) => holding(inputs.producers[name])));
   const rungs: { rung: Rung; failures: string[] }[] = [];
   if (proven) rungs.push({ rung: "proven", failures: policy.config.rungs.proven ? [] : ["the rung is off"] });
   if (maintainer) rungs.push({ rung: "scored", failures: scoredFailures(inputs, classification.band, policy.config) });
   else if (!dependabotAuthor) common.push("the author is not a maintainer");
+  // Someone who can push to a Dependabot branch keeps its author, so every commit must be Dependabot's.
   if (commitProblem) common.push(`a Dependabot pull request needs only Dependabot's commits: ${commitProblem}`);
   else if (dependabotAuthor && !proven) {
     common.push("a Dependabot pull request needs its dependency proof and preview smoke to hold");
