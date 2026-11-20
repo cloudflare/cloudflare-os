@@ -209,11 +209,118 @@ const selfContainedAgentTypes: Rule = {
   },
 };
 
+type ClassMember = ESTree.ClassBody["body"][number];
+
+/** The class's instance method named `name`, when it is declared with a plain name and a body. */
+function methodNamed(body: ESTree.ClassBody, name: string): ESTree.MethodDefinition | undefined {
+  return body.body.find((member: ClassMember): member is ESTree.MethodDefinition =>
+    member.type === "MethodDefinition" && !member.static && !member.computed &&
+    member.key.type === "Identifier" && member.key.name === name);
+}
+
+/** The name a property is written under, quoted or not; undefined for a spread or a computed key. */
+function keyName(property: ESTree.Node): string | undefined {
+  if (property.type !== "Property" || property.computed) return undefined;
+  const { key } = property;
+  if (key.type === "Identifier") return key.name;
+  return key.type === "Literal" && typeof key.value === "string" ? key.value : undefined;
+}
+
+/**
+ * The object literals an argument is written as at its call: itself, or either branch of a
+ * conditional. What `satisfies` and `as` wrap is the object that is sent. One built elsewhere is
+ * its helper's type to check.
+ */
+function* writtenObjects(node: ESTree.Node | undefined): Generator<ESTree.ObjectExpression> {
+  if (node?.type === "TSSatisfiesExpression" || node?.type === "TSAsExpression") {
+    yield* writtenObjects(node.expression);
+  } else if (node?.type === "ConditionalExpression") {
+    yield* writtenObjects(node.consequent);
+    yield* writtenObjects(node.alternate);
+  } else if (node?.type === "ObjectExpression") {
+    yield node;
+  }
+}
+
+const newGatekeeperObserverContract: Rule = {
+  meta: {
+    type: "problem",
+    docs: {
+      description: "Hold a gatekeeper to the parts of the new-gatekeeper observer contract that " +
+        "its types do not enforce (see the write-gatekeeper skill)",
+    },
+    messages: {
+      missingHistory: "A gatekeeper needs `getHistoricalSubresources()`, which the `Gatekeeper` " +
+        "interface does not declare. A new gatekeeper returns `[]` from it.",
+      history: "A new gatekeeper's `getHistoricalSubresources()` only returns `[]`: it has no " +
+        "reads made before subresources were reported.",
+      observerState: "A new gatekeeper's `{{name}}()` does nothing. Report `subresources` on every " +
+        "read and check each observer in `verifyObserverAccess()`.",
+      unreported: "Pass `subresources` explicitly, after any spread, which could replace it, and " +
+        "`[]` for a read nothing restricts. Leaving it out adds no requirement and reads as one " +
+        "that was forgotten.",
+      excludeObservers: "`excludeObservers` belongs to the legacy observer protocol. Report " +
+        "`subresources` and deny in `verifyObserverAccess()`.",
+    },
+    schema: [],
+  },
+  create(context) {
+    return {
+      "ClassDeclaration, ClassExpression"({ body, id, implements: interfaces, superClass }: ESTree.Class) {
+        const addObserver = methodNamed(body, "addObserver");
+        const declared = interfaces?.some(({ expression }) =>
+          expression.type === "Identifier" && expression.name === "Gatekeeper");
+        if (!declared && !(methodNamed(body, "startSession") && addObserver)) return;
+
+        const history = methodNamed(body, "getHistoricalSubresources");
+        const statements = history?.value.body?.body;
+        const returned = statements?.length === 1 && statements[0].type === "ReturnStatement"
+          ? statements[0].argument : undefined;
+        // A facet base of the gatekeeper's own may supply it, as it may supply `startSession()`.
+        // Cloudflare's `DurableObject` supplies neither.
+        const inherits = superClass && !(superClass.type === "Identifier" && superClass.name === "DurableObject");
+        if (!history) {
+          if (!inherits) context.report({ node: addObserver?.key ?? id ?? body, messageId: "missingHistory" });
+        } else if (returned?.type !== "ArrayExpression" || returned.elements.length > 0) {
+          context.report({ node: history.key, messageId: "history" });
+        }
+
+        for (const name of ["addObserver", "removeObserver"]) {
+          const method = methodNamed(body, name);
+          if (method?.value.body && method.value.body.body.length > 0) {
+            context.report({ node: method.key, messageId: "observerState", data: { name } });
+          }
+        }
+      },
+      CallExpression(node) {
+        const { callee } = node;
+        if (callee.type !== "MemberExpression" || callee.computed ||
+            callee.property.name !== "authorizeObservation") {
+          return;
+        }
+        for (const description of writtenObjects(node.arguments[0])) {
+          // The last word on the field: a spread after it can replace it, and the kernel reads
+          // `subresources: undefined` as the field left out.
+          const last = description.properties.findLast(property =>
+            property.type === "SpreadElement" || keyName(property) === "subresources");
+          const reported = last?.type === "Property" &&
+            !(last.value.type === "Identifier" && last.value.name === "undefined");
+          if (!reported) context.report({ node: description, messageId: "unreported" });
+        }
+      },
+      Property(node) {
+        if (keyName(node) === "excludeObservers") context.report({ node, messageId: "excludeObservers" });
+      },
+    };
+  },
+};
+
 export default {
   meta: {
     name: "gadgets",
   },
   rules: {
+    "new-gatekeeper-observer-contract": newGatekeeperObserverContract,
     "prefer-jsdoc": preferJsdoc,
     "self-contained-agent-types": selfContainedAgentTypes,
   },

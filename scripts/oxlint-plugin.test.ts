@@ -155,3 +155,113 @@ ruleTester.run("self-contained-agent-types", plugin.rules["self-contained-agent-
     },
   ],
 });
+
+const gatekeeper = (members: string) => `class GatekeeperImpl {\n  async startSession() {}\n${members}\n}`;
+const contract = "  async getHistoricalSubresources() { return []; }\n" +
+  "  async addObserver(_id: string) {}\n  async removeObserver(_id: string) {}";
+
+ruleTester.run("new-gatekeeper-observer-contract", plugin.rules["new-gatekeeper-observer-contract"], {
+  valid: [
+    gatekeeper(contract),
+    gatekeeper(`${contract}\n  async verifyObserverAccess(observers, ids) { return check(observers, ids); }`),
+    // Not a gatekeeper: it starts no session.
+    "class Roster {\n  async addObserver(id: string) { this.ids.add(id); }\n}",
+    "await queue.authorizeObservation({ title, subresources: [] });",
+    "await queue.authorizeObservation({ ...observation, subresources: [id] });",
+    "await queue.authorizeObservation({ title, subresources });",
+    "await queue.authorizeObservation({ title, \"subresources\": [id] });",
+    "await queue.authorizeObservation({ title, subresources: [id] } satisfies ObservationDescription);",
+    // A base class may supply the session and the history; what this one defines is still checked.
+    "class Facet extends Base implements Gatekeeper<Session> {\n  async addObserver(_id: string) {}\n}",
+    // A description built elsewhere is checked by its helper's type, not here.
+    "await queue.authorizeObservation(observation);",
+    "await queue.authorizeObservation(scoped ? { title, subresources: ids } : observation);",
+  ],
+  invalid: [
+    {
+      code: gatekeeper("  async addObserver(_id: string) {}\n  async removeObserver(_id: string) {}"),
+      errors: [{ messageId: "missingHistory" }],
+    },
+    {
+      code: gatekeeper("  async getHistoricalSubresources() { return this.tracker.ids(); }\n" +
+        "  async addObserver(_id: string) {}\n  async removeObserver(_id: string) {}"),
+      errors: [{ messageId: "history" }],
+    },
+    {
+      code: gatekeeper("  async getHistoricalSubresources() { return [this.id]; }\n" +
+        "  async addObserver(_id: string) {}\n  async removeObserver(_id: string) {}"),
+      errors: [{ messageId: "history" }],
+    },
+    {
+      code: gatekeeper("  async getHistoricalSubresources() { return []; }\n" +
+        "  async addObserver(id: string, user) { await this.verify(user); }\n" +
+        "  async removeObserver(id: string) { this.observers.delete(id); }"),
+      errors: [
+        { messageId: "observerState", data: { name: "addObserver" } },
+        { messageId: "observerState", data: { name: "removeObserver" } },
+      ],
+    },
+    {
+      code: "class Facet extends Base implements Gatekeeper<Session> {\n" +
+        "  async addObserver(id: string) { this.observers.add(id); }\n}",
+      errors: [{ messageId: "observerState", data: { name: "addObserver" } }],
+    },
+    {
+      code: "class Facet implements Gatekeeper<Session> {\n  async addObserver(_id: string) {}\n}",
+      errors: [{ messageId: "missingHistory" }],
+    },
+    // Each branch written at the call is one that may be sent.
+    {
+      code: "await queue.authorizeObservation(scoped ? { title, subresources: ids } : { title });",
+      errors: [{ messageId: "unreported" }],
+    },
+    {
+      code: "await queue.authorizeObservation(scoped ? { title } : ({ title } satisfies ObservationDescription));",
+      errors: [{ messageId: "unreported" }, { messageId: "unreported" }],
+    },
+    // A static method is not the facet's.
+    {
+      code: "class Facet implements Gatekeeper<Session> {\n  async addObserver(_id: string) {}\n" +
+        "  static async getHistoricalSubresources() { return []; }\n}",
+      errors: [{ messageId: "missingHistory" }],
+    },
+    // The shape the skeleton writes: Cloudflare's base class supplies no history.
+    {
+      code: "class Facet extends DurableObject<Env> implements Gatekeeper<Session> {\n  async addObserver(_id: string) {}\n}",
+      errors: [{ messageId: "missingHistory" }],
+    },
+    {
+      code: "await queue.authorizeObservation({ title } satisfies ObservationDescription);",
+      errors: [{ messageId: "unreported" }],
+    },
+    {
+      code: "await queue.authorizeObservation({ title } as ObservationDescription);",
+      errors: [{ messageId: "unreported" }],
+    },
+    // The spread comes last, and can carry `subresources: undefined`.
+    {
+      code: "await queue.authorizeObservation({ subresources: [id], ...observation });",
+      errors: [{ messageId: "unreported" }],
+    },
+    {
+      code: "await queue.authorizeObservation({ title, subresources: undefined });",
+      errors: [{ messageId: "unreported" }],
+    },
+    {
+      code: "await queue.authorizeObservation({ title, subresources: [], \"excludeObservers\": [id] });",
+      errors: [{ messageId: "excludeObservers" }],
+    },
+    {
+      code: "await this.queue.authorizeObservation({ title: \"Read inbox\" });",
+      errors: [{ messageId: "unreported" }],
+    },
+    {
+      code: "await queue.authorizeObservation({ ...observation });",
+      errors: [{ messageId: "unreported" }],
+    },
+    {
+      code: "await queue.authorizeObservation({ title, subresources: [], excludeObservers: [id] });",
+      errors: [{ messageId: "excludeObservers" }],
+    },
+  ],
+});
