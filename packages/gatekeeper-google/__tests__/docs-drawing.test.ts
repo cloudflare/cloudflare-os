@@ -106,6 +106,25 @@ describe("a Google Doc tab's drawing", () => {
     expect(drawing.objects["other-corner"]!.placed).toMatchObject({ left: 420, top: -20 });
   });
 
+  // Google Docs has an unset useFirstPageHeaderFooter as the document's in the first section only.
+  it("gives a later section a first page of its own only where the section says so", () => {
+    let later = (useFirstPageHeaderFooter?: boolean) => {
+      let tab = buildTab([{ runs: ["Cover\n"] }, { structure: "sectionBreak" }, { runs: ["Body\n"] }]);
+      tab.body.content[2]!.sectionBreak = { sectionStyle: { sectionType: "NEXT_PAGE", useFirstPageHeaderFooter } };
+      let { drawing } = docTabToMarkdown({
+        ...tab,
+        documentStyle: { useFirstPageHeaderFooter: true, firstPageHeaderId: "cover", defaultHeaderId: "running" },
+        headers: { cover: part("Cover"), running: part("Running") },
+      });
+      expect(drawing.sections[0]).toMatchObject({ firstPage: true, firstHeader: "cover", header: "running" });
+      return drawing.sections[1];
+    };
+
+    expect(later()).toMatchObject({ newPage: true, firstHeader: "cover", header: "running" });
+    expect(later()).not.toHaveProperty("firstPage");
+    expect(later(true)).toMatchObject({ firstPage: true });
+  });
+
   it("fills white behind text on a page of another color, and not on a white one", () => {
     let white = { color: { rgbColor: { red: 1, green: 1, blue: 1 } } };
     let highlight = (documentStyle: object) => {

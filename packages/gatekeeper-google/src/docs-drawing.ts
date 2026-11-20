@@ -467,7 +467,8 @@ export function docTabDrawing(
         footer: style.defaultFooterId ?? (before ? before.footer : document.defaultFooterId),
         firstHeader: style.firstPageHeaderId ?? (before ? before.firstHeader : document.firstPageHeaderId),
         firstFooter: style.firstPageFooterId ?? (before ? before.firstFooter : document.firstPageFooterId),
-        firstPage: (style.useFirstPageHeaderFooter ?? document.useFirstPageHeaderFooter) || undefined,
+        // Only the first section takes the document's: a later one that does not say has none.
+        firstPage: (style.useFirstPageHeaderFooter ?? (!before && document.useFirstPageHeaderFooter)) || undefined,
         evenHeader: style.evenPageHeaderId ?? (before ? before.evenHeader : document.evenPageHeaderId),
         evenFooter: style.evenPageFooterId ?? (before ? before.evenFooter : document.evenPageFooterId),
       }),
