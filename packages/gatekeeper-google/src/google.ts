@@ -150,7 +150,10 @@ import DRIVE_CONFIGURATOR_HTML from "./generated/drive-configurator-ui.txt";
 import CREATION_LOCATION_CONFIGURATOR_HTML from "./generated/creation-location-configurator-ui.txt";
 import GOOGLE_LOGO_SVG from "./google-logo.svg";
 import { obsContext } from "./observability.js";
-import { AccessTokenCache, AccessTokenRequest, ACCESS_TOKEN_EXPIRY_SAFETY_MS, type AccessTokenProvider } from "./auth-retry";
+import {
+  AccessTokenCache, AccessTokenRequest, ACCESS_TOKEN_EXPIRY_SAFETY_MS, tokenFailureCause,
+  type AccessTokenProvider,
+} from "./auth-retry";
 import { Mutex } from "./mutex";
 import { PendingActionStore } from "./pending-actions";
 import {
@@ -1006,7 +1009,7 @@ export class UserAccount extends DurableObject<Env> {
     } catch (error) {
       logger.warn("failed to record a Google grant's holder", {
         event: "google.grant.hold.failed",
-        ...(error instanceof RefreshRefusedError ? { outcome: "refreshRefused" } : { error }),
+        ...(tokenFailureCause(error) instanceof RefreshRefusedError ? { outcome: "refreshRefused" } : { error }),
       });
     } finally {
       this.#holdingGrant--;
@@ -2188,7 +2191,7 @@ async function hasGoogleGroupMembership(getToken: AccessTokenProvider, groupName
       try {
         return await askOnce();
       } catch (error) {
-        if (!(error instanceof TokenReplacedError) || tries >= 2) throw error;
+        if (!(tokenFailureCause(error) instanceof TokenReplacedError) || tries >= 2) throw error;
       }
     }
   };

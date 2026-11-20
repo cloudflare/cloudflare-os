@@ -262,6 +262,8 @@ function harness(binding: Pick<GmailGatekeeperImplProps, "groupOutsideSenders"> 
   return {
     backend,
     session: () => ready.then(() => (hook as unknown as TestHooks).openGmailSession(facetName, id, props, queueId)),
+    /** Gives the observer's own account another token, as a refresh does. */
+    replaceObserverToken: (token: string) => seed(observerId, token),
     /** Disconnects the observer's own account, as the Workshop does when its owner removes it. */
     disconnectObserver: () => runInDurableObject(testEnv.UserAccount.get(observerId),
       (_instance: unknown, state: DurableObjectState) => { state.storage.kv.delete("refreshToken"); }),
@@ -579,6 +581,19 @@ describe("Gmail group members", () => {
     gmail.backend.observerUserinfoHeld = false;
     expect(await admitting).toBe(false);
     expect(gmail.backend.membershipLookups ?? 0).toBe(0);
+  });
+
+  // A token replaced between the two is no reason to refuse: both are asked again with the new one.
+  it("asks again with the member's new token when it changed while the address was read", async () => {
+    const gmail = harness();
+    gmail.backend.members.add(MEMBER);
+    gmail.backend.observerUserinfoHeld = true;
+    const admitting = gmail.admits();
+    await vi.waitFor(() => expect(gmail.backend.observerUserinfoWaiting).toBe(true), {timeout: 5000});
+    await gmail.replaceObserverToken("new-observer-token");
+    gmail.backend.observerUserinfoHeld = false;
+    expect(await admitting).toBe(true);
+    expect(gmail.backend.membershipLookups).toBe(1);
   });
 
   it("refuses anyone who isn't a direct member", async () => {

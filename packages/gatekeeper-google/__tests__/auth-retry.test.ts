@@ -4,7 +4,9 @@ import {
   type SubserviceTally,
 } from "@gadgets/observability/metrics";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AccessTokenCache, fetchWithAuthRetry, type AccessTokenRequest } from "../src/auth-retry";
+import {
+  AccessTokenCache, fetchWithAuthRetry, isUnsentRequest, tokenFailureCause, type AccessTokenRequest,
+} from "../src/auth-retry";
 import { GOOGLE_API_SOURCE, summedInto } from "../src/call-metrics";
 import { ChatApi } from "../src/chat-api";
 import { DriveApi } from "../src/drive-api";
@@ -220,6 +222,28 @@ describe("fetchWithAuthRetry", () => {
       "https://www.googleapis.com/oauth2/v3/userinfo", { signal: AbortSignal.timeout(50) },
       async () => "token")).rejects.toThrow(/timed out|TimeoutError|aborted/i);
     expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  // A provider can hand one error object to many requests, as a refusal it keeps: only the request
+  // it ended before sending is unsent, not one that sent and then met it asking again.
+  it("marks as unsent only the request a provider's shared error ended before sending", async () => {
+    vi.stubGlobal("fetch", async () => new Response(null, { status: 503, headers: { "Retry-After": "0" } }));
+    let refusal = new Error("This connection was disconnected.");
+    let url = "https://chat.googleapis.com/v1/spaces/AAAA/messages/BBB";
+    let first = await fetchWithAuthRetry(url, { method: "PATCH" }, async () => { throw refusal; },
+      { idempotent: true }).catch((error: unknown) => error);
+    expect(isUnsentRequest(first)).toBe(true);
+    expect((first as Error).message).toBe(refusal.message);
+    expect(tokenFailureCause(first)).toBe(refusal);
+
+    let asked = 0;
+    let second = await fetchWithAuthRetry(url, { method: "PATCH" }, async () => {
+      if (asked++ === 0) return "token";
+      throw refusal;
+    }, { idempotent: true }).catch((error: unknown) => error);
+    expect(asked).toBe(2);
+    expect(second).toBe(refusal);
+    expect(isUnsentRequest(second)).toBe(false);
   });
 
   it("gives up while a retry waits for its token once the caller's signal aborts", async () => {

@@ -116,8 +116,17 @@ function recordAttempt(
   }
 }
 
-// Errors a request failed with before it was first sent: its token could not be had.
-const tokenUnavailable = new WeakSet<object>();
+/**
+ * What a request fails with when the token it was first to carry could not be had, so it was never
+ * sent: the provider's error, whose message it repeats, is its cause. Made afresh for each request,
+ * so a provider that hands one error object to several requests, as a cached refusal, marks only
+ * the request it ended before sending.
+ */
+class TokenUnavailableError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+  }
+}
 
 /**
  * Whether `error` ended a request before it was sent at all, because the token it was to carry
@@ -125,7 +134,12 @@ const tokenUnavailable = new WeakSet<object>();
  * not made, whatever its handler records about it.
  */
 export function isUnsentRequest(error: unknown): boolean {
-  return typeof error === "object" && error !== null && tokenUnavailable.has(error);
+  return error instanceof TokenUnavailableError;
+}
+
+/** The token provider's own error, when `error` is the one a request never sent for it ended with. */
+export function tokenFailureCause(error: unknown): unknown {
+  return error instanceof TokenUnavailableError ? error.cause : error;
 }
 
 /**
@@ -155,8 +169,7 @@ export async function fetchWithAuthRetry(
   let refreshed = false;
   let reloaded = false;
   let token = await getAccessToken().catch((error: unknown) => {
-    if (typeof error === "object" && error !== null) tokenUnavailable.add(error);
-    throw error;
+    throw new TokenUnavailableError(error);
   });
   let attempt = 0;
 
