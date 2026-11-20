@@ -56,9 +56,9 @@ describe("Google access token refresh", () => {
     }
   });
 
-  it("reports a scope an admin blocked, and throws on any other refusal", async () => {
+  it("reports a scope an admin blocked, without Google's description, and throws on any other refusal", async () => {
     expect(await refuse({ error: "admin_policy_enforced", error_description: "blocked scope" }))
-      .toEqual({ ok: false, reason: "policyBlocked", detail: "blocked scope" });
+      .toEqual({ ok: false, reason: "policyBlocked" });
     await expect(refuse({ error: "invalid_client", error_description: "Unauthorized" }, 401))
       .rejects.toThrow("Failed to refresh access token [http=401 error=invalid_client]");
   });

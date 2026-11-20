@@ -1577,26 +1577,6 @@ describe("sharing", () => {
     expect(await drive.attempts()).toEqual({});
   });
 
-  // A failed write is logged, so what an account's refusal quotes of Google is left out of it.
-  it("leaves Google's words out of a change its connection cannot send", async () => {
-    let drive = binding();
-    let { actionId } = await drive.queued("share", "doc-1", BOB, "reader");
-    const opening = "A Google Workspace admin has restricted access this connection needs";
-    provider.duringPermissionRead = async () => {
-      await account().disconnectDrive(`${opening} (Blocked for ada@example.com by policy 42). Ask ` +
-        "your administrator to allow it — re-authenticating will not help.");
-      vi.spyOn(Date, "now").mockReturnValue(Date.now() + ACCESS_TOKEN_MEMO_MAX_AGE_MS);
-    };
-
-    try {
-      expect(await drive.apply(actionId)).toBe(
-        `${opening}. Ask your administrator to allow it — re-authenticating will not help.`);
-    } finally {
-      vi.restoreAllMocks();
-    }
-    expect(provider.writes).toEqual([]);
-  });
-
   // Drive's refusal says the change was not made, whatever the connection answers meanwhile.
   it("reports Drive's refusal of a change whose connection was disconnected while it was sent", async () => {
     let drive = binding();

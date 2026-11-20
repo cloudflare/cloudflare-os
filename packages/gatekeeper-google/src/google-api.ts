@@ -154,7 +154,7 @@ export async function exchangeAuthCode(
 export type RefreshFailure =
   /** Google's `invalid_grant`. `subtype` is its `error_subtype`, such as `invalid_rapt`, when it sends one. */
   | { ok: false; reason: "revoked"; subtype?: string }
-  | { ok: false; reason: "policyBlocked"; detail: string };
+  | { ok: false; reason: "policyBlocked" };
 
 export type AccessTokenResult = { ok: true; token: GoogleAccessToken } | RefreshFailure;
 
@@ -189,8 +189,8 @@ export async function getAccessToken(
         return { ok: false, reason: "revoked", ...(subtype !== undefined ? { subtype } : {}) };
       }
       if (body.error === "admin_policy_enforced") {
-        return { ok: false, reason: "policyBlocked",
-                 detail: body.error_description ?? "admin_policy_enforced" };
+        // Google's description of the restriction stays here: the refusal is logged.
+        return { ok: false, reason: "policyBlocked" };
       }
       // Google's code only: its description, like any body it sends, can repeat the request.
       let code = safeProviderCode(body.error);

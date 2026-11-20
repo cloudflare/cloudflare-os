@@ -141,13 +141,16 @@ describe("Google token refresh refusals", () => {
     ]);
   });
 
-  it("logs a scope an admin blocked without Google's description of it", async () => {
+  // A failed call is logged wherever it ends up, so its error leaves Google's words out too.
+  it("tells and logs a scope an admin blocked without Google's description of it", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const account = await connectedAccount();
     account.google.refresh = refusal(
       {error: "admin_policy_enforced", error_description: "scope blocked by policy"});
 
-    await expect(account.mint()).rejects.toThrow(/admin has restricted access .*scope blocked by policy/);
+    const refused = await account.mint().then(() => undefined, (error: Error) => error.message);
+    expect(refused).toMatch(/admin has restricted access/);
+    expect(refused).not.toContain("scope blocked by policy");
 
     const logged = warn.mock.calls.map(([entry]) => entry)
       .filter(entry => entry?.event === "google.token.mint.refused");

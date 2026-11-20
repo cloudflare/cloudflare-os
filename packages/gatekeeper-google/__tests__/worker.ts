@@ -58,19 +58,15 @@ export class UserAccount extends DurableObject<Env> {
    * as, unless {@link setAccessToken} installed another, which then answers once its count has run.
    */
   async getAccessToken(): Promise<GoogleAccessToken> {
-    let refusal = this.ctx.storage.kv.get<string | true>(DISCONNECTED_KEY);
-    if (refusal !== undefined) {
-      throw new Error(refusal === true ? "The test disconnected this Google account." : refusal);
+    if (this.ctx.storage.kv.get<boolean>(DISCONNECTED_KEY)) {
+      throw new Error("The test disconnected this Google account.");
     }
     return { token: this.#nextToken(true), expires: new Date(8640000000000000) };
   }
 
-  /**
-   * Refuses every token from now on, as a disconnected account does, or with `message`, until
-   * {@link setAccessToken}.
-   */
-  async disconnect(message?: string): Promise<void> {
-    this.ctx.storage.kv.put(DISCONNECTED_KEY, message ?? true);
+  /** Refuses every token from now on, as a disconnected account does, until {@link setAccessToken}. */
+  async disconnect(): Promise<void> {
+    this.ctx.storage.kv.put(DISCONNECTED_KEY, true);
   }
 
   /**
@@ -700,13 +696,10 @@ export class TestHooks extends DurableObject<Env> {
     await (account as unknown as UserAccount).setAccessToken(token, after);
   }
 
-  /**
-   * Disconnects the test user's Google account, or has it refuse every token with `message`: it
-   * serves none until {@link setDriveToken}.
-   */
-  async disconnectDrive(message?: string): Promise<void> {
+  /** Disconnects the test user's Google account: it serves no token until {@link setDriveToken}. */
+  async disconnectDrive(): Promise<void> {
     let account = this.ctx.exports.UserAccount.get(this.ctx.exports.UserAccount.idFromName("test-user"));
-    await (account as unknown as UserAccount).disconnect(message);
+    await (account as unknown as UserAccount).disconnect();
   }
 
   /**
