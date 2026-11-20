@@ -11,6 +11,7 @@ import {GatekeeperUserImpl} from "../../src/google";
 import {
   DRIVE_WRITES_GRANT, GOOGLE_DRIVE_RESOURCE, resourceUrlPatternsToOAuthScopes,
 } from "../../src/resources";
+import {docsGetResponse} from "../docs-fields";
 import {presentation, shape, slide, text} from "../slides-fixture";
 import type {TestHooks, UserAccount, WorkspaceBinding} from "./worker";
 
@@ -222,9 +223,8 @@ function workspaceBackend(): WorkspaceBackend {
     if (!node) return json({error: {code: 403, message: "The caller does not have permission"}}, 403);
     switch (url.hostname) {
       case "docs.googleapis.com":
-        return json({
-          documentId: id, title: node.name, revisionId: "revision-1",
-          ...(url.searchParams.has("fields") ? {} : {tabs: [TAB]}),
+        return docsGetResponse(url, new Headers(init.headers), {
+          documentId: id, title: node.name, revisionId: "revision-1", tabs: [TAB],
         });
       case "sheets.googleapis.com":
         return json({

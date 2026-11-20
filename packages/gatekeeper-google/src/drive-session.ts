@@ -199,6 +199,17 @@ export type DriveSessionCoreOptions = {
 /** Construction contract for one positioned folder capability core. */
 export type DriveFolderSessionCoreOptions = Omit<DriveSessionCoreOptions, "scope"> & {
   location: FolderLocation;
+  /**
+   * Called, and awaited, before a file is refused because it is not a live direct child of
+   * the folder the session stands on, at an open or at a read: with the file's id, the file
+   * as Drive just answered it (`undefined` for one the connected account cannot see) and the
+   * session's saved path as it was just proved. NOT called where the session's own saved
+   * path fails its proof, which says nothing of the file. It changes nothing of the refusal:
+   * what it throws is not caught here, so it must not throw.
+   */
+  refused?: (
+    fileId: string, file: DriveScopeNode | undefined, path: readonly DriveScopeNode[],
+  ) => Promise<void>;
 };
 
 /** Either core a Drive session can be driving. */
@@ -1005,10 +1016,12 @@ function rejectChildFolders(query: DriveSearchQuery): void {
 /** Direct-child Drive access positioned at one provider-validated folder path. */
 export class DriveFolderSessionCore extends DriveCoreBase {
   #location: FolderLocation;
+  #refused: DriveFolderSessionCoreOptions["refused"];
 
   constructor(options: DriveFolderSessionCoreOptions) {
     super(options);
     this.#location = {folderIds: [...options.location.folderIds]};
+    this.#refused = options.refused;
   }
 
   async getScope(): Promise<DriveScope> {
@@ -1351,9 +1364,13 @@ export class DriveFolderSessionCore extends DriveCoreBase {
       await this.authorizeAccountRelative(
         "Check Google Drive folder",
         "Check whether a requested file is a direct child of this Drive folder.");
+      await this.#refused?.(fileId, undefined, path);
       refuse();
     }
-    if (!isDirectChild(file, path[path.length - 1])) refuse();
+    if (!isDirectChild(file, path[path.length - 1])) {
+      await this.#refused?.(fileId, file, path);
+      refuse();
+    }
     await this.#readLocation();
     return file;
   }

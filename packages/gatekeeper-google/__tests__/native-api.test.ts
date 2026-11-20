@@ -1,11 +1,22 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { GoogleDocsApi, type GoogleDocsTab } from "../src/docs-api";
+import { DOCUMENT_FIELDS, GoogleDocsApi, type GoogleDocsTab } from "../src/docs-api";
 import { GOOGLE_SHEET_MIME_TYPE } from "../src/drive-session";
 import { explainUnopenedFile } from "../src/office-conversion";
 import { GoogleSheetsApi } from "../src/sheets-api";
 import { GoogleApiError, readGoogleJson } from "../src/google-response";
+import { docsGetResponse } from "./docs-fields";
 
 const token = async () => "access-token";
+
+/** Google's answer to a read whose field mask it does not take. */
+const REFUSED_FIELDS = {
+  error: { code: 400, status: "INVALID_ARGUMENT", message: "Request contains an invalid argument." },
+};
+
+/** The field mask a request to the stubbed `fetch` carried, or `null` for none. */
+function fieldMaskOf(init: RequestInit | undefined): string | null {
+  return new Headers(init?.headers).get("X-Goog-FieldMask");
+}
 
 type RawTab = {
   tabProperties: { tabId: string; title: string };
@@ -72,6 +83,42 @@ function chunkedResponse(cancel: () => void): Response {
   return new Response(body);
 }
 
+/**
+ * A document's answer of `bytes` bytes of valid JSON, sent in chunks of 64 KiB, with how many
+ * of its bytes have been asked for.
+ */
+function documentAnswer(bytes: number, headers?: Record<string, string>) {
+  const open = `${JSON.stringify(docResponse()).slice(0, -1)},"padding":"`;
+  const body = new TextEncoder().encode(`${open}${"a".repeat(bytes - open.length - 2)}"}`);
+  expect(body.length).toBe(bytes);
+  let sent = 0;
+  const response = new Response(new ReadableStream<Uint8Array>({
+    pull(controller) {
+      controller.enqueue(body.subarray(sent, sent += 64 * 1024));
+      if (sent >= bytes) controller.close();
+    },
+  }), { headers });
+  return { response, sent: () => Math.min(sent, bytes) };
+}
+
+/**
+ * What `getDocument` makes of `answer`, a `documentAnswer`'s: the document or what it threw, how
+ * many requests it made, and the length of each text of the answer the JSON parser was handed
+ * meanwhile. A text is the answer's where it begins as the answer does or holds a kilobyte of
+ * its padding: the test runner parses texts of its own (a source map, at a first error).
+ */
+async function readDocument(answer: Response) {
+  const fetch = vi.fn(async () => answer);
+  vi.stubGlobal("fetch", fetch);
+  const parse = vi.spyOn(JSON, "parse");
+  const outcome: unknown = await new GoogleDocsApi(token).getDocument("doc-1").catch(value => value);
+  const parsed = parse.mock.calls.map(([text]) => text)
+    .filter(text => text.startsWith("{\"documentId\"") || text.includes("a".repeat(1024)))
+    .map(text => text.length);
+  parse.mockRestore();
+  return { outcome, parsed, fetches: fetch.mock.calls.length };
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -80,8 +127,10 @@ afterEach(() => {
 describe("native Google content API safety", () => {
   it("requests tab content and normalizes a single-tab document", async () => {
     let requestedUrl: string | undefined;
-    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+    let requestedFields: string | null | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       requestedUrl = input instanceof Request ? input.url : input.toString();
+      requestedFields = fieldMaskOf(init);
       return Response.json(docResponse());
     }));
 
@@ -92,8 +141,144 @@ describe("native Google content API safety", () => {
       tabs: [normalizedTab("tab-1", "Main")],
     });
     expect(requestedUrl).toBe(
-      "https://docs.googleapis.com/v1/documents/doc-1?includeTabsContent=true",
+      "https://docs.googleapis.com/v1/documents/doc-1?includeTabsContent=true&prettyPrint=false",
     );
+    expect(requestedFields).toBe(DOCUMENT_FIELDS);
+  });
+
+  it("reads a document once more without the mask when Google refuses the mask", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const fetch = vi.fn(async (_input: string | URL | Request, init?: RequestInit) =>
+      fieldMaskOf(init) === null
+        ? Response.json(docResponse())
+        : Response.json(REFUSED_FIELDS, { status: 400 }));
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(new GoogleDocsApi(token).getDocument("doc-1")).resolves.toEqual({
+      documentId: "doc-1",
+      title: "Quarterly plan",
+      revisionId: "revision-1",
+      tabs: [normalizedTab("tab-1", "Main")],
+    });
+
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch.mock.calls.map(([, init]) => fieldMaskOf(init))).toEqual([DOCUMENT_FIELDS, null]);
+    expect(fetch.mock.calls[1][0]).toBe(fetch.mock.calls[0][0]);
+    expect(error).toHaveBeenCalledOnce();
+    expect(error.mock.calls[0]?.[0]).toMatchObject({
+      component: "gatekeeper.google.docs",
+      event: "google.doc.read.fields-refused",
+      fallback: "unmasked",
+      httpStatus: 400,
+      operation: "get document",
+      providerStatus: "INVALID_ARGUMENT",
+      error: expect.stringContaining("Google Docs get document failed [http=400]"),
+      vendorId: "google",
+    });
+    expect(warn).toHaveBeenCalledOnce();
+    expect(warn.mock.calls[0]?.[0]).toMatchObject({ event: "google.api.request.failed" });
+    // Neither line holds the mask, the document's title, its ID or Google's prose.
+    const logged = JSON.stringify([error.mock.calls, warn.mock.calls]);
+    for (const held of ["tabProperties", "Quarterly plan", "doc-1", "invalid argument"]) {
+      expect(logged).not.toContain(held);
+    }
+  });
+
+  it("reads once more after a 400 that is not JSON", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const fetch = vi.fn(async (_input: string | URL | Request, init?: RequestInit) =>
+      fieldMaskOf(init) === null
+        ? Response.json(docResponse())
+        : new Response("<html>", { status: 400 }));
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(new GoogleDocsApi(token).getDocument("doc-1"))
+      .resolves.toMatchObject({ documentId: "doc-1" });
+
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(error).toHaveBeenCalledOnce();
+    expect(error.mock.calls[0]?.[0]).toMatchObject({
+      event: "google.doc.read.fields-refused", httpStatus: 400,
+    });
+    expect(error.mock.calls[0]?.[0]).not.toHaveProperty("providerStatus");
+  });
+
+  it("gives the caller the unmasked read's error, and does not read a third time", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const fetch = vi.fn(async () => Response.json(REFUSED_FIELDS, { status: 400 }));
+    vi.stubGlobal("fetch", fetch);
+
+    const failure = await new GoogleDocsApi(token).getDocument("doc-1").catch(value => value);
+
+    expect(failure).toBeInstanceOf(GoogleApiError);
+    expect(failure).toMatchObject({
+      message: "Google Docs get document failed [http=400]",
+      httpStatus: 400,
+      providerStatus: "INVALID_ARGUMENT",
+    });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ["a 403", 403, { error: { code: 403, status: "PERMISSION_DENIED" } }],
+    ["a 404", 404, { error: { code: 404, status: "NOT_FOUND" } }],
+    ["a file that is not a Google Doc", 400, { error: { code: 400, status: "FAILED_PRECONDITION" } }],
+  ] as const)("does not read again for a failure that is not the mask's: %s", async (
+    _name, status, body,
+  ) => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const fetch = vi.fn(async () => Response.json(body, { status }));
+    vi.stubGlobal("fetch", fetch);
+
+    const failure = await new GoogleDocsApi(token).getDocument("doc-1").catch(value => value);
+
+    expect(failure).toBeInstanceOf(GoogleApiError);
+    expect(failure).toMatchObject({
+      message: `Google Docs get document failed [http=${status}]`,
+      httpStatus: status,
+      providerStatus: body.error.status,
+    });
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it("does not read again when the masked answer is another document's", async () => {
+    const fetch = vi.fn(async () => Response.json({ ...docResponse(), documentId: "doc-2" }));
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(new GoogleDocsApi(token).getDocument("doc-1"))
+      .rejects.toThrow("Google Docs returned a different document");
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  // The limit is on the bytes read: an answer is refused by the length it declares or, where
+  // it declares none, by the running total of its chunks, so the parser is handed no text of it.
+  it("refuses an answer past the limit before parsing any of it", async () => {
+    const LIMIT = 10 * 1024 * 1024;
+    for (const declared of [false, true]) {
+      const answer = documentAnswer(
+        LIMIT + 1, declared ? { "Content-Length": String(LIMIT + 1) } : undefined);
+      const { outcome, parsed, fetches } = await readDocument(answer.response);
+
+      expect(outcome).toBeInstanceOf(Error);
+      expect((outcome as Error).message).toBe("Google Docs response exceeded the 10485760-byte limit.");
+      expect(parsed).toEqual([]);
+      // The refusal is not a refused mask: nothing is asked again.
+      expect(fetches).toBe(1);
+      // A declared length refuses the answer unread, but for what the stream had ready; with
+      // none, the chunk that passes the limit does.
+      if (declared) expect(answer.sent()).toBeLessThanOrEqual(2 * 64 * 1024);
+      else expect(answer.sent()).toBe(LIMIT + 1);
+    }
+
+    // An answer of exactly the limit is read, and the parser is handed all of it.
+    const { outcome, parsed } = await readDocument(documentAnswer(LIMIT).response);
+    expect(outcome).toMatchObject({ documentId: "doc-1", tabs: [normalizedTab("tab-1", "Main")] });
+    expect(parsed).toEqual([LIMIT]);
   });
 
   it("requests tab-agnostic metadata for a multi-tab document", async () => {
@@ -211,6 +396,62 @@ describe("native Google content API safety", () => {
     await expect(new GoogleDocsApi(token).getDocument("doc-1")).rejects.toThrow(message);
   });
 
+  it("reads the IDs of a document's top-level tabs and nothing else", async () => {
+    const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) =>
+      docsGetResponse(new URL(input.toString()), new Headers(init?.headers), docResponse([
+        rawTab("overview", "Overview", [rawTab("details", "Details")]),
+        rawTab("appendix", "Appendix"),
+      ])));
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(new GoogleDocsApi(token).getTopLevelTabIds("doc-1"))
+      .resolves.toEqual(["overview", "appendix"]);
+
+    expect(fetch).toHaveBeenCalledOnce();
+    const [url, init] = fetch.mock.calls[0];
+    expect(url).toBe(
+      "https://docs.googleapis.com/v1/documents/doc-1?includeTabsContent=true&prettyPrint=false" +
+        "&fields=documentId%2Ctabs(tabProperties(tabId))",
+    );
+    expect(fieldMaskOf(init)).toBeNull();
+  });
+
+  it.each([
+    ["another document", { documentId: "doc-2", tabs: [{ tabProperties: { tabId: "solo" } }] },
+      "Google Docs returned a different document"],
+    ["no tab", { documentId: "doc-1", tabs: [] }, "Google Docs returned no document tab"],
+    ["no list of tabs", { documentId: "doc-1" }, "Google Docs returned no document tab"],
+    ["a tab without an ID", {
+      documentId: "doc-1", tabs: [{ tabProperties: { tabId: "solo" } }, { tabProperties: {} }],
+    }, "Google Docs returned an invalid tab"],
+    ["a tab with an empty ID", { documentId: "doc-1", tabs: [{ tabProperties: { tabId: "" } }] },
+      "Google Docs returned an invalid tab"],
+    ["a tab that is not an object", { documentId: "doc-1", tabs: [null] },
+      "Google Docs returned an invalid tab"],
+  ] as const)("refuses tab IDs of %s", async (_case, answer, message) => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json(answer)));
+
+    await expect(new GoogleDocsApi(token).getTopLevelTabIds("doc-1")).rejects.toThrow(message);
+  });
+
+  it("does not read the IDs again when Google refuses the read", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const fetch = vi.fn(async () => Response.json(REFUSED_FIELDS, { status: 400 }));
+    vi.stubGlobal("fetch", fetch);
+
+    const failure = await new GoogleDocsApi(token).getTopLevelTabIds("doc-1").catch(value => value);
+
+    expect(failure).toBeInstanceOf(GoogleApiError);
+    expect(failure).toMatchObject({
+      message: "Google Docs get tab IDs failed [http=400]",
+      httpStatus: 400,
+      providerStatus: "INVALID_ARGUMENT",
+    });
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(error).not.toHaveBeenCalled();
+  });
+
   it("revision-locks marked writes and returns the range ID and the requests' replies", async () => {
     let requestInit: RequestInit | undefined;
     const added = { addDocumentTab: { tabProperties: { tabId: "t.new", title: "New", index: 1 } } };
@@ -308,6 +549,21 @@ describe("native Google content API safety", () => {
     expect(JSON.stringify(warn.mock.calls)).not.toContain("secret provider");
     expect(JSON.stringify(warn.mock.calls)).not.toContain("unsafe provider reason prose");
   });
+
+  it("carries the HTTP status of a failed request", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    for (const status of [400, 404, 503]) {
+      const failure = await readGoogleJson(new Response("<html>", { status }), {
+        provider: "Google Docs", operation: "get document", maxBytes: 1024,
+      }).catch(value => value);
+      expect(failure).toBeInstanceOf(GoogleApiError);
+      expect(failure).toMatchObject({ httpStatus: status, providerStatus: undefined });
+    }
+    // An error made without an answer has none.
+    expect(new GoogleApiError("Google Docs get document failed", "NOT_FOUND").httpStatus)
+      .toBeUndefined();
+  });
+
   it.each([
     ["Docs", () => new GoogleDocsApi(token).getDocument("doc-1"), docResponse()],
     ["Sheets", () => new GoogleSheetsApi(token).getSpreadsheet("sheet-1"), sheetBody()],

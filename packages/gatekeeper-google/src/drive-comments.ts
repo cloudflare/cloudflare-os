@@ -40,7 +40,7 @@ import {
   docsWriteFailure, docsWriteInvalid, type DocsRange,
   type DocsSuggestionRecord, type GoogleDocsApi, type GoogleDocsDocument,
 } from "./docs-api";
-import { locateQuote, selectTab } from "./drive-comment-body";
+import { locateQuoteInFetched } from "./drive-comment-body";
 import type { DocSuggestion, DriveComment, DriveCommentReply } from "./drive-types";
 import { GoogleApiError } from "./google-response";
 import {
@@ -619,7 +619,9 @@ type DocsPlacement = {
 /**
  * Reads the Doc a comment that quotes it, or a suggested edit, is sent to, and finds the quoted
  * text there, which must still occur exactly once in its tab. `undefined` for a write sent
- * through Drive.
+ * through Drive. The Doc is searched an element at a time, straight out of its parsed answer,
+ * which is let go behind the search: the answer is another view than a read's (suggestions
+ * inline), so nothing of it is stored.
  */
 async function place(
   host: CommentHost, action: DriveCommentAction,
@@ -629,18 +631,20 @@ async function place(
       ? { tabId: action.payload.tabId, text: action.payload.oldText } : undefined;
   if (!quoted) return undefined;
   let { document, suggestions } = await readDoc(host, action.payload.fileId, false);
+  // Read before the search, which empties the document.
+  let { revisionId } = document;
   let range: DocsRange;
   try {
-    range = locateQuote(selectTab(document, quoted.tabId), quoted.text,
+    range = locateQuoteInFetched(document, quoted.tabId, quoted.text,
       { wholeChips: action.kind === "suggestEdit" });
   } catch (error) {
     throw new ActionApplyError(QUOTE_GONE, { cause: error });
   }
   // A range is placed by the read: without its revision to send on, an edit made meanwhile would
   // move it. Google gives one to every account that can comment, so this is not expected.
-  if (!document.revisionId) throw new ActionApplyError(NO_REVISION);
+  if (!revisionId) throw new ActionApplyError(NO_REVISION);
   return {
-    range, revisionId: document.revisionId,
+    range, revisionId,
     mySuggestions: suggestions.filter(({ headPost }) => headPost.me)
       .map(({ suggestionId }) => suggestionId),
   };
