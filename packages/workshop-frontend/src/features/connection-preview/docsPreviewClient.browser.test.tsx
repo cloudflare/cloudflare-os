@@ -404,7 +404,7 @@ it('marks what was put in beside a word, not the word, and draws a line break a 
   expect([...changed.querySelectorAll('ins')].map(node => node.textContent).join('')).toBe(', and every embedder,')
 })
 
-it('starts a new sheet at a page break, one a pending change adds as one the tab has', async () => {
+it('starts a new sheet at a page break the tab has, and draws one a pending change names as the text it writes', async () => {
   const savedMarkdown = 'Before\n\n\\[Page break\\]\n\nAfter\n'
   const { sheets, refresh, show } = await draw({ savedMarkdown })
   const pages = () => sheets().map(sheet => text(sheet.querySelector('.area')!))
@@ -412,15 +412,17 @@ it('starts a new sheet at a page break, one a pending change adds as one the tab
   // A paragraph that ends in its page break leaves no line of itself on the next sheet.
   expect(sheets()[1].querySelectorAll('.col > *')).toHaveLength(1)
 
-  await refresh({ markdown: `${savedMarkdown}\n\\[Page break\\]\n\nLast\n` })
-  await expect.poll(pages).toEqual(['Before', 'After', 'Last'])
+  // Google is sent these names as text: no pending change can make a page break or an image.
+  await refresh({ markdown: 'Before\n\n\\[Page break\\]\n\nAfter [Image]\n\n\\[Page break\\]\n\nLast\n' })
+  await expect.poll(pages).toEqual(['Before', 'After [Image][Page break]Last'])
+  expect(sheets()[1].querySelector('.obj, .chip')).toBeNull()
   // As saved, the tab ends where it did.
   show('As saved')
   expect(pages()).toEqual(['Before', 'After'])
   // With each change in place there is one sheet, as long as the tab.
   show('Inline')
   expect(sheets()).toHaveLength(1)
-  expect(sheets()[0].querySelectorAll('.pagebreak')).toHaveLength(2)
+  expect(sheets()[0].querySelectorAll('.pagebreak')).toHaveLength(1)
 })
 
 it('steps from page to page with a navigator at the foot of the frame, where there are pages', async () => {
@@ -775,4 +777,20 @@ it('counts the page at the head of the frame, where a step puts one, however sho
     return reading()
   }).toBe(`Page ${count} of ${count}`)
   expect(next.disabled).toBe(true)
+})
+
+it('draws a paragraph that says only <table> as that text, and what follows it as it is', async () => {
+  const savedMarkdown = 'Intro\n\n<table>\n\n# Results\n\nAfter\n'
+  const { blocks, look } = await draw({
+    savedMarkdown,
+    drawing: drawing([
+      paragraph(0, 'Intro', { look: TITLE }), paragraph(2, '<table>'),
+      paragraph(4, [{ text: 'Results', look: HEADING, at: 2 }], { style: 'HEADING_1', look: HEADING }), paragraph(6, 'After'),
+    ]),
+  })
+
+  expect(blocks().map(block => [block.getAttribute('role'), text(block)])).toEqual(
+    [[null, 'Intro'], [null, '<table>'], ['heading', 'Results'], [null, 'After']])
+  // The tab is still drawn from its drawing.
+  expect(parseFloat(look(run(blocks()[0], 'Intro')).fontSize)).toBeCloseTo(26 * POINT, 1)
 })
