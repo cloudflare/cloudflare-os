@@ -78,6 +78,7 @@ import { WorkshopButton, WorkshopIconButton, WorkshopInput } from './components/
 import { useActionEntries, useActions } from './useActions'
 import { ConnectionPreviewPane } from './features/connection-preview/ConnectionPreviewPane'
 import { previewKey, previewOffers, type ConnectionPreview } from './features/connection-preview/connectionPreview'
+import { ClosedPreviewsMenu } from './features/connection-preview/ClosedPreviewsMenu'
 import { useAutoOpenConnectionPreview } from './features/connection-preview/useAutoOpenConnectionPreview'
 import { usePendingConnectionPreviews } from './features/connection-preview/usePendingConnectionPreviews'
 import DeleteConfirmationDialog from './components/DeleteConfirmationDialog'
@@ -1985,18 +1986,7 @@ export default function GadgetEditor() {
             restricted={metadata?.containsRestrictedData === true}
           />
 
-          {closedPreviews.map(preview => (
-            <WorkshopIconButton
-              key={previewKey(preview)}
-              onClick={() => openConnectionPreview(preview)}
-              title={`Preview ${preview.title}`}
-              aria-label={`Preview ${preview.title}`}
-            >
-              {preview.iconUrl
-                ? <img src={preview.iconUrl} alt="" className="size-[15px]" />
-                : <FileText size={15} />}
-            </WorkshopIconButton>
-          ))}
+          <ClosedPreviewsMenu previews={closedPreviews} onOpen={openConnectionPreview} />
 
           {showReconnecting && <ReconnectingChip />}
 
