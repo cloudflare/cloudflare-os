@@ -2476,6 +2476,36 @@ async function addTab(facet: string, title: string, options?: { parentTabId?: st
 }
 
 describe("adding a Google Doc tab", () => {
+  // Disconnected between its read and its send, an add sends nothing, so a tab someone adds
+  // meanwhile does not make its next approval take it for one that may have been added.
+  it("adds a tab its disconnected connection never sent, though another tab was added meanwhile", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "Intro");
+    docs.install();
+    let added = await addTab("add-tab-gone", "Notes");
+    let inner = globalThis.fetch;
+    let reads = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      let url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
+      let method = init?.method ?? (input instanceof Request ? input.method : "GET");
+      if (method === "GET" && url.pathname === "/v1/documents/doc-1" && ++reads === 1) {
+        await rawHooks().disconnectDrive();
+        vi.spyOn(Date, "now").mockReturnValue(Date.now() + ACCESS_TOKEN_MEMO_MAX_AGE_MS);
+      }
+      return inner(input, init);
+    }));
+    try {
+      expect(await hooks().applyAction("add-tab-gone", added.actionId))
+        .toBe("The test disconnected this Google account.");
+    } finally {
+      vi.restoreAllMocks();
+      await rawHooks().setDriveToken(undefined);
+    }
+    docs.install();
+    docs.addTab("t.other", "Someone else's", MAIN_TAB);
+    expect(await hooks().applyAction("add-tab-gone", added.actionId)).toBeNull();
+  });
+
   it("queues an empty tab that edits fill before it is added, and applies them in order", async () => {
     let docs = new DocsModel();
     docs.setText(MAIN_TAB, "Intro");

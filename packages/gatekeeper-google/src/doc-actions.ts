@@ -7,6 +7,7 @@ import {
   ActionApplyError, type ActionDefinition, type ActionPresentation,
 } from "@gadgets/gatekeeper-kit/actions";
 import { buildDescription, plainInline } from "@gadgets/gatekeeper-kit/action-description";
+import { isUnsentRequest } from "./auth-retry";
 import { type GoogleDocTab } from "./docs-types";
 import {
   blankDocsTab, docsWriteFailure, GoogleDocsApi, type DocsBatchReply, type GoogleDocReader,
@@ -838,8 +839,9 @@ async function applyDocEdit(action: GoogleDocAction, host: DocHost, id: number):
         rangeStart: tab.bodyEndIndex - 1,
         tabId: tab.tabId,
       }).catch(async (error: unknown) => {
-        if (action.type === "addTab" && docsWriteFailure(error) !== "unknown") {
-          // Refused whole, so no tab was added, and a retry has nothing to look for.
+        if (action.type === "addTab" &&
+            (isUnsentRequest(error) || docsWriteFailure(error) !== "unknown")) {
+          // Refused whole, or never sent, so no tab was added, and a retry has nothing to look for.
           delete action.knownTabIds;
           host.saved(id, action);
         }

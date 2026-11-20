@@ -116,6 +116,18 @@ function recordAttempt(
   }
 }
 
+// Errors a request failed with before it was first sent: its token could not be had.
+const unsent = new WeakSet<object>();
+
+/**
+ * Whether `error` ended a request before it was sent at all, because the token it was to carry
+ * could not be had, as from a connection disconnected meanwhile: a write it was to make was then
+ * not made, whatever its handler records about it.
+ */
+export function isUnsentRequest(error: unknown): boolean {
+  return typeof error === "object" && error !== null && unsent.has(error);
+}
+
 /**
  * Perform an authenticated fetch, injecting a Bearer token and applying both retry concerns
  * described at the top of this file. The `Authorization` header is set from the (possibly
@@ -142,7 +154,10 @@ export async function fetchWithAuthRetry(
   // One-shot each: a 401 buys one refreshed retry, a 403 one reloaded retry.
   let refreshed = false;
   let reloaded = false;
-  let token = await getAccessToken();
+  let token = await getAccessToken().catch((error: unknown) => {
+    if (typeof error === "object" && error !== null) unsent.add(error);
+    throw error;
+  });
   let attempt = 0;
 
   while (true) {
