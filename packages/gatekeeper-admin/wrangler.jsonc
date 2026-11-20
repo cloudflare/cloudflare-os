@@ -16,7 +16,10 @@
   },
   "build": {
     "command": "node ../api-schema/scripts/generate.ts --if-stale && pnpm exec capnweb-validate build --out .wrangler/validate",
-    "watch_dir": "src"
+    "watch_dir": [
+      "src",
+      "../workshop-shared/src"
+    ]
   },
   "rules": [
     {
