@@ -5,7 +5,7 @@ import type { SimpleUser, SimpleUserInput } from "./index.d.js";
 
 /*
  * Operations left out, which the client cannot call:
- * - POST /repos/{owner}/{repo}/issues/{issue_number}/attachments (issues/upload): its request body is not JSON (application/octet-stream).
+ * - POST /repos/{owner}/{repo}/issues/{issue_number}/attachments (issues/upload): its request body is not `application/json` (application/octet-stream).
  */
 
 export type Issue = {
