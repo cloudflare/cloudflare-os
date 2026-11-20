@@ -9,6 +9,7 @@ import {
   type AdminGatekeeperInfo, type AdminObserver, type AdminPendingChange,
   type AdminWorkspaceDescription, type AdminWorkspaceDiagnostics, type AdminWorkspaceMethod,
   type AdminWorkspaceView, type AdminWriteAction, type AdminWriteArgs, type AdminWriteRecord,
+  type ObserverBindingPathStep,
 } from "@gadgets/workshop-shared/api";
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
@@ -541,6 +542,13 @@ type GadgetReach = {
   gadgetIds: Set<WorkpieceId>;
   gatekeeperIds: Set<WorkpieceId>;
 };
+
+// An edge #gadgetReach() followed, for listObserverRequirements() to explain: a binding, by name,
+// or an enabled hook.
+type ObserverReachEdge =
+  | {target: WorkpieceId; binding: string}
+  | {target: WorkpieceId; hook: Extract<ObserverBindingPathStep, {type: "hook"}>};
+
 // Copied from normalizeText() in agent-catalog.ts, minus its length clamp
 function oneLineReason(reason: string): string {
   return reason.replace(/\p{Cc}/gu, " ").replace(/\s+/g, " ").trim();
@@ -10926,8 +10934,8 @@ class OverseerImpl implements AgentHooks {
   // whose gadget can't be resolved (none named, or its record gone) is keyed `undefined` and
   // reaches every gadget, fail-closed. A hook waking a still-provisional gadget reaches nothing
   // until promotion, which mergeChanges' scope diff reports.
-  #enabledHookConnections(): Map<WorkpieceId | undefined, WorkpieceId[]> {
-    let connections = new Map<WorkpieceId | undefined, WorkpieceId[]>();
+  #enabledHookConnections(): Map<WorkpieceId | undefined, BoundHookRecord[]> {
+    let connections = new Map<WorkpieceId | undefined, BoundHookRecord[]>();
     for (let hook of Array.from(this.storage.boundHooks.list())) {
       if (!hook.enabled) continue;
       let gadgetId = hook.gadgetId ?? this.defaultGadgetId;
@@ -10935,8 +10943,8 @@ class OverseerImpl implements AgentHooks {
       if (gadget?.pending) continue;
       let key = gadget ? gadgetId : undefined;
       let list = connections.get(key);
-      if (list) list.push(hook.gatekeeperId);
-      else connections.set(key, [hook.gatekeeperId]);
+      if (list) list.push(hook);
+      else connections.set(key, [hook]);
     }
     return connections;
   }
@@ -10962,24 +10970,40 @@ class OverseerImpl implements AgentHooks {
   // only by the former, so no accepted request can ever add a connection to a spawned chat beyond
   // the spawner's bindings. If spawned agents ever gain either tool, this closure must learn about
   // it too.
-  #gadgetReach(gadgetId: WorkpieceId, hooks = this.#enabledHookConnections()): GadgetReach {
+  #gadgetReach(gadgetId: WorkpieceId, hooks = this.#enabledHookConnections(),
+               edges?: Map<WorkpieceId, ObserverReachEdge[]>): GadgetReach {
     let reach: GadgetReach = {gadgetIds: new Set(), gatekeeperIds: new Set()};
-    let pending = [gadgetId, ...hooks.get(undefined) ?? []];
+    let unattributedHooks = hooks.get(undefined) ?? [];
+    let pending = [gadgetId, ...unattributedHooks.map(hook => hook.gatekeeperId)];
+    let hookEdge = (hook: BoundHookRecord): ObserverReachEdge => ({
+      target: hook.gatekeeperId,
+      hook: {type: "hook", id: hook.id, title: hook.description.title},
+    });
+    let followBindings = (id: WorkpieceId, bindings: [string, BindingRecord][],
+                          boundHooks: BoundHookRecord[] = []) => {
+      pending.push(...bindings.map(([, edge]) => edge.target),
+          ...boundHooks.map(hook => hook.gatekeeperId));
+      if (edges) {
+        edges.set(id, [
+          ...bindings.map(([binding, edge]): ObserverReachEdge => ({target: edge.target, binding})),
+          ...boundHooks.map(hookEdge),
+          ...(id === gadgetId ? unattributedHooks.map(hookEdge) : []),
+        ]);
+      }
+    };
     while (pending.length > 0) {
       let id = pending.pop()!;
       let gadget = this.storage.gadgets.get(id);
       if (gadget) {
         if (gadget.type !== "gadget" || gadget.pending || reach.gadgetIds.has(id)) continue;
         reach.gadgetIds.add(id);
-        pending.push(...this.visibleBindings(gadget).map(([, edge]) => edge.target),
-            ...hooks.get(id) ?? []);
+        followBindings(id, this.visibleBindings(gadget), hooks.get(id));
         continue;
       }
       let gatekeeper = this.storage.gatekeepers.get(id);
       if (!gatekeeper || reach.gatekeeperIds.has(id)) continue;
       reach.gatekeeperIds.add(id);
-      pending.push(...this.visibleBindings({bindings: gatekeeper.bindings ?? {}})
-          .map(([, edge]) => edge.target));
+      followBindings(id, this.visibleBindings({bindings: gatekeeper.bindings ?? {}}));
     }
     return reach;
   }
@@ -11026,10 +11050,11 @@ class OverseerImpl implements AgentHooks {
   //   risk -- never-bound producers" in plans/restricted-data-sharing.md.
   #inScopeGatekeepers(
       grant: CollaboratorGrant,
-      reach = grant === "workspace" ? undefined : this.#gadgetReach(grant.gadgetId))
+      reach = grant === "workspace" ? undefined : this.#gadgetReach(grant.gadgetId),
+      onProducer?: (gadgetId: WorkpieceId, gatekeeperId: WorkpieceId) => void)
       : GatekeeperRecord[] {
-    let ids = reach && new Set(
-        [...reach.gatekeeperIds, ...this.observerLedger.gadgetProducers(reach.gadgetIds)]);
+    let ids = reach && new Set([...reach.gatekeeperIds,
+        ...this.observerLedger.gadgetProducers(reach.gadgetIds, onProducer)]);
 
     let result: GatekeeperRecord[] = [];
     for (let gk of this.storage.gatekeepers.list()) {
@@ -11044,11 +11069,81 @@ class OverseerImpl implements AgentHooks {
   }
 
   listObserverRequirements(grant: CollaboratorGrant): ObserverBindingNeed[] {
-    if (grant !== "workspace" && !this.isShareableGadget(grant.gadgetId)) {
-      throw new Error(`No such gadget: ${grant.gadgetId}`);
+    if (grant === "workspace") return this.#inScopeGatekeepers(grant).map(observerBindingNeed);
+    let {gadgetId} = grant;
+    if (!this.isShareableGadget(gadgetId)) throw new Error(`No such gadget: ${gadgetId}`);
+    if (grant.mode === "view") return [];
+
+    let edges = new Map<WorkpieceId, ObserverReachEdge[]>();
+    let reach = this.#gadgetReach(gadgetId, undefined, edges);
+    // Heard from the same ledger pass that puts them in scope.
+    let producers = new Map<WorkpieceId, WorkpieceId[]>();
+    let gatekeepers = this.#inScopeGatekeepers(grant, reach, (gadget, gatekeeper) => {
+      let ids = producers.get(gadget);
+      if (ids) ids.push(gatekeeper);
+      else producers.set(gadget, [gatekeeper]);
+    });
+    // Keyed by each path's JSON, so two edges to one workpiece explain it once.
+    let paths = new Map(gatekeepers.map(
+        gk => [gk.id, new Map<string, ObserverBindingPathStep[]>()]));
+
+    // The workpieces #gadgetReach() descends into, as steps: reached gadgets, and agent spawners,
+    // whose records alone carry bindings (GatekeeperRecord.bindings), so no other connection has
+    // edges to follow. Cached, so every path names a workpiece alike.
+    let nodes = new Map<WorkpieceId, ObserverBindingPathStep | undefined>();
+    let node = (edge: ObserverReachEdge): ObserverBindingPathStep | undefined => {
+      let id = edge.target;
+      if (nodes.has(id)) return nodes.get(id);
+      let fallback = "hook" in edge ? edge.hook.title : edge.binding;
+      let step: ObserverBindingPathStep | undefined;
+      if (reach.gadgetIds.has(id)) {
+        step = {type: "gadget", id, title: this.storage.gadgets.get(id)?.title || fallback};
+      } else {
+        let spawner = this.storage.gatekeepers.get(id);
+        if (spawner?.creationSpec?.type === "agentSpawner") {
+          let title = spawner.resourceTitle || spawner.creationSpec.config.displayName;
+          step = {type: "agentSpawner", id, title: title || fallback};
+        }
+      }
+      nodes.set(id, step);
+      return step;
+    };
+    // Records what `id` reaches along `path`, returning the workpieces to descend into.
+    let visit = (id: WorkpieceId, path: ObserverBindingPathStep[]) => {
+      for (let producer of producers.get(id) ?? []) {
+        let historical: ObserverBindingPathStep[] = [...path, {type: "historicalRequirement"}];
+        paths.get(producer)?.set(JSON.stringify(historical), historical);
+      }
+      let next: {id: WorkpieceId, path: ObserverBindingPathStep[]}[] = [];
+      for (let edge of edges.get(id) ?? []) {
+        let via = "hook" in edge ? [...path, edge.hook] : path;
+        paths.get(edge.target)?.set(JSON.stringify(via), via);
+        let step = node(edge);
+        if (step) next.push({id: edge.target, path: [...via, step]});
+      }
+      return next;
+    };
+
+    // One branch per workpiece the gadget reaches first, each with a shortest route to every node
+    // within it, so a route through a node the branch already reached is not listed: enumerating
+    // every route through shared subtrees can grow exponentially.
+    let branched = new Set([gadgetId]);
+    for (let branch of visit(gadgetId, [])) {
+      if (branched.has(branch.id)) continue;
+      branched.add(branch.id);
+      let seen = new Set([gadgetId, branch.id]);
+      let queue = [branch];
+      for (let {id, path} of queue) {
+        for (let child of visit(id, path)) {
+          if (seen.has(child.id)) continue;
+          seen.add(child.id);
+          queue.push(child);
+        }
+      }
     }
-    if (grant !== "workspace" && grant.mode === "view") return [];
-    return this.#inScopeGatekeepers(grant).map(observerBindingNeed);
+
+    return gatekeepers.map(
+        gk => ({...observerBindingNeed(gk), paths: [...paths.get(gk.id)!.values()]}));
   }
 
   // Tail of the in-flight addObserver/removeObserver chain per `${observerId}/${gatekeeperId}`
