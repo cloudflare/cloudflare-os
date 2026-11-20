@@ -39,8 +39,8 @@ export type DocTabSnapshot = {
   bodyEndIndex: number;
   /** One entry per `[Image]` placeholder in `markdown`, in the order they appear. */
   images: DocTabImage[];
-  /** The tab as Google Docs draws it. */
-  drawing: GoogleDocDrawing;
+  /** The tab as Google Docs draws it. Absent from a stored snapshot too large to hold it. */
+  drawing?: GoogleDocDrawing;
   /** Where Google serves, for a short while, each image `drawing` names that has bytes. */
   imageUris: Record<string, string>;
 }
@@ -163,7 +163,7 @@ class MarkdownWriter {
 }
 
 /** Convert one document tab to Markdown with a source map into that tab's index space. */
-export function docTabToMarkdown(tab: GoogleDocsTab): DocTabSnapshot {
+export function docTabToMarkdown(tab: GoogleDocsTab): DocTabSnapshot & { drawing: GoogleDocDrawing } {
   let writer = new MarkdownWriter();
   let blocks: BlockMapping[] = [];
   let places = new Map<StructuralElement, DocBlockPlace>();

@@ -65,7 +65,7 @@ import {
   googleDocTabMetadata, GoogleDocTabSnapshot, GoogleDocWriteMarker, GoogleDocWriteReceipt,
   invalidateGoogleDocAction, invalidateUnreplayableGoogleDocActions, isGoogleDocSnapshot,
   MAX_DOC_ADDED_TABS, newGoogleDocTab, parseGoogleDocWriteReceipt, PROVISIONAL_TAB_PREFIX,
-  requireGoogleDocAppendIndex, resolveGoogleDocTab, storeInvalidator,
+  requireGoogleDocAppendIndex, resolveGoogleDocTab, storeGoogleDocSnapshot, storeInvalidator,
 } from "./doc-actions";
 
 const logger = obsContext.createLogger({ component: "gatekeeper.google", vendorId: "google" });
@@ -430,7 +430,7 @@ export class GoogleDocGatekeeperImpl
       unapplyable: async (id, unapplied, reason, snapshot) => {
         invalidateGoogleDocAction(pendingActions, { id, action: unapplied }, reason);
         this.#simulationCache.current = undefined;
-        await this.ctx.storage.put(DOC_SNAPSHOT_KEY, snapshot);
+        await storeGoogleDocSnapshot(this.ctx.storage, snapshot);
       },
     }, { id: actionId });
     let { writeMarker, snapshot } = landed!;
@@ -458,7 +458,7 @@ export class GoogleDocGatekeeperImpl
       if (writeMarker) {
         refreshedSnapshot = googleDocSnapshot(await api.getDocument(documentId));
       }
-      await this.ctx.storage.put(DOC_SNAPSHOT_KEY, refreshedSnapshot);
+      await storeGoogleDocSnapshot(this.ctx.storage, refreshedSnapshot);
       invalidateUnreplayableGoogleDocActions(
           storeInvalidator(pendingActions),
           refreshedSnapshot,
@@ -1076,6 +1076,7 @@ export class GoogleDocSessionImpl extends RpcTarget
       title: "Read Google Doc drawing",
       description: "Read one tab of the document as Google Docs draws it.",
     });
+    if (!tab.drawing) throw new Error("readDrawing: this document is too large to read as it is drawn.");
     return tab.drawing;
   }
 
@@ -1210,8 +1211,7 @@ function storedDocSource(
       // What Google returned before a write landed is stale: the edit is no longer pending to be
       // replayed over it, so it would read as missing, and edits queued after it could not replay.
       if (writes !== cache.writes) continue;
-      await storage.put(DOC_SNAPSHOT_KEY, snapshot);
-      return snapshot;
+      return storeGoogleDocSnapshot(storage, snapshot);
     }
   }
 
