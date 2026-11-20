@@ -686,10 +686,11 @@ async function postNote(
     throw new ActionApplyError(`The suggestion was made, but its note was not posted: ${
       error.message}`, { cause: error });
   });
-  // Asked before the note's send is recorded, as before any send (see sendOnce).
-  await host.ready?.().catch((error: unknown) => {
-    throw new Error(`The suggestion was made, but its note was not posted: ${
-      error instanceof Error ? error.message : String(error)}`, { cause: error });
+  // Asked before the note's send is recorded, as before any send (see sendOnce). The reason is
+  // ours alone: the account's can quote Google, and a failed approval is logged.
+  await host.ready?.().catch(() => {
+    throw new Error("The suggestion was made, but its note was not posted: the connection " +
+      "cannot send now. Approve it again to post the note.");
   });
   host.attempts.put(id, { ...marked, noteAt: Date.now() });
   try {
