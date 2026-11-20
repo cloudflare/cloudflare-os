@@ -280,6 +280,11 @@ const GRANT_SUBJECT_KEY = "grantSubject";
 // nothing about the grant held now.
 const GRANT_CREDENTIALS_KEY = "grantCredentialsId";
 
+// Storage key holding the OAuth client the installed credentials are known to be issued to: the one
+// whose code exchange gave them, or that refreshed them. Not set for credentials no such step has
+// shown the client of, as ones installed before it was recorded.
+const CREDENTIALS_CLIENT_KEY = "credentialsClientId";
+
 // Storage key holding which Google account (`sub`) the credentials with a `credentialsId` belong
 // to, as read when they were staged, described or recorded: apart from whether the registry has
 // listed this object, so that what is known of the account survives a registry that failed.
@@ -297,8 +302,11 @@ const REFRESH_TOKEN_DEAD_KEY = "refreshTokenDead";
 // refresh token, and the Google account whose registry it rechecks.
 const PENDING_REVOCATION_KEY = "pendingRevocation";
 
-/** `attempts` counts the tries made so far, the disconnect's included. */
-type PendingRevocation = { refreshToken: string; subject?: string; attempts: number };
+/**
+ * `attempts` counts the tries made so far, the disconnect's included. `clientId` is the OAuth
+ * client the refresh token is known to be issued to, if it is known.
+ */
+type PendingRevocation = { refreshToken: string; clientId?: string; subject?: string; attempts: number };
 
 /**
  * Whether a disconnect revokes the grant at Google, and the Google account it went by, if known.
@@ -602,6 +610,8 @@ type StagedGoogleCredentials = {
   requestedResources: string[];
   /** The Google account (`sub`) that signed in, when Google said which. */
   subject?: string;
+  /** The OAuth client whose code exchange gave the credentials. */
+  clientId?: string;
 };
 
 // How long an account reuses an answer about its access to a subresource, counted from when it
@@ -826,6 +836,7 @@ export class UserAccount extends DurableObject<Env> {
           refreshToken: response.refreshToken, accessToken: response.accessToken,
           grantedScopes: response.grantedScopes, requestedResources: flow.requestedResources,
           ...(subject !== undefined ? { subject } : {}),
+          clientId,
         };
         let stageId = stageCredentials(this.ctx.storage.kv, staged, Date.now());
         return { callback, mode: flow.mode, stageId };
@@ -834,6 +845,7 @@ export class UserAccount extends DurableObject<Env> {
       this.ctx.storage.kv.put<string>("refreshToken", response.refreshToken);
       this.ctx.storage.kv.put<GoogleAccessToken>("accessToken", response.accessToken);
       this.ctx.storage.kv.put<string>("credentialsId", crypto.randomUUID());
+      this.ctx.storage.kv.put<string>(CREDENTIALS_CLIENT_KEY, clientId);
       this.#forgetRefusal();
       this.ctx.storage.kv.put<string[]>("grantedScopes", response.grantedScopes);
       mergeGrantedResources(this.ctx.storage.kv, flow.requestedResources);
@@ -884,6 +896,8 @@ export class UserAccount extends DurableObject<Env> {
       kv.put<string>("refreshToken", staged.refreshToken);
       kv.put<GoogleAccessToken>("accessToken", staged.accessToken);
       kv.put<string>("credentialsId", credentialsId);
+      if (staged.clientId !== undefined) kv.put<string>(CREDENTIALS_CLIENT_KEY, staged.clientId);
+      else kv.delete(CREDENTIALS_CLIENT_KEY);
       if (staged.subject !== undefined) {
         kv.put<AccountSubject>(ACCOUNT_SUBJECT_KEY, { credentialsId, subject: staged.subject });
       }
@@ -1068,6 +1082,10 @@ export class UserAccount extends DurableObject<Env> {
         this.ctx.exports.GoogleGrantRegistry.idFromName(subject).toString() !== registryId) {
       return false;
     }
+    // Credentials another OAuth client issued, as before the deployment moved to the one it has
+    // now, cannot be refreshed here: they hold nothing this deployment's connections could lose.
+    let issuer = kv.get<string>(CREDENTIALS_CLIENT_KEY);
+    if (issuer !== undefined && issuer !== this.env.CLIENT_ID) return false;
     // Listed under this grant for credentials a reconnect replaced, not yet known to be the same
     // Google account's, it may hold another's: which it is is read now, and when it cannot be,
     // it cannot say.
@@ -1088,9 +1106,10 @@ export class UserAccount extends DurableObject<Env> {
     // An access token that has not expired was minted within the hour, so Google honoured the
     // refresh token then. One that has, as on a connection left unused, says nothing: Google may
     // have ended the refresh token meanwhile, and a holder whose token holds no grant would keep
-    // the last working connection from revoking it.
+    // the last working connection from revoking it. Nor does one whose client is not known, which
+    // a refresh with this deployment's client shows.
     let stored = kv.get<GoogleAccessToken>("accessToken");
-    if (stored !== undefined && stored.expires.valueOf() > Date.now()) return true;
+    if (issuer !== undefined && stored !== undefined && stored.expires.valueOf() > Date.now()) return true;
     let lives = await this.#refreshTokenLives(refreshToken);
     // A reconnect replaced the credentials while Google was asked: the answer is about them now.
     if (kv.get<string>("refreshToken") !== refreshToken) return await this.holdsGrantIn(registryId);
@@ -1113,7 +1132,10 @@ export class UserAccount extends DurableObject<Env> {
       if (!clientId || !clientSecret) throw new Error("The Google Gatekeeper is not configured.");
       let result = await getAccessToken(refreshToken, clientId, clientSecret,
           AbortSignal.timeout(GRANT_SUBJECT_TIMEOUT_MS));
-      if (result.ok) return result.token.token;
+      if (result.ok) {
+        this.#issuedTo(refreshToken, clientId);
+        return result.token.token;
+      }
       dead = result.reason === "revoked" && !isCloudSessionExpiry(result);
       throw new Error("Google would not refresh these credentials to say whose they are.");
     };
@@ -1152,6 +1174,12 @@ export class UserAccount extends DurableObject<Env> {
     return true;
   }
 
+  /** Records that `refreshToken`, while it is the one installed, refreshed with `clientId`. */
+  #issuedTo(refreshToken: string, clientId: string): void {
+    let kv = this.ctx.storage.kv;
+    if (kv.get<string>("refreshToken") === refreshToken) kv.put<string>(CREDENTIALS_CLIENT_KEY, clientId);
+  }
+
   /**
    * Whether Google still honours `refreshToken`, asked with a refresh whose token is dropped.
    * Without the credentials mutex, which a disconnect asking the registry may hold; the answer is
@@ -1165,6 +1193,7 @@ export class UserAccount extends DurableObject<Env> {
     if (!clientId || !clientSecret) throw new Error("The Google Gatekeeper is not configured.");
     let result = await getAccessToken(refreshToken, clientId, clientSecret,
         AbortSignal.timeout(GRANT_SUBJECT_TIMEOUT_MS));
+    if (result.ok) this.#issuedTo(refreshToken, clientId);
     // A Google Cloud session that ran out, or an admin's restriction, leaves the refresh token
     // standing, as at a mint.
     if (result.ok || result.reason !== "revoked" || isCloudSessionExpiry(result)) return true;
@@ -1499,6 +1528,7 @@ export class UserAccount extends DurableObject<Env> {
       }
 
       this.ctx.storage.kv.put<GoogleAccessToken>("accessToken", result.token);
+      this.ctx.storage.kv.put<string>(CREDENTIALS_CLIENT_KEY, clientId);
       this.ctx.storage.kv.delete(REFRESH_TOKEN_DEAD_KEY);
       endedRefusal = this.ctx.storage.kv.get<string>(REFRESH_REFUSED_KEY);
       return result.token;
@@ -1599,12 +1629,14 @@ export class UserAccount extends DurableObject<Env> {
       if (!refreshToken && this.ctx.storage.kv.get(PENDING_REVOCATION_KEY) !== undefined) return;
       let pending: PendingRevocation | undefined;
       if (refreshToken) {
+        let clientId = this.ctx.storage.kv.get<string>(CREDENTIALS_CLIENT_KEY);
         let release = await this.#releaseGrant(refreshToken);
         // Not revoked for a holder that could not be asked, which may hold nothing: the grant's
         // registry is asked again later, as for a revocation Google did not take.
         if (release.unsure) {
           pending = {
             refreshToken, attempts: 1,
+            ...(clientId === undefined ? {} : { clientId }),
             ...(release.subject === undefined ? {} : { subject: release.subject }),
           };
         }
@@ -1621,6 +1653,7 @@ export class UserAccount extends DurableObject<Env> {
             });
             pending = {
               refreshToken, attempts: 1,
+              ...(clientId === undefined ? {} : { clientId }),
               ...(release.subject === undefined ? {} : { subject: release.subject }),
             };
           }
@@ -1667,7 +1700,17 @@ export class UserAccount extends DurableObject<Env> {
   async #retryRevocation(pending: PendingRevocation): Promise<void> {
     try {
       // An account not known at the disconnect is read now, so that a connection of it made since
-      // is found; and one Google no longer refreshes for holds no grant to revoke.
+      // is found; and one Google no longer refreshes for holds no grant to revoke. Not with a client
+      // the token was not issued to, as after the deployment moved to another: Google's refusal then
+      // says nothing of the grant, and which connections of the account it would end can't be told.
+      if (pending.subject === undefined && pending.clientId !== undefined &&
+          pending.clientId !== this.env.CLIENT_ID) {
+        logger.warn("gave up revoking a grant whose OAuth client the deployment no longer uses", {
+          event: "google.grant.revoke.abandoned", outcome: "clientChanged",
+        });
+        this.ctx.storage.deleteAll();
+        return;
+      }
       let subject = pending.subject ?? await this.#revocationSubject(pending.refreshToken);
       if (subject === null) {
         logger.info("dropped a revocation of a grant Google had already ended", {

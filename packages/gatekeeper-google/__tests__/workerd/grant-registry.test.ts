@@ -1189,6 +1189,77 @@ describe("Google grants shared by several connections", () => {
   });
 });
 
+// The deployment's OAuth client was "former-client" before it moved to "test-client", in another
+// Google Cloud project or the same one: which, the gatekeeper can't tell.
+describe("Google grants after the deployment moved to another OAuth client", () => {
+  /** A connection made under the former client, recorded as a holder, its access token still live. */
+  async function formerConnection(google: Google, name: string, subject: string) {
+    const account = await connection(google, name, subject);
+    await account.run((_instance, state) => { state.storage.kv.put("credentialsClientId", "former-client"); });
+    return account;
+  }
+
+  // Credentials the former client issued can't be refreshed here, so they hold nothing the new
+  // client's connections could lose.
+  it("revokes the new client's grant whatever connections the former client's credentials hold", async () => {
+    const google = fakeGoogle();
+    const {ada} = googleAccounts();
+    await formerConnection(google, "former", ada);
+    const current = await connection(google, "current", ada);
+    await current.disconnect();
+    expect(google.revoked).toEqual(["refresh-current"]);
+  });
+
+  // Credentials whose client was never shown, as ones from before it was recorded, are not taken for
+  // the new client's on the strength of an access token: a refresh with it shows whose they are.
+  it("asks a holder whose credentials' client isn't known to refresh before it counts", async () => {
+    const google = fakeGoogle();
+    const {ada} = googleAccounts();
+    const unknown = await connection(google, "unknown", ada);
+    await unknown.run((_instance, state) => { state.storage.kv.delete("credentialsClientId"); });
+    google.refused.set("refresh-unknown", null);
+    const current = await connection(google, "current", ada);
+    await current.disconnect();
+    expect(google.revoked).toEqual(["refresh-current"]);
+  });
+
+  // A revocation that can't tell whose grant it would end, and can't learn it with a client its
+  // token wasn't issued to, is given up rather than taken for one Google ended.
+  it("gives up a revocation of the former client's whose Google account isn't known", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const google = fakeGoogle();
+    const {ada} = googleAccounts();
+    const former = await storedAccount(google, "former", ada);
+    await former.run((_instance, state) => { state.storage.kv.put("credentialsClientId", "former-client"); });
+    google.refreshFails = true;
+    google.revocationFails = true;
+    await former.disconnect();
+    google.refreshFails = false;
+    google.revocationFails = false;
+
+    expect(await former.alarm()).toBe(true);
+    expect(google.revoked).toEqual([]);
+    expect(await former.isEmpty()).toBe(true);
+  });
+
+  // In one Cloud project, revoking the former client's token would end the new client's
+  // connections too: a connection of the account made under the new client keeps the grant.
+  it("drops a revocation of the former client's once the new client's connection holds the grant", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const google = fakeGoogle();
+    const {ada} = googleAccounts();
+    const former = await formerConnection(google, "former", ada);
+    google.revocationFails = true;
+    await former.disconnect();
+    google.revocationFails = false;
+    const current = await connection(google, "current", ada);
+
+    expect(await former.alarm()).toBe(true);
+    expect(google.revoked).toEqual([]);
+    expect(await current.refresh()).toBe("access-current");
+  });
+});
+
 describe("GoogleGrantRegistry", () => {
   const registryOf = (subject: string) =>
     testEnv.GoogleGrantRegistry.get(testEnv.GoogleGrantRegistry.idFromName(subject));
