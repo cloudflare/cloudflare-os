@@ -24,7 +24,7 @@ import type { ActionFileReference } from "@gadgets/gatekeeper-kit/action-files";
 import type { ProvisionalIds } from "@gadgets/gatekeeper-kit/simulation";
 import type { XListInfo, XPostDraft, XPostInfo, XReplySettings, XUserInfo, XUserSummary } from "./types";
 import {
-  XApi, XApiError, XCreditsError, XRateLimitError, isOutcomeUnknown, requireCreated, requireData, requireResult,
+  XApi, XApiError, XCreditsError, XRateLimitError, isOutcomeUnknown, requireData, requireResult,
   xTime, LIST_FIELDS, type XEnvelope,
 } from "./x-api";
 import type { StoredIdentity } from "./x-credentials";
@@ -34,6 +34,7 @@ import {
   TEXT_LIMIT, TEXT_LIMIT_PREMIUM, comparableText, comparableUrl, duplicateKey, extractCashtags, extractMentions, extractUrls,
   weightedLength, withoutLeadingMentions,
 } from "./x-text";
+import { xUpstream } from "./x-upstream";
 import { postUrl } from "./x-urls";
 
 /** Most posts one thread may hold. */
@@ -535,21 +536,23 @@ async function findPublished(host: XActionHost, draft: StoredDraft, replyTo: str
  * filter owned Lists, so every page is read.
  */
 async function matchingLists(host: XActionHost, payload: XActions["createList"]): Promise<WireList[]> {
-  const matches: WireList[] = [];
-  let token: string | undefined;
-  for (let page = 0; page < MAX_OWNED_LIST_PAGES; page++) {
-    const envelope = await host.read<WireList[]>(RECONCILE_PAGE, (api, me) => api.get<WireList[]>(`/2/users/${me.id}/owned_lists`, {
-      "list.fields": "created_at,description,private",
-      max_results: RECONCILE_PAGE,
-      pagination_token: token,
-    }));
-    matches.push(...completeRows(envelope, "Lists").filter(list => list.name === payload.name
-      && (list.description ?? "") === (payload.description ?? "")
-      && (list.private === true) === (payload.private === true)));
-    token = envelope.meta?.next_token;
-    if (token === undefined) return matches;
-  }
-  throw new Error("X listed more owned Lists than an account can have.");
+  return await xUpstream.summed(async () => {
+    const matches: WireList[] = [];
+    let token: string | undefined;
+    for (let page = 0; page < MAX_OWNED_LIST_PAGES; page++) {
+      const envelope = await host.read<WireList[]>(RECONCILE_PAGE, (api, me) => api.get<WireList[]>(`/2/users/${me.id}/owned_lists`, {
+        "list.fields": "created_at,description,private",
+        max_results: RECONCILE_PAGE,
+        pagination_token: token,
+      }));
+      matches.push(...completeRows(envelope, "Lists").filter(list => list.name === payload.name
+        && (list.description ?? "") === (payload.description ?? "")
+        && (list.private === true) === (payload.private === true)));
+      token = envelope.meta?.next_token;
+      if (token === undefined) return matches;
+    }
+    throw new Error("X listed more owned Lists than an account can have.");
+  });
 }
 
 /**
@@ -612,8 +615,7 @@ async function publishOne(host: XActionHost, draft: StoredDraft, replyTo: string
   const attempt: SendAttempt = { at: Date.now(), mediaIds };
   host.attempts.put(attemptKey, attempt);
   try {
-    const created = await host.write(api => api.post<{ id: string }>("/2/tweets", body));
-    const id = requireCreated(created, "post");
+    const id = await host.write(api => api.create("/2/tweets", body, "post"));
     host.attempts.delete(attemptKey);
     return id;
   } catch (error) {
@@ -642,32 +644,34 @@ async function publishOne(host: XActionHost, draft: StoredDraft, replyTo: string
  */
 async function publishAll(host: XActionHost, ctx: ActionContext, drafts: readonly StoredDraft[],
                           refs: readonly string[], firstReplyTo: string | undefined): Promise<string[]> {
-  const published = [...host.progress.get(ctx.id)];
-  try {
-    for (let index = published.length; index < drafts.length; index++) {
-      const replyTo = index === 0 ? firstReplyTo : published[index - 1];
-      const id = await publishOne(host, drafts[index], replyTo, `${ctx.id}:${index}`);
-      published.push(id);
-      host.refs.bind(refs[index], id);
-      host.progress.put(ctx.id, published);
-    }
-  } catch (error) {
-    if (error instanceof ActionApplyError || error instanceof ActionOutcomeUnknownError) {
-      // Terminal, so no retry will need the progress or the images.
-      host.progress.delete(ctx.id);
-      host.releaseImages(drafts);
-      if (published.length > 0) {
-        const message = `${error.message} ${published.length === 1
-          ? "The thread's first post was published and is still on X."
-          : `The thread's first ${published.length} posts were published and are still on X.`}`;
-        throw error instanceof ActionApplyError ? new ActionApplyError(message) : new ActionOutcomeUnknownError(message);
+  return await xUpstream.summed(async () => {
+    const published = [...host.progress.get(ctx.id)];
+    try {
+      for (let index = published.length; index < drafts.length; index++) {
+        const replyTo = index === 0 ? firstReplyTo : published[index - 1];
+        const id = await publishOne(host, drafts[index], replyTo, `${ctx.id}:${index}`);
+        published.push(id);
+        host.refs.bind(refs[index], id);
+        host.progress.put(ctx.id, published);
       }
+    } catch (error) {
+      if (error instanceof ActionApplyError || error instanceof ActionOutcomeUnknownError) {
+        // Terminal, so no retry will need the progress or the images.
+        host.progress.delete(ctx.id);
+        host.releaseImages(drafts);
+        if (published.length > 0) {
+          const message = `${error.message} ${published.length === 1
+            ? "The thread's first post was published and is still on X."
+            : `The thread's first ${published.length} posts were published and are still on X.`}`;
+          throw error instanceof ActionApplyError ? new ActionApplyError(message) : new ActionOutcomeUnknownError(message);
+        }
+      }
+      throw error;
     }
-    throw error;
-  }
-  host.progress.delete(ctx.id);
-  host.releaseImages(drafts);
-  return published;
+    host.progress.delete(ctx.id);
+    host.releaseImages(drafts);
+    return published;
+  });
 }
 
 /**
@@ -681,14 +685,16 @@ function forgetAttempts(host: XActionHost, id: number, posts: number): void {
 
 /** Deletes posts, newest first; one already gone counts as deleted. */
 async function deletePosts(host: XActionHost, ids: readonly string[]): Promise<void> {
-  for (const id of ids.toReversed()) {
-    try {
-      await confirmedWrite(host, api => api.delete(`/2/tweets/${id}`));
-    } catch (error) {
-      if (error instanceof XApiError && error.status === 404) continue;
-      throw error;
+  await xUpstream.summed(async () => {
+    for (const id of ids.toReversed()) {
+      try {
+        await confirmedWrite(host, api => api.delete(`/2/tweets/${id}`));
+      } catch (error) {
+        if (error instanceof XApiError && error.status === 404) continue;
+        throw error;
+      }
     }
-  }
+  });
 }
 
 const listId = (host: XActionHost, target: ListTarget) => host.refs.requireResolved(target.id);
@@ -978,12 +984,11 @@ export const actions = defineActions<XActionHost, XActions>({
         const attempt: SendAttempt = { at: Date.now(), existing };
         host.attempts.put(attemptKey, attempt);
         try {
-          const created = await host.write(api => api.post<{ id: string }>("/2/lists", {
+          createdId = await host.write(api => api.create("/2/lists", {
             name: payload.name,
             ...(payload.description ? { description: payload.description } : {}),
             ...(payload.private ? { private: true } : {}),
-          }));
-          createdId = requireCreated(created, "List");
+          }, "List"));
         } catch (error) {
           if (!isOutcomeUnknown(error)) {
             host.attempts.delete(attemptKey);
