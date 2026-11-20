@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { describe, it } from "node:test";
+import { pathToFileURL } from "node:url";
 
+import { parseWorkflow, stepsOf } from "../../risk-review-fixtures/workflow.ts";
+import { git } from "../git.ts";
 import { buildBonkVerdict, type BonkInputs } from "./bonk.ts";
 
 const MODEL = "cloudflare-ai-gateway/openai/gpt-6.1-sol";
@@ -59,5 +66,40 @@ describe("buildBonkVerdict", () => {
     assert.equal(limited.round, 4);
     assert.deepEqual(limited.needs_person, ["round limit"]);
     assert.deepEqual(buildBonkVerdict(inputs({ report: CLEAN, round: 6 })).needs_person, ["round limit"]);
+  });
+});
+
+describe("bonk-pr.yml", () => {
+  // The job runs bonk.ts from a copy of the base commit's judge code, outside the checkout, so a
+  // module the copy leaves out is missing only there.
+  it("copies every module bonk.ts imports to where it runs it", () => {
+    const root = resolve(import.meta.dirname, "../../..");
+    const scripts = stepsOf(parseWorkflow(readFileSync(join(root, ".github/workflows/bonk-pr.yml"), "utf8")))
+      .flatMap(({ run }) => (typeof run === "string" ? [run] : []));
+    const [copy, ...otherCopies] = scripts.filter((script) => script.includes("git archive"));
+    const started = new Set(scripts.flatMap((script) => /^node (\$RUNNER_TEMP\/\S+)/.exec(script)?.[1] ?? []));
+    assert.ok(copy !== undefined && otherCopies.length === 0 && started.size > 0, "one step copies the scripts, and later steps run them");
+
+    const temp = mkdtempSync(join(tmpdir(), "automerge-judge-"));
+    try {
+      // The working tree's judge code as a tree, written to a scratch object store.
+      const env = {
+        ...process.env,
+        GIT_INDEX_FILE: join(temp, "index"),
+        GIT_OBJECT_DIRECTORY: join(temp, "objects"),
+        GIT_ALTERNATE_OBJECT_DIRECTORIES: git(["rev-parse", "--path-format=absolute", "--git-path", "objects"], root).trim(),
+      };
+      mkdirSync(env.GIT_OBJECT_DIRECTORY);
+      execFileSync("git", ["add", "--all", "--", "scripts/automerge"], { cwd: root, env });
+      const tree = execFileSync("git", ["write-tree"], { cwd: root, env, encoding: "utf8" }).trim();
+      execFileSync("bash", ["-e", "-c", copy], { cwd: root, env: { ...env, BASE_SHA: tree, RUNNER_TEMP: temp } });
+      for (const script of started) {
+        const url = pathToFileURL(script.replace("$RUNNER_TEMP", temp)).href;
+        // Imported rather than run: that loads every module the script imports and starts nothing.
+        execFileSync(process.execPath, ["--input-type=module", "--eval", `await import(${JSON.stringify(url)});`], { stdio: "pipe" });
+      }
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
   });
 });

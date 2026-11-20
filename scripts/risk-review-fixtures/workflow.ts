@@ -1,4 +1,4 @@
-import type { Json } from "../automerge/json.ts";
+import { maybeObject, type Json, type JsonObject } from "../automerge/json.ts";
 
 /** For each character: whether it is inside quotes, and how many brackets and braces enclose it. */
 function nesting(text: string): { quoted: boolean; depth: number }[] {
@@ -168,4 +168,33 @@ export function parseWorkflow(source: string): Json {
   const root = block(peek()?.indent ?? 0);
   if (peek()) throw new Error(`line ${next + 1}: unexpected indentation`);
   return root;
+}
+
+/** The value at `keys` in a parsed workflow; `undefined` where a key is missing. */
+export function dig(root: Json | undefined, ...keys: string[]): Json | undefined {
+  let value = root;
+  for (const key of keys) value = maybeObject(value)?.[key];
+  return value;
+}
+
+/** Every text value in a parsed workflow, wherever it sits. */
+export function texts(value: Json | undefined): string[] {
+  if (typeof value === "string") return [value];
+  return (Array.isArray(value) ? value : Object.values(maybeObject(value) ?? {})).flatMap(texts);
+}
+
+/** A parsed workflow's jobs. */
+export function jobsOf(workflow: Json): Json[] {
+  return Object.values(maybeObject(dig(workflow, "jobs")) ?? {});
+}
+
+/** Every step of every job in a parsed workflow, in file order. */
+export function stepsOf(workflow: Json): JsonObject[] {
+  return jobsOf(workflow).flatMap((job) => {
+    const steps = dig(job, "steps");
+    return Array.isArray(steps) ? steps : [];
+  }).flatMap((entry) => {
+    const step = maybeObject(entry);
+    return step ? [step] : [];
+  });
 }

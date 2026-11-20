@@ -5,7 +5,7 @@ import { describe, it } from "node:test";
 
 import { PRODUCERS, type Artifact, type WorkflowRun } from "./risk-review-contract.ts";
 import { BASE, HEAD, MODELS, proofJson, verdictJson, zip } from "./risk-review-fixtures/artifacts.ts";
-import { parseWorkflow } from "./risk-review-fixtures/workflow.ts";
+import { dig, jobsOf, parseWorkflow, stepsOf, texts } from "./risk-review-fixtures/workflow.ts";
 import {
   MAX_DECISION_CHARS,
   POLICY_FILES,
@@ -29,7 +29,7 @@ import {
   type PullRequest,
   type Review,
 } from "./risk-review.ts";
-import { maybeObject, type Json } from "./automerge/json.ts";
+import { maybeObject, type Json, type JsonObject } from "./automerge/json.ts";
 import { parseMaintainers, type ChangedFile } from "./risk-review-policy.ts";
 
 const ROOT = new URL("../", import.meta.url);
@@ -1451,35 +1451,8 @@ describe("parseWorkflow", () => {
   });
 });
 
-/** The value at `keys` in a parsed workflow; `undefined` where a key is missing. */
-function dig(root: Json | undefined, ...keys: string[]): Json | undefined {
-  let value = root;
-  for (const key of keys) value = maybeObject(value)?.[key];
-  return value;
-}
-
-/** Every text value in a parsed workflow, wherever it sits. */
-function texts(value: Json | undefined): string[] {
-  if (typeof value === "string") return [value];
-  return (Array.isArray(value) ? value : Object.values(maybeObject(value) ?? {})).flatMap(texts);
-}
-
-function jobsOf(workflow: Json): Json[] {
-  return Object.values(maybeObject(dig(workflow, "jobs")) ?? {});
-}
-
-function stepsOf(workflow: Json): { [key: string]: Json }[] {
-  return jobsOf(workflow).flatMap((job) => {
-    const steps = dig(job, "steps");
-    return Array.isArray(steps) ? steps : [];
-  }).flatMap((entry) => {
-    const step = maybeObject(entry);
-    return step ? [step] : [];
-  });
-}
-
 /** The steps that run `action`, at any version. */
-function stepsUsing(workflow: Json, action: string): { [key: string]: Json }[] {
+function stepsUsing(workflow: Json, action: string): JsonObject[] {
   return stepsOf(workflow).filter(({ uses }) => typeof uses === "string" && uses.startsWith(`${action}@`));
 }
 
