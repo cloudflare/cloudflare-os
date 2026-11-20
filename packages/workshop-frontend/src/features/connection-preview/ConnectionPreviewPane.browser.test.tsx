@@ -334,3 +334,18 @@ it('draws one item of a connection from a session of that item, with only its ch
   await page.getByRole('button', { name: 'Apply' }).click()
   await expect.poll(() => resolved).toEqual(['approve 2'])
 })
+
+it('reads an item again once a change to its connection is approved, which may have moved it out of reach', async () => {
+  await page.viewport(1100, 800)
+  const { doc, emit } = renderPane([], 'file')
+  await expect.poll(() => doc.calls).toContain('readImage photo')
+  const reads = doc.calls.length
+
+  // A move names no item. Queued, it has changed nothing yet.
+  emit(action(1, { state: 'pending' }))
+  await new Promise(done => setTimeout(done, 600))
+  expect(doc.calls).toHaveLength(reads)
+
+  emit(action(1, { state: 'approved' }))
+  await expect.poll(() => doc.calls.length).toBeGreaterThan(reads)
+})
