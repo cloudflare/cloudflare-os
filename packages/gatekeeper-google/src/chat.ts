@@ -61,7 +61,7 @@ import type { ChatMessageRaw } from "./chat-api";
 import type { ChatHookDelivery, ChatHookParams, ChatMessageHookTarget } from "./chat-hooks";
 import { chatHooksConfigured, type PushHooksEnv } from "./pubsub-push";
 import { getGoogleAccountProfile } from "./google-api";
-import { AccessTokenCache } from "./auth-retry";
+import { AccessTokenCache, isUnsentRequest } from "./auth-retry";
 import { CursorPager, CursorPagerOptions } from "./cursor";
 import { ApprovalQueueRpcTarget, RpcCursor, SharedApprovalQueue } from "./shared-approval-queue";
 import { verifyGoogleSubresourceAccess, type GoogleVerifierApi } from "./google-verifier-types";
@@ -235,7 +235,7 @@ class ChatStore {
   /**
    * Run one write to Google, first marking the action uncertain so a retry looks for what an
    * earlier attempt may have written. A definitive refusal of the first write proves nothing
-   * landed, so it clears.
+   * landed, so it clears, as does a first write never sent because its token could not be had.
    */
   async attemptWrite<T>(id: number, write: () => Promise<T>): Promise<T> {
     const first = !this.wasAttempted(id);
@@ -245,10 +245,9 @@ class ChatStore {
     } catch (error) {
       // 408 and 429 leave the outcome open, and a later refusal says nothing about whether an
       // earlier attempt landed: a send has no read that could tell.
-      if (first && error instanceof ChatApiError && error.status >= 400 && error.status < 500 &&
-          error.status !== 408 && error.status !== 429) {
-        this.clearAttempt(id);
-      }
+      let refused = error instanceof ChatApiError && error.status >= 400 && error.status < 500 &&
+          error.status !== 408 && error.status !== 429;
+      if (first && (refused || isUnsentRequest(error))) this.clearAttempt(id);
       throw error;
     }
   }

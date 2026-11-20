@@ -5,6 +5,7 @@
 // and the approval queue together.
 
 import {env} from "cloudflare:workers";
+import {ACCESS_TOKEN_EXPIRY_SAFETY_MS} from "../../src/auth-retry";
 import {abortAllDurableObjects, runInDurableObject} from "cloudflare:test";
 import {afterEach, describe, expect, it, vi} from "vitest";
 import type {GoogleChatGatekeeperImpl, GoogleChatGatekeeperImplProps} from "../../src/chat";
@@ -419,6 +420,7 @@ function chatHarness(
     rejectAction: (actionId: number) => ready.then(() =>
       runHook(hook, instance => instance.chatRejectAction(facetName, id, props, actionId))),
     /** Hold the next matching request; resolves once it is reached, returning its release. */
+    userObjectId: props.userObjectId,
     holdNextRequest: async (match: (url: URL, method: string) => boolean): Promise<() => void> => {
       gate.match = match;
       while (!gate.reached) await tick();
@@ -1188,6 +1190,42 @@ describe("Google Chat gatekeeper behaviors", () => {
     await chat.rejectAction(1);
     expect(backend.state.messages.some(message => message.name === `${SPACE_NAME}/messages/M1`)).toBe(true);
     await expect(chat.applyAction(1)).rejects.toThrow(/Unknown pending Google Chat action/);
+  });
+
+  // An edit its disconnected connection never sent is not one that may have landed, so the next
+  // approval still checks for text changed by hand meanwhile.
+  it("still refuses to edit over text changed by hand after an approval that could not send", async () => {
+    const backend = chatBackend();
+    backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using message = (await space.getMessage(messageName("root"))).message;
+    await message.edit("Resolved");
+    const account = testEnv.UserAccount.get(testEnv.UserAccount.idFromString(chat.userObjectId));
+    const store = (kv: DurableObjectStorage["kv"], lifetime: number) => {
+      kv.put("refreshToken", "refresh-token");
+      kv.put("accessToken", {token: "access-token", expires: new Date(Date.now() + lifetime)});
+    };
+    // A token the memo serves for the read, and no longer once the read has waited a moment, so
+    // the send asks the account for it.
+    await runInDurableObject(account, (_instance: unknown, state: DurableObjectState) =>
+      store(state.storage.kv, ACCESS_TOKEN_EXPIRY_SAFETY_MS + 800));
+    const held = chat.holdNextRequest((url, method) => method === "GET" && url.pathname.includes("/messages/"));
+    const applying = chat.applyAction(1).then(() => "applied", (error: Error) => error.message);
+    const release = await held;
+    await runInDurableObject(account, (_instance: unknown, state: DurableObjectState) => {
+      state.storage.kv.delete("refreshToken");
+    });
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    release();
+    expect(await applying).toMatch(/disconnected/);
+    expect(backend.state.edits).toEqual([]);
+
+    await runInDurableObject(account, (_instance: unknown, state: DurableObjectState) =>
+      store(state.storage.kv, 3_600_000));
+    backend.state.messages[0].text = "Changed by hand";
+    await expect(chat.applyAction(1)).rejects.toThrow(/edited in Google Chat after this change was queued/);
+    expect(backend.state.edits).toEqual([]);
   });
 
   it("refuses to apply an edit over text changed in Google Chat since it was queued", async () => {
