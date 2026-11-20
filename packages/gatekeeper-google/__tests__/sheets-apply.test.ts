@@ -167,6 +167,29 @@ describe("applying a Google Sheets change", () => {
     expect(fake.cells.get("1:1")).toBe(5);
   });
 
+  // The batch that never left would have deleted an earlier unknown send's marker: that marker
+  // stays recorded, so the next batch sent deletes it.
+  it("keeps an earlier unknown send's marker through a send that never left", async () => {
+    let { fake, clock, actions, markers, queue } = setup();
+    let a = await queue(6);
+    fake.failures = ["dropped", "dropped", "dropped"];
+    await expect(actions.apply(a.id)).rejects.toBeInstanceOf(ActionOutcomeUnknownError);
+    let earlier = markers();
+    expect(earlier).toEqual([{ id: a.marker, sentAt: T0, unknown: true }]);
+
+    clock.now = T0 + MARKER_RETENTION_MS;
+    let b = await queue(7);
+    let real = fake.api.batchUpdate;
+    let unsent = await unsentError("This connection was disconnected.");
+    fake.api.batchUpdate = async () => { throw unsent; };
+    await expect(actions.apply(b.id)).rejects.toThrow("This connection was disconnected.");
+    expect(markers()).toEqual(earlier);
+
+    fake.api.batchUpdate = real;
+    await actions.apply(b.id);
+    expect(deletedBy(fake.batches.at(-1)!)).toEqual([a.marker]);
+    expect(markers()).toEqual([{ id: b.marker, sentAt: T0 + MARKER_RETENTION_MS }]);
+  });
 
   it("keeps a marker a send given up on could still commit, so that send cannot land over a later batch", async () => {
     let { fake, clock, journal, actions, queue } = setup();
