@@ -1381,7 +1381,9 @@ What stays the gatekeeper's, because two listings rarely agree on it:
 - **The filter and the order.** `keeps` is asked of every folded row, stand-ins included, and
   `compare` sorts the stand-ins and is handed back as `inject.compare`. The kit calls both and
   implements neither; state `keeps` reads that needs a provider call is re-read in the cursor's
-  `refresh`, before `list.refresh()`.
+  `refresh`, before `list.refresh()`. The cursor places a row before it is folded, so a fold
+  must not change where `compare` puts it: a listing whose pending changes reorder its rows (a
+  rename in a listing sorted by title) sorts by a key they do not change.
 - **Which provider rows to read again, and where they go.** A provider that filters before pending
   changes apply leaves out a row they move into the listing. The gatekeeper reads those rows
   itself and passes each through `list.overlay`. One listing merges them into `inject.items` at
