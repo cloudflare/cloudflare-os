@@ -2437,7 +2437,9 @@ describe("Google Doc images", () => {
   });
 });
 
-describe("Google Doc pending changes", () => {
+describe.each(RUNS)("Google Doc pending changes, $name", r => {
+  inRun(r);
+
   it("returns a tab as saved and as edited, with the changes between them", async () => {
     let docs = new DocsModel();
     docs.setText(MAIN_TAB, "Before");
@@ -2462,7 +2464,8 @@ describe("Google Doc pending changes", () => {
   });
 
   // What the code does is checked where it runs: the Workshop's ConnectionPreviewPane browser test.
-  it("offers a preview", async () => {
+  // A Drive binding offers the preview of a file with the change that names it (see the Drive block).
+  it.skipIf(r.drive)("offers a preview", async () => {
     new DocsModel().install();
 
     expect(await hooks().describe("pending-preview")).toMatchObject({ hasPreview: true });
@@ -2506,6 +2509,9 @@ describe("Google Doc pending changes", () => {
       }],
       revisionId: "revision-2",
     });
+
+    await hooks().rejectAction("pending-stale", actionId);
+    expect((await hooks().readPendingChanges("pending-stale", MAIN_TAB)).changes).toEqual([]);
   });
 
   it("lists only the edits of the tab it names", async () => {
@@ -2517,7 +2523,8 @@ describe("Google Doc pending changes", () => {
       .toEqual([{ id: actionId, type: "appendText", markdown: "added" }]);
   });
 
-  it("reads a tab still to be added as saved empty, before and after it is added", async () => {
+  // A Drive binding adds no tabs.
+  it.skipIf(r.drive)("reads a tab still to be added as saved empty, before and after it is added", async () => {
     let docs = new DocsModel();
     docs.setText(MAIN_TAB, "Intro");
     docs.install();
@@ -4042,6 +4049,23 @@ describe("Google Doc edits through a read and write Drive binding", () => {
     let id = await hooks().submitAppend(facet, "next");
     expect(await hooks().applyAction(facet, id)).toBeNull();
     expect(await rawHooks().driveStored(`drive:${facet}`, DRIVE_DOC, RECEIPT)).toBeNull();
+  });
+
+  it("notes a stale edit of a Doc only while it waits to be rejected", async () => {
+    let docs = draft("target");
+    let facet = "drive-stale-note";
+    let notes = () => rawHooks().driveStoredKeys(`drive:${facet}`, DRIVE_DOC, "driveDocs:stale:");
+    let id = await hooks().submitReplace(facet, "target", "changed");
+    docs.externalEdit(MAIN_TAB, "rewritten");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 60_000);
+
+    await hooks().readContent(facet);
+    expect(await notes()).toEqual(["driveDocs:stale:doc-1"]);
+    await hooks().rejectAction(facet, id);
+    // The next session sweeps it.
+    await hooks().readContent(facet);
+    expect(await notes()).toEqual([]);
   });
 
   // The engine's run holds the write with a promise the test releases, which hangs a Drive binding's

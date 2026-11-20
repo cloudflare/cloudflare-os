@@ -296,6 +296,12 @@ export const SHEETS_STATE_PREFIX = "driveSheets:file:";
  */
 export const DOC_RECEIPT_PREFIX = "driveDocs:receipt:";
 
+/**
+ * Where the numbers of a document's edits that a replay failed are kept, by its file ID: the
+ * journal lists no failed record, and such an edit is shown, as stale, until it is rejected.
+ */
+export const DOC_STALE_PREFIX = "driveDocs:stale:";
+
 /** How often a Doc is read again after an approval while its queue keeps moving. */
 const MAX_REFRESHES = 3;
 
@@ -439,8 +445,9 @@ export class DriveFileEditors {
     let { fileId } = target;
     let changes = this.#changes<{ payload: GoogleDocAction }>("docs", fileId);
     return {
-      pending: () => this.#docsPending(fileId),
-      invalidate: this.#docsInvalidator(),
+      pending: () => [...this.#docsStale(fileId), ...this.#docsPending(fileId)]
+        .toSorted((a, b) => a.id - b.id),
+      invalidate: this.#docsInvalidator(fileId),
       cache: this.#docCache(fileId),
       queue: prepare => changes.queue(
         async () => {
@@ -527,7 +534,7 @@ export class DriveFileEditors {
         let snapshot = googleDocSnapshot(await this.#options.docs.getDocument(fileId));
         if (writes !== freshness.writes() || queued !== freshness.newestQueued()) continue;
         invalidateUnreplayableGoogleDocActions(
-          this.#docsInvalidator(), snapshot, this.#docsPending(fileId),
+          this.#docsInvalidator(fileId), snapshot, this.#docsPending(fileId),
           `Pending Google Doc edits could not be replayed after edit ${actionId} was applied`);
         return;
       }
@@ -548,9 +555,24 @@ export class DriveFileEditors {
       .flatMap(({ id, action }) => id === landed ? [] : [{ id, action: action.payload }]);
   }
 
-  /** Fails, in the journal, an edit that can no longer be replayed. */
-  #docsInvalidator(): GoogleDocInvalidator {
-    return ({ id }, reason) => this.#options.journal.markFailed(id, reason);
+  /** Fails, in the journal, an edit to document `fileId` that can no longer be replayed. */
+  #docsInvalidator(fileId: string): GoogleDocInvalidator {
+    return ({ id }, reason) => {
+      this.#options.journal.markFailed(id, reason);
+      this.#options.kv.put(`${DOC_STALE_PREFIX}${fileId}`,
+        [...this.#docsStale(fileId).map(stale => stale.id), id]);
+    };
+  }
+
+  /** Document `fileId`'s edits that a replay failed and no rejection has cleared, each with why. */
+  #docsStale(fileId: string): GoogleDocPendingAction[] {
+    let { kv, journal } = this.#options;
+    return (kv.get<number[]>(`${DOC_STALE_PREFIX}${fileId}`) ?? []).flatMap(id => {
+      let record = journal.get(id);
+      if (record?.state !== "failed") return [];
+      let { change } = record.action.payload as DriveEdit<GoogleDocAction>;
+      return [{ id, action: { ...change, invalidatedReason: record.error } }];
+    });
   }
 
   #docReceipt(fileId: string): GoogleDocWriteReceipt | undefined {
@@ -566,11 +588,16 @@ export class DriveFileEditors {
   /**
    * Drops what no change can still need: a spreadsheet's state once the journal holds none of the
    * numbers noted in it and no marker it keeps can still land, and past those, all but the
-   * spreadsheets written most recently. A Doc's receipt is kept: it outlives its edit only while
-   * the marker it names is still in the document, which the next edit to that Doc deletes.
+   * spreadsheets written most recently, and a Doc's note of stale edits once none is left to
+   * reject. A Doc's receipt is kept: it outlives its edit only while the marker it names is still
+   * in the document, which the next edit to that Doc deletes.
    */
   sweep(): void {
     let { kv, journal } = this.#options;
+    // Listed in full first, so that no key is deleted under the list.
+    for (let [key, ids] of Array.from(kv.list<number[]>({ prefix: DOC_STALE_PREFIX }))) {
+      if (!ids.some(id => journal.get(id)?.state === "failed")) kv.delete(key);
+    }
     let now = Date.now();
     let idle: [string, SheetsFileState][] = [];
     for (let [key, state] of kv.list<SheetsFileState>({ prefix: SHEETS_STATE_PREFIX })) {
