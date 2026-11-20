@@ -26,6 +26,8 @@ export type Identity = {
 
 /** The stored identity for what the provider said about the grant's user. */
 export function identityOf(user: WireUser): Identity {
+  // A reconnect must be the same user, which an ID that is missing would make true of anyone.
+  if (typeof user.id !== "string" || user.id === "") throw new Error("Acme Service named no user ID for the grant.");
   return {
     userId: user.id,
     name: user.name,

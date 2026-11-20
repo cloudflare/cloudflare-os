@@ -61,6 +61,8 @@ export function namesFor({ name, display }: Pick<ScaffoldOptions, "name" | "disp
   }
   const pascal = shown.split(/[^A-Za-z0-9]+/).filter(Boolean).map(word => word[0].toUpperCase() + word.slice(1)).join("");
   if (!/^[A-Z]/.test(pascal)) throw new Error(`No class name can be made from the display name "${shown}".`);
+  // The template's types for what the provider sends are `WireItem` and `WireUser`.
+  if (pascal === "Wire") throw new Error(`"${shown}" names its types as the template names its own: use another display name.`);
   return { name, pascal, constant: name.toUpperCase(), display: shown };
 }
 

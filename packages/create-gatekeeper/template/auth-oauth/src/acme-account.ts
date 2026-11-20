@@ -94,7 +94,8 @@ async function fetchUser(accessToken: string): Promise<Identity> {
 
 // STOP(observer-probe): Whether the provider opens an object for the user whose token this is.
 // Ask the same endpoint a read uses, not public metadata. A definite "no" is false; any other
-// failure leaves access undetermined, so it throws.
+// failure leaves access undetermined, so it throws. Where the provider can answer 200 without
+// the object, an empty list for one, check the reply is the object asked for.
 async function probe(accessToken: string, itemId: string): Promise<boolean> {
   try {
     await createApi(accessToken).get("/items/{id}", { path: { id: itemId } });

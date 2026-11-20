@@ -32,6 +32,11 @@ describe("namesFor", () => {
     expect(() => scaffold({ name, auth: "oauth" })).toThrow("is a module every gatekeeper has");
   });
 
+  it("refuses a display name that names its types as the template names its own", () => {
+    expect(() => namesFor({ name: "wire" })).toThrow("use another display name");
+    expect(namesFor({ name: "wire", display: "Wire Transfer" }).pascal).toBe("WireTransfer");
+  });
+
   it("links the types an agent is shown to the declarations", () => {
     expect(scaffold({ name: "acme", auth: "oauth" }).get("src/types.txt")).toEqual({ symlink: "types.d.ts" });
   });

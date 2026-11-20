@@ -7,6 +7,7 @@
 import { SELF, env, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { generateNonce } from "@gadgets/gatekeeper-kit/connect-nonce";
+import { identityOf } from "#gatekeeper/acme-credentials";
 import { ALL_RESOURCES } from "#gatekeeper/acme-resources";
 import { itemUrl, parseResourceUrl } from "#gatekeeper/acme-urls";
 import type { Outcome } from "./worker";
@@ -250,4 +251,9 @@ it("declares a URL pattern that matches the URLs it makes and parses", () => {
   const url = itemUrl("it-em_1");
   expect(parseResourceUrl(url)).toEqual({ itemId: "it-em_1" });
   expect(ALL_RESOURCES.map(({ urlPattern }) => new URLPattern(urlPattern).test(url))).toEqual([true]);
+});
+
+it("refuses a user the provider gave no ID, which is what a connection is pinned to", () => {
+  expect(() => identityOf({ id: "", name: "Alice" })).toThrow("named no user ID");
+  expect(() => identityOf({ name: "Alice" } as Parameters<typeof identityOf>[0])).toThrow("named no user ID");
 });
