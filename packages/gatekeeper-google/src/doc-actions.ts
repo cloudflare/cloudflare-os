@@ -208,6 +208,25 @@ export function googleDocSnapshot(document: GoogleDocsDocument): GoogleDocSnapsh
   };
 }
 
+/**
+ * Stores `snapshot`, and answers with what was stored. A snapshot too large for one stored value
+ * is stored without its tabs' drawings: only a preview reads those, where every read and edit of
+ * the document needs the rest.
+ */
+export async function storeGoogleDocSnapshot(
+  storage: DurableObjectStorage, snapshot: GoogleDocSnapshot,
+): Promise<GoogleDocSnapshot> {
+  try {
+    await storage.put(DOC_SNAPSHOT_KEY, snapshot);
+    return snapshot;
+  } catch (error) {
+    if (!String(error).includes("SQLITE_TOOBIG")) throw error;
+    let undrawn = { ...snapshot, tabs: snapshot.tabs.map(({ drawing: _, ...tab }) => tab) };
+    await storage.put(DOC_SNAPSHOT_KEY, undrawn);
+    return undrawn;
+  }
+}
+
 /** Accept a cached snapshot only if it predates nothing this code depends on. */
 export function isGoogleDocSnapshot(value: unknown): value is GoogleDocSnapshot {
   if (!value || typeof value !== "object") return false;

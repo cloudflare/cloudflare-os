@@ -2315,6 +2315,20 @@ describe("Google Doc drawing", () => {
     expect(value).toContain("readDrawing(tabId: string): Promise<GoogleDocDrawing>;");
     expect(observations).toEqual([]);
   });
+
+  it("keeps a document readable whose drawing makes it too large to store", async () => {
+    let docs = new DocsModel();
+    // Text that fits one stored value as the tab's Markdown, and not again in its drawing.
+    let text = "word ".repeat(1_000_000);
+    docs.setText(MAIN_TAB, text);
+    docs.install();
+
+    expect((await hooks().readContent("drawing-large", MAIN_TAB)).trim()).toBe(text.trim());
+    expect((await call("drawing-large", "readDrawing", MAIN_TAB)).error)
+      .toContain("too large to read as it is drawn");
+    // And is read again from what was stored.
+    expect((await hooks().readContent("drawing-large", MAIN_TAB)).trim()).toHaveLength(text.length - 1);
+  });
 });
 
 describe("Google Doc images", () => {
