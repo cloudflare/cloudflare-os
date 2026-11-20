@@ -4,7 +4,10 @@ import {
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it } from "vitest";
 import { ID, type Routes } from "../../src/route-operation";
-import { defineUpstream, recordCall, summedInto, type UpstreamFetch } from "../../src/upstream";
+import {
+  defineUpstream, recordCall, summedInto, type RetryPolicy, type UpstreamFetch,
+  type UpstreamRequestInit,
+} from "../../src/upstream";
 
 const API = "https://api.vendor.example/v1";
 const ROUTES: Routes = [[`${API}/`, { threads: { [ID]: {} } }]];
@@ -229,6 +232,84 @@ describe("upstream in workerd", () => {
     expect(answers).toEqual([200, 200, 200]);
     // The one whose signal was not cleared is its caller's to give up, and is not counted.
     expect(kinds(added)).toEqual([["threads.get", "success"], ["threads.get", "success"], ["threads.get", "success"]]);
+  });
+
+  it("parses an answer whose `answer` hook was asked, the hook being given no body to lock", async () => {
+    const { tally, added } = keeping();
+    const given: unknown[] = [];
+
+    const echoed = await summedInto(tally, () => echoing.read(`${API}/threads/18c2`, {
+      answer: answered => {
+        given.push(answered);
+        // What code that is not type-checked may do with an answer: take a reader of its body.
+        const body: unknown = Reflect.get(answered, "body");
+        if (body instanceof ReadableStream) body.getReader();
+        return answered.status === 200 ? { outcome: "refused", reason: "busy" } : undefined;
+      },
+    }, response => response.json<Echoed>()));
+
+    expect(echoed.method).toBe("GET");
+    expect(given).toEqual([{ status: 200, headers: expect.any(Headers) }]);
+    expect(given.map(answered => answered instanceof Response)).toEqual([false]);
+    expect(added.map(call => [call.operation, call.outcome, call.reason]))
+        .toEqual([["threads.get", "refused", "busy"]]);
+  });
+
+  it("sends once a GET answered 429 that its retry rule would not send again, though its body then times out", async () => {
+    const { tally, added } = keeping();
+    let sends = 0;
+    // Answers at once, with a body that fails with the reason of the attempt's signal.
+    const stalling = upstream.with({
+      retry: { baseDelayMs: 0, retryable: () => false },
+      fetch: async (_input, init) => {
+        sends++;
+        const signal = init?.signal;
+        return new Response(new ReadableStream<Uint8Array>({
+          start(controller) {
+            signal?.addEventListener("abort", () => controller.error(signal.reason));
+          },
+        }), { status: 429, headers: { "Retry-After": "120" } });
+      },
+    });
+
+    await expect(summedInto(tally, () =>
+      stalling.read(`${API}/threads`, { timeoutMs: 5 }, response => response.text())))
+        .rejects.toMatchObject({ name: "TimeoutError" });
+
+    expect(sends).toBe(1);
+    expect(added.map(call => [call.operation, call.outcome, call.reason]))
+        .toEqual([["threads.list", "refused", "rate"]]);
+  });
+
+  it.each<[string, number, RetryPolicy | null, UpstreamRequestInit]>([
+    ["replay", 401, null, { replay: response => response.status === 401 }],
+    ["retry", 503, { baseDelayMs: 0 }, {}],
+  ])("sends no %s whose headers are asked for as the caller's signal aborts", async (_name, status, retry, init) => {
+    const { tally, added } = keeping();
+    const caller = new AbortController();
+    const stop = new Error("stop");
+    let sends = 0;
+    let asked = 0;
+    // A transport that answers whatever the signal it is handed.
+    const deaf = upstream.with({
+      retry,
+      fetch: async () => new Response("{}", { status: ++sends === 1 ? status : 200 }),
+    });
+
+    await expect(summedInto(tally, () => deaf.request(`${API}/threads/18c2`, {
+      ...init,
+      signal: caller.signal,
+      authorize: async () => {
+        await scheduler.wait(1);
+        // The caller gives up while the headers of the second send are looked up.
+        if (++asked === 2) caller.abort(stop);
+        return { "X-Api": "2" };
+      },
+    }))).rejects.toBe(stop);
+
+    expect([sends, asked]).toEqual([1, 2]);
+    expect(added.map(call => [call.operation, call.outcome, call.reason, call.httpStatus]))
+        .toEqual([["threads.get", "error", "http", status]]);
   });
 
   it("cuts off an attempt by the runtime's own timeout, and counts it one", async () => {

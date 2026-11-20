@@ -22,7 +22,7 @@ import {
   pkceChallenge,
 } from "../src/oauth-client";
 import { ResponseTooLargeError } from "../src/response-body";
-import { defineUpstream, type UpstreamFetch } from "../src/upstream";
+import { defineUpstream, type Upstream, type UpstreamFetch } from "../src/upstream";
 import { fakeKv } from "./fake-kv";
 
 const TOKEN_URL = "https://vendor.example/oauth/token";
@@ -993,6 +993,9 @@ function withTokens(): Response {
   return json({ access_token: "at", refresh_token: "rt2", expires_in: 3600 });
 }
 
+/** One refresh, with its caller's signal. */
+const refreshing: Run = (client, signal) => client.refresh({ refreshToken: "the-refresh-token", signal });
+
 /** A module factory for a module that `oauth-client` may not load. */
 function refused(module: string) {
   return () => {
@@ -1154,6 +1157,60 @@ describe("OAuthClient through an upstream", () => {
     expect(handed.map(sent => sent.redirect)).toEqual(["manual"]);
     expect(written()).toEqual([
       ["gatekeeper.vendor.api", "identity", "token.refresh", "error", "http", 503],
+    ]);
+  });
+
+  it.each<[string, () => Response, Counted]>([
+    ["a 403", () => json({ error: "access_denied" }, 403), ["error", "http", 403]],
+    ["a redirect", () => new Response(null, { status: 302, headers: { Location: TOKEN_URL } }),
+      ["error", "http", 302]],
+    ["a 500", () => new Response("down", { status: 500 }), ["error", "http", 500]],
+    ["a 429", () => json({ error: "slow_down" }, 429), ["refused", "rate", 429]],
+    ["a 403 whose body is too large", () => json({ error: "a".repeat(100) }, 403), ["error", "http", 403]],
+    ["a 200", withTokens, ["success", "", 200]],
+    ["a 200 whose body is too large", () => json({ access_token: "a".repeat(100) }), ["error", "parse", 200]],
+  ])("counts %s by its own rule, whatever the upstream's `succeeded` says of a status", async (_name, respond, counted) => {
+    const options = { ...COUNTED, maxResponseBytes: 64 };
+    const plain = await attempt(fetch => new OAuthClient({ ...options, fetch }), respond, refreshing);
+
+    // The rule of a provider's API that takes every status for a success, and of one that takes none.
+    for (const succeeded of [() => true, () => false]) {
+      points = [];
+      const through = await attempt(fetch => new OAuthClient({
+        ...options, upstream: defineUpstream({ vendorId: "vendor", fetch, succeeded }),
+      }), respond, refreshing);
+
+      expect(through.handed).toEqual(plain.handed);
+      expect(told(through.settled)).toEqual(told(plain.settled));
+      expect(Object.keys(through.settled)).toEqual([counted[0] === "success" ? "returned" : "threw"]);
+      expect(written()).toEqual([["gatekeeper.vendor.api", "vendor", "token.refresh", ...counted]]);
+    }
+  });
+
+  it("sends through the upstream it is given, and derives no other from it", async () => {
+    const { handed, fetch } = endpoint(() => json({ error: "access_denied" }, 403));
+    const defined = defineUpstream({ vendorId: "vendor", fetch, succeeded: () => true });
+    let reads = 0;
+    // An upstream a gatekeeper wraps: its own `read` over the defined one's.
+    const wrapped: Upstream = {
+      ...defined,
+      read(input, init, parse, answer) {
+        reads++;
+        return defined.read(input, init, parse, answer);
+      },
+      with() {
+        throw new Error("the client derived an upstream");
+      },
+    };
+
+    const error = await responseError(
+      new OAuthClient({ ...BASE, upstream: wrapped }).refresh({ refreshToken: "rt" }));
+
+    expect(error.httpStatus).toBe(403);
+    expect(handed).toHaveLength(1);
+    expect(reads).toBe(1);
+    expect(written()).toEqual([
+      ["gatekeeper.vendor.api", "vendor", "token.refresh", "error", "http", 403],
     ]);
   });
 

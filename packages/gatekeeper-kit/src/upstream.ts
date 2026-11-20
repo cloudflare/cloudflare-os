@@ -48,6 +48,14 @@ export type CallAnswer = {
 };
 
 /**
+ * What a request's `answer` hook is given of an answered attempt: the status of the answer and
+ * its headers, which are the answer's own `Headers` object. It holds nothing of the body, which
+ * the hook can so neither read nor lock. The hook reads the headers and does not change them:
+ * they are the ones the retry rule reads and the caller is answered with.
+ */
+export type AnsweredWith = { status: number; headers: Headers };
+
+/**
  * When a request is sent again after a transient failure. Members left out take the default:
  * 3 attempts, a base delay of 500 ms and a longest delay of 10 000 ms.
  */
@@ -68,11 +76,13 @@ export type RetryPolicy = {
    * Whether an attempt answered with `status` is sent again. The default sends again a request
    * that is idempotent (a GET or HEAD, or one marked `idempotent`) and was answered 429, 502, 503
    * or 504, so the policy never sends a write twice unless it is marked or this says so. It is
-   * asked only while attempts remain and the body can be sent again, and is not asked about an
-   * attempt that threw, nor about one whose answer `read` could not read before its timeout:
-   * those are sent again only when the request is idempotent. `headers` are the answer's, for a
-   * rule that turns on what the answer says beside its status, such as whether it names a wait
-   * and how long a one.
+   * asked only while attempts remain and the body can be sent again, once about each answer as
+   * it comes, and is not asked about an attempt that threw. That one is sent again only when the
+   * request is idempotent, and so is one whose answer `read` could not read before its timeout,
+   * where the status of that answer is a success. What it says of an answer of any other status
+   * stands, though the body of that answer is then not read in time. `headers` are the answer's,
+   * for a rule that turns on what the answer says beside its status, such as whether it names a
+   * wait and how long a one.
    */
   retryable?: (
     status: number, request: { method: string; operation: string; idempotent: boolean },
@@ -137,7 +147,8 @@ export type UpstreamOptions = {
    * Whether `status` is the success of the request named `operation`. Default: below 300 for a
    * request whose redirect mode is `"manual"`, and below 400 for one that follows redirects. It
    * answers at once: a throw, or what is no boolean (a promise is not awaited), is read as the
-   * default.
+   * default. It says how an answer is counted and, under `read`, which answer is asked for again
+   * where its body timed out (see `Upstream`, Retry).
    */
   succeeded?: (status: number, operation: string) => boolean;
   /** The fetch every attempt is sent with. Default `globalThis.fetch`, read at each attempt. */
@@ -183,7 +194,8 @@ export type UpstreamRequestInit = RequestInit & {
   redirect?: RequestInit["redirect"];
   /**
    * Headers for each attempt, asked anew before every one and set over the request's own. A
-   * request that has it must not set the same headers itself.
+   * request that has it must not set the same headers itself. Where the caller's signal aborts
+   * while it is asked for the headers of a send after the first, that send is not made.
    */
   authorize?: () => HeadersInit | Promise<HeadersInit>;
   /**
@@ -198,11 +210,12 @@ export type UpstreamRequestInit = RequestInit & {
   replay?: (response: Response) => boolean | Promise<boolean>;
   /**
    * How an answered attempt is counted by what its status and headers say, asked for each before
-   * it is counted. It answers at once and reads no body: undefined, a throw or what is no answer
-   * counts the attempt by its status, and a promise is no answer and is not awaited. An attempt
-   * is counted by what its body says through `read`, whose own `answer` is given the parsed body.
+   * it is counted. It is given those two alone (`AnsweredWith`) and not the answer, so it reads
+   * no body. It answers at once: undefined, a throw or what is no answer counts the attempt by
+   * its status, and a promise is no answer and is not awaited. An attempt is counted by what its
+   * body says through `read`, whose own `answer` is given the parsed body.
    */
-  answer?: (response: Response) => CallAnswer | undefined;
+  answer?: (answered: AnsweredWith) => CallAnswer | undefined;
 };
 
 /**
@@ -227,16 +240,20 @@ export type UpstreamRequestInit = RequestInit & {
  *   that threw is sent again under the same conditions when the request is idempotent, unless
  *   the upstream's `thrown` says that nothing was sent. So is, under `read`, an attempt whose
  *   answer `parse` could not read once the attempt's own timeout had fired, after the wait of
- *   one that threw. A write is never sent twice unless it is marked `idempotent`, the
- *   gatekeeper's `retryable` says so, or its `replay` hook does: a `retry` of `null` turns off
- *   this rule and not the Replay one, so a request that must be sent once gives no `replay`.
- *   Nothing is sent again once the caller's signal has aborted. The wait is what the policy's
- *   `delayMs` gives for the answer, else what the answer's `Retry-After` asks for, either capped
- *   at `maxDelayMs`. A `Retry-After` asks for its count of seconds, or the time left until
- *   its HTTP date (in any of the three forms RFC 9110 gives one, as `Sun, 06 Nov 1994 08:49:37
- *   GMT`), which is nothing once the date is past. With no `Retry-After`, or one that is neither
- *   (a day that its month does not have makes no date), and after a throw, the wait is
- *   `Math.random() * min(baseDelayMs * 2 ** attempt, maxDelayMs)`. The body of the answer is
+ *   one that threw, where the status of that answer is a success: by `succeeded` and the
+ *   redirect mode, as under Counting, and whatever the request's `answer` counts it as. An
+ *   answer of any other status is not sent again for a body that timed out: this rule decided
+ *   on it when it came, by `retryable`, and that stands. A write is never sent twice unless it is
+ *   marked `idempotent`, the gatekeeper's `retryable` says so, or its `replay` hook does: a
+ *   `retry` of `null` turns off this rule and not the Replay one, so a request that must be sent
+ *   once gives no `replay`. Nothing is sent again once the caller's signal has aborted, whether
+ *   before `authorize` is asked for the headers of that send or while it is. The wait is what
+ *   the policy's `delayMs` gives for the answer, else what the answer's `Retry-After` asks for,
+ *   either capped at `maxDelayMs`. A `Retry-After` asks for its count of seconds, or the time
+ *   left until its HTTP date (in any of the three forms RFC 9110 gives one, as `Sun, 06 Nov 1994
+ *   08:49:37 GMT`), which is nothing once the date is past. With no `Retry-After`, or one that
+ *   is neither (a day that its month does not have makes no date), and after a throw, the wait
+ *   is `Math.random() * min(baseDelayMs * 2 ** attempt, maxDelayMs)`. The body of the answer is
  *   cancelled before the wait, which ends at once when the caller's signal aborts, after an
  *   answer and after a throw alike.
  * - **Replay.** See `UpstreamRequestInit.replay`: at most two more sends of a request.
@@ -299,17 +316,18 @@ export interface Upstream {
    * @param parse Reads the answer. When it throws, what is left of the body is cancelled and the
    * error propagates, unless the Retry rule sends the request again, the attempt's own timeout
    * having fired: `parse` is then asked to read the last answer of what is sent. The attempt is
-   * counted, either way, by its status where that is no success. Where it is one, the attempt is
-   * an `error` with the reason `parse`, unless the reading was cut off, which the attempt's
-   * signal does to it: it is an `error` with the reason `timeout` once the timeout has fired or
-   * the caller's signal has aborted with a `TimeoutError`, and is not counted once the caller's
-   * signal has aborted for any other reason. What `parse` threw is read for none of this, and
-   * the signals alone are: whatever `parse` throws once the attempt's timeout has fired is taken
-   * for a reading that the timeout cut off.
+   * counted, either way, as `request` counts its answer, by the status or by what the request's
+   * `answer` says, where that is no `success`. Where it is a `success`, the attempt is an `error`
+   * with the reason `parse`, unless the reading was cut off, which the attempt's signal does to
+   * it: it is an `error` with the reason `timeout` once the timeout has fired or the caller's
+   * signal has aborted with a `TimeoutError`, and is not counted once the caller's signal has
+   * aborted for any other reason. What `parse` threw is read for none of this, and the signals
+   * alone are: whatever `parse` throws once the attempt's timeout has fired is taken for a
+   * reading that the timeout cut off.
    * @param answer How the parsed answer is counted, which is how an attempt is counted by what
    * its body says: the request's own `answer` reads no body. Undefined, a throw or what is no
-   * answer (a promise is not awaited) counts it by its status. By convention an error inside a
-   * success is an `error` with the reason `api`.
+   * answer (a promise is not awaited) counts it as `request` counts its answer. By convention an
+   * error inside a success is an `error` with the reason `api`.
    * @returns What `parse` returned of the last answer.
    */
   read<T>(
@@ -554,12 +572,16 @@ export function defineUpstream(options: UpstreamOptions): Upstream {
     const sending = async (): Promise<Sent> => {
       for (;;) {
         // Nothing is sent again once the caller's signal has aborted, and no header is asked for.
-        if (attempt + replays > 0) caller?.throwIfAborted();
+        const resend = attempt + replays > 0;
+        if (resend) caller?.throwIfAborted();
         const sent: RequestInit = { ...rest };
         if (authorize) {
           const headers = new Headers(rest.headers ?? request?.headers);
           new Headers(await authorize()).forEach((value, name) => headers.set(name, value));
           sent.headers = headers;
+          // Nor where it aborted while the headers were asked for. A first send goes to `fetch`
+          // with the signal as it is.
+          if (resend) caller?.throwIfAborted();
         }
         // A fresh timeout for each attempt, so that a retry has the whole of it.
         const timeout = timeoutMs === null ? undefined : AbortSignal.timeout(timeoutMs);
@@ -598,10 +620,14 @@ export function defineUpstream(options: UpstreamOptions): Upstream {
           throw error;
         }
 
-        const answered = { ...call, durationMs: Date.now() - startedAt, httpStatus: response.status };
-        // The hook answers at once: nothing between an answer and its count is waited for.
-        const verdict = askedNow(() => answer?.(response))
-          ?? byStatus(response.status, succeeded(response.status, operation, manual));
+        const { status } = response;
+        const answered = { ...call, durationMs: Date.now() - startedAt, httpStatus: status };
+        // Whether the status is a success, which no hook that only counts an answer changes.
+        const success = succeeded(status, operation, manual);
+        // The hook answers at once: nothing between an answer and its count is waited for. It is
+        // given the status and the headers alone, so that it leaves the body as it came.
+        const verdict = askedNow(() => answer?.({ status, headers: response.headers }))
+          ?? byStatus(status, success);
         let counted = false;
         const countOnce = (given: CallAnswer) => {
           if (counted) return;
@@ -645,11 +671,12 @@ export function defineUpstream(options: UpstreamOptions): Upstream {
             if (caller?.aborted && errorName(caller.reason) !== "TimeoutError") return "abort";
             return timeout?.aborted || caller?.aborted ? "timeout" : undefined;
           },
-          // An answer that the attempt's own timeout kept from being read is an attempt that
-          // timed out, and is sent again as one that threw is.
+          // A success that the attempt's own timeout kept from being read is an attempt that
+          // timed out, and is sent again as one that threw is. An answer that is no success was
+          // put to the retry rule when it came, and what the rule said of it stands.
           again: () => {
-            if (!timeout?.aborted || caller?.aborted || !resendable || !idempotent || !retry
-                || attempt >= retry.attempts - 1) return undefined;
+            if (!success || !timeout?.aborted || caller?.aborted || !resendable || !idempotent
+                || !retry || attempt >= retry.attempts - 1) return undefined;
             return pause(backoffMs(retry, attempt++, null), caller).then(sending);
           },
         };
@@ -677,8 +704,8 @@ export function defineUpstream(options: UpstreamOptions): Upstream {
           countLast(askedNow(() => answer?.(parsed, response)) ?? verdict);
           return parsed;
         } catch (error) {
-          // A success that could not be read is a malformed answer only where its reading was
-          // not cut off.
+          // An answer counted a `success` that could not be read is a malformed one only where
+          // its reading was not cut off.
           if (verdict.outcome !== "success") {
             countLast(verdict);
           } else {
@@ -754,9 +781,9 @@ export function defineUpstream(options: UpstreamOptions): Upstream {
 
 // The answer of a request's last attempt, how its status counts, the counting of it, how the
 // reading of it was cut off where the attempt's signal has aborted, and the sending of the request
-// again where its reading failed: undefined unless the attempt's own timeout has fired and an
-// attempt that threw would be sent again, and else the last answer of what is then sent, after
-// the wait.
+// again where its reading failed: undefined unless the status of the answer is a success, the
+// attempt's own timeout has fired and an attempt that threw would be sent again, and else the last
+// answer of what is then sent, after the wait.
 type Sent = {
   response: Response;
   verdict: CallAnswer;

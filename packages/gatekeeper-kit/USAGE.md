@@ -509,10 +509,10 @@ async function vendorJson<T>(token: string, path: string, init?: UpstreamRequest
 - `request` returns the answer and counts it by its status. `read` parses the answer first and
   counts it afterwards, so its `answer` argument can count an error inside a 200, by convention as
   an `error` with the reason `api`. Counting by what a body says is `read`'s: a request's own
-  `answer` hook answers at once, from the status and headers alone. `call` counts a call that is
-  not an HTTP request, such as an RPC binding's method. Wrap an operation that makes many requests
-  in `summed`: its calls are written as one point per kind when it ends, which keeps a long
-  listing under the 250 points Analytics Engine takes from one invocation.
+  `answer` hook is given the status and headers alone, and answers at once. `call` counts a call
+  that is not an HTTP request, such as an RPC binding's method. Wrap an operation that makes many
+  requests in `summed`: its calls are written as one point per kind when it ends, which keeps a
+  long listing under the 250 points Analytics Engine takes from one invocation.
 - Every string of a point is a closed word: a literal in the gatekeeper's code or a key of its
   route tree (`./route-operation`), never a URL, host, id, header or message. A request the tree
   does not name is counted under its HTTP method, or under `OTHER` where its method is not one of

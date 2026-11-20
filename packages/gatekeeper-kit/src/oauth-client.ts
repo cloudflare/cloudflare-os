@@ -5,7 +5,7 @@ import { CredentialsExpiredError, type RefreshCredentials } from "./credentials"
 import { requirePositiveInt } from "./positive-int";
 import { readTextCapped } from "./response-body";
 // Types alone: a Worker that passes no `upstream` loads neither that module nor what it needs.
-import type { CallAnswer, Upstream } from "./upstream";
+import type { AnsweredWith, CallAnswer, Upstream } from "./upstream";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_RESPONSE_BYTES = 64 * 1024;
@@ -112,9 +112,11 @@ export type OAuthClientOptions = {
   fetch?: (input: string, init: RequestInit) => Promise<Response>;
   /**
    * The gatekeeper's upstream client (`defineUpstream` in `./upstream`). Given one, every request
-   * is sent with its `fetch` and counted as one subservice call; `fetch` may not be given beside
-   * it. The request, its timeout, and what a method returns or throws are those of a client
-   * without it: the upstream's timeout, retry and redirect options do not apply.
+   * is sent through its `read`, so with its `fetch`, and counted as one subservice call; `fetch`
+   * may not be given beside it. The request, its timeout, and what a method returns or throws
+   * are those of a client without it: the upstream's timeout, retry and redirect options do not
+   * apply, and neither does its `succeeded`, which is the rule of the provider's API and not of
+   * these endpoints.
    *
    * The operation is `token.exchange` for `exchangeCode`, `token.refresh` for `refresh`, and
    * `token.revoke` for `revoke` and `request("revocation")`. A `request("token")` is named by its
@@ -124,8 +126,10 @@ export type OAuthClientOptions = {
    * counted as an `error` with the reason `api`. A 2xx whose body is not read to its end is
    * counted as `Upstream.read` counts one: an `error` with the reason `parse` where the body is
    * too large and `timeout` where the timeout cut the reading off, and not at all where the
-   * caller's signal did. Any other answer is counted by its status, and a request that was not
-   * answered as `Upstream` counts one.
+   * caller's signal did. Any other answer is counted by its status, under this client's own
+   * rule: a 2xx is a `success`, a 429 is `refused` with the reason `rate`, and any other status,
+   * a 3xx included, is an `error` with the reason `http`. A request that was not answered is
+   * counted as `Upstream` counts one.
    */
   upstream?: Upstream;
 };
@@ -458,6 +462,7 @@ export class OAuthClient {
     } else {
       answer = await upstream.read(url, {
         ...request, signal, operation, timeoutMs: this.#timeoutMs, retry: null,
+        answer: countedByStatus,
       }, read, countedAs);
     }
     if (answer.rejection !== undefined) throw answer.rejection;
@@ -493,8 +498,15 @@ export class OAuthClient {
 // endpoint rejected the request or gave no access token to a method that requires one.
 type Answer = { status: number; body: Record<string, unknown>; rejection?: OAuthResponseError };
 
+// How an upstream counts an answer by its status: this client's own rule, given for every status
+// so that the upstream's `succeeded` decides none.
+function countedByStatus({ status }: AnsweredWith): CallAnswer {
+  if (status >= 200 && status < 300) return { outcome: "success" };
+  return status === 429 ? { outcome: "refused", reason: "rate" } : { outcome: "error", reason: "http" };
+}
+
 // How an upstream counts an answer its status does not describe: a rejection inside a 2xx is an
-// error of the API. Any other is counted by its status.
+// error of the API. Any other is counted by its status, as `countedByStatus` says.
 function countedAs(answer: Answer): CallAnswer | undefined {
   return answer.rejection !== undefined && answer.status >= 200 && answer.status < 300
     ? { outcome: "error", reason: "api" }

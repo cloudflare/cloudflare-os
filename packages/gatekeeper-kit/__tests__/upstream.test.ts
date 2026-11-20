@@ -7,8 +7,8 @@ import process from "node:process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ID, ONE, type Routes } from "../src/route-operation";
 import {
-  defineUpstream, recordCall, summedInto, type CallAnswer, type RetryPolicy, type Upstream,
-  type UpstreamFetch,
+  defineUpstream, recordCall, summedInto, type AnsweredWith, type CallAnswer, type RetryPolicy,
+  type Upstream, type UpstreamFetch, type UpstreamRequestInit,
 } from "../src/upstream";
 
 const API = "https://api.vendor.example/v1";
@@ -120,21 +120,25 @@ function stalling(status: number = 200) {
   return fetch;
 }
 
-// A global fetch that gives each of `answers` in turn, a status being an answer with it whose
-// body never ends, as those of `stalling` are. It gives the fake clock's time at each send.
-function stalled(...answers: (number | Response)[]): number[] {
+// A global fetch that gives each of `answers` in turn, a status, alone or with headers, being an
+// answer with it whose body never ends, as those of `stalling` are. It gives the fake clock's
+// time at each send.
+function stalled(
+  ...answers: (number | Response | [status: number, headers: Record<string, string>])[]
+): number[] {
   const times: number[] = [];
   vi.stubGlobal("fetch", async (_input: string, init: RequestInit) => {
     times.push(Date.now());
     const next = answers[times.length - 1];
     if (next === undefined) throw new Error("the test listed no further answer");
-    if (typeof next !== "number") return next;
+    if (next instanceof Response) return next;
+    const [status, headers] = typeof next === "number" ? [next, {}] : next;
     const signal = init.signal;
     return new Response(new ReadableStream<Uint8Array>({
       start(controller) {
         signal?.addEventListener("abort", () => controller.error(signal.reason));
       },
-    }), { status: next });
+    }), { status, headers });
   });
   return times;
 }
@@ -669,10 +673,6 @@ describe("retry", () => {
 
     // A branch of a cloned body is cancelled only once the other is read, which here is never.
     const response = await upstream.request(THREAD, {
-      answer: reply => {
-        reply.clone();
-        return undefined;
-      },
       replay: reply => {
         reply.clone();
         return reply.status === 401;
@@ -686,14 +686,14 @@ describe("retry", () => {
   it("sends again an attempt whose body never ends, waiting for nothing that its `answer` does", async () => {
     const endless = open(503);
     const fetch = answering(endless.response, 200);
-    // What code that is not type-checked may give for the hook: one that reads the body to its end.
-    const reading = vi.fn((reply: Response) => reply.clone().text());
+    // What code that is not type-checked may give for the hook: one whose answer never comes.
+    const pending = vi.fn(() => new Promise<never>(() => {}));
 
-    const response: Response = await Reflect.apply(untimed.request, untimed, [THREAD, { answer: reading }]);
+    const response: Response = await Reflect.apply(untimed.request, untimed, [THREAD, { answer: pending }]);
 
     expect(response.status).toBe(200);
     expect(fetch).toHaveBeenCalledTimes(2);
-    expect(reading).toHaveBeenCalledTimes(2);
+    expect(pending).toHaveBeenCalledTimes(2);
     expect(outcomes()).toEqual([["error", "http", 503], ["success", "", 200]]);
   });
 
@@ -1131,6 +1131,31 @@ describe("abort", () => {
     expect(authorize).toHaveBeenCalledTimes(1);
     expect(outcomes()).toEqual([["error", "http", 401]]);
   });
+
+  it.each<[string, number, UpstreamRequestInit]>([
+    ["replay", 401, { replay: response => response.status === 401 }],
+    ["retry", 503, {}],
+  ])("sends no %s whose headers are asked for as the caller's signal aborts", async (_name, status, init) => {
+    // A transport that answers whatever the signal it is handed.
+    const fetch = answering(status, 200);
+    const caller = new AbortController();
+    const stop = new Error("stop");
+    let asked = 0;
+
+    await expect(upstream.request(THREAD, {
+      ...init,
+      signal: caller.signal,
+      authorize: async () => {
+        // The caller gives up while the headers of the second send are looked up.
+        if (++asked === 2) caller.abort(stop);
+        return {};
+      },
+    })).rejects.toBe(stop);
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(asked).toBe(2);
+    expect(outcomes()).toEqual([["error", "http", status]]);
+  });
 });
 
 describe("replay", () => {
@@ -1563,9 +1588,9 @@ describe("counting", () => {
   it("counts an answer by the request's `answer`, asked for every attempt with its status and headers", async () => {
     answering(coded(503, "busy", "busy"), coded(200, "quota", "quota"), answer(200, "fine"));
     const seen: number[] = [];
-    const quota = (response: Response): CallAnswer | undefined => {
-      seen.push(response.status);
-      const code = response.headers.get("X-Vendor-Error");
+    const quota = (answered: AnsweredWith): CallAnswer | undefined => {
+      seen.push(answered.status);
+      const code = answered.headers.get("X-Vendor-Error");
       if (code === "busy") return { outcome: "refused", reason: "busy" };
       return code === "quota"
         ? { outcome: "error", reason: "api", detail: "quota", providerCode: 17 } : undefined;
@@ -1586,6 +1611,35 @@ describe("counting", () => {
       ["error", "api", "quota", 200, 17],
       ["success", "", "", 200, 0],
     ]);
+  });
+
+  it("gives the request's `answer` the status and the answer's own headers, and no body to read or lock", async () => {
+    const answers = [answer(200, "read"), answer(200, "requested")];
+    answering(...answers);
+    const seen: AnsweredWith[] = [];
+    const init = {
+      answer: (answered: AnsweredWith): CallAnswer => {
+        seen.push(answered);
+        // What code that is not type-checked may do with an answer: take a reader of its body.
+        const body: unknown = Reflect.get(answered, "body");
+        if (body instanceof ReadableStream) body.getReader();
+        return { outcome: "refused", reason: "busy" };
+      },
+    };
+
+    const text = await upstream.read(THREAD, init, bodyText);
+    const response = await upstream.request(THREAD, init);
+
+    expect(seen.map(answered => Reflect.ownKeys(answered).toSorted())).toEqual(rows(2, ["headers", "status"]));
+    for (const answered of seen) expect(Object.getPrototypeOf(answered)).toBe(Object.prototype);
+    expect(seen.map(answered => answered.status)).toEqual([200, 200]);
+    expect(seen[0].headers).toBe(answers[0].headers);
+    expect(seen[1].headers).toBe(answers[1].headers);
+    // The body is left to `parse`, and to the caller of `request`.
+    expect(text).toBe("read");
+    expect(response.body?.locked).toBe(false);
+    expect(await response.text()).toBe("requested");
+    expect(outcomes()).toEqual(rows(2, ["refused", "busy", 200]));
   });
 
   it("counts by the status an answer whose `answer` throws, or returns what is no answer", async () => {
@@ -2163,15 +2217,93 @@ describe("read", () => {
       expect(outcomes()).toEqual([["error", "timeout", 200], ["success", "", 200]]);
     });
 
-    it("is counted by its status where that is no success, and sent again all the same", async () => {
+    it("is counted by its status where that is no success, and is not sent again", async () => {
       const times = stalled(404, answer(200, "payload"));
 
-      const text = upstream.read(THREAD, undefined, bodyText);
+      const text = expect(upstream.read(THREAD, undefined, bodyText))
+          .rejects.toMatchObject({ name: "TimeoutError" });
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      await text;
+      expect(times).toHaveLength(1);
+      expect(outcomes()).toEqual([["error", "http", 404]]);
+    });
+
+    it("leaves unsent a 429 that `retryable` would not send again, whatever wait the answer names", async () => {
+      const times = stalled([429, { "Retry-After": "120" }], answer(200, "payload"));
+      const retryable = vi.fn(() => false);
+
+      const text = expect(upstream.read(THREAD, { retry: { retryable } }, bodyText))
+          .rejects.toMatchObject({ name: "TimeoutError" });
+      await vi.advanceTimersByTimeAsync(200_000);
+
+      await text;
+      expect(times).toHaveLength(1);
+      // The rule was asked about the answer once, when it came, and its word stands.
+      expect(retryable).toHaveBeenCalledTimes(1);
+      expect(outcomes()).toEqual([["refused", "rate", 429]]);
+    });
+
+    it("sends nothing beyond its attempts for a 503 that the retry rule sent again, each of whose bodies stalls", async () => {
+      const times = stalled(503, 503, 503, answer(200, "payload"));
+
+      const text = expect(upstream.read(THREAD, undefined, bodyText))
+          .rejects.toMatchObject({ name: "TimeoutError" });
+      await vi.advanceTimersByTimeAsync(200_000);
+
+      await text;
+      // The waits of the retry rule, and none after the last answer, whose reading timed out.
+      expect(gaps(times)).toEqual([250, 500]);
+      expect(outcomes()).toEqual(rows(3, ["error", "http", 503]));
+    });
+
+    it.each<[string, Parameters<Upstream["with"]>[0], number]>([
+      ["a 404 that `succeeded` takes for a success", { succeeded: status => status === 404 }, 404],
+      ["a 302 where redirects are followed", { redirect: "follow" }, 302],
+    ])("sends again %s", async (_name, overrides, status) => {
+      const times = stalled(status, answer(200, "payload"));
+
+      const text = upstream.with(overrides).read(THREAD, undefined, bodyText);
       await vi.advanceTimersByTimeAsync(31_000);
 
       expect(await text).toBe("payload");
-      expect(times).toHaveLength(2);
-      expect(outcomes()).toEqual([["error", "http", 404], ["success", "", 200]]);
+      expect(gaps(times)).toEqual([30_250]);
+      expect(outcomes()[0]).toEqual(["error", "timeout", status]);
+    });
+
+    it.each<[string, Parameters<Upstream["with"]>[0], RequestInit & { idempotent?: boolean }, number]>([
+      ["a 200 that `succeeded` takes for no success", { succeeded: status => status === 204 }, {}, 200],
+      ["a 302 where redirects are not followed", {}, {}, 302],
+      ["a 500 of a marked write", {}, { method: "POST", body: "{}", idempotent: true }, 500],
+    ])("sends once %s", async (_name, overrides, init, status) => {
+      const times = stalled(status, answer(200, "payload"));
+
+      const text = expect(upstream.with(overrides).read(THREAD, init, bodyText))
+          .rejects.toMatchObject({ name: "TimeoutError" });
+      await vi.advanceTimersByTimeAsync(200_000);
+
+      await text;
+      expect(times).toHaveLength(1);
+      expect(outcomes()).toEqual([["error", "http", status]]);
+    });
+
+    it("is sent again by what its status is, whatever the request's `answer` counts it as", async () => {
+      const busy = stalled(200, answer(200, "payload"));
+      const text = upstream.read(
+        THREAD, { answer: () => ({ outcome: "refused", reason: "busy" }) }, bodyText);
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(await text).toBe("payload");
+
+      const missing = stalled(404, answer(200, "payload"));
+      const failed = expect(upstream.read(THREAD, { answer: () => ({ outcome: "success" }) }, bodyText))
+          .rejects.toMatchObject({ name: "TimeoutError" });
+      await vi.advanceTimersByTimeAsync(200_000);
+      await failed;
+
+      expect([busy.length, missing.length]).toEqual([2, 1]);
+      expect(outcomes()).toEqual([
+        ["refused", "busy", 200], ["refused", "busy", 200], ["error", "timeout", 404],
+      ]);
     });
 
     it("leaves a request, whose caller reads the body, sent once", async () => {
