@@ -30,7 +30,10 @@ A cached task receives only built-in variables and those declared in its `cache.
 to a task, or invoke that task from the script. Declaring a variable on a sibling task is not enough.
 
 Use `cache.env` when a value changes output or verification policy; `untrackedEnv` is for scheduling
-only. `scripts/env-passthrough.test.ts` guards the declared build-time surface.
+only. `scripts/env-passthrough.test.ts` guards the declared build-time surface. The Google
+gatekeeper's `test` task declares `GOOGLE_DOCS_WIDER_TESTS` this way, since its Docs tests hold
+wider tables where the variable is set (see
+[its README](../packages/gatekeeper-google/README.md#google-docs-edits)).
 
 An environment variable naming an external directory fingerprints the path, not its contents.
 Backend bundled-blueprint codegen is therefore uncached; its consumers can fingerprint the generated
