@@ -1299,7 +1299,14 @@ export interface Gatekeeper<Session> extends DurableObject {
    * and actions go through the approval queue like any other.
    *
    * With `previewOf`, the ID of an `ActionDescription.previewOf`, returns the code that draws
-   * that item instead, and throws for an ID that names nothing it can draw.
+   * that item instead, and throws for an ID that names nothing it can draw. That code runs with
+   * what the session's `openPreview(previewOf)` returns in place of the session: a method such a
+   * session has by convention with the Workshop, which no type here names.
+   *
+   * Returns code only. The Workshop calls this with no session, so nothing here is an observation,
+   * and `previewOf` is whatever a client sent. Neither the code nor the choice of it may therefore
+   * depend on anything read from the provider: what the resource holds is read by the code,
+   * through its session.
    */
   getPreviewUi?(previewOf?: string): Promise<UiFile[]>;
 
@@ -1837,7 +1844,13 @@ export type ActionKind = {
   label: string;
 };
 
-/** An item of a resource that its gatekeeper can draw by itself. See `ActionDescription.previewOf`. */
+/**
+ * An item of a resource that its gatekeeper can draw by itself. See `ActionDescription.previewOf`.
+ *
+ * It is stored and sent with its action's description, to everyone who sees the workspace's
+ * action log and before any read of the item is authorized. It therefore holds nothing that
+ * description may not show them.
+ */
 export type PreviewItem = {
   /**
    * The gatekeeper's own name for the item, opaque to everyone else and handed back to
