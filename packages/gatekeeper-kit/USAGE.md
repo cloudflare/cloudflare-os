@@ -698,9 +698,9 @@ The store runs no callback but the reducer's. A reducer that cannot replay a rec
 returns `refused` with its reason and the fold goes on; the result lists what that call refused, and
 the gatekeeper marks those records after the fold and leaves marked records out of the lists it
 folds. A mark outlives the read, so it is made only over a copy no resolution may have overtaken:
-where a record left the journal while the copy was fetched, a later record refused over it may be
-refused for the copy's age, and that read marks nothing. Inside a resource Durable Object that reads
-a document one tab at a time, where `#journal` is the gatekeeper's own pending store:
+for a record pending before the copy was fetched, and for none where a record pending then left the
+journal while it was fetched. Inside a resource Durable Object that reads a document one tab at a
+time, where `#journal` is the gatekeeper's own pending store:
 
 ```ts
 // `invalidatedReason` is the mark, stored with the record under the same id.
@@ -721,25 +721,29 @@ type Queued = { id: number; action: Change };
 });
 
 async read(tabId: string): Promise<string> {
-  const before = this.#journal.listPending().map(({ id }) => id);
+  const before = new Set(this.#journal.listPending().map(({ id }) => id));
   const doc = await this.#api.get();
   const tab = doc.tabs.find(tab => tab.id === tabId);
   // A record that left the journal while the document was fetched may have applied after the
-  // fetch read it: a later record built on it is then refused over a copy without it. Such a
-  // read shows what it folded and marks nothing; the next read, over a fresh copy, decides.
+  // fetch read it, and one staged meanwhile may build on a record that did: either way a refusal
+  // over this copy may be the copy's age and not the record's. So a refusal is marked only for a
+  // record pending before the fetch, and none where a record pending then has left; the next
+  // read, over a fresh copy, decides the rest.
   const pending = new Set(this.#journal.listPending().map(({ id }) => id));
-  const settled = before.some(id => !pending.has(id));
-  return render(this.#fold(tabId, tab, !settled)); // once the observation is authorized
+  const overtaken = [...before].some(id => !pending.has(id));
+  return render(this.#fold(tabId, tab, overtaken ? new Set() : before)); // once authorized
 }
 
 // Folds the records of one tab over the provider's copy of it, or over nothing where the document
-// has no such tab, then marks what the fold refused when `mark` says the copy may decide it,
-// with no `await` in between.
-#fold(tabId: string, tab: Tab | undefined, mark: boolean): Tab | undefined {
+// has no such tab, then marks what the fold refused of the records `decided` names, with no
+// `await` in between.
+#fold(tabId: string, tab: Tab | undefined, decided: ReadonlySet<number>): Tab | undefined {
   const view = createSimulationView(this.#journal.listPending(), action => [action.tabId]);
   const { entity, refused } = this.#replay.fold(
     tabId, tab, view.forTarget(tabId).filter(record => !record.action.invalidatedReason));
-  if (mark) for (const { record, refusal } of refused) this.#journal.markInvalid(record.id, refusal);
+  for (const { record, refusal } of refused) {
+    if (decided.has(record.id)) this.#journal.markInvalid(record.id, refusal);
+  }
   return entity;
 }
 
@@ -1376,18 +1380,19 @@ return new OffsetCursor<Incident>({
 
 The reducer creates the stand-in: given no entity and the create's record, it returns the row the
 listing shows until the provider has one, as `applied`. A record that deletes a row returns
-`deleted`. A refused record leaves the row as it was, and the hooks mark nothing. A fold that
-stops at `unsupported` would show the row with only the records before the stop, so the hooks
-throw `SimulatedListStopped` instead, from `overlay` or `refresh`. `overlay` folds a row when it
+`deleted`. A refused record leaves the row as it was, and the hooks mark nothing. A fold that stops
+at `unsupported` would show the row with only the records before the stop, so that row is not shown;
+nothing is thrown, since the hooks run before the page is authorized. `overlay` folds a row when it
 is served and the stand-ins are folded at each `refresh()`, which `revalidate` then looks up,
-dropping one whose create `created` no longer lists, so a create bound while a page is being
-fetched serves the provider's row. So above, where `refresh` reads the pending records before
-each page, a record staged between two pages shows on every row served after it, a
-buffered one included, and an id bound while a page is being fetched shows on the provider's rows
-of that page, since the view is built on the call. No fold is remembered from one call to the
-next: a row read again (a refused page's retry) is folded again, and so is every stand-in at each
-`refresh()`, each fold reducing its records again from the first. What is kept is the stand-in
-rows the last `refresh()` made, which `revalidate` looks up.
+dropping one whose create `created` no longer lists, so a create bound before its stand-in is served
+leaves the provider's row to be served; one bound after (between two fetches of one `next()`
+included) leaves the stand-in, and the cursor's `identity` keeps the provider's row out of the walk.
+So above, where `refresh` reads the pending records before each page, a record staged between two
+pages shows on every row served after it, a buffered one included, and an id bound while a page is
+being fetched shows on the provider's rows of that page, since the view is built on the call. No
+fold is remembered from one call to the next: a row read again (a refused page's retry) is folded
+again, and so is every stand-in at each `refresh()`, each fold reducing its records again from the
+first. What is kept is the stand-in rows the last `refresh()` made, which `revalidate` looks up.
 
 What stays the gatekeeper's, because two listings rarely agree on it:
 

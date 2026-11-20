@@ -212,21 +212,6 @@ export function createSimulationStore<
   return Object.freeze({ fold });
 }
 
-/**
- * Thrown by a listing's hooks when the fold of one of its rows stopped at an `unsupported`
- * step: the row would show only the records before the stop, as if they were all of them.
- */
-export class SimulatedListStopped extends Error {
-  /**
-   * @param entity The row, by the entity it is.
-   * @param reason Why its fold stopped, as the reducer gave it.
-   */
-  constructor(readonly entity: string, readonly reason: string) {
-    super(`A pending change to ${entity} cannot be shown in this listing: ${reason}`);
-    this.name = "SimulatedListStopped";
-  }
-}
-
 /** What `simulatedList` needs of a listing whose rows are entities of a simulation store. */
 export type SimulatedListOptions<
   Id extends string,
@@ -236,9 +221,10 @@ export type SimulatedListOptions<
   /**
    * The store that folds a row: its base and its entity are both the listing's row. A record
    * its reducer refuses leaves the row as it was, and the hooks mark nothing: a gatekeeper that
-   * marks refusals does so where it folds outside the listing. A fold that stops at an
-   * `unsupported` step makes `overlay`, `refresh` and the making of the hooks throw
-   * `SimulatedListStopped`, since the row would show some of its records only. Where its
+   * marks refusals does so where it folds outside the listing. A row whose fold stops at an
+   * `unsupported` step is not shown, provider row or stand-in, since it would show some of its
+   * records only; nothing of the stop is thrown, since the hooks run before the page they serve
+   * is authorized, and the gatekeeper reports a stop where it folds outside the listing. Where its
    * reducer reads what only this listing knows (who is asking, the folder listed, names read
    * ahead of the walk), build the store with the listing. A row given to `overlay` is folded
    * each time it is given: a cursor holds a provider row until its page is served and may
@@ -277,8 +263,10 @@ export type SimulatedListOptions<
    * The entities pending creates will make that this listing may show, by their provisional
    * ids, oldest first. Read when the hooks are made, at every `refresh()`, and each time a
    * stand-in is served; the gatekeeper leaves out an id whose create has applied
-   * (`ProvisionalIds.isResolved`), so a create bound while a page was being fetched serves the
-   * provider's row and not its stand-in.
+   * (`ProvisionalIds.isResolved`). So a create bound before its stand-in is served drops the
+   * stand-in, and the provider's row is served where a page lists it. Once the stand-in has
+   * been served, the cursor's `identity` keeps the provider's row out of the walk: a create
+   * bound between two fetches of one `next()` leaves the stand-in that page already holds.
    */
   readonly created?: () => readonly Id[];
 };
@@ -373,10 +361,10 @@ export function simulatedList<
   const { store, view, id, compare, keeps, created } = options;
 
   // A row as its pending records leave it, when the listing shows it. A fold that stopped
-  // would show the row with only the records before the stop: the listing fails instead.
+  // would show the row with only the records before the stop, so the row is not shown.
   const shown = (entity: Id, base: Row | undefined): Row | undefined => {
     const { entity: row, stopped } = store.fold(entity, base, view().forTarget(entity));
-    if (stopped) throw new SimulatedListStopped(entity, stopped.reason);
+    if (stopped) return undefined;
     return row !== undefined && (keeps?.(row) ?? true) ? row : undefined;
   };
 
