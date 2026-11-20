@@ -1560,6 +1560,24 @@ describe("counting", () => {
     expect(outcomes()).toEqual([["error", "http", 302], ["success", "", 302], ["success", "", 302]]);
   });
 
+  it("counts by the default, of the request's redirect mode, a status its `succeeded` has no rule for", async () => {
+    answering(308, 302, 302, 404);
+    // Only what differs from the default is said.
+    const resuming = upstream.with({
+      succeeded: (status, operation) =>
+        status === 308 && operation === "upload.send" ? true : undefined,
+    });
+
+    await resuming.request(THREAD, { method: "PUT", operation: "upload.send" });
+    await resuming.request(THREAD);
+    await resuming.request(THREAD, { redirect: "follow" });
+    await resuming.request(THREAD, { redirect: "follow" });
+
+    expect(outcomes()).toEqual([
+      ["success", "", 308], ["error", "http", 302], ["success", "", 302], ["error", "http", 404],
+    ]);
+  });
+
   it("counts by the gatekeeper's `succeeded`, asked with the status and the operation", async () => {
     answering(499, 499, 308, 429);
     const cancelling = upstream.with({

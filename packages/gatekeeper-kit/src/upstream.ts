@@ -144,13 +144,14 @@ export type UpstreamOptions = {
    */
   redirect?: "follow" | "manual";
   /**
-   * Whether `status` is the success of the request named `operation`. Default: below 300 for a
+   * Whether `status` is the success of the request named `operation`, or undefined for a status
+   * the gatekeeper has no rule of its own for, which is read by the default: below 300 for a
    * request whose redirect mode is `"manual"`, and below 400 for one that follows redirects. It
    * answers at once: a throw, or what is no boolean (a promise is not awaited), is read as the
-   * default. It says how an answer is counted and, under `read`, which answer is asked for again
+   * default too. It says how an answer is counted and, under `read`, which answer is asked for again
    * where its body timed out (see `Upstream`, Retry).
    */
-  succeeded?: (status: number, operation: string) => boolean;
+  succeeded?: (status: number, operation: string) => boolean | undefined;
   /** The fetch every attempt is sent with. Default `globalThis.fetch`, read at each attempt. */
   fetch?: UpstreamFetch;
   /**
