@@ -107,7 +107,7 @@ async function render({
       bulk={{
         run: async () => {}, progress: null, failure, dismissFailure: () => {},
       }}
-      previewFor={previewed ? () => () => {} : undefined}
+      previewFor={previewed ? group => ({ title: group.title, onOpen: () => {} }) : undefined}
     />,
   ))
 }
@@ -275,6 +275,8 @@ it('keeps the connection name readable beside its preview link', async () => {
   // Whole, inside the tray, and clear of the row's own button.
   expect(link.getBoundingClientRect().left).toBeGreaterThanOrEqual(row.getBoundingClientRect().right)
   expect(link.getBoundingClientRect().right).toBeLessThanOrEqual(host!.getBoundingClientRect().right)
+  // Tall enough for a finger, with the row's own target all around it.
+  expect(link.getBoundingClientRect().height).toBeGreaterThanOrEqual(24)
   // The caret closes the row, after the button, and opens the group as the rest of the row does.
   const caret = row.parentElement!.lastElementChild!
   expect(caret.getBoundingClientRect().left).toBeGreaterThanOrEqual(link.getBoundingClientRect().right)

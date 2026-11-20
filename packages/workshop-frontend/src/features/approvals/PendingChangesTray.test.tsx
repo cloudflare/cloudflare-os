@@ -72,7 +72,7 @@ async function render(options: {
   ready?: boolean
   bulk?: BulkResolve
   actions?: Partial<PendingChangeActions>
-  previewFor?: (group: PendingChangeGroup) => (() => void) | undefined
+  previewFor?: (group: PendingChangeGroup) => { title: string, onOpen: () => void } | undefined
 }) {
   const calls: string[] = []
   const actions: PendingChangeActions = {
@@ -297,18 +297,20 @@ describe('PendingChangesTray', () => {
     expect(buttons().filter(b => b.textContent === 'Deny').every(b => b.disabled)).toBe(true)
   })
 
-  it('offers a preview on the rows whose connection has one, beside the row\'s own button', async () => {
+  it('offers a preview on the rows that have one, named for what it opens, beside the row\'s own button', async () => {
     const opened: number[] = []
     await render({
       groups: [
         group([request(1)], { title: 'Paul Pierce' }),
         group([request(2, { gatekeeperId: 2 })], { title: 'Team calendar' }),
       ],
-      previewFor: ({ gatekeeperId }) => gatekeeperId === 1 ? () => opened.push(gatekeeperId) : undefined,
+      // A folder's row opens one of its files.
+      previewFor: ({ gatekeeperId }) =>
+        gatekeeperId === 1 ? { title: 'Draft notes', onOpen: () => opened.push(gatekeeperId) } : undefined,
     })
 
     const previews = buttons().filter(b => b.textContent === 'Preview')
-    expect(previews.map(b => b.getAttribute('aria-label'))).toEqual(['Preview Paul Pierce'])
+    expect(previews.map(b => b.getAttribute('aria-label'))).toEqual(['Preview Draft notes'])
     // A button inside the row's button would be invalid, and pressing it would toggle the group.
     expect(previews[0].closest('[aria-expanded]')).toBeNull()
 
@@ -325,7 +327,7 @@ describe('PendingChangesTray', () => {
     await render({
       groups: [group([request(1), request(2)])],
       bulk: { ...noBulk, progress: { decision: 'approve', done: 0, total: 2 } },
-      previewFor: () => onPreview,
+      previewFor: () => ({ title: 'Paul Pierce', onOpen: onPreview }),
     })
 
     await click(button('Preview'))
