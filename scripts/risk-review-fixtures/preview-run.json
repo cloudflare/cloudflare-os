@@ -1,0 +1,96 @@
+{
+  "id": 41476970333,
+  "name": "Preview",
+  "head_branch": "dancarter/google-calendar-hooks",
+  "head_sha": "5a4eb70a242dcf9bf990267cb0024eb96d666e91",
+  "path": ".github/workflows/preview.yml",
+  "display_title": "Let gadgets watch a Google Calendar for event changes",
+  "run_number": 3652,
+  "event": "pull_request",
+  "status": "completed",
+  "conclusion": "success",
+  "workflow_id": 335834837,
+  "check_suite_id": 112398953179,
+  "check_suite_node_id": "CS_kwDOSDyFo88AAAAaK3_q2w",
+  "pull_requests": [
+    {
+      "id": 5119596651,
+      "number": 965,
+      "head": {
+        "ref": "dancarter/google-calendar-hooks",
+        "sha": "5a4eb70a242dcf9bf990267cb0024eb96d666e91",
+        "repo": {
+          "id": 1211925923,
+          "name": "cloudflare-os"
+        }
+      },
+      "base": {
+        "ref": "main",
+        "sha": "91f4e707360a147ed01a69594e607d2b007dd718",
+        "repo": {
+          "id": 1211925923,
+          "name": "cloudflare-os"
+        }
+      }
+    }
+  ],
+  "created_at": "2026-11-02T15:59:11Z",
+  "updated_at": "2026-11-02T16:02:15Z",
+  "actor": {
+    "login": "dcartertwo",
+    "id": 3964339,
+    "type": "User",
+    "site_admin": false
+  },
+  "run_attempt": 1,
+  "referenced_workflows": [],
+  "run_started_at": "2026-11-02T15:59:11Z",
+  "triggering_actor": {
+    "login": "dcartertwo",
+    "id": 3964339,
+    "type": "User",
+    "site_admin": false
+  },
+  "head_commit": {
+    "id": "5a4eb70a242dcf9bf990267cb0024eb96d666e91",
+    "tree_id": "702a2864219003be8bdb4f87f3cc3122cd72e42c",
+    "message": "Say that a refused Calendar channel renewal keeps the old channel until it expires\n\nUnlike a first channel Google refuses, a refused renewal leaves notifications arriving on the old channel, so reads stay hourly until it expires rather than every two minutes. Also, for the record: the account tracking the first commit shares forgets an account's tracked: note before dropping its hooks rather than after, so if dropping them fails partway, the next alarm asks the account again at once instead of a day later.",
+    "timestamp": "2026-11-02T15:59:03Z",
+    "author": {
+      "name": "Dan Carter",
+      "email": "dancarter@cloudflare.com"
+    },
+    "committer": {
+      "name": "Dan Carter",
+      "email": "dancarter@cloudflare.com"
+    }
+  },
+  "repository": {
+    "id": 1211925923,
+    "name": "cloudflare-os",
+    "full_name": "cloudflare/cloudflare-os",
+    "private": false,
+    "owner": {
+      "login": "cloudflare",
+      "id": 314135,
+      "type": "Organization",
+      "site_admin": false
+    },
+    "description": "Agent workspace built on Cloudflare Workers for creating documents, building apps, and running agents with your company\u2019s context and systems.",
+    "fork": false
+  },
+  "head_repository": {
+    "id": 1211925923,
+    "name": "cloudflare-os",
+    "full_name": "cloudflare/cloudflare-os",
+    "private": false,
+    "owner": {
+      "login": "cloudflare",
+      "id": 314135,
+      "type": "Organization",
+      "site_admin": false
+    },
+    "description": "Agent workspace built on Cloudflare Workers for creating documents, building apps, and running agents with your company\u2019s context and systems.",
+    "fork": false
+  }
+}

@@ -1,0 +1,15 @@
+# A trimmed copy of the repository's pnpm-workspace.yaml, pinned so the tests that edit it do not
+# follow version bumps.
+packages:
+  - packages/*
+  - scripts
+
+catalog:
+  capnweb: ^0.12.0
+  typescript: 7.0.2
+  zod: ^4.6.7
+
+overrides:
+  '@types/node': 26.1.0
+
+minimumReleaseAge: 1440

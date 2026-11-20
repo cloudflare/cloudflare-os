@@ -1,0 +1,116 @@
+{
+  "action": "completed",
+  "workflow_run": {
+    "id": 39728762380,
+    "name": "Risk review trigger",
+    "head_branch": "chore/classify-changsets",
+    "head_sha": "795f5aa494a566b9a0e4809519d408b71699c37f",
+    "path": ".github/workflows/risk-review-trigger.yml",
+    "display_title": "Classify each pull request's risk and require a human for medium and high",
+    "run_number": 6,
+    "event": "pull_request_review",
+    "status": "completed",
+    "conclusion": "success",
+    "workflow_id": 390666426,
+    "check_suite_id": 107669246115,
+    "check_suite_node_id": "CS_kwDOSDyFo88AAAAZEZZQow",
+    "pull_requests": [
+      {
+        "id": 4937514431,
+        "number": 845,
+        "head": {
+          "ref": "chore/classify-changsets",
+          "sha": "795f5aa494a566b9a0e4809519d408b71699c37f",
+          "repo": {
+            "id": 1211925923,
+            "name": "cloudflare-os"
+          }
+        },
+        "base": {
+          "ref": "main",
+          "sha": "a3343fa6021c1f105e466c690c354d3bd63d302f",
+          "repo": {
+            "id": 1211925923,
+            "name": "cloudflare-os"
+          }
+        }
+      }
+    ],
+    "created_at": "2026-10-22T05:34:02Z",
+    "updated_at": "2026-10-22T05:34:11Z",
+    "actor": {
+      "login": "deregtd",
+      "id": 2371464,
+      "type": "User",
+      "site_admin": false
+    },
+    "run_attempt": 1,
+    "referenced_workflows": [],
+    "run_started_at": "2026-10-22T05:34:02Z",
+    "triggering_actor": {
+      "login": "deregtd",
+      "id": 2371464,
+      "type": "User",
+      "site_admin": false
+    },
+    "head_commit": {
+      "id": "795f5aa494a566b9a0e4809519d408b71699c37f",
+      "tree_id": "8d2f6c04218decce7119ff83223a9c459efd6dbd",
+      "message": "Record the risk review's setup outside the pull request\n\nThe app, its environment-only key, the Workers AI permission and the main\nruleset have to be set up again when the key rotates or the app is\nrecreated. .github/workflows/README.md, which CONTRIBUTING.md already\nlinks to but which never existed, now holds that and a note on previews.",
+      "timestamp": "2026-10-20T20:21:26Z",
+      "author": {
+        "name": "Nathan Disidore",
+        "email": "nathan@cloudflare.com"
+      },
+      "committer": {
+        "name": "Nathan Disidore",
+        "email": "nathan@cloudflare.com"
+      }
+    },
+    "repository": {
+      "id": 1211925923,
+      "name": "cloudflare-os",
+      "full_name": "cloudflare/cloudflare-os",
+      "private": false,
+      "owner": {
+        "login": "cloudflare",
+        "id": 314135,
+        "type": "Organization",
+        "site_admin": false
+      },
+      "description": "Agent workspace built on Cloudflare Workers for creating documents, building apps, and running agents with your company\u2019s context and systems.",
+      "fork": false
+    },
+    "head_repository": {
+      "id": 1211925923,
+      "name": "cloudflare-os",
+      "full_name": "cloudflare/cloudflare-os",
+      "private": false,
+      "owner": {
+        "login": "cloudflare",
+        "id": 314135,
+        "type": "Organization",
+        "site_admin": false
+      },
+      "description": "Agent workspace built on Cloudflare Workers for creating documents, building apps, and running agents with your company\u2019s context and systems.",
+      "fork": false
+    }
+  },
+  "repository": {
+    "default_branch": "main",
+    "full_name": "cloudflare/cloudflare-os",
+    "id": 1211925923,
+    "name": "cloudflare-os",
+    "node_id": "R_kgDOSDyFow",
+    "owner": {
+      "login": "cloudflare",
+      "type": "Organization"
+    },
+    "private": false
+  },
+  "sender": {
+    "login": "deregtd",
+    "id": 2371464,
+    "type": "User"
+  }
+}
