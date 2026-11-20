@@ -140,12 +140,16 @@ if (!(await providerAccepts(key))) {
 
 The attempt keeps its original expiry, so retrying never extends it, and `reofferOAuth()` returns
 `null` once it has run out or a newer connect link has been made, whether or not that link has
-been used yet. Only a claim made with `retryable` can be reoffered. Reoffer only a submission that
+been used yet. Only a claim made with `retryable` can be reoffered. Such a claim leaves a
+`"claimed"` record under `NONCE_KEY` where the nonce was, so the teardown below, which deletes the
+nonce, also ends a retry that a submission still waiting on the provider would otherwise make. Reoffer only a submission that
 changed nothing: not after credentials were written or `complete()` was called.
 
 Serve the form with `formPageResponse()`, never `htmlResponse()`: a page that sends no referrer
-posts its forms with `Origin: null`, and `readConnectForm()` refuses that as cross-site. The page
-may post only to its own origin, so `action` must be on the deployment's.
+posts its forms with `Origin: null`, and `readConnectForm()` refuses that as cross-site. The page's
+forms may target only its own origin, so `action` must be on the deployment's and must be the
+handler that reads the credential. That handler answers the POST itself, with a page: a 307 or 308
+to another origin carries the body with it, and not every browser stops that redirect.
 `readConnectForm()` checks the method, origin, encoding and size and nothing else, and the origin
 is the whole deployment's, not this gatekeeper's alone. The account
 checks the nonce, in the step that spends it, and validates the key against the provider before it

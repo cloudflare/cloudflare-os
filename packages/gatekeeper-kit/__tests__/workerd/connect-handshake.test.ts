@@ -171,6 +171,26 @@ describe("reoffering a claimed attempt", () => {
     const { claim } = claimed(kv);
     expect(reofferOAuth(kv, claim, OAUTH_STAGE_EXPIRY)).toBeNull();
     expect(reofferOAuth(kv, claim, Number.NaN)).toBeNull();
+    expect(kv.get<StoredNonce>(NONCE_KEY)?.stage).toBe("claimed");
+  });
+
+  it("leaves nothing a caller can present after a retryable claim, and keeps no metadata", () => {
+    const kv = makeKv();
+    const { first, claim } = claimed(kv);
+    expect(kv.get(NONCE_KEY)).toEqual({ value: first, expiresAt: OAUTH_STAGE_EXPIRY, stage: "claimed" });
+    expect(claimOAuth(kv, first, 103)).toBeNull();
+    expect(advanceToOAuth(kv, first, 103)).toBeNull();
+    expect(claim).toMatchObject({ firstConnect: true, startedUnder: "g1" });
+  });
+
+  // A disconnect or a cancelled connect deletes the nonce; a submission still waiting on the
+  // provider must not reopen the attempt.
+  it("stays ended once the nonce has been deleted", () => {
+    const kv = makeKv();
+    const { claim } = claimed(kv);
+    kv.delete(NONCE_KEY);
+
+    expect(reofferOAuth(kv, claim, 103)).toBeNull();
     expect(kv.get(NONCE_KEY)).toBeUndefined();
   });
 

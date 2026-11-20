@@ -196,7 +196,7 @@ The two-stage connect nonce machine that every OAuth gatekeeper currently re-imp
 
 ```ts
 export const NONCE_KEY = "nonce";               // unchanged from every current gatekeeper
-export type ConnectStage = "initiation" | "oauth";
+export type ConnectStage = "initiation" | "oauth" | "claimed";
 export type StoredNonce<Extra extends object = Record<never, never>> =
   TimedNonce & { stage: ConnectStage } & Extra;
 export function putInitiation<Meta extends object>(
@@ -227,8 +227,11 @@ new record keeps the claimed one's metadata and **original expiry**, so retries 
 attempt open. It returns `null` for an expired attempt and when a link has been stored since the
 claim, so a newer link wins. An empty slot cannot show that: a newer attempt that has itself been
 claimed leaves the slot as empty as the older one did, and would let the older one back in. So a
-claim made with `retryable` records its nonce under `nonceRetryableClaim`, `putInitiation` deletes
-that, and `reofferOAuth` gives back only the claim the marker names. An OAuth callback has no use for it: its provider will not call back
+claim made with `retryable` leaves a `"claimed"` record under `NONCE_KEY` that names it, without
+its metadata, and `reofferOAuth` gives back only the claim that record names. It lives under the
+nonce's own key, not beside it, so that everything that already ends an attempt ends the retry
+too: `putInitiation` overwrites it, and a disconnect or a cancelled connect, which delete the
+nonce, delete it. Neither `advanceToOAuth` nor `claimOAuth` accepts a `"claimed"` record. An OAuth callback has no use for it: its provider will not call back
 twice.
 
 Initiation metadata records what a link was minted for, so a callback need not infer it: deriving
@@ -298,7 +301,9 @@ per `{ name, label, secret?, placeholder? }`, and `error?` above them when the f
 after a refused submission (§4.2, `reofferOAuth`); it escapes every value and throws on no fields, on a
 repeated or malformed field name, and on a field named `nonce`. `formPageResponse` is `htmlResponse` with
 `Referrer-Policy: same-origin` and `form-action 'self'` added to its policy, so the browser will
-not post the credential to another origin whatever `action` says. `readConnectForm(req, { origin, maxBytes = 16 KiB })` refuses a
+not post the credential to another origin whatever `action` says. Browsers differ on applying
+that to a redirect, so the handler must not answer the POST with a cross-origin 307 or 308; the
+handoff page, which is HTML, forwards no body. `readConnectForm(req, { origin, maxBytes = 16 KiB })` refuses a
 non-POST (405), runs `connectMutationError` (403, 415), reads the body through `readTextCapped`
 (413 over the cap, 400 for a body that cannot be read) and returns the fields, or the refusal as an
 HTML `Response`. It does not check the nonce: the account does, in the same step that spends it.

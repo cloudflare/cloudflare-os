@@ -46,8 +46,10 @@ export function htmlResponse(body: string, status = 200): Response {
  * `htmlResponse`, but with `Referrer-Policy: same-origin`. Under `no-referrer` a browser posts the
  * page's forms with `Origin: null`, which the guard refuses, so the form could never be submitted.
  * `same-origin` still keeps the page's URL, a bearer capability, out of every cross-origin
- * `Referer`. The page may also post only to its own origin (`form-action 'self'`), so a
- * credential typed into it cannot be sent anywhere else.
+ * `Referer`. The page's forms may also target only its own origin (`form-action 'self'`), so a
+ * mistaken `action` cannot send a typed credential elsewhere. That covers the first request only:
+ * not every browser applies it to a redirect, so the handler the form posts to must answer the
+ * POST itself and never redirect it to another origin with a 307 or 308, which carry the body.
  * @param body HTML response body.
  * @param status HTTP status.
  * @returns A hardened HTML response whose forms name their origin.
@@ -116,7 +118,8 @@ export const PAGE_STYLE = `
     --strong: #100f0d;
     --subtle: oklch(52% 0.006 60);
     --brand: #ff4801;
-    --danger: oklch(63.7% 0.237 25.331);
+    /* Darker than Kumo's danger: small error text on --base needs 4.5:1, and this reaches 6.2:1. */
+    --danger: oklch(50.5% 0.213 27.518);
     /* Kumo's primary button is "contrast": near-black in light mode, the accent in dark. */
     --contrast: #14110f;
     --on-contrast: #ffffff;
