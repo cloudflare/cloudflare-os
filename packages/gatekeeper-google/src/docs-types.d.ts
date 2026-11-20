@@ -244,4 +244,10 @@ export type GoogleDocPendingChanges = {
 
   /** The tab's pending changes, oldest first. */
   changes: GoogleDocPendingChange[];
+
+  /**
+   * Names the document as saved: another after any change to it, one to how it is drawn included,
+   * which `savedMarkdown` may not show. Absent where the connection cannot edit the document.
+   */
+  revisionId?: string;
 }
