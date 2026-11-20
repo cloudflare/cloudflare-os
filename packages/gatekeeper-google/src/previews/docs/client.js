@@ -809,7 +809,8 @@ async function load() {
     const drawing = await readDrawing(savedMarkdown, revisionId).catch(() => BLANK);
     if (current !== generation) return;
     const stale = changes.filter(change => change.stale).length;
-    pager.lift(changes.length > 0);
+    // The card is over every tab while a change waits on any of them.
+    pager.lift(changes.length > 0 || tabs.some(listed => listed.pending));
     // Nothing of this tab moved, as when a change is made to another: what is drawn stands.
     if (loaded && !page.hidden && tab.drawing === drawing && tab.savedMarkdown === savedMarkdown && tab.markdown === markdown) {
       for (const arrived of document.querySelectorAll('.fresh')) arrived.classList.remove('fresh');

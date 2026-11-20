@@ -868,6 +868,17 @@ it('folds one of two headings of the same name, and keeps the keyboard on its ar
   expect(frame!.contentDocument!.activeElement).toBe(arrows()[1])
 })
 
+it('stands the page navigator above the card for a change that waits on a tab not shown', async () => {
+  const { refresh } = await draw({ savedMarkdown: '', tabs: ['t.0', 't.1'] })
+  const pager = frame!.contentDocument!.getElementById('pager')!
+  expect(pager.classList.contains('lifted')).toBe(false)
+
+  await refresh({ edited: ['t.1'] })
+  await expect.poll(() => pager.classList.contains('lifted')).toBe(true)
+  await refresh({ edited: [] })
+  await expect.poll(() => pager.classList.contains('lifted')).toBe(false)
+})
+
 it('opens on the first tab with changes waiting, and marks each that has them', async () => {
   const { page } = await draw({ savedMarkdown: '', tabs: ['t.0', 't.1', 't.2'], edited: ['t.1', 't.2'] })
   const buttons = [...frame!.contentDocument!.querySelectorAll<HTMLElement>('#outline .tab .name')]
