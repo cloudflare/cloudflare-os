@@ -1143,7 +1143,7 @@ async function load() {
       if (!sheet) throw error;
       const kept = await stillThere();
       // A read that failed for any other reason than the sheet's leaving is said, and tried again.
-      if (kept?.title === sheet.title) throw error;
+      if (current !== generation || kept?.title === sheet.title) throw error;
       // A sheet renamed is asked for by its new title, and one deleted is left for the first there is.
       sheet = kept;
       if (!kept) forget();
