@@ -187,6 +187,19 @@ describe("FetchLoopback's sendFetch", () => {
     expect((await send(new Request("https://example.com/"))).response.status).toBe(200);
   });
 
+  it("returns a redirect that sets Content-Signal: ai-input=no, judging only its destination", async () => {
+    routes["https://example.com/old"] = () => new Response(null, {
+      status: 302, headers: { "location": "https://other.example/new", "content-signal": "ai-input=no" },
+    });
+    expect((await send(new Request("https://example.com/old"))).response.status).toBe(302);
+
+    routes["https://example.com/approved"] = routes["https://example.com/old"];
+    routes["https://other.example/new"] = () => new Response("the page");
+    const { response } = await send(new Request("https://example.com/approved"),
+        { allowed: true, restricted: false, approved: true });
+    expect(await response.text()).toBe("the page");
+  });
+
   describe("with a snapshot", () => {
     const GATEKEEPER_USER: GatekeeperCaller = { from: "user" };
     const AGENT: GatekeeperCaller = { from: "agent", chatId: 1 };

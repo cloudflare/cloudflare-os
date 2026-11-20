@@ -10,7 +10,7 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 import type { GatekeeperCaller } from "./storage-schema/overseer-storage";
 import {
   FETCH_REFUSED_HEADER, FETCH_URL_HEADER, WEB_FETCH_ACCEPT, fetchFollowingRedirects,
-  validateWebFetchUrl,
+  redirectLocation, validateWebFetchUrl,
 } from "./web-fetch";
 
 /** Whose requests a FetchLoopback sends, minted through `ctx.exports.FetchLoopback({props})`. */
@@ -171,8 +171,10 @@ export async function sendFetch(
   }
 
   // Respect the Content-Signal header (https://contentsignals.org/): a site that sets
-  // `ai-input=no` does not want its content fed to an AI agent, which any caller may be.
-  if (contentSignalDenies(response, "ai-input")) {
+  // `ai-input=no` does not want its content fed to an AI agent, which any caller may be. A redirect
+  // that goes back to the caller carries no content, so its destination's signal is the one that
+  // counts.
+  if (redirectLocation(response) === null && contentSignalDenies(response, "ai-input")) {
     await response.body?.cancel();
     return refusal(403, "denied",
         `The site at ${(finalUrl ?? url).href} sets Content-Signal: ai-input=no, indicating ` +

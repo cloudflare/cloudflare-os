@@ -133,6 +133,11 @@ export function validateWebFetchUrl(input: string, allowedHosts?: ReadonlySet<st
   return parsed;
 }
 
+/** The `location` of a redirect a client follows, or null if `response` is not one. */
+export function redirectLocation(response: Response): string | null {
+  return REDIRECT_STATUSES.has(response.status) ? response.headers.get("location") : null;
+}
+
 /**
  * Requests `url` with `send`, following redirects by hand so that each hop passes
  * validateWebFetchUrl before it is sent. Resolves to the final response and the URL it came from.
@@ -143,10 +148,8 @@ export async function fetchFollowingRedirects(
 ): Promise<{ response: Response; url: URL }> {
   for (let redirects = 0; ; ++redirects) {
     const response = await send(url);
-    const location = response.headers.get("location");
-    if (!REDIRECT_STATUSES.has(response.status) || location === null) {
-      return { response, url };
-    }
+    const location = redirectLocation(response);
+    if (location === null) return { response, url };
 
     await response.body?.cancel();
     if (redirects === MAX_REDIRECTS) {
