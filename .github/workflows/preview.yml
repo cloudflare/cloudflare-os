@@ -44,7 +44,7 @@ on:
 permissions: {}
 
 env:
-  NODE_VERSION: "24.19.0"
+  NODE_VERSION: "24.22.3"
 
 jobs:
   deploy:

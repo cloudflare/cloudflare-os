@@ -55,7 +55,7 @@ concurrency:
   cancel-in-progress: ${{ github.event.action == 'closed' }}
 
 env:
-  NODE_VERSION: "24.19.0"
+  NODE_VERSION: "24.22.3"
   EVAL_TRIALS: "10"
   # Per-task models and trials, as WORKSHOP_EVAL_TASK_OVERRIDES (packages/workshop-evals/src/config.ts).
   # Compaction runs one trial on each provider's model: enough to show it pass or fail on each path,
