@@ -22,7 +22,7 @@ import { UnreadProvider } from '@/notifications/UnreadProvider'
 import { useBrowserPushSync } from '@/notifications/useBrowserPush'
 import { useTaskNotices } from '@/notifications/useTaskNotices'
 import { readLayoutPrefs, writeLayoutPrefs } from '@/prefs/layoutPrefs'
-import { readStarOrder, writeStarOrder } from '@/prefs/starOrder'
+import { useStarOrder, writeStarOrder } from '@/prefs/starOrder'
 import { useApi } from '@/rpc/ApiContext'
 import { signOut } from '@/rpc/signOut'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
@@ -40,11 +40,12 @@ import { useReadSkills } from '@/skills/useSkills'
 import { ShareLinkGate } from '@/workspaces/ShareLinkGate'
 import { useSetWorkspaceMuted, useSetWorkspacePinned, useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { WorkspacesProvider } from '@/workspaces/WorkspacesProvider'
-import { formatActivity, formatActivityShort } from '@/workspaces/formatActivity'
+import { formatActivity } from '@/workspaces/formatActivity'
 import { recentChatKey } from '@/workspaces/recentChats'
 import { orderStarred } from '@/workspaces/starredOrder'
 import { useRecentChats } from '@/workspaces/useRecentChats'
-import { isWorkspaceMuted, muteFor } from '@/workspaces/workspaceMute'
+import { useGhostChats, type GhostChat } from '@/workspaces/useGhostChats'
+import { isWorkspaceMuted } from '@/workspaces/workspaceMute'
 import { useLiveWorkspace } from '@/workspaces/useLiveWorkspace'
 import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
@@ -333,7 +334,37 @@ const AppFrame = () => {
   // The viewer's recent chats, each with its workspace, for whoever is in it.
   const recentChats = useRecentChats()
   const recentById = new Map(recentChats.chats.map((chat) => [chat.key, chat]))
-  const sidebarChats: SidebarChat[] = recentChats.chats.flatMap((chat) => {
+  const chatHref = (inWorkspace: string, chat: number) => router.buildLocation({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId: inWorkspace, chatId: chat } }).href
+  // A chat open that is not among them is listed first while it is, faintly until something is said in it.
+  const openedTitle = useLocation({ select: (location) => location.state.chatTitle })
+  const ghosts = useGhostChats(
+    chatPage && { workspaceId: chatPage.params.workspaceId, chatId: chatPage.params.chatId, title: openedTitle },
+    (key) => recentById.has(key),
+    recentChats.refresh,
+  )
+  const ghostById = new Map(ghosts.map((ghost) => [ghost.key, ghost]))
+  const ghostChatOf = (ghost: GhostChat): SidebarChat[] => {
+    const workspace = joinedById.get(ghost.workspaceId)
+    if (!workspace) return []
+    return [{
+      id: ghost.key,
+      workspaceId: ghost.workspaceId,
+      title: chatTitle({ title: ghost.title ?? '' }),
+      workspaceTitle: workspaceTitle(workspace),
+      workspaceLabel: workspaceLabel(workspaceTitle(workspace)),
+      workspaceLook: looks[workspace.id],
+      preview: ghost.preview,
+      previewLoading: ghost.loading,
+      speaker: ghost.speaker,
+      working: ghost.working,
+      workspaceMuted: isWorkspaceMuted(workspace),
+      workspacePinned: workspace.pinned === true,
+      ghost: ghost.fresh ? 'active' : 'quiet',
+      href: chatHref(ghost.workspaceId, ghost.chatId),
+      workspaceHref: workspaceHref(ghost.workspaceId),
+    }]
+  }
+  const sidebarChats: SidebarChat[] = [...ghosts.flatMap(ghostChatOf), ...recentChats.chats.flatMap((chat) => {
     const workspace = joinedById.get(chat.workspaceId)
     if (!workspace) return []
     const author = chat.latest?.author
@@ -344,26 +375,26 @@ const AppFrame = () => {
       workspaceTitle: workspaceTitle(workspace),
       workspaceLabel: workspaceLabel(workspaceTitle(workspace)),
       workspaceLook: looks[workspace.id],
-      time: formatActivityShort(chat.lastActive),
       preview: chat.latest?.text,
+      previewLoading: chat.reading,
       // A chat's own assistant is not named: it is whose the chat is.
       speaker: author?.type === 'user' ? (author.id === user.id ? 'You' : author.name) : chat.agent,
-      attention: chat.waiting === 'approval' ? 'Needs approval' : chat.waiting === 'action' ? 'Needs action' : undefined,
       working: chat.working,
       unread: chat.unread,
       muted: chat.muted,
       workspaceMuted: isWorkspaceMuted(workspace),
       workspacePinned: workspace.pinned === true,
-      href: router.buildLocation({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId: chat.workspaceId, chatId: chat.chatId } }).href,
+      href: chatHref(chat.workspaceId, chat.chatId),
       workspaceHref: workspaceHref(chat.workspaceId),
     }]
-  })
+  })]
   // The pinned workspaces, in the order the Workspaces page has them; with none of them and no recent
   // chats to list either, the latest workspaces, as the sidebar had before there were chats in it.
-  const pinnedWorkspaces = orderStarred(joined.filter(({ pinned }) => pinned), readStarOrder()).map(sidebarWorkspaceOf)
+  const starOrder = useStarOrder()
+  const pinnedWorkspaces = orderStarred(joined.filter(({ pinned }) => pinned), starOrder).map(sidebarWorkspaceOf)
   const workspaces = pinnedWorkspaces.length === 0 && sidebarChats.length === 0 && recentChats.known
     ? joined.slice(0, FALLBACK_WORKSPACES).map(sidebarWorkspaceOf)
-    : pinnedWorkspaces
+    : []
   const selectedChatId = chatPage ? recentChatKey(chatPage.params.workspaceId, chatPage.params.chatId) : undefined
   // A chat just opened is read again with its workspace, so that it is listed as soon as it is the viewer's.
   const refreshRecent = recentChats.refresh
@@ -380,7 +411,7 @@ const AppFrame = () => {
     void navigate({ to: '/workspace/$workspaceId', params: { workspaceId: id }, search: { open } })
   }
   const openChat = (chat: SidebarChat) => {
-    const recent = recentOf(chat)
+    const recent = recentOf(chat) ?? ghostById.get(chat.id)
     if (!recent) return
     leaveSidebar()
     const open = besideOf?.workspaceId === recent.workspaceId ? carryAside(besideOf.open, { workspaceId: recent.workspaceId, chatId: recent.chatId }) : undefined
@@ -398,13 +429,14 @@ const AppFrame = () => {
   const recentOf = (chat: SidebarChat) => recentById.get(chat.id)
   const sidebarActions: SidebarActions = {
     onOpenWorkspace: (id) => openWorkspace(id),
-    onPinWorkspace: (id, pinned) => attempt(pinned ? 'pin the workspace' : 'unpin the workspace', () => {
-      // First among the pinned, as the latest pinned is on the Workspaces page.
-      const order = readStarOrder().filter((other) => other !== id)
-      writeStarOrder(pinned ? [id, ...order] : order)
+    onPinWorkspace: (id, pinned, at = 0) => attempt(pinned ? 'pin the workspace' : 'unpin the workspace', () => {
+      // Where it was dropped among the pinned as they are shown, else first, as the latest pinned is on the Workspaces page.
+      const order = pinnedWorkspaces.map((workspace) => workspace.id).filter((other) => other !== id)
+      if (pinned) order.splice(Math.min(at, order.length), 0, id)
+      writeStarOrder(order)
       return setPinned(id, pinned)
     }),
-    onMuteWorkspace: (id, length) => attempt(length ? 'mute the workspace' : 'unmute the workspace', () => setWorkspaceMuted(id, length ? muteFor(length) : false)),
+    onMuteWorkspace: (id, muted) => attempt(muted ? 'mute the workspace' : 'unmute the workspace', () => setWorkspaceMuted(id, muted)),
     onMarkWorkspaceRead: unread === null ? undefined : (id) => attempt('mark the workspace read', () => unread.markWorkspaceRead(id)),
     onNewChat: (id) => {
       leaveSidebar()
@@ -413,10 +445,6 @@ const AppFrame = () => {
     onMuteChat: (chat, muted) => attempt(muted ? 'mute the chat' : 'unmute the chat', () => {
       const recent = recentOf(chat)
       return recent && recentChats.setMuted(recent, muted)
-    }),
-    onMarkChatRead: (chat, read) => attempt(read ? 'mark the chat read' : 'mark the chat unread', () => {
-      const recent = recentOf(chat)
-      return recent && recentChats.setRead(recent, read)
     }),
     onHideChat: (chat) => {
       const recent = recentOf(chat)
@@ -459,6 +487,8 @@ const AppFrame = () => {
   const sidebar = (collapsed: boolean) => (
     <Sidebar
       user={{ name: user.name, avatarUrl }}
+      pinned={pinnedWorkspaces}
+      onReorderPinned={writeStarOrder}
       workspaces={workspaces}
       // The chat open is marked where it is listed, and its workspace only on the rail, or where it is not.
       selectedWorkspaceId={collapsed || selectedChatId === undefined || !sidebarChats.some(({ id }) => id === selectedChatId) ? workspaceId : undefined}
@@ -468,10 +498,6 @@ const AppFrame = () => {
       selectedChatId={selectedChatId}
       onSelectChat={openChat}
       actions={sidebarActions}
-      onUnhideChat={(chat) => {
-        const recent = recentOf(chat)
-        if (recent) recentChats.unhide(recent.workspaceId, recent.chatId)
-      }}
       onGoHome={() => {
         leaveSidebar()
         void navigate({ to: '/' })

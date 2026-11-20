@@ -1051,13 +1051,32 @@ gallery has each block in each state (`AgentsPreview`, over `exampleAgents.ts`).
 
 ## The sidebar
 
-The sidebar is flat: the pinned workspaces (`WorkspaceListItem`), then the viewer's recent chats
-across workspaces (`SidebarChatItem`: the workspace's icon, the chat's title and time, and its
-workspace and latest message, or what waits on the viewer), under quiet Pinned and Recent headings
-where there are both. With nothing pinned and no recent chats, it lists the latest workspaces as it
-did before. Which chats are recent is `workspaces/recentChats.ts` (plain and tested): what waits on
-the viewer first, then the chats people had that they take part in, the latest first, from the past
-week, thirty at most; an agent's run only while it waits. Nothing says who takes part in a chat, so
+The sidebar is flat: the pinned workspaces, as tiles in an area of their own over the rest
+(`PinnedWorkspaces`: each its icon over its title, up to three to a line, four where it is 20rem wide (a container query), 2px between lines, with
+the list's hover and selection gliding and joining along a line, `useWorkspaceUnderlay`'s `x`),
+then the viewer's recent chats
+across workspaces (`SidebarChatItem`: the workspace's icon, which alone says which it is in, the
+chat's title, and its latest message; no time). A row marks its activity alone: dots hopping at the
+icon's corner while its agent works (`TypingDots`, which a workspace's chat list has on its
+pictures too), and the unread dot, which a muted chat leaves out. In the rail's card, which has no
+icons, a working chat's second line is "Typing…", shimmering, and the unread dot ends the row.
+Until its latest message is read (`RecentChat.reading`: among those
+whose last messages are read, `tailsWanted`, and not read yet for it as it is now), its second
+line is "Loading…", shimmering; one whose messages are not read at all has none. What waits on the
+viewer is not said on it. With nothing pinned
+and no recent chats, it lists the latest workspaces as rows, as it did before. A row is dragged
+with a mouse onto the tiles to pin its workspace, and a tile within them to move it or out of them
+to unpin it (`usePinDrag`, one drag for both): a copy of the icon lifts off and floats to the
+pointer, jiggling as an app being moved on a phone does (`.jiggle`), then flies into its tile when
+let go of, back to where it came from on Escape or elsewhere, or fades once unpinned. Meanwhile
+the area is tinted, its height springs to what it holds (from nothing while none is pinned, when
+it says Pin workspace), and the tiles make way for the place it would take (`CardGridMotion`,
+which also moves them with Alt and an arrow key, and drags nothing itself here). A chat of a workspace pinned already can still be picked up, but the area does not open
+for it and it only goes back. A finger does not
+drag: a long press is the menu. The order is `prefs/starOrder.ts`'s, which the Workspaces page
+follows too (`useStarOrder`). Which chats are recent is `workspaces/recentChats.ts` (plain and tested): what waits on
+the viewer and the chats people had that they take part in, all by when they were last active, the
+latest first, so a new message puts its chat at the top, from the past week, thirty at most; an agent's run only while it waits. Nothing says who takes part in a chat, so
 it is guessed: the viewer wrote in its last messages, has a read cursor in it, or hears of it. The
 sweep that counts what waits (`AgentsWaitingProvider`) reads each workspace's read state
 (`getWorkspaceUnreadState`) and the last messages of its latest chats with it, into
@@ -1065,17 +1084,26 @@ sweep that counts what waits (`AgentsWaitingProvider`) reads each workspace's re
 chat is opened, is read again at once. The backend listing the viewer's chats with their latest
 message would replace all of it.
 
+A chat open that is not among them (older than a week, hidden, or not the viewer's) is listed
+first while it is open, faintly until something is said in it (`useGhostChats`, its line from the
+open chat's own session, `ghostChat.ts`; `SidebarChat.ghost`). Left with nothing said in it,
+it goes; left with something said, it stays first, as it is drawn then, until the recent chats,
+read again for its workspace, have it. Gone to again from there, it is still drawn whole. Its menu has nothing to mute it by or hide.
+
 The rows keep their order while the list is pointed at, focused from the keyboard or has a menu
-open, what is new coming at the end (`heldOrder`), and take the real order once left. A row's menu
+open, what is new coming at the end (`heldOrder`), and take the real order once left, sliding to
+their new places with the highlight under them, new ones fading in (`useRowSlide`; the underlay
+measures rows where they are laid out, not where a slide has them). A row's menu
 opens by right-clicking it, or pressing and holding it on a touch screen (`ContextMenu`, one for the
-whole list, `SidebarMenus`): a chat's has Open in new tab, Mark as read or unread, Go to workspace,
-pinning its workspace, muting the chat or the workspace (for an hour, until tomorrow morning, or
-until turned back on, `muteFor`), and Remove from sidebar; a pinned workspace's has Open in new
-tab, New chat here, Mark all as read, Unpin and Mute. A removed chat is kept out on this device
-(`prefs/sidebarHidden.ts`) until it waits on the viewer again after more happened in it, and its
-place says so with Undo for a few seconds. On the rail each workspace is its icon, the pinned first,
-then those the chats are in (`railWorkspacesOf`), and pointing at one with chats opens a card of
-them (`HoverCard`), with the way to the workspace and New chat.
+whole list, `SidebarMenus`): a chat's has Open in new tab, Go to workspace, pinning its workspace,
+muting the chat or the workspace (until unmuted), and Hide from sidebar; a pinned workspace's has Open in new
+tab, New chat here, Mark all as read, Unpin and Mute. A hidden chat is kept out on this device
+(`prefs/sidebarHidden.ts`) until it waits on the viewer again after more happened in it, or something is said in it while it is open (`useGhostChats`), and goes at once, with nothing left
+in its place. A row keeps its hover while its menu is open (`data-menu-open`). On the rail each workspace is its icon, the pinned first and
+apart, then those the chats are in (`railWorkspacesOf`). Clicking one goes to it; pointing at one with
+chats opens a small card of them beside it (`HoverCard`), each going to its chat, and one with none
+has a tooltip at once. A card opens as soon as its icon is pointed at, only one at a time,
+and with one open, the next takes its place with no animation. While one is open the dividers' pills (`ResizeHandle`) do not come out, as the card is over the gap.
 
 ## A gadget's own page
 

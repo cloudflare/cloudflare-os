@@ -24,9 +24,9 @@ describe('recentChatsOf', () => {
     expect(listed({ w: reading(chats, states) }, tails)).toEqual(['w:5', 'w:2', 'w:3', 'w:1'])
   })
 
-  it('puts what waits on a person first, an agent’s run only while it does', () => {
+  it('lists what waits on a person among the rest, by when it was last active, an agent’s run only while it waits', () => {
     const chats = [chat(1, 1), chat(2, 50, { awaitingDecision: true }), chat(3, 20, { spawnerName: 'Inbox' }), chat(4, 30, { spawnerName: 'Inbox' })]
-    expect(listed({ w: reading(chats, [read(1), read(3)], [4]) })).toEqual(['w:4', 'w:2', 'w:1'])
+    expect(listed({ w: reading(chats, [read(1), read(3)], [4]) })).toEqual(['w:1', 'w:4', 'w:2'])
   })
 
   it('leaves out what was last active too long ago, unless it waits', () => {
@@ -54,6 +54,13 @@ describe('recentChatsOf', () => {
     const tails = { 'w:1': { lastActive: ago(5).getTime(), latest, wrote: false }, 'w:2': { lastActive: ago(9).getTime(), latest, wrote: false }, 'w:3': { lastActive: ago(5).getTime(), latest, ask, wrote: false } }
     const chats = recentChatsOf(new Map([['w', reading([chat(1, 5), chat(2, 5), chat(3, 5, { awaitingDecision: true })], [read(1), read(2)])]]), new Map(Object.entries(tails)), new Map(), NOW)
     expect(Object.fromEntries(chats.map(({ key, latest: said }) => [key, said?.text]))).toEqual({ 'w:3': 'Connect Jira', 'w:1': 'Done', 'w:2': undefined })
+  })
+
+  it('says which are still to be read, as they are now, of those whose last messages are read', () => {
+    const tails = { 'w:1': { lastActive: ago(5).getTime(), wrote: false }, 'w:2': { lastActive: ago(9).getTime(), wrote: false } }
+    // Seven chats people had: the oldest is not one whose last messages are read.
+    const chats = recentChatsOf(new Map([['w', reading(Array.from({ length: 7 }, (_, index) => chat(index + 1, 5 + index)), Array.from({ length: 7 }, (_, index) => read(index + 1)))]]), new Map(Object.entries(tails)), new Map(), NOW)
+    expect(Object.fromEntries(chats.map(({ key, reading: still }) => [key, still]))).toEqual({ 'w:1': false, 'w:2': true, 'w:3': true, 'w:4': true, 'w:5': true, 'w:6': true, 'w:7': false })
   })
 })
 

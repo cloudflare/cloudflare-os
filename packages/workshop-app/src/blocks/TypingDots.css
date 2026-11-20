@@ -1,0 +1,20 @@
+/* A chat at work is marked with three dots that hop in turn, each a little after the one before
+   it (its delay, in TypingDots.tsx), and rest a while between hops. Without motion, they only dim
+   and brighten. */
+.typing-dot {
+  animation: typing-dot-hop 1.1s ease-in-out infinite;
+}
+
+@keyframes typing-dot-hop {
+  0%, 60%, 100% { transform: translateY(0); }
+  30% { transform: translateY(-2.5px); }
+}
+
+:root[data-motion='off'] .typing-dot {
+  animation-name: typing-dot-glow;
+}
+
+@keyframes typing-dot-glow {
+  0%, 60%, 100% { opacity: 1; }
+  30% { opacity: 0.4; }
+}

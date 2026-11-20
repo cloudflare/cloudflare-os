@@ -4,23 +4,20 @@ import type { SidebarWorkspace } from './WorkspaceNav'
 /** A workspace on the collapsed sidebar's rail, with the recent chats in it that the expanded sidebar lists. */
 export type RailWorkspace = SidebarWorkspace & { chats: SidebarChat[] }
 
-const marks = (chats: readonly SidebarChat[]) => ({
-  unread: chats.some(({ unread, muted, workspaceMuted }) => unread && !muted && !workspaceMuted),
-  attention: chats.find(({ attention }) => attention)?.attention,
-})
+// Unread, as a chat's row is marked, but not for a muted one.
+const unreadIn = (chats: readonly SidebarChat[]) => chats.some(({ unread, muted, workspaceMuted }) => unread && !muted && !workspaceMuted)
 
 /**
  * The rail's workspaces, which say on one icon each what the expanded sidebar lists: the pinned
  * ones first, as they are, then each workspace the recent chats are in, in the order its first
- * chat is listed. Each is marked unread, or waiting on the viewer, where it or a chat in it is.
+ * chat is listed. Each is marked unread where it or a chat in it is.
  */
 export const railWorkspacesOf = (workspaces: readonly SidebarWorkspace[], chats: readonly SidebarChat[]): RailWorkspace[] => {
   const byWorkspace = new Map<string, SidebarChat[]>()
   for (const chat of chats) byWorkspace.set(chat.workspaceId, [...(byWorkspace.get(chat.workspaceId) ?? []), chat])
   const listed = workspaces.map((workspace) => {
     const its = byWorkspace.get(workspace.id) ?? []
-    const { unread, attention } = marks(its)
-    return { ...workspace, unread: workspace.unread || unread, attention: workspace.attention ?? attention, chats: its }
+    return { ...workspace, unread: workspace.unread || unreadIn(its), chats: its }
   })
   const listedIds = new Set(workspaces.map(({ id }) => id))
   const others = [...byWorkspace].filter(([id]) => !listedIds.has(id)).map(([id, its]): RailWorkspace => {
@@ -32,7 +29,7 @@ export const railWorkspacesOf = (workspaces: readonly SidebarWorkspace[], chats:
       workspaceLook: first.workspaceLook,
       href: first.workspaceHref,
       muted: first.workspaceMuted,
-      ...marks(its),
+      unread: unreadIn(its),
       chats: its,
     }
   })

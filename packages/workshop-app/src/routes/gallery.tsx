@@ -111,6 +111,8 @@ const previewWorkspaces: SidebarWorkspace[] = [
 
 const chatIn = (workspace: SidebarWorkspace, chat: Omit<SidebarChat, 'workspaceId' | 'workspaceTitle' | 'workspaceLabel' | 'workspaceLook'>): SidebarChat => ({
   ...chat,
+  // Somewhere to open in another tab.
+  href: `#${chat.id}`,
   workspaceId: workspace.id,
   workspaceTitle: workspace.title,
   workspaceLabel: workspace.workspaceLabel,
@@ -118,13 +120,17 @@ const chatIn = (workspace: SidebarWorkspace, chat: Omit<SidebarChat, 'workspaceI
 })
 const [greeting, assistant, , dashboard, slides] = previewWorkspaces
 const previewChats: SidebarChat[] = [
-  chatIn(dashboard, { id: 'dashboard:4', title: 'Sprint burndown', time: '2m', attention: 'Needs approval', preview: 'Share “Q3 plan” with finance' }),
-  chatIn(greeting, { id: 'greeting:7', title: 'Plan the offsite', time: '5m', speaker: 'Maya', preview: 'Sounds good, let’s book the venue for Thursday', unread: true }),
-  chatIn(slides, { id: 'slides:2', title: 'Investor update deck', time: '18m', working: true }),
-  chatIn(dashboard, { id: 'dashboard:3', title: 'Bug triage', time: '1h', preview: 'I grouped the open bugs by component and flagged three as regressions.' }),
-  chatIn(assistant, { id: 'assistant:1', title: 'Availability next week', time: '3h', speaker: 'You', preview: 'Can you check Tuesday instead?', muted: true }),
-  chatIn(greeting, { id: 'greeting:6', title: 'Welcome email draft', time: '2d', preview: 'Here’s a shorter version with the dates up front.' }),
+  chatIn(dashboard, { id: 'dashboard:4', title: 'Sprint burndown', preview: 'Share “Q3 plan” with finance' }),
+  chatIn(greeting, { id: 'greeting:7', title: 'Plan the offsite', speaker: 'Maya', preview: 'Sounds good, let’s book the venue for Thursday', unread: true }),
+  chatIn(slides, { id: 'slides:2', title: 'Investor update deck', speaker: 'You', preview: 'Can you add a slide on churn?', working: true }),
+  chatIn(dashboard, { id: 'dashboard:3', title: 'Bug triage', preview: 'I grouped the open bugs by component and flagged three as regressions.' }),
+  chatIn(assistant, { id: 'assistant:1', title: 'Availability next week', speaker: 'You', preview: 'Can you check Tuesday instead?', muted: true }),
+  chatIn(greeting, { id: 'greeting:6', title: 'Welcome email draft', preview: 'Here’s a shorter version with the dates up front.' }),
+  // Its latest message is still being read.
+  chatIn(assistant, { id: 'assistant:2', title: 'Meeting notes', previewLoading: true }),
 ]
+// An old chat, not among the recent ones, as it is listed while it is open.
+const unlistedChat = chatIn(slides, { id: 'slides:1', title: 'First outline', preview: 'Here’s a first pass at the outline.' })
 
 // More than fit in the menu, one with a look of its own and one with a title too long for the button.
 const pickerWorkspaces: WorkspacePickerProps['workspaces'] = [
@@ -416,36 +422,55 @@ const SidebarPage = () => {
   const [hidden, setHidden] = useState<string[]>([])
   const [pinned, setPinned] = useState(['greeting', 'dashboard'])
   const [said, setSaid] = useState('Right-click a row, or press and hold it on a touch screen, for its menu.')
-  const shownChats = chats
-    .filter(({ id }) => !hidden.includes(id))
-    .map((chat) => ({ ...chat, workspacePinned: pinned.includes(chat.workspaceId) }))
-  const workspaces = previewWorkspaces.filter(({ id }) => pinned.includes(id)).map((workspace) => ({ ...workspace, pinned: true }))
+  // Whether something was said in the unlisted chat since it was opened.
+  const [unlistedSaid, setUnlistedSaid] = useState(false)
+  const unlistedOpen = selectedChat === unlistedChat.id
+  const shownChats = [
+    ...(unlistedOpen ? [{ ...unlistedChat, ghost: unlistedSaid ? 'active' as const : 'quiet' as const, ...(unlistedSaid ? { speaker: 'You', preview: 'Add a slide on pricing' } : {}) }] : []),
+    ...chats.filter(({ id }) => !hidden.includes(id)),
+  ].map((chat) => ({ ...chat, workspacePinned: pinned.includes(chat.workspaceId) }))
+  const byId = new Map(previewWorkspaces.map((workspace) => [workspace.id, workspace]))
+  const pinnedWorkspaces = pinned.flatMap((id) => (byId.has(id) ? [{ ...byId.get(id)!, pinned: true }] : []))
   const change = (id: string, to: Partial<SidebarChat>) => setChats((current) => current.map((chat) => (chat.id === id ? { ...chat, ...to } : chat)))
   const actions: SidebarActions = {
     onOpenWorkspace: (id) => setSaid(`Go to the workspace ${id}.`),
-    onPinWorkspace: (id, on) => setPinned((current) => (on ? [id, ...current] : current.filter((other) => other !== id))),
-    onMuteWorkspace: (id, length) => {
-      setChats((current) => current.map((chat) => (chat.workspaceId === id ? { ...chat, workspaceMuted: length !== null } : chat)))
-      setSaid(length ? `Muted ${id} (${length}).` : `Unmuted ${id}.`)
+    onPinWorkspace: (id, on, at = 0) => setPinned((current) => {
+      const rest = current.filter((other) => other !== id)
+      if (on) rest.splice(at, 0, id)
+      return rest
+    }),
+    onMuteWorkspace: (id, muted) => {
+      setChats((current) => current.map((chat) => (chat.workspaceId === id ? { ...chat, workspaceMuted: muted } : chat)))
+      setSaid(muted ? `Muted ${id}.` : `Unmuted ${id}.`)
     },
     onMarkWorkspaceRead: (id) => setChats((current) => current.map((chat) => (chat.workspaceId === id ? { ...chat, unread: false } : chat))),
     onNewChat: (id) => setSaid(`A new chat in ${id}.`),
     onMuteChat: (chat, muted) => change(chat.id, { muted }),
-    onMarkChatRead: (chat, read) => change(chat.id, { unread: !read }),
     onHideChat: (chat) => setHidden((current) => [...current, chat.id]),
   }
   // A message arrives in the last chat: it moves up once the sidebar is no longer pointed at.
   const arrive = () => setChats((current) => {
     const last = current.at(-1)!
-    return [{ ...last, time: 'now', unread: true, speaker: 'Grace', preview: 'Just pushed the fix, can you take a look?' }, ...current.slice(0, -1)]
+    return [{ ...last, unread: true, speaker: 'Grace', preview: 'Just pushed the fix, can you take a look?' }, ...current.slice(0, -1)]
   })
   return (
     <>
-      <Section title="Sidebar, expanded and collapsed to a rail: the pinned workspaces, then the viewer’s recent chats, each under its workspace’s icon, with what waits on them first. Right-click a row (or press and hold it) for its menu; a chat removed can be put back from where it was for a while. The chats keep their order while the list is pointed at: send a message to the last one and it moves up once the pointer leaves. On the rail, each workspace is its icon, pinned first, and pointing at one opens a card of its chats. As it was, with the pages as icons beside the logo, kept to compare, then as it is, with them as rows under the list">
+      <Section title="Sidebar, expanded and collapsed to a rail: the pinned workspaces as tiles, then the viewer’s recent chats, each under its workspace’s icon, the latest first. Drag a chat onto the tiles to pin its workspace (one already pinned only goes back), and drag the tiles to reorder them. Right-click a row (or press and hold it) for its menu; a chat hidden goes at once. A chat opened that is not listed is first, faintly, while it is open, and goes once another is. The chats keep their order while the list is pointed at: send a message to the last one and it slides up once the pointer leaves. On the rail, each workspace is its icon, the pinned first and apart, and pointing at one opens a card of its chats, and clicking it goes to it. As it was, with the pages as icons beside the logo, kept to compare, then as it is, with them as rows under the list">
         <div className="flex flex-col gap-3">
           <div className="flex items-center gap-3">
             <Button onClick={arrive}>A message arrives in the last chat</Button>
-            <Button onClick={() => setHidden([])} disabled={hidden.length === 0}>Put back removed chats</Button>
+            <Button onClick={() => setHidden([])} disabled={hidden.length === 0}>Put back hidden chats</Button>
+            <Button
+              onClick={() => {
+                setSelectedChat(unlistedChat.id)
+                setUnlistedSaid(false)
+                setSidebarPage(undefined)
+              }}
+              disabled={unlistedOpen}
+            >
+              Open a chat that is not listed
+            </Button>
+            <Button onClick={() => setUnlistedSaid(true)} disabled={!unlistedOpen || unlistedSaid}>Say something in it</Button>
             <p role="status" className="text-sm text-kumo-subtle">{said}</p>
           </div>
           <div className="flex gap-4">
@@ -453,7 +478,9 @@ const SidebarPage = () => {
               <div key={`${layout}-${collapsed}`} className={`flex h-[40rem] shrink-0 flex-col rounded-3xl bg-kumo-canvas p-2 ring-1 ring-kumo-line ${collapsed ? 'w-14' : 'w-72'}`}>
                 <Sidebar
                   user={{ name: 'Ada Lovelace' }}
-                  workspaces={workspaces}
+                  pinned={pinnedWorkspaces}
+                  onReorderPinned={setPinned}
+                  workspaces={[]}
                   selectedWorkspaceId={sidebarPage || (selectedChat && !collapsed) ? undefined : selectedWorkspace}
                   onSelectWorkspace={(id) => {
                     setSelectedWorkspace(id)
@@ -469,7 +496,6 @@ const SidebarPage = () => {
                     change(chat.id, { unread: false })
                   }}
                   actions={actions}
-                  onUnhideChat={(chat) => setHidden((current) => current.filter((id) => id !== chat.id))}
                   connections={[{ name: 'Google' }, { name: 'Linear' }, { name: 'Cloudflare' }]}
                   library={{ current: sidebarPage === 'library', onOpen: () => setSidebarPage('library'), waiting: 3 }}
                   workspacesPage={{ current: sidebarPage === 'workspaces', onOpen: () => setSidebarPage('workspaces') }}

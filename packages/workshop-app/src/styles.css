@@ -215,10 +215,12 @@
 }
 /* The sidebar's workspaces fade the same way, by the same two amounts, but to nothing at either
    end and over the same length: nothing floats over them, so what scrolls goes at the list's own
-   edges. There is no scrollbar to leave a strip for. */
+   edges. There is no scrollbar to leave a strip for. The top comes in whole over the first
+   quarter of the range (12px), so that a row cut by the pinned tiles over the list is never seen
+   cut off, as it would be while it was still coming in. */
 .chat-fade.sidebar-fade {
-  --chat-fade-floor: calc(1 - var(--chat-fade-top));
-  --chat-fade-length: calc(var(--chat-fade-top) * 3rem);
+  --chat-fade-floor: calc(1 - min(1, var(--chat-fade-top) * 4));
+  --chat-fade-length: calc(min(1, var(--chat-fade-top) * 4) * 3rem);
   --chat-fade-bottom-length: calc(var(--chat-fade-bottom) * 3rem);
   mask-size: 0 0, 100% 100%, 100% 100%;
 }
@@ -232,4 +234,27 @@
       0 3rem,
       calc(100% - 3rem) 100%;
   }
+}
+
+/* A workspace's icon being dragged in the sidebar jiggles as an app on a phone's home screen does
+   while it is being moved. Nothing moves with motion off. */
+@keyframes jiggle {
+  from {
+    rotate: -3deg;
+  }
+  to {
+    rotate: 3deg;
+  }
+}
+.jiggle {
+  animation: jiggle 130ms ease-in-out infinite alternate;
+}
+:root[data-motion='off'] .jiggle {
+  animation: none;
+}
+/* While one is dragged, whatever the pointer is over, it is holding the workspace. */
+:root[data-pin-dragging],
+:root[data-pin-dragging] * {
+  cursor: grabbing !important;
+  user-select: none;
 }

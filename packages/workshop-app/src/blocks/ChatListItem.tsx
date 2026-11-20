@@ -7,8 +7,8 @@ import { LogoIcon } from '@/components/LogoIcon'
 import { ShimmerText } from '@/components/ShimmerText'
 import { formatCost } from '@/components/usageFormat'
 import { StatusPill, type StatusPillProps } from './StatusPill'
+import { TypingDots } from './TypingDots'
 import { UnreadDot } from './UnreadDot'
-import './ChatListItem.css'
 
 /** What a chat's picture is marked with: waiting on someone, failed, at work, or with something unread. */
 export type ChatBadge = 'waiting' | 'failed' | 'working' | 'unread'
@@ -60,13 +60,7 @@ const CUT = 'ring-kumo-tint group-hover/row:ring-[color-mix(in_srgb,var(--color-
 // The mark on a picture, at its corner, cut out of the surface it is on.
 const Badge = ({ badge }: { badge: ChatBadge }) =>
   badge === 'working'
-    ? (
-      // Three dots hopping in turn, as someone typing (see ChatListItem.css): grey, as at work wants nobody,
-      // where the colours of the other marks say something waits or is unread.
-      <span role="img" aria-label="Working" className={cn('absolute -end-1.5 -bottom-1 flex h-3.5 items-center gap-0.5 rounded-full bg-kumo-base px-1 text-kumo-subtle ring-2', CUT)}>
-        {[0, 1, 2].map((dot) => <span key={dot} className="chat-list-item-hop size-1 rounded-full bg-current" style={{ animationDelay: `${dot * 140}ms` }} />)}
-      </span>
-    )
+    ? <TypingDots className={cn('absolute -end-1.5 -bottom-1 h-3.5 rounded-full bg-kumo-base px-1 text-kumo-subtle ring-2', CUT)} />
     : <span role="img" aria-label={BADGES[badge].label} className={cn('absolute end-0 bottom-0 size-2 rounded-full ring-3', CUT, BADGES[badge].colour)} />
 
 /**

@@ -3,7 +3,7 @@ import { setSidebarHidden, useSidebarHidden } from '@/prefs/sidebarHidden'
 import { useApi } from '@/rpc/ApiContext'
 import { RecentChats } from './RecentChatsStore'
 import { useRecentChatsContext } from './RecentChatsContext'
-import { recentChatKey, recentChatsOf, type RecentChat } from './recentChats'
+import { recentChatsOf, type RecentChat } from './recentChats'
 
 const EMPTY = new RecentChats()
 const nothing = () => {}
@@ -14,12 +14,8 @@ export type RecentChatsValue = {
   known: boolean
   /** Mutes a chat for the viewer, or unmutes it, shown at once and put back if refused. Rejects with why. */
   setMuted: (chat: RecentChat, muted: boolean) => Promise<void>
-  /** Marks a chat read, or its latest message unread, shown at once and put back if refused. Rejects with why. */
-  setRead: (chat: RecentChat, read: boolean) => Promise<void>
   /** Takes a chat out of the sidebar on this device, until it waits on the viewer again. */
   hide: (chat: RecentChat) => void
-  /** Puts a chat taken out back. */
-  unhide: (workspaceId: string, chatId: number) => void
   /** Reads a workspace's chats again ahead of the rest. Stable. */
   refresh: (workspaceId: string) => void
 }
@@ -59,10 +55,7 @@ export const useRecentChats = (): RecentChatsValue => {
     known,
     setMuted: (chat, muted) =>
       changing(chat, { notificationsEnabled: !muted, notificationsEnabledOverride: !muted }, (overseer) => overseer.setChatNotificationsEnabled(chat.chatId, !muted)),
-    setRead: (chat, read) =>
-      changing(chat, { unreadMessageCount: read ? 0 : 1 }, (overseer) => (read ? overseer.markChatRead(chat.chatId) : overseer.markChatUnread(chat.chatId))),
     hide: (chat) => setSidebarHidden(chat.key, chat.lastActive.getTime()),
-    unhide: (workspaceId, chatId) => setSidebarHidden(recentChatKey(workspaceId, chatId), undefined),
     refresh: context?.refresh ?? nothing,
   }
 }

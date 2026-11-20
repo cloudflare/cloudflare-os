@@ -8,6 +8,7 @@ import { DropdownMenu } from '@/components/DropdownMenu'
 import { LogoIcon } from '@/components/LogoIcon'
 import { Markdown } from '@/components/Markdown'
 import { ServiceLogo } from '@/components/ServiceLogo'
+import { FOCUS_RING } from '@/components/focusRing'
 import { useNarrowScreen } from '@/hooks/useNarrowScreen'
 import { useWorkspaceUnderlay } from './useWorkspaceUnderlay'
 import type { SidebarChat } from './SidebarChatItem'
@@ -26,7 +27,11 @@ export type SidebarConnection = {
 
 export type SidebarProps = {
   user: { name: string; avatarUrl?: string }
-  /** The workspaces listed first: in the app, those pinned to the sidebar. */
+  /** The workspaces pinned to the sidebar, as tiles over the rest (`WorkspaceNav`). */
+  pinned?: SidebarWorkspace[]
+  /** Puts the pinned workspaces in another order, giving their ids in the new one. */
+  onReorderPinned?: (ids: string[]) => void
+  /** Workspaces listed as rows before the chats: in the app, the latest, while there is nothing else to list. */
   workspaces: SidebarWorkspace[]
   selectedWorkspaceId?: string
   onSelectWorkspace: (id: string) => void
@@ -37,8 +42,6 @@ export type SidebarProps = {
   onSelectChat?: (chat: SidebarChat) => void
   /** What a row's menu does, opened by right-clicking it or pressing and holding it. */
   actions?: SidebarActions
-  /** Puts back a chat taken out of the sidebar. */
-  onUnhideChat?: (chat: SidebarChat) => void
   /** The logo was clicked: go to the start of a new chat. */
   onGoHome?: () => void
   /** The deployment's own logo, in place of the app's mark. */
@@ -128,7 +131,7 @@ const NavRow = ({ icon, label, current, onClick, waiting = 0, ...props }: NavRow
     className={cn(
       // A rectangular hit area keeps hover stable at the rounded corners as the underlay grows.
       "relative after:absolute after:inset-0 after:content-['']",
-      'flex w-full cursor-pointer items-center gap-2.5 rounded-2xl p-2 pr-4 text-left text-(length:--control-text) font-medium text-kumo-default',
+      'flex w-full cursor-pointer items-center gap-2.5 rounded-2xl p-2 pr-4 text-left text-(length:--control-text) font-medium text-kumo-default', FOCUS_RING,
       'not-data-underlay:hover:bg-kumo-fill not-data-underlay:aria-[current=page]:bg-kumo-fill',
     )}
     {...props}
@@ -161,6 +164,8 @@ const NavRows = ({ children }: { children: ReactNode }) => {
  */
 export const Sidebar = ({
   user,
+  pinned,
+  onReorderPinned,
   workspaces,
   selectedWorkspaceId,
   onSelectWorkspace,
@@ -168,7 +173,6 @@ export const Sidebar = ({
   selectedChatId,
   onSelectChat,
   actions,
-  onUnhideChat,
   onGoHome,
   logoUrl,
   announcement,
@@ -258,6 +262,8 @@ export const Sidebar = ({
   const nav = (
     <WorkspaceNav
       key={collapsed ? 'rail' : 'list'}
+      pinned={pinned}
+      onReorderPinned={onReorderPinned}
       workspaces={workspaces}
       selectedWorkspaceId={selectedWorkspaceId}
       onSelectWorkspace={onSelectWorkspace}
@@ -265,7 +271,6 @@ export const Sidebar = ({
       selectedChatId={selectedChatId}
       onSelectChat={onSelectChat}
       actions={actions}
-      onUnhideChat={onUnhideChat}
       notice={notice}
       empty={empty}
       rail={collapsed}

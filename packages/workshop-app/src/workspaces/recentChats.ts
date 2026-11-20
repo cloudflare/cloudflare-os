@@ -41,6 +41,8 @@ export type RecentChat = {
   muted: boolean
   /** What it last said or, while it waits, what it asks, with who said it. */
   latest?: LatestMessage
+  /** Its last messages are to be read (`tailsWanted`) and have not been yet, for it as it is now. */
+  reading: boolean
 }
 
 /** How far back a chat is recent, as the sidebar's sweep asks only the workspaces active this lately. */
@@ -91,8 +93,9 @@ const takesPart = (chat: AiChatMetadata, state: ChatReadState | undefined, tail:
 
 /**
  * The viewer's recent chats, across the workspaces read (`readings`, by id): what waits on a
- * person, first, then the chats people had that the viewer takes part in, active lately, each
- * group the latest first. An agent's run is only listed while it waits. One the viewer took out
+ * person, and the chats people had that the viewer takes part in, active lately, all of them by
+ * when they were last active, the latest first, so that what just happened in one, such as a new
+ * message, puts it at the top. An agent's run is only listed while it waits. One the viewer took out
  * of the list (`hidden`, by key, at the time it was last active then) is left out until it waits
  * on a person again, after more has happened in it.
  */
@@ -103,8 +106,10 @@ export const recentChatsOf = (
   now: number,
 ): RecentChat[] => {
   const found: RecentChat[] = []
-  for (const [workspaceId, { chats, readStates, approvals }] of readings) {
+  for (const [workspaceId, reading] of readings) {
+    const { chats, readStates, approvals } = reading
     const states = new Map(readStates.map((state) => [state.chatId, state]))
+    const wanted = new Set(tailsWanted(reading, now).map(({ id }) => id))
     for (const chat of chats) {
       const key = recentChatKey(workspaceId, chat.id)
       const state = states.get(chat.id)
@@ -129,10 +134,11 @@ export const recentChatsOf = (
         unread: state !== undefined && state.unreadMessageCount > 0 && state.notificationsEnabled !== false,
         muted: state?.notificationsEnabledOverride === false,
         latest: (waiting !== undefined ? said?.ask : undefined) ?? said?.latest,
+        reading: said === undefined && wanted.has(chat.id),
       })
     }
   }
   return found
-    .toSorted((a, b) => Number(b.waiting !== undefined) - Number(a.waiting !== undefined) || b.lastActive.getTime() - a.lastActive.getTime())
+    .toSorted((a, b) => b.lastActive.getTime() - a.lastActive.getTime())
     .slice(0, MOST)
 }

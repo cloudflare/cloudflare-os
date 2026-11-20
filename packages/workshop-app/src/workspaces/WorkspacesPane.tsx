@@ -16,7 +16,7 @@ import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { useListView } from '@/hooks/useListView'
 import { useNarrowScreen } from '@/hooks/useNarrowScreen'
 import { PageLayout } from '@/layouts/PageLayout'
-import { readStarOrder, writeStarOrder } from '@/prefs/starOrder'
+import { useStarOrder, writeStarOrder } from '@/prefs/starOrder'
 import { useUnread } from '@/notifications/UnreadContext'
 import { useApi } from '@/rpc/ApiContext'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
@@ -50,7 +50,7 @@ export const WorkspacesPane = ({ onOpenWorkspace, workspaceHref, onNewWorkspace 
   const workspaces = useWorkspaces()
   const setPinned = useSetWorkspacePinned()
   const connection = useConnectionNotice()
-  const [starOrder, setStarOrder] = useState(readStarOrder)
+  const starOrder = useStarOrder()
   // Why the last star or unstar did not hold, or what was not marked read.
   const [starProblem, setStarProblem] = useState<string>()
   useDocumentTitle('Workspaces')
@@ -78,15 +78,11 @@ export const WorkspacesPane = ({ onOpenWorkspace, workspaceHref, onNewWorkspace 
     })),
   ]
 
-  const keepOrder = (order: string[]) => {
-    setStarOrder(order)
-    writeStarOrder(order)
-  }
   const star = (id: string, on: boolean) => {
     setStarProblem(undefined)
     if (connection?.blocked()) return
     // The whole order is kept, so that one starred elsewhere since stays after this one.
-    keepOrder(on ? [id, ...starredIds.filter((other) => other !== id)] : starredIds.filter((other) => other !== id))
+    writeStarOrder(on ? [id, ...starredIds.filter((other) => other !== id)] : starredIds.filter((other) => other !== id))
     setPinned(id, on).catch((error: unknown) => {
       setStarProblem(`Couldn’t ${on ? 'pin' : 'unpin'} the workspace: ${error instanceof Error ? error.message : String(error)}`)
     })
@@ -102,7 +98,7 @@ export const WorkspacesPane = ({ onOpenWorkspace, workspaceHref, onNewWorkspace 
   }
 
   // Only with all of the starred there: putting some of them in order would lose the others' places.
-  const reorderStarred = list.narrowed ? undefined : keepOrder
+  const reorderStarred = list.narrowed ? undefined : writeStarOrder
   // What a row and a card are both given.
   const propsOf = (workspace: WorkspaceMetadataWithTimestamps) => {
     // Everyone with access, who deleting it takes it from; its row shows its members.

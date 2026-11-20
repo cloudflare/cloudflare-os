@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import type { NotificationMute, WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
+import type { WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
 import type { WorkspaceRemoval } from '@/blocks/WorkspaceMoreMenu'
 import { useApi } from '@/rpc/ApiContext'
 import { sameLiveFields, type LiveWorkspaceFields } from './LiveWorkspace'
@@ -70,12 +70,11 @@ export const WorkspacesProvider = ({ children }: { children: ReactNode }) => {
       overseer[Symbol.dispose]()
     }
   }
-  const setMuted = async (id: string, muted: boolean | NotificationMute) => {
+  const setMuted = async (id: string, muted: boolean) => {
     const before = state.status === 'ready' ? state.workspaces.find((workspace) => workspace.id === id)?.notificationMute : undefined
-    const mute = muted === true ? { indefinite: true as const } : muted === false ? null : muted
-    mark(id, { notificationMute: mute ?? undefined })
+    mark(id, { notificationMute: muted ? { indefinite: true } : undefined })
     try {
-      await api.setWorkspaceNotificationMute(id, mute)
+      await api.setWorkspaceNotificationMute(id, muted ? { indefinite: true } : null)
     } catch (error) {
       mark(id, { notificationMute: before })
       throw error

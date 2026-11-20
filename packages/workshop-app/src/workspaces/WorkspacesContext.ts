@@ -1,5 +1,5 @@
 import { createContext, useContext } from 'react'
-import type { NotificationMute, WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
+import type { WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
 import type { WorkspaceRemoval } from '@/blocks/WorkspaceMoreMenu'
 import type { LiveWorkspaceFields } from './LiveWorkspace'
 import type { WorkspaceLooks } from './WorkspaceLooks'
@@ -19,10 +19,10 @@ export type WorkspacesContextValue = {
   /** Renames a workspace, shown at once and undone if the server refuses. */
   rename: (id: string, title: string) => Promise<void>
   /**
-   * Mutes a workspace's notifications until it is unmuted (`true`) or for a while (a
-   * `NotificationMute`), or unmutes it, shown at once and undone if the server refuses.
+   * Mutes a workspace's notifications until it is unmuted, or unmutes it, shown at once and
+   * undone if the server refuses.
    */
-  setMuted: (id: string, muted: boolean | NotificationMute) => Promise<void>
+  setMuted: (id: string, muted: boolean) => Promise<void>
   /**
    * Deletes a workspace or removes it from the list (see `removeWorkspace`), and drops it from the
    * list once the server has done it, as neither can be shown at once and undone.

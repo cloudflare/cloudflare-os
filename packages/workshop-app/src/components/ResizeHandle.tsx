@@ -4,6 +4,7 @@ import { useMotionLevel } from '@/hooks/useMotionLevel'
 import { useReducedMotion } from '@/hooks/useReducedMotion'
 import { motionTransition } from '@/hooks/motionTransition'
 import { cn } from '@cloudflare/kumo/utils'
+import { isHoverCardOpen } from './HoverCard'
 import { BOUNCY, HELD_LENGTH, HELD_OPACITY, IDLE_LENGTH, IDLE_OPACITY, SMOOTH, between, useCalm } from './pill'
 import { clampSize } from './resizing'
 
@@ -222,6 +223,11 @@ export const ResizeHandle = ({
     }
     // A finger is only ever near while it holds the handle.
     if (event.pointerType === 'touch') return
+    // A card open beside the sidebar's rail is over the gap, and on its way there the pointer crosses it.
+    if (isHoverCardOpen()) {
+      if (near.current) part()
+      return
+    }
     const inside = contains(box, event.clientX, event.clientY)
     const middleX = box.left + reach.left
     const reachedEdge = edge === 'right' ? event.clientX >= middleX - 1 : edge === 'left' ? event.clientX <= middleX + 1 : true

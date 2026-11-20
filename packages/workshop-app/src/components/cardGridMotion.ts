@@ -19,12 +19,26 @@ const LIFT = 1.03
 /** How far a card was from its place at `start`, from where it slides there. */
 type Slide = { x: number; y: number; start: number }
 
+/** How wide a card was drawn at `start`, from which it grows or shrinks to its place's width. */
+type Resize = { from: number; start: number }
+
+export type CardGridMotionOptions = {
+  /** Off, the cards are only moved by the keyboard, as where something else drags them. */
+  pointer?: boolean
+  /**
+   * A card whose place changes width, as when how many are on a line does, slides by its middle,
+   * and what is in it (its one child) grows or shrinks to the new width about that middle.
+   */
+  resize?: boolean
+}
+
 type Card = {
   key: string
   element: HTMLElement
   /** Where the browser has laid the card out, which it is moved from. */
   slot: Slot
   slide?: Slide
+  resize?: Resize
   /** Over the others as it settles, once let go of. */
   dropping: boolean
 }
@@ -64,10 +78,16 @@ export class CardGridMotion {
   private focused: HTMLElement | null = null
   private readonly observer = new ResizeObserver(() => this.measure())
 
+  private readonly pointer: boolean
+  private readonly resize: boolean
+
   constructor(
     private readonly grid: HTMLElement,
     private readonly announce: (text: string) => void,
+    { pointer = true, resize = false }: CardGridMotionOptions = {},
   ) {
+    this.pointer = pointer
+    this.resize = resize
     grid.addEventListener('pointerdown', this.onPointerDown)
     grid.addEventListener('keydown', this.onKeyDown)
     grid.addEventListener('focusin', this.onFocusIn)
@@ -96,7 +116,7 @@ export class CardGridMotion {
     this.groups = groups
     const now = performance.now()
     const animate = this.initialized && !isMotionOff()
-    const before = new Map(this.cards.map((card) => [card.key, { card, ...this.seenAt(card, now) }]))
+    const before = new Map(this.cards.map((card) => [card.key, { card, width: this.widthAt(card, now), ...this.seenAt(card, now) }]))
 
     this.cards = Array.from(this.grid.querySelectorAll<HTMLElement>('[data-card]'), (element) => {
       const key = element.dataset.card!
@@ -110,7 +130,10 @@ export class CardGridMotion {
       }
       // The one being dragged is where the pointer has it.
       if (this.drag?.moving && this.drag.key === key) return card
-      const x = was.x - slot.left
+      // By its middle where it can change width, so that what is in it does not jump to one side.
+      const resized = this.resize && animate && Math.abs(was.width - slot.width) >= 0.5
+      if (resized) card.resize = { from: was.width, start: now }
+      const x = this.resize ? was.x + was.card.slot.width / 2 - (slot.left + slot.width / 2) : was.x - slot.left
       const y = was.y - slot.top
       if (!animate || (Math.abs(x) < 0.5 && Math.abs(y) < 0.5)) return card
       // One already on its way to this place carries on, rather than starting over.
@@ -138,6 +161,13 @@ export class CardGridMotion {
     return { x: card.slide.x * left, y: card.slide.y * left }
   }
 
+  /** How wide what is in a card is drawn at `now`. */
+  private widthAt(card: Card, now: number) {
+    if (!card.resize) return card.slot.width
+    const done = ease(clamp((now - card.resize.start) / DURATION, 0, 1))
+    return card.resize.from + (card.slot.width - card.resize.from) * done
+  }
+
   /** Where a card is drawn at `now`, within the grid. */
   private seenAt(card: Card, now: number) {
     if (this.drag?.moving && this.drag.key === card.key) return { x: this.drag.x, y: this.drag.y }
@@ -153,6 +183,15 @@ export class CardGridMotion {
       if (card.slide && now - card.slide.start >= DURATION) card.slide = undefined
       if (!card.slide && !dragged) card.dropping = false
       active ||= card.slide !== undefined
+      if (card.resize) {
+        const content = card.element.firstElementChild
+        const width = this.widthAt(card, now)
+        if (now - card.resize.start >= DURATION) card.resize = undefined
+        else active = true
+        if (content instanceof HTMLElement) {
+          Object.assign(content.style, card.resize ? { width: `${width}px`, translate: `${(card.slot.width - width) / 2}px 0` } : { width: '', translate: '' })
+        }
+      }
       const { x, y } = this.seenAt(card, now)
       const dx = x - card.slot.left
       const dy = y - card.slot.top
@@ -232,7 +271,7 @@ export class CardGridMotion {
 
   // Links are the browser's to drag otherwise, which would end a drag of their card.
   private onDragStart = (event: DragEvent) => {
-    if (this.cardOf(event.target)?.group.reorder) event.preventDefault()
+    if (this.pointer && this.cardOf(event.target)?.group.reorder) event.preventDefault()
   }
 
   // A long press is the card's, not the menu a touch browser opens for one.
@@ -245,7 +284,7 @@ export class CardGridMotion {
   }
 
   private onPointerDown = (event: PointerEvent) => {
-    if (event.button !== 0 || this.drag) return
+    if (event.button !== 0 || this.drag || !this.pointer) return
     const found = this.cardOf(event.target)
     if (!found?.group.reorder) return
     const within = this.grid.getBoundingClientRect()

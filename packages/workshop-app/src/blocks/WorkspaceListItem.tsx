@@ -2,6 +2,7 @@ import { cn } from '@cloudflare/kumo/utils'
 import { LinkButton } from '@/components/LinkButton'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import type { WorkspaceLook } from '@/components/workspaceLook'
+import { FOCUS_RING } from '@/components/focusRing'
 import { UnreadDot } from './UnreadDot'
 
 export type WorkspaceListItemProps = {
@@ -20,6 +21,8 @@ export type WorkspaceListItemProps = {
    */
   attention?: string
   selected?: boolean
+  /** Its menu is open: it keeps the hover while the pointer is in the menu. */
+  menuOpen?: boolean
   /** The workspace's address, so that it can be opened in another tab. */
   href?: string
   onSelect: () => void
@@ -35,22 +38,24 @@ export const WorkspaceListItem = ({
   unread,
   attention,
   selected,
+  menuOpen,
   href,
   onSelect,
 }: WorkspaceListItemProps) => (
   <LinkButton
     href={href}
     data-workspace-id={id}
+    data-menu-open={menuOpen || undefined}
     onClick={onSelect}
     aria-current={selected || undefined}
     className={cn(
       // A rectangular hit area keeps hover stable at the rounded corners as the underlay grows.
       "relative after:absolute after:inset-0 after:content-['']",
-      'flex w-full items-center gap-3 rounded-2xl px-3 py-3 pr-4 text-left text-base not-data-underlay:hover:bg-kumo-fill',
+      'flex w-full items-center gap-3 rounded-2xl px-3 py-3 pr-4 text-left text-base not-data-underlay:hover:bg-kumo-fill', FOCUS_RING,
       selected && 'not-data-underlay:bg-kumo-fill',
     )}
   >
-    <WorkspaceIcon label={workspaceLabel} {...workspaceLook} />
+    <span data-pin-icon className="flex shrink-0"><WorkspaceIcon label={workspaceLabel} {...workspaceLook} /></span>
     <span className="min-w-0 flex-1 leading-snug">
       <span className="block truncate font-medium text-kumo-default">{title}</span>
       {attention
