@@ -5,14 +5,16 @@ import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
 import { buildDescription, codeSpan } from "@gadgets/gatekeeper-kit/action-description";
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
 import { KvTtlCache } from "@gadgets/gatekeeper-kit/cache";
+import { clearCredentialExpiryLatch, notifyCredentialsExpiredOnce } from "@gadgets/gatekeeper-kit/credential-expiry";
 import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
+import { SerialTaskQueue } from "@gadgets/gatekeeper-kit/serial-queue";
 import {
   PreviewOAuth,
   PreviewOAuthConfigurationError,
   type PreviewOAuthState,
 } from "@gadgets/gatekeeper-kit/preview-oauth";
 import { formatSubresourceId, parseSubresourceId } from "@gadgets/gatekeeper-kit/subresource-ids";
-import { exchangeAuthCode, getAccessToken, getGoogleAccountDescription, getGoogleAccountProfile, getGoogleVerifiedEmail, GoogleAccessToken, GoogleUserInfoError, RefreshFailure, revokeGoogleToken } from "./google-api";
+import { exchangeAuthCode, getAccessToken, getGoogleAccountProfile, getGoogleVerifiedEmail, GoogleAccessToken, googleAccountDescription, GoogleUserInfoError, RefreshFailure, revokeGoogleToken } from "./google-api";
 import type { GoogleDocEditSession, GoogleDocReadSession } from "./docs-types";
 import { GoogleDocsApi } from "./docs-api";
 import { GoogleSheetsApi } from "./sheets-api";
@@ -148,7 +150,10 @@ import DRIVE_CONFIGURATOR_HTML from "./generated/drive-configurator-ui.txt";
 import CREATION_LOCATION_CONFIGURATOR_HTML from "./generated/creation-location-configurator-ui.txt";
 import GOOGLE_LOGO_SVG from "./google-logo.svg";
 import { obsContext } from "./observability.js";
-import { AccessTokenCache, AccessTokenRequest, ACCESS_TOKEN_EXPIRY_SAFETY_MS, type AccessTokenProvider } from "./auth-retry";
+import {
+  AccessTokenCache, AccessTokenRequest, ACCESS_TOKEN_EXPIRY_SAFETY_MS, tokenFailureCause,
+  type AccessTokenProvider,
+} from "./auth-retry";
 import { Mutex } from "./mutex";
 import { PendingActionStore } from "./pending-actions";
 import {
@@ -229,6 +234,8 @@ import {
 } from "./chat";
 
 export { GmailGatekeeperImpl } from "./gmail";
+export { GoogleGrantRegistry } from "./grant-registry";
+import type { GoogleGrantRegistry } from "./grant-registry";
 export { GoogleChatGatekeeperImpl } from "./chat";
 export { ChatHookController, ChatHookDriver } from "./chat-hooks";
 export { GmailHookController, GmailHookDriver } from "./gmail-hooks";
@@ -259,6 +266,67 @@ const TOKEN_REVOKE_TIMEOUT_MS = 10 * 1000;
 // short enough that the account recovers on its own once the cause is fixed — an admin lifting a
 // scope restriction leaves nothing for us to observe, so we have to re-ask Google eventually.
 const MINT_FAILURE_COOLDOWN_MS = 60 * 1000;
+
+// Storage key naming the latest refusal by Google to refresh the installed credentials, kept until
+// the Workshop, which was told they had expired, has heard that they mint tokens again.
+const REFRESH_REFUSED_KEY = "refreshRefused";
+
+// Storage key holding the Google account (`sub`) whose grant this object is recorded as holding,
+// in that account's GoogleGrantRegistry. No other registry lists this object.
+const GRANT_SUBJECT_KEY = "grantSubject";
+
+// Storage key holding the `credentialsId` of the credentials that record was made for. A reconnect
+// installs others, perhaps another Google account's, and until this names them the record says
+// nothing about the grant held now.
+const GRANT_CREDENTIALS_KEY = "grantCredentialsId";
+
+// Storage key holding the OAuth client the installed credentials are known to be issued to: the one
+// whose code exchange gave them, or that refreshed them. Not set for credentials no such step has
+// shown the client of, as ones installed before it was recorded.
+const CREDENTIALS_CLIENT_KEY = "credentialsClientId";
+
+// Storage key holding which Google account (`sub`) the credentials with a `credentialsId` belong
+// to, as read when they were staged, described or recorded: apart from whether the registry has
+// listed this object, so that what is known of the account survives a registry that failed.
+const ACCOUNT_SUBJECT_KEY = "accountSubject";
+
+type AccountSubject = { credentialsId: string; subject: string };
+
+// Storage key set while the installed refresh token is one Google has refused for good, with a
+// plain `invalid_grant`. Such credentials hold no grant, whatever was started before the refusal:
+// the key goes when a token mints again or other credentials are installed.
+const REFRESH_TOKEN_DEAD_KEY = "refreshTokenDead";
+
+// Storage key holding, once the account is disconnected, a revocation Google did not take, or one
+// put off because a holder of the grant could not be asked, which the alarm tries again: its
+// refresh token, and the Google account whose registry it rechecks.
+const PENDING_REVOCATION_KEY = "pendingRevocation";
+
+/**
+ * `attempts` counts the tries made so far, the disconnect's included. `clientId` is the OAuth
+ * client the refresh token is known to be issued to, if it is known.
+ */
+type PendingRevocation = { refreshToken: string; clientId?: string; subject?: string; attempts: number };
+
+/**
+ * Whether a disconnect revokes the grant at Google, and the Google account it went by, if known.
+ * `unsure`: not revoked because a holder could not be asked, which may hold nothing.
+ */
+type GrantRelease = { revoke: boolean; subject?: string; unsure?: true };
+
+/** The release a registry's answer about the Google account `subject`'s grant makes. */
+function released(answer: { last: boolean; unsure?: true }, subject: string): GrantRelease {
+  return { revoke: answer.last, subject, ...(answer.unsure ? { unsure: true } : {}) };
+}
+
+// How many times a revocation Google does not take is tried, with the wait before the second, which
+// doubles each time up to the last: about eight hours in all.
+const REVOCATION_ATTEMPTS = 10;
+const REVOCATION_RETRY_BASE_MS = 60 * 1000;
+const REVOCATION_RETRY_MAX_MS = 4 * 3600 * 1000;
+
+// How long reading which Google account the credentials belong to may take.
+const GRANT_SUBJECT_TIMEOUT_MS = 10 * 1000;
 
 // What a token request fails with once an account has no refresh token. Of the accounts a binding
 // can name, only one the Workshop disconnected loses it: revoke() deletes all of its storage. The
@@ -540,6 +608,10 @@ type StagedGoogleCredentials = {
   accessToken: GoogleAccessToken;
   grantedScopes: string[];
   requestedResources: string[];
+  /** The Google account (`sub`) that signed in, when Google said which. */
+  subject?: string;
+  /** The OAuth client whose code exchange gave the credentials. */
+  clientId?: string;
 };
 
 // How long an account reuses an answer about its access to a subresource, counted from when it
@@ -585,21 +657,40 @@ function parseAccountSubresource(subresource: string): AccountSubresource {
   }
 }
 
-/** What a caller is told when Google permanently refuses to refresh the account's access token. */
+/**
+ * Whether Google refused a refresh because the account's Google Cloud session ran out. The
+ * account's organization limits how long a sign-in lasts for Google Cloud, which a connection
+ * holding a Cloud scope such as BigQuery's is subject to. Only signing in again renews it. Google
+ * names the condition with either subtype.
+ */
+function isCloudSessionExpiry(failure: RefreshFailure): boolean {
+  return failure.reason === "revoked" &&
+      (failure.subtype === "invalid_rapt" || failure.subtype === "rapt_required");
+}
+
+/**
+ * Google refused for good to refresh the account's access token. Its message, which callers are
+ * told, can quote Google's description of an admin's restriction, so it is not logged; the
+ * refusal is, as `google.token.mint.refused`.
+ */
+class RefreshRefusedError extends Error {}
+
+/**
+ * What a caller is told when Google permanently refuses to refresh the account's access token, in
+ * words of our own: a failed call is logged, and Google's can name the account or its admin's rule.
+ */
 function refreshFailureMessage(failure: RefreshFailure): string {
   if (failure.reason === "policyBlocked") {
-    return "A Google Workspace admin has restricted access this connection needs " +
-        `(${failure.detail}). Ask your administrator to allow it — re-authenticating will not help.`;
+    return "A Google Workspace admin has restricted access this connection needs. Ask your " +
+        "administrator to allow it — re-authenticating will not help.";
   }
-  // The account's organization limits how long a sign-in lasts for Google Cloud, which a connection
-  // holding a Cloud scope such as BigQuery's is subject to. Only signing in again renews it. Google
-  // names the condition with either subtype.
-  if (failure.subtype === "invalid_rapt" || failure.subtype === "rapt_required") {
+  if (isCloudSessionExpiry(failure)) {
     return "Google needs this account to sign in again: its organization requires a new sign-in " +
         "for Google Cloud access (such as BigQuery) every so often. Please re-authenticate.";
   }
   return "Google credentials have expired or been revoked. Please re-authenticate.";
 }
+
 
 export class UserAccount extends DurableObject<Env> {
   // Serialize minting, reconnect, and revoke against each other. Minting is a network round trip, so
@@ -610,6 +701,12 @@ export class UserAccount extends DurableObject<Env> {
 
   // The last mint that failed permanently — revoked credentials, or a scope an admin has blocked.
   #mintFailure: { error: Error; at: number } | undefined;
+
+  // The notices to the Workshop about these credentials, sent one at a time in the order their
+  // causes happened. The Workshop goes on reading the account while it handles a restoration, and
+  // then records the connection as working, so an expiry told to it meanwhile would be overwritten:
+  // an expiry notice waits for the restoration before it to return.
+  #notices = new SerialTaskQueue();
 
   // This account's answers about its own access to subresources, keyed by subresource and
   // partitioned by the credentials that learned them (see #credentialsId), so an answer can't
@@ -730,9 +827,16 @@ export class UserAccount extends DurableObject<Env> {
         // The reconnect URL is a bearer capability, so the new grant is only staged until the
         // Workshop has confirmed the browser that finished the flow is the owner's (see
         // commitReconnect). Bound gadgets keep reading the current token meanwhile.
+        // Which Google account signed in is read now, so that commitReconnect() knows at once
+        // whether the grant this object is recorded as holding is still the one it holds.
+        let subject = await getGoogleAccountProfile(
+            response.accessToken.token, AbortSignal.timeout(GRANT_SUBJECT_TIMEOUT_MS))
+            .then(profile => profile.sub, () => undefined);
         let staged: StagedGoogleCredentials = {
           refreshToken: response.refreshToken, accessToken: response.accessToken,
           grantedScopes: response.grantedScopes, requestedResources: flow.requestedResources,
+          ...(subject !== undefined ? { subject } : {}),
+          clientId,
         };
         let stageId = stageCredentials(this.ctx.storage.kv, staged, Date.now());
         return { callback, mode: flow.mode, stageId };
@@ -741,10 +845,13 @@ export class UserAccount extends DurableObject<Env> {
       this.ctx.storage.kv.put<string>("refreshToken", response.refreshToken);
       this.ctx.storage.kv.put<GoogleAccessToken>("accessToken", response.accessToken);
       this.ctx.storage.kv.put<string>("credentialsId", crypto.randomUUID());
-      // These credentials are new, so any recorded permanent failure no longer applies
-      this.#mintFailure = undefined;
+      this.ctx.storage.kv.put<string>(CREDENTIALS_CLIENT_KEY, clientId);
+      this.#forgetRefusal();
       this.ctx.storage.kv.put<string[]>("grantedScopes", response.grantedScopes);
       mergeGrantedResources(this.ctx.storage.kv, flow.requestedResources);
+      // Marked before the Workshop describes it, which can record a connection as its grant's
+      // holder (see noteAccountSubject), and a sign-in is never one.
+      if (flow.mode === "auth") this.ctx.storage.kv.put("deleteCredentialsOnAlarm", true);
       return { callback, mode: flow.mode, stageId: undefined };
     });
 
@@ -757,15 +864,27 @@ export class UserAccount extends DurableObject<Env> {
         let props: GatekeeperUserImplProps = { userObjectId: this.ctx.id.toString() };
         handoff = await callback.complete(this.ctx.exports.GatekeeperUserImpl({props}));
       } catch (err) {
-        this.ctx.storage.kv.delete("refreshToken");
+        // Described before its handoff, a connection is recorded as a holder of its grant, which
+        // another connection's disconnect may have spared for it meanwhile: it lets go as a
+        // disconnect does, revoking when no other connection holds the grant. A sign-in holds none.
+        if (completion.mode === "auth") {
+          this.ctx.storage.kv.delete("refreshToken");
+        } else {
+          await this.revoke().catch(error => {
+            logger.warn("failed to let go of a connection whose handoff failed", {
+              event: "google.grant.release.failed", error,
+            });
+            this.ctx.storage.kv.delete("refreshToken");
+          });
+        }
         throw err;
       }
 
       if (completion.mode === "auth") {
-        this.ctx.storage.kv.put("deleteCredentialsOnAlarm", true);
         this.ctx.storage.setAlarm(Date.now() + 2 * 60 * 1000);
       } else {
         this.ctx.storage.deleteAlarm();
+        await this.#holdGrant();
       }
     }
 
@@ -774,18 +893,413 @@ export class UserAccount extends DurableObject<Env> {
 
   /** Makes the grant staged under `stageId` live; see GatekeeperUser.commitReconnect. */
   async commitReconnect(stageId: string): Promise<void> {
+    let kv = this.ctx.storage.kv;
+    let credentialsId = crypto.randomUUID();
     await this.#credentials.run(async () => {
       let staged = commitStagedCredentials<StagedGoogleCredentials>(
           this.ctx.storage.kv, Date.now(), stageId);
       if (!staged) throw new Error("No reconnect is awaiting confirmation. Please try again.");
-      this.ctx.storage.kv.put<string>("refreshToken", staged.refreshToken);
-      this.ctx.storage.kv.put<GoogleAccessToken>("accessToken", staged.accessToken);
-      this.ctx.storage.kv.put<string>("credentialsId", crypto.randomUUID());
-      // These credentials are new, so any recorded permanent failure no longer applies
-      this.#mintFailure = undefined;
-      this.ctx.storage.kv.put<string[]>("grantedScopes", staged.grantedScopes);
-      mergeGrantedResources(this.ctx.storage.kv, staged.requestedResources);
+      // Whether this object is recorded, registry included, as holding its grant under the
+      // credentials replaced here. Not once Google refused those for good: the registry drops a
+      // holder whose refresh token is dead when it asks.
+      let recorded = kv.get<string>(GRANT_CREDENTIALS_KEY) !== undefined &&
+          kv.get<string>(GRANT_CREDENTIALS_KEY) === kv.get<string>("credentialsId") &&
+          kv.get<boolean>(REFRESH_TOKEN_DEAD_KEY) !== true;
+      kv.put<string>("refreshToken", staged.refreshToken);
+      kv.put<GoogleAccessToken>("accessToken", staged.accessToken);
+      kv.put<string>("credentialsId", credentialsId);
+      if (staged.clientId !== undefined) kv.put<string>(CREDENTIALS_CLIENT_KEY, staged.clientId);
+      else kv.delete(CREDENTIALS_CLIENT_KEY);
+      if (staged.subject !== undefined) {
+        kv.put<AccountSubject>(ACCOUNT_SUBJECT_KEY, { credentialsId, subject: staged.subject });
+      }
+      this.#forgetRefusal();
+      kv.put<string[]>("grantedScopes", staged.grantedScopes);
+      mergeGrantedResources(kv, staged.requestedResources);
+      // The record of the grant this object holds was made for the credentials replaced here. It
+      // stands for the new ones only when they are known to be the same Google account's and it
+      // was complete for the old ones; when it was not complete, #holdGrant finishes it, below or
+      // at a refresh. A reconnect may have signed in as another Google account: once the new
+      // credentials are known to be another account's, this object lets go of the grant recorded
+      // before, and tells that account's registry, so that an answer it gave while it still held
+      // that grant no longer counts. While it is not known which account they are, it goes on
+      // holding that grant until #holdGrant learns, since revoking under a connection in use is
+      // the worse mistake.
+      let recordedSubject = kv.get<string>(GRANT_SUBJECT_KEY);
+      let sameAccount = staged.subject !== undefined && staged.subject === recordedSubject;
+      if (sameAccount && recorded) {
+        kv.put<string>(GRANT_CREDENTIALS_KEY, credentialsId);
+        return;
+      }
+      if (sameAccount) {
+        kv.delete(GRANT_CREDENTIALS_KEY);
+      } else if (staged.subject === undefined) {
+        kv.delete(GRANT_CREDENTIALS_KEY);
+        // Listed again, so that an answer it gave the registry about the credentials replaced
+        // here, on its way back, is not believed: asked again, it says it cannot yet say.
+        if (recordedSubject !== undefined) {
+          await this.#grantRegistry(recordedSubject).add(this.ctx.id.toString()).catch(error => {
+            logger.warn("failed to record a Google grant's holder", {
+              event: "google.grant.hold.failed", error,
+            });
+          });
+        }
+      } else {
+        await this.#dropGrant().catch(error => {
+          logger.warn("failed to stop holding the Google grant a reconnect replaced", {
+            event: "google.grant.forget.failed", error,
+          });
+        });
+      }
+      // The stage read which Google account signed in, so the new credentials are recorded under
+      // it now; #holdGrant asks Google only when it could not, or when this fails.
+      if (staged.subject !== undefined) {
+        await this.#recordHolder(staged.subject, credentialsId).catch(error => {
+          logger.warn("failed to record a Google grant's holder", {
+            event: "google.grant.hold.failed", error,
+          });
+        });
+      }
     });
+    // Records the grant held now, unless the record still stands.
+    await this.#holdGrant();
+    // Google refused the new credentials meanwhile, and the Workshop, told so, records a reconnect
+    // that returns as working. The refusal is forgotten as told, so the next refresh asks Google
+    // again and tells the Workshop of it: once the notices queued before have been sent, or one of
+    // them would record it as told again.
+    let refused = () => kv.get<string>("credentialsId") === credentialsId &&
+        kv.get<string>(REFRESH_REFUSED_KEY) !== undefined;
+    if (refused()) {
+      await this.#notices.run(() => {
+        if (!refused()) return;
+        this.#mintFailure = undefined;
+        clearCredentialExpiryLatch(kv);
+      });
+    }
+    // A later reconnect or a disconnect replaced these credentials while this one waited. Told of
+    // a reconnect that returns, the Workshop records the account as working, which would clear an
+    // expiry it has been told of since for the credentials that are live.
+    if (kv.get<string>("credentialsId") !== credentialsId) {
+      throw new Error("These credentials were replaced before this reconnect finished.");
+    }
+  }
+
+  // How many recordings of this object as a grant holder are under way (see #holdGrant).
+  #holdingGrant = 0;
+
+  #grantRegistry(subject: string): DurableObjectStub<GoogleGrantRegistry> {
+    return this.ctx.exports.GoogleGrantRegistry.getByName(subject);
+  }
+
+  /**
+   * Records this object as a holder of its Google account's grant (see GoogleGrantRegistry), so
+   * that disconnecting another connection of the same Google account leaves this one working. A
+   * sign-in keeps its credentials only for a moment and is never recorded. Best effort: an object
+   * not recorded for the credentials it holds now is tried again at its next token refresh, and
+   * until then a revocation elsewhere disconnects it.
+   */
+  async #holdGrant(): Promise<void> {
+    let kv = this.ctx.storage.kv;
+    this.#holdingGrant++;
+    try {
+      let installed = this.#credentialsId();
+      // Nothing to record for a sign-in, or for a refresh token Google no longer honours.
+      let holdsNothing = () =>
+          shouldDeleteCredentialsOnAlarm(kv) || kv.get<boolean>(REFRESH_TOKEN_DEAD_KEY) === true;
+      if (installed === undefined || holdsNothing()) return;
+      if (kv.get<string>(GRANT_CREDENTIALS_KEY) === installed) return;
+      // Asked of Google only when not known already, outside the lock, which a token refresh needs.
+      let sub = this.#accountSubject(installed) ?? (await getGoogleAccountProfile(
+          async opts => (await this.getAccessToken(opts)).token,
+          AbortSignal.timeout(GRANT_SUBJECT_TIMEOUT_MS))).sub;
+      // Recorded under the lock, so that a disconnect either finds this object recorded or has
+      // already left nothing to record.
+      await this.#credentials.run(async () => {
+        // The profile describes other credentials if a reconnect or a disconnect ran meanwhile,
+        // and Google may have refused these for good while it was read.
+        if (kv.get<string>("credentialsId") !== installed || holdsNothing()) return;
+        // A reconnect may have signed in as another Google account. The grant recorded before is
+        // let go first, and the new one is named before its registry lists this object, so that
+        // the registry this object names is the only one it tells it holds a grant in.
+        kv.put<AccountSubject>(ACCOUNT_SUBJECT_KEY, { credentialsId: installed, subject: sub });
+        // Best effort, as at a reconnect: the old registry drops this object when it next asks it.
+        if (kv.get<string>(GRANT_SUBJECT_KEY) !== sub) {
+          await this.#dropGrant().catch(error => {
+            logger.warn("failed to stop holding the Google grant a reconnect replaced", {
+              event: "google.grant.forget.failed", error,
+            });
+          });
+        }
+        await this.#recordHolder(sub, installed);
+      });
+    } catch (error) {
+      logger.warn("failed to record a Google grant's holder", {
+        event: "google.grant.hold.failed",
+        ...(tokenFailureCause(error) instanceof RefreshRefusedError ? { outcome: "refreshRefused" } : { error }),
+      });
+    } finally {
+      this.#holdingGrant--;
+    }
+  }
+
+  /**
+   * Records this object as holding the grant of the Google account `subject` with the credentials
+   * `installed`: named first, then listed by its registry, then marked as recorded for those
+   * credentials, which until then a token refresh records again. Called with the credentials mutex
+   * held.
+   */
+  async #recordHolder(subject: string, installed: string): Promise<void> {
+    let kv = this.ctx.storage.kv;
+    kv.put<string>(GRANT_SUBJECT_KEY, subject);
+    await this.#grantRegistry(subject).add(this.ctx.id.toString());
+    kv.put<string>(GRANT_CREDENTIALS_KEY, installed);
+  }
+
+  /** The Google account the credentials `credentialsId` names belong to, when that was read. */
+  #accountSubject(credentialsId: string | undefined): string | undefined {
+    let known = this.ctx.storage.kv.get<AccountSubject>(ACCOUNT_SUBJECT_KEY);
+    return known !== undefined && known.credentialsId === credentialsId ? known.subject : undefined;
+  }
+
+  /**
+   * Notes that `accessToken`, while it is the access token stored, belongs to the Google account
+   * `subject`, as describing the account read: recording this object as a holder of that
+   * account's grant then needn't ask Google again. A connection not recorded for these credentials,
+   * as after a reconnect that could not read which account it signed in as, is recorded now, under
+   * the account read, before the description returns; never a sign-in, which is described too.
+   */
+  async noteAccountSubject(accessToken: string, subject: string): Promise<void> {
+    let kv = this.ctx.storage.kv;
+    let installed = this.#credentialsId();
+    if (installed === undefined || kv.get<GoogleAccessToken>("accessToken")?.token !== accessToken) {
+      return;
+    }
+    kv.put<AccountSubject>(ACCOUNT_SUBJECT_KEY, { credentialsId: installed, subject });
+    if (kv.get<string>(GRANT_CREDENTIALS_KEY) !== installed) await this.#holdGrant();
+  }
+
+  /**
+   * Whether this object holds credentials and is recorded as a holder in the grant registry with
+   * this id, with a refresh token Google still honours; `"unknown"` when it cannot yet say, which
+   * the registry counts as holding but reports as unsure. The registry asks before it believes a
+   * holder it lists. Without the credentials mutex: the registry asks while another account's
+   * disconnect waits on it.
+   */
+  async holdsGrantIn(registryId: string): Promise<boolean | "unknown"> {
+    let kv = this.ctx.storage.kv;
+    let subject = kv.get<string>(GRANT_SUBJECT_KEY);
+    let refreshToken = kv.get<string>("refreshToken");
+    if (refreshToken === undefined || kv.get<boolean>(REFRESH_TOKEN_DEAD_KEY) === true ||
+        subject === undefined ||
+        this.ctx.exports.GoogleGrantRegistry.idFromName(subject).toString() !== registryId) {
+      return false;
+    }
+    // Credentials another OAuth client issued, as before the deployment moved to the one it has
+    // now, cannot be refreshed here: they hold nothing this deployment's connections could lose.
+    let issuer = kv.get<string>(CREDENTIALS_CLIENT_KEY);
+    if (issuer !== undefined && issuer !== this.env.CLIENT_ID) {
+      // The registry drops this object for the answer, so its record of being listed goes too: a
+      // reconnect under the deployment's client lists it again.
+      kv.delete(GRANT_CREDENTIALS_KEY);
+      return false;
+    }
+    // Listed under this grant for credentials a reconnect replaced, not yet known to be the same
+    // Google account's, it may hold another's: which it is is read now, and when it cannot be,
+    // it cannot say.
+    let installed = this.#credentialsId();
+    if (kv.get<string>(GRANT_CREDENTIALS_KEY) !== installed &&
+        this.#accountSubject(installed) !== subject) {
+      let read = await this.#readAccountSubject(refreshToken).catch(() => undefined);
+      if (kv.get<string>("refreshToken") !== refreshToken) return await this.holdsGrantIn(registryId);
+      if (read === undefined) return "unknown";
+      if (read === null) return false;
+      if (installed !== undefined && kv.get<string>("credentialsId") === installed) {
+        kv.put<AccountSubject>(ACCOUNT_SUBJECT_KEY, { credentialsId: installed, subject: read });
+        // Recorded as it is now: kept, or moved to the account read.
+        void this.#holdGrant();
+      }
+      return read === subject;
+    }
+    // An access token that has not expired was minted within the hour, so Google honoured the
+    // refresh token then. One that has, as on a connection left unused, says nothing: Google may
+    // have ended the refresh token meanwhile, and a holder whose token holds no grant would keep
+    // the last working connection from revoking it. Nor does one whose client is not known, which
+    // a refresh with this deployment's client shows.
+    let stored = kv.get<GoogleAccessToken>("accessToken");
+    if (issuer !== undefined && stored !== undefined && stored.expires.valueOf() > Date.now()) return true;
+    let lives = await this.#refreshTokenLives(refreshToken);
+    // A reconnect replaced the credentials while Google was asked: the answer is about them now.
+    if (kv.get<string>("refreshToken") !== refreshToken) return await this.holdsGrantIn(registryId);
+    return lives;
+  }
+
+  /**
+   * Which Google account `refreshToken`'s credentials belong to, read with the stored access token
+   * or, once it has expired or Google rejects it, one a refresh mints and drops; null when Google
+   * refuses the refresh token for good, which is then recorded as dead while it is still
+   * installed. Without the credentials mutex, as holdsGrantIn() is. Throws when Google cannot say.
+   */
+  async #readAccountSubject(refreshToken: string): Promise<string | null> {
+    let kv = this.ctx.storage.kv;
+    let tokenBefore = kv.get<GoogleAccessToken>("accessToken")?.token;
+    let { CLIENT_ID: clientId, CLIENT_SECRET: clientSecret } = this.env;
+    // A refresh token Google refuses for good holds no grant: null, below.
+    let dead = false;
+    let mint = async () => {
+      if (!clientId || !clientSecret) throw new Error("The Google Gatekeeper is not configured.");
+      let result = await getAccessToken(refreshToken, clientId, clientSecret,
+          AbortSignal.timeout(GRANT_SUBJECT_TIMEOUT_MS));
+      if (result.ok) {
+        this.#issuedTo(refreshToken, clientId);
+        return result.token.token;
+      }
+      dead = result.reason === "revoked" && !isCloudSessionExpiry(result);
+      throw new Error("Google would not refresh these credentials to say whose they are.");
+    };
+    let stored = kv.get<GoogleAccessToken>("accessToken");
+    try {
+      let token = stored !== undefined && stored.expires.valueOf() > Date.now()
+          ? stored.token : await mint();
+      // A token Google stops accepting before its recorded expiry gets one refresh, as any
+      // request's does (see fetchWithAuthRetry).
+      // Kept for the attempts after it, which a 5xx retries.
+      return (await getGoogleAccountProfile(
+          async opts => opts?.forceRefresh ? (token = await mint()) : token,
+          AbortSignal.timeout(GRANT_SUBJECT_TIMEOUT_MS))).sub;
+    } catch (error) {
+      if (!dead) throw error;
+      // Refused, unless a refresh of the connection's own worked while Google was asked.
+      if (!this.#markRefreshTokenDead(refreshToken, tokenBefore)) throw error;
+      return null;
+    }
+  }
+
+
+  /**
+   * Records `refreshToken`, while it is the one installed, as one Google refuses for good, which
+   * the registry drops when it asks; and so its record of being listed there goes too, so that a
+   * refresh that works after all lists it again. Says whether it did: not once the access token
+   * stored is another than `tokenBefore`, the one stored when Google was asked, since a refresh
+   * of the connection's own then worked, outside the lock this check runs without.
+   */
+  #markRefreshTokenDead(refreshToken: string, tokenBefore: string | undefined): boolean {
+    let kv = this.ctx.storage.kv;
+    if (kv.get<string>("refreshToken") !== refreshToken) return false;
+    if (kv.get<GoogleAccessToken>("accessToken")?.token !== tokenBefore) return false;
+    kv.put<boolean>(REFRESH_TOKEN_DEAD_KEY, true);
+    kv.delete(GRANT_CREDENTIALS_KEY);
+    return true;
+  }
+
+  /** Records that `refreshToken`, while it is the one installed, refreshed with `clientId`. */
+  #issuedTo(refreshToken: string, clientId: string): void {
+    let kv = this.ctx.storage.kv;
+    if (kv.get<string>("refreshToken") === refreshToken) kv.put<string>(CREDENTIALS_CLIENT_KEY, clientId);
+  }
+
+  /**
+   * Whether Google still honours `refreshToken`, asked with a refresh whose token is dropped.
+   * Without the credentials mutex, which a disconnect asking the registry may hold; the answer is
+   * recorded only while `refreshToken` is still the installed one, and holdsGrantIn() gives it
+   * only then. Throws when Google gives none,
+   * which the registry counts as holding.
+   */
+  async #refreshTokenLives(refreshToken: string): Promise<boolean> {
+    let tokenBefore = this.ctx.storage.kv.get<GoogleAccessToken>("accessToken")?.token;
+    let { CLIENT_ID: clientId, CLIENT_SECRET: clientSecret } = this.env;
+    if (!clientId || !clientSecret) throw new Error("The Google Gatekeeper is not configured.");
+    let result = await getAccessToken(refreshToken, clientId, clientSecret,
+        AbortSignal.timeout(GRANT_SUBJECT_TIMEOUT_MS));
+    if (result.ok) this.#issuedTo(refreshToken, clientId);
+    // A Google Cloud session that ran out, or an admin's restriction, leaves the refresh token
+    // standing, as at a mint.
+    if (result.ok || result.reason !== "revoked" || isCloudSessionExpiry(result)) return true;
+    // Refused, unless a refresh of the connection's own worked while Google was asked.
+    return !this.#markRefreshTokenDead(refreshToken, tokenBefore);
+  }
+
+  /**
+   * Stops being a holder of the grant this object is recorded under, and says whether no holder of
+   * that grant is left; undefined when it is recorded under none. The record goes first, and is
+   * what counts: the registry asks an account before it believes it holds a grant (holdsGrantIn),
+   * so a removal that does not reach the registry is made good the next time the registry asks.
+   * Called with the credentials mutex held.
+   */
+  async #forgetGrant(): Promise<{ last: boolean; unsure?: true } | undefined> {
+    let subject = this.#unrecordGrant();
+    if (subject === undefined) return undefined;
+    return await this.#grantRegistry(subject).remove(this.ctx.id.toString());
+  }
+
+  /**
+   * As #forgetGrant, for a caller that does not revoke and so need not wait while the registry
+   * asks the other holders whether any is left.
+   */
+  async #dropGrant(): Promise<void> {
+    let subject = this.#unrecordGrant();
+    if (subject !== undefined) await this.#grantRegistry(subject).drop(this.ctx.id.toString());
+  }
+
+  /** Deletes this object's record of the grant it holds, and says whose grant that was. */
+  #unrecordGrant(): string | undefined {
+    let kv = this.ctx.storage.kv;
+    let subject = kv.get<string>(GRANT_SUBJECT_KEY);
+    kv.delete(GRANT_SUBJECT_KEY);
+    kv.delete(GRANT_CREDENTIALS_KEY);
+    return subject;
+  }
+
+  /**
+   * Stops holding the Google account's grant before the credentials go, and says whether to revoke
+   * it at Google: only when no other connection of that Google account on this deployment holds it.
+   * When the account is not known, or a registry cannot be asked, the grant is revoked: nothing
+   * then says another connection would lose it. Called with the credentials mutex held.
+   */
+  async #releaseGrant(refreshToken: string): Promise<GrantRelease> {
+    let kv = this.ctx.storage.kv;
+    let installed = this.#credentialsId();
+    let known = this.#accountSubject(installed);
+    // The account the release went by, however it was learned, kept should it fail.
+    let subject = known;
+    try {
+      let recordedFor = kv.get<string>(GRANT_CREDENTIALS_KEY);
+      let recordedSubject = kv.get<string>(GRANT_SUBJECT_KEY);
+      // The registry this object is listed in is the one of the grant held now when the record was
+      // made for these credentials, or names the account they are known to belong to, though
+      // listing this object there failed. Only that registry's answer decides.
+      if (recordedSubject !== undefined &&
+          (recordedFor === installed || recordedSubject === known)) {
+        subject = recordedSubject;
+        return released(await this.#forgetGrant() ?? { last: true }, subject);
+      }
+      // Otherwise it is a former listing, as a reconnect that could not read which account it
+      // signed in as leaves, let go of without asking, whatever becomes of that: the grant held
+      // now is found below.
+      await this.#dropGrant().catch(error => {
+        logger.warn("failed to stop holding a Google grant a reconnect replaced", {
+          event: "google.grant.forget.failed", error,
+        });
+      });
+      if (known !== undefined) {
+        return released(await this.#grantRegistry(known).remove(this.ctx.id.toString()), known);
+      }
+      // Not known for these credentials: a sign-in, a connection older than the registry that
+      // has not refreshed a token since, or one whose recording failed or has not finished, as
+      // after a reconnect, whose earlier record may name another Google account. Google is asked
+      // which account it is, with the stored access token or one a refresh mints, which needs no
+      // lock; a refresh token it refuses for good holds no grant to spare.
+      let read = await this.#readAccountSubject(refreshToken);
+      if (read === null) return { revoke: true };
+      subject = read;
+      return released(await this.#grantRegistry(subject).remove(this.ctx.id.toString()), subject);
+    } catch (error) {
+      logger.warn("failed to release a Google grant; revoking it", {
+        event: "google.grant.release.failed", error,
+      });
+      // The account still goes by, should Google not take the revocation, so that trying it again
+      // can find a connection of the account made since.
+      return { revoke: true, ...(subject === undefined ? {} : { subject }) };
+    }
   }
 
   /**
@@ -918,6 +1432,15 @@ export class UserAccount extends DurableObject<Env> {
     return !opts?.forceRefresh;
   }
 
+  // Newly installed credentials have no failure recorded against them and nothing reported about
+  // them, so the next refusal is told to the Workshop afresh.
+  #forgetRefusal(): void {
+    this.#mintFailure = undefined;
+    this.ctx.storage.kv.delete(REFRESH_REFUSED_KEY);
+    this.ctx.storage.kv.delete(REFRESH_TOKEN_DEAD_KEY);
+    clearCredentialExpiryLatch(this.ctx.storage.kv);
+  }
+
   async getAccessToken(opts?: AccessTokenRequest): Promise<GoogleAccessToken> {
     let { CLIENT_ID: clientId, CLIENT_SECRET: clientSecret } = this.env;
     if (!clientId || !clientSecret) {
@@ -936,9 +1459,12 @@ export class UserAccount extends DurableObject<Env> {
       return cached;
     }
 
+    // The refusal a mint below ended: Google had refused these credentials, and now mints for them.
+    let endedRefusal: string | undefined;
+
     // Serialized so a burst of concurrent 401s collapses into one token exchange. The re-check
     // inside the lock is what does the collapsing — the lock alone would just queue the mints.
-    return this.#credentials.run(async () => {
+    let token = await this.#credentials.run(async () => {
       let fresh = this.ctx.storage.kv.get<GoogleAccessToken>("accessToken");
       if (this.#tokenSatisfies(fresh, opts)) {
         return fresh;
@@ -982,10 +1508,27 @@ export class UserAccount extends DurableObject<Env> {
         });
         // All are permanent, so all mark the connection dead. They differ in the remedy:
         // re-authenticating fixes a revoked grant but cannot grant a scope an admin has blocked.
-        let error = new Error(refreshFailureMessage(result));
+        let error = new RefreshRefusedError(refreshFailureMessage(result));
         // Recorded before notifying so only the first caller of a burst does either.
         this.#mintFailure = { error, at: Date.now() };
-        this.#notifyCredentialsDead();
+        let refusal = crypto.randomUUID();
+        this.ctx.storage.kv.put<string>(REFRESH_REFUSED_KEY, refusal);
+        this.#notifyCredentialsDead(refusal);
+        // A refresh token Google no longer honours holds no grant, and revoking it revokes
+        // nothing: left recorded, it would keep the last working connection of the Google account
+        // from revoking the grant. A Cloud session that ran out, or an admin's restriction, does
+        // not end the refresh token, whose revocation would still end the grant for the others, so
+        // those go on holding.
+        if (result.reason === "revoked" && !isCloudSessionExpiry(result)) {
+          // Recorded first, so that a recording of this object as a holder that began before the
+          // refusal, and finishes after it, records nothing.
+          this.ctx.storage.kv.put<boolean>(REFRESH_TOKEN_DEAD_KEY, true);
+          await this.#dropGrant().catch(forgetError => {
+            logger.warn("failed to stop holding a Google grant whose refresh was refused", {
+              event: "google.grant.forget.failed", error: forgetError,
+            });
+          });
+        }
         throw error;
       }
 
@@ -1002,23 +1545,83 @@ export class UserAccount extends DurableObject<Env> {
       }
 
       this.ctx.storage.kv.put<GoogleAccessToken>("accessToken", result.token);
+      this.ctx.storage.kv.put<string>(CREDENTIALS_CLIENT_KEY, clientId);
+      this.ctx.storage.kv.delete(REFRESH_TOKEN_DEAD_KEY);
+      endedRefusal = this.ctx.storage.kv.get<string>(REFRESH_REFUSED_KEY);
       return result.token;
+    });
+
+    // Outside the lock, as acceptAuthCode's callbacks are: the Workshop reads the account's
+    // description when told, which asks this object for a token.
+    if (endedRefusal !== undefined) this.#notifyCredentialsRestored(endedRefusal);
+    // A connection not recorded as holding its grant under the credentials installed now is
+    // recorded when it refreshes a token: one made before grants had a registry, or one whose
+    // recording failed or was undone by a refused refresh or a revocation Google did not take.
+    // Not while a recording is under way: reading the profile can itself refresh the token.
+    if (this.#holdingGrant === 0 &&
+        this.ctx.storage.kv.get<string>(GRANT_CREDENTIALS_KEY) !== this.#credentialsId()) {
+      void this.#holdGrant();
+    }
+    return token;
+  }
+
+  // Sends a notice once those before it have returned. Not awaited by the mint that causes it: a
+  // notice that fails must not mask the mint's outcome, and the Workshop asks this object for a
+  // token while it handles one. A notice that throws is logged, so that those after it are still
+  // sent.
+  #queueNotice(send: () => Promise<void>): void {
+    this.#notices.run(send).catch(error => {
+      logger.warn("failed to send a credential notice", {
+        event: "credentials.notice.failed", error,
+      });
     });
   }
 
   // Tell the workshop the credentials are permanently dead so the UI prompts a reconnect instead of
-  // every call failing opaquely. Fire and forget — a notification failure must not mask the error.
-  #notifyCredentialsDead(): void {
-    let callback = this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>("callback");
-    callback?.credentialsExpired().catch(notifyErr => {
-      logger.warn("failed to notify credential expiry", {
-        event: "credentials.expiry.notify.failed", error: notifyErr,
-      });
+  // every call failing opaquely. The Workshop is told once per expiry, and a notice that did not
+  // arrive is sent again by the next refused mint. Nothing is said if, by its turn, `refusal` is no
+  // longer the latest: the credentials were replaced or disconnected, or a later refusal has a
+  // notice of its own queued.
+  #notifyCredentialsDead(refusal: string): void {
+    let kv = this.ctx.storage.kv;
+    this.#queueNotice(async () => {
+      if (kv.get<string>(REFRESH_REFUSED_KEY) !== refusal) return;
+      let callback = kv.get<Fetcher<GatekeeperConnectCallback>>("callback");
+      await notifyCredentialsExpiredOnce(kv, callback, VENDOR_ID);
+    });
+  }
+
+  // Tell the Workshop that credentials it was told had expired mint tokens again, as when an admin
+  // lifts the restriction that blocked them. `refusal` is forgotten only once the Workshop has
+  // heard, and only if Google has not refused again since, so a notice that did not arrive is sent
+  // again by the next mint. Nothing is said if, by its turn, `refusal` is no longer the latest: the
+  // credentials were replaced or disconnected, or Google has refused them again.
+  #notifyCredentialsRestored(refusal: string): void {
+    let kv = this.ctx.storage.kv;
+    this.#queueNotice(async () => {
+      try {
+        if (kv.get<string>(REFRESH_REFUSED_KEY) !== refusal) return;
+        // These credentials work again, so a later refusal of them is news to the Workshop. Re-armed
+        // here and not by the mint, so that an expiry notice still queued for `refusal` cannot set
+        // the latch afterwards and silence the next refusal.
+        clearCredentialExpiryLatch(kv);
+        await kv.get<Fetcher<GatekeeperConnectCallback>>("callback")?.credentialsRestored();
+        if (kv.get<string>(REFRESH_REFUSED_KEY) === refusal) kv.delete(REFRESH_REFUSED_KEY);
+      } catch (error) {
+        logger.warn("failed to notify credential restoration", {
+          event: "credentials.restore.notify.failed", error,
+        });
+      }
     });
   }
 
   async alarm(_alarmInfo?: AlarmInvocationInfo): Promise<void> {
     await this.#credentials.run(async () => {
+      let pending = this.ctx.storage.kv.get<PendingRevocation>(PENDING_REVOCATION_KEY);
+      if (pending !== undefined) {
+        await this.#retryRevocation(pending);
+        return;
+      }
       if (shouldDeleteCredentialsOnAlarm(this.ctx.storage.kv)) {
         await this.#forgetHooks();
         this.ctx.storage.deleteAll();
@@ -1026,16 +1629,148 @@ export class UserAccount extends DurableObject<Env> {
     });
   }
 
+  /**
+   * Disconnects the account: its credentials and everything else it stored are deleted, but for a
+   * revocation Google did not take, or put off for a holder that could not be asked, which is tried
+   * again later. The grant is revoked at Google only
+   * when no other connection of the same Google account holds it, since Google would end theirs
+   * with it. While the grant lives on, so does an access token this
+   * account already handed out: a gatekeeper object that memoized one goes on reaching Google
+   * until it next asks this account, within a minute (see AccessTokenCache).
+   */
   async revoke(): Promise<void> {
     await this.#credentials.run(async () => {
       let refreshToken = this.ctx.storage.kv.get<string>("refreshToken");
+      // Disconnected already, by a call whose revocation Google did not take: that one is kept,
+      // and tried again as scheduled.
+      if (!refreshToken && this.ctx.storage.kv.get(PENDING_REVOCATION_KEY) !== undefined) return;
+      let pending: PendingRevocation | undefined;
       if (refreshToken) {
-        await revokeGoogleToken(refreshToken, AbortSignal.timeout(TOKEN_REVOKE_TIMEOUT_MS));
+        let release = await this.#releaseGrant(refreshToken);
+        // Read after the release, which may have refreshed the token and so learned its client.
+        let clientId = this.ctx.storage.kv.get<string>(CREDENTIALS_CLIENT_KEY);
+        // Not revoked for a holder that could not be asked, which may hold nothing: the grant's
+        // registry is asked again later, as for a revocation Google did not take.
+        if (release.unsure) {
+          pending = {
+            refreshToken, attempts: 1,
+            ...(clientId === undefined ? {} : { clientId }),
+            ...(release.subject === undefined ? {} : { subject: release.subject }),
+          };
+        }
+        // A revocation Google does not take is tried again later, the disconnect done all the
+        // same: left connected, the account would no longer count as a holder of the grant, and
+        // another connection's disconnect, such as the Workshop dropping a connect it never
+        // completed, could revoke the grant under it.
+        if (release.revoke) {
+          try {
+            await revokeGoogleToken(refreshToken, AbortSignal.timeout(TOKEN_REVOKE_TIMEOUT_MS));
+          } catch (error) {
+            logger.warn("Google did not take a revocation; trying it again later", {
+              event: "google.grant.revoke.failed", error,
+            });
+            pending = {
+              refreshToken, attempts: 1,
+              ...(clientId === undefined ? {} : { clientId }),
+              ...(release.subject === undefined ? {} : { subject: release.subject }),
+            };
+          }
+        }
       }
       await this.#forgetHooks();
       this.ctx.storage.deleteAlarm();
       this.ctx.storage.deleteAll();
+      if (pending !== undefined) this.#scheduleRevocation(pending);
     });
+  }
+
+  /**
+   * The Google account a pending revocation's refresh token belongs to, read with a token it
+   * mints, or null when Google refuses it for good, leaving no grant to revoke. Throws when Google
+   * cannot say. A mint that works shows the client the token was issued to, which `issuedTo`
+   * hears even when the account then can't be read.
+   */
+  async #revocationSubject(
+    refreshToken: string, issuedTo: (clientId: string) => void,
+  ): Promise<string | null> {
+    let { CLIENT_ID: clientId, CLIENT_SECRET: clientSecret } = this.env;
+    if (!clientId || !clientSecret) throw new Error("The Google Gatekeeper is not configured.");
+    let result = await getAccessToken(refreshToken, clientId, clientSecret,
+        AbortSignal.timeout(TOKEN_MINT_TIMEOUT_MS));
+    if (!result.ok) {
+      if (result.reason === "revoked" && !isCloudSessionExpiry(result)) return null;
+      throw new Error("Google would not refresh the token of a revocation to try again.");
+    }
+    issuedTo(clientId);
+    return (await getGoogleAccountProfile(
+        result.token.token, AbortSignal.timeout(GRANT_SUBJECT_TIMEOUT_MS))).sub;
+  }
+
+  /** Keeps what a revocation Google did not take needs, until the alarm tries it again. */
+  #scheduleRevocation(pending: PendingRevocation): void {
+    this.ctx.storage.kv.put<PendingRevocation>(PENDING_REVOCATION_KEY, pending);
+    this.ctx.storage.setAlarm(Date.now() +
+        Math.min(REVOCATION_RETRY_BASE_MS * 2 ** (pending.attempts - 1), REVOCATION_RETRY_MAX_MS));
+  }
+
+  /**
+   * Tries again a revocation Google did not take when the account was disconnected, unless a
+   * connection of the same Google account made since holds the grant, which would lose it. Gives
+   * up after REVOCATION_ATTEMPTS, leaving the grant at Google until it lapses. Called with the
+   * credentials mutex held.
+   */
+  async #retryRevocation(pending: PendingRevocation): Promise<void> {
+    try {
+      // An account not known at the disconnect is read now, so that a connection of it made since
+      // is found; and one Google no longer refreshes for holds no grant to revoke. Not with a client
+      // the token was not issued to, as after the deployment moved to another: Google's refusal then
+      // says nothing of the grant, and which connections of the account it would end can't be told.
+      if (pending.subject === undefined && pending.clientId !== undefined &&
+          pending.clientId !== this.env.CLIENT_ID) {
+        logger.warn("gave up revoking a grant whose OAuth client the deployment no longer uses", {
+          event: "google.grant.revoke.abandoned", outcome: "clientChanged",
+        });
+        this.ctx.storage.deleteAll();
+        return;
+      }
+      // A client the mint shows is kept for the next try, the account read or not.
+      let subject = pending.subject ?? await this.#revocationSubject(
+          pending.refreshToken, clientId => { pending = { ...pending, clientId }; });
+      if (subject === null) {
+        logger.info("dropped a revocation of a grant Google had already ended", {
+          event: "google.grant.revoke.moot",
+        });
+        this.ctx.storage.deleteAll();
+        return;
+      }
+      pending = { ...pending, subject };
+      // Each try starts its ask further along, so a slow holder cannot keep the same ones unasked.
+      let answer = await this.#grantRegistry(subject)
+          .remove(this.ctx.id.toString(), undefined, pending.attempts);
+      // A holder that could not be asked may be one whose grant is gone: asked again later.
+      if (answer.unsure) throw new Error("A holder of the grant could not be asked whether it holds it.");
+      if (!answer.last) {
+        logger.info("dropped a revocation a later connection's grant would undo", {
+          event: "google.grant.revoke.dropped",
+        });
+        this.ctx.storage.deleteAll();
+        return;
+      }
+      await revokeGoogleToken(pending.refreshToken, AbortSignal.timeout(TOKEN_REVOKE_TIMEOUT_MS));
+    } catch (error) {
+      // Google did not take it or could not say whose it is, or the registry could not say
+      // whether a connection made since holds the grant: all are asked again later, and when the
+      // tries run out the grant is left at Google.
+      let attempts = pending.attempts + 1;
+      if (attempts < REVOCATION_ATTEMPTS) {
+        this.#scheduleRevocation({ ...pending, attempts });
+        return;
+      }
+      logger.warn("gave up revoking a disconnected connection's Google grant", {
+        event: "google.grant.revoke.abandoned", error,
+      });
+    }
+    this.ctx.storage.deleteAll();
   }
 
   /**
@@ -1088,7 +1823,20 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     let tokenPromise = obj.getAccessToken();
     let grantedResourcesPromise = obj.getGrantedResourceUrlPatterns();
     let token = await tokenPromise;
-    let description = await getGoogleAccountDescription(token.token);
+    // Bounded: the Workshop reads it while it handles a credential notice, which the notices after
+    // it, and a reconnect waiting on them, wait for.
+    let profile = await getGoogleAccountProfile(
+        token.token, AbortSignal.timeout(GRANT_SUBJECT_TIMEOUT_MS));
+    // The Workshop describes a new connection before it completes, so the account need not ask
+    // Google again which account it is to record itself as its grant's holder. Best effort.
+    try {
+      await obj.noteAccountSubject(token.token, profile.sub);
+    } catch (error) {
+      logger.warn("failed to note which Google account a connection is", {
+        event: "google.grant.subject.note.failed", error,
+      });
+    }
+    let description = googleAccountDescription(profile);
 
     // A private grant is the gatekeeper's own business, never a resource the Workshop can bind.
     description.grantedResourceUrlPatterns =
@@ -1475,6 +2223,9 @@ async function hasChatAccess(api: ChatApi, spaceName: string, members: boolean):
   }
 }
 
+/** The account's token changed between reading an address and asking about its membership. */
+class TokenReplacedError extends Error {}
+
 /**
  * Whether the account behind `getToken` is a direct member of the Google Group named `groupName`,
  * asked of Cloud Identity with that account's own token, about the address Google's userinfo
@@ -1488,10 +2239,28 @@ async function hasGoogleGroupMembership(getToken: AccessTokenProvider, groupName
   // reconnect between two tokens would have one account answer for another's address. A token
   // Google refuses (401) is replaced once, and both are asked again with the new one.
   let token = await getToken();
-  let ask = async () => {
+  // The account answers for its token again before each membership request, so that one
+  // disconnected while the address was read asks no more; and when its token is another now, both
+  // are asked again with that one.
+  let current = async () => {
+    let now = await getToken();
+    if (now === token) return token;
+    token = now;
+    throw new TokenReplacedError();
+  };
+  let askOnce = async () => {
     let email = await getGoogleVerifiedEmail(token);
     if (!email) throw new Error("This Google account has no verified email address.");
-    return await new CloudIdentityApi(async () => token).isDirectMember(groupName, email.toLowerCase());
+    return await new CloudIdentityApi(current).isDirectMember(groupName, email.toLowerCase());
+  };
+  let ask = async () => {
+    for (let tries = 0; ; tries++) {
+      try {
+        return await askOnce();
+      } catch (error) {
+        if (!(tokenFailureCause(error) instanceof TokenReplacedError) || tries >= 2) throw error;
+      }
+    }
   };
   let refused = (error: unknown) =>
     (error instanceof CloudIdentityApiError || error instanceof GoogleUserInfoError) && error.status === 401;
@@ -2342,13 +3111,15 @@ export class GoogleDriveGatekeeperImpl
    * nothing the approval sends after its identity read goes a second time under other credentials. Otherwise it is the connection's own
    * provider, under which a comment is applied.
    */
-  #applyApi = new DriveApi(async opts => this.#approvalToken ?? this.#getAccessToken(opts));
+  #applyApi = new DriveApi(opts => this.#applyToken(opts));
   #host = {
     api: this.#applyApi,
     // Comments that quote a Doc and suggested edits are sent through Docs, under the same token.
-    docs: new GoogleDocsApi(async opts => this.#approvalToken ?? this.#getAccessToken(opts)),
+    docs: new GoogleDocsApi(opts => this.#applyToken(opts)),
     scope: () => this.#scope, writeRefusal: () => this.#writeRefusal(),
     attempts: this.#attempts,
+    // The connection answers for its token, as before every request (see #applyToken).
+    ready: async () => { await this.#getAccessToken(); },
     // An edit is not tied to an account, so it is sent under the connection's own token.
     editors: {
       slides: (fileId: string) => ({ api: this.#editApis.slides, presentationId: fileId }),
@@ -2419,6 +3190,21 @@ export class GoogleDriveGatekeeperImpl
 
   #getAccessToken(opts?: AccessTokenRequest): Promise<string> {
     return this.#tokens.get(opts);
+  }
+
+  /**
+   * The token the action handlers send under: the approval's while one runs, once the connection
+   * has answered for its own as every other request does (see AccessTokenCache), so that an
+   * approval goes on no longer than a minute after its connection was disconnected.
+   */
+  async #applyToken(opts?: AccessTokenRequest): Promise<string> {
+    let approval = this.#approvalToken;
+    if (approval === undefined) return this.#getAccessToken(opts);
+    // A refresh or a reload, asked after Drive refused a request, answers the same token, which
+    // sends nothing again: checking the connection then could only hide Drive's answer.
+    if (opts?.forceRefresh || opts?.reloadStored) return approval;
+    await this.#getAccessToken();
+    return approval;
   }
 
   /** The account, scope and access this binding has, which a folder not yet created has not. */

@@ -117,6 +117,32 @@ function recordAttempt(
 }
 
 /**
+ * What a request fails with when the token it was first to carry could not be had, so it was never
+ * sent: the provider's error, whose message it repeats, is its cause. Made afresh for each request,
+ * so a provider that hands one error object to several requests, as a cached refusal, marks only
+ * the request it ended before sending.
+ */
+class TokenUnavailableError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+  }
+}
+
+/**
+ * Whether `error` ended a request before it was sent at all, because the token it was to carry
+ * could not be had, as from a connection disconnected meanwhile: a write it was to make was then
+ * not made, whatever its handler records about it.
+ */
+export function isUnsentRequest(error: unknown): boolean {
+  return error instanceof TokenUnavailableError;
+}
+
+/** The token provider's own error, when `error` is the one a request never sent for it ended with. */
+export function tokenFailureCause(error: unknown): unknown {
+  return error instanceof TokenUnavailableError ? error.cause : error;
+}
+
+/**
  * Perform an authenticated fetch, injecting a Bearer token and applying both retry concerns
  * described at the top of this file. The `Authorization` header is set from the (possibly
  * refreshed) token on every attempt, so callers must NOT set it themselves; any other headers in
@@ -142,7 +168,9 @@ export async function fetchWithAuthRetry(
   // One-shot each: a 401 buys one refreshed retry, a 403 one reloaded retry.
   let refreshed = false;
   let reloaded = false;
-  let token = await getAccessToken();
+  let token = await getAccessToken().catch((error: unknown) => {
+    throw new TokenUnavailableError(error);
+  });
   let attempt = 0;
 
   while (true) {
@@ -180,7 +208,8 @@ export async function fetchWithAuthRetry(
       // Network error or timeout: ambiguous, so retry only when the request is safe to replay,
       // and never once the caller's own signal has aborted it.
       if (replayable && idempotent && attempt < retries - 1 && !init.signal?.aborted) {
-        await new Promise(resolve => setTimeout(resolve, backoffDelayMs(attempt, null)));
+        await backoff(backoffDelayMs(attempt, null), init.signal);
+        token = await untilAborted(getAccessToken(), init.signal);
         attempt++;
         continue;
       }
@@ -219,13 +248,59 @@ export async function fetchWithAuthRetry(
     if (replayable && canRetry(response.status, idempotent) && attempt < retries - 1) {
       let delay = backoffDelayMs(attempt, response.headers.get("Retry-After"));
       await response.body?.cancel();
-      await new Promise(resolve => setTimeout(resolve, delay));
+      await backoff(delay, init.signal);
+      // Asked again, so that a provider that stops serving a connection disconnected meanwhile
+      // (see AccessTokenCache) stops its retries too.
+      token = await untilAborted(getAccessToken(), init.signal);
       attempt++;
       continue;
     }
 
     return response;
   }
+}
+
+/**
+ * Waits `ms` before a retry, or throws the reason `signal` aborted with, as soon as it does: a
+ * caller's deadline covers the waits as well as the requests.
+ */
+function backoff(ms: number, signal: AbortSignal | null | undefined): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    let abort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason);
+    };
+    let timer = setTimeout(() => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", abort, { once: true });
+  });
+}
+
+/**
+ * `promise`, or the reason `signal` aborted with as soon as it does. What `promise` does goes on,
+ * as a token refresh other requests share must.
+ */
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal | null | undefined): Promise<T> {
+  if (!signal) return promise;
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      promise.catch(() => {});
+      reject(signal.reason);
+      return;
+    }
+    let abort = () => {
+      promise.catch(() => {});
+      reject(signal.reason);
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+  });
 }
 
 /** Await `token`, cancelling the rejected response's body if it fails. */
@@ -247,6 +322,15 @@ async function releasingOnFailure(response: Response, token: Promise<string>): P
 export const ACCESS_TOKEN_EXPIRY_SAFETY_MS = 60 * 1000;
 
 /**
+ * How long `AccessTokenCache` serves a token before it asks the `UserAccount` again. The account
+ * answers from the token it has stored, and mints only once that is within its expiry safety
+ * window, so asking usually costs one RPC. It is also the only way a gatekeeper learns that its
+ * connection was disconnected while the grant lives on at Google, where the token itself goes on
+ * working until it expires.
+ */
+export const ACCESS_TOKEN_MEMO_MAX_AGE_MS = 60 * 1000;
+
+/**
  * Mints an access token, bypassing any cache of its own when `forceRefresh` is set.
  */
 export type MintedAccessToken = { token: string; expires: Date };
@@ -257,7 +341,8 @@ export type MintAccessToken = (opts?: AccessTokenRequest) => Promise<MintedAcces
  * Per-Durable-Object memo of the access token minted by the `UserAccount`, so a gatekeeper doesn't
  * pay an RPC on every API call. The token is re-minted once it is within `skewMs` of expiring, and
  * `forceRefresh` discards it outright — which is what makes the 401 retry in `fetchWithAuthRetry`
- * able to heal a token that Google invalidated ahead of its recorded expiry.
+ * able to heal a token that Google invalidated ahead of its recorded expiry. The memo is served for
+ * at most `maxAgeMs`, after which the account is asked again and refuses once it is disconnected.
  *
  * Each gatekeeper Durable Object holds its own instance, so these can briefly diverge: two
  * gatekeepers may sit on different vintages of a token, both valid. They converge because every miss
@@ -270,12 +355,17 @@ export type MintAccessToken = (opts?: AccessTokenRequest) => Promise<MintedAcces
  */
 export class AccessTokenCache {
   #cached: MintedAccessToken | undefined;
+  #cachedAt = 0;
   #mint: MintAccessToken;
   #skewMs: number;
+  #maxAgeMs: number;
 
-  constructor(mint: MintAccessToken, skewMs: number = ACCESS_TOKEN_EXPIRY_SAFETY_MS) {
+  constructor(
+      mint: MintAccessToken, skewMs: number = ACCESS_TOKEN_EXPIRY_SAFETY_MS,
+      maxAgeMs: number = ACCESS_TOKEN_MEMO_MAX_AGE_MS) {
     this.#mint = mint;
     this.#skewMs = skewMs;
+    this.#maxAgeMs = maxAgeMs;
   }
 
   /**
@@ -293,6 +383,7 @@ export class AccessTokenCache {
     if (!cached) return false;
     if (opts?.reloadStored) return false;
     if (cached.expires.valueOf() <= Date.now() + this.#skewMs) return false;
+    if (Date.now() - this.#cachedAt >= this.#maxAgeMs) return false;
     if (opts?.staleToken !== undefined) return cached.token !== opts.staleToken;
     return !opts?.forceRefresh;
   }
@@ -300,8 +391,12 @@ export class AccessTokenCache {
   async get(opts?: AccessTokenRequest): Promise<string> {
     let cached = this.#cached;
     if (!this.#satisfies(cached, opts)) {
+      // The memo's age runs from when the account was asked, not from when `mint` returned, which
+      // may have checked the token first.
+      let asked = Date.now();
       cached = await this.#mint(opts);
       this.#cached = cached;
+      this.#cachedAt = asked;
     }
     return cached.token;
   }

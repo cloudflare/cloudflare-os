@@ -89,12 +89,20 @@ const accountCalls = new Map<string, string[]>();
 const stashedTickets = new Map<string, string>();
 
 /**
+ * The names of `holdDescribe` accounts whose describe() is waiting. It polls rather than awaiting a
+ * promise another request resolves, which workerd would cancel as a hang.
+ */
+const heldDescribes = new Set<string>();
+
+/**
  * A gatekeeper account as the Workshop sees one: a persistent stub it can store and call back into.
  * Records calls by `props.name` so a test can ask any instance what happened (`calls()`); with
- * `failRevoke` / `failDescribe`, that method rejects after being recorded.
+ * `failRevoke` / `failDescribe`, that method rejects after being recorded; with `holdDescribe`,
+ * describe() waits until `releaseDescribe()`.
  */
 export class FakeGatekeeperAccount extends WorkerEntrypoint<Cloudflare.Env, {
-  name: string; failRevoke?: boolean; failDescribe?: boolean; providesUi?: boolean;
+  name: string; failRevoke?: boolean; failDescribe?: boolean; holdDescribe?: boolean;
+  providesUi?: boolean;
 }> {
   #record(call: string) {
     const calls = accountCalls.get(this.ctx.props.name) ?? [];
@@ -104,6 +112,10 @@ export class FakeGatekeeperAccount extends WorkerEntrypoint<Cloudflare.Env, {
 
   async describe(): Promise<AccountDescription> {
     this.#record("describe");
+    if (this.ctx.props.holdDescribe) {
+      heldDescribes.add(this.ctx.props.name);
+      while (heldDescribes.has(this.ctx.props.name)) await scheduler.wait(5);
+    }
     if (this.ctx.props.failDescribe) throw new Error("describe failed");
     return {
       displayName: this.ctx.props.name,
@@ -166,6 +178,10 @@ export class FakeGatekeeperAccount extends WorkerEntrypoint<Cloudflare.Env, {
 
   async calls(): Promise<string[]> {
     return accountCalls.get(this.ctx.props.name) ?? [];
+  }
+
+  releaseDescribe(): void {
+    heldDescribes.delete(this.ctx.props.name);
   }
 }
 

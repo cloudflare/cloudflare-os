@@ -8,6 +8,7 @@ import type {
 } from "../../src/slides-api";
 import type { Slide, PresentationInfo, ShapeElement, TableElement } from "../../src/slides-read-types";
 import type { SlideTextEdit } from "../../src/slides-types";
+import { ACCESS_TOKEN_MEMO_MAX_AGE_MS } from "../../src/auth-retry";
 import { TEXT_STYLE_FIELDS } from "../../src/slides-text";
 import { colorScheme, presentation, shape, SIMPLE_LIGHT, slide, text } from "../slides-fixture";
 import { PICTURE_COPY, SlidesProvider, table } from "../slides-provider";
@@ -1354,6 +1355,38 @@ describe.each(RUNS)("Google Slides backgrounds and theme ($name)", run => {
     expect(outline.slides[0].background).toBe("picture");
     expect(s1.background).toBe("picture");
     expect(JSON.stringify([outline, s1])).not.toContain("googleusercontent");
+  });
+});
+
+describe("Google Slides writes that never left", () => {
+  // Nothing was sent, so nothing can have landed: the change stays pending, not unknown.
+  it("leaves a change pending whose write never left, its connection disconnected meanwhile", async () => {
+    let provider = new SlidesProvider(deck()).install();
+    let slides = gatekeeper(STANDALONE);
+    let { actionId } = await slides.edit([
+      { slideId: "s2", elementId: "b2", find: "$10M", replace: "$12M" },
+    ]);
+    let inner = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      let url = new URL(input instanceof Request ? input.url : input);
+      // The last read before the write: the write's own token ask is the one the account refuses.
+      if (url.pathname.endsWith("/pages/s2")) {
+        await hooks().disconnectDrive();
+        vi.spyOn(Date, "now").mockReturnValue(Date.now() + ACCESS_TOKEN_MEMO_MAX_AGE_MS);
+      }
+      return inner(input, init);
+    }));
+    try {
+      expect(await slides.apply(actionId!)).toBe("The test disconnected this Google account.");
+    } finally {
+      vi.restoreAllMocks();
+      await hooks().setDriveToken(undefined);
+    }
+    expect(provider.batches).toEqual([]);
+
+    provider.install();
+    expect(await slides.apply(actionId!)).toBeNull();
+    expect(provider.text("s2", "b2")).toBe("Revenue: $12M\nMargin: 20%\n");
   });
 });
 

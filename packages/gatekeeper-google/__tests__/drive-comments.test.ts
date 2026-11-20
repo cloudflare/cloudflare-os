@@ -2,7 +2,7 @@ import { ActionJournal, defineActions, type JournalEntry } from "@gadgets/gateke
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AccessTokenCache } from "../src/auth-retry";
+import { AccessTokenCache, fetchWithAuthRetry } from "../src/auth-retry";
 import type {
   DocsRange, DocsSuggestionRecord, GoogleDocsApi, GoogleDocsDocument, StructuralElement,
 } from "../src/docs-api";
@@ -1555,6 +1555,42 @@ describe("comments that quote a Doc, and suggested edits, through the Docs API",
     expect(deletion.docs.replyToSuggestion).not.toHaveBeenCalled();
     expect(suggestionSummary(edit({ newText: "" }))).toBe("Delete: “May”");
     expect(suggestionSummary(edit())).toBe("Replace: “May” with “June”");
+  });
+
+  // The note is a send of its own, checked as any send is before it is recorded.
+  it("posts no note once its connection cannot send, though its suggestion was made", async () => {
+    let { docs, attempts, host, submit, apply } = harness();
+    let id = await submit("suggestEdit", edit({ note: "It moved." }));
+    let checks = 0;
+    // What the account says is what would let it send, which approving again would not.
+    const disconnected = "The Google account this connection was made with has been disconnected.";
+    host.ready = async () => {
+      if (checks++ > 0) throw new Error(disconnected);
+    };
+    expect(await apply(id)).toBe(`The suggestion was made, but its note was not posted: ${disconnected}`);
+    expect(docs.suggest).toHaveBeenCalledTimes(1);
+    expect(docs.replyToSuggestion).not.toHaveBeenCalled();
+    expect(attempts.get(id)).toMatchObject({ suggestionId: "suggest.s1" });
+    expect(attempts.get(id)).not.toHaveProperty("noteAt");
+  });
+
+  // Its token not to be had at the note's send itself, past the check just before: the note never
+  // left, so its next approval posts it, never the suggestion.
+  it("posts a note whose send never left on its next approval, the suggestion kept", async () => {
+    let { docs, attempts, submit, apply } = harness();
+    let id = await submit("suggestEdit", edit({ note: "It moved." }));
+    const disconnected = "The Google account this connection was made with has been disconnected.";
+    let unsent = await fetchWithAuthRetry("https://docs.googleapis.com/v1/documents/doc-1:batchUpdate",
+      {}, async () => { throw new Error(disconnected); }).catch((error: unknown) => error);
+    docs.replyToSuggestion.mockRejectedValueOnce(unsent);
+    expect(await apply(id)).toBe(`The suggestion was made, but its note was not posted: ${disconnected}`);
+    expect(attempts.get(id)).toMatchObject({ suggestionId: "suggest.s1" });
+    expect(attempts.get(id)).not.toHaveProperty("noteAt");
+
+    expect(await apply(id)).toBeNull();
+    expect(docs.suggest).toHaveBeenCalledTimes(1);
+    expect(docs.replyToSuggestion).toHaveBeenCalledTimes(2);
+    expect(attempts.get(id)).toMatchObject({ suggestionId: "suggest.s1", postedId: "suggest.s1" });
   });
 
   it("looks for a suggestion an unconfirmed send made before it sends again, and posts the note once", async () => {

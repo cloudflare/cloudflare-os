@@ -1,4 +1,5 @@
 import { abortAllDurableObjects, env } from "cloudflare:test";
+import { ACCESS_TOKEN_MEMO_MAX_AGE_MS } from "../../src/auth-retry";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ActionField } from "@gadgets/workshop-shared/gatekeeper";
 import { googleDocActionTab } from "../../src/doc-actions";
@@ -203,8 +204,9 @@ class DocsModel {
     this.#recordMarkerCount();
   }
 
-  addTab(id: string, title: string, parentId: string, text = ""): void {
-    this.tabs.push({ id, title, parentId, text, links: [] });
+  /** Adds tab `id` under `parentId`, or at the top level when there is none. */
+  addTab(id: string, title: string, parentId?: string, text = ""): void {
+    this.tabs.push({ id, title, ...parentId === undefined ? {} : { parentId }, text, links: [] });
   }
 
   removeTab(id: string): void {
@@ -2475,6 +2477,74 @@ async function addTab(facet: string, title: string, options?: { parentTabId?: st
 }
 
 describe("adding a Google Doc tab", () => {
+  // Disconnected between its read and its send, an add sends nothing, so a tab someone adds
+  // meanwhile does not make its next approval take it for one that may have been added.
+  it("adds a tab its disconnected connection never sent, though another tab was added meanwhile", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "Intro");
+    docs.install();
+    let added = await addTab("add-tab-gone", "Notes");
+    let inner = globalThis.fetch;
+    let reads = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      let url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
+      let method = init?.method ?? (input instanceof Request ? input.method : "GET");
+      if (method === "GET" && url.pathname === "/v1/documents/doc-1" && ++reads === 1) {
+        await rawHooks().disconnectDrive();
+        vi.spyOn(Date, "now").mockReturnValue(Date.now() + ACCESS_TOKEN_MEMO_MAX_AGE_MS);
+      }
+      return inner(input, init);
+    }));
+    try {
+      expect(await hooks().applyAction("add-tab-gone", added.actionId))
+        .toBe("The test disconnected this Google account.");
+    } finally {
+      vi.restoreAllMocks();
+      await rawHooks().setDriveToken(undefined);
+    }
+    docs.install();
+    docs.addTab("t.other", "Someone else's", MAIN_TAB);
+    expect(await hooks().applyAction("add-tab-gone", added.actionId)).toBeNull();
+  });
+
+  // A retry that never left proves nothing about the earlier send, which may still land: its
+  // guard is kept, so a tab that appears later is not added a second time.
+  it("keeps an unknown add's guard through a retry its disconnected connection never sent", async () => {
+    let docs = new DocsModel();
+    docs.unsentContentRequests = 1;
+    docs.setText(MAIN_TAB, "Intro");
+    docs.install();
+    let added = await addTab("add-tab-kept", "Notes");
+    expect(await hooks().applyAction("add-tab-kept", added.actionId)).toMatch(/connection dropped/);
+
+    let inner = globalThis.fetch;
+    let reads = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      let url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
+      let method = init?.method ?? (input instanceof Request ? input.method : "GET");
+      if (method === "GET" && url.pathname === "/v1/documents/doc-1" && ++reads === 1) {
+        await rawHooks().disconnectDrive();
+        vi.spyOn(Date, "now").mockReturnValue(Date.now() + ACCESS_TOKEN_MEMO_MAX_AGE_MS);
+      }
+      return inner(input, init);
+    }));
+    try {
+      expect(await hooks().applyAction("add-tab-kept", added.actionId))
+        .toBe("The test disconnected this Google account.");
+    } finally {
+      vi.restoreAllMocks();
+      await rawHooks().setDriveToken(undefined);
+    }
+    // The first send lands after all, and its marker's tab is gone.
+    docs.install();
+    docs.addTab("t.late", "Notes", undefined);
+    docs.externalEdit();
+
+    expect(await hooks().applyAction("add-tab-kept", added.actionId))
+      .toContain("whether it was added is unknown");
+    expect(docs.tabs.filter(tab => tab.title === "Notes")).toHaveLength(1);
+  });
+
   it("queues an empty tab that edits fill before it is added, and applies them in order", async () => {
     let docs = new DocsModel();
     docs.setText(MAIN_TAB, "Intro");
@@ -2549,7 +2619,7 @@ describe("adding a Google Doc tab", () => {
     await hooks().submitAppend("add-tab-alias-both", "Hello", added.tabId);
     // The add has landed, its reply not yet in: the replay lists Google's tab and the provisional
     // one carrying the queued edit. Then the handoff records Google's ID before the read looks.
-    docs.addTab("t.google", "Notes", undefined as unknown as string);
+    docs.addTab("t.google", "Notes", undefined);
     docs.externalEdit();
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(Date.now() + 60_000);
@@ -2564,7 +2634,7 @@ describe("adding a Google Doc tab", () => {
 
   it("places a tab at an index and nests one under a tab still waiting", async () => {
     let docs = new DocsModel();
-    docs.addTab("tab-2", "Second", undefined as unknown as string);
+    docs.addTab("tab-2", "Second", undefined);
     docs.install();
 
     let first = await addTab("add-tab-place", "First", { index: 0 });
@@ -2681,7 +2751,7 @@ describe("adding a Google Doc tab", () => {
       .toMatch(/content response lost/);
     // The marker stays in the first tab while the tab the add made is replaced.
     docs.removeTab(docs.tabs[1].id);
-    docs.addTab("t.collaborator", "Notes", undefined as unknown as string, "Theirs");
+    docs.addTab("t.collaborator", "Notes", undefined, "Theirs");
     expect(docs.markers.size).toBe(1);
 
     expect(await hooks().applyAction("add-tab-replaced", added.actionId))
@@ -2701,7 +2771,7 @@ describe("adding a Google Doc tab", () => {
     expect(await hooks().applyAction("add-tab-renamed", added.actionId))
       .toMatch(/content response lost/);
     docs.tabs[1].title = "Renamed";
-    docs.addTab("t.collaborator", "Notes", undefined as unknown as string);
+    docs.addTab("t.collaborator", "Notes", undefined);
     docs.externalEdit();
 
     expect(await hooks().applyAction("add-tab-renamed", added.actionId))
@@ -2714,7 +2784,7 @@ describe("adding a Google Doc tab", () => {
   it("refuses a lost add whose marker's tab was deleted, rather than guess or add another",
     async () => {
       let docs = new DocsModel();
-      docs.addTab("tab-2", "Second", undefined as unknown as string);
+      docs.addTab("tab-2", "Second", undefined);
       docs.ambiguousContentResponses = 1;
       docs.install();
       let added = await addTab("add-tab-host-gone", "Notes");
@@ -2738,7 +2808,7 @@ describe("adding a Google Doc tab", () => {
   it("refuses a lost add whose tab was moved under another parent, rather than add another",
     async () => {
       let docs = new DocsModel();
-      docs.addTab("tab-2", "Second", undefined as unknown as string);
+      docs.addTab("tab-2", "Second", undefined);
       docs.ambiguousContentResponses = 1;
       docs.install();
       let added = await addTab("add-tab-moved", "Notes");
@@ -2766,7 +2836,7 @@ describe("adding a Google Doc tab", () => {
     expect(await hooks().applyAction("add-tab-unsent", added.actionId))
       .toMatch(/connection dropped/);
     expect(docs.tabs).toHaveLength(1);
-    docs.addTab("t.collaborator", "Notes", undefined as unknown as string, "Theirs");
+    docs.addTab("t.collaborator", "Notes", undefined, "Theirs");
     docs.externalEdit();
 
     expect(await hooks().applyAction("add-tab-unsent", added.actionId))
@@ -2794,11 +2864,11 @@ describe("adding a Google Doc tab", () => {
   it.each([
     ["an ambiguous adoption", (docs: DocsModel): (() => void) | undefined => {
       docs.ambiguousContentResponses = 1;
-      return () => docs.addTab("t.collaborator", "Notes", undefined as unknown as string);
+      return () => docs.addTab("t.collaborator", "Notes", undefined);
     }],
     ["a send with no known outcome and no marker left", (docs: DocsModel): (() => void) | undefined => {
       docs.unsentContentRequests = 1;
-      return () => docs.addTab("t.collaborator", "Notes", undefined as unknown as string);
+      return () => docs.addTab("t.collaborator", "Notes", undefined);
     }],
     ["a lost reply that is denied instead of retried", (docs: DocsModel): (() => void) | undefined => {
       docs.ambiguousContentResponses = 1;
@@ -2839,7 +2909,7 @@ describe("adding a Google Doc tab", () => {
 
     expect(await hooks().applyAction("add-tab-refused-send", added.actionId)).not.toBeNull();
     docs.refusesEdits = false;
-    docs.addTab("t.collaborator", "Notes", undefined as unknown as string);
+    docs.addTab("t.collaborator", "Notes", undefined);
     docs.externalEdit();
 
     expect(await hooks().applyAction("add-tab-refused-send", added.actionId)).toBeNull();
@@ -3158,6 +3228,35 @@ describe("Google Doc comments", () => {
     })]);
     // Approving it again posts nothing more.
     expect(await hooks().applyAction("comment-flow", queued.actionId!)).toBeNull();
+    expect(docs.commentWrites).toBe(1);
+  });
+
+  // Disconnected between its last read and its send, a comment fails with that, nothing posted
+  // and nothing left in doubt.
+  it("posts no comment once its connection was disconnected a minute into the approval", async () => {
+    let docs = model();
+    let queued = await call("comment-gone", "comment", "Hi", { quote: "The launch is in May." });
+    let inner = globalThis.fetch;
+    let scopeReads = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      let url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
+      // The scope is read again just before the send.
+      if (url.pathname === "/batch/drive/v3" && ++scopeReads === 2) {
+        await rawHooks().disconnectDrive();
+        vi.spyOn(Date, "now").mockReturnValue(Date.now() + ACCESS_TOKEN_MEMO_MAX_AGE_MS);
+      }
+      return inner(input, init);
+    }));
+    try {
+      expect(await hooks().applyAction("comment-gone", queued.actionId!))
+        .toBe("The test disconnected this Google account.");
+    } finally {
+      vi.restoreAllMocks();
+      await rawHooks().setDriveToken(undefined);
+    }
+    expect(docs.commentWrites).toBe(0);
+    // Nothing is in doubt, so approving it again, connected, posts it once.
+    expect(await hooks().applyAction("comment-gone", queued.actionId!)).toBeNull();
     expect(docs.commentWrites).toBe(1);
   });
 

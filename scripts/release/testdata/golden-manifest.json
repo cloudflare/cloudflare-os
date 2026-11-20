@@ -504,6 +504,12 @@
             "GoogleSlidesGatekeeperImpl"
           ],
           "tag": "v8"
+        },
+        {
+          "new_sqlite_classes": [
+            "GoogleGrantRegistry"
+          ],
+          "tag": "v9"
         }
       ],
       "modules": [

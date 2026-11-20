@@ -4,7 +4,9 @@ import {
   type SubserviceTally,
 } from "@gadgets/observability/metrics";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AccessTokenCache, fetchWithAuthRetry, type AccessTokenRequest } from "../src/auth-retry";
+import {
+  AccessTokenCache, fetchWithAuthRetry, isUnsentRequest, tokenFailureCause, type AccessTokenRequest,
+} from "../src/auth-retry";
 import { GOOGLE_API_SOURCE, summedInto } from "../src/call-metrics";
 import { ChatApi } from "../src/chat-api";
 import { DriveApi } from "../src/drive-api";
@@ -54,6 +56,62 @@ describe("AccessTokenCache", () => {
 
     expect(await account.cache.get()).toBe("widened");
     expect(account.requests).toHaveLength(2);
+  });
+});
+
+describe("AccessTokenCache memo age", () => {
+  afterEach(() => vi.useRealTimers());
+
+  // A disconnect that leaves the grant in place at Google leaves the token working there, so the
+  // account's refusal is the only thing that stops a gatekeeper.
+  it("asks the account again once the memo is a minute old, and stops when it refuses", async () => {
+    vi.useFakeTimers();
+    let connected = true;
+    let asked = 0;
+    let cache = new AccessTokenCache(async () => {
+      asked++;
+      if (!connected) throw new Error("This Google account is no longer connected.");
+      return { token: "tok", expires: new Date(Date.now() + 3600_000) };
+    });
+
+    expect(await cache.get()).toBe("tok");
+    vi.advanceTimersByTime(59_000);
+    expect(await cache.get()).toBe("tok");
+    expect(asked).toBe(1);
+
+    vi.advanceTimersByTime(1_000);
+    expect(await cache.get()).toBe("tok");
+    expect(asked).toBe(2);
+
+    connected = false;
+    vi.advanceTimersByTime(59_000);
+    expect(await cache.get()).toBe("tok");
+    vi.advanceTimersByTime(1_000);
+    await expect(cache.get()).rejects.toThrow(/no longer connected/);
+  });
+});
+
+describe("AccessTokenCache memo age from the account check", () => {
+  afterEach(() => vi.useRealTimers());
+
+  // A mint can check the token after the account answered (Chat reads whose it is): that time is
+  // part of the minute, or a slow check would give a disconnected connection's token a fresh one.
+  it("counts the time the mint took", async () => {
+    vi.useFakeTimers();
+    let asked = 0;
+    let cache = new AccessTokenCache(async () => {
+      asked++;
+      vi.advanceTimersByTime(30_000);
+      return { token: "tok", expires: new Date(Date.now() + 3600_000) };
+    });
+
+    expect(await cache.get()).toBe("tok");
+    vi.advanceTimersByTime(29_000);
+    expect(await cache.get()).toBe("tok");
+    expect(asked).toBe(1);
+    vi.advanceTimersByTime(1_000);
+    expect(await cache.get()).toBe("tok");
+    expect(asked).toBe(2);
   });
 });
 
@@ -121,6 +179,85 @@ describe("fetchWithAuthRetry", () => {
 
     expect(response.status).toBe(200);
     expect(requests).toBe(2);
+  });
+
+  // A connection disconnected while a request waits to be retried stops being served by its
+  // provider (see AccessTokenCache), so the retry must ask it again rather than reuse the token.
+  it("asks the provider again before a retry, and stops when it no longer serves", async () => {
+    let requests = 0;
+    vi.stubGlobal("fetch", async () => {
+      requests++;
+      return new Response(null, { status: 503 });
+    });
+    let asked = 0;
+    let provider = async () => {
+      if (asked++ > 0) throw new Error("disconnected");
+      return "token";
+    };
+    await expect(fetchWithAuthRetry("https://www.googleapis.com/drive/v3/files/file-1", {}, provider))
+      .rejects.toThrow("disconnected");
+    expect(requests).toBe(1);
+  });
+
+  it("does not ask the provider again for a retry its caller gave up during the wait", async () => {
+    vi.stubGlobal("fetch", async () => new Response(null, { status: 503, headers: { "Retry-After": "1" } }));
+    let asked = 0;
+    let caller = new AbortController();
+    let response = fetchWithAuthRetry(
+      "https://www.googleapis.com/drive/v3/files/file-1", { signal: caller.signal },
+      async () => { asked++; return "token"; });
+    let outcome = expect(response).rejects.toThrow("stop");
+    await vi.waitFor(() => expect(asked).toBe(1));
+    caller.abort(new Error("stop"));
+    await outcome;
+    expect(asked).toBe(1);
+  });
+
+  // A caller that holds a lock while it waits bounds the wait with its signal, which must end a
+  // retry's backoff too, not only a request.
+  it("gives up during a retry's backoff once the caller's signal aborts", async () => {
+    vi.stubGlobal("fetch", async () => new Response(null, { status: 503, headers: { "Retry-After": "10" } }));
+    let started = Date.now();
+    await expect(fetchWithAuthRetry(
+      "https://www.googleapis.com/oauth2/v3/userinfo", { signal: AbortSignal.timeout(50) },
+      async () => "token")).rejects.toThrow(/timed out|TimeoutError|aborted/i);
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  // A provider can hand one error object to many requests, as a refusal it keeps: only the request
+  // it ended before sending is unsent, not one that sent and then met it asking again.
+  it("marks as unsent only the request a provider's shared error ended before sending", async () => {
+    vi.stubGlobal("fetch", async () => new Response(null, { status: 503, headers: { "Retry-After": "0" } }));
+    let refusal = new Error("This connection was disconnected.");
+    let url = "https://chat.googleapis.com/v1/spaces/AAAA/messages/BBB";
+    let first = await fetchWithAuthRetry(url, { method: "PATCH" }, async () => { throw refusal; },
+      { idempotent: true }).catch((error: unknown) => error);
+    expect(isUnsentRequest(first)).toBe(true);
+    expect((first as Error).message).toBe(refusal.message);
+    expect(tokenFailureCause(first)).toBe(refusal);
+
+    let asked = 0;
+    let second = await fetchWithAuthRetry(url, { method: "PATCH" }, async () => {
+      if (asked++ === 0) return "token";
+      throw refusal;
+    }, { idempotent: true }).catch((error: unknown) => error);
+    expect(asked).toBe(2);
+    expect(second).toBe(refusal);
+    expect(isUnsentRequest(second)).toBe(false);
+  });
+
+  it("gives up while a retry waits for its token once the caller's signal aborts", async () => {
+    vi.stubGlobal("fetch", async () => new Response(null, { status: 503, headers: { "Retry-After": "0" } }));
+    let asked = 0;
+    let caller = new AbortController();
+    // The first token answers at once; the one the retry asks for never does.
+    let provider = () => asked++ === 0 ? Promise.resolve("token") : new Promise<string>(() => {});
+    let response = fetchWithAuthRetry(
+      "https://www.googleapis.com/drive/v3/files/file-1", { signal: caller.signal }, provider);
+    let outcome = expect(response).rejects.toThrow("stop");
+    await vi.waitFor(() => expect(asked).toBe(2));
+    caller.abort(new Error("stop"));
+    await outcome;
   });
 
   it("does not replay a 401 when the provider cannot refresh its token", async () => {

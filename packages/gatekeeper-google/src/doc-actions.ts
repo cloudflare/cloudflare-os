@@ -7,6 +7,7 @@ import {
   ActionApplyError, type ActionDefinition, type ActionPresentation,
 } from "@gadgets/gatekeeper-kit/actions";
 import { buildDescription, plainInline } from "@gadgets/gatekeeper-kit/action-description";
+import { isUnsentRequest } from "./auth-retry";
 import { type GoogleDocTab } from "./docs-types";
 import {
   blankDocsTab, docsWriteFailure, GoogleDocsApi, type DocsBatchReply, type GoogleDocReader,
@@ -828,6 +829,8 @@ async function applyDocEdit(action: GoogleDocAction, host: DocHost, id: number):
       throw new ActionApplyError(errorMessage(error), { cause: error });
     }
     let { tab, requests } = materialized;
+    /** The guard an earlier send with no known outcome left, which this send's failure keeps. */
+    let earlierTabIds = action.type === "addTab" ? action.knownTabIds : undefined;
     if (action.type === "addTab") {
       action.knownTabIds = doc.tabs.map(({ tabId }) => tabId);
       host.saved(id, action);
@@ -838,9 +841,12 @@ async function applyDocEdit(action: GoogleDocAction, host: DocHost, id: number):
         rangeStart: tab.bodyEndIndex - 1,
         tabId: tab.tabId,
       }).catch(async (error: unknown) => {
-        if (action.type === "addTab" && docsWriteFailure(error) !== "unknown") {
-          // Refused whole, so no tab was added, and a retry has nothing to look for.
-          delete action.knownTabIds;
+        if (action.type === "addTab" &&
+            (isUnsentRequest(error) || docsWriteFailure(error) !== "unknown")) {
+          // Refused whole, or never sent, so this send added no tab. An earlier send may still
+          // land, so its guard stays; with none, a retry has nothing to look for.
+          if (earlierTabIds) action.knownTabIds = earlierTabIds;
+          else delete action.knownTabIds;
           host.saved(id, action);
         }
         throw await explainUnopenedFile("doc", error, () => host.mimeType());

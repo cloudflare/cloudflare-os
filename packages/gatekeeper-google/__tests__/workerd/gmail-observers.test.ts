@@ -153,6 +153,6 @@ describe("Gmail verifyObserverAccess", () => {
       {id: "flaky", userObjectId: await gmail.observer("flaky-token", "owner-subject")},
     ];
     backend.failing.add("flaky-token");
-    await expect(gmail.verify(observers, [OWNER])).rejects.toThrow(/Failed to fetch user info: 500/);
+    await expect(gmail.verify(observers, [OWNER])).rejects.toThrow(/Failed to fetch user info \[http=500\]/);
   });
 });

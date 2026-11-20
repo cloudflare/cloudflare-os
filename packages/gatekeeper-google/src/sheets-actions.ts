@@ -28,6 +28,7 @@
  * unseen.
  */
 
+import { isUnsentRequest } from "./auth-retry";
 import {
   ActionApplyError, ActionOutcomeUnknownError, APPLY_OUTCOME_UNKNOWN_MESSAGE, defineActions,
   type ActionDefinition,
@@ -255,10 +256,17 @@ async function write(host: SheetsHost, batch: SheetBatch): Promise<void> {
   };
   let landed = () => record(false, stale);
 
+  let before = host.markers.read();
   try {
     await send();
     return landed();
   } catch (error) {
+    // Never sent, its token not to be had: the markers are left as they were, an earlier unknown
+    // send's included, and the action stays pending for its next approval.
+    if (isUnsentRequest(error)) {
+      host.markers.write(before);
+      throw error;
+    }
     if (error instanceof SheetsWriteRefused) {
       if (error.status === 400 && await markerFound(host, marker)) return landed();
       // Nothing was applied, so the marker was never created and needs no entry. A 401, 403 or 429

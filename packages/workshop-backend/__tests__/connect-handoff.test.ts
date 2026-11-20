@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import type { GatekeeperUser } from "@gadgets/workshop-shared/gatekeeper";
@@ -38,7 +38,9 @@ type UserInternals = UserDurableObject & {
   };
 };
 
-type FakeAccountProps = { name: string; failRevoke?: boolean; failDescribe?: boolean };
+type FakeAccountProps = {
+  name: string; failRevoke?: boolean; failDescribe?: boolean; holdDescribe?: boolean;
+};
 
 let userCounter = 0;
 function freshUser() {
@@ -55,7 +57,10 @@ function freshUser() {
 // gatekeeper's), viewed as the GatekeeperUser the kernel expects.
 function fakeAccount(user: UserInternals, name: string, failing?: Omit<FakeAccountProps, "name">) {
   const account = user.ctx.exports.FakeGatekeeperAccount({ props: { name, ...failing } });
-  return { account: account as unknown as Fetcher<GatekeeperUser>, calls: () => account.calls() };
+  return {
+    account: account as unknown as Fetcher<GatekeeperUser>, calls: () => account.calls(),
+    releaseDescribe: () => account.releaseDescribe(),
+  };
 }
 
 const STAGE_ID = "5".repeat(64);
@@ -233,6 +238,47 @@ describe("connect handoff", () => {
         credentialsExpired: false, credentialExpiresAt: new Date("2027-06-01"),
         description: { displayName: "old" },
       });
+    });
+  });
+
+  it("does not put back an account disconnected while its restored description was read", async () => {
+    const { inDo } = freshUser();
+    await inDo(async user => {
+      const { account, calls, releaseDescribe } = fakeAccount(user, "gone", { holdDescribe: true });
+      user.storage.nextAccountId.put(1);
+      user.storage.connectedAccounts.put({
+        id: 0, account, vendorId: "github", description: { displayName: "old" }, credentialsExpired: true,
+      });
+      const restoring = user.markCredentialsRestored(0, new Date("2027-06-01"));
+      await vi.waitFor(async () => expect(await calls()).toEqual(["describe"]));
+      await user.disconnectAccount(0);
+      await releaseDescribe();
+      await restoring;
+      expect(user.storage.connectedAccounts.get(0)).toBeUndefined();
+    });
+  });
+
+  it("keeps a later restore's description over an earlier one's that arrives after it", async () => {
+    const { inDo } = freshUser();
+    await inDo(async user => {
+      const first = fakeAccount(user, "before-reconnect", { holdDescribe: true });
+      user.storage.nextAccountId.put(1);
+      user.storage.connectedAccounts.put({
+        id: 0, account: first.account, vendorId: "github", description: { displayName: "old" },
+        credentialsExpired: true,
+      });
+      const earlier = user.markCredentialsRestored(0);
+      await vi.waitFor(async () => expect(await first.calls()).toEqual(["describe"]));
+
+      // A reconnect replaces the credentials, and its restore describes them first.
+      const row = user.storage.connectedAccounts.get(0)!;
+      user.storage.connectedAccounts.put({ ...row, account: fakeAccount(user, "after-reconnect").account });
+      await user.markCredentialsRestored(0);
+      await first.releaseDescribe();
+      await earlier;
+      expect(user.storage.connectedAccounts.get(0)?.description).toEqual(expect.objectContaining({
+        displayName: "after-reconnect",
+      }));
     });
   });
 

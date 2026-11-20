@@ -1,6 +1,7 @@
 import {
   ActionApplyError, ActionJournal, ActionOutcomeUnknownError, APPLY_OUTCOME_UNKNOWN_MESSAGE,
 } from "@gadgets/gatekeeper-kit/actions";
+import { fetchWithAuthRetry } from "../src/auth-retry";
 import { describe, expect, it } from "vitest";
 import { MARKER_RETENTION_MS, SHEETS_ACTIONS, type MarkerEntry, type SheetsHost } from "../src/sheets-actions";
 import { SheetsWriteRefused, type GoogleSheetsApi, type SheetArea } from "../src/sheets-api";
@@ -143,7 +144,53 @@ function setup() {
   };
 }
 
+/** An error a request ends with before it is sent, its token not to be had, as fetchWithAuthRetry gives it. */
+async function unsentError(message: string): Promise<unknown> {
+  return fetchWithAuthRetry("https://sheets.googleapis.com/v4/spreadsheets/sheet-1:batchUpdate", {},
+    async () => { throw new Error(message); }).catch((error: unknown) => error);
+}
+
 describe("applying a Google Sheets change", () => {
+  // Nothing was sent, so nothing can still land: the action stays pending, and no marker is left
+  // to hold the spreadsheet's other edits back.
+  it("leaves a change whose send never left pending, recording nothing", async () => {
+    let { fake, actions, markers, queue } = setup();
+    let { id } = await queue(5);
+    let real = fake.api.batchUpdate;
+    let unsent = await unsentError("This connection was disconnected.");
+    fake.api.batchUpdate = async () => { throw unsent; };
+    await expect(actions.apply(id)).rejects.toThrow("This connection was disconnected.");
+    expect(markers()).toEqual([]);
+
+    fake.api.batchUpdate = real;
+    await actions.apply(id);
+    expect(fake.cells.get("1:1")).toBe(5);
+  });
+
+  // The batch that never left would have deleted an earlier unknown send's marker: that marker
+  // stays recorded, so the next batch sent deletes it.
+  it("keeps an earlier unknown send's marker through a send that never left", async () => {
+    let { fake, clock, actions, markers, queue } = setup();
+    let a = await queue(6);
+    fake.failures = ["dropped", "dropped", "dropped"];
+    await expect(actions.apply(a.id)).rejects.toBeInstanceOf(ActionOutcomeUnknownError);
+    let earlier = markers();
+    expect(earlier).toEqual([{ id: a.marker, sentAt: T0, unknown: true }]);
+
+    clock.now = T0 + MARKER_RETENTION_MS;
+    let b = await queue(7);
+    let real = fake.api.batchUpdate;
+    let unsent = await unsentError("This connection was disconnected.");
+    fake.api.batchUpdate = async () => { throw unsent; };
+    await expect(actions.apply(b.id)).rejects.toThrow("This connection was disconnected.");
+    expect(markers()).toEqual(earlier);
+
+    fake.api.batchUpdate = real;
+    await actions.apply(b.id);
+    expect(deletedBy(fake.batches.at(-1)!)).toEqual([a.marker]);
+    expect(markers()).toEqual([{ id: b.marker, sentAt: T0 + MARKER_RETENTION_MS }]);
+  });
+
   it("keeps a marker a send given up on could still commit, so that send cannot land over a later batch", async () => {
     let { fake, clock, journal, actions, queue } = setup();
     let a = await queue(6);

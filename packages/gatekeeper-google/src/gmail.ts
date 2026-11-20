@@ -58,7 +58,7 @@ import {
   ActionDescriptionBuilder, buildDescription, plainInline, RenderedDescription, sanitizeTitle,
 } from "@gadgets/gatekeeper-kit/action-description";
 import {formatSubresourceId, parseSubresourceId} from "@gadgets/gatekeeper-kit/subresource-ids";
-import {AccessTokenCache, AccessTokenRequest} from "./auth-retry";
+import {AccessTokenCache, AccessTokenRequest, isUnsentRequest} from "./auth-retry";
 import {CursorPager} from "./cursor";
 import {ApprovalQueueRpcTarget, RpcCursor, SharedApprovalQueue} from "./shared-approval-queue";
 import {verifyGoogleSubresourceAccess} from "./google-verifier-types";
@@ -497,6 +497,9 @@ class GmailStore {
   wasSendWithdrawn(rfcMessageId: string): boolean {
     return this.#kv.get<number>(this.#withdrawnSendKey(rfcMessageId)) !== undefined;
   }
+
+  /** Forgets a send's fingerprint, for a send that never left: its retry builds the message anew. */
+  clearSendFingerprint(id: number): void { this.#kv.delete(this.#sendFingerprintKey(id)); }
 
   markApplying(id: number): void { this.#kv.put(this.#applyingKey(id), Date.now()); }
   isApplying(id: number): boolean { return this.#kv.get<number>(this.#applyingKey(id)) !== undefined; }
@@ -4829,13 +4832,19 @@ function isDefinitiveWriteRejection(error: unknown): boolean {
 
 async function applyUncertainWrite<T>(
     store: GmailStore, actionId: number, write: () => Promise<T>): Promise<T> {
+  const first = !store.isApplying(actionId);
   store.markApplying(actionId);
   try {
     return await write();
   } catch (error) {
-    // A definitive rejection proves this invocation did not mutate Gmail. Read/reconciliation
-    // failures must never reach this path or erase an earlier invocation's uncertain outcome.
-    if (isDefinitiveWriteRejection(error)) store.clearApplying(actionId);
+    // A definitive rejection proves this invocation did not mutate Gmail, as does a first write
+    // never sent because its token could not be had. Read/reconciliation failures must never reach
+    // this path or erase an earlier invocation's uncertain outcome.
+    let unsent = first && isUnsentRequest(error);
+    if (isDefinitiveWriteRejection(error) || unsent) store.clearApplying(actionId);
+    // With nothing sent at all, the fingerprint of what was to be sent goes too: a send's retry
+    // builds the message anew, with a new Date, and would otherwise be refused as changed.
+    if (first && (unsent || isDefinitiveWriteRejection(error))) store.clearSendFingerprint(actionId);
     throw error;
   }
 }
@@ -4989,7 +4998,10 @@ async function applyMessageMutation(
       mayHaveWritten = true;
     }
   } catch (error) {
-    if (!mayHaveWritten && isDefinitiveWriteRejection(error)) store.clearApplying(actionId);
+    // Refused outright, or never sent for want of its token: nothing was written by this attempt.
+    if (!mayHaveWritten && (isDefinitiveWriteRejection(error) || isUnsentRequest(error))) {
+      store.clearApplying(actionId);
+    }
     throw error;
   }
 }

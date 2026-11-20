@@ -1,4 +1,5 @@
 import {env} from "cloudflare:workers";
+import {ACCESS_TOKEN_EXPIRY_SAFETY_MS} from "../../src/auth-retry";
 import {runInDurableObject} from "cloudflare:test";
 import {afterEach, describe, expect, it, vi} from "vitest";
 import type {
@@ -596,7 +597,7 @@ function actionHarness(
         instance.restartGatekeeper(facetName)));
     },
   };
-  return {calls, gatekeeper, storage, values: storageValues(storage)};
+  return {calls, gatekeeper, storage, values: storageValues(storage), account: userStorage};
 }
 
 type ApprovalQueueHandle = {
@@ -997,6 +998,80 @@ describe("Gmail session API surface", () => {
     expect(await values.has("gmail:applying:1")).toBe(false);
     await expect(gatekeeper.applyAction(1)).rejects.toThrow(/Unknown pending Gmail action/);
     expect(writes).toBe(1);
+  });
+
+  // A reply that sent nothing, its token not to be had or Gmail refusing it outright, is approved
+  // again as a new send, though its message is built anew with another Date.
+  describe("a reply approved again after its first send sent nothing", () => {
+    const sourceId = "abc123";
+    const replyHarness = (firstSend: () => Response | undefined) => {
+      let sends = 0;
+      let attempts = 0;
+      const harness = actionHarness(async (url, init) => {
+        if (url.pathname === `/gmail/v1/users/me/messages/${sourceId}` && !init.method) {
+          return json(messageMetadata(sourceId, "source-thread", "<source@example.com>"));
+        }
+        if (url.pathname === "/gmail/v1/users/me/threads/source-thread" && !init.method) {
+          return json(threadMinimal("source-thread", [sourceId]));
+        }
+        if (url.pathname === "/gmail/v1/users/me/messages/send" && init.method === "POST") {
+          const refused = attempts++ === 0 ? firstSend() : undefined;
+          if (refused) return refused;
+          sends++;
+          return json({id: "def789", threadId: "source-thread"});
+        }
+        if (url.pathname === "/gmail/v1/users/me/labels" && !init.method) return json({labels: []});
+        throw new Error(`Unexpected request: ${url}`);
+      });
+      return {...harness, sends: () => sends};
+    };
+    afterEach(() => vi.useRealTimers());
+
+    it("sends a reply whose earlier approval could not get its token", async () => {
+      vi.useFakeTimers({toFake: ["Date"]});
+      const start = Date.now();
+      const {gatekeeper, account, values, sends} = replyHarness(() => undefined);
+      // A token the memo serves for the reply's queueing and its account check, and no longer
+      // once the clock moves on: the send then asks the account, whose refresh fails.
+      account.kv.put("accessToken", {
+        token: "access-token", expires: new Date(start + ACCESS_TOKEN_EXPIRY_SAFETY_MS + 1000),
+      });
+      const session = await gatekeeper.startSession(approvalQueue());
+      await (await session.getMessage(sourceId)).reply("Reply body");
+      const inner = globalThis.fetch;
+      let moved = false;
+      vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
+        const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
+        if (url.pathname === "/oauth2/v3/userinfo" && !moved) {
+          moved = true;
+          vi.setSystemTime(start + 2000);
+        }
+        return inner(input, init);
+      });
+      await expect(gatekeeper.applyAction(1)).rejects.toThrow();
+      expect(moved).toBe(true);
+      expect(sends()).toBe(0);
+      expect(await values.has("gmail:applying:1")).toBe(false);
+
+      account.kv.put("accessToken", {token: "access-token", expires: new Date(start + 3_600_000)});
+      vi.setSystemTime(start + 10_000);
+      await gatekeeper.applyAction(1);
+      expect(sends()).toBe(1);
+    });
+
+    it("sends a reply Gmail refused outright the first time", async () => {
+      vi.useFakeTimers({toFake: ["Date"]});
+      const start = Date.now();
+      const {gatekeeper, sends} = replyHarness(() => json({error: {code: 400, message: "Bad"}}, 400));
+      const session = await gatekeeper.startSession(approvalQueue());
+      await (await session.getMessage(sourceId)).reply("Reply body");
+      await expect(gatekeeper.applyAction(1)).rejects.toThrow();
+      expect(sends()).toBe(0);
+
+      vi.setSystemTime(start + 10_000);
+      await gatekeeper.applyAction(1);
+      expect(sends()).toBe(1);
+    });
   });
 
   it("admits a sent message created through a restricted binding", async () => {
@@ -3968,6 +4043,61 @@ describe("Gmail message mutations", () => {
     expect(await values.has("gmail:applying:1")).toBe(false);
     await expect(gatekeeper.rejectAction(1)).resolves.toBeUndefined();
     expect(await values.has("pending:action:1")).toBe(false);
+  });
+
+  // A first chunk never sent, its token not to be had, wrote nothing: the next approval is a first
+  // attempt, which a message deleted meanwhile fails, rather than a reconciliation that skips it.
+  it("approves anew a mutation whose first chunk could not get its token", async () => {
+    vi.useFakeTimers({toFake: ["Date"]});
+    try {
+      const start = Date.now();
+      const deleted = new Set<string>();
+      const batches: string[][] = [];
+      const {gatekeeper, storage, values, account} = actionHarness((url, init) => {
+        if (url.pathname === batchModifyPath && init.method === "POST") {
+          const {ids} = JSON.parse(String(init.body)) as BatchBody;
+          batches.push(ids);
+          return ids.some(id => deleted.has(id)) ? json({error: "missing"}, 404) : new Response(null, {status: 204});
+        }
+        const message = /^\/gmail\/v1\/users\/me\/messages\/(\w+)$/.exec(url.pathname);
+        if (message && !init.method) {
+          return deleted.has(message[1]) ? json({error: "missing"}, 404) : json(messageMetadata(message[1], "thread"));
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      });
+      // A token the memo serves for the approval's account check, and no longer once the clock
+      // moves on: the batch then asks the account, whose refresh fails.
+      account.kv.put("accessToken", {
+        token: "access-token", expires: new Date(start + ACCESS_TOKEN_EXPIRY_SAFETY_MS + 1000),
+      });
+      storage.kv.put("pending:action:1", {
+        type: "messageMutation",
+        operation: "markRead",
+        target: {kind: "messages", messageIds: ["aaa", "bbb"]},
+      });
+      const inner = globalThis.fetch;
+      let moved = false;
+      vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
+        const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
+        if (url.pathname === "/oauth2/v3/userinfo" && !moved) {
+          moved = true;
+          vi.setSystemTime(start + 2000);
+        }
+        return inner(input, init);
+      });
+      await expect(gatekeeper.applyAction(1)).rejects.toThrow();
+      expect(moved).toBe(true);
+      expect(batches).toEqual([]);
+      expect(await values.has("gmail:applying:1")).toBe(false);
+
+      deleted.add("aaa");
+      account.kv.put("accessToken", {token: "access-token", expires: new Date(start + 3_600_000)});
+      vi.setSystemTime(start + 10_000);
+      await expect(gatekeeper.applyAction(1)).rejects.toThrow(/messages\.batchModify failed/);
+      expect(batches).toEqual([["aaa", "bbb"]]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("skips messages deleted since the first attempt while reconciling", async () => {

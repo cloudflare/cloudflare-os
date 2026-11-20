@@ -5,6 +5,7 @@
 // and the approval queue together.
 
 import {env} from "cloudflare:workers";
+import {ACCESS_TOKEN_EXPIRY_SAFETY_MS} from "../../src/auth-retry";
 import {abortAllDurableObjects, runInDurableObject} from "cloudflare:test";
 import {afterEach, describe, expect, it, vi} from "vitest";
 import type {GoogleChatGatekeeperImpl, GoogleChatGatekeeperImplProps} from "../../src/chat";
@@ -112,6 +113,10 @@ function chatBackend() {
     /** Post replies as new top-level threads, as Google would by ignoring the reply option. */
     misplaceReplies: false,
     getMessageStatus: 200,
+    /** The status message reads answer with once an edit lands, until changed. */
+    getStatusAfterEdit: undefined as number | undefined,
+    /** The `lastUpdateTime` an edit leaves, in place of the clock's. */
+    editTime: undefined as string | undefined,
     deleteAfterGet: false,
     rejectedToken: undefined as string | undefined,
     sentRequests: new Map<string, string>(),
@@ -323,7 +328,8 @@ function chatBackend() {
         const {text} = JSON.parse(init.body as string) as {text: string};
         state.edits.push({name, text});
         Object.assign(state.messages[index], storedText(state.storeText(text)));
-        state.messages[index].lastUpdateTime = new Date().toISOString();
+        state.messages[index].lastUpdateTime = state.editTime ?? new Date().toISOString();
+        if (state.getStatusAfterEdit !== undefined) state.getMessageStatus = state.getStatusAfterEdit;
         if (state.editFailure) return json({}, state.editFailure);
         const {formattedText: _omitted, ...plain} = state.messages[index];
         return json(state.editsOmitFormattedText ? plain : state.messages[index]);
@@ -418,6 +424,7 @@ function chatHarness(
       runHook(hook, instance => instance.chatRevertAction(facetName, id, props, actionId))),
     rejectAction: (actionId: number) => ready.then(() =>
       runHook(hook, instance => instance.chatRejectAction(facetName, id, props, actionId))),
+    userObjectId: props.userObjectId,
     /** Hold the next matching request; resolves once it is reached, returning its release. */
     holdNextRequest: async (match: (url: URL, method: string) => boolean): Promise<() => void> => {
       gate.match = match;
@@ -719,15 +726,15 @@ describe("Google Chat gatekeeper behaviors", () => {
 
   it("rechecks the authoritative account before delayed apply and undo", async () => {
     const backend = chatBackend();
-    let sub = "subject-a";
-    const chat = chatHarness(backend, () => ({sub}));
+    // A reconnect as another Google account stores that account's token.
+    const chat = chatHarness(backend, token => ({sub: token === "Bearer replacement" ? "subject-b" : "subject-a"}));
     await chat.call("space.post", ["hello"]);
-    sub = "subject-b";
+    await chat.setToken("replacement");
     await expect(chat.applyAction(1)).rejects.toThrow(/different Google account/);
     expect(backend.state.creates).toEqual([]);
-    sub = "subject-a";
+    await chat.setToken("access-token");
     await chat.applyAction(1);
-    sub = "subject-b";
+    await chat.setToken("replacement");
     await expect(chat.revertAction(1)).rejects.toThrow(/different Google account/);
     expect(backend.state.deletes).toEqual([]);
   });
@@ -838,12 +845,28 @@ describe("Google Chat gatekeeper behaviors", () => {
   // reconnect to a different Google account, "my own messages" must not silently become somebody
   // else's.
   it("refuses to act once the connected Google account changes", async () => {
-    let sub = "subject-a";
-    const chat = chatHarness(chatBackend(), () => ({sub}));
+    const chat = chatHarness(chatBackend(), token => ({sub: token === "Bearer replacement" ? "subject-b" : "subject-a"}));
     await chat.call("space.listMessages", [{}]);
-    sub = "subject-b";
+    await chat.setToken("replacement");
     await expect(chat.call("space.listMessages", [{}]))
       .rejects.toThrow(/different Google account/);
+  });
+
+  // The account is asked for the token again every minute, and whenever the binding needs its own
+  // identity: the token it answers was checked already, and Chat works while user info does not.
+  it("reads which Google account a token belongs to once", async () => {
+    let profileReads = 0;
+    let down = false;
+    const chat = chatHarness(chatBackend(), () => {
+      profileReads++;
+      if (down) throw new Error("Google user info is down.");
+      return {sub: "subject-a"};
+    });
+    await chat.call("space.listMessages", [{}]);
+    expect(profileReads).toBe(1);
+    down = true;
+    await chat.call("space.listMessages", [{}]);
+    expect(profileReads).toBe(1);
   });
 
   it("allows post then edit before sending without changing the original approved post", async () => {
@@ -1126,6 +1149,102 @@ describe("Google Chat gatekeeper behaviors", () => {
     expect(backend.state.messages[0].formattedText).toBe("Merged <https://gitlab.example/mr/1|logfwdr>\n");
   });
 
+  // The read for Chat's stored markup follows an edit that landed, so its failure leaves the edit
+  // as one that may have landed: the next approval takes Chat's markup for its own.
+  it("finishes an edit whose follow-up read failed, taking Chat's markup for its own", async () => {
+    const backend = chatBackend();
+    backend.state.storeText = text => text.endsWith("\n") ? text : `${text}\n`;
+    backend.state.editsOmitFormattedText = true;
+    backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using message = (await space.getMessage(messageName("root"))).message;
+    await message.edit("Resolved");
+    backend.state.getStatusAfterEdit = 403;
+    await expect(chat.applyAction(1)).rejects.toThrow(/http=403/);
+    expect(backend.state.edits).toEqual([{name: messageName("root"), text: "Resolved"}]);
+
+    backend.state.getStatusAfterEdit = undefined;
+    backend.state.getMessageStatus = 200;
+    await chat.applyAction(1);
+    expect(backend.state.messages[0].formattedText).toBe("Resolved\n");
+    await expect(chat.revertAction(1)).resolves.toBeUndefined();
+    expect(backend.state.messages[0].formattedText).toBe("root\n");
+  });
+
+  // Known to have landed, the edit is never sent again: changed by hand since, the message keeps
+  // the newer text.
+  it("never resends an edit that landed when its message was changed by hand before the retry", async () => {
+    const backend = chatBackend();
+    backend.state.storeText = text => text.endsWith("\n") ? text : `${text}\n`;
+    backend.state.editsOmitFormattedText = true;
+    backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using message = (await space.getMessage(messageName("root"))).message;
+    await message.edit("Resolved");
+    backend.state.getStatusAfterEdit = 403;
+    await expect(chat.applyAction(1)).rejects.toThrow(/http=403/);
+
+    backend.state.getStatusAfterEdit = undefined;
+    backend.state.getMessageStatus = 200;
+    Object.assign(backend.state.messages[0], {
+      text: "Changed by hand", formattedText: "Changed by hand",
+      lastUpdateTime: new Date(Date.now() + 60_000).toISOString(),
+    });
+    await chat.applyAction(1);
+    expect(backend.state.edits).toEqual([{name: messageName("root"), text: "Resolved"}]);
+    expect(backend.state.messages[0].formattedText).toBe("Changed by hand");
+    expect(await chat.revertAction(1)).toEqual({message: expect.stringContaining("can't be undone automatically")});
+    expect(backend.state.messages[0].formattedText).toBe("Changed by hand");
+  });
+
+  // With no time for the edit, no read can tell it from a later one: undo is left to the owner.
+  it("leaves undoing an edit Chat gave no time for to the owner", async () => {
+    const backend = chatBackend();
+    backend.state.storeText = text => text.endsWith("\n") ? text : `${text}\n`;
+    backend.state.editsOmitFormattedText = true;
+    backend.state.editTime = "";
+    backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using message = (await space.getMessage(messageName("root"))).message;
+    await message.edit("Resolved");
+    // No read is needed to finish it, so one that would fail does not hold it back.
+    backend.state.getStatusAfterEdit = 403;
+    await chat.applyAction(1);
+    expect(await chat.revertAction(1)).toEqual({message: expect.stringContaining("can't be undone automatically")});
+    expect(backend.state.edits).toEqual([{name: messageName("root"), text: "Resolved"}]);
+    expect(backend.state.messages[0].formattedText).toBe("Resolved\n");
+  });
+
+  // Google times an edit to the nanosecond, and two edits can share a millisecond: the later one
+  // is not taken for the edit that landed, so undo cannot overwrite it.
+  it("tells a landed edit from a later one in the same millisecond", async () => {
+    const backend = chatBackend();
+    backend.state.storeText = text => text.endsWith("\n") ? text : `${text}\n`;
+    backend.state.editsOmitFormattedText = true;
+    backend.state.editTime = "2026-11-20T06:00:00.123100Z";
+    backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using message = (await space.getMessage(messageName("root"))).message;
+    await message.edit("Resolved");
+    backend.state.getStatusAfterEdit = 403;
+    await expect(chat.applyAction(1)).rejects.toThrow(/http=403/);
+
+    backend.state.getStatusAfterEdit = undefined;
+    backend.state.getMessageStatus = 200;
+    Object.assign(backend.state.messages[0], {
+      text: "Changed by hand", formattedText: "Changed by hand",
+      lastUpdateTime: "2026-11-20T06:00:00.123900Z",
+    });
+    await chat.applyAction(1);
+    expect(await chat.revertAction(1)).toEqual({message: expect.stringContaining("can't be undone automatically")});
+    expect(backend.state.edits).toEqual([{name: messageName("root"), text: "Resolved"}]);
+    expect(backend.state.messages[0].formattedText).toBe("Changed by hand");
+  });
+
   it("lets an uncertain edit be rejected once its message is deleted", async () => {
     const backend = chatBackend();
     backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
@@ -1172,6 +1291,49 @@ describe("Google Chat gatekeeper behaviors", () => {
     await chat.rejectAction(1);
     expect(backend.state.messages.some(message => message.name === `${SPACE_NAME}/messages/M1`)).toBe(true);
     await expect(chat.applyAction(1)).rejects.toThrow(/Unknown pending Google Chat action/);
+  });
+
+  // An edit its disconnected connection never sent is not one that may have landed, so the next
+  // approval still checks for text changed by hand meanwhile.
+  it("still refuses to edit over text changed by hand after an approval that could not send", async () => {
+    const backend = chatBackend();
+    backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using message = (await space.getMessage(messageName("root"))).message;
+    await message.edit("Resolved");
+    const account = testEnv.UserAccount.get(testEnv.UserAccount.idFromString(chat.userObjectId));
+    const store = (kv: DurableObjectStorage["kv"], lifetime: number) => {
+      kv.put("refreshToken", "refresh-token");
+      kv.put("accessToken", {token: "access-token", expires: new Date(Date.now() + lifetime)});
+    };
+    // A token the memo serves for the read. While the read is held the connection is disconnected
+    // and the clock moves past the token's life, so the send asks the account for one.
+    const lifetime = ACCESS_TOKEN_EXPIRY_SAFETY_MS + 60_000;
+    await runInDurableObject(account, (_instance: unknown, state: DurableObjectState) =>
+      store(state.storage.kv, lifetime));
+    const held = chat.holdNextRequest((url, method) => method === "GET" && url.pathname.includes("/messages/"));
+    const applying = chat.applyAction(1).then(() => "applied", (error: Error) => error.message);
+    const release = await held;
+    await runInDurableObject(account, (_instance: unknown, state: DurableObjectState) => {
+      state.storage.kv.delete("refreshToken");
+    });
+    // Moved on for good, never back, so nothing read meanwhile looks newer than it is.
+    const now = Date.now.bind(Date);
+    vi.spyOn(Date, "now").mockImplementation(() => now() + lifetime);
+    try {
+      release();
+      expect(await applying).toMatch(/disconnected/);
+      expect(backend.state.edits).toEqual([]);
+
+      await runInDurableObject(account, (_instance: unknown, state: DurableObjectState) =>
+        store(state.storage.kv, 3_600_000));
+      backend.state.messages[0].text = "Changed by hand";
+      await expect(chat.applyAction(1)).rejects.toThrow(/edited in Google Chat after this change was queued/);
+      expect(backend.state.edits).toEqual([]);
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 
   it("refuses to apply an edit over text changed in Google Chat since it was queued", async () => {

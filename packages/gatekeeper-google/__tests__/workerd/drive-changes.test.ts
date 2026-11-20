@@ -5,6 +5,7 @@ import type { DriveAccess, GoogleDriveFolderSession } from "../../src/drive-type
 import {
   DRIVE_WRITES_GRANT, GOOGLE_DRIVE_RESOURCE, type DriveAccessLevel,
 } from "../../src/resources";
+import { ACCESS_TOKEN_MEMO_MAX_AGE_MS } from "../../src/auth-retry";
 import { DRIVE_DOCS_KINDS, DRIVE_SHEETS_KINDS, DRIVE_SLIDES_KINDS } from "../drive-edit-kinds";
 
 // Sharing changes and moves through the Drive gatekeeper itself: queued by a session, then applied,
@@ -145,6 +146,8 @@ const MOVE_ACCESS =
   "directly that the new folder also gives is merged into the folder's, and does not come back if " +
   "it is moved out again.";
 const NO_REVERT = "Google Drive changes cannot be reverted automatically.";
+/** What the test user's account refuses with once disconnected (see UserAccount in ../worker). */
+const DISCONNECTED = "The test disconnected this Google account.";
 
 type Role = "reader" | "commenter" | "writer" | "fileOrganizer" | "organizer" | "owner";
 const RANK: Record<Role, number> = {
@@ -225,12 +228,16 @@ class DriveProvider {
    * or `lost`, which makes the change and then answers 503.
    */
   nextWrite?: Answer | "lost";
+  /** What happens as the next write arrives, before it is answered. */
+  duringWrite?: () => void | Promise<void>;
   /** How `about` answers: with a failure, or with the permission ID alone. */
   readonly about: { fail?: Answer; omitAddress?: boolean } = {};
   /** Tokens Google no longer accepts, though their recorded expiry has not come: every request answers 401. */
   readonly rejected = new Set<string>();
   /** What a person does in Drive as the next permission list is read, before it is answered. */
-  duringPermissionRead?: () => void;
+  duringPermissionRead?: () => void | Promise<void>;
+  /** What happens as the next batch of file reads is read, before it is answered. */
+  duringBatch?: () => void | Promise<void>;
   #people = new Map<string, string>([
     ["me@example.com", "perm-A"], ["other@partner.example", "perm-B"],
     ["bob@example.com", "perm-bob"], ["carol@example.com", "perm-carol"],
@@ -402,6 +409,9 @@ class DriveProvider {
     this.requests.push({ call, token });
     if (this.rejected.has(token)) return driveError({ status: 401, reason: "authError" });
     if (url.pathname === "/batch/drive/v3") {
+      let during = this.duringBatch;
+      this.duringBatch = undefined;
+      await during?.();
       return this.#batch(new TextDecoder().decode(await request.arrayBuffer()));
     }
     if (url.pathname === "/drive/v3/about") {
@@ -451,7 +461,7 @@ class DriveProvider {
     if (rawItemId === undefined) {
       if (request.method === "GET") {
         if (!held.canShare) return cannotShare();
-        this.duringPermissionRead?.();
+        await this.duringPermissionRead?.();
         this.duringPermissionRead = undefined;
         return Response.json({
           permissions: this.access(fileId),
@@ -478,6 +488,9 @@ class DriveProvider {
     call: string, url: URL, token: string, body: Record<string, unknown>, make: () => Response,
   ): Promise<Response> {
     this.writes.push({ call, query: Object.fromEntries(url.searchParams), body, token });
+    let during = this.duringWrite;
+    this.duringWrite = undefined;
+    await during?.();
     let outcome = this.nextWrite;
     this.nextWrite = undefined;
     if (outcome !== undefined && outcome !== "lost") return driveError(outcome);
@@ -1520,6 +1533,67 @@ describe("sharing", () => {
     provider.forget();
     expect(await drive.apply(actionId)).toBe(SHARE_OUT_REFUSED);
     expect(provider.requests).toEqual([]);
+  });
+
+  // Disconnecting a connection leaves the grant at Google while another connection holds it, so
+  // the approval's token goes on working there: the connection itself must stop the approval.
+  it("sends no change once its connection was disconnected a minute into the approval", async () => {
+    let drive = binding();
+    let { actionId } = await drive.queued("share", "doc-1", BOB, "reader");
+    provider.duringPermissionRead = async () => {
+      await account().disconnectDrive();
+      vi.spyOn(Date, "now").mockReturnValue(Date.now() + ACCESS_TOKEN_MEMO_MAX_AGE_MS);
+    };
+
+    try {
+      // Refused before the send is recorded, so nothing is held in doubt.
+      expect(await drive.apply(actionId)).toBe(DISCONNECTED);
+    } finally {
+      vi.restoreAllMocks();
+    }
+    expect(provider.writes).toEqual([]);
+    expect(await drive.waiting()).toEqual([actionId]);
+    expect(await drive.attempts()).toEqual({});
+    // The next approval asks the account first, and goes no further.
+    provider.forget();
+    expect(await drive.apply(actionId)).toBe(DISCONNECTED);
+    expect(provider.requests).toEqual([]);
+  });
+
+  it("posts no comment once its connection was disconnected a minute into the approval", async () => {
+    let drive = binding();
+    let { actionId } = await drive.queued("comment", "doc-1", "Hi");
+    provider.duringBatch = async () => {
+      await account().disconnectDrive();
+      vi.spyOn(Date, "now").mockReturnValue(Date.now() + ACCESS_TOKEN_MEMO_MAX_AGE_MS);
+    };
+
+    try {
+      expect(await drive.apply(actionId)).toBe(DISCONNECTED);
+    } finally {
+      vi.restoreAllMocks();
+    }
+    expect(provider.writes).toEqual([]);
+    expect(await drive.attempts()).toEqual({});
+  });
+
+  // Drive's refusal says the change was not made, whatever the connection answers meanwhile.
+  it("reports Drive's refusal of a change whose connection was disconnected while it was sent", async () => {
+    let drive = binding();
+    let { actionId } = await drive.queued("share", "doc-1", BOB, "reader");
+    provider.nextWrite = { status: 403, reason: "shareOutNotPermitted" };
+    provider.duringWrite = async () => {
+      await account().disconnectDrive();
+      vi.spyOn(Date, "now").mockReturnValue(Date.now() + ACCESS_TOKEN_MEMO_MAX_AGE_MS);
+    };
+
+    try {
+      expect(await drive.apply(actionId)).toBe(SHARE_OUT_REFUSED);
+    } finally {
+      vi.restoreAllMocks();
+    }
+    expect(sent(CREATE_ON_DOC)).toHaveLength(1);
+    expect(await drive.attempts()).toEqual({});
   });
 
   it("keeps a change pending when Google stops accepting the approval's token", async () => {

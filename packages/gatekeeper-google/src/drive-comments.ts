@@ -40,6 +40,7 @@ import {
   docsWriteFailure, docsWriteInvalid, type DocsRange,
   type DocsSuggestionRecord, type GoogleDocsApi, type GoogleDocsDocument,
 } from "./docs-api";
+import { isUnsentRequest } from "./auth-retry";
 import { locateQuote, selectTab } from "./drive-comment-body";
 import type { DocSuggestion, DriveComment, DriveCommentReply } from "./drive-types";
 import { GoogleApiError } from "./google-response";
@@ -239,6 +240,8 @@ export type CommentHost = {
   writeRefusal(): Promise<string | undefined>;
   /** The attempt markers a handler reads and writes. */
   attempts: Pick<ReturnType<typeof writeAttempts>, "get" | "put" | "delete">;
+  /** As DriveWritesHost.ready: called just before a send is recorded. */
+  ready?(): Promise<void>;
 };
 
 /** A comment as Drive shows it, or `undefined` once it is deleted or not found. */
@@ -684,10 +687,23 @@ async function postNote(
     throw new ActionApplyError(`The suggestion was made, but its note was not posted: ${
       error.message}`, { cause: error });
   });
+  // Asked before the note's send is recorded, as before any send (see sendOnce). The account's
+  // reason says what would let it send, which approving again may not: it is ours, and quotes
+  // nothing of Google's.
+  await host.ready?.().catch((error: unknown) => {
+    throw new Error(`The suggestion was made, but its note was not posted: ${
+      error instanceof Error ? error.message : String(error)}`, { cause: error });
+  });
   host.attempts.put(id, { ...marked, noteAt: Date.now() });
   try {
     await host.docs.replyToSuggestion(payload.fileId, suggestionId, note);
   } catch (error) {
+    // Its token not to be had at the send itself: the note never left, as when `ready()` refuses.
+    if (isUnsentRequest(error)) {
+      host.attempts.put(id, marked);
+      throw new Error(`The suggestion was made, but its note was not posted: ${
+        error instanceof Error ? error.message : String(error)}`, { cause: error });
+    }
     let failure = docsSendFailure(error);
     if (failure === "unknown") {
       throw new Error("The suggestion was made, but Google Docs did not confirm whether its " +
@@ -1124,4 +1140,5 @@ export const DRIVE_COMMENT_DEFINITIONS = commentDefinitions<DriveWritesHost>(DRI
   docs: host.docs,
   writeRefusal: () => host.writeRefusal(),
   attempts: host.attempts,
+  ready: async () => { await host.ready?.(); },
 }));

@@ -61,7 +61,7 @@ import type { ChatMessageRaw } from "./chat-api";
 import type { ChatHookDelivery, ChatHookParams, ChatMessageHookTarget } from "./chat-hooks";
 import { chatHooksConfigured, type PushHooksEnv } from "./pubsub-push";
 import { getGoogleAccountProfile } from "./google-api";
-import { AccessTokenCache } from "./auth-retry";
+import { AccessTokenCache, isUnsentRequest } from "./auth-retry";
 import { CursorPager, CursorPagerOptions } from "./cursor";
 import { ApprovalQueueRpcTarget, RpcCursor, SharedApprovalQueue } from "./shared-approval-queue";
 import { verifyGoogleSubresourceAccess, type GoogleVerifierApi } from "./google-verifier-types";
@@ -140,6 +140,8 @@ type ChatRevertInfo =
   | { type: "none" }
   | { type: "sentMessage"; messageName: string }
   | { type: "updatedMessage"; messageName: string; previousText: string; text: string }
+  // An edit that landed, which no read could tell from a later edit of the message.
+  | { type: "unverifiedEdit" }
   | { type: "addedReaction"; reactionName: string }
   | { type: "removedReaction"; messageName: string; emoji: string };
 
@@ -230,12 +232,26 @@ class ChatStore {
 
   clearAttempt(id: number): void {
     this.#kv.delete(`chat:attempted:${id}`);
+    this.#kv.delete(`chat:edited:${id}`);
+  }
+
+  /**
+   * Record that edit `id` landed, Chat's markup for it unread, with the edit's `lastUpdateTime` as
+   * Google gave it, when it did: its retry never sends it again.
+   */
+  setLandedEdit(id: number, lastUpdateTime: string | undefined): void {
+    this.#kv.put(`chat:edited:${id}`, lastUpdateTime ? { lastUpdateTime } : {});
+  }
+
+  /** What setLandedEdit() recorded of edit `id`, if anything. */
+  landedEdit(id: number): { lastUpdateTime?: string } | undefined {
+    return this.#kv.get<{ lastUpdateTime?: string }>(`chat:edited:${id}`);
   }
 
   /**
    * Run one write to Google, first marking the action uncertain so a retry looks for what an
    * earlier attempt may have written. A definitive refusal of the first write proves nothing
-   * landed, so it clears.
+   * landed, so it clears, as does a first write never sent because its token could not be had.
    */
   async attemptWrite<T>(id: number, write: () => Promise<T>): Promise<T> {
     const first = !this.wasAttempted(id);
@@ -245,10 +261,9 @@ class ChatStore {
     } catch (error) {
       // 408 and 429 leave the outcome open, and a later refusal says nothing about whether an
       // earlier attempt landed: a send has no read that could tell.
-      if (first && error instanceof ChatApiError && error.status >= 400 && error.status < 500 &&
-          error.status !== 408 && error.status !== 429) {
-        this.clearAttempt(id);
-      }
+      let refused = error instanceof ChatApiError && error.status >= 400 && error.status < 500 &&
+          error.status !== 408 && error.status !== 429;
+      if (first && (refused || isUnsentRequest(error))) this.clearAttempt(id);
       throw error;
     }
   }
@@ -428,6 +443,15 @@ async function submitChatAction(
     ctx.store.remove(actionId);
     throw error;
   }
+}
+
+/**
+ * Whether a message whose `lastUpdateTime` is `now` is still as an edit at `edited` left it, both
+ * as Google gave them: a `Date` keeps only milliseconds, and two edits can share one. With either
+ * time unknown it can't be told, and counts as changed.
+ */
+function sameEdit(edited: string | undefined, now: string | undefined): boolean {
+  return edited !== undefined && now === edited;
 }
 
 /** Manual approval can run out of order, and an older change applied later would undo this one. */
@@ -714,6 +738,11 @@ async function undo(api: ChatApi, self: ChatUser, info: ChatRevertInfo): Promise
       }
       return;
     }
+    case "unverifiedEdit":
+      return {
+        message: "This message may have been edited again after this change, so it can't be " +
+          "undone automatically. Edit it in Google Chat.",
+      };
     case "addedReaction":
       return api.deleteReaction(info.reactionName);
     case "removedReaction":
@@ -789,6 +818,8 @@ async function queueChatMessage(
 
 /** Most people besides the caller that a direct message or group chat can be set up with. */
 const MAX_CONVERSATION_PEOPLE = 49;
+/** How long reading which Google account a newly loaded token belongs to may take. */
+const PROFILE_TIMEOUT_MS = 10 * 1000;
 /** Sends denied after an attempt that are remembered; the oldest go first. */
 const MAX_WITHDRAWN_ATTEMPTS = 100;
 const WITHDRAWN_ATTEMPT = "but an earlier attempt may already have posted it in Google Chat. " +
@@ -1526,22 +1557,29 @@ export class GoogleChatGatekeeperImpl
   #inFlight = new Set<number>();
   /** Conversation setups in flight by who they are with: two applied at once would make two group chats. */
   #settingUp = new SingleFlight();
+  /** The last token checked to belong to this binding's Google account. */
+  #verifiedToken?: string;
   #tokens = new AccessTokenCache(async opts => {
     const account = this.ctx.exports.UserAccount.get(
       this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId));
     let token = await account.getAccessToken(opts);
+    // A token already checked is the same account's still: the account is asked again each minute
+    // to learn that the connection still serves it (see AccessTokenCache), not who it belongs to.
+    if (token.token === this.#verifiedToken) return token;
     // Every newly loaded token is checked before either Chat or People can use it, including a
     // refresh on a live session. A reconnect must never silently change this binding's authority.
+    // Bounded, so that a slow answer cannot serve a token long after the account was asked.
     const profile = await getGoogleAccountProfile(async retry => {
       if (retry) token = await account.getAccessToken(retry);
       return token.token;
-    });
+    }, AbortSignal.timeout(PROFILE_TIMEOUT_MS));
     const pinned = this.ctx.storage.kv.get<string>("chat:accountSubject");
     if (pinned !== undefined && pinned !== profile.sub) {
       throw new Error("This Google Chat binding belongs to a different Google account. Reconnect the original account.");
     }
     if (pinned === undefined) this.ctx.storage.kv.put("chat:accountSubject", profile.sub);
     this.#self = { id: `users/${profile.sub}`, ...(profile.name ? { name: profile.name } : {}), type: "human" };
+    this.#verifiedToken = token.token;
     return token;
   });
 
@@ -1780,9 +1818,10 @@ export class GoogleChatGatekeeperImpl
     const api = this.#api();
     const scope = { store, boundSpace: this.#boundSpaceName(), boundThread: this.#boundThreadName() };
     const retried = store.wasAttempted(actionId);
-    const readTarget = (name: string) => api.getMessage(name).catch((error: unknown) => {
+    const readRawTarget = (name: string) => api.getRawMessage(name).catch((error: unknown) => {
       throw isChatMessageGone(error) ? deletedTarget(store, actionId, error) : error;
     });
+    const readTarget = async (name: string) => chatMessageInfoFromRaw(await readRawTarget(name));
     if (action.type === "addReaction" || action.type === "removeReaction") {
       requireOldestChange(store, actionId, action, other => "emoji" in other &&
         other.messageName === action.messageName && other.emoji === action.emoji);
@@ -1845,18 +1884,37 @@ export class GoogleChatGatekeeperImpl
         if ("queued" in target) throw new Error("Post the message before applying its edits.");
         requireOldestChange(store, actionId, action, other =>
           other.type === "updateMessage" && other.messageName === target.committed);
-        const current = await readTarget(target.committed);
+        const raw = await readRawTarget(target.committed);
+        const current = chatMessageInfoFromRaw(raw);
         requireMessageInScope(scope, current);
         let text = current.formattedText;
-        if (text === action.text && !retried) return { type: "none" };
-        if (text !== action.text) {
+        const landed = store.landedEdit(actionId);
+        if (landed) {
+          // The edit landed before, only Chat's markup for it unread: never sent again, and the text
+          // is its own only while the message is as that edit left it.
+          if (!sameEdit(landed.lastUpdateTime, raw.lastUpdateTime)) return { type: "unverifiedEdit" };
+        } else if (text === action.text && !retried) {
+          return { type: "none" };
+        } else if (text !== action.text) {
           // A retry can't tell Chat's rendering of its own lost write from an outside edit.
           if (!retried && text !== action.previousText) {
             throw new Error(
               "This message was edited in Google Chat after this change was queued, so applying it " +
               "would overwrite that edit. Reject this change and edit the message again.");
           }
-          text = await store.attemptWrite(actionId, () => api.updateMessageText(target.committed, action.text));
+          const updated = await store.attemptWrite(actionId,
+            () => api.updateMessageText(target.committed, action.text));
+          if (updated.formattedText !== undefined) {
+            text = updated.formattedText;
+          } else {
+            store.setLandedEdit(actionId, updated.lastUpdateTime);
+            // With no time for the edit, no read can tell it from a later one.
+            if (updated.lastUpdateTime === undefined) return { type: "unverifiedEdit" };
+            // Read once the edit has landed, outside its attempt: a failed read says nothing of it.
+            const read = await api.getRawMessage(target.committed);
+            if (!sameEdit(updated.lastUpdateTime, read.lastUpdateTime)) return { type: "unverifiedEdit" };
+            text = chatMessageInfoFromRaw(read).formattedText;
+          }
         }
         store.rebaseEdits(chatActionSpaceName(action), target.committed, action.text, text);
         return {

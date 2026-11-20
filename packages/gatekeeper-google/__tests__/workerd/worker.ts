@@ -4,7 +4,8 @@ import { GmailGatekeeperImpl, type GmailGatekeeperImplProps } from "../../src/gm
 import { GoogleChatGatekeeperImpl, type GoogleChatGatekeeperImplProps } from "../../src/chat";
 import {
   BigQueryGatekeeperImpl, GoogleCalendarGatekeeperImpl, GoogleDocGatekeeperImpl, GoogleDriveGatekeeperImpl,
-  GoogleSheetsGatekeeperImpl, GoogleSlidesGatekeeperImpl, GoogleVerifier, UserAccount as GoogleUserAccount,
+  GatekeeperUserImpl, GoogleGrantRegistry, GoogleSheetsGatekeeperImpl, GoogleSlidesGatekeeperImpl,
+  GoogleVerifier, UserAccount as GoogleUserAccount,
   type BigQueryGatekeeperImplProps, type GoogleCalendarGatekeeperImplProps,
   type GoogleDriveGatekeeperImplProps, type HookDriverRef,
 } from "../../src/google";
@@ -17,7 +18,7 @@ import type { GoogleSpreadsheetSession } from "../../src/sheets-types";
 import type { GoogleSlidesGatekeeperImplProps } from "../../src/slides";
 import type { GooglePresentationSession } from "../../src/slides-types";
 import type {
-  ActionKind, HookController, ResourceDescription,
+  ActionKind, ConnectHandoff, GatekeeperUser, HookController, ResourceDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {TestGitCache} from "../test-git-cache";
 import type {
@@ -43,8 +44,8 @@ export { GmailHookController } from "../../src/gmail-hooks";
 export { PdfRenderer } from "@gadgets/pdf-renderer";
 export {
   BigQueryGatekeeperImpl, GmailGatekeeperImpl, GoogleCalendarGatekeeperImpl, GoogleChatGatekeeperImpl,
-  GoogleDocGatekeeperImpl, GoogleDriveGatekeeperImpl, GoogleSheetsGatekeeperImpl, GoogleSlidesGatekeeperImpl,
-  GoogleVerifier,
+  GatekeeperUserImpl, GoogleDocGatekeeperImpl, GoogleDriveGatekeeperImpl, GoogleGrantRegistry,
+  GoogleSheetsGatekeeperImpl, GoogleSlidesGatekeeperImpl, GoogleVerifier,
 };
 
 /** A Google Drive, Docs, Sheets or Slides binding: which gatekeeper, and its props. */
@@ -78,8 +79,22 @@ export class ChatHookDriver extends GoogleChatHookDriver {
 /**
  * The account, with trackHookDriver() held while its storage has `test:holdTracking`, so that a
  * test can act while an enable waits on it; `test:trackingHeld` says one is waiting.
+ * holdsGrantIn()'s answer is held back the same way by `test:holdGrantCheck`, with
+ * `test:grantCheckHeld`.
  */
 export class UserAccount extends GoogleUserAccount {
+  override async holdsGrantIn(registryId: string): Promise<boolean | "unknown"> {
+    const kv = this.ctx.storage.kv;
+    // Decided before it is held, as an answer on its way back is.
+    const answer = await super.holdsGrantIn(registryId);
+    if (kv.get("test:holdGrantCheck")) {
+      kv.put("test:grantCheckHeld", true);
+      while (kv.get("test:holdGrantCheck")) await scheduler.wait(1);
+      kv.delete("test:grantCheckHeld");
+    }
+    return answer;
+  }
+
   override async trackHookDriver(driver: HookDriverRef): Promise<boolean> {
     const kv = this.ctx.storage.kv;
     if (kv.get("test:holdTracking")) {
@@ -380,6 +395,62 @@ type ChatFacet = { facetName: string; id: string; props: GoogleChatGatekeeperImp
 type TestHookDeliveryProps = { hooks: string; facet: ChatFacet; params: ChatHookParams };
 type GmailFacet = { facetName: string; id: string; props: GmailGatekeeperImplProps };
 type TestGmailHookDeliveryProps = { hooks: string; facet: GmailFacet; params: GmailHookParams };
+
+/** What each `TestConnectCallback` was told, by its `props.name`. */
+export const connectCallbackEvents = new Map<string, string[]>();
+
+/** The names of the `TestConnectCallback`s that fail every call, as when the Workshop can't be reached. */
+export const unreachableConnectCallbacks = new Set<string>();
+
+/**
+ * The names of the `TestConnectCallback`s that do not return from `credentialsRestored()` while
+ * listed, as while the Workshop reads the account's description.
+ */
+export const heldConnectCallbacks = new Set<string>();
+
+/**
+ * The names of the `TestConnectCallback`s that describe the account before they complete, as the
+ * Workshop does before it hands out the connection's ticket.
+ */
+export const describingConnectCallbacks = new Set<string>();
+
+/**
+ * The names of the `TestConnectCallback`s whose `complete()` does not return while listed, after
+ * describing the account when it does, as while the Workshop makes the handoff's ticket.
+ */
+export const heldCompleteCallbacks = new Set<string>();
+
+/** Stands in for the Workshop's connect callback, recording each notice that reaches it. */
+export class TestConnectCallback extends WorkerEntrypoint<Cloudflare.Env, { name: string }> {
+  #record(event: string): void {
+    const { name } = this.ctx.props;
+    if (unreachableConnectCallbacks.has(name)) throw new Error("The Workshop can't be reached.");
+    connectCallbackEvents.set(name, [...connectCallbackEvents.get(name) ?? [], event]);
+  }
+
+  async complete(user: GatekeeperUser): Promise<ConnectHandoff> {
+    if (describingConnectCallbacks.has(this.ctx.props.name)) await user.describe();
+    // Polled, since a promise settled by the test's request cannot be awaited from this one.
+    while (heldCompleteCallbacks.has(this.ctx.props.name)) await scheduler.wait(5);
+    this.#record("complete");
+    return { targetOrigin: "https://workshop.example", ticket: "ticket" };
+  }
+
+  async reconnectComplete(stageId: string): Promise<ConnectHandoff> {
+    this.#record(`reconnectComplete:${stageId}`);
+    return { targetOrigin: "https://workshop.example", ticket: "ticket" };
+  }
+
+  async credentialsExpired(): Promise<void> {
+    this.#record("credentialsExpired");
+  }
+
+  async credentialsRestored(): Promise<void> {
+    this.#record("credentialsRestored");
+    // Polled, since a promise settled by the test's request cannot be awaited from this one.
+    while (heldConnectCallbacks.has(this.ctx.props.name)) await scheduler.wait(5);
+  }
+}
 
 /** This worker's loopback exports, which the gatekeeper's generated `Cloudflare.Exports` omits. */
 type TestExports = {

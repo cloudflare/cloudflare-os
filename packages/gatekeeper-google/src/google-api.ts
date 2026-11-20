@@ -154,7 +154,7 @@ export async function exchangeAuthCode(
 export type RefreshFailure =
   /** Google's `invalid_grant`. `subtype` is its `error_subtype`, such as `invalid_rapt`, when it sends one. */
   | { ok: false; reason: "revoked"; subtype?: string }
-  | { ok: false; reason: "policyBlocked"; detail: string };
+  | { ok: false; reason: "policyBlocked" };
 
 export type AccessTokenResult = { ok: true; token: GoogleAccessToken } | RefreshFailure;
 
@@ -181,29 +181,31 @@ export async function getAccessToken(
     let isJson = contentType && contentType.startsWith("application/json");
 
     if (isJson) {
-      let body = await response.json<{
+      let body = await readJsonOr<{
         error?: string, error_description?: string, error_subtype?: unknown,
-      }>();
+      }>(response, `Failed to refresh access token [http=${response.status}]`);
       if (body.error === "invalid_grant") {
         let subtype = safeProviderCode(body.error_subtype);
         return { ok: false, reason: "revoked", ...(subtype !== undefined ? { subtype } : {}) };
       }
       if (body.error === "admin_policy_enforced") {
-        return { ok: false, reason: "policyBlocked",
-                 detail: body.error_description ?? "admin_policy_enforced" };
+        // Google's description of the restriction stays here: the refusal is logged.
+        return { ok: false, reason: "policyBlocked" };
       }
-      throw new Error(
-          `Failed to refresh access token: ${body.error} ${body.error_description}`);
+      // Google's code only: its description, like any body it sends, can repeat the request.
+      let code = safeProviderCode(body.error);
+      throw new Error(`Failed to refresh access token [http=${response.status}` +
+          `${code !== undefined ? ` error=${code}` : ""}]`);
     }
 
-    let errorText = await readErrorText(response);
-    throw new Error(`Failed to refresh access token: ${response.status} ${errorText}`);
+    await response.body?.cancel();
+    throw new Error(`Failed to refresh access token [http=${response.status}]`);
   }
 
-  const data = await response.json() as {
+  const data = await readJsonOr<{
     access_token: string;
     expires_in: number;
-  };
+  }>(response, "Google's token endpoint did not answer with JSON.");
 
   return {
     ok: true,
@@ -222,18 +224,38 @@ export type GoogleAccountProfile = {
   picture?: string;
 };
 
-export async function getGoogleAccountProfile(accessToken: string | AccessTokenProvider): Promise<GoogleAccountProfile> {
+/**
+ * `response`'s JSON body, or for one that is not JSON a throw of `message` alone: a parse error can
+ * quote the body, and these errors are logged. Any other failure to read it, such as the caller
+ * giving up, is thrown as it is.
+ */
+async function readJsonOr<T>(response: Response, message: string): Promise<T> {
+  try {
+    return await response.json<T>();
+  } catch (error) {
+    // Without the parse error as its cause, which would carry the body into the logs.
+    // eslint-disable-next-line preserve-caught-error
+    if (error instanceof SyntaxError) throw new Error(message);
+    throw error;
+  }
+}
+
+/** `signal` lets a caller that holds the credential mutex bound the round trip. */
+export async function getGoogleAccountProfile(
+    accessToken: string | AccessTokenProvider, signal?: AbortSignal): Promise<GoogleAccountProfile> {
   const response = await fetchWithAuthRetry('https://www.googleapis.com/oauth2/v3/userinfo', {
     method: 'GET',
     headers: { 'Accept': 'application/json' },
+    ...(signal ? { signal } : {}),
   }, typeof accessToken === "string" ? async () => accessToken : accessToken);
 
   if (!response.ok) {
     await response.body?.cancel();
-    throw new Error(`Failed to fetch user info: ${response.status} ${response.statusText}`);
+    throw new Error(`Failed to fetch user info [http=${response.status}]`);
   }
 
-  const data = await response.json() as Partial<GoogleAccountProfile>;
+  const data = await readJsonOr<Partial<GoogleAccountProfile>>(
+      response, "Google user info was not JSON.");
   if (!data.sub) throw new Error("Google user info did not include a stable account ID.");
   return data as GoogleAccountProfile;
 }
@@ -243,11 +265,14 @@ export async function getGoogleAccountSubject(accessToken: string): Promise<stri
   return (await getGoogleAccountProfile(accessToken)).sub;
 }
 
-export async function getGoogleAccountDescription(accessToken: string)
+/** `signal` bounds the round trip, which the Workshop's handling of a notice can wait on. */
+export async function getGoogleAccountDescription(accessToken: string, signal?: AbortSignal)
     : Promise<AccountDescription> {
-  const data = await getGoogleAccountProfile(accessToken);
+  return googleAccountDescription(await getGoogleAccountProfile(accessToken, signal));
+}
 
-  // Mapping the response to our specific interface
+/** The account description of a Google profile. */
+export function googleAccountDescription(data: GoogleAccountProfile): AccountDescription {
   return {
     displayName: data.name,
     uniqueName: data.email,
@@ -260,10 +285,13 @@ export async function getGoogleAccountDescription(accessToken: string)
  * verified (`email_verified`). Returns null otherwise, so the Workshop never keys an account by an
  * unverified address.
  */
-/** Google's userinfo endpoint refused the token. */
+/**
+ * Google's userinfo endpoint refused the token. Its status alone: the reason phrase is the
+ * server's own words, and these errors are logged.
+ */
 export class GoogleUserInfoError extends Error {
-  constructor(readonly status: number, statusText: string) {
-    super(`Failed to fetch user info: ${status} ${statusText}`);
+  constructor(readonly status: number) {
+    super(`Failed to fetch user info [http=${status}]`);
   }
 }
 
@@ -278,7 +306,7 @@ export async function getGoogleVerifiedEmail(accessToken: string): Promise<strin
 
   if (!response.ok) {
     response.body?.cancel();
-    throw new GoogleUserInfoError(response.status, response.statusText);
+    throw new GoogleUserInfoError(response.status);
   }
 
   let data: any = await response.json();
@@ -310,15 +338,20 @@ export async function revokeGoogleToken(
     // Read response body to be polite, but we don't really need it.
     await response.text();
   } else if (isJson) {
-    let body = await response.json<{error: string}>();
+    let body = await readJsonOr<{error?: unknown}>(
+        response, `Failed to revoke token [http=${response.status}]`);
     if (response.status === 400 && body.error === "invalid_token") {
       // Token may have been revoked previously, or may have never been valid. We don't really
       // know. But for the sake of idempotency, treat this as success.
     } else {
-      throw new Error(`Failed to revoke token: ${body.error}`);
+      // Google's code only, and no reason phrase: these errors are logged.
+      let code = safeProviderCode(body.error);
+      throw new Error(`Failed to revoke token [http=${response.status}` +
+          `${code !== undefined ? ` error=${code}` : ""}]`);
     }
   } else {
-    throw new Error(`Failed to revoke token: ${response.status} ${response.statusText}`);
+    await response.body?.cancel();
+    throw new Error(`Failed to revoke token [http=${response.status}]`);
   }
 }
 
@@ -1914,31 +1947,6 @@ export function shouldIncludeSpamTrash(query?: string, labelIds?: string[]): boo
     escaped = char === "\\" && !escaped;
   }
   return flushToken();
-}
-
-// Read a bounded prefix of an error response body for inclusion in thrown errors.
-async function readErrorText(response: Response, maxBytes = 4096): Promise<string> {
-  if (!response.body) return response.statusText;
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  while (total < maxBytes) {
-    const {done, value} = await reader.read();
-    if (done) break;
-    const remaining = maxBytes - total;
-    const chunk = value.subarray(0, remaining);
-    chunks.push(chunk);
-    total += chunk.byteLength;
-    if (chunk.byteLength < value.byteLength) break;
-  }
-  await reader.cancel();
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return new TextDecoder().decode(bytes);
 }
 
 // Google's reasons for a request it limited rather than refused, on a 403 or a 429. The limit is
