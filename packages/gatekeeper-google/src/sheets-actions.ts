@@ -102,6 +102,13 @@ const FORMAT_SHEETS: ActionKind = { tag: "formatSheets", label: "Sheet formattin
 const EDIT_SPREADSHEET: ActionKind = {
   tag: "edit-spreadsheet", label: "Spreadsheet edits that keep every sheet, row and column",
 };
+// What a user may let apply without asking: such a batch that also sizes rows or columns,
+// freezes lines or unmerges cells, none of which changes what a cell holds. A tag of its own,
+// so a rule a user enabled for the kind above covers no more than it did.
+const LAYOUT_SPREADSHEET: ActionKind = {
+  tag: "layout-spreadsheet",
+  label: "Spreadsheet edits that resize rows or columns, freeze lines or unmerge cells",
+};
 // What a user may let apply without asking: such a batch that also deletes a sheet, rows or
 // columns, or merges cells, which clears all but the top-left of each, all of which the
 // spreadsheet's version history restores.
@@ -119,8 +126,13 @@ const UPDATE_SPREADSHEET: ActionKind = {
 // The changes an `editSpreadsheet` batch may make: none removes a sheet, row or column.
 const KEEPING_OPS: ReadonlySet<string> = new Set([
   "writeCells", "clearRange", "formatCells", "addSheet", "renameSheet", "duplicateSheet",
-  "insertRows", "insertColumns", "resizeRows", "resizeColumns", "freeze", "unmergeCells",
+  "insertRows", "insertColumns",
 ]);
+
+// A batch otherwise as safe as `editSpreadsheet` that makes one of these changes, and none of
+// the deleting ones, is queued as `layoutSpreadsheet`.
+const LAYOUT_OPS: ReadonlySet<string> =
+  new Set(["resizeRows", "resizeColumns", "freeze", "unmergeCells"]);
 
 // A batch otherwise as safe as `editSpreadsheet` that makes one of these changes is queued as
 // `deleteSpreadsheetContent`. A merge counts whether or not the cells it clears hold anything,
@@ -142,10 +154,10 @@ export function batchKind(
   let cellsOnly = changes.every(change => change.op === "clearRange" || change.op === "writeCells");
   if (cellsOnly && formulas.length === 0) return "editSheetValues";
   if (!formulas.every(callsOnlySpreadsheetFunctions)) return "updateSpreadsheet";
-  if (!changes.every(change => KEEPING_OPS.has(change.op) || DELETING_OPS.has(change.op))) {
-    return "updateSpreadsheet";
-  }
-  return changes.some(change => DELETING_OPS.has(change.op)) ? "deleteSpreadsheetContent" : "editSpreadsheet";
+  let classified = (op: string) => KEEPING_OPS.has(op) || LAYOUT_OPS.has(op) || DELETING_OPS.has(op);
+  if (!changes.every(change => classified(change.op))) return "updateSpreadsheet";
+  if (changes.some(change => DELETING_OPS.has(change.op))) return "deleteSpreadsheetContent";
+  return changes.some(change => LAYOUT_OPS.has(change.op)) ? "layoutSpreadsheet" : "editSpreadsheet";
 }
 
 // Sending a batch: the first send, and resends once an answer was lost.
@@ -513,6 +525,7 @@ export const SHEETS_DEFINITIONS: { [K in keyof SheetsActions]: ActionDefinition<
   editSheetValues: sheetBatch(EDIT_SHEET_VALUES, true),
   formatSheets: sheetBatch(FORMAT_SHEETS, true),
   editSpreadsheet: sheetBatch(EDIT_SPREADSHEET, true),
+  layoutSpreadsheet: sheetBatch(LAYOUT_SPREADSHEET, true),
   deleteSpreadsheetContent: sheetBatch(DELETE_SPREADSHEET_CONTENT, true),
   // Runs a formula that may make Google fetch a URL carrying the spreadsheet's data.
   updateSpreadsheet: sheetBatch(UPDATE_SPREADSHEET, false),

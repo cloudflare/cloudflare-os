@@ -139,13 +139,15 @@ export type SheetBatch = {
  * enters literal values and clears cells, `formatSheets` when it only formats cells,
  * `updateSpreadsheet` when a formula calls a function that does not compute from the spreadsheet
  * alone or a change is not one this module classifies, `deleteSpreadsheetContent` when it
- * otherwise deletes a sheet, rows or columns, and `editSpreadsheet` otherwise; they differ in
- * nothing but which kinds a user may let apply without asking.
+ * otherwise deletes a sheet, rows or columns or merges cells, `layoutSpreadsheet` when it
+ * otherwise sizes rows or columns, freezes lines or unmerges cells, and `editSpreadsheet`
+ * otherwise; they differ in nothing but which kinds a user may let apply without asking.
  */
 export type SheetsActions = {
   editSheetValues: SheetBatch;
   formatSheets: SheetBatch;
   editSpreadsheet: SheetBatch;
+  layoutSpreadsheet: SheetBatch;
   deleteSpreadsheetContent: SheetBatch;
   updateSpreadsheet: SheetBatch;
 };
