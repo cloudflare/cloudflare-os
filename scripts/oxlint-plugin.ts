@@ -310,11 +310,13 @@ const newGatekeeperObserverContract: Rule = {
         const statements = history?.value.body?.body;
         const returned = statements?.length === 1 && statements[0].type === "ReturnStatement"
           ? unwrap(statements[0].argument) : undefined;
-        // A facet base of the gatekeeper's own may supply it, as it may supply `startSession()`.
-        // Cloudflare's `DurableObject` supplies neither.
-        const inherits = superClass && !named(superClass, "DurableObject");
+        // A facet base of the gatekeeper's own may supply it, as it may supply `startSession()`;
+        // Cloudflare's `DurableObject` supplies neither. An abstract one is each subclass's to write.
+        const elsewhere = (superClass && !named(superClass, "DurableObject")) ||
+          body.body.some(member => member.type === "TSAbstractMethodDefinition" &&
+            writtenName(member.key, member.computed) === "getHistoricalSubresources");
         if (!history) {
-          if (!inherits) context.report({ node: addObserver?.key ?? id ?? body, messageId: "missingHistory" });
+          if (!elsewhere) context.report({ node: addObserver?.key ?? id ?? body, messageId: "missingHistory" });
         } else if (returned?.type !== "ArrayExpression" || returned.elements.length) {
           context.report({ node: history.key, messageId: "history" });
         }

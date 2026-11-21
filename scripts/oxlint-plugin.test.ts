@@ -171,6 +171,9 @@ ruleTester.run("new-gatekeeper-observer-contract", plugin.rules["new-gatekeeper-
     "class Roster {\n  async addObserver(id: string) { this.ids.add(id); }\n}",
     // A base class may supply the session and the history; what this one defines is still checked.
     "class Facet extends Base implements Gatekeeper<Session> {\n  async addObserver(_id: string) {}\n}",
+    // An abstract declaration leaves the method to each subclass, which is checked where it is written.
+    "abstract class Base extends DurableObject<Env> implements Gatekeeper<Session> {\n" +
+      "  abstract getHistoricalSubresources(): Promise<string[]>;\n  async addObserver(_id: string) {}\n}",
     // The implementation is the method that runs, not the overload signature before it.
     gatekeeper("  getHistoricalSubresources(): Promise<string[]>;\n" +
       `  async getHistoricalSubresources() { return [] as string[]; }\n${observers}`),
@@ -242,6 +245,11 @@ ruleTester.run("new-gatekeeper-observer-contract", plugin.rules["new-gatekeeper-
     // A getter is not a method the kernel can call.
     {
       code: gatekeeper(`  get getHistoricalSubresources() { return []; }\n${observers}`),
+      errors: [{ messageId: "missingHistory" }],
+    },
+    {
+      code: "abstract class Base extends DurableObject<Env> implements Gatekeeper<Session> {\n" +
+        "  abstract startSession(): Promise<Session>;\n  async addObserver(_id: string) {}\n}",
       errors: [{ messageId: "missingHistory" }],
     },
     // A static method is not the facet's.
