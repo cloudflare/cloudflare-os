@@ -51,8 +51,7 @@ Decided with Kenton on 2026-11-14.
 - The workspace route (`routes/workspace.$id.tsx`) validates the search params `chat`, `w` and
   `showChat`. `GadgetEditor` owns navigation and mounts `GadgetUI` keyed by `selectedGadgetId`.
 - `Overseer.newChat()` and `sendChatMessage()` take `capsules`, `attachments` and `formats` as
-  trailing positional arguments. The `OverseerImpl` methods behind them take the same three plus
-  a `responseTargetRegistration` in the middle.
+  trailing positional arguments, as do the `OverseerImpl` methods behind them.
 - A message sent while the agent runs steers the turn only if it is plain text
   (`OverseerImpl.steerRunningTurn`). A queued steer is `{text, author}` in
   `AiChatMetadata.queuedSteers`; `AgentHooks.takeSteers()` hands the running turn the texts as
@@ -169,8 +168,10 @@ onFocusReset?() }`. `onFocusReset` is optional because only the composer's state
   to send to), or if the frame has been replaced. A replaced
   frame's session ending rejects its pending call, and that must not clear the anchor its
   successor is about to be sent to.
-- A new frame starts with no callback, so it gets `navigate(anchor)`
-  when it registers. That is the whole restore mechanism for code-change reloads and page reloads.
+- A new frame starts with no callback, so it gets `navigate` when it registers. That is the whole
+  restore mechanism for code-change reloads and page reloads. It is sent to `latestAnchor()`, not
+  `anchor`: a code reload can replace the frame within the URL write hold, and the held report's
+  write would then land as an echo, leaving the new frame on the spot before it.
 - Whenever the frame is replaced, `GadgetUI` calls `onFocusReset` too. That includes replacements
   it decides on itself (a failed reconnect bumps `iframeGeneration`), which the parent cannot see.
   A reset is not a null report: what the frame said no longer stands, but the anchor is kept,

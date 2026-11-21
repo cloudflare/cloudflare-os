@@ -279,8 +279,13 @@ const createSandboxedHtml = (page: UiPage, renderMode: GadgetRenderMode | undefi
 
 /** The spot in the gadget the user is focused on, kept by the parent across frames. */
 export type GadgetUIFocus = {
-  /** The spot the frame should be showing. A frame is sent to it as it registers. */
+  /** The spot the frame should be showing. */
   anchor: string | undefined
+  /**
+   * `anchor` once the frame's reports so far have reached it, which a frame is sent to as it
+   * registers: a code reload can replace the frame while its last report is still on the way.
+   */
+  latestAnchor: () => string | undefined
   /**
    * Changes each time `anchor` is set by anything but the frame's own report (a followed link, a
    * sent message's chip), which sends the frame to it. The frame's reports change `anchor` alone.
@@ -424,7 +429,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
       frame.navigate?.[Symbol.dispose]()
       const retained = navigate.dup()
       frame.navigate = retained
-      const anchor = focusRef.current.anchor
+      const anchor = focusRef.current.latestAnchor()
       if (anchor !== undefined) await sendNavigate(retained, anchor)
     },
     reportProblem: reportFocusProblem,

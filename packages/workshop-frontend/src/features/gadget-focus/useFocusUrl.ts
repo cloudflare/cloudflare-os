@@ -118,6 +118,7 @@ export const useFocusUrl = ({
   return {
     anchor,
     navigation: target.navigation,
+    latestAnchor: () => holdRef.current?.pending ? holdRef.current.pending.focus?.anchor : writtenAnchor(),
     onFocusChange: focus => {
       // A gadget that reports only null doesn't need `w` pinned. The URL may not yet show our last
       // write, which a null report must still clear.

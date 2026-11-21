@@ -180,6 +180,25 @@ describe('useFocusUrl', () => {
     expect(replaceSearch.mock.calls).toEqual([[{ w: 1, at: 'cell/B7' }], [{ w: 1, at: 'cell/C1' }]])
   })
 
+  it('gives the latest anchor as the last report, ahead of the URL', async () => {
+    await render({ search: { w: 1, at: 'cell/A1' } })
+    expect(focus!.latestAnchor()).toBe('cell/A1')
+
+    // Written, but not yet shown by the URL.
+    focus!.onFocusChange({ anchor: 'cell/B7', label: 'B7' })
+    expect(focus!.latestAnchor()).toBe('cell/B7')
+    // Held back by that write.
+    focus!.onFocusChange({ anchor: 'cell/C1', label: 'C1' })
+    expect(focus!.latestAnchor()).toBe('cell/C1')
+    focus!.onFocusChange(null)
+    expect(focus!.latestAnchor()).toBeUndefined()
+
+    vi.advanceTimersByTime(FOCUS_URL_WRITE_DELAY_MS)
+    await render({})
+    expect(focus!.anchor).toBeUndefined()
+    expect(focus!.latestAnchor()).toBeUndefined()
+  })
+
   it('clears `at` on a null report, and leaves a URL without one alone', async () => {
     await render({})
     focus!.onFocusChange(null)

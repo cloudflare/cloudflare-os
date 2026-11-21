@@ -163,11 +163,14 @@ class FocusRecorder {
   readonly logs: string[] = []
   // Each navigate call a frame made, settled by the test.
   readonly navigations: { anchor: string; resolve: (result: boolean) => void }[] = []
+  // What latestAnchor() gives, when a test has a report still on its way to the anchor.
+  latest: { anchor: string | undefined } | undefined
 
   focus(anchor: string | undefined, navigation: number): GadgetUIFocus {
     return {
       anchor,
       navigation,
+      latestAnchor: () => this.latest ? this.latest.anchor : anchor,
       onFocusChange: focus => this.events.push(`change ${JSON.stringify(focus)}`),
       onFocusReset: () => this.events.push('reset'),
     }
@@ -329,6 +332,23 @@ describe('focus', () => {
     await reloaded
 
     expect(recorder.events).toEqual(['navigate cell/B7', 'reset', 'navigate cell/B7'])
+  })
+
+  it('sends a frame reloaded before its last report reached the anchor to that report', async () => {
+    const gadget = focusGadget()
+    await show(gadget, 'cell/B7')
+    const control = await frame(0)
+    const registration = control.register()
+    await expect.poll(() => recorder.navigations.length).toBe(1)
+    recorder.navigations[0].resolve(true)
+    await registration
+    await control.report({ anchor: 'cell/C1', label: 'C1' })
+    recorder.latest = { anchor: 'cell/C1' }
+
+    await show(gadget, 'cell/B7', 1)
+    void (await frame(1)).register()
+
+    await expect.poll(() => recorder.navigations.map(n => n.anchor)).toEqual(['cell/B7', 'cell/C1'])
   })
 
   it('resets when a failed reconnect reloads the frame, then sends the new frame to the anchor', async () => {

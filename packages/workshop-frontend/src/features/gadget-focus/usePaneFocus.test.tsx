@@ -41,7 +41,7 @@ const urlFocusChange = vi.fn<(focus: GadgetFocus | null) => void>()
 
 const Harness = () => {
   ({ uiFocus, paneFocus, onFocusOpened, onWorkspaceChange } = usePaneFocus({
-    uiFocus: state.gadget && { anchor: state.anchor, navigation: 0, onFocusChange: urlFocusChange },
+    uiFocus: state.gadget && { anchor: state.anchor, navigation: 0, latestAnchor: () => state.anchor, onFocusChange: urlFocusChange },
     gadget: state.gadget,
     pane: state.pane,
     singlePane: state.singlePane,
