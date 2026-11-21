@@ -2023,6 +2023,11 @@ both counting twice, a copied sheet counting what changes queued to it set) and 
 changes to rows, columns and sheets, and a queued batch is capped at 100 KiB. While such changes are
 queued, a read or a batch may involve at most 5,000,000 characters of formulas times their number,
 since each formula is rewritten through each of them, and hold at most 5 MiB of text as rewritten.
+Queuing a batch, applying it, and a read while changes are queued fetch the spreadsheet's sheets and
+protected ranges, then, in a second request, the merges of only the sheets the batch and the changes
+queued before it act on (and, for `readFormats()`, the sheet it reads), so merges elsewhere hold up
+no write. Google's list of those merges may be at most 5 MiB, about 70,000 merges; a batch acting on
+sheets holding more is refused with an error saying so, as is a read with such a change queued.
 Google allows 60 write requests a minute per user; a write over that quota stays pending.
 
 ## Google Drive bindings
