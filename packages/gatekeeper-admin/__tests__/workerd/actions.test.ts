@@ -74,21 +74,15 @@ const CASES: Case[] = [
       using session = await binding.openIssueReport!(REPORT_ID) as Session;
       await session.reply!("Fixed, please retry.");
     },
-    // Its own lend and its own read of the report, for the card: no observation.
-    queuedLog: ["getAdminApi", "AdminApi.getIssueReport", "submit issue-report-scoped-reply"],
-    payload: {
-      reportId: REPORT_ID, text: "Fixed, please retry.",
-      report: { reporter: "Ada", filedAt: "2026-03-04T05:06:07.000Z", firstLine: "The sheet is empty." },
-    },
+    // No lend and no read of the report: the card is the call's own.
+    queuedLog: ["submit issue-report-scoped-reply"],
+    payload: { reportId: REPORT_ID, text: "Fixed, please retry." },
     call: { name: "addIssueReportEntry", args: [REPORT_ID, "Fixed, please retry.", "public"] },
-    title: `Reply to Ada on issue report ${REPORT_ID}`,
-    description: "Posts this reply in the public thread of the report Ada filed on " +
-      "2026-03-04 05:06 UTC. Sent from a session limited to this report.",
+    title: `Reply to the reporter of issue report ${REPORT_ID}, from a session limited to it`,
+    description: "Posts this reply in the report's public thread. Sent from a session limited " +
+      "to this report.",
     fields: [
       { label: "Report", kind: "inline", value: REPORT_ID },
-      { label: "Reporter", kind: "inline", value: "Ada" },
-      { label: "Filed", kind: "inline", value: "2026-03-04 05:06 UTC" },
-      { label: "Report begins", kind: "text", value: "The sheet is empty." },
       { label: "Reply", kind: "text", value: "Fixed, please retry." },
     ],
   },

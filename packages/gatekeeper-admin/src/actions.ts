@@ -4,7 +4,7 @@
 
 import type { RpcStub } from "cloudflare:workers";
 import {
-  buildDescription, plainInline, sanitizeTitle,
+  buildDescription, sanitizeTitle,
 } from "@gadgets/gatekeeper-kit/action-description";
 import {
   type ActionContext, ActionApplyError, ActionOutcomeUnknownError, type ActionPresentation,
@@ -23,13 +23,6 @@ import {
 
 /** An entry to add to a report's thread: a reply through the admin binding, or a note. */
 export type EntryPayload = { reportId: string; text: string };
-
-/** A reply from a session limited to one report, with what its card says of that report. */
-export type ScopedReplyPayload = EntryPayload & {
-  /** Shown on the card and never sent: the reporter's name, when the report was filed (ISO),
-   * and how its text begins. */
-  report: { reporter: string; filedAt: string; firstLine: string };
-};
 
 /** A status to set on a report. */
 export type StatusPayload = { reportId: string; status: IssueReportStatus };
@@ -53,7 +46,7 @@ export type ContentRequestPayload = { workspaceId: string; reason: string };
 /** The payload of each action kind, by its name in ADMIN_AGENT_ACTIONS. */
 export type AdminActions = {
   issueReportReply: EntryPayload;
-  issueReportScopedReply: ScopedReplyPayload;
+  issueReportScopedReply: EntryPayload;
   issueReportNote: EntryPayload;
   issueReportStatus: StatusPayload;
   issueReportAssignment: AssignmentPayload;
@@ -195,11 +188,6 @@ async function callLent(
  * than STATUS_LABELS: "withAdmin" is what "fixSuggested" and "fixInProgress" are given to them as. */
 const REPORTER_READS: Partial<Record<IssueReportStatus, string>> = { withAdmin: "With the admins" };
 
-/** `iso`, an ISO timestamp, as a card shows it: the same text wherever it is read. */
-function utc(iso: string): string {
-  return `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
-}
-
 const STATUS_LABELS: Record<IssueReportStatus, string> = {
   new: "New",
   investigating: "Investigating",
@@ -254,15 +242,13 @@ export const ADMIN_ACTIONS = defineActions<AdminActionHost, AdminActions>({
     autoApprovable: ADMIN_AGENT_ACTIONS.issueReportScopedReply.autoApprovable,
     delivery: "await-decision",
     claimBeforeApply: true,
-    describe: ({ reportId, text, report }) => card(
-        `Reply to ${report.reporter} on issue report ${reportId}`,
-        buildDescription("Posts this reply in the public thread of the report " +
-            `${plainInline(report.reporter)} filed on ${utc(report.filedAt)}. Sent from a ` +
-            "session limited to this report.")
+    // Built from the call alone: the session reads nothing of the report to queue it, so the
+    // card, which the workspace keeps, holds nothing the report does.
+    describe: ({ reportId, text }) => card(
+        `Reply to the reporter of issue report ${reportId}, from a session limited to it`,
+        buildDescription("Posts this reply in the report's public thread. Sent from a session " +
+            "limited to this report.")
             .inline("Report", reportId)
-            .inline("Reporter", report.reporter)
-            .inline("Filed", utc(report.filedAt))
-            .verbatim("Report begins", report.firstLine)
             .verbatim("Reply", text)),
     apply: ({ reportId, text }, host, ctx) =>
       callLent(host, ctx, (admin) => admin.addIssueReportEntry(reportId, text, "public")),

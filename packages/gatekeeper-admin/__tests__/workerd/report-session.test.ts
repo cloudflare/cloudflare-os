@@ -394,10 +394,13 @@ describe("a report session", () => {
     using _root = root;
     using _report = report;
 
-    for (const call of [() => report.get!(), () => report.reply!("x"), () => report.inspectWorkspace!("triage")]) {
+    for (const call of [() => report.get!(), () => report.inspectWorkspace!("triage")]) {
       expect((await rejection(call())).message).toBe("No such issue report.");
     }
-    expect(queue.submitted).toEqual([]);
+    // A reply reads nothing, so it is queued, and refused where it lands, as a reply through
+    // the whole binding is.
+    await report.reply!("x");
+    expect(queue.submitted).toHaveLength(1);
   });
 
   it("outlives the session that opened it, on a lend of its own", async () => {
@@ -429,7 +432,8 @@ describe("a report session", () => {
 });
 
 describe("a report session's reply", () => {
-  it("is queued with the report's label, read by the session and returned to nobody", async () => {
+  // Its card is kept by the workspace, which a reply leaves unmarked: it holds no report text.
+  it("is queued by the report's id alone, reading nothing and observing nothing", async () => {
     const { log, queue } = triage();
     const { root, report } = await openReport(queue);
     using _root = root;
@@ -437,22 +441,13 @@ describe("a report session's reply", () => {
 
     expect(await report.reply!("Fixed, please retry.")).toBeUndefined();
 
-    expect(log).toEqual(["getAdminApi", "AdminApi.getIssueReport", "submit issue-report-scoped-reply"]);
+    expect(log).toEqual(["submit issue-report-scoped-reply"]);
     expect(queue.observations).toEqual([]);
-    expect(queue.submitted[0]!.description.title).toBe(`Reply to Ada on issue report ${REPORT_ID}`);
-  });
-
-  it("shows no more of a long report than how it begins", async () => {
-    const { queue, state } = triage();
-    state.report = issueReport({ text: "a".repeat(200) + "b".repeat(50) });
-    const { root, report } = await openReport(queue);
-    using _root = root;
-    using _report = report;
-
-    await report.reply!("Thanks.");
-
-    expect(queue.submitted[0]!.description.fields).toContainEqual(
-        { label: "Report begins", kind: "text", value: "a".repeat(200) });
+    const { description } = queue.submitted[0]!;
+    expect(description.title)
+        .toBe(`Reply to the reporter of issue report ${REPORT_ID}, from a session limited to it`);
+    expect(JSON.stringify(description)).not.toContain(SCOPED.text);
+    expect(JSON.stringify(description)).not.toContain(SCOPED.reporter.name);
   });
 });
 

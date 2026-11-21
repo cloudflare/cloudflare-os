@@ -301,15 +301,16 @@ never from a read, so queuing an action marks nothing:
 | Kind | Tag | `autoApprovable` | The card says |
 | --- | --- | --- | --- |
 | `issueReportReply`: a public reply through the binding | `issue-report-reply` | `false` | The report's id and the whole reply, and that it was written with access to what only admins see. |
-| `issueReportScopedReply`: a public reply through a report session | `issue-report-scoped-reply` | `true` | The report's id, its reporter, when it was filed, how it begins, and the whole reply. |
+| `issueReportScopedReply`: a public reply through a report session | `issue-report-scoped-reply` | `true` | The report's id and the whole reply. |
 | `issueReportNote`: an admins-only entry | `issue-report-note` | `true` | The report's id and the whole note. |
 | `issueReportStatus`: a report's status | `issue-report-status` | `true` | The report's id and the status, and what the reporter reads where that is another status. |
 | `issueReportAssignment`: a claim or a release of a report | `issue-report-assignment` | `true` | The report's id, whether it is claimed or released, and that it is for this workspace's owner. |
 | `workspaceWriteRequest`: a write to a workspace (`writeWorkspace()`) | `workspace-write-request` | `false` | The workspace, the action, its arguments and the reason, and that the write runs as the owner once approved. |
 | `contentAccessRequest`: a request for a workspace's content (`requestContentAccess()`) | `content-access-request` | `false` | The workspace and the reason, and that nobody in this workspace can approve the request. |
 
-A scoped reply's card also names the reporter and the report's first line, which the session
-reads for the card alone and may read anyway.
+A scoped reply's card names the report by its id alone. The session reads nothing to queue it,
+so the card, which the workspace keeps after the connection is removed, holds nothing of the
+report, and queuing a reply marks nothing.
 
 **A status's card says what the reporter reads.** The card names the status as admins read it
 and, for `fixSuggested` and `fixInProgress`, adds a "Reporter reads" line with the words the

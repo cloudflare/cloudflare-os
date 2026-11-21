@@ -17,9 +17,6 @@ import type { ObservationDescription } from "@gadgets/workshop-shared/gatekeeper
 import { type BoundAdminActions, entryText } from "./actions.js";
 import { ADMIN_SUBRESOURCE, type AdminSession, Lend, forwarderFor } from "./forward.js";
 
-/** How much of a report's text the card of a reply shows, to say which report it answers. */
-const FIRST_LINE_LENGTH = 200;
-
 /**
  * An issue report as its reporter reads it: the report, and the public entries of its thread
  * with an author's id only on the reporter's own, and each status as the reporter reads it. No
@@ -147,23 +144,12 @@ export class IssueReportSession extends RpcTarget {
   }
 
   /**
-   * Queues a public reply in the report's thread, as the kind only this session queues. The
-   * report is read for the card's label alone and nothing of it is returned, so it is not
-   * observed.
+   * Queues a public reply in the report's thread, as the kind only this session queues. It
+   * reads nothing: its card names the report by id, so queuing a reply marks nothing.
    */
   async reply(text: string): Promise<void> {
-    const entry = entryText(text);
-    const admin = await this.#lend.get();
-    const report = scopedReport(await admin.getIssueReport(this.#reportId));
-    await this.#actions.submit(this.#queue, "issueReportScopedReply", {
-      reportId: this.#reportId,
-      text: entry,
-      report: {
-        reporter: report.reporter.name,
-        filedAt: report.filedAt.toISOString(),
-        firstLine: report.text.slice(0, FIRST_LINE_LENGTH),
-      },
-    });
+    await this.#actions.submit(this.#queue, "issueReportScopedReply",
+        { reportId: this.#reportId, text: entryText(text) });
   }
 
   /**
