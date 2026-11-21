@@ -16,6 +16,14 @@ const MAX_SLIDE_BYTES = 2 * 1024 * 1024;
 /** The most whole pages one read fetches at a time: each is held as text, then parsed, up to 2 MiB. */
 const MAX_PAGE_FETCHES = 4;
 /**
+ * The most compact JSON, in UTF-16 units, of the whole pages one read holds together. A page of
+ * tables parses to up to three times its JSON in memory, and each copy the fold or the planner
+ * makes of a page it edits adds two times more, so a read at the limit with both copies of every
+ * page holds under 60 MiB of the isolate's 128 MB. All 100 slides of a deck of a title, a body
+ * and a table each, about 30 KiB a slide, are 3 MiB.
+ */
+const MAX_READ_PAGES_LENGTH = 8 * 1024 * 1024;
+/**
  * The most pages one read fetches at a time by label alone: the connections a Worker invocation
  * holds open at once, so a larger bound would only queue the rest in the runtime.
  */
@@ -293,11 +301,14 @@ function pagePath(presentationId: string, pageId: string): string {
 export class GoogleSlidesApi {
   constructor(private getAccessToken: AccessTokenProvider) {}
 
-  async #send<T>(url: URL, init: RequestInit, operation: string, maxBytes: number): Promise<T> {
+  async #send<T>(
+    url: URL, init: RequestInit, operation: string, maxBytes: number,
+    beforeParse?: (length: number) => void,
+  ): Promise<T> {
     let response = await fetchWithAuthRetry(
       url.toString(), init, this.getAccessToken, { timeoutMs: REQUEST_TIMEOUT_MS },
     );
-    return readGoogleJson<T>(response, { provider: "Google Slides", operation, maxBytes });
+    return readGoogleJson<T>(response, { provider: "Google Slides", operation, maxBytes, beforeParse });
   }
 
   // Every read asks for compact JSON. Google indents an answer otherwise, and the indentation,
@@ -305,11 +316,12 @@ export class GoogleSlidesApi {
   // read's cap.
   async #get<T>(
     path: string, params: Record<string, string>, operation: string, maxBytes = MAX_RESPONSE_BYTES,
+    beforeParse?: (length: number) => void,
   ): Promise<T> {
     let url = new URL(`${API_BASE}/${path}`);
     for (let [name, value] of Object.entries(params)) url.searchParams.set(name, value);
     url.searchParams.set("prettyPrint", "false");
-    return this.#send<T>(url, {}, operation, maxBytes);
+    return this.#send<T>(url, {}, operation, maxBytes, beforeParse);
   }
 
   /** Create a presentation titled `title` in the caller's My Drive, returning its ID. */
@@ -353,10 +365,16 @@ export class GoogleSlidesApi {
     return this.#presentation(presentationId, OUTLINE_FIELDS, "get outline");
   }
 
-  /** Fetch one slide's content, whatever the size of the rest of the presentation: `fields` of it. */
-  async getSlide(presentationId: string, slideId: string, fields: string = SLIDE_FIELDS): Promise<RestSlide> {
+  /**
+   * Fetch one slide's content, whatever the size of the rest of the presentation: `fields` of it.
+   * `beforeParse` is told the length of its JSON before it is parsed, and fails the fetch by throwing.
+   */
+  async getSlide(
+    presentationId: string, slideId: string, fields: string = SLIDE_FIELDS,
+    beforeParse?: (length: number) => void,
+  ): Promise<RestSlide> {
     let slide = await this.#get<RestSlide>(
-      pagePath(presentationId, slideId), { fields }, "get slide", MAX_SLIDE_BYTES);
+      pagePath(presentationId, slideId), { fields }, "get slide", MAX_SLIDE_BYTES, beforeParse);
     if (slide.objectId !== slideId) throw new Error("Google Slides returned a different slide");
     return slide;
   }
@@ -374,11 +392,22 @@ export class GoogleSlidesApi {
   // for an ID before the failed one has answered: of several failures it throws that of the ID
   // earliest in `ids`, so the error a read reports does not depend on which answer came first,
   // and a request for a later ID cannot change it. Those still running then finish unawaited,
-  // their answers dropped.
+  // their answers dropped. The answer that brings the JSON received past `maxLength` UTF-16 units
+  // fails unparsed, as does every one after it: whether the pages pass it does not depend on the
+  // order they come in, but which request fails for it does.
   #getPages(
     presentationId: string, ids: readonly string[], limit: number, fields: string,
-    keep: (page: RestSlide) => RestSlide = page => page,
+    { keep = page => page, maxLength = Infinity }:
+      { keep?: (page: RestSlide) => RestSlide; maxLength?: number } = {},
   ): Promise<RestSlide[]> {
+    let received = 0;
+    let count = (length: number) => {
+      received += length;
+      if (received > maxLength) {
+        throw new Error(`The slides this needs exceed ${maxLength} characters of content together, ` +
+          "the most one read holds. Read or change fewer slides at a time.");
+      }
+    };
     return new Promise((resolve, reject) => {
       let pages: RestSlide[] = [];
       let answered: boolean[] = [];
@@ -402,7 +431,7 @@ export class GoogleSlidesApi {
       let start = () => {
         if (done || failures.size > 0 || next >= ids.length) return;
         let index = next++;
-        this.getSlide(presentationId, ids[index], fields).then(
+        this.getSlide(presentationId, ids[index], fields, count).then(
           page => { pages[index] = keep(page); },
           (error: unknown) => { failures.set(index, error); },
         ).finally(() => {
@@ -428,13 +457,15 @@ export class GoogleSlidesApi {
   ): Promise<Map<string, RestSlide>> {
     let wanted = [...ids].filter(id => order.includes(id));
     // The whole pages come first and alone, so the two kinds are never in flight together: the
-    // most a read holds unparsed is four whole pages or six labels.
+    // most a read holds unparsed is four whole pages or six labels. Only the whole pages count
+    // against `MAX_READ_PAGES_LENGTH`: a label is cut to a few hundred bytes as it arrives.
     let pages = [
       ...await this.#getPages(
-        presentationId, wanted.filter(id => !labelOnly.has(id)), MAX_PAGE_FETCHES, SLIDE_FIELDS),
+        presentationId, wanted.filter(id => !labelOnly.has(id)), MAX_PAGE_FETCHES, SLIDE_FIELDS,
+        { maxLength: MAX_READ_PAGES_LENGTH }),
       ...await this.#getPages(
         presentationId, wanted.filter(id => labelOnly.has(id)), MAX_LABEL_FETCHES, LABEL_FIELDS,
-        slideLabel),
+        { keep: slideLabel }),
     ];
     let byId = new Map(pages.map(page => [page.objectId!, page]));
     return new Map(wanted.map(id => [id, byId.get(id)!]));

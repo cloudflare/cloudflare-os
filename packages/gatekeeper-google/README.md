@@ -1720,6 +1720,15 @@ move, a skip, a deletion, or a new slide placed after another reads, of each sli
 its shapes' text and whether it is skipped, a couple of KiB, and reads the slide whole when a queued
 change edits it. A read fetches the slides it needs whole first, four at a time, and then those it
 needs only that much of, six at a time, which is as many connections as a Worker holds open at once.
+The whole pages one read holds, the slides queued changes touch among them, are capped at
+8,388,608 characters of compact JSON together (`MAX_READ_PAGES_LENGTH`), counted as each page
+arrives. A read or change that needs more fails with `The slides this needs exceed 8388608
+characters of content together, the most one read holds. Read or change fewer slides at a time.`,
+starts no request after the page that passed the cap, and parses none from it on. A page of tables
+takes up to three times its JSON in memory once parsed, and each copy that a queued or new change
+makes of a page it edits two times more, so at the cap a read and two copies of every page hold
+under 60 MiB of the isolate's 128 MB. All 100 slides of a deck of a title, a body and a table each
+are about 3 MiB.
 
 The simulated presentation was recorded from an English-locale account, so until it is created it
 reads with locale `en` and English layout names. Google translates those names: a presentation a

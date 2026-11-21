@@ -17,11 +17,11 @@ type Asked = {
 };
 
 /**
- * Stubs `fetch` with one that answers no page request until the test does. `asked` holds the
- * requests in the order they were made, and `most` the most that were open at once under each
- * `fields`.
+ * Stubs `fetch` with one that answers no page request until the test does, with `pageOf` its ID.
+ * `asked` holds the requests in the order they were made, and `most` the most that were open at
+ * once under each `fields`.
  */
-function holdPages() {
+function holdPages(pageOf: (id: string) => object = id => ({ objectId: id })) {
   let asked: Asked[] = [];
   let most: Record<string, number> = { [SLIDE_FIELDS]: 0, [LABEL_FIELDS]: 0 };
   let open = (fields: string | null) => asked.filter(page => page.open && page.fields === fields).length;
@@ -33,7 +33,7 @@ function holdPages() {
       id, fields, open: true, wholeOpen: open(SLIDE_FIELDS),
       answer(status = 200) {
         this.open = false;
-        resolve(status === 200 ? Response.json({ objectId: id })
+        resolve(status === 200 ? Response.json(pageOf(id))
           : Response.json({ error: { code: status } }, { status }));
       },
     });
@@ -61,6 +61,13 @@ const failureOf = (read: Promise<unknown>) =>
   read.then(() => "the read did not fail", (error: Error) => error.message);
 
 const ids = (count: number) => Array.from({ length: count }, (_page, at) => `s${at + 1}`);
+
+/** A page of `id` whose compact JSON is `length` characters. */
+function pageOfLength(id: string, length: number) {
+  let page = { objectId: id, pageElements: [{ objectId: `${id}-e`, description: "" }] };
+  page.pageElements[0].description = "x".repeat(length - JSON.stringify(page).length);
+  return page;
+}
 
 describe("GoogleSlidesApi.getSlides", () => {
   const api = new GoogleSlidesApi(token);
@@ -211,6 +218,37 @@ describe("GoogleSlidesApi.getSlides", () => {
     expect(pages.open(SLIDE_FIELDS)).toBe(3);
     await pages.answerAll();
     expect(pages.asked).toHaveLength(4);
+  });
+
+  it("fails a read once its whole pages pass 8 MiB of compact JSON, and starts no request after", async () => {
+    // Four pages fit in 8 MiB together; the fifth passes it.
+    let pages = holdPages(id => pageOfLength(id, 2 * 1024 * 1024 - 64));
+    let wanted = ids(20);
+    let settled = false;
+    let failure = failureOf(api.getSlides("deck-1", wanted, wanted)).finally(() => { settled = true; });
+    for (let answered = 0; answered < 4; answered++) {
+      await pages.reaches(4 + answered);
+      pages.asked[answered].answer();
+      await turns();
+    }
+    await pages.reaches(8);
+    expect(settled).toBe(false);
+
+    pages.asked[4].answer();
+    await turns();
+    expect(settled).toBe(true);
+    expect(await failure).toBe("The slides this needs exceed 8388608 characters of content " +
+      "together, the most one read holds. Read or change fewer slides at a time.");
+    await pages.answerAll();
+    expect(pages.asked.map(page => page.id)).toEqual(wanted.slice(0, 8));
+  });
+
+  it("reads every page of a 100-slide deck of 32 KB pages whole", async () => {
+    let wanted = ids(100);
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) =>
+      Response.json(pageOfLength(decodeURIComponent(new URL(String(input)).pathname.split("/").at(-1)!), 32_196))));
+
+    expect([...(await api.getSlides("deck-1", wanted, wanted)).keys()]).toEqual(wanted);
   });
 
   it("asks for label fields of the IDs it is told to, and the full page of the others", async () => {

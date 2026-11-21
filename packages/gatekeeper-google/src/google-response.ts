@@ -25,6 +25,11 @@ type GoogleJsonResponseOptions = {
   provider: string;
   operation: string;
   maxBytes: number;
+  /**
+   * Told the length of a body read whole, in UTF-16 units, before it is parsed. If it throws, the
+   * read fails with its error and the body is not parsed.
+   */
+  beforeParse?: (length: number) => void;
 };
 
 /**
@@ -160,7 +165,7 @@ export async function readGoogleJson<T>(
   response: Response,
   options: GoogleJsonResponseOptions,
 ): Promise<T> {
-  let { provider, operation, maxBytes } = options;
+  let { provider, operation, maxBytes, beforeParse } = options;
   if (!response.ok) {
     let diagnostics = await reportGoogleRequestFailure(response, provider, operation);
     throw new GoogleApiError(`${provider} ${operation} failed [http=${response.status}]`,
@@ -169,6 +174,7 @@ export async function readGoogleJson<T>(
   }
 
   let text = await readBoundedText(response, maxBytes, provider);
+  beforeParse?.(text.length);
   try {
     return JSON.parse(text) as T;
   } catch {
