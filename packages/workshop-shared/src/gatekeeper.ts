@@ -1686,10 +1686,8 @@ export type ObservationDescription = {
    *   (`ActionDescription.descriptionIsComplete`) is accepted and flagged to the approver; only
    *   git pushes are refused. The kernel does not restrict which connections may be acted on.
    *
-   * TODO(someday): The restricted mode is a blunt instrument. It should be possible to perform
-   *   actions whose visibility is limited to people verified to have access to the same data: an
-   *   action should declare who can see its effects, and each restricted producer verify that
-   *   every such person can already see the data.
+   * The restricted mode is a blunt instrument; docs/restricted-data-audiences.md proposes
+   * releasing an action when everyone who can see its effects can already see the data.
    */
   containsRestrictedData?: boolean;
 
