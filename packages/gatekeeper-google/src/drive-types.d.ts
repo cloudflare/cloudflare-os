@@ -346,7 +346,8 @@ export interface GoogleDriveFolderSession
 
   /**
    * Open a live direct child folder as an independently disposable capability, with the same
-   * access.
+   * access. A folder opened through a shortcut, and any folder opened from it, is read-only, and
+   * its `getScope().access` says `"read"`.
    */
   openFolder(folderId: string): Promise<GoogleDriveFolderSession>;
 

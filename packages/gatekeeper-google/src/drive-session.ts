@@ -1029,7 +1029,8 @@ export class DriveFolderSessionCore extends DriveCoreBase {
     return {
       kind: "folder", folderId: folder.id, rootFolderId: this.#rootId(),
       ...(folderIds.length > 1 ? {parentFolderId: folderIds[folderIds.length - 2]} : {}),
-      name: folder.name, access: this.access,
+      // A folder opened through a shortcut refuses every write, so it says it is read-only.
+      name: folder.name, access: this.#location.shortcuts ? "read" : this.access,
     };
   }
 
@@ -1378,22 +1379,27 @@ export class DriveFolderSessionCore extends DriveCoreBase {
     fileId: string, refuse: () => never, followShortcuts: boolean,
   ): Promise<{file: DriveFile; shortcutId?: string}> {
     let path = await this.#readLocation();
-    let file = await this.tryFetchFile(fileId);
-    if (!file || file.id !== fileId) {
-      // Invisible to this account, an answer relative to it alone. Whether a visible file is a
-      // direct child is objective, so refusing that discloses nothing either.
-      await this.authorizeAccountRelative(
-        "Check Google Drive folder",
-        "Check whether a requested file is in this Drive folder, directly or through a shortcut.");
-      refuse();
-    }
     let current = path[path.length - 1];
+    let fetched = await this.tryFetchFile(fileId);
+    let file = fetched?.id === fileId ? fetched : undefined;
     let shortcutId: string | undefined;
-    if (!isDirectChild(file, current)) {
-      let shortcut = followShortcuts && file.trashed === false
-        ? await this.api.findShortcut(current.id, file.id, corpusOf(current.driveId))
+    if (!file || !isDirectChild(file, current)) {
+      // Looked up whether or not this account can see `fileId`, so neither the lookup's answer
+      // nor its failure says which.
+      let shortcut = followShortcuts
+        ? await this.api.findShortcut(current.id, fileId, corpusOf(current.driveId))
         : undefined;
-      if (!shortcut || !isShortcutChild(shortcut, file.id, current)) refuse();
+      if (!file) {
+        // Invisible to this account, an answer relative to it alone. Whether a visible file is a
+        // direct child is objective, so refusing that discloses nothing either.
+        await this.authorizeAccountRelative(
+          "Check Google Drive folder",
+          "Check whether a requested file is in this Drive folder, directly or through a shortcut.");
+        refuse();
+      }
+      if (!shortcut || file.trashed !== false || !isShortcutChild(shortcut, file.id, current)) {
+        refuse();
+      }
       shortcutId = shortcut.id;
     }
     await this.#readLocation();

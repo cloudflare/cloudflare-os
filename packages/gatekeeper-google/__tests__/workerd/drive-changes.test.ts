@@ -1808,8 +1808,10 @@ describe("moves", () => {
     expect((await drive.call("getEntry", "far-doc")).value).toMatchObject({ id: "far-doc" });
     expect((await drive.callIn(["far-folder"], "getEntry", "deep-doc")).value)
       .toMatchObject({ id: "deep-doc" });
+    // Writes refuse there, so it says it is read-only, although the binding is not.
+    expect((await drive.call("getScope")).value).toMatchObject({ access: "write" });
     expect((await drive.callIn(["far-folder"], "getScope")).value)
-      .toMatchObject({ folderId: "far-folder" });
+      .toMatchObject({ folderId: "far-folder", access: "read" });
 
     let refused = [
       [await drive.call("comment", "far-doc", "Hi"), OUTSIDE],

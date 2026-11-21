@@ -1377,7 +1377,15 @@ describe("positioned Drive folder session", () => {
 
       const trashedTarget = positioned([root, { ...foreignDoc, trashed: true }, toDoc]);
       await expect(trashedTarget.session.getEntry("X")).rejects.toThrow(/outside this Drive binding/);
-      expect(trashedTarget.findShortcut).not.toHaveBeenCalled();
+    });
+
+    it("looks a shortcut up whether or not the account can see the ID, failing alike", async () => {
+      const { session, findShortcut } = positioned([root, foreignDoc]);
+      findShortcut.mockRejectedValue(new Error("teamDriveMembershipRequired"));
+
+      await expect(session.getEntry("X")).rejects.toThrow("teamDriveMembershipRequired");
+      await expect(session.getEntry("unseen")).rejects.toThrow("teamDriveMembershipRequired");
+      expect(findShortcut.mock.calls.map(([, targetId]) => targetId)).toEqual(["X", "unseen"]);
     });
 
     it("proves the shortcut again after a read, refusing one removed meanwhile", async () => {
@@ -1399,7 +1407,7 @@ describe("positioned Drive folder session", () => {
       expect(location).toEqual({ folderIds: ["R", "F"], shortcuts: { F: "S2" } });
       expectReported(authorizations[0], ["drive/folder/R", "drive/folder/F"]);
 
-      const inside = positioned(nodes, location);
+      const inside = positioned(nodes, location, undefined, { access: "write" });
       await expect((await inside.session.list()).next()).resolves.toEqual([
         expect.objectContaining({ id: "FD" }),
       ]);
@@ -1407,7 +1415,7 @@ describe("positioned Drive folder session", () => {
         directParentIds: ["F"], corpus: { kind: "drive", driveId: "drive-2" },
       })]);
       await expect(inside.session.getScope()).resolves.toEqual(expect.objectContaining({
-        folderId: "F", rootFolderId: "R", parentFolderId: "R",
+        folderId: "F", rootFolderId: "R", parentFolderId: "R", access: "read",
       }));
       await expect(inside.session.openNativeFile("FD", docMime, "Google Doc")).resolves.toBe("FD");
 
