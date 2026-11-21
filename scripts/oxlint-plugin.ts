@@ -227,7 +227,7 @@ function writtenName(key: ESTree.Node, computed: boolean): string | undefined {
  */
 function methodNamed(body: ESTree.ClassBody, name: string): ESTree.MethodDefinition | undefined {
   return body.body.find((member): member is ESTree.MethodDefinition =>
-    member.type === "MethodDefinition" && !member.static &&
+    member.type === "MethodDefinition" && member.kind === "method" && !member.static &&
     writtenName(member.key, member.computed) === name && !!member.value.body);
 }
 

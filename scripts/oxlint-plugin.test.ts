@@ -239,6 +239,11 @@ ruleTester.run("new-gatekeeper-observer-contract", plugin.rules["new-gatekeeper-
         "  async removeObserver(_id: string) {}"),
       errors: [{ messageId: "observerState", data: { name: "addObserver" } }],
     },
+    // A getter is not a method the kernel can call.
+    {
+      code: gatekeeper(`  get getHistoricalSubresources() { return []; }\n${observers}`),
+      errors: [{ messageId: "missingHistory" }],
+    },
     // A static method is not the facet's.
     {
       code: "class Facet implements Gatekeeper<Session> {\n  async addObserver(_id: string) {}\n" +
