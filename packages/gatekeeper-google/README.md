@@ -1350,10 +1350,14 @@ holds a revision id valid. The write is then built against that read and pinned 
 The document such an approval fetches is read in hand for the receipt and the write markers,
 which settle an edit whose write landed, and for an edit that no longer replays or whose tab is
 gone, which is refused; none of these stores anything. Where the edit's write must be built from
-it, the document is stored as it is read, in a trial that keeps nothing, and the write is built
-from the piece of the edit's tab around the edit, read from that copy: a store of the runs the
-stored copy does not hold, each rendered as it is stored, and the piece's runs decoded and
-rendered, neither of which an approval that sends the stored requests makes.
+it, the document is stored as it is read, in a trial that keeps nothing, and the write is made
+in the edit's tab of that copy as a replay makes it, with the same checks (an edit that would
+leave a paragraph or a table too large for a row among them), in a transaction that is undone:
+a store of the runs the stored copy does not hold, each rendered as it is stored, and the
+edit's piece decoded and rendered, neither of which an approval that sends the stored requests
+makes. Where the tab came back as it was when a replay stored the edit's result, that result is
+found and nothing is decoded. A write built from the stored copy is made and checked the same
+way, and keeps nothing either.
 Google refuses a batch pinned to the copy's revision once the document has moved past it, and
 writes nothing; the approval then reads the document and builds the edit again, or fails with the
 reason the edit no longer applies, so it costs the refused `batchUpdate` more. A batch built from
@@ -1408,8 +1412,8 @@ each of these counts). `insertTable()` makes its piece twice, the second time to
 table's position. An edit made again whose result is stored, as when a preview's card is
 written again, decodes and renders its piece's runs once more and writes nothing. An approval
 that sends the requests stored with the edit decodes and renders nothing and reads three rows;
-one that builds them, from the stored copy or from a document it fetched, decodes and renders
-the piece's runs and writes nothing of the edit. A rejection makes the edits queued behind
+one that builds them, from the stored copy or from a document it fetched, makes the edit as a
+replay does and keeps nothing of it: the rows it writes are undone. A rejection makes the edits queued behind
 the rejected one in its tab again, each at an edit's cost. On a tab of 20,000 paragraphs
 (196 runs) and on one of 2,000 one-cell tables (4,001 runs), runs decoded and rendered: a
 replacement 1 and 2, and 18 and 19; an append 1 and 2, and 15 and 16; a row added to a table 4
