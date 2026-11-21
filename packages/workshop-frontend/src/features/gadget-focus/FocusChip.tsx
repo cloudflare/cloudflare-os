@@ -1,12 +1,12 @@
-import { Tooltip } from '@cloudflare/kumo'
+import { Popover, Tooltip } from '@cloudflare/kumo'
 import { Crosshair, X } from '@phosphor-icons/react'
 import { focusLabel, type TitledFocus } from './paneFocus'
 
 /**
- * A chip's tooltip: its heading, then the spot's context (what the agent is told is there) as plain
+ * A chip's tooltip or popover: its heading, then the spot's context (what the agent is told is there) as plain
  * text, clamped so a long quote doesn't fill the screen.
  */
-const FocusTooltip = ({ heading, context }: { heading: string; context: string | undefined }) =>
+const FocusDetails = ({ heading, context }: { heading: string; context: string | undefined }) =>
   context
     ? (
       <span className="block max-w-xs">
@@ -42,7 +42,7 @@ export const FocusChip = (props: { focus: TitledFocus } & (
 
   if ('onOpen' in props) {
     return (
-      <Tooltip content={<FocusTooltip heading={label} context={context} />} side="top" asChild>
+      <Tooltip content={<FocusDetails heading={label} context={context} />} side="top" asChild>
         <button
           type="button"
           onClick={props.onOpen}
@@ -57,20 +57,29 @@ export const FocusChip = (props: { focus: TitledFocus } & (
 
   return (
     <div className={`${CHIP_CLASS} py-0.5 pl-2.5 pr-0.5`}>
-      <Tooltip
-        content={<FocusTooltip heading={`The agent will be told you're viewing ${label}`} context={context} />}
-        side="top"
-        asChild
-      >
-        {/* Focusable so the keyboard can open the tooltip, which alone shows the context. Always,
-            since a chip that is only sometimes a stop reads as broken. */}
-        <span
-          tabIndex={0}
-          className="flex min-w-0 items-center gap-1.5 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring"
+      {/* A popover rather than a tooltip: the context it shows is the only preview of what the
+          message will carry, and a tap never opens a tooltip. */}
+      <Popover>
+        <Popover.Trigger
+          openOnHover
+          render={
+            <button
+              type="button"
+              className="flex min-w-0 cursor-pointer items-center gap-1.5 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring"
+            >
+              {face}
+            </button>
+          }
+        />
+        <Popover.Content
+          side="top"
+          sideOffset={8}
+          positionMethod="fixed"
+          className="themed-floating-shadow !z-[1100] !w-auto !min-w-0 !max-w-[min(20rem,calc(100vw-24px))] rounded-xl border border-kumo-line bg-kumo-base !px-3 !py-2 text-[12px] leading-[18px] text-kumo-default !outline-none [&>:first-child]:hidden"
         >
-          {face}
-        </span>
-      </Tooltip>
+          <FocusDetails heading={`The agent will be told you're viewing ${label}`} context={context} />
+        </Popover.Content>
+      </Popover>
       <button
         type="button"
         onClick={props.onDismiss}

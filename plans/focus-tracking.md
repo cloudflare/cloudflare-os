@@ -281,12 +281,14 @@ Frontend:
 - The composer shows a focus chip whenever the workspace pane is showing a gadget. Its label is
   the gadget's title, followed by the spot's label if the current frame has reported one:
   "Budget" or "Budget › Q3 › cell B7". Every gadget gets the first form, including legacy UIs and
-  the bundled blueprints. The chip's tooltip, here and on the transcript's chips, shows the label
+  the bundled blueprints. The chip's details, here and on the transcript's chips, show the label
   and below it the spot's context, if any, as plain text with its line breaks, clamped to a few
   lines: the user can see what the agent is told without the context crowding the chip or its
-  accessible name. The composer chip takes keyboard focus, which opens the tooltip, since the context
-  is shown nowhere else. It does so with or without context, so that it is not a Tab stop only
-  some of the time.
+  accessible name. The transcript's chips show them in a tooltip. The composer chip, where the
+  context is shown nowhere else, shows them in a popover that opens on hover, a tap, or Enter or
+  Space, since a tap never opens a tooltip and a phone user should see what a message will carry
+  before sending it. Its face is a button with or without context, so that it is not a Tab stop
+  only some of the time; dismissing is a separate button beside it.
 - On a single-pane layout (under 48rem, where the chat and the pane take turns on screen), the
   composer treats a closed pane as still showing what it showed when last open, since switching to
   the Chat tab is how a phone user gets to the composer at all. If the pane last showed a gadget

@@ -1078,13 +1078,15 @@ describe("ChatComposer", () => {
       });
     };
 
-    it("lets the keyboard reach a spot's context, which only the tooltip shows", async () => {
+    it("shows a spot's context, which only the chip shows, on a tap or the keyboard", async () => {
       await render({ focusOffer: budget });
-      const face = container!.querySelector<HTMLElement>('span[tabindex="0"]')!;
+      const face = container!.querySelector<HTMLButtonElement>('button[aria-expanded]')!;
       expect(face.textContent).toBe("Budget › Q3 › cell B7");
       expect(document.body.textContent).not.toContain("1,204,331");
 
-      await act(async () => face.focus());
+      // A tap, Enter and Space all click the button.
+      await act(async () => face.click());
+      expect(face.getAttribute("aria-expanded")).toBe("true");
       expect(document.body.textContent).toContain("1,204,331");
     });
 
