@@ -980,10 +980,8 @@ describe("AdminSettings gateway providers", () => {
     expect((await inDo(admin => admin.getSettings("admin"))).gatewayModels).toStrictEqual(before);
   });
 
-  // The environment listing google with no token is a gateway that does not start. An admin
-  // turning it on must leave every other gateway read and write working.
-  it("turns google on for a deployment with no token, and reports that it needs one",
-      async () => {
+  // All providers can ride the Workers AI binding without an API token.
+  it("turns google on for a deployment with no token", async () => {
     const { inDo, stored } = adminSettings({
       ...GATEWAY, CF_AI_GATEWAY_API_TOKEN: undefined, WORKERS_AI: { fetch: vi.fn() },
     });
@@ -993,13 +991,12 @@ describe("AdminSettings gateway providers", () => {
       const { gatewayModels } = await inDo(admin => admin.getSettings("admin"));
       expect(gatewayModels!.providerSettings).toStrictEqual([
         AUTO_OFF, ...FLOOR, OPENAI_OFF,
-        { provider: "google", enabledBy: "admin", needsApiToken: true },
+        { provider: "google", enabledBy: "admin", needsApiToken: false },
       ]);
       expect(gatewayModels!.models.map(model => model.id)).toContain("gemini-3.6-flash");
-
       await inDo(admin => admin.setGatewayModelMode("claude-fable-5-2", "hidden", ACTOR));
       await inDo(admin => admin.addGatewayModel(
-          { ...ADDED, provider: "google", id: "gemini-test" }, ACTOR));
+        { ...ADDED, provider: "google", id: "gemini-test" }, ACTOR));
       expect((await stored()).modelModes).toEqual({ "claude-fable-5-2": "hidden" });
       expect(logged).not.toHaveBeenCalled();
     } finally {
@@ -1194,8 +1191,6 @@ function tested(respond: (request: Request) => Response | Promise<Response>,
 
 describe("AdminSettings.testGatewayProvider", () => {
   const TIMED_OUT = "The model did not answer within 15 seconds.";
-  const NO_TOKEN = 'Provider "google" cannot use the Workers AI binding transport, and no ' +
-      "CF_AI_GATEWAY_API_TOKEN is configured for the HTTPS one.";
 
   it("asks the provider's first suggested model for a few tokens, as the admin", async () => {
     const { test, requests, put, inDo } = tested(() => completion("OK"));
@@ -1264,48 +1259,37 @@ describe("AdminSettings.testGatewayProvider", () => {
       durationMs: expect.any(Number),
     }]);
   });
-
-  // pi's Google adapter reports a refusal as the response body alone, which names no status.
+  // pi's Google adapter reports a refusal as the response body alone, which
+  // names no status.
   it("reports a refused Google request without a status", async () => {
-    const { test, fetch: binding } = tested(() => completion("OK"));
-    const urls: string[] = [];
-    const skipCache: (string | null)[] = [];
-    const fetched = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-      const request = new Request(input, init);
-      urls.push(request.url);
-      skipCache.push(request.headers.get("cf-aig-skip-cache"));
-      return Response.json(
-          { error: { code: 401, message: "API key not valid.", status: "UNAUTHENTICATED" } },
-          { status: 401 });
-    });
-    try {
-      const { result, entries } = await test("google");
-      expect(urls).toHaveLength(1);
-      expect(urls[0]).toContain("/platform-gateway/google-ai-studio/v1beta/models/");
-      // Over HTTPS too, a gateway that caches responses is told to ask the provider.
-      expect(skipCache).toEqual(["true"]);
-      expect(result).toStrictEqual({
-        model: "gemini-3.6-flash", ok: false,
-        message: '{"error":{"code":401,"message":"API key not valid.","status":"UNAUTHENTICATED"}}',
-      });
-      expect(entries).toMatchObject([{ modelId: "gemini-3.6-flash", outcome: "error" }]);
-      expect(entries[0]!.statusCode).toBeUndefined();
-    } finally {
-      fetched.mockRestore();
-    }
-    expect(binding).not.toHaveBeenCalled();
-  });
-
-  it("reports a provider that needs a token the deployment lacks, without a request",
-      async () => {
-    const { test, fetch } = tested(() => completion("OK"), { CF_AI_GATEWAY_API_TOKEN: undefined });
+    const { test, requests } = tested(() => Response.json(
+      { error: { code: 401, message: "API key not valid.", status: "UNAUTHENTICATED" } },
+      { status: 401 },
+    ));
     const { result, entries } = await test("google");
-    expect(result).toStrictEqual({ model: "gemini-3.6-flash", ok: false, message: NO_TOKEN });
-    expect(fetch).not.toHaveBeenCalled();
+    expect(requests.map(({ url }) => url)).toEqual([
+      "https://workers-binding.ai/ai-gateway/gateways/platform-gateway/" +
+          "google-ai-studio/v1beta/models/gemini-3.6-flash:streamGenerateContent?alt=sse",
+    ]);
+    expect(requests[0]!.headers.get("cf-aig-skip-cache")).toBe("true");
+    expect(requests[0]!.headers.get("x-goog-api-key")).toBeNull();
+    expect(result).toStrictEqual({
+      model: "gemini-3.6-flash", ok: false,
+      message: '{"error":{"code":401,"message":"API key not valid.","status":"UNAUTHENTICATED"}}',
+    });
     expect(entries).toMatchObject([{ modelId: "gemini-3.6-flash", outcome: "error" }]);
     expect(entries[0]!.statusCode).toBeUndefined();
   });
 
+  it("tests google over the binding transport when no token is configured", async () => {
+    const { test, requests } = tested(() => new Response("data: {}\n\n", {
+      status: 200, headers: { "content-type": "text/event-stream" },
+    }), { CF_AI_GATEWAY_API_TOKEN: undefined });
+    const { result } = await test("google");
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.url).toContain("/google-ai-studio/v1beta/models/");
+    expect(result.model).toBe("gemini-3.6-flash");
+  });
   it("reports a model that does not answer in time", async () => {
     // Fifteen seconds, shortened for the test. The transport answers only by failing once the
     // request is aborted.
@@ -1586,21 +1570,16 @@ describe("AdminSettings.testGatewayModel", () => {
     expect(JSON.stringify(entries)).not.toContain(prompt);
     expect(JSON.stringify(entries)).not.toContain("Incorrect API key");
   });
-
-  it("reports a model whose provider needs a token the deployment lacks, without a request",
-      async () => {
-    const { testModel, fetch, inDo } = tested(answered, { CF_AI_GATEWAY_API_TOKEN: undefined });
+  it("tests a google model over the binding when the deployment has no token", async () => {
+    const { testModel, requests, inDo } = tested(() => new Response("data: {}\n\n", {
+      status: 200, headers: { "content-type": "text/event-stream" },
+    }), { CF_AI_GATEWAY_API_TOKEN: undefined });
     await inDo(admin => admin.setGatewayProviderEnabled("google", true, ACTOR));
-    const { result, entries } = await testModel("gemini-3.6-flash");
-    expect(result).toStrictEqual({
-      model: "gemini-3.6-flash", ok: false,
-      message: 'Provider "google" cannot use the Workers AI binding transport, and no ' +
-          "CF_AI_GATEWAY_API_TOKEN is configured for the HTTPS one.",
-    });
-    expect(fetch).not.toHaveBeenCalled();
-    expect(entries).toEqual([{ ...LOGGED, modelId: "gemini-3.6-flash", outcome: "error" }]);
+    const { result } = await testModel("gemini-3.6-flash");
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.url).toContain("/google-ai-studio/v1beta/models/");
+    expect(result.model).toBe("gemini-3.6-flash");
   });
-
   it("reports a model that does not answer in time", async () => {
     // Thirty seconds, shortened for the test. The transport answers only by failing once the
     // request is aborted.

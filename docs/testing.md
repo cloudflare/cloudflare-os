@@ -88,9 +88,8 @@ pool from appearing to pass under Node. On a Mac, prevent idle sleep for the dur
 - AI Gateway mode needs `CF_AI_GATEWAY`, `CF_AI_GATEWAY_ACCOUNT_ID`, `CF_AI_GATEWAY_PROVIDERS`
   (`cloudflare` for `@cf/*` models) and a transport: `--use-workers-ai-binding`, which needs a
   Wrangler login (set `CLOUDFLARE_ACCOUNT_ID` if it has several accounts), or
-  `CF_AI_GATEWAY_API_TOKEN` with `CF_AI_GATEWAY_USE_BINDING=false`. `google` always needs the token.
-  Listing models and changing admin model settings send nothing to the gateway, so placeholder
-  values are enough for them.
+  `CF_AI_GATEWAY_API_TOKEN` with `CF_AI_GATEWAY_USE_BINDING=false`. Listing models and changing
+  admin model settings send nothing to the gateway, so placeholder values are enough for them.
 - workshop-backend's `test:run` runs Vitest twice, unit then integration, so a file argument only
   reaches the integration run. For one unit file, run the script's two build steps, then
   `pnpm exec vitest run <file>` in `packages/workshop-backend`.

@@ -27,20 +27,20 @@ function env(overrides: Partial<Cloudflare.Env> = {}): Cloudflare.Env {
 
 describe("AiGatewayConfig transport selection", () => {
   const binding = { gateway: () => ({}) } as unknown as Ai;
-  // google needs the HTTPS+token transport, so token-less configs must not enable it.
+  // All providers can use the Workers AI binding, so a tokenless config works.
   const bindingOnly = env({
     CF_AI_GATEWAY_ACCOUNT_ID: "account-id",
-    CF_AI_GATEWAY_PROVIDERS: "anthropic,openai,cloudflare",
+    CF_AI_GATEWAY_PROVIDERS: "anthropic,openai,google,cloudflare",
     WORKERS_AI: binding,
   });
 
-  it("uses the binding for every provider except google", () => {
+  it("uses the binding for every provider", () => {
     const config = new AiGatewayConfig(bindingOnly);
     expect(config.apiToken).toBeUndefined();
     expect(config.bindingFor("anthropic")).toBe(binding);
     expect(config.bindingFor("openai")).toBe(binding);
     expect(config.bindingFor("cloudflare")).toBe(binding);
-    expect(config.bindingFor("google")).toBeUndefined();
+    expect(config.bindingFor("google")).toBe(binding);
   });
 
   it("falls back to HTTPS with the token when the binding is absent", () => {
@@ -108,11 +108,12 @@ describe("AiGatewayConfig transport selection", () => {
     }))).toThrow("AI Gateway mode needs a transport");
   });
 
-  it("requires the token when google is enabled", () => {
-    expect(() => new AiGatewayConfig(env({
-      CF_AI_GATEWAY_ACCOUNT_ID: "account-id",
+  it("allows google with the binding and no token", () => {
+    const config = new AiGatewayConfig(env({
+      CF_AI_GATEWAY_ACCOUNT_ID: "account-id", CF_AI_GATEWAY_PROVIDERS: "google",
       WORKERS_AI: binding,
-    }))).toThrow("enabling the google provider requires CF_AI_GATEWAY_API_TOKEN");
+    }));
+    expect(config.bindingFor("google")).toBe(binding);
   });
 
   it("resolves the same-account gateway for binding-based callers (webFetch)", () => {
@@ -653,8 +654,6 @@ describe("GatewayModels", () => {
   describe("providers", () => {
     const CATALOG_ORDER = ["cloudflare-auto-router", "cloudflare", "anthropic", "openai", "google"];
     const GEMINI = "gemini-3.6-flash";
-    const NO_TOKEN = 'Provider "google" cannot use the Workers AI binding transport, and no ' +
-        "CF_AI_GATEWAY_API_TOKEN is configured for the HTTPS one.";
     it("enables the environment's, and the ones an admin added that the gateway serves", () => {
       expect([...gatewayModels({}, "anthropic").providers]).toEqual(["anthropic"]);
       // Neither ollama, which has no gateway route, nor a name that is no provider's.
@@ -708,44 +707,35 @@ describe("GatewayModels", () => {
           .toEqual([undefined, "admin", "environment", undefined, undefined]);
     });
 
-    it("reports a provider whose requests need a token the deployment lacks", () => {
-      // Whether the provider is on or off.
-      expect(needsToken(tokenless())).toEqual(["google"]);
-      expect(needsToken(tokenless(), ["google", "openai"])).toEqual(["google"]);
-      // With a token, over HTTPS alone or beside the binding, none does.
-      expect(needsToken(gatewayEnv("anthropic,google"))).toEqual([]);
-      expect(needsToken(env({
-        CF_AI_GATEWAY_ACCOUNT_ID: "account-id", CF_AI_GATEWAY_API_TOKEN: "gateway-token",
-        CF_AI_GATEWAY_PROVIDERS: "anthropic", WORKERS_AI: undefined,
-      }), ["google"])).toEqual([]);
+  it("reports no provider needing a token when the binding is present", () => {
+    // Whether the provider is on or off.
+    expect(needsToken(tokenless())).toEqual([]);
+    expect(needsToken(tokenless(), ["google", "openai"])).toEqual([]);
+    // With a token, over HTTPS alone or beside the binding, none does.
+    expect(needsToken(gatewayEnv("anthropic,google"))).toEqual([]);
+    expect(needsToken(env({
+      CF_AI_GATEWAY_ACCOUNT_ID: "account-id", CF_AI_GATEWAY_API_TOKEN: "gateway-token",
+      CF_AI_GATEWAY_PROVIDERS: "anthropic", WORKERS_AI: undefined,
+    }))).toEqual([]);
+  });
+
+  it("builds with google enabled by an admin on a deployment that has no token", async () => {
+    const models = new GatewayModels(
+      new AiGatewayConfig(tokenless()), { ...NO_CONFIG, addedProviders: ["google"] }
+    );
+    expect(models.providerSettings.find(({ provider }) => provider === "google")).toStrictEqual({
+      provider: "google", enabledBy: "admin", needsApiToken: false,
     });
-
-    // The environment enabling google without a token is a deployment that does not start. An
-    // admin doing so must not be: every gateway read builds this table.
-    it("builds with google enabled by an admin on a deployment that has no token", async () => {
-      expect(() => new AiGatewayConfig(tokenless("anthropic,google")))
-          .toThrow("enabling the google provider requires CF_AI_GATEWAY_API_TOKEN");
-
-      const models = new GatewayModels(
-          new AiGatewayConfig(tokenless()), { ...NO_CONFIG, addedProviders: ["google"] });
-      expect(models.providerSettings.find(({ provider }) => provider === "google")).toStrictEqual(
-          { provider: "google", enabledBy: "admin", needsApiToken: true });
-      expect(ids(models.list("language"))).toContain(GEMINI);
-      expect(ids(models.list("language"))).toContain("claude-opus-5-5");
-
-      const read = await getGatewayModels({
-        ...tokenless(),
-        BLUEPRINTS: adminConfigKv({ addedProviders: ["google"] }) as unknown as KVNamespace,
-      });
-      expect(read!.providers.has("google")).toBe(true);
-
-      // Its models are refused request by request, and the other providers' run.
-      expect(() => getModel(tokenless(), read!.resolve(GEMINI)!.config, USER))
-          .toThrow(new Error(NO_TOKEN));
-      expect(getModel(tokenless(), read!.resolve("claude-opus-5-5")!.config, USER).model.id)
-          .toBe("claude-opus-5-5");
+    expect(ids(models.list("language"))).toContain(GEMINI);
+    expect(ids(models.list("language"))).toContain("claude-opus-5-5");
+    const read = await getGatewayModels({
+      ...tokenless(), BLUEPRINTS: adminConfigKv({ addedProviders: ["google"] }) as unknown as KVNamespace,
     });
-
+    expect(read!.providers.has("google")).toBe(true);
+    expect(getModel(tokenless(), read!.resolve(GEMINI)!.config, USER).model.id).toBe(GEMINI);
+    expect(getModel(tokenless(), read!.resolve("claude-opus-5-5")!.config, USER).model.id)
+        .toBe("claude-opus-5-5");
+  });
     // The table says which providers need a token by the rule getModel refuses a request on.
     // This holds the two in step.
     it.each([tokenless(), gatewayEnv()])(
