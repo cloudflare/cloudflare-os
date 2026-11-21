@@ -6,8 +6,9 @@ import type { GoogleDocsDocument } from "../src/docs-api";
 
 /**
  * The field names of the Docs API's `documents` resource that the gatekeeper's field masks may
- * name, as Google's reference gives them. The fake refuses any other name, as Google does; it
- * does not know which type has which name (see `parseFieldMask`).
+ * name, as Google's reference gives them, and `suggestions`, the suggestion threads a read with
+ * comments included returns, which Google took in a mask on 2026-11-21. The fake refuses any other
+ * name, as Google does; it does not know which type has which name (see `parseFieldMask`).
  */
 export const DOCS_API_FIELD_NAMES: ReadonlySet<string> = new Set([
   "alignment", "autoText", "body", "bold", "bullet", "childTabs", "columnBreak", "content",
@@ -20,7 +21,7 @@ export const DOCS_API_FIELD_NAMES: ReadonlySet<string> = new Set([
   "paragraph", "paragraphStyle", "person", "personProperties", "positionedObjectIds", "revisionId",
   "richLink", "richLinkProperties", "sectionBreak", "startIndex", "startNumber", "strikethrough",
   "styles", "suggestedDeletionIds", "suggestedInsertionIds", "suggestedTableCellStyleChanges",
-  "suggestedTableRowStyleChanges", "tabId", "tabProperties", "table", "tableCellStyle",
+  "suggestedTableRowStyleChanges", "suggestions", "tabId", "tabProperties", "table", "tableCellStyle",
   "tableCells", "tableHeader", "tableOfContents", "tableRowStyle", "tableRows", "tableStyle",
   "tabs", "textRun", "textStyle", "title", "type", "underline", "uri",
 ]);

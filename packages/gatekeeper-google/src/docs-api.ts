@@ -481,6 +481,14 @@ function tabFields(levels: number): string {
 export const DOCUMENT_FIELDS = `documentId,title,revisionId,tabs(${tabFields(MASKED_TAB_LEVELS)})`;
 
 /**
+ * What `getDocumentWithSuggestions` asks for: `DOCUMENT_FIELDS`, so a write is placed on the tabs
+ * as the copy it was queued against holds them, and the suggestion threads, whole. The comment
+ * threads Google would send beside them are left out.
+ */
+const SUGGESTED_DOCUMENT_FIELDS =
+  `documentId,title,revisionId,suggestions,tabs(${tabFields(MASKED_TAB_LEVELS)})`;
+
+/**
  * The header the field mask of a full read travels in. Google's front end refuses a URL that
  * carries a mask past some length (21,335 characters were refused and 10,964 taken); the header
  * has carried 31,706.
@@ -717,8 +725,8 @@ export class GoogleDocsApi {
 
   /**
    * Fetch a document as a write must be based on it, suggestions inline, with the suggestion
-   * threads the caller can see. Comment threads come along too but are not kept: Drive lists the
-   * same comments under the same IDs.
+   * threads the caller can see, asking only for `SUGGESTED_DOCUMENT_FIELDS`. Comment threads are
+   * left out: Drive lists the same comments under the same IDs.
    */
   async getDocumentWithSuggestions(
     documentId: string,
@@ -726,7 +734,7 @@ export class GoogleDocsApi {
     let raw = await this.#request<GoogleDocsResponse & { suggestions?: unknown }>(
       `${DOCS_API_BASE}/${encodeURIComponent(documentId)}?includeTabsContent=true&` +
         "suggestionsViewMode=SUGGESTIONS_INLINE&commentsViewMode=COMMENTS_VIEW_MODE_INCLUDED&prettyPrint=false",
-      {},
+      { headers: { [FIELD_MASK_HEADER]: SUGGESTED_DOCUMENT_FIELDS } },
       "get document with suggestions",
     );
     if (raw.documentId !== documentId) throw new Error("Google Docs returned a different document");

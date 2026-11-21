@@ -2,7 +2,7 @@ import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  DocsCommentNotSavedError, GoogleDocsApi, type DocsCommentRecord, type GoogleDocsDocument,
+  DocsCommentNotSavedError, DOCUMENT_FIELDS, GoogleDocsApi, type DocsCommentRecord, type GoogleDocsDocument,
   type StructuralElement,
 } from "../src/docs-api";
 import {
@@ -185,7 +185,7 @@ describe("Docs comment threads", () => {
     expect(toCommentRecord(threads[1])).not.toHaveProperty("quotedText");
   });
 
-  it("reads the Doc with its suggestions as compact JSON, so indentation alone cannot pass the cap", async () => {
+  it("reads the Doc with its suggestions as compact JSON under the copy's mask, so indentation alone cannot pass the cap", async () => {
     // 60,000 one-line paragraphs: about 6 MB as compact JSON, and over the 10 MiB cap indented.
     let content = Array.from({ length: 60_000 }, (_paragraph, i) => ({
       startIndex: 1 + 2 * i, endIndex: 3 + 2 * i,
@@ -193,9 +193,11 @@ describe("Docs comment threads", () => {
     }));
     let body = { documentId: "doc-1", tabs: [{ tabProperties: { tabId: "t.0", title: "Tab 1" }, documentTab: { body: { content } } }] };
     let requested: URL[] = [];
-    vi.stubGlobal("fetch", async (url: string) => {
+    let masks: (string | null)[] = [];
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
       let asked = new URL(url);
       requested.push(asked);
+      masks.push(new Headers(init?.headers).get("X-Goog-FieldMask"));
       let text = asked.searchParams.get("prettyPrint") === "false" ? JSON.stringify(body) : JSON.stringify(body, null, 2);
       return new Response(text, { headers: { "Content-Type": "application/json" } });
     });
@@ -204,6 +206,9 @@ describe("Docs comment threads", () => {
     let { document } = await new GoogleDocsApi(async () => "token").getDocumentWithSuggestions("doc-1");
     expect(document.documentId).toBe("doc-1");
     expect(requested[0].searchParams.get("prettyPrint")).toBe("false");
+    // The copy's fields, so the write is placed on the tabs as it was queued against them, and the
+    // suggestion threads.
+    expect(masks[0]).toBe(DOCUMENT_FIELDS.replace("revisionId,tabs(", "revisionId,suggestions,tabs("));
   });
 
   it("reads a Doc with no comments as no threads, and refuses a malformed one", async () => {

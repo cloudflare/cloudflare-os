@@ -221,7 +221,7 @@ describe("the fake of Google's field masks", () => {
   });
 
   it("lists the field names in order and once each", () => {
-    expect(DOCS_API_FIELD_NAMES.size).toBe(80);
+    expect(DOCS_API_FIELD_NAMES.size).toBe(81);
     expect([...DOCS_API_FIELD_NAMES]).toEqual([...DOCS_API_FIELD_NAMES].toSorted());
     // The set drops a name written twice, so the names are read as the source writes them.
     let source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "docs-fields.ts"), "utf8");
