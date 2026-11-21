@@ -20,7 +20,7 @@ afterEach(() => {
 
 const LONG_LINE = `const long = '${'wrapped text '.repeat(30)}'`
 
-function mountDeletion(width: string) {
+function mountDiff(width: string, original: string[], text: string[]) {
   window.localStorage.setItem('gadgets:workshop:diffLayout', 'stacked')
   host = document.createElement('div')
   host.style.width = width
@@ -29,14 +29,14 @@ function mountDeletion(width: string) {
   act(() => root!.render(
     <ThemeProvider>
       <CodeDiffEditor
-        filename="file.ts"
-        original={['const a = 1', LONG_LINE, 'const c = 3'].join('\n')}
-        text={['const a = 1', 'const c = 3'].join('\n')}
-        height={500}
+        filename="file.ts" original={original.join('\n')} text={text.join('\n')} height={500}
       />
     </ThemeProvider>,
   ))
 }
+
+const mountDeletion = (width: string) =>
+  mountDiff(width, ['const a = 1', LONG_LINE, 'const c = 3'], ['const a = 1', 'const c = 3'])
 
 async function deletedRow(): Promise<HTMLElement> {
   return vi.waitFor(() => {
@@ -79,4 +79,28 @@ it('keeps a long deleted line on one row in a wide editor, scrolled to sideways'
   scroller().scrollLeft = end
   expect(row.getBoundingClientRect().right)
     .toBeLessThanOrEqual(scroller().getBoundingClientRect().right + 0.5)
+})
+
+it('keeps a wrapped expand button whole, its gutter cell beside it', async () => {
+  // Enough deleted lines to truncate, in a pane too narrow for the button's label.
+  const deleted = Array.from({ length: 130 }, (_, i) => `const gone${i + 1} = ${i + 1}`)
+  mountDiff('200px', ['const a = 1', ...deleted, 'const c = 3'], ['const a = 1', 'const c = 3'])
+  const button = await vi.waitFor(() => {
+    const found = host!.querySelector<HTMLElement>('button.gadgets-deleted-omitted-row')
+    expect(found).not.toBeNull()
+    return found!
+  })
+  button.scrollIntoView({ block: 'center' })
+
+  await vi.waitFor(() => expect(button.getBoundingClientRect().height).toBeGreaterThan(20))
+  // The whole label is inside the button, so every part of it expands the deletion.
+  expect(button.scrollHeight).toBeLessThanOrEqual(button.clientHeight)
+  await vi.waitFor(() => {
+    const ellipsis = [...host!.querySelectorAll<HTMLElement>('.gadgets-deleted-margin')]
+      .find(cell => cell.textContent === '...')
+    expect(ellipsis?.getBoundingClientRect().top)
+      .toBeCloseTo(button.getBoundingClientRect().top, 0)
+    expect(ellipsis?.getBoundingClientRect().height)
+      .toBeCloseTo(button.getBoundingClientRect().height, 0)
+  })
 })
