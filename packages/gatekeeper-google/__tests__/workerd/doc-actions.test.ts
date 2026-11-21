@@ -3104,11 +3104,6 @@ describe("a Drive source of a Doc whose copy the connection evicted", () => {
   const small = (text: string): GoogleDocsDocument => ({
     documentId: "doc-1", title: "Small", revisionId: "r1", tabs: [buildTab([para(text)])],
   });
-  const EDIT: GoogleDocPendingAction = {
-    id: 1,
-    action: { ...BASE, type: "replaceText", oldMarkdown: "First.", newMarkdown: "Changed.", display: { tab: "x" } },
-  };
-
   /**
    * A connection that keeps one document, what its limits told it, and `sourceOf`: a source of
    * a file saying `text` with `pending` queued, and a whole read through it.
