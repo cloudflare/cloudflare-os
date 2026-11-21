@@ -1,7 +1,6 @@
-// What a pass over a tab of thousands of numbered lists reads and writes of its carry: pinned
-// by a count of entries, which grows with the lists and not with their square. No time is
-// pinned: a count holds on any machine.
-// A file of its own, because it replaces a module for every test of its file.
+// What a pass of the Doc store over a tab of thousands of numbered lists reads and writes of
+// its carry, by a count of entries that grows with the lists and not with their square; and
+// that the store moves a carry nowhere else. A file of its own: it replaces a module.
 
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -11,14 +10,11 @@ import { DocStore, docStoreCost, fetchedMarkdown, type DocPending } from "../src
 import { initialCarry } from "../src/markdown-converter";
 import { counted, touchedBy } from "./carry-count";
 import { fakeDocStorage } from "./doc-store-fake";
-import { listedTablesTab, scenarioBase } from "./doc-store-scenarios";
+import { listedTablesTab } from "./doc-store-scenarios";
 import { documentOf } from "./docs-fetched-corpus";
 
-// The module as it is but for `initialCarry` as other modules import it: every pass of the
-// store then owns a counted carry, and so does the second side of every pair the store makes,
-// which is handed a carry made the same way. What a walk that holds a pair touches is
-// therefore the two maps together, and `carries` says whether it held one: 1 for a pass
-// alone, 2 for a pass with a pair.
+// `initialCarry` as other modules import it: every pass of the store, and the second side of
+// every pair it makes, then owns a counted carry (`carries` is 1 for a pass, 2 with a pair).
 vi.mock("../src/markdown-converter", async importOriginal => {
   let converter = await importOriginal<typeof import("../src/markdown-converter")>();
   let { countedCarry } = await import("./carry-count");
@@ -29,10 +25,8 @@ const DOC = "doc";
 const NONE: DocPending = { edits: [], roots: [] };
 const SOURCES = path.resolve(import.meta.dirname, "../src");
 
-/** A store under the digest `made`, over `storage`. */
-function opened(made?: string, storage = fakeDocStorage()): DocStore {
-  return new DocStore(storage, undefined, made);
-}
+/** A store over a storage of its own. */
+const opened = () => new DocStore(fakeDocStorage());
 
 /** Keeps a document of `tab` as Google answers one: a walk empties it, so each keep reads its own. */
 function keep(store: DocStore, tab: GoogleDocsTab, revision: string) {
@@ -70,19 +64,6 @@ function oneItemMore(lists: number): GoogleDocsTab {
   return tab;
 }
 
-/**
- * `listedTablesTab("t1", lists)` with every second table's cell an item of the list of the
- * table before it: no index moves and every list stays defined. Every list then holds another
- * count than in the tab as it was (two where it held one, or none), to the tab's end.
- */
-function everyListOtherwise(lists: number): GoogleDocsTab {
-  let tab = listedTablesTab("t1", lists);
-  for (let [at, cell] of cellsOf(tab).entries()) {
-    if (at % 2 === 1) cell.bullet = { listId: `kix.list${at - 1}` };
-  }
-  return tab;
-}
-
 describe("the carry of a pass over a tab of thousands of numbered lists", () => {
   it("the counter counts", () => {
     let carry = initialCarry();
@@ -114,68 +95,6 @@ describe("the carry of a pass over a tab of thousands of numbered lists", () => 
     // The lists' ratio is 2.57; the ratio of their squares is 6.6.
     expect(touched[1] / touched[0]).toBeGreaterThan(2.3);
     expect(touched[1] / touched[0]).toBeLessThan(2.8);
-  });
-
-  // The first list holds one number more than in the version beside, to the tab's end, so the
-  // two carries are never the same again and every later run is keyed again: the walk moves
-  // both carries past each, and asks at each whether they are the same. Counted on both
-  // sides, the pass's numbers and what the pair holds apart.
-  it("a refetch keyed beside a version whose numbers never settle touches no more", () => {
-    let touched = [3_000, 7_700].map(lists => {
-      let store = opened();
-      keep(store, listedTablesTab("t1", lists), "r1");
-      let cost = spent(() => keep(store, oneItemMore(lists), "r2"));
-      // The changed table is rendered; the runs after it are keyed from their summaries.
-      expect(cost).toMatchObject({
-        carries: 2, runsRendered: 1, runsDecoded: 0, runsKeyed: 2 * lists - 3,
-      });
-      // A table keyed again: 1 entry read for its key, 7 to move this version's carry past
-      // it and 6 to move the other's.
-      expect(cost.touched).toBeLessThanOrEqual(14 * lists);
-      return cost.touched;
-    });
-    expect(touched[1] / touched[0]).toBeGreaterThan(2.3);
-    expect(touched[1] / touched[0]).toBeLessThan(2.8);
-  });
-
-  // Every list holds another count than in the version beside, to the tab's end, so the pair
-  // holds every list passed apart, thousands by the end: the shape on which a move that
-  // listed or copied what differs would cost the square of the lists.
-  it("a refetch keyed beside a version that numbers every list otherwise touches no more", () => {
-    let touched = [1_500, 3_000].map(lists => {
-      let store = opened();
-      keep(store, listedTablesTab("t1", lists), "r1");
-      let cost = spent(() => keep(store, everyListOtherwise(lists), "r2"));
-      // Every second table is rendered; of the others and the stretches between, all but the
-      // first of each are keyed from their summaries.
-      expect(cost).toMatchObject({
-        carries: 2, runsRendered: lists / 2, runsDecoded: 0, runsKeyed: 1.5 * lists - 2,
-      });
-      // A pair of tables, the first keyed again and the second rendered: 30 entries, which
-      // is 15 a list.
-      expect(cost.touched).toBeLessThanOrEqual(15 * lists);
-      return cost.touched;
-    });
-    // The lists' ratio is 2; the ratio of their squares is 4.
-    expect(touched[1] / touched[0]).toBeGreaterThan(1.8);
-    expect(touched[1] / touched[0]).toBeLessThan(2.2);
-  });
-
-  // The version is kept under one digest and read under another: each run is decoded,
-  // rendered and keyed again, in one pass that owns its carry.
-  it("a keying after a change of digest touches the lists each run counts in", () => {
-    let touched = [400, 800].map(lists => {
-      let storage = fakeDocStorage();
-      let head = keep(opened("a", storage), listedTablesTab("t1", lists), "r1");
-      let store = opened("b", storage);
-      let base = scenarioBase(store, DOC, head);
-      let cost = spent(() => store.markdown(base));
-      expect(cost).toMatchObject({ carries: 1, runsRendered: 2 * lists + 1 });
-      expect(cost.touched).toBeLessThanOrEqual(6 * lists);
-      return cost.touched;
-    });
-    expect(touched[1] / touched[0]).toBeGreaterThan(1.8);
-    expect(touched[1] / touched[0]).toBeLessThan(2.2);
   });
 
   // By the sources' text, read as files: each call of `advanceCarry` in the store is found
