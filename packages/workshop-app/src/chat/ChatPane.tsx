@@ -42,6 +42,7 @@ import { slashRequestFor, missingCommand } from './slashCommands'
 import { useChatCommands } from './useChatCommands'
 import { withCapsules } from './capsules'
 import { useLinkConnections } from './useLinkConnections'
+import { ConnectResource } from '@/connections/SetUpConnection'
 import { useChatSession } from './useChatSession'
 import { useOpenNewOutputs } from './useOpenNewOutputs'
 import { useCapturedLogs } from './useCapturedLogs'
@@ -195,7 +196,9 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   })
   // Making a connection in the workspace is building in it, which those who only use it cannot.
   const builds = workspace !== undefined && workspace.role !== 'use'
-  const pasteLinks = useLinkConnections(builds ? workspaceId : undefined, composer, added)
+  const links = useLinkConnections(builds ? workspaceId : undefined, composer, added)
+  const draftLinks = links?.draft
+  const linkForm = links?.form
   // Left once, whether the workspace says it was deleted first or the call returns first.
   const left = useRef(false)
   const leave = () => {
@@ -420,8 +423,6 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
     />
   ), [workspaceId, context, minimizeContext, openOutput, openAttachment, outputHref, opensAutomations, openAutomation, linksAutomations, hrefOfAutomation])
 
-  const onPasteLinks = useHandler((urls: string[]) => pasteLinks?.(urls))
-  const hasPasteLinks = pasteLinks !== undefined
   const stopAgent = useHandler(() => {
     if (connection?.blocked()) return false
     setProblem(undefined)
@@ -463,7 +464,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
       onSend={sendMessage}
       commands={composerCommands}
       commandsLoading={commandsLoading}
-      onPasteLinks={hasPasteLinks ? onPasteLinks : undefined}
+      links={draftLinks}
       addActions={builds ? { onAddConnection: () => setAdding(true) } : undefined}
       stop={agentActive && waiting ? { waiting, onStop: stopAgent } : undefined}
       problem={sendProblem === undefined ? undefined : { message: sendProblem, onDismiss: dismissProblem }}
@@ -471,7 +472,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
     />
     <ChatStatusLine usage={usage} modelId={modelId} />
     </div>
-  ), [usage, modelId, logged, peekLogs, discardLogs, addLogs, sendMessage, composerCommands, commandsLoading, hasPasteLinks, onPasteLinks, builds, agentActive, waiting, stopAgent, sendProblem, dismissProblem, reply, showReplied])
+  ), [usage, modelId, logged, peekLogs, discardLogs, addLogs, sendMessage, composerCommands, commandsLoading, draftLinks, builds, agentActive, waiting, stopAgent, sendProblem, dismissProblem, reply, showReplied])
 
   const hasEarlier = ready && chat.hasEarlier
   const loadingEarlier = ready && chat.loadingEarlier
@@ -555,6 +556,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
       {adding && (
         <AddConnection workspaceId={workspaceId} open={adding} onOpenChange={setAdding} to="this chat" onAdded={onAdded} />
       )}
+      {linkForm && <ConnectResource {...linkForm} />}
     </ChatLayout>
   )
 }

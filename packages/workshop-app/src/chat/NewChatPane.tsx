@@ -5,6 +5,7 @@ import { ChatStart, type ChatStartProps } from '@/blocks/ChatStart'
 import { Composer, type ComposerHandle } from '@/blocks/Composer'
 import type { ComposerConnection } from '@/blocks/ComposerConnectionLines'
 import { AddConnection, type AddedConnection } from '@/connections/AddConnection'
+import { ConnectResource } from '@/connections/SetUpConnection'
 import type { ComposerCommand } from '@/blocks/ComposerCommandPicker'
 import { MessageList } from '@/blocks/MessageList'
 import { UserMessage, type UserMessagePart } from '@/blocks/UserMessage'
@@ -18,6 +19,7 @@ import { startWithFormat, type StartFormat } from './startWithFormat'
 import { ComposerModelPicker } from './ComposerModelPicker'
 import { describeModelProblem, useDefaultModel } from './useDefaultModel'
 import { useChatCommands } from './useChatCommands'
+import { useLinkConnections } from './useLinkConnections'
 
 // As the message will be drawn: the skill or the format as what it is, then what was written.
 const shownOf = ({ text, files, command, format }: { text: string; files: File[]; command?: ComposerCommand; format?: StartFormat }): FirstMessage => {
@@ -115,6 +117,9 @@ export const NewChatPane = ({ header, sendingHeader = header, greeting, format, 
         ensureWorkspace().then(() => setAdding(true), (error: unknown) => setProblem(`Couldn’t add a connection: ${error instanceof Error ? error.message : String(error)}`))
       },
     }
+  // A link in the first message is a connection as in any other, the workspace made for the first of them.
+  const links = useLinkConnections(startIn, composer, added, ensureWorkspace)
+  const linkForm = links?.form && <ConnectResource {...links.form} />
   // A failure leaves the commands unread; sending still makes the workspace as it goes.
   const onCommandsWanted = startIn === undefined && ensureWorkspace
     ? () => void ensureWorkspace().catch(() => undefined)
@@ -157,20 +162,23 @@ export const NewChatPane = ({ header, sendingHeader = header, greeting, format, 
   if (greeting !== undefined && !pending) {
     return (
       <StartLayout header={header}>
-        <ChatStart ref={composer} greeting={greeting} onSend={send} initialDraft={unsent} commands={commands} commandsLoading={commandsLoading} onCommandsWanted={onCommandsWanted} format={format} problem={composerProblem} workspace={workspace} addActions={addActions} endSlot={modelPicker} autoFocus />
+        <ChatStart ref={composer} greeting={greeting} onSend={send} initialDraft={unsent} commands={commands} commandsLoading={commandsLoading} onCommandsWanted={onCommandsWanted} format={format} problem={composerProblem} workspace={workspace} addActions={addActions} links={links?.draft} endSlot={modelPicker} autoFocus />
         {startIn !== undefined && <AddConnection workspaceId={startIn} open={adding} onOpenChange={setAdding} to="this chat" onAdded={onAdded} />}
+        {linkForm}
       </StartLayout>
     )
   }
 
   return (
     // The message being sent has its format in it, so the composer under it starts with none.
-    <ChatLayout header={sendingHeader} composer={<Composer ref={composer} onSend={send} commands={commands} commandsLoading={commandsLoading} onCommandsWanted={onCommandsWanted} format={pending ? undefined : format} problem={composerProblem} addActions={addActions} endSlot={modelPicker} />}>
+    // Its links are the greeting's composer's, where that is what was sent from.
+    <ChatLayout header={sendingHeader} composer={<Composer ref={composer} onSend={send} commands={commands} commandsLoading={commandsLoading} onCommandsWanted={onCommandsWanted} format={pending ? undefined : format} problem={composerProblem} addActions={addActions} links={greeting === undefined ? links?.draft : undefined} endSlot={modelPicker} />}>
       {/* In the conversation's own list, so it is where the conversation this becomes will be. */}
       <MessageList messages={[]}>
         {pending && <UserMessage {...shownOf(pending)} />}
         <AssistantPresence working={Boolean(pending)} status="Thinking…" />
       </MessageList>
+      {greeting === undefined && linkForm}
     </ChatLayout>
   )
 }
