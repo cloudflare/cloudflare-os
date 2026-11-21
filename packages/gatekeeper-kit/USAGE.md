@@ -696,10 +696,11 @@ see [A listing over a simulation store](#a-listing-over-a-simulation-store).
 
 The store runs no callback but the reducer's. A reducer that cannot replay a record on the entity
 returns `refused` with its reason and the fold goes on; the result lists what that call refused, and
-the gatekeeper marks those records after the fold and leaves marked records out of the lists it
-folds. A mark outlives the read, so the fetch, the fold and the marks run against apply and reject
-(`runExclusive`): a read then waits for an apply in flight. Inside a resource Durable Object that
-reads a document one tab at a time, where `#journal` is the gatekeeper's own pending store:
+the gatekeeper marks those records after the fold, leaves marked records out of the lists it folds,
+and fails the apply of a marked record before it reaches the provider. A mark outlives the read, so
+the fetch, the fold and the marks run against apply and reject (`runExclusive`): a read then waits
+for an apply in flight. Inside a resource Durable Object that reads a document one tab at a time,
+where `#journal` is the gatekeeper's own pending store:
 
 ```ts
 // `invalidatedReason` is the mark, stored with the record under the same id.
@@ -749,6 +750,11 @@ reject(id: number): void {
 }
 
 async apply(id: number, edit: Edit): Promise<void> {
+  // An edit a read refused and marked is not sent: the reads leave it out, and the provider may
+  // still accept it (a positional edit whose offset is still in the tab) and change text no read
+  // showed changing. The record is read here, on the queue the reads mark it on.
+  const reason = this.#journal.get(id)?.action.invalidatedReason;
+  if (reason) throw new ActionApplyError(reason); // terminal: nothing reached the provider
   await this.#api.update(edit);
   this.ctx.storage.transactionSync(() => {
     this.#journal.remove(id);

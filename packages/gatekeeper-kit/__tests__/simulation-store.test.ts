@@ -1,6 +1,7 @@
 import * as fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import { PROPERTY_RUN_OPTIONS } from "@gadgets/scripts/property-runs";
+import { ActionApplyError } from "../src/actions";
 import type { CursorInjection } from "../src/cursors";
 import { createSimulationView, ProvisionalIds, type SimulationRecord } from "../src/simulation";
 import {
@@ -11,6 +12,7 @@ import {
   type EntityStep,
   type SimulationStoreOptions,
 } from "../src/simulation-store";
+import { SerialTaskQueue } from "../src/serial-queue";
 import { fakeKv } from "./fake-kv";
 
 // The fixture is a gatekeeper whose entities are pages of lines. Its reducer refuses what it
@@ -1206,5 +1208,124 @@ describe("simulatedList", () => {
     expect(list.inject.items).toEqual([]);
     expect(list.inject.revalidate(task("~1", 5))).toBeNull();
     expect(reduced).toBe(0);
+  });
+});
+
+// The document recipe of USAGE.md's "Replaying pending actions", run as it is written there: a
+// resource that reads a document one tab at a time, marks what a fold refused, and applies and
+// rejects on the queue its reads run on. An edit is positional: it replaces the text it expects at
+// an offset, and the provider writes at the offset whatever text is there.
+describe("the usage recipe's document reads", () => {
+  type Edit = { tabId: string; at: number; expected: string; text: string };
+  type Tab = { id: string; text: string };
+  type Change = { tabId: string; edit: Edit; invalidatedReason?: string };
+  type Queued = { id: number; action: Change };
+
+  const applyEdit = (tab: Tab, edit: Edit): { ok: true; tab: Tab } | { ok: false; reason: string } =>
+    tab.text.slice(edit.at, edit.at + edit.expected.length) === edit.expected
+      ? { ok: true, tab: { ...tab, text: write(tab.text, edit) } }
+      : { ok: false, reason: `The tab no longer reads "${edit.expected}" there.` };
+  const write = (text: string, edit: Edit): string =>
+    text.slice(0, edit.at) + edit.text + text.slice(edit.at + edit.expected.length);
+
+  class Document {
+    readonly provider = { tabs: [{ id: "t1", text: "hello world" }] as Tab[], sent: [] as Edit[] };
+    readonly #records = new Map<number, Queued>();
+    readonly #journal = {
+      listPending: (): Queued[] => [...this.#records.values()],
+      get: (id: number): Queued | undefined => this.#records.get(id),
+      markInvalid: (id: number, reason: string): void => {
+        const record = this.#records.get(id);
+        if (record) record.action.invalidatedReason = reason;
+      },
+      remove: (id: number): void => void this.#records.delete(id),
+    };
+    readonly #queue = new SerialTaskQueue();
+    readonly #actions = { runExclusive: <T>(hook: () => Promise<T>) => this.#queue.run(hook) };
+    readonly #api = {
+      get: async () => ({ tabs: this.provider.tabs.map(tab => ({ ...tab })) }),
+      update: async (edit: Edit) => {
+        this.provider.sent.push(edit);
+        this.provider.tabs = this.provider.tabs.map(tab =>
+          tab.id === edit.tabId ? { ...tab, text: write(tab.text, edit) } : tab);
+      },
+    };
+    #replay = createSimulationStore<string, Tab, Tab, Queued, string>({
+      initial: tab => tab,
+      reduce: (tab, { action }) => {
+        if (tab === undefined) return { kind: "refused", refusal: "The tab is not in the document." };
+        const edited = applyEdit(tab, action.edit);
+        return edited.ok
+          ? { kind: "applied", value: edited.tab }
+          : { kind: "refused", refusal: edited.reason };
+      },
+    });
+
+    stage(id: number, edit: Edit): void {
+      this.#records.set(id, { id, action: { tabId: edit.tabId, edit } });
+    }
+
+    marked(id: number): string | undefined {
+      return this.#records.get(id)?.action.invalidatedReason;
+    }
+
+    read(tabId: string): Promise<string | undefined> {
+      return this.#actions.runExclusive(async () => {
+        const doc = await this.#api.get();
+        const tab = doc.tabs.find(tab => tab.id === tabId);
+        return this.#fold(tabId, tab)?.text;
+      });
+    }
+
+    #fold(tabId: string, tab: Tab | undefined): Tab | undefined {
+      const view = createSimulationView(this.#journal.listPending(), action => [action.tabId]);
+      const { entity, refused } = this.#replay.fold(
+        tabId, tab, view.forTarget(tabId).filter(record => !record.action.invalidatedReason));
+      for (const { record, refusal } of refused) this.#journal.markInvalid(record.id, refusal);
+      return entity;
+    }
+
+    reject(id: number): Promise<void> {
+      return this.#queue.run(() => this.#journal.remove(id));
+    }
+
+    apply(id: number, edit: Edit): Promise<void> {
+      return this.#queue.run(async () => {
+        const reason = this.#journal.get(id)?.action.invalidatedReason;
+        if (reason) throw new ActionApplyError(reason);
+        await this.#api.update(edit);
+        this.#journal.remove(id);
+      });
+    }
+  }
+
+  it("applies an edit no read refused", async () => {
+    const doc = new Document();
+    const edit = { tabId: "t1", at: 0, expected: "hello", text: "howdy" };
+    doc.stage(1, edit);
+
+    expect(await doc.read("t1")).toBe("howdy world");
+    await doc.apply(1, edit);
+    expect(doc.provider.sent).toEqual([edit]);
+    expect(doc.provider.tabs[0].text).toBe("howdy world");
+  });
+
+  it("sends the provider no edit a read refused and marked, and rejects it", async () => {
+    const doc = new Document();
+    const edit = { tabId: "t1", at: 0, expected: "hello", text: "howdy" };
+    doc.stage(1, edit);
+    // The text the edit expects changed at the provider; its offset is still in the tab.
+    doc.provider.tabs = [{ id: "t1", text: "jello world" }];
+
+    expect(await doc.read("t1")).toBe("jello world");
+    expect(doc.marked(1)).toBe('The tab no longer reads "hello" there.');
+
+    await expect(doc.apply(1, edit)).rejects.toThrow(ActionApplyError);
+    expect(doc.provider.sent).toEqual([]);
+    expect(doc.provider.tabs[0].text).toBe("jello world");
+    // The record stays, with its reason, until it is rejected.
+    expect(doc.marked(1)).toBe('The tab no longer reads "hello" there.');
+    await doc.reject(1);
+    expect(doc.marked(1)).toBeUndefined();
   });
 });
