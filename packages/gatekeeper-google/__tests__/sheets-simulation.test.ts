@@ -61,18 +61,25 @@ const deleteRows = (sheetId: number, first: number, count = 1): PlannedChange =>
 
 
 describe("baseValues", () => {
-  it("answers every lookup as a scan of every piece would, in any order, pieces across bands and overlapping", () => {
+  // Pieces cut across rows (tall), and many narrow column fragments with a few wide pieces over
+  // them (wide), both across several bands and overlapping.
+  let shapes = {
+    tall: { pieces: 25, rows: 1_200, height: 600, columns: 6, width: 4, askRows: 2_000, askColumns: 10 },
+    wide: { pieces: 80, rows: 40, height: 30, columns: 120, width: 3, askRows: 60, askColumns: 150 },
+  };
+  it.each(Object.entries(shapes))("answers every lookup as a scan of every piece would, in any order: %s", (_name, shape) => {
     let seed = 20261120;
     let next = (below: number) => {
       seed = (seed * 1103515245 + 12345) % 2147483648;
       return seed % below;
     };
     for (let round = 0; round < 30; round++) {
-      let pieces: SheetArea[] = Array.from({ length: 1 + next(25) }, () => {
-        let startRow = next(1_200), startColumn = next(6);
+      let pieces: SheetArea[] = Array.from({ length: 1 + next(shape.pieces) }, () => {
+        let startRow = next(shape.rows), startColumn = next(shape.columns);
+        let width = 1 + next(next(8) === 0 ? 10 * shape.width : shape.width);
         return {
           sheetId: next(2) * 3,
-          rect: { startRow, endRow: startRow + 1 + next(600), startColumn, endColumn: startColumn + 1 + next(4) },
+          rect: { startRow, endRow: startRow + 1 + next(shape.height), startColumn, endColumn: startColumn + width },
         };
       });
       let values = pieces.map(({ rect }) => Array.from({ length: rect.endRow - rect.startRow }, () =>
@@ -90,8 +97,13 @@ describe("baseValues", () => {
         return null;
       };
       for (let ask = 0; ask < 400; ask++) {
-        let sheetId = next(2) * 3, row = next(2_000), column = next(10);
+        let sheetId = next(2) * 3, row = next(shape.askRows), column = next(shape.askColumns);
         expect(lookup(sheetId, row, column), `round ${round}`).toBe(scanned(sheetId, row, column));
+      }
+      // A row walked as the guard walks it, column by column.
+      let row = next(shape.askRows);
+      for (let column = 0; column < shape.askColumns; column++) {
+        expect(lookup(0, row, column), `round ${round}, row ${row}`).toBe(scanned(0, row, column));
       }
     }
   });
@@ -1019,7 +1031,7 @@ describe("baseValues", () => {
     }
   });
 
-  it("looks only through the pieces that hold a cell's row when queued structure cuts a guarded area into hundreds", () => {
+  it("looks only through the pieces that hold a cell's row and its columns when queued structure cuts a guarded area into hundreds", () => {
     // As many insertions as may be queued: a row before every 18th of the first 480 that Google
     // holds and a column before every 4th of its 100, the last first so that each lands where
     // Google's lines still are.
@@ -1050,13 +1062,12 @@ describe("baseValues", () => {
     expect(content).toEqual(enteredContent(g, [area], keyedValues(pieces, values)));
     expect(content[0][479 + 25][99 + 25]).toBe("479:99");
     // Each walk asks for the 480 rows Google holds, 100 cells a row. A row's first cell looks at
-    // each piece that reaches the row's band of 256 rows once, to list the 26 that hold the row:
-    // the 26 columns of pieces for each run of rows the band reaches, 354 a row on average here
-    // against all 676 of the sheet without the bands. A cell then looks
-    // through that list from its end until its own piece: the columns come in runs of 3, then 24
-    // runs of 4, then 1, and a cell of run j looks at 26 - j pieces, so a row's cells look at
-    // 3 * 26 + 4 * (25 + 24 + ... + 2) + 1 = 1,375. Two walks.
-    expect(reads).toBe(1_659_456);
+    // each piece that reaches the row's band of 256 rows once, to index the 26 that hold the row
+    // by band of 16 columns: 354 a row on average here, against all 676 of the sheet without the
+    // bands. A cell then looks through its band's list from its end until its own piece: the
+    // columns come in runs of 3, then 24 runs of 4, then 1, so a band holds 5 or 6 pieces and a
+    // row's cells look at 319 (1,375 with no column bands). Two walks.
+    expect(reads).toBe(645_696);
     // Looking through every piece for every cell would be 48,000 * 676, twice: 64,896,000.
     expect(reads).toBeLessThan(3_000_000);
   });
