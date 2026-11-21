@@ -1,6 +1,4 @@
-// What a tab's JSON says of the looks no Markdown rendering shows, and of what its tables' cells
-// hold, for tests that hold the request builders to them through the model of
-// `documents.batchUpdate`.
+// Probes of a tab's JSON for looks the Markdown does not show and for its tables' cells.
 
 import type {
   GoogleDocsTab, Paragraph, ParagraphElement, StructuralElement,

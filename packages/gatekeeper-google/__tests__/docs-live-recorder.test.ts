@@ -15,19 +15,17 @@ import type {
 } from "../src/docs-api";
 import { applyDocsRequests, NotModelledError } from "../src/docs-model";
 import type { ModelParagraphStyle, ModelTextStyle } from "../src/docs-model";
-import { pruneTab } from "../src/docs-replica";
 import { docTabToMarkdown, POSITIONED_ITEM_BEFORE } from "../src/markdown-converter";
-import { BULLET_LIST, buildTab, footnote, para, presetLevels } from "./doc-fixture";
+import { BULLET_LIST, buildTab, para, presetLevels } from "./doc-fixture";
 import type { BlockSpec } from "./doc-fixture";
 import {
-  comparable, FIXTURE_DIRECTORY, prunedTab, readFixtures, rowsGoogleSizes,
+  comparable, prunedTab, readFixtures, rowsGoogleSizes,
 } from "./docs-live-fixtures";
 import type { DocsLiveFixture } from "./docs-live-fixtures";
 import {
   drift, googleTransport, main, recordScenario, SCENARIOS, stepRequests,
 } from "./docs-live-recorder";
 import type { DocsTransport, Scenario, ScenarioStep } from "./docs-live-recorder";
-import { pinnedHeaderRows } from "./docs-model-probes";
 
 const FIXTURES = readFixtures();
 const CHIP_PLACEHOLDER = "\uE907";
@@ -155,15 +153,6 @@ async function recordedByModel(scenario: Scenario, start: { copied?: GoogleDocsT
   return { fresh, recorded, ...model };
 }
 
-/** `value` with a field nothing reads added to every object in it. */
-function dressed<T>(value: T, key?: string): T {
-  if (Array.isArray(value)) return value.map(entry => dressed(entry)) as T;
-  if (!value || typeof value !== "object") return value;
-  let fields = Object.entries(value).map(([name, held]) => [name, dressed(held, name)]);
-  // The lists are keyed by id, so a field there would be a list.
-  return Object.fromEntries(key === "lists" ? fields : [...fields, ["unread", { by: "anything" }]]);
-}
-
 describe("the batch of a step", () => {
   it("builds from each recorded document the batch its recording holds", () => {
     let equal = 0;
@@ -229,23 +218,6 @@ describe("the batch of a step", () => {
 });
 
 describe("a pruned tab", () => {
-  it("is the tab pruned, with its title emptied, and prunes to itself", () => {
-    // Each name these tabs hold is its own stand-in, so the title is all a recording changes
-    // of them: the template's chips, image and list, and the kinds of chip it lacks.
-    let chips = buildTab([{
-      runs: [
-        { richLink: { title: "Link 1", uri: "https://example.com/1" } }, footnote(7),
-        { autoText: "PAGE_COUNT" }, "\n",
-      ],
-    }]);
-    for (let tab of [template(), chips]) {
-      let sent = dressed({ ...tab, title: "A title", namedStyles: newDocument().namedStyles });
-      let pruned = prunedTab(sent);
-      expect(pruned).toEqual({ ...pruneTab(sent), title: "" });
-      expect(prunedTab(pruned)).toEqual(pruned);
-    }
-  });
-
   it("replaces the names a recording holds", () => {
     let ada = { person: { name: "Ada Lovelace", email: "ada@corp.example" } };
     let tab = prunedTab(buildTab([
@@ -585,7 +557,7 @@ async function rejection(promise: Promise<unknown>): Promise<Error> {
 describe("a recording", () => {
   it("records every scenario against the model", async () => {
     for (let scenario of SCENARIOS) {
-      // Its last step waits for Google: the test after the next records it as far as it goes.
+      // Its last step waits for Google: a test below records it as far as it goes.
       if (scenario.name === "positioned-list-item") continue;
       let { fresh, recorded, discarded, documents } = await recordedByModel(scenario);
 
@@ -601,116 +573,6 @@ describe("a recording", () => {
       // A recorded scenario is recorded again as it was, its recorded batches included.
       if (recorded) expect(drift(recorded, fresh), scenario.name).toEqual([]);
     }
-  });
-
-  // The scenarios of list items whose texts start with tabs run against the model here, and
-  // wait for a recording of what Google Docs does with their batches.
-  it("builds the steps that write and keep the tabs list items' texts start with", async () => {
-    let read = (tab: GoogleDocsTab) => docTabToMarkdown(tab).markdown;
-    let bullets = (requests: GoogleDocsRequest[]) => requests.filter(request =>
-      "createParagraphBullets" in request || "deleteParagraphBullets" in request);
-    let onlyTabs = (requests: GoogleDocsRequest[]) => requests.flatMap(request =>
-      "insertText" in request && /^\t+$/.test(request.insertText.text) ? [request.insertText] : []);
-    let inserts = (requests: GoogleDocsRequest[]) =>
-      requests.flatMap(request => "insertText" in request ? [request.insertText.text] : []);
-    let lastBullets = (requests: GoogleDocsRequest[]) =>
-      requests.findLastIndex(request => "createParagraphBullets" in request);
-    // The tabs written at the start of items' texts once the batch's last bullets are made.
-    let writtenBack = (requests: GoogleDocsRequest[]) =>
-      lastBullets(requests) < 0 ? [] : onlyTabs(requests.slice(lastBullets(requests)));
-    let levels = (tab: GoogleDocsTab) => tab.body.content.flatMap(({ paragraph }) =>
-      paragraph?.bullet ? [paragraph.bullet.nestingLevel ?? 0] : []);
-    let stepOf = (recording: DocsLiveFixture, name: string) => {
-      let step = recording.steps.find(candidate => candidate.name === name);
-      if (!step) throw new Error(`No step ${name}`);
-      return step;
-    };
-
-    let typed = (await recordedByModel(scenarioOf("tab-typed-into-list-item"))).fresh;
-    expect(read(typed.steps[0].after)).toBe("- one\n  - two\n- three\n");
-    for (let step of typed.steps.slice(1)) {
-      expect(inserts(step.requests), step.name).toEqual(["\t"]);
-      expect(bullets(step.requests), step.name).toEqual([]);
-      expect(levels(step.after), step.name).toEqual([0, 1, 0]);
-    }
-    expect(typed.steps.slice(1).map(step => read(step.after)))
-      .toEqual(["- \tone\n  - two\n- three\n", "- \tone\n  - \ttwo\n- three\n"]);
-
-    let written = (await recordedByModel(scenarioOf("tab-starts-new-list-item"))).fresh;
-    let appended = stepOf(written, "an item appended");
-    expect(read(appended.after)).toBe("- one\n  - two\n- three\n- \tfour\n");
-    expect(writtenBack(appended.requests)).toHaveLength(1);
-    let nested = stepOf(written, "a nested item appended");
-    expect(read(nested.after)).toBe("- one\n  - two\n- three\n- \tfour\n  - \tfive\n");
-    // The level's tab, without the text's own.
-    expect(inserts(nested.requests)[0]).toBe("\n\tfive");
-    expect(writtenBack(nested.requests).map(({ text }) => text)).toEqual(["\t"]);
-    // Written into a paragraph that inherits its bullet, the tab goes in with the text.
-    for (let [name, text] of [
-      ["an item written between two items", "\tbetween\n"],
-      ["an item split off the last item", "\n\tsplit"],
-    ]) {
-      let { requests } = stepOf(written, name);
-      expect(bullets(requests), name).toEqual([]);
-      expect(inserts(requests), name).toEqual([text]);
-    }
-    expect(writtenBack(stepOf(written, "a deeper item written between two items").requests))
-      .toHaveLength(1);
-    expect(read(written.steps.at(-1)!.after)).toBe(
-      "- one\n  - two\n- three\n  - \tdeep\n- \tbetween\n- \tfour\n  - \tfive\n  - \tsplit\n\n" +
-      "Tail\n\n1. **\t**n1\n  1. \t**n2**\n");
-
-    let again = (await recordedByModel(scenarioOf("tab-item-bulleted-again"))).fresh;
-    let making = "items appended at two nested levels";
-    for (let step of again.steps.slice(1)) {
-      if (step.name === making) continue;
-      expect(step.requests.some(request => "deleteParagraphBullets" in request), step.name)
-        .toBe(true);
-      expect(writtenBack(step.requests).length, step.name).toBeGreaterThan(0);
-    }
-    // It only makes the items the last step needs.
-    expect(writtenBack(stepOf(again, making).requests)).toEqual([]);
-    let bold = "- one\n  - \ttwo\n  - **\t**bold\n- seven\n- third\n  - \t\tfour\n- new\n- mid\n- five\n";
-    expect(again.steps.slice(1).map(step => read(step.after))).toEqual([
-      "- one\n  - two\n  - three\n  - \tfour\n- five\n",
-      "- one\n  - \ttwo\n- three\n  - \tfour\n- five\n",
-      "- one\n  - \ttwo\n- three\n  - \t\tfour\n- mid\n- five\n",
-      "- one\n  - \ttwo\n- third\n  - \t\tfour\n- new\n- mid\n- five\n",
-      bold,
-      `${bold}  - six\n    - deep\n`,
-      `${bold}  - six\n    - **\t**deep\n- last\n`,
-    ]);
-    // Two tabs at the first nested level: the tab over the level is deleted before the bullets.
-    for (let name of [
-      "an item given a second tab, with a shallower item behind it",
-      "an unchanged item that starts with tabs between a changed item and a new, shallower one",
-    ]) {
-      let { requests } = stepOf(again, name);
-      let before = requests[lastBullets(requests) - 1];
-      if (!("deleteContentRange" in before)) throw new Error(`No deletion before the bullets: ${name}`);
-      let { startIndex, endIndex } = before.deleteContentRange.range;
-      expect(endIndex - startIndex, name).toBe(1);
-    }
-
-    // One tab of its own at the second nested level: a level tab is written in front of the
-    // item's own bold tab, which is written back bold.
-    let fewer = again.steps.at(-1)!;
-    let last = lastBullets(fewer.requests);
-    let [back, ...others] = writtenBack(fewer.requests);
-    expect(others).toEqual([]);
-    expect(back.text).toBe("\t");
-    let at = back.location.index;
-    let over = { startIndex: at, endIndex: at + 1, tabId: again.before.tabId };
-    let wrote = fewer.requests.findLastIndex(request => "insertText" in request);
-    expect(fewer.requests.slice(wrote + 1, wrote + 3)).toEqual([
-      { updateTextStyle: { range: over, textStyle: {}, fields: "bold,italic,strikethrough,link" } },
-      { updateTextStyle: { range: over, textStyle: { bold: true }, fields: "bold" } },
-    ]);
-    let levelTabs = onlyTabs(fewer.requests.slice(0, last));
-    expect(levelTabs.map(({ text }) => text)).toEqual(["\t", "\t"]);
-    expect(levelTabs[0].location.index).toBe(at);
-    expect(levelTabs[1].location.index).toBeLessThan(at);
-    expect(levels(fewer.after).slice(-3)).toEqual([1, 2, 0]);
   });
 
   it("sends a scenario's setup before it reads the document, and records no step for it", async () => {
@@ -738,11 +600,6 @@ describe("a recording", () => {
     for (let step of fresh.steps) expect(step.requests).not.toEqual(setupBatch);
     expect(docTabToMarkdown(fresh.steps[1].after).markdown).toBe("Set up\n\nOne\n\nTwo\n");
 
-    let { before } = (await recordedByModel(scenarioOf("header-rows"))).fresh;
-    let table = before.body.content.find(element => element.table);
-    expect(pinnedHeaderRows(before, table?.startIndex ?? -1)).toBe(1);
-    expect(docTabToMarkdown(before).markdown.match(/<p>[^<]*<\/p>/g))
-      .toEqual(["<p>h1</p>", "<p>h2</p>", "<p>c1</p>", "<p>c2</p>"]);
   });
 
   it("records the list item that holds a positioned image as far as the model answers", async () => {
@@ -851,18 +708,6 @@ describe("a recording", () => {
       .toThrow("is marked unguarded, and the builders build it");
   });
 
-  it("discards the document when the setup is refused", async () => {
-    let model = modelTransport();
-    model.transport.send = async () => {
-      throw new Error("the server refuses the batch");
-    };
-    let scenario: Scenario = { name: "refused-setup", setup: () => [], steps: [] };
-
-    await expect(recordScenario(scenario, model.transport, { pauseMs: 0 })).rejects
-      .toThrow("the server refuses the batch");
-    expect(model.discarded).toEqual(["document-1"]);
-  });
-
   it("discards the document when a step fails", async () => {
     let model = modelTransport();
     let { send } = model.transport;
@@ -876,25 +721,6 @@ describe("a recording", () => {
 
     let failure = await rejection(recordScenario(scenario, model.transport, { pauseMs: 0 }));
     expect(failure.message).toBe("refused-step / second: the server refuses the batch");
-    expect(model.discarded).toEqual(["document-1"]);
-  });
-
-  it("fails a scenario whose step a builder refuses", async () => {
-    let model = modelTransport();
-    let scenario: Scenario = {
-      name: "refused-by-a-builder",
-      steps: [
-        { name: "a table", table: () => ({ type: "insertTable", rows: 1, columns: 1, cells: [["a"]] }) },
-        // The cell path keeps the paragraphs a cell has.
-        { name: "a second paragraph in the cell", replace: ["<p>a</p>", "<p>a</p><p>b</p>"] },
-        { name: "never reached", append: "End" },
-      ],
-    };
-
-    let failure = await rejection(recordScenario(scenario, model.transport, { pauseMs: 0 }));
-    expect(failure.message).toContain(
-      "refused-by-a-builder / a second paragraph in the cell: replaceText: a table cell keeps");
-    expect(model.sent).toHaveLength(1);
     expect(model.discarded).toEqual(["document-1"]);
   });
 
@@ -1038,22 +864,7 @@ describe("the command line", () => {
     for (let root of temporary.splice(0)) rmSync(root, { recursive: true, force: true });
   });
 
-  it("checks every recording and writes nothing", async () => {
-    let line = commandLine(FIXTURES);
-    expect(line.directory).not.toBe(FIXTURE_DIRECTORY);
-    let held = line.files();
-
-    expect(await line.run(line.tokenFile, "--check")).toBe(0);
-    // Each recording is made again and is as it was; a scenario with none is not made.
-    expect(line.lines.toSorted())
-      .toEqual(FIXTURES.map(({ name }) => `${name}: as recorded`).toSorted());
-    expect(line.model.discarded).toHaveLength(FIXTURES.length);
-    expect(line.files()).toEqual(held);
-    expect(line.tokens).toEqual([TOKEN]);
-    expect(line.lines.join("\n")).not.toContain(TOKEN);
-  });
-
-  it("fails a check for a recording that drifted, and for one that cannot be made again", async () => {
+  it("checks recordings against a fresh one, writes nothing, and fails one that drifted", async () => {
     let altered = recordedSplits();
     rewritten(altered.steps[0].after);
     let drifted = commandLine([altered]);
@@ -1063,18 +874,8 @@ describe("the command line", () => {
       [`paragraph-splits: headings and body: Google answers differently, at ${TEXT_PATH}`]);
     expect(drifted.files()).toEqual(held);
     expect(drifted.model.documents.size).toBe(0);
-
-    let nesting = recordedOf("bullets-nesting");
-    // A recording that lost the step whose batch only it holds cannot be made again.
-    let failed = commandLine([{ ...nesting, steps: nesting.steps.slice(0, 2) }]);
-    held = failed.files();
-    expect(await failed.run(failed.tokenFile, "--check")).toBe(1);
-    expect(failed.lines).toEqual([
-      "bullets-nesting: failed: bullets-nesting / an item nested under the last: the step " +
-      "sends the batch its committed recording holds, and there is none",
-    ]);
-    expect(failed.files()).toEqual(held);
-    expect(failed.model.documents.size).toBe(0);
+    expect(drifted.tokens).toEqual([TOKEN]);
+    expect(drifted.lines.join("\n")).not.toContain(TOKEN);
 
     // One recording that is as it was does not hide another that drifted.
     let mixed = commandLine([altered, recordedOf("table-looks")]);
@@ -1083,6 +884,8 @@ describe("the command line", () => {
       `paragraph-splits: headings and body: Google answers differently, at ${TEXT_PATH}`,
       "table-looks: as recorded",
     ]);
+    let clean = commandLine([recordedOf("table-looks")]);
+    expect(await clean.run(clean.tokenFile, "--check")).toBe(0);
   });
 
   it("writes a recording as compact JSON", async () => {

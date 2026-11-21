@@ -1,8 +1,5 @@
-// An edit whose first slice is the wrong one. The first slice is a guess (`batchReach`); what
-// makes the guess safe is the guard of a slice and the loop that widens beneath the wording
-// of a refusal (`editedSlice`). Here the guess is made wrong on purpose, and the outcome is
-// held to the same edit with the guess as it is.
-// A file of its own, because it replaces a module for every test of its file.
+// An edit whose first slice (`batchReach`'s guess) is made wrong on purpose gives what it gives
+// with the guess right. Its own file, because it mocks the model for the whole file.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GoogleDocsTab } from "../src/docs-api";
@@ -20,18 +17,13 @@ import { kept } from "./docs-store-slice-shadow";
 
 type Model = typeof import("../src/docs-model");
 
-/**
- * What stands in for the model's two functions an edit calls, where a test sets one; the
- * module as it is otherwise (`original`).
- */
+/** What stands in for the model's two functions an edit calls, where a test sets one. */
 const hooks = vi.hoisted(() => ({
   original: undefined as Model | undefined,
   batchReach: undefined as Model["batchReach"] | undefined,
   slice: undefined as Model["applyDocsRequestsToSlice"] | undefined,
 }));
 
-// The module as it is but for `batchReach` and `applyDocsRequestsToSlice` as other modules
-// import them: each is the function a test set, and the original where none is set.
 vi.mock("../src/docs-model", async importOriginal => {
   let model = await importOriginal<Model>();
   hooks.original = model;
@@ -93,11 +85,7 @@ describe("an edit whose first slice does not hold what its batch reads", () => {
     let made!: ReturnType<typeof docEditResult>;
     let cost = moved(() => made = docEditResult(store, base, THIRD));
 
-    // For the builders, the piece around the paragraph, whose closure reaches the runs beside
-    // its own: tried from the paragraph's run (1) and made from the run before (4: that run,
-    // the paragraph's and the two after it, a line each). For the model, the first run, then
-    // the first three, up to the run the index the model read falls in: the first slice
-    // names no run the piece decoded, and a wider slice is decoded from storage.
+    // The builders' piece (1 tried, 4 made); the model's slice widened once (1, then 3).
     expect(cost).toMatchObject({ viewWidenings: 1, runsDecoded: (1 + 4) + (1 + 3) });
     let stored = store.result(base, docEditKey(THIRD));
     expect(stored).toEqual({ requests: want.requests, after: made.after });
@@ -108,8 +96,7 @@ describe("an edit whose first slice does not hold what its batch reads", () => {
   });
 
   it("a refused batch that widens stores its refusal and nothing else", () => {
-    // Thrown by the model once the slice holds what the batch reads. Made once, so its frames
-    // are its own whichever attempt throws it.
+    // Thrown by the model once the slice holds what the batch reads.
     let refusal = new Error("Index 4 must be less than the end index.");
     hooks.slice = (...given) => {
       hooks.original!.applyDocsRequestsToSlice(...given);
@@ -188,8 +175,7 @@ describe("an edit whose first slice does not hold what its batch reads", () => {
     expect(made.requests).toEqual(want.requests);
   });
 
-  // THE TEETH of what an edit decodes for the builders' own batches, and the reason the reach
-  // counts no index an earlier request of the batch moved.
+  // Teeth: the reach counts no index an earlier request of the batch moved.
   it("read as written, the builders' batches take runs they do not touch", () => {
     // Every request read alone and joined: the least `from`, the greatest `to`, every `behind`.
     let asWritten: Model["batchReach"] = requests => {
@@ -224,17 +210,12 @@ describe("an edit whose first slice does not hold what its batch reads", () => {
       expect(written.tab).toBe(original.tab);
       expect(written.markdown).toBe(original.markdown);
     };
-    // The shape of the counted cases: a table alone in its run between two runs of prose.
     let lines = Array.from({ length: 2_000 }, (_, at) => `Line ${String(at).padStart(5, "0")}.`);
     let tabled = linesWithTablesTab("t1", lines, [1_000]);
-    // The piece around the table, for the builders, whatever the reach: tried from the
-    // table's run (1) and made from the run before, with the table's and the run after (3).
+    // The builders' piece around the table: 1 tried, 3 made.
     const TABLED = 1 + 3;
 
-    // A row added with text: its text is written past the table's stored end, in what is
-    // stored as the run after it. For the model: the table's run, taken from the piece, and
-    // one run cut; as written the run after it too, which the piece does not keep decoded (1
-    // decoded), and two runs cut.
+    // A row added with text, written past the table's stored end: as written, one run more.
     let row = both(tabled, expected => ({ type: "insertTableRows", at: 1, cells: [["added"]], expected }));
     expect(row.map(({ cost }) => cost)).toEqual([
       { runsDecoded: TABLED, runsRendered: TABLED + 1, viewWidenings: 0 },
@@ -242,13 +223,7 @@ describe("an edit whose first slice does not hold what its batch reads", () => {
     ]);
     sameOutcome(row);
 
-    // A growing replacement in the paragraph before the table: the 45 characters it styles
-    // after the insertion reach, as written, across what is stored as the table (11 indexes)
-    // into the run after it. For the builders, the piece: the paragraph's run, the table's
-    // and the next, which the closure's two steps forward end in (3 decoded and rendered).
-    // For the model: the paragraph's run, taken from the piece, and one run cut; as written
-    // the table's run and the next too, which the piece does not keep decoded (2 decoded),
-    // and three runs cut.
+    // A growing replacement before the table, whose styling as written reaches past it.
     let growing = both(tabled, () => ({
       type: "replaceText", oldMarkdown: lines[999], newMarkdown: "G".repeat(45),
     }));
@@ -258,12 +233,7 @@ describe("an edit whose first slice does not hold what its batch reads", () => {
     ]);
     sameOutcome(growing);
 
-    // On the shape of many runs (401), a row added with 500 characters in its cell to the
-    // hundredth table. For the builders, the piece around the table: nine runs, found in
-    // passes of 1, 2, 3, 5 and 9. For the model, the table's run, taken from the piece; as
-    // written the range styled over that text names a run for every few indexes after the
-    // table, 73 runs in all, of which the 72 after the table's are decoded for it, and each
-    // is cut and rendered again as it was.
+    // A long row added to the hundredth of 200 tables: as written, 72 runs more.
     const MANY = 1 + 2 + 3 + 5 + 9;
     let many = both(tinyTablesTab("t2", 200), expected => ({
       type: "insertTableRows", at: 1, cells: [["x".repeat(500)]], expected,

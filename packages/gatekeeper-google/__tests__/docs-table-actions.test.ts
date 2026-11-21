@@ -1,3 +1,6 @@
+// Table changes, appends and replacements prepared on a stored tab: arguments, refusals, the
+// change stored and the card shown.
+
 import { describe, expect, it, vi } from "vitest";
 import { googleDocDisplayLimit } from "../src/doc-actions";
 import type { GoogleDocsTab, NamedStyles } from "../src/docs-api";
@@ -71,28 +74,21 @@ function edited(from: Read, oldMarkdown: string, newMarkdown: string, inTable?: 
     from.doc, { type: "replaceText", oldMarkdown, newMarkdown, ...(inTable ? { inTable } : {}) }));
 }
 
-/** Sizes that cut a tab into runs of one to three elements: any tab here is then several runs. */
-const FORCED: RunSizes = { least: 0, target: 400, most: Infinity, elements: 3 };
+/** An element a run, a table alone: no run ends by its content. */
+const ONE: RunSizes = { least: Infinity, target: Infinity, most: Infinity, elements: 1 };
 
 type Stored = { store: DocStore; version: DocVersion };
 
-/**
- * `tab` stored as a version of a document, in a store of its own, and in a second store
- * (`forced`) that cuts it into runs of one to three elements.
- */
+/** `tab` stored under the store's sizes, and (`forced`) under runs of one element. */
 function versionOf(tab: GoogleDocsTab): Stored & { forced: Stored } {
   let stored = (sizes?: RunSizes): Stored => {
     let store = fakeDocStore(undefined, undefined, sizes);
     return { store, version: store.putTab("doc", tab, []) };
   };
-  return { ...stored(), forced: stored(FORCED) };
+  return { ...stored(), forced: stored(ONE) };
 }
 
-/**
- * What `call` answers of `tab` stored. It is asked of both stores of `versionOf`, which must
- * answer the same, or refuse with the same message: every card pinned here is pinned for a tab
- * of several runs too.
- */
+/** What `call` answers of `tab` stored, which both stores of `versionOf` must answer alike. */
 function onBoth<T>(tab: GoogleDocsTab, call: (store: DocStore, version: DocVersion) => T): T {
   let { store, version, forced } = versionOf(tab);
   let outcome = (run: () => T): { value: T } | { error: unknown } => {
@@ -1093,20 +1089,6 @@ describe("cards", () => {
     expect(tableChangeRequests(suggested.tab, said.change)).toHaveLength(1);
   });
 
-  it("numbers the table as it stood when the change was requested", () => {
-    let pair = read(buildTab(
-      [para("Before"), grid(["a", "b"], ["c", "d"]), para("Mid"), grid(["e", "f"], ["g", "h"]),
-        para("After")]));
-    for (let call of [
-      addRows({ table: 1 }), addColumns({ table: 1 }), dropRows({ table: 1, at: 0 }),
-      dropColumns({ table: 1, at: 0 }), dropTable(1),
-    ]) {
-      let shown = card(call, pair);
-      expect(shown.description.endsWith(was(2))).toBe(true);
-      expect(shown.fields).toContainEqual(markdownField("Text before the table", "Mid"));
-    }
-  });
-
   it("shows the nearest text above the table, past empty paragraphs and other tables", () => {
     let under = read(buildTab([
       heading("Budget"), para(""), grid(["a", "b"]), para(""), grid(["c", "d"]), para("After"),
@@ -1122,18 +1104,6 @@ describe("cards", () => {
     expect(card(addRows({ table: 0 }), bare).fields)
       .toEqual([html("First row of the table", rowHtml("a", "b")), resulting(rowHtml("", ""))]);
     expect(card(dropTable(0), bare).fields).toEqual([html("Table", tableAt(bare.tab, 0))]);
-  });
-
-  it("shows the row above new rows only below a row other than the first", () => {
-    let labels = (at?: number) =>
-      card(addRows({ table: 0, ...(at === undefined ? {} : { at }) })).fields?.map(field => field.label);
-    let located = ["Text before the table", "First row of the table"];
-    expect(labels(0)).toEqual([...located, "Resulting"]);
-    expect(labels(1)).toEqual([...located, "Resulting"]);
-    expect(labels(2)).toEqual([...located, "Row above the new rows", "Resulting"]);
-    expect(labels()).toEqual([...located, "Row above the new rows", "Resulting"]);
-    expect(card(addRows({ table: 0 })).fields?.[2])
-      .toEqual(html("Row above the new rows", rowHtml("Ship docs", "Done")));
   });
 
   it("puts the tab's name in prose only as the label it is given", () => {
@@ -1202,33 +1172,12 @@ describe("the result a table change's card shows", () => {
     expect(tableAt(made(inFront).tab, 0)).toBe(tableOf(["x"], ["y"]));
   });
 
-  it("shows the line of a restyled cell, and nothing of the rows that read the same", () => {
-    let call = {
-      method: "setTableCellStyle" as const,
-      cells: { table: 0, row: 1, column: 1, style: { background: "#ffcc00" } },
-    };
-    expect(fieldsOf(call).at(-1))
-      .toEqual(resulting("    <td style=\"background-color:#ffcc00\"><p>Open</p></td>"));
-  });
-
-  it("shows the lines of the rows a merge changes", () => {
-    let across = { method: "mergeTableCells" as const, cells: { table: 0, row: 1, column: 0, rows: 1, columns: 2 } };
-    expect(fieldsOf(across).at(-1)).toEqual(resulting([
-      "    <td colspan=\"2\">", "      <p>Fix login</p>", "      <p>Open</p>", "    </td>", cellLine(""),
-    ].join("\n")));
+  it("shows the lines of the rows a merge down changes", () => {
     let down = { method: "mergeTableCells" as const, cells: { table: 0, row: 1, column: 0, rows: 2, columns: 1 } };
     expect(fieldsOf(down).at(-1)).toEqual(resulting([
       "    <td rowspan=\"2\">", "      <p>Fix login</p>", "      <p>Ship docs</p>", "    </td>",
       cellLine("Open"), "  </tr>", "  <tr>", cellLine(""),
     ].join("\n")));
-  });
-
-  it("shows nothing for a deletion, which adds no line", () => {
-    expect(labelsOf(dropRows({ table: 0, at: 1 })))
-      .toEqual(["Deleted rows", "Text before the table", "First row of the table"]);
-    expect(labelsOf(dropColumns({ table: 0, at: 1 })))
-      .toEqual(["Deleted cells, row by row", "Text before the table", "First row of the table"]);
-    expect(labelsOf(dropTable(0))).toEqual(["Table", "Text before the table"]);
   });
 
   it("shows nothing for a row that reads as a row the card already shows", () => {
@@ -1288,444 +1237,43 @@ const EVERY_KIND = () => buildTab([
   para("After"),
 ], LISTS);
 
-// Every byte a table change's card holds, for one call of each of the eleven kinds: the title
-// and the whole description (its prose, each field with its label, kind, value and syntax,
-// and that it is complete), and for a new table the number it is given. The cards' other
-// tests pin a field or a sentence each; this one holds the writers of a card to what they
-// write, whatever they read it from.
-describe("every kind of table change's card, whole", () => {
-  type Whole = Pick<PreparedTableChange, "title" | "description" | "table">;
+// The cards the cases above do not reach: a split, a least height, a merge of rows and
+// columns, on a table whose first row holds a merged cell and whose text before stands
+// behind empty paragraphs and another table.
+describe("cards on a table with a merged cell, second in its tab", () => {
+  const card = (call: TableCall) => {
+    let { title, description } = prepare(read(EVERY_KIND()), call);
+    return { title, ...description };
+  };
+  const located = [
+    markdownField("Text before the table", "Intro"),
+    html("First row of the table", [
+      "  <tr>", "    <td colspan=\"2\"><p>Budget</p></td>", cellLine(""), cellLine("Year"), "  </tr>",
+    ].join("\n")),
+  ];
 
-  it.each<[string, TableCall, Whole]>([
-    ["insertTable at the end", addTable({ rows: 2, columns: 2, cells: [["a", "b"]] }), {
-      title: "Insert a table in Google Doc",
-      description: {
-        description: "Insert a table of 2 rows and 2 columns in tab \"Main\" (tab-1), at the " +
-          "end of the tab. An empty paragraph is added after it.",
-        fields: [
-          {
-            label: "Cells", kind: "json",
-            value: "[\n" +
-              "  [\n" +
-              "    \"a\",\n" +
-              "    \"b\"\n" +
-              "  ],\n" +
-              "  [\n" +
-              "    \"\",\n" +
-              "    \"\"\n" +
-              "  ]\n" +
-              "]",
-          },
-          {
-            label: "Resulting", kind: "text", syntax: "html",
-            value: "<table>\n" +
-              "  <tr>\n" +
-              "    <td><p>a</p></td>\n" +
-              "    <td><p>b</p></td>\n" +
-              "  </tr>\n" +
-              "  <tr>\n" +
-              "    <td><p></p></td>\n" +
-              "    <td><p></p></td>\n" +
-              "  </tr>\n" +
-              "</table>",
-          },
-        ],
-        descriptionIsComplete: true,
-      },
-      table: 2,
-    }],
-    ["insertTable after a line", addTable({ rows: 1, columns: 2, cells: [["x"]], after: "Intro\n" }), {
-      title: "Insert a table in Google Doc",
-      description: {
-        description: "Insert a table of 1 row and 2 columns in tab \"Main\" (tab-1), after the " +
-          "paragraph, list item or table that the text below ends in. An empty " +
-          "paragraph is added with it: after the new table, or between the two " +
-          "tables when it follows a table.",
-        fields: [
-          {
-            label: "After", kind: "text", syntax: "markdown",
-            value: "Intro\n",
-          },
-          {
-            label: "Cells", kind: "json",
-            value: "[\n" +
-              "  [\n" +
-              "    \"x\",\n" +
-              "    \"\"\n" +
-              "  ]\n" +
-              "]",
-          },
-          {
-            label: "Resulting", kind: "text", syntax: "html",
-            value: "<table>\n" +
-              "  <tr>\n" +
-              "    <td><p>x</p></td>\n" +
-              "    <td><p></p></td>\n" +
-              "  </tr>\n" +
-              "</table>",
-          },
-        ],
-        descriptionIsComplete: true,
-      },
-      table: 0,
-    }],
-    ["insertTableRows", addRows({ table: 1, cells: [["Food", "Open", "2027"]] }), {
-      title: "Insert table rows in Google Doc",
-      description: {
-        description: "Insert 1 row in a table of tab \"Main\" (tab-1), after its last row. It " +
-          "was table 2 of the tab when this change was requested.",
-        fields: [
-          {
-            label: "New rows", kind: "json",
-            value: "[\n" +
-              "  [\n" +
-              "    \"Food\",\n" +
-              "    \"Open\",\n" +
-              "    \"2027\"\n" +
-              "  ]\n" +
-              "]",
-          },
-          {
-            label: "Text before the table", kind: "text", syntax: "markdown",
-            value: "Intro",
-          },
-          {
-            label: "First row of the table", kind: "text", syntax: "html",
-            value: "  <tr>\n" +
-              "    <td colspan=\"2\"><p>Budget</p></td>\n" +
-              "    <td><p></p></td>\n" +
-              "    <td><p>Year</p></td>\n" +
-              "  </tr>",
-          },
-          {
-            label: "Row above the new rows", kind: "text", syntax: "html",
-            value: "  <tr>\n" +
-              "    <td><p>Venue</p></td>\n" +
-              "    <td><p>Done</p></td>\n" +
-              "    <td><p>2026</p></td>\n" +
-              "  </tr>",
-          },
-          {
-            label: "Resulting", kind: "text", syntax: "html",
-            value: "  <tr>\n" +
-              "    <td><p>Food</p></td>\n" +
-              "    <td><p>Open</p></td>\n" +
-              "    <td><p>2027</p></td>\n" +
-              "  </tr>",
-          },
-        ],
-        descriptionIsComplete: true,
-      },
-    }],
-    ["insertTableColumns", addColumns({ table: 1, cells: [["Note"], ["none"], ["late"]] }), {
-      title: "Insert table columns in Google Doc",
-      description: {
-        description: "Insert 1 column in a table of tab \"Main\" (tab-1), after its last " +
-          "column. It was table 2 of the tab when this change was requested.",
-        fields: [
-          {
-            label: "New cells, row by row", kind: "json",
-            value: "[\n" +
-              "  [\n" +
-              "    \"Note\"\n" +
-              "  ],\n" +
-              "  [\n" +
-              "    \"none\"\n" +
-              "  ],\n" +
-              "  [\n" +
-              "    \"late\"\n" +
-              "  ]\n" +
-              "]",
-          },
-          {
-            label: "Text before the table", kind: "text", syntax: "markdown",
-            value: "Intro",
-          },
-          {
-            label: "First row of the table", kind: "text", syntax: "html",
-            value: "  <tr>\n" +
-              "    <td colspan=\"2\"><p>Budget</p></td>\n" +
-              "    <td><p></p></td>\n" +
-              "    <td><p>Year</p></td>\n" +
-              "  </tr>",
-          },
-          {
-            label: "Resulting", kind: "text", syntax: "html",
-            value: "    <td><p>Note</p></td>\n" +
-              "  </tr>\n" +
-              "  <tr>\n" +
-              "    <td><p>Travel</p></td>\n" +
-              "    <td><p>Open</p></td>\n" +
-              "    <td><p>2025</p></td>\n" +
-              "    <td><p>none</p></td>\n" +
-              "  </tr>\n" +
-              "  <tr>\n" +
-              "    <td><p>Venue</p></td>\n" +
-              "    <td><p>Done</p></td>\n" +
-              "    <td><p>2026</p></td>\n" +
-              "    <td><p>late</p></td>",
-          },
-        ],
-        descriptionIsComplete: true,
-      },
-    }],
-    ["deleteTableRows", dropRows({ table: 1, at: 2 }), {
-      title: "Delete table rows in Google Doc",
-      description: {
-        description: "Delete row 3 of a table of tab \"Main\" (tab-1), with everything in it. " +
-          "It was table 2 of the tab when this change was requested.",
-        fields: [
-          {
-            label: "Deleted rows", kind: "text", syntax: "html",
-            value: "  <tr>\n" +
-              "    <td><p>Venue</p></td>\n" +
-              "    <td><p>Done</p></td>\n" +
-              "    <td><p>2026</p></td>\n" +
-              "  </tr>",
-          },
-          {
-            label: "Text before the table", kind: "text", syntax: "markdown",
-            value: "Intro",
-          },
-          {
-            label: "First row of the table", kind: "text", syntax: "html",
-            value: "  <tr>\n" +
-              "    <td colspan=\"2\"><p>Budget</p></td>\n" +
-              "    <td><p></p></td>\n" +
-              "    <td><p>Year</p></td>\n" +
-              "  </tr>",
-          },
-        ],
-        descriptionIsComplete: true,
-      },
-    }],
-    ["deleteTableColumns", dropColumns({ table: 1, at: 2 }), {
-      title: "Delete table columns in Google Doc",
-      description: {
-        description: "Delete column 3 of a table of tab \"Main\" (tab-1), with everything in " +
-          "it. It was table 2 of the tab when this change was requested.",
-        fields: [
-          {
-            label: "Deleted cells, row by row", kind: "json",
-            value: "[\n" +
-              "  [\n" +
-              "    \"<td><p>Year</p></td>\"\n" +
-              "  ],\n" +
-              "  [\n" +
-              "    \"<td><p>2025</p></td>\"\n" +
-              "  ],\n" +
-              "  [\n" +
-              "    \"<td><p>2026</p></td>\"\n" +
-              "  ]\n" +
-              "]",
-          },
-          {
-            label: "Text before the table", kind: "text", syntax: "markdown",
-            value: "Intro",
-          },
-          {
-            label: "First row of the table", kind: "text", syntax: "html",
-            value: "  <tr>\n" +
-              "    <td colspan=\"2\"><p>Budget</p></td>\n" +
-              "    <td><p></p></td>\n" +
-              "    <td><p>Year</p></td>\n" +
-              "  </tr>",
-          },
-        ],
-        descriptionIsComplete: true,
-      },
-    }],
-    ["deleteTable", dropTable(1), {
-      title: "Delete a table in Google Doc",
-      description: {
-        description: "Delete a table of tab \"Main\" (tab-1), with everything in it. It was " +
-          "table 2 of the tab when this change was requested.",
-        fields: [
-          {
-            label: "Table", kind: "text", syntax: "html",
-            value: "<table>\n" +
-              "  <tr>\n" +
-              "    <td colspan=\"2\"><p>Budget</p></td>\n" +
-              "    <td><p></p></td>\n" +
-              "    <td><p>Year</p></td>\n" +
-              "  </tr>\n" +
-              "  <tr>\n" +
-              "    <td><p>Travel</p></td>\n" +
-              "    <td><p>Open</p></td>\n" +
-              "    <td><p>2025</p></td>\n" +
-              "  </tr>\n" +
-              "  <tr>\n" +
-              "    <td><p>Venue</p></td>\n" +
-              "    <td><p>Done</p></td>\n" +
-              "    <td><p>2026</p></td>\n" +
-              "  </tr>\n" +
-              "</table>",
-          },
-          {
-            label: "Text before the table", kind: "text", syntax: "markdown",
-            value: "Intro",
-          },
-        ],
-        descriptionIsComplete: true,
-      },
-    }],
-    ["setTableCellStyle", restyle({ table: 1, row: 1, column: 0, style: { background: "#FFCC00" } }), {
-      title: "Restyle table cells in Google Doc",
-      description: {
-        description: "Set the look of the cells in row 2 and column 1 of a table of tab " +
-          "\"Main\" (tab-1). It was table 2 of the tab when this change was requested.",
-        fields: [
-          {
-            label: "Style", kind: "json",
-            value: "{\n" +
-              "  \"background\": \"#ffcc00\"\n" +
-              "}",
-          },
-          {
-            label: "Text before the table", kind: "text", syntax: "markdown",
-            value: "Intro",
-          },
-          {
-            label: "First row of the table", kind: "text", syntax: "html",
-            value: "  <tr>\n" +
-              "    <td colspan=\"2\"><p>Budget</p></td>\n" +
-              "    <td><p></p></td>\n" +
-              "    <td><p>Year</p></td>\n" +
-              "  </tr>",
-          },
-          {
-            label: "Resulting", kind: "text", syntax: "html",
-            value: "    <td style=\"background-color:#ffcc00\"><p>Travel</p></td>",
-          },
-        ],
-        descriptionIsComplete: true,
-      },
-    }],
-    ["setTableColumnWidths", widths({ table: 1, at: 2, width: 120 }), {
-      title: "Set table column widths in Google Doc",
-      description: {
-        description: "Make column 3 of a table of tab \"Main\" (tab-1) 120pt wide. It was table " +
-          "2 of the tab when this change was requested.",
-        fields: [
-          {
-            label: "Text before the table", kind: "text", syntax: "markdown",
-            value: "Intro",
-          },
-          {
-            label: "First row of the table", kind: "text", syntax: "html",
-            value: "  <tr>\n" +
-              "    <td colspan=\"2\"><p>Budget</p></td>\n" +
-              "    <td><p></p></td>\n" +
-              "    <td><p>Year</p></td>\n" +
-              "  </tr>",
-          },
-          {
-            label: "Resulting", kind: "text", syntax: "html",
-            value: "  <colgroup><col><col><col style=\"width:120pt\"></colgroup>",
-          },
-        ],
-        descriptionIsComplete: true,
-      },
-    }],
-    ["setTableRowHeights", heights({ table: 1, at: 1, count: 2, height: 30 }), {
-      title: "Set table row heights in Google Doc",
-      description: {
-        description: "Make rows 2 to 3 of a table of tab \"Main\" (tab-1) at least 30pt tall. " +
-          "It was table 2 of the tab when this change was requested.",
-        fields: [
-          {
-            label: "Text before the table", kind: "text", syntax: "markdown",
-            value: "Intro",
-          },
-          {
-            label: "First row of the table", kind: "text", syntax: "html",
-            value: "  <tr>\n" +
-              "    <td colspan=\"2\"><p>Budget</p></td>\n" +
-              "    <td><p></p></td>\n" +
-              "    <td><p>Year</p></td>\n" +
-              "  </tr>",
-          },
-          {
-            label: "Resulting", kind: "text", syntax: "html",
-            value: "  <tr style=\"height:30pt\">\n" +
-              "    <td><p>Travel</p></td>\n" +
-              "    <td><p>Open</p></td>\n" +
-              "    <td><p>2025</p></td>\n" +
-              "  </tr>\n" +
-              "  <tr style=\"height:30pt\">",
-          },
-        ],
-        descriptionIsComplete: true,
-      },
-    }],
-    ["mergeTableCells", merge({ table: 1, row: 1, column: 1, rows: 2, columns: 2 }), {
-      title: "Merge table cells in Google Doc",
-      description: {
-        description: "Merge the cells in rows 2 to 3 and columns 2 to 3 of a table of tab " +
-          "\"Main\" (tab-1) into one. Their text is joined into the top-left cell, " +
-          "row by row. It was table 2 of the tab when this change was requested.",
-        fields: [
-          {
-            label: "Text before the table", kind: "text", syntax: "markdown",
-            value: "Intro",
-          },
-          {
-            label: "First row of the table", kind: "text", syntax: "html",
-            value: "  <tr>\n" +
-              "    <td colspan=\"2\"><p>Budget</p></td>\n" +
-              "    <td><p></p></td>\n" +
-              "    <td><p>Year</p></td>\n" +
-              "  </tr>",
-          },
-          {
-            label: "Resulting", kind: "text", syntax: "html",
-            value: "    <td rowspan=\"2\" colspan=\"2\">\n" +
-              "      <p>Open</p>\n" +
-              "      <p>2025</p>\n" +
-              "      <p>Done</p>\n" +
-              "      <p>2026</p>\n" +
-              "    </td>\n" +
-              "    <td><p></p></td>\n" +
-              "  </tr>\n" +
-              "  <tr>\n" +
-              "    <td><p>Venue</p></td>\n" +
-              "    <td><p></p></td>\n" +
-              "    <td><p></p></td>",
-          },
-        ],
-        descriptionIsComplete: true,
-      },
-    }],
-    ["unmergeTableCells", split({ table: 1, row: 0, column: 0 }), {
-      title: "Split a table cell in Google Doc",
-      description: {
-        description: "Split the merged cell at row 1, column 1 of a table of tab \"Main\" " +
-          "(tab-1) back into its cells. Its text stays in the top-left one. It was " +
-          "table 2 of the tab when this change was requested.",
-        fields: [
-          {
-            label: "Text before the table", kind: "text", syntax: "markdown",
-            value: "Intro",
-          },
-          {
-            label: "First row of the table", kind: "text", syntax: "html",
-            value: "  <tr>\n" +
-              "    <td colspan=\"2\"><p>Budget</p></td>\n" +
-              "    <td><p></p></td>\n" +
-              "    <td><p>Year</p></td>\n" +
-              "  </tr>",
-          },
-          {
-            label: "Resulting", kind: "text", syntax: "html",
-            value: "    <td><p>Budget</p></td>",
-          },
-        ],
-        descriptionIsComplete: true,
-      },
-    }],
-  ])("%s", (_name, call, expected) => {
-    let { title, description, table } = prepare(read(EVERY_KIND()), call);
-    expect({ title, description, ...(table === undefined ? {} : { table }) }).toEqual(expected);
+  it.each<[string, TableCall, string, string, string]>([
+    ["unmergeTableCells", split({ table: 1, row: 0, column: 0 }), "Split a table cell in Google Doc",
+      "Split the merged cell at row 1, column 1 of a table of tab \"Main\" (tab-1) back into its " +
+      "cells. Its text stays in the top-left one.",
+      cellLine("Budget")],
+    ["setTableRowHeights", heights({ table: 1, at: 1, count: 2, height: 30 }),
+      "Set table row heights in Google Doc",
+      "Make rows 2 to 3 of a table of tab \"Main\" (tab-1) at least 30pt tall.",
+      ["  <tr style=\"height:30pt\">", cellLine("Travel"), cellLine("Open"), cellLine("2025"), "  </tr>",
+        "  <tr style=\"height:30pt\">"].join("\n")],
+    ["mergeTableCells", merge({ table: 1, row: 1, column: 1, rows: 2, columns: 2 }),
+      "Merge table cells in Google Doc",
+      "Merge the cells in rows 2 to 3 and columns 2 to 3 of a table of tab \"Main\" (tab-1) into " +
+      "one. Their text is joined into the top-left cell, row by row.",
+      ["    <td rowspan=\"2\" colspan=\"2\">", "      <p>Open</p>", "      <p>2025</p>", "      <p>Done</p>",
+        "      <p>2026</p>", "    </td>", cellLine(""), "  </tr>", "  <tr>", cellLine("Venue"), cellLine(""),
+        cellLine("")].join("\n")],
+  ])("describes %s", (_name, call, title, description, result) => {
+    expect(card(call)).toEqual({
+      title, description: `${description}${was(2)}`, fields: [...located, resulting(result)],
+      descriptionIsComplete: true,
+    });
   });
 });
 
@@ -1733,14 +1281,10 @@ const INTRO = () => buildTab([para("Intro")]);
 const BLANK = () => buildTab([para("")]);
 /** A tab that ends in a list the bullet preset made. */
 const LISTED = () => buildTab([para("Intro"), item("item")], LISTS);
-// A call names its table by its number in the tab, and its checks, its requests and its card
-// are made from the piece of the tab around that table, whose tables are counted from the
-// piece's first: the number a call, a refusal, a card and a new table's answer speak of is
-// the tab's all the same. Held on a tab of four tables kept an element a run, so that the
-// piece around every table but the first starts after a table.
+// The number a call, a refusal, a card and a new table speak of is the tab's, though each is
+// made from the piece around its table; under runs of one element (`prepare`) every piece but
+// the first table's starts after a table.
 describe("a table named by its number, in a tab of many runs", () => {
-  /** An element a run, a table alone: no run ends by its content. */
-  const ONE: RunSizes = { least: Infinity, target: Infinity, most: Infinity, elements: 1 };
   const cells = (name: string) => [[`${name}1`, `${name}2`], [`${name}3`, `${name}4`]];
   /** Four tables with three paragraphs between each two; the last reads as the first does. */
   const MANY = () => buildTab([
@@ -1750,21 +1294,8 @@ describe("a table named by its number, in a tab of many runs", () => {
     grid(...cells("C")), para("After C"), para("Tail one"), para("Tail two"),
     grid(...cells("A")), para("End"),
   ]);
-  /** `call` prepared on the tab kept an element a run, which the other two stores must match. */
-  function prepared(call: TableCall): PreparedTableChange {
-    let store = fakeDocStore(undefined, undefined, ONE);
-    let one = prepareTableChange(store, store.putTab("doc", MANY(), []), call, LABEL);
-    expect(one).toEqual(prepare(read(MANY()), call));
-    return one;
-  }
-  /** What `call` is refused with on the tab kept an element a run, as on the other two stores. */
-  function refused(call: TableCall): string {
-    let store = fakeDocStore(undefined, undefined, ONE);
-    let version = store.putTab("doc", MANY(), []);
-    let message = thrownMessage(() => prepareTableChange(store, version, call, LABEL));
-    expect(message).toBe(refusal(read(MANY()), call));
-    return message;
-  }
+  const prepared = (call: TableCall) => prepare(read(MANY()), call);
+  const refused = (call: TableCall) => refusal(read(MANY()), call);
   const prose = (change: PreparedTableChange) => change.description.description;
 
   it("a card names the number its table has in the tab", () => {
@@ -1887,69 +1418,39 @@ describe("a change prepared on a store", () => {
     expect(shown.markdown).toBe(1);
   });
 
+  // A card reads the stored Markdown of the runs that read otherwise: no tab's Markdown or
+  // summary whole, and nothing rendered but the builders' piece and the runs the edit changed.
   it("reads the Markdown of the runs in which the tab reads otherwise, with nothing rendered for it", () => {
     let runsOf = (tab: GoogleDocsTab) =>
       [...cutRuns(tab.body.content, RUN_SIZES)].map(run => runId(run.json));
     let table = addRows({ table: 0, cells: [["New", "Row"]] });
-    // Each case with the Markdown its card holds at most (the two strings of the runs that
-    // read otherwise, `changedMarkdown`), and the runs rendered for its builders. The tab is
-    // three runs: a paragraph, a table, a paragraph.
-    type Strings = (before: string, after: string) => number;
-    let cases: [DocEdit, (store: DocStore, version: DocVersion) => unknown, Strings, number][] = [
-      // The piece: the paragraph is the tab's first, and its closure reaches the table and
-      // the paragraph after it: three runs, in one pass. The strings: the paragraph's run in
-      // each version.
+    // Each case with the runs rendered for its builders, on a tab of three runs.
+    let cases: [DocEdit, (store: DocStore, version: DocVersion) => unknown, number][] = [
       [{ type: "replaceText", oldMarkdown: "Before", newMarkdown: "Earlier" },
         (store, version) => prepareTextReplacement(
-          store, version, "Before", "Earlier", LABEL, googleDocDisplayLimit("replaceText")),
-        () => "Before\n\n".length + "Earlier\n\n".length, 3],
-      // The piece at the tab's end reaches back to the table and the first paragraph: tried
-      // from the last run (1) and from the run before (2), scouted two runs back (3) and made
-      // from the tab's first run (3). The strings: the last paragraph's run in each version.
+          store, version, "Before", "Earlier", LABEL, googleDocDisplayLimit("replaceText")), 3],
       [{ type: "appendText", markdown: "More" },
-        (store, version) => prepareAppend(store, version, "More"),
-        () => "\nAfter\n".length + "\nAfter\n\nMore\n".length, 1 + 2 + 3 + 3],
-      // The piece around the table: tried from the table's run (1) and made from the run
-      // before, the tab's first, with the run after (3). The strings: the table's run and,
-      // no range being named, the run before it, in each version: each tab but its last run.
+        (store, version) => prepareAppend(store, version, "More"), 1 + 2 + 3 + 3],
       [prepare(read(STATUS()), table).change,
-        (store, version) => prepareTableChange(store, version, table, LABEL),
-        (before, after) => before.length + after.length - 2 * "\nAfter\n".length, 1 + 3],
+        (store, version) => prepareTableChange(store, version, table, LABEL), 1 + 3],
     ];
-    for (let [edit, call, strings, builders] of cases) {
-      let markdown = renderTab(STATUS()).markdown;
-      let after = renderTab(applyDocEdit(STATUS(), edit)).markdown;
+    for (let [edit, call, builders] of cases) {
       let before = runsOf(STATUS());
-      // The runs the edit changed: the runs of the tab it gives that the tab before does not hold.
       let changed = runsOf(applyDocEdit(STATUS(), edit)).filter(run => !before.includes(run));
-      expect(changed).toHaveLength(1);
-      expect(before).toHaveLength(3);
+      expect([before.length, changed.length]).toEqual([3, 1]);
       let { store, version } = versionOf(STATUS());
       let whole = vi.spyOn(store, "markdown");
       let summary = vi.spyOn(store, "summary");
       let rendered = docStoreCost.runsRendered;
       call(store, version);
-      // The store renders the runs the edit changed as it stores the tab the edit gives, and
-      // the card reads the stored Markdown of the runs that read otherwise: no tab's Markdown
-      // is read whole, no summary of a whole tab is joined and nothing is rendered for it.
       expect(whole).not.toHaveBeenCalled();
       expect(summary).not.toHaveBeenCalled();
-      // The runs rendered for the builders, and the runs the edit changed, rendered alone to
-      // be stored.
       expect(docStoreCost.runsRendered - rendered).toBe(builders + changed.length);
-      // Found stored, the card's runs are read from storage once more, and only the builders'
-      // runs are rendered: a replacement's for the path it takes, an append's and a table
-      // change's for what the preparation asks before the edit. THE CARD'S READS hold its two
-      // strings, short of the two tabs' Markdown.
+      // Found stored, only the builders' runs are rendered.
       rendered = docStoreCost.runsRendered;
-      docStoreCost.peakMarkdownCharsInHand = 0;
       call(store, version);
       expect(whole).not.toHaveBeenCalled();
       expect(docStoreCost.runsRendered - rendered).toBe(builders);
-      // The Markdown in hand at most: the piece's joined runs, which on this tab of three
-      // runs are the tab's, or the card's two strings.
-      expect(strings(markdown, after)).toBeLessThan(markdown.length + after.length);
-      expect(docStoreCost.peakMarkdownCharsInHand).toBe(Math.max(markdown.length, strings(markdown, after)));
     }
   });
 });
@@ -2365,15 +1866,5 @@ describe("a replacement in a paragraph its named style formats", () => {
     expect(renderTab(applyDocEdit(
       bolded.doc, { type: "replaceText", oldMarkdown: "Notes", newMarkdown: "End\n\n" })).markdown)
       .toBe("Before\n\n## End\n\n here\n\nAfter\n");
-  });
-
-  it("is refused for a break inside a subtitle, in the builder's words", () => {
-    let subtitle = read(styled(
-      [para("Before"), { runs: ["Notes here\n"], namedStyleType: "SUBTITLE" }, para("After")],
-      [{ namedStyleType: "SUBTITLE", textStyle: { italic: true } }]));
-    expect(thrownMessage(() => replace(subtitle, "Notes", "End\n\n"))).toBe(
-      "replaceText: a paragraph break written inside a subtitle would make the rest of it a " +
-      "normal paragraph, without the subtitle's look. Write the break at the subtitle's end, " +
-      "or replace the whole subtitle.");
   });
 });

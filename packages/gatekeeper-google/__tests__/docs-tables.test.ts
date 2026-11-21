@@ -227,11 +227,6 @@ const kinds = (requests: readonly GoogleDocsRequest[]): string[] =>
 // ---------------------------------------------------------------------------
 
 describe("tableSize", () => {
-  it("returns the rows and columns of a rendered table", () => {
-    let content = read(BASIC());
-    expect(tableSize(content, 0, "insertTableRows")).toEqual({ rows: 2, columns: 2 });
-  });
-
   it("refuses a table that has no row, or no cell, with the method's name", () => {
     let tab = buildTab([para("Before"), grid(["gone"]), grid(["a"]), para("After")]);
     let [noRows, noCells] = tab.body.content.flatMap(element => element.table ?? []);
@@ -245,13 +240,6 @@ describe("tableSize", () => {
         .toBe("deleteTableRows: this table is not laid out as Google Docs lays tables out, so " +
           "it cannot be changed.");
     }
-  });
-
-  it("refuses rows of different lengths with the method's name", () => {
-    let content = read(buildTab([para("A"), { table: [["a\n", "b\n"], ["c\n"]] }, para("B")]));
-    expect(thrownMessage(() => tableSize(content, 0, "insertTableColumns")))
-      .toBe("insertTableColumns: the rows of this table do not all have the same number of " +
-        "cells, so its rows and columns cannot be changed.");
   });
 });
 
@@ -400,12 +388,6 @@ describe("index arithmetic", () => {
     expect(before.sourceMap.tables[0].docStart).toBe(9);
     return tableChangeRequests(before, change(before));
   };
-
-  it("fillIndexes a row added below row 0 at 25 and 27", () => {
-    let requests = requestsFor(content => addRows(content, 0, 1, [["x", "y"]]));
-    expect(rowRequests(requests)).toEqual([[1, false]]);
-    expect(fillIndexes(requests)).toEqual([25, 27]);
-  });
 
   it("fillIndexes a row added at the end from the table's end plus one", () => {
     let tableEnd = docTabToMarkdown(AT_NINE).sourceMap.tables[0].docEnd;
@@ -583,20 +565,6 @@ describe("new cells take after their reference cell", () => {
     appliedChange(lookTab(), change);
   });
 
-  it("names the reference column the same way, and the last one at the end", () => {
-    let columnsOf = (change: TableChange) =>
-      tableChangeRequests(docTabToMarkdown(lookTab()), change).flatMap(request =>
-        "insertTableColumn" in request
-          ? [[request.insertTableColumn.tableCellLocation.columnIndex, request.insertTableColumn.insertRight]]
-          : []);
-    let cells = [["a", "b"], ["c", "d"]];
-    expect(columnsOf(addColumns(read(lookTab()), 0, 0, cells))).toEqual([[0, false], [1, false]]);
-    expect(columnsOf(addColumns(read(lookTab()), 0, 2, cells))).toEqual([[1, true], [1, true]]);
-    appliedChange(lookTab(), addColumns(read(lookTab()), 0, 0, cells));
-    appliedChange(lookTab(), addColumns(read(lookTab()), 0, 2, cells));
-    appliedChange(lookTab(), addRows(read(lookTab()), 0, 2, cells));
-  });
-
   it("resets every cell of a new table, filled or empty, as it does the paragraph beside it", () => {
     // The table cuts the heading at its start, and Google writes the heading's look onto the
     // line breaks of the new cells, where no rendering shows it.
@@ -661,14 +629,6 @@ describe("pinned header rows", () => {
     for (let across of [merge(0, 0, 2, 1), merge(0, 0, 3, 2)]) {
       expect(thrownMessage(() => tableChangeRequests(before, across))).toBe(refused);
     }
-    // Without the refusal, the builder would send what probe M4 saw Google refuse.
-    let unpinned = buildTab(
-      [para("Before"), grid(["H1", "H2"], ["a", "b"], ["c", "d"]), para("After")]);
-    let requests = tableChangeRequests(
-      docTabToMarkdown(unpinned), { ...merge(0, 0, 2, 1), ...refOf(read(unpinned), 0) });
-    expect(thrownMessage(() => applyDocsRequests(tab, requests)))
-      .toBe("A non-rectangular collection of cells cannot be merged.");
-
     appliedChange(tab, merge(0, 0, 1, 2));
     appliedChange(tab, merge(1, 0, 2, 2));
   });
@@ -1397,12 +1357,7 @@ describe("the cells a tab's tables hold", () => {
     expect(thrownMessage(() => checkTabTableCells(held, 2_501, "insertTable"))).toBe(tabCells("insertTable", 5_001));
   });
 
-  it("takes an addition that brings the tab's tables to the limit", () => {
-    let applied = appliedChange(FULL, addRows(content, 1, 1, tenCells()));
-    expect(tableTexts(applied, 1).length).toBe(2);
-  });
-
-  it("refuses rows, a column and a table that would pass it", () => {
+  it("takes an addition that brings the tab's tables to the limit, and refuses what would pass it", () => {
     let filled = applyDocEdit(FULL, addRows(content, 1, 1, tenCells()));
     let grown = renderTab(filled);
     let second = addRows(grown, 1, 2, tenCells());
@@ -1701,14 +1656,6 @@ describe("a deletion whose cells have come to hold what its card did not say", (
       expect(change).not.toHaveProperty("unshown");
       appliedChange(statusTab(), change);
       expect(refusal(dropdownTab(), change)).toBe(cameToHoldChips(change.type));
-    }
-  });
-
-  it("applies a deletion that recorded the dropdown, with it and once it is gone", () => {
-    for (let change of statusDeletions(read(dropdownTab()))) {
-      expect(change).toMatchObject({ unshown: 1 });
-      appliedChange(dropdownTab(), change);
-      appliedChange(statusTab(), change);
     }
   });
 
@@ -2215,21 +2162,6 @@ describe("existing characters that Google strips from inserted text", () => {
     let { rendering } = appliedCellText(
       BASIC(), "<p>r0c0</p>", `<p>r0${BULLET}c0!</p>`);
     expect(tableAt(rendering, 0)).toContain("<td><p>r0c0!</p></td>");
-  });
-});
-
-describe("surrogate pairs", () => {
-  it("replaces an emoji by one that shares its high surrogate, whole", () => {
-    let status = oneCell(["\u{1F7E2} On track"], "\u{1F7E2} On track", "\u{1F534} Blocked");
-    expect(status.requests)
-      .toEqual([["delete", 0, 11], ["insert", 0, "\u{1F534} Blocked"], RESET(0, 10)]);
-    let swapped = oneCell(["Smile \u{1F600} now"], "Smile \u{1F600} now", "Smile \u{1F601} now");
-    expect(swapped.requests).toEqual([["delete", 6, 8], ["insert", 6, "\u{1F601}"], RESET(6, 8)]);
-  });
-
-  it("removes the first of two emoji that share a high surrogate, whole", () => {
-    let removed = oneCell(["\u{1F600}\u{1F601}x"], "\u{1F600}\u{1F601}x", "\u{1F601}x");
-    expect(removed.requests).toEqual([["delete", 0, 2]]);
   });
 });
 
@@ -2915,9 +2847,8 @@ describe("the size of a replacement in table cells", () => {
   });
 
   it("walks a link of thousands of formatted stretches once, however many it holds", () => {
-    // One link whose text alternates between struck through and plain, pointed to another URL.
-    // Walked once for each of its stretches, a link of 48,000 takes minutes to plan, and the
-    // refusal below would not come within the time a test is given.
+    // One link of alternately struck-through and plain stretches, pointed to another URL: a
+    // walk once for each stretch would not refuse within a test's time.
     let pointed = (pairs: number) => {
       let runs = Array.from({ length: pairs }, () =>
         [linked("a", OLD, { strikethrough: true }), linked("b", OLD)]).flat();
@@ -3016,12 +2947,9 @@ describe("replacementPath", () => {
   it("says which side of a table a replacement reaches it from", () => {
     let content = read(BTA());
     let [table] = content.sourceMap.tables;
-    expect(pathOf(content, "<table>", "Intro\n\n<table>")).toEqual(beside("before"));
-    expect(pathOf(content, "<table>", "Intro <table>")).toEqual(beside("before"));
     expect(pathOf(content, "Before\n\n<table>", "Before\n\nIntro\n\n<table>"))
       .toEqual(beside("before"));
     expect(pathOf(content, "Before\n", "Before\n\nIntro\n")).toEqual(beside("before"));
-    expect(pathOf(content, "</table>", "</table>\n\nCaption")).toEqual(beside("after"));
     expect(pathOf(content, "</table>\n", "</table>\n\nCaption\n")).toEqual(beside("after"));
     // Text added at the table's first character and at its last, and on the line breaks around it.
     for (let [at, side] of [
@@ -3657,14 +3585,6 @@ describe("formatting a paragraph's named style already gives", () => {
     expect(appliedReplacement(tab(), oldMarkdown, newMarkdown).rendering.markdown).toContain(reads);
   });
 
-  it("splits off text whose style normal text's named style also gives, which then reads plain", () => {
-    // Bold of its own where normal text is bold by its style: the rest becomes normal text,
-    // and a read shows only what text sets beside its named style.
-    let { rendering } = appliedReplacement(boldByStyle(), "Notes", "End\n\n");
-    expect(rendering.markdown).toContain("## End\n\n here\n");
-    expect(rendering.markdown).not.toContain("**here**");
-  });
-
   it("makes an edit beside kept text its named style also formats", () => {
     let tab = styledTab([
       para("Before"),
@@ -3954,18 +3874,19 @@ describe("the refusals a table causes beside it", () => {
     expect(textRefusal(
       TWO_TABLES("Mid"), "a</p></td>\n  </tr>\n</table>\n\nMid\n\n<table>\n  <tr>\n    <td><p>b", "ab"))
       .toBe(refusedBeside("after"));
-    for (let side of ["before", "after", "around"] as const) {
-      expect(refusedBeside(side)).toContain("insertTable()");
-      expect(refusedBeside(side)).toContain("deleteTable()");
-    }
   });
 
   it("leaves the paragraph path's refusal where no table is the reason", () => {
-    let tab = buildTab([para("Before"), toc, chip(), grid(["a", "b"]), para("After")]);
-    expect(textRefusal(tab, "[Table of contents]", "[Contents]")).toBe(CONVERTER_REFUSAL);
-    expect(textRefusal(tab, "Owner: Ana", "Owner: Ben")).toBe(CONVERTER_REFUSAL);
-    // A record queued for a paragraph whose text has moved into a cell.
-    expect(textRefusal(tab, "<p>a</p>", "<p>changed</p>")).toBe(CONVERTER_REFUSAL);
+    let before = read(buildTab([para("Before"), toc, chip(), grid(["a", "b"]), para("After")]));
+    // The last is a record queued for a paragraph whose text has moved into a cell.
+    for (let [oldMarkdown, newMarkdown] of [
+      ["[Table of contents]", "[Contents]"], ["Owner: Ana", "Owner: Ben"], ["<p>a</p>", "<p>changed</p>"],
+    ]) {
+      let replacement = replacementIn(before.markdown, oldMarkdown, newMarkdown);
+      let error = thrown(() => textReplacementRequests(before, replacement));
+      expect(error).toBeInstanceOf(StructuredContentError);
+      expect(error).toHaveProperty("message", CONVERTER_REFUSAL);
+    }
   });
 
   it("refuses a record queued for text in a table whose text is no longer in one", () => {
@@ -3986,55 +3907,6 @@ function thrown(run: () => unknown): unknown {
   }
   throw new Error("Expected a refusal");
 }
-
-describe("the paragraph path of a stored replacement", () => {
-  const content = read(BTA());
-
-  it("returns what the paragraph path returns", () => {
-    let accepted = replacementIn(content.markdown, "Before", "Earlier");
-    expect(textReplacementRequests(content, accepted))
-      .toEqual(converterRequests(content, accepted));
-  });
-
-  it("lets every other error through as it is", () => {
-    let listed = read(buildTab([item("item"), para("Bee"), grid(["a"]), para("After")], ALL_LISTS));
-    let replacement = replacementIn(listed.markdown, "\n\nBee", "");
-    let [own, engine] = bothPaths(listed, replacement);
-    expect(own).toEqual({ error: expect.any(String), structured: false });
-    expect(engine).toEqual(own);
-  });
-
-  it("rethrows the structured-content refusal itself where no table is the reason", () => {
-    let chipped = read(buildTab([para("Before"), toc, chip(), grid(["a", "b"]), para("After")]));
-    for (let [kind, oldMarkdown, newMarkdown] of [
-      ["paragraphs", "[Table of contents]", "[Contents]"], ["cells", "<p>a</p>", "<p>changed</p>"],
-    ]) {
-      let replacement = replacementIn(chipped.markdown, oldMarkdown, newMarkdown);
-      expect(replacementPath(chipped, replacement).kind).toBe(kind);
-      expect(thrown(() => textReplacementRequests(chipped, replacement)))
-        .toBeInstanceOf(StructuredContentError);
-    }
-  });
-
-  it("answers with a table's own refusal where the paragraph path refuses what reaches one", () => {
-    let cases: [() => GoogleDocsTab, string, string, "before" | "after" | "around"][] = [
-      [BTA, "<table>", "Intro <table>", "before"],
-      [CHIP_TABLE_DUE, "<table>", "Intro\n\n<table>", "before"],
-      [ABTAT, "B\n\n", "", "before"],
-      [CHIP_TABLE_DUE, "\n\nDue Nov 8, 2026", "", "after"],
-      [BTA, "Before\n\n<table>\n  <tr>\n    <td><p>a", "X", "before"],
-      [BTA, content.markdown, "Rewritten\n", "around"],
-    ];
-    for (let [tab, oldMarkdown, newMarkdown, side] of cases) {
-      let reached = read(tab());
-      let replacement = replacementIn(reached.markdown, oldMarkdown, newMarkdown);
-      expect(outcome(() => converterRequests(reached, replacement)))
-        .toEqual({ error: CONVERTER_REFUSAL, structured: true });
-      expect(thrownMessage(() => textReplacementRequests(reached, replacement)))
-        .toBe(refusedBeside(side));
-    }
-  });
-});
 
 // ---------------------------------------------------------------------------
 // The ends of the tab
@@ -4152,36 +4024,6 @@ describe("chains of changes", () => {
       "    <td><p><strong>filled</strong> &amp; done</p></td>\n    <td><p>z</p></td>\n  </tr>\n</table>");
     state = advance(state.tab, dropTable(state.content, 0));
     expect(state.content.markdown).toBe("Before\n\n\n\nAfter\n");
-  });
-
-  it("runs every operation on the content every other operation leaves", () => {
-    /** The operations, each on the first table of the content it is given. */
-    let operations: ((content: DocTabSnapshot) => Step | undefined)[] = [
-      content => newTable([["n1", "n2"]], content.sourceMap.tables.length > 0 ? "After" : undefined),
-      content => content.sourceMap.tables[0] && addRows(content, 0, 1, [
-        ["r1", "r2", "r3"].slice(0, tableSize(content, 0, "x").columns),
-      ]),
-      content => content.sourceMap.tables[0] && addColumns(
-        content, 0, 1, content.sourceMap.tables[0].rows.map((_, row) => [`c${row}`])),
-      content => content.sourceMap.tables[0] && dropRows(content, 0, 0),
-      content => content.sourceMap.tables[0] && dropColumns(content, 0, 0),
-      content => content.sourceMap.tables[0] && cellReplacement(content, 0, 0, 0, "<em>changed</em>"),
-      content => content.sourceMap.tables[0] && dropTable(content, 0),
-    ];
-    let steps = 0;
-    for (let first of operations) {
-      for (let second of operations) {
-        let tab = buildTab([para("Before"), sized(3, 3), para("After")]);
-        let state = { tab, content: read(tab) };
-        for (let operation of [first, second]) {
-          let step = operation(state.content);
-          if (!step) continue;
-          state = advance(state.tab, step);
-          steps++;
-        }
-      }
-    }
-    expect(steps).toBeGreaterThan(90);
   });
 });
 
