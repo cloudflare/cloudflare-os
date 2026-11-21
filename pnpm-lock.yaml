@@ -706,6 +706,9 @@ importers:
       vitest:
         specifier: 'catalog:'
         version: 5.1.0(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-playwright@5.1.0)(@vitest/browser-preview@5.1.0)(@vitest/ui@5.1.0)(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)(yaml@2.9.1))
+      yaml:
+        specifier: ^2.9.1
+        version: 2.9.1
 
   packages/gatekeeper-linear:
     dependencies:

@@ -111,16 +111,17 @@ import {
 
 ## Schema generation
 
-The `gatekeeper-openapi-schema` bin generates `./http` schemas from an OpenAPI document, with the
-Forge plugin in [`forge/`](forge/). It writes one `index.d.ts`, with the models and an `Api` schema
-of the operations the client can call. Operations with a non-JSON body or 2xx response, or with an
-object-valued query parameter, cannot be in a schema: they are listed at the top of the file, and
-one that `--operations` names fails the run. A model with `readOnly` fields also gets an
+The `gatekeeper-openapi-schema` bin generates `./http` schemas from an OpenAPI document, JSON or
+YAML, with the Forge plugin in [`forge/`](forge/). It writes one `index.d.ts`, with the models and
+an `Api` schema of the operations the client can call. Operations with a non-JSON body or 2xx
+response, with an object-valued query parameter, or with a parameter declared with `content` or a
+style other than its location's default, cannot be in a schema: they are listed at the top of the
+file, and one that `--operations` names fails the run. A model with `readOnly` fields also gets an
 `<Model>Input` type without them, which request bodies use. A query parameter named `name[]`, the
 bracket convention for arrays, takes an array even where the document declares a single value.
 
 ```sh
-gatekeeper-openapi-schema <spec.json or https URL> --out src/generated/openapi \
+gatekeeper-openapi-schema <spec file or https URL> --out src/generated/openapi \
   [--sha256 <hex>] [--group-by tag] [--operations openapi-operations.jsonl] [--omit-header Accept]... \
   [--writable id]... [--patch openapi-patch.json] [--scopes-extension x-scopes]
 ```
@@ -148,7 +149,7 @@ JSON object per line, with an operation's `operationId`, `method`, `path`, first
 `summary`, and writes no files. The lines you keep are the `--operations` file:
 
 ```sh
-gatekeeper-openapi-schema <spec.json or https URL> --list [--sha256 <hex>] | grep -i incident
+gatekeeper-openapi-schema <spec file or https URL> --list [--sha256 <hex>] | grep -i incident
 ```
 
 ## Internal modules

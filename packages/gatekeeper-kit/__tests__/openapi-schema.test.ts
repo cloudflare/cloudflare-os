@@ -6,6 +6,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileS
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { stringify } from "yaml";
 import { createOpenAPIClient } from "../src/http";
 import type { IssueInput, IssuesApi } from "./fixtures/openapi-schema/expected/issues.d.ts";
 import type { UsersApi } from "./fixtures/openapi-schema/expected/users.d.ts";
@@ -316,6 +317,72 @@ describe("gatekeeper-openapi-schema", { timeout: 120_000 }, () => {
       const elsewhere = generate(file, out);
       expect(elsewhere.status).toBe(1);
       expect(elsewhere.stderr).toContain('/status is a $ref to "other.json#/Status", which is not a path item of the document');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reads a YAML document as it reads the same one in JSON", () => {
+    const dir = mkdtempSync(join(tmpdir(), "openapi-schema-"));
+    try {
+      const out = join(dir, "out");
+      writeFileSync(join(dir, "spec.yaml"), stringify(JSON.parse(readFileSync(join(fixture, "spec.json"), "utf8"))));
+      const result = generate(join(dir, "spec.yaml"), out, "--group-by", "tag");
+      expect(result.status, result.stderr).toBe(0);
+      expect(readTree(out)).toEqual(readTree(join(fixture, "expected")));
+
+      writeFileSync(join(dir, "spec.yaml"), "paths: [unclosed");
+      const neither = generate(join(dir, "spec.yaml"), out);
+      expect(neither.status).toBe(1);
+      expect(neither.stderr).toContain("spec.yaml is neither JSON nor YAML: ");
+      expect(neither.stderr).not.toContain("    at ");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("leaves out an operation with a parameter Forge does not read, and generates the rest", () => {
+    const dir = mkdtempSync(join(tmpdir(), "openapi-schema-"));
+    try {
+      const responses = { 204: { description: "Done." } };
+      const filter = { name: "filter", in: "query", style: "deepObject", schema: { type: "object" } };
+      const spec = {
+        openapi: "3.1.0",
+        info: { title: "Things", version: "1" },
+        paths: {
+          "/things": { get: { operationId: "things/list", parameters: [{ $ref: "#/components/parameters/Filter" }], responses } },
+          "/things/{id}": {
+            parameters: [{ name: "id", in: "path", required: true, style: "label", schema: { type: "string" } }],
+            get: { operationId: "things/get", responses },
+          },
+          "/search": {
+            get: {
+              operationId: "search",
+              parameters: [{ name: "q", in: "query", content: { "application/json": { schema: { type: "object" } } } }],
+              responses,
+            },
+          },
+          "/status": {
+            get: { operationId: "status", parameters: [{ name: "tags", in: "query", style: "form", schema: { type: "string" } }], responses },
+          },
+        },
+        components: { parameters: { Filter: filter } },
+      };
+      const file = join(dir, "spec.json");
+      writeFileSync(file, JSON.stringify(spec));
+      const out = join(dir, "out");
+      const result = generate(file, out);
+      expect(result.status, result.stderr).toBe(0);
+      const schema = readTree(out)["index.d.ts"];
+      expect(schema).toContain("GET /things (things/list): query parameter `filter` has style `deepObject`, which the client does not send.");
+      expect(schema).toContain("GET /things/{id} (things/get): path parameter `id` has style `label`, which the client does not send.");
+      expect(schema).toContain("GET /search (search): query parameter `q` is declared with `content`, which the client does not send.");
+      expect(schema).toContain('path: "/status";');
+
+      writeFileSync(join(dir, "ops.jsonl"), listing("things/list"));
+      const listed = generate(file, out, "--operations", join(dir, "ops.jsonl"));
+      expect(listed.status).toBe(1);
+      expect(listed.stderr).toContain("things/list, GET /things cannot be in a schema: query parameter `filter` has style `deepObject`");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

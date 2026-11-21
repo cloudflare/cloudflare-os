@@ -231,6 +231,9 @@ class Printer {
   }
 
   operation(method: Method): { block: Block } | { reason: string } {
+    // Set by the bin for an operation with a parameter Forge would not read.
+    const leftOut = method.extension("x-left-out");
+    if (typeof leftOut === "string") return { reason: leftOut };
     const lines: Block = [["{"]];
     const id = method.extension("x-operation-id");
     const tag = typeof id === "string" ? `\`${id}\`` : "";
