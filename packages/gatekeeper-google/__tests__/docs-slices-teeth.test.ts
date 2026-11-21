@@ -1,10 +1,6 @@
-// Each part of the guard a slice of a tab is read through is needed, and no read of the body
-// goes around it. The model ships no way to switch a part of its guard off, so the models
-// with a part taken out are built here from its source text, and the comparison of a slice
-// with the whole tab must find what each of them gets wrong. The census then holds the
-// source text itself: the body's list of elements is reached through one class, and every
-// use of a list that can be the body's is listed with the reason it reads nothing outside
-// what a lookup answered.
+// Each part of the guard a slice is read through is needed: models built from the source with a
+// part changed are found out by the comparison with the whole tab. And no read of the body goes
+// around it: a census of the source lists every use of the body's list with its reason.
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -35,9 +31,8 @@ const mixed = MIXED.body.content;
 const afterBreak = mixed[MIXED_PLACES.longBreak + 1];
 
 /**
- * An insertion at the first index of the paragraph after the long section break, from every
- * stretch whose first element is that break and that holds the paragraph: the one shape on
- * which a slice's first element can be told from the element that opens a body.
+ * An insertion after the long section break, from every stretch that opens with the break: the one
+ * shape on which a slice's first element can be told from the element that opens a body.
  */
 const FROM_THE_BREAK: Batch = {
   tab: MIXED, requests: [insertText(afterBreak.startIndex, "x")],
@@ -112,10 +107,7 @@ function firstParagraph(tab: GoogleDocsTab, from: number, to: number): number | 
   return undefined;
 }
 
-/**
- * What `entry` throws for a batch on its stretch, by what the error holds: a model built
- * from the text has classes of its own. Nothing where it throws nothing.
- */
+/** What `entry` throws for a batch on its stretch, by what the error holds, or nothing. */
 function thrownBy(entry: SliceApply, { tab, requests, from, to }: Placed) {
   try {
     entry(sliceOf(tab, from, to, "model"), requests);
@@ -126,10 +118,7 @@ function thrownBy(entry: SliceApply, { tab, requests, from, to }: Placed) {
   return undefined;
 }
 
-/**
- * For each of the three tabs, an insertion at the first index of the first paragraph of each
- * stretch that holds one: the stretches that open the tab, or the ones that do not.
- */
+/** For each tab, an insertion at the first paragraph of each stretch that opens it, or does not. */
 function batchesAtFirstParagraphs(opening: boolean): Placed[][] {
   return NAMES.map(name => {
     let tab = SLICE_TABS[name];
@@ -168,9 +157,7 @@ describe("each part of the guard is needed", () => {
 
   it("without body-opening, a slice that starts with a long section break is counted short", () => {
     let entry = entryOf("body-opening");
-    // The rule is read where a slice is re-indexed, and differs from the body's only where
-    // the slice's first element is a section break longer than one index: the break is
-    // counted as one index, and every element after it comes out one short.
+    // The rule differs from the body's only where a slice opens with a section break longer than one.
     let fromBreak = found([FROM_THE_BREAK], entry);
     expect(fromBreak.mismatches).toHaveLength(fromBreak.ran);
     expect(fromBreak.ran).toBe(6);
@@ -193,12 +180,8 @@ describe("each part of the guard is needed", () => {
     let entry = entryOf("side-by-lookup");
     let { mismatches } = found(CORPUS, entry);
 
-    // It errs only where a lookup below the origin finds nothing: an earlier request of the
-    // batch removed the slice's first element. There it names the side after the slice unless
-    // the slice ends the tab, the stretch is widened toward the tab's end, and the wrong
-    // answer, a refusal the whole tab does not give, comes out once the stretch reaches the
-    // tab's last element. So every mismatch is of a stretch that starts after the lowest
-    // element the batch names.
+    // It errs only where an earlier request removed the slice's first element, so every mismatch
+    // is of a stretch that starts after the lowest element the batch names.
     expect(mismatches.length).toBeGreaterThan(0);
     for (let { batch, from, to } of mismatches) {
       let named = namedPosition(batch.tab, batch.requests)!;
@@ -241,9 +224,7 @@ describe("each part of the guard is needed", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// The census of the model's source
-// ---------------------------------------------------------------------------
+// --- The census of the model's source
 
 const MODEL_TEXT = readFileSync(path.resolve(import.meta.dirname, "../src/docs-model.ts"), "utf8");
 
@@ -346,10 +327,7 @@ function containerUses(text: string): string[] {
 /** Whether a callee is the draft's map of settled counts, which a list keys by what it is. */
 const keysSettled = (callee: string) => /(^|\.)settled\.(get|set)$/.test(callee);
 
-/**
- * What in `text` holds a list of elements under another name than `container`, or hands one
- * to a function that does: nothing, for a source that keeps the one name.
- */
+/** What in `text` holds or hands on a list of elements under another name than `container`. */
 function otherNames(text: string): string[] {
   let source = parsed(text);
   let nodes = nodesOf(source);

@@ -1,17 +1,7 @@
-// THE SUITES' OWN CALLS AS A CORPUS OF THE DIFFERENTIAL. A setup file of the Node pass: it
-// wraps the entry points through which the suites build an edit from a WHOLE tab's rendering
-// (`docEditRequests`, `makeDocEdit`, `applyDocEdit`, `materializeDocEdit`, and the table
-// changes' `tableChangeRequests`), so that each call also builds the same edit from the
-// CLOSURE of its own elements, cut from the same tab, and fails the calling test where the
-// batch or the refusal differs. No source file knows of it.
-//
-// What it costs and holds. The closure is found first, from what the renderer says each
-// element writes: a call whose closure is the whole tab passes straight through, and only a
-// call whose closure leaves an element out cuts its piece and builds again. A tab of more
-// than 2,000 body elements passes straight through too. It holds no tab and no rendering
-// alive: its maps are weak, and what they hold of a tab is a weak reference or numbers. It
-// renders with `renderRun`, never through a function that counts. A test file that replaces
-// one of the three modules itself replaces this file's wrapper of it.
+// A setup file of the Node pass: every suite's call that builds an edit from a whole tab's
+// rendering also builds it from the closure of its own elements, and fails the calling test
+// where the batch or refusal differs. Tabs whose closure is whole, or of over 2,000 elements,
+// pass through; its maps are weak, and it renders with `renderRun`, which counts nothing.
 
 import { vi } from "vitest";
 import type { GoogleDocsRequest, GoogleDocsTab } from "../src/docs-api";
@@ -32,10 +22,7 @@ export type ShadowTally = {
   skipped: number;
 };
 
-/**
- * Another range than the closure, for a test of the shadow itself (`shrinkShadowForTest`):
- * handed the closure, the own elements and the tab's flags.
- */
+/** Another range than the closure, for a test of the shadow itself (`shrinkShadowForTest`). */
 type ShadowShrink = (
   closure: { from: number; to: number }, own: { first: number; last: number }, flags: readonly number[],
 ) => { from: number; to: number };
@@ -62,8 +49,7 @@ type State = {
   tabEditRequests?: (tab: TabReading, edit: DocEdit) => GoogleDocsRequest[];
 };
 
-// One state a worker, whichever instance of this module reads it: the setup file's and a
-// test's import of it are the same counts.
+// One state a worker, shared by the setup file's instance and a test's import.
 const KEY = Symbol.for("gatekeeper-google.docs-piece-suite-shadow");
 const shared = globalThis as { [KEY]?: State };
 const state: State = shared[KEY] ??= {
@@ -76,10 +62,7 @@ export function shadowTally(): ShadowTally {
   return { ...state.tally };
 }
 
-/**
- * For a test of the shadow itself: builds from the range `shrink` makes of each closure, or
- * from the closure again where `undefined`.
- */
+/** For a test of the shadow itself: builds from the range `shrink` makes of each closure. */
 export function shrinkShadowForTest(shrink: ShadowShrink | undefined): void {
   state.shrink = shrink;
 }
@@ -102,9 +85,8 @@ function builtBy(run: () => readonly GoogleDocsRequest[]): Built | undefined {
 }
 
 /**
- * Holds the outcome `whole` of an edit built from `rendering`, the whole rendering of `tab`,
- * to the same edit built from the closure of its own elements. Throws, naming `entry` and the
- * kind of difference and nothing of the document, where the two differ.
+ * Holds `whole`, an edit's outcome from the whole rendering of `tab`, to the same built from
+ * its closure; throws, naming `entry` and the kind of difference, where they differ.
  */
 function held(
   converter: Converter, wholeTabReading: (render: DocTabSnapshot) => TabReading,
@@ -125,8 +107,7 @@ function held(
   state.tally.shadowed++;
   let rendered = () => converter.renderRun(
     content, tab, converter.initialCarry(), { mdStart: 0, elements: true });
-  // A tab seen for the first time is rendered once: the run that tells its elements is the
-  // one its piece is cut from, where one is cut.
+  // A tab seen for the first time is rendered once, and its piece cut from that run.
   let fresh: ReturnType<typeof rendered> | undefined;
   let told = state.told.get(tab);
   if (!told) {
@@ -209,8 +190,7 @@ vi.mock("../src/markdown-converter", async importOriginal => {
   let converter = await importOriginal<Converter>();
   let docTabToMarkdown: Converter["docTabToMarkdown"] = tab => {
     let rendering = converter.docTabToMarkdown(tab);
-    // Weak both ways: a map's value lives as long as its key, so the tab itself there would
-    // be kept alive by every rendering of it a test holds.
+    // Weak both ways, so that a rendering a test holds keeps no tab alive.
     state.tabs.set(rendering.sourceMap, new WeakRef(tab));
     state.renderings.set(tab, new WeakRef(rendering));
     return rendering;
@@ -254,10 +234,8 @@ vi.mock("../src/docs-replay", async importOriginal => {
   state.tabEditRequests = replay.tabEditRequests;
 
   /**
-   * `run`, an entry point, and then its outcome held to the closure's. `found` says, once it
-   * ran, the tab and the rendering it built from and the batch it gave; `build` is `false`
-   * for a throw that is no outcome of the build (the edit's own refusal before it, or the
-   * model's after it).
+   * `run`, an entry point, its outcome then held to the closure's; `found` says what it built
+   * from, and `build: false` for a throw that is no outcome of the builders.
    */
   let shadowed = <T>(
     entry: string, edit: DocEdit, run: () => T,
@@ -307,8 +285,7 @@ vi.mock("../src/docs-replay", async importOriginal => {
       : { tab, rendering: rendering ?? state.renderings.get(tab)?.deref() });
   let makeDocEdit: typeof replay.makeDocEdit = (tab, edit, rendering) =>
     makeAs("makeDocEdit", tab, edit, rendering);
-  // `applyDocEdit` is `makeDocEdit(tab, edit).after`: made through the shadowed entry, so that
-  // the batch it built is in hand to compare.
+  // `applyDocEdit` is `makeDocEdit(tab, edit).after`, made through the shadowed entry.
   let applyDocEdit: typeof replay.applyDocEdit = (tab, edit) => makeAs("applyDocEdit", tab, edit).after;
   let materializeDocEdit: typeof replay.materializeDocEdit = (tabs, action: QueuedDocEdit) => shadowed(
     "materializeDocEdit", action, () => replay.materializeDocEdit(tabs, action),

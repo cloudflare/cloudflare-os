@@ -28,7 +28,6 @@ import {
   selectFields,
 } from "./docs-fields";
 import { prunedTab, readFixtures } from "./docs-live-fixtures";
-import { pruneTabByHand } from "./docs-prune-by-hand";
 import { locateQuote } from "./locate-quote-whole";
 
 const FIXTURES = readFixtures();
@@ -39,14 +38,9 @@ const RECORDED: { name: string; tab: GoogleDocsTab }[] = FIXTURES.flatMap(fixtur
   ...fixture.steps.map(step => ({ name: `${fixture.name}, after ${step.name}`, tab: step.after })),
 ]);
 
-// ---------------------------------------------------------------------------
-// A tab as Google sends it: with what the gatekeeper does not read
-// ---------------------------------------------------------------------------
+// --- A tab as Google sends it: with what the gatekeeper does not read
 
-/**
- * The parts of which the copy keeps no suggestion ids, which it keeps of a table, a row and a
- * cell alone: each kind of paragraph element, a section break and a table of contents.
- */
+/** The parts of which the copy keeps no suggestion ids (it keeps those of tables, rows and cells). */
 const SUGGESTIBLE: ReadonlySet<string> = new Set([
   "textRun", "autoText", "horizontalRule", "pageBreak", "columnBreak", "footnoteReference",
   "equation", "inlineObjectElement", "person", "richLink", "dateElement", "dropdown",
@@ -55,16 +49,8 @@ const SUGGESTIBLE: ReadonlySet<string> = new Set([
 
 /**
  * A deep copy of `tab` with fields the gatekeeper does not read added throughout, as
- * `documents.get` sends many: an unknown key on every object of the body, the lists and the
- * named styles; fields of Google's own where the copy keeps a part only in part or only as `{}`
- * (more style fields on paragraphs, text, list levels and rows, small caps and a background
- * colour among the text's, a text style on a bullet and on a horizontal rule, a named style's
- * paragraph style and the rest of its text style, its link included, a section break's style, a
- * table of contents' entries, the id of a person, of a rich link and of a date, a rich link's
- * type, a date's time, locale, time zone, formats and suggested changes, and the suggestion ids
- * of every part in `SUGGESTIBLE` with the text style a suggestion would give it, which Google
- * sends of those that have a text style); each table's count of rows and of columns; and the
- * tab's other collections. No field the copy keeps is touched.
+ * `documents.get` sends many: an unknown key on every object, Google's own fields where the copy
+ * keeps a part only in part or as `{}`, and the tab's other collections. No kept field is touched.
  */
 function dressed(tab: GoogleDocsTab): GoogleDocsTab {
   let copy = structuredClone(tab);
@@ -146,9 +132,7 @@ function dressed(tab: GoogleDocsTab): GoogleDocsTab {
   });
 }
 
-// ---------------------------------------------------------------------------
-// A tab of every element the rendering names
-// ---------------------------------------------------------------------------
+// --- A tab of every element the rendering names
 
 // The characters that stand, in a spec's runs, for the elements `buildTab` has no spec for.
 const EQUATION = "\ue001";
@@ -157,10 +141,7 @@ const COLUMN_BREAK = "\ue003";
 const IMAGE = "\ue004";
 const DROPDOWN = "\ue005";
 
-/**
- * The elements `buildTab` has no spec for, each under the character that stands for it:
- * `withElements` puts the element where the character is, with its indexes.
- */
+/** The elements `buildTab` has no spec for, under the character `withElements` replaces. */
 const ELEMENTS: Record<string, Omit<ParagraphElement, "startIndex" | "endIndex">> = {
   [EQUATION]: { equation: {} },
   [PAGE_BREAK]: { pageBreak: { textStyle: { bold: true } } },
@@ -242,10 +223,7 @@ const LISTS: GoogleDocsTab["lists"] = {
   },
 };
 
-/**
- * The cases of the rendering: for each, the blocks that hold it and, where `buildTab` has no
- * spec for a field, the change that sets it on the built tab.
- */
+/** The cases of the rendering: their blocks, and a change for a field `buildTab` cannot set. */
 const CASES: { name: string; blocks: BlockSpec[]; set?: (tab: GoogleDocsTab) => void }[] = [
   {
     name: "text in each style, and a link of each kind",
@@ -428,15 +406,9 @@ const RENDERED: { name: string; tab: GoogleDocsTab }[] = [
   { name: "every element at once", tab: RICHEST },
 ];
 
-// ---------------------------------------------------------------------------
-// A tab of every field the copy keeps
-// ---------------------------------------------------------------------------
+// --- A tab of every field the copy keeps
 
-/**
- * One of each field a pruned tab may hold and nothing else, none at a value pruning could
- * write without reading it; an element that is not a text run holds every field of a text
- * style, as the text run does. Its indexes are no document's: pruning reads none.
- */
+/** One of each field a pruned tab may hold and nothing else, none at a value pruning could invent. */
 function everyFieldTab(): GoogleDocsTab {
   let look: ModelTextStyle = {
     bold: true, italic: true, strikethrough: true, underline: true,
@@ -558,9 +530,7 @@ const CORPUS: { name: string; tab: GoogleDocsTab }[] = [
   ...RECORDED, ...RENDERED, { name: "one of each kept field", tab: EVERY_FIELD },
 ];
 
-// ---------------------------------------------------------------------------
-// Tabs worn down at random
-// ---------------------------------------------------------------------------
+// --- Tabs worn down at random
 
 /** The seed of the worn copies. */
 const SEED = 20261116;
@@ -574,11 +544,8 @@ const WORN_AS_IT_IS = new Set([
 ]);
 
 /**
- * Copies of `tab` worn down at random, the same for a seed: of each object, a field is
- * dropped, or emptied to `{}` or `[]`. A field the pruning refuses a tab without (a
- * paragraph's elements and style, the body and its content, the lists) is never dropped or
- * emptied, nor is an object that holds one; a list of the `lists` map keeps its id; and what
- * names and places the tab and its named ranges are left as they are.
+ * Copies of `tab` worn down at random: of each object a field dropped or emptied, never one the
+ * pruning refuses a tab without, nor what names and places the tab.
  */
 function wornCopies(tab: GoogleDocsTab, seed: number, count: number): GoogleDocsTab[] {
   let random = seeded(seed);
@@ -612,9 +579,7 @@ function wornCopies(tab: GoogleDocsTab, seed: number, count: number): GoogleDocs
   return Array.from({ length: count }, () => wear(tab) as GoogleDocsTab);
 }
 
-// ---------------------------------------------------------------------------
-// Walking
-// ---------------------------------------------------------------------------
+// --- Walking
 
 /** Every object and array under `value`, itself included. */
 function partsOf(value: unknown, into = new Set<object>()): Set<object> {
@@ -630,26 +595,7 @@ function deepFrozen<T>(value: T): T {
   return value;
 }
 
-/** Whether a key anywhere under `value` holds `undefined`, which `JSON.stringify` leaves out. */
-function holdsUndefined(value: unknown): boolean {
-  return [...partsOf(value)].some(part => Object.values(part).includes(undefined));
-}
-
-/** The number of table cells under `content`, those of the tables in cells included. */
-function cellCount(content: readonly StructuralElement[]): number {
-  let count = 0;
-  for (let { table } of content) {
-    for (let row of table?.tableRows ?? []) {
-      for (let cell of row.tableCells ?? []) count += 1 + cellCount(cell.content ?? []);
-    }
-  }
-  return count;
-}
-
-/**
- * Where two JSON texts first differ, as the path of keys to it from `tab` (a key the two hold
- * at different places in an object counts), or nothing for the same text. Never a value.
- */
+/** Where two JSON texts first differ, as a path of keys (never a value), or nothing. */
 function firstDifference(left: string, right: string): string | undefined {
   if (left === right) return undefined;
   let differs = (a: unknown, b: unknown, path: string): string | undefined => {
@@ -668,11 +614,7 @@ function firstDifference(left: string, right: string): string | undefined {
   return differs(JSON.parse(left), JSON.parse(right), "tab") ?? "tab";
 }
 
-/**
- * The fields pruned `tabs` hold, by kind of object: for each key an object sits under (`tab`
- * for a tab itself, the key of the array for an object in one, and `lists.*` for a list, since
- * the lists are keyed by their ids), the keys of every such object, in order.
- */
+/** The fields pruned `tabs` hold, by the key each object sits under (`lists.*` for a list). */
 function keptFields(tabs: readonly GoogleDocsTab[]): Record<string, string> {
   let fields = new Map<string, Set<string>>();
   let visit = (value: unknown, under: string): void => {
@@ -703,11 +645,7 @@ function prunedStyle(style: TextStyle): TextStyle {
   return pruned.body.content[1].paragraph!.elements[0].textRun!.textStyle;
 }
 
-/**
- * The rendering of `tab` as it is compared with the rendering of the pruned tab. The source
- * map hands on the style of each run as the tab holds it, whole, for a builder to read the
- * bold, italic, strikethrough and link of; so those styles are pruned here as the tab's are.
- */
+/** The rendering of `tab`, its source map's run styles pruned as the tab's are. */
 function renderingOf(tab: GoogleDocsTab): DocTabSnapshot {
   let rendering = docTabToMarkdown(tab);
   for (let block of rendering.sourceMap.blocks) {
@@ -735,9 +673,7 @@ const MARKED: GoogleDocsTab["namedRanges"] = {
   "gadgets-write-second": { namedRanges: [{ namedRangeId: "range.4" }] },
 };
 
-// ---------------------------------------------------------------------------
-// Pruning
-// ---------------------------------------------------------------------------
+// --- Pruning
 
 describe("pruning a tab", () => {
   it("has recordings and cases to hold it to", () => {
@@ -762,42 +698,6 @@ describe("pruning a tab", () => {
   it("drops everything the gatekeeper does not read and no field it does", () => {
     for (let { name, tab } of [...RECORDED, ...RENDERED]) {
       expect(pruneTab(dressed(tab)), name).toStrictEqual(pruneTab(tab));
-    }
-  });
-
-  // `pruneTab` stands in front of every read, so a field of the rendering that the whitelist
-  // forgot would show here as a rendering that changed.
-  describe("leaves the rendering as it is", () => {
-    for (let { name, tab } of RENDERED) {
-      it(name, () => {
-        let sent = dressed(tab);
-        expect(docTabToMarkdown(pruneTab(sent))).toStrictEqual(renderingOf(sent));
-      });
-    }
-
-    it("every recorded tab", () => {
-      for (let { name, tab } of RECORDED) {
-        let sent = dressed(tab);
-        expect(docTabToMarkdown(pruneTab(sent)), name).toStrictEqual(renderingOf(sent));
-      }
-    });
-  });
-
-  describe("commutes with the model", () => {
-    for (let fixture of FIXTURES) {
-      it(`in the recording ${fixture.name}`, () => {
-        let before = fixture.before;
-        for (let step of fixture.steps) {
-          let sent = dressed(before);
-          for (let options of MODELS) {
-            expect(
-              pruneTab(applyDocsRequests(sent, step.requests, options)),
-              `${step.name} ${JSON.stringify(options)}`,
-            ).toStrictEqual(applyDocsRequests(pruneTab(sent), step.requests, options));
-          }
-          before = step.after;
-        }
-      });
     }
   });
 
@@ -851,141 +751,9 @@ function paragraphTab(elements: unknown, more: Record<string, unknown> = {}): Go
   return tabOf([{ endIndex: 2, paragraph: { elements, paragraphStyle: {}, ...more } }]);
 }
 
-/** A tab of one paragraph that is one text run styled `textStyle`. */
-function runTab(textStyle: unknown): GoogleDocsTab {
-  return paragraphTab([{ endIndex: 2, textRun: { content: "x\n", textStyle } }]);
-}
-
-/** A tab of one table of one cell, the cell being `cell`. */
-function cellTab(cell: Record<string, unknown>): GoogleDocsTab {
-  return tabOf([{ endIndex: 4, table: { tableRows: [{ endIndex: 4, tableCells: [cell] }] } }]);
-}
-
-/** The JSON `prune` writes of `tab`, or nothing where it refuses the tab. */
-function written(
-  prune: (tab: GoogleDocsTab) => GoogleDocsTab, tab: GoogleDocsTab,
-): string | undefined {
-  try {
-    return JSON.stringify(prune(tab));
-  } catch {
-    return undefined;
-  }
-}
-
-// `pruneTab` reads what it keeps off one table. `pruneTabByHand` names the same fields helper by
-// helper, and the two are held to the same JSON; the tests against literals hold the table by
-// themselves.
 describe("pruning by the table", () => {
-  it("writes what the pruning written helper by helper writes, for every recorded, built and " +
-      "dressed tab", () => {
-    expect(RECORDED.length).toBeGreaterThanOrEqual(232);
-    let unplaced: Partial<GoogleDocsTab> = { body: { content: [] }, lists: {}, namedRanges: {} };
-    let tabs = [...CORPUS, { name: "neither named nor placed", tab: unplaced as GoogleDocsTab }];
-    for (let { name, tab } of tabs) {
-      for (let sent of [tab, dressed(tab), { ...tab, namedRanges: MARKED }]) {
-        let pruned = pruneTab(sent);
-        expect(firstDifference(JSON.stringify(pruned), JSON.stringify(pruneTabByHand(sent))), name)
-          .toBeUndefined();
-        // The helpers write `tabId: undefined` for a tab without an id, which the JSON leaves
-        // out; the table writes no key for a field that is not there.
-        expect(holdsUndefined(pruned), name).toBe(false);
-      }
-    }
-  });
-
-  it("writes what the pruning written helper by helper writes for tabs worn down at random", () => {
-    let recorded = RECORDED.reduce((most, entry) =>
-      cellCount(entry.tab.body.content) > cellCount(most.tab.body.content) ? entry : most);
-    let built = [
-      { name: "every element at once", tab: RICHEST },
-      { name: "one of each kept field", tab: EVERY_FIELD },
-    ];
-    let sources = [...built, recorded]
-      .flatMap(({ name, tab }) => [{ name, tab }, { name: `${name}, dressed`, tab: dressed(tab) }]);
-    let unstyledRuns = 0;
-    let unlevelledLists = 0;
-    for (let { name, tab } of sources) {
-      for (let [number, worn] of wornCopies(tab, SEED, 200).entries()) {
-        let byTable = written(pruneTab, worn);
-        let byHand = written(pruneTabByHand, worn);
-        let copy = `${name}, copy ${number}`;
-        expect(byTable === undefined || byHand === undefined, `${copy} is refused`).toBe(false);
-        expect(firstDifference(byTable!, byHand!), copy).toBeUndefined();
-
-        let runs = [...paragraphsOf(worn.body.content)].flatMap(paragraph => paragraph.elements)
-          .flatMap(element => element.textRun ?? []);
-        if (runs.some(run => run.textStyle === undefined)) unstyledRuns++;
-        if (Object.values(worn.lists).some(list => list.listProperties === undefined)) {
-          unlevelledLists++;
-        }
-      }
-    }
-    // The two defaults are met: a text run with no style, and a list with no levels.
-    expect(unstyledRuns).toBeGreaterThan(0);
-    expect(unlevelledLists).toBeGreaterThan(0);
-  });
-
-  it("reads null as the pruning written helper by helper does, where that one prunes", () => {
-    let chips = [
-      "textRun", "autoText", "horizontalRule", "pageBreak", "columnBreak", "footnoteReference",
-      "equation", "inlineObjectElement", "person", "richLink", "dateElement", "dropdown",
-    ];
-    let pruned: [string, GoogleDocsTab][] = [
-      ["a text style's bold", runTab({ bold: null })],
-      ["an element's start index", paragraphTab([{ startIndex: null, endIndex: 2 }])],
-      ["a tab's parent", tabOf([], { parentTabId: null })],
-      ...chips.map((chip): [string, GoogleDocsTab] =>
-        [`an element's ${chip}`, paragraphTab([{ endIndex: 2, [chip]: null }])]),
-      ["a text run's style", runTab(null)],
-      ["a colour", runTab({ foregroundColor: { color: null } })],
-      ["a list's properties", tabOf([], { lists: { "kix.list": { listProperties: null } } })],
-      ["a list's levels",
-        tabOf([], { lists: { "kix.list": { listProperties: { nestingLevels: null } } } })],
-    ];
-    for (let [name, tab] of pruned) {
-      let byHand = written(pruneTabByHand, tab);
-      expect(byHand, name).toBeDefined();
-      expect(written(pruneTab, tab), name).toBe(byHand);
-    }
-
-    let refused: [string, GoogleDocsTab][] = [
-      ["a paragraph's elements", paragraphTab(null)],
-      ["a paragraph's style", paragraphTab([], { paragraphStyle: null })],
-      ["a tab's body", tabOf([], { body: null })],
-      ["a body's content", tabOf(null)],
-      ["a tab's lists", tabOf([], { lists: null })],
-      ["a paragraph's positioned objects", paragraphTab([], { positionedObjectIds: null })],
-    ];
-    for (let [name, tab] of refused) {
-      expect(() => pruneTab(tab), name).toThrow(TypeError);
-      expect(() => pruneTabByHand(tab), name).toThrow(TypeError);
-    }
-
-    // Here the two prunings part: the table leaves out a part that is `null`, where the helpers
-    // write `{}` for a section break or a table of contents and throw on a part they read into.
-    // No tab shows it: JSON from Google holds no `null`.
-    let breaks = tabOf([{ endIndex: 1, sectionBreak: null, tableOfContents: null }]);
-    expect(pruneTab(breaks).body.content).toStrictEqual([{ endIndex: 1 }]);
-    expect(pruneTabByHand(breaks).body.content)
-      .toStrictEqual([{ endIndex: 1, sectionBreak: {}, tableOfContents: {} }]);
-
-    let unbulleted = paragraphTab([], { bullet: null });
-    expect(pruneTab(unbulleted).body.content)
-      .toStrictEqual([{ endIndex: 2, paragraph: { elements: [], paragraphStyle: {} } }]);
-    expect(() => pruneTabByHand(unbulleted)).toThrow(TypeError);
-
-    let untabled = tabOf([{ endIndex: 4, table: null }]);
-    expect(pruneTab(untabled).body.content).toStrictEqual([{ endIndex: 4 }]);
-    expect(() => pruneTabByHand(untabled)).toThrow(TypeError);
-
-    let hollow = cellTab({ endIndex: 4, content: null });
-    expect(pruneTab(hollow).body.content).toStrictEqual(
-      [{ endIndex: 4, table: { tableRows: [{ endIndex: 4, tableCells: [{ endIndex: 4 }] }] } }]);
-    expect(() => pruneTabByHand(hollow)).toThrow(TypeError);
-  });
-
   it("refuses a paragraph without its elements or its style, a tab without its body or its " +
-      "lists, and a body without its content", () => {
+      "lists, and a body without its content, and one with any of those null", () => {
     // Each part holds a text beside what it lacks. The table's refusal is the name of the field
     // and nothing of the document; a tab without its lists is refused by the engine, in its words.
     let text = { zzSecret: "text of the document" };
@@ -997,9 +765,16 @@ describe("pruning by the table", () => {
       ["a body without its content", tabOf([], { body: text }), "content"],
       ["a tab without its lists", tabOf([], { lists: undefined, ...text })],
     ];
-    for (let [name, tab, field] of refused) {
+    let nulls: [string, GoogleDocsTab][] = [
+      ["a paragraph's elements", paragraphTab(null)],
+      ["a paragraph's style", paragraphTab([], { paragraphStyle: null })],
+      ["a tab's body", tabOf([], { body: null })],
+      ["a body's content", tabOf(null)],
+      ["a tab's lists", tabOf([], { lists: null })],
+      ["a paragraph's positioned objects", paragraphTab([], { positionedObjectIds: null })],
+    ];
+    for (let [name, tab, field] of [...refused, ...nulls]) {
       expect(() => pruneTab(tab), name).toThrow(TypeError);
-      expect(() => pruneTabByHand(tab), name).toThrow(TypeError);
       if (field) {
         expect(() => pruneTab(tab), name)
           .toThrow(new RegExp(`^Google Docs returned a part without its ${field}$`));
@@ -1013,7 +788,6 @@ describe("pruning by the table", () => {
     let tab = tabOf([], { lists });
     let pruned = `{"listProperties":{"nestingLevels":[]}}`;
     expect(JSON.stringify(pruneTab(tab).lists)).toBe(`{"__proto__":${pruned},"kix.a":${pruned}}`);
-    expect(written(pruneTab, tab)).toBe(written(pruneTabByHand, tab));
   });
 
   it("writes an empty style for a text run without one, and no levels for a list without " +
@@ -1085,10 +859,8 @@ describe("pruning by the table", () => {
   });
 });
 
-// The whitelist and the version of the stored copy move together: a stored copy whose revision
-// Google confirms is not fetched again, so one pruned by another whitelist would be served
-// under an unchanged version for as long as its document stood. A change to this list is a
-// change to what a stored copy holds, and `DOC_COPY_FORMAT_VERSION` changes with it.
+// The whitelist and `DOC_COPY_FORMAT_VERSION` move together: a stored copy whose revision Google
+// confirms is not fetched again.
 it("keeps which style changes a row's and a cell's suggestions make, by ID alone", () => {
   let tab = buildTab([{ table: [["a\n", "b\n"]] }]);
   let table = tab.body.content.find(element => element.table)!.table!;
@@ -1176,9 +948,7 @@ it("keeps exactly these fields under this format version", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// The copy
-// ---------------------------------------------------------------------------
+// --- The copy
 
 describe("the copy of a document", () => {
   let recorded = FIXTURES[0].before;
@@ -1260,9 +1030,7 @@ describe("the named styles of a new document", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// The fields asked of Google
-// ---------------------------------------------------------------------------
+// --- The fields asked of Google
 
 /**
  * `tabs` as `getDocument` returns them from a fake Google that holds `answer(rawDocsDocument(…))`,

@@ -1,11 +1,6 @@
-// THE WHOLE-TAB SEARCH the run-by-run one (`locateQuoteInRuns` in `../src/drive-comment-body`)
-// is held to: a quote found in the text of a tab that is in hand whole, every piece of that text
-// listed before the search begins. A test helper, kept apart from the source so that the two
-// share nothing but the renderer's reading of one paragraph element: where they answer the
-// same range, or refuse with the same message, for a tab handed whole and handed in items, the
-// search by items reads the tab as this one does. With it, what the two are compared over:
-// tabs built by hand for what a quote can meet, and quotes drawn from a tab's own text. Beside
-// it, `locateQuote`: the source's own search over a tab in hand, for the tests that hold one.
+// THE WHOLE-TAB SEARCH the run-by-run one (`locateQuoteInRuns`) is held to, sharing nothing with
+// the source but the renderer's reading of one element; the tabs and drawn quotes the two are
+// compared over; and `locateQuote`, the source's own search over a tab in hand.
 
 import type { DocsRange, GoogleDocsTab, ParagraphElement } from "../src/docs-api";
 import { locateQuoteInRuns } from "../src/drive-comment-body";
@@ -139,9 +134,7 @@ export function locateQuote(
   return locateQuoteInRuns(tab.tabId, [tab.body.content], quote, options);
 }
 
-// ---------------------------------------------------------------------------
-// What the two searches are compared over
-// ---------------------------------------------------------------------------
+// --- What the two searches are compared over
 
 /** What a search answers: the range, or the message of its refusal. */
 export function outcome(search: () => DocsRange): DocsRange | string {
@@ -156,11 +149,8 @@ export function outcome(search: () => DocsRange): DocsRange | string {
 const withinLine = (quote: string) => quote.split(/[\n\v]/)[0];
 
 /**
- * `draws` rounds of quotes drawn from the text of `tab`: part of one paragraph element's text;
- * the end of one element's text with the start of the next's; any stretch of the text, which
- * may take part of a chip or run across what reads as nothing; one or two characters, which
- * most tabs hold more than once, overlapping where a character repeats; and text the tab does
- * not hold.
+ * `draws` rounds of quotes drawn from the text of `tab`: within an element, across two, any stretch,
+ * one or two characters (most repeat), and text the tab does not hold.
  */
 export function drawnQuotes(tab: GoogleDocsTab, dice: Dice, draws: number): string[] {
   let { text, pieces } = tabTextWhole(tab);

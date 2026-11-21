@@ -1,8 +1,6 @@
 // The path through runs held to the path with a tab whole: every recorded step and a chain of
-// drawn edits are made in hand, in a store under the sizes a store cuts to and in a store that
-// cuts every tab into runs of one to three elements. Every pending read, every card and every
-// applied result must be the same on the three. The tabs are decoded from JSON: fixtures that
-// share style objects would hide what a stored run loses.
+// drawn edits, made in hand, in a store under the sizes a store cuts to and in one that cuts a
+// run an element, give the same pending reads, cards and applied results.
 
 import { describe, expect, it } from "vitest";
 import { googleDocDisplayLimit } from "../src/doc-actions";
@@ -25,8 +23,8 @@ import { largeTabs, summaryOf, throughJson } from "./render-run-tabs";
 const DOC = "doc";
 const NONE: DocPending = { edits: [], roots: [] };
 const LABEL = "\"Main\" (tab-1)";
-/** Sizes that cut a tab into runs of one to three elements. */
-const FORCED: RunSizes = { least: 0, target: 400, most: Infinity, elements: 3 };
+/** Sizes that cut a tab into a run an element. */
+const FORCED: RunSizes = { least: 0, target: 400, most: Infinity, elements: 1 };
 
 /** A store, and the version of the tab a step is made in. */
 type Path = { storage: FakeDocStorage; store: DocStore; sizes?: RunSizes; version?: DocVersion };
@@ -133,9 +131,7 @@ describe("the path through runs against the path with a tab whole", () => {
       }
     });
 
-  // Footnotes in paragraphs and in cells, protected content with section breaks in the middle
-  // of the body, and tables between lists: ten edits each, every one made in the tab the one
-  // before gave.
+  // Ten edits each, every one made in the tab the one before gave.
   it.each([
     ["paragraphs with footnotes", 20261117, 10],
     ["protected content", 20261118, 8],

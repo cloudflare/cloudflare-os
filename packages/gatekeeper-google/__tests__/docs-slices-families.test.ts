@@ -1,7 +1,5 @@
-// The model on a slice of a tab, held to the model on the whole tab, for a family of requests:
-// one request of each kind the model takes at each place of three small tabs, from every
-// stretch of the tab's top-level elements. What is thinned is the ranges a range kind takes,
-// to a table of two widths; every request that is run is run from every stretch.
+// The model on a slice held to the whole tab for one request of each kind at each place of three
+// small tabs, from every stretch. The ranges a range kind takes are thinned, a table of two widths.
 
 import { describe, expect, it } from "vitest";
 import type { GoogleDocsRequest } from "../src/docs-api";
@@ -33,9 +31,7 @@ const FAMILY = NAMES.flatMap(name => FAMILY_KINDS.flatMap(kind => [
     : [],
 ]));
 
-// What the family's tests add to, for the test after them: the requests each tab and kind
-// ran under each option and how many of them the whole tab took, the stretches, and the links
-// cleared from the linked paragraph.
+// What the family's tests add to, for the test after them.
 const ran = new Map<string, number>();
 const taken = new Map<string, number>();
 const corpus = { stretches: 0, nothing: 0, unlinked: 0 };
@@ -101,9 +97,7 @@ describe("a family of requests, from every slice", () => {
       }
     }
     expect(ran.size).toBe(66);
-    // And no tab and kind is held on refusals alone: the whole tab takes one request of each
-    // at least. A bulleted range that holds a list item is refused, so on the tab of lists
-    // the ranges over its plain paragraphs are what makes a list or joins one.
+    // And no tab and kind is held on refusals alone.
     for (let [test, applied] of taken) expect(applied, test).toBeGreaterThanOrEqual(1);
     expect(taken.size).toBe(66);
     // The range the model reads the unit before for is in the table, whatever the thinning.

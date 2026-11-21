@@ -1,9 +1,5 @@
-// A batch applied through the store's slices, held to the batch applied to the whole tab: the
-// helpers that keep a tab as a fetch keeps it, take the runs of a stretch of its version as a
-// slice, apply a batch to the slice and widen it where the model says a read fell outside it,
-// store the version the slice gives and compare what the store reads of it with the whole
-// tab's result. A helper and no test of its own: `storeFromEveryStretch` registers the
-// differential for one sizing, in the file of that sizing. Node only: the storage is the fake.
+// A batch applied through the store's slices, held to the batch applied to the whole tab. No
+// test of its own: `storeFromEveryStretch` registers the differential for one sizing.
 
 import { beforeAll, describe, expect, it } from "vitest";
 import type { GoogleDocsRequest, GoogleDocsTab } from "../src/docs-api";
@@ -35,11 +31,7 @@ import { WIDER } from "./wider-run";
 const DOC = "doc";
 const NONE: DocPending = { edits: [], roots: [] };
 
-/**
- * `tab` as a fetch hands it to a store: decoded from JSON, so that no two parts are one
- * object, pruned, and with no start on the section break that opens its body, as Google
- * sends it.
- */
+/** `tab` as a fetch hands it to a store: decoded from JSON, pruned, no start on its opening break. */
 export function asFetched(tab: GoogleDocsTab): GoogleDocsTab {
   let fetched = pruneTab(throughJson(tab));
   let opening: Partial<GoogleDocsTab["body"]["content"][number]> | undefined = fetched.body.content[0];
@@ -47,11 +39,7 @@ export function asFetched(tab: GoogleDocsTab): GoogleDocsTab {
   return fetched;
 }
 
-/**
- * A store of its own over a `fakeDocStorage` of its own, its runs cut to `sizes`, with `tab`
- * kept in it as a fetch keeps a document's one tab, with the write markers `writeMarkers`
- * (none where not given): the storage, the store and the tab's base version.
- */
+/** A store of its own with `tab` kept in it as a fetch keeps it, its runs cut to `sizes`. */
 export function kept(
   tab: GoogleDocsTab, sizes?: RunSizes, writeMarkers: readonly DocWriteMarkerCopy[] = [],
 ): { storage: FakeDocStorage; store: DocStore; base: DocVersion } {
@@ -78,11 +66,7 @@ export function runStarts(storage: FakeDocStorage, version: DocVersion): number[
   return starts;
 }
 
-/**
- * A reach that names exactly the runs at places `[from, to)` of `version`: its lowest index
- * the first index of run `from` and its highest that of run `to - 1`, so `DocStore.slice`
- * answers that stretch. `starts` is `runStarts` of the version, for a caller that asks often.
- */
+/** A reach that names exactly the runs at places `[from, to)` of `version`. */
 export function stretchReach(
   storage: FakeDocStorage, version: DocVersion, from: number, to: number,
   starts: readonly number[] = runStarts(storage, version),
@@ -90,11 +74,7 @@ export function stretchReach(
   return { from: starts[from], to: starts[to - 1], behind: [] };
 }
 
-/**
- * How many runs `storage` holds, and how many of them do not start at 0. A run is a JSON
- * array (a context is an object): its first element's stored start is 0, or absent where it
- * is the section break that opens a body.
- */
+/** How many runs `storage` holds, and how many of them do not start at 0. */
 export function runsStored(storage: FakeDocStorage): { runs: number; off: number } {
   return storage.sql.exec<{ runs: number; off: number }>(
     `SELECT COUNT(*) AS runs, COALESCE(SUM(CASE
@@ -106,11 +86,7 @@ export function runsStored(storage: FakeDocStorage): { runs: number; off: number
   ).one();
 }
 
-/**
- * The refusal `thrown` is: its name and message, whatever error it is (a generated batch the
- * model has no answer for can fail it with a `TypeError`, which every slice must give too).
- * Anything thrown that is no `Error` is thrown on.
- */
+/** The refusal `thrown` is, by name and message, whatever error it is. */
 function refusalOf(thrown: unknown): Refusal {
   if (!(thrown instanceof Error)) throw thrown;
   return { name: thrown.name, message: thrown.message };
@@ -128,12 +104,7 @@ export type AppliedSlice = {
   emptied: number;
 };
 
-/**
- * THE WIDENING LOOP on the store: `requests` applied to `slice.piece`; on a slice edge the
- * runs are taken again, wider, FROM THE STORE (`DocStore.widen`, handed the places and the
- * error) and the batch applied again. Answers the slice the batch applied to, what the model
- * answered and how often it widened, or the refusal.
- */
+/** THE WIDENING LOOP on the store: on a slice edge the runs are taken again, wider, from the store. */
 export function applied(
   store: DocStore, slice: DocSlice, requests: readonly GoogleDocsRequest[],
 ): AppliedSlice | { refused: Refusal } {
@@ -162,11 +133,7 @@ export type WholeResult =
     end: number;
   };
 
-/**
- * What `tab` holds beside its body: its identity, its lists and its named styles, in that
- * order whatever the order of the tab's own keys. A tab with no named styles reads as one
- * whose named styles are absent.
- */
+/** What `tab` holds beside its body: its identity, its lists and its named styles. */
 function sharedOf(tab: GoogleDocsTab): unknown[] {
   return [tabIdentity(tab), tab.lists, tab.namedStyles ?? null];
 }
@@ -187,12 +154,7 @@ export function whole(tab: GoogleDocsTab, requests: readonly GoogleDocsRequest[]
   };
 }
 
-/**
- * Holds that `child`, the version a slice gave, reads as the whole tab's result: its tab (the
- * body, and beside it the identity, the lists and the named styles), its Markdown, its
- * summary, where its body ends and that it is exact. The tab's JSON is compared first, and
- * the values only where the texts differ.
- */
+/** Holds that `child`, the version a slice gave, reads as the whole tab's result. */
 export function expectReadsAs(
   store: DocStore, child: DocVersion, want: Extract<WholeResult, { tab: GoogleDocsTab }>,
   where: () => string,
@@ -244,10 +206,8 @@ export type StretchTally = {
 };
 
 /**
- * THE DIFFERENTIAL FOR ONE BATCH: `tab` kept under `sizes`, and for EVERY stretch `[from, to)`
- * of its version's runs, each from the same rows: the slice of that stretch, the batch through
- * `applied`, the version through `putSlice`, held to what the whole tab gives (the same
- * refusal by name and message, or the version read as the whole tab's result).
+ * THE DIFFERENTIAL FOR ONE BATCH: `tab` kept under `sizes`, and from EVERY stretch of its runs
+ * the batch through `slice`, `applied` and `putSlice`, held to what the whole tab gives.
  */
 export function expectFromEveryStretch(
   tab: GoogleDocsTab, requests: readonly GoogleDocsRequest[], sizes: RunSizes,
@@ -321,9 +281,8 @@ export function recordedSteps(name: string): {
   });
 }
 
-// The seeded sequences a sizing's file runs, A TABLE OF TWO WIDTHS: each seed with the way its
-// sequences are written, and which of a seed's 320 sequences are run (those whose number is a
-// multiple of `every`).
+// The seeded sequences a sizing's file runs, A TABLE OF TWO WIDTHS: the seeds, and every how
+// many of a seed's 320 sequences is run.
 const SEQUENCES: { seeds: (readonly [seed: number, backToFront: boolean])[]; every: number } = WIDER
   ? { seeds: [[20261113, false], [20261114, true]], every: 80 }
   : { seeds: [[20261113, false]], every: 160 };
@@ -335,19 +294,12 @@ const SEQUENCE_PARTS = 4;
 let pairs: Pair[] | undefined;
 
 /**
- * Registers THE STORE'S DIFFERENTIAL FOR ONE SIZING: every recorded step, the pairs whose
- * first request removes or adds a top-level element, and a share of the seeded sequences,
- * each batch through `slice`, the model and `putSlice` FROM EVERY STRETCH of its version's
- * runs under `sizes`, held to the whole tab's outcome. `share` takes every `share`-th pair of
- * each tab and first request (1 for all of them), and `widerOnly` registers the tests and
- * skips them outside the wider run, where the file's sequences are two a seed.
+ * Registers THE STORE'S DIFFERENTIAL FOR ONE SIZING: every recorded step, every `share`-th pair
+ * of each tab and first request, and a share of the seeded sequences, each batch from every
+ * stretch of runs under `sizes` (`expectFromEveryStretch`).
  */
-export function storeFromEveryStretch(
-  label: string, sizes: RunSizes, share: number, widerOnly: boolean,
-): void {
-  let title = `a batch through the store's slices, ${label}` +
-    (widerOnly ? " (the wider run: GOOGLE_DOCS_WIDER_TESTS=1)" : "");
-  describe.skipIf(widerOnly && !WIDER)(title, () => {
+export function storeFromEveryStretch(label: string, sizes: RunSizes, share: number): void {
+  describe(`a batch through the store's slices, ${label}`, () => {
     let steps = { fixtures: 0, steps: 0, built: 0, applied: 0, ran: 0, nothing: 0 };
 
     it.each(readFixtures().map(fixture => fixture.name))(
@@ -400,13 +352,9 @@ export function storeFromEveryStretch(
 
     it("ran the pairs of every first request on every tab, and what a removal and an addition leave", () => {
       expect(counted.kinds.size).toBe(names.length * PAIR_FIRSTS.length);
-      // Every `share`-th pair of each tab and first request, and the floor of a file that
-      // takes a share of them: ten of each, 180 pairs.
       expect(counted.pairs).toBe(counted.kinds.size * Math.ceil(40 / share));
       expect(counted.pairs).toBeGreaterThanOrEqual(120);
-      // A first request left its slice with no element; a later request read past a slice
-      // whose first element was gone, and the runs were taken again from the store; a table
-      // added was cut into a run of its own.
+      // A slice emptied; a read past a slice whose first element was gone; a table cut alone.
       expect(counted.emptied).toBeGreaterThan(0);
       expect(counted.afterRemoval).toBeGreaterThan(0);
       expect(counted.tables).toBeGreaterThan(0);
@@ -416,7 +364,7 @@ export function storeFromEveryStretch(
     describe("a share of the seeded sequences, from every stretch of runs", () => {
       // Text, not objects: a tab is parsed where it is used.
       let recorded = new Map<number, RecordedCall[]>();
-      let every = widerOnly ? 160 : SEQUENCES.every;
+      let { every } = SEQUENCES;
       let ran = { calls: 0, followed: 0, stretches: 0 };
 
       beforeAll(() => {
@@ -426,8 +374,6 @@ export function storeFromEveryStretch(
         }
       });
 
-      // A seed's calls are a test a part, each part every `SEQUENCE_PARTS`-th call: from
-      // every stretch, the calls of one seed take longer than a test is given on a busy machine.
       it.each(SEQUENCES.seeds.flatMap(([seed]) =>
         Array.from({ length: SEQUENCE_PARTS }, (_, part) => [seed, part] as const),
       ))("seed %i, part %i", (seed, part) => {

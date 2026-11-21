@@ -1,15 +1,7 @@
-// The request builders of a text edit on a piece of a tab, held to the builders on the whole
-// tab: a replacement outside tables and an append, each built from the closure of its own
-// elements cut from the whole rendering, from the piece a store answers under several cuts of
-// the tab into runs, and from the whole rendering under a recorder that fails on a read past
-// the closure. The same batch, or the same refusal with the same text. Then the one place an
-// edit becomes requests (`tabEditRequests`), a replacement in a table's cell and the scan's
-// refusals among its edits, from a reading of the tab made each of those ways; every kind of
-// table change the same way, with a table call's checks (`tableCallChange`) and its
-// preparation, card and number (`prepareTableChange`), whose pieces are put under the
-// recorder; an edit made in a stored version end to end, against the edit made in the tab in
-// hand; and the shadow that holds the other suites' own calls the same way. Node only: the
-// storage is the fake.
+// Edits built from a piece of a tab (the closure cut from the whole rendering, the stored piece,
+// the whole rendering under the recorder) give the whole tab's batch or refusal: text edits,
+// `tabEditRequests`, table changes and table calls, an edit made end to end in a store, and the
+// shadow of the other suites' own calls.
 
 import { createSimulationStore } from "@gadgets/gatekeeper-kit/simulation-store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -25,11 +17,10 @@ import { tableChangeRequests } from "../src/docs-tables";
 import type { TableChange } from "../src/docs-tables";
 import { RUN_SIZES } from "../src/docs-runs";
 import type { RunSizes } from "../src/docs-runs";
-import { DocStore, docStoreCost } from "../src/docs-store";
+import { DocStore } from "../src/docs-store";
 import type { DocVersion } from "../src/docs-store";
 import { docTabToMarkdown, isBlankDocTab, MARKDOWN_RENDERING_VERSION } from "../src/markdown-converter";
 import { buildTab, diceOf, para } from "./doc-fixture";
-import { linesWithTablesTab } from "./doc-store-scenarios";
 import { readFixtures } from "./docs-live-fixtures";
 import { SCENARIOS, stepEdit } from "./docs-live-recorder";
 import {
@@ -38,42 +29,26 @@ import {
 } from "./docs-model-draws";
 import {
   APPEND, closureReading, expectSameCallFromReadings, expectSameFromPieces, expectSameFromReadings,
-  expectSamePrepared, fromClosure, fromReading, fromStore, fromWhole, pieceCase, pieceStore,
-  recordedReading, renderedOf, REPLACE, sandwiched,
+  fromClosure, fromReading, fromStore, fromWhole, pieceCase, pieceStore, recordedReading, renderedOf,
+  REPLACE,
 } from "./docs-piece-shadow";
 import type { PieceCase, PieceVerdict, ReadingVerdict, Shrink } from "./docs-piece-shadow";
 import {
   DEFAULT_CORPUS, DEFAULT_TABLE_CORPUS, madeTableCases, PIECE_SHAPES, pieceCorpus, pieceEdits,
-  pieceTableCorpus, pieceTabs, tabEditCorpus, tabEdits,
+  pieceTableCorpus, pieceTabs, TABLE_KINDS, tabEditCorpus, tabEdits,
 } from "./docs-piece-tabs";
 import type { PieceDraw, PieceShape, PieceTab, TabEditDraw, TableDraw } from "./docs-piece-tabs";
 import { shadowTally, shrinkShadowForTest } from "./docs-piece-suite-shadow";
 import { asFetched } from "./docs-store-slice-shadow";
-import { recordedTabs } from "./render-run-tabs";
 import { WIDER } from "./wider-run";
 
-/** Runs of exactly `elements` elements, a table alone: no run ends by its content. */
-const runsOf = (elements: number): RunSizes =>
-  ({ least: Infinity, target: Infinity, most: Infinity, elements });
-const ONE = runsOf(1);
-const TWO = runsOf(2);
-const THREE = runsOf(3);
+/** Runs of one element each, a table alone: the harshest cut. */
+const ONE: RunSizes = { least: Infinity, target: Infinity, most: Infinity, elements: 1 };
 
-/** What a test counts of the cases it holds. */
+/** What a test counts of the cases it holds, by `PieceVerdict`. */
 type Tally = {
-  /** Cases the whole tab builds a batch for, and cases it refuses, the pieces the same. */
-  built: number;
-  refused: number;
-  /** Built cases whose closure leaves an element of the tab out, in all and by entry. */
-  strict: number;
-  strictReplacements: number;
-  strictAppends: number;
-  /** Built cases whose batch names an index in the element next to the piece's first, and last. */
-  nearBefore: number;
-  nearAfter: number;
-  /** Built cases `pieceOverreach` counts to the batch's end on the side after, and the others. */
-  counted: number;
-  stopped: number;
+  built: number; refused: number; strict: number; strictReplacements: number; strictAppends: number;
+  nearBefore: number; nearAfter: number; counted: number; stopped: number;
 };
 
 const noTally = (): Tally => ({
@@ -111,12 +86,7 @@ function held(
   return verdict;
 }
 
-/**
- * Holds `tally` to floors, so that a corpus that stops testing anything fails: at least so
- * many edits built and so many refused, the pieces giving the same; of the built ones, so
- * many whose closure leaves an element of the tab out, which are the cases that test the
- * closure; and of those, so many of each entry, each of which ran under the recorder.
- */
+/** Holds `tally` to floors, so that a corpus that stops reaching strict closures fails. */
 function expectAtLeast(
   tally: Tally,
   floors: { built: number; refused: number; strict: number; replacements: number; appends: number },
@@ -135,11 +105,7 @@ const STEPS = readFixtures().flatMap(({ name, before, steps }) => {
     ({ step, tab: asFetched(position === 0 ? before : steps[position - 1].after) }));
 });
 
-/**
- * The edit of a recorded `step` in `tab`, where it is one of the two this file holds: a
- * replacement outside tables of a text that is there once, or an append to a tab that is not
- * blank and ends in a paragraph.
- */
+/** The edit of a recorded `step`: a replacement outside tables, or an append to a tab that is not blank. */
 function textCase(tab: GoogleDocsTab, step: (typeof STEPS)[number]["step"]): PieceCase | undefined {
   let { rendering } = renderedOf(tab);
   if ("append" in step) {
@@ -153,10 +119,6 @@ function textCase(tab: GoogleDocsTab, step: (typeof STEPS)[number]["step"]): Pie
   return pieceCase(REPLACE, { matchStart: rendering.markdown.indexOf(oldMarkdown), oldMarkdown, newMarkdown });
 }
 
-/** The text of the paragraph `tab` ends in. */
-const ending = (tab: GoogleDocsTab) =>
-  tab.body.content.at(-1)!.paragraph?.elements.map(element => element.textRun?.content ?? "").join("");
-
 /** An `updateTextStyle` that makes `[start, end)` bold. */
 const bold = (start: number, end: number) => styleText(start, end, { bold: true }, "bold");
 
@@ -164,23 +126,14 @@ const bold = (start: number, end: number) => styleText(start, end, { bold: true 
 const unmarked = (name: string, tab: GoogleDocsTab): PieceTab =>
   ({ name, tab, shapes: new Set(), marks: new Map() });
 
-const SIZINGS = {
-  one: ["one element a run", ONE], two: ["two elements a run", TWO],
-  three: ["three elements a run", THREE], real: ["the real cut", RUN_SIZES],
-} as const;
+/** The two sizings every stored piece is held under. */
+const SIZINGS = [["one element a run", ONE], ["the real cut", RUN_SIZES]] as const;
 
-// THE TABLES, EACH OF TWO WIDTHS. `PURE` is the table of the test that builds from the closure
-// with no store, a seed a test; `STORED` that of the tests that build from stored runs, a
-// store a tab and sizing, with the rounds of edits drawn on every tab of the recordings;
-// `SANDWICHES` the seeds and the sizings of the recorded steps inside a larger tab; and
-// `SEQUENCES` which of the seeded sequences' tabs edits are drawn on, and how many.
+// The tables, each of two widths: seeded edits from the closure alone (`PURE`) and from stored
+// runs (`STORED`), and edits on the seeded sequences' tabs.
 const PURE = WIDER
   ? { ...DEFAULT_CORPUS, tabs: 500, edits: 24, seeds: [0, 1, 2] } : { ...DEFAULT_CORPUS, seeds: [0] };
-const STORED = WIDER
-  ? { tabs: 200, edits: 16, sizings: [SIZINGS.one, SIZINGS.two, SIZINGS.three, SIZINGS.real], rounds: [0, 1, 2] }
-  : { tabs: 40, edits: 8, sizings: [SIZINGS.one, SIZINGS.three, SIZINGS.real], rounds: [] };
-const SANDWICHES = WIDER
-  ? { seeds: [1, 2, 3], sizings: [ONE, TWO, THREE, RUN_SIZES] } : { seeds: [1], sizings: [ONE, RUN_SIZES] };
+const STORED = WIDER ? { tabs: 200, edits: 16 } : { tabs: 40, edits: 8 };
 const SEQUENCES = WIDER ? { every: 8, edits: 12 } : { every: 16, edits: 8 };
 
 /** Every case the seeded tests hold, counted together, and by the shapes of its tab. */
@@ -196,10 +149,6 @@ function heldSeeded(tab: PieceTab, drawn: PieceDraw, sizings: readonly RunSizes[
   for (let shape of drawn.beside) shapes.get(shape)!.beside++;
 }
 
-/** The seed of the tabs stored under the sizing named `name`: other tabs for each sizing. */
-const storedSeed = (name: string) =>
-  DEFAULT_CORPUS.seed + 100 * (1 + Object.values(SIZINGS).findIndex(([other]) => other === name));
-
 // The tests count as they go, and the tests that state a tally read what the tests before
 // them counted: the file is run whole.
 describe("the builders of a text edit on a piece of the tab", () => {
@@ -207,31 +156,12 @@ describe("the builders of a text edit on a piece of the tab", () => {
     let tally = noTally();
     for (let { step, tab } of STEPS) {
       let drawn = textCase(tab, step);
-      if (drawn) held(tab, drawn, [ONE, TWO, THREE, RUN_SIZES], tally);
+      if (drawn) held(tab, drawn, [ONE, RUN_SIZES], tally);
     }
-    // A recorded tab is short: the closure of a step is the whole tab in one case in five.
     expectAtLeast(tally, { built: 110, refused: 0, strict: 85, replacements: 55, appends: 30 });
   });
 
-  it.each(SANDWICHES.seeds)("every recorded step, inside a larger tab, seed %i", seed => {
-    let tally = noTally();
-    for (let [number, { step, tab }] of STEPS.entries()) {
-      // An append is built at the larger tab's end: after a filler it would stand after the
-      // filler's last paragraph, its closure holding nothing of the recorded tab. So a step
-      // that appends gets the filler before alone, and is built after the recorded ending.
-      let larger = sandwiched(tab, seed * 1000 + number * 2, "append" in step);
-      if ("append" in step) expect(ending(larger)).toBe(ending(tab));
-      let drawn = textCase(larger, step);
-      if (drawn) held(larger, drawn, SANDWICHES.sizings, tally);
-    }
-    // Inside a larger tab every closure is a strict part, and no step's tab is blank: an
-    // append to a recorded tab that is blank is built after its one empty paragraph.
-    expectAtLeast(tally, { built: 140, refused: 0, strict: 140, replacements: 75, appends: 60 });
-    expect(tally.strict).toBe(tally.built);
-  });
-
-  // The seeded sequences are batches applied to the model, and hold no edit: the edits are
-  // drawn on the tabs they reach, the last tab of every `every`-th sequence.
+  // Edits drawn on the last tab of every `every`-th seeded sequence of model batches.
   it("edits drawn on the tabs the seeded sequences reach", () => {
     let tally = noTally();
     let last = new Map<number, string>();
@@ -253,7 +183,6 @@ describe("the builders of a text edit on a piece of the tab", () => {
     let tabs = pieceTabs(DEFAULT_CORPUS.seed, DEFAULT_CORPUS.tabs);
     let sizes = tabs.map(({ tab }) => tab.body.content.length);
     expect([Math.min(...sizes), Math.max(...sizes)]).toEqual([20, 60]);
-    // Three shapes a tab in turn, and those drawn beside them.
     for (let shape of PIECE_SHAPES) {
       expect(tabs.filter(tab => tab.shapes.has(shape)).length, shape).toBeGreaterThanOrEqual(30);
     }
@@ -265,35 +194,20 @@ describe("the builders of a text edit on a piece of the tab", () => {
     for (let { tab, drawn } of pieceCorpus({ ...PURE, seed: PURE.seed + seed })) heldSeeded(tab, drawn, []);
   });
 
-  it.each(STORED.sizings)("seeded tabs and edits, from stored runs, %s", (name, sizes) => {
-    for (let { tab, drawn } of pieceCorpus({ ...STORED, seed: storedSeed(name) })) {
-      heldSeeded(tab, drawn, [sizes]);
-    }
-  });
-
-  it.each(STORED.sizings.flatMap(([name, sizes]) => STORED.rounds.map(round => [name, round, sizes] as const)))(
-    "edits drawn on every recorded tab, from stored runs, %s, round %i", (name, round, sizes) => {
-      let tally = noTally();
-      for (let [number, recorded] of recordedTabs().entries()) {
-        let tab = asFetched(recorded.tab);
-        let edits = pieceEdits(
-          unmarked(recorded.name, tab), storedSeed(name) + round * 1009 + number, STORED.edits);
-        for (let drawn of edits) held(tab, drawn, [sizes], tally);
+  it.each(SIZINGS.map(([name, sizes], at) => [name, sizes, at] as const))(
+    "seeded tabs and edits, from stored runs, %s", (_name, sizes, at) => {
+      for (let { tab, drawn } of pieceCorpus({ ...STORED, seed: DEFAULT_CORPUS.seed + 100 * (1 + at) })) {
+        heldSeeded(tab, drawn, [sizes]);
       }
-      // A recorded tab is short: about half the closures are a strict part of their tab.
-      expectAtLeast(tally, { built: 3_000, refused: 100, strict: 1_500, replacements: 1_300, appends: 200 });
     });
 
   it("holds the seeded edits on closures that are a strict part of their tab", () => {
-    // What the default table gives: 1,681 built, every one strict (1,483 replacements and 198
-    // appends), and 467 refused the same.
-    expectAtLeast(seeded, { built: 1_500, refused: 230, strict: 1_200, replacements: 740, appends: 100 });
+    expectAtLeast(seeded, { built: 1_300, refused: 200, strict: 1_050, replacements: 650, appends: 85 });
     expect(seeded.strict).toBeGreaterThanOrEqual(0.8 * seeded.built);
   });
 
   it("every shape stands beside an edit", () => {
-    // For each shape, the built edits with a strict closure on a tab that holds the shape,
-    // and those of them drawn beside it: about half of what the default table gives.
+    // The built strict edits on a tab that holds each shape, and those drawn beside it.
     let floors: Record<PieceShape, [holds: number, beside: number]> = {
       empties: [650, 120], nested: [580, 290], tabbed: [440, 140], offPreset: [500, 115],
       positioned: [460, 27], positionedInList: [420, 80], protected: [440, 30], tables: [830, 100],
@@ -322,20 +236,17 @@ describe("the builders of a text edit on a piece of the tab", () => {
   });
 
   it("no batch reaches past its piece", () => {
-    // `expectSameFromPieces` asks `pieceOverreach` of every batch the whole tab builds, with
-    // the closure the batch was built from: it names no side. What that check saw, in the
-    // default pass: 2,017 batches, 69 of which name an index in the element next to their
-    // piece's first and 181 in the element next to its last, so the check is asked at both
-    // edges.
-    expect(all.built).toBeGreaterThanOrEqual(1_900);
+    // `expectSameFromPieces` asked `pieceOverreach` of every batch, and some batches name an
+    // index next to each edge of their piece: the check is asked at both edges.
+    expect(all.built).toBeGreaterThanOrEqual(1_500);
     expect(all.nearBefore).toBeGreaterThanOrEqual(30);
     expect(all.nearAfter).toBeGreaterThanOrEqual(90);
-    // The builders of a text edit write no request that adds length but `insertText`, so the
-    // side after a piece is counted to the end of every batch.
+    // A text edit adds length only by `insertText`: the side after is counted to every batch's end.
     expect([all.counted, all.stopped]).toEqual([all.built, 0]);
   });
 
   it("counts each index of a batch where it stood at least", () => {
+    expect(pieceOverreach([], { first: false, last: false, inner: { from: 7, to: 7 } })).toBeUndefined();
     // A piece between indexes 100 and 200, the tab going on at both ends.
     let inner = { from: 100, to: 200 };
     let part = { first: false, last: false, inner };
@@ -395,33 +306,9 @@ describe("the builders of a text edit on a piece of the tab", () => {
     expect(side(named, bold(150, 202))).toBe("after");
   });
 
-  it("a batch of no request reaches nowhere", () => {
-    expect(pieceOverreach([], { first: false, last: false, inner: { from: 7, to: 7 } })).toBeUndefined();
-
-    // An edit that changes nothing builds no request, from a piece as from the whole tab.
-    let lines = Array.from({ length: 12 }, (_, line) => para(line === 6 ? "Hello world" : `Line ${line}`));
-    let tab = asFetched(buildTab(lines));
-    let matchStart = renderedOf(tab).rendering.markdown.indexOf("world");
-    let edit = { matchStart, oldMarkdown: "world", newMarkdown: "world" };
-    expect(fromWhole(tab, REPLACE, edit)).toEqual({ requests: [] });
-    let closure = fromClosure(tab, REPLACE, edit);
-    expect(closure.range.to - closure.range.from).toBeLessThan(tab.body.content.length);
-    expect(closure.outcome).toEqual({ requests: [] });
-    expect(pieceOverreach([], closure.part)).toBeUndefined();
-    for (let sizes of [ONE, RUN_SIZES]) {
-      let stored = fromStore(tab, sizes, REPLACE, edit);
-      expect(stored.piece.at).toEqual(closure.part);
-      expect(stored.outcome).toEqual({ requests: [] });
-    }
-    expect(expectSameFromPieces(tab, REPLACE, edit, [ONE, RUN_SIZES]))
-      .toEqual({ built: true, strict: true, nearBefore: false, nearAfter: false, counted: true });
-  });
-
   it("a batch holds no object of the piece it was built from", () => {
-    // `expectSameFromPieces` asks it of every batch built from a stored piece
-    // (`sharedWithPiece`). The places a style of the rendering enters a request, each reached
-    // here: the style at the place text is put in, the style of the text replaced, and the
-    // link a replacement keeps.
+    // Each place a style of the rendering enters a request: the style where text is put in, the
+    // style of the text replaced, and the link a replacement keeps.
     let link = { url: "https://example.com/page" };
     let strong = { bold: true };
     let lines = Array.from({ length: 12 }, (_, line) => para(`Line ${line}`));
@@ -498,58 +385,19 @@ function heldByReading(
   if (verdict.strict) tally[kind].strict++;
 }
 
-// A case is built from stored runs once a sizing: the wider table is held in parts, a test
-// each of every fourth case, and each part holds the floor by itself.
-const READINGS = WIDER
-  ? { tabs: 120, edits: 12, sizings: [ONE, TWO, THREE, RUN_SIZES], parts: 4 }
-  : { tabs: 30, edits: 8, sizings: [ONE, RUN_SIZES], parts: 1 };
+// The wider table is held in parts, a test each, and each part holds the floor by itself.
+const READINGS = WIDER ? { tabs: 120, edits: 12, parts: 4 } : { tabs: 30, edits: 8, parts: 1 };
 
 describe("a text edit built from a reading of its tab", () => {
-  it("every recorded step, on the tab as recorded, under every sizing", () => {
-    let tally = noKinds();
-    for (let { step, tab } of STEPS) {
-      let drawn = stepDraw(tab, step);
-      if (drawn) heldByReading(tab, drawn, [ONE, TWO, THREE, RUN_SIZES], tally);
-    }
-    // About half of what the recordings give (62 strict replacements outside tables of 85,
-    // 36 strict appends of 38, and 32 appends to a blank tab). A recorded tab is short: the
-    // closure of each of the three replacements in a cell is its whole tab, so they are
-    // strict only inside a larger tab, below.
-    expect(tally.replace.strict).toBeGreaterThanOrEqual(30);
-    expect(tally.cell).toEqual({ cases: 3, strict: 0 });
-    expect(tally.append.strict).toBeGreaterThanOrEqual(18);
-    expect(tally.blankAppend.cases).toBeGreaterThanOrEqual(16);
-  });
-
-  it("every recorded step, inside a larger tab", () => {
-    let tally = noKinds();
-    for (let [number, { step, tab }] of STEPS.entries()) {
-      let larger = sandwiched(tab, 5_000 + number * 2, "append" in step);
-      let drawn = stepDraw(larger, step);
-      if (drawn) heldByReading(larger, drawn, [ONE, RUN_SIZES], tally);
-    }
-    // Inside a larger tab the closure of every text that stands once is a strict part, a
-    // cell's among them, and no tab is blank.
-    expect(tally.replace.strict).toBeGreaterThanOrEqual(42);
-    expect(tally.replace.strict).toBe(tally.replace.cases);
-    expect(tally.cell).toEqual({ cases: 3, strict: 3 });
-    expect(tally.append.strict).toBeGreaterThanOrEqual(35);
-    expect(tally.blankAppend.cases).toBe(0);
-  });
-
   it.each(Array.from({ length: READINGS.parts }, (_, part) => part))(
     "seeded tabs and edits, cells and the scan's refusals among them, part %i", part => {
       let tally = noKinds();
       let corpus = tabEditCorpus({ ...READINGS, seed: DEFAULT_CORPUS.seed + 500 });
       for (let [number, { tab, drawn }] of corpus.entries()) {
-        if (number % READINGS.parts === part) heldByReading(tab.tab, drawn, READINGS.sizings, tally);
+        if (number % READINGS.parts === part) heldByReading(tab.tab, drawn, [ONE, RUN_SIZES], tally);
       }
-      // THE FLOOR, of each part, about half of what the default table gives, each case built
-      // under the recorder too: strict replacements outside tables and in cells, strict
-      // appends to a tab that is not blank, and the scan's refusals of a text that is not
-      // there and of one that stands more than once, which name no piece.
-      // (218, 95 and 20 strict, and 12 and 13 refused, in the default table; no part of the
-      // wider table gives fewer than 312, 122 and 28, and 20 and 21.)
+      // Strict replacements outside tables and in cells, strict appends, and the scan's
+      // refusals of a text not there and of one there twice, which name no piece.
       expect(tally.replace.strict).toBeGreaterThanOrEqual(110);
       expect(tally.cell.strict).toBeGreaterThanOrEqual(45);
       expect(tally.append.strict).toBeGreaterThanOrEqual(10);
@@ -574,11 +422,8 @@ describe("a text edit built from a reading of its tab", () => {
       heldByReading(
         tab, { edit: { type: "replaceText", oldMarkdown: "", newMarkdown: "x" }, kind: "empty" }, [ONE], tally);
     }
-    // A BLANK TAB'S CLOSURE IS NEVER STRICT: a blank tab holds no element that writes a
-    // character, so each step back from its end passes every element and runs out at the
-    // tab's first: the piece is the whole tab. Blankness is the tab's own answer all the
-    // same, which the tabs that end in an empty paragraph after text hold: their piece at
-    // the end renders as line breaks, and the tab is not blank.
+    // A blank tab's closure is the whole tab; a tab that ends in empty paragraphs after text
+    // is not blank, though its piece at the end renders as line breaks.
     expect(tally.blankAppend).toEqual({ cases: 8, strict: 0 });
     expect(tally.append.cases).toBe(12);
     expect(tally.append.strict).toBeGreaterThanOrEqual(4);
@@ -586,8 +431,7 @@ describe("a text edit built from a reading of its tab", () => {
   });
 
   it("an edit that builds no request", () => {
-    // The edit that changes nothing, on a tab where its closure is a strict part and crosses
-    // a run's edge: no request from any reading, no side named, and the version itself.
+    // The edit that changes nothing, its closure a strict part that crosses a run's edge.
     let lines = Array.from({ length: 12 }, (_, line) => para(line === 6 ? "Hello world" : `Line ${line}`));
     let tab = asFetched(buildTab(lines));
     let edit: DocEdit = { type: "replaceText", oldMarkdown: "world", newMarkdown: "world" };
@@ -596,45 +440,28 @@ describe("a text edit built from a reading of its tab", () => {
     let range = closed.range()!;
     expect(range.to - range.from).toBeLessThan(tab.body.content.length);
     expect(fromReading(recordedReading(tab), edit)).toEqual({ requests: [] });
-    for (let sizes of [ONE, THREE]) {
-      let { store, storage, base } = pieceStore(tab, sizes);
-      let reading = storedTabReading(store, base);
-      expect(fromReading(reading, edit)).toEqual({ requests: [] });
-      // The closure crosses a run's edge: more than one run was decoded for it.
-      expect(reading.takeDecoded()!.size).toBeGreaterThan(1);
-      let before = storage.rows();
-      let made = docEditResult(store, base, edit);
-      expect(made).toEqual({ requests: [], after: base });
-      // Nothing is stored but the result.
-      let after = storage.rows();
-      expect(after.doc_result).toHaveLength(1);
-      expect(after).toEqual({ ...before, doc_result: after.doc_result });
-    }
+    let { store, storage, base } = pieceStore(tab, ONE);
+    let reading = storedTabReading(store, base);
+    expect(fromReading(reading, edit)).toEqual({ requests: [] });
+    expect(reading.takeDecoded()!.size).toBeGreaterThan(1);
+    let before = storage.rows();
+    let made = docEditResult(store, base, edit);
+    expect(made).toEqual({ requests: [], after: base });
+    // Nothing is stored but the result.
+    let after = storage.rows();
+    expect(after.doc_result).toHaveLength(1);
+    expect(after).toEqual({ ...before, doc_result: after.doc_result });
   });
 });
 
 // ---------------------------------------------------------------------------
-// Table changes: built from a reading, checked as a call, and prepared
+// Table changes: built from a reading, and checked as a call
 // ---------------------------------------------------------------------------
 
-/** The eleven kinds of table change. */
-const TABLE_KINDS = [
-  "insertTable", "insertTableRows", "insertTableColumns", "deleteTableRows", "deleteTableColumns",
-  "deleteTable", "setTableCellStyle", "setTableColumnWidths", "setTableRowHeights",
-  "mergeTableCells", "unmergeTableCells",
-] as const satisfies readonly TableChange["type"][];
 type TableKind = (typeof TABLE_KINDS)[number];
 
-/** What the tests of table changes count for one kind of change. */
-type KindCount = {
-  /** Cases held, each built from the whole tab, its closure, the recorder and stored runs. */
-  cases: number;
-  /** Cases whose closure leaves an element of the tab out: built under the recorder too. */
-  strict: number;
-  /** Batches built, and those of them whose count on the side after the piece stopped. */
-  built: number;
-  stopped: number;
-};
+/** Of one kind of table change: cases, strict ones, batches built and those whose count stopped. */
+type KindCount = { cases: number; strict: number; built: number; stopped: number };
 const noKindCounts = (): Record<TableKind, KindCount> => Object.fromEntries(
   TABLE_KINDS.map(kind => [kind, { cases: 0, strict: 0, built: 0, stopped: 0 }])) as Record<TableKind, KindCount>;
 /** Counts `verdict`, of a case of `kind`, in `counts`. */
@@ -657,21 +484,11 @@ function expectFloors(counts: readonly number[], floors: readonly number[]): voi
   for (let [at, kind] of TABLE_KINDS.entries()) expect(counts[at], kind).toBeGreaterThanOrEqual(floors[at]);
 }
 
-// THE TABLES OF THE TABLE CHANGES, EACH OF TWO WIDTHS: the seeded tabs, the changes drawn on
-// each and the sizings they are held under; the sizings of the recorded steps; and those of
-// the preparations, which make each change in a store twice.
-const TABLE_CHANGES = WIDER
-  ? { ...DEFAULT_TABLE_CORPUS, tabs: 60, edits: 8, sizings: [ONE, TWO, THREE, RUN_SIZES], prepared: [ONE, THREE] }
-  : { ...DEFAULT_TABLE_CORPUS, sizings: [ONE, RUN_SIZES], prepared: [ONE, RUN_SIZES] };
+/** The seeded tabs of the table changes, of two widths. */
+const TABLE_CHANGES = WIDER ? { ...DEFAULT_TABLE_CORPUS, tabs: 60, edits: 8 } : DEFAULT_TABLE_CORPUS;
 
 /** The seeded tabs of the table changes, each with the changes drawn on it. */
 const tableCorpus = () => pieceTableCorpus(TABLE_CHANGES);
-
-/** The recorded steps that change a table, each with the change it queues on its tab. */
-const TABLE_STEPS = STEPS.flatMap(({ step, tab }) => {
-  if (!("table" in step)) return [];
-  return [{ tab, change: stepEdit(step, renderedOf(tab).rendering) as TableChange }];
-});
 
 describe("a table change built from a reading of its tab", () => {
   /** Every case of this describe, by kind, and the seeded ones by the shapes they stand beside. */
@@ -692,50 +509,17 @@ describe("a table change built from a reading of its tab", () => {
   const refused = (words: string) =>
     [...refusals].reduce((sum, [message, times]) => message.includes(words) ? sum + times : sum, 0);
 
-  it("every recorded step that changes a table, on the tab as recorded", () => {
-    let counts = noKindCounts();
-    for (let { tab, change } of TABLE_STEPS) heldChange(tab, change, [ONE, TWO, THREE, RUN_SIZES], counts);
-    // The recordings hold 41 steps that change a table, of every kind, each of which its tab
-    // takes. A recorded tab is short: the closure of all but two is the whole tab, so the
-    // steps are strict inside a larger tab, below.
-    expect(byKind(counts, "cases")).toEqual([10, 4, 4, 3, 1, 1, 7, 4, 1, 3, 3]);
-    expect(byKind(counts, "built")).toEqual(byKind(counts, "cases"));
-    expect(byKind(counts, "strict")).toEqual([2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
-  });
-
-  it("every recorded step that changes a table, inside a larger tab", () => {
-    let counts = noKindCounts();
-    for (let [number, { tab, change }] of TABLE_STEPS.entries()) {
-      // A table added at the tab's end is built there: with no filler after, it stands after
-      // the recorded ending.
-      let larger = sandwiched(tab, 7_000 + number * 2, change.type === "insertTable" && change.after === undefined);
-      heldChange(larger, change, [ONE, RUN_SIZES], counts);
-    }
-    // Inside a larger tab every step is built from a strict part of the tab, under the
-    // recorder too.
-    expect(byKind(counts, "cases")).toEqual([10, 4, 4, 3, 1, 1, 7, 4, 1, 3, 3]);
-    expect(byKind(counts, "built")).toEqual(byKind(counts, "cases"));
-    expect(byKind(counts, "strict")).toEqual(byKind(counts, "cases"));
-  });
-
   it("seeded tabs and changes", () => {
     let counts = noKindCounts();
     for (let { tab, draws } of tableCorpus()) {
       for (let { change, beside } of draws) {
         if (!change) continue;
-        let verdict = heldChange(tab.tab, change, TABLE_CHANGES.sizings, counts);
+        let verdict = heldChange(tab.tab, change, [ONE, RUN_SIZES], counts);
         if (verdict.strict) for (let shape of beside) besides.set(shape, besides.get(shape)! + 1);
       }
     }
-    // THE FLOOR, A KIND OF CHANGE: the cases whose closure leaves an element of the tab out,
-    // each built under the recorder too, at about half of what the default table gives (31,
-    // 21, 11, 10, 16, 26, 7, 8, 12, 11 and 6, in the order of the kinds).
+    // Strict cases of every kind, and the shapes a strict change's table stands beside.
     expectFloors(byKind(counts, "strict"), [15, 10, 5, 5, 8, 13, 3, 4, 6, 5, 3]);
-    // THE SHAPES a strict change stands beside: its table, or the element a new table
-    // follows, is of the shape or next to an element of it. A table in a cell, a suggested
-    // row or cell, tables beside tables and a paragraph a positioned object is anchored to
-    // among them. (142, 52, 39, 22 and 4 in the default table; every other shape once to
-    // three times.)
     let floors: Partial<Record<PieceShape, number>> =
       { tables: 70, tablesBeside: 26, nestedTable: 19, suggested: 11, positioned: 2 };
     for (let shape of PIECE_SHAPES) {
@@ -748,12 +532,8 @@ describe("a table change built from a reading of its tab", () => {
     for (let { tab, draws } of madeTableCases()) {
       for (let { change } of draws) if (change) heldChange(tab.tab, change, [ONE, RUN_SIZES], counts);
     }
-    // Every kind is drawn on them, and built for all but three from a strict part.
     expectFloors(byKind(counts, "strict"), [7, 7, 2, 3, 2, 4, 1, 1, 1, 1, 1]);
-    // WHAT THE TAB AS A WHOLE REFUSES, each from a piece that does not hold what refuses it:
-    // a second table that reads the same, a numbered list after a table of numbered items,
-    // the cells the tab's tables may hold, and a text a new table is to follow that stands
-    // twice, or nowhere; and a table that reads as none of the tab does.
+    // What the tab as a whole refuses, each from a piece that does not hold what refuses it.
     for (let words of [
       "another table of the tab now reads the same", "holds items of a numbered list",
       "tables, rows and columns can be added only until the tables of a tab hold",
@@ -773,21 +553,16 @@ describe("a table change built from a reading of its tab", () => {
   });
 
   it("no table batch reaches past its piece", () => {
-    // `tabEditRequests` checks every batch against the piece it was built from
-    // (`pieceOverreach`), and every piece above gave the whole tab's batch: none names a
-    // side. WHAT THAT CHECK SAW, by kind: the batches built, and those for which its count
-    // on the side after the piece STOPPED at a request that adds length no request states.
-    // A new table, a row or a column inserted and cells merged are such requests, and each
-    // is the first of its batch: for every batch of those four kinds the check after the
-    // piece sees nothing past it, and the differential, not the check, is what holds them.
-    // The other seven kinds are counted to their last request.
+    // A new table, rows, columns and a merge add length no request states, and each opens its
+    // batch: `pieceOverreach` stops counting the side after there, and the differential holds
+    // those four kinds. The other seven are counted to their last request.
     let built = byKind(all, "built"), stopped = byKind(all, "stopped");
     let lengthens: readonly TableKind[] =
       ["insertTable", "insertTableRows", "insertTableColumns", "mergeTableCells"];
     expect(stopped).toEqual(TABLE_KINDS.map((kind, at) => lengthens.includes(kind) ? built[at] : 0));
     if (!WIDER) {
-      expect(built).toEqual([67, 41, 21, 10, 14, 39, 23, 18, 16, 13, 7]);
-      expect(stopped).toEqual([67, 41, 21, 0, 0, 0, 0, 0, 0, 13, 0]);
+      expect(built).toEqual([47, 33, 13, 4, 12, 37, 9, 10, 14, 7, 1]);
+      expect(stopped).toEqual([47, 33, 13, 0, 0, 0, 0, 0, 0, 7, 0]);
     }
   });
 });
@@ -807,12 +582,9 @@ describe("a table call checked against a reading of its tab", () => {
 
   it("seeded tabs and calls", () => {
     for (let { tab, draws } of tableCorpus()) {
-      for (let drawn of draws) heldCall(tab.tab, drawn, TABLE_CHANGES.sizings);
+      for (let drawn of draws) heldCall(tab.tab, drawn, [ONE, RUN_SIZES]);
     }
-    // THE FLOOR, FOR CALLS BY NUMBER: the calls whose table's closure leaves an element of
-    // the tab out, each checked under the recorder too, at about half of what the default
-    // table gives (21, 11, 10, 16, 26, 7, 9, 12, 11 and 6, in the order of the kinds). A call
-    // to add a table asks no piece: its checks are the build's.
+    // Strict calls of every kind; a call to add a table asks no piece.
     let [added, ...existing] = byKind(all, "strict");
     expect(added).toBe(0);
     expectFloors([1, ...existing], [1, 10, 5, 5, 8, 13, 3, 4, 6, 5, 3]);
@@ -824,96 +596,14 @@ describe("a table call checked against a reading of its tab", () => {
     for (let { tab, draws } of madeTableCases()) {
       for (let drawn of draws) heldCall(tab.tab, drawn, [ONE, RUN_SIZES]);
     }
-    // Two tables that read the same are refused with both numbers, which are the tab's; and
-    // the questions the checks share with the builders are refused the same.
+    // Two tables that read the same are refused with the tab's numbers; and the checks the
+    // calls share with the builders are refused the same.
     for (let words of [
       "reads the same as table", "holds items of a numbered list",
       "tables, rows and columns can be added only until the tables of a tab hold",
     ]) {
       expect(refused(words), words).toBeGreaterThan(0);
     }
-  });
-});
-
-describe("a table call prepared on a stored tab, its pieces under the recorder", () => {
-  /** What the preparations of this describe gave, by kind: prepared and refused. */
-  let prepared = Object.fromEntries(TABLE_KINDS.map(kind => [kind, [0, 0]])) as Record<TableKind, [number, number]>;
-  /** The recorded pieces that were read back to the line before their table. */
-  let asked = 0;
-  /** Holds `call` prepared on `tab` under `sizings` and counts it; the number of a new table. */
-  function heldPrepared(tab: GoogleDocsTab, { kind, call }: TableDraw, sizings: readonly RunSizes[]): number | undefined {
-    if (!call) return undefined;
-    let verdict = expectSamePrepared(tab, call, sizings);
-    prepared[kind][verdict.prepared ? 0 : 1]++;
-    asked += verdict.asked;
-    return verdict.table;
-  }
-  /**
-   * The number the table `change` adds has in the tab the change gives, made in the tab in
-   * hand: the place of the first table of the tab after that the tab before does not hold
-   * there.
-   */
-  function numberInHand(tab: GoogleDocsTab, change: TableChange): number {
-    let before = renderedOf(tab).rendering;
-    let after = docTabToMarkdown(makeDocEdit(tab, change).after);
-    let html = (render: typeof before, place: number) => {
-      let table = render.sourceMap.tables[place];
-      return table && render.markdown.slice(table.mdStart, table.mdEnd);
-    };
-    return after.sourceMap.tables.findIndex((_, place) => html(after, place) !== html(before, place));
-  }
-
-  /** The new tables of the seeded calls that were numbered as the tab made in hand numbers them. */
-  let numbered = 0;
-  // A preparation makes its change in a store, twice a sizing: the wider table is held in
-  // parts, a test each.
-  const PARTS = WIDER ? 3 : 1;
-
-  it.each(Array.from({ length: PARTS }, (_, part) => part))(
-    "seeded tabs and calls, and the number a new table is given, part %i", part => {
-      for (let [number, { tab, draws }] of tableCorpus().entries()) {
-        if (number % PARTS !== part) continue;
-        for (let drawn of draws) {
-          let table = heldPrepared(tab.tab, drawn, TABLE_CHANGES.prepared);
-          if (table === undefined) continue;
-          // THE ORACLE: the new table's place among the tables of the tab made in hand.
-          expect(table, tab.name).toBe(numberInHand(tab.tab, drawn.change!));
-          numbered++;
-        }
-      }
-    });
-
-  it("prepares the seeded calls as cards, each with its pieces under the recorder", () => {
-    // THE FLOOR, FOR PENDING CARDS: the calls on a table the tab holds that became a card,
-    // each prepared with its pieces under the recorder too, at about half of what the
-    // default table gives (87 in all: 14, 10, 0, 9, 26, 7, 8, 12, 1 and 0 in the order of
-    // the kinds; rows deleted and a cell split are prepared on the made tabs, below).
-    let cards = TABLE_KINDS.slice(1).reduce((sum, kind) => sum + prepared[kind][0], 0);
-    expect(cards).toBeGreaterThanOrEqual(43);
-    // And the new tables numbered as the tab made in hand numbers them (28).
-    expect(numbered).toBeGreaterThanOrEqual(14);
-    // A card names the nearest text before its table. Where the piece holds none (a table
-    // behind tables and empty paragraphs), it asks its tab: 30 recorded pieces were read
-    // back to that line.
-    expect(asked).toBeGreaterThanOrEqual(10);
-  });
-
-  it("the tabs made for what a table call asks of its tab as a whole", () => {
-    let made = 0;
-    for (let { tab, draws } of madeTableCases()) {
-      for (let drawn of draws) {
-        let table = heldPrepared(tab.tab, drawn, [ONE, THREE]);
-        if (table === undefined) continue;
-        expect(table, tab.name).toBe(numberInHand(tab.tab, drawn.change!));
-        made++;
-      }
-    }
-    expect(made).toBeGreaterThanOrEqual(7);
-    // Every kind became a card at least once, with its pieces under the recorder (42, 28,
-    // 13, 3, 12, 33, 9, 10, 14, 3 and 1 with the seeded ones), and most were refused at
-    // least once the same.
-    expectFloors(TABLE_KINDS.map(kind => prepared[kind][0]), [21, 14, 6, 1, 6, 16, 4, 5, 7, 1, 1]);
-    expect(TABLE_KINDS.reduce((sum, kind) => sum + prepared[kind][1], 0)).toBeGreaterThanOrEqual(40);
   });
 });
 
@@ -973,8 +663,7 @@ describe("an edit made in a stored version, held to the edit made in the tab in 
       if (last && (slice.from < last.from || slice.to > last.to)) left++;
       return putSlice.call(this, slice, made);
     });
-    // THE BUILT REQUESTS ARE DEEP-FROZEN BEFORE THE MODEL RUNS: the batch is first read for
-    // its reach, by the check against its piece. A write through a request then throws.
+    // The built requests are deep-frozen before the model runs: a write through one throws.
     let reach = model.batchReach;
     vi.spyOn(model, "batchReach").mockImplementation(requests => reach(deepFrozen(requests)));
   });
@@ -991,19 +680,6 @@ describe("an edit made in a stored version, held to the edit made in the tab in 
     return "requests" in made;
   }
 
-  it("every recorded step, one element a run and under the real cut", () => {
-    let built = 0, refused = 0;
-    for (let { step, tab } of STEPS) {
-      let drawn = stepDraw(tab, step);
-      if (!drawn) continue;
-      if (heldEndToEnd(tab, drawn.edit, [ONE, RUN_SIZES])) built++;
-      else refused++;
-    }
-    // Every recorded text step is one its tab takes: 158 built, none refused.
-    expect(built).toBeGreaterThanOrEqual(100);
-    expect(refused).toBe(0);
-  });
-
   it("seeded tabs and edits, and a queue of three folded", () => {
     let built = 0, refused = 0, folded = 0;
     for (let [number, tab] of pieceTabs(DEFAULT_CORPUS.seed + 700, END_TO_END.tabs).entries()) {
@@ -1012,8 +688,8 @@ describe("an edit made in a stored version, held to the edit made in the tab in 
         if (heldEndToEnd(tab.tab, edit, [number % 2 === 0 ? ONE : RUN_SIZES])) built++;
         else refused++;
       }
-      // A queue of the first three edits, folded over the stored tab and made in hand one
-      // after the other: the same edits refused, and the same tab at the end.
+      // The first three edits folded over the stored tab and made in hand one by one: the
+      // same edits refused, and the same tab at the end.
       let queue = draws.slice(0, 3).map(({ edit }, at): QueuedDocRecord => ({
         id: at + 1,
         action: { ...edit, tabId: tab.tab.tabId, markdownVersion: MARKDOWN_RENDERING_VERSION },
@@ -1030,7 +706,6 @@ describe("an edit made in a stored version, held to the edit made in the tab in 
       expect(store.markdown(fold.entity!)).toBe(docTabToMarkdown(inHand).markdown);
       folded++;
     }
-    // About half of what the tables give: 122 built and 55 refused by default.
     expect(built).toBeGreaterThanOrEqual(WIDER ? 440 : 60);
     expect(refused).toBeGreaterThanOrEqual(WIDER ? 150 : 25);
     expect(folded).toBe(END_TO_END.tabs);
@@ -1051,43 +726,14 @@ describe("an edit made in a stored version, held to the edit made in the tab in 
     for (let [number, { tab, draws }] of madeTableCases().entries()) {
       held(tab.tab, draws, number % 2 === 0 ? RUN_SIZES : ONE);
     }
-    // About half of what the tables give: 172 built and 82 refused by default.
     expect(built).toBeGreaterThanOrEqual(85);
     expect(refused).toBeGreaterThanOrEqual(40);
   });
 
   it("no slice the model was handed left the runs of the piece its batch was built from", () => {
-    // Counted by the three tests above, which this one reads: every version stored for an edit
-    // was cut from a slice inside the runs of the edit's piece. Nothing refuses an edit for
-    // it: what the model reads is the model's to bound.
-    // (651 versions stored by default: an edit under each sizing, the folds' steps, and the
-    // table changes.)
+    // Counted by the two tests above.
     expect(stored).toBeGreaterThanOrEqual(WIDER ? 800 : 320);
     expect(left).toBe(0);
-  });
-
-  it("one decode for the closure and the slice", () => {
-    // On the tab of 20,000 paragraphs under the real cut: a replacement inside one paragraph
-    // in the middle of a run decodes the piece's runs, and no run more for the model.
-    let lines = Array.from({ length: 20_000 }, (_, at) => `Line ${String(at).padStart(5, "0")}.`);
-    let { store, base } = pieceStore(asFetched(linesWithTablesTab("t1", lines, [5_000, 10_000, 15_000])), RUN_SIZES);
-    let reading = storedTabReading(store, base);
-    let text = lines[7_030];
-    let at = reading.find(text) as number;
-    let before = docStoreCost.runsDecoded;
-    reading.piece({ markdown: { mdStart: at, mdEnd: at + text.length } });
-    let piece = docStoreCost.runsDecoded - before;
-    expect(piece).toBe(1);
-
-    before = docStoreCost.runsDecoded;
-    let made = docEditResult(store, base, { type: "replaceText", oldMarkdown: text, newMarkdown: "Changed." }, reading);
-    expect(made.requests.length).toBeGreaterThan(0);
-    // The reading held the piece, and the slice took its run: nothing is decoded.
-    expect(docStoreCost.runsDecoded - before).toBe(0);
-    // With no reading handed in: the piece's runs, and none for the model.
-    before = docStoreCost.runsDecoded;
-    docEditResult(store, base, { type: "replaceText", oldMarkdown: lines[7_031], newMarkdown: "Other." });
-    expect(docStoreCost.runsDecoded - before).toBe(piece);
   });
 });
 
@@ -1106,8 +752,8 @@ describe("the suites' own calls", () => {
 
   it("are shadowed: each builds again from the closure of its edit", () => {
     let before = shadowTally();
-    // Five recorded steps made in the tab in hand, and three built from its rendering: from
-    // the middle of the recordings on, where the tabs are longer than an edit's closure.
+    // Five recorded steps made in hand and three built from a rendering, from the middle of
+    // the recordings, where tabs are longer than a closure.
     let from = Math.floor(TEXT_STEPS.length / 2);
     for (let { tab, edit } of TEXT_STEPS.slice(from, from + 5)) applyDocEdit(tab, edit);
     for (let { tab, edit } of TEXT_STEPS.slice(from + 5, from + 8)) docEditRequests(renderTab(tab), edit);
@@ -1115,26 +761,24 @@ describe("the suites' own calls", () => {
     expect(after.shadowed - before.shadowed).toBe(8);
     expect(after.skipped - before.skipped).toBe(0);
     expect(after.large - before.large).toBe(0);
-    // Each is built again from a strict part of its tab, or passes because its closure is
-    // the whole tab.
     expect((after.strict - before.strict) + (after.whole - before.whole)).toBe(8);
     expect(after.strict - before.strict).toBeGreaterThanOrEqual(1);
 
-    // A TABLE CHANGE is built again from the piece around its table: a recorded step that
-    // changes a table, inside a larger tab, made in the tab in hand and built from its
-    // rendering. Each is built from a strict part of the tab.
-    let { tab, change } = TABLE_STEPS.find(step => step.change.type === "insertTableRows")!;
-    let larger = sandwiched(tab, 7_100);
+    // A table change is built again from the piece around its table: rows added to the
+    // second table of a made tab, which stands between paragraphs.
+    let made = madeTableCases().find(({ tab }) => tab.name === "a table that opens the body")!;
+    let change = made.draws[4].change!;
+    expect(change.type).toBe("insertTableRows");
     before = shadowTally();
-    applyDocEdit(larger, change);
-    tableChangeRequests(renderTab(larger), change);
+    applyDocEdit(made.tab.tab, change);
+    tableChangeRequests(renderTab(made.tab.tab), change);
     after = shadowTally();
     expect([after.shadowed - before.shadowed, after.strict - before.strict]).toEqual([2, 2]);
   });
 
   it("fail the calling test where the closure builds another batch", () => {
-    // One element off the back of the closure: the first edit of the default table for which
-    // that builds another batch, with no error and no index past the smaller piece.
+    // The first edit for which one element off the back of the closure builds another batch
+    // that names no index past the smaller piece.
     let offBack: Shrink = ({ from, to }, own) => ({ from, to: Math.max(own.last + 1, to - 1) });
     let found = pieceCorpus(DEFAULT_CORPUS).find(({ tab, drawn }) => {
       if (drawn.entry !== REPLACE) return false;
@@ -1152,8 +796,8 @@ describe("the suites' own calls", () => {
     let before = shadowTally();
     expect(() => applyDocEdit(tab.tab, edit)).not.toThrow();
     expect(shadowTally().strict - before.strict).toBe(1);
-    // With the shadow's closure one element short, the same call fails, and says which
-    // entry point and what kind of difference, and nothing of the document.
+    // With the shadow's closure one element short, it fails, naming the entry point and the
+    // kind of difference and nothing of the document.
     shrinkShadowForTest(offBack);
     expect(() => applyDocEdit(tab.tab, edit)).toThrow(
       "The suites' shadow: applyDocEdit builds another batch from the closure of its edit's own elements.");

@@ -1,7 +1,5 @@
-// The model on a slice of a tab, held to the model on the whole tab, for the batches a guard
-// that judged a read by what a lookup found gets wrong: a first request that removes or adds
-// a top-level element of the tab, then any request, from every stretch of the tab. Every pair,
-// in both widths of the tests.
+// The model on a slice held to the whole tab for a first request that removes or adds a top-level
+// element, then any request, from every stretch: what a guard that judged by the lookup gets wrong.
 
 import { describe, expect, it } from "vitest";
 import { expectEverySlice, PAIR_FIRSTS, pairsCorpus, SLICE_TABS } from "./docs-slice-shadow";

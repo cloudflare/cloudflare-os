@@ -1,16 +1,10 @@
-// A whole rendering of a tab that fails on a read past a piece of it: what holds the request
-// builders to reading, of a tab's content, the elements of the piece alone. It reads as the
-// whole rendering does, so a builder handed it builds what it builds from the whole tab, and
-// a read of content outside the piece's elements throws where the builder makes it. A helper
-// and no test of its own.
+// A whole rendering of a tab that throws on a read of content past a piece of it, so that a
+// builder handed it builds what it builds from the whole tab or fails where it reads too far.
 
 import { ELEMENT_BLOCK, ELEMENT_PROTECTS, ELEMENT_TABLE } from "../src/markdown-converter";
 import type { DocTabSnapshot } from "../src/markdown-converter";
 
-/**
- * Thrown by a rendering `recorded` made for a read of content outside its range. The message
- * names the operation and the offsets or the entry read, and never any text of a document.
- */
+/** Thrown on a read outside a recorded range; its message names no text of a document. */
 export class ReadPastPiece extends Error {
   constructor(what: string) {
     super(`A read past the piece: ${what}`);
@@ -32,11 +26,8 @@ export type RecordedWhole = {
 const POSITIONS: ReadonlySet<PropertyKey> = new Set(["mdStart", "mdEnd", "docStart", "docEnd"]);
 
 /**
- * The entries of `entries`, each handed out as itself where `inside` says its place is one of
- * the range's, and otherwise as a stand-in that throws on a read of anything but its position.
- * One stand-in an entry, so that an entry found twice is one object and `indexOf` finds it.
- * A write to the entries or to a stand-in throws a `TypeError`, as an unserved read of the
- * Markdown does, so that no caller takes it for a builder's refusal.
+ * `entries`, each outside the range handed out as one stand-in that throws on a read of
+ * anything but its position; a write throws a `TypeError`, which no caller takes for a refusal.
  */
 function guardedEntries<T extends object>(
   kind: string, entries: T[], inside: (place: number) => boolean,
@@ -83,10 +74,8 @@ function guardedEntries<T extends object>(
 }
 
 /**
- * `markdown`, as a stand-in that answers its length and serves the methods the builders call
- * on a tab's Markdown, each answering a primitive, and throws `ReadPastPiece` where one reads
- * a character outside `[from, to)`. An end that is `-Infinity` or `Infinity` is the tab's own:
- * a read past that end of the string is one the whole tab's string answers the same.
+ * `markdown` as a stand-in serving the methods the builders call, throwing `ReadPastPiece` on a
+ * read outside `[from, to)`; an infinite end is the tab's own, read freely.
  */
 function guardedMarkdown(markdown: string, from: number, to: number): string {
   let { length } = markdown;
@@ -116,8 +105,7 @@ function guardedMarkdown(markdown: string, from: number, to: number): string {
       reads("at", place, place + 1);
       return markdown.at(index);
     },
-    // A search reads from where it starts to the end of what it finds, and to the string's
-    // end where it finds nothing.
+    // A search reads to the end of what it finds, or to the string's end.
     indexOf(search: string, start?: number) {
       let found = markdown.indexOf(search, start);
       reads("indexOf", offset(start, 0), found < 0 ? length : found + search.length);
@@ -151,10 +139,7 @@ function guardedMarkdown(markdown: string, from: number, to: number): string {
           return markdown[index];
         }
       }
-      // Anything else reads the string in a way nothing here follows: a method no builder
-      // called on a tab's Markdown before, or the string taken whole (a concatenation, a
-      // regular expression). It is served once it is listed above, with what it reads. A
-      // `TypeError`, so that no caller takes it for a builder's refusal.
+      // Any other read is one nothing here follows: a `TypeError`, until it is listed above.
       throw new TypeError(`The Markdown of a recorded rendering is asked ${String(property)}`);
     },
     has(_target, property) {
@@ -167,20 +152,11 @@ function guardedMarkdown(markdown: string, from: number, to: number): string {
 }
 
 /**
- * `whole.rendering`, reading as it does, but throwing `ReadPastPiece` on a read of CONTENT
- * outside the body elements `[range.from, range.to)`: of the Markdown, any character before
- * the range's first element's start or from the range's end on; of the source map, any
- * property but its position (`mdStart`, `mdEnd`, `docStart`, `docEnd`) of an entry an element
- * outside the range owns. A range that reaches the tab's first or last element allows every
- * read to that end, past the string's own end included. Everything else of the rendering
- * (its identity, `bodyEndIndex`, a length, an entry's position) is the tab's and is read
- * freely. The Markdown is no primitive: it has no method but those the builders call
- * (`guardedMarkdown`), and `===` on it is identity. A write to the Markdown, to the source
- * map's arrays or to an entry outside the range throws a `TypeError`.
- * @param lineBreakBefore Allows a read of the line break that stands just before the range,
- * where one does: what a search back for the start of the range's first line reads. A piece's
- * own string starts there and answers that it holds none, which says the same; a card's walk
- * back to the text before its table makes that search, and no request builder does.
+ * `whole.rendering`, throwing `ReadPastPiece` on a read of content outside the body elements
+ * `[range.from, range.to)`: Markdown outside their characters, or anything but the position of a
+ * source map entry an element outside owns. A range at a tab's end allows reads to that end.
+ * @param lineBreakBefore Allows the line break just before the range, which a card's walk back
+ * to the text before its table reads.
  */
 export function recorded(
   whole: RecordedWhole, range: { readonly from: number; readonly to: number },

@@ -34,12 +34,7 @@ export type LargeTab = NamedTab & { about: number };
 /** What two renderings are compared by: the Markdown and the source map. */
 export type Rendering = Pick<DocTabSnapshot, "markdown" | "sourceMap">;
 
-/**
- * A carry as the tests keep one: a copy, plain data that survives JSON. A pass's carry
- * (`PassCarry`) is moved in place and may not be kept past a move, so a test that reads the
- * carry after each run of a chain, builds one by hand or reads one back from a key holds this.
- * Written as `RenderCarry` says a carry is written.
- */
+/** A carry as the tests keep one: a copy, plain data that survives JSON (a `PassCarry` moves in place). */
 export type PlainCarry = {
   /** Whether anything is written yet: what is written first takes no blank line before it. */
   readonly hasOutput: boolean;
@@ -74,11 +69,7 @@ export function carryOf(plain: PlainCarry): PassCarry {
   };
 }
 
-/**
- * What `carry` holds at this moment, as a copy: every list an own property whatever its id
- * (an id may be a name every object inherits). The arrays are the carry's own, which a pass
- * replaces and never changes.
- */
+/** What `carry` holds at this moment, as a copy whose arrays are the carry's own. */
 export function plainOf(carry: PassCarry): PlainCarry {
   return {
     hasOutput: carry.hasOutput,
@@ -90,12 +81,7 @@ export function plainOf(carry: PassCarry): PlainCarry {
   };
 }
 
-/**
- * `numbers` with the levels of each list of `counted` in its place: written as a carry holds
- * them (no `null` at the end), and the list absent where no level holds a number. A copy, and
- * every list an own property of it whatever its id. The arrays of `counted` are taken, not
- * copied.
- */
+/** `numbers` with the levels of each list of `counted` in its place, written as a carry holds them. */
 function withListNumbers(
   numbers: PlainCarry["listNumbers"], counted: readonly [string, (number | null)[]][],
 ): PlainCarry["listNumbers"] {
@@ -108,11 +94,7 @@ function withListNumbers(
   return Object.fromEntries(lists);
 }
 
-/**
- * THE REFERENCE: a plain copying advance, kept as what `advanceCarry` is held to; it copies
- * every list at every run and is for tests only. The carry after a run, from the carry before
- * it and the run's summary alone; it shares with `carry` every part the run leaves as it was.
- */
+/** THE REFERENCE `advanceCarry` is held to: a plain copying advance, the carry after a run. */
 export function advancedCopy(carry: PlainCarry, summary: RunSummary): PlainCarry {
   if (!summary.emits) return carry;
   let { endListId: previousListId, levels } = summary;
@@ -165,11 +147,7 @@ export function sameCarry(left: PlainCarry, right: PlainCarry): boolean {
     sameList(left.listNumbers[listId], right.listNumbers[listId]));
 }
 
-/**
- * `renderRun` of a run entered with a carry a test keeps, and the carry after the run as the
- * test keeps one: the copy of a pass's carry made of `carry` and moved past the run by
- * `advanceCarry`.
- */
+/** `renderRun` of a run entered with a carry a test keeps, and the carry after it as a copy. */
 export function renderedFrom(
   elements: readonly StructuralElement[], context: RenderContext, carry: PlainCarry,
   at: RunPlace,
@@ -182,10 +160,7 @@ export function renderedFrom(
 
 /** A tab rendered run by run. */
 export type RenderedByRuns = Rendering & {
-  /**
-   * A copy of the carry after each run, with `INITIAL_CARRY` first: `carries[run]` is what
-   * `run` is entered with when nothing spoils it, and the last is the carry after the tab.
-   */
+  /** A copy of the carry before each run, and last the carry after the tab. */
   carries: PlainCarry[];
   /** Where each run's Markdown starts in the tab's. */
   starts: number[];
@@ -196,10 +171,7 @@ export function throughJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
-/**
- * Every tab of every recording: the tab each scenario starts from and the tab Google answered
- * after each of its steps, each a copy of its own so that no two parts share an object.
- */
+/** Every tab of every recording, before its first step and after each, each a copy of its own. */
 export function recordedTabs(): NamedTab[] {
   return readFixtures().flatMap(({ name, before, steps }) => [
     { name: `${name}, before`, tab: throughJson(before) },
@@ -208,9 +180,7 @@ export function recordedTabs(): NamedTab[] {
   ]);
 }
 
-// ---------------------------------------------------------------------------
-// Cuts: each is the bounds of its runs, from 0 to the body's length
-// ---------------------------------------------------------------------------
+// --- Cuts: each is the bounds of its runs, from 0 to the body's length
 
 /** Every cut of a body of `length` elements into two runs. */
 export function* everyCutInTwo(length: number): Iterable<number[]> {
@@ -241,9 +211,7 @@ export function seededCutsInTwo(length: number, seed: number, count: number): nu
     [0, 1 + Math.floor(random() * (length - 1)), length]);
 }
 
-// ---------------------------------------------------------------------------
-// Rendering by runs
-// ---------------------------------------------------------------------------
+// --- Rendering by runs
 
 // The joiner of rendered runs is the source's own, under the names these tests read it by:
 // what holds `renderRun` to `docTabToMarkdown` here holds the joiner an edit's rendering is
@@ -253,11 +221,8 @@ export {
 } from "../src/markdown-converter";
 
 /**
- * Renders `tab` as the runs `bounds` cut its body into: each with `renderRun`, in order,
- * entered with one pass's carry, moved past each run by `advanceCarry`, and placed where the
- * Markdown so far ends, and joined with `appendRun`. `spoil`, where given, is handed the copy
- * of the carry before each run after the first, and the run is entered with what it answers:
- * what a test hands a run in place of what the run before left.
+ * Renders `tab` as the runs `bounds` cut it into, with one pass's carry, joined with `appendRun`.
+ * `spoil` replaces the carry each run after the first is entered with.
  */
 export function renderedByRuns(
   tab: GoogleDocsTab, bounds: readonly number[], spoil?: (carry: PlainCarry) => PlainCarry,
@@ -289,12 +254,7 @@ function mapText(sourceMap: SourceMap): string {
   return text;
 }
 
-/**
- * The one comparison of two renderings: the Markdown byte for byte, and the source map entry
- * for entry. The maps are compared by their JSON text first: the same code builds both, so
- * the texts are the same unless the maps differ, and `toEqual` then decides and gives the
- * message. `where` is the message, or what gives it when the comparison fails.
- */
+/** The one comparison of two renderings: the Markdown, and the source map (by its JSON text first). */
 export function expectSameRendering(
   got: Rendering, whole: Rendering, where: string | (() => string),
 ): void {
@@ -306,12 +266,8 @@ export function expectSameRendering(
 }
 
 /**
- * Holds `tab` to the property: rendered by runs it is the tab rendered whole
- * (`docTabToMarkdown`), with the whole body as one run, with one element a run and with runs
- * of one to three elements. `"every"` adds every cut in two of a body of at most 64 elements,
- * and 16 drawn cuts in two of a longer one; `"sampled"` draws four cuts in two and one seed
- * fewer of the runs of one to three. `stored` also holds the tab to `storedByRuns`, with one
- * element a run and with one seed of runs of one to three. `where` names the tab in a failure.
+ * Holds `tab` rendered by runs to the tab rendered whole: as one run, one element a run, runs of
+ * one to three elements and cuts in two (every one, or `"sampled"`). `stored` adds `storedByRuns`.
  */
 export function expectRendersByRuns(
   tab: GoogleDocsTab, where: string, cuts: "every" | "sampled" = "every",
@@ -337,9 +293,7 @@ export function expectRendersByRuns(
     { renderings });
 }
 
-// ---------------------------------------------------------------------------
-// Large tabs
-// ---------------------------------------------------------------------------
+// --- Large tabs
 
 /** One numbered level, as each list of the large tabs that is not a preset's is defined. */
 const NUMBERED = { listProperties: { nestingLevels: [{ glyphType: "DECIMAL" }] } };
@@ -360,16 +314,9 @@ const noted = (text: string, number: number, listId?: string): ParagraphSpec => 
 });
 
 /**
- * Large tabs of the content a rendering carries state through, each decoded from JSON: a
- * numbered list of 20,000 items; a numbered list interrupted by a paragraph every 50 items;
- * nested numbered and bulleted lists; tables between the items of a list, their cells holding
- * numbered items and footnotes; paragraphs with footnotes, numbered by place; protected
- * content; and a thousand short numbered lists. `scale` divides the sizes.
- *
- * Every item and paragraph holds its own number in its text (but the deepest items of the
- * nested lists), so that no two elements of a tab are the same string. In the tables between
- * lists, the items in the cells of every second table are of the list the body's items are
- * of, so that the numbers those cells show are the ones the body carried.
+ * Large tabs of the content a rendering carries state through (lists, nested lists, tables between
+ * list items, footnotes, protected content), each decoded from JSON; `scale` divides the sizes. No
+ * two paragraphs are the same string, and every second table's cells continue the body's list.
  */
 export function largeTabs(scale = 1): LargeTab[] {
   let count = (size: number) => Math.max(1, Math.round(size / scale));
@@ -501,10 +448,7 @@ export function largeTabs(scale = 1): LargeTab[] {
   });
 }
 
-/**
- * What `DocStore.summary` answers of a tab whose rendering whole is `rendering`, for a tab
- * whose first index is 0: the summary a store's runs must join to.
- */
+/** What `DocStore.summary` answers of a tab whose rendering whole is `rendering`. */
 export function summaryOf(rendering: DocTabSnapshot): DocRunSummary {
   let { markdown, sourceMap } = rendering;
   return {
@@ -523,9 +467,7 @@ export function summaryOf(rendering: DocTabSnapshot): DocRunSummary {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Fuzzed tabs
-// ---------------------------------------------------------------------------
+// --- Fuzzed tabs
 
 /** What a level of a fuzzed list is: numbered from 1 or another start, bulleted, or neither. */
 const FUZZED_LEVELS: readonly NestingLevel[] = [
@@ -592,15 +534,9 @@ function* footnoteReferencesOf(
 }
 
 /**
- * `count` generated tabs aimed at a run's summary and its keys, each decoded from JSON. Lists
- * whose levels are numbered, bulleted, markerless and a checklist's in mixtures, with start
- * numbers 0, 2, 3 and 5, and a list the tab does not define; items, footnotes and subtitles in
- * cells and in tables inside cells; section breaks and tables of contents mid-body; an opening
- * section break with a start index of 0, with none, and no opening break; footnotes numbered
- * by place in two tabs of three, and otherwise with numbers that are absent, empty, no number,
- * zero-padded, zero, negative and out of order; subtitles under named styles that give them
- * italic, that do not, and under none. Every tenth tab's first block is a section break, which
- * no block that writes anything stands before.
+ * `count` generated tabs aimed at a run's summary and its keys: mixed list levels and starts, an
+ * undefined list, nested tables, structures mid-body, every kind of opening section break and of
+ * footnote number, and subtitles under every kind of named style. Each decoded from JSON.
  */
 export function fuzzedTabs(seed: number, count: number): NamedTab[] {
   let dice = diceOf(seed);
@@ -647,9 +583,7 @@ export function fuzzedTabs(seed: number, count: number): NamedTab[] {
   });
 }
 
-// ---------------------------------------------------------------------------
-// A run's summary, the advance and the two keys
-// ---------------------------------------------------------------------------
+// --- A run's summary, the advance and the two keys
 
 /** A list no generated tab and no recording names. */
 const UNNAMED_LIST = "a list the run does not name";
@@ -668,15 +602,9 @@ function shownLevels(summary: RunSummary): CarriedLevel[] {
 }
 
 /**
- * A carry built from the text of `key` alone that gives the run of `summary` the rendering
- * the key stands for and DISAGREES with `actual`, the carry the key was made of, wherever the
- * key leaves it free: another `abutsProtected`; another `previousListId` where the run does
- * not lead with a list; every list number the key does not hold moved by 1,000 in a list the
- * run names, and left out in any other; another `footnoteBase` where the key holds none; every
- * continued level the key does not decide flipped; and, for a run that leads with a list and
- * takes no blank line, the other of the two reasons there are for that (nothing written yet,
- * or the list continued). Were the key to leave out something the rendering reads, this carry
- * would give another rendering.
+ * A carry built from the text of `key` alone that DISAGREES with `actual`, the carry the key was
+ * made of, wherever the key leaves it free: were the key to leave out something the rendering
+ * reads, this carry would give another rendering.
  */
 export function carryFromKey(key: string, summary: RunSummary, actual: PlainCarry): PlainCarry {
   let fields = (key === "" ? {} : JSON.parse(key)) as CarryKeyFields;
@@ -725,14 +653,7 @@ export function carryFromKey(key: string, summary: RunSummary, actual: PlainCarr
   };
 }
 
-/**
- * A carry drawn from `seed` that a run could be entered with and that the run of `summary`
- * is not: whether anything is written and whether it ends protected; the list before, among
- * none, the list the run leads with, the list it ends with and a list it does not name; up to
- * four continued levels; a number for some levels of the lists the run names and of one it
- * does not (none, the level's start less one, its start, a large number); and a count of
- * footnotes. Written as `RenderCarry` says a carry is written.
- */
+/** A carry drawn from `seed` that the run of `summary` could be entered with, unrelated to its own. */
 export function unrelatedCarry(summary: RunSummary, seed: number): PlainCarry {
   let { below, pick, random } = diceOf(seed);
   let previousListId = pick([undefined, summary.lead?.listId, summary.endListId, UNNAMED_LIST]);
@@ -769,12 +690,7 @@ function isNumbered({ glyphType }: NestingLevel): boolean {
   return glyphType !== undefined && glyphType !== "NONE" && glyphType !== "GLYPH_TYPE_UNSPECIFIED";
 }
 
-/**
- * A context that agrees with `context` on what the key of `summary`'s run names and on
- * nothing else: the lists the run names as they are, every other list redefined (numbered
- * where it was bulleted, and from another start), and the named styles kept only for a run
- * that holds a subtitle, otherwise given where the tab has none and left out where it has.
- */
+/** A context that agrees with `context` on what the key of `summary`'s run names, and on nothing else. */
 export function contextFromKey(summary: RunSummary, context: RenderContext): RenderContext {
   let lists: Lists = Object.fromEntries(Object.entries(context.lists).map(([listId, list]) =>
     [listId, summary.listIds.includes(listId) ? list : {
@@ -789,11 +705,8 @@ export function contextFromKey(summary: RunSummary, context: RenderContext): Ren
 }
 
 /**
- * The name of a run among the renderings a test stores: a digest of its elements' JSON with
- * every index counted from the run's first element and every footnote number that is a whole
- * number counted from `footnoteBase`, as a stored run holds them. A section break that opens
- * the body and has a start index of 0 is written without it, which tells it from a section
- * break elsewhere, unless `keepOpeningIndex`.
+ * The name of a run among the renderings a test stores, its positions relative as a stored run's
+ * are; the opening section break is written without its start index unless `keepOpeningIndex`.
  */
 function runIdentity(
   elements: readonly StructuralElement[], opensBody: boolean, footnoteBase: number,
@@ -850,18 +763,10 @@ function storedCounts({ sourceMap }: RenderedRun, mdStart: number): unknown {
 }
 
 /**
- * Holds the runs `bounds` cut `tab` into to what the store will rest on, each run in order
- * and entered with ONE PASS'S CARRY, which `advanceCarry` moves in place past each run:
- * - THE KEYS: the run rendered again from `carryFromKey` of its carry key, under
- *   `contextFromKey`, gives the same Markdown, the same summary and the same counts; and one
- *   (run, context key, carry key) never has two Markdowns among `renderings`;
- * - THE ADVANCE: the pass's carry after the run, copied, is `advancedCopy` of the copy taken
- *   before it, and so is a carry made of `INITIAL_CARRY` and of an `unrelatedCarry`;
- * - THE OWNERSHIP: the copy taken before the run is as it was after the move, and the numbers
- *   of every list the run does not count in are the array the pass held before it;
- * - THE SUMMARY: the run rendered from `INITIAL_CARRY` and from an `unrelatedCarry` records
- *   the same summary.
- * Answers each run's carry key. `where` names the tab and the cut in a failure.
+ * Holds the runs `bounds` cut `tab` into, entered with one pass's carry, to what the store rests on:
+ * THE KEYS (a run rendered from its keys alone is the same, and a key has one Markdown), THE ADVANCE
+ * (`advancedCopy`), THE OWNERSHIP (no carry changed in place) and THE SUMMARY (the same under any
+ * carry). Answers each run's carry key.
  */
 export function storedByRuns(
   tab: GoogleDocsTab, bounds: readonly number[], where: string,

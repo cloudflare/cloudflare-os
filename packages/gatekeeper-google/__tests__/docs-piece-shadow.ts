@@ -1,26 +1,18 @@
-// A piece of a stored tab held to the same part of the tab rendered whole, and the request
-// builders on a piece held to the builders on the whole tab: the helpers that render a tab
-// whole with what the pass says of its elements, name an edit's own elements in it, say
-// where a piece stands from the stored rows beneath the store, build an edit from the whole
-// rendering, from the closure cut from it, from a stored piece and from the whole rendering
-// under the recorder, and compare; and the readings of a tab made each of those ways, for
-// what is handed a reading. A helper and no test of its own. Node only: the storage is the
-// fake.
+// Helpers that hold a piece of a stored tab, and what is built from a piece, to the tab
+// rendered whole: the closure cut from the whole rendering, the stored piece, and the whole
+// rendering under the recorder. Node only: the storage is the fake.
 
 import { expect } from "vitest";
 import type { GoogleDocsRequest, GoogleDocsTab, StructuralElement } from "../src/docs-api";
 import { DOC_DERIVED } from "../src/docs-derived";
-import { hasModelIndexes } from "../src/docs-model";
 import { DocReadingFault, storedTabReading } from "../src/docs-reading";
 import { pieceOverreach, tabEditRequests } from "../src/docs-replay";
 import type { DocEdit } from "../src/docs-replay";
-import { pruneTab } from "../src/docs-replica";
 import type { RunSizes } from "../src/docs-runs";
-import { DocStore } from "../src/docs-store";
-import type { DocPiece, DocVersion, PieceAt } from "../src/docs-store";
-import { prepareTableChange, tableCallChange } from "../src/docs-table-actions";
-import type { PreparedTableChange, TableCall } from "../src/docs-table-actions";
-import { lineAbove, replacementPath, wholeTabReading } from "../src/docs-tables";
+import type { DocPiece, DocStore, DocVersion, PieceAt } from "../src/docs-store";
+import { tableCallChange } from "../src/docs-table-actions";
+import type { TableCall } from "../src/docs-table-actions";
+import { replacementPath, wholeTabReading } from "../src/docs-tables";
 import type { TableChange, TextReplacement } from "../src/docs-tables";
 import {
   canonicalizeMarkdownReplacement, closureOf, computeReplaceOperations, docTabToMarkdown,
@@ -30,13 +22,10 @@ import {
 import type {
   DocTabSnapshot, JoinedRuns, MarkdownRange, OwnElements, OwnRange, TabReading,
 } from "../src/markdown-converter";
-import {
-  buildTab, diceOf, grid, heading, item, para, presetLevels,
-} from "./doc-fixture";
-import type { BlockSpec, Lists } from "./doc-fixture";
+import { buildTab, para } from "./doc-fixture";
 import type { FakeDocStorage } from "./doc-store-fake";
 import { ReadPastPiece, recorded } from "./docs-piece-recorder";
-import { asFetched, kept, undone } from "./docs-store-slice-shadow";
+import { asFetched, kept } from "./docs-store-slice-shadow";
 
 export { kept as pieceStore };
 
@@ -47,15 +36,9 @@ export type Whole = {
   /** Where each element's Markdown starts, and what it writes and owns (`RunElements`). */
   readonly starts: readonly number[];
   readonly flags: readonly number[];
-  /**
-   * Where each element starts and ends in the tab's indexes: one whose index is no integer
-   * starts or ends where the element before it ends.
-   */
+  /** Where each element starts and ends in the tab's indexes, carried over a missing index. */
   readonly indexes: { readonly starts: readonly number[]; readonly ends: readonly number[] };
-  /**
-   * The tab as one run joined, rendered afresh at each call: `pieceRendering` takes what
-   * it is handed.
-   */
+  /** The tab as one run joined, rendered afresh at each call: `pieceRendering` moves its entries. */
   joined(): JoinedRuns;
 };
 
@@ -93,11 +76,7 @@ export function ownIn(whole: Whole, own: OwnRange): OwnElements {
   return { first: holder(mdStart), last: holder(Math.max(mdStart, mdEnd - 1)) };
 }
 
-/**
- * Where the run that holds the first of `own` stands in `version`, by `PieceAt`'s rule,
- * computed BENEATH the store: from the version's list joined to the summaries stored with
- * its runs' renderings under the digest `made`.
- */
+/** Where the run holding the first of `own` stands in `version` (`PieceAt`), read beneath the store. */
 export function pieceAtFor(
   storage: FakeDocStorage, version: DocVersion, own: OwnRange, made: string = DOC_DERIVED,
 ): PieceAt {
@@ -117,7 +96,7 @@ export function pieceAtFor(
         ? own.table >= tablesBefore && own.table < tablesBefore + run.tables
         // The last run that writes a character and starts at or before the offset.
         : run.length > 0 && mdStart <= own.markdown.mdStart;
-    // The version's last run where none holds the own elements: no run writes a character.
+    // Where no run writes a character, the version's last.
     if (holds || (seq === runs.length - 1 && !found)) found = { place: seq, mdStart, tablesBefore, own };
     mdStart += run.length;
     tablesBefore += run.tables;
@@ -132,11 +111,7 @@ export function closureIn(whole: Whole, own: OwnRange): { from: number; to: numb
   return closure;
 }
 
-/**
- * Holds `piece` to the closure of `own` cut from `whole`: the same rendering, and the same
- * place in the tab, its inner indexes the end of the closure's first element and the start
- * of its last.
- */
+/** Holds `piece` to the closure of `own` cut from `whole`: the same rendering and the same place. */
 export function expectPieceOfWhole(piece: DocPiece, whole: Whole, own: OwnRange): void {
   let { from, to } = closureIn(whole, own);
   let cut = pieceRendering(whole.joined(), from, to);
@@ -161,12 +136,8 @@ function withSilent(tab: GoogleDocsTab, before: number): GoogleDocsTab {
 }
 
 /**
- * Tabs in which, under one-element runs, a run writes nothing: the section break that opens
- * the body, and an element with nothing to render some runs BEFORE the own element, AT it
- * (the run just before, so that the two start at one Markdown offset) and AFTER it; and a
- * tab whose Markdown is empty. Each with its own ranges: one inside the own element's
- * Markdown and one that starts at its first character, and for the empty tab the range at
- * offset 0.
+ * Tabs in which, under one-element runs, a run writes nothing before, at and after the own
+ * element, and a tab whose Markdown is empty, each with own ranges to ask.
  */
 export function silentRunTabs(): { name: string; tab: GoogleDocsTab; ranges: MarkdownRange[] }[] {
   let lines = ["Zero", "One", "Two", "Three", "Own text", "Five", "Six", "Seven", "Eight"];
@@ -203,11 +174,7 @@ export type Outcome =
   | { readonly requests: GoogleDocsRequest[] }
   | { readonly refused: { readonly name: string; readonly message: string } };
 
-/**
- * The outcome of `run`: its batch, or what it threw as a refusal. A `TypeError`, a
- * `ReadPastPiece`, a `DocReadingFault` and anything that is no `Error` is a fault and is
- * thrown on.
- */
+/** The outcome of `run`, its batch or its refusal; a fault (`TypeError`, `ReadPastPiece`, ...) is thrown on. */
 export function outcomeOf(run: () => GoogleDocsRequest[]): Outcome {
   try {
     return { requests: run() };
@@ -221,10 +188,8 @@ export function outcomeOf(run: () => GoogleDocsRequest[]): Outcome {
 }
 
 /**
- * One way an edit becomes requests, as the differential holds it: `own`, how the edit's own
- * range is named in the tab's units, and `build`, the requests from a rendering whose
- * Markdown starts at `mdStart` of the tab's (0 for the whole tab's), the edit's Markdown
- * offsets moved by as much.
+ * One way an edit becomes requests: `own`, the edit's own range, and `build`, from a rendering
+ * whose Markdown starts at `mdStart` of the tab's.
  */
 export type PieceEntry<Edit> = {
   readonly name: string;
@@ -232,10 +197,7 @@ export type PieceEntry<Edit> = {
   build(render: DocTabSnapshot, edit: Edit, mdStart: number): GoogleDocsRequest[];
 };
 
-/**
- * A replacement outside tables, of a text that stands once in the tab at `matchStart`, built
- * by the paragraph path's builder as the one place an edit becomes requests calls it.
- */
+/** A replacement outside tables of a text that stands once at `matchStart`, by the paragraph path. */
 export const REPLACE: PieceEntry<TextReplacement> = {
   name: "a replacement outside tables",
   own: ({ matchStart, oldMarkdown }) =>
@@ -284,11 +246,7 @@ export function fromWhole<Edit>(tab: GoogleDocsTab, entry: PieceEntry<Edit>, edi
 /** A range of a tab's body elements, `[from, to)`. */
 export type ElementRange = { readonly from: number; readonly to: number };
 
-/**
- * Another range for an edit than its closure: handed the closure, the own elements and the
- * tab's flags, it answers the range to build from, or the range the recorder allows reads
- * of. The teeth take elements off the closure with it; a wider range adds some.
- */
+/** Another range than the closure to build from or allow reads of, for the teeth and a wider range. */
 export type Shrink = (
   closure: ElementRange, own: OwnElements, flags: readonly number[],
 ) => ElementRange;
@@ -305,10 +263,8 @@ function partOf(
 }
 
 /**
- * The outcome of `edit` built from the closure of its own elements, cut from the whole tab's
- * joined runs (`pieceRendering` over `closureOf`'s range, the own elements found as
- * `DocStore.piece` finds them), with the range built from and where it stands in the tab, as
- * `DocStore.piece` says it. `shrink` builds from another range than the closure.
+ * The outcome of `edit` built from the closure of its own elements cut from the whole tab's
+ * joined runs (or from what `shrink` makes of it), with where that range stands.
  */
 export function fromClosure<Edit>(
   tab: GoogleDocsTab, entry: PieceEntry<Edit>, edit: Edit, shrink?: Shrink,
@@ -340,20 +296,15 @@ function reachable(value: unknown, seen = new Set<object>()): Set<object> {
 }
 
 /**
- * The objects of `requests` that are objects of `piece`: of its rendering, source map
- * included, or of the runs it keeps decoded. A batch is stored and sent as it was built, and
- * the model changes the elements a rendering was made from in place: so a batch holds none.
+ * The objects of `requests` that are objects of `piece`: a batch is stored as built and the
+ * model changes a piece's elements in place, so a batch holds none.
  */
 export function sharedWithPiece(requests: GoogleDocsRequest[], piece: DocPiece): object[] {
   let ofPiece = reachable(piece.decoded, reachable(piece.rendering));
   return [...reachable(requests)].filter(object => ofPiece.has(object));
 }
 
-/**
- * The outcome of `edit` built from the piece a store answers for it (`DocStore.piece`), the
- * tab kept in a store of its own with its runs cut to `sizes` (one store a tab and sizing: a
- * piece changes nothing of a version), and the piece.
- */
+/** The outcome of `edit` built from the piece a store of `tab` cut to `sizes` answers, and the piece. */
 export function fromStore<Edit>(
   tab: GoogleDocsTab, sizes: RunSizes, entry: PieceEntry<Edit>, edit: Edit,
 ): { outcome: Outcome; piece: DocPiece } {
@@ -364,12 +315,7 @@ export function fromStore<Edit>(
   };
 }
 
-/**
- * THE READ PAST THE PIECE: the outcome of `edit` built from the whole tab's rendering under
- * the recorder (`recorded`), which throws `ReadPastPiece` on a read of content outside the
- * closure of the edit's own elements. The edit's offsets are the whole tab's. `shrink` has
- * the recorder fail on a read outside another range than the closure.
- */
+/** The outcome of `edit` built from the whole rendering under the recorder of its closure (or `shrink`'s range). */
 export function fromRecorded<Edit>(
   tab: GoogleDocsTab, entry: PieceEntry<Edit>, edit: Edit, shrink?: Shrink,
 ): Outcome {
@@ -386,17 +332,10 @@ export type PieceVerdict = {
   readonly built: boolean;
   /** Whether the closure left at least one element of the tab out. */
   readonly strict: boolean;
-  /**
-   * Whether the batch names an index in the element next to the piece's first, where the tab
-   * goes on before the piece, by `pieceOverreach`'s own counting.
-   */
+  /** Whether the batch names an index in the element next to the piece's first, and its last. */
   readonly nearBefore: boolean;
-  /** The same of the element next to the piece's last, where the tab goes on after. */
   readonly nearAfter: boolean;
-  /**
-   * Whether `pieceOverreach` counts every request of the batch on the side after the piece:
-   * `false` where a request that adds length otherwise ends its count.
-   */
+  /** Whether `pieceOverreach` counts the whole batch on the side after the piece. */
   readonly counted: boolean;
 };
 
@@ -405,12 +344,9 @@ const FAR = 2 ** 40;
 const FARTHER = 2 ** 50;
 
 /**
- * Holds `edit` built from pieces of `tab` to `edit` built from the whole tab: the closure cut
- * from the whole rendering, the whole rendering under the recorder, and the stored piece
- * under each of `sizings` give the whole tab's batch or its refusal, name and message; a
- * stored piece stands where the closure does, and the batch built from it holds no object of
- * it (`sharedWithPiece`); and a batch the whole tab builds names no index past the closure
- * (`pieceOverreach`). A `ReadPastPiece` is thrown on.
+ * Holds `edit` built from the closure, under the recorder and from the stored piece under each
+ * of `sizings` to the whole tab's batch or refusal; a stored piece stands where the closure
+ * does and its batch holds none of it; a batch names no index past the closure.
  */
 export function expectSameFromPieces<Edit>(
   tab: GoogleDocsTab, entry: PieceEntry<Edit>, edit: Edit, sizings: readonly RunSizes[],
@@ -434,10 +370,7 @@ export function expectSameFromPieces<Edit>(
   }
   let { requests } = outcome;
   expect(pieceOverreach(requests, part)).toBeUndefined();
-  // The predicate itself says how far a batch reaches: asked of a piece whose inner range
-  // ends one element short on a side, it names the side for a batch that names an index in
-  // that element; and it names a last request far past every index only where it counts
-  // that far.
+  // How far the batch reaches: a piece one element short on a side, and a request far past.
   let nearBefore = !part.first && pieceOverreach(requests, {
     first: false, last: true, inner: { from: whole.indexes.ends[range.from + 1], to: FAR },
   }) === "before";
@@ -462,10 +395,8 @@ export type ShadowReading = TabReading & {
   range(): ElementRange | undefined;
 };
 
-// A reading of `tab` whose answers of the tab as a whole are the whole rendering's own
-// (`wholeTabReading`, asked of the rendering as `docTabToMarkdown` made it) and whose piece
-// is what `cut` answers for the closure of the own range, or for the range `shrink` makes
-// of it: the rendering to hand the builders, and where it stands, less its reading.
+// A reading of `tab` that answers of the tab as a whole as the whole rendering does, and whose
+// piece is what `cut` answers for the closure (or `shrink`'s range).
 function readingOver(
   tab: GoogleDocsTab, shrink: Shrink | undefined,
   cut: (range: ElementRange) => { rendering: DocTabSnapshot; part: DocPiece["at"] },
@@ -492,12 +423,7 @@ function readingOver(
   return reading;
 }
 
-/**
- * A reading of `tab` whose piece is THE CLOSURE CUT FROM THE WHOLE RENDERING
- * (`pieceRendering` over `closureOf`'s range, or over the range `shrink` makes of it), where
- * `DocStore.piece` would say it stands; what it answers of the tab as a whole is the whole
- * rendering's.
- */
+/** A reading of `tab` whose piece is the closure cut from the whole rendering (or `shrink`'s range). */
 export function closureReading(tab: GoogleDocsTab, shrink?: Shrink): ShadowReading {
   let { whole, rendering } = renderedOf(tab);
   return readingOver(tab, shrink, range => {
@@ -510,13 +436,8 @@ export function closureReading(tab: GoogleDocsTab, shrink?: Shrink): ShadowReadi
 }
 
 /**
- * THE READ PAST THE PIECE, for whatever is handed a reading: a reading of `tab` whose piece
- * is the whole rendering under the recorder (`recorded`), which throws `ReadPastPiece` on a
- * read of content outside the closure of the own range (or the range `shrink` makes of it).
- * Its Markdown offsets are the whole tab's, so the piece stands at offset 0 with no table
- * before it, between the indexes the closure's outermost elements give. What it answers of
- * the tab as a whole is the whole rendering's, unrecorded: the whole-tab list is exactly a
- * reading's members.
+ * A reading of `tab` whose piece is the whole rendering under the recorder of the closure (or
+ * `shrink`'s range), standing at offset 0 with the whole tab's offsets.
  */
 export function recordedReading(tab: GoogleDocsTab, shrink?: Shrink): ShadowReading {
   let { whole, rendering } = renderedOf(tab);
@@ -548,20 +469,13 @@ export type ReadingVerdict = {
   readonly refused?: string;
   /** Whether the edit named a piece, and its closure left at least one element of the tab out. */
   readonly strict: boolean;
-  /**
-   * For a batch built: whether `pieceOverreach` counts every request of it on the side after
-   * the piece, `false` where a request that adds length otherwise ends its count.
-   */
+  /** For a batch built: whether `pieceOverreach` counts the whole batch on the side after. */
   readonly counted?: boolean;
 };
 
 /**
- * Holds `edit`, built by `tabEditRequests`, from pieces of `tab` to the same built from the
- * whole tab's reading: the closure's reading, the recorded reading (no `ReadPastPiece`) and
- * the stored reading under each of `sizings` give the whole tab's batch or its refusal, name
- * and message. `matchStart`, for a replacement of a text that stands once: where it stands;
- * the path it takes (`replacementPath`) is then asked of the recorded piece, as a preparation
- * asks it, and is the whole rendering's.
+ * Holds `edit` built by `tabEditRequests` from the closure's, the recorded and the stored
+ * readings to the whole tab's; with `matchStart`, the recorded piece's `replacementPath` too.
  */
 export function expectSameFromReadings(
   tab: GoogleDocsTab, edit: DocEdit, sizings: readonly RunSizes[], matchStart?: number,
@@ -595,7 +509,7 @@ export function expectSameFromReadings(
 }
 
 // ---------------------------------------------------------------------------
-// A table call checked against a reading of its tab, and prepared on a stored tab
+// A table call checked against a reading of its tab
 // ---------------------------------------------------------------------------
 
 /** What a table call's checks gave: the change to queue, or the refusal they threw. */
@@ -616,12 +530,7 @@ export function callOutcome(reading: TabReading, call: TableCall): CallOutcome {
   }
 }
 
-/**
- * Holds `call`, checked by `tableCallChange`, on pieces of `tab` to the same checked on the
- * whole tab's reading: the closure's reading, the recorded reading (no `ReadPastPiece`) and
- * the stored reading under each of `sizings` give the whole tab's change or its refusal,
- * name and message.
- */
+/** Holds `call` checked by `tableCallChange` on the closure's, the recorded and the stored readings to the whole tab's. */
 export function expectSameCallFromReadings(
   tab: GoogleDocsTab, call: TableCall, sizings: readonly RunSizes[],
 ): ReadingVerdict {
@@ -638,222 +547,4 @@ export function expectSameCallFromReadings(
   let strict = range !== undefined && range.to - range.from < whole.flags.length;
   return "change" in outcome
     ? { built: true, strict } : { built: false, strict, refused: outcome.refused.message };
-}
-
-/** What a table call prepared gave: the change's card and number, or the refusal's message. */
-export type PreparedOutcome =
-  | Pick<PreparedTableChange, "change" | "title" | "description" | "table">
-  | { readonly refused: string };
-
-/** `call` prepared on `version` of `store`, undone at its end: nothing of it stays stored. */
-function preparedOutcome(store: DocStore, version: DocVersion, call: TableCall): PreparedOutcome {
-  try {
-    let { change, title, description, table } =
-      undone(store, () => prepareTableChange(store, version, call, "the tab"));
-    return { change, title, description, ...(table === undefined ? {} : { table }) };
-  } catch (error) {
-    if (!(error instanceof Error) || error instanceof TypeError || error instanceof ReadPastPiece) throw error;
-    return { refused: error.message };
-  }
-}
-
-/**
- * Runs `run` with every piece a store answers for `tab` (`DocStore.prototype.piece`) made
- * THE WHOLE RENDERING UNDER THE RECORDER: the store's own piece, its decoded runs and its
- * inner indexes as the store made them, but for its rendering, which is `recorded` over the
- * closure's elements, found in the whole as `fromClosure` finds them, and so stands at
- * Markdown offset 0 with no table before it. FOR A PIECE AROUND A TABLE THE RANGE REACHES
- * BACK TO THE LINE BEFORE THE TABLE where the closure does not hold one: a card names the
- * nearest text before its table, which a piece that holds none asks of its tab
- * (`TabReading.lineBefore`), and the whole rendering under the recorder has no other way to
- * answer than to be read that far. `asked` counts the pieces whose range was so widened.
- * The line break just before the range may be read too (`recorded`'s last parameter): the
- * walk back to that line looks for where the range's first line starts. The method is
- * replaced by hand and put back: a spy would keep each piece.
- */
-export function withRecordedPieces<T>(tab: GoogleDocsTab, run: () => T): { value: T; asked: number } {
-  let { whole, rendering } = renderedOf(tab);
-  let { piece } = DocStore.prototype;
-  let asked = 0;
-  DocStore.prototype.piece = function (this: DocStore, version, at) {
-    let made = piece.call(this, version, at);
-    let own = ownIn(whole, at.own);
-    let { from, to } = closureIn(whole, at.own);
-    if (at.own !== "end" && "table" in at.own) {
-      let tableStart = whole.starts[own.first];
-      // Whether the elements from `first` to the table hold a line that is not a table's.
-      let holdsLine = (first: number) => {
-        let start = whole.starts[first];
-        let tables = rendering.sourceMap.tables.flatMap(({ mdStart, mdEnd }) =>
-          mdStart >= start && mdEnd <= tableStart ? [{ mdStart: mdStart - start, mdEnd: mdEnd - start }] : []);
-        return lineAbove(rendering.markdown.slice(start, tableStart), tables, tableStart - start) !== undefined;
-      };
-      if (from > 0 && !holdsLine(from)) {
-        asked++;
-        while (from > 0 && !holdsLine(from)) from--;
-      }
-    }
-    return {
-      ...made,
-      rendering: recorded({ rendering, starts: whole.starts, flags: whole.flags }, { from, to }, true),
-      at: { ...made.at, mdStart: 0, tablesBefore: 0 },
-    };
-  };
-  try {
-    return { value: run(), asked };
-  } finally {
-    DocStore.prototype.piece = piece;
-  }
-}
-
-/** What `expectSamePrepared` says of a case, for a test's tally. */
-export type PreparedVerdict = {
-  /** Whether the call became a change with its card. */
-  readonly prepared: boolean;
-  /** How many of the recorded pieces were read back to the line before their table. */
-  readonly asked: number;
-  /** The number the preparation answered for a new table. */
-  readonly table?: number;
-};
-
-/**
- * Holds `call` PREPARED on `tab` stored under each of `sizings` (`prepareTableChange`: the
- * call's checks, the pending card, the edit and the card's result) with every piece the whole
- * rendering under the recorder (`withRecordedPieces`) to the same prepared as it is: the
- * same change, title, description and number, or the same refusal, under every sizing, and
- * no `ReadPastPiece`. So the checks, the builders and the pending card's reads of its piece
- * are held to the closure and to the one line before the table that a card asks of its tab.
- */
-export function expectSamePrepared(
-  tab: GoogleDocsTab, call: TableCall, sizings: readonly RunSizes[],
-): PreparedVerdict {
-  let first: PreparedOutcome | undefined;
-  let asked = 0;
-  for (let sizes of sizings) {
-    let { store, base } = keptFor(tab, sizes);
-    let plain = preparedOutcome(store, base, call);
-    let guarded = withRecordedPieces(tab, () => preparedOutcome(store, base, call));
-    expect(guarded.value).toEqual(plain);
-    expect(plain).toEqual(first ?? plain);
-    first ??= plain;
-    asked += guarded.asked;
-  }
-  if (!first || "refused" in first) return { prepared: false, asked };
-  return { prepared: true, asked, ...(first.table === undefined ? {} : { table: first.table }) };
-}
-
-
-// ---------------------------------------------------------------------------
-// A tab inside a larger one
-// ---------------------------------------------------------------------------
-
-/** The lists a filler's items are of: a bulleted and a numbered one, made by the presets. */
-const FILLER_LISTS: Lists = {
-  bulleted: { listProperties: { nestingLevels: presetLevels() } },
-  numbered: { listProperties: { nestingLevels: presetLevels(true) } },
-};
-
-/** How a filler meets the tab it stands beside: what it ends in before it, or starts with after. */
-const BOUNDARIES = [
-  "a paragraph", "a heading", "empty paragraphs", "deeper list items", "a table", "a section break",
-] as const;
-
-/**
- * The blocks of a filler: seeded prose, a list and a table, of words no recording and no
- * generated tab writes, with its `boundary` at the end it meets the tab at: its last blocks
- * where it stands `before` the tab, its first where it stands after.
- */
-function fillerBlocks(seed: number, before: boolean): BlockSpec[] {
-  let { below, pick } = diceOf(seed);
-  let count = 0;
-  let word = () => `${before ? "quox" : "zorp"}${seed}v${count++}`;
-  let list = () => pick(["bulleted", "numbered"]);
-  let body: BlockSpec[] = [];
-  for (let chunk = 3 + below(3); chunk > 0; chunk--) {
-    body.push(para(`${word()} blivet prose.`));
-    let kind = below(4);
-    if (kind === 0) body.push(heading(`${word()} head`, 1 + below(3)));
-    if (kind === 1) {
-      let listId = list();
-      body.push(item(`${word()} item`, listId), item(`${word()} nested`, listId, 1),
-        item(`${word()} item`, listId));
-    }
-    if (kind === 2) body.push(grid([`${word()} cell`, `${word()} cell`]), para(`${word()} after.`));
-  }
-  let boundary: BlockSpec[];
-  switch (pick(BOUNDARIES)) {
-    case "a paragraph": boundary = [para(`${word()} edge.`)]; break;
-    case "a heading": boundary = [heading(`${word()} edge`, 1 + below(3))]; break;
-    case "empty paragraphs": boundary = Array.from({ length: 1 + below(5) }, () => para("")); break;
-    case "deeper list items": {
-      let listId = list();
-      boundary = Array.from({ length: 1 + below(3) },
-        () => item(`${word()} deep`, listId, 1 + below(3)));
-      // A list starts at level 0 where it stands before the tab; after it, the items are the
-      // first of the filler and stand right behind the tab's last element.
-      if (before) boundary.unshift(item(`${word()} top`, listId));
-      break;
-    }
-    case "a table": boundary = [grid([`${word()} cell`]), para(below(2) ? "" : `${word()} after.`)]; break;
-    case "a section break": boundary = [{ structure: "sectionBreak" }]; break;
-  }
-  // A body ends in a paragraph: a filler that starts with its boundary ends with its prose.
-  return before ? [...body, ...boundary] : [...boundary, ...body, para(`${word()} end.`)];
-}
-
-/** A deep copy of `value`, every start and end index moved by `by`, every list id prefixed. */
-function moved<T>(value: T, by: number, lists: string): T {
-  if (Array.isArray(value)) return value.map(part => moved(part, by, lists)) as T;
-  if (value === null || typeof value !== "object") return value;
-  let copy: Record<string, unknown> = {};
-  for (let [key, held] of Object.entries(value)) {
-    copy[key] = (key === "startIndex" || key === "endIndex") && typeof held === "number" ? held + by
-      : key === "listId" && typeof held === "string" ? lists + held
-      : moved(held, by, lists);
-  }
-  return copy as T;
-}
-
-/** Where the body of `tab` ends. */
-const bodyEnd = (tab: GoogleDocsTab) => tab.body.content.at(-1)!.endIndex;
-
-/** `lists` with `prefix` before every id. */
-const renamed = (lists: Lists, prefix: string): Lists =>
-  Object.fromEntries(Object.entries(lists).map(([id, list]) => [prefix + id, list]));
-
-/**
- * `tab` inside a larger tab: seeded filler before and after it in one body, every index of
- * the tab and of the filler after it moved, so that an edit of the tab's own text has its
- * closure as a strict part of the body. THE BOUNDARY VARIES WITH THE SEED: the filler before
- * ends in, and the filler after starts with, a plain paragraph, a heading, one to five empty
- * paragraphs, list items at levels 1 to 3 of either kind, a table and its paragraph, or a
- * section break. Where `ends`, there is no filler after: the larger tab ends where `tab`
- * does, so that what is built at the tab's end stands after the ending of `tab`, its closure
- * a strict part of the body by the filler before. Pruned, as a stored tab is.
- * @throws Where `tab` does not open with a section break, or the tab made is not indexed as
- * the model indexes a tab (`hasModelIndexes`).
- */
-export function sandwiched(tab: GoogleDocsTab, seed: number, ends = false): GoogleDocsTab {
-  let [opening, ...rest] = tab.body.content;
-  if (!opening?.sectionBreak) throw new Error("The tab does not open with a section break.");
-  let before = pruneTab(buildTab(fillerBlocks(seed, true), FILLER_LISTS));
-  let after = pruneTab(buildTab(ends ? [] : fillerBlocks(seed + 1, false), FILLER_LISTS));
-  let lead = bodyEnd(before) - 1;
-  let made: GoogleDocsTab = {
-    ...structuredClone(tab),
-    body: {
-      content: [
-        structuredClone(opening),
-        ...moved(before.body.content.slice(1), 0, "before."),
-        ...moved(rest, lead, ""),
-        ...moved(after.body.content.slice(1), lead + bodyEnd(tab) - 1, "after."),
-      ],
-    },
-    lists: {
-      ...renamed(before.lists, "before."), ...structuredClone(tab.lists),
-      ...renamed(after.lists, "after."),
-    },
-  };
-  if (!hasModelIndexes(made)) throw new Error("The tab made is not indexed as the model indexes.");
-  return made;
 }

@@ -1,9 +1,6 @@
-// The model on a slice of a tab, held to the model on the whole tab: a batch applied to whole
-// consecutive elements of a tab, decoded from JSON where they stand as a stored run is, gives
-// the whole tab's outcome from every stretch the tab has, the stretch widened where the model
-// says a read fell outside it. Here: every recorded step, the hole a guard that judged by what
-// a lookup found would leave, the cases the guard is written for, what a batch names of its
-// tab, what a slice answers for the rest of the tab, and the builders' own batches.
+// The model on a slice of a tab gives the whole tab's outcome from every stretch, widened where it
+// reads outside: every recorded step, the cases the guard is written for, `batchReach`, and what a
+// slice answers for the rest of the tab.
 
 import { describe, expect, it } from "vitest";
 import type { GoogleDocsRequest, GoogleDocsTab } from "../src/docs-api";
@@ -70,10 +67,7 @@ function edgeFrom(
   return undefined;
 }
 
-/**
- * How many times the stretch `[from, to)` is widened for `requests`, having held that what
- * they give from it is what the whole tab gives.
- */
+/** How many times `[from, to)` is widened for `requests`, its outcome held to the whole tab's. */
 function widenedFrom(
   tab: GoogleDocsTab, requests: readonly GoogleDocsRequest[], from: number, to: number,
   options: ModelOptions = {},
@@ -147,9 +141,7 @@ describe("the model on a slice of a tab", () => {
     let whole = wholeOutcome(tab, batch, {});
     expect("tab" in whole).toBe(true);
 
-    // The table's removal leaves the stretch from the table to the tab's end no settled
-    // element (the paragraphs after the table are past the draft's watermark), so the lookup
-    // of index 1 finds nothing. The side is the index's: 1 is below the stretch's origin.
+    // With the table removed the lookup of index 1 finds nothing; the side is the index's.
     let toEnd = [MIXED_PLACES.table, length] as const;
     expect(edgeFrom(tab, batch, ...toEnd)).toEqual({ side: "before", index: 1 });
     expect(appliedFrom(tab, batch, {}, ...toEnd, "model")).toEqual({ ...whole, widenings: 1 });
@@ -459,9 +451,7 @@ describe("the model on a slice of a tab", () => {
         let reach = batchReach(requests);
         if (!reach) continue;
         steps++;
-        // Every top-level element a run of its own: the stretch from the element that holds
-        // the lowest index counted to the one that holds the highest, and the element before
-        // where a bulleted range starts at the stretch's first index.
+        // The elements from the lowest index named to the highest, and the one behind a bulleted range.
         let from = elementHolding(tab, reach.from);
         let to = elementHolding(tab, reach.to) + 1;
         let origin = ingestedTab(tab).body.content[from].startIndex;

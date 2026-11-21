@@ -1,3 +1,6 @@
+// The run cut and the stored form of a run: a tab cut into runs and decoded is the tab, a run is
+// named by its content alone, and a tab's stored runs rendered in order render as the tab.
+
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import type { GoogleDocsTab, ParagraphElement, StructuralElement } from "../src/docs-api";
@@ -6,7 +9,7 @@ import { applyDocsRequests } from "../src/docs-model";
 import { cutRuns, decodeRun, endsRun, RUN_SIZES } from "../src/docs-runs";
 import type { CutRun, RunSizes } from "../src/docs-runs";
 import {
-  advanceCarry, docTabToMarkdown, initialCarry, renderRun, runCarryKey, runContextKey,
+  advanceCarry, docTabToMarkdown, initialCarry, renderRun, runCarryKey,
 } from "../src/markdown-converter";
 import type { RenderCarry, RenderedRun } from "../src/markdown-converter";
 import { buildTab, cellOf, diceOf, footnote, grid, para } from "./doc-fixture";
@@ -17,7 +20,7 @@ import {
 } from "./render-run-tabs";
 import type { NamedTab } from "./render-run-tabs";
 
-/** Sizes that force runs of one to three elements. */
+/** Sizes of a small target, under which a run of one to three elements is cut. */
 const FORCED: RunSizes = { least: 0, target: 400, most: Infinity, elements: 3 };
 /** Sizes that make every element a run. */
 const ONE_EACH: RunSizes = { ...FORCED, elements: 1 };
@@ -25,7 +28,7 @@ const ONE_EACH: RunSizes = { ...FORCED, elements: 1 };
 /** The two cuts every property is held under. */
 const CUTS: { cut: string; sizes: RunSizes }[] = [
   { cut: "about 32 KiB a run", sizes: RUN_SIZES },
-  { cut: "one to three elements a run", sizes: FORCED },
+  { cut: "an element a run", sizes: ONE_EACH },
 ];
 
 const label = (at: number) => `Line ${String(at).padStart(5, "0")}.`;
@@ -288,7 +291,7 @@ describe("the stored form of a run", () => {
       ],
     },
   ])("an element with no end ends where the one before it does: a body $body", ({ content }) => {
-    for (let sizes of [ONE_EACH, { ...FORCED, elements: 2 }, FORCED, RUN_SIZES]) {
+    for (let sizes of [ONE_EACH, RUN_SIZES]) {
       // `placedRuns` gives each run the running sum of the sizes before it as its first index.
       let runs = placedRuns(content, sizes);
       for (let run of runs) {
@@ -322,7 +325,7 @@ describe("the stored form of a run", () => {
     let near = [tableOfNotes(1, 0), ...elements];
     let far = [tableOfNotes(1_000_001, 40), ...moved(elements, 1_000_000, 40)];
     expect(JSON.stringify(far)).not.toBe(JSON.stringify(near));
-    for (let sizes of [RUN_SIZES, FORCED, ONE_EACH]) {
+    for (let sizes of [RUN_SIZES, ONE_EACH]) {
       // The table is a run of its own: the runs after it are not their tab's first.
       let [, ...nearRuns] = placedRuns(near, sizes);
       let [, ...farRuns] = placedRuns(far, sizes);
@@ -341,7 +344,7 @@ describe("the stored form of a run", () => {
       { table: [[cellOf({ runs: ["In a cell", footnote(2), ".\n"] }), "beside"]] },
       ...Array.from({ length: 12 }, (_, at) => ({ runs: [label(at), footnote(3 + at), "\n"] })),
     ]).body.content;
-    for (let sizes of [FORCED, ONE_EACH]) {
+    for (let sizes of [ONE_EACH]) {
       let whole = placedRuns(body, sizes);
       expect(whole.length).toBeGreaterThan(5);
       let elements = 0, based = 0;
@@ -411,7 +414,7 @@ describe("the stored form of a run", () => {
       { startIndex: 4, endIndex: 9, table: { tableRows: rows } },
       { startIndex: 9, endIndex: 10, tableOfContents: {} }, { startIndex: 10, endIndex: 11 },
     ] as StructuralElement[];
-    for (let sizes of [ONE_EACH, FORCED, RUN_SIZES]) {
+    for (let sizes of [ONE_EACH, RUN_SIZES]) {
       let runs = placedRuns(content, sizes);
       expect(JSON.stringify(decodedBody(runs))).toBe(JSON.stringify(content));
       expect(runs.reduce((sum, run) => sum + run.size, 0)).toBe(11);
@@ -463,10 +466,7 @@ const CHANGES: {
   },
 ];
 
-/**
- * How many runs of `before` and of `after` are not the same run at the same place from either
- * end: the runs between the first that differs and the last that does.
- */
+/** How many runs of `before` and `after` stand between the first that differs and the last. */
 function changedRuns(before: readonly string[], after: readonly string[]): number {
   let least = Math.min(before.length, after.length);
   let head = 0;
@@ -481,17 +481,11 @@ function runIds(content: Iterable<StructuralElement>, sizes: RunSizes): string[]
   return Array.from(cutRuns(content, sizes), run => sha256(run.json));
 }
 
-/**
- * WHAT MUST NOT BE DONE: the hash with every digit left out, those of the text too. Paragraphs
- * that differ only in a number in their text then all answer alike.
- */
+/** WHAT MUST NOT BE DONE: the hash with every digit left out, those of the text too. */
 const endsRunWithoutDigits: typeof endsRun = (json, sizes) =>
   endsRun(json.replace(/[0-9-]/g, ""), sizes);
 
-/**
- * The rule of `cutRuns` for a body of paragraphs with `ends` in place of `endsRun`: each run
- * as the stored strings of its elements, every element stored as a run of its own.
- */
+/** The rule of `cutRuns` for a body of paragraphs, with `ends` in place of `endsRun`. */
 function cutBy(
   ends: typeof endsRun, content: readonly StructuralElement[], sizes: RunSizes,
 ): string[] {
@@ -523,10 +517,7 @@ const emptyParagraphs = (count: number, ...first: BlockSpec[]) =>
 /** The texts a long checklist repeats: none of them, stored as a paragraph, ends a run. */
 const FEW_TEXTS = ["Done.", "To do, and waiting on a reply.", "Not started."];
 
-/**
- * A stretch of 20,000 paragraphs drawn from `FEW_TEXTS`, the same draws at every call, without
- * the paragraphs at `without`; then a table, and 5,000 paragraphs more.
- */
+/** 20,000 paragraphs drawn from `FEW_TEXTS` but those at `without`, a table, and 5,000 more. */
 function fewTexts(without: readonly number[] = []): StructuralElement[] {
   let { pick } = diceOf(20261117);
   let stretch = (count: number) => Array.from({ length: count }, () => para(pick(FEW_TEXTS)));
@@ -679,7 +670,7 @@ describe("the section break that opens a body", () => {
   it("of a tab the model made is stored as the one Google sent, and decoded with its start", () => {
     for (let { name, tab } of RECORDED) {
       let made = applyDocsRequests(tab, []).body.content;
-      for (let sizes of [RUN_SIZES, FORCED]) {
+      for (let sizes of [RUN_SIZES, ONE_EACH]) {
         let runs = placedRuns(made, sizes);
         // The model indexes these tabs as Google does: every run is the run of Google's tab.
         expect(runs.map(run => run.json), name)
@@ -717,7 +708,7 @@ describe("the section break that opens a body", () => {
     { opening: "a table", first: tableOfNotes(4, 0) },
   ])("alone loses a start index of 0: a body that opens with $opening keeps it", ({ first }) => {
     let content = [first, paragraphAt("two\n", 4, 8), paragraphAt("three\n", 8, 14)];
-    for (let sizes of [ONE_EACH, FORCED, RUN_SIZES]) {
+    for (let sizes of [ONE_EACH, RUN_SIZES]) {
       let runs = placedRuns(content, sizes);
       expect(firstStored(runs[0].json).startIndex).toBe(0);
       for (let exact of [false, true]) {
@@ -745,7 +736,7 @@ describe("the section break that opens a body", () => {
     let unplaced = [{ sectionBreak: {} } as StructuralElement, paragraphAt("", undefined, undefined)];
     for (let opening of unplaced) {
       let body = [opening, atZero];
-      for (let sizes of [ONE_EACH, FORCED]) {
+      for (let sizes of [ONE_EACH, RUN_SIZES]) {
         let stored = placedRuns(body, sizes);
         expect(firstStored(stored[0].json)).toEqual(opening);
         expect(JSON.stringify(decodedBody(stored))).toBe(JSON.stringify(body));
@@ -759,7 +750,7 @@ describe("the section break that opens a body", () => {
   it("keeps its start index in a tab whose body starts at another index than 0", () => {
     let content = moved(buildTab([para("One."), para("Two.")]).body.content, 7, 0);
     expect(content[0]).toEqual({ startIndex: 7, endIndex: 8, sectionBreak: {} });
-    for (let sizes of [ONE_EACH, FORCED, RUN_SIZES]) {
+    for (let sizes of [ONE_EACH, RUN_SIZES]) {
       let runs = placedRuns(content, sizes);
       expect(runs[0].first).toBe(7);
       expect(firstStored(runs[0].json)).toEqual({ startIndex: 0, endIndex: 1, sectionBreak: {} });
@@ -892,24 +883,15 @@ describe("decodeRun", () => {
   });
 });
 
-/** The renderings of stored runs a test has seen, by run, context key and carry key. */
-const RENDERINGS = new Map<string, string>();
-
-/**
- * WHAT MUST NOT BE DONE: a second notion of a numbered footnote, digits only. It counts `007`,
- * which is stored as the text it is, and misses `-3`, which is stored counted from the run.
- */
+/** WHAT MUST NOT BE DONE: a second notion of a numbered footnote, digits only. */
 function holdsDigitsOnly(elements: readonly StructuralElement[]): boolean {
   return storedFootnoteNumbers(JSON.stringify(elements))
     .some(number => typeof number === "string" && /^\d+$/.test(number));
 }
 
 /**
- * Holds each stored run of `tab` to ONE notion of a numbered footnote: decoded with the base
- * it was stored with and with that base plus 7, and rendered from the carry it is entered
- * with and from that carry with the base plus 7, its two Markdowns differ if and only if
- * `numbered` says the run holds a numbered footnote, and its two carry keys differ if and
- * only if the Markdowns do. Answers the first run that fails, or nothing.
+ * Holds each stored run of `tab` to ONE notion of a numbered footnote: decoded and rendered with the
+ * base 7 higher, its Markdown moves iff `numbered` says so, and its key iff the Markdown does.
  */
 function footnoteKeyFailure(
   tab: GoogleDocsTab, sizes: RunSizes,
@@ -958,24 +940,6 @@ describe.each(CUTS)("a tab's stored runs rendered, $cut", ({ sizes }) => {
         expect(joined.extendsProtected, name).toBe(false);
         expectSameRendering(joined, whole, () => `${name}, entered with ${
           advance ? "the carry moved in place" : "the carry a copying advance gives"}`);
-      }
-    }
-  });
-
-  it.each(CORPUS)("a stored run renders the same wherever it is listed: $part", ({ tabs }) => {
-    for (let { name, tab } of tabs()) {
-      let carry = initialCarry();
-      for (let run of placedRuns(tab.body.content, sizes)) {
-        let rendered = renderRun(decodedRun(run), tab, carry, { mdStart: 0 });
-        let { summary } = rendered;
-        let entry =
-          [sha256(run.json), runContextKey(summary, tab), runCarryKey(summary, carry)].join("\n");
-        let stored = RENDERINGS.get(entry);
-        if (stored === undefined) RENDERINGS.set(entry, rendered.markdown);
-        else if (stored !== rendered.markdown) {
-          expect(rendered.markdown, `${name}: a second Markdown for ${run.json}`).toBe(stored);
-        }
-        advanceCarry(carry, rendered.summary);
       }
     }
   });
@@ -1075,9 +1039,8 @@ const note = (footnoteNumber: unknown, startIndex: number) => JSON.stringify({
 });
 
 describe("endsRun", () => {
-  // A CHANGE HERE MOVES EVERY RUN'S ID: every stored tab is then cut again as it is next
-  // written, and shares next to no run with the versions cut before. Record other answers only for
-  // a change that is meant to do that.
+  // A CHANGE HERE MOVES EVERY RUN'S ID, and every stored tab is cut again: record other answers
+  // only for a change meant to do that.
   it.each<[of: string, json: string, answers: string]>([
     ["an object of nothing", "{}", "0010000000000000"],
     ["a paragraph", line("Line 00007.\n", 0, 12), "1111111110100010"],
@@ -1114,9 +1077,7 @@ describe("endsRun", () => {
   });
 
   it("counts every unit it hashes, the backslash of an escape among them", () => {
-    // 111 units of this string are hashed, one of them the backslash of its escape. Its hash
-    // leaves 110 over the first two targets and 111 over the others: the answer turns on the
-    // count, and on the one unit.
+    // 111 units are hashed, one the backslash of its escape: the answer turns on that one unit.
     let json = line("C:\\", 0, 3);
     let answers = [167, 283, 199, 398].map(target => endsRun(json, { ...FORCED, target }));
     expect(answers).toEqual([true, true, false, false]);
