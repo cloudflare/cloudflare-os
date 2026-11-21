@@ -2736,6 +2736,14 @@ const MOVE_NEEDS_A_FOLDER =
   "Moving takes a folder or all-of-Drive connection: the single-file connection named below " +
   "cannot move a file.";
 
+/**
+ * Said of a write in a folder opened through a shortcut, which reads follow and writes do not: the
+ * folder is not in the connected one.
+ */
+const THROUGH_SHORTCUT =
+  "This folder was opened through a shortcut, so its files can be read here but not changed, " +
+  "commented on, shared or moved.";
+
 /** The Drive session methods that open a native file. */
 type NativeOpener = "openGoogleDoc" | "openGoogleSheet" | "openGoogleSlides";
 
@@ -3147,6 +3155,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
         ? `${MOVE_NEEDS_A_FOLDER} ${refused}` : refused);
     }
     if (folderId === fileId) throw new Error(MOVE_INTO_ITSELF);
+    this.#refuseThroughShortcut();
     let actor = await this.#writes.actor();
     let target = await this.#core.moveTarget(fileId, folderId);
     await this.#refuseQueued(pending => {
@@ -3179,6 +3188,15 @@ export class GoogleDriveSessionImpl extends RpcTarget
   async #requireWritable(): Promise<void> {
     let refused = await this.#writes.writeRefusal();
     if (refused !== undefined) throw new Error(refused);
+    this.#refuseThroughShortcut();
+  }
+
+  /**
+   * Refuses a write in a folder opened through a shortcut up front. Its proof at approval, along
+   * the saved path alone, would refuse it anyway.
+   */
+  #refuseThroughShortcut(): void {
+    if (this.#location?.shortcuts) throw new Error(THROUGH_SHORTCUT);
   }
 
   /**

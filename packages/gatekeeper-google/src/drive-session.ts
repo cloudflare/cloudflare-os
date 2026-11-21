@@ -3,11 +3,11 @@ import { CursorPager, type Pager } from "./cursor";
 import {
   FOLDER_MIME_TYPE, MAX_QUERY_PARENTS, MY_DRIVE_ROOT, SHORTCUT_MIME_TYPE,
   isFileInvisible, isInsufficientScope, isListableFolderFile, isListableFolderNode,
-  type DriveApi, type DriveCommentList, type DriveFile, type DriveListFilesOptions,
-  type DriveScopeNode,
+  type DriveApi, type DriveCommentList, type DriveCorpus, type DriveFile,
+  type DriveListFilesOptions, type DriveScopeNode,
 } from "./drive-api";
 import {
-  isDirectChild, outsideScope, readFolderLocation,
+  isDirectChild, isShortcutChild, outsideScope, readFolderLocation,
   type FolderLocation,
 } from "./drive-folder-scope";
 import type { DriveObservation } from "./drive-observers";
@@ -105,7 +105,9 @@ export function requireDriveBindingScope(scope: DriveBindingScope): DriveBinding
 
 type DriveSessionScope = Exclude<DriveBindingScope, { kind: "folder" }>;
 type DriveSessionApi = Pick<
-  DriveApi, "listFiles" | "getFile" | "getScopeNodes" | "canComment" | "canShare" | "listComments"
+  DriveApi,
+  "listFiles" | "getFile" | "getScopeNodes" | "findShortcut" | "canComment" | "canShare" |
+  "listComments"
 >;
 /** A page's proven scope: the bound drive, and the parents its files must sit directly under. */
 type FolderPageScope = {driveId: string | undefined; parents: DriveScopeNode[]};
@@ -988,6 +990,11 @@ export class DriveSessionCore extends DriveCoreBase {
  * refused rather than dropped: the provider call overrides it, but it would still reach the
  * observation description and report a folder that was never read.
  */
+/** The corpus a folder in `driveId` (a shared drive's, or none for My Drive) is listed in. */
+function corpusOf(driveId: string | undefined): DriveCorpus {
+  return driveId ? {kind: "drive", driveId} : {kind: "user"};
+}
+
 function rejectDirectParent(query: DriveFolderListOptions | DriveFolderSearchQuery): void {
   if ((query as DriveSearchQuery).directParentId !== undefined) {
     throw new Error("A Drive folder binding is already scoped; directParentId is not accepted.");
@@ -1008,7 +1015,8 @@ export class DriveFolderSessionCore extends DriveCoreBase {
 
   constructor(options: DriveFolderSessionCoreOptions) {
     super(options);
-    this.#location = {folderIds: [...options.location.folderIds]};
+    let {folderIds, shortcuts} = options.location;
+    this.#location = {folderIds: [...folderIds], ...(shortcuts ? {shortcuts: {...shortcuts}} : {})};
   }
 
   async getScope(): Promise<DriveScope> {
@@ -1042,16 +1050,19 @@ export class DriveFolderSessionCore extends DriveCoreBase {
   }
 
   async getEntry(fileId: string): Promise<DriveEntry> {
-    let file = await this.#requireDirectFile(fileId);
+    let {file} = await this.#requireChild(fileId, outsideScope, true);
     await this.authorizeUnits(
       [this.#folderObservation(), {kind: "file", fileId: file.id}],
       "Read Google Drive metadata", `Read metadata for Drive file ${file.id}.`);
     return driveFileToEntry(file);
   }
 
-  /** Only a live direct child of the positioned folder can be opened. */
+  /**
+   * Only a live direct child of the positioned folder, or the target of a shortcut that is one,
+   * can be opened.
+   */
   async openFile(fileId: string, description: string): Promise<DriveFile> {
-    let file = await this.#requireDirectFile(fileId);
+    let {file} = await this.#requireChild(fileId, outsideScope, true);
     await this.authorizeUnits(
       [this.#folderObservation(), {kind: "file", fileId: file.id}],
       `Open ${description} from Google Drive`,
@@ -1081,7 +1092,7 @@ export class DriveFolderSessionCore extends DriveCoreBase {
 
   /**
    * One live direct child that is a folder whose children can be listed, which is what a folder
-   * must be to be opened or moved into here. Any other answer about `folderId` is disclosed as
+   * must be to be moved into here. Any other answer about `folderId` is disclosed as
    * {@link #requireDirectFile} and {@link #refuseUnlistable} disclose it, then refused with
    * `refuse`.
    */
@@ -1093,13 +1104,19 @@ export class DriveFolderSessionCore extends DriveCoreBase {
     return folder;
   }
 
-  /** Open one live, listable direct child folder and append its checked path edge. */
+  /**
+   * Open one live, listable direct child folder, or the target of a shortcut that is one, and
+   * append its checked path edge, naming the shortcut if it took one.
+   */
   async openFolder(folderId: string): Promise<FolderLocation> {
-    let folder = await this.#requireChildFolder(folderId);
+    let {file: folder, shortcutId} = await this.#requireChild(folderId, outsideScope, true);
+    if (!isListableFolderFile(folder)) await this.#refuseUnlistable(folder);
     await this.authorizeUnits(
       [this.#folderObservation(), {kind: "folder", fileId: folder.id}],
       "Open Google Drive folder", `Open direct child folder ${folder.id}.`);
-    return {folderIds: [...this.#location.folderIds, folder.id]};
+    let {folderIds, shortcuts} = this.#location;
+    if (shortcutId !== undefined) shortcuts = {...shortcuts, [folder.id]: shortcutId};
+    return {folderIds: [...folderIds, folder.id], ...(shortcuts ? {shortcuts} : {})};
   }
 
   /** Validate and authorize one direct child whose comments are about to be read or written. */
@@ -1227,7 +1244,7 @@ export class DriveFolderSessionCore extends DriveCoreBase {
       nativeSubresource(fileId, expectedMimeType, content),
     ]);
     let requireCurrent = async () => {
-      let file = await this.#requireDirectFile(fileId);
+      let {file} = await this.#requireChild(fileId, outsideScope, true);
       if (file.mimeType !== expectedMimeType) outsideScope();
       unchanged?.(file);
     };
@@ -1254,11 +1271,11 @@ export class DriveFolderSessionCore extends DriveCoreBase {
     // mid-pagination would otherwise keep having its contents disclosed as in scope.
     let readScope = async (): Promise<FolderPageScope> => {
       let path = await this.#readLocation();
-      bound ??= {driveId: path[0].driveId};
-      if (bound.driveId !== path[0].driveId) throw new Error(FOLDER_MOVED);
       let current = path[path.length - 1];
+      bound ??= {driveId: current.driveId};
+      if (bound.driveId !== current.driveId) throw new Error(FOLDER_MOVED);
       return {
-        driveId: path[0].driveId,
+        driveId: current.driveId,
         parents: childFolderIds
           ? await this.#requireChildFolders(childFolderIds, current)
           : [current],
@@ -1278,7 +1295,7 @@ export class DriveFolderSessionCore extends DriveCoreBase {
         let page = await this.api.listFiles({
           ...query,
           directParentIds: parentIds,
-          corpus: driveId ? {kind: "drive", driveId} : {kind: "user"},
+          corpus: corpusOf(driveId),
           pageToken,
         });
         return {items: page.files, ...(page.nextPageToken ? {nextPageToken: page.nextPageToken} : {})};
@@ -1324,25 +1341,42 @@ export class DriveFolderSessionCore extends DriveCoreBase {
     return readFolderLocation(this.#location, ids => this.api.getScopeNodes(ids));
   }
 
+  /**
+   * The positioned folder's current metadata. A folder reached through a shortcut is checked
+   * against the shortcut by the path proof the caller takes around this read, not as a child.
+   */
   async #readCurrentFolder(path: DriveScopeNode[]): Promise<DriveFile> {
     let current = path[path.length - 1];
     let folder = await this.tryFetchFile(current.id);
+    let viaShortcut = this.#location.shortcuts?.[current.id] !== undefined;
     if (!folder || folder.id !== current.id || !isListableFolderFile(folder) ||
-        folder.driveId !== path[0].driveId ||
-        (path.length > 1 && !isDirectChild(folder, path[path.length - 2]))) {
+        folder.driveId !== current.driveId ||
+        (path.length > 1 && !viaShortcut && !isDirectChild(folder, path[path.length - 2]))) {
       outsideScope();
     }
     return folder;
   }
 
-  /**
-   * One live direct child of the positioned folder, with the saved path proved before the read
-   * and again after it. An ID that names none is refused with `refuse`; a saved path that fails
-   * its proof is outside the binding whatever was asked for.
-   */
+  /** {@link #requireChild} without following shortcuts, as every write's target proof is. */
   async #requireDirectFile(
     fileId: string, refuse: () => never = outsideScope,
   ): Promise<DriveFile> {
+    return (await this.#requireChild(fileId, refuse, false)).file;
+  }
+
+  /**
+   * One live direct child of the positioned folder or, when `followShortcuts`, a live file or
+   * folder a shortcut among those children points to, naming that shortcut. The saved path is
+   * proved before the read and again after it. An ID that names neither is refused with
+   * `refuse`; a saved path that fails its proof is outside the binding whatever was asked for.
+   *
+   * A shortcut stands for its target as a member of the folder it sits in, so whoever may add
+   * to the folder may bring a file into a reader's reach. The disclosure is the target's, and
+   * reported as the target: a collaborator must reach it with their own account.
+   */
+  async #requireChild(
+    fileId: string, refuse: () => never, followShortcuts: boolean,
+  ): Promise<{file: DriveFile; shortcutId?: string}> {
     let path = await this.#readLocation();
     let file = await this.tryFetchFile(fileId);
     if (!file || file.id !== fileId) {
@@ -1353,9 +1387,17 @@ export class DriveFolderSessionCore extends DriveCoreBase {
         "Check whether a requested file is a direct child of this Drive folder.");
       refuse();
     }
-    if (!isDirectChild(file, path[path.length - 1])) refuse();
+    let current = path[path.length - 1];
+    let shortcutId: string | undefined;
+    if (!isDirectChild(file, current)) {
+      let shortcut = followShortcuts && file.trashed === false
+        ? await this.api.findShortcut(current.id, file.id, corpusOf(current.driveId))
+        : undefined;
+      if (!shortcut || !isShortcutChild(shortcut, file.id, current)) refuse();
+      shortcutId = shortcut.id;
+    }
     await this.#readLocation();
-    return file;
+    return {file, ...(shortcutId === undefined ? {} : {shortcutId})};
   }
 
   #rootId(): string {

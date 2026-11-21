@@ -411,6 +411,11 @@ class DriveProvider {
         user: { permissionId, ...(this.about.omitAddress ? {} : { emailAddress }) },
       });
     }
+    // This drive holds no shortcuts, so a folder binding's lookup of one to a non-child finds none.
+    if (call === "GET /drive/v3/files" &&
+        url.searchParams.get("q")?.includes("application/vnd.google-apps.shortcut")) {
+      return Response.json({ files: [] });
+    }
     let match = /^\/drive\/v3\/files\/([^/]+)(?:\/(permissions|comments)(?:\/([^/]+))?)?$/
       .exec(url.pathname);
     if (!match) throw new Error(`Unexpected provider request: ${call}`);
