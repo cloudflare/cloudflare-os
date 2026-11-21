@@ -2,6 +2,7 @@ import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type R
 import { Combobox } from '@cloudflare/kumo/primitives/combobox'
 import { PaperclipIcon, PlugIcon, PlusIcon } from '@phosphor-icons/react'
 import { DropdownMenu } from '@gadgets/ui'
+import { stored } from '@/prefs/stored'
 import { commandGlyph, type ComposerCommand } from './ComposerCommandPicker'
 import { composerAddEntries, composerAddKey, type ComposerAddEntry } from './composerAddEntries'
 
@@ -59,6 +60,11 @@ const ACTIONS = {
   connection: { icon: PlugIcon, label: 'Add a new connection' },
 } as const
 
+// How tall the menu was when its skills were last listed, in this browser: while they are read
+// again it opens as tall, since they are most likely the same ones. Never read, it has no room
+// kept for them, and grows for those that come, rather than opening tall and falling to a few.
+const lastHeight = stored<number | undefined>('workshop-app:composer-add-height', (value) => (typeof value === 'number' && value > 0 ? value : undefined), undefined)
+
 /**
  * What the menu holds, mounted as it opens: the rows over a field that narrows them, the field
  * at the edge nearest the composer. It opens at the height it then keeps while anything is typed,
@@ -76,12 +82,16 @@ const ComposerAddSearch = ({ onUpload, onAddConnection, commands, close }: Compo
   const fieldRef = useRef<HTMLInputElement>(null)
   const rootRef = useRef<HTMLDivElement>(null)
   const [height, setHeight] = useState<number>()
+  // As tall as it was the last time, until its skills are read.
+  const [kept] = useState(() => (loading ? lastHeight.read() : undefined))
 
   useEffect(() => fieldRef.current?.focus({ preventScroll: true }), [])
   // Its height with nothing typed, which it keeps once something is.
   useLayoutEffect(() => {
-    if (!typed && rootRef.current) setHeight(rootRef.current.offsetHeight)
-  }, [typed, entries.length, loading])
+    if (typed || !rootRef.current) return
+    setHeight(rootRef.current.offsetHeight)
+    if (commands && !loading) lastHeight.write(rootRef.current.offsetHeight)
+  }, [typed, entries.length, loading, commands === undefined])
 
   const choose = (entry: ComposerAddEntry) => {
     close()
@@ -95,7 +105,7 @@ const ComposerAddSearch = ({ onUpload, onAddConnection, commands, close }: Compo
       ref={rootRef}
       // Opened under the button rather than over it, the field is at its top instead.
       className="flex min-h-0 flex-col in-data-[side=bottom]:flex-col-reverse"
-      style={typed ? { height } : undefined}
+      style={typed ? { height } : loading ? { height: kept } : undefined}
       onKeyDown={(event) => {
         const does = composerAddKey(event.key, highlighted.current)
         if (does === 'keep') return event.stopPropagation()
@@ -120,7 +130,7 @@ const ComposerAddSearch = ({ onUpload, onAddConnection, commands, close }: Compo
         itemToStringLabel={(entry: ComposerAddEntry) => (entry.kind === 'command' ? entry.command.title : ACTIONS[entry.key].label)}
         isItemEqualToValue={(a: ComposerAddEntry, b: ComposerAddEntry) => a.key === b.key}
       >
-        <Combobox.List className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-1.5 outline-none">
+        <Combobox.List className={`min-h-0 ${loading ? 'shrink-0' : 'flex-1'} overflow-y-auto overscroll-contain p-1.5 outline-none`}>
           {(entry: ComposerAddEntry, index: number) => (
             <Fragment key={entry.key}>
               {!typed && entry.kind === 'command' && entries[index - 1]?.kind === 'action' && (
@@ -131,9 +141,9 @@ const ComposerAddSearch = ({ onUpload, onAddConnection, commands, close }: Compo
           )}
         </Combobox.List>
         {loading ? (
-          // Room for the skills to come, about as much as they take, so the menu does not grow when
-          // they do. After the rows either way up, as the skills will be.
-          <p role="status" className={`${NOTE} h-64 shrink-0 in-data-[side=bottom]:-order-1`}>Loading skills…</p>
+          // In the room kept for the skills to come, where they were listed before. After the rows
+          // either way up, as the skills will be.
+          <p role="status" className={`${NOTE} min-h-0 flex-1 in-data-[side=bottom]:-order-1`}>Loading skills…</p>
         ) : (
           typed && <Combobox.Empty className={`${NOTE} empty:hidden in-data-[side=bottom]:-order-1`}>No skills match.</Combobox.Empty>
         )}
