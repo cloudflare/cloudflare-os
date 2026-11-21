@@ -10,6 +10,28 @@ export function isGoogleDocsStrippedCharacter(code: number): boolean {
     code >= 0xe000 && code <= 0xf8ff;
 }
 
+const GRAPHEMES = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+/**
+ * Whether `offset` of `text` lies between two grapheme clusters, or at either end. Google Docs
+ * does not insert text inside a cluster (such as between a letter and its combining accent):
+ * it refuses the insertion or moves it to the cluster's end.
+ */
+export function atGraphemeBoundary(text: string, offset: number): boolean {
+  return offset <= 0 || offset >= text.length ||
+    GRAPHEMES.segment(text).containing(offset)?.index === offset;
+}
+
+/**
+ * Whether deleting what lies between the first `prefix` and the last `suffix` UTF-16 code units
+ * of `text` leaves a grapheme cluster across the place it was deleted from, as two regional
+ * indicators pair up as a flag once the character between them goes.
+ */
+export function joinsGraphemes(text: string, prefix: number, suffix: number): boolean {
+  return prefix > 0 && suffix > 0 && prefix + suffix < text.length &&
+    !atGraphemeBoundary(text.slice(0, prefix) + text.slice(text.length - suffix), prefix);
+}
+
 /** The character a text run holds in place of embedded content, such as a building block's chip. */
 export const CHIP_PLACEHOLDER = "\uE907";
 

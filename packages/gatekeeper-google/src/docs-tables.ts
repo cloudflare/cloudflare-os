@@ -4,7 +4,7 @@
 // reading answers of the tab as a whole; nothing mutates its input.
 
 import type { DocsLocation, GoogleDocsRequest, TableCellLocation, TextStyle } from "./docs-api";
-import { isGoogleDocsStrippedCharacter } from "./docs-content";
+import { atGraphemeBoundary, isGoogleDocsStrippedCharacter, joinsGraphemes } from "./docs-content";
 import {
   addRequest, canonicalizeMarkdownReplacement, canonicalLinkDestination, cellLinkDestination,
   computeReplaceOperations, docsLinkForDestination, isBlankDocTab, isSafeTableLink, lineStart,
@@ -1433,6 +1433,22 @@ function commonBounds(left: string, right: string): { prefix: number; suffix: nu
 }
 
 /**
+ * `commonBounds` of a text `left` and the text `right` that replaces it, narrowed so that they
+ * split no grapheme cluster of either and the deletion of the rest of `left` leaves no cluster
+ * across the place the rest of `right` is inserted at (`atGraphemeBoundary`, `joinsGraphemes`):
+ * the replacement then lands, and is styled, where it reads.
+ */
+function graphemeBounds(left: string, right: string): { prefix: number; suffix: number } {
+  let { prefix, suffix } = commonBounds(left, right);
+  while (!atGraphemeBoundary(left, prefix) || !atGraphemeBoundary(right, prefix)) prefix--;
+  while (!atGraphemeBoundary(left, left.length - suffix) ||
+      !atGraphemeBoundary(right, right.length - suffix) || joinsGraphemes(left, prefix, suffix)) {
+    suffix--;
+  }
+  return { prefix, suffix };
+}
+
+/**
  * Where the text a replacement changes lies among the tab's tables. The text is what remains
  * of `oldMarkdown` once the characters it shares with `newMarkdown` at each end are left out
  * (`commonBounds`), so table HTML quoted unchanged around a paragraph counts for nothing. Text
@@ -1746,7 +1762,7 @@ function formatPieces(
 function planText(oldHtml: string, newHtml: string, tabId: string): TextPlan {
   let before = parseCellInline(oldHtml);
   let after = parseCellInline(newHtml);
-  let { prefix, suffix } = commonBounds(before.text, after.text);
+  let { prefix, suffix } = graphemeBounds(before.text, after.text);
   let oldTail = before.text.length - suffix;
   let newTail = after.text.length - suffix;
   let sameLink = (left: string | undefined, right: string | undefined) =>
