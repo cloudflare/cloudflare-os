@@ -2181,6 +2181,43 @@ describe("commonPrefix and commonSuffix", () => {
   });
 });
 
+// Google does not insert inside a grapheme cluster: it refuses the insertion or moves it to the
+// cluster's end, where the text and the style sent for it would land otherwise than shown.
+describe("grapheme clusters in what a replacement changes", () => {
+  // An e and a combining acute accent: one cluster.
+  const ACCENTED = "Café";
+  const WRITTEN = "CafeX́";
+
+  it("rewrites a cluster whole in a cell rather than insert inside it", () => {
+    let accent = oneCell([ACCENTED], ACCENTED, WRITTEN);
+    expect(accent.requests)
+      .toEqual([["delete", 3, 5], ["insert", 3, "eX́"], RESET(3, 6)]);
+    expect(accent.html).toBe(WRITTEN);
+    let bolded = oneCell([ACCENTED], ACCENTED, "Caf<strong>eX</strong>́");
+    expect(bolded.requests).toEqual([
+      ["delete", 3, 5], ["insert", 3, "eX́"], RESET(3, 6),
+      ["style", 3, 5, { bold: true }, "bold"],
+    ]);
+    expect(bolded.html).toBe("Caf<strong>eX</strong>́");
+  });
+
+  it("starts an insertion where the text the deletion leaves has no cluster", () => {
+    // The regional indicators U and S pair up as a flag once the x between them is deleted.
+    let flag = oneCell(["\u{1F1FA}x\u{1F1F8}"], "\u{1F1FA}x\u{1F1F8}", "\u{1F1FA}y\u{1F1F8}");
+    expect(flag.requests).toEqual([["delete", 2, 5], ["insert", 2, "y\u{1F1F8}"], RESET(2, 5)]);
+    expect(flag.html).toBe("\u{1F1FA}y\u{1F1F8}");
+  });
+
+  it("rewrites a cluster whole in a paragraph rather than insert inside it", () => {
+    let tab = buildTab([para(ACCENTED), para("After")]);
+    let before = docTabToMarkdown(tab);
+    let replacement = replacementIn(before.markdown, ACCENTED, WRITTEN);
+    expect(relative(textReplacementRequests(before, replacement), 1))
+      .toEqual([["delete", 3, 5], ["insert", 3, "eX́"], RESET(3, 6)]);
+    expect(appliedParagraphText(tab, ACCENTED, WRITTEN).markdown).toBe(`${WRITTEN}\n\nAfter\n`);
+  });
+});
+
 describe("existing text that reads like an escape", () => {
   it("counts offsets from the text decoded once", () => {
     let lessThan = oneCell(["use &lt; here"], "use &amp;lt; here", "use &amp;lt; there");

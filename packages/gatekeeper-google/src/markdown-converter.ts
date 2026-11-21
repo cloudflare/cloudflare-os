@@ -7,8 +7,8 @@ import type {
   TableCell, TextStyle,
 } from "./docs-api";
 import {
-  BULLET_PRESETS, CHIP_PLACEHOLDER, isGoogleDocsStrippedCharacter, LIST_LEVELS, loneChipCopy,
-  madeByPreset, wholeFootnoteNumber,
+  atGraphemeBoundary, BULLET_PRESETS, CHIP_PLACEHOLDER, isGoogleDocsStrippedCharacter,
+  joinsGraphemes, LIST_LEVELS, loneChipCopy, madeByPreset, wholeFootnoteNumber,
 } from "./docs-content";
 import { lookOfTable, renderLook } from "./docs-table-look";
 import type { TableLook } from "./docs-table-look";
@@ -2500,7 +2500,10 @@ function blockMarkerAround(
 
 /**
  * Shared replacement bounds that never split Markdown syntax tokens, or a surrogate pair: two
- * emoji can share their high surrogate, and Google refuses to delete half of a pair.
+ * emoji can share their high surrogate, and Google refuses to delete half of a pair. Nor do they
+ * split a grapheme cluster of either text, or leave one across the place the new text is put
+ * once the old is deleted (`atGraphemeBoundary`, `joinsGraphemes`), so that the new text lands,
+ * and is styled, where the replacement shows it.
  *
  * Nor do they leave part of a block marker the new Markdown writes in the text the two share,
  * where the old Markdown has those characters as a line's text and not as a marker: `one two`
@@ -2518,7 +2521,9 @@ function markdownReplacementBounds(oldMarkdown: string, newMarkdown: string): {
   while (prefixLen < oldMarkdown.length && prefixLen < newMarkdown.length &&
       oldMarkdown[prefixLen] === newMarkdown[prefixLen]) prefixLen++;
   while (prefixLen > 0 && (oldTokenSplits[prefixLen] || newTokenSplits[prefixLen] ||
-      isHighSurrogate(oldMarkdown.charCodeAt(prefixLen - 1)))) prefixLen--;
+      isHighSurrogate(oldMarkdown.charCodeAt(prefixLen - 1)) ||
+      !atGraphemeBoundary(oldMarkdown, prefixLen) ||
+      !atGraphemeBoundary(newMarkdown, prefixLen))) prefixLen--;
   let written = blockMarkerAround(newMarkdown, prefixLen, true);
   if (written && !blockMarkerAround(oldMarkdown, prefixLen, true)) prefixLen = written.start;
 
@@ -2530,7 +2535,10 @@ function markdownReplacementBounds(oldMarkdown: string, newMarkdown: string): {
   let splitsToken = () => suffixLen > 0 &&
     (oldTokenSplits[oldMarkdown.length - suffixLen] ||
       newTokenSplits[newMarkdown.length - suffixLen] ||
-      isLowSurrogate(oldMarkdown.charCodeAt(oldMarkdown.length - suffixLen)));
+      isLowSurrogate(oldMarkdown.charCodeAt(oldMarkdown.length - suffixLen)) ||
+      !atGraphemeBoundary(oldMarkdown, oldMarkdown.length - suffixLen) ||
+      !atGraphemeBoundary(newMarkdown, newMarkdown.length - suffixLen) ||
+      joinsGraphemes(oldMarkdown, prefixLen, suffixLen));
   while (splitsToken()) suffixLen--;
   written = blockMarkerAround(newMarkdown, newMarkdown.length - suffixLen, false);
   if (suffixLen > 0 && written &&

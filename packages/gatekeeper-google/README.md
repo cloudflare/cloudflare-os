@@ -604,8 +604,11 @@ it. The characters
 a replacement keeps are not rewritten, and the only formatting sent for them is the bold, italic,
 strikethrough or link the replacement changes. A link that stays is never cleared, so a word
 corrected inside a link stays part of it, and a link pointed to another URL as a whole is only
-pointed there. New text takes the bold, italic, strikethrough and link the replacement gives it,
-and loses the characters Google removes from inserted text. Text a replacement leaves with no link,
+pointed there. A kept character that shares a grapheme cluster with text the replacement changes,
+as a letter does when new text goes between it and its combining accent, is written again as new
+text, in a cell or outside tables, since Google does not insert text inside a cluster. New text
+takes the bold, italic, strikethrough and link the replacement gives it, and loses the characters
+Google removes from inserted text. Text a replacement leaves with no link,
 where it had one or was typed next to one, also loses the colour and underline Google gives a link,
 and nothing else of its look. A link to a heading that does not exist fails when the change is
 approved, and writes nothing.
