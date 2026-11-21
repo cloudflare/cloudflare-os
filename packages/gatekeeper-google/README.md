@@ -2028,11 +2028,12 @@ protected ranges, and, in a second request, the merges of only the sheets the ba
 queued before it act on (and, for `readFormats()`, the sheet it reads), so merges elsewhere hold up
 no write. Applying a batch, `getSpreadsheet()` and a range read send the two requests together,
 since the changes name their sheets by ID; queuing a batch and `readFormats()` find sheets by title,
-so they send the second once the first answers. A merges request Google refuses while naming a sheet
-a collaborator has deleted is sent again for the sheets left, if any. Google's list of those merges
-may be at most 5 MiB, about 70,000 merges; a batch acting on sheets holding more is refused with an
-error saying so, as is a read with such a change queued. Google allows 60 write requests a minute
-per user; a write over that quota stays pending.
+so they send the second once the first answers. Google refuses a merges request that names a sheet a
+collaborator has deleted (400, `INVALID_ARGUMENT`), so one that fails while a sheet it names is gone
+is sent again for the sheets left, if any. Google's list of those merges may be at most 5 MiB, about
+70,000 merges; a batch acting on sheets holding more is refused with an error saying so, as is a
+read with such a change queued. Google allows 60 write requests a minute per user; a write over that
+quota stays pending.
 
 ## Google Drive bindings
 
