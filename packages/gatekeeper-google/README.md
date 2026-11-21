@@ -747,11 +747,11 @@ and a text replacement queued after it do not fail with it, and a failed change 
 takes nothing with it. On a Doc's own connection a rejection is settled at
 once, by replaying what is still queued over the stored copy, so that it is never weighed together
 with another rejection or with a collaborator's edit; where none is stored, as after an approval
-whose reread of the document failed, the changes to existing tables of the rejected change's tab
-queued behind it fail instead. A Doc opened through Drive replays nothing at a rejection: the
-changes to existing tables queued behind a rejected change to a table's structure or to the text
-of its cells fail with it, as they do behind one that fails or is refused when it is approved,
-and the rest stay queued for the next read, which replays them (see
+whose reread of the document failed, it is settled as on a Doc opened through Drive. A Doc
+opened through Drive replays nothing at a rejection: the changes to existing tables queued
+behind a rejected change to a table's structure or to the text of its cells fail with it, as
+they do behind one that fails or is refused when it is approved, and the rest stay queued for the
+next read, which replays them (see
 [Editing Docs, Sheets and Slides](#editing-docs-sheets-and-slides)). That leaves two ways in which
 a collaborator can still
 send a change to another table between two reads: by moving the text that an earlier queued

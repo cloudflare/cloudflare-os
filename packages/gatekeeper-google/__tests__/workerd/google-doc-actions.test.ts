@@ -1785,8 +1785,11 @@ describe.each(RUNS)("Google Doc tables, $name", r => {
     docsWithBody(tableBody());
     let facet = "table-reject-unread";
     await hooks().applyStorage(facet, [
-      storedAction(1, { type: "replaceText", oldMarkdown: "Before", newMarkdown: "Earlier" }),
-      storedAction(2, storedRows),
+      storedAction(1, {
+        type: "replaceText", oldMarkdown: "<td><p>Open</p></td>",
+        newMarkdown: "<td><p>Done</p></td>", inTable: true,
+      }),
+      storedAction(2, { ...storedRows, expected: tableOf([["Task", "Status"], ["Fix login", "Done"]]) }),
       storedAction(3, { type: "insertTable", rows: 1, columns: 1, cells: [[""]] }),
       storedAction(4, { type: "replaceText", oldMarkdown: "After", newMarkdown: "Later" }),
     ]);
@@ -1801,6 +1804,27 @@ describe.each(RUNS)("Google Doc tables, $name", r => {
     expect(await hooks().applyAction(facet, 2)).toContain(gate("insertTableRows"));
     // Neither a new table nor a text edit names a table by how it read: neither carries a reason.
     expect(await lengths()).toEqual(before);
+  });
+
+  // The tables read as the later changes recorded them whether or not the rejected change is
+  // made, so the next replay checks those changes as it checks any.
+  it.skipIf(r.drive)("keeps later table changes queued when a rejection with no read to " +
+    "replay over changed no table", async () => {
+    let docs = docsWithBody(tableBody());
+    let facet = "table-reject-unread-text";
+    await hooks().applyStorage(facet, [
+      storedAction(1, { type: "replaceText", oldMarkdown: "Before", newMarkdown: "Earlier" }),
+      storedAction(2, storedRows),
+    ]);
+    let length = await hooks().storedValueJsonLength(facet, "pending:action:2");
+
+    await hooks().rejectAction(facet, 1);
+
+    expect(await hooks().storedValueJsonLength(facet, "pending:action:2")).toBe(length);
+    expect(await hooks().readContent(facet))
+      .toBe(`Before\n\n${tableOf([...TABLE_ROWS, ["a", "b"]])}\n\nAfter\n`);
+    expect(await hooks().applyAction(facet, 2)).toBeNull();
+    expect(docs.contentBatches).toBe(1);
   });
 
   it.skipIf(r.drive)("replays nothing when no later change names a table", async () => {
@@ -1858,7 +1882,7 @@ describe.each(RUNS)("Google Doc tables, $name", r => {
     let facet = "table-reject-unreadable";
     // The first edit leaves the table reading as the second records it: replayed without it,
     // the second finds its table in the stored summaries and decodes the piece around it.
-    let text = await edit(facet, "replaceText", "Before", "Earlier");
+    let added = await edit(facet, "insertTable", { rows: 1, columns: 1 });
     let rows = await edit(facet, "insertTableRows", { table: 0, cells: [["a", "b"]] });
     expect(await hooks().readContent(facet)).toContain("<td><p>a</p></td>");
     // The main tab's run, as the store holds it, is no list of a tab's elements.
@@ -1870,7 +1894,7 @@ describe.each(RUNS)("Google Doc tables, $name", r => {
       "UPDATE doc_run SET json = '\"not a tab\"' WHERE id IN (SELECT run FROM doc_seq WHERE version = ?)",
       version);
 
-    await hooks().rejectAction(facet, text.actionId);
+    await hooks().rejectAction(facet, added.actionId);
 
     expect(await hooks().applyAction(facet, rows.actionId)).toContain(gate("insertTableRows"));
     expect(docs.contentBatches).toBe(0);
@@ -1964,7 +1988,7 @@ describe.each(RUNS)("Google Doc tables, $name", r => {
     let docs = docsWithBody(tableBody());
     let facet = "reject-version-unreadable";
     await edit(facet, "replaceText", "Before", "Earlier");
-    let rejected = await edit(facet, "replaceText", "After", "Later");
+    let rejected = await edit(facet, "insertTable", { rows: 1, columns: 1 });
     let rows = await edit(facet, "insertTableRows", { table: 0, cells: [["a", "b"]] });
     await hooks().readContent(facet);
     await loseFirstEditsVersion(facet);
@@ -7277,14 +7301,14 @@ describe.each(RUNS)("an approved Google Doc edit built from the document its app
     await hooks().rejectAction(facet, first);
 
     // The rejection succeeds, and what its replay marked before it met the run is undone: the
-    // replacement behind stays pending. With no copy to replay over, the change behind the rejected
-    // edit that names a table is dropped as a rejection that could not replay drops it.
-    expect(await pending(facet)).toEqual([second]);
-    expect(await hooks().applyAction(facet, rows)).toContain(
-      `Pending Google Doc edits could not be replayed after edit ${first} was rejected`);
+    // replacement behind stays pending, and so does the table change behind that, since the
+    // rejected edit changed no table.
+    expect(await pending(facet)).toEqual([second, rows]);
     // The copy is dropped: the next read fetches the document, once, and replays the queue.
     let from = requestsMade();
-    expect(await hooks().readContent(facet, MAIN_TAB)).toContain("Zebra\n\nGnu\n");
+    let content = await hooks().readContent(facet, MAIN_TAB);
+    expect(content).toContain("Zebra\n\nGnu\n");
+    expect(content).toContain("<td><p>a</p></td>");
     expect(docsRequestsSince(from).filter(request => request === "read")).toHaveLength(1);
   });
 });

@@ -616,9 +616,11 @@ export class GoogleDocGatekeeperImpl
    * and never a newer one (rejecting has to work while Google is unreachable): once with the
    * rejected edit still queued, which settles whatever that copy holds that no replay has seen,
    * and once without it, which settles the rejection alone. With no copy to replay over, those
-   * edits are dropped instead, and a copy that cannot be read back is treated as none. A rejected
-   * add waits on none of this: the edits queued for its tab are refused by the next replay, which
-   * no longer finds the tab.
+   * edits are dropped instead where the rejected edit changed a table's structure or the text of
+   * its cells (`closesTableGate`), and otherwise left for the next replay to check, since the
+   * tables read as they recorded them either way; a copy that cannot be read back is treated as
+   * none. A rejected add waits on none of this: the edits queued for its tab are refused by the
+   * next replay, which no longer finds the tab.
    *
    * It is one storage transaction: the overseer marks the action rejected only once this
    * returns, so a failure has to leave the record where the overseer still has it.
@@ -666,7 +668,10 @@ export class GoogleDocGatekeeperImpl
       }
       if (!replayed) {
         pendingActions.remove(actionId);
-        if (waiting) invalidateTableChangesBehind(queue, rejectedTabId, actionId, context);
+        if (waiting) {
+          invalidateTableChangesBehind(
+            queue, closesTableGate(rejected) ? rejectedTabId : undefined, actionId, context);
+        }
       }
       // A copy held is kept for the next rejection to replay over, and is due a revision check
       // before a read uses it. Without one this does nothing.
