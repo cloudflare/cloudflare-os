@@ -534,6 +534,27 @@ describe("Sheets merge requests", () => {
     ]);
   });
 
+  it("records the merges an unmerge splits, and fails without them, as a batch built on a rejected one", () => {
+    let sheets = [sheet(0, "Sales", { merges: [rect(0, 0, 1, 2)] }), SHEETS[1]];
+    let first = queued(1, resolve([{ op: "mergeCells", range: "Sales!A1:C1" }], sheets));
+    let merged = replayed(grid(sheets), [first]);
+    let unmerge = resolveChanges(merged, prepareChanges([{ op: "unmergeCells", range: "Sales!A1:C1" }]), minter(101));
+    expect(unmerge).toEqual([{ op: "unmergeCells", sheetId: 0, rect: rect(0, 0, 1, 3), merges: [rect(0, 0, 1, 3)] }]);
+    expect(planSheet(merged, unmerge).grid.sheets[0].merges).toBeUndefined();
+    // With the merge rejected, the unmerge would split A1:B1 instead, which it was not queued to.
+    let reason = "change 1 (unmergeCells): A1:C1 holds the merged cells A1:B1, but held the merged cells A1:C1 " +
+      "when the unmerge was queued";
+    expect(() => planSheet(grid(sheets), unmerge)).toThrow(new ChangeConflict(reason));
+    expect(replayChanges(grid(sheets), [queued(2, unmerge)])).toMatchObject({ kind: "incomplete", reason });
+    // An unmerge queued over no merge fails once the range holds one.
+    let none = resolve([{ op: "unmergeCells", range: "Sales!A3:B3" }], sheets);
+    expect(none).toEqual([{ op: "unmergeCells", sheetId: 0, rect: rect(2, 0, 1, 2), merges: [] }]);
+    let later = [sheet(0, "Sales", { merges: [rect(2, 0, 1, 2)] }), SHEETS[1]];
+    expect(() => planSheet(grid(later), none)).toThrow(new ChangeConflict(
+      "change 1 (unmergeCells): A3:B3 holds the merged cells A3:B3, but held no merged cells when the unmerge " +
+      "was queued"));
+  });
+
   // As a scratch spreadsheet refused them, in Google's words: "You must select all cells in a merged
   // range to merge or unmerge them" and "You can't merge frozen and non-frozen rows".
   it("refuses merging or unmerging part of a merge, and merging frozen lines with others", () => {
@@ -752,7 +773,7 @@ describe("Sheets batches built on queued changes", () => {
       queued(11, [{ op: "resizeRows", sheetId: 0, start: 0, count: 2, size: 40 }]),
       queued(12, [{ op: "freeze", sheetId: 0, rows: 2 }]),
       queued(13, [{ op: "mergeCells", sheetId: 0, rect: rect(5, 0, 1, 2), merge: "ALL" }]),
-      queued(14, [{ op: "unmergeCells", sheetId: 0, rect: rect(5, 0, 1, 2) }]),
+      queued(14, [{ op: "unmergeCells", sheetId: 0, rect: rect(5, 0, 1, 2), merges: [rect(5, 0, 1, 2)] }]),
       queued(15, [{ op: "formatCells", sheetId: 0, rect: rect(0, 0), format: { bold: true } }]),
     ];
     let laidOut = replayed(grid(SHEETS), layout);

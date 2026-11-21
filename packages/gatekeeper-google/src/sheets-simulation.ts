@@ -100,14 +100,16 @@ export type Grid = {
 /**
  * A change as queued: the sheet it acts on by ID, its formulas as Google stores them, and the
  * first line it inserts before or deletes, zero-based. A deleted sheet's size is the approver's;
- * `appends` says inserted lines go after the last.
+ * `appends` says inserted lines go after the last. An unmerge's `merges` are the merges within its
+ * range as the changes queued before it leave the sheet, which it splits, and it applies only
+ * while the range holds exactly those.
  */
 export type PlannedChange =
   | { op: "writeCells"; sheetId: number; rect: Rect; values: SheetCellInput[][] }
   | { op: "clearRange"; sheetId: number; rect: Rect }
   | { op: "formatCells"; sheetId: number; rect: Rect; format: SheetFormatChange }
   | { op: "mergeCells"; sheetId: number; rect: Rect; merge: MergeType }
-  | { op: "unmergeCells"; sheetId: number; rect: Rect }
+  | { op: "unmergeCells"; sheetId: number; rect: Rect; merges: Rect[] }
   | { op: "addSheet"; sheetId: number; title: string; index: number; rowCount: number; columnCount: number }
   | { op: "renameSheet"; sheetId: number; title: string }
   | { op: "duplicateSheet"; sheetId: number; newSheetId: number; title: string; index: number }

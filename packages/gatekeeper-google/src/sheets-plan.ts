@@ -352,6 +352,25 @@ function ununmergeable(sheet: SimSheet, rect: Rect): string | undefined {
     "that holds all of them";
 }
 
+/** The merges of `sheet` that `rect` holds whole: those a merge of it replaces, or an unmerge splits. */
+function heldMerges(sheet: SimSheet, rect: Rect): Rect[] {
+  return (sheet.merges ?? []).filter(merge => contains(rect, merge));
+}
+
+/**
+ * Why `change` cannot unmerge in `sheet`, if it cannot: its range holds other merges than the
+ * ones it was queued to split, so a batch built on a merge or an unmerge that was not applied, or
+ * on merges a collaborator has changed since, does not split what its approver was not shown.
+ */
+function unsplittable(sheet: SimSheet, change: Extract<PlannedChange, { op: "unmergeCells" }>): string | undefined {
+  let names = (merges: readonly Rect[]) => merges.map(rectName).toSorted();
+  let held = names(heldMerges(sheet, change.rect));
+  let queued = names(change.merges);
+  if (held.length === queued.length && held.every((name, i) => name === queued[i])) return undefined;
+  let listed = (merges: string[]) => merges.length === 0 ? "no merged cells" : `the merged cells ${merges.join(", ")}`;
+  return `${rectName(change.rect)} holds ${listed(held)}, but held ${listed(queued)} when the unmerge was queued`;
+}
+
 /**
  * The first cell of `rect` that `values` gives a value and a merge of `sheet` covers, other than
  * its top-left, whose value the merge shows: Google drops what is written there.
@@ -643,7 +662,8 @@ function applyOne(work: Working, change: PlannedChange, by: number, conflict: (r
       let outside = outsideCell(sheet, rect);
       if (outside !== undefined) throw conflict(`${outside} is outside "${sheet.title}"`);
       let range = gridRange(change.sheetId, rect);
-      let reason = change.op === "mergeCells" ? unmergeable(sheet, rect, change.merge) : ununmergeable(sheet, rect);
+      let reason = change.op === "mergeCells"
+        ? unmergeable(sheet, rect, change.merge) : ununmergeable(sheet, rect) ?? unsplittable(sheet, change);
       if (reason !== undefined) throw conflict(reason);
       // Merges the range holds whole are replaced, or undone.
       let merges = (sheet.merges ?? []).filter(merge => !contains(rect, merge));
@@ -1020,7 +1040,7 @@ function resolveCells(
     if (reason !== undefined) throw new Error(`${label}: ${reason}.`);
     return change.op === "mergeCells"
       ? { op: change.op, sheetId: sheet.id, rect: change.rect, merge: change.merge }
-      : { op: change.op, sheetId: sheet.id, rect: change.rect };
+      : { op: change.op, sheetId: sheet.id, rect: change.rect, merges: heldMerges(sheet, change.rect) };
   }
   let dropped = coveredWrite(sheet, change.rect, change.values);
   if (dropped) throw new Error(`${label}: ${droppedWrite(dropped)}.`);
