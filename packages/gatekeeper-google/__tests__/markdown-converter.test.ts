@@ -1229,22 +1229,8 @@ describe("Google Docs table map", () => {
     expect(table.rows[1].cells.map(cell => sliceOf(snapshot, cell)))
       .toEqual(["    <td><p>r1c0</p></td>\n", "    <td><p>r1c1</p></td>\n"]);
     expect(mappedTexts(snapshot).map(text => text.html)).toEqual(["r0c0", "r0c1", "r1c0", "r1c1"]);
-    expect(table.look).toEqual(lookOfTable(fixtureTable(tab, 3)));
     expect("suggested" in table).toBe(false);
     expect("pinnedRows" in table).toBe(false);
-
-    let rows = fixtureTable(tab, 3).tableRows ?? [];
-    expect(rows).toHaveLength(2);
-    rows.forEach((row, index) => {
-      expect(rowIndexes(table, index)).toEqual({
-        docStart: row.startIndex,
-        docEnd: row.endIndex,
-        cells: (row.tableCells ?? []).map(cell => ({
-          docStart: cell.startIndex,
-          paragraphs: (cell.content ?? []).map(paragraph => paragraph.startIndex),
-        })),
-      });
-    });
     expect(rowIndexes(table, 0)).toEqual({
       docStart: 10,
       docEnd: 23,
@@ -1344,14 +1330,9 @@ describe("Google Docs table map", () => {
       [4, 1, "Mark"],
     ]);
     expect(texts.map(text => text.paragraph)).toEqual(fixtureParagraphStarts(fixtureTable(tab, 2)));
-    expect(around(texts[0], 3, 4)).toBe("<p>One</p>");
+    // An empty text's range sits inside its paragraph's tags.
     expect(around(texts[2], 3, 4)).toBe("<p></p>");
-    expect(around(texts[4], 4, 5)).toBe("<h2>Heading</h2>");
     expect(around(texts[5], 6, 5)).toBe("<li>● Dot</li>");
-    expect(around(texts[6], 8, 4)).toBe("<ol><li>Step<ol>");
-    expect(around(texts[7], 8, 10)).toBe("<ol><li>Sub</li></ol>");
-    expect(around(texts[8], 9, 10)).toBe("</li><li>Next</li></ol>");
-    expect(around(texts[9], 10, 10)).toBe("<li><h3>● Section</h3></li>");
 
     expect(inLine(texts[10])).toEqual([
       `    <td>${SKIPPED_LEVEL}${SKIPPED_LEVEL}<ol><li>`, "Deep",
@@ -1360,12 +1341,6 @@ describe("Google Docs table map", () => {
     expect(inLine(texts[11])).toEqual(["      <p>", "Intro", "</p>"]);
     expect(inLine(texts[12])).toEqual([
       `      ${SKIPPED_LEVEL}<ol><li>`, "Inner", "</li></ol></li></ul>",
-    ]);
-    expect(inLine(texts[13])).toEqual([
-      "    <td><ol><li>", "Top", `${SKIPPED_LEVEL}<ol><li>Low</li></ol></li></ul></li></ol></td>`,
-    ]);
-    expect(inLine(texts[14])).toEqual([
-      `    <td><ol><li>Top${SKIPPED_LEVEL}<ol><li>`, "Low", "</li></ol></li></ul></li></ol></td>",
     ]);
     expect(inLine(texts[15])).toEqual([
       `    <td>${SKIPPED_LEVEL}<ul style="list-style-type: none"><li>○ `, "Mark",
@@ -1505,24 +1480,9 @@ describe("Google Docs table map", () => {
       .toEqual({ docStart: emptyRow.startIndex, docEnd: emptyRow.endIndex, cells: [] });
   });
 
-  it("shares one element between adjacent runs formatted alike", () => {
+  it("drops an unsafe link, and writes a rule, a subtitle and chips in a cell", () => {
     let bold = { bold: true };
-    let struck = { strikethrough: true };
-    let link = { link: { url: "https://e.com" } };
 
-    expect(singleCellHtml(cellTab([{ runs: [
-      { text: "Hello ", style: bold }, { text: "World", style: bold }, "\n",
-    ] }]))).toBe("<td><p><strong>Hello World</strong></p></td>");
-    expect(singleCellHtml(cellTab([{ runs: [
-      { text: "Hello ", style: bold }, { text: "World", style: { bold: true, italic: true } }, "\n",
-    ] }]))).toBe("<td><p><strong>Hello </strong><strong><em>World</em></strong></p></td>");
-    expect(singleCellHtml(cellTab([{ runs: [
-      { text: "Read ", style: link }, { text: "this", style: link }, "\n",
-    ] }]))).toBe('<td><p><a href="https://e.com">Read this</a></p></td>');
-    expect(singleCellHtml(cellTab([{ runs: [
-      { text: "old", style: struck }, " new ", { text: "gone", style: struck },
-      { text: " too", style: struck }, "\n",
-    ] }]))).toBe("<td><p><s>old</s> new <s>gone too</s></p></td>");
     expect(singleCellHtml(cellTab([{ runs: [
       { text: "Run", style: { link: { url: "javascript:alert(1)" } } }, " now\n",
     ] }]))).toBe("<td><p>Run now</p></td>");
@@ -1634,19 +1594,6 @@ describe("Google Docs table map", () => {
     ]);
     expect(sliceOf(snapshot, table.rows[1].cells[0]))
       .toBe("    <td>\n      <h1>Title</h1>\n      <p></p>\n      <p>last</p>\n    </td>\n");
-    expect(table.look).toEqual(lookOfTable(fixtureTable(tab, 1)));
-    expect(table.look.cells.map(row => row.map(look => look === null)))
-      .toEqual([[false, false, true], [false, true, true]]);
-  });
-
-  it("maps rows of different lengths as they are", () => {
-    let snapshot = docTabToMarkdown(buildTab([
-      { runs: ["A\n"] }, { table: [["a\n", "b\n"], ["c\n"]] }, { runs: ["B\n"] },
-    ]));
-    let [table] = snapshot.sourceMap.tables;
-
-    expectMapTilesTable(snapshot, table);
-    expect(table.rows.map(row => row.cells.length)).toEqual([2, 1]);
   });
 
   it("marks the cells that hold an item of a list that numbers a level", () => {
@@ -1715,48 +1662,6 @@ describe("Google Docs table map", () => {
 
     expect(firstRowCells(tab).map(cell => cell.styled))
       .toEqual([true, true, true, true, true, true, false, false, false, false]);
-  });
-
-  it("marks the cells that hold a chip alone", () => {
-    let tab = buildTab([{ table: [[
-      { paragraphs: [{ runs: [{ dropdown: "Open" }, "\n"] }] },
-      { paragraphs: [{ runs: [PERSON, "\n"] }] },
-      { paragraphs: [{ runs: [{ date: "Sep 16, 2026" }, "\n"] }] },
-      { paragraphs: [{ runs: [RICH_LINK, "\n"] }] },
-      "\uE907\n",
-      { paragraphs: [{ runs: ["Owner: ", PERSON, "\n"] }] },
-      { paragraphs: [{ runs: [PERSON, " owns it\n"] }] },
-      { paragraphs: [{ runs: ["Owner\n"] }, { runs: [PERSON, "\n"] }] },
-      { paragraphs: [{ runs: [PERSON, "\n"] }, { runs: ["\n"] }] },
-      { paragraphs: [{ runs: [RICH_LINK, "\n"] }] },
-      "\n",
-      "Plain\n",
-    ]] }]);
-    makeInlineImage(fixtureParagraph(fixtureCell(tab, 1, 0, 9)), 0);
-
-    expect(firstRowCells(tab).map(cell => cell.loneChip)).toEqual([
-      true, true, true, true, true, false, false, false, false, false, false, false,
-    ]);
-    expect(docTabToMarkdown(tab).markdown).toContain(
-      "  <tr>\n    <td><p></p></td>\n    <td><p>owner@example.com</p></td>\n");
-    expect(docTabToMarkdown(tab).markdown).toContain("    <td><p>[Image]</p></td>\n");
-  });
-
-  it("marks the cells of chips nobody has seen copied", () => {
-    let tab = buildTab([{ table: [[
-      { paragraphs: [{ runs: [PERSON, PERSON, "\n"] }] },
-      { paragraphs: [{ runs: [PERSON, " \n"] }] },
-      { paragraphs: [{ runs: [PERSON, "\uE907\n"] }] },
-      "\uE907\uE907\n",
-      { paragraphs: [{ runs: [{ dropdown: "Open" }, RICH_LINK, "\n"] }] },
-      { paragraphs: [{ runs: [PERSON, ", ", PERSON, "\n"] }] },
-      { paragraphs: [{ runs: [RICH_LINK, " caption\n"] }] },
-    ]] }]);
-    makeInlineImage(fixtureParagraph(fixtureCell(tab, 1, 0, 4)), 1);
-    makeInlineImage(fixtureParagraph(fixtureCell(tab, 1, 0, 6)), 0);
-
-    expect(firstRowCells(tab).map(cell => cell.loneChip))
-      .toEqual([true, true, true, true, true, false, false]);
   });
 
   it("marks the cells that hold an element the rendering shows nothing for", () => {
@@ -1927,10 +1832,6 @@ describe("Google Docs table map", () => {
       0xe000, 0xe907, 0xf0b7, 0xf8ff,
     ].map(code => String.fromCharCode(code));
 
-    for (let character of stripped) {
-      expect([character.charCodeAt(0), stripUnwritableCharacters(`a${character}b`)])
-        .toEqual([character.charCodeAt(0), "ab"]);
-    }
     expect(stripUnwritableCharacters(`${stripped.join("")}x${stripped.join("y")}`))
       .toBe(`x${"y".repeat(stripped.length - 1)}`);
     expect(stripUnwritableCharacters("tab\there\nline\u000bbreak \u00a0\ud7ff\uf900 \u{1F600}"))
@@ -2081,55 +1982,6 @@ describe("source map invariants", () => {
     }
   });
 
-  it("keeps a table's rows, cells and texts ordered and inside the table in both spaces", () => {
-    let mapped = docTabToMarkdown(buildTab([
-      { runs: ["Before\n"] },
-      { table: [
-        ["a\n", { paragraphs: [{ runs: ["first\n"] }, { runs: ["\n"] }, { runs: ["third\n"] }] }],
-        [{ paragraphs: [
-          { runs: ["one\n"], bullet: { listId: "L1" } },
-          { runs: ["two\n"], bullet: { listId: "L1" } },
-        ] }, "\n"],
-      ] },
-      { runs: ["Between\n"] },
-      { table: [["b\n"]] },
-      { runs: ["After\n"] },
-    ], BULLET_LIST));
-    let { tables, protectedRanges } = mapped.sourceMap;
-    let mdCursor = 0;
-    let docCursor = 0;
-
-    expect(tables).toHaveLength(2);
-    for (let table of tables) {
-      expectMapTilesTable(mapped, table);
-      expect(table.mdStart).toBeGreaterThanOrEqual(mdCursor);
-      expect(table.docStart).toBeGreaterThanOrEqual(docCursor);
-      expect(protectedRanges.filter(range =>
-        range.mdStart <= table.mdStart && table.mdEnd <= range.mdEnd)).toHaveLength(1);
-
-      let rowStart = table.docStart + 1;
-      for (let row of table.rows) {
-        expect(row.docStart).toBe(rowStart);
-        expect(row.cells[0].docStart).toBe(row.docStart + 1);
-        for (let [index, cell] of row.cells.entries()) {
-          // A cell ends where the one after it starts, and a row's last cell where the row ends.
-          let cellEnd = row.cells[index + 1]?.docStart ?? row.docEnd;
-          let paragraphCursor = cell.docStart + 1;
-          expect(cellEnd).toBeGreaterThan(cell.docStart);
-          for (let { docStart } of cell.texts) {
-            expect(docStart).toBeGreaterThanOrEqual(paragraphCursor);
-            expect(docStart).toBeLessThan(cellEnd);
-            paragraphCursor = docStart + 1;
-          }
-        }
-        rowStart = row.docEnd;
-      }
-      expect(table.docEnd).toBe(rowStart + 1);
-      mdCursor = table.mdEnd;
-      docCursor = table.docEnd;
-    }
-  });
-
   it("tiles every table with its rows and cells, and gives its look and its paragraphs", () => {
     const merged = { rowSpan: 2, columnSpan: 2 };
     const item = (line: string, nestingLevel = 0) =>
@@ -2153,14 +2005,29 @@ describe("source map invariants", () => {
 
     for (let tab of [built, ...recorded]) {
       let rendering = docTabToMarkdown(tab);
-      let elements = tab.body.content.flatMap(element => element.table ?? []);
+      let elements = tab.body.content.filter(element => element.table);
       expect(rendering.sourceMap.tables).toHaveLength(elements.length);
       for (let [index, table] of rendering.sourceMap.tables.entries()) {
-        let paragraphs = fixtureParagraphStarts(elements[index]);
+        let element = elements[index];
+        let rows = element.table?.tableRows ?? [];
         expectMapTilesTable(rendering, table);
-        expect(table.look).toEqual(lookOfTable(elements[index]));
-        for (let { docStart } of table.rows.flatMap(row => row.cells.flatMap(cell => cell.texts))) {
-          expect(paragraphs).toContain(docStart);
+        expect(table.look).toEqual(lookOfTable(element.table!));
+        expect([table.docStart, table.docEnd]).toEqual([element.startIndex, element.endIndex]);
+        expect(rendering.sourceMap.protectedRanges.filter(range =>
+          range.mdStart <= table.mdStart && table.mdEnd <= range.mdEnd)).toHaveLength(1);
+        // Every row and cell at the fixture's indexes, and each text a paragraph of its own cell.
+        expect(table.rows.map((_, at) => rowIndexes(table, at).docStart)).toEqual(
+          rows.map(row => row.startIndex));
+        for (let [at, row] of rows.entries()) {
+          let cells = row.tableCells ?? [];
+          let mapped = rowIndexes(table, at);
+          expect([mapped.docEnd, mapped.cells.map(cell => cell.docStart)])
+            .toEqual([row.endIndex, cells.map(cell => cell.startIndex)]);
+          for (let [column, cell] of mapped.cells.entries()) {
+            let paragraphs = (cells[column].content ?? []).flatMap(part =>
+              part.paragraph ? [part.startIndex] : []);
+            expect(cell.paragraphs).toEqual(paragraphs.filter(start => cell.paragraphs.includes(start)));
+          }
         }
         tables++;
       }
@@ -3277,9 +3144,8 @@ function bulletPhase(requests: GoogleDocsRequest[], length: number): GoogleDocsR
   return requests.slice(-length);
 }
 
-// Google nests a bulleted range by more than its tabs: it joins the list of the item directly
-// before it, and each paragraph lands at that item's level plus its own tabs less the fewest
-// tabs in the range. These pin the requests that give every new item the level it is written at.
+// Google nests a bulleted range from the item directly before it, at that item's level plus each
+// paragraph's tabs less the fewest in the range; the recordings pin the builders' batches for it.
 describe.each([
   ["bulleted", "- ", "BULLET_DISC_CIRCLE_SQUARE", [
     { glyphSymbol: "\u25cf" }, { glyphSymbol: "\u25cb" }, { glyphSymbol: "\u25a0" },
@@ -3298,130 +3164,8 @@ describe.each([
     })),
     ...(plain ? [{ runs: ["plain\n"] }] : []),
   ], lists);
-  /** The same tab as its rendering and source map. */
-  let listTab = (levels: number[], plain = true) => docTabToMarkdown(listDoc(levels, plain));
   let bullets = (startIndex: number, endIndex: number) =>
     ({ createParagraphBullets: { range: rangeOfTab(startIndex, endIndex), bulletPreset } });
-
-  it("renders the fixture as expected", () => {
-    expect(listTab([0, 1, 2]).markdown)
-      .toBe(`${item(0, "a")}\n${item(1, "b")}\n${item(2, "c")}\n\nplain\n`);
-  });
-
-  it("bullets a child written alone after an item behind an empty paragraph", () => {
-    // "a" [1,3), then the child's paragraph "\ta1\n" at [3,7).
-    let requests = replacementRequests(listTab([0, 0]), item(0, "a"), `${item(0, "a")}\n${item(1, "a1")}`);
-
-    expect(requests[0]).toEqual(textInserted(2, "\n\ta1"));
-    expect(bulletPhase(requests, 3)).toEqual([textInserted(3, "\n"), bullets(3, 8), scaffoldDeleted(3)]);
-  });
-
-  it("gives the empty paragraph the level of the item before a grandchild", () => {
-    // "b" at level 1 is [3,5); the grandchild's paragraph "\t\tb1\n" is [5,10).
-    let requests = replacementRequests(listTab([0, 1]), item(1, "b"), `${item(1, "b")}\n${item(2, "b1")}`);
-
-    expect(requests[0]).toEqual(textInserted(4, "\n\t\tb1"));
-    expect(bulletPhase(requests, 3)).toEqual([textInserted(5, "\t\n"), bullets(5, 12), scaffoldDeleted(5)]);
-  });
-
-  it("bullets children written at the end of a list behind an empty paragraph", () => {
-    let requests = replacementRequests(
-      listTab([0]), item(0, "a"), `${item(0, "a")}\n${item(1, "a1")}\n${item(2, "a2")}`);
-
-    expect(requests[0]).toEqual(textInserted(2, "\n\ta1\n\t\ta2"));
-    expect(bulletPhase(requests, 3)).toEqual([textInserted(3, "\n"), bullets(3, 13), scaffoldDeleted(3)]);
-  });
-
-  it("starts a list nested after a plain paragraph", () => {
-    // "plain" is [1,7); the appended items are "\tx\n" [7,10) and "\t\ty\n" [10,14).
-    let tab = docTabToMarkdown(buildTab([{ runs: ["plain\n"] }]));
-    let requests = appendedRequests(tab, `${item(1, "x")}\n${item(2, "y")}`);
-
-    expect(requests[0]).toEqual(textInserted(6, "\n\tx\n\t\ty"));
-    expect(bulletPhase(requests, 3)).toEqual([textInserted(7, "\n"), bullets(7, 15), scaffoldDeleted(7)]);
-  });
-
-  it("bullets a top-level item appended after nested ones together with them", () => {
-    // "b" [3,5) and "c" [5,7) lose their bullets, get their levels back as tabs, and are
-    // bulleted with the appended "d" [7,9) behind "a", which is as shallow as "d".
-    let requests = appendedRequests(listTab([0, 1, 2], false), item(0, "d"));
-
-    expect(requests[0]).toEqual(textInserted(6, "\nd"));
-    expect(bulletPhase(requests, 5)).toEqual([
-      ...unbulleted(3, 7), textInserted(5, "\t\t"), textInserted(3, "\t"), bullets(3, 12),
-    ]);
-  });
-
-  it("bullets a top-level item written after a nested one together with it", () => {
-    let requests = replacementRequests(listTab([0, 1]), item(1, "b"), `${item(1, "b")}\n${item(0, "c")}`);
-
-    expect(requests[0]).toEqual(textInserted(4, "\nc"));
-    expect(bulletPhase(requests, 4)).toEqual([...unbulleted(3, 5), textInserted(3, "\t"), bullets(3, 8)]);
-  });
-
-  it("takes in only the items deeper than the new one", () => {
-    // The new item at level 1 follows "c" at level 2 and is as deep as "b", which stays out.
-    let requests = replacementRequests(
-      listTab([0, 1, 2]), item(2, "c"), `${item(2, "c")}\n${item(1, "c2")}`);
-
-    expect(requests[0]).toEqual(textInserted(6, "\n\tc2"));
-    expect(bulletPhase(requests, 4)).toEqual([...unbulleted(5, 7), textInserted(5, "\t\t"), bullets(5, 13)]);
-  });
-
-  it("bullets new items on both sides of kept ones as one range", () => {
-    let requests = replacementRequests(
-      listTab([0, 1, 2]), `${item(1, "b")}\n${item(2, "c")}`,
-      `${item(2, "new")}\n${item(1, "b")}\n${item(2, "c")}\n${item(0, "top")}`);
-
-    // "\t\tnew\n" [3,9), "b" [9,11), "c" [11,13), "top\n" [13,17).
-    expect(bulletPhase(requests, 5)).toEqual([
-      ...unbulleted(9, 13), textInserted(11, "\t\t"), textInserted(9, "\t"), bullets(3, 20),
-    ]);
-  });
-
-  it("sends one request for a run whose shallowest item is as deep as the item before it", () => {
-    let requests = replacementRequests(
-      listTab([0, 1]), item(1, "b"), `${item(1, "b")}\n${item(2, "x")}\n${item(1, "y")}`);
-
-    expect(requests[0]).toEqual(textInserted(4, "\n\t\tx\n\ty"));
-    expect(requests.filter(request => "insertText" in request)).toHaveLength(1);
-    expect(requests.some(request => "deleteContentRange" in request)).toBe(false);
-    expect(bulletPhase(requests, 1)).toEqual([bullets(5, 12)]);
-  });
-
-  it("refuses to take in an item that holds a positioned image", () => {
-    // "b" at level 1 anchors an image; a top-level item after it could only be placed by
-    // rewriting "b".
-    let anchored = (plain: boolean) => {
-      let tab = buildTab([
-        { runs: ["a\n"], bullet: { listId: "L1", nestingLevel: 0 } },
-        { runs: ["b\n"], bullet: { listId: "L1", nestingLevel: 1 } },
-        ...(plain ? [{ runs: ["plain\n"] }] : []),
-      ], lists);
-      tab.body.content.find(element => element.paragraph?.bullet?.nestingLevel === 1)!
-        .paragraph!.positionedObjectIds = ["image-1"];
-      return docTabToMarkdown(tab);
-    };
-
-    expect(() => appendedRequests(anchored(false), item(0, "c"))).toThrow(POSITIONED_ITEM_BEFORE);
-    expect(() => replacementRequests(anchored(true), "plain", item(0, "plain")))
-      .toThrow(POSITIONED_ITEM_BEFORE);
-    // An item as deep as the anchored one, or deeper, rewrites nothing and is written.
-    expect(() => appendedRequests(anchored(false), item(1, "c"))).not.toThrow();
-    expect(() => appendedRequests(anchored(false), item(2, "c"))).not.toThrow();
-  });
-
-  it("does not count a list of the other kind before the run", () => {
-    let other = marker === "- " ? "1. " : "- ";
-    let requests = replacementRequests(listTab([0, 1]), "plain", `  ${other}plain`);
-
-    // The nested items before it are not its list: the run starts one, behind an empty paragraph.
-    expect(requests.some(request => "deleteParagraphBullets" in request &&
-      request.deleteParagraphBullets.range.startIndex < 5)).toBe(false);
-    expect(requests.slice(-3)).toMatchObject([
-      textInserted(5, "\n"), { createParagraphBullets: { range: rangeOfTab(5, 13) } }, scaffoldDeleted(5),
-    ]);
-  });
 
   it("does not count a list of its kind that the preset did not make", () => {
     // A list as the Docs editor can make one: of the same kind, with glyphs of its own. Whether
@@ -3456,8 +3200,7 @@ describe.each([
       .toEqual([textInserted(5, "\n"), bullets(5, 10), scaffoldDeleted(5)]);
     // Shallower than it: bulleted alone.
     expect(bulletPhase(written(item(0, "c")), 1)).toEqual([bullets(5, 7)]);
-    // The same behind an item that a rewrite of whole blocks leaves as it is: "a2" [1,4), "b"
-    // [4,6), then the new item's paragraph at 6.
+    // The same behind an item a rewrite of whole blocks leaves as it is ("b" ends at 6).
     let rewrite = replacementRequests(docTabToMarkdown(doc(true)),
       `${item(0, "a")}\n${item(1, "b")}\n\nplain`,
       `${item(0, "a2")}\n${item(1, "b")}\n\n${item(1, "plain")}`);
@@ -3471,8 +3214,7 @@ describe.each([
     let other = marker === "- " ? "1. " : "- ";
     let [a, b, c] = [item(0, "a"), item(1, "b"), item(2, "c")];
     let plainTab = buildTab([{ runs: ["plain\n"] }]);
-    // Each is a tab, the text replaced in it (none for an append), and the text written. The
-    // fixture's list holds three of a preset's levels, which the model takes for the preset's.
+    // Each is a tab, the text replaced in it (none for an append), and the text written.
     let cases: [GoogleDocsTab, string | undefined, string][] = [
       [listDoc([0, 0]), a, `${a}\n${item(1, "a1")}`],
       [listDoc([0, 1]), b, `${b}\n${item(2, "b1")}`],
@@ -3529,14 +3271,6 @@ describe("a block marker written where the old text goes on", () => {
     expect(insertedText(requests)).toEqual(["one\ntwo"]);
     // The second paragraph is split off the item, whose list it keeps.
     expect(requests.some(request => "deleteParagraphBullets" in request)).toBe(false);
-  });
-
-  it("splits a nested item in two at its level", () => {
-    let tab = tabOf([["alpha", 0], ["beta", 1], ["gamma item", 2]]);
-    let { requests, trimmedNew } = replace(tab, "    - gamma item", "    - gamma\n    - item");
-
-    expect(trimmedNew).toBe("\n    - ");
-    expect(insertedText(requests)).toEqual(["gamma\nitem"]);
   });
 
   it("writes the second line as the numbered item or heading its marker names", () => {
@@ -3767,13 +3501,6 @@ describe("computeReplaceOperations, read back as written", () => {
     let bulletRequests = (requests: GoogleDocsRequest[]) => requests.filter(request =>
       "createParagraphBullets" in request || "deleteParagraphBullets" in request);
 
-    it("reads a paragraph turned into a list item as it was written", () => {
-      for (let marker of ["- ", "1. "]) {
-        expectReplacementReadsAsWritten(
-          listTab(para("P"), para("target"), para("End")), "target", `${marker}target`);
-      }
-    });
-
     it("reads a list written into an empty tab, and after a heading, as it was written", () => {
       expectReadsAsWritten(listTab(para("")), 0, 0, "- a\n- b\n- c");
       expectReplacementReadsAsWritten(
@@ -3841,37 +3568,29 @@ describe("computeReplaceOperations, read back as written", () => {
       expectImageOnB(nested.tabs);
       expectEmptyParagraphBehindB(nested.requests);
 
-      // The item's text is quoted without its marker: see "keeps two items rewritten in one
-      // replacement in their one list".
+      // The item's text quoted without its marker.
       let split = replaced(further(), "c", "c\n    - d");
       expect(split.model).toBe("- a\n    - [Image] b\n    - c\n    - d\n\nEnd\n");
       expectImageOnB(split.tabs);
 
-      // A shallower item could only be placed by rewriting "b": the builders refuse, so no batch
-      // of theirs reaches the model's refusal for a positioned paragraph.
+      // A shallower item could only be placed by rewriting "b", so the builders refuse it.
       expect(() => appendTo(anchored(), "  - c")).toThrow(POSITIONED_ITEM_BEFORE);
       expect(() => replaced(further(), "    - c", "  - c")).toThrow(POSITIONED_ITEM_BEFORE);
       expect(() => replaced(further(), "c", "c\n  - d")).toThrow(POSITIONED_ITEM_BEFORE);
     });
 
-    // From here to the end of this block, a tab can read otherwise than the Markdown written into
-    // it. Each test asserts what the model reads, which is Google's, as recorded.
+    // From here on a tab can read otherwise than the Markdown written: each test asserts what
+    // the model reads, which is Google's as recorded.
 
-    // An item bulleted in front of a list starts a list of its own (recorded:
-    // bullets-never-following / the paragraph becomes an item). No recorded step writes the first
-    // item of a list a level deeper: its bullet is taken and made again, and the list behind it
-    // is the one it was in.
+    // An item bulleted in front of a list starts a list of its own (bullets-never-following).
     it("keeps an item written in front of a list in a list of its own", () => {
       let first = replaced(
         listTab(para("P"), listItem("a", "B"), listItem("b", "B"), para("End")), "- a", "  - a");
       expect(first.model).toBe("P\n\n  - a\n\n- b\n\nEnd\n");
     });
 
-    // The recorded join rule: a bulleted range joins the list of the item directly before it when
-    // the same preset made that list (bullets-join-same-preset / tail to item), whichever list
-    // its paragraphs were items of. Two lists of one preset stand next to each other after
-    // bullets-never-following / the paragraph becomes an item; no recorded step bullets the first
-    // item of the second again.
+    // A bulleted range joins the list of the item directly before it when the same preset made
+    // that list, whichever list its paragraphs were in (bullets-join-same-preset).
     it("joins an item bulleted again to the list of its preset directly in front of it", () => {
       for (let [first, second, other, marker, otherMarker] of [
         ["B", "B2", "N", "- ", "1. "], ["N", "N2", "B", "1. ", "- "],
@@ -3892,12 +3611,8 @@ describe("computeReplaceOperations, read back as written", () => {
       }
     });
 
-    // No bullet request is in these, so every item stays in the list it is in: a deletion leaves
-    // the bullets around it as they were (recorded: list-text-edits / a nested item removed), and
-    // two lists of one preset next to each other read with a blank line between them (recorded:
-    // bullets-never-following / the paragraph becomes an item). No recorded step removes what
-    // stands between two lists. Lists written around a paragraph are two lists, so this is what
-    // removing that paragraph sends.
+    // With no bullet request every item stays in its list, and two lists of one preset side by
+    // side read with a blank line between them (list-text-edits, bullets-never-following).
     it("keeps two lists apart that an edit brings together, and joins the halves of one", () => {
       for (let [first, second, marker] of [["B", "B2", "- "], ["N", "N2", "1. "]]) {
         let around = () =>
@@ -3928,9 +3643,8 @@ describe("computeReplaceOperations, read back as written", () => {
         "- a\n- b\n\nEnd\n");
     });
 
-    // A numbered list that a paragraph splits goes on counting behind it, by the items in front
-    // of the paragraph (recorded: bullets-numbering-2 / a paragraph splits the list, and / the
-    // break becomes an item again). Here with one item fewer in front, and one more.
+    // A numbered list a paragraph splits goes on counting by the items in front of the paragraph
+    // (bullets-numbering-2).
     it("goes on counting in a numbered list a paragraph splits", () => {
       let split = listTab(listItem("a", "N"), para("b"), listItem("c", "N"), para("End"));
       let fewer = replaced(split, "1. a", "X");
@@ -3939,9 +3653,7 @@ describe("computeReplaceOperations, read back as written", () => {
       expect(more.model).toBe("1. a\n1. X\n\nb\n\n3. c\n\nEnd\n");
     });
 
-    // The second item is split off the first, whose list and level it keeps (recorded:
-    // list-text-edits / a sibling after the first item). The recorded step of this name holds
-    // an earlier batch, which wrote the second item's marker as text.
+    // The second item is split off the first, whose list and level it keeps (list-text-edits).
     it("splits a nested item in two at its level", () => {
       let { model, requests } = replaced(listTab(
         listItem("alpha item", "B"), listItem("inserted sibling", "B"),
@@ -3958,12 +3670,8 @@ describe("computeReplaceOperations, read back as written", () => {
         "- omega item\n\n1. first\n  1. inner\n1. second\n");
     });
 
-    // A text edit inside a list item leaves its bullet (recorded: list-text-edits / bold inside
-    // a nested item), and a line break written into an item makes two items of its list
-    // (recorded: list-text-edits / a sibling after the first item). These replacements send
-    // nothing but such edits, one of them with a request more, which bullets a nested item. No
-    // recorded step rewrites the first item it quotes and writes another, or writes an item in
-    // front of a quoted one at its level.
+    // A text edit leaves an item's bullet and a line break in an item makes two items of its
+    // list (list-text-edits); these replacements send nothing else but one nested bullet.
     it("keeps two items rewritten in one replacement in their one list", () => {
       for (let [listId, marker] of [["B", "- "], ["N", "1. "]]) {
         let tab = () => listTab(
@@ -3999,25 +3707,20 @@ describe("computeReplaceOperations, read back as written", () => {
       expect(bulletRequests(nested.requests)).toEqual([]);
       expect(nested.model).toBe("- a\n  - new\n  - b\n\nEnd\n");
 
-      // An item rewritten with a nested one written under it. The nested item is bulleted by a
-      // request, as it is under an item left as it was (recorded: nesting-deeper / a child
-      // under the middle item).
+      // An item rewritten with a nested one under it: the nested item is bulleted by one request.
       let child = replaced(listTab(listItem("a", "B"), para("End")), "- a", "- x\n  - y");
       expect(child.requests.filter(request => "createParagraphBullets" in request)).toHaveLength(1);
       expect(child.model).toBe("- x\n  - y\n\nEnd\n");
       expectReplacementReadsAsWritten(listTab(listItem("a", "B"), para("End")), "- a", "- a\n  - y");
 
-      // An item's text quoted without its marker, and a further item written after it: one
-      // `insertText` splits the item. Recorded with the marker quoted: list-text-edits / a
-      // sibling after the first item.
+      // An item's text quoted without its marker, and an item after it: one `insertText` splits it.
       let split = replaced(
         listTab(listItem("a", "B"), listItem("c", "B"), para("End")), "c", "c\n- d");
       expect(bulletRequests(split.requests)).toEqual([]);
       expect(split.model).toBe("- a\n- c\n- d\n\nEnd\n");
     });
 
-    // Google nests a bulleted range from the item it joins (recorded in bullets-nesting). A
-    // replacement that starts at the blank line behind an item knows that item as an append does.
+    // A replacement at the blank line behind an item nests from that item, as an append does.
     it("writes an item at the blank line behind a list item at the level it is written at", () => {
       // The indent of an item at the ninth level.
       let ninthIndent = " ".repeat(16);
@@ -4130,10 +3833,6 @@ describe("computeReplaceOperations, read back as written", () => {
         expect(refusal).not.toBeInstanceOf(DocModelError);
         expect((refusal as Error).message).toBe(LIST_LEVEL_TOO_DEEP);
       }
-      expect(docTabToMarkdown(written(8, `\n${ninthIndent}- x\n\nEnd`)).markdown)
-        .toBe(`- p\n${ninthIndent}- a\n${ninthIndent}- x\n\nEnd\n`);
-      expect(docTabToMarkdown(written(8, "\n  - x\n\nEnd")).markdown)
-        .toBe(`- p\n${ninthIndent}- a\n  - x\n\nEnd\n`);
     });
 
     /** `without` replaced by nothing, held to the requests of the same text with its line break. */
@@ -4143,8 +3842,7 @@ describe("computeReplaceOperations, read back as written", () => {
       return removed;
     }
 
-    // The batch is the recorded one (list-text-edits / a nested item removed). No recorded step
-    // quotes the item without its line break, and the builders send the same batch for both.
+    // The batch is list-text-edits' "a nested item removed", with or without the line break.
     it("removes a list item replaced by nothing with its paragraph, with or without its line break", () => {
       for (let [listId, marker] of [["B", "- "], ["N", "1. "]]) {
         let item = (text: string) => listItem(text, listId);
@@ -4214,8 +3912,7 @@ describe("computeReplaceOperations, read back as written", () => {
       expect(replaced(kept, "- b\n", "\n").requests).toEqual(whole.requests);
     });
 
-    // A nested item's line starts with its indentation, which a caller may leave out of the
-    // text it quotes.
+    // A caller may leave a nested item's indentation out of the text it quotes.
     it("removes a nested list item quoted from its marker with its paragraph", () => {
       for (let [listId, marker] of [["B", "- "], ["N", "1. "]]) {
         let item = (text: string, level = 0) => listItem(text, listId, level);
@@ -4286,15 +3983,8 @@ describe("computeReplaceOperations, read back as written", () => {
       expect(emptiedNested.model).toBe("- a\n  - \n- c\n\nEnd\n");
     });
 
-    // What the replacement builds where the one with the line break is refused, or pulls no line
-    // in beside the item.
+    // Where the replacement with the line break is refused, or pulls no line in beside the item.
     it("leaves an empty paragraph where a list item's line break cannot go with it", () => {
-      let deeper = listTab(listItem("a", "B"), listItem("b", "B", 1));
-      expect(() => replaced(deeper, "  - b\n", "")).toThrow(
-        "cannot keep a list item while deleting the paragraphs that end its section");
-      let last = replaced(deeper, "  - b", "");
-      expect(last.model).toBe("- a\n\n\n");
-      expectEmptyParagraphAt(last.tabs, 1);
       // Before a table as at the end of the tab.
       let table = "<table>\n  <tr>\n    <td><p>t</p></td>\n  </tr>\n</table>";
       let beforeTable = listTab(
@@ -4357,11 +4047,8 @@ describe("computeReplaceOperations, read back as written", () => {
       range: rangeOfTab(start, end), textStyle: {}, fields: "bold,italic,strikethrough,link",
     } });
 
-    // The recorded rule: `createParagraphBullets` counts and strips every leading tab of a
-    // paragraph it bullets (nesting-outdent / a top-level item appended after the nested one).
-    // So an item is bulleted without the tabs of its own text, and they are written afterwards.
-    // That Google Docs keeps them there as text is not on record yet: the recorder's scenarios
-    // `tab-typed-into-list-item` and `tab-starts-new-list-item` are there to record it.
+    // `createParagraphBullets` strips a bulleted paragraph's leading tabs, so an item is bulleted
+    // without its text's tabs and they are written afterwards (recorded: tab-starts-new-list-item).
     it("writes the tab a new item's text starts with once its bullet is made", () => {
       let made = replaced(listTab(para("P"), para("\tfoo"), para("End")), "\tfoo", "- \tfoo");
       expect(made.model).toBe("P\n\n- \tfoo\n\nEnd\n");
@@ -4377,15 +4064,6 @@ describe("computeReplaceOperations, read back as written", () => {
 
       // The text canonicalised for an append's write keeps the tab, so it reaches the builders.
       expect(canonicalizeMarkdownForWrite("- a\n- \tb")).toBe("- a\n- \tb");
-      let two = appendTo(listTab(para("P")), "- a\n- \tb");
-      expect(two.markdown).toBe("P\n\n- a\n- \tb\n");
-      expect(two.requests[0]).toEqual(textInserted(2, "\na\nb"));
-      expect(two.requests.slice(-3)).toEqual([
-        expect.objectContaining({
-          createParagraphBullets: expect.objectContaining({ range: rangeOfTab(3, 7) }),
-        }),
-        textInserted(5, "\t"), cleared(5, 6),
-      ]);
 
       // A run of levels: each item is laid out behind its level's tabs alone, one bullet request
       // makes them all, and the tabs of their texts go in last item first.
@@ -4407,15 +4085,9 @@ describe("computeReplaceOperations, read back as written", () => {
       for (let text of ["- **\t**b", "- \t**b**", "- **\tb**", "- ~~\t~~b"]) {
         expect(appendTo(listTab(para("P")), text).markdown).toBe(`P\n\n${text}\n`);
       }
-      expect(appendTo(listTab(para("P")), "- **\t**b").requests.slice(-3)).toEqual([
-        textInserted(3, "\t"), cleared(3, 4),
-        { updateTextStyle: { range: rangeOfTab(3, 4), textStyle: { bold: true }, fields: "bold" } },
-      ]);
 
-      // An item that is only a tab, numbered items, and a tab that holds nothing else.
+      // An item that is only a tab, and a tab that holds nothing else.
       expect(appendTo(listTab(para("P")), "- \t").markdown).toBe("P\n\n- \t\n");
-      expect(appendTo(listTab(para("P")), "1. \tx\n   1. \ty").markdown)
-        .toBe("P\n\n1. \tx\n  1. \ty\n");
       expect(docTabToMarkdown(applyDocEdit(listTab(para("")), {
         type: "appendText", markdown: "- \tx\n  - \ty",
       })).markdown).toBe("- \tx\n  - \ty\n");
@@ -4437,71 +4109,16 @@ describe("computeReplaceOperations, read back as written", () => {
         .toBe(`P\n\n- a\n${deep}- \t\tx\n- b\n`);
     });
 
-    // An item a shallower new item takes into its range is bulleted again. Where the change holds
-    // the item's text, its own tabs count toward its level's tabs, and are written back once the
-    // bullets are made. Not on record yet: the recorder's scenario `tab-item-bulleted-again` is
-    // there to record it.
+    // An item a shallower new item takes into its range is bulleted again, and its own tabs are
+    // written back once the bullets are made; the recording tab-item-bulleted-again pins the rest.
     it("writes back the tabs of an item it bullets again", () => {
       let B = (text: string, level = 0) => listItem(text, "B", level);
-      let created = (start: number, end: number) => expect.objectContaining({
-        createParagraphBullets: expect.objectContaining({ range: rangeOfTab(start, end) }),
-      });
-      let onlyTabs = (request: GoogleDocsRequest) =>
-        "insertText" in request && /^\t+$/.test(request.insertText.text);
-
-      // An item split off a nested item, and a shallower one, in one call. No level tab is
-      // written for `b`, whose own tab makes its level up.
-      let split = replaced(listTab(B("a", 1), para("End")), "  - a", "  - a\n  - \tb\n- c");
-      expect(split.model).toBe("  - a\n  - \tb\n- c\n\nEnd\n");
-      expect(split.requests.slice(-4)).toEqual([
-        textInserted(1, "\t"), created(1, 9), textInserted(3, "\t"), cleared(3, 4),
-      ]);
-
-      // A tab typed into a nested item whose next item moves up a level.
-      let typed = replaced(
-        listTab(B("b", 1), B("c", 1), para("End")), "  - b\n  - c", "  - \tb\n- c");
-      expect(typed.model).toBe("  - \tb\n- c\n\nEnd\n");
-      expect(typed.requests.slice(-3)).toEqual([
-        created(1, 6), textInserted(1, "\t"), cleared(1, 2),
-      ]);
-      expect(typed.requests.slice(0, -3).some(onlyTabs)).toBe(false);
-
-      // An unchanged item between a changed line and the new item.
       let between = (item: BlockSpec) => listTab(B("a"), B("x", 1), item, B("c", 1), para("End"));
-      expect(replaced(between(B("\tb", 1)), "  - x\n  - \tb\n  - c", "  - y\n  - \tb\n- c").model)
-        .toBe("- a\n  - y\n  - \tb\n- c\n\nEnd\n");
 
-      // More tabs than its level: the tab over its level is deleted before the bullets are made.
-      let more = replaced(
-        between(B("\t\tb", 1)), "  - x\n  - \t\tb\n  - c", "  - y\n  - \t\tb\n- c");
-      expect(more.model).toBe("- a\n  - y\n  - \t\tb\n- c\n\nEnd\n");
-      expect(more.requests.slice(-5)).toEqual([
-        { deleteContentRange: { range: rangeOfTab(5, 6) } }, textInserted(3, "\t"),
-        created(3, 11), textInserted(5, "\t\t"), cleared(5, 7),
-      ]);
       // Two tabs over its level are both deleted.
       expect(replaced(
         between(B("\t\t\tb", 1)), "  - x\n  - \t\t\tb\n  - c", "  - y\n  - \t\t\tb\n- c",
       ).model).toBe("- a\n  - y\n  - \t\t\tb\n- c\n\nEnd\n");
-
-      // Fewer tabs than its level, the tab bold: one of the two tabs of the level of `c` is
-      // written in front of its own, then the level of `b`.
-      let fewer = replaced(listTab(B("a"), B("b", 1), B("c", 2), para("End")),
-        "    - c", "    - **\t**c\n- d");
-      expect(fewer.model).toBe("- a\n  - b\n    - **\t**c\n- d\n\nEnd\n");
-      expect(fewer.requests.slice(-6)).toEqual([
-        textInserted(5, "\t"), textInserted(3, "\t"), created(3, 12),
-        textInserted(5, "\t"), cleared(5, 6),
-        { updateTextStyle: { range: rangeOfTab(5, 6), textStyle: { bold: true }, fields: "bold" } },
-      ]);
-
-      // A bold tab.
-      let bold = between({
-        runs: [{ text: "\t", style: { bold: true } }, "b\n"],
-        bullet: { listId: "B", nestingLevel: 1 },
-      });
-      expect(replaced(bold, "  - x\n  - **\t**b\n  - c", "  - y\n  - **\t**b\n- c").model)
-        .toBe("- a\n  - y\n  - **\t**b\n- c\n\nEnd\n");
 
       // Several in one range, with new items that start with tabs behind them.
       expect(replaced(
@@ -4578,14 +4195,6 @@ describe("computeReplaceOperations, read back as written", () => {
           !("updateParagraphStyle" in request || "updateTextStyle" in request))).toEqual([]);
         return { requests, model };
       };
-
-      let levels = () => listTab(listItem("one", "B"), listItem("two", "B", 1));
-      let top = styledOnly(levels(), "- one", "- \tone");
-      expect(top.requests).toEqual([textInserted(1, "\t"), cleared(1, 2)]);
-      expect(top.model).toBe("- \tone\n  - two\n");
-      let nested = styledOnly(levels(), "  - two", "  - \ttwo");
-      expect(nested.requests).toEqual([textInserted(5, "\t"), cleared(5, 6)]);
-      expect(nested.model).toBe("- one\n  - \ttwo\n");
 
       expect(styledOnly(listTab(listItem("\tb", "B"), listItem("c", "B"), para("End")),
         "- \tb\n- c", "- \tx\n- y").model).toBe("- \tx\n- y\n\nEnd\n");

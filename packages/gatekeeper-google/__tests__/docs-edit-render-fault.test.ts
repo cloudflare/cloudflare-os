@@ -1,13 +1,9 @@
-// Holds what the renderer throws on the tab an edit is made in and on the tab it gives. The
-// store renders the piece of the first the builders read, and the runs cut from the edit's
-// slice as it stores them, inside the transaction where every other throw is a fault of storage: the
-// renderer's is told from those, refused as any throw of the pure code is, and stored.
-// A file of its own, because it replaces a module for every test of its file.
+// The renderer's throw on the tab an edit is made in or gives is refused and stored, told apart
+// from storage's faults. Its own file, because it mocks `renderRun` for the whole file.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { GoogleDocsTab } from "../src/docs-api";
 import { replayCost } from "../src/docs-model";
-import { storedTabReading } from "../src/docs-reading";
 import {
   docEditKey, docEditResult, DocEditRefusedError, docRefusal, type DocEdit,
 } from "../src/docs-replay";
@@ -24,9 +20,7 @@ import { wholeTabsFetched } from "./doc-store-scenarios";
 /** Whether the store's renderer throws on a run that holds the text `FAULT`. */
 const fault = vi.hoisted(() => ({ on: false }));
 
-// The module as it is but for `renderRun` as other modules import it. `docTabToMarkdown` calls
-// the module's own `renderRun`, so the rendering of a tab in hand is untouched, and only the
-// store's rendering of a run can fail.
+// Only the store's rendering of a run can fail: `docTabToMarkdown` calls the module's own.
 vi.mock("../src/markdown-converter", async importOriginal => {
   let converter = await importOriginal<typeof import("../src/markdown-converter")>();
   let renderRun: typeof converter.renderRun = (elements, ...rest) => {
@@ -116,19 +110,12 @@ describe("the renderer's fault on a tab the store renders as it stores it", () =
     fault.on = true;
     let edit: DocEdit = { type: "appendText", markdown: "More" };
 
-    // A piece marks what the renderer throws on a run of it; a preparation, which asks its
-    // piece outside an edit's own `try`, is handed what the renderer threw, and stores
-    // nothing.
-    let unrendered = thrownBy(() => storedTabReading(store, version).piece("end"));
-    expect(unrendered).toBeInstanceOf(DocRunRenderError);
-    expect((unrendered as DocRunRenderError).cause).toEqual(new Error("renderer fault"));
+    // A preparation asks its piece outside an edit's `try`: it is handed the renderer's throw.
     let prepared = thrownBy(() => prepareAppend(store, version, "More"));
     expect(prepared).toEqual(new Error("renderer fault"));
     expect(prepared).not.toBeInstanceOf(DocEditRefusedError);
     expect(storage.rows()).toEqual(before);
 
-    // The piece of the tab around the edit is rendered for the builders, and the renderer
-    // throws on a run of it.
     let thrown = thrownBy(() => docEditResult(store, version, edit));
 
     expect(thrown).toBeInstanceOf(DocEditRefusedError);

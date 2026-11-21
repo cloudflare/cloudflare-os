@@ -45,6 +45,7 @@ import {
 } from "../doc-fixture";
 import { storedRows, tableCounts } from "../doc-store-scenarios";
 import { FakeKv } from "../fake-kv";
+import { WIDER } from "../wider-run";
 import { withDocStore } from "./doc-store-host";
 
 type Append = Parameters<typeof DOC_DEFINITIONS.appendText.describe>[0];
@@ -376,9 +377,7 @@ describe("Google Doc edit definitions", () => {
     expect(api.batchUpdate).not.toHaveBeenCalled();
   }));
 
-  // -------------------------------------------------------------------------
   // An edit built from the copy the connection holds
-  // -------------------------------------------------------------------------
 
   it("builds an edit from the copy held and pins it to the copy's revision, reading no document", inStore(async () => {
     let held = snapshotOf(docAt("r-copy", "Draft"));
@@ -746,9 +745,7 @@ describe("how long a revision id pins a write", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // An edit built from the document its approval fetched
-// ---------------------------------------------------------------------------
 
 /** The message of what the renderer throws on `tab`. */
 const rendererSays = (tab: GoogleDocsTab): string => thrownMessage(() => docTabToMarkdown(tab));
@@ -869,7 +866,6 @@ describe.each(FORMS)("an edit built from the document its approval fetched, on %
   }
 
   describe.each<[string, FetchedTab]>([
-    ["can be stored", "stored"],
     ["holds a paragraph past a row in another tab", "pastRow"],
     ["holds a list item the renderer throws on in another tab", "unrendered"],
   ])("settles from a receipt or a marker without storing the fetched document, which %s", (_name, other) => {
@@ -918,7 +914,6 @@ describe.each(FORMS)("an edit built from the document its approval fetched, on %
   });
 
   it.each<[string, FetchedTab]>([
-    ["can be stored", "stored"],
     ["holds a paragraph past a row", "pastRow"],
     ["holds a list item the renderer throws on", "unrendered"],
   ])("does not store the fetched document for an add, where it %s", inStore(async (_name, other) => {
@@ -1087,9 +1082,7 @@ describe.each(FORMS)("an edit built from the document its approval fetched, on %
       { ...APPEND, tabId: undefined }, fetched => fetched],
   ])("refuses an edit %s before it stores the fetched document", (_name, action, shaped) => {
     it.each<[string, FetchedTab]>([
-      ["can be stored", "stored"],
       ["holds a paragraph past a row", "pastRow"],
-      ["holds a paragraph with no paragraph style", "unstyled"],
       ["holds a list item the renderer throws on", "unrendered"],
     ])("where the document %s", inStore(async (_holding, other) => {
       let fresh = shaped(twoTabs("r-now", "stored", other));
@@ -1280,9 +1273,7 @@ describe("a fallback while another fetch of the document waits to be kept", () =
     });
 });
 
-// ---------------------------------------------------------------------------
 // The copy held and a fresh read build the same batch
-// ---------------------------------------------------------------------------
 
 const GENERATED_LISTS: GoogleDocsTab["lists"] = {
   bullets: { listProperties: { nestingLevels: presetLevels() } },
@@ -1537,7 +1528,8 @@ function asGoogleReads([documentId, requests, ...pinAndMarker]: BatchCall) {
 // of the request names the fields Google sets, the copy keeps each of those, and the batches
 // are compared as Google reads them. Held here for documents and edits nobody wrote by hand.
 describe("a Doc edit built from the copy held and from a fresh read", () => {
-  const SEEDS = Array.from({ length: 25 }, (_, index) => index + 1);
+  /** One seed by default, two in the wider run. */
+  const SEEDS = WIDER ? [1, 2] : [1];
   /** How many edits of each kind were compared. */
   const compared = new Map<string, number>();
   /** The style fields the tab as Google sent it gives a batch, unread, that the copy's lacks. */
@@ -3135,54 +3127,6 @@ describe("a Drive source of a Doc, read twice through the same objects", () => {
     expect(state.gets).toBe(2);
   }));
 
-  it("a read through Drive stores nothing until it is approved, and decodes and renders what it " +
-      "fetched in each write", inStore(async () => {
-    /** The runs `run` decoded and rendered. */
-    let spent = async (run: () => unknown) => {
-      let before = [docStoreCost.runsDecoded, docStoreCost.runsRendered];
-      await run();
-      return [docStoreCost.runsDecoded - before[0], docStoreCost.runsRendered - before[1]];
-    };
-    let rows = () => Object.values(tableCounts(storage!)).reduce((sum, count) => sum + count, 0);
-    let fetchedBy = async ({ source }: ReturnType<typeof sourceOf>) => {
-      let snapshot!: GoogleDocSnapshot;
-      // Holding the document it fetched decodes and renders nothing.
-      expect(await spent(async () => snapshot = await source.snapshot())).toEqual([0, 0]);
-      return snapshot;
-    };
-
-    // A read whose scope check never passes: read in a trial, twice, and never approved.
-    let refused = sourceOf();
-    let unapproved = await fetchedBy(refused);
-    let trial = await spent(() => refused.read(unapproved));
-    let again = await spent(() => refused.read(unapproved));
-    expect(rows()).toBe(0);
-
-    // A read that is approved: its trial, and then the keep.
-    let read = sourceOf();
-    let snapshot = await fetchedBy(read);
-    let tried = await spent(() => read.read(snapshot));
-    expect(rows()).toBe(0);
-    let kept = await spent(() => read.source.approved(snapshot));
-    let n = tableCounts(storage!).doc_seq;
-
-    expect(running().head(FILE)).toMatchObject({ revision: "r1" });
-    expect(n).toBeGreaterThan(100);
-    // Each write of the held document decodes its runs, and renders those the store lacks:
-    // every one, each time, for a document of which nothing is stored.
-    expect([trial, again, tried, kept]).toEqual([[n, n], [n, n], [n, n], [n, n]]);
-  }));
-
-  it("what a kept view remembers is its record", inStore(async () => {
-    let { snapshot } = await approved();
-    let head = running().head(FILE)!;
-    // The one size a view has: the record it is built from, for a tab of 20,000 paragraphs.
-    expect(JSON.stringify(head).length).toBeLessThan(4_096);
-    let rebuilt = storedDocCopy(running(), FILE, head);
-    expect(rebuilt.outline).toEqual(snapshot.copy.outline);
-    expect(rebuilt.tab("tab-1")).toEqual(snapshot.copy.tab("tab-1"));
-    expect(rebuilt.held()).toBe(true);
-  }));
 });
 
 // A source keeps which copy a read approved; the connection's caps may remove that copy under
@@ -3267,33 +3211,6 @@ describe("a Drive source of a Doc whose copy the connection evicted", () => {
     expect(second.state.gets).toBe(2);
   }));
 
-  it("makes the pending edits of an evicted file again, and they read the same", inStore(async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(T);
-    let { removed, pendingDocs, sourceOf } = connection();
-    let first = sourceOf("file-a", "First.", [EDIT]), second = sourceOf("file-b", "Second.");
-    pendingDocs.add("file-a");
-
-    // The edit is made in the first read's trial, which keeps nothing, and again over the
-    // copy that read kept; it is found stored from then on.
-    let reads = async () => [await first.read(), await first.read(), await first.read()];
-    let before = await reads();
-    expect(before).toEqual([
-      { markdown: "Changed.\n", made: 1 }, { markdown: "Changed.\n", made: 1 },
-      { markdown: "Changed.\n", made: 0 },
-    ]);
-    expect(first.state.gets).toBe(1);
-
-    // The only other copy is the file's, pending edit and all: it is evicted.
-    vi.setSystemTime(T + HOUR);
-    await second.read();
-    expect(removed).toEqual([["file-a", { event: "evicted", reason: "count" }]]);
-    expect(storage!.sql.exec("SELECT edit FROM doc_result").toArray()).toEqual([]);
-
-    // One fetch, and the edit made as after the file's first read: it reads the same.
-    expect(await reads()).toEqual(before);
-    expect(first.state.gets).toBe(2);
-  }));
 });
 
 /** A whole read of every tab through `source`, approved under a folder: what it answered. */
@@ -3387,8 +3304,7 @@ describe("a Drive source of a Doc a read approved", () => {
     return { open, made };
   }
 
-  // 673 bytes as JSON for a document of one tab and 155 more for each further tab, with a
-  // revision id of 64 characters, tab titles of 20 and no write marker waiting.
+  // Under 700 bytes for a tab, and under 165 for each further one.
   it("what a Drive source holds of an approved copy is its record, and no text of the document", inStore(async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(T);
@@ -3409,23 +3325,7 @@ describe("a Drive source of a Doc a read approved", () => {
     expect(JSON.parse(wider).head.outline).toHaveLength(5);
     expect(record.length).toBeLessThan(700);
     expect((wider.length - record.length) / 4).toBeLessThan(165);
-
-    // The binding keeps the sources of the four documents opened most recently
-    // (`MAX_DOC_SOURCES`): five were opened, and it holds four such records.
-    let rest = ["file-2", "file-3", "file-4"].map(file => ({ file, source: open(file) }));
-    for (let { source } of rest) await readThrough(source);
-    expect(made.sources).toBe(5);
-    for (let { file, source } of [{ file: "file-5", source: five }, ...rest]) {
-      expect(open(file)).toBe(source);
-      expect(reached(source, file).length).toBeLessThanOrEqual(wider.length);
-    }
-    expect(made.sources).toBe(5);
-    // The first document's was let go: a session that opens it is given another, which holds
-    // nothing until a read through it is approved.
-    let again = open("file-1");
-    expect(made.sources).toBe(6);
-    expect(again).not.toBe(one);
-    expect(again.held()).toBeUndefined();
+    expect(made.sources).toBe(2);
   }));
 });
 

@@ -1,7 +1,5 @@
-// The seeded sequences the model is held to: the generator of a random tab, of one request of
-// each kind at a place of it, and the runner of the property over them. A helper and no test,
-// so that the property's own tests and the tests that hold each of its calls from the slices of
-// its tab read one definition and draw the same sequences.
+// The seeded model sequences: a random tab, a request of each kind at a place of it, and the
+// property's runner, shared so the property and the slice tests draw the same sequences.
 
 import { expect } from "vitest";
 import type {
@@ -456,12 +454,7 @@ export type Tally = {
 
 const COVERED_CELL = "a request at a paragraph of a cell that a merged cell covers";
 
-/**
- * In place of the property's own checks: handed every call the property makes of the model,
- * before the call is made (the tab, the batch, the number of the sequence, and where it is),
- * for a caller that holds those calls to something else. The sequences drawn are the same
- * with it and without.
- */
+/** Handed each model call before it is made, in place of the property's checks; same draws. */
 export type SequenceCalls = (call: {
   tab: GoogleDocsTab;
   requests: readonly GoogleDocsRequest[];
@@ -471,10 +464,7 @@ export type SequenceCalls = (call: {
   where: () => string;
 }) => void;
 
-/**
- * One run of the dice over the sequences of `runSequences`, which a call may take a part of:
- * the next call handed the same run goes on where it stopped, and adds to the same tally.
- */
+/** A run of the dice over `runSequences`, taken in parts that share one tally. */
 export type SequenceRun = { dice: ReturnType<typeof diceOf>; tally: Tally; next: number };
 
 /** A run of the dice of `seed` that has drawn no sequence yet. */
@@ -492,13 +482,9 @@ export function sequenceRun(seed: number): SequenceRun {
 }
 
 /**
- * The property: after every request of a random sequence, the requests so far applied as one
- * batch give the tab that the same requests give one batch each, which leaves every index
- * exact and numbers the footnotes after each. A request the one refuses, the other refuses alike.
- * `between` is what the tab of the one-batch-each chain passes through before each request.
- * With `each`, the two calls the property makes for a request are handed to it and the
- * property's own checks are not made: the sequences are drawn and applied, and nothing more.
- * With `run`, the `sequences` next sequences of that run are taken, and its tally answered.
+ * The property: after every request of a random sequence, the requests so far as one batch give
+ * the tab the same requests give one batch each, with exact indexes, and refuse alike. `between`
+ * is what the chain's tab passes through before each request; `each` replaces the checks.
  */
 export function runSequences(
   seed: number, sequences: number, backToFront: boolean,
@@ -568,10 +554,7 @@ export function runSequences(
       return chosen;
     };
 
-    /**
-     * The pair that tells a deletion's lookup from a styled range's: the deletion ends where
-     * the paragraph just changed ends, at the paragraph that survives it.
-     */
+    /** A length change, then a deletion that ends where the changed paragraph ends. */
     let lengthThenJoin = () => {
       let spots = paragraphSpots(eager.body.content)
         .filter(({ container, position }) => container[position + 1]?.paragraph);
@@ -591,10 +574,7 @@ export function runSequences(
       }
     };
 
-    /**
-     * What the skipped look for covered cells must survive: a table known to hold no merged
-     * cell, then a merge in it, then a request at a cell the merge covers.
-     */
+    /** A table of no merged cell, a merge in it, then a request at a cell the merge covers. */
     let coverThenRequest = () => {
       let tables = tableSpots(eager.body.content).filter(({ element, container }) =>
         container === eager.body.content && !hasMergedCell(element) &&
@@ -640,11 +620,7 @@ export function runSequences(
       ]));
     };
 
-    /**
-     * The three pairs below tell whether a change of length reached the end of every cell,
-     * row and table that holds it: the second request of each lies below the watermark the
-     * first left and at or past the end a holder had before it.
-     */
+    // Pairs whose second request lies past where a holder of the first one's change ended.
     let growNestedThenInside = () => {
       let spots = nestedParagraphSpots(eager.body.content);
       let spot = spots[below(spots.length)];
@@ -716,10 +692,7 @@ export type RecordedCall = {
   where: string;
 };
 
-/**
- * Every call the sequences of `seed` make of the model, in order, and what they reached:
- * `runSequences` run once with nothing checked. Two calls a request, applied or refused.
- */
+/** Every model call the sequences of `seed` make, in order (two a request), with the tally. */
 export function recordedSequenceCalls(
   seed: number, sequences: number, backToFront: boolean,
 ): { tally: Tally; calls: RecordedCall[] } {

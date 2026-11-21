@@ -1,13 +1,5 @@
-// An edit whose stored copy cannot be read back: the copy is dropped, so that the next read
-// fetches, wherever the missing row is met. An edit decodes only the piece of its tab around
-// it, so a row that is gone elsewhere is met late or not at all: by the scan of the stored
-// Markdown, by a pass over the runs' summaries (the one that places a piece, the one that
-// counts the tables), by the piece, by the model's slice, as the version the edit gives is
-// stored (inside a transaction of the edit's own that the failure undoes), or by the piece a
-// new table's number is read from, made after the edit. What a preparation throws for it is
-// storage's own error, never the reading's wrapper. And the lookup of the text a comment or a
-// suggestion quotes, which reads the tab's runs to its end: it meets a row that is gone
-// wherever it is.
+// An edit or a quoted-text lookup whose stored copy lost a row drops the copy, wherever the
+// row is met, and throws storage's own error, never the reading's wrapper.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { googleDocDisplayLimit } from "../src/doc-actions";

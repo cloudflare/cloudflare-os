@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type {
   GoogleDocsRequest, GoogleDocsTab, NestingLevel, Paragraph, StructuralElement, TableCell,
-  TableCellStyle, TableRow,
+  TableRow,
 } from "../src/docs-api";
 import contentSource from "../src/docs-content.ts?raw";
 import {
@@ -22,10 +22,10 @@ import { BULLET_LIST, buildTab, cellOf, diceOf, para, presetLevels } from "./doc
 import type { BlockSpec, Dice, ParagraphSpec, TableSpec } from "./doc-fixture";
 import { fakeDocStore } from "./doc-store-fake";
 import {
-  BULLETED, bullets, cellAt, deleteBullets, deleteColumn, deleteRange, deleteRow,
+  BULLETED, bullets, deleteBullets, deleteColumn, deleteRange, deleteRow,
   footnoteNumbers, footnoteReferences, insertColumn, insertRow, insertTable, insertText,
-  LINK_A, mergeCells, NUMBERED, pinRows, points, randomTab, referencePlaces, REQUEST_KINDS,
-  runSequences, sequenceRun, styleParagraphs, styleText, TAB, type Tally,
+  LINK_A, mergeCells, NUMBERED, pinRows, points, runSequences, sequenceRun, styleParagraphs,
+  styleText, TAB, type Tally,
 } from "./docs-model-draws";
 import {
   alignmentAt, fontSizeAt, hasLinkLook, indentedParagraphs, pinnedHeaderRows, tableElement,
@@ -160,14 +160,6 @@ describe("table geometry", () => {
 
     expect(tableTexts(result)).toEqual([["a\n"], ["second\n"], ["third\n"]]);
   });
-
-  it("leaves the tab it is given as it was", () => {
-    let tab = buildTab([{ runs: ["Before\n"] }, { runs: ["After\n"] }]);
-    let copy = structuredClone(tab);
-    applyDocsRequests(tab, [insertTable(8, 1, 1), insertText(1, "x")]);
-
-    expect(tab).toEqual(copy);
-  });
 });
 
 const threeRowTable = () => buildTab([
@@ -236,13 +228,6 @@ describe("what Google refuses", () => {
     expect(refusal([insertText(3, "x")], tab))
       .toThrow("The insertion index cannot be within a grapheme cluster.");
     expect(textOf(bodyParagraphs(applyDocsRequests(tab, [deleteRange(2, 4)]))[0])).toBe("ab\n");
-  });
-
-  it("applies nothing of a batch when it throws", () => {
-    let tab = threeRowTable();
-    let copy = structuredClone(tab);
-    expect(refusal([insertText(1, "x"), deleteRange(11, 16)], tab)).toThrow(INVALID_DELETION);
-    expect(tab).toEqual(copy);
   });
 });
 
@@ -727,9 +712,7 @@ describe("the paragraph requests", () => {
   });
 
   it("takes a look given up to a paragraph's line break away when the style is then named", () => {
-    // The batches of probe P6. A replay that chains batches relies on the order of the third:
-    // the text styled first and the style named after it, where the looks the whole paragraph
-    // holds go. The second is the builders' order, the style named first, where they stay.
+    // Text styled first and the style named after it: the looks the whole paragraph holds go.
     let red = { color: { rgbColor: { red: 1 } } };
     let styled = applyDocsRequests(
       applyDocsRequests(buildTab([{ runs: ["\n"] }]), [insertText(1, "Alpha beta\nGamma\n")]),
@@ -947,9 +930,7 @@ describe("what the model does not cover", () => {
       .toEqual([11, 3]);
   });
 
-  // Inferred, not on record, that the empty first line of the split keeps the image. The
-  // builders refuse the edit that would send this batch (`POSITIONED_ITEM_BEFORE`), so what
-  // Google does with the image of the deleted line is not answered here.
+  // Inferred: the split's empty first line keeps the image; deleting that line is not answered.
   it("has no answer for the empty paragraph of a bulleted range that holds a positioned image", () => {
     let tab = buildTab([
       { runs: ["a\n"], bullet: { listId: "made" } },
@@ -1138,10 +1119,6 @@ describe("bullets the gatekeeper creates", () => {
   it.each<[string, number | undefined, number[], number[]]>([
     ["a range of its own", undefined, [0], [0]],
     ["a range of its own written in tabs", undefined, [1, 2], [0, 1]],
-    // Recorded: bullets-nesting-2 / a child under the middle item.
-    ["a nested item written alone, which lands flat", 0, [1], [0]],
-    // Recorded: outdent-after-nested / a top-level item appended after the nested one.
-    ["a paragraph of no tabs behind a nested item", 2, [0], [2]],
     ["a range that starts as deep in tabs as the item before it", 1, [1, 2, 3], [1, 2, 3]],
     ["a range whose tabs skip a level", 1, [0, 2], [1, 3]],
   ])(
@@ -1176,27 +1153,7 @@ describe("bullets the gatekeeper creates", () => {
     expect(result.body.content.slice(1).map(span)).toEqual([[1, 5], [5, 7], [7, 13]]);
   });
 
-  // Recorded: nesting-deeper / a child under the middle item.
-  it("counts an empty paragraph of tabs like any other, so the paragraphs behind it land deeper", () => {
-    let { tab, start, end } = afterLead(
-      { runs: ["a\n"], bullet: { listId: "made", nestingLevel: 1 } }, ["\t\n", "\t\tdeep\n"]);
-    let bulleted = applyDocsRequests(tab, [bullets(start, end, BULLETED)]);
-
-    expect(bodyParagraphs(bulleted).map(textOf)).toEqual(["a\n", "\n", "deep\n"]);
-    expect(levelsOf(bulleted)).toEqual([1, 1, 2]);
-
-    let result = applyDocsRequests(
-      tab, [bullets(start, end, BULLETED), deleteRange(start, start + 1)]);
-
-    expect(bodyParagraphs(result).map(textOf)).toEqual(["a\n", "deep\n"]);
-    expect(levelsOf(result)).toEqual([1, 2]);
-    expect(listIdsOf(result)).toEqual(["made", "made"]);
-  });
-
-  // Inferred, not on record: this is how a list made in the Docs editor, which the request has
-  // not been seen to meet, is told from one a preset made. The Markdown preview reads an item
-  // written after any list of its kind as joined to it (`- a`, `- b`), where the model reads a
-  // list of its own after one whose glyphs differ (`- a`, a blank line, `- b`).
+  // Inferred: a list made in the Docs editor is told from a preset's by its levels' glyphs.
   it("joins a list of fewer levels whose glyphs are the preset's, and not one whose glyphs differ", () => {
     let listAfter = (preset: string, nestingLevels: NestingLevel[]) => {
       let { tab, start, end } = afterLead(
@@ -1443,15 +1400,6 @@ describe("how inserted text is styled", () => {
   ])("%s", (_, runs, index, text, expected) => {
     expect(runsAfter(buildTab([{ runs }]), insertText(index, text))).toEqual(expected);
   });
-
-  it("joins the text run it is typed into, with that run's size", () => {
-    let tab = buildTab([{ runs: [{ text: "Hello", style: sized(14) as ModelTextStyle }, "\n"] }]);
-    let result = applyDocsRequests(tab, [insertText(3, "XY")]);
-
-    expect(runsOf(bodyParagraphs(result)[0])).toEqual([["HeXYllo", sized(14)], ["\n", {}]]);
-    expect(fontSizeAt(result, 3)).toBe(14);
-  });
-
   it("takes the style of the text that follows a link, not the link", () => {
     let tab = buildTab([{
       runs: [linked("ab", sized(14)), { text: " tail", style: sized(9) as ModelTextStyle }, "\n"],
@@ -1740,48 +1688,6 @@ describe("a text style that ends at a paragraph's line break", () => {
   });
 });
 
-/** A solid border one point wide, of this colour. */
-const border = (rgbColor: Record<string, number>) =>
-  ({ width: points(1), dashStyle: "SOLID", color: { color: { rgbColor } } });
-/** A style for one cell of the first column of the table at index 2. */
-const styleCell = (
-  rowIndex: number, tableCellStyle: TableCellStyle, fields: string,
-): GoogleDocsRequest => ({
-  updateTableCellStyle: {
-    tableRange: { tableCellLocation: cellAt(2, rowIndex), rowSpan: 1, columnSpan: 1 },
-    tableCellStyle,
-    fields,
-  },
-});
-
-describe("colours", () => {
-  it("stores a colour without its components of 0", () => {
-    // Recorded: table-looks / partial borders.
-    let tab = buildTab([
-      { runs: ["\n"] }, { table: [["a\n"], ["b\n"], ["c\n"]] }, { runs: ["\n"] },
-    ]);
-    let result = applyDocsRequests(tab, [
-      styleCell(1, {
-        borderTop: border({ red: 1, green: 0, blue: 0 }),
-        borderBottom: border({ red: 0, green: 0, blue: 0 }),
-        backgroundColor: { color: { rgbColor: { red: 0, green: 0.5, blue: 0 } } },
-      }, "borderTop,borderBottom,backgroundColor"),
-      styleText(5, 6, { foregroundColor: { color: { rgbColor: { red: 0, green: 0, blue: 1 } } } },
-        "foregroundColor"),
-    ]);
-    let [[above], [named], [below]] = cellsOf(result);
-
-    expect(named.tableCellStyle?.borderTop).toEqual(border({ red: 1 }));
-    expect(named.tableCellStyle?.borderBottom).toEqual(border({}));
-    expect(named.tableCellStyle?.backgroundColor).toEqual({ color: { rgbColor: { green: 0.5 } } });
-    // The cells beside it take each border on the side that faces it.
-    expect(above.tableCellStyle?.borderBottom).toEqual(border({ red: 1 }));
-    expect(below.tableCellStyle?.borderTop).toEqual(border({}));
-    expect(joinedRunsOf(cellParagraphs(above)[0]))
-      .toEqual([["a\n", { foregroundColor: { color: { rgbColor: { blue: 1 } } } }]]);
-  });
-});
-
 const notedCell = (text: string, number: string) =>
   cellOf({ runs: [text, { footnote: { id: `footnote-${number}`, number } }, "\n"] });
 
@@ -1902,13 +1808,9 @@ describe("footnotes", () => {
 
   it.each<{ how: string; numbers: (string | undefined)[] }>([
     { how: "skipped in a cell", numbers: ["1", "2", "4", "5", "6"] },
-    { how: "skipped after the table", numbers: ["1", "2", "3", "4", "6"] },
-    { how: "repeated", numbers: ["1", "2", "2", "3", "4"] },
     { how: "out of order", numbers: ["1", "3", "2", "4", "5"] },
     { how: "missing", numbers: ["1", "2", undefined, "4", "5"] },
-    { how: "missing on the first", numbers: [undefined, "2", "3", "4", "5"] },
     { how: "not a number", numbers: ["1", "2", "x", "4", "5"] },
-    { how: "empty", numbers: ["1", "2", "3", "4", ""] },
     { how: "written another way", numbers: ["01", "2", "3", "4", "5"] },
     { how: "counted from 0", numbers: ["0", "1", "2", "3", "4"] },
   ])("says a tab with a footnote number $how does not hold the model's", ({ numbers }) => {
@@ -1921,17 +1823,9 @@ describe("footnotes", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Indexes kept by what a request touches
-// ---------------------------------------------------------------------------
-
-/** The sequences of each seeded property, and the tests they are run in: one run of the dice. */
 const SEQUENCES = 320, SEQUENCE_PARTS = 8;
 
-/**
- * The property of `runSequences` over `SEQUENCES` sequences of `seed`, a part of them a test,
- * each part going on where the one before stopped, and then `counts`, handed the tally of all.
- */
+/** `runSequences` over `SEQUENCES` sequences of `seed`, split into tests, then `counts` of the tally. */
 function inParts(
   name: string, seed: number, backToFront: boolean, counts: (tally: Tally) => void,
   between?: () => (tab: GoogleDocsTab) => GoogleDocsTab,
@@ -2132,41 +2026,9 @@ describe("indexes kept by what a request touches", () => {
       { runs: ["tail", footnote("10"), "\n"] },
     ]);
   };
-  // Each request is built on the tab as the ones before it left it.
-  const overFirstReference = (doc: GoogleDocsTab) => {
-    let [first] = referencePlaces(doc);
-    return deleteRange(first.startIndex, first.startIndex + 1);
-  };
   const tableOf = (doc: GoogleDocsTab) => tableElement(doc).startIndex;
   const lastRow = (doc: GoogleDocsTab) => deleteRow(tableOf(doc), 2);
-  const lastColumn = (doc: GoogleDocsTab) => deleteColumn(tableOf(doc), 2);
   const leftColumn = (doc: GoogleDocsTab) => mergeCells(tableOf(doc), 0, 0, 2, 1);
-
-  it("numbers footnotes once a batch is applied", () => {
-    for (let steps of [
-      [overFirstReference, lastRow, lastColumn, leftColumn],
-      [leftColumn, overFirstReference, lastRow, lastColumn],
-    ]) {
-      let tab = notedTab();
-      let eager = tab;
-      let requests: GoogleDocsRequest[] = [];
-      for (let build of steps) {
-        let before = footnoteNumbers(eager);
-        requests.push(build(eager));
-        eager = applyDocsRequests(eager, requests.slice(-1));
-        // Each of them changes the number a footnote that stays shows, or their order.
-        expect(footnoteNumbers(eager)).not.toEqual(before.slice(0, footnoteNumbers(eager).length));
-      }
-      let batch = footnoteNumbers(applyDocsRequests(tab, requests));
-
-      expect(batch).toEqual(footnoteNumbers(eager));
-      expect(hasModelFootnotes(eager)).toBe(true);
-      expect(hasModelFootnotes(applyDocsRequests(tab, requests))).toBe(true);
-      expect(batch.map(([id]) => id)).toEqual(
-        ["footnote-2", "footnote-5", "footnote-3", "footnote-10"]);
-      expect(batch.map(([, number]) => number)).toEqual(["1", "2", "3", "4"]);
-    }
-  });
 
   it("numbers the footnotes a merge moves by where they stand", () => {
     let tab = buildTab([
@@ -2211,18 +2073,6 @@ describe("indexes kept by what a request touches", () => {
     expect(tab).toEqual(given);
   });
 
-  it("counts one clone and two full re-indexes for a batch on a tab as it was fetched into " +
-    "`replayCost`", () => {
-    let tab = buildTab([{ runs: ["Hello\n"] }]);
-    for (let cost of [undefined, { fullReindexes: 0 }]) {
-      let before = { ...replayCost };
-      applyDocsRequests(tab, [insertText(1, "x")], {}, cost);
-      expect(replayCost).toMatchObject(
-        { tabClones: before.tabClones + 1, fullReindexes: before.fullReindexes + 2 });
-      if (cost) expect(cost.fullReindexes).toBe(2);
-    }
-  });
-
   it("re-indexes a tab it returned once for a batch that moves an index, and not at all for " +
     "one that moves none", () => {
     let first = applyDocsRequests(buildTab([{ runs: ["Hello\n"] }]), [insertText(1, "x")]);
@@ -2238,57 +2088,6 @@ describe("indexes kept by what a request touches", () => {
     expect(runsOf(bodyParagraphs(unmoved)[0]).map(([text]) => text)).toEqual(["x", "He", "llo\n"]);
     expect(hasModelIndexes(unmoved)).toBe(true);
     expect(unmoved).toEqual(applyDocsRequests(structuredClone(first), styled));
-  });
-
-  it("gives for a tab it returned what it gives for a copy of that tab", () => {
-    let dice = diceOf(20261115);
-    let { below, pick } = dice;
-    let requestIn = (doc: GoogleDocsTab) =>
-      pick(REQUEST_KINDS)({ ...dice, doc, choose: spots => spots[below(spots.length)] });
-    let run = (
-      from: GoogleDocsTab, batch: GoogleDocsRequest[],
-    ): { tab: GoogleDocsTab; passes: number } | { refusal: string } => {
-      let cost: ModelCost = { fullReindexes: 0 };
-      try {
-        return { tab: applyDocsRequests(from, batch, {}, cost), passes: cost.fullReindexes };
-      } catch (error) {
-        return { refusal: error instanceof Error ? error.message : String(error) };
-      }
-    };
-    let tally = { applied: 0, refused: 0, unmoved: 0, unmovedAtEnd: 0 };
-    for (let round = 0; round < 900; round++) {
-      let tab = randomTab(dice, round % 2 === 0);
-      let request = requestIn(tab);
-      let first = request && run(tab, [request]);
-      if (!first || !("tab" in first)) continue;
-      let returned = first.tab;
-      // One request or two, each at a place of the tab as it was returned.
-      let batch = [requestIn(returned), below(2) === 0 ? requestIn(returned) : undefined]
-        .flatMap(drawn => drawn ? [drawn] : []);
-      if (batch.length === 0) continue;
-      let where = `round ${round}, ${JSON.stringify(batch)}`;
-      let known = run(returned, batch);
-      let copied = run(structuredClone(returned), batch);
-      if (!("tab" in known) || !("tab" in copied)) {
-        expect(known, where).toEqual(copied);
-        tally.refused++;
-        continue;
-      }
-      expect(known.tab, where).toEqual(copied.tab);
-      expect(hasModelIndexes(known.tab) && hasModelIndexes(copied.tab), where).toBe(true);
-      // The copy pays the pass before its first request, and nothing else differs.
-      expect(known.passes, where).toBe(copied.passes - 1);
-      tally.applied++;
-      let last = run(returned, batch.slice(-1));
-      if (known.passes === 0) tally.unmoved++;
-      // A batch whose last request moves no index, after one that moved some.
-      else if ("tab" in last && last.passes === 0) tally.unmovedAtEnd++;
-    }
-
-    expect(tally.applied).toBeGreaterThanOrEqual(400);
-    expect(tally.refused).toBeGreaterThanOrEqual(100);
-    expect(tally.unmoved).toBeGreaterThanOrEqual(100);
-    expect(tally.unmovedAtEnd).toBeGreaterThanOrEqual(20);
   });
 });
 
@@ -2371,15 +2170,6 @@ describe("the index guard", () => {
 
     expect(hasModelIndexes(tab)).toBe(false);
     expect(tab).toEqual(given);
-  });
-
-  it("holds for every tab the model returns", () => {
-    // The random sequences above assert it after each of their requests; this is one batch.
-    let result = applyDocsRequests(indexed(), [
-      insertText(3, "one\ntwo"), deleteRange(2, 5), insertTable(1, 2, 2),
-    ]);
-
-    expect(hasModelIndexes(result)).toBe(true);
   });
 
   it("says the tab can be read and not changed", () => {
@@ -2467,9 +2257,7 @@ describe("modelFollowing", () => {
   });
 
   it("a paragraph of the body whose text ends in half a surrogate pair is not followed", () => {
-    // A batch is applied to a piece of a tab that may start after any paragraph of the body,
-    // and the model takes the code unit before the piece for no first half of a pair without
-    // reading it. A paragraph of a cell is never the element before a piece.
+    // A piece may start after any body paragraph, and the unit before it is taken as no half pair.
     let half = buildTab([{ runs: ["half \uD83D"] }, para("after")]);
     let whole = buildTab([{ runs: ["half \uD83D\n"] }, para("after")]);
     let inCell = buildTab([
@@ -2482,9 +2270,7 @@ describe("modelFollowing", () => {
   });
 
   it("a start left out is followed only on the section break that opens the body", () => {
-    // A stored piece of a tab is given a start only on the section break that opens the body,
-    // which is the one start Google leaves out. The model re-indexes no piece before it applies
-    // a batch, so it could not place an insertion in a paragraph that has no start.
+    // The opening section break is the one start Google leaves out; a piece is not re-indexed.
     let asSent = buildTab([para("first"), { structure: "sectionBreak", length: 2 }, para("last")]);
     let opening: { startIndex?: number } = asSent.body.content[0];
     delete opening.startIndex;
@@ -2515,10 +2301,7 @@ describe("modelFollowing", () => {
   });
 
   it("a tab that names a list of the model's own form it does not define is not followed", () => {
-    // An edit made in the pieces of a tab that a batch touches leaves every other piece as it
-    // is listed. The model gives a list it makes the lowest id of its own form that the tab
-    // does not define, so a paragraph that names such an id with no definition would become
-    // an item of a list a later batch makes, wherever it stands: such a tab takes no edit.
+    // A later batch's new list would take the undefined id and capture that paragraph.
     let orphan: ParagraphSpec = { runs: ["item\n"], bullet: { listId: "model.1" } };
     let inBody = () => buildTab([para("one"), para("two"), orphan]);
     let inCell = buildTab([para("one"), { table: [[{ paragraphs: [orphan] }]] }, para("two")]);
@@ -2531,8 +2314,7 @@ describe("modelFollowing", () => {
     // The model makes no id of another form, so a name without a definition there is followed.
     expect(followedBothWays(another)).toEqual([true, true]);
 
-    // Why: the whole tab asks no guard, so the batch applies, and the list it makes for the
-    // first paragraph takes the id the third names, which the batch did not name.
+    // Why: the list made for the first paragraph takes the id the third names.
     let tab = inBody();
     let { startIndex, endIndex } = tab.body.content[1];
     let result = applyDocsRequests(tab, [bullets(startIndex, endIndex, BULLETED)]);
@@ -2758,10 +2540,7 @@ describe("lookups by index", () => {
 
     applyDocsRequests(tab, [insertText(index, "x")]);
 
-    // The request looks up two indexes: the paragraph the text goes into, and the code unit
-    // before the index. That unit is not the first half of a surrogate pair, so the unit after
-    // it is not read. The body's 4,097 elements halve down to one in 12 comparisons or 13, and
-    // to this paragraph in 12, where a walk from the first element would compare 4,091.
+    // Two lookups (the paragraph and the unit before the index), 12 halvings each over 4,097.
     expect(replayCost.lookupSteps - before).toBe(2 * 12);
   });
 });

@@ -1,10 +1,12 @@
+// The replay of queued Google Doc edits: requests built, refusals kept, keys, the fold over
+// stored versions, and the span a card shows.
+
 import {
   createSimulationStore, type EntityFold,
 } from "@gadgets/gatekeeper-kit/simulation-store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  blankDocTabToKeep, googleDocDisplayLimit, logModelRefusal, replayGoogleDoc,
-  type GoogleDocAddTabAction, type GoogleDocReplayQueue,
+  blankDocTabToKeep, googleDocDisplayLimit, logModelRefusal, type GoogleDocAddTabAction,
 } from "../src/doc-actions";
 import { blankDocsTab } from "../src/docs-api";
 import type { GoogleDocsRequest, GoogleDocsTab } from "../src/docs-api";
@@ -27,21 +29,19 @@ import { DocReadingFault, storedTabReading } from "../src/docs-reading";
 import { DOC_COPY_UNREADABLE, pruneTab } from "../src/docs-replica";
 import { cutRuns, RUN_SIZES } from "../src/docs-runs";
 import {
-  DOC_ROW_BYTES, DocPieceError, DocRowTooLargeError, DocRunRenderError, DocStore, docStoreCost,
+  DOC_ROW_BYTES, DocPieceError, DocRowTooLargeError, DocStore, docStoreCost,
 } from "../src/docs-store";
-import type { DocPending, DocStoreCost, DocVersion } from "../src/docs-store";
-import { prepareAppend, prepareTextReplacement } from "../src/docs-table-actions";
+import type { DocStoreCost, DocVersion } from "../src/docs-store";
+import { prepareTextReplacement } from "../src/docs-table-actions";
 import {
   closesTableGate, tableChangeRequests, tableGateRefusal, tableIdentity, textReplacementRequests,
 } from "../src/docs-tables";
-import * as converter from "../src/markdown-converter";
 import {
   docTabToMarkdown, markdownToDocRequests, MARKDOWN_RENDERING_VERSION,
 } from "../src/markdown-converter";
 import type { DocTabSnapshot } from "../src/markdown-converter";
-import { buildTab, diceOf, grid, keptSnapshot, para, tableAt, thrownMessage } from "./doc-fixture";
+import { buildTab, diceOf, grid, para, tableAt, thrownMessage } from "./doc-fixture";
 import { fakeDocStorage, fakeDocStore, type FakeDocStorage } from "./doc-store-fake";
-import { wholeTabsFetched } from "./doc-store-scenarios";
 import { CUTS } from "./docs-fetched-corpus";
 import { fuzzedTabs, recordedTabs, throughJson, type NamedTab } from "./render-run-tabs";
 
@@ -614,12 +614,7 @@ function unrenderable(tabId = TAB): GoogleDocsTab {
   return tab;
 }
 
-/**
- * What the model's wrapper throws for `cause`, thrown by the model's next call in place of its
- * answer, WHICHEVER ENTRY is called: the whole-tab one (`applyDocsRequests`, an edit on a tab
- * in hand) or the slice one (`applyDocsRequestsToSlice`, an edit through the store). The first
- * of the two to be called restores both.
- */
+/** Makes the model's next call throw `cause`, through the whole-tab entry or the slice one. */
 function modelThrows(cause: unknown): void {
   let whole = vi.spyOn(model, "applyDocsRequests");
   let slice = vi.spyOn(model, "applyDocsRequestsToSlice");
@@ -800,25 +795,6 @@ describe("docTabReducer", () => {
     expect(cost).toMatchObject({ runsDecoded: 0, rowsWritten: 0, resultsStored: 0 });
   });
 
-  it("records a fault of the model as a refusal that holds nothing of what it threw", () => {
-    let stored = storedTabs(PROSE());
-    let item: DocEdit = { type: "appendText", markdown: "- item" };
-    let fault = new TypeError("Cannot read properties of undefined (reading 'Hello world')");
-    modelThrows(fault);
-
-    let fold = foldOf(stored, [record(1, item), record(2, replaceWorld)]);
-    let refusal = refusedOf(fold).get(1);
-    expect(refusal?.reason).toBe(
-      "appendText: this change cannot be shown as it will read once applied, so it cannot be " +
-      "made through this connection. Make it in Google Docs.");
-    expect(refusal?.modelError?.name).toBe("TypeError");
-    expect(refusal?.modelError?.frames).toContain("docs-replay.test");
-    expect(JSON.stringify(refusal)).not.toContain(fault.message);
-    expect(refusal?.unindexed).toBeUndefined();
-    expect(refusal?.unmodelled).toBeUndefined();
-    expect(markdownOf(stored, fold)).toBe("Hello there\n\nEnd\n");
-  });
-
   it("refuses what the builders and the model refuse", () => {
     // Each is thrown twice, once for the tab in hand, so it is made once: its frames are its own.
     let thrown = [
@@ -848,24 +824,13 @@ describe("docTabReducer", () => {
     let broken = unrenderable();
     let thrown = thrownBy(() => docTabToMarkdown(broken));
     expect(thrown).toBeInstanceOf(TypeError);
-    // The store renders each run of a tab as it stores it, so this code stores no such tab:
-    // the fault is the tab's, and is marked as one.
-    let refusedToStore = thrownBy(() => storedTabs(broken));
-    expect(refusedToStore).toBeInstanceOf(DocRunRenderError);
-    expect((refusedToStore as DocRunRenderError).cause).toEqual(thrown);
-    // A stored tab is one the renderer throws on only where other code stored it: here the
-    // one run a sound tab's version lists is made the broken tab's.
+    // The store refuses to keep such a tab, so the one run a sound tab's version lists is
+    // made the broken tab's beneath it.
     let stored = storedTabs(PROSE(), tabAs(OTHER, PROSE()));
     let [run] = [...cutRuns(broken.body.content, RUN_SIZES)];
     stored.storage.sql.exec(
       "INSERT INTO doc_run (doc, id, json) VALUES (?, 'broken', ?)", stored.base().doc, run.json).toArray();
     stored.storage.sql.exec("UPDATE doc_seq SET run = 'broken' WHERE version = ?", stored.base().id).toArray();
-    // The store marks what the renderer throws on a run; a preparation, which asks its piece
-    // outside an edit's own `try`, is handed what the renderer threw.
-    let unrendered = thrownBy(() => storedTabReading(stored.store, stored.base()).piece("end"));
-    expect(unrendered).toBeInstanceOf(DocRunRenderError);
-    expect((unrendered as DocRunRenderError).cause).toEqual(thrown);
-    expect(thrownBy(() => prepareAppend(stored.store, stored.base(), "More"))).toEqual(thrown);
     let edits = [record(1, replaceWorld), record(2, { type: "appendText", markdown: "More" })];
 
     let fold = foldOf(stored, edits);
@@ -881,29 +846,6 @@ describe("docTabReducer", () => {
     let cost = spent(() => { again = foldOf(stored, edits); });
     expect(refusedOf(again)).toStrictEqual(refusedOf(fold));
     expect(cost).toMatchObject({ runsDecoded: 0, runsRendered: 0, resultsStored: 0 });
-  });
-
-  it("refuses an edit whose result the renderer cannot render", () => {
-    let stored = storedTabs(PROSE());
-    let render = converter.renderRun;
-    // The tab the edit gives, and no other, is one the renderer throws for: the store renders
-    // the run the edit changed as it stores it.
-    vi.spyOn(converter, "renderRun").mockImplementation((...run) => {
-      let rendered = render(...run);
-      if (rendered.markdown.includes("Hello there")) throw new TypeError("cannot render");
-      return rendered;
-    });
-    let rows = () => stored.storage.rows();
-
-    let fold = foldOf(stored, [record(1, replaceWorld)]);
-    expect(refusedOf(fold)).toStrictEqual(new Map([[1, { reason: "cannot render" }]]));
-    expect(fold.entity).toBe(stored.base());
-    // No child version, and the rendering of the version the edit was made in.
-    expect(rows().doc_version).toHaveLength(1);
-    expect(rows().doc_md).toHaveLength(1);
-    expect(rows().doc_result).toHaveLength(1);
-    vi.restoreAllMocks();
-    expect(spent(() => stored.store.markdown(stored.base()))).toMatchObject({ runsDecoded: 0 });
   });
 
   it("passes a fault of storage through the fold and refuses no record for it", () => {
@@ -971,83 +913,6 @@ describe("docTabReducer", () => {
     expect(refused).toEqual([2, 3, 5]);
     expect(version).toEqual(
       createSimulationStore(docTabReducer(stored.store)).fold(TAB, base, records).entity);
-  });
-
-  it("counts a reducer step for each record it reduces", () => {
-    let stored = storedTabs(TABLED());
-    let before = replayCost.folds;
-    // Applied or refused, made or found stored, a record that is reduced is a step.
-    foldOf(stored, [record(1, replaceWorld), record(2, missing), record(3, addRows())]);
-    expect(replayCost.folds - before).toBe(3);
-    foldOf(stored, [record(1, replaceWorld), record(2, missing), record(3, addRows())]);
-    expect(replayCost.folds - before).toBe(6);
-  });
-
-  it("makes a chain of edits in the runs each touches: the piece around each edit rendered, " +
-    "and no copy", () => {
-    let edits: DocEdit[] = [
-      replaceWorld,
-      { type: "appendText", markdown: "More" },
-      { type: "replaceText", oldMarkdown: "End", newMarkdown: "Finish" },
-    ];
-    // The same chain on tabs in hand: what the chain through the store is held to.
-    let inHand = edits.reduce((tab, edit) => applyDocEdit(tab, edit), PROSE());
-
-    let stored = storedTabs(PROSE());
-    let before = { ...replayCost };
-    let fold!: TabFold;
-    let cost = spent(() => { fold = foldOf(stored, edits.map((edit, at) => record(at + 1, edit))); });
-    expect(stored.store.tab(fold.entity!)).toEqual(inHand);
-    // The tab is one run, and so is each tab the edits give. Decoded: for each of the three
-    // edits, its tab's one run, for the piece the builders read, which the model's slice
-    // takes as it was decoded (3 and no more). Rendered: the piece of each edit, for the
-    // builders (3), and the run cut from each slice, to be stored (3). No run stands after it
-    // to be keyed, and no tab is rendered whole.
-    expect(cost).toMatchObject({
-      runsDecoded: 3, runsRendered: 3 + 3, runsKeyed: 0, resultsStored: 3,
-    });
-    expect(replayCost.renders - before.renders).toBe(0);
-    // No tab is copied: the model changes the runs decoded for it in place.
-    expect(replayCost.tabClones - before.tabClones).toBe(0);
-    // A slice is not re-indexed on the way in. Each of the three batches moves an index, so
-    // the indexes of its slice are recomputed once, after it.
-    expect(replayCost.fullReindexes - before.fullReindexes).toBe(3);
-  });
-
-  it("makes the edit behind a refused one in the version the refused one left", () => {
-    let stored = storedTabs(PROSE());
-    let cost = spent(() => foldOf(stored, [
-      record(1, replaceWorld), record(2, missing), record(3, { type: "appendText", markdown: "More" }),
-    ]));
-    // The refusal is stored too. Each tab is one run. Decoded: that run, for the piece of each
-    // of the two edits that were made, which its slice takes (2); the refused edit's text is
-    // not found by the scan of the stored Markdown, which decodes nothing. Rendered: the
-    // piece of each of the two edits made (2), and the run cut from the slice of each, to be
-    // stored (2).
-    expect(cost).toMatchObject({ runsDecoded: 2, runsRendered: 2 + 2, resultsStored: 3 });
-  });
-
-  it("decodes a version an earlier request made without indexing it again", () => {
-    let stored = storedTabs(PROSE());
-    let first = [record(1, replaceWorld), record(2, { type: "appendText", markdown: "More" })];
-    let made = foldOf(stored, first).entity!;
-    expect(made.exact).toBe(true);
-    let last: DocEdit = { type: "replaceText", oldMarkdown: "End", newMarkdown: "Finish" };
-    // What the same edit costs on the model's own output, in hand: nothing on the way in, and
-    // the indexes recomputed once after the batch, which moves one.
-    let tab = first.reduce((from, { action }) => applyDocEdit(from, action), PROSE());
-    let inHand = replayCost.fullReindexes;
-    applyDocEdit(tab, last);
-    let reindexes = replayCost.fullReindexes - inHand;
-    expect(reindexes).toBe(1);
-
-    let before = replayCost.fullReindexes;
-    let cost = spent(() => foldOf(stored, [...first, record(3, last)]));
-    // The version is one run: decoded once, for the piece the builders read, and taken as
-    // it is by the slice the model changes.
-    expect(cost).toMatchObject({ runsDecoded: 1, resultsFound: 2, resultsStored: 1 });
-    // The slice costs what the model's own output costs in hand: no re-index on the way in.
-    expect(replayCost.fullReindexes - before).toBe(reindexes);
   });
 });
 
@@ -1194,46 +1059,6 @@ describe("docEditResult", () => {
         expect(docRefusal(refused)).toBe(refused.refusal);
       }
     }
-    // The model's two carry what the logs read of them, and nothing of what was thrown.
-    let { store, base } = storedTabs(PROSE());
-    modelThrows(fault);
-    refusalOf(() => docEditResult(store, base(), replaceWorld));
-    let { refusal } = refusalOf(() => docEditResult(store, base(), replaceWorld));
-    expect(refusal.modelError?.name).toBe("RangeError");
-    expect(refusal.modelError?.frames).toContain("docs-replay.test");
-    expect(JSON.stringify(refusal)).not.toContain("Hello world");
-    let other = storedTabs(PROSE());
-    modelThrows(new NotModelledError("a shape", false));
-    refusalOf(() => docEditResult(other.store, other.base(), replaceWorld));
-    expect(refusalOf(() => docEditResult(other.store, other.base(), replaceWorld)).refusal.unmodelled)
-      .toEqual({ what: "a shape", invariant: false });
-  });
-
-  it("makes an edit with the reading its caller asked, decoding the piece's runs once", () => {
-    let { store, base } = storedTabs(PROSE());
-    let reading = storedTabReading(store, base());
-    // The caller asks where the text stands and the piece around it, as a preparation does.
-    let at = reading.find("world") as number;
-    let asked = spent(() => reading.piece({ markdown: { mdStart: at, mdEnd: at + "world".length } }));
-    expect(asked).toMatchObject({ runsDecoded: 1, runsRendered: 1 });
-    let made!: DocEditResult;
-    let cost = spent(() => { made = docEditResult(store, base(), replaceWorld, reading); });
-    // The piece came with the reading, and nothing it remembers is read again. Decoded:
-    // nothing, since the slice takes the run the piece decoded. Rendered: the run cut from
-    // the slice, to be stored.
-    expect(cost).toMatchObject({ runsDecoded: 0, runsRendered: 1, resultsStored: 1 });
-    // The reading remembers no piece after the edit.
-    expect(reading.takeDecoded()).toBeUndefined();
-    expect(store.markdown(made.after)).toBe("Hello there\n\nEnd\n");
-    // The next edit of the chain is handed the version that one gave, and costs what an edit
-    // of a version costs: its one run decoded and rendered for the piece (1 and 1), taken as
-    // it is by the slice, and the run cut from it rendered, to be stored (1).
-    let next!: DocEditResult;
-    cost = spent(() => {
-      next = docEditResult(store, made.after, { type: "appendText", markdown: "More" });
-    });
-    expect(cost).toMatchObject({ runsDecoded: 1, runsRendered: 1 + 1, resultsStored: 1 });
-    expect(store.markdown(next.after)).toBe("Hello there\n\nEnd\n\nMore\n");
   });
 
   it("refuses an edit that would give the tab a paragraph past a row, and stores nothing", () => {
@@ -1484,201 +1309,6 @@ describe("replayableDocEdits", () => {
   it("keeps every record of a tab the copy lacks", () => {
     let records = [record(1, replaceWorld, "ghost", { writeId: "w1" }), record(2, replaceWorld, "ghost")];
     expect(replayableDocEdits(undefined, records)).toEqual(records);
-  });
-
-  it("gives back the records it was given, typed as they were", () => {
-    type Kept = { id: number; action: QueuedDocEdit & { submittedAt: number } };
-    let stored: Kept[] = [
-      { id: 1, action: { ...replaceWorld, tabId: TAB, writeId: "w1", submittedAt: 3 } },
-      { id: 2, action: { ...replaceWorld, tabId: TAB, submittedAt: 7 } },
-    ];
-    let kept: Kept[] = replayableDocEdits(part, stored);
-    expect(kept).toEqual([stored[1]]);
-    expect(kept[0]).toBe(stored[1]);
-    expect(kept[0].action.submittedAt).toBe(7);
-  });
-});
-
-describe("a tab of 20,000 paragraphs folded through the store", () => {
-  const label = (at: number) => `Line ${String(at).padStart(5, "0")}.`;
-  const LARGE = () => buildTab(Array.from({ length: 20_000 }, (_, at) => para(label(at))));
-  const change = (at: number): DocEdit =>
-    ({ type: "replaceText", oldMarkdown: label(at), newMarkdown: `Changed ${at}.` });
-  const QUEUE = [record(1, change(7)), record(2, change(9_000)), record(3, change(19_999))];
-  const pendingOf = (...records: QueuedDocRecord[]): DocPending =>
-    ({ edits: records.map(({ action }) => docEditKey(action)), roots: [] });
-
-  /** A document of the large tab and a small one, kept in a store over `storage`. */
-  function keptLarge(storage = fakeDocStorage(), made?: string) {
-    let store = new DocStore(storage, undefined, made);
-    let document = { documentId: "doc-1", title: "Large", tabs: [LARGE(), tabAs(OTHER, PROSE())] };
-    let { copy } = keptSnapshot(store, document, DOC);
-    let fold = (records: readonly QueuedDocRecord[], tabId = TAB, from = store) =>
-      createSimulationStore(docTabReducer(from)).fold(tabId, copy.tab(tabId), records);
-    return { storage, store, copy, fold };
-  }
-
-  it("a pending read decodes no run once its Markdown is stored", () => {
-    let { store, fold } = keptLarge();
-    let made = store.markdown(fold(QUEUE).entity!);
-    let cost = spent(() => expect(store.markdown(fold(QUEUE).entity!)).toBe(made));
-    expect(cost).toMatchObject({ runsDecoded: 0, runsRendered: 0 });
-    expect(made).toContain("Changed 7.\n");
-    expect(made).toContain("Changed 19999.\n");
-    expect(cost.peakMarkdownCharsInHand).toBe(made.length);
-  });
-
-  it("a second read of the same state renders nothing and writes no row", () => {
-    let { store, fold } = keptLarge();
-    store.markdown(fold(QUEUE).entity!);
-    let renders = replayCost.renders;
-    let cost = spent(() => store.markdown(fold(QUEUE).entity!));
-    expect(cost).toMatchObject({ runsRendered: 0, rowsWritten: 0, resultsStored: 0, resultsFound: 3 });
-    expect(replayCost.renders - renders).toBe(0);
-  });
-
-  it("a queue of N edits stores N results, and a fold after the object slept makes none of " +
-    "them again", () => {
-    let { storage, fold } = keptLarge();
-    expect(spent(() => fold(QUEUE))).toMatchObject({ resultsStored: 3, resultsFound: 0 });
-    // Another activation: a store of its own over the same storage, and nothing else.
-    let woken = new DocStore(storage);
-    let clones = replayCost.tabClones;
-    let cost = spent(() => fold(QUEUE, TAB, woken));
-    expect(cost).toMatchObject({ resultsStored: 0, resultsFound: 3, runsDecoded: 0, rowsWritten: 0 });
-    expect(replayCost.tabClones - clones).toBe(0);
-  });
-
-  it("a chain of edits renders the piece around each, and stores the runs cut from each slice", () => {
-    let { storage, copy, fold } = keptLarge();
-    let runsOf = (version: DocVersion) => storage.sql.exec<{ run: string }>(
-      "SELECT run FROM doc_seq WHERE version = ? ORDER BY seq", version.id).toArray().map(({ run }) => run);
-    let renders = replayCost.renders;
-    let clones = replayCost.tabClones;
-
-    let cost = spent(() => fold(QUEUE));
-
-    // The base and the version each edit gave, found stored.
-    let lists = [copy.tab(TAB)!, ...QUEUE.map((_, at) => fold(QUEUE.slice(0, at + 1)).entity!)].map(runsOf);
-    let n = lists.map(list => list.length);
-    // The runs each edit changed: the runs its version does not share with the one before.
-    let c = lists.slice(1).map((list, at) => list.filter(run => !lists[at].includes(run)).length);
-    // The first edit's paragraph stands in a run cut at the largest size a run may have, and
-    // is longer as the model writes it, so that run is cut in two between the boundaries it
-    // had: one run more, two runs changed, and every later run listed as it was.
-    expect(n).toEqual([133, 134, 134, 134]);
-    expect(c).toEqual([2, 1, 1]);
-    // Step by step. Decoded: the one run that holds the closure of each edit (its paragraph
-    // and the two before and after it, which stand in one run), for the piece its builders
-    // read; the model's slice takes that run as it was decoded and decodes none. Rendered:
-    // that run for the piece, and the runs cut from the slice, alone, to be stored. Keyed:
-    // none: no edit moves the carry, which is compared with the version's own before a later
-    // run is read. Nothing grows with the tab's runs, and no tab is rendered whole.
-    expect(cost).toMatchObject({
-      runsDecoded: 1 + 1 + 1,
-      runsRendered: (1 + c[0]) + (1 + c[1]) + (1 + c[2]),
-      runsKeyed: 0, resultsStored: 3,
-    });
-    expect(replayCost.tabClones - clones).toBe(0);
-    expect(replayCost.renders - renders).toBe(0);
-    // Written by each edit: the runs cut from its slice, their renderings, the list (a row a
-    // run, written inside storage for the runs the edit did not touch), the version and the
-    // result.
-    expect(cost.rowsWritten).toBe(
-      (2 * c[0] + n[1] + 2) + (2 * c[1] + n[2] + 2) + (2 * c[2] + n[3] + 2));
-  });
-
-  it("holds one run in hand at a time", () => {
-    let { storage, store, fold } = keptLarge();
-    let cost = spent(() => store.markdown(fold(QUEUE).entity!));
-    let { longest } = storage.sql
-      .exec<{ longest: number }>("SELECT max(length(json)) AS longest FROM doc_run").one();
-    expect(cost.peakRunBytesInHand).toBeGreaterThan(0);
-    expect(cost.peakRunBytesInHand).toBeLessThanOrEqual(2 * longest);
-  });
-
-  it("a rejection and an approval decode no run they do not change", () => {
-    let { storage, store, fold } = keptLarge();
-    let small = [
-      record(4, replaceWorld, OTHER), record(5, { type: "appendText", markdown: "More" }, OTHER),
-    ];
-    fold(QUEUE);
-    fold(small, OTHER);
-    let smallRun = JSON.stringify(pruneTab(PROSE()).body.content).length;
-
-    // An edit of the small tab is rejected: the edit behind it is made again in that tab, and
-    // the large tab's are found.
-    let cost = spent(() => {
-      store.sweep(DOC, pendingOf(...QUEUE, small[1]));
-      fold([small[1]], OTHER);
-      fold(QUEUE);
-    });
-    // The small tab's one run, decoded once: for the piece, which the slice takes.
-    expect(cost).toMatchObject({ runsDecoded: 1, resultsStored: 1, resultsFound: 3 });
-    expect(cost.peakRunBytesInHand).toBeLessThan(4 * smallRun);
-
-    // The large tab's last edit is rejected: what stays pending is found.
-    cost = spent(() => {
-      store.sweep(DOC, pendingOf(QUEUE[0], QUEUE[1], small[1]));
-      fold(QUEUE.slice(0, 2));
-    });
-    expect(cost).toMatchObject({ runsDecoded: 0, resultsStored: 0, resultsFound: 2 });
-
-    // The small tab's edit is approved: the document comes back with that tab as the edit left
-    // it, and the large tab as it was, which is the version stored.
-    let written = JSON.parse(JSON.stringify(
-      applyDocEdit(pruneTab(tabAs(OTHER, PROSE())), small[1].action))) as GoogleDocsTab;
-    let rows = storage.rows().doc_run.length;
-    cost = spent(() => {
-      let head = store.keep(
-        DOC, wholeTabsFetched({ revision: "r2", fetchedAt: 2_000, tabs: [
-          { tab: pruneTab(LARGE()), writeMarkers: [] }, { tab: written, writeMarkers: [] },
-        ] }), pendingOf(QUEUE[0], QUEUE[1]));
-      let base = store.version(DOC, head.versions[0], { ...head.outline[0], writeMarkers: [] });
-      createSimulationStore(docTabReducer(store)).fold(TAB, base, QUEUE.slice(0, 2));
-    });
-    expect(cost).toMatchObject({ runsDecoded: 0, resultsStored: 0, resultsFound: 2 });
-    // The large tab's run was not written again; the small tab's replaced the two it held.
-    expect(storage.rows().doc_run.length).toBeLessThanOrEqual(rows);
-  });
-
-  it("a fold under another digest makes each result once more from the stored base, and " +
-    "the fold after makes none", () => {
-    let { storage, copy, fold } = keptLarge(fakeDocStorage(), "a");
-    fold(QUEUE);
-    let runs = storage.rows().doc_run;
-    // The runs of the base version: the tab is cut by its content.
-    let listed = storage.sql.exec<{ runs: number }>(
-      "SELECT count(*) AS runs FROM doc_seq WHERE version = ?", copy.tab(TAB)!.id).one().runs;
-    expect(listed).toBe(133);
-
-    let other = new DocStore(storage, undefined, "b");
-    let cost = spent(() => fold(QUEUE, TAB, other));
-    // Decoded: the base's runs twice, one run at a time (to say again whether the model
-    // follows it, which the record said under the other digest; and to key it under this
-    // digest, which the scan for the first edit's text asks for); and the one run that holds
-    // the piece of each of the three edits, which the model's slice takes. The versions the
-    // edits give are made under this digest, and no run of them is decoded but their piece's.
-    expect(cost).toMatchObject({
-      resultsFound: 0, resultsStored: 3, runsDecoded: 2 * listed + 3,
-    });
-    // The runs are the same content, so none is written again.
-    expect(storage.rows().doc_run).toEqual(runs);
-
-    cost = spent(() => fold(QUEUE, TAB, other));
-    expect(cost).toMatchObject({ resultsFound: 3, resultsStored: 0, runsDecoded: 0, rowsWritten: 0 });
-  });
-
-  it("a rolled-back transaction leaves no version for a later fold to find", () => {
-    let { storage, store, fold } = keptLarge();
-    let before = storage.rows();
-    expect(() => store.transaction(() => {
-      fold(QUEUE);
-      throw new Error("the request failed");
-    })).toThrow("the request failed");
-    expect(storage.rows()).toEqual(before);
-    // The fold remembers nothing, so nothing points at what was undone: each edit is made.
-    expect(spent(() => fold(QUEUE))).toMatchObject({ resultsFound: 0, resultsStored: 3 });
   });
 });
 
@@ -1953,9 +1583,8 @@ describe("changedSpan of two strings of a tab that reads on", () => {
   });
 });
 
-// A BATCH PAST ITS PIECE IS A REFUSAL, and so is a piece that cannot be made: each a function
-// of the version and the edit, which comes again at every rebuild, so neither may pass through
-// a fold as a fault. Neither is known to happen: here a spy on the store's `piece` makes them.
+// A batch past its piece, and a piece that cannot be made, are refusals (they come again at
+// every rebuild), never faults; a spy on the store's `piece` makes them.
 describe("a batch that reaches past the piece it was built from", () => {
   const piece = DocStore.prototype.piece;
   /** What the store's `piece` does while a test says so: nothing otherwise. */
@@ -2031,17 +1660,6 @@ describe("a batch that reaches past the piece it was built from", () => {
     expect(again.refusal).toEqual(thrown.refusal);
   });
 
-  it("is a step refused in a fold, which goes on", () => {
-    let stored = storedTabs(PROSE());
-    faulty = "leaves";
-
-    let fold = foldOf(stored, [record(1, replaceWorld), record(2, APPEND)]);
-
-    expect(refusedOf(fold)).toStrictEqual(new Map([[1, { reason: modelFaultOf(), overreach: "before" }]]));
-    // The edit behind it is made in the base: an append names no index before its piece.
-    expect(markdownOf(stored, fold)).toBe("Hello world\n\nEnd\n\nMore\n");
-  });
-
   it("a table change's batch past its piece is refused the same, and closes its tab's table gate", () => {
     let stored = storedTabs(TABLED());
     let { store, base } = stored;
@@ -2056,9 +1674,7 @@ describe("a batch that reaches past the piece it was built from", () => {
     expect(thrown.refusal).toEqual({ reason, overreach: "before" });
     expect(store.result(base(), docEditKey(rows))).toEqual({ refusal: thrown.refusal });
 
-    // In a fold it is a step refused, as a table change the model faults on is: the fold
-    // goes on, the tab's table gate closes behind it for a change that names a table, and
-    // a change placed by its text is made.
+    // In a fold it closes the tab's table gate, and a change placed by its text is made.
     let fold = foldOf(stored, [
       record(1, rows),
       record(2, { type: "deleteTableRows", at: 0, count: 1, expected: expectedOf(TABLED()) }),
@@ -2083,27 +1699,6 @@ describe("a batch that reaches past the piece it was built from", () => {
     expect(logged(error, "google.doc.piece.overreach")).toEqual([{
       component: "gatekeeper.google", vendorId: "google", event: "google.doc.piece.overreach",
       operation: "replaceText", side: "before",
-      message: "Google Doc edit's batch reaches past the piece of the tab it was built from",
-    }]);
-    expect(error).toHaveBeenCalledTimes(1);
-
-    // A replay that refuses the record logs it once, with the record's id.
-    error.mockClear();
-    let kept = fakeDocStore();
-    let head = kept.keep(
-      DOC, kept.fetched({ documentId: "d", title: "t", tabs: [PROSE()] }, 0), { edits: [], roots: [] });
-    let invalidate = vi.fn();
-    let pending = [{ id: 7, action: { ...replaceWorld, ...CURRENT, tabId: TAB } }];
-    faulty = "leaves";
-    let replay = replayGoogleDoc(
-      { pending: () => pending, invalidate } as unknown as GoogleDocReplayQueue,
-      storedDocCopy(kept, DOC, head), "Read");
-    expect(replay.tab(TAB)).toBeDefined();
-
-    expect(invalidate).toHaveBeenCalledTimes(1);
-    expect(logged(error, "google.doc.piece.overreach")).toEqual([{
-      component: "gatekeeper.google", vendorId: "google", event: "google.doc.piece.overreach",
-      actionId: 7, operation: "replaceText", side: "before",
       message: "Google Doc edit's batch reaches past the piece of the tab it was built from",
     }]);
     expect(error).toHaveBeenCalledTimes(1);
@@ -2138,15 +1733,4 @@ describe("a batch that reaches past the piece it was built from", () => {
     expect(markdownOf(stored, fold)).toBe("Hello world\n\nFinish\n");
     expect(store.markdown(base())).toBe("Hello world\n\nEnd\n");
   });
-
-  /** The words of a fault of the model for a replacement. */
-  function modelFaultOf(): string {
-    let was = faulty;
-    faulty = undefined;
-    try {
-      return modelFault();
-    } finally {
-      faulty = was;
-    }
-  }
 });

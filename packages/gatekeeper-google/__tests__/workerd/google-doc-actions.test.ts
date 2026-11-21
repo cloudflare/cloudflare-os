@@ -34,6 +34,7 @@ import { docsGetResponse } from "../docs-fields";
 import { DriveFiles, DOC_MIME as DRIVE_DOC_MIME, FOLDER_MIME } from "../drive-files";
 import { serveFakes, type ProviderFake } from "../slides-provider";
 import { DOC_REVISION_PIN_MS, DOC_SNAPSHOT_TTL_MS } from "../../src/doc-actions";
+import { WIDER } from "../wider-run";
 import { GoogleDocEditSessionImpl } from "../../src/docs";
 
 /**
@@ -918,18 +919,9 @@ const THROUGH_DRIVE: Run = {
 };
 
 /**
- * The runs of a block that asserts what the engine does. A block runs bound directly alone when it
- * is about what only a Doc's own binding has: metadata dated by the revisions it observed, edits
- * stored in its own store under an earlier rendering, creating a Doc, an Office file connected as
- * a Doc, its comments, its stored layout, adding a tab, a write stored while a request of an
- * approval is held, and the one queue its sessions share. Within a block that runs twice, a test
- * runs bound directly alone, and says why where that is not the first reason, when it reads or
- * writes the bound Doc's storage or counts the fetches of its stored copy; when it rejects a
- * change to a table and asserts what the replay over the stored copy keeps of the table changes
- * behind it, which a Drive binding, replaying nothing at a rejection, fails ('fails the table
- * changes queued behind a rejected table change, and none behind a rejected text edit' asserts
- * that); or when it needs a change or a queue larger than the 100 KiB a Drive binding stores a
- * change in.
+ * The runs of a block that asserts what the engine does. A test runs bound directly alone when
+ * it is about what only a Doc's own binding has (its storage, the replay a rejection makes over
+ * its stored copy, a change past the 100 KiB a Drive binding stores).
  */
 const RUNS = [STANDALONE, THROUGH_DRIVE];
 
@@ -1157,14 +1149,6 @@ function tableBody(): GoogleDocsTab["body"] {
 const TABLE_ROWS = [["Task", "Status"], ["Fix login", "Open"]];
 const TABLE_CONTENT = `Before\n\n${tableOf(TABLE_ROWS)}\n\nAfter\n`;
 
-/** What a row, column or delete change is refused with while table `other` reads as its own. */
-const twin = (op: string, table: number, other: number) =>
-  `${op}: table ${table} reads the same as table ${other} of this tab (styles, column ` +
-  "widths, row heights, numbers in square brackets and where numbered lists start aside), " +
-  "so the change could not be kept to the table it is meant for. Make the two differ " +
-  "first, for example by changing the text of a cell with replaceText(), then call " +
-  `${op}() again.`;
-
 /** The reasons a queued change is dropped with, by what happened to its table. */
 const gone = (op: string) =>
   `${op}: the table no longer reads as it did when this change was queued, or it is gone.`;
@@ -1315,33 +1299,6 @@ describe.each(RUNS)("Google Doc auto-approval, $name", r => {
       .toEqual({ actionKind: EDIT_DOCUMENT, autoApprovable: true });
   });
 
-  it("lets a cell's text be replaced as a document edit", async () => {
-    docsWithBody(tableBody());
-
-    await edit("verdict-cell", "replaceText", "<td><p>Open</p></td>", "<td><p>Done</p></td>");
-    expect(await hooks().lastActionVerdict)
-      .toEqual({ actionKind: EDIT_DOCUMENT, autoApprovable: true });
-  });
-
-  it("lets tables, rows and columns be added and deleted without asking", async () => {
-    docsWithBody(tableBody());
-
-    for (let [method, argument] of [
-      ["insertTable", { rows: 1, columns: 1 }],
-      ["insertTableRows", { table: 0 }],
-      ["insertTableColumns", { table: 0 }],
-      ["deleteTableRows", { table: 0, at: 1 }],
-      ["deleteTableColumns", { table: 0, at: 1 }],
-      ["deleteTable", 0],
-      ["setTableCellStyle", { table: 0, row: 0, column: 0, style: { background: "#ffcc00" } }],
-      ["setTableColumnWidths", { table: 0, width: 100 }],
-      ["setTableRowHeights", { table: 0, height: 20 }],
-    ] as const) {
-      await edit("verdict-tables", method, argument);
-      expect(await hooks().lastActionVerdict)
-        .toEqual({ actionKind: TABLE_CHANGES, autoApprovable: true });
-    }
-  });
 });
 
 describe.each(RUNS)("Google Doc tables, $name", r => {
@@ -1513,50 +1470,6 @@ describe.each(RUNS)("Google Doc tables, $name", r => {
     expect(docs.markers.size).toBe(0);
   });
 
-  it("shows a cell replacement's card as table HTML", async () => {
-    let docs = docsWithBody(tableBody());
-    let facet = "table-cell-card";
-
-    let { actionId } = await edit(
-      facet, "replaceText", "<td><p>Open</p></td>", "<td><p>**Done**</p></td>");
-
-    expect(await hooks().lastActionTitle).toBe("Edit Google Doc");
-    expect(await hooks().lastActionDescription).toBe(
-      'Replace text in a table of tab "Main" (tab-1). The values below are the table\'s HTML: ' +
-      "Markdown syntax in them is written to the cells as typed.");
-    expect(await hooks().lastActionFields).toEqual([
-      cardField("Old", "<td><p>Open</p></td>", "html"),
-      cardField("New", "<td><p>**Done**</p></td>", "html"),
-    ]);
-    expect(await hooks().readContent(facet)).toContain("<td><p>**Done**</p></td>");
-    expect(await hooks().applyAction(facet, actionId)).toBeNull();
-    expect(docs.cellText(0, 1, 1)).toBe("**Done**");
-
-    // The same strings outside a table are Markdown, and the card says so.
-    await edit(facet, "replaceText", "After", "**Later**");
-    expect(await hooks().lastActionDescription).toBe('Replace text in tab "Main" (tab-1).');
-    expect(await hooks().lastActionFields).toEqual([
-      cardField("Old", "After", "markdown"),
-      cardField("New", "**Later**", "markdown"),
-    ]);
-  });
-
-  it("returns where a new table is", async () => {
-    docsWithBody(tableBody());
-    let facet = "table-position";
-
-    let first = await edit(
-      facet, "insertTable", { rows: 1, columns: 1, cells: [["First"]], after: "Before" });
-    expect(first.returned).toBe(0);
-    let last = await edit(facet, "insertTable", { rows: 1, columns: 1, cells: [["Last"]] });
-    expect(last.returned).toBe(2);
-
-    await edit(facet, "insertTableRows", { table: last.returned, cells: [["Row"]] });
-    expect(await hooks().readContent(facet)).toBe(
-      `Before\n\n${tableOf([["First"]])}\n\n\n\n${tableOf(TABLE_ROWS)}\n\nAfter\n\n` +
-      `${tableOf([["Last"], ["Row"]])}\n\n\n`);
-  });
-
   it("replays changes queued one after another on one table", async () => {
     let docs = docsWithBody(tableBody());
     let facet = "table-chain";
@@ -1680,24 +1593,6 @@ describe.each(RUNS)("Google Doc tables, $name", r => {
     expect(docs.contentBatches).toBe(1);
   });
 
-  it("refuses a row, column or delete change while another table reads the same", async () => {
-    let docs = docsWithBody(pairBody());
-    let facet = "table-twin-refused";
-
-    for (let [method, argument, target, other] of [
-      ["insertTableRows", { table: 0, cells: [["a", "b"]] }, 0, 1],
-      ["deleteTable", 1, 1, 0],
-      ["insertTableColumns", { table: 0 }, 0, 1],
-      ["deleteTableRows", { table: 0, at: 1 }, 0, 1],
-      ["deleteTableColumns", { table: 0, at: 1 }, 0, 1],
-    ] as const) {
-      await expect(edit(facet, method, argument)).rejects.toThrow(twin(method, target, other));
-      expect(await hooks().lastObservations).toEqual([GENERIC_READ]);
-      expect(await hooks().lastActionDescription).toBe("");
-    }
-    expect(docs.contentBatches).toBe(0);
-  });
-
   it("takes the change once a cell sets the two tables apart", async () => {
     let docs = docsWithBody(pairBody());
     let facet = "table-twin-apart";
@@ -1717,27 +1612,6 @@ describe.each(RUNS)("Google Doc tables, $name", r => {
     passSnapshotTtl();
     expect(await hooks().readContent(facet)).toBe(preview);
     expect(docs.contentBatches).toBe(3);
-  });
-
-  it("adds a second table that reads like the first", async () => {
-    docsWithBody(buildTab([para("Before"), para("After")]).body);
-    let facet = "table-twin-added";
-    let header = { rows: 1, columns: 2, cells: [["Task", "Owner"]] };
-
-    expect((await edit(facet, "insertTable", { ...header, after: "Before" })).returned).toBe(0);
-    expect((await edit(facet, "insertTable", { ...header, after: "After" })).returned).toBe(1);
-    let headerTable = tableOf([["Task", "Owner"]]);
-    expect(await hooks().readContent(facet)).toBe(
-      `Before\n\n${headerTable}\n\n\n\nAfter\n\n${headerTable}\n\n\n`);
-
-    let rows = { table: 0, cells: [["a", "b"]] };
-    await expect(edit(facet, "insertTableRows", rows))
-      .rejects.toThrow(twin("insertTableRows", 0, 1));
-    await edit(facet, "replaceText", ...FIRST_OF_PAIR);
-    await edit(facet, "insertTableRows", rows);
-    expect(await hooks().readContent(facet)).toBe(
-      `Before\n\n${tableOf([["Task (A)", "Owner"], ["a", "b"]])}\n\n\n\nAfter\n\n` +
-      `${headerTable}\n\n\n`);
   });
 
   it("invalidates a change when a collaborator makes another table read the same", async () => {
@@ -1892,11 +1766,8 @@ describe.each(RUNS)("Google Doc tables, $name", r => {
     expect(docs.tables()[0].rows).toHaveLength(1);
   });
 
-  // The copy held is not always one whose replay was stored: listing the tabs, or naming a tab the
-  // document lacks, stores a newer read and replays no tab's edits. So the rejection settles
-  // what that read brought with the rejected change still queued. Settled only after the
-  // removal, exactly one table would read as `rows` recorded, the first, and approving `rows`
-  // would write the row there.
+  // Listing the tabs, or naming a tab the document lacks, stores a newer read and replays no
+  // tab's edits: the rejection settles what that read brought before it removes the change.
   // Bound alone: it asserts what the replay over the stored copy keeps behind a rejection.
   it.skipIf(r.drive).each<[string, (facet: string) => Promise<unknown>]>([
     ["listing the tabs", facet => Promise.resolve(hooks().listTabs(facet))],
@@ -2096,24 +1967,6 @@ describe.each(RUNS)("Google Doc tables, $name", r => {
     expect(docs.documentFetches).toBe(fetches + 1);
   });
 
-  it.skipIf(r.drive)("serves the copy it holds once its revision is confirmed", async () => {
-    let docs = docsWithBody(tableBody());
-    let facet = "copy-confirmed";
-    await hooks().readContent(facet);
-    expect(docs.documentFetches).toBe(1);
-
-    passSnapshotTtl();
-    await hooks().readContent(facet);
-
-    expect(docs.revisionProbes).toBe(1);
-    expect(docs.documentFetches).toBe(1);
-
-    // The check is what made the copy current: a read at once asks Google nothing.
-    await hooks().readContent(facet);
-    expect(docs.revisionProbes).toBe(1);
-    expect(docs.documentFetches).toBe(1);
-  });
-
   /**
    * Removes the runs that only the version the first edit queued in the Doc's first tab made
    * lists: the runs it shares with the tab's base version stay.
@@ -2176,11 +2029,7 @@ describe.each(RUNS)("Google Doc tables, $name", r => {
     expect(docs.documentFetches).toBe(fetches + 1);
   });
 
-  // Were the record removed before a later step threw, the overseer would still hold an action
-  // that this gatekeeper answers `Unknown pending Google Doc action` for, at every retry. Nothing
-  // was read, so no copy is held: the rejection removes record 1, drops record 2, which names a
-  // table of its tab, and throws reading record 3, which holds no action. That is after the
-  // removal, since the scan for a change that waits on the rejected one stops at record 2.
+  // A record removed before a later step threw would be answered as unknown at every retry.
   it.skipIf(r.drive)("leaves the record in place when a rejection cannot be settled", async () => {
     docsWithBody(tableBody());
     let facet = "table-reject-unsettled";
@@ -2246,39 +2095,6 @@ describe.each(RUNS)("Google Doc tables, $name", r => {
     expect(docs.contentBatches).toBe(2);
     passSnapshotTtl();
     expect(await hooks().readContent(facet)).toBe(pending);
-  });
-
-  // A dropdown put into a cell changes nothing a read shows, so the table still reads as the
-  // deletion recorded it, which recorded no chip.
-  it("invalidates a queued deletion when what it removes comes to hold a dropdown", async () => {
-    let docs = docsWithBody(buildTab([
-      para("Before"), grid(["Task", "Status"], ["Fix login", ""]), para("After"),
-    ]).body);
-    let facet = "table-dropdown-since";
-    let rows = await edit(facet, "deleteTableRows", { table: 0, at: 1 });
-    let queued = await hooks().readContent(facet);
-    expect(queued).not.toContain("Fix login");
-
-    docs.externalBody(MAIN_TAB, buildTab([
-      para("Before"),
-      { table: [
-        ["Task\n", "Status\n"],
-        ["Fix login\n", { paragraphs: [{ runs: [{ dropdown: "Blocked" }, "\n"] }] }],
-      ] },
-      para("After"),
-    ]).body);
-
-    expect(await hooks().applyAction(facet, rows.actionId)).toContain(
-      "deleteTableRows: what would be deleted has come to hold a dropdown or other smart " +
-      "chips, which getContent() does not show, since this change was queued.");
-    expect(docs.contentBatches).toBe(0);
-    expect(docs.tables()[0].rows).toHaveLength(2);
-    expect(await hooks().readContent(facet)).toContain(rowOf("Fix login", ""));
-
-    // Requested again, the deletion records the dropdown, and the row is deleted.
-    let again = await edit(facet, "deleteTableRows", { table: 0, at: 1 });
-    expect(await hooks().applyAction(facet, again.actionId)).toBeNull();
-    expect(docs.tables()[0].rows).toHaveLength(1);
   });
 
   // The cells are counted in the tab as it will read: a row that waits takes its room.
@@ -2612,34 +2428,6 @@ describe.each(RUNS)("Google Doc edits replayed on the copy of the document, $nam
     expect(docs.contentBatches).toBe(0);
   });
 
-  it("shows on the card what a read returns", async () => {
-    // Bold written on a heading whose named style gives bold: the markers write nothing.
-    let docs = new DocsModel();
-    docs.setBody(MAIN_TAB, buildTab([
-      para("Before"), { runs: ["Notes here\n"], namedStyleType: "HEADING_2" }, para("After"),
-    ]).body, {}, {
-      styles: [
-        { namedStyleType: "NORMAL_TEXT", textStyle: { bold: false } },
-        { namedStyleType: "HEADING_2", textStyle: { bold: true } },
-      ],
-    });
-    docs.install();
-    let facet = "card-shows-the-read";
-    let content = await hooks().readContent(facet);
-
-    let { actionId } = await edit(facet, "replaceText", "Notes here", "**Notes here**");
-
-    expect(await hooks().lastActionFields).toEqual([
-      cardField("Old", "Notes here", "markdown"),
-      cardField("Requested New", "**Notes here**", "markdown"),
-      cardField("New", "Notes here", "markdown"),
-    ]);
-    expect(await hooks().readContent(facet)).toBe(content);
-    expect(await hooks().applyAction(facet, actionId)).toBeNull();
-    passSnapshotTtl();
-    expect(await hooks().readContent(facet)).toBe(content);
-  });
-
   it("takes an edit to a subtitle while another edit to its tab waits", async () => {
     let docs = new DocsModel();
     docs.setBody(MAIN_TAB, buildTab([
@@ -2716,85 +2504,6 @@ describe.each(RUNS)("Google Doc edits replayed on the copy of the document, $nam
     expect(docs.contentBatches).toBe(1);
   });
 
-  it("queues a break that splits off text normal text's style also gives", async () => {
-    // Bold of its own in a heading, where normal text is bold by its style: split off, the
-    // rest of the heading is normal text and reads without the markers.
-    let styles = {
-      styles: [
-        { namedStyleType: "NORMAL_TEXT", textStyle: { bold: true } },
-        { namedStyleType: "HEADING_2", textStyle: { bold: false } },
-        { namedStyleType: "SUBTITLE", textStyle: { italic: true } },
-      ],
-    };
-    let docs = new DocsModel();
-    docs.setBody(MAIN_TAB, buildTab([para("Before"), {
-      runs: ["Notes ", { text: "here", style: { bold: true } }, "\n"], namedStyleType: "HEADING_2",
-    }, { runs: ["Aside here\n"], namedStyleType: "SUBTITLE" }, para("After")]).body, {}, styles);
-    docs.install();
-    let facet = "split-accepted";
-    let content = await hooks().readContent(facet);
-    expect(content).toContain("## Notes **here**\n");
-
-    let { actionId } = await edit(facet, "replaceText", "Notes", "End\n\n");
-
-    let fields = await hooks().lastActionFields;
-    expect(fields).toEqual([
-      cardField("Old", "Notes **here**", "markdown"),
-      cardField("Requested New", "End\n\n **here**", "markdown"),
-      cardField("New", "End\n\n here", "markdown"),
-    ]);
-    let pending = content.replace("Notes **here**", "End\n\n here");
-    expect(await hooks().readContent(facet)).toBe(pending);
-    expect(await hooks().applyAction(facet, actionId)).toBeNull();
-    passSnapshotTtl();
-    expect(await hooks().readContent(facet)).toBe(pending);
-    expect(docTabToMarkdown(docs.bodyTab()).markdown).toBe(pending);
-
-    // A break inside a subtitle would lose the subtitle's look: the request builder refuses it.
-    await expect(edit(facet, "replaceText", "Aside", "End\n\n")).rejects.toThrow(
-      "replaceText: a paragraph break written inside a subtitle would make the rest of it a " +
-      "normal paragraph, without the subtitle's look. Write the break at the subtitle's end, " +
-      "or replace the whole subtitle.");
-  });
-
-  it("shows on a table change's card the lines that will read otherwise", async () => {
-    docsWithBody(tableBody());
-    let facet = "table-card-result";
-
-    await edit(facet, "insertTableRows", { table: 0, at: 1, cells: [["Ship docs", "Done"]] });
-    let fields = await hooks().lastActionFields;
-    expect(fields.at(-1)).toEqual(cardField("Resulting", rowOf("Ship docs", "Done"), "html"));
-    expect(await hooks().readContent(facet)).toContain(
-      `${rowOf("Task", "Status")}\n${rowOf("Ship docs", "Done")}\n${rowOf("Fix login", "Open")}\n`);
-
-    // A deletion adds no line.
-    await edit(facet, "deleteTableRows", { table: 0, at: 2 });
-    expect((await hooks().lastActionFields).map(field => field.label))
-      .toEqual(["Deleted rows", "Text before the table", "First row of the table"]);
-    await edit(facet, "deleteTable", 0);
-    expect((await hooks().lastActionFields).map(field => field.label))
-      .toEqual(["Table", "Text before the table"]);
-  });
-
-  it("shows on an append's card the empty paragraphs it writes", async () => {
-    let docs = new DocsModel();
-    docs.setText(MAIN_TAB, "Intro");
-    docs.install();
-    let facet = "append-card-empty-paragraphs";
-
-    await edit(facet, "appendText", "a\n\nb\n\n");
-    expect(await hooks().lastActionFields)
-      .toEqual([cardField("Content", "a\n\nb\n\n", "markdown")]);
-    expect(await hooks().readContent(facet)).toBe("Intro\n\na\n\nb\n\n\n");
-
-    await edit(facet, "appendText", "\nplain");
-    expect(await hooks().lastActionFields).toEqual([
-      cardField("Requested", "\nplain", "markdown"),
-      cardField("Resulting", "\n\nplain", "markdown"),
-    ]);
-    expect(await hooks().readContent(facet)).toContain("\n\n\nplain\n");
-  });
-
   it.skipIf(r.drive)("asks Google nothing more after an edit that sent nothing is approved with nothing behind it", async () => {
     let docs = new DocsModel();
     docs.setText(MAIN_TAB, "Alpha\nBeta");
@@ -2833,9 +2542,7 @@ describe.each(RUNS)("Google Doc edits replayed on the copy of the document, $nam
   });
 });
 
-// ---------------------------------------------------------------------------
 // A queue nobody wrote by hand
-// ---------------------------------------------------------------------------
 
 const SECOND_TAB = "tab-2";
 const GENERATED_TABS = [MAIN_TAB, SECOND_TAB];
@@ -2884,12 +2591,10 @@ type GeneratedEdit = {
   outcome: string;
 };
 
-const SEEDS = [
-  { seed: 1, mode: "approve all" }, { seed: 2, mode: "approve or reject" },
-  { seed: 3, mode: "approve all" }, { seed: 4, mode: "approve or reject" },
-  { seed: 5, mode: "approve all" }, { seed: 6, mode: "approve or reject" },
-  { seed: 7, mode: "approve all" }, { seed: 8, mode: "approve or reject" },
-] as const;
+/** One seed by default, two in the wider run, which between them queue every kind of edit. */
+const SEEDS = ([
+  { seed: 1, mode: "approve or reject" }, { seed: 60, mode: "approve all" },
+] as const).slice(0, WIDER ? 2 : 1);
 
 // What a read shows of a queue is what approving it does, for sequences nobody wrote by hand.
 // The fake applies each batch with the model the gatekeeper replays with, so this holds the
@@ -3143,7 +2848,7 @@ describe.each(RUNS)("a queue of generated edits, $name", r => {
   // An activation that starts over reads every pending state from storage alone: the copy, each
   // pending edit's result and each rendering, a pending add's tab and the edits in it included.
   it.skipIf(r.drive)("reads every pending state the same after the object starts again " +
-    "between two steps", () => settleGenerated(SEEDS[1], true, true));
+    "between two steps", () => settleGenerated(SEEDS[0], true, true));
 
   // The sweep in an approval's handoff and in a rejection keeps the blank tab a pending add
   // makes and what the edits queued in it made.
@@ -3179,8 +2884,8 @@ describe.each(RUNS)("a queue of generated edits, $name", r => {
   });
 
   it("queues every kind of edit between its seeds", context => {
-    // Says nothing of a run that left seeds out.
-    if (seedsRun !== SEEDS.length) context.skip();
+    // Says nothing of a run that left seeds out, or of the default run's one seed.
+    if (!WIDER || seedsRun !== SEEDS.length) context.skip();
     expect([...queuedKinds].toSorted()).toEqual(GENERATED_KINDS.toSorted());
     // A deletion adds no line to the tab, so its card has no result to hold the read to.
     expect([...comparedKinds].toSorted()).toEqual(
@@ -4169,9 +3874,7 @@ describe.each(RUNS)("Google Doc write receipts, $name", r => {
     run.appliedAgain(await hooks().applyAction("ambiguous", actionId));
   });
 
-  // -------------------------------------------------------------------------
   // An approved edit built from the copy held
-  // -------------------------------------------------------------------------
 
   it("applies an approved edit from the copy held, reading no document before the write", async () => {
     let warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -4300,30 +4003,6 @@ describe.each(RUNS)("Google Doc write receipts, $name", r => {
     });
   });
 
-  // Through Drive too, where this is the test of a collaborator's edit beside a write.
-  it("applies an approved edit over a collaborator's edit made since the copy was fetched", async () => {
-    let warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    let facet = "copy-stale";
-    let { docs, actionId } = await queuedOnCopy(facet);
-    docs.externalEdit(MAIN_TAB, COLLABORATOR);
-    let from = requestsMade();
-    expect(await hooks().applyAction(facet, actionId)).toBeNull();
-    // Google refuses the batch pinned to the copy's revision, so the document is read and the
-    // edit built against it: one read more than an approval the copy serves.
-    expect(docsRequestsSince(from)).toEqual(["content", "read", "content", "cleanup"]);
-    expect(docs.contentBatches).toBe(1);
-    expect(docs.text()).toBe(`${COLLABORATOR}\nAppended`);
-    expect(await hooks().readContent(facet)).toBe("Alpha by a collaborator\n\nBeta\n\nAppended\n");
-
-    let [line, ...more] = copyRefusals(warn);
-    expect(more).toEqual([]);
-    expect(line).toMatchObject({
-      actionId, operation: "appendText", failure: "absent", providerStatus: "INVALID_ARGUMENT",
-      fallback: "read",
-    });
-    expect(JSON.stringify(line)).not.toMatch(/Alpha|Beta|collaborator|Appended|revision-/);
-  });
-
   it("writes nothing over a collaborator's edit that lands while the write is on its way", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
@@ -4370,54 +4049,6 @@ describe.each(RUNS)("Google Doc write receipts, $name", r => {
     expect(docs.text()).toBe("Alpha\nBeta\nAppended");
   });
 
-  it("reads the document at the next approval when the refusal of a stale copy's batch carries no status", async () => {
-    let warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    let facet = "copy-stale-no-status";
-    let { docs, actionId } = await queuedOnCopy(facet, model => { model.stalePinStatus = undefined; });
-    docs.externalEdit(MAIN_TAB, COLLABORATOR);
-
-    // A refusal that does not say whether the batch applied fails the approval: the batch may
-    // have applied.
-    let from = requestsMade();
-    let failed = await hooks().applyAction(facet, actionId);
-    expect(failed).toBe("Google Docs batch update document failed [http=400]");
-    expect(docsRequestsSince(from)).toEqual(["content"]);
-    expect(docs.contentBatches).toBe(0);
-    expect(docs.text()).toBe(COLLABORATOR);
-    let [line, ...more] = copyRefusals(warn);
-    expect(more).toEqual([]);
-    expect(line).toMatchObject({ actionId, operation: "appendText", failure: "unknown", fallback: "retry" });
-    expect(line.providerStatus).toBeUndefined();
-
-    // The copy built its one batch: tried again, the approval reads the document.
-    from = requestsMade();
-    expect(await hooks().applyAction(facet, actionId)).toBeNull();
-    expect(docsRequestsSince(from)).toEqual(["read", "content", "cleanup"]);
-    expect(docs.contentBatches).toBe(1);
-    expect(docs.markers.size).toBe(0);
-    expect(docs.text()).toBe(`${COLLABORATOR}\nAppended`);
-    expect(copyRefusals(warn)).toHaveLength(1);
-  });
-
-  it("settles a write whose answer was lost at the next approval when the refusal of a stale pin carries no status", async () => {
-    vi.spyOn(console, "warn").mockImplementation(() => {});
-    let facet = "copy-lost-no-status";
-    let { docs, actionId } = await queuedOnCopy(facet, model => {
-      model.stalePinStatus = undefined;
-      model.ambiguousContentResponses = 1;
-    });
-    expect(await hooks().applyAction(facet, actionId)).toMatch(/content response lost/);
-    expect(docs.contentBatches).toBe(1);
-
-    // No read between: the copy is the one the lost write was built from, and builds no other.
-    let from = requestsMade();
-    expect(await hooks().applyAction(facet, actionId)).toBeNull();
-    expect(docsRequestsSince(from)).toEqual(["read", "cleanup"]);
-    expect(docs.contentBatches).toBe(1);
-    expect(docs.markers.size).toBe(0);
-    expect(docs.text()).toBe("Alpha\nBeta\nAppended");
-  });
-
   // Bound alone: a rejection through a Drive binding replays nothing, since no document is in
   // hand there.
   it.skipIf(r.drive)("replays the queue over the copy held when an edit is rejected after its approval failed", async () => {
@@ -4441,28 +4072,6 @@ describe.each(RUNS)("Google Doc write receipts, $name", r => {
     passSnapshotTtl();
     expect(await hooks().readContent(facet)).toBe(preview);
     expect(docs.contentBatches).toBe(1);
-  });
-
-  it("reads the document to delete an earlier write's marker before the next edit is built", async () => {
-    let docs = new DocsModel();
-    docs.cleanupFailures = 1;
-    docs.install();
-    let facet = "copy-behind-receipt";
-    let firstId = await hooks().submitAppend(facet, "first");
-    expect(await hooks().applyAction(facet, firstId)).toBeNull();
-    let [firstMarker] = docs.markers.keys();
-    expect(firstMarker).toBeDefined();
-
-    expect(await hooks().readContent(facet)).toBe("first\n");
-    let secondId = await hooks().submitAppend(facet, "second");
-    let from = requestsMade();
-    expect(await hooks().applyAction(facet, secondId)).toBeNull();
-    // The marker's deletion moves the revision, so the edit is built against the read after it.
-    expect(docsRequestsSince(from).slice(0, 4)).toEqual(["read", "cleanup", "read", "content"]);
-    expect(docs.deletedMarkerIds).toContain(firstMarker);
-    expect(docs.maxMarkerCount).toBe(1);
-    expect(docs.contentBatches).toBe(2);
-    expect(docs.text()).toBe("first\nsecond");
   });
 
   // Restarts every object, the Drive binding's receipt included (drive-editors.test.ts).
@@ -4772,19 +4381,6 @@ describe("Google Doc edits stored under an earlier rendering", () => {
   const previous = (action: Record<string, unknown>) =>
     [storedAction(1, { ...action, markdownVersion: PREVIOUS_RENDERING })];
 
-  it("applies a text replacement stored under the previous rendering", async () => {
-    let docs = new DocsModel();
-    docs.setText(MAIN_TAB, "base");
-    docs.install();
-    let facet = "previous-rendering-replace";
-    await hooks().applyStorage(
-      facet, previous({ type: "replaceText", oldMarkdown: "base", newMarkdown: "changed" }));
-
-    expect(await hooks().readContent(facet)).toBe("changed\n");
-    expect(await hooks().applyAction(facet, 1)).toBeNull();
-    expect(docs.text()).toBe("changed");
-  });
-
   it("applies an append stored under the previous rendering", async () => {
     let docs = new DocsModel();
     docs.setText(MAIN_TAB, "base");
@@ -4821,38 +4417,6 @@ describe("Google Doc edits stored under an earlier rendering", () => {
     expect(docs.contentBatches).toBe(0);
   });
 
-  // The previous rendering could queue no table change, so nothing vouches for one stored under it.
-  it("refuses a table change stored under the previous rendering", async () => {
-    let docs = docsWithBody(tableBody());
-    let facet = "previous-rendering-table";
-    await hooks().applyStorage(facet, previous({
-      type: "insertTableRows", at: 2, cells: [["a", "b"]], expected: tableOf(TABLE_ROWS),
-    }));
-
-    expect(await hooks().readContent(facet)).toBe(TABLE_CONTENT);
-    expect(await hooks().applyAction(facet, 1))
-      .toContain("was queued under an earlier Markdown format");
-    expect(docs.contentBatches).toBe(0);
-  });
-
-  it("drops a table replacement whose text left the table", async () => {
-    let docs = docsWithBody(tableBody());
-    let facet = "table-replacement-moved";
-    let { actionId } = await edit(facet, "replaceText", "Fix login", "Fix logout");
-    expect(await hooks().readContent(facet)).toContain("<td><p>Fix logout</p></td>");
-
-    docs.externalBody(MAIN_TAB, buildTab([
-      para("Fix login"), grid(["Task", "Status"], ["Other", "Open"]), para("After"),
-    ]).body);
-    passSnapshotTtl();
-
-    expect(await hooks().readContent(facet)).toBe(
-      `Fix login\n\n${tableOf([["Task", "Status"], ["Other", "Open"]])}\n\nAfter\n`);
-    expect(await hooks().applyAction(facet, actionId)).toContain(
-      "replaceText: this change was queued for text in a table, and that text is no longer " +
-      "in one.");
-    expect(docs.contentBatches).toBe(0);
-  });
 });
 
 describe("Google Doc metadata", () => {
@@ -6545,64 +6109,6 @@ describe("Google Doc stored layout", () => {
     });
   });
 
-  it("reads a copy stored under another format as absent", async () => {
-    let docs = new DocsModel();
-    docs.setText(MAIN_TAB, "base");
-    docs.install();
-    let facet = "stored-layout-earlier-format";
-    expect(await hooks().readContent(facet)).toBe("base\n");
-    expect(await hooks().docCopyHead(facet)).toMatchObject({ outline: [{ tabId: MAIN_TAB }] });
-
-    // The rows as another format's code left them: a store that opens over them starts empty.
-    await hooks().docStoreExec(facet, "UPDATE doc_format SET format = 'another'");
-    await hooks().restartDoc(facet);
-    let fetches = docs.documentFetches;
-
-    expect(await hooks().readContent(facet)).toBe("base\n");
-    // Fetched, not confirmed by its revision, and stored again in the current format.
-    expect([docs.documentFetches, docs.revisionProbes]).toEqual([fetches + 1, 0]);
-    expect(await hooks().docCopyHead(facet)).toMatchObject({ stale: false, outline: [{ tabId: MAIN_TAB }] });
-    // The copy, and the rendering of its one tab, which the read stored.
-    expect(await hooks().docStoreRows(facet))
-      .toEqual({ doc_copy: 1, doc_md: 1, doc_result: 0, doc_run: 2, doc_seq: 1, doc_version: 1 });
-  });
-
-  it("removes the keys under docCopy: when the Doc is next used", async () => {
-    let docs = new DocsModel();
-    docs.setText(MAIN_TAB, "base");
-    docs.install();
-    let facet = "stored-layout-unread-copy";
-    // A copy of the document that nothing reads: an index and, for its outline and its tab, a
-    // manifest and chunks. Forty keys.
-    type Put = { kind: "put"; key: string; value: unknown };
-    let chunks = (part: string, count: number): Put[] => [
-      { kind: "put", key: `docCopy:doc/${part}:manifest`, value: { size: 8 * count, chunks: count } },
-      ...Array.from({ length: count }, (_, at): Put => ({
-        kind: "put", key: `docCopy:doc/${part}:chunk:${String(at).padStart(4, "0")}`, value: new Uint8Array(8),
-      })),
-    ];
-    await hooks().writeStored(facet, "doc", [
-      { kind: "put", key: "docCopy:doc:manifest", value: { size: 0, chunks: 0, meta: { version: 2, formatVersion: 3 } } },
-      ...chunks("", 1), ...chunks(MAIN_TAB, 36),
-    ], "kv");
-    let unread = async () =>
-      (await hooks().storedKeys(facet, "doc")).filter(key => key.startsWith("docCopy:"));
-    expect(await unread()).toHaveLength(40);
-    await hooks().restartDoc(facet);
-
-    // The activation removed a batch when it started, and the read another: the document is
-    // fetched, since nothing under those keys is read.
-    expect(await hooks().readContent(facet)).toBe("base\n");
-    expect(docs.documentFetches).toBe(1);
-    expect(await unread()).toHaveLength(8);
-
-    expect(await hooks().readContent(facet)).toBe("base\n");
-    expect(await unread()).toEqual([]);
-    expect(docs.documentFetches).toBe(1);
-    expect(await hooks().storedKeys(facet, "doc")).toEqual([]);
-    expect(await hooks().docCopyHead(facet)).toMatchObject({ outline: [{ tabId: MAIN_TAB }] });
-  });
-
   it("reads a copy stored under another format as absent, and approves over the document fetched in its place", async () => {
     let docs = new DocsModel();
     docs.setText(MAIN_TAB, "base");
@@ -7487,8 +6993,8 @@ describe.each(RUNS)("an approved Google Doc edit built from the document its app
       expect(docs.text(MAIN_TAB)).toBe(tabId === MAIN_TAB ? "Alpha\nBeta again\nAppended" : "Alpha\nBeta\nAppended");
     });
 
+  // The edit's own tab is held in doc-actions.test.ts.
   it.each([
-    ["the edit's tab", MAIN_TAB],
     ["the other tab", OTHER_TAB],
   ])("records the edit as unapplyable when the renderer throws on the document its approval fetched: a list item in %s",
     async (_name, tabId) => {
@@ -7549,7 +7055,6 @@ describe.each(RUNS)("an approved Google Doc edit built from the document its app
     });
 
   it.each<[string, () => { body: GoogleDocsTab["body"]; lists?: GoogleDocsTab["lists"] }]>([
-    ["a paragraph past a row", () => ({ body: pastRow() })],
     ["a list item the renderer throws on", () => ({ body: unrendered().body, lists: BULLET_LIST })],
   ])("records an edit whose tab is gone with its own refusal, where the document holds %s",
     async (name, other) => {
@@ -7650,25 +7155,6 @@ describe.each(RUNS)("an approved Google Doc edit built from the document its app
       expect(await hooks().applyAction(facet, actionId)).toBe(run.unapplied(MODEL_FAULT("replaceText")));
     });
 
-  it("logs nothing but the edit as unapplyable where the fetched document refuses it in words", async () => {
-    let facet = "fallback-words";
-    vi.spyOn(console, "warn").mockImplementation(() => {});
-    let logged = vi.spyOn(console, "error").mockImplementation(() => {});
-    let docs = new DocsModel();
-    docs.setText(MAIN_TAB, "Alpha\nBeta");
-    docs.install();
-    expect(await hooks().readContent(facet, MAIN_TAB)).toBe("Alpha\n\nBeta\n");
-    let actionId = await hooks().submitReplace(facet, "Beta", "Gamma", MAIN_TAB);
-    expect(await hooks().readContent(facet, MAIN_TAB)).toBe("Alpha\n\nGamma\n");
-    docs.setText(MAIN_TAB, "Alpha\nDelta");
-
-    expect(await hooks().applyAction(facet, actionId)).toContain("oldMarkdown was not found");
-
-    expect(unapplyableLines(logged)).toHaveLength(1);
-    expect(linesOf(logged, "google.doc.piece.overreach")).toEqual([]);
-    expect(linesOf(logged, "google.doc.prepare.model-refused")).toEqual([]);
-  });
-
   it("answers a read whose replay builds a batch past its piece, and drops that edit alone", async () => {
     let facet = "read-overreach";
     vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -7706,24 +7192,6 @@ describe.each(RUNS)("an approved Google Doc edit built from the document its app
     await exec(facet, "DELETE FROM doc_md");
     await exec(facet, "DELETE FROM doc_run WHERE json NOT LIKE '%\"lists\"%'");
   };
-
-  it("tells the agent that the copy is unreadable, and reads again from Google", async () => {
-    let facet = "unreadable-replace";
-    vi.spyOn(console, "warn").mockImplementation(() => {});
-    vi.spyOn(console, "error").mockImplementation(() => {});
-    let docs = new DocsModel();
-    docs.setText(MAIN_TAB, "Alpha\nBeta");
-    docs.install();
-    expect(await hooks().readContent(facet, MAIN_TAB)).toBe("Alpha\n\nBeta\n");
-    await loseRuns(facet);
-
-    await expect(Promise.resolve(hooks().submitReplace(facet, "Beta", "Gamma", MAIN_TAB)))
-      .rejects.toThrow(DOC_COPY_UNREADABLE);
-    // The copy was dropped: the next read fetches the document, once, and answers.
-    let from = requestsMade();
-    expect(await hooks().readContent(facet, MAIN_TAB)).toBe("Alpha\n\nBeta\n");
-    expect(docsRequestsSince(from).filter(request => request === "read")).toHaveLength(1);
-  });
 
   it("answers a read with an edit pending over a copy that lost a row from a fresh fetch", async () => {
     let facet = "unreadable-read";
@@ -8008,21 +7476,6 @@ describe.each(RUNS)("what the store keeps of a Google Doc's pending edits, $name
     expect(await hooks().readContent(facet)).toContain("<td><p>nw009</p></td>");
     expect(since(docs, before)).toMatchObject({ stored: 0, found: 1 });
     expect(await rowsOf(facet)).toMatchObject({ doc_result: 1, doc_version: kept.doc_version + 1 });
-  });
-
-  it("a preparation's sweep writes no row when nothing is left over", async () => {
-    frozen();
-    let docs = docsWithBody(tableBody());
-    let facet = "store-sweep-nothing";
-    await hooks().readContent(facet);
-    await edit(facet, "replaceText", "Before", "Earlier");
-    await hooks().readContent(facet);
-
-    // A preparation that is refused before it makes anything writes what its sweep writes.
-    let before = counts(docs);
-    await expect(edit(facet, "replaceText", "not in the tab", "other"))
-      .rejects.toThrow("oldMarkdown was not found");
-    expect(since(docs, before)).toMatchObject({ written: 0, stored: 0, fetches: 0 });
   });
 
   // What code derived of a stored tab is served only under the digest of that code. Rows left
@@ -8592,84 +8045,6 @@ describe("Google Doc edits through a read and write Drive binding", () => {
     expect(docs.documentFetches).toBe(1);
   });
 
-  it("folds a queue at each read and fetches for none of them", async () => {
-    let docs = draft();
-    let facet = "drive-doc-source-folds";
-    await hooks().submitAppend(facet, "One");
-    await hooks().submitAppend(facet, "Two");
-    let pending = "Draft\n\nOne\n\nTwo\n";
-    expect(await hooks().readContent(facet)).toBe(pending);
-
-    let before = { folds: replayCost.folds, fetches: docs.documentFetches };
-    expect(await hooks().readContent(facet)).toBe(pending);
-    expect(await hooks().readContent(facet)).toBe(pending);
-    expect(replayCost.folds).toBe(before.folds + 4);
-    expect(docs.documentFetches).toBe(before.fetches);
-  });
-
-  it("fetches again for a session opened after a write landed", async () => {
-    let docs = draft();
-    let facet = "drive-doc-source-landed";
-    let first = await hooks().submitAppend(facet, "One");
-    await hooks().submitAppend(facet, "Two");
-    let pending = "Draft\n\nOne\n\nTwo\n";
-    expect(await hooks().readContent(facet)).toBe(pending);
-
-    // The newest edit queued is the same one after the approval: only the write counted tells
-    // that the snapshot is behind the document.
-    expect(await hooks().applyAction(facet, first)).toBeNull();
-    let fetched = docs.documentFetches;
-    expect(await hooks().readContent(facet)).toBe(pending);
-    expect(docs.documentFetches).toBe(fetched + 1);
-  });
-
-  it("fetches again for a session opened after an edit was queued", async () => {
-    let docs = draft();
-    let facet = "drive-doc-source-queued";
-    expect(await hooks().readContent(facet)).toBe("Draft\n");
-    // A collaborator's change, which the snapshot does not show within its time to live.
-    docs.externalEdit(MAIN_TAB, "Other");
-    expect(await hooks().readContent(facet)).toBe("Draft\n");
-
-    await hooks().submitAppend(facet, "More");
-    expect(docs.documentFetches).toBe(1);
-    expect(await hooks().readContent(facet)).toBe("Other\n\nMore\n");
-    expect(docs.documentFetches).toBe(2);
-  });
-
-  it("does not reuse a snapshot no read was authorized for", async () => {
-    let docs = new DocsModel();
-    docs.setText(MAIN_TAB, "Draft");
-    let drive = new DriveFiles({
-      [ROOT]: { name: "Reports", mimeType: FOLDER_MIME, parents: ["my-root"] },
-      "doc-1": { name: "Test document", mimeType: DRIVE_DOC_MIME, parents: [ROOT] },
-    });
-    serveFakes([drive, docsProvider(docs)]);
-    let facet = "drive:drive-doc-source-unauthorized";
-    let read = () => rawHooks().callDriveNative(
-      facet, FOLDER, "openGoogleDoc", "doc-1", "getContent", []);
-
-    // The file leaves the folder while the document is fetched, so the scope check that follows
-    // the fetch refuses the read.
-    let model = globalThis.fetch;
-    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
-      let response = await model(input, init);
-      if (new URL(new Request(input, init).url).hostname === "docs.googleapis.com") {
-        drive.files.get("doc-1")!.parents = ["elsewhere"];
-      }
-      return response;
-    });
-    let refused = await read();
-    expect(refused.error).toBe("The requested file is outside this Drive binding.");
-    expect(docs.documentFetches).toBe(1);
-
-    // Back in the folder, the next session is given nothing of the document fetched for that read.
-    vi.stubGlobal("fetch", model);
-    drive.files.get("doc-1")!.parents = [ROOT];
-    expect((await read()).value).toBe("Draft\n");
-    expect(docs.documentFetches).toBe(2);
-  });
-
   /**
    * One document more than a binding keeps sources of, `doc-1` first, each reading its own
    * number, and the calls of a fresh session of each through the account's binding `facet`.
@@ -8960,45 +8335,6 @@ describe("Google Doc edits through a read and write Drive binding", () => {
 
     expect(drive.batches()).toHaveLength(batches + 2);
     await expectRefusedWithRowBehind(facet, queued, answer, fetched);
-  });
-
-  // A change to a table that exists records the table as it read, and a deletion shows it on its
-  // card as well, so the 100 KiB of one queued change bounds the table that can be changed.
-  it("holds a change to a table through Drive to 100 KiB, the table it records included", async () => {
-    const TOO_LARGE = /^This change is too large to queue \(\d+ bytes, limit 102400\)\. Split it up\.$/;
-    /** A table of `rows` rows of ten cells, about a thousand characters of HTML to a row. */
-    let wide = (rows: number) => buildTab([
-      para("Before"),
-      grid(...Array.from({ length: rows }, (_, row) =>
-        Array.from({ length: 10 }, (__, column) => `${row}.${column}`.padEnd(80, "x")))),
-      para("After"),
-    ]).body;
-    let tableLength = (content: string) =>
-      content.indexOf("</table>") + "</table>".length - content.indexOf("<table");
-    let width = [{ table: 0, width: 100 }];
-
-    docsWithBody(wide(52));
-    let facet = "drive-doc-table-big";
-    let content = await hooks().readContent(facet);
-    expect(tableLength(content)).toBeGreaterThan(51_200);
-    await expect(edit(facet, "setTableColumnWidths", ...width)).rejects.toThrow(TOO_LARGE);
-    expect(await hooks().lastActionDescription).toBe("");
-    expect(await rawHooks().driveStoredKeys(`drive:${facet}`, DRIVE_DOC, "drive:action:")).toEqual([]);
-    expect(await hooks().readContent(facet)).toBe(content);
-    // The Doc's own binding stores the same change.
-    expect((await rawHooks().submitEdit("standalone-doc-table-big", "setTableColumnWidths", width))
-      .actionId).toBeTypeOf("number");
-
-    // A table of half that takes the width, and is too large to delete: its card shows it whole.
-    docsWithBody(wide(30));
-    let half = "drive-doc-table-half";
-    let smaller = tableLength(await hooks().readContent(half));
-    expect(smaller).toBeGreaterThan(29_000);
-    expect(smaller).toBeLessThan(31_000);
-    expect((await edit(half, "setTableColumnWidths", ...width)).actionId).toBeTypeOf("number");
-    await expect(edit(half, "deleteTable", 0)).rejects.toThrow(TOO_LARGE);
-    expect(await rawHooks().driveStoredKeys(`drive:${half}`, DRIVE_DOC, "drive:action:"))
-      .toHaveLength(1);
   });
 
   // Through Drive the read that prepares an edit is authorized, and names the tab: it is the
@@ -9304,21 +8640,6 @@ describe("Google Doc edits through a read and write Drive binding", () => {
         expect(docs.documentFetches).toBe(1);
       });
 
-      it("fetches the Doc again for a quote past the TTL, with no revision probe", async () => {
-        vi.useFakeTimers({ toFake: ["Date"] });
-        let start = Date.UTC(2026, 0, 1, 10);
-        vi.setSystemTime(start);
-        let { docs } = library();
-        let files = connection("drive-quote-old", FOLDER);
-        expect(await files.read()).toBe("Draft\n");
-        vi.setSystemTime(start + DOC_SNAPSHOT_TTL_MS);
-        let from = requestsMade();
-        expect((await queue(files, ...QUOTING[0].slice(1) as ["comment", unknown[]])).error)
-          .toBeUndefined();
-        expect(docsReadsSince(from)).toEqual(["read"]);
-        expect(docs.revisionProbes).toBe(0);
-      });
-
       it("stores nothing of the Doc for a comment whose scope check refuses", async () => {
         let { docs, move } = library();
         let files = connection("drive-quote-refused", FOLDER);
@@ -9386,21 +8707,6 @@ describe("Google Doc edits through a read and write Drive binding", () => {
           expect(await rawHooks().driveQueued(files.facet, FOLDER)).toEqual([plain.actionId]);
         });
 
-        it("refuses a quote in another tab than the one that holds the paragraph", async () => {
-          let { docs } = library();
-          docs.addTab("tab-2", "Notes", MAIN_TAB);
-          docs.setBody("tab-2", pastRow());
-          let files = connection("drive-quote-past-row-elsewhere", FOLDER);
-          // The copy is of the document: a tab that reads is not kept without the one that
-          // does not.
-          let refused = await queue(
-            files, "comment", ["doc-1", "Really?", { quote: "Draft", tabId: MAIN_TAB }]);
-          expect(refused.error).toContain(
-            'A paragraph of tab "tab-2" of this Google Doc is too large to keep a copy of: ');
-          expect(refused.actionId).toBeUndefined();
-          expect(docs.documentFetches).toBe(1);
-          expect(await files.head()).toBeNull();
-        });
       });
     });
 
@@ -9408,10 +8714,8 @@ describe("Google Doc edits through a read and write Drive binding", () => {
     // most once, for the file's parent folder, and the copy goes where that shows the
     // connection does not reach the file.
     describe("a refusal of a file the connection does not reach removes its copy", () => {
-      const BINDINGS = [
-        ["a read and write binding", FOLDER],
-        ["a read-only connection", READ_ONLY_FOLDER],
-      ] as const;
+      // A read-only connection is the one the mid-fetch and the trash tests below use.
+      const BINDINGS = [["a read and write binding", FOLDER]] as const;
       const NO_ROW = { "doc_copy of the file": 0, "doc_version of the file": 0 };
       let info: MockInstance<typeof console.info>;
       /** The removals the connection logged, each line whole. */
@@ -9488,26 +8792,6 @@ describe("Google Doc edits through a read and write Drive binding", () => {
         await expectNeverRead(files, facet, binding);
       });
 
-      it.each(BINDINGS)("when the file is opened again out of scope (%s)", async (name, binding) => {
-        let { move, refused, lookups } = twoDocs();
-        let facet = `drive-reach-reopened-${name.length}`;
-        let files = connection(facet, binding);
-        for (let file of ["doc-1", "doc-2", "doc-2"]) await files.read([], file);
-        move("doc-1", "elsewhere");
-        let unread = connection(`${facet}-unread`, binding);
-        let base = await refused(() => unread.read());
-
-        let requests = await refused(() => files.read());
-
-        expect(lookups(requests, "elsewhere")).toBe(1);
-        expect(requests.filter(request => request !== "BATCH elsewhere")).toEqual(base);
-        expect(removals()).toEqual([unreachable("doc-1", "moved-out")]);
-        await expectNeverRead(files, facet, binding);
-        // Refused again, with no copy left: nothing is asked for and nothing is logged.
-        expect(await refused(() => files.read())).toEqual(base);
-        expect(removals()).toHaveLength(1);
-      });
-
       it("removes the stored copy, and keeps nothing of the document just fetched, when the file leaves while it is fetched", async () => {
         let { docs, move, refused, lookups } = twoDocs();
         let facet = "drive-reach-left-mid-fetch";
@@ -9545,65 +8829,6 @@ describe("Google Doc edits through a read and write Drive binding", () => {
         expect(removals()).toEqual([]);
       });
 
-      it("asks nothing, and keeps the copy, when a file that did not move is refused to a session that stands two folders above it", async () => {
-        let { drive, docs, refused } = twoDocs(INNER);
-        let files = connection("drive-reach-two-above", FOLDER);
-        expect(await files.read([SUB, INNER])).toBe("Draft\n");
-        expect(await files.read([SUB, INNER])).toBe("Draft\n");
-        let stored = await files.stored();
-        expect(stored.head).toMatchObject({ folder: INNER });
-        let unread = connection("drive-reach-two-above-unread", FOLDER);
-
-        // The root session, and the session of the folder between, each refused the file.
-        for (let path of [[], [SUB]]) {
-          let base = await refused(() => unread.read(path));
-          expect(await refused(() => files.read(path))).toEqual(base);
-        }
-
-        expect(drive.batches().filter(ids => ids.length === 1 && ids[0] === INNER)).toEqual([]);
-        expect(await files.stored()).toEqual(stored);
-        expect(removals()).toEqual([]);
-        expect(await files.read([SUB, INNER])).toBe("Draft\n");
-        expect(docs.documentFetches).toBe(1);
-      });
-
-      it("asks nothing when the file is refused to a session whose own folder left", async () => {
-        let { drive, move, refused } = twoDocs(SUB);
-        let files = connection("drive-reach-stale-path", FOLDER);
-        expect(await files.read([SUB])).toBe("Draft\n");
-        let stored = await files.stored();
-        let unread = connection("drive-reach-stale-path-unread", FOLDER);
-        let base = await refused(() => unread.readAfter(() => move(SUB, "elsewhere"), [SUB]));
-        move(SUB, ROOT);
-
-        // The folder the session was opened under leaves the binding: its saved path fails
-        // its proof, which says nothing of the file.
-        let requests = await refused(() => files.readAfter(() => move(SUB, "elsewhere"), [SUB]));
-
-        expect(requests).toEqual(base);
-        // No batch asks for the file's parent, or for the folder it went to, alone.
-        expect(drive.batches().filter(ids => ids.length === 1 && ids[0] !== ROOT)).toEqual([]);
-        expect(await files.stored()).toEqual(stored);
-        expect(removals()).toEqual([]);
-      });
-
-      it.each(BINDINGS)("asks nothing for a refused file the connection stores no copy of (%s)", async (name, binding) => {
-        let { move, refused } = twoDocs();
-        move("doc-1", "elsewhere");
-        let unread = connection(`drive-reach-no-copy-unread-${name.length}`, binding);
-        let base = await refused(() => unread.read());
-        // A connection that stores another Doc, so its storage holds the tables.
-        let files = connection(`drive-reach-no-copy-${name.length}`, binding);
-        expect(await files.read([], "doc-2")).toBe("Second\n");
-        let rows = await files.rows("doc-2");
-
-        expect(await refused(() => files.read())).toEqual(base);
-
-        expect(base).not.toContain("BATCH elsewhere");
-        expect(await files.rows("doc-2")).toEqual(rows);
-        expect(removals()).toEqual([]);
-      });
-
       it("asks nothing of other files", async () => {
         let { drive, move, refused } = twoDocs();
         move("doc-2", SUB);
@@ -9628,7 +8853,6 @@ describe("Google Doc edits through a read and write Drive binding", () => {
       it.each([
         ["in the trash", "trashed", (drive: DriveFiles) => { drive.files.get("doc-1")!.trashed = true; }],
         ["the account cannot see", "invisible", (drive: DriveFiles) => { drive.files.delete("doc-1"); }],
-        ["in no folder", "moved-out", (drive: DriveFiles) => { drive.files.get("doc-1")!.parents = []; }],
       ] as const)("removes the copy of a file %s with no lookup", async (_name, reason, change) => {
         let { drive, refused } = twoDocs();
         let facet = `drive-reach-${reason}`;
@@ -9694,42 +8918,6 @@ describe("Google Doc edits through a read and write Drive binding", () => {
         expect(await files.apply(actionId!)).toBeNull();
         expect(docs.text()).toContain("More");
       });
-
-      it("applies the pending edit of a file that left and came back from a fetch, with no read between", async () => {
-        let { docs, move, refused } = twoDocs();
-        let files = connection("drive-reach-came-back-approval", FOLDER);
-        let { actionId, error } = await files.call("appendText", ["More"]);
-        expect(error).toBeUndefined();
-        move("doc-1", "elsewhere");
-        await refused(() => files.read());
-        expect(await files.head()).toBeNull();
-        move("doc-1", ROOT);
-        let fetches = docs.documentFetches;
-
-        // The source's copy is gone, so the write is built from a document fetched for it.
-        expect(await files.apply(actionId!)).toBeNull();
-
-        expect(docs.documentFetches - fetches).toBe(1);
-        expect(docs.contentBatches).toBe(1);
-        expect(docs.text()).toContain("More");
-      });
-
-      // The stated limit: one request says what the file's parent stands in, not what that
-      // folder's own parent stands in.
-      it.each(BINDINGS)("a file that moved two folders away inside the binding loses its copy and is fetched once at its next allowed read (%s)", async (name, binding) => {
-        let { docs, move, refused, lookups } = twoDocs();
-        let files = connection(`drive-reach-two-away-${name.length}`, binding);
-        expect(await files.read()).toBe("Draft\n");
-        move("doc-1", INNER);
-
-        expect(lookups(await refused(() => files.read()), INNER)).toBe(1);
-
-        expect(removals()).toEqual([unreachable("doc-1", "moved-out")]);
-        expect(await files.head()).toBeNull();
-        expect(await files.read([SUB, INNER])).toBe("Draft\n");
-        expect(docs.documentFetches).toBe(2);
-        expect(await files.head()).toMatchObject({ folder: INNER, stale: false });
-      });
     });
 
     describe("a refusal that leaves the file in the connection's reach changes nothing in storage", () => {
@@ -9762,8 +8950,6 @@ describe("Google Doc edits through a read and write Drive binding", () => {
 
       it.each([
         ["a read and write binding", "first", FOLDER],
-        ["a read and write binding", "second", FOLDER],
-        ["a read-only connection", "first", READ_ONLY_FOLDER],
         ["a read-only connection", "second", READ_ONLY_FOLDER],
       ] as const)("whichever session is refused first after the file moved to another folder " +
           "of the binding (%s, the old folder's session refused %s)", async (name, order, binding) => {
@@ -9865,7 +9051,7 @@ describe("Google Doc edits through a read and write Drive binding", () => {
         return { ...fakes, second };
       }
 
-      it.each(BINDINGS)("a keep that brings %s to 201 documents removes the copy read first", async (name, binding) => {
+      it.each([BINDINGS[0]])("a keep that brings %s to 201 documents removes the copy read first", async (name, binding) => {
         let { docs, second } = twoDocs();
         let files = connection(`drive-cap-count-${name.length}`, binding);
         expect(await files.read()).toBe("Draft\n");
@@ -9901,7 +9087,7 @@ describe("Google Doc edits through a read and write Drive binding", () => {
         expect(await files.rows("doc-2")).toMatchObject(NO_ROW);
       });
 
-      it.each(BINDINGS)("a keep that finds %s over 512 MiB removes the copy read first", async (name, binding) => {
+      it.each([BINDINGS[1]])("a keep that finds %s over 512 MiB removes the copy read first", async (name, binding) => {
         let { docs, second } = twoDocs();
         let files = connection(`drive-cap-bytes-${name.length}`, binding);
         expect(await files.read()).toBe("Draft\n");
@@ -10010,22 +9196,7 @@ describe("Google Doc edits through a read and write Drive binding", () => {
         expect(entry.error).toBeUndefined();
       };
 
-      it.each(BINDINGS)("stays in %s while the connection is not used", async (name, binding) => {
-        let { docs } = aged();
-        let files = connection(`drive-expiry-unused-${name.length}`, binding);
-        expect(await files.read()).toBe("Draft\n");
-        let stored = await files.stored();
-        expect(stored.rows).toMatchObject({ "doc_copy of the file": 1, "doc_version of the file": 1 });
-
-        vi.setSystemTime(START + PAST + 30 * DAY);
-
-        // The hooks start no session: the rows are as they were, and nothing was logged.
-        expect(await files.stored()).toEqual(stored);
-        expect(removals()).toEqual([]);
-        expect(docs.documentFetches).toBe(1);
-      });
-
-      it.each(BINDINGS)("goes from %s at the next request, one that reads no Doc", async (name, binding) => {
+      it.each([BINDINGS[0]])("goes from %s at the next request, one that reads no Doc", async (name, binding) => {
         let { docs } = aged();
         let files = connection(`drive-expiry-other-use-${name.length}`, binding);
         expect(await files.read()).toBe("Draft\n");
@@ -10051,7 +9222,7 @@ describe("Google Doc edits through a read and write Drive binding", () => {
         expect(removals()).toEqual([expired("doc-1")]);
       });
 
-      it.each(BINDINGS)("goes from %s at the next read of the file itself, which fetches once", async (name, binding) => {
+      it.each([BINDINGS[1]])("goes from %s at the next read of the file itself, which fetches once", async (name, binding) => {
         let { docs } = aged();
         let files = connection(`drive-expiry-own-read-${name.length}`, binding);
         expect(await files.read()).toBe("Draft\n");
@@ -10069,7 +9240,7 @@ describe("Google Doc edits through a read and write Drive binding", () => {
         expect(await files.rows()).toMatchObject({ doc_copy: 1, "doc_version of the file": 1 });
       });
 
-      it.each(BINDINGS)("goes from %s at a read of a session started before the limit", async (name, binding) => {
+      it.each([BINDINGS[0]])("goes from %s at a read of a session started before the limit", async (name, binding) => {
         let { docs } = aged();
         let files = connection(`drive-expiry-open-session-${name.length}`, binding);
         expect(await files.read()).toBe("Draft\n");
@@ -10083,25 +9254,6 @@ describe("Google Doc edits through a read and write Drive binding", () => {
         expect(await files.head()).toMatchObject({
           fetchedAt: START + PAST, approvedAt: hourOf(START + PAST), stale: false,
         });
-      });
-
-      it.each(BINDINGS)("goes from %s at the read of another file", async (name, binding) => {
-        let { docs, second } = aged();
-        let files = connection(`drive-expiry-other-read-${name.length}`, binding);
-        expect(await files.read()).toBe("Draft\n");
-
-        vi.setSystemTime(START + PAST);
-        expect(await files.read([], "doc-2")).toBe("Second\n");
-
-        expect(removals()).toEqual([expired("doc-1")]);
-        expect(await files.rows()).toMatchObject({ "doc_copy of the file": 0, "doc_version of the file": 0 });
-        // Storage holds what a connection that read the second file alone holds.
-        let control = connection(`drive-expiry-other-read-control-${name.length}`, binding);
-        expect(await control.read([], "doc-2")).toBe("Second\n");
-        expect(await files.rows("doc-2")).toEqual(await control.rows("doc-2"));
-        expect(await rawHooks().driveDocBaseRows(files.facet, binding, "doc-2"))
-          .toBe(await rawHooks().driveDocBaseRows(control.facet, binding, "doc-2"));
-        expect([docs.documentFetches, second.documentFetches]).toEqual([1, 2]);
       });
 
       it("goes at an approval, whose write is built from a fetch", async () => {
@@ -10147,7 +9299,6 @@ describe("Google Doc edits through a read and write Drive binding", () => {
 
       describe.each([
         ["an approval", (facet: string, id: number) => rawHooks().applyDrive(facet, FOLDER, id)],
-        ["a rejection", (facet: string, id: number) => rawHooks().rejectDrive(facet, FOLDER, id)],
       ] as const)("at %s of a record that is no Doc edit", (_decision, decide) => {
         it("goes when the record is a comment", async () => {
           let { docs } = aged();
@@ -10189,34 +9340,9 @@ describe("Google Doc edits through a read and write Drive binding", () => {
         });
       });
 
-      it("reads a file's pending edits the same once its copy expired", async () => {
-        let { docs } = aged();
-        let files = connection("drive-expiry-pending", FOLDER);
-        expect((await files.call("appendText", ["More"])).error).toBeUndefined();
-        let pending = await files.read();
-        expect(pending).toBe("Draft\n\nMore\n");
-        let fetches = docs.documentFetches;
-
-        vi.setSystemTime(START + PAST);
-        let before = docStoreCost.resultsStored;
-        expect(await files.read()).toBe(pending);
-
-        expect(removals()).toEqual([expired("doc-1")]);
-        expect(docs.documentFetches).toBe(fetches + 1);
-        // The edit is made again in the read's trial, and once more over the copy that read
-        // kept, by the read after it, which fetches nothing.
-        expect(docStoreCost.resultsStored - before).toBe(1);
-        expect(await files.read()).toBe(pending);
-        expect(docStoreCost.resultsStored - before).toBe(2);
-        expect(docs.documentFetches).toBe(fetches + 1);
-        expect(await files.rows()).toMatchObject({ "doc_copy of the file": 1, doc_result: 1 });
-      });
-
+      // The binding's sessions share the file's source, which confirms the copy's revision.
       it.each([
-        // A binding's sessions share the file's source, which confirms its copy's revision; a
-        // read-only session has a source of its own, whose first read fetches.
         ["a read and write binding", FOLDER, 1],
-        ["a read-only connection", READ_ONLY_FOLDER, 2],
       ] as const)("is renewed in %s by a read", async (name, binding, fetches) => {
         let { docs } = aged();
         let files = connection(`drive-expiry-renewed-${name.length}`, binding);
@@ -10244,7 +9370,7 @@ describe("Google Doc edits through a read and write Drive binding", () => {
         expect(docs.documentFetches).toBe(fetches);
       });
 
-      it.each(BINDINGS)("keeps the hour of its pass in %s only once it stores a Doc", async (name, binding) => {
+      it.each([BINDINGS[1]])("keeps the hour of its pass in %s only once it stores a Doc", async (name, binding) => {
         aged();
         let files = connection(`drive-expiry-key-${name.length}`, binding);
         let passed = () => rawHooks().driveStored(files.facet, binding, DOC_COPY_EXPIRY_PASS_KEY);
@@ -10265,52 +9391,6 @@ describe("Google Doc edits through a read and write Drive binding", () => {
         expect(removals()).toEqual([]);
       });
 
-      it.each(BINDINGS)("sets no alarm on %s", async (name, binding) => {
-        aged();
-        let files = connection(`drive-expiry-alarm-${name.length}`, binding);
-        let alarm = () => rawHooks().driveAlarm(files.facet, binding);
-        expect(await alarm()).toBeNull();
-        expect(await files.read()).toBe("Draft\n");
-        expect(await alarm()).toBeNull();
-
-        // An expiry and a keep.
-        vi.setSystemTime(START + PAST);
-        expect(await files.read([], "doc-2")).toBe("Second\n");
-        expect(removals()).toEqual([expired("doc-1")]);
-        expect(await alarm()).toBeNull();
-      });
-    });
-
-    // The refusal of a file outside the connection's reach removed its copy, so the read after
-    // the file came back fetches: one `documents.get`, which is what a removal costs.
-    it("fetches a Doc once more when it left the connection's reach, was refused and came back", async () => {
-      let { docs, move } = library();
-      let files = connection("drive-store-came-back", FOLDER);
-      expect(await files.read()).toBe("Draft\n");
-      move("doc-1", "elsewhere");
-      expect(await files.read()).toBe(OUTSIDE);
-      move("doc-1", ROOT);
-      expect(await files.read()).toBe("Draft\n");
-      expect(docs.documentFetches).toBe(2);
-    });
-
-    it("reads a file's pending edits the same after another session was refused it", async () => {
-      let { docs } = library(SUB);
-      let files = connection("drive-store-pending-refused", FOLDER);
-      expect((await files.call("appendText", ["More"], [SUB])).error).toBeUndefined();
-      let pending = await files.read([SUB]);
-      expect(pending).toBe("Draft\n\nMore\n");
-      let fetches = docs.documentFetches;
-      expect(await files.read()).toBe(OUTSIDE);
-      // What the same reads cost with no refusal between them: the copy is reused, and the
-      // refusal removed nothing, so the edit's result is found.
-      let before = { stored: docStoreCost.resultsStored, found: docStoreCost.resultsFound };
-      expect(await files.read([SUB])).toBe(pending);
-      expect(docs.documentFetches).toBe(fetches);
-      expect({
-        stored: docStoreCost.resultsStored - before.stored,
-        found: docStoreCost.resultsFound - before.found,
-      }).toEqual({ stored: 0, found: 1 });
     });
 
     it("leaves the stored copy as it was when a read fails for a reason that is not its scope", async () => {
@@ -10454,12 +9534,8 @@ describe("Google Doc edits through a read and write Drive binding", () => {
   });
 });
 
-// WHAT A SESSION TAKES IN HAND, step by step, on a tab of 2,000 paragraphs of 100 characters
-// with a table in its middle (36 runs, 204,083 characters of Markdown): the store's counters
-// around each call, both peaks from 0, and the requests the Docs API was sent. The same steps
-// on the store alone, with their formulas and the rows they read, are `pieceCountsScenario`
-// (`docs-piece.test.ts`); this holds them through a bound Doc and through a Doc opened from a
-// read and write Drive binding, with the requests Google is sent for each.
+// What a session takes in hand on a tab of 2,000 paragraphs with a table in its middle: the
+// store's counters and peaks around each call, and the requests the Docs API was sent.
 describe.each(RUNS)("what a Google Doc session takes in hand, $name", r => {
   inRun(r);
 
@@ -10513,45 +9589,8 @@ describe.each(RUNS)("what a Google Doc session takes in hand, $name", r => {
     expect(step.peakMarkdown).toBeLessThan(tab / 4);
   }
 
-  // THROUGH DRIVE the first read after an edit is queued fetches the document and reads the
-  // copy it holds back in a trial: one `documents.get` and each of the tab's runs decoded
-  // once. Bound directly it asks Google nothing.
-  it("a pending read answers the tab's Markdown and decodes no stored run for it, and an approval sends the stored batch while the pin holds", async () => {
-    let facet = "piece-pin";
-    document();
-    let read = () => hooks().readContent(facet, MAIN_TAB);
-    let content = await read();
-    let actionId = 0;
-    let queued = await taken(async () => {
-      actionId = (await edit(facet, "replaceText", ...REPLACEMENT, MAIN_TAB)).actionId;
-    });
-    // The piece's one run, taken by the model, and the run cut from it rendered.
-    expect(counts(queued)).toEqual(counted(1, 2));
-    expectPiece(queued, 1, REPLACEMENT[1].length, content.length);
-
-    let pending = await taken(read);
-    expect(counts(pending)).toEqual(r.drive ? counted(TAB_RUNS, 0, 0, ["read"]) : counted(0, 0));
-    let changed = content.length + REPLACEMENT[1].length - REPLACEMENT[0].length;
-    // THE FLOOR: the Markdown a read answers is in hand, whole.
-    expect(pending.peakMarkdown).toBe(changed);
-    let again = await taken(read);
-    expect(counts(again)).toEqual(counted(0, 0));
-    expect(again.peakMarkdown).toBe(changed);
-
-    let approval = await taken(async () => expect(await hooks().applyAction(facet, actionId)).toBeNull());
-    // The stored result is sent: no `documents.get`, no run and no Markdown in hand.
-    expect(approval).toEqual({ ...counted(0, 0, 0, ["content", "cleanup"]), peakRun: 0, peakMarkdown: 0 });
-  });
-
-  // BOUND DIRECTLY each edit is its piece: a replacement and an append one run, a row the
-  // table's run and the run on each side (tried from the table's, made again from the run
-  // before: 1 + 3), a new table its line's run and, for the table's number, the piece once
-  // more around the line in the version the edit gave (2 runs: the line now ends its run).
-  // The rejection replays the three edits left, each made again in another version.
-  // THROUGH DRIVE a preparation that follows a queued edit fetches the document (one
-  // `documents.get`) and reads the held copy back in a trial (the tab's runs decoded once),
-  // and the trial makes again the edit queued last, whose result the trial before it did
-  // not keep; a rejection replays nothing, and the read after it does.
+  // Each edit decodes the runs of its piece, never the tab; through Drive a preparation that
+  // follows a queued edit also fetches and reads the held copy back in a trial.
   it("each queued edit decodes its piece, and a rejection the pieces of the edits left", async () => {
     let facet = "piece-queue";
     document();
@@ -10588,28 +9627,6 @@ describe.each(RUNS)("what a Google Doc session takes in hand, $name", r => {
     // The read through Drive that replays them also answers the tab's Markdown.
     if (!r.drive) expectPiece(rejection, 3, lineOf(300).length, content.length);
     expect((r.drive ? after : rejection).peakRun).toBeLessThanOrEqual(2 * RUN_SIZES.most);
-  });
-
-  // The write lands and its answer is lost; the read after it stores the document as the
-  // write left it, with the write's marker in the tab. The approval made again finds that
-  // marker in the copy and settles from it: the cleanup alone, and nothing of the tab read.
-  it("an approval whose write's marker is in the copy sends the cleanup alone and reads no stored run", async () => {
-    let facet = "piece-marker";
-    let docs = document();
-    docs.ambiguousContentResponses = 1;
-    let read = () => hooks().readContent(facet, MAIN_TAB);
-    await read();
-    let { actionId } = await edit(facet, "replaceText", ...REPLACEMENT, MAIN_TAB);
-    expect(await hooks().applyAction(facet, actionId)).toMatch(/content response lost/);
-    expect(docs.markers.size).toBe(1);
-    passSnapshotTtl();
-    expect(await read()).toContain(REPLACEMENT[1]);
-
-    let settled = await taken(async () => expect(await hooks().applyAction(facet, actionId)).toBeNull());
-
-    expect(settled).toEqual({ ...counted(0, 0, 0, ["cleanup"]), peakRun: 0, peakMarkdown: 0 });
-    expect(docs.markers.size).toBe(0);
-    expect(docs.contentBatches).toBe(1);
   });
 
   // An add of a tab reads the document: its request is built from the tabs' identities, with

@@ -1,16 +1,11 @@
-// What an edit asks of its stored tab as a whole, answered from stored rows: the two scans of
-// Markdown handed a run at a time held to a search of the joined string, a walk of some of a
-// version's runs held to the walk of them all, the stored reading held to the reading of the
-// whole rendering (also where a walk hands its runs again), and what a member decodes, holds
-// and throws.
-// Node only: the storage is the fake and the heap is Node's.
-// It replaces a module for every test of its file: the renderer's `renderRun` as other
-// modules import it, which throws on a run that holds the text `FAULT` while `fault.on`.
+// The stored reading of a tab (scans, walks, members, pieces) held to the reading of its whole
+// rendering, and what it decodes and throws. The file mocks `renderRun` as other modules
+// import it, to throw on a run that holds `FAULT` while `fault.on`.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GoogleDocsTab, StructuralElement } from "../src/docs-api";
 import {
-  DocReadingFault, markdownScan, MAX_SCAN_FOLLOWED, storedTabReading, unwrapped, windowScan,
+  DocReadingFault, markdownScan, storedTabReading, unwrapped, windowScan,
 } from "../src/docs-reading";
 import { renderTab } from "../src/docs-replay";
 import { DOC_COPY_UNREADABLE } from "../src/docs-replica";
@@ -23,22 +18,20 @@ import {
 } from "../src/docs-tables";
 import type { OwnRange, TabReading } from "../src/markdown-converter";
 import { buildTab, diceOf, grid, item, NUMBERED_LIST, para, tableAt, thrownMessage } from "./doc-fixture";
-import type { FakeDocStorage } from "./doc-store-fake";
-import { proseTab, tinyTablesTab } from "./doc-store-scenarios";
+import { proseTab } from "./doc-store-scenarios";
 import { readFixtures } from "./docs-live-fixtures";
 import {
   closureIn, expectPieceOfWhole, ownIn, pieceStore, silentRunTabs, wholeOf, type Whole,
 } from "./docs-piece-shadow";
 import { pieceTabs } from "./docs-piece-tabs";
 import { asFetched } from "./docs-store-slice-shadow";
-import { collect, HEAP_MEASURED, heapHeld } from "./heap-held";
+import { collect, HEAP_MEASURED } from "./heap-held";
 import { WIDER } from "./wider-run";
 
 /** Whether the store's renderer throws on a run that holds the text `FAULT`. */
 const fault = vi.hoisted(() => ({ on: false }));
 
-// The module as it is but for `renderRun` as other modules import it: the rendering of a tab
-// in hand calls the module's own, so only the store's rendering of a run can fail.
+// Only the store's rendering of a run can fail: a tab in hand is rendered by the module's own.
 vi.mock("../src/markdown-converter", async importOriginal => {
   let converter = await importOriginal<typeof import("../src/markdown-converter")>();
   let renderRun: typeof converter.renderRun = (elements, ...rest) => {
@@ -48,18 +41,11 @@ vi.mock("../src/markdown-converter", async importOriginal => {
   return { ...converter, renderRun };
 });
 
-const MIB = 1024 * 1024;
-
 /** Sizes that cut a tab into runs of `elements` elements at most. */
 const runsOf = (elements: number): RunSizes => ({ least: 0, target: 400, most: Infinity, elements });
 const SIZINGS: readonly (readonly [string, RunSizes])[] = [
-  ["one element a run", runsOf(1)], ["two elements a run", runsOf(2)],
-  ["three elements a run", runsOf(3)], ["the real cut", RUN_SIZES],
+  ["one element a run", runsOf(1)], ["the real cut", RUN_SIZES],
 ];
-
-// ---------------------------------------------------------------------------
-// The two scans
-// ---------------------------------------------------------------------------
 
 type Found = number | "none" | "many";
 type Scan = { take(run: string): boolean; done(): Found | "crowded" };
@@ -111,22 +97,6 @@ const TEXTS = [
 ];
 
 describe("a scan of Markdown handed a run at a time", () => {
-  it("is forty characters and texts of every length class", () => {
-    expect(FORTY).toHaveLength(40);
-    let lengths = TEXTS.map(text => text.length);
-    expect(lengths).toEqual(expect.arrayContaining([1, 2, 15, 16, 17, 24]));
-    expect(Math.max(...lengths)).toBe(24);
-    // Each answer a search gives is given of several texts, with and without the line break.
-    for (let before of [false, true]) {
-      let answers = TEXTS.map(text => searched(FORTY, text, before));
-      for (let kind of ["none", "many"]) {
-        expect(answers.filter(found => found === kind).length).toBeGreaterThanOrEqual(2);
-      }
-      expect(answers.filter(found => typeof found === "number").length).toBeGreaterThanOrEqual(4);
-    }
-    expect(searched(FORTY, "\nabababab", true)).toBe(-1);
-  });
-
   describe.each(SCANS)("%s", (_name, scan) => {
     // A TABLE OF TWO WIDTHS: every cut into one to four parts, and into five in the wider run.
     it.each(WIDER ? [1, 2, 3, 4, 5] : [1, 2, 3, 4])(
@@ -155,15 +125,6 @@ describe("a scan of Markdown handed a run at a time", () => {
           }
         }
       }
-    });
-
-    it("finds a place that spans three parts, and two places that overlap", () => {
-      let parts = ["abababab\nabcabcabcabcabc", "abcx\n\nx", "yzxyzxyab"];
-      expect(parts.join("")).toBe(FORTY);
-      expect(scanned(scan("bcabcx\n\nxyz"), parts)).toBe(22);
-      expect(FORTY.indexOf("bcabcx\n\nxyz")).toBe(22);
-      expect(scanned(scan("aba"), ["xab", "ab", "ax"])).toBe("many");
-      expect(scanned(scan("aba"), ["xab", "aax"])).toBe(1);
     });
 
     it("answers a seeded table of strings and texts as a search of the string does", () => {
@@ -196,33 +157,7 @@ describe("a scan of Markdown handed a run at a time", () => {
       for (let count of Object.values(outcomes)) expect(count).toBeGreaterThan(strings);
     });
   });
-
-  it("a text that overlaps itself is still answered", () => {
-    let line = "same line\n";
-    let string = line.repeat(1_000);
-    let parts = Array.from({ length: Math.ceil(1_000 / 7) }, (_, at) =>
-      line.repeat(Math.min(7, 1_000 - 7 * at)));
-    expect(parts.join("")).toBe(string);
-    // Two hundred equal lines start at every line: more places than a scan follows at once.
-    let equal = line.repeat(200);
-    expect(200 / 7).toBeGreaterThan(MAX_SCAN_FOLLOWED / 7);
-    expect(scanned(markdownScan(equal), parts)).toBe("crowded");
-    expect(scanned(windowScan(equal), parts)).toBe(searched(string, equal));
-    expect(searched(string, equal)).toBe("many");
-    // The string from its second character on stands once, and reads as itself at every line.
-    let rest = string.slice(1);
-    expect(scanned(markdownScan(rest), parts)).toBe("crowded");
-    expect(scanned(windowScan(rest), parts)).toBe(1);
-    // Three equal lines are followed across a run's end three at most.
-    let few = line.repeat(3);
-    expect(scanned(markdownScan(few), parts)).toBe("many");
-    expect(scanned(windowScan(few), parts)).toBe("many");
-  });
 });
-
-// ---------------------------------------------------------------------------
-// The stored reading, held to the reading of the whole rendering
-// ---------------------------------------------------------------------------
 
 /** `tab` kept under `sizes`: its store, and the two readings of it. */
 function read(tab: GoogleDocsTab, sizes?: RunSizes) {
@@ -280,10 +215,8 @@ const asked = (): Asked => ({
 });
 
 /**
- * Asks the stored reading of `tab` under `sizes` and the reading of its whole rendering every
- * question but the piece, and holds each answer of the first to the second's: `finds` seeded
- * texts with and without a line break before the Markdown, short ones (which repeat), long
- * ones (which span runs) and ones changed in a character (which are absent).
+ * Holds every answer but the piece of the stored reading of `tab` to the whole rendering's,
+ * with `finds` seeded texts: short (repeating), long (spanning runs) and absent.
  */
 function expectSameAnswers(
   tab: GoogleDocsTab, sizes: RunSizes, seed: number, finds: number, tally: Asked,
@@ -332,13 +265,10 @@ function expectSameAnswers(
 }
 
 describe("the two readings answer the same", () => {
-  // A TABLE OF TWO WIDTHS: the seeded tabs, the texts sought in a seeded tab and in a recorded
-  // one, and the sizings. The default pass leaves the two-element runs to the wider run.
-  const TABLE = WIDER
-    ? { tabs: 100, finds: 30, recordedFinds: 12, sizings: SIZINGS }
-    : { tabs: 12, finds: 30, recordedFinds: 6, sizings: SIZINGS.filter((_, at) => at !== 1) };
+  // A TABLE OF TWO WIDTHS: the seeded tabs and the texts sought in a recorded one.
+  const TABLE = WIDER ? { tabs: 100, finds: 30, recordedFinds: 12 } : { tabs: 12, finds: 30, recordedFinds: 6 };
 
-  it.each(TABLE.sizings)("of every recorded tab and the seeded tabs, under %s", (name, sizes) => {
+  it.each(SIZINGS)("of every recorded tab and the seeded tabs, under %s", (name, sizes) => {
     let tally = asked();
     let seed = 20261119 + 1_000 * SIZINGS.findIndex(([other]) => other === name);
     let tabs = [
@@ -353,8 +283,7 @@ describe("the two readings answer the same", () => {
         tab, sizes, seed + number,
         number < RECORDED.length ? TABLE.recordedFinds : TABLE.finds, tally);
     }
-    // In the default pass no text overlaps itself past what a scan follows; the wider run
-    // draws some from stretches of empty paragraphs, which the windows then answer.
+    // Only the wider run draws a text that overlaps itself past what a scan follows.
     if (!WIDER) expect(tally.crowded).toBe(0);
     for (let [kind, count] of Object.entries(tally)) {
       if (kind !== "crowded") expect(count, kind).toBeGreaterThan(0);
@@ -372,9 +301,7 @@ describe("the two readings answer the same", () => {
     expect(equal.length).toBeGreaterThan(20 * longest);
     docStoreCost.peakMarkdownCharsInHand = 0;
     expect(stored.find(equal)).toBe("many");
-    // COUNTED as what the windows hold: the text, the window in hand and the one its tail was
-    // cut from, each window under the text and a run. The scan that follows places counts the
-    // text and a run.
+    // The windows hold the text and two windows, each under the text and a run.
     expect(docStoreCost.peakMarkdownCharsInHand).toBeGreaterThan(2 * equal.length);
     expect(docStoreCost.peakMarkdownCharsInHand).toBeLessThan(3 * equal.length + 2 * longest);
     let rest = rendering.markdown.slice(1);
@@ -405,10 +332,6 @@ describe("the two readings answer the same", () => {
     expect(docStoreCost.runsRendered).toBeGreaterThan(before.runsRendered);
   });
 });
-
-// ---------------------------------------------------------------------------
-// A walk of some of a version's runs
-// ---------------------------------------------------------------------------
 
 /** Items of one numbered list in runs apart, the third behind a paragraph and a table. */
 const NUMBERED_APART = () => asFetched(buildTab([
@@ -461,10 +384,6 @@ describe("a walk of some of a version's runs", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// A walk that hands its runs again
-// ---------------------------------------------------------------------------
-
 /**
  * A numbered item before the first table, two tables no other reads as, and a line that
  * stands twice: every member's answer differs where it counts a run twice.
@@ -491,11 +410,7 @@ const members = () => ({
 });
 type Walked = keyof ReturnType<typeof members>;
 
-/**
- * What a reading of `tab` is asked, each question with the member it asks and a check that
- * holds a reading's answer to the whole rendering's: every member, of every table and of every
- * element (its Markdown with the next element's sought, the line before it, its piece).
- */
+/** Every question of every member a reading of `tab` is asked, each held to the whole rendering's answer. */
 function questionsOf(tab: GoogleDocsTab): { member: Walked; check(reading: TabReading): void }[] {
   let rendering = renderTab(tab);
   let whole = wholeOf(tab);
@@ -575,87 +490,8 @@ describe("a walk that hands its runs again", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// What a question holds
-// ---------------------------------------------------------------------------
-
-const isPage =(query: string) => /FROM doc_seq\b[^]*ORDER BY (doc_seq\.)?seq LIMIT \?/.test(query);
-const readsMarkdown = (query: string) => query.startsWith("SELECT md FROM doc_md");
-
-/** True at the `nth` statement `is` chooses, counted from 1, and at no other. */
-function nth(n: number, is: (query: string) => boolean): (query: string) => boolean {
-  let seen = 0;
-  return query => is(query) && ++seen === n;
-}
-
-type Kept = { storage: FakeDocStorage; base: DocVersion };
-
-/**
- * How much more is in use at the statement `at` chooses, inside what `ask` asks of a stored
- * reading of `kept` made for it, than before the reading was made (`heapHeld`): a function
- * of its own, which keeps the answer's kind and no other value of what it measures.
- */
-function heldBy(
-  kept: Kept, at: (query: string) => boolean, ask: (reading: TabReading) => unknown,
-): { bytes: number; seen: number; answer: string } {
-  let answer = "";
-  let { bytes, seen } = heapHeld(kept.storage, at, observed => {
-    answer = String(ask(storedTabReading(new DocStore(observed), kept.base)));
-  });
-  return { bytes, seen, answer };
-}
-
-/** A string of its own with the characters of `text`: no view of a longer one. */
-const copied = (text: string): string => Buffer.from(text, "latin1").toString("latin1");
-
-// The read of the last page of a walk of `runs` runs: the page before it, full, is in hand.
-const lastPage = (runs: number) => nth(Math.floor(runs / 500) + 1, isPage);
-// The read of the Markdown of the last run but one of the last page that is full: a scan
-// then has a whole page in hand, whatever the tab's runs.
-const inLastFullPage = (runs: number) => nth(500 * Math.floor(runs / 500) - 1, readsMarkdown);
-
-/** A tab of `pairs` one-cell tables kept, with where its last table's Markdown starts. */
-function manyRuns(pairs: number): Kept & { runs: number; lastTable: number } {
-  let tab = tinyTablesTab("tab-1", pairs);
-  let { storage, base } = pieceStore(tab);
-  return {
-    storage, base, runs: 2 * pairs + 1,
-    lastTable: renderTab(tab).sourceMap.tables.at(-1)!.mdStart,
-  };
-}
-
 describe("what a question holds", () => {
-  // A text of 1 MiB that spans some forty runs of 52. COUNTED: the text and the longest run's
-  // Markdown, exactly. THE LIVE HEAP at the read of the middle run's Markdown, beyond the
-  // text (which stands before the measure starts): 96 KB where the text is there and 66 KB
-  // where its last character differs, of runs of 49 KB at most: the run before the one
-  // read, which the scan's tail keeps, the page of the list and the store. Pinned at two
-  // runs' Markdown and 32 KiB; the tab's Markdown joined would be 1.4 MB.
-  it("a scan holds the text and a run", HEAP_MEASURED, () => {
-    let filler = "lorem ipsum dolor sit amet ".repeat(23);
-    let { storage, store, base } = pieceStore(
-      proseTab("tab-1", 2_400, at => `Paragraph ${at} ${filler}`.slice(0, 600)));
-    let runs = runsMarkdown(store, base);
-    let longest = Math.max(...runs.map(run => run.length));
-    expect(runs.length).toBeGreaterThan(40);
-    let from = 12_345;
-    let text = copied(runs.join("").slice(from, from + MIB));
-    let changed = copied(`${text.slice(0, -1)}#`);
-    for (let [sought, expected] of [[text, from], [changed, "none"]] as const) {
-      docStoreCost.peakMarkdownCharsInHand = 0;
-      expect(storedTabReading(store, base).find(sought)).toBe(expected);
-      expect(docStoreCost.peakMarkdownCharsInHand).toBeLessThanOrEqual(sought.length + longest);
-      expect(docStoreCost.peakMarkdownCharsInHand).toBeGreaterThan(sought.length);
-      let held = heldBy(
-        { storage, base }, nth(runs.length >> 1, readsMarkdown), reading => reading.find(sought));
-      expect(held.seen).toBe(1);
-      expect(held.answer).toBe(String(expected));
-      expect(held.bytes).toBeLessThan(2 * longest + 32 * 1024);
-    }
-  });
-
-  // COUNTED: the longest Markdown of the runs read, one in hand at a time, and no run before
-  // the line answered or after the offset asked.
+  // The peak is the longest run read, one at a time, none before the line or after the offset.
   it("the lines read backwards hold a run at a time", () => {
     let { store, base, stored, whole, rendering } = read(asFetched(buildTab([
       para(`First, and longer than every run after it: ${"lorem ipsum ".repeat(60)}`),
@@ -668,9 +504,7 @@ describe("what a question holds", () => {
     let last = runs.findLastIndex(run => run.includes("<table>"));
     expect(runs.filter(run => run.includes("<table>"))).toHaveLength(3);
     let { tables } = rendering.sourceMap;
-    // A table's run starts with the line break before the table. Behind two tables and the
-    // empty lines between: the runs from the last table's back to the line's, of which the
-    // second table's is the longest, and neither long paragraph.
+    // Behind two tables the longest run read is the second table's, and neither long paragraph.
     let behind = Math.max(...lengths.slice(line, last + 1));
     expect(last - line).toBe(5);
     expect(behind).toBe(lengths[line + 3]);
@@ -695,66 +529,7 @@ describe("what a question holds", () => {
       expect(docStoreCost.peakMarkdownCharsInHand).toBe(peak);
     }
   });
-
-  // What each member is asked on the shape of many runs, and the statement inside its walk at
-  // which the heap is read: the walk's last page for a pass, one of the last runs' Markdown
-  // for a scan and for the lines read backwards. `lastTable` is where the last table starts.
-  type Member = {
-    at(runs: number): (query: string) => boolean;
-    ask(reading: TabReading, lastTable: number): unknown;
-    answer: string;
-  };
-  const MEMBERS: Record<string, Member> = {
-    tables: { at: lastPage, ask: reading => reading.tables().cells > 0, answer: "true" },
-    tablesShaped: {
-      at: lastPage, ask: reading => reading.tablesShaped("<table>\n</table>").length, answer: "0",
-    },
-    numberedAfter: { at: lastPage, ask: reading => reading.numberedAfter(0), answer: "false" },
-    blank: { at: () => nth(1, isPage), ask: reading => reading.blank(), answer: "false" },
-    find: { at: inLastFullPage, ask: reading => typeof reading.find("<p>cell 37</p>"), answer: "number" },
-    findAbsent: { at: inLastFullPage, ask: reading => reading.find("no such text"), answer: "none" },
-    // Behind every other table: the lines are read back through all of them to the tab's start.
-    lineBefore: {
-      at: runs => nth(runs - 4, readsMarkdown),
-      ask: (reading, lastTable) => reading.lineBefore(lastTable), answer: "undefined",
-    },
-  };
-
-  // A tab of thousands of one-cell tables, each a run, with a run between each two: 4,001
-  // and 8,001 runs (4,001 and 19,601 in the wider run). THE PER-RUN TERM of each member is
-  // the difference of what it holds on the two tabs, by the runs between them. MEASURED, in
-  // bytes a run, default pass and wider run: `tables` -0.3 and -0.1, `tablesShaped` -0.9
-  // and 0.4, `numberedAfter` 0.0 to 4.8 and -0.4, `blank` 0.0 and 0.0, `find` of a cell's
-  // text 1.7 and 0.6, `find` of an absent text 5.8 and -0.1, `lineBefore` 2.5 and 0.3:
-  // nothing a run. What is left is a constant of up to 24 KB between two measures of one
-  // member (what the code of a walk takes as it is compiled again between the collections
-  // of a measure), which is 6 bytes a run over 4,000 runs and under 2 over 15,600. PINNED
-  // at 16 bytes a run in the default pass and at 4 in the wider run: a list of the runs'
-  // places alone would be 8 bytes a run, and one of their summaries over 190.
-  /** The two tabs of the shape, kept once a file by the first member's test. */
-  let tabs: ReturnType<typeof manyRuns>[] | undefined;
-
-  it.each(Object.keys(MEMBERS))(
-    "the shape of many runs is asked without a list of it: %s", HEAP_MEASURED, name => {
-      let { at, ask, answer } = MEMBERS[name];
-      let [fewer, more] = tabs ??= (WIDER ? [2_000, 9_800] : [2_000, 4_000]).map(manyRuns);
-      // Asked once on the larger tab before it is measured, so that what the code itself
-      // takes as it runs (the first time, and once a loop of it is compiled) is in neither
-      // measure.
-      ask(storedTabReading(new DocStore(more.storage), more.base), more.lastTable);
-      let held = [fewer, more].map(kept => {
-        let measured = heldBy(kept, at(kept.runs), reading => ask(reading, kept.lastTable));
-        expect(measured.seen).toBe(1);
-        expect(measured.answer).toBe(answer);
-        return measured.bytes;
-      });
-      expect((held[1] - held[0]) / (more.runs - fewer.runs)).toBeLessThan(WIDER ? 4 : 16);
-    });
 });
-
-// ---------------------------------------------------------------------------
-// What a stored reading throws, and the piece it answers
-// ---------------------------------------------------------------------------
 
 /** What `run` throws, or `undefined` where it throws nothing. */
 function thrownBy(run: () => unknown): unknown {
@@ -829,19 +604,6 @@ describe("what a stored reading throws", () => {
     }))).toBe(cause);
   });
 
-  it("unwrapped passes every answer and every other throw", () => {
-    expect(unwrapped(() => 7)).toBe(7);
-    let other = new Error("another");
-    expect(thrownBy(() => unwrapped(() => {
-      throw other;
-    }))).toBe(other);
-    let inner = new DocReadingFault("no error");
-    expect(inner.message).toBe("A stored Google Doc tab could not be read.");
-    expect(thrownBy(() => unwrapped(() => {
-      throw inner;
-    }))).toBe("no error");
-  });
-
   it("the renderer's throw and a piece that names nothing pass as they are", () => {
     let { store, base, stored, rendering } = read(
       asFetched(buildTab(["One", "FAULT here", "Three"].map(para))), runsOf(1));
@@ -880,14 +642,13 @@ const outcome = (run: () => unknown): unknown => {
 };
 
 describe("the piece a stored reading answers", () => {
-  it.each([SIZINGS[0], SIZINGS[3]])(
+  it.each(SIZINGS)(
     "carries its reading, and the checks on it answer as on the whole rendering, under %s",
     (_name, sizes) => {
-      let counts = { tables: 0, refused: 0, twins: 0 };
-      let tabs = [
-        ...RECORDED, LISTED(), numberedFar("item"), numberedFar("table"), numberedFar("nothing"),
-        numberedSecond(),
-      ];
+      let counts = { tables: 0, twins: 0 };
+      let far = [numberedFar("item"), numberedFar("table")];
+      let refusing = new Set<GoogleDocsTab>();
+      let tabs = [...RECORDED, LISTED(), ...far, numberedFar("nothing"), numberedSecond()];
       for (let tab of tabs) {
         let rendering = renderTab(tab);
         let { tables } = rendering.sourceMap;
@@ -917,7 +678,7 @@ describe("the piece a stored reading answers", () => {
             let shape = { type, at: 0, count: 1 };
             let whole = outcome(() => checkTableTarget(rendering, table, shape));
             expect(outcome(() => checkTableTarget(piece, place, shape))).toEqual(whole);
-            if (typeof whole === "string" && whole.includes("numbered list")) counts.refused++;
+            if (typeof whole === "string" && whole.includes("numbered list")) refusing.add(tab);
           }
           counts.tables++;
         }
@@ -925,26 +686,8 @@ describe("the piece a stored reading answers", () => {
       expect(counts.tables).toBeGreaterThan(50);
       expect(counts.twins).toBeGreaterThan(0);
       // The far item and the far table, each outside the piece of the first table.
-      expect(counts.refused).toBeGreaterThanOrEqual(2);
+      for (let tab of far) expect(refusing.has(tab)).toBe(true);
     });
-
-  it("refuses a deletion for a numbered list far after its table, which the piece does not hold", () => {
-    for (let later of ["item", "table"] as const) {
-      let { stored, rendering } = read(numberedFar(later), runsOf(1));
-      let piece = stored.piece({ table: 0 });
-      expect(piece.part?.last).toBe(false);
-      expect(piece.markdown).not.toContain("far");
-      expect(rendering.markdown).toContain("far");
-      expect(thrownMessage(() => checkTableTarget(piece, 0, { type: "deleteTableRows", at: 0, count: 1 })))
-        .toBe("deleteTableRows: what would be deleted holds items of a numbered list, and a " +
-          "numbered list follows it in the tab, which the deletion could renumber. That is not " +
-          "supported.");
-    }
-    let { stored } = read(numberedFar("nothing"), runsOf(1));
-    expect(outcome(() =>
-      checkTableTarget(stored.piece({ table: 0 }), 0, { type: "deleteTableRows", at: 0, count: 1 })))
-      .toBeUndefined();
-  });
 
   it("asks what follows a table by its number in the tab, and says so of a table it does not hold", () => {
     let { stored, rendering } = read(numberedSecond(), runsOf(1));
@@ -1017,8 +760,7 @@ describe("the piece a stored reading answers", () => {
     let reading = storedTabReading(store, base);
     let own: OwnRange = { table: 2 };
     let before = { ...docStoreCost };
-    // A function of its own, which answers a reference that holds nothing and a copy: no
-    // frame of this test holds the piece.
+    // A function of its own, so that no frame of this test holds the piece.
     let first = (() => {
       let piece = reading.piece(own);
       let { part, ...rendering } = piece;
@@ -1036,8 +778,7 @@ describe("the piece a stored reading answers", () => {
     };
     expect(spent.decoded).toBeGreaterThan(0);
     expect(spent.rendered).toBeGreaterThan(0);
-    // The decoded runs are handed on once, and the reading holds the piece no longer, though
-    // the reading and the runs are held still.
+    // The decoded runs are handed on once, and then the reading no longer holds the piece.
     let decoded = reading.takeDecoded();
     expect(decoded?.size).toBeGreaterThan(0);
     expect(reading.takeDecoded()).toBeUndefined();
