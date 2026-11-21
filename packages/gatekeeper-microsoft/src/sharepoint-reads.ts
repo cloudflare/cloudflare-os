@@ -376,8 +376,9 @@ export async function grantedSites(api: GraphApi): Promise<GrantedSites> {
       from = page.nextFrom;
     }
   } catch (error) {
-    // Search down on Microsoft's side, as on a new tenant, leaves what was found, or the home site.
-    if (!(error instanceof GraphApiError && error.status >= 500)) throw error;
+    // Search down on Microsoft's side, as on a new tenant, leaves what was found, or the home site;
+    // so does Search throttled part-way, where failing would throw away every site already found.
+    if (!(error instanceof GraphApiError && (error.status >= 500 || (error.status === 429 && from !== 0)))) throw error;
     complete = false;
     if (from === 0) await check([await root]);
   }

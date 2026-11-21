@@ -190,6 +190,11 @@ describe("the sites a Sites.Selected connection can open", () => {
     const named = Array.from({ length: 501 }, (_, index) => site(`S${index}`));
     const later = tenant(named, ["S3"], { search: from => from === 0 ? undefined : down() });
     expect(await grantedSites(later.api)).toMatchObject({ sites: [{ name: "S3" }], complete: false });
+    // Throttled part-way keeps what was found too; throttled at the start is the caller's to hear.
+    const throttled = () => Response.json({ error: { code: "TooManyRequests", message: "slow down" } }, { status: 429, headers: { "retry-after": "600" } });
+    const midway = tenant(named, ["S3"], { search: from => from === 0 ? undefined : throttled() });
+    expect(await grantedSites(midway.api)).toMatchObject({ sites: [{ name: "S3" }], complete: false });
+    await expect(grantedSites(tenant(named, ["S3"], { search: throttled }).api)).rejects.toThrow(/limiting how fast/);
   });
 
   it("fails when search refuses the request, which is no answer about the sites", async () => {
