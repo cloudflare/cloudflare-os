@@ -769,6 +769,16 @@ const ROW_BAND = 256;
 /** The band a row is in. */
 const bandOf = (row: number): number => Math.floor(row / ROW_BAND);
 
+/**
+ * The columns of a band, by which `baseValues` finds the pieces of a row that hold a cell. Few:
+ * the pieces queued column changes cut a guard into are a few columns wide, and indexing a row
+ * costs its cells over `COLUMN_BAND` at most.
+ */
+const COLUMN_BAND = 16;
+
+/** The band a column is in. */
+const columnBandOf = (column: number): number => Math.floor(column / COLUMN_BAND);
+
 /** Values of cells of the sheets Google holds, by sheet ID and zero-based row and column. */
 export type BaseCells<T> = (sheetId: number, row: number, column: number) => T | null;
 
@@ -797,25 +807,35 @@ export function baseValues<T extends EnteredValue = SpreadsheetCellValue>(
       else bands.set(band, [i]);
     }
   });
-  // The pieces that hold the row last asked for, in piece order. Every caller walks an area a row
-  // at a time (`rewriteWork`, `enteredContent` and the simulated read all loop rows, then
-  // columns), so a run of lookups shares one list, and a lookup costs the pieces that hold its
-  // row, not every piece of its sheet: a guarded area that queued insertions cut up has hundreds.
-  // A caller that asked in another order would get the same answers at the cost of a scan of the
-  // pieces near the row a lookup.
+  // The pieces that hold the row last asked for, by the bands of `COLUMN_BAND` columns they
+  // reach, in piece order. Every caller walks an area a row at a time (`rewriteWork`,
+  // `enteredContent` and the simulated read all loop rows, then columns), so a run of lookups
+  // shares one index, and a lookup costs the pieces that hold its row near its column, not every
+  // piece of its sheet: a guarded area that queued insertions or deletions cut up has hundreds,
+  // across its rows or its columns. A caller that asked in another order would get the same
+  // answers at the cost of indexing the pieces near the row a lookup.
   let heldSheet: number | undefined;
   let heldRow = 0;
-  let holding: number[] = [];
+  let holding = new Map<number, number[]>();
   return (sheetId, row, column) => {
     if (sheetId !== heldSheet || row !== heldRow) {
-      holding = (bandsOn.get(sheetId)?.get(bandOf(row)) ?? [])
-        .filter(i => values[i]?.[row - pieces[i].rect.startRow] !== undefined);
+      holding = new Map();
+      for (let i of bandsOn.get(sheetId)?.get(bandOf(row)) ?? []) {
+        let { rect } = pieces[i];
+        if (values[i]?.[row - rect.startRow] === undefined) continue;
+        for (let band = columnBandOf(rect.startColumn); band <= columnBandOf(rect.endColumn - 1); band++) {
+          let on = holding.get(band);
+          if (on) on.push(i);
+          else holding.set(band, [i]);
+        }
+      }
       heldSheet = sheetId;
       heldRow = row;
     }
-    for (let at = holding.length - 1; at >= 0; at--) {
-      let { rect } = pieces[holding[at]];
-      let value = values[holding[at]]?.[row - rect.startRow]?.[column - rect.startColumn];
+    let near = holding.get(columnBandOf(column)) ?? [];
+    for (let at = near.length - 1; at >= 0; at--) {
+      let { rect } = pieces[near[at]];
+      let value = values[near[at]]?.[row - rect.startRow]?.[column - rect.startColumn];
       if (value !== undefined && value !== null) return value;
     }
     return null;
