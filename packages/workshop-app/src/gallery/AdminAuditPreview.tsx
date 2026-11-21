@@ -70,6 +70,7 @@ const fakeFor = (state: State) => {
       return {
         days: 7,
         totalEvents: records.length,
+        writes: 0,
         byDay: ['2026-11-11', '2026-11-12', '2026-11-13', '2026-11-14', '2026-11-15', '2026-11-16', '2026-11-17'].map((day, index) => ({ day, count: state === 'empty' ? 0 : [0, 0, 0, 1, 1, 0, 3][index] })),
         topAdmins: state === 'empty' ? [] : [{ admin: 'ada', count: 3 }, { admin: 'grace', count: 2 }],
       }

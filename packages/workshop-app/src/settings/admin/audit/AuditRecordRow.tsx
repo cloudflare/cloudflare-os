@@ -1,6 +1,6 @@
 import { useId, useState, type ReactNode } from 'react'
 import { CaretRightIcon } from '@phosphor-icons/react'
-import type { AdminAccessRecord, AdminAuditRecord, AdminSettingChange, AdminUserAccessRecord } from '@gadgets/workshop-shared/api'
+import type { AdminAccessRecord, AdminAuditRecord, AdminSettingChange, AdminUserAccessRecord, AdminWriteRecord } from '@gadgets/workshop-shared/api'
 import { Tag } from '@gadgets/ui'
 import { targetUserOf, type AuditFilter } from './auditFilter'
 import { ACCESS_LEVEL_NAMES, changeName, excerptLabel, KIND_NAMES, REFUSAL_NAMES, VIA_NAMES } from './auditText'
@@ -48,15 +48,18 @@ const SettingChanges = ({ changes }: { changes: AdminSettingChange[] }) => (
   </ul>
 )
 
-const AccessDetails = ({ record }: { record: AdminAccessRecord | AdminUserAccessRecord }) => {
+// A call's or a write's reason and arguments, and a call's level, which a write has none of.
+const CallDetails = ({ record }: { record: AdminAccessRecord | AdminUserAccessRecord | AdminWriteRecord }) => {
   const args = Object.entries(record.args)
   return (
     <>
       <Detail term="Reason">{record.reason}</Detail>
-      <Detail term="Access">
-        {ACCESS_LEVEL_NAMES[record.access]}
-        {record.refused && `, refused: ${REFUSAL_NAMES[record.refused]}`}
-      </Detail>
+      {record.kind !== 'write' && (
+        <Detail term="Access">
+          {ACCESS_LEVEL_NAMES[record.access]}
+          {record.refused && `, refused: ${REFUSAL_NAMES[record.refused]}`}
+        </Detail>
+      )}
       {args.length > 0 && (
         <Detail term="Arguments">
           <span className="font-mono">{args.map(([name, value]) => `${name}: ${String(value)}`).join(' · ')}</span>
@@ -77,7 +80,7 @@ export type AuditRecordRowProps = {
  * refused call marked as one, then who called it and when, and whom it reached. It opens to the
  * rest beneath it: the admin, the user reached and the workspace, each of which narrows the log to
  * it, how the call came, and a setting change's values before and after, or a call's reason, level
- * and arguments. Ported from main's Audit tab, which drew it as a table's row.
+ * and arguments, or a write's workspace, reason and arguments. Ported from main's Audit tab, which drew it as a table's row.
  */
 export const AuditRecordRow = ({ record, onFilterBy }: AuditRecordRowProps) => {
   const [open, setOpen] = useState(false)
@@ -103,7 +106,7 @@ export const AuditRecordRow = ({ record, onFilterBy }: AuditRecordRowProps) => {
           <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <span className="min-w-0 font-mono text-sm wrap-anywhere text-kumo-default">{record.method}</span>
             <Tag>{KIND_NAMES[record.kind]}</Tag>
-            {record.kind !== 'setting' && record.refused && <Tag className="border-kumo-warning text-kumo-warning">Refused</Tag>}
+            {(record.kind === 'workspace' || record.kind === 'user') && record.refused && <Tag className="border-kumo-warning text-kumo-warning">Refused</Tag>}
           </span>
           <span className="text-sm wrap-anywhere text-kumo-subtle">
             {record.admin} · <time dateTime={record.at.toISOString()}>{time}</time> · {reached}
@@ -116,7 +119,7 @@ export const AuditRecordRow = ({ record, onFilterBy }: AuditRecordRowProps) => {
             <Detail term="Admin">
               <NarrowTo label={`Show only ${record.admin}’s activity`} onSelect={() => onFilterBy({ admin: record.admin })}>{record.admin}</NarrowTo>
             </Detail>
-            {record.kind === 'workspace' && (
+            {(record.kind === 'workspace' || record.kind === 'write') && (
               <Detail term="Workspace">
                 <NarrowTo label={`Show only calls into ${record.workspaceTitle || record.workspaceId}`} onSelect={() => onFilterBy({ workspace: record.workspaceId })}>
                   {record.workspaceTitle || 'Untitled'}
@@ -131,7 +134,7 @@ export const AuditRecordRow = ({ record, onFilterBy }: AuditRecordRowProps) => {
                   : 'Unknown'}
               </Detail>
             )}
-            {record.kind !== 'setting' && <AccessDetails record={record} />}
+            {record.kind !== 'setting' && <CallDetails record={record} />}
             <Detail term="Via">{VIA_NAMES[record.via]}</Detail>
           </dl>
           {record.kind === 'setting' && <SettingChanges changes={record.changes} />}
