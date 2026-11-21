@@ -230,8 +230,11 @@ const size = (bytes: number | undefined): string | undefined => {
   return `${value < 10 ? Number(value.toFixed(1)) : Math.round(value)} ${SIZE_UNITS[unit]}`;
 };
 
-// A folder or shared drive grant reaches everything in it, checked again on every read.
-const CONTAINER_CHOICE = { subtitle: "All of its contents, including anything added later" };
+// A folder or shared drive grant reaches everything in it, checked again on every read, and what
+// its shortcuts point to, which may be outside it.
+const CONTAINER_CHOICE = {
+  subtitle: "All of its contents, including anything added later, and anything its shortcuts point to",
+};
 
 /** As for {@link toItem}: a folder on the path whose children this account cannot list is only seen. */
 const toAncestor = (

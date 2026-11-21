@@ -53,8 +53,9 @@ export type DriveOwner = {
 /**
  * Metadata about a Drive shortcut's target. A folder binding treats the target of a shortcut among
  * the positioned folder's direct children as one of them for reading: pass `targetId` to
- * `getEntry()`, a read or a native open, or to `openFolder()` for a folder. Other bindings do not
- * follow shortcuts; read the target by its ID.
+ * `getEntry()`, a read or a native open, or to `openFolder()` for a folder. An account binding can
+ * read a target directly by ID. An exact-file binding to the shortcut cannot read the target, which
+ * needs its own connection.
  */
 export type DriveShortcut = {
   /** Stable ID recorded for the shortcut target. */
