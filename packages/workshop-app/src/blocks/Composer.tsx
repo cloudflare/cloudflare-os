@@ -331,7 +331,7 @@ export const Composer = ({ onSend, initialDraft, commands = [], commandsLoading,
             command={command}
             refusal={filesRefused || connectionsRefused
               ? `${filesRefused ? 'Files' : 'Connections'} can’t go with ${command.kind === 'skill' ? 'a skill' : 'it'}. Remove them, or ${command.kind === 'skill' ? 'the skill' : 'it'}.`
-              : command && stop ? 'It can be used once the agent has finished.' : undefined}
+              : command && stop && !sending ? 'It can be used once the agent has finished.' : undefined}
             onCancel={() => {
               setCommand(undefined)
               inputRef.current?.focus()
@@ -339,7 +339,8 @@ export const Composer = ({ onSend, initialDraft, commands = [], commandsLoading,
           />
           <ComposerConnectionLines
             connections={connections}
-            refusal={stop && !command ? 'It can be added once the agent has finished.' : undefined}
+            // Not as the draft goes with them: the agent starts on it before the lines are taken off.
+            refusal={stop && !command && !sending ? 'It can be added once the agent has finished.' : undefined}
             onRemove={(key) => {
               setConnections((current) => current.filter((connection) => connection.key !== key))
               inputRef.current?.focus()
