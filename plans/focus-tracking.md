@@ -168,6 +168,11 @@ onFocusReset?() }`. `onFocusReset` is optional because only the composer's state
   to send to), or if the frame has been replaced. A replaced
   frame's session ending rejects its pending call, and that must not clear the anchor its
   successor is about to be sent to.
+- A frame's `navigate` calls never overlap. Each waits for the one before to settle, and a target
+  that a newer one replaced while it waited is skipped. Otherwise a slow call (one waiting on the
+  gadget's data, say) could finish after a newer one and redraw and report the spot the user
+  clicked away from. The guarantee is in `onNavigate()`'s contract, so a gadget needn't handle
+  overlapping calls itself.
 - A new frame starts with no callback, so it gets `navigate` when it registers. That is the whole
   restore mechanism for code-change reloads and page reloads. It is sent to `latestAnchor()`, not
   `anchor`: a code reload can replace the frame within the URL write hold, and the held report's

@@ -334,6 +334,22 @@ describe('focus', () => {
     expect(recorder.events).toEqual(['navigate cell/B7', 'reset', 'navigate cell/B7'])
   })
 
+  it('sends the frame on only once its navigate call settles, skipping targets replaced meanwhile', async () => {
+    const gadget = focusGadget()
+    await show(gadget, undefined)
+    await (await frame(0)).register()
+
+    await show(gadget, 'cell/B7')
+    await expect.poll(() => recorder.navigations.length).toBe(1)
+    await show(gadget, 'cell/C1')
+    await show(gadget, 'cell/D4')
+    await settle()
+    expect(recorder.navigations.map(n => n.anchor)).toEqual(['cell/B7'])
+
+    recorder.navigations[0].resolve(true)
+    await expect.poll(() => recorder.navigations.map(n => n.anchor)).toEqual(['cell/B7', 'cell/D4'])
+  })
+
   it('sends a frame reloaded before its last report reached the anchor to that report', async () => {
     const gadget = focusGadget()
     await show(gadget, 'cell/B7')
@@ -401,9 +417,9 @@ describe('focus', () => {
     await expect.poll(() => recorder.navigations.length).toBe(1)
 
     await show(gadget, 'cell/C1')
-    await expect.poll(() => recorder.navigations.length).toBe(2)
     recorder.navigations[0].resolve(false)
     await registration
+    await expect.poll(() => recorder.navigations.length).toBe(2)
     recorder.navigations[1].resolve(true)
     await settle()
 
@@ -421,9 +437,9 @@ describe('focus', () => {
     await show(gadget, 'gone')
     await expect.poll(() => recorder.navigations.length).toBe(1)
     await show(gadget, 'cell/B7')
-    await expect.poll(() => recorder.navigations.length).toBe(2)
     // The return supersedes the failure.
     recorder.navigations[0].resolve(false)
+    await expect.poll(() => recorder.navigations.length).toBe(2)
     recorder.navigations[1].resolve(true)
     await settle()
 

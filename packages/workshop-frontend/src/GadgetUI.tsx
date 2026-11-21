@@ -219,6 +219,10 @@ class WorkshopGadgetHost extends RpcTarget implements GadgetHost {
 type FrameFocus = {
   // Our duplicate of the frame's registered navigate callback.
   navigate: RpcStub<Navigate> | null
+  // The navigate calls, each started once the one before has settled.
+  navigating: Promise<void>
+  // Counts the targets, so that one replaced while it waited is never sent.
+  targets: number
 }
 
 // Where a console call or uncaught error happened in the frame, as the browser reported it.
@@ -395,7 +399,18 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
     focusRef.current?.onFocusReset?.()
   }
 
-  const sendNavigate = async (navigate: RpcStub<Navigate>, anchor: string) => {
+  // Sends the frame to `anchor` once its earlier navigate calls have settled, since a slow one
+  // finishing last would undo it, and only if no newer target has come meanwhile.
+  const sendNavigate = (frame: FrameFocus, anchor: string) => {
+    const target = ++frame.targets
+    frame.navigating = frame.navigating.then(async () => {
+      if (target !== frame.targets || !frame.navigate || frameFocusRef.current !== frame) return
+      await callNavigate(frame.navigate, anchor)
+    })
+    return frame.navigating
+  }
+
+  const callNavigate = async (navigate: RpcStub<Navigate>, anchor: string) => {
     const epoch = ++focusEpochRef.current
     let resolved: boolean
     try {
@@ -430,7 +445,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
       const retained = navigate.dup()
       frame.navigate = retained
       const anchor = focusRef.current.latestAnchor()
-      if (anchor !== undefined) await sendNavigate(retained, anchor)
+      if (anchor !== undefined) await sendNavigate(frame, anchor)
     },
     reportProblem: reportFocusProblem,
     openAgentChat: async chatToken => {
@@ -446,7 +461,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
     const anchor = focusRef.current?.anchor
     if (!frame?.navigate || anchor === undefined) return
     focusRef.current?.onFocusReset?.()
-    void sendNavigate(frame.navigate, anchor)
+    void sendNavigate(frame, anchor)
   }, [navigation])
 
   // A code change invalidates the view without clearing `hasLoaded`, so the previous load's "no UI"
@@ -695,7 +710,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
                 : gadgetStubRef.current[property]
             },
           })
-          const frame: FrameFocus = { navigate: null }
+          const frame: FrameFocus = { navigate: null, navigating: Promise.resolve(), targets: 0 }
           frameFocusRef.current = frame
           const sessionAbort = new AbortController()
           rpcSessionRef.current = newMessagePortRpcSession(
