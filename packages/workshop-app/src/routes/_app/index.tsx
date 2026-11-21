@@ -82,8 +82,13 @@ function Home() {
   // Stable per workspace: useChatCommands reads again when it changes.
   const listCommands = useCallback(async () => {
     if (startIn === undefined) return []
-    using overseer = api.openWorkspace(startIn)
-    return await overseer.listSlashCommands()
+    // Disposed by hand: `using` is not lowered for every browser this runs in, and Safari cannot parse it.
+    const overseer = api.openWorkspace(startIn)
+    try {
+      return await overseer.listSlashCommands()
+    } finally {
+      overseer[Symbol.dispose]()
+    }
   }, [api, startIn])
   // With none to choose, there is nothing to pick but a new workspace, so it is left out. Kept
   // while the list loads, so that it does not pop in under the composer for whoever has some,
