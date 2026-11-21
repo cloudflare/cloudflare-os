@@ -3235,6 +3235,8 @@ describe("Google Sheets replay cost", () => {
   const SHEETS = 328;
   const CAN_EDIT = 33;
   const VALUES = 801_078;
+  /** The merges, asked for the sheet a change or a replay acts on, of a sheet that holds none. */
+  const MERGES = 30;
 
   /** What a phase is measured in, in the order the table prints them. */
   const MEASURES = [
@@ -3363,7 +3365,9 @@ describe("Google Sheets replay cost", () => {
     // fake indents an answer that was not asked compact, and a read that forgot to ask would count
     // here. The 50,000 values are 16 bytes a cell, where they are 27 indented.
     //
-    // An answer of cells as entered is 40 bytes around its blocks, one for each area.
+    // An answer of cells as entered is 40 bytes around its blocks, one for each area. Wherever the
+    // sheets are read to queue, replay or apply, the merges of the sheets the changes act on are
+    // read after them (`MERGES`).
     expect(measured).toEqual([
       {
         ...none, phase: "build", pending: 5,
@@ -3375,7 +3379,7 @@ describe("Google Sheets replay cost", () => {
         // bytes, and 15 more where it names its first row, which a block from row 1 does not. One
         // of the first guard's two blocks names it and both of the second's, with a comma between
         // the two.
-        fetches: 12, responseBytes: 5 * SHEETS + 5 * CAN_EDIT + 1_062_682 + 1_062_697,
+        fetches: 17, responseBytes: 5 * SHEETS + 5 * CAN_EDIT + 5 * MERGES + 1_062_682 + 1_062_697,
         mostOpen: 2,
       },
       {
@@ -3385,20 +3389,20 @@ describe("Google Sheets replay cost", () => {
         overlayCopies: 20, overlayEntries: 1_000_000,
         // To queue: the sheets and whether the account may edit, together, then the guarded cell
         // as entered, a block of 94 bytes. To read: the sheets and the 50,000 values, together.
-        fetches: 25, responseBytes: 10 * SHEETS + 5 * CAN_EDIT + 5 * 134 + 5 * VALUES,
+        fetches: 35, responseBytes: 10 * SHEETS + 5 * CAN_EDIT + 10 * MERGES + 5 * 134 + 5 * VALUES,
         mostOpen: 2,
       },
       {
         ...none, phase: "read", pending: 5 + N,
         overlayCopies: 1,
         // The sheets and the 50,000 values, together.
-        fetches: 2, responseBytes: SHEETS + VALUES, mostOpen: 2,
+        fetches: 3, responseBytes: SHEETS + MERGES + VALUES, mostOpen: 2,
       },
       {
         ...none, phase: "formats read", pending: 5 + N,
         overlayCopies: 1,
         // The sheets, and the formats Google holds for the cells, together.
-        fetches: 2, responseBytes: SHEETS + 35_008, mostOpen: 2,
+        fetches: 3, responseBytes: SHEETS + MERGES + 35_008, mostOpen: 2,
       },
       {
         ...none, phase: "queue a deleted row", pending: 6 + N,
@@ -3410,7 +3414,7 @@ describe("Google Sheets replay cost", () => {
         keysIndexed: 200_000,
         // The sheets and whether the account may edit, together, then the deleted row as entered:
         // a block of 16 bytes, which names its first row and holds no cell.
-        fetches: 3, responseBytes: SHEETS + CAN_EDIT + 56, mostOpen: 2,
+        fetches: 4, responseBytes: SHEETS + CAN_EDIT + MERGES + 56, mostOpen: 2,
       },
       {
         ...none, phase: "queue an inserted row", pending: 7 + N,
@@ -3420,21 +3424,21 @@ describe("Google Sheets replay cost", () => {
         // index and guards no cell.
         overlayCopies: 3, overlayEntries: 199_800, keysIndexed: 100_000,
         // The sheets and whether the account may edit, together.
-        fetches: 2, responseBytes: SHEETS + CAN_EDIT, mostOpen: 2,
+        fetches: 3, responseBytes: SHEETS + CAN_EDIT + MERGES, mostOpen: 2,
       },
       {
         ...none, phase: "moved read", pending: 7 + N,
         overlayCopies: 1, keysIndexed: 100_000,
         // The sheets, then the 49,900 cells of the 499 rows below the inserted one as entered, at
         // 53 bytes a cell, and as shown, at 16, together.
-        fetches: 3, responseBytes: SHEETS + 2_651_240 + 799_562, mostOpen: 2,
+        fetches: 4, responseBytes: SHEETS + MERGES + 2_651_240 + 799_562, mostOpen: 2,
       },
       {
         ...none, phase: "approve", pending: 6 + N,
         // The batch is planned again over the sheets as they are, with nothing queued. It formats,
         // so its digest is of no cell. The sheets, then the write, whose answer is 20 bytes.
         overlayCopies: 1,
-        fetches: 2, responseBytes: SHEETS + 20, mostOpen: 1,
+        fetches: 3, responseBytes: SHEETS + MERGES + 20, mostOpen: 1,
       },
       // A rejection reads nothing.
       { ...none, phase: "reject", pending: 5 + N },
@@ -3446,9 +3450,9 @@ describe("Google Sheets replay cost", () => {
         // 80,000 queued keys in each of the two replays, where a fold that stops nowhere indexes
         // them once.
         overlayCopies: 2, keysIndexed: 2 * 80_000,
-        // As `moved read`, of all 500 rows, and the sheets with the collaborator's frozen row (19
-        // bytes).
-        fetches: 3, responseBytes: SHEETS + 19 + 2_656_553 + 801_164, mostOpen: 2,
+        // As `moved read`, of all 500 rows, the sheets with the collaborator's frozen row (19
+        // bytes), and the merges of both sheets the queued changes act on (59).
+        fetches: 4, responseBytes: SHEETS + 19 + 59 + 2_656_553 + 801_164, mostOpen: 2,
       },
     ]);
   });
