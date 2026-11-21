@@ -20,7 +20,7 @@ describe('chatContextOf', () => {
     expect(context.outputs.map(({ title, draft }) => [title, draft])).toEqual([['App', true], ['Report', false]])
     expect(context.files.map(({ name }) => name)).toEqual(['Attached file', 'a.txt'])
     expect(context.hooks.map(({ id }) => id)).toEqual([7])
-    expect(context.connectors.map(({ key, scopes }) => [key, scopes])).toEqual([['drive', ['Q3 plan', 'Roadmap']], ['connection:3', ['Claude']]])
+    expect(context.connectors.map(({ key, title }) => [key, title])).toEqual([['drive:Q3 plan', 'Q3 plan'], ['drive:Roadmap', 'Roadmap'], ['connection:3', 'Claude']])
   })
 
   it('has only the automations until what the chat has is read', () => {

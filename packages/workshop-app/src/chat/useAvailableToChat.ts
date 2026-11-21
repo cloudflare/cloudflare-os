@@ -29,12 +29,21 @@ export const useAvailableToChat = (workspaceId: string, chatId: number, context:
   ])].toSorted((a, b) => a - b).join(',')
   const used = context.connectors.length
   const [bindings, setBindings] = useState(NONE)
+  // What each connection reaches, for what kind of thing it is: read as the bindings are.
+  const [reaches, setReaches] = useState<ReadonlyMap<number, { resourceUrl?: string; resourceTypeId?: string }>>()
 
   useEffect(() => {
     if (!ids || reconnecting) return
     let current = true
     const overseer = api.openWorkspace(workspaceId)
     const gadgets = ids.split(',').map((id) => overseer.getGadget(Number(id)))
+    // Only what the workspace records, so no connection is asked; one that cannot say leaves kinds unsaid.
+    overseer.listObserverRequirements('workspace').then(
+      (needs) => {
+        if (current) setReaches(new Map(needs.map(({ gatekeeperId, resourceUrl, resourceTypeId }) => [gatekeeperId, { resourceUrl, resourceTypeId }])))
+      },
+      () => {},
+    )
     // A gadget that cannot be read, as one deleted meanwhile, is left out.
     void Promise.allSettled(gadgets.map((gadget) => gadget.listBindings(chatId)))
       .then((results) => {
@@ -50,5 +59,5 @@ export const useAvailableToChat = (workspaceId: string, chatId: number, context:
   }, [api, reconnecting, workspaceId, chatId, ids, used])
 
   const hooks = useMemo(() => (automations.status === 'ready' ? automations.automations.map(({ hook }) => hook) : undefined), [automations])
-  return useMemo(() => availableTo(context, { library: made, hooks, bindings: ids ? bindings : NONE }), [context, made, hooks, bindings, ids])
+  return useMemo(() => availableTo(context, { library: made, hooks, bindings: ids ? bindings : NONE, reaches }), [context, made, hooks, bindings, ids, reaches])
 }

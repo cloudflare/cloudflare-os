@@ -12,6 +12,8 @@ export type WorkspaceHoldings = {
   hooks?: readonly BoundHookInfo[]
   /** What its gadgets are bound to, as the chat sees them, its own drafts' bindings among them. */
   bindings: readonly GadgetBindingInfo[]
+  /** What each of its connections reaches, by the connection's id (`ObserverBindingNeed`), where read. */
+  reaches?: ReadonlyMap<number, { resourceUrl?: string; resourceTypeId?: string }>
 }
 
 // The kinds of connection that reach a service: not a model, nor an agent the chat can start.
@@ -42,12 +44,13 @@ const hookItem = (hook: BoundHookInfo): HookItem => ({
 /**
  * What a chat can use, rather than what it has used: everything its workspace has made, this
  * chat's drafts and worktrees first, as they are what it is working on; the workspace's
- * automations; the services its gadgets are bound to, with those the chat itself went through;
+ * automations; what its gadgets reach on the services they are bound to, each once, with whatever else
+ * the chat itself went through;
  * and what was uploaded to the chat, which is the chat's alone. Until the workspace's part is
  * read, the chat's own (`context`) stands in for it, so that nothing it has disappears meanwhile.
  * Nothing is from another workspace.
  */
-export const availableTo = (context: ChatContext, { library, hooks, bindings }: WorkspaceHoldings): ChatContext => {
+export const availableTo = (context: ChatContext, { library, hooks, bindings, reaches }: WorkspaceHoldings): ChatContext => {
   const working = context.outputs.filter(({ draft, type }) => draft || type === 'worktree')
   const made = library?.map(libraryItem) ?? context.outputs.filter((output) => !working.includes(output))
   const outputs = [...working, ...made.filter(({ workpieceId }) => !working.some((each) => each.workpieceId === workpieceId))]
@@ -58,14 +61,10 @@ export const availableTo = (context: ChatContext, { library, hooks, bindings }: 
 
   const bound = bindings
     .filter(({ kind, vendorId }) => vendorId !== undefined && REACHES_A_SERVICE.has(kind))
-    .map(({ target, vendorId, resourceTitle }) => ({ gatekeeperId: target, vendorId, resourceTitle }))
-  // Bound ones first, by service, then any the chat went through that no gadget is bound to.
+    .map(({ target, vendorId, resourceTitle }) => ({ gatekeeperId: target, vendorId, resourceTitle, ...reaches?.get(target) }))
+  // What the gadgets reach first, then anything else the chat went through.
   const connectors = chatConnectors(bound)
-  for (const used of context.connectors) {
-    const same = connectors.find(({ key }) => key === used.key)
-    if (!same) connectors.push(used)
-    else for (const scope of used.scopes) if (!same.scopes.includes(scope)) same.scopes.push(scope)
-  }
+  for (const used of context.connectors) if (!connectors.some(({ key }) => key === used.key)) connectors.push(used)
 
   return { outputs, hooks: automations, files: context.files, connectors }
 }

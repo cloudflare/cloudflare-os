@@ -33,11 +33,12 @@ describe('availableTo', () => {
     expect(available.hooks.map(({ title }) => title)).toEqual(['Chat hook 7', 'Hook 5', 'Hook 3'])
   })
 
-  it('lists the services the gadgets reach, by service, with any the chat went through besides', () => {
-    const own = chat({ connectors: [{ key: 'drive', vendorId: 'drive', scopes: ['Notes'] }, { key: 'github', vendorId: 'github', scopes: ['repo'] }] })
+  it('lists what the gadgets reach, each once, with its kind where known, and anything else the chat went through', () => {
+    const own = chat({ connectors: [{ key: 'drive:Notes', vendorId: 'drive', title: 'Notes' }, { key: 'drive:Q3 plan', vendorId: 'drive', title: 'Q3 plan' }] })
     const available = availableTo(own, {
       bindings: [binding(1, 'drive', 'Q3 plan', 'gatekeeper'), binding(2, 'drive', 'Q3 plan'), binding(3, undefined, 'Claude', 'aiModel'), binding(4, 'skills', 'Skills', 'ambient')],
+      reaches: new Map([[1, { resourceTypeId: 'doc' }]]),
     })
-    expect(available.connectors.map(({ key, scopes }) => [key, scopes])).toEqual([['drive', ['Q3 plan', 'Notes']], ['skills', ['Skills']], ['github', ['repo']]])
+    expect(available.connectors.map(({ key, resourceTypeId }) => [key, resourceTypeId])).toEqual([['drive:Q3 plan', 'doc'], ['skills:Skills', undefined], ['drive:Notes', undefined]])
   })
 })
