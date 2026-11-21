@@ -15,9 +15,8 @@ import { RUNS_OF_THREE } from "./doc-store-scenarios";
 import { asFetched, kept } from "./docs-store-slice-shadow";
 
 /**
- * A tab of one numbered list broken by a paragraph after each item, so that every later item
- * shows a number carried from the items before it, and a table before its last paragraph,
- * kept three elements a run: nine runs of the list, the table's and the last paragraph's.
+ * A numbered list broken by a paragraph after each item (every later number is carried), then a
+ * table and a paragraph, kept three elements a run.
  */
 function numbered() {
   let tab = asFetched(buildTab([
@@ -76,8 +75,7 @@ describe("an edit that finds a later run of its tab gone as it stores its versio
     let { runs: all } = numbered();
     for (let at = 1; at < all.length; at++) {
       let { store, base, lose } = numbered();
-      // Gone before the edit is made: met by the piece where the piece holds the run, and
-      // otherwise as the version is stored, where the later runs are rendered again.
+      // Met by the piece, or else as the version is stored and later runs are rendered again.
       lose(at);
       let thrown = thrownBy(() => docEditResult(store, base, RENUMBERS));
       // A run that holds no item is not rendered again, so its row is not missed.
@@ -93,8 +91,7 @@ describe("an edit that finds a later run of its tab gone as it stores its versio
 describe("a preparation whose copy lost a row, met where the piece does not decode", () => {
   it("a replacement meets it in the scan of the stored Markdown", () => {
     let { store, base, lose } = numbered();
-    // The text stands in run 6; run 1 is gone with its rendering, so the scan, which reads
-    // each run's stored Markdown from the first, renders it alone and finds no row.
+    // Run 1 is gone with its rendering: the scan for text in run 6 renders it and finds no row.
     lose(1, true);
     let decoded = vi.spyOn(DocStore.prototype, "piece");
     let thrown = thrownBy(() => prepareTextReplacement(store, base, "Line 9.", "Line nine.", "Tab", LIMIT));
@@ -104,8 +101,7 @@ describe("a preparation whose copy lost a row, met where the piece does not deco
 
   it("a replacement meets it in the model's slice", () => {
     let { store, base, runs, storage } = numbered();
-    // The run the batch names is gone between the piece and the slice, and the piece hands
-    // on no decoded run: the slice decodes it from storage and finds no row.
+    // Gone between the piece and the slice, which decodes it and finds no row.
     let piece = DocStore.prototype.piece;
     vi.spyOn(DocStore.prototype, "piece").mockImplementation(function (this: DocStore, version, at) {
       let made = piece.call(this, version, at);
@@ -121,8 +117,7 @@ describe("a preparation whose copy lost a row, met where the piece does not deco
 
   it("a replacement meets it as the version it gives is stored", () => {
     let { store, base, lose } = numbered();
-    // Run 5 holds an item the edit numbers again: it is rendered as the version is stored,
-    // inside the edit's own transaction, which the failure undoes. The edit drops the copy.
+    // Run 5 is renumbered, so rendered inside the edit's transaction, which the failure undoes.
     lose(5);
     let thrown = thrownBy(() => prepareTextReplacement(store, base, "1. Item 0.\n\n", "", "Tab", LIMIT));
     expectUnreadable(thrown, store);
@@ -130,8 +125,7 @@ describe("a preparation whose copy lost a row, met where the piece does not deco
 
   it("an append meets it in the pass that places its piece", () => {
     let { store, base, lose } = numbered();
-    // The append is built at the tab's end; run 1 is gone with its rendering, and the pass
-    // over the runs' stored summaries that finds where the tab ends renders it alone.
+    // The pass over the summaries that finds the tab's end renders the lost run 1.
     lose(1, true);
     let placed = vi.spyOn(DocStore.prototype, "piece");
     let thrown = thrownBy(() => prepareAppend(store, base, "More."));
@@ -141,8 +135,7 @@ describe("a preparation whose copy lost a row, met where the piece does not deco
 
   it("a table change meets it in the pass that counts the tab's tables", () => {
     let { store, base, lose } = numbered();
-    // The call names its table by number; run 1 is gone with its rendering, and the pass
-    // over the runs' stored summaries that counts the tables renders it alone.
+    // The pass over the summaries that counts the tables renders the lost run 1.
     lose(1, true);
     let placed = vi.spyOn(DocStore.prototype, "piece");
     let thrown = thrownBy(() => prepareTableChange(
@@ -153,8 +146,7 @@ describe("a preparation whose copy lost a row, met where the piece does not deco
 
   it("a table change meets it in the piece around its table", () => {
     let { store, base, runs, lose } = numbered();
-    // The table's run is gone and its rendering is there: the passes over the summaries
-    // read it, and the piece, which decodes the run, finds no row.
+    // The table's rendering is there but its run is not: the piece finds no row.
     lose(runs.length - 2);
     let placed = vi.spyOn(DocStore.prototype, "piece");
     let sliced = vi.spyOn(DocStore.prototype, "slice");
@@ -167,9 +159,7 @@ describe("a preparation whose copy lost a row, met where the piece does not deco
 
   it("a table change does not meet a row gone far from its table", () => {
     let { store, base, lose } = numbered();
-    // Run 1 is gone and its rendering is there. Nothing of the preparation decodes it: the
-    // table is found in the summaries, the piece holds the tab's last runs, and the card
-    // reads stored Markdown. The next read that decodes the run drops the copy.
+    // The preparation never decodes run 1; the next read that does drops the copy.
     lose(1);
     let prepared = prepareTableChange(store, base, { method: "deleteTable", table: 0 }, "Tab");
     expect(prepared.change.type).toBe("deleteTable");
@@ -179,9 +169,7 @@ describe("a preparation whose copy lost a row, met where the piece does not deco
 
   it("a new table meets it in the piece made again for its number", () => {
     let { store, base, runs, storage } = numbered();
-    // The edit is made and stored; the piece around the new table's place is then made once
-    // more, outside any transaction, and the run it decodes is gone: the store drops the
-    // copy where it throws.
+    // The piece for the new table's number is made again outside any transaction, over a lost run.
     let piece = DocStore.prototype.piece;
     let pieces = 0;
     vi.spyOn(DocStore.prototype, "piece").mockImplementation(function (this: DocStore, version, at) {
@@ -199,9 +187,8 @@ describe("a preparation whose copy lost a row, met where the piece does not deco
 
 describe("a preparation whose copy lost a row between its edit and its card", () => {
   /**
-   * Makes the card's first read (`DocStore.changed`) remove, beneath the store, every run
-   * the version after lists that the version before does not, with its rendering, and read
-   * on. Answers how often the card read.
+   * Makes the card's first read (`DocStore.changed`) remove the runs only the version after
+   * lists, with their renderings. Answers how often the card read.
    */
   function losingForTheCard(storage: ReturnType<typeof numbered>["storage"]): () => number {
     let changed = DocStore.prototype.changed;
@@ -220,9 +207,7 @@ describe("a preparation whose copy lost a row between its edit and its card", ()
     return () => reads;
   }
 
-  // The edit is made and stored, in its own transaction; the card's reads run after it, in
-  // no transaction: the store drops the copy where it finds the row gone, and the caller
-  // reads storage's own error.
+  // The card's reads run after the edit's transaction, in none.
   it.each([
     ["a replacement", (store: DocStore, base: DocVersion) =>
       prepareTextReplacement(store, base, "Line 9.", "Line nine.", "Tab", LIMIT)],
@@ -242,9 +227,7 @@ describe("a preparation whose copy lost a row between its edit and its card", ()
   });
 });
 
-// A bound Doc's lookup and a Drive connection's, over a copy it kept, search a view of the
-// stored copy in no transaction: the store drops the copy where it finds the row gone, and
-// the lookup throws storage's own error.
+// A bound Doc's lookup and a Drive connection's search the stored copy in no transaction.
 describe("a lookup of quoted text whose copy lost a row", () => {
   /** What a search for `quote` in the kept tab throws, through a view of the stored copy. */
   const lookup = (store: DocStore, base: DocVersion, quote: string) => thrownBy(() =>

@@ -1,7 +1,7 @@
-// A setup file of the Node pass: every suite's call that builds an edit from a whole tab's
-// rendering also builds it from the closure of its own elements, and fails the calling test
-// where the batch or refusal differs. Tabs whose closure is whole, or of over 2,000 elements,
-// pass through; its maps are weak, and it renders with `renderRun`, which counts nothing.
+// A Node setup file: every suite's call that builds an edit from a whole tab's rendering also
+// builds it from the closure of its own elements, failing the test where batch or refusal differ.
+// Whole closures and tabs over 2,000 elements pass through; maps are weak; `renderRun` counts
+// nothing.
 
 import { vi } from "vitest";
 import type { GoogleDocsRequest, GoogleDocsTab } from "../src/docs-api";

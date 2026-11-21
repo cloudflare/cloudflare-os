@@ -85,18 +85,16 @@ describe("DocStore on a Durable Object's storage", () => {
     expect(rows).toEqual(ROWS_WRITTEN);
   });
 
-  // What sharing saves, on real storage: an edit and a changed fetch write the runs near the
-  // change and a list, whatever the tab's length.
+  // An edit and a changed fetch write the runs near the change and a list, whatever the tab's
+  // length.
   it("counts what each step of a large tab's life writes, decodes, renders and keys", async () => {
     const life = await withDocStore((store, storage) => largeTabLife(store, storage));
 
     const { n, c, m } = life;
     expect({ n, c, m, fetched: life.fetched }).toEqual({ n: 133, c: 1, m: 133, fetched: { c: 1, m: 133 } });
     expect(life).toMatchObject(LARGE_TAB_COSTS);
-    // Each number of the table, from the runs of the tab (n), the runs a change replaced (c)
-    // and the runs of the changed tab (m). A row written to an ordinary table (a run, a
-    // rendering, a result) is billed with the row of its key's index, twice; A ROW REMOVED IS
-    // BILLED ONCE, whichever table it is of.
+    // n runs, c replaced, m after. A row written is billed twice (with its index's row); A ROW
+    // REMOVED IS BILLED ONCE.
     expect(life.keep).toEqual(stepCost(5 * n + 4, 0, n, 0));
     expect(life.read).toEqual(stepCost(0, 0, 0, 0));
     expect(life.edit).toEqual(stepCost(4 * c + m + 3, 1, 1 + c, 0));
@@ -126,9 +124,8 @@ describe("DocStore on a Durable Object's storage", () => {
       }
     });
 
-    // Rows read as billed (a row a table step, and a row a `json_each`/`json_tree` step), for a
-    // tab of n runs, N JSON values and L lists, and an edit at place p whose list is walked over
-    // q rows. An edit reads rows of the list and no value of its tab's runs.
+    // Rows read as billed, for n runs, N JSON values, L lists and an edit at place p whose list
+    // is walked over q rows: an edit reads rows of the list and no value of its tab's runs.
     it("counts the rows an edit, a pending read and a first edit after a deploy read", async () => {
       const { cases, tabs } = await scenario();
       const read = (name: string) => cases[name].rowsRead;
@@ -139,99 +136,68 @@ describe("DocStore on a Durable Object's storage", () => {
         const { runs: n, lists: L, largestRun } = tabs.lines;
         const p = cases.middle.at!.place, q = walked(n, p);
         expect([n, L, p]).toEqual([138, 0, 48]);
-        // A PENDING READ, the Markdown and then the summary: the joined page of each call
-        // (a row of the list and the row of the rendering it names: 2n and 2n) and each
-        // run's Markdown by its key (n). Rows of tables alone.
+        // A PENDING READ (Markdown, then summary): each call's joined page (2n) and each run's
+        // Markdown (n).
         expect(read("pendingRead")).toEqual(5 * n + 4);
         expect(wrote("pendingRead")).toEqual(0);
-        // AN EDIT OF ONE PARAGRAPH, term by term.
-        // The scan for its text: the joined pages of the whole list (2n) and each run's
-        // Markdown by its key (n); every run is read, since a second place must be ruled out.
+        // AN EDIT OF ONE PARAGRAPH. The scan: every joined page and Markdown, to rule out a second
+        // place.
         const scan = 3 * n;
         // The pass that places its piece: the joined pages to the piece's run (2q).
         const placed = 2 * q;
-        // The piece, one pass from the paragraph's run: the version's totals (n), the joined
-        // pages for the state at that run (2q), and the list from it with no join, to the
-        // page's end (n - p). Its one run, found and read, is among the constants.
+        // The piece: the totals (n), the joined pages to its run (2q), the list on to the page's
+        // end.
         const piece = n + 2 * q + (n - p);
-        // The slice: the version's totals (n) and the joined pages to the slice's end (2q);
-        // its run is the piece's, taken as it was decoded and read no second time. Its
-        // version: the totals again (n), the sizes before the slice's end (p), the parent's
-        // names outside the slice (n), and the child's list, a row read for each row written
-        // (2n). NO VALUE OF A RUN IS READ: the lists are asked for by id or by the page's
-        // runs, and here the context defines none.
+        // The slice (n + 2q, its run the piece's) and its version (totals, sizes before p, the
+        // parent's names, the child's list read as written). NO VALUE OF A RUN IS READ.
         const made = n + 2 * q + n + p + n + 2 * n;
         expect(read("middle")).toEqual(scan + placed + piece + made + 13);
         expect(read("middle")).toEqual(10 * n + 6 * q + 13);
-        // WRITTEN: its run, the run's rendering and its result, each billed with the row of
-        // its key's index (2 each), the child's list (n) and the child's record.
+        // WRITTEN: its run, rendering and result (2 each), the child's list (n) and record.
         const edit = n + 7;
         expect(wrote("middle")).toEqual(edit);
         // Fewer than the values of one run: it would pass them if the slice's run were stepped.
         expect(read("middle")).toBeLessThan(largestRun);
-        // A PIECE OF MORE RUNS reads each, found and read (2 a run): the paragraph before a
-        // table, whose closure holds the table's run and the next (2 more), and the last
-        // paragraph of a run, whose closure holds the next run (1 more). The place cancels
-        // out: the piece's page is read from it, and the version sums the sizes before it.
+        // A PIECE OF MORE RUNS reads each run it adds, found and read (2 a run).
         expect(read("growingBeforeTable")).toEqual(read("middle") + 2 * 2);
         expect(read("lastShorter")).toEqual(read("middle") + 2);
         expect(read("lastLonger")).toEqual(read("middle") + 2);
-        // A PIECE MADE IN TWO PASSES, for the first paragraph of a run, whose closure starts
-        // in the run before: the pass from the paragraph's run, as above, and one from the
-        // run before, which reads the totals, the joined pages, the list from one place
-        // earlier and two runs.
+        // A PIECE MADE IN TWO PASSES (the closure starts in the run before): one more from p - 1.
         const second = n + 2 * q + (n - (p - 1)) + 2 * 2 + 3;
         expect(read("firstParagraph")).toEqual(read("middle") + second);
         expect(read("runStart")).toEqual(read("middle") + second);
-        // AN APPEND has no scan: whether the tab is blank is asked of the first joined page
-        // (2q, here the whole list), the pass that places the tab's end reads every joined
-        // page (2n), and its piece and its slice stand at the last place.
+        // AN APPEND: no scan; the blank check (2q) and the pass to the tab's end (2n).
         expect(read("append")).toEqual(11 * n + 4 * q + 12);
         expect(wrote("append")).toEqual(edit);
-        // A TABLE CHANGE, term by term. What it asks of the tab as a whole is a pass over the
-        // joined pages each (a row of the list and the row of the rendering it names, whose
-        // summary it reads): the table that reads as recorded (2n: every run, since a second
-        // such table must be ruled out), and for a change that adds cells the cells the
-        // tab's tables hold (2n). Its piece is placed by a pass to the table's run (2q) and
-        // made in passes, each of which reads the totals (n), the joined pages for the state
-        // at its first run (2q), the list from that run to the page's end, each run it
-        // renders, found and read, and three rows more.
+        // A TABLE CHANGE: a pass over the joined pages for the recorded table (2n), another for the
+        // cells when it adds some (2n), the pass placing its piece (2q), and the piece's passes.
         const pass = (place: number, runs: number) => n + 2 * q + (n - place) + 2 * runs + 3;
         // The slice and its version, as an edit of one paragraph has them.
         const stored = (place: number) => 5 * n + 2 * q + place;
         const pt = cases.cellStyle.at!.place;
         expect(walked(n, pt)).toEqual(q);
-        // A look change: the table is a run of its own between two runs of prose, and its
-        // piece is tried from its run (1 run) and made from the run before (3 runs).
+        // A look change: tried from the table's run (1 run), made from the run before (3 runs).
         const look = 2 * n + 2 * q + pass(pt, 1) + pass(pt - 1, 3) + stored(pt) + 9;
         expect(read("cellStyle")).toEqual(look);
         expect(read("cellStyle")).toEqual(11 * n + 8 * q - pt + 24);
         expect(wrote("cellStyle")).toEqual(edit);
-        // A row added: the pass over the tables' cells besides. With text in its cells, and
-        // for a column, one row more.
+        // A row added: the cells' pass besides; with text in its cells, or a column, one row more.
         expect(read("rowNoText")).toEqual(look + 2 * n);
         expect(read("rowWithText")).toEqual(look + 2 * n + 1);
         expect(read("columnWithText")).toEqual(look + 2 * n + 1);
-        // A NEW TABLE AT THE TAB'S END: the tables' cells (2n), the pass that places the
-        // tab's end (2n), one pass of the piece at the last place, and the slice and its
-        // version there, whose list is two rows longer, a row read for each written.
+        // A NEW TABLE AT THE TAB'S END: cells (2n), the pass to the end (2n), the list two rows
+        // longer.
         const end = n - 1;
         expect(read("tableFilled")).toEqual(2 * n + 2 * n + pass(end, 1) + stored(end) + 2 * 2 + 7);
-        // A NEW TABLE AFTER A PARAGRAPH: the tables' cells (2n), the scan for the text it is
-        // to follow (3n), and the piece, the slice and the version as the edit of that
-        // paragraph has them, the list two rows longer.
+        // A NEW TABLE AFTER A PARAGRAPH: cells (2n), the scan (3n), then that paragraph's edit.
         expect(read("tableAfterParagraph")).toEqual(
           2 * n + 3 * n + 2 * q + pass(p, 1) + stored(p) + 2 * 2 + 7);
         expect(wrote("tableAfterParagraph")).toEqual(edit + 2 * 5);
-        // THE FIRST EDIT AFTER A DEPLOY: the question whether the model follows the tab (its
-        // totals, its list, each run found and read: 4n), the keying, which the scan asks
-        // for (the list read and written over, each run found and read, the renderings of
-        // the other digest looked up and removed and this digest's written: 10n), and the
-        // edit.
+        // THE FIRST EDIT AFTER A DEPLOY: whether the model follows the tab (4n), the keying (10n),
+        // the edit.
         expect(read("afterDeploy")).toEqual(read("middle") + 14 * n + 25);
-        // WRITTEN: the record of the question's answer; the keying, which writes each run's
-        // rendering over in place (n, the index's row as it was), the list (n) and the
-        // version's record; and the edit.
+        // WRITTEN: the answer's record, the keying (renderings in place, the list, the record), the
+        // edit.
         expect(wrote("afterDeploy")).toEqual(1 + (2 * n + 1) + edit);
       }
       {
@@ -240,53 +206,34 @@ describe("DocStore on a Durable Object's storage", () => {
         const { place: p, named: i } = cases.listedMiddle.at!;
         const q = walked(n, p);
         expect([n, P, L, p, i, q]).toEqual([601, 2, 300, 299, 1, 500]);
-        // THE PIECE AROUND A TABLE, five passes (from the table's run, from the run before,
-        // two scouts and the piece: 1, 2, 3, 5 and 9 runs, from places p, p - 1, p - 2,
-        // p - 4 and p - 4). The pass that places it reads the joined pages to its run (2q).
-        // EACH PASS reads the totals (n), the joined pages for its state (2q), the list from
-        // its first run with no join, and THE LISTS ITS PAGE'S RUNS NAME, by the one
-        // statement a pass of a piece runs for its page: the page's rows of the list and its
-        // runs (2 * 500), A ROW FOR EVERY VALUE OF THOSE RUNS' JSON (N0, the first page's)
-        // and a row for every list the context defines (L). So a piece of 9 runs reads the
-        // values of 500 runs five times: THE COST OF A PASS IS ITS PAGE'S, NOT ITS RUNS'.
+        // THE PIECE AROUND A TABLE: five passes of 1, 2, 3, 5 and 9 runs. Each reads its page's
+        // lists in one statement: 2 * 500 rows, a row a value of the page's runs (N0) and a row a
+        // list (L). THE COST OF A PASS IS ITS PAGE'S, NOT ITS RUNS'.
         const passes = 5, rendered = 1 + 2 + 3 + 5 + 9;
         const lists = 2 * 500 + N0 + L;
         const fromPlaces = passes * (n - p) + (0 + 1 + 2 + 4 + 4);
         const piece = 2 * q + passes * (n + 2 * q + lists) + fromPlaces + 2 * rendered;
         expect(read("listedPiece")).toEqual(piece + 31);
         expect(wrote("listedPiece")).toEqual(0);
-        // AN EDIT OF ONE CELL: the scan (3n), that piece, and the slice and its version as on
-        // the tab of lines, with the context's lists stepped twice, by the slice's
-        // definitions asked for by id and by the ids of the model's form (2L), and a row for
-        // the one id asked for (i).
+        // AN EDIT OF ONE CELL: the scan, that piece, the slice and its version, the lists stepped
+        // twice (2L) and the one id asked for (i).
         expect(read("listedMiddle")).toEqual(
           3 * n + read("listedPiece") + (5 * n + 2 * q + p + 2 * L + i) + 13);
-        // WRITTEN as on the tab of lines: the batch makes no list, so the child has no
-        // context of its own.
+        // WRITTEN as on the tab of lines: the batch makes no list.
         const edit = n + 7;
         expect(wrote("listedMiddle")).toEqual(edit);
-        // THE FIRST EDIT AFTER A DEPLOY reads the runs' values and the lists of each page
-        // ONCE MORE, for the keying, which renders every run (N and L a page). The rest is
-        // rows of tables and the lists stepped for the question.
+        // THE FIRST EDIT AFTER A DEPLOY reads every run's values and each page's lists once more,
+        // to key.
         expect(read("listedAfterDeploy")).toEqual(read("listedMiddle") + N + L * P + 8_987);
-        // WRITTEN: the record of the question's answer, the keying and the edit. The keying's
-        // list names d distinct renderings, f of them in its first 500 runs: those are written
-        // over in place (a row each), and each of the others is a row removed with the other
-        // digest's and a row written with its index's (3 each); then the list and the record.
+        // WRITTEN: of the keying's d distinct renderings, the f in its first 500 runs are written
+        // in place (1 each) and the rest removed and written (3 each).
         const d = L + 2, f = 250 + 2;
         expect(wrote("listedAfterDeploy")).toEqual(1 + (f + 3 * (d - f) + n + 1) + edit);
       }
 
       {
-        // THE SHAPE OF MANY RUNS: a table and an empty paragraph in turn, each a run. A row
-        // added to the hundredth table reads NO VALUE OF A RUN AND 31 ROWS A RUN OF THE TAB:
-        // the two passes for what it asks of the tab as a whole (4n), the pass that places
-        // its piece (2q), the five passes of the piece (from the table's run, from the run
-        // before, two scouts and the piece: 1, 2, 3, 5 and 9 runs, from places p, p - 1,
-        // p - 2, p - 4 and p - 4), each of which reads the totals and the joined pages for
-        // its state (n + 2q) and the list from its first run (about n / 2 here), and the
-        // slice and its version (5n + 2q + p). On this shape the walks of the list are the
-        // cost: 12,512 rows for a tab of 401 runs.
+        // THE SHAPE OF MANY RUNS (a table and an empty paragraph in turn): a row added to the
+        // hundredth table reads NO VALUE OF A RUN; the walks of the list are the cost.
         const { runs: n, lists: L } = tabs.tables;
         const p = cases.rowManyRuns.at!.place, q = walked(n, p);
         expect([n, L, p, q]).toEqual([401, 0, 199, 401]);
@@ -304,10 +251,7 @@ describe("DocStore on a Durable Object's storage", () => {
       const RENDER_ALL = ["afterDeploy", "listedAfterDeploy"];
       /** The cases whose piece reads the lists of its page: held above, each by its formula. */
       const LISTED = ["listedPiece", "listedMiddle"];
-      /**
-       * The case on the shape of many runs, held above by its formula: its runs are so small
-       * that the rows of its walks pass a tenth of the values its tab's runs hold.
-       */
+      /** The case on the shape of many runs, held above: its walks pass a tenth of its runs' values. */
       const MANY_RUNS = ["rowManyRuns"];
       /** The edits the builders build from a piece: a replacement, an append or a table change. */
       const BUILT = [
@@ -321,11 +265,8 @@ describe("DocStore on a Durable Object's storage", () => {
         const cut = cost.listed - cost.shared;
         if (RENDER_ALL.includes(name) || LISTED.includes(name)) continue;
         expect(cost.runsKeyed, name).toBe(0);
-        // A batch by hand: at most the edit of one paragraph at its tab's last place, eight
-        // rows for each run decoded and each run cut, and for each widening a walk from the
-        // list's start. An edit the builders build, besides: what it asks of the tab as a
-        // whole and the pass that places its piece (a scan and a pass, or three passes: 7n at
-        // most), and at most a pass of its piece for each run it decodes (4n each).
+        // A batch by hand: a last-place edit, 8 rows a run decoded or cut, a walk a widening. A
+        // built edit adds its whole-tab passes (7n) and a piece pass a run decoded (4n).
         const built = BUILT.includes(name) ? 7 * n + 4 * n * cost.runsDecoded : 0;
         expect(cost.rowsRead, name).toBeLessThanOrEqual(
           8 * n + 2 * L + 14 + 8 * (cost.runsDecoded + cut) + cost.viewWidenings * (3 * n + 2 * L + 8) +
@@ -338,42 +279,34 @@ describe("DocStore on a Durable Object's storage", () => {
     });
   });
 
-  // Rows read by the card of a queued change: where two lists differ (`DocStore.changed`) reads
-  // their totals and steps to the first and last difference, nothing between; the strings
-  // (`changedMarkdown`) add the summaries before `from` and each reader's pages and Markdown.
+  // Rows a card reads: `DocStore.changed` steps to the first and last difference, nothing
+  // between; `changedMarkdown` adds the summaries before `from` and each reader's pages.
   it("counts the rows a preparation's card reads", async () => {
     const { rowAdded, nested } = await withDocStore((_, storage) => cardRowsScenario(storage));
     const compared = ({ before, after, changed }: typeof rowAdded) =>
       before + after + 2 * (changed.from + 1) + 2 * (before - changed.beforeTo + 1);
     {
-      // A ROW ADDED TO A TABLE in the middle of 2,000 lines: the table's run is listed
-      // anew, and nothing else.
+      // A ROW ADDED TO A TABLE in 2,000 lines: only the table's run is listed anew.
       const { before: nb, after: na, changed, card } = rowAdded;
       expect([nb, na, changed]).toEqual([21, 21, { from: 9, beforeTo: 10, afterTo: 10 }]);
       expect(rowAdded.compared).toEqual({ rowsRead: compared(rowAdded) + 1, all: 4 });
-      // Six readers, each of one page of 8 runs: two forwards from the table's run, which
-      // read it in each version; two backwards from the run after it, which read it again;
-      // and one of each version for its string, the table's run and the run before it.
+      // Six readers of one 8-run page each, two forwards and two backwards, and one a version for
+      // its string.
       expect(card).toEqual({
         pages: 1 + 6, joined: 1 + 6, content: 2 + 2 + 2 * 2, all: 4 + 2 * 7 + 8,
         rowsRead: rowAdded.compared.rowsRead + (1 + 2 * changed.from) + 6 * (1 + 2 * 8) + 8,
       });
-      // Under two rows a run of the tab beyond `changed`, whatever the tab's length: the
-      // pass before the place that differs.
+      // Under two rows a run before `changed`, whatever the tab's length.
       expect(rowAdded.strings.mdStart).toBeGreaterThan(80_000);
     }
     {
-      // THE ITEMS BEFORE AN ITEM MADE A LEVEL-0 ONE, under the real cut: every run is
-      // listed anew, cut otherwise, and all but the last read as before.
+      // THE ITEMS BEFORE AN ITEM MADE LEVEL 0: every run is listed anew, all but the last read as
+      // before.
       const { before: nb, after: na, changed, card } = nested;
       expect([nb, na, changed]).toEqual([41, 44, { from: 0, beforeTo: 41, afterTo: 44 }]);
       expect(nested.compared).toEqual({ rowsRead: compared(nested) + 2, all: 4 });
-      // THE PRICE OF COMPARING AS TEXT: every run listed anew before the text is read once
-      // in each version by the comparison from the front, three rows a run (its row of the
-      // list, the rendering's row the page names, and its Markdown): nb + na runs. The
-      // comparison from the end reads the last run of each; the string after is its last
-      // run; the string before is found by a pass of its list from `from` (two rows a
-      // run) and is one run. Four of the pages reach their list's end.
+      // THE PRICE OF COMPARING AS TEXT: from the front, every run listed anew is read once a
+      // version (3 rows a run); the end and each string read a run.
       const front = 2 * 1 + 2 * (nb + na) + (nb + na);
       const end = 2 * (1 + 2 * 8) + 2;
       const strings = (1 + 2 * 1) + 1 + (1 + 2 * nb) + 1;
@@ -382,8 +315,7 @@ describe("DocStore on a Durable Object's storage", () => {
         all: 4 + (6 + 12) + (nb + na) + 4,
         rowsRead: nested.compared.rowsRead + front + end + strings + 4,
       });
-      // The strings hold the item's line and one run of each version, of the 320,000
-      // characters that read alike before it.
+      // The strings hold one run of each version, not the 320,000 characters alike before it.
       expect(nested.strings.mdStart).toBeGreaterThan(300_000);
       expect(nested.strings.before + nested.strings.after).toBeLessThan(4_000);
     }
@@ -397,9 +329,8 @@ describe("DocStore on a Durable Object's storage", () => {
     expect(await withDocStore((_, storage) => driveReadScenario(storage))).toEqual(DRIVE_READ_SCENARIO);
   });
 
-  // What a fetch costs in rows on real storage, for a tab of n runs of which a change replaces c
-  // and leaves m: a row written to an ordinary table is billed twice (with its index's row); the
-  // stored base's list is read once in pages (2n); a changed fetch's sweep is pinned per shape.
+  // Rows a fetch costs for n runs, c replaced and m left: a written row is billed twice, the
+  // base's list is read once in pages (2n), and a changed fetch's sweep is pinned per shape.
   it.each([
     {
       // An answer of nearly 10 MiB: paragraphs of about 500 characters, each run its own.
@@ -408,8 +339,7 @@ describe("DocStore on a Durable Object's storage", () => {
       changed: { first: 4_329, last: 4_330 },
     },
     {
-      // Many runs: 2,000 small tables, each a run, and between two of them an empty
-      // paragraph, the same run each time: d = 2,002 distinct runs, each with one rendering.
+      // 2,000 one-run tables with the same empty paragraph between: 2,002 distinct runs.
       shape: "tables" as const, n: 4_001, pages: 9,
       first: (n: number) => ({ rowsWritten: 4 * 2_002 + n + 4, rowsRead: 2 * n + 1 }),
       changed: { first: 42_057, last: 42_057 },
@@ -424,8 +354,8 @@ describe("DocStore on a Durable Object's storage", () => {
     expect(counts.first).toEqual({
       ...first(n), runsRendered: n, runsKeyed: 0, listStatements: 0, listRows: 0, replaced: n, runs: n,
     });
-    // The run that changed, its rendering, the tab's list and its record; and the removal of
-    // what the version it replaces held alone.
+    // The changed run, its rendering, the list and record; and the removal of what the base held
+    // alone.
     const written = (4 * c + m + 2) + (2 * c + n + 1);
     // Each page of the base's list is one statement, `RUN_LIST_BATCH` runs at most.
     const list = { listStatements: pages, listRows: n };
@@ -439,18 +369,16 @@ describe("DocStore on a Durable Object's storage", () => {
       runsKeyed: shape === "prose" ? 0 : 1,
       ...list, replaced: c, runs: m,
     });
-    // Nothing changed: the copy's record is the one row written. Read: the base's list, a
-    // row for each run found stored, and ten small rows.
+    // Nothing changed: the copy's record is written; the list, each run found and ten rows are
+    // read.
     expect(counts.unchanged).toEqual({
       rowsWritten: 1, rowsRead: 2 * n + n + 10, runsRendered: 0, runsKeyed: 0,
       ...list, replaced: 0, runs: n,
     });
   });
 
-  // Rows read to key a version again under another digest and read it, for n runs in P pages,
-  // N JSON values and L lists: the lists of a page cost `N + L * P` (each run's values stepped
-  // once a keying, the context once a page, never once a run), plus rows of tables in n, the
-  // renderings (d distinct, f in the first batch of 500) and 7 small rows.
+  // Rows read to key a version under another digest: the lists cost `N + L * P` (each run's
+  // values once, the context once a page, never once a run), plus rows of tables.
   it("bills the lists of a page a row for every value of its runs and a row for every list of the tab", async () => {
     const keyed = await withDocStore((_, storage) => keyingRows(storage));
 
@@ -460,8 +388,7 @@ describe("DocStore on a Durable Object's storage", () => {
     expect(nodes).toBeGreaterThan(30 * runs);
     // A statement a page loads its lists, and one reads the named styles.
     expect(keyed.counts).toMatchObject({ lists: pages, styles: 1 });
-    // The renderings the list names: each table's, and an empty paragraph's at the tab's start
-    // and after a table; the first 500 runs name 250 tables' and those two.
+    // Each table's rendering and two empty paragraphs': d distinct, f in the first 500 runs.
     const d = lists + 2, f = 250 + 2;
     const tables = 11 * runs + (2 * d + f) + (pages - 1) + 7;
     expect(keyed.rowsRead).toEqual(tables + pages + nodes + lists * pages);
@@ -517,18 +444,14 @@ describe("DocStore on a Durable Object's storage", () => {
   // The row limit is measured in UTF-8 bytes; one element is held to a row, a tab is not.
   it("keeps a paragraph of just under 8,000,000 bytes of text outside ASCII and refuses a larger one, saying why", async () => {
     const outcome = await withDocStore((store, storage) => {
-      // A paragraph that holds every width of UTF-8 beside its JSON's ASCII: a character of two
-      // bytes, one of four that is two units of the string, and `characters` of three bytes.
+      // Every width of UTF-8: a character of two bytes, one of four, and `characters` of three.
       const tabOf = (characters: number) => scenarioTab("t1", [`é\u{1F600}${"文".repeat(characters)}`]);
-      // The largest row the document holds: the paragraph is a run of its own, and the row of
-      // its rendering (its keys, the digest, its summary and its Markdown) holds more beside
-      // the text than the row of the run does.
+      // The largest row the document holds, a run's or a rendering's.
       const largestRow = () => storage.sql.exec<{ bytes: number }>(
         `SELECT max(bytes) AS bytes FROM (
            SELECT length(CAST(run || context || carry || made || summary || md AS BLOB)) AS bytes FROM doc_md
            UNION ALL SELECT length(CAST(id || json AS BLOB)) FROM doc_run)`).one().bytes;
-      // The paragraph's indexes and its Markdown's length take more digits as it grows, so the
-      // count is settled on a paragraph of nearly the size.
+      // Settled on a paragraph of nearly the size: its indexes take more digits as it grows.
       const nearly = Math.floor((DOC_ROW_BYTES - 4_000) / 3);
       store.keep("nearly", scenarioCopy([tabOf(nearly)]), NONE);
       const fits = nearly + Math.floor((DOC_ROW_BYTES - largestRow()) / 3);
@@ -575,8 +498,7 @@ describe("DocStore on a Durable Object's storage", () => {
         "read or edited through this connection until it is made smaller in Google Docs.",
     });
     expect(outcome.overStored).toBe(false);
-    // Nothing of the larger paragraph is stored: the rows are the smaller document's, its
-    // opening break and its paragraph each a run with its rendering.
+    // Nothing of the larger paragraph is stored: the rows are the smaller document's.
     expect(outcome.counts).toEqual({ ...EMPTY, doc_copy: 1, doc_run: 3, doc_md: 2, doc_seq: 2, doc_version: 1 });
     expect(outcome.longLength).toBeGreaterThan(2 * DOC_ROW_BYTES);
     expect(outcome.longRead).toBeGreaterThan(2 * DOC_ROW_BYTES);
@@ -627,9 +549,8 @@ describe("DocStore on a Durable Object's storage", () => {
     });
   });
 
-  // A run is rendered with the definitions its context holds, which the worker's SQLite reads
-  // with its JSON functions, and those throw on text that is not JSON: a context that is not
-  // what was stored is unreadable, and no error of SQLite's passes.
+  // SQLite's JSON functions throw on a context that is not JSON: the version reads as
+  // unreadable, and no error of SQLite's passes.
   it("reads a version whose context is not what was stored as unreadable, and drops the copy", async () => {
     const outcome = await withDocStore((_, storage) => ["not json", '{"lists":7}'].map(json => {
       const store = new DocStore(storage, undefined, "a");
@@ -681,44 +602,34 @@ describe("DocStore on a Durable Object's storage", () => {
   });
 });
 
-// The rows storage bills for each step of a document's life. A row of an ordinary table (a run,
-// a context, a rendering, a result) is billed with the row of its key's index.
+// The rows storage bills for each step of a document's life, each with its index's row.
 const ROWS_WRITTEN = {
-  // Two tabs, each one run: their runs and the context they share (6), the rendering of each
-  // run (4), two versions, two run lists of one row each and the copy's record.
+  // Two one-run tabs: runs and shared context (6), renderings (4), versions, lists and the record.
   keep: 15,
   // The same document kept again: the copy's record alone.
   again: 1,
   // The runs were rendered by the keep: a read writes nothing.
   firstRead: 0,
   secondRead: 0,
-  // An edit: the run it changed, which is its tab's one run (2), that run's rendering (2), the
-  // version it gives, its run list of one row, and the edit's result (2).
+  // An edit: the run (2), its rendering (2), the version, its list and the result (2).
   edit: 8,
   // A trial of a document the stored copy holds unchanged.
   trial: 0,
 };
 
-// What each step of the life of a tab of 20,000 paragraphs (`largeTabLife`) moves of the store's
-// counters, on real storage: 133 runs (n), of which an edit of one paragraph and a fetch that
-// brings one paragraph changed each replace one (c) and leave as many (m).
+// What each step of `largeTabLife` (20,000 paragraphs, n = 133 runs) moves of the store's
+// counters; an edit and a changed fetch each replace one run (c) and leave m.
 const LARGE_TAB_COSTS: Record<string, StepCost> = {
-  // The first keep: the runs (2n), the context (2), their renderings (2n), the list (n), the
-  // version and the copy's record. Each run is rendered alone, to be stored.
+  // The first keep: runs (2n), context (2), renderings (2n), list (n), version and record.
   keep: { rowsWritten: 669, runsDecoded: 0, runsRendered: 133, runsKeyed: 0 },
   // A read of the Markdown and of the summary: stored rows, joined.
   read: { rowsWritten: 0, runsDecoded: 0, runsRendered: 0, runsKeyed: 0 },
-  // An edit in the middle: the changed run (2c), its rendering (2c), the child's list (m), its
-  // version and the result (2). Decoded: the one run that holds the closure of the edit's
-  // paragraph, for the piece the builders read, which the model's slice takes (1). Rendered:
-  // that run for the piece (1), and the run cut from the slice, to be stored (c). Keyed: none:
-  // the carry after the slice is the base's.
+  // An edit: run (2c), rendering (2c), list (m), version, result (2). Decoded: the piece's run,
+  // which the slice takes. Rendered: that run and the run cut. Keyed: none.
   edit: { rowsWritten: 140, runsDecoded: 1, runsRendered: 2, runsKeyed: 0 },
   // A pending read of the version the edit gives.
   pendingRead: { rowsWritten: 0, runsDecoded: 0, runsRendered: 0, runsKeyed: 0 },
-  // A rejection's sweep removes everything the edit wrote, and nothing else, each row billed
-  // once: the child's list (m), its version, the result, and the rendering (c) and the run (c)
-  // only the child listed.
+  // A rejection's sweep removes what the edit wrote and nothing else, each row billed once.
   rejection: { rowsWritten: 137, runsDecoded: 0, runsRendered: 0, runsKeyed: 0 },
   // The base then reads with nothing decoded or rendered.
   baseRead: { rowsWritten: 0, runsDecoded: 0, runsRendered: 0, runsKeyed: 0 },
@@ -726,19 +637,14 @@ const LARGE_TAB_COSTS: Record<string, StepCost> = {
   editAgain: { rowsWritten: 140, runsDecoded: 1, runsRendered: 2, runsKeyed: 0 },
   // An approval's sweep: the copy's record marked stale (1), and the rejection's rows.
   approval: { rowsWritten: 138, runsDecoded: 0, runsRendered: 0, runsKeyed: 0 },
-  // A refetch that brings one paragraph changed: the changed run (2c), its rendering (2c), the
-  // fetched tab's list (m), its version and the copy's record, written over in place (1); and
-  // removed of the base it replaces, each row billed once, its list (n), its version, and the
-  // run (c) and the rendering (c) only it listed. Rendered: the changed run. Keyed: the run
-  // directly after it.
+  // A refetch of one changed paragraph: run, rendering, list, version and record written, and
+  // what only the base listed removed. Rendered: the changed run. Keyed: the run after it.
   refetch: { rowsWritten: 275, runsDecoded: 0, runsRendered: 1, runsKeyed: 1 },
   // A refetch that brings the tab unchanged: the copy's record.
   unchanged: { rowsWritten: 1, runsDecoded: 0, runsRendered: 0, runsKeyed: 0 },
 };
 
-// What a removal costs beside the other documents of a store, as storage bills it: a store
-// that holds two hundred other documents against one that holds none, and against one that
-// holds a thousand, on a tab of many runs.
+// What a removal costs beside a store's other documents: two hundred against none and a thousand.
 describe("what a removal costs on a Durable Object's storage", () => {
   const CASES = Object.keys(SWEEP_COST) as SweepCase[];
 
@@ -776,10 +682,8 @@ describe("what a removal costs on a Durable Object's storage", () => {
         return { runs, ...dropLarge };
       }));
 
-    // Six statements and no row answered, whatever the document's runs. It is billed the
-    // rows it removes and, beside them, a row for each row of the list as the list's
-    // delete finds it: three rows a pair of a table and a paragraph more for a tab twice
-    // as long, and nothing else.
+    // Six statements and no row answered, whatever the runs: billed the rows it removes and a
+    // row for each row of the list its delete finds.
     expect(drops.map(({ statements, answered }) => ({ statements, answered })))
       .toEqual([{ statements: 6, answered: 0 }, { statements: 6, answered: 0 }]);
     expect(drops.map(({ runs, rowsRead, rowsWritten }) => rowsRead - rowsWritten - runs)).toEqual([4, 4]);
@@ -802,8 +706,7 @@ describe("what a keep at a connection's caps costs on a Durable Object's storage
     }
     // The keep that evicts nothing reads one row a copy beyond what the keep itself reads.
     expect(cost.nothing.rowsRead - cost.plain.rowsRead).toBe(200);
-    // The one that evicts the many-run document reads a row a copy and what a drop of that
-    // document is billed: no row of a list but those its delete removes.
+    // Evicting the many-run document: a row a copy and what its drop is billed.
     const drop = SWEEP_ROWS[pairs].dropLarge;
     expect(cost.manyRuns).toMatchObject({
       rowsRead: cost.plain.rowsRead + 201 + drop.rowsRead + drop.beside,
@@ -825,8 +728,7 @@ describe("what a connection's expiry pass costs on a Durable Object's storage", 
     for (const call of Object.keys(EXPIRY_ROWS) as (keyof typeof EXPIRY_ROWS)[]) {
       expect(cost[call], call).toMatchObject(EXPIRY_ROWS[call]);
     }
-    // The pass that removes the prose and the many-run document reads a row a copy and what
-    // a drop of each is billed: no row of a list but those its delete removes.
+    // Removing two documents: a row a copy and what each drop is billed.
     const drop = SWEEP_ROWS[pairs].dropLarge;
     expect(cost.two).toMatchObject({
       rowsRead: 202 + EXPIRY_PROSE_DROP.rowsRead + drop.rowsRead + drop.beside,
@@ -836,10 +738,7 @@ describe("what a connection's expiry pass costs on a Durable Object's storage", 
 });
 
 // A reset undoes the drops of the expiry call it ends, and nothing an earlier request dropped.
-/**
- * Runs `run` as one request of the `DocStoreHost` named `expiry-reset`, through a stub of its
- * own: one that met the reset is not used again.
- */
+/** Runs `run` as one request of `expiry-reset` on its own stub: one that met the reset is not used again. */
 const request = <T>(run: (state: DurableObjectState) => T) => runInDurableObject(
   env.DOC_STORE_HOST.getByName("expiry-reset"),
   (_instance: unknown, state: DurableObjectState) => run(state));
@@ -889,8 +788,7 @@ describe("a connection's expiry pass on a Durable Object that is reset", () => {
   });
 });
 
-// What a reader of a tab's own text costs, as storage bills it: the runs of the many-run tab,
-// decoded one at a time.
+// What iterating the many-run tab's runs costs, decoded one at a time.
 describe("what an iteration of a tab's runs costs on a Durable Object's storage", () => {
   /** The pairs of the many-run tab: 4,001 runs, and in the wider run 19,601 too. */
   const PAIRS: readonly number[] = WIDER ? [2_000, 9_800] : [2_000];
@@ -926,8 +824,7 @@ describe("what an iteration of a tab's runs costs on a Durable Object's storage"
     expect(cost).toEqual({
       // The paragraph that opens the tab is a run with the body's opening break.
       handed: runs, elements: runs + 1, decoded: runs, rowsWritten: 0, unchanged: true,
-      // The version's totals, the pages of its list and, for each run, that its row is
-      // stored and then its JSON.
+      // The totals, the list's pages, and for each run its row's check and then its JSON.
       statements: 1 + pages + 2 * runs, pages, content: runs,
       // BILLED: the list twice, by the totals and by the pages, and each run's row twice.
       rowsRead: 4 * runs,

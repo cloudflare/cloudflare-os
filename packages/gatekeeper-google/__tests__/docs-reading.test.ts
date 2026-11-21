@@ -183,10 +183,7 @@ function walked(store: DocStore, version: DocVersion, from?: number, to?: number
 const runsMarkdown = (store: DocStore, version: DocVersion): string[] =>
   walked(store, version).map(run => run.markdown);
 
-/**
- * Holds the piece `reading` answers of `own` to the closure of `own` cut from `whole`, and
- * to carrying the reading.
- */
+/** Holds the piece `reading` answers of `own` to the closure of `own` cut from `whole`. */
 function expectPieceOfReading(reading: TabReading, whole: Whole, own: OwnRange): void {
   let { part, ...rendering } = reading.piece(own);
   let { tab, ...at } = part!;
@@ -215,8 +212,8 @@ const asked = (): Asked => ({
 });
 
 /**
- * Holds every answer but the piece of the stored reading of `tab` to the whole rendering's,
- * with `finds` seeded texts: short (repeating), long (spanning runs) and absent.
+ * Holds every answer but the piece of the stored reading to the whole rendering's, with `finds`
+ * seeded texts: repeating, spanning runs and absent.
  */
 function expectSameAnswers(
   tab: GoogleDocsTab, sizes: RunSizes, seed: number, finds: number, tally: Asked,
@@ -384,19 +381,13 @@ describe("a walk of some of a version's runs", () => {
   });
 });
 
-/**
- * A numbered item before the first table, two tables no other reads as, and a line that
- * stands twice: every member's answer differs where it counts a run twice.
- */
+/** A numbered item, two tables and a repeated line: answers differ where a run counts twice. */
 const RESTARTED = () => asFetched(buildTab([
   para("Intro"), item("numbered first", "N1"), grid(["a", "b"]), para("Before"), para("Middle"),
   para("After"), grid(["c", "d"], ["e", "f"]), para("Twice"), para("Twice"), para("End"),
 ], NUMBERED_LIST));
 
-/**
- * A blank tab whose one character is written before its last run: an empty paragraph, and
- * after it an element the pruning left with nothing to render.
- */
+/** A blank tab: an empty paragraph, then an element pruned to nothing in its last run. */
 const BLANK_THEN_SILENT = () => {
   let tab = asFetched(buildTab([para("")]));
   let end = tab.body.content.at(-1)!.endIndex;
@@ -450,8 +441,7 @@ const DAMAGE: readonly (readonly ["key" | "markdown", string, readonly Walked[]]
   // are not the list's, and the version is keyed again whole.
   ["key", "a run's key in the list is not the renderer's",
     ["blank", "tables", "tablesShaped", "numberedAfter", "find", "lineBefore", "piece"]],
-  // The rendering stands under that key, its summary whole and its Markdown none this code
-  // stored: only a walk that asks the run's Markdown finds it, and ends there.
+  // A rendering under that key, foreign Markdown: only a walk asking for Markdown finds it.
   ["markdown", "and the Markdown stored under it does not read back", ["find", "lineBefore"]],
 ];
 
@@ -480,8 +470,7 @@ describe("a walk that hands its runs again", () => {
           storage.sql.exec(
             "UPDATE doc_seq SET carry = 'zz' WHERE version = ? AND seq = ?", base.id, place);
           check(storedTabReading(store, base));
-          // The version keyed again names the renderer's key: the walk that found the damage
-          // was handed its runs once more.
+          // Keyed again under the renderer's key.
           if (key().carry !== "zz") restarted[member]++;
         }
       }
@@ -551,10 +540,7 @@ const numberedFar = (later: "item" | "table" | "nothing") => asFetched(buildTab(
   para("End"),
 ], NUMBERED_LIST));
 
-/**
- * A table whose first row holds a numbered list, the tab's second table: far before it a
- * table and a numbered item, and no numbered list after it.
- */
+/** A second table whose first row holds a numbered list, after a table and a numbered item. */
 const numberedSecond = () => asFetched(buildTab([
   para("Intro"), grid(["a", "b"]), item("an item", "N1"),
   ...Array.from({ length: 8 }, (_, at) => para(`Line ${at}`)),
@@ -736,9 +722,7 @@ describe("the piece a stored reading answers", () => {
     let whole = wholeOf(tab);
     let { starts } = whole;
     let { stored } = read(tab, runsOf(1));
-    // Each differs from the one before it in one part of what names a piece: a range's end,
-    // its start, a range from the tab's end, the end from a table, a table's number, and a
-    // table from a range.
+    // Each differs from the one before in one part of what names a piece.
     let owns: OwnRange[] = [
       { markdown: { mdStart: starts[1], mdEnd: starts[2] } },
       { markdown: { mdStart: starts[1], mdEnd: starts[5] } },

@@ -1,3 +1,6 @@
+// A table's look: how getContent() writes it, that a table's identity leaves it out, and that
+// a replacement of cell text keeps it.
+
 import { describe, expect, it } from "vitest";
 import type { GoogleDocsTab, OptionalColor, TableCellBorder, TableCellStyle } from "../src/docs-api";
 import { DEFAULT_CELL, renderLook } from "../src/docs-table-look";

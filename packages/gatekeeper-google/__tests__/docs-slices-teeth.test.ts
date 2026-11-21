@@ -141,8 +141,8 @@ describe("each part of the guard is needed", () => {
     let unchanged = mutantModel([]).applyDocsRequestsToSlice;
     let { ran, widenings, mismatches } = found(CORPUS, unchanged);
 
-    // The harness alone changes nothing, and an edge of a model built from the text is told
-    // as one: its class is its own.
+    // The harness alone changes nothing, and a built model's edge is told as one: its class is its
+    // own.
     expect(mismatches).toEqual([]);
     expect(widenings).toBeGreaterThan(0);
     expect(ran).toBeGreaterThan(CORPUS.length * 30);

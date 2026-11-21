@@ -1,6 +1,5 @@
-// `pieceCountsScenario` on real storage: the counts the fake gives, and the rows each case
-// reads as billed, a formula in the tab's runs (`pieceCountsExpected(...).rows`) plus a small
-// constant (`PIECE_ROWS`).
+// `pieceCountsScenario` on real storage: the fake's counts, and the rows each case reads as
+// billed (`pieceCountsExpected(...).rows` plus `PIECE_ROWS`).
 
 import { describe, expect, it } from "vitest";
 import {

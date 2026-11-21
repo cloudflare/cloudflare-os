@@ -1,7 +1,5 @@
-// What a Google Doc's gatekeeper, its sessions and a Drive connection's editors keep between two
-// requests: nothing of a document, by construction. The census reads the source text, so a field
-// or a variable added later fails here until it is listed with what it holds; the checks after
-// it fail for a view that kept a tab, a rendering or a result out of storage's sight.
+// A Google Doc's gatekeeper, sessions and Drive editors keep nothing of a document between two
+// requests: a census of the source's fields and variables, then what a second read does.
 
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -302,9 +300,7 @@ describe("what is kept between two requests, by the source's own text", () => {
   });
 
   it("a session with no storage is the one place a source holds a document", () => {
-    // `inHandDocCopies` answers copies that close over the held document (its runs' JSON as
-    // bytes): the seam for a Drive session built with no storage at all, which the gatekeeper
-    // never builds.
+    // `inHandDocCopies` closes over a held document: only for a session with no storage.
     expect(declaredBy("docs-copy.ts", "inHandDocCopies")).toEqual({ parameters: [], variables: [] });
     expect(declaredBy("docs-copy.ts", "inHandDocCopy"))
       .toEqual({ parameters: ["document"], variables: [] });
@@ -316,9 +312,7 @@ describe("what is kept between two requests, by the source's own text", () => {
     for (let maker of makers) {
       expect(maker.pos >= within.pos && maker.end <= within.end, maker.parent.getText()).toBe(true);
     }
-    // Called from two places in all of the package's source: where a Drive session with no
-    // store names the copies of a Doc, for one it opens and for one a comment quotes, and
-    // where a read-only Doc session is built with no copies.
+    // Called only by a Drive session with no store and a read-only Doc session.
     let callers: string[] = [];
     let sources = readdirSync(SRC, { recursive: true, encoding: "utf8" })
       .filter(file => /\.tsx?$/.test(file)).toSorted();
@@ -365,11 +359,7 @@ const EDIT: GoogleDocPendingAction = {
   },
 };
 
-/**
- * A bound Doc's copy over a store of its own, with `pending` queued. The lifecycle and the
- * view it answered are kept by the test from one read to the next, as a gatekeeper that stays
- * awake keeps them.
- */
+/** A bound Doc's copy over its own store with `pending` queued, kept across reads as when awake. */
 async function boundHost(pending: GoogleDocPendingAction[] = []) {
   let storage = fakeDocStorage();
   let store = new DocStore(storage);
@@ -416,8 +406,7 @@ describe("a bound Doc's copy, read twice through the same objects", () => {
     let { runs } = storage.sql.exec<{ runs: number }>("SELECT count(*) AS runs FROM doc_seq").one();
     expect(runs).toBe(133);
     storage.sql.exec("DELETE FROM doc_md").toArray();
-    // A view that remembered the tab or its rendering would answer with neither count moving:
-    // each of the tab's runs is decoded and rendered again, alone.
+    // Nothing remembered: each run is decoded and rendered again.
     expect(spent(read)).toMatchObject({ value: first, decoded: runs, rendered: runs });
   });
 

@@ -213,9 +213,7 @@ export function seededCutsInTwo(length: number, seed: number, count: number): nu
 
 // --- Rendering by runs
 
-// The joiner of rendered runs is the source's own, under the names these tests read it by:
-// what holds `renderRun` to `docTabToMarkdown` here holds the joiner an edit's rendering is
-// made with.
+// The source's own joiner, so these tests hold the joiner an edit's rendering is made with too.
 export {
   joinRenderedRun as appendRun, noRenderedRuns as noRuns, type JoinedRuns,
 } from "../src/markdown-converter";
@@ -602,9 +600,8 @@ function shownLevels(summary: RunSummary): CarriedLevel[] {
 }
 
 /**
- * A carry built from the text of `key` alone that DISAGREES with `actual`, the carry the key was
- * made of, wherever the key leaves it free: were the key to leave out something the rendering
- * reads, this carry would give another rendering.
+ * A carry built from the text of `key` alone that DISAGREES with `actual` wherever the key leaves
+ * it free: a key that left out something the rendering reads would give another rendering.
  */
 export function carryFromKey(key: string, summary: RunSummary, actual: PlainCarry): PlainCarry {
   let fields = (key === "" ? {} : JSON.parse(key)) as CarryKeyFields;
@@ -637,8 +634,7 @@ export function carryFromKey(key: string, summary: RunSummary, actual: PlainCarr
       let held = keyed[level];
       if (held !== undefined) return held;
       let start = shown.find(need => need.listId === listId && need.level === level)?.start;
-      // A level the run shows and the key holds no number for: the level's start less one,
-      // said the way the actual carry does not say it.
+      // A shown level the key holds no number for: its start less one, said the other way.
       if (start !== undefined) return (carried[level] ?? null) === null ? start - 1 : null;
       return (carried[level] ?? 0) + 1000;
     })];
@@ -784,8 +780,7 @@ export function storedByRuns(
     let elements = tab.body.content.slice(bounds[run], bounds[run + 1]);
     let at = { mdStart };
     let place = () => `${where}, elements ${bounds[run]} to ${bounds[run + 1]}`;
-    // What the test keeps of the carry before the run, a second copy that shares nothing
-    // with the pass, and the arrays the pass holds.
+    // The kept carry before the run, a copy sharing nothing with the pass, and the pass's arrays.
     let before = kept(pass);
     let apart: PlainCarry = {
       ...before, continuedListLevels: [...pass.continuedListLevels],

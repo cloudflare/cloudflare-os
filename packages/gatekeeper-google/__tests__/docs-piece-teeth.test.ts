@@ -259,9 +259,7 @@ describe("the recorder of reads past a piece", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Blankness, for an append built through a reading of its tab
-// ---------------------------------------------------------------------------
+// --- Blankness, for an append built through a reading of its tab
 
 /** The words a batch past its piece is refused in. */
 const NOT_SHOWN = "this change cannot be shown as it will read once applied, so it cannot be made";
@@ -308,9 +306,7 @@ describe("the closure made smaller, for an edit built from a reading", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// The closure made smaller, for a table change
-// ---------------------------------------------------------------------------
+// --- The closure made smaller, for a table change
 
 
 /** The table changes of the default table and of the made tabs, each with its tab. */

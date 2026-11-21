@@ -18,10 +18,7 @@ const LISTS: Lists = {
   Q1: { listProperties: { nestingLevels: [{ glyphSymbol: "●" }, { glyphType: "NONE" }] } },
 };
 
-/**
- * What the renderer says each element of the tab `blocks` build writes. Element 0 is the
- * section break that opens the body, which writes nothing: block `k` is element `k + 1`.
- */
+/** What the renderer says each element of the tab of `blocks` writes: block `k` is element `k + 1`. */
 function flagsOf(blocks: BlockSpec[]): Uint8Array {
   let tab = buildTab(blocks, LISTS);
   return renderRun(tab.body.content, tab, initialCarry(), { mdStart: 0, elements: true })

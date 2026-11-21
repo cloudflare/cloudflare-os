@@ -13,10 +13,7 @@ import { HEAP_MEASURED, heapHeld, inUse } from "./heap-held";
 
 /** The pairs of a table and a paragraph of the many-run tab, and the runs it is cut into. */
 const PAIRS = 9_800, RUNS = 2 * PAIRS + 1;
-/**
- * The rows the many-run tab's runs are stored as: one for each table, one for the paragraph
- * that opens the tab and one for the empty paragraph every stretch between two tables holds.
- */
+/** The many-run tab's stored runs: one a table, the opening paragraph, and one shared empty paragraph. */
 const RUN_ROWS = PAIRS + 2;
 /** The many-run tab: 19,601 runs. */
 const manyRuns = () => tinyTablesTab("t1", PAIRS);
@@ -27,9 +24,8 @@ const rowsOf = (storage: FakeDocStorage, table: string) =>
 const readsRun = (query: string) => query.startsWith("SELECT json FROM doc_run");
 
 /**
- * `at` for a measure that only reads: it throws for a statement that is not a `SELECT`, but
- * the one a store opens with. True at the statements that read a run's JSON whose place among
- * them, counted from 1, is one of `places`.
+ * `at` for a read-only measure (throws on any write but the store's opening one): true at the
+ * run-JSON reads whose 1-based place is in `places`.
  */
 function reading(places: readonly number[]): (query: string) => boolean {
   let seen = 0;
@@ -42,12 +38,9 @@ function reading(places: readonly number[]): (query: string) => boolean {
 }
 
 /**
- * A lookup of quoted text over the copy a Drive connection keeps, by the calls a Drive source
- * makes of `driveDocCopies`: the many-run tab, as a fetch answers it, is held and kept as the
- * file's copy with its read approved under a folder; then the view that keep answered is
- * searched for `quote` (`savedDoc`), as a comment's lookup searches it while the copy is
- * fresh. Answers what the search holds as it reads the runs at `places` (`heapHeld`), what it
- * answered, and what storage held before the search. Numbers and that string only.
+ * The many-run tab kept as a Drive file's approved copy, then its view searched for `quote` as a
+ * comment's lookup does. Answers what the search holds at the runs at `places`, what it
+ * answered, and what storage held before.
  */
 function lookedUpInDriveCopy(quote: string, places: readonly number[]) {
   let storage = fakeDocStorage();
@@ -86,13 +79,11 @@ describe("what a lookup in a stored Google Doc holds", HEAP_MEASURED, () => {
     // The last table's text: the search reads to the tab's end to find it once.
     let looked = lookedUpInDriveCopy(`cell ${PAIRS - 1}`, [1, PAIRS, RUNS]);
 
-    // The copy was stored, and its read approved, before the search. The context's row is
-    // one more than the runs'.
+    // Stored and approved before the search; the context is one row more than the runs.
     expect(looked.before).toEqual({ listed: RUNS, rows: RUN_ROWS + 1, approved: true });
     expect(looked.seen).toBe(3);
     expect(JSON.parse(looked.answer)).toMatchObject({ tabId: "t1" });
-    // A page of the list and the end of the text so far; a decoded run kept for every run
-    // passed would be hundreds of bytes a run.
+    // A page of the list and the text's tail, not a decoded run for every run passed.
     expect(looked.bytes / RUNS).toBeLessThan(16);
   });
 });
@@ -100,10 +91,7 @@ describe("what a lookup in a stored Google Doc holds", HEAP_MEASURED, () => {
 /** The lower of two readings of what is in use, taken in a row, as `heapHeld` reads it. */
 const settled = () => Math.min(inUse(), inUse());
 
-/**
- * A Doc as a fetch answers it: a parse of its own of the tabs `tabs` makes. The tabs are made
- * in this call, so no frame that measures names them or the text parsed.
- */
+/** A fetch's parsed answer of `tabs`, made here so no measuring frame names the tabs or the text. */
 function fetchedAnswer(tabs: () => GoogleDocsTab[]): GoogleDocsDocument {
   return JSON.parse(JSON.stringify({ documentId: "doc", title: "Doc", revisionId: "r1", tabs: tabs() }));
 }
@@ -118,10 +106,8 @@ function answerInHand(tabs: () => GoogleDocsTab[]): number {
 }
 
 /**
- * `fetchedAnswer(tabs)` with `probe` called when the search of tab `t1` reads the last element
- * of its body: the search asks every element for its `paragraph`, which here is an accessor.
- * On the element and not on the body's slot, since an accessor at an index of an array makes
- * of the whole array a dictionary.
+ * `fetchedAnswer(tabs)` with `probe` called as the search reads `t1`'s last element, through a
+ * `paragraph` accessor on the element (one on an array slot would make the array a dictionary).
  */
 function probedAnswer(tabs: () => GoogleDocsTab[], probe: () => void): GoogleDocsDocument {
   let answer = fetchedAnswer(tabs);
@@ -132,10 +118,8 @@ function probedAnswer(tabs: () => GoogleDocsTab[], probe: () => void): GoogleDoc
 }
 
 /**
- * A search for `quote` in tab `t1` of a fetched answer of `tabs`, as an approval makes it
- * (`locateQuoteInFetched`). Answers what is in use when the search reads that tab's last
- * element over what was in use BEFORE THE ANSWER WAS MADE, how often the search read it, and
- * what it answered. This frame holds the answer, as the approval's does.
+ * An approval's search for `quote` in `t1` of a fetched answer: what is in use at the tab's last
+ * element over what was in use BEFORE THE ANSWER WAS MADE, how often it was read, and the answer.
  */
 function searchedInAnswer(tabs: () => GoogleDocsTab[], quote: string) {
   let before = settled();
@@ -158,8 +142,7 @@ const linesTab = () => scenarioTab(
   "t1", Array.from({ length: 20_000 }, (_, at) => `Line ${String(at).padStart(5, "0")}.`));
 
 describe("what an approval's search of a fetched Google Doc holds", HEAP_MEASURED, () => {
-  // At the tab's last element, of the answer what is left is the body's list, emptied (8
-  // bytes a slot), beside the element being read and the search's own.
+  // At the last element, what is left of the answer is the emptied body list (8 bytes a slot).
   it("an approval's search lets the answer go behind it", () => {
     let many = answerInHand(() => [manyRuns()]);
     let last = searchedInAnswer(() => [manyRuns()], `cell ${PAIRS - 1}`);

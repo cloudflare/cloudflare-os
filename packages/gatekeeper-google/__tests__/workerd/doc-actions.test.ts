@@ -68,10 +68,7 @@ let store: DocStore | undefined;
 let storage: DurableObjectStorage | undefined;
 let kept = 0;
 
-/**
- * `body` as a test that runs inside a Durable Object, whose storage holds the store the
- * test's snapshots are kept in.
- */
+/** `body` as a test inside a Durable Object, whose storage holds the test's store. */
 function inStore<A extends unknown[]>(body: (...args: A) => unknown): (...args: A) => Promise<void> {
   return (...args) => withDocStore(async (made, on) => {
     store = made;
@@ -84,10 +81,7 @@ function inStore<A extends unknown[]>(body: (...args: A) => unknown): (...args: 
   });
 }
 
-/**
- * `tab` as it reads back from the store where the model did not make it: the section break
- * that opens its body holds no start index, as Google sends none.
- */
+/** `tab` as the store reads it back: its opening section break has no start index, as Google sends. */
 function asStored(tab: GoogleDocsTab): GoogleDocsTab {
   let [{ startIndex: _, ...opening }, ...rest] = tab.body.content;
   return { ...tab, body: { content: [opening as GoogleDocsTab["body"]["content"][number], ...rest] } };
@@ -119,18 +113,12 @@ type Form = typeof FORMS[number];
 /** What no pending edit reaches. */
 const NONE = { edits: [], roots: [] };
 
-/**
- * How a fake host stores the document its approval fetched: in which `form`, as which document
- * of which store (the running test's unless given).
- */
+/** How a fake host stores the document its approval fetched: in which `form`, where. */
 type Fetching = { form?: Form; doc?: string; store?: () => DocStore };
 
 /**
- * A host over one document whose Docs API is a stub; `landed`, `unapplyable`, `spendCopy` and
- * `tryFetched` are recorded. `held` is the copy `heldCopy` answers, until a batch is built from
- * it. `getDocument` answers a copy of the document at each call, since storing a fetched
- * document empties it. `tryFetched` stores what it is handed in a trial of the store, as the
- * host of `fetching.form` does.
+ * A host over one stubbed document, recording `landed`, `unapplyable`, `spendCopy` and
+ * `tryFetched`. `getDocument` answers a fresh copy: storing a fetched document empties it.
  */
 function host(
   document: GoogleDocsDocument, receipt?: { actionId: number; markerId: string },
@@ -391,8 +379,8 @@ describe("Google Doc edit definitions", () => {
     expect(landings(landed)).toEqual([{ id: 4, marker: { id: "marker-new", tabId: "tab-1" } }]);
   }));
 
-  // A stored result is named by the edit's own fields, which the Markdown version an edit was
-  // previewed under is not among: the version is asked before any result is looked up.
+  // A stored result is keyed by the edit's fields, not the preview version: the version is asked
+  // first.
   it("builds no write from a stored result for an edit stored under an earlier Markdown version", inStore(async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     let held = snapshotOf(docAt("r-copy", "Draft"));
@@ -426,9 +414,7 @@ describe("Google Doc edit definitions", () => {
 
     await DOC_DEFINITIONS.appendText.apply(APPEND, docHost, { id: 4 });
 
-    // No result was stored for the edit: it is made and checked as a replay makes it, in a
-    // transaction that is undone. The base version's one run is decoded and rendered, and so is
-    // the run the edit gives.
+    // No result was stored: the edit is made and checked as a replay makes it, then undone.
     expect(api.getDocument).not.toHaveBeenCalled();
     expect(atBatch!.rows).toBe(rows);
     expect(atBatch!.cost).toMatchObject({
@@ -803,9 +789,8 @@ describe.each(FORMS)("an edit built from the document its approval fetched, on %
   const KEPT = "kept";
 
   /**
-   * An approval that falls back: the host holds the copy of a stored document of two tabs,
-   * Google refuses the batch pinned to it, and the approval then fetches `fresh`. With the
-   * rows and the copy's record as they stand before the approval.
+   * An approval that falls back: Google refuses the batch pinned to the held copy of a
+   * two-tab document, and the approval fetches `fresh`. With the rows as they stood before.
    */
   function fallback(fresh: GoogleDocsDocument, on: () => DocStore = running) {
     vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -979,8 +964,7 @@ describe.each(FORMS)("an edit built from the document its approval fetched, on %
     }));
 
   it("refuses an edit that would leave a paragraph of the fetched document past a row, and sends nothing", inStore(async () => {
-    // The copy held is small; the document fetched has grown the edit's paragraph to near a row,
-    // which it still fits, and the replacement would take it past one, as a replay refuses.
+    // The fetched document's paragraph still fits a row; the replacement would take it past one.
     let fresh = twoTabs("r-now", "stored", "stored");
     let grown = `Draft ${"a".repeat(DOC_ROW_BYTES - 2_000)}`;
     fresh.tabs[0] = { ...buildTab([para(grown), para("Kept")]), tabId: "tab-1", title: "Main" };
@@ -1095,9 +1079,7 @@ describe.each(FORMS)("an edit built from the document its approval fetched, on %
     expectStoredAs(before);
   }));
 
-  // The edit's own refusals stand before anything the document's content gives: with the
-  // checks inside the trial, a document that cannot be stored would leave such an edit pending
-  // with the row's error, and one the renderer throws on would record the renderer's message.
+  // The edit's own refusals stand before anything the document's content gives.
   describe.each<[string, GoogleDocEditAction, (fetched: GoogleDocsDocument) => GoogleDocsDocument]>([
     ["whose tab is gone from the fetched document", APPEND,
       fetched => ({ ...fetched, tabs: fetched.tabs.slice(1) })],
@@ -1151,8 +1133,8 @@ describe.each(FORMS)("an edit built from the document its approval fetched, on %
     ({ ...BASE, ...edit, display: { tab: "x" } }) as GoogleDocEditAction;
 
   it.each<[string, () => GoogleDocsTab, (tab: GoogleDocsTab) => GoogleDocEditAction, RunSizes | undefined]>([
-    // Footnote references whose numbers are out of place: the model cannot follow the tab,
-    // which the fallback never asks.
+    // Footnote references out of place: the model cannot follow the tab, which the fallback never
+    // asks.
     ["a replacement in a tab the model cannot follow",
       () => ({ ...buildTab([{ runs: ["Draft", footnote(2), " then", footnote(1), ".\n"] }, para("Kept")]), tabId: "tab-1" }),
       () => storedEdit({ type: "replaceText", oldMarkdown: "Kept", newMarkdown: "Held" }), undefined],
@@ -1199,10 +1181,8 @@ describe.each(FORMS)("an edit built from the document its approval fetched, on %
 
 });
 
-// A fallback stores the document it fetched and removes it in one synchronous stretch, beside
-// whatever else the document's key holds: another fetch of the document that has not been
-// kept yet is kept as if no approval had come between. Each sequence runs twice, in an object
-// of its own, with the approval and without, and the rows are compared.
+// A fallback stores and removes its fetched document in one synchronous stretch: another fetch
+// not yet kept is kept as if no approval came between. Rows are compared with and without it.
 describe("a fallback while another fetch of the document waits to be kept", () => {
   const T = Date.UTC(2026, 0, 1);
   /** The document the waiting fetch brought: another state than the fallback's. */
@@ -1307,10 +1287,7 @@ const GENERATED_LISTS: GoogleDocsTab["lists"] = {
   numbers: { listProperties: { nestingLevels: presetLevels(true) } },
 };
 
-/**
- * The style of a run in an explicit font: bold, which a text style request of the builders
- * names, beside fields the copy does not keep.
- */
+/** A run's style in an explicit font: bold, which the builders name, beside fields the copy drops. */
 const EXPLICIT_FONT = {
   bold: true, smallCaps: true,
   weightedFontFamily: { fontFamily: "Lora", weight: 700 },
@@ -1343,10 +1320,8 @@ type Generated = {
 };
 
 /**
- * A document of one or two tabs of text and a blank one, drawn from `dice`: paragraphs, one of
- * them in an explicit font, a heading, two lists and one or two tables of drawn sizes in each, a
- * merged region in the first tab, and named ranges the copy does not keep (one that marks no
- * write, one of another write).
+ * A document of one or two tabs of text and a blank one, drawn from `dice`: prose, a heading,
+ * lists, tables, a merged region, and named ranges the copy does not keep.
  */
 function generatedDocument(dice: Dice, seed: number): Generated {
   let fresh = 0;
@@ -1421,10 +1396,7 @@ function drawnTable(dice: Dice, generated: Generated) {
 const tableChangeOf = (generated: Generated, tab: GoogleDocsTab, call: TableCall) =>
   generated.stored(tab, prepareTableChange(running(), versionOf(tab), call, "x").change);
 
-/**
- * The edits compared for each kind, drawn against a generated document. A kind added to
- * `DocEdit` fails the type check here until it has a generator.
- */
+/** The edits compared for each kind: a kind added to `DocEdit` fails the type check until it has one. */
 const EDITS = {
   replaceText(dice, generated) {
     let outside = dice.pick(generated.tabs);
@@ -1528,11 +1500,7 @@ const EDITS = {
 
 type BatchCall = Parameters<GoogleDocsApi["batchUpdate"]>;
 
-/**
- * The batch `call` sends as Google reads it, and what it does not read. A text style request
- * sets the fields its mask names and no other, so each one's style is cut to those in `call`,
- * and the fields cut are `unread`.
- */
+/** The batch `call` sends as Google reads it: each style cut to its mask, the rest `unread`. */
 function asGoogleReads([documentId, requests, ...pinAndMarker]: BatchCall) {
   let unread: string[] = [];
   let read = requests.map(request => {
@@ -1548,12 +1516,8 @@ function asGoogleReads([documentId, requests, ...pinAndMarker]: BatchCall) {
   return { call: [documentId, read, ...pinAndMarker], unread };
 }
 
-// An approval builds its batch from a copy: the one held, or the fetched document stored as it
-// is read. The copy keeps what the builders read of a tab, so that batch is the one built from
-// the tab as Google sent it at the same revision, but for one thing: a text style request
-// carries the whole style of the run it was read from, of which the copy keeps a part. The mask
-// of the request names the fields Google sets, the copy keeps each of those, and the batches
-// are compared as Google reads them. Held here for documents and edits nobody wrote by hand.
+// A batch built from the copy is the one built from the tab as Google sent it, as Google reads
+// it: a text style carries only part of the run's style, but every field its mask names.
 describe("a Doc edit built from the copy held and from a fresh read", () => {
   /** One seed by default, two in the wider run. */
   const SEEDS = WIDER ? [1, 2] : [1];
@@ -1569,8 +1533,7 @@ describe("a Doc edit built from the copy held and from a fresh read", () => {
       for (let action of edits(dice, generated)) {
         let fresh = host(generated.document);
         let copy = host(generated.document, undefined, snapshotOf(generated.document));
-        // An edit the document refuses, or that changes nothing in it, is a defect of the
-        // generator: it fails here, and is never left out.
+        // An edit refused or changing nothing is a generator defect: it fails, never skipped.
         await docDefinition(action).apply(action, fresh.docHost, { id: 4 });
         await docDefinition(action).apply(action, copy.docHost, { id: 4 });
         expect(fresh.api.batchUpdate, kind).toHaveBeenCalledTimes(1);
@@ -1670,9 +1633,8 @@ type Invalidator = "marks the record" | "removes the record";
 const INVALIDATORS: Invalidator[] = ["marks the record", "removes the record"];
 
 /**
- * A queue over `pending` with the reasons it was given, by record. One that removes leaves the
- * record in hand as it was, and both throw for a record invalidated twice, as a journal does
- * for one that is gone.
+ * A queue over `pending` with its reasons by record; both forms throw for a record invalidated
+ * twice, as a journal does.
  */
 function countedQueue(
   pending: GoogleDocPendingAction[], invalidator: Invalidator = "marks the record",
@@ -1817,8 +1779,7 @@ describe("a Doc's pending actions replayed on a copy of it", () => {
     // The tab's fold drops the edit and goes on: each record is a step once.
     expect(spent(goneIn("tab-1"), appendTo("tab-1", "More")))
       .toEqual({ queueReads: 1, folds: 2, dropped: [1] });
-    // An add is a step of the tab tree, refused or not, and one more where its tab is made; an
-    // edit of a tab the document lacks is one.
+    // An add is a tree step, and one more where its tab is made; an edit of a missing tab is one.
     expect(spent(add("pending-tab-a", { parentTabId: "gone" }), appendTo("ghost", "More")))
       .toEqual({ queueReads: 1, folds: 2, dropped: [1, 2] });
     expect(spent(add("pending-tab-a", {}), { ...add("pending-tab-b", {}), invalidatedReason: "Stale." }))
@@ -1859,8 +1820,7 @@ describe("replaying a Doc's queue one tab at a time", () => {
       'replaceText: oldMarkdown was not found in the current simulated tab "tab-1". ' +
       'Make sure the text exactly matches content returned by getContent("tab-1").'));
 
-    // The dropped edit carries its reason and is left out: the next replay folds the edit that
-    // remains.
+    // The dropped edit carries its reason; the next replay folds the edit that remains.
     expect(spending(() => markdownOf(replayGoogleDoc(queue, copy, REPLAY_CONTEXT), "tab-1")))
       .toEqual({ value: "Draft\n\nMore\n", folds: 1, queueReads: 1 });
   }));
@@ -1881,8 +1841,7 @@ describe("replaying a Doc's queue one tab at a time", () => {
     let after = replayGoogleDoc(queue, copy, REPLAY_CONTEXT);
     expect(spending(() => markdownOf(after, "tab-1")).folds).toBe(1);
 
-    // An edit of the second tab is applied or rejected: each tab folds what is left of its own
-    // queue.
+    // An edit of the second tab is settled: each tab folds what is left of its own queue.
     remove(3);
     let removed = replayGoogleDoc(queue, copy, REPLAY_CONTEXT);
     expect(spending(() => markdownOf(removed, "tab-1")).folds).toBe(1);
@@ -1998,8 +1957,7 @@ describe("replaying a Doc's queue one tab at a time", () => {
       expect(read.value).toContain("<td><p>x</p></td>");
       expect(carried.reasons.size).toBe(0);
 
-      // An edit the tab tree refused is not reduced again by the fold of the only tab, though a
-      // queue that removes it leaves the record in hand as it was.
+      // An edit the tab tree refused is not reduced again by the only tab's fold.
       let refused = countedQueue([
         { id: 1, action: add("pending-tab-a", {}) },
         { id: 2, action: unnamed(appendTo("tab-1", "More")) },
@@ -2205,10 +2163,7 @@ describe("replaying a Doc's queue one tab at a time", () => {
 });
 
 describe("a Doc edit prepared through a read that is authorized", () => {
-  /**
-   * A session over one tab, "Draft" unless given, with `pending` queued, whose next read's
-   * authorization runs `during`.
-   */
+  /** A session over one tab with `pending` queued, whose next read's authorization runs `during`. */
   function session(
     pending: { id: number; action: GoogleDocAction }[],
     tab: GoogleDocsTab = buildTab([{ runs: ["Draft\n"] }]),
@@ -2292,8 +2247,7 @@ describe("a Doc edit prepared through a read that is authorized", () => {
     expect(queued).toMatchObject([{ type: "replaceText", oldMarkdown: "More", newMarkdown: "Most" }]);
   }));
 
-  // A card is built from the stored edit, so what it shows beyond the edit's own texts is stored
-  // with it, and nothing else is: the texts themselves are never stored twice.
+  // What a card shows beyond the edit's own texts is stored with it; the texts never twice.
   it("stores with an edit only what its card shows beyond the edit", inStore(async () => {
     let label = "\"Main\" (tab-1)";
     let plain = session([]);
@@ -2332,8 +2286,7 @@ describe("a Doc edit prepared through a read that is authorized", () => {
         cardField("New", "A &amp; B", "html"),
       ]);
 
-    // An append reads otherwise than the canonical form of its text where the tab's named styles
-    // already give what its markers ask for, and then stores how it reads.
+    // An append whose markers the named styles already give stores how it reads.
     let styled = session([], {
       ...buildTab([para("Intro")]),
       namedStyles: { styles: [{ namedStyleType: "NORMAL_TEXT", textStyle: { bold: true } }] },
@@ -2413,10 +2366,7 @@ describe("a Drive binding's Doc snapshot, reused", () => {
 
   const T = Date.UTC(2026, 0, 1);
 
-  /**
-   * One document in a stub Google that counts its requests, and sources of it that keep their
-   * copy in the running test's store under one file id, each with its own binding's counters.
-   */
+  /** One document in a counting stub Google, and sources of one file id, each with its own counters. */
   function sharedDoc() {
     let google = {
       revision: 1, text: "Draft", gets: 0, probes: 0,
@@ -2538,9 +2488,8 @@ describe("a Drive binding's Doc snapshot, reused", () => {
     expect(google.gets).toBe(2);
   }));
 
-  // THE ONE PLACE a `documents.get` is made that a source alone would not make: another source
-  // kept a later document of the file, which needs the document to have changed. The first
-  // source fetches, where its own snapshot is still inside its TTL.
+  // THE ONE EXTRA `documents.get`: another source kept a later document, so the first fetches
+  // though its snapshot is inside its TTL.
   it("fetches again once another source kept a later document of the file", inStore(async () => {
     let { google, open } = sharedDoc();
     let first = open(), second = open();
@@ -2571,8 +2520,7 @@ describe("a Drive binding's Doc snapshot, reused", () => {
     expect(google.gets).toBe(2);
   }));
 
-  // An unchanged document has one id whichever read kept it, so neither source is left without
-  // a reusable snapshot.
+  // An unchanged document has one id whichever read kept it: both snapshots stay reusable.
   it.each(["after", "before"])(
     "is reused by a source whose first read ended %s another's on the same document",
     inStore(async order => {
@@ -2608,8 +2556,7 @@ describe("a Drive binding's Doc snapshot, reused", () => {
     vi.setSystemTime(T + DOC_SNAPSHOT_TTL_MS + 1);
     google.revision = 2;
     google.text = "Rewritten";
-    // While the probe is out, the other source keeps the changed document; the probe then
-    // answers that the first source's revision still stands.
+    // While the probe is out the other source keeps a change; the probe says the revision stands.
     google.duringProbe = async () => {
       google.duringProbe = undefined;
       expect(await second.read()).toBe("Rewritten");
@@ -2620,9 +2567,7 @@ describe("a Drive binding's Doc snapshot, reused", () => {
     expect(google).toMatchObject({ gets: 3, probes: 1 });
   }));
 
-  // The probe's answer cannot be used once an edit was queued during it, and a fetch begun on
-  // the counters read before the probe would be discarded for the same edit: the read starts
-  // over, and fetches once.
+  // An edit queued during the probe voids its answer: the read starts over and fetches once.
   it("fetches once past the TTL when an edit is queued during a revision probe that answers unchanged", inStore(async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(T);
@@ -2702,9 +2647,8 @@ describe("a Drive binding's Doc snapshot, reused", () => {
     expect(google.gets).toBe(3);
   }));
 
-  // The record names the folder the stored copy's last approved read stood on. A read that
-  // reused the copy this source kept is approved after another source kept a later document:
-  // it was a read of another document, and says nothing of the one stored.
+  // The record names the folder of the stored copy's last approved read; an approval of a read
+  // of another document says nothing of it.
   it("does not record the approval of a read of an older copy on one another source kept after it", inStore(async () => {
     let { google, open } = sharedDoc();
     let first = open(), second = open();
@@ -2840,8 +2784,7 @@ describe("a Drive binding's Doc snapshot, reused", () => {
     expect(await source.snapshot({ confirm: false })).toBe(first);
     expect(google).toMatchObject({ gets: 1, probes: 0 });
 
-    // Past it the document is fetched, though its revision stands: a probe and a fetch would
-    // be two requests where the document changed.
+    // Past it the document is fetched, not probed: a probe and a fetch would be two requests.
     vi.setSystemTime(T + DOC_SNAPSHOT_TTL_MS);
     let second = await source.snapshot({ confirm: false });
     expect(second).not.toBe(first);
@@ -2879,8 +2822,8 @@ describe("a Drive binding's Doc snapshot, reused", () => {
     expect(google).toMatchObject({ gets: 1, probes: 1 });
   }));
 
-  // What the costs of a file with pending edits rest on: it is fetched at the first read after
-  // an edit is queued, not at every read.
+  // A file with pending edits is fetched at the first read after an edit is queued, not at every
+  // read.
   it("reuses the approved snapshot of a file with pending edits until another edit is queued", inStore(async () => {
     let { google, open } = sharedDoc();
     let { binding, read } = open();
@@ -3023,10 +2966,8 @@ describe("a Drive binding's Doc snapshot, reused", () => {
   }));
 });
 
-// A source keeps which snapshot a read approved, and a snapshot's view the copy's record. What
-// a view that kept a tab, a rendering or a result out of storage's sight would fail: each test
-// keeps the same source and the same snapshot from one read to the next, as a connection that
-// stays awake does.
+// A snapshot's view holds the copy's record and nothing of a tab, a rendering or a result:
+// each test keeps one source and snapshot across reads, as a connection that stays awake does.
 describe("a Drive source of a Doc, read twice through the same objects", () => {
   const FILE = "large";
   const line = (at: number) => `Line ${String(at).padStart(5, "0")}.`;
@@ -3090,8 +3031,8 @@ describe("a Drive source of a Doc, read twice through the same objects", () => {
     let { runs } = storage!.sql.exec<{ runs: number }>("SELECT count(*) AS runs FROM doc_seq").one();
     expect(runs).toBe(133);
     storage!.sql.exec("DELETE FROM doc_md").toArray();
-    // A view that remembered the tab or its rendering would answer with neither count moving:
-    // each of the tab's runs is decoded and rendered again, alone.
+    // Each run is decoded and rendered again: a view that remembered the tab would move neither
+    // count.
     expect(spent(read)).toMatchObject({ value: first, decoded: runs, rendered: runs });
   }));
 
@@ -3169,10 +3110,8 @@ describe("a Drive source of a Doc whose copy the connection evicted", () => {
   };
 
   /**
-   * A connection over the running test's store that keeps one document, what its limits
-   * told it of, and `sourceOf`: the source of a file whose document says `text`, with
-   * `pending` queued on it, and a whole read through it (a snapshot, the tab as a pending
-   * read answers it, and the approval).
+   * A connection that keeps one document, what its limits told it, and `sourceOf`: a source of
+   * a file saying `text` with `pending` queued, and a whole read through it.
    */
   function connection() {
     let removed: [string, DocCopyRemoval][] = [];
@@ -3224,8 +3163,7 @@ describe("a Drive source of a Doc whose copy the connection evicted", () => {
     expect(removed).toEqual([["file-a", { event: "evicted", reason: "count" }]]);
     expect(running().head("file-a")).toBeUndefined();
 
-    // An approval that pinned its write to that copy finds none held, and falls back to a
-    // fetch; the source's next read fetches, once.
+    // An approval pinned to that copy falls back to a fetch; the next read fetches, once.
     expect(first.source.held()).toBeUndefined();
     expect(await first.read()).toEqual({ markdown: "First.\n", made: 0 });
     expect(await first.read()).toEqual({ markdown: "First.\n", made: 0 });
@@ -3250,17 +3188,15 @@ async function readThrough(source: DriveDocSource): Promise<string> {
 }
 
 /**
- * What the snapshot `source` approved reaches of `file`, as JSON: its own fields and the
- * copy's record its view was made from. A field added to the snapshot, to the view or to the
- * record fails here until it is listed with what it holds.
+ * What the snapshot `source` approved reaches of `file`, as JSON: a field added to the
+ * snapshot, its view or the record fails here until it is listed.
  */
 function reached(source: DriveDocSource, file: string): string {
   let snapshot = source.held()!;
   let head = running().head(file)!;
   expect(Object.keys(snapshot)).toEqual(["revisionId", "copy", "fetchedAt"]);
-  // The record: the copy's name, its revision, its clocks, whether a write has landed since,
-  // each tab's identity, base version and write markers, the folder and the hour of its last
-  // allowed read, the digest it was last swept under and its counted bytes.
+  // The record: the copy, its revision and clocks, landed writes, each tab, the last allowed
+  // read's folder and hour, the sweep's digest and the counted bytes.
   expect(Object.keys(head)).toEqual([
     "id", "revision", "fetchedAt", "checkedAt", "stale", "outline", "versions", "writeMarkers",
     "folder", "approvedAt", "made", "bytes",
@@ -3299,11 +3235,7 @@ describe("a Drive source of a Doc a read approved", () => {
     })),
   });
 
-  /**
-   * A read and write binding over the running test's store, and `open`: the source the binding
-   * keeps of `file`, whose document has `tabs` tabs, made as a Drive session makes it and
-   * counted in `made`.
-   */
+  /** A read and write binding, and `open`: its source of `file` with `tabs` tabs, counted in `made`. */
   function binding() {
     let journal = new ActionJournal<DriveAction>(new FakeKv(), { namespace: "drive" });
     let editors = new DriveFileEditors({

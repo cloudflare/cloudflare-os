@@ -1,6 +1,6 @@
-// A tab between two edits passes through the Doc store: it is serialized, stored, parsed and
-// known to the model again. These tests hold that the passage changes no step of a chain of
-// edits, on every recording of Google's own answers.
+// A tab between two edits is serialized, stored, parsed and known to the model again: that passage
+// through the Doc store changes no step of a chain of edits, on every recording of Google's
+// answers.
 
 import { describe, expect, it } from "vitest";
 import type { GoogleDocsRequest, GoogleDocsTab } from "../src/docs-api";
@@ -40,8 +40,7 @@ describe.each(readFixtures())("the recording $name", fixture => {
       expect(JSON.stringify(through.tab), step.name).toBe(JSON.stringify(plain.tab));
       expect(docTabToMarkdown(through.tab).markdown, step.name)
         .toBe(docTabToMarkdown(plain.tab).markdown);
-      // A tab the model made is known to the model again once it is read back, so the chain
-      // through the store recomputes no more than the chain in memory.
+      // A tab read back is known to the model again: the chain recomputes no more than in memory.
       if (at > 0) expect(through.fullReindexes, step.name).toBeLessThanOrEqual(plain.fullReindexes);
       inMemory = plain.tab;
       stored = through.tab;

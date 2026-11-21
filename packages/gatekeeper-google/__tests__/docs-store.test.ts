@@ -120,10 +120,7 @@ function typing(tab: GoogleDocsTab, text: string): GoogleDocsRequest[] {
   return [{ insertText: { location: { index: 1, tabId: tab.tabId }, text } }];
 }
 
-/**
- * Makes the edit keyed `edit` in `version` as a reducer does, typing at the start of the tab:
- * the child stored from the runs the batch touches, and its result (`scenarioEdit`).
- */
+/** Makes the edit keyed `edit` in `version` as a reducer does, typing at the tab's start. */
 const edited = scenarioEdit;
 
 /** The version the edit keyed `e1` gave in `version`, read back. */
@@ -133,10 +130,7 @@ function scenarioBaseResult(store: DocStore, version: DocVersion): DocVersion {
   return found.after;
 }
 
-/**
- * What a test measures of the store's costs: the pass's own tally is measured where it is
- * asked, and so are a piece's widenings.
- */
+/** The store's costs a test measures: the ingest peak and the widenings are measured where asked. */
 type Spent = Omit<DocStoreCost, "ingestPeakBufferedBytes" | "viewWidenings" | "pieceWidenings">;
 
 /** What `run` spent in the store: the counts' differences, and the peaks from 0. */
@@ -193,10 +187,7 @@ const columnsOf = (storage: FakeDocStorage, table: string) =>
 type Row = Record<string, unknown>;
 const rowsOf = (storage: FakeDocStorage, table: string) => storage.rows()[table] as Row[];
 
-/**
- * The piece at the end of `version`, as a reading of the tab makes it, what storage throws
- * thrown as storage threw it.
- */
+/** The piece at the end of `version`, as a reading makes it; storage's errors pass through. */
 const pieceAtEnd = (store: DocStore, version: DocVersion): DocTabSnapshot =>
   unwrapped(() => storedTabReading(store, version).piece("end"));
 
@@ -208,8 +199,7 @@ describe("DocStore", () => {
 
     let version = store.putTab(DOC, tab, []);
 
-    // The opening break, the paragraph and the list item are one run, and the table is alone
-    // in its own. Each run is rendered as it is stored.
+    // Two runs, each rendered as stored: the break, paragraph and list item, then the table alone.
     expect(runs).toHaveLength(2);
     expect(counts(storage)).toEqual({ ...EMPTY, doc_run: 3, doc_md: 2, doc_seq: 2, doc_version: 1 });
     expect(rowsOf(storage, "doc_seq").map(row => row.run)).toEqual(runs);
@@ -248,8 +238,7 @@ describe("DocStore", () => {
     expect(store.putTab(DOC, tab, []).id).toBe(id);
   });
 
-  // The refetch that follows the removal of a write's marker brings the tab's content
-  // unchanged, and must find what was stored for it.
+  // The refetch after a write's marker is removed must find what was stored for the tab.
   it("a tab fetched again with another marker, title or place is the same version", () => {
     let { store } = opened();
     let tab = PROSE();
@@ -274,8 +263,7 @@ describe("DocStore", () => {
     expect(found).toMatchObject({ after: { id: child.id, title: "Renamed", index: 3, writeMarkers: [marker] } });
   });
 
-  // A kept view reads the markers from the record it remembers, and the refetch that follows a
-  // marker's removal changes only markers: each alone must name another copy.
+  // A kept view reads markers from its record, so a marker or a title alone names another copy.
   it("a copy that differs only by a marker, or only by a title, is another copy over the same versions", () => {
     let { storage, store } = opened();
     let first = store.keep(DOC, copyOf([PROSE(), NOTES()]), NONE);
@@ -326,8 +314,7 @@ describe("DocStore", () => {
     let tab = NOTES();
     let { markdown } = docTabToMarkdown(tab);
 
-    // The tab is three runs, the table alone in the second: each is rendered, alone, as the
-    // tab is stored.
+    // Three runs, the table alone in the second, each rendered alone as the tab is stored.
     let stored = spent(() => store.putTab(DOC, tab, []));
     let version = store.putTab(DOC, tab, []);
     let first = spent(() => expect(store.markdown(version)).toBe(markdown));
@@ -385,8 +372,7 @@ describe("DocStore", () => {
       numberedItems: true,
       tables: [],
     };
-    // What is summarised of the runs' renderings as the tab is stored is what storage answers
-    // from then on, whatever the tab's runs.
+    // What storing summarised of the runs is what storage answers after, whatever the runs.
     let summarised = (of: GoogleDocsTab) => {
       let version = store.putTab(DOC, of, []);
       let made = store.summary(version);
@@ -448,8 +434,7 @@ describe("DocStore", () => {
     }
     expect(tables.map(table => table.cells)).toEqual([4, 2, 2]);
     expect(tables.map(table => table.numbered)).toEqual([false, true, false]);
-    // Each table is a run of its own, so its place is the sizes and the Markdown lengths of the
-    // runs before it: under runs of one element each the joined summary is the same.
+    // Each table is a run, so its place sums the runs before it: the same under one-element runs.
     expect(storedSummary(store, version).tables).toEqual(tables);
     let other = opened(undefined, undefined, ONE).store;
     expect(storedSummary(other, other.putTab(DOC, tab, [])).tables).toEqual(tables);
@@ -487,16 +472,14 @@ describe("DocStore", () => {
     expect(version.exact).toBe(true);
     expect(isModelIndexed(decoded)).toBe(true);
     expect(costOf(decoded)).toBeLessThanOrEqual(costOf(made));
-    // The same tab as Google would send it reads the same and is another version, over the
-    // same run and context: what the model made never stands for what was fetched.
+    // As Google sends it, the same tab is another version: a model's tab never stands for a fetch.
     let sent = store.putTab(DOC, JSON.parse(JSON.stringify(made)) as GoogleDocsTab, []);
     expect(sent.id).not.toBe(version.id);
     expect(sent.exact).toBe(false);
     expect(store.version(DOC, sent.id, sent)).toMatchObject({ id: sent.id, exact: false });
     expect(store.version(DOC, version.id, version)).toMatchObject({ id: version.id, exact: true });
     expect(isModelIndexed(store.tab(sent))).toBe(false);
-    // It reads back as Google sends a tab: the model's, but for the start index of the section
-    // break that opens the body, which only a tab the model made holds.
+    // It reads back as Google sends it: no start index on the body's opening break.
     let [opening, ...rest] = decoded.body.content;
     expect(opening).toEqual({ startIndex: 0, endIndex: 1, sectionBreak: {} });
     expect(store.tab(sent)).toEqual({
@@ -527,8 +510,7 @@ describe("DocStore", () => {
     });
     expect(store.head(DOC)).toEqual(head);
     expect(store.tab(baseOf(store, head, 1))).toEqual(tabs[1]);
-    // The first tab is one run and the second three, its table alone; the two share a context.
-    // Each run is rendered by the keep.
+    // One run for the first tab and three for the second, sharing a context, each rendered.
     expect(counts(storage)).toEqual({
       ...EMPTY, doc_copy: 1, doc_run: 5, doc_md: 4, doc_seq: 4, doc_version: 2,
     });
@@ -550,8 +532,7 @@ describe("DocStore", () => {
     expect(again.fetchedAt).toBe(9_000);
     expect(store.keep(DOC, copyOf([PROSE(), NOTES()], { revision: "r2" }), NONE).id).not.toBe(first.id);
     expect(store.keep(DOC, copyOf([PROSE()]), NONE).id).not.toBe(first.id);
-    // A tab whose body changed under the same revision, or under none, is another copy with
-    // the same outline: a view that held the earlier one does not hold this one.
+    // A changed body under the same revision, or none, is another copy with the same outline.
     for (let revision of ["r1", undefined]) {
       let other = opened().store;
       let before = copyOf([PROSE(), NOTES()], { revision });
@@ -593,8 +574,7 @@ describe("DocStore", () => {
 
     expect(second.versions[1]).toBe(first.versions[1]);
     expect(rowsOf(storage, "doc_version").map(row => row.id).toSorted()).toEqual([...second.versions].toSorted());
-    // The changed tab's run and Markdown went, and the tab's one run as it is came with its
-    // Markdown; the other tab's three runs and the context the two share stay.
+    // The changed tab's run and Markdown were replaced; the other tab's runs and the context stay.
     expect(counts(storage)).toEqual({ doc_copy: 1, doc_md: 4, doc_result: 0, doc_run: 5, doc_seq: 4, doc_version: 2 });
     expect(rowsOf(storage, "doc_run").map(row => row.id)).not.toContain(runIds(PROSE())[0]);
     expect(store.markdown(baseOf(store, second, 0))).toBe(docTabToMarkdown(changed).markdown);
@@ -628,8 +608,7 @@ describe("DocStore", () => {
 
   it("keys a rendering by its context, and sweeps it by that key", () => {
     let { storage, store } = opened();
-    // One body, of one run, under two definitions of the list it names: its items numbered,
-    // and bulleted.
+    // One body of one run under two definitions of its list: numbered, then bulleted.
     let blocks = [para("One"), item("first", "N1"), item("second", "N1")];
     let numbered = tabOf("t1", blocks, NUMBERED_LIST);
     let bulleted = tabOf("t1", blocks, { N1: BULLET_LIST.L1 });
@@ -643,8 +622,7 @@ describe("DocStore", () => {
     let first = store.keep(DOC, copyOf([numbered]), NONE);
     expect(store.markdown(baseOf(store, first))).toBe(numberedText);
 
-    // The body comes again under the other definition: the run stays, and its rendering under
-    // the earlier context goes with the version that listed it.
+    // Under the other definition the run stays; its earlier rendering goes with its version.
     let second = store.keep(DOC, copyOf([bulleted], { revision: "r2" }), NONE);
     let base = () => baseOf(store, second);
     expect(counts(storage)).toEqual({ ...EMPTY, doc_copy: 1, doc_run: 2, doc_md: 1, doc_seq: 1, doc_version: 1 });
@@ -926,9 +904,8 @@ describe("DocStore", () => {
     let { storage, store } = opened();
     store.putTab(DOC, PROSE(), []);
     let before = storage.rows();
-    // A paragraph's Markdown is as long as its text, and the row of a rendering holds the run's
-    // summary beside it, which is more than the run's own row holds beside the text. So a
-    // paragraph whose run exactly fits a row has a rendering that does not.
+    // A rendering's row also holds the run's summary, so a paragraph whose run just fits a row
+    // has a rendering that does not.
     let sized = (length: number) => tabOf("t9", [para("Nine"), para("x".repeat(length))]);
     let rowOf = (tab: GoogleDocsTab) => {
       let [, paragraph] = [...cutRuns(tab.body.content, RUN_SIZES)];
@@ -1074,8 +1051,7 @@ describe("DocStore", () => {
       expect(counts(storage)).toMatchObject({ doc_version: 2, doc_seq: 2, doc_run: 3 });
     });
 
-    // A refusal gives no version and an edit that changes nothing gives the version it was
-    // made in: once neither is pending, the sweep has results to remove and no version.
+    // A refusal gives no version and a no-op edit its base: undecided, their results go alone.
     it("removes the results of edits that are not pending where no version goes with them", () => {
       let { storage, store } = opened();
       let base = baseOf(store, store.keep(DOC, copyOf([PROSE()]), NONE));
@@ -1101,8 +1077,7 @@ describe("DocStore", () => {
       store.markdown(one);
       edited(store, one, "e1");
       let child = edited(store, two, "e1");
-      // The two documents read the same and take the same edit, and each holds rows of its
-      // own: its run, the run the edit gives, its context and the rendering of each run.
+      // Each document holds rows of its own: its run, the edit's run, its context and renderings.
       expect(counts(storage)).toEqual({ doc_copy: 2, doc_md: 4, doc_result: 2, doc_run: 6, doc_seq: 4, doc_version: 4 });
       let content = (doc: string) =>
         ["doc_md", "doc_run"].map(table => rowsOf(storage, table).filter(row => row.doc === doc));
@@ -1110,13 +1085,11 @@ describe("DocStore", () => {
       expect(content("two").map(rows => rows.map(row => ({ ...row, doc: "one" })))).toEqual(content("one"));
       let before = content("two");
 
-      // The second document is swept with its edit pending while the first holds a version
-      // that is dead: nothing of either goes.
+      // The second, its edit pending, is swept while the first holds a dead version: nothing goes.
       store.sweep("two", { edits: ["e1"], roots: [] });
       expect(counts(storage)).toMatchObject({ doc_md: 4, doc_run: 6 });
-      // The first is swept with no edit pending: the version its edit gave goes with the run
-      // and the rendering it alone listed there, and the second's rows of both stay. Then the
-      // first is dropped.
+      // The first, swept with nothing pending, loses its edit's version and what only it listed;
+      // the second's rows stay. Then the first is dropped.
       store.sweep("one", NONE);
       expect(content("one").map(rows => rows.length)).toEqual([1, 2]);
       expect(content("two")).toEqual(before);
@@ -1135,8 +1108,7 @@ describe("DocStore", () => {
       let { storage, store } = opened();
       store.keep(DOC, copyOf([PROSE()]), NONE);
       let before = storage.rows();
-      // A request that stored a version and its rendering, and failed before any result or
-      // pending record named them.
+      // A version and rendering stored by a request that failed before any record named them.
       let orphan = tabOf("t1", [para("Orphan")]);
       store.putTab(DOC, orphan, []);
       expect(storage.rows()).not.toEqual(before);
@@ -1191,8 +1163,7 @@ describe("DocStore", () => {
     });
   });
 
-  // Every statement the store ran in a scenario that keeps two documents, makes edits, queues
-  // results, reads, makes a piece, sweeps and drops.
+  // Every statement a scenario of keeps, edits, results, reads, a piece, sweeps and drops ran.
   function statementsOfAScenario(): FakeDocStorage {
     let { storage, store } = opened();
     let one = store.keep("one", copyOf([PROSE(), NOTES()]), NONE, { folder: "f1", at: 1 });
@@ -1218,8 +1189,7 @@ describe("DocStore", () => {
     store.keep("one", copyOf([NOTES()], { revision: "r3" }), NONE);
     store.drop("one");
     store.drop("two");
-    // Rows of another digest, for the statements that write over them and remove them, and a
-    // tab that names a list, for the statements that key its version again from its runs.
+    // Another digest's rows, and a tab that names a list, for the statements that touch them.
     let other = new DocStore(storage, undefined, "other");
     let listed = tabOf("t1", [para("One"), item("first", "N1")], NUMBERED_LIST);
     let kept = baseOf(other, other.keep("one", copyOf([listed]), NONE), 0, "one");
@@ -1262,8 +1232,7 @@ describe("DocStore", () => {
         expect(step, statement).not.toMatch(/SCAN doc_(run|md|result|seq|version|copy)\b/);
       }
     }
-    // A plan names a table by its alias, so `tableScans` reads every scan; the sweep's comparisons
-    // search lists by the versions' key and content by the document's.
+    // `tableScans` reads every scan, by alias too; the sweep searches lists and content by key.
     expect(tableScans(storage, statements)).toEqual({});
     for (let statement of statements.filter(ran => /^DELETE FROM doc_(md|run)[^]*NOT IN/.test(ran))) {
       let searched = storage.plan(statement).filter(step => /\bdoc_(seq|version|md|run)\b/.test(step));
@@ -1294,8 +1263,7 @@ describe("DocStore", () => {
     expect(created.statements().filter(statement => /CREATE (UNIQUE )?INDEX/.test(statement))).toEqual([]);
   });
 
-  // `toArray()` lands every row it returns on the heap, so it is for small rows; content is
-  // read by key with `one()`.
+  // `toArray()` puts every row on the heap, so content is read by key with `one()`.
   it("reads content one row a statement, never as an array", () => {
     let { storage, store } = opened();
     let head = store.keep(DOC, copyOf([PROSE(), NOTES()]), NONE);
@@ -1483,8 +1451,7 @@ describe("DocStore", () => {
       expect(counts(storage)).toMatchObject({ doc_result: 0, doc_version: 1 });
     });
 
-    // The limit itself is pinned on real storage in the workerd test: this is that a trial
-    // meets the same guard, and meets it before `use`.
+    // The limit is pinned on real storage in the workerd test; a trial meets it before `use`.
     it("refuses a trial of a tab with a paragraph too large for a row before use runs", () => {
       let { storage, store } = opened();
       let large = tabOf("t1", [para("x".repeat(DOC_ROW_BYTES))]);
@@ -1717,8 +1684,7 @@ describe("DocStore", () => {
   });
 
   describe("under another digest", () => {
-    // A two-tab document written by the code of digest "a": a tab's Markdown read, a result with
-    // its child version and the child's rendering, and whether the model indexes the tab.
+    // A two-tab document written under digest "a": a read, a result with its child, an index check.
     function written() {
       let storage = fakeDocStorage();
       let a = new DocStore(storage, undefined, "a");
@@ -1773,9 +1739,7 @@ describe("DocStore", () => {
       let b = new DocStore(storage, undefined, "b");
       let before = counts(storage);
 
-      // The child reads the same under both digests, so nothing is added. Written in place: the
-      // base's one run keyed again by the read (its rendering, its list's row and its record),
-      // the child's by the edit that stores it (the same three), and the result.
+      // The child reads the same under both digests: its rows and the base's are written in place.
       let cost = spent(() => {
         b.markdown(base);
         expect(scenarioEdit(b, base, "e1").id).toBe(child.id);
@@ -1794,8 +1758,7 @@ describe("DocStore", () => {
       let a = new DocStore(storage, undefined, "a");
       let markdown = docTabToMarkdown(PROSE()).markdown;
       let summary = a.summary(base);
-      // The two digests run the same code here, so the rows of "a" are made to say what other
-      // code would have derived: another Markdown and summary, other requests, another child.
+      // Both digests run the same code, so "a"'s rows are made to say what other code would derive.
       storage.sql.exec("UPDATE doc_md SET md = 'stale', summary = ?", JSON.stringify({ markdownLength: 5, tables: [] })).toArray();
       storage.sql.exec("UPDATE doc_result SET result = ?, child = ?", JSON.stringify({ requests: [] }), head.versions[1]).toArray();
       let b = new DocStore(storage, undefined, "b");
@@ -1833,8 +1796,7 @@ describe("DocStore", () => {
       let derived = () => rowsOf(storage, "doc_version").find(row => row.id === base.id)?.derived;
       expect(derived()).toBe(JSON.stringify({ made: "a", unindexed: false, keyed: true }));
 
-      // The tab is in hand: its one run is rendered and keyed from it, and its rendering, its
-      // list's row and its record are written in place.
+      // The tab is in hand: its run is rendered and keyed, and its three rows written in place.
       expect(spent(() => expect(b.putTab(DOC, PROSE(), []).id).toBe(base.id))).toMatchObject({
         rowsWritten: 3, runsDecoded: 0, runsRendered: 1,
       });
@@ -1863,9 +1825,7 @@ describe("DocStore", () => {
       let base = baseOf(a, head);
       let child = edited(a, base, "e1");
       let b = new DocStore(storage, undefined, "b");
-      // The edit is made again: the version it is made in is keyed first, as a read keys it,
-      // and the version it gives is keyed as it is stored, so the rendering of each is this
-      // digest's. Those of the tab beside them, which nothing read, are still the other's.
+      // The edit made again keys parent and child under this digest; the unread tab beside stays.
       expect(edited(b, base, "e1").id).toBe(child.id);
       expect(madeIn(storage, "doc_md").toSorted()).toEqual(["a", "a", "a", "b", "b"]);
 
@@ -1885,8 +1845,7 @@ describe("DocStore", () => {
 
       expect(kept).toEqual({ ...head, made: "b" });
       expect(b.head(DOC)).toEqual(kept);
-      // The keep keyed each tab again from the tab in hand, so the renderings of their four
-      // runs are this digest's; the child's, which the other digest made, went with its version.
+      // The keep re-keyed each tab from the tab in hand; the child's rows went with its version.
       expect(madeIn(storage, "doc_md")).toEqual(["b", "b", "b", "b"]);
       expect(madeIn(storage, "doc_result")).toEqual([]);
     });
@@ -2002,8 +1961,7 @@ describe("DocStore", () => {
     expect(longest).toBeLessThan(length);
     let peak = (run: () => unknown) => spent(run).peakMarkdownCharsInHand;
 
-    // A tab that is stored has one run's Markdown in hand at a time: the peak is its longest
-    // run's, not the tab's. Stored again, nothing is rendered.
+    // Storing holds one run's Markdown at a time, so the peak is the longest run's.
     let version = store.putTab("first", tab, []);
     expect(peak(() => version = store.putTab(DOC, tab, []))).toBe(longest);
     expect(peak(() => store.putTab(DOC, tab, []))).toBe(0);
@@ -2027,8 +1985,7 @@ describe("DocStore", () => {
     expect(peak(() => docEditResult(store, stored, { type: "appendText", markdown: "More" })))
       .toBe(longerLengths[3] + longerLengths[4]);
     expect(longerLengths[3] + longerLengths[4]).toBeLessThan(docTabToMarkdown(longer).markdown.length);
-    // A run counts at two bytes a character, from the row read until the parse returns, and
-    // from the cut until it is stored: one run at a time.
+    // Two bytes a character, from a run's read to its parse and from its cut to its store.
     let longestRun = 2 * Math.max(...runs.map(run => run.json.length));
     expect(spent(() => store.tab(version)).peakRunBytesInHand).toBe(longestRun);
     expect(spent(() => store.putTab(DOC, tab, [])).peakRunBytesInHand).toBe(longestRun);
@@ -2068,8 +2025,7 @@ const renderingOf = (storage: FakeDocStorage, { run, context, carry }: ListRow) 
     .find(row => row.run === run && row.context === context && row.carry === carry);
 
 describe("DocStore, a version of several runs", () => {
-  // Under runs of one element, eight runs whose keys show the carry three ways: a carried number
-  // (the third item), a blank line before, and nothing (key '').
+  // Eight one-element runs whose keys show a carried number, a blank line before, and nothing ('').
   const SEVERAL = () => tabOf("t1", [
     para("Intro"), item("first", "N1"), item("second", "N1"), para("Between"),
     item("third", "N1"), grid(["a", "b"], ["c", "d"]), para("Close"),
@@ -2149,17 +2105,14 @@ describe("DocStore, a version of several runs", () => {
 
     expect(summary).toEqual(summaryOf(whole));
     expect(summary).toMatchObject({ blank: false, numberedItems: true, protectedRanges: 1 });
-    // The table is the seventh run: its start and its Markdown range are moved by the sizes
-    // and the Markdown lengths of the six runs before it, where its own run's summary counts
-    // them from the run's start.
+    // The seventh run: the table's place in the tab adds the six runs before to its run's summary.
     let own = (JSON.parse(renderingOf(storage, list[TABLE])!.summary) as DocRunSummary).tables[0];
     let [table] = summary.tables;
     expect(own.start).toBe(0);
     expect(table.start).toBe(list.slice(0, TABLE).reduce((sum, row) => sum + row.size, 0));
     expect(table.mdStart - own.mdStart).toBe(whole.markdown.indexOf("\n<table>"));
     expect(table.mdEnd - table.mdStart).toBe(own.mdEnd - own.mdStart);
-    // The answer holds the fields of a summary and no other, for one run as for many: what a
-    // stored summary holds beside them stays in the store.
+    // The answer holds a summary's fields and no other, for one run as for many.
     expect(Object.keys(summary).toSorted()).toEqual(fields);
     expect(Object.keys(JSON.parse(renderingOf(storage, list[TABLE])!.summary))).toContain("run");
     let single = opened();
@@ -2200,8 +2153,7 @@ describe("DocStore, a version of several runs", () => {
     // That run alone, with the carry it is entered with: never the tab.
     expect(cost).toMatchObject({ runsDecoded: 1, runsRendered: 1, rowsWritten: 1 });
     expect(replayCost.renders).toBe(renders);
-    // The row written is under the key the list names and holds that run's Markdown, which is
-    // the slice of the tab's Markdown at the run's place; every other row is what it was.
+    // The row written holds that run's Markdown under the list's key; every other row is as it was.
     expect(renderingOf(storage, list[at])!.md).toBe(inPlace[at]);
     expect(rowsOf(storage, "doc_md")).toEqual(before);
     expect(store.markdown(version)).toBe(whole.markdown);
@@ -2225,8 +2177,7 @@ describe("DocStore, a version of several runs", () => {
       expect(inPlace[at]).toBe("1. second\n");
       expect(alone(at)).toBe(inPlace[at]);
     } else if (at === TABLE) {
-      // The run's place matters: the read that rendered it answered the table's start in the
-      // tab, the sizes of the six runs before it, where the row holds it from the run's start.
+      // Its place matters: the read answered the table's start in the tab, the row from the run's.
       let [own] = (JSON.parse(renderingOf(storage, list[at])!.summary) as DocRunSummary).tables;
       expect(own.start).toBe(0);
       expect(summaryOf(whole).tables[0].start).toBe(list.slice(0, at).reduce((sum, row) => sum + row.size, 0));
@@ -2247,8 +2198,7 @@ describe("DocStore, a version of several runs", () => {
       return one.list[at];
     };
 
-    // They share two runs and the row of each one's rendering: the opening section break's,
-    // the empty Markdown, and the paragraph's, that paragraph's Markdown alone.
+    // They share two runs and their renderings: the opening break's (empty) and the paragraph's.
     expect([one.list.length, two.list.length]).toEqual([3, 3]);
     expect(renderingOf(storage, shared(BREAK))!.md).toBe("");
     expect(renderingOf(storage, shared(INTRO))!.md).toBe("Same\n");
@@ -2257,8 +2207,8 @@ describe("DocStore, a version of several runs", () => {
     expect(store.markdown(one.version)).toBe("Same\n\nAlpha\n");
     expect(store.markdown(two.version)).toBe("Same\n\nBeta\n");
 
-    // A shared rendering that is missing is rendered again by whichever version reads first,
-    // that run alone, and holds the run's Markdown and nothing of that version's tab.
+    // A missing shared rendering is rendered again, that run alone, by whichever version reads
+    // first.
     for (let [at, markdown] of [[INTRO, "Same\n"], [BREAK, ""]] as const) {
       let before = rowsOf(storage, "doc_md");
       remove(storage, shared(at));
@@ -2298,8 +2248,7 @@ describe("DocStore, a version of several runs", () => {
     expect(spent(() => store.summary(version)))
       .toMatchObject({ runsDecoded: 0, runsRendered: 0, rowsWritten: 0 });
 
-    // And a summary that holds everything a reader asks and not the renderer's summary of the
-    // run, which the carry is advanced over.
+    // And a summary that holds what a reader asks but not the run's own summary.
     let { run: _run, ...asked } = JSON.parse(renderingOf(storage, list[THIRD])!.summary);
     expect(Object.keys(asked).toSorted()).toEqual(Object.keys(summaryOf(whole)).toSorted());
     storage.sql.exec(
@@ -2311,8 +2260,7 @@ describe("DocStore, a version of several runs", () => {
     expect(store.markdown(version)).toBe(whole.markdown);
   });
 
-  // The version's record says its keys are the store's, and its list holds no run: what a
-  // version that was swept in part would leave.
+  // A record that says its keys are the store's over an empty list, as a part-swept version leaves.
   it.each(["markdown", "summary", "tab"] as const)(
     "a keyed version whose list is gone is unreadable, never an empty tab: %s", read => {
       let { storage, store } = opened(undefined, undefined, ONE);
@@ -2340,8 +2288,7 @@ describe("DocStore, a version of several runs", () => {
     ]), DOC, on);
     let last = 3;
     expect(list).toHaveLength(4);
-    // The third paragraph's run holds its reference as the first of the run, and its key the
-    // two references before it, which make it read as the third.
+    // The third paragraph's run stores its reference as 1; its key holds the two before it.
     expect(rowsOf(storage, "doc_run").find(row => row.id === list[last].run)!.json)
       .toContain('"footnoteNumber":1');
     expect(JSON.parse(list[last].carry)).toEqual({ f: 2, s: true });
@@ -2389,8 +2336,7 @@ describe("DocStore, a version of several runs", () => {
     expect(rowsOf(storage, "doc_md")).toEqual(before.map(row => ({ ...row, made: "b" })));
   });
 
-  // A version keyed again decodes each run at its place in the tab, so the summary stored for
-  // a table's run says where the table starts in that run, as the summary a keep stored does.
+  // Keyed again, a table's run is summarised with the table's start in that run, as a keep does.
   it("a version keyed again under another digest summarises a table where it stands", () => {
     let { storage, version, whole, list } = kept(SEVERAL(), DOC, opened(undefined, "a", ONE));
     let before = rowsOf(storage, "doc_md");
@@ -2497,8 +2443,7 @@ describe("DocStore, a version of several runs", () => {
         let base = baseOf(store, store.keep(DOC, copyOf([SEVERAL()], {}, ONE), NONE));
         let third = listOf(storage, base)[THIRD];
         let { context } = rowsOf(storage, "doc_version").find(row => row.id === base.id)!;
-        // Under the store's own digest only the run with no rendering is rendered; under
-        // another, every run is, in one transaction that the drop stands outside of.
+        // Its own digest renders only the run lacking a rendering; another renders every run.
         let reader = digest === undefined ? store : new DocStore(storage, undefined, digest, ONE);
         if (digest === undefined) remove(storage, third);
         storage.sql.exec(statement, damaged === "run" ? third.run : context).toArray();
@@ -2561,11 +2506,7 @@ describe("DocStore, runs cut by content", () => {
   /** A tab of 20,000 paragraphs, built once. Never changed. */
   const LARGE = () => large ??= tabOf("large", Array.from({ length: 20_000 }, (_, at) => para(line(at))));
 
-  /**
-   * The body's opening break, a paragraph, an item of a numbered list, a paragraph that
-   * interrupts the list and a second item, which shows the number carried over the
-   * interruption: under runs of one element, five runs, the second item the one at `SECOND`.
-   */
+  /** Break, paragraph, item, interrupting paragraph, item numbered over it; the second at `SECOND`. */
   const INTERRUPTED = () => tabOf(
     "t1", [para("Intro"), item("first", "N1"), para("Between"), item("second", "N1")], NUMBERED_LIST);
   const SECOND = 4;
@@ -2643,10 +2584,7 @@ describe("DocStore, runs cut by content", () => {
   /** A tab of `largeTabs()`, pruned as a fetch prunes it. The tabs are built once. Never changed. */
   const largeTab = (name: string) =>
     pruneTab((builtOnce ??= largeTabs()).find(tab => tab.name === name)!.tab);
-  /**
-   * What `store.putSlice` rendered in the calls made while `run` ran: the runs rendered alone,
-   * to be stored, apart from the runs of the piece rendered for an edit's builders.
-   */
+  /** The runs `store.putSlice` rendered to store while `run` ran, not the piece's for builders. */
   function renderedToStore(store: DocStore, run: () => unknown): number {
     let rendered = 0;
     let putSlice = store.putSlice.bind(store);
@@ -2692,8 +2630,7 @@ describe("DocStore, runs cut by content", () => {
     expect(markdown).toBe(docTabToMarkdown(LARGE()).markdown);
   });
 
-  // THIS EDIT MOVES NO NUMBERING: the runs it changed, stored, is the whole of what follows the
-  // change.
+  // THIS EDIT MOVES NO NUMBERING: the changed runs stored are all that follows the change.
   it("an edit in the middle stores the runs it changed and a list, and renders its piece and those", () => {
     let { storage, store } = opened();
     let base = baseOf(store, store.keep(DOC, copyOf([LARGE()]), NONE));
@@ -2708,8 +2645,7 @@ describe("DocStore, runs cut by content", () => {
     let [n, m, c] = [parent.length, child.length, changed.length];
     expect([n, m, c]).toEqual([133, 133, 1]);
     expect(c).toBeLessThanOrEqual(3);
-    // The version the edit gives lists its parent's runs, under their keys, but for the one the
-    // edit changed.
+    // The child lists its parent's runs under their keys, but for the one the edit changed.
     expect(child[0]).toEqual({ ...parent[0], version: made.id });
     expect(child.filter(row => row !== changed[0]).map(({ run, context, carry }) => [run, context, carry]))
       .toEqual(parent.filter(row => row.seq !== changed[0].seq)
@@ -2718,8 +2654,7 @@ describe("DocStore, runs cut by content", () => {
       ...before, doc_run: before.doc_run + c, doc_md: before.doc_md + c, doc_seq: before.doc_seq + m,
       doc_version: before.doc_version + 1, doc_result: 1,
     });
-    // Decoded: the piece's one run, which the slice takes; rendered: it and the run cut. No later run
-    // is keyed: the carry after the slice is the parent's.
+    // Decoded: the piece's run, which the slice takes; rendered: it and the run cut; none keyed.
     expect(cost).toMatchObject({ runsDecoded: 1, runsRendered: 1 + c, runsKeyed: 0, resultsStored: 1 });
     expect(toStore).toBe(c);
     expect(renders).toBe(0);
@@ -2794,14 +2729,12 @@ describe("DocStore, runs cut by content", () => {
     let changed = notIn(listOf(storage, baseOf(store, head)), parent);
     expect(changed).toHaveLength(2);
     expect(changed[1].seq - changed[0].seq).toBeGreaterThan(50);
-    // The changed run of each place is rendered and the run directly after each is keyed: the
-    // runs between the two places, and after the second, keep the earlier base's keys.
+    // At each place the changed run is rendered and the next keyed; the rest keep their keys.
     expect(cost).toMatchObject({ runsDecoded: 0, runsRendered: 2, runsKeyed: 2 });
     expect(store.markdown(baseOf(store, head))).toBe(docTabToMarkdown(tab).markdown);
   });
 
-  // Each tab is stored beside the earlier base of the tab with its id, wherever that tab stood
-  // in the earlier outline: here a tab put in first has moved the two the earlier copy held.
+  // Each tab is stored beside the earlier base of the tab with its id, wherever it stood before.
   it("a refetch that brings a tab put in first and a later tab changed keys each tab beside its own earlier base", () => {
     let { store } = opened(undefined, undefined, ONE);
     let lines = (tabId: string, third = `${tabId} line 3.`) => tabOf(
@@ -2813,9 +2746,7 @@ describe("DocStore, runs cut by content", () => {
     let head!: DocCopyHead;
     let cost = spent(() => head = store.keep(DOC, copyOf(tabs, { revision: "r2" }, ONE), NONE));
 
-    // Rendered: every run of the tab the earlier copy did not hold (its opening break and its
-    // three paragraphs), and the changed paragraph of the last tab. Keyed: the paragraph after
-    // that one. The tab between them keeps its earlier base's keys from end to end.
+    // Rendered: the new tab's runs and the last tab's changed paragraph; keyed: the one after it.
     expect(put).toBe(4);
     expect(cost).toMatchObject({ runsDecoded: 0, runsRendered: put + 1, runsKeyed: 1 });
     expect(head.outline.map(({ tabId }) => tabId)).toEqual(["t0", "t1", "t2"]);
@@ -2829,14 +2760,10 @@ describe("DocStore, runs cut by content", () => {
     }
   });
 
-  // A stored run counts its footnotes from its own start: a footnote added early changes no later
-  // run, and only later runs that hold a numbered footnote are rendered again.
+  // A run counts footnotes from its start: one added early re-renders only later runs that hold
+  // one.
   it("a refetch that brings a footnote added before others writes the runs near it, shares every later run, keys them all and renders only those that hold a footnote", () => {
-    /**
-     * 20,000 paragraphs with a footnote reference, numbered by place, in every 500th; with
-     * `added`, one more paragraph that holds one stands after the tenth, and every later
-     * number is one more, as Google sends it.
-     */
+    /** 20,000 paragraphs, a footnote every 500th; `added` puts one after the tenth, renumbering. */
     let noted = (added: boolean) => {
       let number = 0;
       let reference = (id: string) => ({ footnote: { id, number: String(++number) } });
@@ -2873,13 +2800,11 @@ describe("DocStore, runs cut by content", () => {
       ...before, doc_run: before.doc_run + c, doc_md: before.doc_md + c + F,
       doc_seq: before.doc_seq + m, doc_version: before.doc_version + 1,
     });
-    // Rendered, in two terms: the changed runs (c), and the later runs whose key holds the
-    // footnote count (F), for which no rendering is stored under the count as fetched; none
-    // of the L - F others. Keyed: every later run.
+    // Rendered: the changed runs (c) and later runs whose key holds the count (F); keyed: all
+    // later.
     expect(cost).toMatchObject({ runsDecoded: 0, runsRendered: c + F, runsKeyed: L });
 
-    // Removed with the base that was replaced: its list (n), its record (1), and the
-    // renderings (c + F) and the runs (c) only it listed.
+    // Swept with the replaced base: its list (n), record (1), renderings (c + F) and runs (c).
     let swept = spent(() => store.sweep(DOC, NONE));
     expect(swept.rowsWritten).toBe(n + 1 + (c + F) + c);
     expect(counts(storage)).toEqual(before);
@@ -2892,11 +2817,7 @@ describe("DocStore, runs cut by content", () => {
   });
 
   const TABLES = 300;
-  /**
-   * A tab of `TABLES` small tables that are the same, with a paragraph of its own text before,
-   * between and after them; with `added`, one more such table and a paragraph stand in the
-   * middle.
-   */
+  /** `TABLES` identical small tables among paragraphs; `added` puts one more in the middle. */
   const manyTables = (added = false) => tabOf("t1", [
     para("Between 0."),
     ...Array.from({ length: TABLES }, (_, at) => [
@@ -2905,8 +2826,7 @@ describe("DocStore, runs cut by content", () => {
     ]).flat(),
   ]);
 
-  // What this pins: the cost of a repeated id is keys, not renders, and a tab of many tables
-  // writes a list of as many rows at every edit and every changed fetch.
+  // A repeated id costs keys, not renders; a tab of many tables writes a list as long every time.
   it("a table like the others put in keys every later run and renders the one run that is new", () => {
     let { storage, store } = opened();
     let base = baseOf(store, store.keep(DOC, copyOf([manyTables()]), NONE));
@@ -2927,8 +2847,7 @@ describe("DocStore, runs cut by content", () => {
     let added = notIn(fetched, parent);
     let later = fetched.length - 1 - added[0].seq;
     expect([fetched.length, added.length, later]).toEqual([603, 1, 300]);
-    // Rendered: the paragraph put in (the table's rendering is shared). Keyed: every later run, each
-    // onto a key the earlier base lists, with no statement.
+    // Rendered: the paragraph put in; keyed with no statement: every later run.
     expect(cost).toMatchObject({ runsDecoded: 0, runsRendered: 1, runsKeyed: later });
     expect(statements.filter(looksUpRendering)).toEqual([]);
     expect(store.markdown(baseOf(store, head))).toBe(docTabToMarkdown(tab).markdown);
@@ -2943,8 +2862,8 @@ describe("DocStore, runs cut by content", () => {
     let { made, cost, toStore } = editCost(store, base, edit);
 
     expect(n).toBe(601);
-    // The piece: tried from the run (1) and the run before (2), scouted (3), made from its start (5);
-    // then the run cut. No later run is keyed.
+    // The piece: tried (1), the run before (2), scouted (3), made (5); then the run cut; none
+    // keyed.
     expect(cost).toMatchObject({
       runsDecoded: 1 + 2 + 3 + 5, runsRendered: (1 + 2 + 3 + 5) + 1, runsKeyed: 0,
     });
@@ -2969,8 +2888,7 @@ describe("DocStore, runs cut by content", () => {
     expect(store.markdown(made)).toBe(docTabToMarkdown(store.tab(made)).markdown);
   });
 
-  // The walk beside another version compares the carries only after a run that was re-keyed,
-  // never assuming them the same.
+  // After a re-keyed run the walk compares the carries, never assuming them the same.
   it("a refetch keys the run directly after a change even where the carries are the same", () => {
     let { storage, store } = opened(undefined, undefined, ONE);
     let items = (first: string) => tabOf(
@@ -2981,21 +2899,15 @@ describe("DocStore, runs cut by content", () => {
     let cost = spent(() => store.keep(DOC, copyOf([items("uno")], { revision: "r2" }, ONE), NONE));
 
     expect(n).toBe(5);
-    // The changed item is rendered, alone, to be stored; the item after it is keyed, and
-    // settles the walk.
+    // The changed item is rendered to be stored; the item after it is keyed and settles the walk.
     expect(cost).toMatchObject({ runsDecoded: 0, runsRendered: 1, runsKeyed: 1 });
   });
 
-  /**
-   * A paragraph, two items of a numbered list, the first of the text `first` and the second
-   * `same`, and a paragraph after them. Under runs of one element, the opening break and a run
-   * each: with `first` the second's text, the two items are one run at two places.
-   */
+  /** Paragraph, items `first` and `same`, paragraph: with `first` = `same`, one run at two places. */
   const TWO_ITEMS = (first: string) => tabOf(
     "t1", [para("Intro"), item(first, "N1"), item("same", "N1"), para("After")], NUMBERED_LIST);
 
-  // A run the earlier base lists at several places is known under the key it has at each of
-  // them: the item that opens the list and the item that continues it are keyed apart.
+  // A run listed at several places is known under each place's key: opening and continuing items.
   it("a run re-keyed onto the key the earlier base lists for it at a later place asks storage nothing", () => {
     let { storage, store } = opened(undefined, undefined, ONE);
     let parent = listOf(storage, baseOf(store, store.keep(DOC, copyOf([TWO_ITEMS("same")], {}, ONE), NONE)));
@@ -3010,9 +2922,8 @@ describe("DocStore, runs cut by content", () => {
       cost = spent(() => head = store.keep(DOC, copyOf([tab], { revision: "r2" }, ONE), NONE));
     });
 
-    // Rendered: the changed item. Keyed: the item after it, found at the first place the
-    // earlier base lists its run and keyed here as that base keys it at the second; and the
-    // last paragraph, the earlier list's second item having been passed.
+    // Rendered: the changed item; keyed: the next, as the base keys it there, and the last
+    // paragraph.
     expect(cost).toMatchObject({ runsDecoded: 0, runsRendered: 1, runsKeyed: 2 });
     expect(statements.filter(looksUpRendering)).toEqual([]);
     let fetched = listOf(storage, baseOf(store, head));
@@ -3023,11 +2934,7 @@ describe("DocStore, runs cut by content", () => {
     expect(whole.markdown).toContain("1. other\n1. same\n");
   });
 
-  /**
-   * A paragraph, two items of a numbered list and a paragraph after them; with `between`, a
-   * paragraph of the text `text` stands between the two items. Under runs of one element, the
-   * opening break and a run each.
-   */
+  /** Paragraph, two numbered items, paragraph; with `between`, a paragraph of `text` between. */
   const ITEMS = (between: boolean, text = "Between") => tabOf("t1", [
     para("Intro"), item("one", "N1"), ...(between ? [para(text)] : []), item("two", "N1"),
     para("After"),
@@ -3052,9 +2959,7 @@ describe("DocStore, runs cut by content", () => {
     // The second item is the one run both list that is keyed apart.
     let second = fetched.at(-2)!;
     expect(keyedApart(fetched, parent).filter(row => row.run === parent.at(-2)!.run)).toEqual([second]);
-    // Rendered: the paragraph where one is put in, and the second item, which has no rendering
-    // under the key it has here. Keyed: that item alone, after which the carry is the earlier
-    // base's again and the last paragraph keeps its keys.
+    // Rendered: a paragraph put in and the re-keyed second item; keyed: that item alone.
     expect(cost).toMatchObject({ runsDecoded: 0, runsRendered: rendered, runsKeyed: 1 });
     let whole = docTabToMarkdown(tab);
     let read = spent(() => expect(store.markdown(baseOf(store, head))).toBe(whole.markdown));
@@ -3063,8 +2968,7 @@ describe("DocStore, runs cut by content", () => {
     expect(store.summary(baseOf(store, head))).toEqual(summaryOf(whole));
   });
 
-  // A pending root stores the second item's rendering under the key the walk works out: found by
-  // one statement, not rendered.
+  // A pending root stores the second item's rendering under the walk's key: one statement finds it.
   it("a run re-keyed onto a key another version's rendering is stored under asks storage once and is not rendered", () => {
     let { storage, store } = opened(undefined, undefined, ONE);
     let root = store.putTab(DOC, ITEMS(true), []);
@@ -3079,9 +2983,7 @@ describe("DocStore, runs cut by content", () => {
       cost = spent(() => head = store.keep(DOC, copyOf([tab], { revision: "r2" }, ONE), pending));
     });
 
-    // Rendered: the paragraph put in. Keyed: the second item, whose key is not one the earlier
-    // base lists for it: one statement finds the rendering the other version stored, and the
-    // run is not rendered. The last paragraph keeps its keys.
+    // Rendered: the paragraph put in; keyed: the second item, found under another version's row.
     expect(cost).toMatchObject({ runsDecoded: 0, runsRendered: 1, runsKeyed: 1 });
     let second = listOf(storage, baseOf(store, head)).at(-2)!;
     let { run, context, carry } = theirs.at(-2)!;
@@ -3096,8 +2998,7 @@ describe("DocStore, runs cut by content", () => {
     expect(whole.markdown).toContain("\nOther\n\n2. two\n");
   });
 
-  // A run re-keyed onto a key the earlier base lists is moved past like any other: a table
-  // rendered after it starts where it does in the tab.
+  // A re-keyed run is moved past like any other: a table rendered after it starts where it stands.
   it("a table put in after a re-keyed run is summarised where it stands", () => {
     let { storage, store } = opened(undefined, undefined, ONE);
     store.keep(DOC, copyOf([tabOf("t1", [para("One"), para("Two"), para("Three")])], {}, ONE), NONE);
@@ -3108,8 +3009,7 @@ describe("DocStore, runs cut by content", () => {
     let head!: DocCopyHead;
     let cost = spent(() => head = store.keep(DOC, copyOf([tab], { revision: "r2" }, ONE), NONE));
 
-    // Rendered: the changed paragraph, the table and the paragraph after it. Keyed: the
-    // paragraph after the changed one; the third keeps the earlier base's keys.
+    // Rendered: the changed paragraph, the table and the one after; keyed: the paragraph after.
     expect(cost).toMatchObject({ runsDecoded: 0, runsRendered: 3, runsKeyed: 1 });
     let version = baseOf(store, head);
     let list = listOf(storage, version);
@@ -3147,10 +3047,8 @@ describe("DocStore, runs cut by content", () => {
     "t1", [para("One"), para("Two"), para("Three"), para(fourth), para("Five")]);
   const FOURTH: DocEdit = { type: "replaceText", oldMarkdown: "Four", newMarkdown: "Vier" };
   /**
-   * The runs the piece around `FOURTH` decodes and renders under runs of one element: its
-   * closure is the two paragraphs before it, its own and the one after it, which ends the
-   * tab. Tried from the paragraph's run (1) and from the run before (2), scouted two runs back
-   * (3), and made from its first run (4).
+   * The runs the piece around `FOURTH` decodes and renders: tried from its run (1) and the run
+   * before (2), scouted two back (3), and made from its closure's first run (4).
    */
   const FOURTH_PIECE = 1 + 2 + 3 + 4;
   /** A store under runs of one element that keeps `SEVERAL()`: its base version and its list. */
@@ -3179,9 +3077,7 @@ describe("DocStore, runs cut by content", () => {
   });
 
   describe("an edit of a version with a rendering missing before its slice renders that run alone", () => {
-    // The run that lacks its rendering stands before the change, so the scan for the edit's
-    // text, the first walk of the edit, reads its Markdown and its summary, and the child
-    // lists it under the same key.
+    // The run lacking its rendering is before the change: the edit's walk reads it, same key.
     const LACKING = 2;
 
     it("where the row is gone", () => {
@@ -3255,8 +3151,7 @@ describe("DocStore, runs cut by content", () => {
       let head!: DocCopyHead;
       let cost = spent(() => head = store.keep(DOC, copyOf([CHANGED()], { revision: "r2" }, ONE), NONE));
 
-      // The runs before the one with no summary keep the base's keys at their places. The
-      // base is not used past it: that run and every run after it is rendered, from hand.
+      // Runs before the one lacking a summary keep their keys; it and all after are rendered.
       expect(cost).toMatchObject({ runsDecoded: 0, runsRendered: parent.length - LOST, runsKeyed: 0 });
       expect(store.version(DOC, base.id, base)).toBeUndefined();
       let fetched = baseOf(store, head);
@@ -3272,8 +3167,8 @@ describe("DocStore, runs cut by content", () => {
       let head!: DocCopyHead;
       let cost = spent(() => head = store.keep(DOC, copyOf([SEVERAL()], { revision: "r2" }, ONE), NONE));
 
-      // The stored version, keyed as its runs are cut: the run with no rendering and those after it
-      // are rendered from hand, and the missing rows and the copy's record written.
+      // Keyed as cut: the run lacking a rendering and those after it rendered, missing rows
+      // written.
       expect(head.versions).toEqual([base.id]);
       expect(cost).toMatchObject({
         runsDecoded: 0, runsRendered: parent.length - LOST, runsKeyed: 0, rowsWritten: 3,
@@ -3351,9 +3246,7 @@ describe("DocStore, runs cut by content", () => {
     expect(fetched.map(row => row.run)).toEqual(parent.map(row => row.run));
     let redefined = fetched.filter((row, at) => row.context !== parent[at].context).map(row => row.seq);
     expect(redefined).toEqual([1, 4, 7]);
-    // Rendered: the three runs that name the redefined list, each under its own context key.
-    // Keyed: the four runs after the first of them that both versions know, since the list's
-    // numbers, which the earlier base's carry holds, are never this version's again.
+    // Rendered: the three runs naming the redefined list; keyed: the four after the first of them.
     expect(cost).toMatchObject({ runsDecoded: 0, runsRendered: 3, runsKeyed: 4 });
     // A run that names another list, or none, keeps its row, and the earlier base's rows stand.
     for (let at of [0, 2, 3, 5, 6]) expect(keyOf(fetched[at])).toEqual(keyOf(parent[at]));
@@ -3373,8 +3266,7 @@ describe("DocStore, runs cut by content", () => {
       return { storage, store, base, n: parent.length, m: child.length, c: notIn(child, parent).length };
     }
 
-    // The store's part of an approval's handoff: the copy marked stale and the same sweep, the
-    // edit out of the pending records. The child is dead either way.
+    // The store's part of an approval: the copy marked stale, the same sweep, the edit unqueued.
     it("approving it removes the same, and the next keep stores the changed runs again", () => {
       let { storage, store, n, m, c } = editedLarge();
       let before = counts(storage);
@@ -3385,8 +3277,7 @@ describe("DocStore, runs cut by content", () => {
 
       expect(statements).toHaveLength(10);
 
-      // The tab as Google returns it after the write: the child's content, as a base version,
-      // stored beside the earlier base.
+      // The tab as Google returns it after the write, stored beside the earlier base.
       let tab = largeWith({ 9_000: "Changed." });
       let head!: DocCopyHead;
       statements = asked(storage, () => {
@@ -3395,17 +3286,15 @@ describe("DocStore, runs cut by content", () => {
 
       // Rendered: the changed runs, stored again (one term). Keyed: the run after them.
       expect(cost).toMatchObject({ runsDecoded: 0, runsRendered: c, runsKeyed: 1 });
-      // That keep's sweep: one `DELETE` for the renderings, one for the runs and one for the
-      // contexts only the earlier base named, and then its results, list and record.
+      // That keep's sweep: one `DELETE` each for renderings, runs and contexts; then results, list,
+      // record.
       expect(statements.map(([statement]) => /^DELETE FROM (\w+)/.exec(statement)?.[1]).filter(Boolean))
         .toEqual(["doc_md", "doc_run", "doc_run", "doc_result", "doc_seq", "doc_version"]);
       expect(counts(storage)).toEqual({ ...before, doc_result: 0, doc_seq: n, doc_version: 1, doc_md: n, doc_run: n + 1 });
       expect(store.markdown(baseOf(store, head))).toBe(docTabToMarkdown(tab).markdown);
     });
 
-    // What the two statements that compare lists read: the lists of the document's own
-    // versions, the dead and the live, each once a statement, so two rows a run of every list
-    // of the document; and no list of another document, which neither names.
+    // The two list-comparing statements read the document's own lists once each, no other's.
     it("a sweep reads two rows a run of every list of its document, and none of another's", () => {
       let { storage, store, base } = editedLarge();
       let first = docEditResult(store, base, EDIT).after;
@@ -3417,8 +3306,7 @@ describe("DocStore, runs cut by content", () => {
 
       let statements = asked(storage, () => store.sweep(DOC, { edits: [docEditKey(EDIT)], roots: [] }));
 
-      // No statement passes over a table, and the two that read lists name the versions they
-      // read: the dead one and the two live ones, all of the document.
+      // No statement passes over a table; the list reads name the dead and the two live versions.
       expect(statements.filter(([statement]) => statement.startsWith("SELECT DISTINCT"))).toEqual([]);
       let comparing = statements.filter(([statement]) => /^DELETE FROM doc_(md|run)[^]*FROM doc_seq/.test(statement));
       expect(comparing.map(([statement]) => /^DELETE FROM (\w+)/.exec(statement)![1])).toEqual(["doc_md", "doc_run"]);
@@ -3456,8 +3344,7 @@ describe("DocStore, runs cut by content", () => {
 
       store.keep(DOC, { ...tabs("Changed"), revision: "r2" }, NONE);
 
-      // The replaced base of the first tab listed Alpha's run; the second tab still does, so
-      // the sweep removes no content: the changed run and its rendering are all that moved.
+      // The second tab still lists Alpha's run, so the sweep removes no content.
       expect(counts(storage)).toMatchObject({ doc_md: before.doc_md + 1, doc_run: before.doc_run + 1 });
       expect(renderingOf(storage, alpha)).toBeDefined();
       expect(rowsOf(storage, "doc_run").some(row => row.id === alpha.run)).toBe(true);
@@ -3497,8 +3384,7 @@ describe("DocStore, runs cut by content", () => {
     expect(other.unindexed(store.putTab(DOC, placed, []))).toBe(false);
   });
 
-  // What this pins: a tab's runs are not bounded by its size. A table is a run and so is every
-  // stretch between two tables.
+  // A tab's runs are not bounded by its size: each table is a run, and so is each stretch between.
   it("a tab of many tables is a run a table and a run between them", () => {
     let { storage, store } = opened();
     let tables = 300;
@@ -3512,8 +3398,7 @@ describe("DocStore, runs cut by content", () => {
 
     let version = store.putTab(DOC, tab, []);
 
-    // The opening break, each small table and the paragraph after it, the wide table and the
-    // last paragraph.
+    // The opening break, each small table and its paragraph, the wide table, the last paragraph.
     let list = listOf(storage, version);
     expect(list).toHaveLength(1 + 2 * tables + 2);
     expect(list.length).toBeGreaterThanOrEqual(2 * tables);
@@ -3541,8 +3426,7 @@ describe("DocStore, runs cut by content", () => {
   const writesList = ([statement]: [string, readonly unknown[]]) =>
     statement.startsWith("INSERT OR REPLACE INTO doc_seq");
 
-  // What a batch bounds is one bound value: the entries of a list go to storage as JSON, and a
-  // tab can be tens of thousands of runs.
+  // A batch bounds one bound value: a list's entries go as JSON, and a tab can be 10,000s of runs.
   it("a list longer than a batch is written whole and in order", () => {
     let { storage, store } = opened(undefined, "a", ONE);
     let tab = tabOf("t1", Array.from({ length: 1_200 }, (_, at) => para(`Line ${at}.`)));
@@ -3654,8 +3538,7 @@ describe("DocStore, runs cut by content", () => {
     // The second item shows the number carried over the paragraph between.
     let second = list[SECOND];
     expect(JSON.parse(second.carry)).toEqual({ n: { N1: { 0: 1 } }, s: true });
-    // By hand: the list names another carry for the run, and under that key stands what a
-    // version entered with that carry would have stored of it under the later digest.
+    // By hand: another carry for the run, with what that carry would have stored under the digest.
     let planted = JSON.stringify({ s: true });
     listCarry(storage, version, SECOND, planted);
     storage.sql.exec(
@@ -3683,15 +3566,13 @@ describe("DocStore, runs cut by content", () => {
     let whole = docTabToMarkdown(tab);
     let version = baseOf(store, store.keep(DOC, copyOf([tab], {}, ONE), NONE));
     let list = listOf(storage, version);
-    // By hand, under the store's own digest: the list names a carry for the second item that
-    // is not what the run shows, and no rendering stands under it.
+    // By hand: a carry for the second item that the run does not show, with no rendering under it.
     let planted = { ...list[SECOND], carry: JSON.stringify({ s: true }) };
     listCarry(storage, version, SECOND, planted.carry);
 
     let first = spent(() => expect(store.markdown(version)).toBe(whole.markdown));
 
-    // The run is rendered alone, its keys are not the list's, and so every run is keyed again:
-    // nothing is stored under a key the run does not show, and the list holds the true key.
+    // Its keys are not the list's, so every run is keyed again and the list gets the true key.
     expect(first).toMatchObject({ runsDecoded: 6, runsRendered: 6 });
     expect(listOf(storage, version)).toEqual(list);
     expect(renderingOf(storage, planted)).toBeUndefined();
@@ -3708,14 +3589,12 @@ describe("DocStore, runs cut by content", () => {
     let whole = docTabToMarkdown(tab);
     let version = baseOf(a, a.keep(DOC, copyOf([tab], {}, ONE), NONE));
     let made = () => listOf(storage, version).map(row => renderingOf(storage, row)!.made);
-    // Another version of the document, stored under another digest, shares the opening break
-    // and the first paragraph, whose renderings that digest writes over, under the same keys.
+    // Digest "b" stores another version sharing two runs, writing over their renderings.
     new DocStore(storage, undefined, "b", ONE)
       .putTab(DOC, tabOf("t1", [para("Intro"), para("Theirs")]), []);
     expect(made()).toEqual(["b", "b", "a"]);
 
-    // The first digest again, as after a change of the code is taken back: the version is
-    // keyed under it, and two of its renderings are not its own.
+    // Digest "a" again, as after a change is taken back: two of its renderings are not its own.
     let again = new DocStore(storage, undefined, "a", ONE);
     let first = spent(() => expect(again.markdown(version)).toBe(whole.markdown));
 
@@ -3730,9 +3609,8 @@ describe("DocStore, runs cut by content", () => {
     let storage = fakeDocStorage();
     let tab = INTERRUPTED();
     let whole = docTabToMarkdown(tab);
-    // Another version of the document, stored under another digest (a pending root, which
-    // ends otherwise): its second item stands after the paragraph, and that digest's
-    // rendering of it is stored under the key the item has there.
+    // Under digest "a", a pending root puts the second item after the paragraph, under its key
+    // there.
     let a = new DocStore(storage, undefined, "a", ONE);
     let root = a.putTab(DOC, tabOf("t1", [
       para("Intro"), item("first", "N1"), para("Between"), item("second", "N1"), para("Last"),
@@ -3744,13 +3622,12 @@ describe("DocStore, runs cut by content", () => {
     b.keep(DOC, copyOf([tabOf("t1", [para("Intro"), item("first", "N1"), item("second", "N1")], NUMBERED_LIST)], {}, ONE), pending);
     expect(theirs.map(row => renderingOf(storage, row)!.made)).toEqual(["b", "b", "b", "a", "a"]);
 
-    // The fetch brings the paragraph put in: the second item is re-keyed onto the other
-    // version's key for it, which the earlier base does not list.
+    // The fetch puts the paragraph in: the second item is re-keyed onto the other version's key.
     let head!: DocCopyHead;
     let cost = spent(() => head = b.keep(DOC, copyOf([tab], { revision: "r2" }, ONE), pending));
 
-    // Rendered: the paragraph, and the second item, whose stored rendering is not the store's
-    // digest's. Keyed: that item.
+    // Rendered: the paragraph, and the second item, whose row is another digest's; keyed: that
+    // item.
     expect(cost).toMatchObject({ runsDecoded: 0, runsRendered: 2, runsKeyed: 1 });
     let version = baseOf(b, head);
     let list = listOf(storage, version);
@@ -3770,8 +3647,7 @@ describe("DocStore, runs cut by content", () => {
       let whole = docTabToMarkdown(tab);
       let version = baseOf(a, a.keep(DOC, copyOf([tab], {}, ONE), NONE));
       let list = listOf(storage, version);
-      // By hand, what code that keys the second item by another carry would have left: the
-      // list and the rendering alike under that key.
+      // By hand: the list and the rendering alike under a key code with another carry would leave.
       let held = { ...list[SECOND], carry: JSON.stringify({ other: 1 }) };
       listCarry(storage, version, SECOND, held.carry);
       storage.sql.exec(
@@ -3786,9 +3662,7 @@ describe("DocStore, runs cut by content", () => {
       expect(read.id).toBe(version.id);
       expect(b.markdown(read)).toBe(whole.markdown);
 
-      // The rendering goes as the list is written over. No list names the key the run was held
-      // under afterwards, and a read and a `putTab` run no sweep: only a keep's sweep, which
-      // removes every rendering of the document another digest made, would find it later.
+      // Gone as the list is written over; only a keep's sweep would find the old key later.
       expect(listOf(storage, version)).toEqual(list);
       expect(renderingOf(storage, held)).toBeUndefined();
       expect(madeBy(storage)).toEqual(["b", "b", "b", "b", "b"]);
@@ -3810,8 +3684,7 @@ describe("DocStore, runs cut by content", () => {
       return [runsDecoded, runsRendered];
     };
 
-    // Keyed, then asked whether the model indexes it: the tab is decoded once for the
-    // answer, and the keys stay.
+    // Keyed, then asked: the tab is decoded once for the answer, and the keys stay.
     let keyedFirst = other();
     expect(cost(() => keyedFirst.store.markdown(keyedFirst.version))).toEqual([5, 5]);
     expect(cost(() => keyedFirst.store.unindexed(keyedFirst.version))).toEqual([5, 0]);
@@ -3825,16 +3698,14 @@ describe("DocStore, runs cut by content", () => {
     expect(cost(() => askedFirst.store.unindexed(askedFirst.version))).toEqual([0, 0]);
     expect(cost(() => askedFirst.store.markdown(askedFirst.version))).toEqual([0, 0]);
 
-    // Keyed, then the same tab stored: the indexes are said of the tab in hand, with no run
-    // rendered, and the keys stay.
+    // Keyed, then stored again: the indexes are said of the tab in hand, nothing rendered.
     let storedAgain = other();
     expect(cost(() => storedAgain.store.markdown(storedAgain.version))).toEqual([5, 5]);
     expect(cost(() => storedAgain.store.putTab(DOC, storedAgain.tab, []))).toEqual([0, 0]);
     expect(cost(() => storedAgain.store.unindexed(storedAgain.version))).toEqual([0, 0]);
     expect(cost(() => storedAgain.store.markdown(storedAgain.version))).toEqual([0, 0]);
 
-    // Keyed, then the same tab fetched at a later revision: the indexes are said as its
-    // elements pass, with no run decoded or rendered, and the keys stay.
+    // Keyed, then fetched at a later revision: said as elements pass, nothing decoded or rendered.
     let fetchedAgain = other();
     expect(cost(() => fetchedAgain.store.markdown(fetchedAgain.version))).toEqual([5, 5]);
     expect(cost(() => fetchedAgain.store.keep(
@@ -3858,8 +3729,7 @@ describe("DocStore, runs cut by content", () => {
     let b = new DocStore(storage, undefined, "b", ONE);
     let statements = asked(storage, () => expect(b.markdown(version)).toBe(docTabToMarkdown(tab).markdown));
 
-    // Keying the version again asks for the lists once a page of its list, by the places of
-    // that page's runs, and for the named styles once.
+    // Keying again asks the lists once a page, by that page's places, and the named styles once.
     let named = statements.filter(([statement]) => statement.includes("json_each(doc_run.json, '$.lists')"));
     expect(named.map(([, bindings]) => bindings)).toEqual([[context, version.id, 0, 500, DOC]]);
     // And that statement answers the definitions those runs name, and no other of the 500.
@@ -3902,8 +3772,7 @@ describe("DocStore, a document's own rows", () => {
         let beside = sweepCostScenario(fakeDocStorage(), { others: 200, pairs });
         let alone = sweepCostScenario(fakeDocStorage(), { others: 0, pairs });
 
-        // The same statements, the same rows answered and the same rows changed; what real
-        // storage bills for them is pinned on a Durable Object's.
+        // The same statements, rows answered and rows changed; real billing is pinned in workerd.
         expect(beside).toEqual(alone);
         expect(alone.runs).toBe(2 * pairs + 1);
         for (let removal of Object.keys(SWEEP_COST) as SweepCase[]) {
@@ -3931,8 +3800,7 @@ describe("DocStore, a document's own rows", () => {
         store.drop("one");
       });
 
-      // Every statement names the document or versions of it, and none the other document
-      // or a version of it; no statement is without a binding, so none passes over a table.
+      // Every statement is bound to this document or its versions, so none passes over a table.
       let named = statements.flatMap(([, bindings]) => bindings.flatMap(bound =>
         typeof bound === "string" && bound.startsWith("[") ? JSON.parse(bound) as unknown[] : [bound]));
       expect(statements.length).toBeGreaterThan(12);
@@ -3944,8 +3812,8 @@ describe("DocStore, a document's own rows", () => {
         .toEqual(new Set([store.head("two")!.made]));
     });
 
-    // The second item of a list is one run in both versions, listed under the key it has
-    // directly after the first item and under the key it has after a paragraph.
+    // The second item is one run in both versions, keyed after the first item and after a
+    // paragraph.
     it("removes a run only a dead version listed and keeps one a live version lists under another key, with its other rendering", () => {
       let { storage, store } = opened(undefined, undefined, ONE);
       let items = (between: boolean) => blocksOf([
@@ -4007,8 +3875,8 @@ describe("DocStore, a document's own rows", () => {
     });
 
     it("drops a document by its key: no row of it is left in any table, and every row of another document is as it was", () => {
-      // The same life of the second document, in a storage that stored the first and dropped
-      // it and in one that never stored it.
+      // The second document's life, in a storage that held and dropped the first, and in a fresh
+      // one.
       let lived = (first: boolean) => {
         let { storage, store } = opened();
         if (first) {
@@ -4055,10 +3923,7 @@ describe("DocStore, a document's own rows", () => {
   });
 
   describe("a copy's bytes", () => {
-    /**
-     * What `head` should count, from the rows: the UTF-8 length of the stored JSON of each
-     * run its base versions list, a run counted at each place, and of their contexts.
-     */
+    /** What `head` should count: the UTF-8 bytes of each listed run, at each place, and contexts. */
     function bytesStored(storage: FakeDocStorage, doc: string, head: DocCopyHead): number {
       let json = new Map(rowsOf(storage, "doc_run").filter(row => row.doc === doc)
         .map(row => [String(row.id), Buffer.byteLength(String(row.json), "utf8")]));
@@ -4085,8 +3950,7 @@ describe("DocStore, a document's own rows", () => {
       expect(store.head(DOC)!.bytes).toBe(head.bytes);
       let { bytes } = storage.sql.exec<{ bytes: number }>("SELECT bytes FROM doc_copy WHERE doc = ?", DOC).one();
       expect(bytes).toBe(head.bytes);
-      // A run listed at several places is counted at each, so the count is of the document
-      // as it was fetched and not of the rows that hold it.
+      // Counted at each place a run is listed: the document as fetched, not the rows that hold it.
       let rows = rowsOf(storage, "doc_run").reduce((sum, row) => sum + Buffer.byteLength(String(row.json), "utf8"), 0);
       expect(head.bytes).toBeGreaterThanOrEqual(rows);
     });
@@ -4141,8 +4005,7 @@ describe("DocStore, a document's own rows", () => {
 
       let copies = store.copies();
 
-      // A record a copy: its key, the hour of its last approved read where a scope check
-      // guards it, the clock of its fetch and its bytes.
+      // A record a copy: its key, its last approved read's hour where scoped, its fetch and bytes.
       expect(copies.toSorted((a, b) => a.doc < b.doc ? -1 : 1)).toEqual([
         { doc: "bound", fetchedAt: bound.fetchedAt, bytes: bound.bytes },
         {
@@ -4155,8 +4018,7 @@ describe("DocStore, a document's own rows", () => {
       expect(counted.answered() - before.answered).toBe(copies.length);
       let [statement] = counted.ran().filter(ran => ran.includes("FROM doc_copy") && !ran.includes("WHERE"));
       expect(statement).toBe("SELECT doc, approved, fetched_at, bytes FROM doc_copy");
-      // It passes over the copies' records, which is what it is for, and names no large
-      // column of one and no other table.
+      // It scans the copies' records, its purpose, and names no large column and no other table.
       expect(tableScans(storage, [statement])).toEqual({ [statement]: ["SCAN doc_copy"] });
       for (let large of ["outline", "markers", "versions"]) expect(statement).not.toContain(large);
       expect(statement.match(/\bdoc_\w+/g)).toEqual(["doc_copy"]);
@@ -4172,8 +4034,7 @@ describe("DocStore, a document's own rows", () => {
         for (let kept of Object.keys(CAP_COST) as CapCase[]) {
           expect(cost[kept], kept).toMatchObject(CAP_COST[kept]);
         }
-        // An eviction writes nothing but what it removes: the keep's rows, and beyond them a
-        // row for each row the evicted copies held.
+        // An eviction writes only what it removes: the keep's rows and the evicted copies' rows.
         expect(cost.nothing.rowsWritten).toBe(cost.plain.rowsWritten);
         expect(cost.fifty.rowsWritten - cost.plain.rowsWritten).toBe(50 * cost.plain.rowsWritten);
         expect(cost.manyRuns.rowsWritten).toBeGreaterThan(cost.runs);
@@ -4323,8 +4184,8 @@ describe("DocStore.piece, the lists its runs name", () => {
   }
 
   it("a piece loads its lists a page at a time, never a statement a run", () => {
-    // Runs that each name a dozen of 18 lists, in one page. Each pass of a piece reads the
-    // named styles once and the lists of the page its runs stand in by one statement.
+    // Runs naming a dozen of 18 lists, one page: each pass reads styles once, the page's lists
+    // once.
     let dozens = listRunsTab("t1", 60);
     let storage = fakeDocStorage();
     let base = keptIn(storage, dozens);
@@ -4366,11 +4227,7 @@ describe("DocStore.piece, the lists its runs name", () => {
 
 describe("DocStore.reader", () => {
   const ONE_ELEMENT: RunSizes = { least: Infinity, target: Infinity, most: Infinity, elements: 1 };
-  /**
-   * Some 1,200 paragraphs, a run each and three pages of a list: lines that repeat every 400
-   * (the same run at three places), and a numbered list of two items continued by a third
-   * near the tab's end, whose number is the carry's.
-   */
+  /** 1,200 one-run paragraphs: lines repeating every 400, and a list continued near the end. */
   const LINES = () => tabOf("t1", [
     para("Intro"), item("one", "N1"), item("two", "N1"),
     ...Array.from({ length: 1_195 }, (_, at) => para(`Line ${at % 400}`)),
@@ -4392,10 +4249,7 @@ describe("DocStore.reader", () => {
     });
     return runs;
   }
-  /**
-   * The runs a reader of `version` from `place` hands, each with its Markdown: every one of
-   * them, or the first `most`.
-   */
+  /** The runs a reader of `version` from `place` hands, with their Markdown: all, or the first `most`. */
   function read(store: DocStore, version: DocVersion, place: number, back: boolean, most = Infinity) {
     let next = store.reader(version, place, back);
     let runs: Handed[] = [];
@@ -4493,8 +4347,8 @@ describe("DocStore.reader", () => {
       let storage = fakeDocStorage();
       let { store, base } = linesKept(storage);
       let all = walked(store, base);
-      // The list's third item, numbered by the carry of the 1,198 runs before it; and, read
-      // forwards, a line before it too, whose run stands at places 300, 700 and 1,100.
+      // The list's third item, numbered by the carry; forwards, a line before it at 300, 700,
+      // 1,100.
       let third = all.findIndex(run => run.markdown.includes("3. three"));
       expect(third).toBeGreaterThan(1_100);
       let missing = back ? [third] : [third, 700];
@@ -4509,9 +4363,8 @@ describe("DocStore.reader", () => {
       read(store, base, 0, false);
       expect(docStoreCost.runsRendered - cost.runsRendered).toBe(missing.length);
     }
-    // BACKWARDS, a run is rendered with the state the stored summaries of the runs before it
-    // give. Where one of those is gone too, that state cannot be worked out: the version is
-    // keyed again whole, as a walk does for a list it cannot read, and reads the same.
+    // BACKWARDS a run renders with the state the earlier summaries give; with one gone too, the
+    // version is keyed again whole, and reads the same.
     let storage = fakeDocStorage();
     let { store, base } = linesKept(storage);
     let all = walked(store, base);
@@ -4521,10 +4374,7 @@ describe("DocStore.reader", () => {
     expect(docStoreCost.runsRendered - cost.runsRendered).toBe(all.length);
   });
 
-  /**
-   * A numbered list of two items, continued by a third 30 lines on, a run each, kept in a
-   * store: with every run a walk hands, and the places of the second and the third item.
-   */
+  /** A two-item list continued 30 lines on, kept: its walked runs and the 2nd and 3rd items' places. */
   function continuedKept() {
     let storage = fakeDocStorage();
     let store = new DocStore(storage, undefined, undefined, ONE_ELEMENT);
@@ -4548,8 +4398,7 @@ describe("DocStore.reader", () => {
   }
 
   it("backwards, renders each run with the state of its own place", () => {
-    // The renderings of the second and the third item do not read back, while their
-    // summaries do: the state at either is worked out from the summaries before it.
+    // The two items' Markdown does not read back but their summaries do: each state is worked out.
     let { storage, store, base, all, second, third } = continuedKept();
     for (let place of [second, third]) unread(storage, base, place);
     let cost = { ...docStoreCost };
@@ -4564,9 +4413,7 @@ describe("DocStore.reader", () => {
   });
 
   it("backwards, reads a run's Markdown again once the version is keyed again for it", () => {
-    // The third item's Markdown does not read back, and the second item's rendering is
-    // gone: the reader hands the third item by its summary, and its Markdown is asked for
-    // with no state to render it alone with, a summary before it being gone.
+    // The third item's Markdown is unreadable and the second's rendering gone: no state for it.
     let { storage, store, base, all, second, third } = continuedKept();
     gone(storage, base, [second]);
     unread(storage, base, third);
@@ -4627,8 +4474,7 @@ describe("DocStore.runs", () => {
 
       expect(runs).toHaveLength(listed);
       expect(cost).toMatchObject({ runsDecoded: listed, runsRendered: 0, runsKeyed: 0, rowsWritten: 0 });
-      // The tab whole decodes each run at its place too: the elements, their indexes and the
-      // numbers of their footnotes are the same.
+      // The tab whole decodes each run at its place too: elements, indexes and footnote numbers.
       expect(runs.flat()).toEqual(store.tab(base).body.content);
       expect(JSON.stringify(runs.flat())).toBe(JSON.stringify(store.tab(base).body.content));
     });
@@ -4694,8 +4540,7 @@ describe("DocStore.runs", () => {
       before = ran();
     }
 
-    // The first run: the version's totals, the one page of its list, that the run is stored
-    // and its JSON. Each run after it: that it is stored and its JSON.
+    // The first run: totals, the list's page, the run's row and JSON; each after: row and JSON.
     expect(asked).toEqual([4, 2, 2, 2, 2, 2]);
     // The page came short, so its end reads nothing.
     expect(ran()).toBe(before);

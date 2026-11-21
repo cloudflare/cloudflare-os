@@ -1,6 +1,5 @@
-// THE WHOLE-TAB SEARCH the run-by-run one (`locateQuoteInRuns`) is held to, sharing nothing with
-// the source but the renderer's reading of one element; the tabs and drawn quotes the two are
-// compared over; and `locateQuote`, the source's own search over a tab in hand.
+// THE WHOLE-TAB SEARCH `locateQuoteInRuns` is held to (sharing only the renderer's reading of an
+// element), the tabs and quotes they are compared over, and `locateQuote` over a tab in hand.
 
 import type { DocsRange, GoogleDocsTab, ParagraphElement } from "../src/docs-api";
 import { locateQuoteInRuns } from "../src/drive-comment-body";
@@ -18,9 +17,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 type Piece = { at: number; length: number; startIndex: number; endIndex: number; run: boolean };
 
 /**
- * A tab's text as its Markdown shows it, without the formatting: text runs, chips and placeholders,
- * in document order, table cells included, with where each piece sits in the tab. Structural
- * elements arrive unvalidated, so they are read defensively.
+ * A tab's text as its Markdown shows it, unformatted, in document order (cells included), with
+ * where each piece sits. Elements arrive unvalidated, so they are read defensively.
  */
 function tabTextWhole(tab: GoogleDocsTab): { text: string; pieces: Piece[] } {
   let chunks: string[] = [];
@@ -84,11 +82,9 @@ function indexAt(pieces: Piece[], offset: number, end: boolean, wholeChips: bool
 }
 
 /**
- * Finds `quote`, trimmed, in the text of `tab`, held whole, where it must occur exactly once;
- * neither side is normalized. Returns the range it takes in the tab. A chip the quote takes
- * part of is taken whole, as a comment's anchor; with `wholeChips`, as for text a suggestion
- * replaces, it is refused, as is a quote that runs across an element the text leaves out,
- * which the range would take in.
+ * The range in `tab` of `quote`, trimmed, which must occur exactly once (nothing normalized). A
+ * chip partly quoted is taken whole; with `wholeChips` it is refused, as is a quote across an
+ * element the text leaves out.
  */
 export function locateQuoteWhole(
   tab: GoogleDocsTab, quote: string, { wholeChips = false }: { wholeChips?: boolean } = {},
@@ -124,10 +120,7 @@ export function locateQuoteWhole(
   };
 }
 
-/**
- * The run-by-run search (`locateQuoteInRuns`) over the body of `tab`, held whole, as one item:
- * the whole-tab form of the source's one search, for a test that has a tab in hand.
- */
+/** The source's `locateQuoteInRuns` over the body of `tab` as one item, for a tab in hand. */
 export function locateQuote(
   tab: GoogleDocsTab, quote: string, options: { wholeChips?: boolean } = {},
 ): DocsRange {
@@ -179,10 +172,7 @@ function withElements(
   return tab;
 }
 
-/**
- * `tab` with each text run of no text given one index, from its `from`-th body element on,
- * all of them paragraphs: every index behind such a run moves up by one.
- */
+/** `tab` with each empty text run from body element `from` on given one index, later ones moved up. */
 function withIndexedEmpties(tab: GoogleDocsTab, from: number): GoogleDocsTab {
   let moved = 0;
   for (let element of tab.body.content.slice(from)) {
@@ -199,10 +189,7 @@ function withIndexedEmpties(tab: GoogleDocsTab, from: number): GoogleDocsTab {
 
 const ALICE = { person: { name: "Alice", email: "alice@example.com" } };
 
-/**
- * Tabs built by hand, each with the quotes that reach what it was built for. Index 0 of each
- * body is its section break.
- */
+/** Hand-built tabs, each with the quotes that reach what it was built for. */
 export const QUOTED_TABS: { tab: GoogleDocsTab; quotes: string[] }[] = [
   {
     // Chips, an element that reads as no text, a table with a table in a cell, and text that
@@ -220,9 +207,8 @@ export const QUOTED_TABS: { tab: GoogleDocsTab; quotes: string[] }[] = [
     ],
   },
   {
-    // Paragraphs whose last element has no line break, so that the text of two joins: across
-    // a boundary of two elements, across a paragraph that reads as no text, and where the
-    // joined text repeats.
+    // Paragraphs with no line break, so two texts join: across elements, across an empty-reading
+    // paragraph, and where the joined text repeats.
     tab: buildTab([
       { runs: ["joined"] }, { runs: ["text\n"] },
       { runs: ["abc"] }, { runs: [{ dropdown: "Open" }] }, { runs: ["def"] },
@@ -236,12 +222,8 @@ export const QUOTED_TABS: { tab: GoogleDocsTab; quotes: string[] }[] = [
     ],
   },
   {
-    // Text runs of no text. Those that take no index: some that meet, between two paragraphs'
-    // text and inside one; and, in the paragraph of "m", two that do not meet, the second
-    // starting past where the first ends and ending where the text goes on. And those that
-    // take an index each and meet, inside the paragraph of "abcd" and between the text of
-    // "hi" and of "jk": the text before them ends where the first of them starts, and the
-    // text after them starts where the last of them ends.
+    // Empty text runs: of no index, meeting and (around "m") not; and of one index each, meeting,
+    // inside "abcd" and between "hi" and "jk".
     tab: withIndexedEmpties(withElements(buildTab([
       { runs: ["p"] }, { runs: [""] }, { runs: ["", ""] }, { runs: ["q\n"] },
       { runs: ["x", "", "", "y\n"] },

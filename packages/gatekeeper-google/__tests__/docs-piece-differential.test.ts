@@ -1,7 +1,6 @@
 // Edits built from a piece of a tab (the closure cut from the whole rendering, the stored piece,
 // the whole rendering under the recorder) give the whole tab's batch or refusal: text edits,
-// `tabEditRequests`, table changes and table calls, an edit made end to end in a store, and the
-// shadow of the other suites' own calls.
+// `tabEditRequests`, table changes and calls, edits made end to end, and other suites' calls.
 
 import { createSimulationStore } from "@gadgets/gatekeeper-kit/simulation-store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -236,8 +235,8 @@ describe("the builders of a text edit on a piece of the tab", () => {
   });
 
   it("no batch reaches past its piece", () => {
-    // `expectSameFromPieces` asked `pieceOverreach` of every batch, and some batches name an
-    // index next to each edge of their piece: the check is asked at both edges.
+    // Some batches name an index next to each edge of their piece: `pieceOverreach` is asked at
+    // both.
     expect(all.built).toBeGreaterThanOrEqual(1_500);
     expect(all.nearBefore).toBeGreaterThanOrEqual(30);
     expect(all.nearAfter).toBeGreaterThanOrEqual(90);
@@ -307,8 +306,7 @@ describe("the builders of a text edit on a piece of the tab", () => {
   });
 
   it("a batch holds no object of the piece it was built from", () => {
-    // Each place a style of the rendering enters a request: the style where text is put in, the
-    // style of the text replaced, and the link a replacement keeps.
+    // Each place a rendering's style enters a request: text put in, text replaced, a link kept.
     let link = { url: "https://example.com/page" };
     let strong = { bold: true };
     let lines = Array.from({ length: 12 }, (_, line) => para(`Line ${line}`));
@@ -343,9 +341,7 @@ describe("the builders of a text edit on a piece of the tab", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// The one place an edit becomes requests, on a reading of the tab
-// ---------------------------------------------------------------------------
+// --- The one place an edit becomes requests, on a reading of the tab
 
 /** What the tests of `tabEditRequests` count, by the kind of edit drawn. */
 type KindTally = Record<TabEditDraw["kind"] | "blankAppend" | "empty", { cases: number; strict: number }>;
@@ -454,9 +450,7 @@ describe("a text edit built from a reading of its tab", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Table changes: built from a reading, and checked as a call
-// ---------------------------------------------------------------------------
+// --- Table changes: built from a reading, and checked as a call
 
 type TableKind = (typeof TABLE_KINDS)[number];
 
@@ -553,9 +547,8 @@ describe("a table change built from a reading of its tab", () => {
   });
 
   it("no table batch reaches past its piece", () => {
-    // A new table, rows, columns and a merge add length no request states, and each opens its
-    // batch: `pieceOverreach` stops counting the side after there, and the differential holds
-    // those four kinds. The other seven are counted to their last request.
+    // A new table, rows, columns and a merge add length no request states and open their batch, so
+    // `pieceOverreach` stops there; the other seven kinds are counted to their last request.
     let built = byKind(all, "built"), stopped = byKind(all, "stopped");
     let lengthens: readonly TableKind[] =
       ["insertTable", "insertTableRows", "insertTableColumns", "mergeTableCells"];
@@ -607,9 +600,7 @@ describe("a table call checked against a reading of its tab", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// End to end: an edit made in a stored version, against the edit made in the tab in hand
-// ---------------------------------------------------------------------------
+// --- End to end: an edit made in a stored version, against the edit made in the tab in hand
 
 /** `value` with every object and array in it frozen. */
 function deepFrozen<T>(value: T): T {
@@ -737,9 +728,7 @@ describe("an edit made in a stored version, held to the edit made in the tab in 
   });
 });
 
-// ---------------------------------------------------------------------------
-// The suites' own calls, shadowed
-// ---------------------------------------------------------------------------
+// --- The suites' own calls, shadowed
 
 describe("the suites' own calls", () => {
   afterEach(() => shrinkShadowForTest(undefined));
@@ -777,8 +766,7 @@ describe("the suites' own calls", () => {
   });
 
   it("fail the calling test where the closure builds another batch", () => {
-    // The first edit for which one element off the back of the closure builds another batch
-    // that names no index past the smaller piece.
+    // The first edit for which one element off the closure's back builds another, in-piece batch.
     let offBack: Shrink = ({ from, to }, own) => ({ from, to: Math.max(own.last + 1, to - 1) });
     let found = pieceCorpus(DEFAULT_CORPUS).find(({ tab, drawn }) => {
       if (drawn.entry !== REPLACE) return false;

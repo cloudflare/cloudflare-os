@@ -427,9 +427,8 @@ describe("materializeDocEdit", () => {
     expect(requests).not.toEqual(docEditRequests(docTabToMarkdown(first), replace));
   });
 
-  // The fallback of an approval builds from the fetched document as the store holds it: the
-  // tab decoded from its runs gives the rendering and the requests the tab as Google sent it
-  // gives, and refuses what it refuses, in the same words.
+  // An approval's fallback builds from the stored tab: the same rendering, requests and refusals
+  // as the tab Google sent.
   describe.each(CUTS)("builds the same requests from a tab read back from the store, cut $cut", ({ sizes }) => {
     /** What `action` gives in `tab`: the rendering and the requests, or the refusal's text. */
     function outcome(tab: GoogleDocsTab, action: QueuedDocEdit) {
@@ -443,8 +442,7 @@ describe("materializeDocEdit", () => {
 
     it.each<[string, () => NamedTab[], readonly DocEdit["type"][]]>([
       ["every recording's tabs", recordedTabs, ["replaceText", "appendText", "insertTableRows"]],
-      // Footnotes numbered out of order, which the model cannot follow, are among them. Their
-      // texts are single letters, so a replacement is refused where its letter is repeated.
+      // Includes footnotes out of order, which the model cannot follow; single-letter texts.
       ["generated tabs", () => fuzzedTabs(11, 120), ["appendText", "insertTableRows"]],
       ["a tab with a table", () => [{ name: "a table between paragraphs", tab: TABLED() }],
         ["replaceText", "appendText", "insertTableRows"]],
@@ -491,8 +489,7 @@ describe("materializeDocEdit", () => {
   });
 });
 
-// A stored edit with no tab was stored before tabs could be named, by code that refused to read
-// a document of more than one tab: it was approved against the one tab such a document had.
+// A stored edit with no tab predates named tabs: it applies to a one-tab document's tab.
 describe("docEditTab", () => {
   const main = PROSE();
   const storedAppend: QueuedDocEdit = { type: "appendText", markdown: "added" };
@@ -523,10 +520,7 @@ describe("docEditTab", () => {
 // The reducer
 // ---------------------------------------------------------------------------
 
-/**
- * A pending record of tab `tabId`, previewed under the current Markdown version; `null` for a
- * record that names no tab.
- */
+/** A pending record of tab `tabId` (`null`: none) under the current Markdown version. */
 function record(
   id: number, edit: DocEdit, tabId: string | null = TAB,
   more: { invalidatedReason?: string; markdownVersion?: number; writeId?: string } = {},
@@ -824,8 +818,7 @@ describe("docTabReducer", () => {
     let broken = unrenderable();
     let thrown = thrownBy(() => docTabToMarkdown(broken));
     expect(thrown).toBeInstanceOf(TypeError);
-    // The store refuses to keep such a tab, so the one run a sound tab's version lists is
-    // made the broken tab's beneath it.
+    // The store refuses such a tab, so a sound version's one run is replaced beneath it.
     let stored = storedTabs(PROSE(), tabAs(OTHER, PROSE()));
     let [run] = [...cutRuns(broken.body.content, RUN_SIZES)];
     stored.storage.sql.exec(
@@ -975,8 +968,7 @@ describe("docEditResult", () => {
   it("makes an edit once and finds it stored after", () => {
     let { store, base } = storedTabs(PROSE());
     let made!: DocEditResult;
-    // The tab is one run: decoded once, for the piece the builders read, and taken as it is
-    // by the slice the model changes.
+    // One run, decoded once for the piece and taken as is by the model's slice.
     expect(spent(() => { made = docEditResult(store, base(), replaceWorld); }))
       .toMatchObject({ runsDecoded: 1, resultsStored: 1, resultsFound: 0 });
     let found!: DocEditResult;
@@ -1122,8 +1114,7 @@ describe("docEditResult", () => {
     ]);
     expect(storage.rows()).toEqual(withRefusal);
 
-    // With rows that fit, the edit the store refused is made, not found, and the builders'
-    // refusal is found stored.
+    // With rows that fit, the refused edit is made, and the builders' refusal is found stored.
     vi.restoreAllMocks();
     let cost = spent(() => {
       expect(store.markdown(docEditResult(store, base(), replaceWorld).after))
@@ -1247,8 +1238,7 @@ describe("docEditResult", () => {
   });
 
   it("a fault of storage while a run is read is not refused", () => {
-    // Met by the piece, which reads the run first; and by the slice, where the piece hands
-    // no decoded run on.
+    // Met by the piece, or by the slice where the piece hands no decoded run on.
     for (let meets of ["the piece", "the slice"]) {
       let { store, storage, base } = storedTabs(PROSE());
       let before = storage.rows();
@@ -1332,10 +1322,7 @@ function rangeOf(markdown: string, text: string): { start: number; end: number }
   return { start, end: start + text.length };
 }
 
-/**
- * A call of `changedSpan` and what it gives: the two sides of the span and, where the texts
- * leave more than one span with those sides, the span itself.
- */
+/** A `changedSpan` call and its two sides, and the span where the sides leave it ambiguous. */
 type SpanCase = [
   name: string, before: string, after: string, named: { start: number; end: number } | undefined,
   sides: [string, string], span?: ReturnType<typeof changedSpan>,
@@ -1650,8 +1637,7 @@ describe("a batch that reaches past the piece it was built from", () => {
       .toEqual(["DocPieceOverreachError", "A batch reaches past the piece it was built from."]);
     expect(docRefusal(new DocModelError(reason, cause))).toEqual(thrown.refusal);
 
-    // Asked again, with the piece as it is: the refusal is found stored, and nothing is
-    // decoded and nothing rendered.
+    // Asked again: the refusal is found stored, nothing decoded or rendered.
     faulty = undefined;
     let again!: DocEditRefusedError;
     let cost = spent(() => { again = refusalOf(() => docEditResult(store, base(), replaceWorld)); });

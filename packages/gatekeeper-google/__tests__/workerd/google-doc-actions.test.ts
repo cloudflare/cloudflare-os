@@ -37,10 +37,7 @@ import { DOC_REVISION_PIN_MS, DOC_SNAPSHOT_TTL_MS } from "../../src/doc-actions"
 import { WIDER } from "../wider-run";
 import { GoogleDocEditSessionImpl } from "../../src/docs";
 
-/**
- * A request the gatekeeper sends in a batch: one that changes content, the add of a tab, or one
- * of the two that create and delete a write marker.
- */
+/** A request in a batch: a content change, a tab's add, or a write marker's create or delete. */
 type BatchRequest =
   | GoogleDocsBatchRequest
   | { createNamedRange: { name: string; range: DocsRange } }
@@ -76,10 +73,7 @@ type ModelThread = {
   replies: ModelPost[];
 };
 
-/**
- * The tab a request names. Every write coordinate names the tab it applies to, since tab bodies
- * index independently; a request that leaves it out has none.
- */
+/** The tab a request names, as tab bodies index independently; none where it leaves it out. */
 function requestTabId(
   request: Exclude<BatchRequest, { deleteNamedRange: unknown } | GoogleDocsAddTabRequest>,
 ): string | undefined {
@@ -145,9 +139,8 @@ const OFFICE_REFUSAL =
 type RequestKind = "content" | "cleanup" | "create" | "read" | "applied" | "scope";
 
 /**
- * The full `documents.get` calls of the current test, by every `DocsModel`, that carried no
- * field mask. Every path that reads a document asks only for the fields the gatekeeper reads,
- * so this is 0 when a test ends, unless Google refused the mask and the read was made again.
+ * The full `documents.get` calls of this test that carried no field mask: 0 at its end, unless
+ * Google refused the mask and the read was made again.
  */
 let unmaskedFetches = 0;
 
@@ -232,10 +225,7 @@ class DocsModel {
   lostCommentResponses = 0;
   #nextPostId = 1;
   #nextTabId = 1;
-  /**
-   * Every method that changes what `documents.get` answers moves it, since a document does not
-   * change at one revision.
-   */
+  /** Moved by every method that changes what `documents.get` answers. */
   #revision = 1;
   #nextMarkerId = 1;
   readonly #held = new Map<RequestKind, { reach: () => void; released: Promise<void> }>();
@@ -666,9 +656,8 @@ class DocsModel {
   }
 
   /**
-   * Adds an empty tab as `addDocumentTab` does, returning its properties as Google replies. The
-   * tab holds what `blankDocsTab` gives one, the named styles of a new document included, so it
-   * reads the same once added as the replay showed it while its add waited.
+   * Adds an empty tab as `addDocumentTab` does, answering its properties: `blankDocsTab`'s content,
+   * so it reads once added as the replay showed it while its add waited.
    */
   #addTab({ title, parentTabId, index }: { title?: string; parentTabId?: string; index?: number }) {
     let siblings = this.tabs.filter(tab => tab.parentId === parentTabId);
@@ -1051,17 +1040,13 @@ function docsRequestKind(
 const requestsMade = () => vi.mocked(fetch).mock.calls.length;
 
 /**
- * The requests the Docs API was sent after the first `from` the model received, in order: a full
- * read of the document, a probe of its revision, a batch that carries content (applied or
- * refused) and the deletion of a marker.
+ * The Docs API requests after the first `from` the model received, in order: a full read, a
+ * revision probe, a content batch (applied or refused) and a marker's deletion.
  */
 const docsRequestsSince = (from: number) => vi.mocked(fetch).mock.calls.slice(from)
   .flatMap(([input, init]) => docsRequestKind(input, init) ?? []);
 
-/**
- * `docsRequestsSince`, with a read of the document's title and revision alone told apart from
- * the other requests the approval tests do not order: `"title"`.
- */
+/** `docsRequestsSince`, with a read of the title and revision alone told apart as `"title"`. */
 const docsReadsSince = (from: number) => vi.mocked(fetch).mock.calls.slice(from)
   .flatMap(([input, init]) => {
     let kind = docsRequestKind(input, init);
@@ -1314,9 +1299,7 @@ describe.each(RUNS)("Google Doc tables, $name", r => {
     );
   });
 
-  // A bound Doc authorizes the read of a new table's position between two preparations of the
-  // table: the second finds what the first stored. Through Drive the one preparation is the
-  // authorized read, made on the copy the read before it kept.
+  // The second preparation finds what the first stored; through Drive there is only one.
   it("makes the table an insertTable adds once, though it prepares it twice", async () => {
     docsWithBody(tableBody());
     let facet = "table-insert-made-once";
@@ -1644,9 +1627,8 @@ describe.each(RUNS)("Google Doc tables, $name", r => {
     expect(docs.contentBatches).toBe(0);
   });
 
-  // Left to one replay, the two rejections cancel out: one table reads as the rows recorded, the
-  // one that was there all along, and the rows meant for the new table go to it.
-  // Bound alone: it asserts what the replay over the stored copy keeps behind a rejection.
+  // Bound alone. Left to one replay, the two rejections cancel out and the new table's rows go to
+  // the table that was there all along.
   it.skipIf(r.drive)("settles each rejection before the next", async () => {
     let facet = "table-rejections-in-turn";
     let { docs, first, added, second } = await queueBehindTwin(facet);
@@ -1736,9 +1718,8 @@ describe.each(RUNS)("Google Doc tables, $name", r => {
     expect(docs.contentBatches).toBe(0);
   });
 
-  // Without the gate the fourth edit is the next pending one, finds exactly one table reading as
-  // it recorded, the one under `## X`, and adds the row meant for the other.
-  // Bound alone: it asserts what the replay over the stored copy keeps behind a rejection.
+  // Ungated, the fourth edit would find only the table under `## X` reading as recorded, and add
+  // the row meant for the other. Bound alone: it holds the replay over the stored copy.
   it.skipIf(r.drive)("keeps a row off the other of two tables when the edit that set them apart is rejected", async () => {
     let docs = docsWithBody(buildTab([
       heading("X"), grid(["Task", "Owner"]), heading("Y"), grid(["Task", "Owner"]),
@@ -1967,10 +1948,7 @@ describe.each(RUNS)("Google Doc tables, $name", r => {
     expect(docs.documentFetches).toBe(fetches + 1);
   });
 
-  /**
-   * Removes the runs that only the version the first edit queued in the Doc's first tab made
-   * lists: the runs it shares with the tab's base version stay.
-   */
+  /** Removes the runs only the first edit's version lists; those it shares with the base stay. */
   async function loseFirstEditsVersion(facet: string): Promise<void> {
     let [base] = (await hooks().docCopyHead(facet))!.versions;
     await hooks().docStoreExec(facet,
@@ -2067,9 +2045,8 @@ describe.each(RUNS)("Google Doc tables, $name", r => {
     expect(docs.contentBatches).toBe(0);
   });
 
-  // The text edit takes the item out of the list, so the cell's item becomes the list's first.
-  // The read shows that number while the text edit waits, so a change queued behind it records
-  // the table as it will read, and applies to it.
+  // The text edit takes an item out of the list, making the cell's item its first. The read shows
+  // that number while the edit waits, so a change queued behind records the table as it will read.
   it("shows a list number an earlier text edit moves in a table, and applies a change recorded against it", async () => {
     let item = numberedItem;
     let docs = docsWithBody(buildTab([
@@ -2182,9 +2159,9 @@ describe.each(RUNS)("Google Doc tables, $name", r => {
     expect(await hooks().lastObservations).toEqual(r.positionReads(POSITION_READ));
   });
 
-  // The position is read from the document, so the read is authorized before anything is stored:
-  // where reads are refused, insertTable() queues nothing, and the other writes still queue.
-  // Bound alone: through Drive the read that prepares any edit is refused, which its own test holds.
+  // The position's read is authorized before anything is stored: refused, insertTable() queues
+  // nothing and the other writes still queue. Bound alone: through Drive the read that prepares any
+  // edit is refused, which its own test holds.
   it.skipIf(r.drive)("queues nothing when the read of a new table's position is refused", async () => {
     docsWithBody(buildTab([para("Before")]).body);
     let facet = "table-position-refused";
@@ -2213,10 +2190,7 @@ describe.each(RUNS)("Google Doc tables, $name", r => {
     }
   });
 
-  // Without the queue the append is stored while the table waits for its authorization: it is
-  // received first, `added` reads above the table, and the read shows the append and no table.
-  // With the writes queued and the reads not waiting, the read shows neither, and the metadata
-  // lists no pending edit.
+  // The append waits behind the table's authorization, and the read and the metadata wait for both.
   it("takes calls in the order they were made while a table's position is authorized", async () => {
     let docs = docsWithBody(tableBody());
     let facet = "table-call-order";
@@ -2497,7 +2471,6 @@ describe.each(RUNS)("Google Doc edits replayed on the copy of the document, $nam
     expect(await hooks().applyAction(facet, third.actionId)).toBe(droppedByRead(
       `replaceText: oldMarkdown was not found in the current simulated tab "${MAIN_TAB}". ` +
       `Make sure the text exactly matches content returned by getContent("${MAIN_TAB}").`));
-    // A further read marks nothing more.
     expect(await hooks().readContent(facet)).toBe("First\n\nBeta\n\nDelta\n");
     expect(await hooks().storedValueJsonLength(facet, key)).toBe(dropped);
     expect(await hooks().applyAction(facet, first.actionId)).toBeNull();
@@ -2596,10 +2569,8 @@ const SEEDS = ([
   { seed: 1, mode: "approve or reject" }, { seed: 60, mode: "approve all" },
 ] as const).slice(0, WIDER ? 2 : 1);
 
-// What a read shows of a queue is what approving it does, for sequences nobody wrote by hand.
-// The fake applies each batch with the model the gatekeeper replays with, so this holds the
-// read, the cards and the applied document to one another, not to Google. The same seeds make
-// the same sequences in both runs: there is one replay.
+// A read of a queue of generated edits shows what approving it does. The fake applies each batch
+// with the replay's model, so this holds read, cards and document to one another, not to Google.
 describe.each(RUNS)("a queue of generated edits, $name", r => {
   inRun(r);
 
@@ -2611,9 +2582,8 @@ describe.each(RUNS)("a queue of generated edits, $name", r => {
 
   /**
    * Queues every kind of edit once, in the seed's order, and settles the queue from its head.
-   * With `addsTab`, a tab is added once three edits are queued, with two edits of its own, and
-   * the kinds that remain pick among the three tabs. With `restarts`, the Doc's activation is
-   * ended before each step, between two reads of every tab that must agree.
+   * `addsTab` adds a tab once three edits are queued, with two edits of its own, the kinds left
+   * picking among the three tabs; `restarts` ends the activation before each step.
    */
   async function settleGenerated(
     { seed, mode }: typeof SEEDS[number], addsTab = false, restarts = false,
@@ -2643,9 +2613,8 @@ describe.each(RUNS)("a queue of generated edits, $name", r => {
         : [[tabId, docTabToMarkdown(docs.bodyTab(inDocument)).markdown] as const];
     }));
     /**
-     * Reads every tab, ends the activation, and reads every tab again: the one that starts over
-     * answers the same from storage alone. The read before it settled the copy's age, so the
-     * one after fetches nothing, and it finds every pending edit's result.
+     * Reads every tab, ends the activation, and reads every tab again: the object that starts over
+     * answers the same from storage alone, fetching nothing.
      */
     let acrossRestart = async () => {
       if (!restarts) return;
@@ -3319,7 +3288,6 @@ describe.each(RUNS)("Google Doc list edits, $name", r => {
       .rejects.toThrow(LIST_LEVEL_TOO_DEEP);
     await expect(edit(facet, "replaceText", "\n\nEnd", `\n${tenthIndent}- x\n\nEnd`))
       .rejects.toThrow(LIST_LEVEL_TOO_DEEP);
-    // Nothing was queued.
     expect(await hooks().readContent(facet)).toBe(before);
 
     // A sibling of the ninth-level item is queued, and reads at that level.
@@ -4262,10 +4230,8 @@ describe.each(RUNS)("Google Doc write receipts, $name", r => {
   });
 });
 
-// An approval lists the pending edits and then awaits Google, and a write can be stored during
-// any of those waits. These tests hold a provider request open to store one there. They stand
-// after the restart test above: the runtime does not survive a restart of the Durable Objects
-// that follows a held request.
+// A write stored while an approval awaits Google, by holding a provider request open. After the
+// restart test above: the runtime does not survive a restart that follows a held request.
 describe("Google Doc table changes stored during an approval", () => {
   // An edit stored while the approval waits for the document was recorded behind the one being
   // approved, like any other, though the approval listed the pending edits before it.
@@ -4321,13 +4287,11 @@ describe("Google Doc table changes stored during an approval", () => {
   });
 });
 
-// The write queue belongs to the document, not to a session: a call takes its turn behind the
-// calls made before it, from whichever session it comes. The test holds a provider request, so it
-// stands after the restart test like the ones above.
+// The write queue is the document's: a call waits behind the earlier calls of every session. After
+// the restart test, as it holds a provider request.
 describe("Google Doc writes from several sessions", () => {
-  // Every call below is a session of its own. With a queue for each session the replacement is
-  // checked while the append it quotes still waits for Google, and is refused for text the tab
-  // does not hold; the second append is stored first, and the read shows only that one.
+  // Each call is a session of its own. Per-session queues would check the replacement before the
+  // append it quotes reached Google, and store the second append first.
   it("takes the calls of different sessions in the order they were made", async () => {
     let docs = new DocsModel();
     docs.setText(MAIN_TAB, "Start");
@@ -4349,9 +4313,8 @@ describe("Google Doc writes from several sessions", () => {
       let note = () => { settled.push(name); };
       call.then(note, note);
     }
-    // Reading a stored record takes no turn and asks Google nothing, so it answers while the
-    // first write is held. The pause after it gives the three calls sent before it the time to
-    // settle, if nothing held them.
+    // A stored record's read takes no turn, so it answers while the first write is held; the pause
+    // after it lets the three calls before it settle, if nothing held them.
     expect(await hooks().storedValueJsonLength(facet, "pending:action:1")).toBeUndefined();
     await scheduler.wait(20);
     expect(settled).toEqual([]);
@@ -4813,8 +4776,7 @@ describe.each(RUNS)("Google Doc tab isolation, $name", r => {
 
     expect(await hooks().readContent(facet, MAIN_TAB)).toBe("shared\n\nbeta\n");
 
-    // The document was fetched again, and the read replays the tab's one edit over the tab it
-    // brought.
+    // Fetched again: the read replays the tab's one edit over the tab it brought.
     expect(docs.documentFetches).toBe(before.fetches + 1);
     expect(replayCost.folds).toBe(before.folds + 1);
     expect(await hooks().readContent(facet, "metrics")).toBe("rewritten\n");
@@ -6036,15 +5998,10 @@ describe("Google Doc stored layout", () => {
     docs.install();
     let facet = "stored-layout-doc";
     let storedKeys = () => hooks().storedKeys(facet, "doc");
-    /**
-     * The copy of the document: one record, and its one tab as a version, a run list and two
-     * runs (its body and its lists and styles), with the tab's rendering.
-     */
+    // The copy: one record, and its one tab as a version, a run list, two runs (its body, and its
+    // lists and styles) and a rendering.
     let copyRows = { doc_copy: 1, doc_md: 1, doc_result: 0, doc_run: 2, doc_seq: 1, doc_version: 1 };
-    /**
-     * And what the edit prepared in that tab made: its result, and the version it gives with
-     * its run list, its body and its rendering.
-     */
+    // With what the edit prepared made: its result, and its version's run list, body and rendering.
     let editRows = { doc_copy: 1, doc_md: 2, doc_result: 1, doc_run: 3, doc_seq: 2, doc_version: 2 };
 
     let first = await hooks().submitAppend(facet, "first");
@@ -6249,9 +6206,8 @@ function occurrences(content: string, text: string): number {
   return content.split(text).length - 1;
 }
 
-// What a queue of edits to two large documents spends, phase by phase, in both hosts. Every
-// assertion is a count taken under a frozen clock, never a time, so the load of the machine
-// changes none of them. The table of every phase is printed once the block has run.
+// What a queue of edits to two large documents spends, phase by phase, in both hosts: counts under
+// a frozen clock, never times. The table of every phase is printed once the block has run.
 describe("Google Doc replay cost", () => {
   /** The edits queued for the large tab, each followed by a read of it. */
   const N = 4;
@@ -6370,10 +6326,7 @@ describe("Google Doc replay cost", () => {
     ].join("\n"));
   });
 
-  /**
-   * Runs the queue over the document `shape` names, in the host of the current run: the row of
-   * each phase, which the table printed after the block holds too.
-   */
+  /** Runs the queue over `shape`'s document in the current run's host: the row of each phase. */
   async function measure(shape: Shape): Promise<Row[]> {
     // Frozen, so that no count depends on how long the machine took: the copy's time to live
     // passes only where a phase moves the clock.
@@ -6453,147 +6406,113 @@ describe("Google Doc replay cost", () => {
   }
 
   /**
-   * What each phase spends, in the order of `MEASURES` and then `pending`: the counts a later
-   * change must not raise without saying so. The queue is built to show two things. The edit a
-   * collaborator's change drops is a replacement outside tables, so it is the only edit its
-   * replay drops. And the rejected edit of the tables document has a change that names a table
-   * queued behind it, so a bound Doc's rejection replays the queue there and not in the
-   * paragraphs document, while a Drive binding fails that change with the rejection.
+   * What each phase spends, in the order of `MEASURES` and then `pending`: counts a change must not
+   * raise without saying so. The edit a collaborator's change drops is a replacement outside
+   * tables, so it is the only edit its replay drops. The rejected edit of the tables document has a
+   * change that names a table queued behind it, so a bound Doc's rejection replays the queue there
+   * and not in the paragraphs document, while a Drive binding fails that change instead.
    *
-   * What the rows hold of the replay, one tab at a time. A read folds the queue of the tab it
-   * reads over that tab's version in the store, a step for each edit queued in it: `reads`,
-   * three reads of the large tab's four edits, holds twelve. An edit's check folds the edits
-   * queued before it in its tab, and the read after it those and the edit: `queue` holds one
-   * step for the other tab's edit, and 1, 3, 5 and 7 for the large tab's four. A step looks up
-   * what its edit made in the version before it (`resultsFound`), and makes the edit only where
-   * nothing is stored for it (`resultsStored`): `queue` stores five results for its five edits
-   * and finds seventeen, and `reads` finds twelve and stores none. `dropped edit` folds the
-   * large tab's four edits once, over one read of the queue, and none of the other tab's: the
-   * tab came back changed, so each is made again in it. The bound `rejection` of the tables
-   * document reads the queue twice, once for each replay, and each replay folds every tab an
-   * edit is queued for: the other tab's edit and the large tab's three with the rejected edit
-   * still queued, then the other tab's and the large tab's two without it, of which the one
-   * behind the rejected edit is made again; the read after it finds those two. The bound
-   * `approval (other tab)` folds the large tab's two edits still queued, in the replay after
-   * its fetch, which brought the large tab as it was stored: the tab is not stored again, and
-   * both results are found. `read after approval` folds the one edit left.
+   * A read folds the queue of the tab it reads over that tab's stored version, a step per edit:
+   * `reads`, three reads of the large tab's four edits, holds twelve. An edit's check folds the
+   * edits before it in its tab, and the read after it those and the edit: `queue` holds one step
+   * for the other tab's edit and 1, 3, 5 and 7 for the large tab's. A step looks up its edit's
+   * result in the version before it (`resultsFound`) and makes the edit only where none is stored
+   * (`resultsStored`): `queue` stores five and finds seventeen, `reads` finds twelve and stores
+   * none. `dropped edit` folds the large tab's four edits once, over one read of the queue, and
+   * none of the other tab's: the tab came back changed, so each is made again. The bound
+   * `rejection` of the tables document reads the queue twice, once a replay, and each replay folds
+   * every tab with an edit queued: the other tab's edit and the large tab's three with the rejected
+   * edit, then the other tab's and the large tab's two without it, of which the one behind the
+   * rejected edit is made again; the read after it finds those two. The bound `approval (other
+   * tab)` folds the large tab's two queued edits after its fetch, which brought the large tab as
+   * stored: the tab is not stored again, and both results are found. `read after approval` folds
+   * the one edit left.
    *
-   * `rowsWritten` shows what the store keeps of a bound Doc, in rows as storage bills them. A
-   * tab is stored as runs cut by its content: the paragraphs document's large tab is 125 runs,
-   * the tables document's 20 (each table alone, and each stretch between two), and the other
-   * tab one. The cold read keeps the two tabs, each run with its rendering and its row in the
-   * tab's run list, the two versions, the context they share and the copy's record. An edit
-   * queued stores its result and the version it gives: the runs it changed with their
-   * renderings, and a run list, a row a run. A read of a state read before writes nothing:
-   * `reads`. A fetch that brought one tab changed writes that tab's rows and the record, and
-   * removes the version it replaces with what the edits made in it, which the replay then
-   * stores again for the tab fetched: `dropped edit`, and each approval after the row that
-   * retires the copy its write outdated. A rejection writes the record and removes what the
-   * rejected edit alone reached, the run lists of the versions made from it on included, and
-   * a revision check writes the record alone.
-   * `runsDecoded` shows that a tab's runs are decoded only where an edit is made in it, AND
-   * OF A TEXT EDIT ONLY THE PIECE ITS BUILDERS READ: the runs that hold the closure of the
-   * edit's own elements, which the model takes as they were decoded and decodes no second
-   * time; a chain of edits made again decodes as much at each step. `queue` decodes one run
-   * for each of the paragraphs document's five edits. A change to a table and a replacement
-   * in a cell decode the runs of the piece around their table, a pass at a time, and no
-   * other run of the tab: the tables document's `queue` decodes 37 runs. A bound Doc's cold
-   * read, `reads`, an approval that sends a stored result and a rejection with no table
-   * change behind it decode nothing, and
-   * nothing decoded outlives the request. A read through Drive that fetched adds the
-   * document's runs twice: the read holds what it fetched as the bytes of its runs, and its
-   * trial and its keep each read them back, as `cold read` shows (the two tabs' runs, twice)
-   * and `queue` five times over, once for each of its fetches. A document stored as it is
-   * read, the one an approval fetches after its write, is decoded by nothing. An approval that
-   * builds its write from a document it fetched makes the edit as a replay does, in the copy
-   * stored of that document, and finds the result a replay stored where the edit's tab came
-   * back as it was: through Drive, `approval`.
-   * `runsRendered` counts every rendering of a run. A tab that is stored beside no earlier
-   * version of it has each of its runs rendered, alone: the cold read renders the 126 runs of
-   * the two tabs, and no read after it renders any. An edit that is made renders its piece for
-   * the builders, and, to be stored, the runs of the version it gives that have no rendering,
-   * which are the runs it changed: `queue` renders 5 runs for the builders and 5 to be stored.
-   * A fetch that brings a tab changed renders the runs that changed: `dropped edit` renders
-   * the one run the fetch changed, the piece of each of the three edits that still apply, and
-   * the one run each of them changed; the fourth is refused by the scan of the tab's stored
+   * `rowsWritten` counts rows as storage bills them. A tab is stored as runs cut by its content:
+   * the paragraphs document's large tab is 125 runs, the tables document's 20 (each table alone,
+   * and each stretch between two), the other tab one. The cold read keeps the two tabs (each run
+   * with its rendering and its row in the run list), the two versions, their shared context and
+   * the copy's record. A queued edit stores its result and its version: the runs it changed with
+   * their renderings, and a run list, a row a run. A read of a state read before writes nothing
+   * (`reads`). A fetch that brought one tab changed writes that tab's rows and the record, and
+   * removes the version it replaces with what the edits made in it, which the replay stores again
+   * (`dropped edit`, and each approval after the row that retires the copy its write outdated). A
+   * rejection writes the record and removes what the rejected edit alone reached, the run lists of
+   * the versions made from it included; a revision check writes the record alone.
+   *
+   * `runsDecoded`: a tab's runs are decoded only where an edit is made in it, and of a text edit
+   * only the runs that hold the closure of its own elements, which the model takes as decoded; a
+   * chain of edits made again decodes as much at each step. `queue` decodes one run for each of the
+   * paragraphs document's five edits. A table change or a cell replacement decodes the piece around
+   * its table: the tables document's `queue` decodes 37 runs, its last edit (a table change) the
+   * nine of its piece where the tab is twenty-one. A bound Doc's cold read, `reads`, an approval
+   * that sends a stored result and a rejection with no table change behind it decode nothing, and
+   * nothing decoded outlives the request. A read through Drive that fetched decodes the document's
+   * runs twice, its trial and its keep each reading back the bytes it fetched: `cold read` (the two
+   * tabs' runs, twice), and `queue` five times over, once a fetch. A document stored as it is read,
+   * as an approval's fetch after its write is, is decoded by nothing. An approval that builds its
+   * write from a document it fetched makes the edit in the copy stored of it, and finds the
+   * replay's result where the edit's tab came back as it was: through Drive, `approval`.
+   *
+   * `runsRendered`: a tab stored beside no earlier version of it has each run rendered alone: the
+   * cold read renders the two tabs' 126 runs, and no read after it renders any. A made edit renders
+   * its piece for the builders and, to be stored, the runs it changed: `queue` renders 5 and 5.
+   * `dropped edit` renders the one run the fetch changed, the piece of each of the three edits that
+   * still apply and the one run each changed; the fourth is refused by the scan of the tab's stored
    * Markdown, which finds its text gone and decodes nothing.
-   * `runsKeyed` counts the runs whose rendering's key was worked out from a stored summary:
-   * the runs after the ones an edit or a fetch changed, up to where the carry is the stored
-   * version's again. `queue` keys none: each of its edits leaves the carry as it was.
    *
-   * `documentFetches` shows where an approved write was built. A bound Doc's two approvals read
-   * the document once each, after the write, for the edits queued behind it: the write is the
-   * stored result of the edit in the copy's tab, pinned to the copy's revision, so no document
-   * is read before it and no tab is decoded for it. Through Drive `approval (other tab)`
-   * builds from the snapshot the read before it left, and reads the document once, after the
-   * write. Its `approval` follows a write that landed, so no snapshot may build it: the document
-   * is read before the write, stored as it is read, in a trial that keeps nothing, and the
-   * edit's tab came back as the replay left it, so its result is found there. The
-   * stored copy lacks the other tab as the approval before left it, so the trial writes that
-   * tab's rows, renders its one run and removes them: ten rows. The paragraphs document is read
-   * after the write too, one edit being still queued. A revision probe is answered with the
-   * revision alone, so `responseBytes` holds whole documents only where `documentFetches`
-   * counts one.
+   * `runsKeyed`: the runs after those an edit or a fetch changed whose rendering's key was worked
+   * out from a stored summary, up to where the carry is the stored version's again (asked before a
+   * later run is read). `queue` keys none: each of its edits leaves the carry as it was.
    *
-   * Through Drive the sessions share the document's source, and a document is stored once the
-   * read that fetched it is authorized. Until then the read replays over it in a trial, which
-   * writes the tabs' rows and removes them, so `cold read` writes them twice, and renders each
-   * run twice. `reads` fetches no document, its requests being each read's scope
-   * check, and finds the large tab's four results at each read, as a bound Doc's does. `queue`
-   * fetches once for each edit, at the read after it, which finds an edit queued since the
-   * snapshot and folds the tab's queue over the document it fetches, in a trial: the document
-   * came back unchanged, so the trial finds every pending result and the read keeps the
-   * snapshot. The next edit is prepared on that kept copy, so its result is stored and stays,
-   * and each edit of `queue` is made once, as a bound Doc makes it. An edit queued through
-   * Drive straight after another, with no read between, is made twice: its preparation finds
-   * an edit queued since the snapshot, fetches, and runs in a trial, which removes at its end
-   * what an edit that is not pending yet made, and the read after it makes the edit once more.
-   * No phase here queues that way; the tests of a Doc opened through Drive hold it. `dropped
-   * edit` asks for the revision before it fetches, and makes the large tab's edits in a trial
-   * of a document the stored copy does not hold, which leaves no row of them: the paragraphs
-   * document's `read after rejection` reuses the snapshot kept since and makes the two edits
-   * still queued once more, where the tables document's finds the newest edit queued gone and
-   * fetches. An approval's replay after its write fetches with no scope check and keeps
-   * nothing, so the edit it makes there is made once more by `read after approval`.
+   * `documentFetches`: where an approved write was built. A bound Doc's two approvals read the
+   * document once each, after the write, for the edits queued behind it: the write is the edit's
+   * stored result, pinned to the copy's revision, so nothing is read or decoded before it. Through
+   * Drive `approval (other tab)` builds from the snapshot the read before it left, and reads once,
+   * after the write. Its `approval` follows a write that landed, so no snapshot may build it: the
+   * document is read before the write and stored as read, in a trial that keeps nothing, where the
+   * edit's result is found; the stored copy lacks the other tab as the approval before left it, so
+   * the trial writes that tab's rows, renders its one run and removes them: ten rows. The
+   * paragraphs document is read after the write too, one edit being still queued. A revision probe
+   * answers the revision alone, so `responseBytes` holds whole documents only where
+   * `documentFetches` counts one.
    *
-   * `tabClones`, `fullReindexes`, `renders` and `runsDecoded` show what an edit costs of its
-   * tab. NO EDIT COPIES A TAB: the model changes, in place, the runs its batch touches, decoded
-   * for it, and the store cuts them again; the one copy left in these rows is the tests'
-   * Google's, which applies an approved batch to its own document with the whole-tab model.
-   * An edit's check renders, for the builders, the piece of the tab around the edit, a table
-   * change's the piece around its table, and the runs that piece decoded are the ones the
-   * model changes. `renders` counts a tab in hand rendered whole, which nothing that reads or
-   * edits a document does: no phase holds one. The paragraphs document's
-   * `queue` decodes five runs for its five edits, and `reads` none; the tables document's
-   * last edit, a change to a table, decodes the nine runs of the piece around it where the
-   * tab is twenty-one. A step that finds its result
-   * stored decodes and renders nothing, and a read answers the stored Markdown of its runs,
-   * joined. A chain of edits made again renders the piece of each step that still applies,
-   * as `dropped edit` shows. A bound
-   * Doc's `approval` of an edit of the large tab makes the edit queued behind it in the tab as
-   * Google returned it, which is another version than the one the model made, stored beside
-   * the base it replaces with only its changed run rendered; the read after it finds the
-   * result.
-   * That is the one make an approval costs each edit still queued in the tab it wrote: a
-   * fetch that brings a tab under another marker, title or place brings the same version, and
-   * makes none. An edit
-   * recomputes the indexes of the runs its batch touches once, after its requests, and none
-   * before them: a stored run decoded at its place holds the model's indexes. The tables
-   * document's last edit, which sets widths and moves no index, recomputes none. `runsKeyed`
-   * is the runs after an edit's whose key is worked out again: none where the edit leaves the
-   * carry as it was, which is asked before a later run is read.
+   * Through Drive the sessions share the document's source, stored once the read that fetched it
+   * is authorized; until then the read replays over it in a trial that writes the tabs' rows and
+   * removes them, so `cold read` writes them twice and renders each run twice. `reads` fetches no
+   * document (its requests are each read's scope check) and finds the large tab's four results at
+   * each read. `queue` fetches once an edit, at the read after it, which finds an edit queued since
+   * the snapshot and folds the tab's queue over the fetch in a trial: the document came back
+   * unchanged, so the trial finds every result and the read keeps the snapshot, on which the next
+   * edit is prepared, so each edit is made once. (An edit queued straight after another, with no
+   * read between, is made twice; the Drive tests hold that.) `dropped edit` probes the revision
+   * before it fetches, and makes the large tab's edits in a trial that leaves no row of them: the
+   * paragraphs document's `read after rejection` reuses the snapshot kept since and makes the two
+   * edits still queued once more, where the tables document's finds the newest queued edit gone
+   * and fetches. An approval's replay after its write fetches with no scope check and keeps
+   * nothing, so `read after approval` makes its edit once more.
    *
-   * `fingerprints` shows that a bound Doc serializes no queue to queue an edit, and that through
-   * Drive each queued edit serializes its tab's queue twice: at its check, and once the read
-   * that made the check was authorized.
+   * `tabClones`, `fullReindexes` and `renders`: NO EDIT COPIES A TAB. The model changes in place
+   * the runs its batch touches, and the one clone in these rows is the tests' Google, which applies
+   * an approved batch with the whole-tab model. `renders` counts a tab rendered whole, which no
+   * phase does. A step that finds its result stored decodes and renders nothing, and a read joins
+   * the stored Markdown of its runs. A bound Doc's `approval` of a large-tab edit makes the edit
+   * behind it in the tab as Google returned it, another version than the model's, stored beside
+   * the base with only its changed run rendered; the read after it finds the result. That is the
+   * one make an approval costs each edit still queued in the tab it wrote: a fetch that brings a
+   * tab under another marker, title or place brings the same version. An edit recomputes the
+   * indexes of the runs its batch touches once, after its requests, and none before them; the
+   * tables document's last edit sets widths and moves no index, so it recomputes none.
    *
-   * `lookupSteps` shows a lookup halving its way to its place, wherever in the tab that is: 14
-   * or 15 comparisons to a paragraph of the paragraphs document's 20,000, and 13 to 16 to a
-   * cell's paragraph in the tables document, through the body's 20 elements, a table's 25 rows
-   * and a row's 20 cells. A request that writes text makes two such lookups, the paragraph it
-   * names and the code unit before its index: the unit after it is read only where the one
-   * before is the first half of a surrogate pair, which none here is. The replay and the
-   * tests' Google, which applies an approved batch with the same model, both count.
+   * `fingerprints`: a bound Doc serializes no queue to queue an edit; through Drive each queued
+   * edit serializes its tab's queue twice, at its check and once that check's read was authorized.
+   *
+   * `lookupSteps`: a lookup halves its way to its place: 14 or 15 comparisons to a paragraph of the
+   * paragraphs document's 20,000, and 13 to 16 to a cell's paragraph in the tables document
+   * (through the body's 20 elements, a table's 25 rows and a row's 20 cells). A request that writes
+   * text makes two lookups, the paragraph it names and the code unit before its index; the one
+   * after is read only after a high surrogate, which none here is. The replay and the tests'
+   * Google both count.
    */
   const EXPECTED: Record<string, Record<string, number[]>> = {
     "paragraphs, bound directly": {
@@ -6654,10 +6573,7 @@ describe("Google Doc replay cost", () => {
       });
   });
 
-  /**
-   * What `body` adds to the store's counts (its widenings among them), the model's clones and
-   * Google's document reads.
-   */
+  /** What `body` adds to the store's counts (widenings too), model clones and Google's reads. */
   async function costOf(docs: DocsModel, body: () => Promise<unknown>) {
     let totals = () => ({
       runsDecoded: docStoreCost.runsDecoded, runsRendered: docStoreCost.runsRendered,
@@ -6758,9 +6674,8 @@ describe("Google Doc replay cost", () => {
         }
       });
 
-      // For each edit, of the 125 runs of the tab it is made in, the one that holds the piece
-      // around it is decoded, for the builders, and taken as it was decoded by the model. No
-      // tab is copied.
+      // Each edit decodes one of the tab's 125 runs, its piece's, which the model takes as decoded.
+      // No tab is copied.
       expect(cost).toMatchObject({
         resultsStored: N, runsDecoded: N, tabClones: 0, documentFetches: 0,
       });
@@ -6861,9 +6776,8 @@ describe("Google Doc replay cost", () => {
       await beside.queue(1);
       let fetch = await costOf(beside.docs, beside.read);
       expect(fetch).toMatchObject({ documentFetches: 1, resultsStored: 0, resultsFound: 1 });
-      // Each of the 2N - 1 makings decodes the one run of its piece, which the model takes;
-      // each of the N fetches decodes what a fetch decodes. No tab is copied and no batch
-      // widens.
+      // Each of the 2N - 1 makings decodes its piece's one run, and each of the N fetches what a
+      // fetch decodes. No tab is copied and no batch widens.
       expect(cost).toMatchObject({
         documentFetches: N, tabClones: 0, viewWidenings: 0,
         runsDecoded: (2 * N - 1) + N * fetch.runsDecoded,
@@ -7088,10 +7002,9 @@ describe.each(RUNS)("an approved Google Doc edit built from the document its app
       await expectNothingStoredSince(facet, before);
     });
 
-  // A BATCH PAST ITS PIECE, AND A PIECE THAT CANNOT BE MADE, are refusals of the edit: each
-  // comes again at every rebuild of the same edit in the same version, so none may fail a
-  // read, a rejection or an approval as a fault would. Neither is known to happen: a spy on
-  // the store's `piece` makes them here.
+  // A BATCH PAST ITS PIECE, AND A PIECE THAT CANNOT BE MADE, refuse the edit: each recurs at every
+  // rebuild in the same version, so neither may fail a read, rejection or approval as faults do.
+  // A spy on the store's `piece` makes them.
   const MODEL_FAULT = (operation: string) =>
     `${operation}: this change cannot be shown as it will read once applied, so it cannot be ` +
     "made through this connection. Make it in Google Docs.";
@@ -7270,7 +7183,6 @@ describe.each(RUNS)("an approved Google Doc edit built from the document its app
     expect(unapplyableLines(logged)).toEqual([]);
     expect(await pending(facet)).toEqual([actionId]);
     expect(docs.contentBatches).toBe(0);
-    // Approved again, it lands.
     expect(await hooks().applyAction(facet, actionId)).toBeNull();
     expect(docs.text(MAIN_TAB)).toBe("Alpha\nGamma\nNew");
   });
@@ -7302,9 +7214,8 @@ describe.each(RUNS)("an approved Google Doc edit built from the document its app
     // The batch is the first request: no document was read to build it.
     expect(docsRequestsSince(from)[0]).toBe("content");
     expect(built).toHaveBeenCalled();
-    // Made and checked as a replay makes it, in a transaction that is undone: the two rows it
-    // writes, the result the test deleted among them, are not kept (the unit tests of
-    // `doc-actions` read the rows back), and nothing else is written.
+    // Made and checked as a replay makes it, in a transaction that is undone: its two rows, the
+    // deleted result among them, are not kept, and nothing else is written.
     expect(atWrite! - written).toBe(2);
     expect(docs.text(MAIN_TAB)).toBe("Alpha\nGamma");
     built.mockRestore();
@@ -7351,7 +7262,6 @@ describe.each(RUNS)("an approved Google Doc edit built from the document its app
     expect(content).toContain("Zebra\n\nYak\n");
     expect(content).not.toContain("<td><p>a</p></td>");
     expect(docsRequestsSince(from).filter(request => request === "read")).toEqual([]);
-    // Rejecting the dropped edits succeeds too.
     await hooks().rejectAction(facet, second);
     await hooks().rejectAction(facet, rows);
     expect(await pending(facet)).toEqual([]);
@@ -7366,10 +7276,9 @@ describe.each(RUNS)("an approved Google Doc edit built from the document its app
 
     await hooks().rejectAction(facet, first);
 
-    // The rejection succeeds. What the replay marked before it met the run is undone with
-    // it, so the replacement behind stays pending; the copy is then treated as none, as it
-    // is where there is none to replay over: the change that names a table behind the
-    // rejected edit is dropped for that, in the words of a rejection that could not replay.
+    // The rejection succeeds, and what its replay marked before it met the run is undone: the
+    // replacement behind stays pending. With no copy to replay over, the change behind the rejected
+    // edit that names a table is dropped as a rejection that could not replay drops it.
     expect(await pending(facet)).toEqual([second]);
     expect(await hooks().applyAction(facet, rows)).toContain(
       `Pending Google Doc edits could not be replayed after edit ${first} was rejected`);
@@ -8119,9 +8028,7 @@ describe("Google Doc edits through a read and write Drive binding", () => {
     expect(read.value).toBe(pending);
   });
 
-  // The sessions a binding opens on a Doc share the document's source, so a session left open
-  // reads what the sessions opened after it read, while they queue and the binding applies and
-  // rejects.
+  // A binding's sessions on a Doc share its source: one left open reads what later sessions read.
   it("reads the same on a session left open while a queue of text and table changes over two tabs is approved and rejected", async () => {
     let docs = draft("Intro");
     const SECOND = "second";
@@ -8211,10 +8118,8 @@ describe("Google Doc edits through a read and write Drive binding", () => {
     }
   });
 
-  // A bound Doc replays the changes behind a rejected one over its stored copy and keeps those
-  // that still apply ('follows a table past a rejected insertion above it'). A rejection through a
-  // Drive binding replays nothing, since no document is in hand there, so it fails those that
-  // named a table as the rejected change left it.
+  // A Drive rejection replays nothing, as no document is in hand, so it fails the changes behind it
+  // that named a table as it left it; a bound Doc replays and keeps those that still apply.
   it("fails the table changes queued behind a rejected table change, and none behind a rejected text edit", async () => {
     let docs = docsWithBody(tableBody());
     let row = { table: 0, cells: [["Ship docs", "Open"]] };
@@ -8340,9 +8245,8 @@ describe("Google Doc edits through a read and write Drive binding", () => {
     await expectRefusedWithRowBehind(facet, queued, answer, fetched);
   });
 
-  // Through Drive the read that prepares an edit is authorized, and names the tab: it is the
-  // authorization of the position insertTable() returns, where a bound Doc authorizes a read of
-  // the position alone ('queues nothing when the read of a new table's position is refused').
+  // Through Drive the read preparing an edit, which names the tab, authorizes the position
+  // insertTable() returns; a bound Doc authorizes a read of the position alone.
   it("authorizes the read that prepares a table, and no second read of its position", async () => {
     docsWithBody(tableBody());
     let facet = "drive-doc-table-reads";
@@ -8917,7 +8821,6 @@ describe("Google Doc edits through a read and write Drive binding", () => {
         expect(await files.read()).toBe(pending);
         expect(docs.documentFetches - fetches).toBe(1);
         expect(await files.rows()).toMatchObject({ "doc_copy of the file": 1, doc_result: 1 });
-        // And it is approved as any edit of a stored copy is.
         expect(await files.apply(actionId!)).toBeNull();
         expect(docs.text()).toContain("More");
       });
@@ -8985,7 +8888,6 @@ describe("Google Doc edits through a read and write Drive binding", () => {
         let files = connection(`drive-store-unavailable-${name.length}`, binding);
         expect(await files.read()).toBe("Draft\n");
         let stored = await files.stored();
-        // The file is gone from what the connected account can see.
         drive.files.delete("doc-1");
         expect(await files.read()).toBe(refusal);
         expect(await files.stored()).toEqual(stored);
@@ -9074,8 +8976,7 @@ describe("Google Doc edits through a read and write Drive binding", () => {
         expect(await files.rows("doc-2")).toMatchObject({
           doc_copy: MAX_DRIVE_DOC_COPIES, "doc_copy of the file": 1, "doc_version of the file": 1,
         });
-        // One fetch a read so far, the control's included: the second file's own read
-        // fetched once.
+        // One fetch a read so far, the control's included.
         expect([docs.documentFetches, second.documentFetches]).toEqual([1, 2]);
 
         // The first file read again fetches once and reads the same; its keep removes the
@@ -9646,9 +9547,8 @@ describe.each(RUNS)("what a Google Doc session takes in hand, $name", r => {
   });
 
   // The collaborator's edit changes the tab's last paragraph, so Google refuses the pin: one
-  // `documents.get`, the answer stored as it is read (one run of it is not stored yet, and
-  // is rendered), and the batch made from the piece around the edit in that copy as a replay
-  // makes it, which renders the run the edit gives too.
+  // `documents.get`, stored as read (rendering its one run not stored yet), and the batch made from
+  // the piece around the edit as a replay makes it, which renders the run the edit gives too.
   it("an approval whose pin Google refuses reads the document once and builds from the piece", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     let facet = "piece-fallback";

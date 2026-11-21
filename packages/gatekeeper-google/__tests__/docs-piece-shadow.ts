@@ -165,9 +165,7 @@ export function silentRunTabs(): { name: string; tab: GoogleDocsTab; ranges: Mar
   }];
 }
 
-// ---------------------------------------------------------------------------
-// The builders on a piece, held to the builders on the whole tab
-// ---------------------------------------------------------------------------
+// --- The builders on a piece, held to the builders on the whole tab
 
 /** What a build gave: its batch, or the refusal it threw. */
 export type Outcome =
@@ -385,9 +383,7 @@ export function expectSameFromPieces<Edit>(
   return { built: true, strict, nearBefore, nearAfter, counted };
 }
 
-// ---------------------------------------------------------------------------
-// An edit built from a reading of its tab
-// ---------------------------------------------------------------------------
+// --- An edit built from a reading of its tab
 
 /** A reading a test made of a tab, with the range of elements its last piece held. */
 export type ShadowReading = TabReading & {
@@ -508,9 +504,7 @@ export function expectSameFromReadings(
   return { built: true, strict, counted };
 }
 
-// ---------------------------------------------------------------------------
-// A table call checked against a reading of its tab
-// ---------------------------------------------------------------------------
+// --- A table call checked against a reading of its tab
 
 /** What a table call's checks gave: the change to queue, or the refusal they threw. */
 export type CallOutcome =

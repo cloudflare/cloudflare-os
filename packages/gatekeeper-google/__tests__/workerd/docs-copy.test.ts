@@ -16,8 +16,7 @@ it("refuses a record whose columns are of the wrong types", async () => {
   await host.read({ a: "one" });
   const before = await host.counts();
 
-  // Text where the clock of the fetch goes, and a record with no id: storage takes neither, so
-  // no reader of a record has to ask what its columns hold.
+  // Storage refuses text for the fetch's clock and a record with no id.
   expect(await failure(host.insertRecord("fetched_at"))).toMatch(/doc_copy\.fetched_at|datatype/i);
   expect(await failure(host.insertRecord("id"))).toMatch(/doc_copy\.id|NOT NULL/i);
 
@@ -53,8 +52,8 @@ it("removes a copy of several megabytes under docCopy: in batches, and what is l
   expect(await host.removeUnread(4)).toBe(true);
 });
 
-// The first tab's rows are written before the second tab's paragraph is found too large: the
-// rollback is held here, the limit by the store's own test.
+// The first tab's rows are written before the second's paragraph is found too large: held to a
+// rollback.
 it("leaves the earlier copy whole when a keep fails part way", async () => {
   const host = env.DOC_COPY_HOST.getByName("fails-midway");
   await host.read({ a: "one", b: "two" });

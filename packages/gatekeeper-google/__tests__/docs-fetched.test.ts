@@ -1,6 +1,5 @@
 // The walk of a fetched Google Doc (`fetchedDoc`): each tab as the runs its pruned whole is cut
-// into, the answer read once as asked and emptied as read, and what it throws, and when.
-// That what the walk passed can be collected is held through a store in docs-ingest.test.ts.
+// into, the answer read once and emptied as read, and what it throws, and when.
 
 import { describe, expect, it } from "vitest";
 import type { GoogleDocsDocument, GoogleDocsTab } from "../src/docs-api";
@@ -142,8 +141,7 @@ describe("the walk of a fetched document", () => {
     let at = 0;
 
     for (let tab of fetchedDoc(document, 0).tabs) {
-      // The tab handed over has left the answer, and so has every tab before it; the tabs
-      // after it are the answer's own.
+      // The tab handed over, and every tab before it, have left the answer.
       expect(document.tabs.map((slot, index) => index <= at ? slot === undefined : slot === held[index])
         .every(Boolean)).toBe(true);
       for (let run of tab.runs) {

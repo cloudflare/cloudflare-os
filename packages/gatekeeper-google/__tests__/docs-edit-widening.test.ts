@@ -35,10 +35,7 @@ vi.mock("../src/docs-model", async importOriginal => {
 
 const NONE: DocPending = { edits: [], roots: [] };
 const LINES = Array.from({ length: 12 }, (_, at) => `Line ${String(at).padStart(2, "0")}.`);
-/**
- * Twelve lines under forced sizes, which cut them into seven runs of one to three elements:
- * the third holds `Line 05.` alone.
- */
+/** Twelve lines cut into seven runs of one to three elements: the third holds `Line 05.` alone. */
 const keptLines = () => kept(scenarioTab("t1", LINES), RUNS_OF_THREE);
 /** An edit inside the paragraph of the third run. */
 const THIRD: DocEdit = { type: "replaceText", oldMarkdown: "05", newMarkdown: "five" };

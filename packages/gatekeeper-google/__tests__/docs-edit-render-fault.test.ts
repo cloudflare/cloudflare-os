@@ -131,8 +131,7 @@ describe("the renderer's fault on a tab the store renders as it stores it", () =
     fault.on = false;
     let { storage, store, version } = kept();
     let before = storage.rows();
-    // Storage refuses the statement that writes a run list: the list of the version the edit
-    // gives.
+    // Storage refuses to write the run list of the version the edit gives.
     storage.refuse(statement => statement.startsWith("INSERT OR REPLACE INTO doc_seq"));
 
     let thrown = thrownBy(() => docEditResult(store, version, APPEND));

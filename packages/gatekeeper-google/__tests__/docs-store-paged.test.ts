@@ -1,6 +1,6 @@
-// What a read of a stored tab and the keying of its version under another digest ask of
-// storage: its list a page at a time, a page's lists by one statement, no content table scanned.
-// A file of its own because it mocks the renderer's carry functions and `renderRun` to count them.
+// What a read of a stored tab, and a keying of its version under another digest, ask of storage:
+// its list a page at a time, a page's lists by one statement, no content table scanned. Mocks the
+// renderer's carry functions and `renderRun` to count them.
 
 import { describe, expect, it, vi } from "vitest";
 import type { GoogleDocsTab } from "../src/docs-api";
@@ -166,8 +166,7 @@ describe("a stored tab's list, a page at a time", () => {
       ...fuzzedTabs(41, 60).filter(({ tab }) => namedListIds(tab.body.content).length > 0),
       { name: "runs that each name a dozen lists", tab: listRunsTab("t1", 6) },
       { name: "tables that each name a list", tab: listedTablesTab("t1", 40) },
-      // Three pages of a list whose every run but the first names a list of its own: the runs
-      // at a page's first and last place among them.
+      // Three pages of runs that each name a list of their own: lists at a page's edges.
       {
         name: "items that are each a run and a list", tab: listedProseTab("t1", 1_200),
         cuts: [[{ ...RUNS_OF_THREE, elements: 1 }, "a run an element"]],
@@ -250,24 +249,22 @@ describe("a stored tab's list, a page at a time", () => {
         expect(under(counted.storage, "a", RUNS_OF_THREE).markdown(base), name).toBe(whole));
       lose(storage, base, 0);
 
-      // That run and no other: a rendering that came out under another key than the list
-      // names would have the version keyed again, every run rendered.
+      // That run alone: one rendered under another key would have the version keyed again.
       expect(read(), name).toMatchObject({ runsDecoded: 1, runsRendered: 1 });
       // And the row it wrote back is the run's: read again, with nothing missing.
       expect(read(), name).toMatchObject({ runsDecoded: 0, runsRendered: 0 });
 
       let [first] = tab.body.content;
       if (first.startIndex > 0) startsLate++;
-      // A section break is written everywhere but at index 0, so one that starts a body
-      // which does not start at 0 is lost by a run decoded from 0.
+      // A section break is written everywhere but at index 0, so a run decoded from 0 loses one
+      // that starts a body not at 0.
       if (first.sectionBreak && first.startIndex > 0) showsItsIndex++;
     }
     expect(startsLate).toBeGreaterThanOrEqual(10);
     expect(showsItsIndex).toBeGreaterThan(0);
 
-    // A VERSION THE MODEL MADE, of a tab that starts at 0: its opening section break is
-    // stored with no index and takes the one its run is decoded at, so it is written by a
-    // run decoded from anywhere past 0.
+    // A VERSION THE MODEL MADE, starting at 0: its opening break is stored with no index and
+    // takes the one its run is decoded at.
     let tab = listedTablesTab("t1", 4);
     let storage = fakeDocStorage();
     let { base, counted, store } = keptUnder(storage, tab, "a");
@@ -283,11 +280,9 @@ describe("a stored tab's list, a page at a time", () => {
   });
 
   it("renders a run alone past the first at the index the sizes of the runs before it give", () => {
-    // A run an element, so the element at a place of the body is the run at that place of
-    // the list, and where a run was decoded shows in where its first element ends. The run
-    // lost is a section break past the first element: it is written everywhere but at index
-    // 0, which no key holds, so one decoded at the first index of a tab that starts at 0 would
-    // lose its line and be stored and answered so under the key the list names.
+    // A run an element, so where a run was decoded shows in where its first element ends. The
+    // run lost is a section break past the first element, which a decode from index 0 would
+    // write wrong under the key the list names.
     let sizes = { ...RUNS_OF_THREE, elements: 1 };
     let tabs = [...fuzzedTabs(41, 60), ...recordedTabs()]
       .map(({ name, tab }) => ({ name, tab: pruneTab(throughJson(tab)) }));
@@ -304,13 +299,11 @@ describe("a stored tab's list, a page at a time", () => {
         .toEqual({ runs: content.length });
       let whole = docTabToMarkdown(tab).markdown;
       let ends = (at: readonly number[]) => at.map(place => content[place].endIndex);
-      // Section breaks of the same content share one rendering, so the runs a loss has
-      // rendered alone are among the breaks and the first run: never every run, which a
-      // version keyed again has rendered.
+      // Section breaks of the same content share a rendering, so a loss renders breaks and the
+      // first run alone: never every run, as a keying again does.
       let sharing = ends([0, ...places]);
       expect(sharing.length, name).toBeLessThan(content.length);
-      // The renderings at `lost` removed and the tab read: each run rendered was decoded
-      // where its element stands in the tab, the lost ones among them.
+      // With the renderings at `lost` removed, each run rendered was decoded where it stands.
       let readWithout = (...lost: number[]) => {
         let where = `${name}, places ${lost.join(" and ")}`;
         lose(storage, base, ...lost);
@@ -321,11 +314,9 @@ describe("a stored tab's list, a page at a time", () => {
       };
 
       for (let place of places) {
-        // The break alone: its index is made from the list, the tab's first index and the
-        // sizes of the runs before the break.
+        // The break alone: its index comes from the tab's first and the sizes of the runs before.
         readWithout(place);
-        // And with the first run: the index is the tab's first at place 0, and the walk moves
-        // it by the size of each run it passes on the way to the break.
+        // And with the first run: the walk moves the index from the tab's first.
         readWithout(0, place);
       }
     }
@@ -333,14 +324,9 @@ describe("a stored tab's list, a page at a time", () => {
   });
 
   it("renders a run alone past the first page with the carry of the runs before it", () => {
-    // 1,200 paragraphs, a run an element after the run of the section break: 1,201 runs,
-    // three pages of the version's list, paragraph n at place n. They are items of ONE
-    // numbered list but for every tenth place and for those that open a page: the first 50
-    // places of the first page, 100 of the second and 150 of the third, so that the same
-    // places of two pages never hold the same count of items. An item that follows a
-    // paragraph outside the list shows the number after the one the carry holds for its list,
-    // the count of the items before it, and its carry key holds that count, where the key of
-    // a table of a list of its own holds nothing of the carry.
+    // 1,201 runs over three pages, paragraph n at place n: items of one numbered list but for
+    // every tenth place and the first 50, 100 and 150 places of the three pages, so no two pages
+    // hold the same count of items at a place. Such an item's carry key holds that count.
     let made = scenarioTab("t1", [], Array.from({ length: 1_200 }, (_, at) => `Paragraph ${at + 1}`));
     for (let [place, element] of made.body.content.entries()) {
       let opensPage = place % 500 < 50 * (1 + Math.floor(place / 500));
@@ -356,21 +342,16 @@ describe("a stored tab's list, a page at a time", () => {
     let read = () => spent(counted, () =>
       expect(under(counted.storage, "a", sizes).markdown(base)).toBe(whole));
 
-    // An item of the second page, after 495 others, and one of the third, after 792. The
-    // paragraph before each is outside the list at the same place of every page, so a state
-    // made from another page's summaries differs from the run's own by the count alone.
+    // An item of the second page and one of the third, each after a paragraph outside the list:
+    // a state made from another page's summaries would differ by the count alone.
     expect(whole).toContain("\n496. Paragraph 701\n");
     expect(whole).toContain("\n793. Paragraph 1181\n");
 
-    // The state at the first is made from the summaries of the 701 runs before it, the first
-    // page's and 201 of the second's, and the walk moves it on to the other. Those two runs
-    // and no other: a run rendered with another count of the items before it comes out under
-    // another key than the list names, and the version is then keyed again, every run
-    // rendered.
+    // The state at the first is made from the 701 runs' summaries before it, and the walk moves
+    // it on to the other. Those two runs alone: a wrong count would key the version again.
     lose(storage, base, 701, 1_181);
     expect(read()).toMatchObject({ runsDecoded: 2, runsRendered: 2, pages: 3 + 2 });
-    // The one of the third page alone: the state is made from all three pages read again,
-    // 181 runs of the third.
+    // The third page's alone: its state is made from all three pages read again.
     lose(storage, base, 1_181);
     expect(read()).toMatchObject({ runsDecoded: 1, runsRendered: 1, pages: 3 + 3 });
     // And the rows written back are the runs': read again, with nothing missing.
@@ -393,12 +374,10 @@ describe("a stored tab's list, a page at a time", () => {
 // What each read costs on `LISTED`, by the statements it runs over the tab's context: a number
 // of pages or a constant, never a number of runs. An edit's are in `docs-edit-counts.test.ts`.
 const PAGED_COUNTS = {
-  // A version keyed under another digest: every run decoded and rendered once, the list read
-  // with no join (three pages), the lists loaded once a page, the styles once; and then read
-  // (three joined pages).
+  // A version keyed under another digest: every run decoded and rendered once, three unjoined
+  // pages, the lists once a page, the styles once; then read (three joined pages).
   keyedAgain: { lists: 3, styles: 1, runsDecoded: RUNS, runsRendered: RUNS, pages: 3 + 3, joined: 3 },
-  // Every rendering stored: the list's pages and a rendering's Markdown by key a run. No
-  // carry is made or moved, and the version's totals are not read.
+  // Every rendering stored: the pages and a rendering by key a run; no carry, no totals read.
   pendingRead: {
     lists: 0, styles: 0, runsDecoded: 0, runsRendered: 0, pages: 3, joined: 3, content: RUNS,
     totals: 0, advances: 0, made: 0,
@@ -407,9 +386,8 @@ const PAGED_COUNTS = {
     lists: 0, styles: 0, runsDecoded: 0, runsRendered: 0, pages: 3, joined: 3, content: 0,
     totals: 0, advances: 0, made: 0,
   },
-  // Three renderings lost, one in each page: each run is decoded and rendered alone, with its
-  // page's lists. The state at the first is made by one page read again; a carry is moved
-  // over the 11 runs before it and then, by the walk, over the 1,190 runs from it on.
+  // One rendering lost a page: each rendered alone with its page's lists. The state at the first
+  // takes one page read again; a carry moves over the 11 runs before it, then the 1,190 after.
   lostRenderings: {
     lists: 3, styles: 1, runsDecoded: 3, runsRendered: 3, pages: 3 + 1, totals: 1,
     advances: 11 + 1_190, made: 1, content: 3,

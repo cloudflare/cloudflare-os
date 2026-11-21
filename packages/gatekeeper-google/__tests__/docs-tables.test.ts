@@ -1,3 +1,6 @@
+// The table engine: the requests a table change or a replacement in table cells sends, what
+// each is refused with, and how the tab reads once Google applies it.
+
 import { describe, expect, it } from "vitest";
 import type {
   GoogleDocsRequest, GoogleDocsTab, Paragraph, StructuralElement, TableCell, TextStyle,
@@ -108,9 +111,8 @@ function shapeOf(change: TableChange): TableChangeShape {
 }
 
 /**
- * The tab a table change leaves, which renders the same under each of the model's behaviours.
- * Under each, no paragraph is left indented and a table that gains rows keeps its count of
- * pinned header rows.
+ * The tab a table change leaves, alike under every model behaviour: no paragraph left
+ * indented, and a table that gains rows keeps its count of pinned header rows.
  */
 function appliedChange(tab: GoogleDocsTab, change: TableChange): GoogleDocsTab {
   let before = docTabToMarkdown(tab);
@@ -140,10 +142,7 @@ function replacementIn(
   return { matchStart: found, oldMarkdown, newMarkdown };
 }
 
-/**
- * A replacement in table cells, which renders the same under each of the model's behaviours:
- * the tab it leaves, its requests and that tab's rendering.
- */
+/** A replacement in table cells, alike under every model behaviour: tab, requests, rendering. */
 function appliedCellText(
   tab: GoogleDocsTab, oldMarkdown: string, newMarkdown: string,
 ): { applied: GoogleDocsTab; requests: GoogleDocsRequest[]; rendering: DocTabSnapshot } {
@@ -155,10 +154,7 @@ function appliedCellText(
   return { applied, requests, rendering: docTabToMarkdown(applied) };
 }
 
-/**
- * A stored replacement, queued for table cells when `inTable`, which renders the same under
- * each of the model's behaviours: the tab it leaves and that tab's rendering.
- */
+/** A stored replacement (for table cells when `inTable`), alike under every model behaviour. */
 function appliedReplacement(
   tab: GoogleDocsTab, oldMarkdown: string, newMarkdown: string, inTable?: true,
 ): { rendering: DocTabSnapshot; applied: GoogleDocsTab } {
@@ -169,9 +165,8 @@ function appliedReplacement(
 }
 
 /**
- * The rendering a tab has after a stored replacement that is not one in table cells, found at
- * `matchStart` when its old text stands more than once. It is the same under each of the
- * model's behaviours.
+ * A tab's rendering after a stored paragraph replacement, alike under every model behaviour;
+ * `matchStart` picks the occurrence when the old text stands more than once.
  */
 function appliedParagraphText(
   tab: GoogleDocsTab, oldMarkdown: string, newMarkdown: string, matchStart?: number,
@@ -432,10 +427,7 @@ function centre(tab: GoogleDocsTab, row: number, column: number): void {
   style.alignment = "CENTER";
 }
 
-/**
- * A table whose row 0 holds a centred paragraph of bold 18 pt text and a heading with the same
- * look, and whose row 1 holds plain cells.
- */
+/** Row 0: a centred paragraph of bold 18 pt text and a heading of that look; row 1: plain. */
 function lookTab(second: ParagraphSpec = heading("Head")): GoogleDocsTab {
   let tab = buildTab([
     para("Before"),
@@ -472,10 +464,7 @@ const MATCHED = ["insertText", "updateTextStyle"];
 const tableBeforeHeading = () =>
   buildTab([para("Before"), grid(["first"]), heading("Results"), para("End")]);
 
-/**
- * The font sizes a tab's second table carries in its first row: on the first and the last
- * character of the first cell's paragraph, and on the second cell's line break.
- */
+/** Sizes in the second table's row 0: cell 0's first and last character, cell 1's line break. */
 function newCellSizes(tab: GoogleDocsTab): (number | undefined)[] {
   let filled = cellParagraph(tab, 0, 0, 1);
   let length = filled.paragraph.elements.reduce(
@@ -697,10 +686,7 @@ function attempt(run: () => unknown): string | undefined {
   }
 }
 
-/**
- * Judge a change: what the request builder refuses it with, if it does. A change it accepts
- * reads one way once made.
- */
+/** What the request builder refuses a change with, if anything; one it accepts reads one way. */
 function judge(tab: GoogleDocsTab, change: TableChange): string | undefined {
   let refused = attempt(() => tableChangeRequests(docTabToMarkdown(tab), change));
   if (refused === undefined) appliedChange(tab, change);
@@ -2014,9 +2000,8 @@ function relative(requests: readonly GoogleDocsRequest[], start: number): Relati
 }
 
 /**
- * A replacement of the text of the one paragraph of a single-cell table, through the property.
- * `oldHtml` and `newHtml` are the paragraph's text; the requests come back counted from the
- * paragraph's start.
+ * A replacement of the one paragraph of a single-cell table; `oldHtml` and `newHtml` are its
+ * text, and the requests come back counted from the paragraph's start.
  */
 function oneCell(runs: Runs, oldHtml: string, newHtml: string, wrap = "p") {
   let tab = buildTab([
@@ -2973,8 +2958,7 @@ describe("replacementPath", () => {
     // Text of the table together with text outside it.
     expect(pathOf(content, "Before\n\n<table>\n  <tr>\n    <td><p>a", "X")).toEqual(beside("before"));
     expect(pathOf(content, "b</p></td>\n  </tr>\n</table>\n\nAfter", "X")).toEqual(beside("after"));
-    // A range that ends at the table's last character, or starts at its first, has text on
-    // one side only.
+    // A range ending at the table's last character, or starting at its first, has one side.
     let html = tableAt(content, 0);
     expect(pathOf(content, `Before\n\n${html}`, "X")).toEqual(beside("before"));
     expect(pathOf(content, `${html}\n\nAfter`, "X")).toEqual(beside("after"));
@@ -2986,9 +2970,8 @@ describe("replacementPath", () => {
     expect(pathOf(two, "a</p></td>\n  </tr>\n</table>\n\nMid\n\n<table>\n  <tr>\n    <td><p>b", "ab"))
       .toEqual(beside("after"));
 
-    // Whatever stands beside the table: a read-only paragraph, or an empty one, which is what
-    // an edit that removes the paragraph between two tables leaves there: Google Docs keeps a
-    // paragraph on each side of a table.
+    // Whatever stands beside the table: a read-only paragraph, or the empty one Google Docs
+    // keeps there once an edit removes the paragraph between two tables.
     let readOnly = read(CHIP_TABLE_DUE());
     expect(pathOf(readOnly, "<table>", "X\n\n<table>")).toEqual(beside("before"));
     expect(pathOf(readOnly, "</table>", "</table>\n\nX")).toEqual(beside("after"));
@@ -3076,10 +3059,7 @@ function converterRequests(tab: DocTabSnapshot, replacement: TextReplacement): u
     canonicalizeMarkdownReplacement(oldMarkdown, newMarkdown), tab.tabId).requests;
 }
 
-/**
- * What the converter's own calls give for a replacement as written, and the requests of the
- * stored replacement that is not one in table cells.
- */
+/** The converter's own requests for a replacement, and the stored paragraph replacement's. */
 function bothPaths(tab: DocTabSnapshot, replacement: TextReplacement): [Outcome, Outcome] {
   return [
     outcome(() => converterRequests(tab, replacement)),
@@ -3087,10 +3067,7 @@ function bothPaths(tab: DocTabSnapshot, replacement: TextReplacement): [Outcome,
   ];
 }
 
-/**
- * The requests of a replacement come back as the converter's own calls give them, and the
- * replacement reads one way once made.
- */
+/** A replacement's requests are the converter's own, and it reads one way once made. */
 function expectAsConverter(tab: GoogleDocsTab, oldMarkdown: string, newMarkdown: string): void {
   let before = docTabToMarkdown(tab);
   let replacement = replacementIn(before.markdown, oldMarkdown, newMarkdown);
@@ -3351,8 +3328,7 @@ describe("a replacement beside a table", () => {
     }
   });
 
-  // Recorded: around-tables / the paragraph above the table becomes an item, and
-  // around-tables / the paragraph below the table becomes an item.
+  // Recorded: around-tables, the paragraphs above and below a table becoming items.
   it("makes list items of the paragraphs above and below a table", () => {
     let table = grid(["a", "b"], ["c", "d"]);
     let above = buildTab([para("Top"), para("Second top"), table, para(""), para("Bottom")]);
@@ -3369,10 +3345,9 @@ describe("a replacement beside a table", () => {
 });
 
 describe("text written in front of a list item that shows no marker", () => {
-  // An item of a list whose level has no marker reads as a plain line, so a plain paragraph
-  // written in front of it is taken out of the list it is typed into. Text that goes below a
-  // table is written in front of the paragraph after the table, so it meets this where that
-  // paragraph is such an item; the same replacement with no table near goes the same way.
+  // An item whose level has no marker reads as a plain line, so a plain paragraph written in
+  // front of it leaves the list. Text below a table is written in front of the paragraph after
+  // it, so meets this where that paragraph is such an item, as it does with no table near.
   const places: [tab: () => GoogleDocsTab, write: (text: string) => [string, string]][] = [
     [
       () => buildTab(
@@ -3983,10 +3958,7 @@ describe("a table change behind an append", () => {
 /** One step of a sequence: a table change, or a replacement found at `matchStart`. */
 type Step = TableChange | (TextReplacement & { type: "replaceText"; inTable?: true });
 
-/**
- * Make a step in the model's document, which reads the same under each of the model's
- * behaviours. Returns the document and its rendering after it.
- */
+/** A step made in the model's document, alike under every model behaviour, and its rendering. */
 function advance(tab: GoogleDocsTab, step: Step): { tab: GoogleDocsTab; content: DocTabSnapshot } {
   let before = docTabToMarkdown(tab);
   let applied = appliedOneWay(tab, step.type === "replaceText"

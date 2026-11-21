@@ -8,10 +8,7 @@ import {
   anotherDigestScenario, scenarioTab, storeScenario, tableCounts,
 } from "./doc-store-scenarios";
 
-/**
- * The Doc store over a real DO's storage. A scenario runs inside the Durable Object and answers
- * small values: a test names the scenario, and no document crosses RPC.
- */
+/** The Doc store over a real DO's storage; scenarios run inside it, so no document crosses RPC. */
 export class DocStoreHost extends DurableObject {
   readonly #store = new DocStore(this.ctx.storage);
 
@@ -44,10 +41,8 @@ const MEBIBYTE = 1_048_576;
 const TOO_LARGE = "too large for a row";
 
 /**
- * A Doc's stored copy over a real DO's storage. Google answers the tabs a test names, each one
- * paragraph of the text given, and every answer here is small: a tab reads back as its text.
- * The copy's lifecycle is built when a test first reads through it, so a test of the keys under
- * `docCopy:` alone runs none of its removals.
+ * A Doc's stored copy over a real DO's storage, each tab one paragraph of the text given. The
+ * copy is built at the first read, so a test of `docCopy:` keys alone runs none of its removals.
  */
 export class DocCopyHost extends DurableObject {
   #answer: Record<string, string> = {};
@@ -129,10 +124,7 @@ export class DocCopyHost extends DurableObject {
     return keys;
   }
 
-  /**
-   * Keeps the tabs `tabs` names and puts the key `beside` in one transaction, which then fails
-   * where `fail` says.
-   */
+  /** Keeps `tabs` and puts the key `beside` in one transaction, which then fails where `fail` says. */
   keepBeside(tabs: Record<string, string>, beside: string, fail: boolean): void {
     this.ctx.storage.transactionSync(() => {
       this.ctx.storage.kv.put(beside, true);
@@ -150,10 +142,7 @@ export class DocCopyHost extends DurableObject {
     );
   }
 
-  /**
-   * Writes, as plain keys, a copy under `docCopy:` of `parts` parts of `megabytes` chunks of
-   * 1 MiB each (the index, and a manifest and the chunks for each part), and the keys `others`.
-   */
+  /** Writes a `docCopy:` copy of `parts` parts of `megabytes` 1 MiB chunks, and the keys `others`. */
   writeUnreadCopy(parts: number, megabytes: number, others: string[]): void {
     let { kv } = this.ctx.storage;
     kv.put("docCopy:doc:manifest", { size: 0, chunks: 0 });

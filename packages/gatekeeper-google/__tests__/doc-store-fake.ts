@@ -37,12 +37,10 @@ export type FakeDocStorage = Omit<DocStoreStorage, "sql"> & {
 };
 
 /**
- * A Durable Object's storage as the Doc store uses it, over `node:sqlite`, for Node tests. It
- * follows workerd where the store depends on it: a cursor is stepped lazily and is one row
- * ahead; `transactionSync` nests as savepoints and restores the KV with a rollback; every
- * cursor open at a rollback throws when it is next stepped. It does not count rows as workerd
- * bills them (`rowsWritten` is the statement's changed rows) and enforces no size limit: those
- * are pinned in the workerd project.
+ * A Durable Object's storage as the Doc store uses it, over `node:sqlite`. Like workerd, a cursor
+ * steps lazily one row ahead, `transactionSync` nests as savepoints and restores the KV on a
+ * rollback, and a cursor open at a rollback throws when next stepped. Billed rows and size limits
+ * are not modelled: those are pinned in the workerd project.
  */
 export function fakeDocStorage(): FakeDocStorage {
   const db = new DatabaseSync(":memory:");
