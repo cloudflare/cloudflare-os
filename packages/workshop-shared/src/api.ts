@@ -3509,13 +3509,6 @@ export type AdminGatewayProvider = {
    * AdminApi.setGatewayProviderEnabled). Absent while the provider is off.
    */
   enabledBy?: 'environment' | 'admin';
-
-  /**
-   * Whether the provider's requests need CF_AI_GATEWAY_API_TOKEN on a deployment that has none,
-   * so that they fail until it is set. It says nothing of the provider keys the gateway holds,
-   * which the Workshop can't see (see AdminApi.testGatewayProvider).
-   */
-  needsApiToken: boolean;
 };
 
 /**
@@ -3803,14 +3796,6 @@ export type SuggestedModelId<P extends AiModelProvider = AiModelProvider> =
 export function modelKind(provider: string, model: string): ModelKind {
   return SUGGESTED_MODELS[provider as AiModelProvider]?.[model]?.kind ?? "language";
 }
-
-/**
- * Providers whose pi adapter refuses an injected `fetch` and therefore cannot
- * use the Workers AI binding transport (requiring `CF_AI_GATEWAY_API_TOKEN`
- * over HTTPS). Currently empty -- pi's Google adapter forwards custom `fetch`
- * via `httpOptions.fetch` -- and kept as the hook for any future exception.
- */
-export const HTTPS_ONLY_PROVIDERS: ReadonlySet<string> = new Set<AiModelProvider>([]);
 
 /**
  * Metadata about a workspace (one Overseer DO and everything in it). Includes everything needed

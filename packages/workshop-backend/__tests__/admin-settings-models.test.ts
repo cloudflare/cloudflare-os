@@ -867,13 +867,13 @@ const providers = (inDo: ReturnType<typeof adminSettings>["inDo"]) => inDo(async
 
 describe("AdminSettings gateway providers", () => {
   const FLOOR = [
-    { provider: "cloudflare", enabledBy: "environment", needsApiToken: false },
-    { provider: "anthropic", enabledBy: "environment", needsApiToken: false },
+    { provider: "cloudflare", enabledBy: "environment" },
+    { provider: "anthropic", enabledBy: "environment" },
   ];
-  const OPENAI_OFF = { provider: "openai", needsApiToken: false };
+  const OPENAI_OFF = { provider: "openai" };
   const OPENAI_ON = { ...OPENAI_OFF, enabledBy: "admin" };
-  const GOOGLE_OFF = { provider: "google", needsApiToken: false };
-  const AUTO_OFF = { provider: "cloudflare-auto-router", needsApiToken: false };
+  const GOOGLE_OFF = { provider: "google" };
+  const AUTO_OFF = { provider: "cloudflare-auto-router" };
 
   it("turns a provider on and off, storing and mirroring each change", async () => {
     const { inDo, put, mirror } = adminSettings();
@@ -991,7 +991,7 @@ describe("AdminSettings gateway providers", () => {
       const { gatewayModels } = await inDo(admin => admin.getSettings("admin"));
       expect(gatewayModels!.providerSettings).toStrictEqual([
         AUTO_OFF, ...FLOOR, OPENAI_OFF,
-        { provider: "google", enabledBy: "admin", needsApiToken: false },
+        { provider: "google", enabledBy: "admin" },
       ]);
       expect(gatewayModels!.models.map(model => model.id)).toContain("gemini-3.6-flash");
       await inDo(admin => admin.setGatewayModelMode("claude-fable-5-2", "hidden", ACTOR));
@@ -1149,6 +1149,13 @@ function answered(request: Request): Response {
       } },
     ] as { type: string }[]);
   }
+  if (pathname.includes("/google-ai-studio/")) {
+    return new Response(
+        `data: ${JSON.stringify({
+          candidates: [{ content: { role: "model", parts: [{ text: "OK" }] }, finishReason: "STOP" }],
+        })}\n\n`,
+        { headers: { "content-type": "text/event-stream" } });
+  }
   return completion("OK");
 }
 
@@ -1283,13 +1290,11 @@ describe("AdminSettings.testGatewayProvider", () => {
   });
 
   it("tests google over the binding transport when no token is configured", async () => {
-    const { test, requests } = tested(() => new Response("data: {}\n\n", {
-      status: 200, headers: { "content-type": "text/event-stream" },
-    }), { CF_AI_GATEWAY_API_TOKEN: undefined });
+    const { test, requests } = tested(answered, { CF_AI_GATEWAY_API_TOKEN: undefined });
     const { result } = await test("google");
     expect(requests).toHaveLength(1);
     expect(requests[0]!.url).toContain("/google-ai-studio/v1beta/models/");
-    expect(result.model).toBe("gemini-3.6-flash");
+    expect(result).toStrictEqual({ model: "gemini-3.6-flash", ok: true });
   });
 
   it("reports a model that does not answer in time", async () => {
@@ -1318,7 +1323,7 @@ describe("AdminSettings.testGatewayProvider", () => {
     expect((await test("cloudflare")).result).toStrictEqual({ model: DEEPSEEK_FLASH, ok: true });
     const { stored, view } = await providers(inDo);
     expect(stored).toStrictEqual([]);
-    expect(view[1]).toStrictEqual({ provider: "cloudflare", needsApiToken: false });
+    expect(view[1]).toStrictEqual({ provider: "cloudflare" });
   });
 
   // The router rides the binding's /compat route, and names the model it picked in a response
@@ -1574,14 +1579,12 @@ describe("AdminSettings.testGatewayModel", () => {
   });
 
   it("tests a google model over the binding when the deployment has no token", async () => {
-    const { testModel, requests, inDo } = tested(() => new Response("data: {}\n\n", {
-      status: 200, headers: { "content-type": "text/event-stream" },
-    }), { CF_AI_GATEWAY_API_TOKEN: undefined });
+    const { testModel, requests, inDo } = tested(answered, { CF_AI_GATEWAY_API_TOKEN: undefined });
     await inDo(admin => admin.setGatewayProviderEnabled("google", true, ACTOR));
     const { result } = await testModel("gemini-3.6-flash");
     expect(requests).toHaveLength(1);
     expect(requests[0]!.url).toContain("/google-ai-studio/v1beta/models/");
-    expect(result.model).toBe("gemini-3.6-flash");
+    expect(result).toStrictEqual({ model: "gemini-3.6-flash", ok: true });
   });
 
   it("reports a model that does not answer in time", async () => {

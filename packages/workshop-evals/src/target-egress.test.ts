@@ -108,6 +108,8 @@ it("allows the direct Workers AI route", async () => {
 it("allows AI Gateway inference and cost-log routes over HTTPS", async () => {
   expect(await egress(HTTPS, [WORKERS_AI_MODEL], [WORKERS_AI_INFERENCE_URL, COST_LOG_URL]))
     .toEqual([204, 204]);
+  expect(await egress(HTTPS, [GEMINI], [GEMINI_INFERENCE_URL, COST_LOG_URL]))
+    .toEqual([204, 204]);
 });
 
 it("keeps HTTPS model routes closed in binding mode, with or without a token", async () => {
@@ -121,6 +123,7 @@ it("scopes HTTPS inference to the gateway routes of the models in the matrix", a
   const urls = [CLAUDE_INFERENCE_URL, WORKERS_AI_INFERENCE_URL, GEMINI_INFERENCE_URL];
   expect(await egress(HTTPS, [CLAUDE], urls)).toEqual([204, 403, 403]);
   expect(await egress(HTTPS, [CLAUDE, WORKERS_AI_MODEL], urls)).toEqual([204, 204, 403]);
+  expect(await egress(HTTPS, [CLAUDE, WORKERS_AI_MODEL, GEMINI], urls)).toEqual([204, 204, 204]);
 });
 
 it("returns a deterministic denial for every other route, loopback included", async () => {

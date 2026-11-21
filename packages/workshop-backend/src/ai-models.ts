@@ -916,14 +916,7 @@ function getModelViaGateway(
   options: ModelRoutingOptions,
 ): ModelHandle {
   const metadata = buildMetadata(initiator, options.metadata);
-  const binding = gwConfig.bindingFor(config.provider);
-  // Kept for HTTPS_ONLY_PROVIDERS (currently empty; see api.ts): no binding
-  // means either the provider is listed there or the deployment has none, and
-  // the constructor already required a token for the second case.
-  if (!binding && !gwConfig.apiToken) {
-    throw new Error(`Provider "${config.provider}" cannot use the Workers AI binding transport, ` +
-        "and no CF_AI_GATEWAY_API_TOKEN is configured for the HTTPS one.");
-  }
+  const binding = gwConfig.binding;
   const gatewayAuthHeaders: ProviderHeaders = {
     // pi's API impls recognize cf-aig-authorization and skip SDK auth; the
     // null values suppress the SDKs' own auth headers so the gateway's
@@ -1160,7 +1153,7 @@ export function getDecisionModel(env: Cloudflare.Env, config: AiModelConfig,
   // pi requires a key, which goes unsent.
   const piInput = async (init?: RequestInit) =>
       (await new Response(init?.body).json<{ input: Record<string, unknown> }>()).input;
-  const binding = gwConfig.bindingFor(config.provider);
+  const binding = gwConfig.binding;
   if (binding) {
     // The gateway's passthrough refuses /run even with the binding's identity, so binding
     // requests take the binding's own run(), which reaches the same gateway.

@@ -126,12 +126,10 @@ describe("assertModelAccess", () => {
     expect(() => assertModelAccess(direct, cloudflare)).not.toThrow();
   });
 
-  it("allows google on the binding transport without a token", () => {
+  it("allows gateway access for any provider over binding or HTTPS", () => {
     expect(() => assertModelAccess(binding, google)).not.toThrow();
     expect(() => assertModelAccess(bindingWithToken, google)).not.toThrow();
     expect(() => assertModelAccess(https, google)).not.toThrow();
-  });
-  it("lets cloudflare models ride the binding without a token", () => {
     expect(() => assertModelAccess(binding, cloudflare)).not.toThrow();
   });
 });
