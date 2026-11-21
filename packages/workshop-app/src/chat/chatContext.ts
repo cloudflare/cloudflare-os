@@ -60,7 +60,7 @@ export const chatContextOf = (artifacts: ChatArtifacts | undefined, rows: readon
 }
 
 const KINDS = [
-  ['outputs', 'output'],
+  ['outputs', 'library item'],
   ['hooks', 'automation'],
   ['files', 'upload'],
   ['connectors', 'connector'],
@@ -70,7 +70,7 @@ const KINDS = [
 export const contextCount = (context: ChatContext) => KINDS.reduce((total, [kind]) => total + context[kind].length, 0)
 
 /**
- * What a chat has in a few words, for a button that opens it: "3 outputs · 1 automation", the
+ * What a chat has in a few words, for a button that opens it: "3 library items · 1 automation", the
  * first two kinds it has, and how many others there are.
  */
 export const contextSummary = (context: ChatContext): string => {

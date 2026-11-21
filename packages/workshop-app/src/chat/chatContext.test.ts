@@ -32,10 +32,10 @@ describe('chatContextOf', () => {
 describe('contextSummary', () => {
   it('says the first two kinds there are, with how many others', () => {
     expect(contextSummary(chatContextOf(undefined, []))).toBe('')
-    expect(contextSummary(chatContextOf({ artifacts: [made(1, 1, 'A')], connections: [] }, []))).toBe('1 output')
-    expect(contextSummary(chatContextOf({ artifacts: [made(1, 1, 'A'), made(2, 2, 'B')], connections: [] }, [hook(3, 1)]))).toBe('2 outputs · 1 automation')
+    expect(contextSummary(chatContextOf({ artifacts: [made(1, 1, 'A')], connections: [] }, []))).toBe('1 library item')
+    expect(contextSummary(chatContextOf({ artifacts: [made(1, 1, 'A'), made(2, 2, 'B')], connections: [] }, [hook(3, 1)]))).toBe('2 library items · 1 automation')
     const all = chatContextOf({ artifacts: [made(1, 1, 'A'), sent(3, 'a', 'a.txt')], connections: [used(4, 'drive')] }, [hook(2, 1)])
-    expect(contextSummary(all)).toBe('1 output · 1 automation · +2')
+    expect(contextSummary(all)).toBe('1 library item · 1 automation · +2')
     expect(contextCount(all)).toBe(4)
   })
 })

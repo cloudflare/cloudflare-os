@@ -36,8 +36,9 @@ const fileIcon = (file: ChatAttachment) => {
 }
 
 /**
- * What a chat has, all of it, a section for each kind it has: what it made, what it set up to run
- * by itself, what was uploaded to it and the services it used. Each folds away under its title.
+ * What a chat can use (`availableTo`), a section for each kind there is: the workspace's library,
+ * its automations, what was uploaded to the chat and the services it reaches. Each folds away
+ * under its title.
  */
 export const ChatContextCard = ({ workspaceId, context, onOpenOutput, onOpenAttachment, outputHref, onOpenAutomation, automationHref }: ChatContextCardProps) => {
   const { outputs, hooks, files, connectors } = context
@@ -63,7 +64,7 @@ export const ChatContextCard = ({ workspaceId, context, onOpenOutput, onOpenAtta
 
   return (
     <>
-      {section('outputs', 'Outputs', outputs.length, outputs.map((output) => (
+      {section('outputs', 'Library', outputs.length, outputs.map((output) => (
         <ContextRow key={output.key} icon={outputIcon(output, formats.get(output.workpieceId))} title={output.title} href={outputHref?.(output)} onSelect={() => onOpenOutput(output)} />
       )))}
       {section('automations', 'Automations', hooks.length, hooks.map((hook) => (
@@ -77,7 +78,7 @@ export const ChatContextCard = ({ workspaceId, context, onOpenOutput, onOpenAtta
         // One with no service is named by what it reaches.
         const name = vendor?.displayName ?? (vendorId === undefined ? scopes[0] : vendorId) ?? 'Connection'
         const detail = vendorId === undefined ? undefined : scopes.join(', ') || undefined
-        return <ContextRow key={key} icon={<ServiceLogo name={name} src={vendor?.logo?.url} small />} title={name} detail={detail} />
+        return <ContextRow key={key} icon={<ServiceLogo name={name} src={vendor?.logo?.url} bare />} title={name} detail={detail} />
       }))}
     </>
   )

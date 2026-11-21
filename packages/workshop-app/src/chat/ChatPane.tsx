@@ -25,6 +25,7 @@ import { workspaceLabel } from '@/workspaces/workspaceLabel'
 import { ChatContextPanel } from './ChatContextPanel'
 import { ChatContextSide } from './ChatContextSide'
 import { chatContextOf, contextCount } from './chatContext'
+import { useAvailableToChat } from './useAvailableToChat'
 import { useContextOpen } from './useContextOpen'
 import { useNarrowScreen } from '@gadgets/ui'
 import { ChatItemView, type ChatItemHandlers } from './ChatItemView'
@@ -375,7 +376,9 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
 
   // What the chat has, at the end of its header while it has any, where there is room for it beside the conversation.
   const artifacts = chat.status === 'ready' ? chat.artifacts : undefined
-  const context = useMemo(() => chatContextOf(artifacts, [...(items ?? []), ...(pinned ?? [])]), [artifacts, items, pinned])
+  const own = useMemo(() => chatContextOf(artifacts, [...(items ?? []), ...(pinned ?? [])]), [artifacts, items, pinned])
+  // What it can use: the workspace's, rather than only what the chat has touched.
+  const context = useAvailableToChat(workspaceId, chatId, own)
   const hasContext = contextCount(context) > 0
   const [contextOpen, changeContextOpen] = useContextOpen()
   // Not on a phone, where the conversation has the screen to itself.

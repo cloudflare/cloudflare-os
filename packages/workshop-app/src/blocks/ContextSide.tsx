@@ -18,7 +18,7 @@ export type ContextSideProps = {
  * header's buttons, and its minimize button's glyph is as far in from the right as the rows' ends are.
  */
 export const ContextSide = ({ children, onMinimize, minimizeRef }: ContextSideProps) => (
-  <aside aria-label="What this chat has" className="min-h-0 overflow-y-auto overscroll-contain p-1.5">
+  <aside aria-label="What this chat can use" className="min-h-0 overflow-y-auto overscroll-contain p-1.5">
     <div className="relative">
       {/* Sections alone in what holds them, so that the first and last of them are the first and last of it. */}
       <div className="flex flex-col">{children}</div>
