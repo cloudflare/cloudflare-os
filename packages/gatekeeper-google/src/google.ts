@@ -3092,10 +3092,10 @@ export class GoogleDriveSessionImpl extends RpcTarget
   }
 
   async listAccess(fileId: string): Promise<DriveAccess[]> {
+    this.#refuseThroughShortcut();
     // A listing is a read, and each refusal speaks of changes, so it is said what the two share.
     let refused = await this.#writes.writeRefusal();
     if (refused !== undefined) throw new Error(`${LISTING_TAKES_WRITES} ${refused}`);
-    this.#refuseThroughShortcut();
     let actor = await this.#writes.actor();
     let { target } = await this.#sharing(fileId);
     let id = target.fileId;
@@ -3149,6 +3149,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
   async move(fileId: string, folderId: string): Promise<void> {
     // Said before the write refusal, whose URL on a read-only file binding could not move either.
     if (this.#scope.kind === "file") throw new Error(MOVE_SINGLE_FILE);
+    this.#refuseThroughShortcut();
     let refused = await this.#writes.writeRefusal();
     if (refused !== undefined) {
       // Only an all-of-Drive binding's read-only refusal names a connection that cannot move.
@@ -3156,7 +3157,6 @@ export class GoogleDriveSessionImpl extends RpcTarget
         ? `${MOVE_NEEDS_A_FOLDER} ${refused}` : refused);
     }
     if (folderId === fileId) throw new Error(MOVE_INTO_ITSELF);
-    this.#refuseThroughShortcut();
     let actor = await this.#writes.actor();
     let target = await this.#core.moveTarget(fileId, folderId);
     await this.#refuseQueued(pending => {
@@ -3182,18 +3182,19 @@ export class GoogleDriveSessionImpl extends RpcTarget
   }
 
   /**
-   * Refuses a write this binding may not make, with the reason `writeRefusal()` gives: the
-   * deployment keeps Google Drive read-only, the binding is read-only, or its account does not
-   * allow changes.
+   * Refuses a write this binding may not make: one in a folder opened through a shortcut, or one
+   * `writeRefusal()` refuses because the deployment keeps Google Drive read-only, the binding is
+   * read-only, or its account does not allow changes.
    */
   async #requireWritable(): Promise<void> {
+    this.#refuseThroughShortcut();
     let refused = await this.#writes.writeRefusal();
     if (refused !== undefined) throw new Error(refused);
-    this.#refuseThroughShortcut();
   }
 
   /**
-   * Refuses a write, or a listing of who has access, in a folder opened through a shortcut. A
+   * Refuses a write, or a listing of who has access, in a folder opened through a shortcut, before
+   * any refusal that asks for more access, which could not make it writable. A
    * write's proof at approval, along the saved path alone, would refuse it anyway; a listing
    * proves the positioned folder as a sharing target and would not.
    */

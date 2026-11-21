@@ -1826,6 +1826,13 @@ describe("moves", () => {
       expect(outcome.error).toBe(message);
       expect(outcome.actionId).toBeUndefined();
     }
+    // Said in place of asking for write access, which would not make the folder writable.
+    let readOnly = binding(FOLDER, null);
+    for (let [method, ...args] of [
+      ["comment", "deep-doc", "Hi"], ["listAccess", "deep-doc"], ["move", "deep-doc", "far-folder"],
+    ] as const) {
+      expect((await readOnly.callIn(["far-folder"], method, ...args)).error).toBe(THROUGH_SHORTCUT);
+    }
 
     provider.files.get("to-doc")!.trashed = true;
     provider.files.get("to-folder")!.trashed = true;
