@@ -1006,8 +1006,8 @@ change from a fetched document records it as one that cannot be applied. The che
 batch that writes past its piece. It does not see a piece that is short on what a builder
 read, which builds another batch inside the piece; and it counts no index after a request
 that adds length no request states (a table, a row or a column inserted, cells merged), which
-the first request of every batch of those four kinds is (all 67, 41, 21 and 13 such batches
-of the default pass of `__tests__/docs-piece-differential.test.ts`, and none of the 127
+the first request of every batch of those four kinds is (all 47, 33, 13 and 7 such batches
+of the default pass of `__tests__/docs-piece-differential.test.ts`, and none of the 87
 batches of the other seven kinds). What holds the piece to be enough is tests: the
 builders on a piece are held to the builders on the whole tab's rendering.
 `__tests__/docs-piece-teeth.test.ts` makes the piece smaller and counts, of 945 appends and
@@ -1070,34 +1070,32 @@ rejection of each kind of session to the piece's runs).
   Google served whose longest run is a table of 326 KB, and 3.6 to 3.7 times it for a cell
   changed among ten tables of 124 KB each, which no test holds.
 - The card's reads: one run's Markdown of each tab while the two are compared, and then the
-  card's two strings. On the tables under 64 KiB at each of those moments, on 8,001 runs as on
-  19,601, and under 4 bytes a run between the two; on a tab of prose (6,000 lines) under three
-  runs' Markdown (`__tests__/docs-edit-heap.test.ts`).
+  card's two strings. Measured, not held by a test: on the tables under 64 KiB at each of those
+  moments, on 8,001 runs as on 19,601, and under 4 bytes a run between the two; on a tab of
+  prose (6,000 lines) under three runs' Markdown.
 - For every run of the tab, nothing. Finding the change's elements, each pass that makes its
   piece, applying the requests and storing the tab as the change leaves it read the tab's list
   of runs a page of 500 at a time, and the runs the change did not touch are listed inside
-  storage and never brought to the request. An append and a change to the look of the middle
-  table are held to 2 MiB and 16 bytes a run on 8,001 and 19,601 runs (the same file and
-  `__tests__/docs-store-slices-heap.test.ts`), and a piece in its passes, the scan, the line
-  above a table read back over half the tab, a row queued and its card each to under 16 bytes
-  a run between tabs of 2,001 and 4,001 runs, and under 4 on tabs of up to 19,601 runs in the
-  wider run (`__tests__/docs-piece-heap.test.ts`). The price is reads: a change walks the
+  storage and never brought to the request. An append is held to 2 MiB and 16 bytes a run on
+  8,001 and 19,601 runs (`__tests__/docs-edit-heap.test.ts`). Measured, not held: a change to
+  the look of the middle table keeps to the same bound, and a piece in its passes, the scan,
+  the line above a table read back over half the tab, a row queued and its card each take
+  under 16 bytes a run between tabs of 2,001 and 4,001 runs, and under 4 on tabs of up to
+  19,601 runs. The price is reads: a change walks the
   tab's list from its start once for each thing it asks of the tab and once for each pass of
   its piece, some tens of rows for every run of the tab (see
   [Google Docs request costs](#google-docs-request-costs)).
 - A piece as large as the document: its rendering, and of the runs decoded for it the change's
   own and the one before them, until the model takes them. Beside 200 empty paragraphs and
   under 3,000 nested items, in tabs cut one element a run, 675 and 10,115 runs are decoded
-  for the piece, counting those decoded again, and none of them stays in hand; the piece
-  held is under 3 times its Markdown at two bytes a character and its map as JSON (the same
-  file).
+  for the piece, counting those decoded again, and of them only the change's own and the one
+  before stay decoded (`__tests__/docs-piece-counts.test.ts`); the piece held measured under
+  3 times its Markdown at two bytes a character and its map as JSON.
 - For every list that holds a number, what the renderer carries from run to run: a number for
   each numbered list so far. A pass over a tab's runs has one, moved in place at each run at the
   cost of the lists that run counts in; a pass that keys one state of a tab beside another holds
   the second state's as what differs from the first's; a read of a tab with changes waiting makes
-  none. It is 113 to 176 bytes a list, held to 240 or less by
-  `__tests__/docs-edit-heap.test.ts`, `__tests__/docs-store-slices-heap.test.ts` and
-  `__tests__/docs-store-paged-heap.test.ts`, and a pass over a tab of 7,700 numbered lists, each
+  none. It measured 113 to 176 bytes a list, and a pass over a tab of 7,700 numbered lists, each
   in a table's cell (15,401 runs), takes 0.49 s for a fetch that stores the tab and 0.82 s for a
   tab keyed again after a deploy and the read that asks for it. A change makes one for each
   pass of its piece and one for the walk to the runs its requests touch, each moved from the
@@ -1110,12 +1108,11 @@ rejection of each kind of session to the piece's runs).
   most 300 characters a definition there. A pass of a piece runs that statement once for the
   page its runs stand in, so a piece made in five passes runs it five times, whatever its
   runs (`__tests__/docs-edit-counts.test.ts`). On a tab of one page whose runs name every
-  list, which a tab of prose is, it is all of them: 548 bytes for each list of the tab where
-  31 runs name 3,000 lists (`__tests__/docs-store-paged-heap.test.ts`).
+  list, which a tab of prose is, it is all of them: measured, 548 bytes for each list of the
+  tab where 31 runs name 3,000 lists.
 - One change takes every list of its tab in hand: a change that makes a list, which reads the
-  tab's definitions, parses them and writes them with the list added, about 1,100 bytes a list
-  (3.35 MB for 3,000 lists; `__tests__/docs-edit-heap.test.ts` and
-  `__tests__/docs-store-slices-heap.test.ts`).
+  tab's definitions, parses them and writes them with the list added, measured at about 1,100
+  bytes a list (3.35 MB for 3,000 lists).
 
 A Doc opened through Drive keeps its copy the same way in its Drive connection's storage, by file
 ID, on a read-only connection too, with these differences:
@@ -1252,17 +1249,18 @@ start from a template document, one made by hand (`--template <docId>`), whose c
 `__tests__/docs-live-recorder.ts` lists.
 
 The model is also held, from every stretch of a tab's elements and of its stored runs, to what
-it does on the whole tab; `__tests__/docs-slices.test.ts` and
-`__tests__/docs-store-slices-forced.test.ts` are where to start reading.
+it does on the whole tab: `__tests__/docs-slices.test.ts` from every stretch of elements, and
+`__tests__/docs-store-slices-forced.test.ts` and `__tests__/docs-store-slices-real.test.ts`
+from every stretch of runs cut one element a run and as a store cuts them.
 
 The request builders are held the same way: from a piece they have to build what they build
 from the whole tab's rendering, the same batch or the same refusal in the same words, and the
-same card. `__tests__/docs-piece-differential.test.ts` holds that on every recorded step, as
-recorded and inside a larger tab, on the tabs the generated sequences reach, and on generated
-tabs (empty paragraphs, nested and tabbed list items, lists off the presets, positioned images,
-protected content, tables beside tables and inside cells, suggested content, section breaks
-inside the body), stored as runs of one, two and three elements and as runs are cut by
-default, so that a piece is a part of its tab and crosses runs. A setup file of the package's
+same card. `__tests__/docs-piece-differential.test.ts` holds that on every recorded step, on
+the tabs the generated sequences reach, and on generated tabs (empty paragraphs, nested and
+tabbed list items, lists off the presets, positioned images, protected content, tables beside
+tables and inside cells, suggested content, section breaks inside the body), stored as runs of
+one element and as runs are cut by default, so that a piece is a part of its tab and crosses
+runs. A setup file of the package's
 Node tests (`__tests__/docs-piece-suite-shadow.ts`) builds every batch the other suites build
 from a whole tab once more from its piece, and fails the calling test where the two differ.
 A read past the piece fails a test: the same builds are made from the whole rendering under a
@@ -1284,13 +1282,12 @@ The package's tests run
 a part of all this by default, and all of it with `GOOGLE_DOCS_WIDER_TESTS=1` set, by either
 entrypoint (`GOOGLE_DOCS_WIDER_TESTS=1 pnpm exec vp run -F @gadgets/google-gatekeeper test`,
 whose task declares the variable, or the `test:run` script): the second seed of the generated
-sequences, their batches from every stretch, the stored runs cut one element a run, the larger
-tables of generated requests, the measure of a keying on list definitions as long as Google
-sends on 4,000 lists, and, of the tests of the builders on a piece (`docs-piece-rendering`,
-`docs-piece-store`, `docs-piece-differential`, `docs-reading`, `docs-piece-cards`,
-`docs-piece-counts` and `docs-piece-heap`), three seeds of 500 generated tabs and every
-recorded tab three times over for the differential, more drawn tabs and ranges for the
-pieces, the stored rows and the cards, and the counts and the heap on a tab of 19,601 runs;
+sequences, their batches from every stretch, more of the pairs from stored runs cut one element
+a run, the larger tables of generated requests, and, of the tests of the builders on a piece
+(`docs-piece-rendering`, `docs-piece-store`, `docs-piece-differential`, `docs-reading`,
+`docs-piece-cards` and `docs-piece-counts`), three seeds of 500 generated tabs for the
+differential, more drawn tabs and ranges for the pieces, the stored rows and the cards, and
+the counts on a tab of 19,601 runs;
 and, of what a Drive connection keeps, more quotes drawn for the search of a comment's text
 and, in the workerd Docs pass, which is handed the variable too, the rows of a sweep, an
 eviction and an expiry on the tab of 19,601 runs. The wider run's Node pass allows a test
@@ -1407,8 +1404,9 @@ added, the range styled over a longer replacement), so a row or a column added w
 replacement longer than what it replaced touch one run, whatever stands after it. Where the
 first choice of runs is too small, the change is applied again to more of them, which decodes
 them again: requests written by hand that make a list item from one position past a run's start
-decode that run, and then it and the run before it (`__tests__/docs-edit-counts.test.ts` holds
-each of these counts). `insertTable()` makes its piece twice, the second time to report the new
+decode that run, and then it and the run before it (`__tests__/workerd/docs-store.test.ts`
+holds each of these counts on a tab of prose and tables, and
+`__tests__/docs-piece-counts.test.ts` those on the tab of one-cell tables). `insertTable()` makes its piece twice, the second time to report the new
 table's position. An edit made again whose result is stored, as when a preview's card is
 written again, decodes and renders its piece's runs once more and writes nothing. An approval
 that sends the requests stored with the edit decodes and renders nothing and reads three rows;
@@ -1419,9 +1417,9 @@ the rejected one in its tab again, each at an edit's cost. On a tab of 20,000 pa
 replacement 1 and 2, and 18 and 19; an append 1 and 2, and 15 and 16; a row added to a table 4
 and 5, and 18 and 19; a table added after a line 2 and 5, and 36 and 39; an approval that
 builds its requests 1 and 1, and 18 and 18; a rejection with two edits behind it 2 and 4, and
-38 and 40; a read with changes waiting none (`__tests__/docs-piece-counts.test.ts`, which
-holds the same counts on shorter tabs, and `__tests__/workerd/docs-piece.test.ts` on a Durable
-Object's storage). Queuing an edit stores the runs
+38 and 40; a read with changes waiting none (`__tests__/docs-piece-counts.test.ts`, and
+`__tests__/workerd/docs-piece.test.ts` on a Durable Object's storage, which holds the same
+counts on shorter tabs too). Queuing an edit stores the runs
 the edit changed, each rendered once more, alone, with its rendering; the list of the tab as the
 edit leaves it, whatever the edit touched; and the edit's requests. A fetch that brings a tab
 changed stores the runs near the change, rendered alone, with their renderings, and the tab's
@@ -1652,9 +1650,9 @@ A change holds a small multiple of a run and nothing for every run of its tab (s
   stored: 2.09 MB beside its two texts, which is 4.4 bytes of heap for each character of the
   longer text. It holds 3.0 bytes a character while its requests are built, the spanned runs
   decoded beside their renderings, and 2.0 with its card's two strings in hand. That is the
-  change's size and not the tab's: the figures are the same on a tab of 5,000 paragraphs as on
-  one of 20,000 (`__tests__/docs-piece-heap.test.ts`, which holds the three under 5.2, 3.4 and
-  2.6 bytes a character and one run).
+  change's size and not the tab's: the figures measured the same on a tab of 5,000 paragraphs
+  as on one of 20,000 (`__tests__/docs-piece-heap.test.ts` holds the first, on the tab of
+  20,000, under 5.2 bytes a character and one run).
 - A very large table or paragraph, which is a run of its own, as large as it is.
 - Hundreds of empty paragraphs or nested list items beside a change, all of which its piece
   takes in: their rendering is held whole while the requests are built, though not their
@@ -1673,7 +1671,7 @@ summary for a table change, a page at a time.
 
 A read of a tab with changes waiting holds the Markdown it
 answers, as a string a run and once more joined, and a page of 500 of the tab's list of runs:
-beside the Markdown itself, about 46 bytes a run on the tab of 19,601 runs
+beside the Markdown itself, about 46 bytes a run on the tab of 19,601 runs, held under 57
 (`__tests__/docs-store-paged-heap.test.ts`). It
 holds nothing for a list, since it reads no list definition and carries nothing from run to run
 where every run's rendering is stored. `getContent()` answers a tab's whole Markdown, so that
@@ -2254,9 +2252,10 @@ session a read-only one has open on a Doc. That is the copy's record (its name, 
 its clocks, whether a write has landed since it was fetched, the folder its last allowed read
 stood on, the digest of the code it was last swept under, its counted bytes, and for each tab
 its ID, title, place, base version's name and write markers) and a few counters of the
-connection's writes and queued edits. It holds no text of a document's body: as JSON it is 673
-bytes for a document of one tab and 155 for each further tab, with a revision ID of 64
-characters and tab titles of 20 (`__tests__/workerd/doc-actions.test.ts`). So a connection
+connection's writes and queued edits. It holds no text of a document's body: as JSON it
+measured 673 bytes for a document of one tab and 155 for each further tab, with a revision ID
+of 64 characters and tab titles of 20, held under 700 and 165
+(`__tests__/workerd/doc-actions.test.ts`). So a connection
 started again fetches each document once more at its first read, though its copy is stored. The
 stored copy still spares work: the runs that fetch brings unchanged are neither written nor
 rendered again.
