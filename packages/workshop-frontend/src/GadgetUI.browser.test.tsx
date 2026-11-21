@@ -365,6 +365,23 @@ describe('focus', () => {
     expect(recorder.navigations.map(n => n.anchor)).toEqual(['cell/B7'])
   })
 
+  it('keeps reports once the anchor is removed, with no call left waiting behind the running one', async () => {
+    const gadget = focusGadget()
+    await show(gadget, undefined)
+    const control = await frame(0)
+    await control.register()
+
+    await show(gadget, 'cell/B7')
+    await expect.poll(() => recorder.navigations.length).toBe(1)
+    await show(gadget, 'cell/C1')
+    await show(gadget, undefined)
+    await control.report({ anchor: 'cell/D4', label: 'D4' })
+
+    expect(recorder.events.filter(e => e.startsWith('change'))).toEqual([
+      'change {"anchor":"cell/D4","label":"D4"}',
+    ])
+  })
+
   it('ignores reports from a navigate call a newer target has replaced', async () => {
     const gadget = focusGadget()
     await show(gadget, undefined)

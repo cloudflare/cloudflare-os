@@ -105,12 +105,18 @@ export interface GadgetHost {
   reportFocus(focus: GadgetFocus | null): void;
 
   /**
-   * Registers how the host sends the user to a spot. The host calls `navigate` with an anchor
-   * this gadget reported earlier: right away if there is a spot to return to, and later when the
-   * user follows a link to one. `navigate` returns false if the anchor no longer resolves, and
-   * otherwise should show the spot, even if the UI is already drawn, and report it with
-   * `reportFocus()`. A second registration replaces the first. Resolves once the call for a spot
-   * to return to, if there is one, has settled. Never calls `navigate` during an export.
+   * Registers how the host sends the user to a spot. The host calls `navigate` with an anchor,
+   * usually one this gadget reported earlier: right away if there is a spot to return to, and
+   * later when the user follows a link to one. `navigate` returns false if the anchor no longer
+   * resolves, and otherwise should show the spot, even if the UI is already drawn, and report it
+   * with `reportFocus()`. Calls never overlap: the host waits for one to settle before the next,
+   * and skips any target a newer one replaced meanwhile. A second registration replaces the first.
+   * Resolves once the call for a spot to return to, if there is one, has settled, so a UI that
+   * awaits this before its first render never draws the wrong spot first. Never calls `navigate`
+   * during an export.
+   *
+   * The anchor can come from outside the gadget (a pasted link, for one), so `navigate` must treat
+   * it as untrusted input that selects what to show and never causes an action.
    */
   onNavigate(navigate: (anchor: string) => boolean | Promise<boolean>): Promise<void>;
 }
@@ -173,9 +179,11 @@ onFocusReset?() }`. `onFocusReset` is optional because only the composer's state
   gadget's data, say) could finish after a newer one and redraw and report the spot the user
   clicked away from. The guarantee is in `onNavigate()`'s contract, so a gadget needn't handle
   overlapping calls itself. A removed anchor counts as a newer target, so going Back to an entry
-  without `at` drops a queued one. While a newer target has replaced the running call, the frame's
-  reports are dropped too: they describe the spot the user has moved on from, and would otherwise
-  reach `at` and the composer, where nothing might replace them if the newer call never reports.
+  without `at` drops a queued one. While another call waits behind the running one, the frame's
+  reports are dropped too: they describe the spot the frame is about to leave, and would otherwise
+  reach `at` and the composer, where nothing might replace them if the waiting call never reports.
+  Once nothing waits (after going Back, say), the running call's reports stand, since what it
+  draws stays, and so do the user's own selections.
 - A new frame starts with no callback, so it gets `navigate` when it registers. That is the whole
   restore mechanism for code-change reloads and page reloads. It is sent to `latestAnchor()`, not
   `anchor`: a code reload can replace the frame within the URL write hold, and the held report's

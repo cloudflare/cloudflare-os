@@ -224,9 +224,10 @@ type FrameFocus = {
   // Counts the targets (an anchor removed among them), so that one replaced while it waited is
   // never sent.
   targets: number
-  // The target whose navigate call is running. While a newer one has replaced it, the call's
-  // reports describe a spot the user has moved on from.
-  running: number | null
+  // Whether a navigate call is running, and whether one waits to start after it. While one waits,
+  // the running call's reports describe a spot the frame is about to leave.
+  running: boolean
+  waiting: boolean
 }
 
 // Where a console call or uncaught error happened in the frame, as the browser reported it.
@@ -407,11 +408,14 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
   // finishing last would undo it, and only if no newer target has come meanwhile.
   const sendNavigate = (frame: FrameFocus, anchor: string) => {
     const target = ++frame.targets
+    frame.waiting = true
     frame.navigating = frame.navigating.then(async () => {
-      if (target !== frame.targets || !frame.navigate || frameFocusRef.current !== frame) return
-      frame.running = target
+      if (target !== frame.targets) return
+      frame.waiting = false
+      if (!frame.navigate || frameFocusRef.current !== frame) return
+      frame.running = true
       await callNavigate(frame.navigate, anchor)
-      frame.running = null
+      frame.running = false
     })
     return frame.navigating
   }
@@ -442,7 +446,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
     reportFocus: reported => {
       const current = focusRef.current
       if (frameFocusRef.current !== frame || !current) return
-      if (frame.running !== null && frame.running !== frame.targets) return
+      if (frame.running && frame.waiting) return
       ++focusEpochRef.current
       current.onFocusChange(reported)
     },
@@ -466,8 +470,12 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
     ++focusEpochRef.current
     const frame = frameFocusRef.current
     const anchor = focusRef.current?.anchor
-    // A removed anchor is a target too: what was queued, or is running, is no longer wanted.
-    if (frame && anchor === undefined) ++frame.targets
+    // A removed anchor replaces a waiting target. The running call goes on, and with nothing after
+    // it, what it draws stays and its reports stand.
+    if (frame && anchor === undefined) {
+      ++frame.targets
+      frame.waiting = false
+    }
     if (!frame?.navigate || anchor === undefined) return
     focusRef.current?.onFocusReset?.()
     void sendNavigate(frame, anchor)
@@ -719,7 +727,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
                 : gadgetStubRef.current[property]
             },
           })
-          const frame: FrameFocus = { navigate: null, navigating: Promise.resolve(), targets: 0, running: null }
+          const frame: FrameFocus = { navigate: null, navigating: Promise.resolve(), targets: 0, running: false, waiting: false }
           frameFocusRef.current = frame
           const sessionAbort = new AbortController()
           rpcSessionRef.current = newMessagePortRpcSession(
