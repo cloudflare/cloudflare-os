@@ -10,7 +10,7 @@ import { NetworkInterceptor, type Handler } from "../src/network-interceptor.js"
 import { waitFor, type ConnectedAccount } from "../src/rpc-client.js";
 import {
   addAdminConnection, adminActions, adminApiOf, agentTurn, approveContent, auditRecords,
-  buildGadget, enableEveryRule, EVERY_TAG, fileReport, GRACE, HEIDI, isRestricted,
+  buildGadget, enableEveryRule, EVERY_TAG, fileReport, GRACE, HAS_READ, HEIDI, isRestricted,
   listed, newMember, newUser, newWorkspace, observationTitles, openAs, opening, OWNER,
   pendingActions, provisionAdminAccount, recordingGadget, reporterThread, requestsFiled,
   scriptedTurn, settle, startAdminHarness, TAGS, turnModels, VENDOR, writesMade,
@@ -18,8 +18,8 @@ import {
 } from "./admin-gatekeeper-harness.js";
 
 // The gatekeeper's seven action kinds, what a rule may apply, and what marks a workspace as holding
-// restricted data: any read through the whole binding, and what a session limited to one report
-// reads of a reporter's workspace that is itself marked.
+// restricted data: any read through the connection, the whole binding's and a session limited to
+// one report's alike.
 //
 // The issue reports, the audit log and the content requests are deployment-wide, so this file owns its
 // harness and runs serially. Each case that depends on what a workspace has read uses a
@@ -634,8 +634,8 @@ export class Gadget extends DurableObject {
   }
 }`;
 
-it("lets a scoped reply reach the reporter with no person, from a workspace that has read " +
-    "nothing through the binding", async () => {
+it("lets a scoped reply reach the reporter with no person only from a workspace that has read " +
+    "nothing through the connection", async () => {
   const reporter = await newMember(suite, "answered");
   const [byGadget, byAgent] = [await fileReport(reporter), await fileReport(reporter)];
   const posted = (reportId: string) => waitFor("the reply in the reporter's thread", async () => {
@@ -656,19 +656,26 @@ it("lets a scoped reply reach the reporter with no person, from a workspace that
   expect((await adminThread(byGadget.id))[0]!.agent).toEqual({ workspaceId: desk.id });
   expect(await isRestricted(desk.ws)).toBe(false);
 
-  // An agent's own turn, likewise: it read only what the reporter could see. Pinned, so that
-  // a change of this rule is deliberate.
+  // An agent that reads the report first: what it read marks the workspace, though it is only
+  // what the reporter could see, so its reply waits for a person. Pinned, so that a change of
+  // this rule is deliberate.
   const chat = await scopedOnly("Triage, an agent answers");
   const turn = await agentTurn(owner, chat.ws, `
     const report = await env.ADMIN.openIssueReport(${json(byAgent.id)});
     ${attempt("text", "report.get().then(report => report.text)")}
     ${attempt("scoped", `report.reply("Answered by the agent")`)}`, { connection: chat.connection });
-  expect(await turn.resumed()).toEqual({ text: { value: byAgent.text }, scoped: { value: null } });
+  expect(await turn.results()).toEqual({ text: { value: byAgent.text }, scoped: { value: null } });
+  expect(await isRestricted(chat.ws)).toBe(true);
+  await settle(chat.ws);
+  const [held] = await pendingActions(chat.ws, 1);
+  expect(tagOf(held!)).toBe(TAGS.issueReportScopedReply);
+  expect(await reporterThread(reporter, byAgent.id)).toEqual([]);
+  await chat.ws.approveAction(held!.id);
+  await turn.resumed();
   expect((await posted(byAgent.id)).map(entry => entry.text)).toEqual(["Answered by the agent"]);
-  expect(await decisions(chat.ws)).toEqual([[TAGS.issueReportScopedReply, "approved", true]]);
+  expect(await decisions(chat.ws)).toEqual([[TAGS.issueReportScopedReply, "approved", false]]);
   expect((await adminThread(byAgent.id))[0]!.agent)
       .toEqual({ workspaceId: chat.id, chatId: turn.chatId });
-  expect(await isRestricted(chat.ws)).toBe(false);
 });
 
 const REPORT_NOT_OWNERS = "This report's workspace is not its reporter's.";
@@ -746,9 +753,9 @@ it("limits a report session to its one report, as its reporter reads it", async 
   }
   expect(await pendingActions(ws, 0)).toEqual([]);
   expect((await admin.getIssueReport(report!.id)).status).toBe("new");
-  // What it read is what the reporter could see: the workspace is not marked.
+  // What it read is what the reporter could see, and it marks the workspace all the same.
   expect(await observationTitles(ws)).toEqual(["Issue report: get"]);
-  expect(await isRestricted(ws)).toBe(false);
+  expect(await isRestricted(ws)).toBe(true);
 });
 
 it("shows a session limited to one report what its reporter reads", async () => {
@@ -783,7 +790,6 @@ it("shows a session limited to one report what its reporter reads", async () => 
       expect(json(read), hidden).not.toContain(hidden);
     }
   }
-  expect(await isRestricted(ws)).toBe(false);
 });
 
 it("reads a reporter's content through a report session only under the grant given with " +
@@ -839,8 +845,8 @@ it("reads a reporter's content through a report session only under the grant giv
   expect(await read(twice.reports[0]!.id, twice.chatId)).toEqual(REFUSED_FOR_GRANT);
   expect(await read(twice.reports[1]!.id, twice.chatId)).toEqual({ chat: { value: 1 } });
 
-  // None of it marks the workspace that read: each answer is what the reporter could see.
-  expect(await isRestricted(ws)).toBe(false);
+  // Each answer is what the reporter could see, and each marks the workspace that read it.
+  expect(await isRestricted(ws)).toBe(true);
 });
 
 it("lists in a report session's view the grant given with its report, and no other", async () => {
@@ -865,7 +871,6 @@ it("lists in a report session's view the grant given with its report, and no oth
   await theirs.revokeAdminAccess(own.id);
   const ended = await agentTurn(owner, ws, inSession(report!.id, describe), { chatId: turn.chatId });
   expect((await ended.results()).description!.value).toMatchObject({ grants: [] });
-  expect(await isRestricted(ws)).toBe(false);
 
   // The contrast: a view opened through the whole binding lists the admins' grant.
   const whole = await triageWorkspace("Triage, every grant");
@@ -952,118 +957,69 @@ const listChats = attempt("chats", "view.listChats().then(chats => chats.length)
 const getChat = (chatId: number) =>
   attempt("chat", `view.getChat(${chatId}).then(chat => chat.messages.length > 0)`);
 
-// A workspace of heidi's that holds restricted data, its chat, and her two reports that name it:
-// the first with a grant. Made by the first of the three cases below.
-let restricted: { id: string; chatId: number; granted: string; plain: string };
-
-it("carries the mark of a reporter's restricted workspace into the workspace whose report " +
-    "session reads it, from the view's first answer", async () => {
-  const hers = await newWorkspace(suite, heidi, "Heidi's own triage");
-  const herConnection = await addAdminConnection(
-      hers.ws, (await provisionAdminAccount(heidi)).id);
-  const marking = await agentTurn(heidi, hers.ws, attempt("users",
-      "env.ADMIN.listUsers({ limit: 1 }).then(page => page.users.length)"),
-      { connection: herConnection });
-  expect(await marking.results()).toEqual({ users: { value: 1 } });
-  expect(await isRestricted(hers.ws)).toBe(true);
-  const [granted, plain] = [
-    await fileReport(heidi, { context: { workspaceId: hers.id } }),
-    await fileReport(heidi, { context: { workspaceId: hers.id } }),
-  ];
-  await hers.ws.grantAdminAccess({ reportId: granted.id });
-  restricted = { id: hers.id, chatId: marking.chatId, granted: granted.id, plain: plain.id };
-
+it("marks the workspace whose report session reads anything, for good: a reply then waits for " +
+    "a person and no public site is fetched", async () => {
+  const { reporter, chatId: theirChat, ws: theirs, reports: [report] } =
+      await reporterWithWorkspace("ordinary");
+  await theirs.grantAdminAccess({ reportId: report!.id });
   const [nell, late] = [await newMember(suite, "nell"), await newMember(suite, "afterwards")];
-  const { ws, id, connection } = await sharedTriage("Triage, a restricted reporter", nell);
+  const { ws, id, connection } = await sharedTriage("Triage, an ordinary reporter", nell);
 
-  // The report never marks, and neither does opening the view, which returns no data.
-  const first = await agentTurn(owner, ws, inSession(granted.id,
+  // The report marks, though it is the reporter's own; opening the view returns no data and
+  // marks the same; every answer of the view does, metadata and content alike.
+  const first = await agentTurn(owner, ws, inSession(report!.id,
       attempt("get", "report.get().then(report => report.id)")), { connection });
-  expect(await first.results()).toEqual({ get: { value: granted.id } });
-  expect(await isRestricted(ws)).toBe(false);
-  const { chatId } = first;
-  const opened = await agentTurn(owner, ws, inView(granted.id, `out.opened = { value: true };`), { chatId });
-  expect(await opened.results()).toEqual({ opened: { value: true } });
-  expect(await isRestricted(ws)).toBe(false);
-
-  // The view's first answer does, metadata though it is; content under her grant does too.
-  const metadata = await agentTurn(owner, ws, inView(granted.id, listChats), { chatId });
-  expect(await metadata.results()).toEqual({ chats: { value: 1 } });
+  expect(await first.results()).toEqual({ get: { value: report!.id } });
   expect(await isRestricted(ws)).toBe(true);
-  const content = await agentTurn(owner, ws, inView(granted.id, getChat(restricted.chatId)), { chatId });
+  const { chatId } = first;
+  const metadata = await agentTurn(owner, ws, inView(report!.id, listChats), { chatId });
+  expect(await metadata.results()).toEqual({ chats: { value: 1 } });
+  const content = await agentTurn(owner, ws, inView(report!.id, getChat(theirChat)), { chatId });
   expect(await content.results()).toEqual({ chat: { value: true } });
   expect(await observations(ws)).toEqual([
-    ["Issue report: get", false],
-    ["Issue report: inspectWorkspace", false],
-    ["Issue report: inspectWorkspace", false], ["Admin view: listChats", true],
-    ["Issue report: inspectWorkspace", false], ["Admin view: getChat", true],
+    ["Issue report: get", true],
+    ["Issue report: inspectWorkspace", true], ["Admin view: listChats", true],
+    ["Issue report: inspectWorkspace", true], ["Admin view: getChat", true],
   ]);
 
   // From then on nothing is applied without a person, a reply through the session included,
   // and no public site is fetched.
-  const reply = await agentTurn(owner, ws, inSession(granted.id,
+  const reply = await agentTurn(owner, ws, inSession(report!.id,
       attempt("scoped", `report.reply("We read your workspace")`)), { chatId });
   await settle(ws);
   const [held] = await pendingActions(ws, 1);
   expect(tagOf(held!)).toBe(TAGS.issueReportScopedReply);
   expect(reply.paused()).toBe(true);
-  expect(await reporterThread(heidi, granted.id)).toEqual([]);
+  expect(await reporterThread(reporter, report!.id)).toEqual([]);
   await ws.approveAction(held!.id);
   await reply.resumed();
   expect(await decisions(ws)).toEqual([[TAGS.issueReportScopedReply, "approved", false]]);
-  expect((await reporterThread(heidi, granted.id)).map(entry => entry.text))
+  expect((await reporterThread(reporter, report!.id)).map(entry => entry.text))
       .toEqual(["We read your workspace"]);
   expect(await fetchPublicPage(ws, chatId)).toContain(WEB_FETCH_PROHIBITED);
   expect(webRequests).toEqual([]);
 
-  // Restricted, but not admins-only for good: that follows a read through the whole binding
-  // alone. With the connection removed, the workspace is shared again as any workspace.
+  // Admins-only for good: with the connection removed, a non-admin is still refused.
   expect(await opening(suite, nell, id)).toBe(workspaceAccessDenied);
   await connection.client.remove();
   expect(await isRestricted(ws)).toBe(true);
-  expect(await opening(suite, nell, id)).toBe("opened");
-  expect(await ws.addCollaborator(late.name, "workspace")).not.toBeNull();
+  expect(await opening(suite, nell, id)).toBe(workspaceAccessDenied);
+  await expect(ws.addCollaborator(late.name, "workspace")).rejects.toThrow(HAS_READ);
 });
 
-it("leaves the workspace unmarked when a report session reads an ordinary reporter's " +
-    "workspace, so its reply still reaches the reporter with no person", async () => {
-  const { reporter, chatId: theirChat, ws: theirs, reports: [report] } =
-      await reporterWithWorkspace("ordinary");
-  await theirs.grantAdminAccess({ reportId: report!.id });
-  const { ws, connection } = await sharedTriage(
-      "Triage, an ordinary reporter", await newMember(suite, "nell"));
-
-  const metadata = await agentTurn(owner, ws, inView(report!.id, listChats), { connection });
-  expect(await metadata.results()).toEqual({ chats: { value: 1 } });
-  expect(await isRestricted(ws)).toBe(false);
-  const { chatId } = metadata;
-  const content = await agentTurn(owner, ws, inView(report!.id, getChat(theirChat)), { chatId });
-  expect(await content.results()).toEqual({ chat: { value: true } });
-  expect(await isRestricted(ws)).toBe(false);
-  expect((await observations(ws)).map(([, flagged]) => flagged)).toEqual([false, false, false, false]);
-
-  const reply = await agentTurn(owner, ws, inSession(report!.id,
-      attempt("scoped", `report.reply("We read your workspace")`)), { chatId });
-  await reply.resumed();
-  expect(await decisions(ws)).toEqual([[TAGS.issueReportScopedReply, "approved", true]]);
-  expect((await reporterThread(reporter, report!.id)).map(entry => entry.text))
-      .toEqual(["We read your workspace"]);
-  // A public site is still fetched from here.
-  expect(await fetchPublicPage(ws, chatId)).toContain("A public page");
-  expect(webRequests).toEqual([PUBLIC_PAGE]);
-});
-
-it("holds a scoped reply drafted before a view's answer marked the workspace", async () => {
+it("holds a scoped reply drafted before a report session's read marked the workspace", async () => {
+  const { reporter, reports: [report] } = await reporterWithWorkspace("drafted");
   const { ws, connection } = await triageWorkspace("Triage, drafted before the mark", { rules: true });
   const front = await agentTurn(owner, ws,
-      attempt("reply", addEntry(restricted.plain, "A public reply", "public")), { connection });
+      attempt("reply", addEntry(report!.id, "A public reply", "public")), { connection });
   const draft = await agentTurn(owner, ws,
-      attempt("scoped", scopedReply(restricted.plain, "Drafted before the view")), { connection });
+      attempt("scoped", scopedReply(report!.id, "Drafted before the read")), { connection });
   const [reply, scoped] = await pendingActions(ws, 2);
   expect(await isRestricted(ws)).toBe(false);
 
-  const viewing = await agentTurn(owner, ws, inView(restricted.plain, listChats), { connection });
-  expect(await viewing.results()).toEqual({ chats: { value: 1 } });
+  const reading = await agentTurn(owner, ws, inSession(report!.id,
+      attempt("get", "report.get().then(report => report.id)")), { connection });
+  expect(await reading.results()).toEqual({ get: { value: report!.id } });
   expect(await isRestricted(ws)).toBe(true);
 
   await ws.approveAction(reply!.id);
@@ -1071,6 +1027,6 @@ it("holds a scoped reply drafted before a view's answer marked the workspace", a
   await settle(ws);
   expect((await pendingActions(ws, 1)).map(action => action.id)).toEqual([scoped!.id]);
   expect(draft.paused()).toBe(true);
-  expect((await reporterThread(heidi, restricted.plain)).map(entry => entry.text))
+  expect((await reporterThread(reporter, report!.id)).map(entry => entry.text))
       .toEqual(["A public reply"]);
 });

@@ -965,17 +965,20 @@ every call whether the owner is still a deployment admin and the gatekeeper is s
 **The workspace admits only deployment admins.** While a workspace has the connection, nobody
 but its owner and users who are deployment admins at that moment can open it, in any role or by
 any share link; other admins may collaborate there and decide its pending actions. Once the
-workspace has read anything through the whole binding it stays so for good, with or without the
-connection, because its chats hold what was read.
+workspace has read or received anything through the connection it stays so for good, with or
+without the connection, because its chats hold what was read.
 
-**Reads mark the workspace as holding restricted data.** Every read through the whole binding
-sets the platform's restricted-data latch on the workspace, in this version. From then on no
-rule applies anything there, so every action waits for a person, and web fetches reach only the
-hosts the deployment trusts. A report session's reads do not mark, with one exception: its view
-of a reporter's workspace that itself holds restricted data marks the workspace that reads it,
-without closing it for good. A hook's event that tells what a report's reporter is not shown
-marks the workspace that receives it as a read through the whole binding does, for good; a new
-report and a public reply mark nothing (see [issue-reports.md](issue-reports.md#hooks)).
+**Everything read or received through the connection marks the workspace as holding restricted
+data**, in this version: a read through the whole binding, a report session's read (the report,
+its images, its view of the reporter's workspace) and every hook's event. Each sets the
+platform's restricted-data latch and keeps the workspace admins-only for good. From then on no
+rule applies anything there, so every action waits for a person, a reply to a reporter
+included, and web fetches reach only the hosts the deployment trusts. A report's text and
+images are whatever its author put there, and anyone can file one, so what a report session
+reads is not safe to send anywhere just because its reporter could see it. This holds until
+[audience-based release](restricted-data-audiences.md) lets an action through when everyone who
+can see its effects can already see the data (see
+[the README](../packages/gatekeeper-admin/README.md#restricted-data)).
 
 **Where the person behind a call is found.** Every record names the owner, so:
 
@@ -1003,20 +1006,11 @@ firing, and adding it again restores them. In mode Enabled it cannot be removed.
 - [The split of the two reply kinds and the restricted-data mark are the gatekeeper Worker's
   own declarations](../packages/gatekeeper-admin/README.md#what-a-worker-that-keeps-everything-could-do):
   they hold against agents and gadgets, not against the Worker.
-- [Non-admins admitted again after the connection is removed read what report sessions left in
-  the chats](../packages/gatekeeper-admin/README.md#what-the-non-admins-who-come-back-can-read).
-  When an admin reports their own workspace that read through the whole binding, and grants its
-  content, that is what the whole binding answered there: the workspace that triages the report
-  is marked as holding restricted data, and is not closed for good.
 - [The latch does not hold back reads through the workspace's other
   connections](../packages/gatekeeper-admin/README.md#what-the-latch-does-not-hold-back).
-- [What a report session reads of an ordinary reporter's workspace, under the reporter's grant,
-  lands in a triage workspace that is not
-  marked](../packages/gatekeeper-admin/README.md#what-an-unmarked-triage-workspace-holds).
-  Its web fetches and the rule-applied actions of its other connections are not held, and a
-  report's text can steer an agent to send that content out. So a triage agent is given no
-  other connection, and the triage workspace holds none its owner would not send a reporter's
-  content to.
+- [Reading a report closes the workspace as a read of the whole deployment
+  does](../packages/gatekeeper-admin/README.md#restricted-data): a reply to the reporter waits
+  for a person like any other action.
 - [An agent finds the write it asked for through the audit log, and the content request it filed
   through the list of requests](../packages/gatekeeper-admin/README.md#limits): the call
   that queues either returns nothing.
@@ -1775,9 +1769,9 @@ Integration suites, in `packages/integration-tests/__tests__/`:
   connection and after; a content request no member of the workspace can approve; a public
   reply through the binding held for a person whatever the rules; a note, a status and a write
   request applied by their rules; the restricted-data mark and its order; the session limited
-  to one report, its reply reaching the reporter with no person, and the mark of a reporter's
-  restricted workspace; the three hooks firing into a gadget's stored callback, once for each
-  kind of change to a report, and which of their events mark the workspace; two admins'
+  to one report, its reply reaching the reporter with no person only before anything was read,
+  and the mark its reads make; the three hooks firing into a gadget's stored callback, once for
+  each kind of change to a report, each event marking the workspace; two admins'
   workspaces claiming one report, of which exactly one holds it; and a spawned agent handed
   one report's session.
 

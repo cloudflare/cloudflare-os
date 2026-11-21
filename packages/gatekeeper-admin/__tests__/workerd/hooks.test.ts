@@ -247,6 +247,16 @@ describe("subscribing", () => {
     expect(registered.map(([, registration]) => registration)).toEqual([{ kind: "investigationComplete" }]);
   });
 
+  // What a person reads before enabling any of the three.
+  it("says, for each hook, that every event marks the workspace for good", async () => {
+    for (const method of SUBSCRIBE_METHODS) {
+      const { description } = await subscribe(method, { enable: false });
+      expect(description.description.replace(/\s+/g, " "), method).toContain(
+          "marks this workspace as holding restricted data and keeps it admins-only, as reading " +
+          "the report does.");
+    }
+  });
+
   it("binds one hook for changes to reports, disabled until its controller enables it", async () => {
     const { queue, description, state, enable, disable } =
         await subscribe("subscribeIssueReportChanged", { enable: false });
@@ -312,8 +322,7 @@ describe("subscribing", () => {
 
 /**
  * The restricted-data flag of the one observation of `state`'s hook, which is under the
- * binding's subresource: `true` marks the workspace as a read through the binding does, and
- * an event that marks nothing leaves the flag out.
+ * binding's subresource: `true` marks the workspace as a read through the binding does.
  */
 function flag({ observations }: HookState): boolean | undefined {
   expect(observations).toHaveLength(1);
@@ -440,7 +449,7 @@ describe("an event", () => {
     expect(state.firings).toBe(2);
   });
 
-  it("of a new report, and of an investigation that ended with a status its reporter reads, is observed with the binding's subresource and no restricted mark, before the callback", async () => {
+  it("of a new report, and of an investigation that ended with a status its reporter reads, is observed with the binding's subresource and the restricted mark, before the callback", async () => {
     const { state } = await subscribe("subscribeIssueReported");
     const investigation = await subscribe("subscribeInvestigationComplete");
 
@@ -455,8 +464,8 @@ describe("an event", () => {
         { label: "Report", kind: "inline", value: "r1" },
       ],
       subresources: [ADMIN_BINDING_SUBRESOURCE],
+      containsRestrictedData: true,
     }]);
-    expect(state.observations[0]).not.toHaveProperty("containsRestrictedData");
 
     expect(investigation.state.order).toEqual(["observe", "call"]);
     expect(investigation.state.observations).toEqual([{
@@ -468,14 +477,14 @@ describe("an event", () => {
         { label: "Report", kind: "inline", value: "r2" },
       ],
       subresources: [ADMIN_BINDING_SUBRESOURCE],
+      containsRestrictedData: true,
     }]);
-    expect(investigation.state.observations[0]).not.toHaveProperty("containsRestrictedData");
     // A firing is lent nothing and queues nothing.
     expect(state.other).toEqual([]);
     expect(investigation.state.other).toEqual([]);
   });
 
-  it("of a write its reporter is not shown is observed with the binding's subresource and the restricted mark, before the callback", async () => {
+  it("of a write is observed with the binding's subresource and the restricted mark, before the callback", async () => {
     const { state } = await subscribe("subscribeIssueReportChanged");
 
     await ingest(changed("r3", "status", "closed"));
@@ -495,35 +504,31 @@ describe("an event", () => {
     expect(state.other).toEqual([]);
   });
 
-  it.each(ISSUE_REPORT_PRIORITIES)("of a new report (%s) marks nothing", async (priority) => {
+  it.each(ISSUE_REPORT_PRIORITIES)("of a new report (%s) marks the workspace", async (priority) => {
     const { state } = await subscribe("subscribeIssueReported");
     await ingest(reported("r1", priority));
-    expect(flag(state)).toBeUndefined();
+    expect(flag(state)).toBe(true);
   });
 
-  // Only the two statuses the reporter reads as another say what the reporter is not shown.
-  it.each(ENDS.map((status) => [status, status === "fixSuggested" || status === "fixInProgress"] as const))(
-      "of an investigation that ended as %s marks the workspace: %s", async (status, marked) => {
+  it.each(ENDS)("of an investigation that ended as %s marks the workspace", async (status) => {
     const { state } = await subscribe("subscribeInvestigationComplete");
     await ingest(ended("r1", status));
-    expect(flag(state)).toBe(marked || undefined);
+    expect(flag(state)).toBe(true);
   });
 
-  // A reply is public, as is the status a reopening one set. Every other write is for admins
-  // alone, or, for a status, may be: the event does not say which.
-  const WRITES: [IssueReportChange, IssueReportStatus | undefined, boolean][] = [
-    ["status", "answered", true], ["status", "fixInProgress", true], ["assignment", undefined, true],
-    ["note", undefined, true], ["links", undefined, true],
-    ["reply", undefined, false], ["reply", "withAdmin", false],
+  // A reply, and the status a reopening one set, mark too.
+  const WRITES: [IssueReportChange, IssueReportStatus | undefined][] = [
+    ["status", "answered"], ["status", "fixInProgress"], ["assignment", undefined],
+    ["note", undefined], ["links", undefined], ["reply", undefined], ["reply", "withAdmin"],
   ];
 
-  it.each(WRITES)("of a write (%s, status %s) marks the workspace: %s", async (change, status, marked) => {
+  it.each(WRITES)("of a write (%s, status %s) marks the workspace", async (change, status) => {
     const { state } = await subscribe("subscribeIssueReportChanged");
     await ingest(changed("r1", change, status));
-    expect(flag(state)).toBe(marked || undefined);
+    expect(flag(state)).toBe(true);
   });
 
-  it("of each kind of write has its mark stated above", () => {
+  it("of each kind of write is among those above", () => {
     expect(new Set(WRITES.map(([change]) => change))).toEqual(new Set(ISSUE_REPORT_CHANGES));
   });
 
@@ -1143,21 +1148,15 @@ describe("the declarations", () => {
         '"fixInProgress" | "fixProposed" | "closed";');
   });
 
-  it("say which events mark the workspace that receives them, and what follows", () => {
-    const MARKS = "marks THIS workspace as holding restricted data, as reading the report through " +
-      "this binding does: from then on nothing here is applied without a person, a reply " +
-      "through a report session included.";
-    expect(docOf(HAND_WRITTEN_TYPES, "  subscribeInvestigationComplete(hook: ")).toContain(
-        "An event whose status is \"fixSuggested\" or \"fixInProgress\", which the report's " +
-        `reporter reads as "withAdmin", ${MARKS}`);
-    expect(docOf(HAND_WRITTEN_TYPES, "  subscribeIssueReportChanged(hook: ")).toContain(
-        `Every event but a "reply" tells what the report's reporter is not shown, and ${MARKS}`);
-    expect(docOf(HAND_WRITTEN_TYPES, "export interface InvestigationCompleteHook {")).toContain(
-        "Receiving an event whose `status` is \"fixSuggested\" or \"fixInProgress\" marks this " +
-        "workspace as holding restricted data");
-    expect(docOf(HAND_WRITTEN_TYPES, "export interface IssueReportChangedHook {")).toContain(
-        "Receiving an event of any `change` but \"reply\" marks this workspace as holding " +
-        "restricted data");
+  it("say that every event marks the workspace that receives it", () => {
+    expect(docOf(HAND_WRITTEN_TYPES, "  subscribeIssueReported(hook: ")).toContain(
+        "Receiving an event marks THIS workspace as holding restricted data, as everything read " +
+        "or received through this binding does.");
+    for (const method of ["subscribeInvestigationComplete", "subscribeIssueReportChanged"]) {
+      expect(docOf(HAND_WRITTEN_TYPES, `  ${method}(hook: `), method).toContain(
+          "Receiving an event marks THIS workspace as holding restricted data, as for " +
+          "subscribeIssueReported().");
+    }
   });
 
   it("give each callback's event its own id, and say to key the work by it since an event can repeat", () => {

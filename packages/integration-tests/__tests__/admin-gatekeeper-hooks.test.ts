@@ -106,12 +106,11 @@ it("calls a gadget's stored callback once for each new report and each end of an
   expect(JSON.stringify(calls)).not.toContain(report.reporter.id);
   expect(JSON.stringify(calls)).not.toContain(unseen.id);
 
-  // Once each. Neither subscribing nor these events mark the workspace: a new report, and an
-  // investigation that ended with a status the reporter reads, say nothing the reporter lacks.
+  // Once each, and each marks the workspace: a new report's event included.
   await new Promise(resolve => setTimeout(resolve, 500));
   expect(await facet.calls()).toHaveLength(3);
   expect(await observationTitles(ws)).toEqual(Array(3).fill("Receive an issue report event"));
-  expect(await isRestricted(ws)).toBe(false);
+  expect(await isRestricted(ws)).toBe(true);
 });
 
 it("delivers an event again, with the same id, after a callback that failed, which a gadget " +
@@ -251,8 +250,8 @@ it("fires both hooks when a report leaves investigating, each with an id of its 
   expect(await facet.calls()).toHaveLength(3);
 });
 
-it("marks a workspace told of a note, which its reporter is not shown, and not one told only " +
-    "of a new report and a reply", async () => {
+it("marks a workspace told of any event, a new report's and a reply's included, before its " +
+    "callback runs", async () => {
   const { ws, facet } = await watcher(
       "Triage, told of a note", ["subscribeIssueReported", "subscribeIssueReportChanged"]);
   for (const hook of await ws.listHooks()) await ws.enableHook(hook.id);
@@ -260,19 +259,18 @@ it("marks a workspace told of a note, which its reporter is not shown, and not o
   const told = async (count: number) =>
     (await callsOf(facet, count)).map(call => call.event.change ?? call.kind);
 
-  // A new report and a reply to it: the reporter has both, so the workspace keeps its rules.
+  // Subscribing marks nothing; the first event, a new report's, marks the workspace as reading
+  // the report would.
+  expect(await isRestricted(ws)).toBe(false);
   const report = await fileReport(reporter);
   expect(await told(1)).toEqual(["issueReported"]);
+  expect(await isRestricted(ws)).toBe(true);
   await reporter.api.replyToIssueReport(report.id, "It fails on every page");
-  expect(await told(2)).toEqual(["issueReported", "reply"]);
-  expect(await isRestricted(ws)).toBe(false);
-
-  // That admins wrote a note, and when, is theirs alone: being told of it marks the workspace
-  // as reading the report would.
   await admin.addIssueReportEntry(report.id, "Likely the quota", "admins");
   expect(await told(3)).toEqual(["issueReported", "reply", "note"]);
-  expect(await isRestricted(ws)).toBe(true);
-  expect(await observationTitles(ws)).toEqual(Array(3).fill("Receive an issue report event"));
+  expect((await ws.listActions({ filter: "observation" })).entries.map(entry =>
+    entry.type === "observation" && entry.description.containsRestrictedData)).toEqual(
+      [true, true, true]);
 });
 
 /** What a triage agent is told of its interface: one call, with a stub that reaches one report. */
@@ -426,8 +424,8 @@ it("gives a spawned chat no admin binding unless its spawner names one", async (
   expect(await isRestricted(ws)).toBe(false);
 });
 
-it("triages a report with no person: a gadget hands a spawned agent a stub that reaches " +
-    "that one report, and its reply reaches the reporter", async () => {
+it("triages a report: a gadget hands a spawned agent a stub that reaches that one report, and " +
+    "its reply reaches the reporter once a person approves it", async () => {
   const { ws, id } = desk;
   const facet = await deskFacet();
   const reporter = await newMember(suite, "triaged");
@@ -486,7 +484,22 @@ it("triages a report with no person: a gadget hands a spawned agent a stub that 
     reply: { value: null },
   });
 
-  // The reply reached the reporter with no person, and ended the investigation once.
+  // The hook's event marked the workspace before the gadget had it, so what the gadget and the
+  // agent queued waits for a person, as every action there does: the status, the reply and the
+  // status that follows it. A person approves each, in order.
+  const held = await waitFor("the three actions", async () => {
+    const pending = (await ws.listActions({ filter: "pending" })).entries.toReversed();
+    return pending.length >= 3 ? pending : null;
+  });
+  expect(held.map(entry => entry.type === "action" && entry.description.actionKind?.tag)).toEqual([
+    ADMIN_AGENT_ACTIONS.issueReportStatus.kind.tag,
+    ADMIN_AGENT_ACTIONS.issueReportScopedReply.kind.tag,
+    ADMIN_AGENT_ACTIONS.issueReportStatus.kind.tag,
+  ]);
+  expect(await isRestricted(ws)).toBe(true);
+  for (const entry of held) await ws.approveAction(entry.id);
+
+  // The reply reached the reporter, and ended the investigation once.
   const thread = await waitFor("the report to be answered", async () => {
     const found = await admin.getIssueReport(report.id);
     return found.status === "answered" ? found.entries : null;
@@ -509,7 +522,6 @@ it("triages a report with no person: a gadget hands a spawned agent a stub that 
       eventId: expect.any(String), reportId: report.id, status: "answered", at: expect.any(Date),
     } },
   ]);
-  expect(await isRestricted(ws)).toBe(false);
 });
 
 it("opens nothing for a stub restored from params its caller chose", async () => {

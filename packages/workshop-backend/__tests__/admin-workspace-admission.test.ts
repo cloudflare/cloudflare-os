@@ -2,7 +2,7 @@
 // (OverseerImpl.adminsOnly() and admitsNonOwner()): beside its owner, only users who are deployment
 // admins at that moment, at every gate a non-owner passes. A workspace without the connection
 // admits whoever it is shared with, and one that had the connection and read nothing through the
-// whole admin binding does so again once the connection is removed.
+// admin binding does so again once the connection is removed.
 //
 // Runs against a real OverseerDurableObject with its real sharing manager, opened through
 // OverseerDurableObject.open() as each user, over the fixture facet that stands for the admin
@@ -43,9 +43,8 @@ const OMAR: AiChatAuthorInfo = { type: "user", id: "omar@example.test", name: "O
 const RESOURCE_URL = "https://workshop.example/admin";
 const CHAT_ID = 7;
 const GADGET = 100;
-// The subresource id a session limited to one report puts on what it reads of the reporter's
-// workspace: any id other than ADMIN_BINDING_SUBRESOURCE, which is all the workspace reads.
-const REPORT_SUBRESOURCE = "admin:report";
+// A subresource id other than ADMIN_BINDING_SUBRESOURCE, which is all the workspace reads.
+const OTHER_SUBRESOURCE = "admin:other";
 // What createAdminAccessError(notAdmin) says.
 const NOT_ADMIN_MESSAGE =
     "Only a deployment admin can inspect a workspace or a user, or change a workspace.";
@@ -196,7 +195,7 @@ async function observe(ws: Workspace, claims: object, id = ws.gatekeeperId): Pro
 }
 
 // What the workspace keeps of what was read: the restricted-data latch, the mark of a read through
-// the whole admin binding, and the rule that follows.
+// the admin binding, and the rule that follows.
 function marks(ws: Workspace) {
   return {
     restricted: ws.impl.storage.containsRestrictedData.get(),
@@ -482,12 +481,12 @@ async function refusedEverywhere(ws: Workspace, user: AiChatAuthorInfo): Promise
 }
 
 describe("removing the admin connection", () => {
-  it("restores ordinary sharing in a workspace that read nothing through the whole binding",
+  it("restores ordinary sharing in a workspace that read nothing through the binding",
       () => withWorkspace(async ws => {
     await share(ws, NELL);
     chooseAccounts(ws, NELL);
-    // What a session limited to one report reads of an ordinary report, and a queued action.
-    await observe(ws, { subresources: [REPORT_SUBRESOURCE] });
+    // Observations of the connection that read nothing restricted, and a queued action.
+    await observe(ws, { subresources: [OTHER_SUBRESOURCE] });
     await observe(ws, {});
     await queueAction(ws, 1, "issueReportStatus");
     expect(marks(ws)).toEqual({ restricted: false, adminReads: false, adminsOnly: "connection" });
@@ -502,7 +501,7 @@ describe("removing the admin connection", () => {
     expect(await collaborators(ws)).toEqual([MAYA.id, NELL.id].toSorted());
   }));
 
-  it("lifts nothing in a workspace that read through the whole binding, for good", async () => {
+  it("lifts nothing in a workspace that read through the binding, for good", async () => {
     let workspaceId = "";
     await withWorkspace(async ws => {
       workspaceId = ws.id;
@@ -575,11 +574,11 @@ describe("removing the admin connection", () => {
         { profile: { id: MAYA.id } });
   }));
 
-  it("restores ordinary sharing in a workspace a report session marked as restricted",
+  it("restores ordinary sharing in a workspace marked as restricted without the binding's id",
       () => withWorkspace(async ws => {
     await share(ws, NELL);
-    // What a report session reads of a reporter's workspace that itself holds restricted data.
-    await observe(ws, { containsRestrictedData: true, subresources: [REPORT_SUBRESOURCE] });
+    // An observation of the connection that says it read restricted data, under another id.
+    await observe(ws, { containsRestrictedData: true, subresources: [OTHER_SUBRESOURCE] });
     expect(marks(ws)).toEqual({ restricted: true, adminReads: false, adminsOnly: "connection" });
 
     // The latch holds: a rule applies nothing from here on.
@@ -599,17 +598,17 @@ describe("removing the admin connection", () => {
         { profile: { id: MAYA.id } });
   }));
 
-  // The whole binding's id is the one subresource the workspace reads, and only on an observation
+  // The binding's id is the one subresource the workspace reads, and only on an observation
   // of the admin connection that says its read holds restricted data.
   it.each([
     { claims: { containsRestrictedData: true, subresources: [ADMIN_BINDING_SUBRESOURCE] },
       restricted: true, adminReads: true },
-    { claims: { containsRestrictedData: true, subresources: [REPORT_SUBRESOURCE] },
+    { claims: { containsRestrictedData: true, subresources: [OTHER_SUBRESOURCE] },
       restricted: true, adminReads: false },
     { claims: { containsRestrictedData: true, subresources: [] },
       restricted: true, adminReads: false },
     { claims: { containsRestrictedData: true }, restricted: true, adminReads: false },
-    // A hook's delivery: the whole binding's id, and nothing read.
+    // The binding's id, and nothing restricted read.
     { claims: { subresources: [ADMIN_BINDING_SUBRESOURCE] }, restricted: false, adminReads: false },
   ])("marks an observation that claims $claims as restricted: $restricted, admin reads: " +
       "$adminReads", ({ claims, restricted, adminReads }) => withWorkspace(async ws => {

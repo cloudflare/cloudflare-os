@@ -17,7 +17,6 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import { TAKE_OVER_BY_PERSON } from "../../src/actions.js";
 import { ADMIN_SUBRESOURCE, forwarderFor } from "../../src/forward.js";
-import { REPORT_SUBRESOURCE } from "../../src/report-session.js";
 import { ADMIN_SCHEMA, SERVICES, generatedDeclarations, kindOf } from "../../src/surface.js";
 import HAND_WRITTEN_TYPES from "../../src/types.txt";
 import * as WORKER from "../../src/worker.js";
@@ -219,10 +218,14 @@ describe("the facet", () => {
     expect(unwrapped).toContain(`\n    status?: ${union(read)};`);
     expect(HAND_WRITTEN_TYPES).toContain(`type: ${union(ISSUE_REPORT_IMAGE_TYPES)};`);
     expect(HAND_WRITTEN_TYPES).toContain(`at most ${MAX_ISSUE_REPORT_TEXT_LENGTH} characters`);
-    // What a restricted reporter's workspace does to the workspace that reads it.
-    expect(HAND_WRITTEN_TYPES.replace(/\n +\* /g, " ")).toContain(
-        "When that workspace holds restricted data, every answer of the view marks THIS " +
-        "workspace as holding restricted data too");
+    // What a report session's reads do to the workspace that reads them.
+    const unwrappedDocs = HAND_WRITTEN_TYPES.replace(/\n +\* /g, " ");
+    expect(unwrappedDocs).toContain(
+        "Everything it reads marks THIS workspace as holding restricted data, as the binding's own " +
+        "reads do.");
+    expect(unwrappedDocs).toContain(
+        "Every answer of the view marks THIS workspace as holding restricted data, as get() and " +
+        "readImage() do.");
     // How a session is handed to a spawned agent: never from the report id.
     expect(HAND_WRITTEN_TYPES).toContain("never from the report id");
     expect(HAND_WRITTEN_TYPES).toContain("crypto.randomUUID()");
@@ -243,9 +246,8 @@ describe("the facet", () => {
         .resolves.toEqual({ allowedObserverIds: ["owner", "second-admin"] });
     await expect(gatekeeper.verifyObserverAccess(observers, []))
         .resolves.toEqual({ allowedObserverIds: ["owner", "second-admin"] });
-    await expect(gatekeeper.verifyObserverAccess(observers, [REPORT_SUBRESOURCE, ADMIN_SUBRESOURCE]))
-        .resolves.toEqual({ allowedObserverIds: ["owner", "second-admin"] });
-    for (const unknown of ["admin:other", "", "global"]) {
+    // A report session observes under the whole binding's id too: no other id is known.
+    for (const unknown of ["admin:report", "admin:other", "", "global"]) {
       await expect(gatekeeper.verifyObserverAccess(observers, [ADMIN_SUBRESOURCE, unknown]))
           .resolves.toEqual({ allowedObserverIds: [] });
     }

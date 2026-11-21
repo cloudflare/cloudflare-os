@@ -7,7 +7,7 @@ import {
   createIssueReportError, getAdminAccessErrorCode,
 } from "@gadgets/workshop-shared/api";
 import { describe, expect, it, vi } from "vitest";
-import { REPORT_SUBRESOURCE, scopedReport } from "../../src/report-session.js";
+import { scopedReport } from "../../src/report-session.js";
 import { SERVICES } from "../../src/surface.js";
 import HAND_WRITTEN_TYPES from "../../src/types.txt";
 import {
@@ -232,7 +232,8 @@ describe("a report session", () => {
       title: "Issue report: get",
       description: "Read an issue report, as its reporter sees it.",
       fields: [{ label: "Report", kind: "inline", value: REPORT_ID }],
-      subresources: [REPORT_SUBRESOURCE],
+      containsRestrictedData: true,
+      subresources: [ADMIN_BINDING_SUBRESOURCE],
     }]);
   });
 
@@ -253,7 +254,8 @@ describe("a report session", () => {
         { label: "Report", kind: "inline", value: REPORT_ID },
         { label: "Image", kind: "inline", value: "image-1" },
       ],
-      subresources: [REPORT_SUBRESOURCE],
+      containsRestrictedData: true,
+      subresources: [ADMIN_BINDING_SUBRESOURCE],
     }]);
   });
 
@@ -468,8 +470,6 @@ describe("a report session's view of the reporter's workspace", () => {
       expect(log, effective).toEqual([
         "getAdminApi", "AdminApi.getIssueReport", "AdminApi.getSettings",
         "observe Issue report: inspectWorkspace", "AdminApi.inspectWorkspace",
-        // The session's own describe(): no observation comes before it.
-        "AdminWorkspaceView.describe",
       ]);
       expect(admin.calls.at(-1), effective).toEqual({
         name: "inspectWorkspace",
@@ -482,7 +482,8 @@ describe("a report session's view of the reporter's workspace", () => {
           { label: "Report", kind: "inline", value: REPORT_ID },
           { label: "Reason", kind: "inline", value: "triage" },
         ],
-        subresources: [REPORT_SUBRESOURCE],
+        containsRestrictedData: true,
+        subresources: [ADMIN_BINDING_SUBRESOURCE],
       }]);
     }
   });
@@ -560,20 +561,6 @@ describe("a report session's view of the reporter's workspace", () => {
     expect(getAdminAccessErrorCode(refused)).toBe(ADMIN_ACCESS_ERROR_CODES.grantRequired);
     expect(refused.message).toBe(state.viewCall.message);
   });
-
-  it("hands out no view it could not describe, and lets go of the one it opened", async () => {
-    const { queue, views, state } = triage();
-    state.description = new Error("The workspace did not answer.");
-    const { root, report } = await openReport(queue);
-    using _root = root;
-    using _report = report;
-
-    expect((await rejection(report.inspectWorkspace!("triage"))).message)
-        .toBe("The workspace did not answer.");
-
-    await vi.waitFor(() => expect(views[0]!.disposed).toBe(1));
-    expect(views[0]!.calls.map((call) => call.name)).toEqual(["describe"]);
-  });
 });
 
 /** Calls every method of `report` and of its view once, and returns the titles they record. */
@@ -590,9 +577,10 @@ async function readEverything(report: Session) {
 }
 
 describe("what a report session's reads record", () => {
-  it("the report's own id on each, never the whole binding's, and no mark for an ordinary workspace", async () => {
-    for (const description of [{ containsRestrictedData: false }, {}]) {
-      const { queue, state } = triage();
+  // A report's text and images are whatever its reporter put there, and anyone can file one.
+  it("the mark and the whole binding's id on each, whatever the reporter's workspace holds", async () => {
+    for (const description of [{ containsRestrictedData: true }, { containsRestrictedData: false }, {}]) {
+      const { log, queue, views, state } = triage();
       state.description = description;
       const { root, report } = await openReport(queue);
       using _root = root;
@@ -602,43 +590,22 @@ describe("what a report session's reads record", () => {
 
       expect(queue.observations.map((observation) => observation.title)).toEqual(titles);
       for (const observation of queue.observations) {
-        expect(observation.subresources, observation.title).toEqual(["admin:report"]);
-        expect(observation.subresources, observation.title).not.toContain(ADMIN_BINDING_SUBRESOURCE);
-        expect(observation, observation.title).not.toHaveProperty("containsRestrictedData");
+        expect(observation.subresources, observation.title).toEqual([ADMIN_BINDING_SUBRESOURCE]);
+        expect(observation.containsRestrictedData, observation.title).toBe(true);
       }
+      // Each call of the view is observed before it is forwarded, metadata and content alike.
+      for (const name of VIEW_METHODS) {
+        const observed = log.indexOf(`observe Admin view: ${name}`);
+        expect(observed, name).toBeGreaterThan(-1);
+        expect(log[observed + 1], name).toBe(`AdminWorkspaceView.${name}`);
+      }
+      // The session asks the view nothing of its own: describe() ran once, for the caller.
+      expect(views[0]!.calls.filter((call) => call.name === "describe")).toHaveLength(1);
     }
   });
 
-  it("the mark of a reporter's workspace that holds restricted data, on every call of its view alone", async () => {
-    const { log, queue, views, state } = triage();
-    state.description = { containsRestrictedData: true };
-    const { root, report } = await openReport(queue);
-    using _root = root;
-    using _report = report;
-
-    const titles = await readEverything(report);
-
-    expect(queue.observations.map((observation) => observation.title)).toEqual(titles);
-    for (const observation of queue.observations) {
-      expect(observation.subresources, observation.title).toEqual([REPORT_SUBRESOURCE]);
-      // The report, its images, its thread and the open never mark: the view's answers all do.
-      expect(observation.containsRestrictedData, observation.title)
-          .toBe(observation.title.startsWith("Admin view: ") ? true : undefined);
-    }
-    // Each call of the view is observed before it is forwarded, metadata and content alike.
-    for (const name of VIEW_METHODS) {
-      const observed = log.indexOf(`observe Admin view: ${name}`);
-      expect(observed, name).toBeGreaterThan(-1);
-      expect(log[observed + 1], name).toBe(`AdminWorkspaceView.${name}`);
-    }
-    // describe() ran twice: once for the session, unobserved, and once for the caller.
-    expect(views[0]!.calls.filter((call) => call.name === "describe")).toHaveLength(2);
-    expect(log.filter((entry) => entry === "observe Admin view: describe")).toHaveLength(1);
-  });
-
-  it("nothing of a marked workspace when the observation is refused", async () => {
-    const { queue, views, state } = triage();
-    state.description = { containsRestrictedData: true };
+  it("nothing of the view when the observation is refused", async () => {
+    const { queue, views } = triage();
     const { root, report } = await openReport(queue);
     using _root = root;
     using _report = report;
@@ -650,25 +617,6 @@ describe("what a report session's reads record", () => {
 
     expect(queue.observations.at(-1)).toMatchObject(
         { title: "Admin view: listChats", containsRestrictedData: true });
-    expect(views[0]!.calls.map((call) => call.name)).toEqual(["describe"]);
-  });
-
-  it("the mark as it stood when the view was opened, until the next view", async () => {
-    const { queue, state } = triage();
-    state.description = { containsRestrictedData: false };
-    const { root, report } = await openReport(queue);
-    using _root = root;
-    using _report = report;
-    using early = await report.inspectWorkspace!("triage") as Session;
-
-    // The reporter's workspace is marked after the view was opened.
-    state.description = { containsRestrictedData: true };
-    await early.listChats!();
-    expect(queue.observations.at(-1)).not.toHaveProperty("containsRestrictedData");
-
-    using late = await report.inspectWorkspace!("triage") as Session;
-    await late.listChats!();
-    expect(queue.observations.at(-1)).toMatchObject(
-        { title: "Admin view: listChats", containsRestrictedData: true });
+    expect(views[0]!.calls).toEqual([]);
   });
 });

@@ -40,17 +40,16 @@ export interface AdminBinding extends AdminApi {
    *
    * `hook` is a persistent stub, made with ctx.restore() by the gadget whose [restore]()
    * returns the callback. Subscribing reads nothing: the hook is bound disabled, and delivers
-   * once a person enables it.
+   * once a person enables it. Receiving an event marks THIS workspace as holding restricted
+   * data, as everything read or received through this binding does.
    */
   subscribeIssueReported(hook: IssueReportedHook): Promise<void>;
 
   /**
    * Call `hook` each time an admin ends a report's investigation: its status leaves
-   * "investigating" for any status but "new". An event whose status is "fixSuggested" or
-   * "fixInProgress", which the report's reporter reads as "withAdmin", marks THIS workspace as
-   * holding restricted data, as reading the report through this binding does: from then on
-   * nothing here is applied without a person, a reply through a report session included.
-   * `hook` is a persistent stub, as for subscribeIssueReported().
+   * "investigating" for any status but "new". Receiving an event marks THIS workspace as
+   * holding restricted data, as for subscribeIssueReported(). `hook` is a persistent stub, as
+   * for subscribeIssueReported().
    */
   subscribeInvestigationComplete(hook: InvestigationCompleteHook): Promise<void>;
 
@@ -66,11 +65,9 @@ export interface AdminBinding extends AdminApi {
    * comes for an action that changed nothing when it ran (a claim of a report this workspace's
    * owner already holds, a status the report already has), for one that was denied, or for
    * one refused where it lands (`assigned`, `threadFull`): code that waits to learn what
-   * became of an action reads the report as well, and never waits on the event alone. Every
-   * event but a "reply" tells what the report's reporter is not shown, and marks THIS
-   * workspace as holding restricted data, as reading the report through this binding does:
-   * from then on nothing here is applied without a person, a reply through a report session
-   * included. `hook` is a persistent stub, as for subscribeIssueReported().
+   * became of an action reads the report as well, and never waits on the event alone.
+   * Receiving an event marks THIS workspace as holding restricted data, as for
+   * subscribeIssueReported(). `hook` is a persistent stub, as for subscribeIssueReported().
    */
   subscribeIssueReportChanged(hook: IssueReportChangedHook): Promise<void>;
 }
@@ -103,9 +100,7 @@ export interface IssueReportedHook {
  * callback can be called more than once for the same event, and a report's investigation can
  * end more than once, with the same status and at the same `at` too: key the work by `eventId`,
  * which is the same each time one event is delivered and differs between two ends. It answers
- * within 30 seconds, as IssueReportedHook's does. Receiving an event whose `status` is
- * "fixSuggested" or "fixInProgress" marks this workspace as holding restricted data (see
- * subscribeInvestigationComplete()).
+ * within 30 seconds, as IssueReportedHook's does.
  */
 export interface InvestigationCompleteHook {
   /** Called when an admin moved the report from "investigating" to `status`, at `at`. */
@@ -128,9 +123,7 @@ export interface InvestigationCompleteHook {
  * is the same each time one event is delivered and differs between two writes. The events of
  * one report can arrive in any order, and two calls for it can run at once: never keep the
  * last event's `status` as the report's, and never take two calls for one report to run one
- * after the other. It answers within 30 seconds, as IssueReportedHook's does. Receiving an
- * event of any `change` but "reply" marks this workspace as holding restricted data (see
- * subscribeIssueReportChanged()).
+ * after the other. It answers within 30 seconds, as IssueReportedHook's does.
  */
 export interface IssueReportChangedHook {
   /** Called when the report was written to, at `at`. */
@@ -165,7 +158,8 @@ export interface IssueReportHook
  * One issue report and nothing else: the report as its reporter reads it, its images, a reply in
  * its public thread, and its reporter's workspace as the reporter chose to show it. It reaches
  * no other report, no admins-only entry, no listing, no audit log, no setting and no write
- * request, and it cannot be widened.
+ * request, and it cannot be widened. Everything it reads marks THIS workspace as holding
+ * restricted data, as the binding's own reads do.
  */
 export interface IssueReportSession {
   /** The report as its reporter reads it: no links, no admins-only entry, no admin's id. */
@@ -177,8 +171,9 @@ export interface IssueReportSession {
   /**
    * Queue a public reply in the report's thread: non-blank text of at most 2000 characters. It
    * resolves to undefined, and the reply is posted once its action is approved. This is its own
-   * kind of action ("Reply to a reporter from a session limited to their report"), which a
-   * workspace's rule may approve; a public reply through AdminBinding never is.
+   * kind of action ("Reply to a reporter from a session limited to their report"). A
+   * workspace's rule may approve it only while nothing in the workspace has read through this
+   * binding, a report session included; a public reply through AdminBinding never is.
    */
   reply(text: string): Promise<void>;
 
@@ -188,10 +183,8 @@ export interface IssueReportSession {
    * account-wide grant, is live. Its description lists no other grant. It takes the reason
    * alone, which the deployment's audit log keeps: the workspace is the report's, and an id
    * given before the reason is refused. Throws when the report names no workspace or one its
-   * reporter does not own. When that workspace holds restricted data, every answer of the view
-   * marks THIS workspace as holding restricted data too: from the first one on, nothing here is
-   * applied without a person (a reply through this session included) and web fetches reach only
-   * trusted hosts. The report itself, its images and its thread never mark.
+   * reporter does not own. Every answer of the view marks THIS workspace as holding restricted
+   * data, as get() and readImage() do.
    */
   inspectWorkspace(reason: string): Promise<AdminWorkspaceView>;
 }

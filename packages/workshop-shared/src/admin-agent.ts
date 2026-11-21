@@ -26,13 +26,10 @@ export const ADMIN_AGENT_LEND_SECONDS = 15 * 60;
 
 /**
  * The subresource id (ObservationDescription.subresources) the admin gatekeeper puts on every
- * observation it makes through the whole admin binding: each read of the binding, each call on
- * a view the binding opened, and a hook's delivery. An observation of a session limited to one
- * issue report never carries it. A workspace treats every other subresource id as opaque; this
- * one it reads, as it reads this gatekeeper's action tags (ADMIN_AGENT_ACTIONS), to tell the
- * two apart where they must be: an observation that names it and says its read holds restricted
- * data keeps the workspace to deployment admins for good, and a report session's observation,
- * which says the same when the reporter's own workspace holds restricted data, does not.
+ * observation it makes: each read of the binding, of a session limited to one issue report and
+ * of a view either opened, and a hook's delivery. A workspace treats every other subresource id
+ * as opaque; this one it reads: an observation that names it and says its read holds restricted
+ * data keeps the workspace to deployment admins for good.
  */
 export const ADMIN_BINDING_SUBRESOURCE = "admin:deployment";
 
@@ -123,8 +120,8 @@ export const ADMIN_AGENT_KINDS = {
  * nothing the caller says: "issueReportReply" through the admin binding, which reads what only
  * admins see, so its reply always waits for a person; "issueReportScopedReply" through a session
  * limited to one report (the gatekeeper's IssueReportSession), which reads nothing the reporter
- * could not, so its reply may be auto-approved. They never share a tag, so a rule for one never
- * approves the other.
+ * could not, so its reply may be auto-approved where nothing restricted was read. They never
+ * share a tag, so a rule for one never approves the other.
  *
  * Whom the split holds against: the agents and gadgets that call the gatekeeper, which choose
  * neither an action's tag nor whether a read marks its workspace. The gatekeeper Worker
@@ -148,10 +145,10 @@ export const ADMIN_AGENT_KINDS = {
  * the gatekeeper.
  *
  * A verdict of true is a ceiling, not a promise: a rule applies an action only in a workspace
- * that holds no restricted data, and every read through the admin binding marks its workspace as
- * holding some, as does what a session limited to one report reads of a reporter's workspace
- * that itself holds some. So in a workspace whose agent has read either, every kind waits for
- * a person.
+ * that holds no restricted data, and everything read or received through the admin gatekeeper,
+ * a session limited to one report and a hook's delivery included, marks its workspace as holding
+ * some. So in a workspace whose agents or gadgets have read or received anything through it,
+ * every kind waits for a person.
  */
 export const ADMIN_AGENT_ACTIONS = {
   issueReportReply: {

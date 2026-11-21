@@ -208,8 +208,8 @@ exists. What stands in for the owner's knowledge there:
 A workspace that has the admin gatekeeper's connection, or that has read through its whole
 binding, admits beside its owner only deployment admins, which the Workshop checks at each open
 and each background read (`OverseerImpl.admitsNonOwner()`). That connection's
-`verifyObserverAccess()` therefore allows every observer it is asked about for the two subresource
-ids it reports, and none for any other: who may see what it read is decided by admission, not by
+`verifyObserverAccess()` therefore allows every observer it is asked about for the one subresource
+id it reports, and none for any other: who may see what it read is decided by admission, not by
 an account
 (see [the gatekeeper's README](../packages/gatekeeper-admin/README.md#who-can-use-it-and-where)).
 

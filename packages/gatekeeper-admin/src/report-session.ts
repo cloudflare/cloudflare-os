@@ -1,27 +1,21 @@
 // A session limited to one issue report: the report as its reporter reads it, its images, a
 // reply in its public thread, and the reporter's workspace as the reporter chose to show it. It
-// exists so that code can be handed what the reporter could see and nothing else, which is why
-// its reply may reach the reporter with no person in between.
+// exists so that code can be handed what the reporter could see and nothing else. Everything it
+// reads is observed as the whole binding's reads are: restricted data, under the binding's
+// subresource, so the workspace that reads is latched and admins-only for good.
 
 import { RpcStub, RpcTarget } from "cloudflare:workers";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import { buildDescription } from "@gadgets/gatekeeper-kit/action-description";
 import type { AdminAgentQueue } from "@gadgets/workshop-shared/admin-gatekeeper";
 import {
-  type AdminIssueReport, type AdminSettingsView, type AdminWorkspaceDescription,
-  ISSUE_REPORT_ERROR_CODES, ISSUE_REPORT_STATUSES, type IssueReport, type IssueReportEntry,
-  type IssueReportStatus, getIssueReportErrorCode, issueReportStatusForReporter,
+  type AdminIssueReport, type AdminSettingsView, ISSUE_REPORT_ERROR_CODES, ISSUE_REPORT_STATUSES,
+  type IssueReport, type IssueReportEntry, type IssueReportStatus, getIssueReportErrorCode,
+  issueReportStatusForReporter,
 } from "@gadgets/workshop-shared/api";
 import type { ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { type BoundAdminActions, entryText } from "./actions.js";
-import { type AdminSession, Lend, forwarderFor } from "./forward.js";
-
-/**
- * The subresource id of every observation a report session makes, its view's included: one id
- * for every report. Never the whole binding's id, which is what keeps a workspace admins-only
- * for good: nothing a report session reads does that.
- */
-export const REPORT_SUBRESOURCE = "admin:report";
+import { ADMIN_SUBRESOURCE, type AdminSession, Lend, forwarderFor } from "./forward.js";
 
 /** How much of a report's text the card of a reply shows, to say which report it answers. */
 const FIRST_LINE_LENGTH = 200;
@@ -92,8 +86,9 @@ export function scopedReport(
 
 /**
  * What a workspace's activity records for one read of a report session, before the read is
- * made. Never flagged as restricted data: the report, its images and its public thread are what
- * the reporter could see, whatever the reporter's workspace holds.
+ * made: restricted data, under the whole binding's subresource. A report's text and images are
+ * whatever its reporter put there (a screenshot of anything on their screen), and anyone can
+ * write a report, so a read marks the workspace as the binding's own reads do.
  */
 function describeRead(
   method: string, intro: string, values: Record<string, string>,
@@ -105,7 +100,8 @@ function describeRead(
     title: `Issue report: ${method}`,
     description,
     ...(fields ? { fields } : {}),
-    subresources: [REPORT_SUBRESOURCE],
+    containsRestrictedData: true,
+    subresources: [ADMIN_SUBRESOURCE],
   };
 }
 
@@ -213,22 +209,10 @@ export class IssueReportSession extends RpcTarget {
       throw error;
     }
 
-    // Whether the reporter's workspace holds restricted data, asked once, here: every call on
-    // the view is then observed as reading restricted data before it is forwarded, so the
-    // workspace that reads is marked before the first answer reaches it. No view is handed out
-    // without knowing. A reporter's workspace marked after this is read unflagged until this
-    // view ends, which the Workshop makes no later than the session's lend; asking before every
-    // call would double the audit records of every read.
-    let description: AdminWorkspaceDescription;
-    try {
-      description = await view.describe();
-    } catch (error) {
-      view[Symbol.dispose]();
-      throw error;
-    }
-    const restricted = description.containsRestrictedData === true;
+    // Every call on the view is observed as reading restricted data before it is forwarded,
+    // whatever the reporter's workspace holds.
     return new (forwarderFor("AdminWorkspaceView"))(
-        this.#queue.dup(), { restricted, subresource: REPORT_SUBRESOURCE }, view);
+        this.#queue.dup(), { restricted: true, subresource: ADMIN_SUBRESOURCE }, view);
   }
 
   [Symbol.dispose](): void {

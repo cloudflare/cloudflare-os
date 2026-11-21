@@ -75,15 +75,16 @@ say who called, and a rule would apply what it queued with nobody deciding.
 
 ### After the connection is removed
 
-Which workspaces stay closed is decided by one fact, the mark a read makes. A hook's delivery
-of an event that tells what a report's reporter is not shown makes the same mark, and counts
-as a read through the whole binding here (see [Hooks](#hooks)):
+Which workspaces stay closed is decided by one fact, the mark that reading or receiving anything
+through the connection makes: a read through the whole binding, a report session's read, and a
+hook's delivery all make it (see [Restricted data](#restricted-data)):
 
-- **A workspace that never read through the whole binding is ordinary again at once.** It may
-  have opened report sessions, queued actions or received events that mark nothing. The people
-  kept in its sharing list are admitted at their next open, with nobody inviting them.
-- **A workspace that has read through the whole binding stays admins-only for good.** Its chats
-  hold what was read, and nothing lifts the rule.
+- **A workspace that never read or received anything through the connection is ordinary again
+  at once.** It may have opened report sessions, queued actions or subscribed to hooks that
+  never fired. The people kept in its sharing list are admitted at their next open, with nobody
+  inviting them.
+- **A workspace that has read or received anything through the connection stays admins-only
+  for good.** Its chats hold what was read, and nothing lifts the rule.
 
 Each rule reads its own fact:
 
@@ -96,9 +97,8 @@ Each rule reads its own fact:
 While the workspace has the connection it is admins-only whatever it read
 (`hasAdminConnection()`).
 
-No other mark closes a workspace for good. A report session that read a reporter's restricted
-workspace sets the latch alone (see [Restricted data](#restricted-data)): that triage workspace
-waits for a person from then on, and is still ordinary again once the connection is removed.
+A latch set by another connection's observation does not close the workspace for good: only
+this connection's subresource does.
 
 A member who tries to add a non-admin is refused with the reason (`ADMINS_ONLY_REFUSALS`), which
 the Share dialog shows on the person's chip:
@@ -112,30 +112,6 @@ the Share dialog shows on the person's chip:
 
 Non-admins who were in the sharing list before stay listed and stay refused until the owner
 removes them.
-
-### What the non-admins who come back can read
-
-A workspace that never read through the whole binding can still hold, in its chats, what report
-sessions brought in: the text and images of other users' reports, public thread entries, and
-workspace content those reporters granted to admins, the restricted data of a reporter's own
-workspace included. Once the connection is removed, the collaborators who are admitted again
-read those chats. Nothing closes that workspace: the rule above reads reads through the whole
-binding and nothing else.
-
-**That includes whole-binding answers, one hop away.** The reporter can be an admin, and the
-workspace the report names one that read through the whole binding: admins-only for good,
-because its chats hold what was read. Under that admin's grant, a report session's view reads
-those chats, Admin API answers included, into the workspace that triages the report. The
-reader is marked as holding restricted data and no more: the view tells the session that the
-reporter's workspace is restricted (`AdminWorkspaceDescription.containsRestrictedData`), not
-why, so the session observes under the report's subresource and `storage.adminReads` stays
-unset. Once the reader's connection is removed, non-admins are admitted to chats that hold
-what the other workspace keeps from them for good. It takes an admin who reports their own
-triage workspace and grants its content, and an owner who then removes the reader's
-connection and shares it.
-
-An owner who means to share such a workspace again deletes those chats first, or keeps triage in
-a workspace that is never shared with non-admins.
 
 ### Removing the account
 
@@ -437,42 +413,41 @@ restricted data, which the next section makes rare on purpose.
 
 This is the rule of this version.
 
-**Every read through the whole binding marks the workspace as holding restricted data**, through
-the platform's own latch: each of its observations carries `containsRestrictedData`. Listings,
-settings, the audit log, reports and every view method all mark. From the first read on, the
-Workshop enforces what it enforces for restricted data everywhere:
+**Everything read or received through the connection marks the workspace as holding restricted
+data, and keeps it admins-only for good.** Each observation the Worker makes carries
+`containsRestrictedData` and the binding's subresource, so the Workshop sets its latch and
+`storage.adminReads` together (see
+[After the connection is removed](#after-the-connection-is-removed)). That is:
+
+- every read through the whole binding: listings, settings, the audit log, reports and every
+  view method;
+- every read of a report session: `get()`, `readImage()` and each call of its view of the
+  reporter's workspace;
+- every hook's delivery, of any event.
+
+From the first one on, the Workshop enforces what it enforces for restricted data everywhere:
 
 - nothing is applied by a rule: an admins-only note, a status change, a filed request and a
   report session's reply all wait for a person;
 - web fetches reach only the hosts the deployment trusts with such data;
 - a push is refused.
 
-**A report session's reads do not mark, and neither does a hook's delivery of what the
-reporter has**: a new report, or a public reply. A report session returns only what the
-reporter could see.
+**Why a report session's reads mark too.** A report session reads only what the reporter could
+see, but that is not data a workspace may send anywhere. A report's images are screenshots of
+whatever the reporter had on screen, its text is whatever its author wrote, and anyone can file
+one. A triage workspace that kept its web fetches and its rule-applied actions could be steered
+by a report to send another user's content out with no person deciding. A hook's event is ids
+and labels, but what it tells (an admins-only note was added, an investigation ended as a fix
+suggested) is the admins' to share, so it marks as reading the report does.
 
-**A hook's delivery that tells more marks as a read does.** An investigation that ended as
-`fixSuggested` or `fixInProgress`, and every "Report changed" event but a `reply`, tell what
-the reporter is not shown: each is observed with `containsRestrictedData` under the binding's
-subresource (see [Hooks](#hooks)).
+**This is coarser than it needs to be.** A reply to a report's reporter tells them nothing they
+could not see, and an admins-only note tells admins nothing they could not read, yet both wait
+for a person once the workspace has read the report. Releasing such an action needs a model of
+who can see its effects: [the audience design](../../docs/restricted-data-audiences.md)
+proposes one, and this rule stands until it lands.
 
-**The one exception: a reporter's workspace that itself holds restricted data.** When the
-reporter's own workspace is marked, every answer of the session's view of that workspace,
-metadata and content alike, carries the mark into the workspace that reads it, as restricted
-data does everywhere else. Triage of such a report waits for a person from the first view
-answer on: no reply applied by a rule, no public web fetch. "What the reporter could see" does
-not cover what the reporter's workspace is forbidden to send out. The report itself, its images
-and its public thread never mark, and a report from an ordinary workspace is unaffected. This
-mark does not make the triage workspace admins-only for good: only a read through the whole
-binding does (see [After the connection is removed](#after-the-connection-is-removed)).
-
-Its bound: the session learns whether the reporter's workspace is restricted when it opens the
-view. A workspace marked after that is read unflagged until the view ends, at most
-`ADMIN_AGENT_LEND_SECONDS` later.
-
-**So the one place a rule applies an action** is a workspace that has never read through the
-binding, nor a restricted reporter's workspace through a report session, nor received an event
-that marks. It is the one way a reply reaches a reporter with no person in between.
+**So a rule applies this connection's actions only** in a workspace that has read and received
+nothing through it.
 
 **The order.** The latch is set before a read is forwarded and read again before each apply,
 and the lend itself refuses an auto-approved action in a marked workspace. A reply drafted, or
@@ -481,25 +456,15 @@ a session opened, before the first read therefore waits for a person after it.
 **What marks, and what does not.** A session awaits its lend before its first observation, so a
 call refused before anything was lent (the vendor is off, the owner is not an admin, a member's
 direct session) marks nothing. A read that was lent and that the Admin API itself then refuses
-still marks: the mark is made before the answer is known.
+still marks: the mark is made before the answer is known. Opening a report session, queuing an
+action and subscribing to a hook read nothing and mark nothing.
 
 ### What the latch does not hold back
 
 Reads through the workspace's other connections. The latch holds web fetches and actions; an
 observation of another gatekeeper still runs, and its arguments (a search query, a file path, a
 message id) can carry what was read to that vendor. A workspace that reads through the admin
-binding should hold no connection its owner would not send that data to.
-
-### What an unmarked triage workspace holds
-
-This is the other side of "a report session's reads do not mark". Under the reporter's grant, a
-report session reads another user's chats and files, and when the reporter's workspace is an
-ordinary one, that content lands in a triage workspace that is not marked. Nothing is held
-there: its web fetches go to any host, and the actions of its other connections can still be
-applied by a rule. Text in a report, or in the reporter's workspace, can steer a triage agent to
-send that content out with no person in between.
-
-Two rules for whoever builds triage:
+binding should hold no connection its owner would not send that data to. For triage:
 
 - the spawner's `env` of a triage agent names no other connection: the session it is handed is
   all it holds;
@@ -518,7 +483,8 @@ Two rules for whoever builds triage:
 `AdminBinding.openIssueReport(reportId)` opens a session limited to one report
 (`IssueReportSession`). It exists so that a gadget can hand it to an agent that must hold
 nothing the reporter could not see: "only what the reporter could see" is a capability, not a
-prompt. That is why its reply may reach the reporter with no person in between.
+prompt. What it reads still marks the workspace (see [Restricted data](#restricted-data)), so
+its reply waits for a person once anything has been read.
 
 **What it reaches:**
 
@@ -550,8 +516,6 @@ elsewhere, and it cannot be widened.
   that with the report store when the view is opened for the report
   (`AdminWorkspaceInspectOptions.forIssueReport`): the session compares no ids. A workspace
   that is not the reporter's is never opened or described, and leaves no record.
-- It makes one `describe` record per view the session opens: the session's own read, to learn
-  whether the workspace holds restricted data (see [Restricted data](#restricted-data)).
 - It is opened for content only where the deployment's level in force is `"content"`, which the
   session reads from `getSettings()` first. A deployment at the metadata level is asked for a
   metadata view, and records no refused open.
@@ -623,40 +587,18 @@ whole binding.
 | Report changed | `subscribeIssueReportChanged(hook)` | For each write to a report after it was filed, whoever made it: its status set, a claim, a take-over or a release, an entry added to its thread, its links replaced. | `{ eventId, reportId, change, status?, at }` |
 
 An event is ids and labels only: the subscriber reads the report through its own binding.
-Subscribing reads nothing and marks nothing. The hook is bound disabled, and delivers once a
-person enables it. A hook wakes a gadget's stored callback or an existing chat, as hooks do; it
-opens no chat. The third hook is built as the other two are: who may subscribe, and whose
+Subscribing reads nothing and marks nothing; every delivery marks the workspace (below). The
+hook is bound disabled, and delivers once a person enables it. A hook wakes a gadget's stored
+callback or an existing chat, as hooks do; it opens no chat. The third hook is built as the other two are: who may subscribe, and whose
 firings the Workshop refuses, are the same.
 
-**Which deliveries mark the workspace.** Each delivery is observed in the subscriber's
-workspace under the binding's subresource, before the callback is called. The observation
-carries `containsRestrictedData` when the event tells its subscriber something the report's
-reporter is not shown (`tellsWhatReporterIsNotShown()`, in `src/hooks.ts`):
-
-| Event | Flagged | Why |
-| --- | --- | --- |
-| Issue reported | Never | The report's id, its priority and when it was filed are the reporter's own. |
-| Investigation complete | When `status` is `fixSuggested` or `fixInProgress` | The reporter reads both as `withAdmin`. Leaving `investigating` always changes the status the reporter reads, so that it ended, and when, is a public line of the thread. |
-| Report changed, `reply` | Never | A reply is a public entry, the reporter's own or an admin's, and the status a reopening reply carries is public. |
-| Report changed, `status` | Always | The event carries the status as admins read it and not the one it replaced, so it does not say whether the reporter was shown the change: a move between statuses the reporter reads as the same one is a line for admins alone. |
-| Report changed, `assignment`, `note`, `links` | Always | Each is for admins alone, and so is the time it was written. |
-
-- **A flagged delivery marks the workspace exactly as a read through the whole binding does**,
-  since its observation names the same subresource: the latch, and admins-only for good (see
-  [Restricted data](#restricted-data) and
-  [After the connection is removed](#after-the-connection-is-removed)).
-- **Why.** A callback in a workspace that has read nothing can open a report session and reply
-  with what an event told it, and the rule for a scoped reply applies that reply with no
-  person deciding. Reading the same through `getIssueReport()` marks the workspace first, and
-  so does being told it.
-- **What marks nothing says nothing the reporter does not have.** A workspace that subscribes
-  only to "Issue reported", or receives only replies, keeps its rules. Subscribing itself
-  reads nothing and marks nothing.
-- **The hooks fire for every report of the deployment**, so a workspace that subscribes to
-  "Report changed" is marked by the first status, assignment, note or links written to any
-  report, and one that subscribes to "Investigation complete" by the first investigation that
-  ends as a fix suggested or in progress. A triage workspace whose rule answers reporters
-  subscribes to "Issue reported" alone.
+**Every delivery marks the workspace.** Each is observed in the subscriber's workspace with
+`containsRestrictedData`, under the binding's subresource, before the callback is called: the
+latch, and admins-only for good, exactly as a read through the whole binding (see
+[Restricted data](#restricted-data) and
+[After the connection is removed](#after-the-connection-is-removed)). The hooks fire for every
+report of the deployment, so a workspace that subscribes is marked by the first event any
+report sends it.
 
 **What "Report changed" fires for.** One write to a report is one event, whose `change` says
 what the write was (`ISSUE_REPORT_CHANGES`):
@@ -819,7 +761,7 @@ for any admin, and no more:
 | `addIssueReportEntry()`, `setIssueReportStatus()` | None | The entry or status line, with `via: "gatekeeper"` and, for admins, the origin | An action, with its card |
 | `claimIssueReport()`, `releaseIssueReport()` | None | A line only admins read, with no text: who claimed or released the report, with `via: "gatekeeper"` and the origin. The report's assignee carries the same `via` and origin while the claim holds. | An action, with its card |
 | `listUsers()`, `listWorkspaces()`, `getSettings()`, `listAdminAudit()`, `getAdminAuditStats()`, `whoami()`, `listIssueReports()`, `getIssueReport()`, `readIssueReportImage()`, `listContentAccessRequests()`, `getContentAccessRequest()`, and a report session's `get()` and `readImage()` | None | | An observation |
-| A hook's delivery, of any of the three | None | | An observation, with the binding's subresource, and the restricted-data flag when the event tells what the reporter is not shown (see [Hooks](#hooks)) |
+| A hook's delivery, of any of the three | None | | An observation, with the binding's subresource and the restricted-data flag (see [Hooks](#hooks)) |
 
 - **In the audit log**: the calls the Admin API records for any admin. A report session's view
   adds the one `describe` it makes when it opens.
@@ -866,16 +808,12 @@ found elsewhere:
   is not told its chat's id.
 - **The reply split and the restricted-data mark are the Worker's own declarations** (see
   [What a Worker that keeps everything could do](#what-a-worker-that-keeps-everything-could-do)).
-- **Non-admins admitted again after the connection is removed read what report sessions left in
-  the chats**, which can be what an admin's own triage workspace read through the whole binding
-  (see [What the non-admins who come back can read](#what-the-non-admins-who-come-back-can-read)).
 - **The latch does not hold back reads through other connections** (see
   [What the latch does not hold back](#what-the-latch-does-not-hold-back)).
-- **A reporter's workspace marked after a report session's view was opened is read unflagged
-  until that view ends** (see [Restricted data](#restricted-data)).
-- **An ordinary reporter's content, read by a report session, sits in a triage workspace that
-  is not marked**, where web fetches and other connections' actions are not held (see
-  [What an unmarked triage workspace holds](#what-an-unmarked-triage-workspace-holds)).
+- **Reading a report, or receiving a hook's event, closes the workspace as a read of the whole
+  deployment does**: nothing in it is applied by a rule from then on, a report session's reply
+  included, and it stays admins-only after the connection is removed (see
+  [Restricted data](#restricted-data)).
 - **A connection's actions are auto-approved in order.** A public reply, a write or a request
   that waits for a person holds back the auto-approval of that connection's later notes, status
   changes, assignments and requests, and a triager's scoped replies too. Give triage a workspace
@@ -912,14 +850,6 @@ found elsewhere:
   note, a public reply, a status or an assignment), through the Workshop or the CLI.
 - **A claim through a gadget assigns the workspace's owner**, whoever in that workspace pressed
   its "Assign to me" button.
-- **An event that tells what the reporter is not shown marks the workspace that receives it,
-  for good**: an investigation that ended as `fixSuggested` or `fixInProgress`, and every
-  "Report changed" event but a `reply` (see [Hooks](#hooks)). So what an event says of the
-  admins' own statuses, notes, assignments and links reaches the reporter only through a
-  person. The mark is coarse: a status change is flagged even where the reporter was shown
-  it, and one such write to any report of the deployment marks every workspace subscribed to
-  its hook. What marks nothing, "Issue reported" and a `reply` change, says nothing the
-  reporter does not have.
 - **One queue delivers every hook of the deployment**, 20 deliveries a run, each run as long
   as its slowest callback (up to 30 seconds). One slow or failing subscriber of "Report
   changed" can delay other workspaces' "Issue reported" deliveries by minutes, and by up to
@@ -968,8 +898,8 @@ an account of their own:
 - **`verifyObserverAccess()` allows every observer it is asked about.** Who may see what the
   binding read is a question of who is a deployment admin, which this Worker cannot tell:
   admission is the Workshop's. Every observation carries exactly one subresource id,
-  `ADMIN_BINDING_SUBRESOURCE` for the whole binding and a hook's delivery,
-  `REPORT_SUBRESOURCE` for a report session; `getHistoricalSubresources()` returns `[]`, and
+  `ADMIN_BINDING_SUBRESOURCE`, the whole binding's, a report session's and a hook's delivery's
+  alike; `getHistoricalSubresources()` returns `[]`, and
   `addObserver()` and `removeObserver()` do nothing.
 
 ## Tests
@@ -994,15 +924,16 @@ the schema when it is stale and building the configurator frame.
   anything is queued; an action that fails to apply, is lent nothing or is under way.
 - `__tests__/workerd/report-session.test.ts`: the allowlist; a session that can name no other
   report; its reply's card; its view, opened for the level in force and refused by the
-  workspace's own answer; what its reads record, with the mark of a restricted reporter's
-  workspace on its view's calls alone; and the statuses as the reporter reads them, with no
-  admins-only status line, no assignee, no assignment line and no method that assigns.
+  workspace's own answer; what its reads record, each with the mark and the binding's
+  subresource whatever the reporter's workspace holds; and the statuses as the reporter reads
+  them, with no admins-only status line, no assignee, no assignment line and no method that
+  assigns.
 - `__tests__/workerd/hooks.test.ts`: subscribing; an event firing each hook of its kind once,
   each kind of write to a report among them, and a report that leaves `investigating` firing
   two hooks with an event id each; a delivery that fails; many changed events holding an
-  "Issue reported" delivery back by whole runs without losing it; which deliveries carry the
-  restricted-data flag, for each kind of write and each status an investigation ends with;
-  the delivery stub; the
+  "Issue reported" delivery back by whole runs without losing it; the restricted-data flag on
+  every delivery, for each kind of write and each status an investigation ends with; the
+  delivery stub; the
   vendor's `issueReportEvents()`, through its argument validation: a batch that mixes kinds it
   knows with one it does not delivers the known ones, a known kind with an unknown label is
   dropped alone, and an event that is not ids and labels is still refused; the driver's
@@ -1024,8 +955,8 @@ removal, a blueprint, a demoted owner), `admin-gatekeeper-actions.test.ts` (the 
 rules, the restricted-data order, the report session and what it reads of a fix, two admins'
 workspaces claiming one report, a take-over an agent never makes) and
 `admin-gatekeeper-hooks.test.ts` (the three hooks into a gadget's stored callback, once for each
-kind of change to a report, the workspace marked by an event its reporter is not shown and
-by no other, a spawned chat with and without the binding, the hand-off and a forged stub).
+kind of change to a report, the workspace marked by every event, a spawned chat with and
+without the binding, the hand-off and a forged stub).
 
 ## Reviewing a change here
 
@@ -1036,12 +967,9 @@ by no other, a spawned chat with and without the binding, the hand-off and a for
 - an action kind that calls `writeWorkspace()` or `requestContentAccess()` with `autoApprovable`
   true;
 - a "read" method that returns a view with no entry of its own in `ADMIN_AGENT_VIEWS`;
-- a read through the whole binding observed without `containsRestrictedData`, without
-  `ADMIN_BINDING_SUBRESOURCE`, or before its lend resolved;
-- a report session's observation that names `ADMIN_BINDING_SUBRESOURCE`, or its view of a
-  restricted workspace observed without the flag;
-- a hook's delivery of an event that tells what the reporter is not shown observed without
-  the flag, or a field added to an event without a verdict in `tellsWhatReporterIsNotShown()`;
+- a read through the whole binding or a report session, or a hook's delivery, observed without
+  `containsRestrictedData`, without `ADMIN_BINDING_SUBRESOURCE`, or (for a read) before its
+  lend resolved;
 - a comparison of a reporter's id with an owner's outside the report store;
 - a lend or a hook firing that does not ask the owner's account
   (`UserDurableObject.holdsGatekeeperAccount()`);

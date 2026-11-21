@@ -25,9 +25,7 @@ import { ADMIN_GATEKEEPER_VENDOR_ID } from "@gadgets/workshop-shared/admin-agent
 import {
   ISSUE_REPORT_CHANGES, type IssueReportEvent,
 } from "@gadgets/workshop-shared/admin-gatekeeper";
-import {
-  ISSUE_REPORT_PRIORITIES, ISSUE_REPORT_STATUSES, issueReportStatusForReporter,
-} from "@gadgets/workshop-shared/api";
+import { ISSUE_REPORT_PRIORITIES, ISSUE_REPORT_STATUSES } from "@gadgets/workshop-shared/api";
 import type {
   ApprovalQueue, HookController, HookDescription, HookInitiator, HookTargetMetadata,
 } from "@gadgets/workshop-shared/gatekeeper";
@@ -83,15 +81,17 @@ const HOOK_DESCRIPTIONS: Record<IssueReportHookKind, HookDescription> = {
     title: "Watch for new issue reports",
     description: "Call this hook once for each issue report filed on this deployment from now " +
       "on, with the report's id, its priority and the time it was filed. It carries ids and " +
-      "labels only: nothing of the report's text, its images or who filed it.",
+      "labels only: nothing of the report's text, its images or who filed it. Each event " +
+      "marks this workspace as holding restricted data and keeps it admins-only, as reading " +
+      "the report does.",
   },
   investigationComplete: {
     title: "Watch for investigations that end",
     description: "Call this hook each time an admin moves an issue report out of " +
       "\"investigating\", with the report's id, its new status and the time of the change. It " +
       "carries ids and labels only: nothing of the report's text, its thread or who filed it. " +
-      "An event whose status the report's reporter is not shown (a fix suggested or in " +
-      "progress) marks this workspace as holding restricted data, as reading the report does.",
+      "Each event marks this workspace as holding restricted data and keeps it admins-only, " +
+      "as reading the report does.",
   },
   changed: {
     title: "Watch for changes to issue reports",
@@ -102,9 +102,9 @@ const HOOK_DESCRIPTIONS: Record<IssueReportHookKind, HookDescription> = {
       "It fires for changes this workspace's own agents and gadgets made too, which is how " +
       "code learns that an action it queued was applied, so a subscriber that writes to a " +
       "report on each event must not answer its own change. The events of one report can " +
-      "arrive in any order, so the status on one may no longer be the report's. Every event " +
-      "but a public reply's marks this workspace as holding restricted data, as reading the " +
-      "report does.",
+      "arrive in any order, so the status on one may no longer be the report's. Each event " +
+      "marks this workspace as holding restricted data and keeps it admins-only, as reading " +
+      "the report does.",
   },
 };
 
@@ -116,35 +116,6 @@ const OBSERVED: Record<IssueReportHookKind, string> = {
   changed: "Receive the id of an issue report that was written to, what the write was, the " +
       "status it set if it set one, and the time.",
 };
-
-/**
- * Whether `event` tells its subscriber something its report's reporter is not shown, so that
- * receiving it marks the workspace as reading the report through the binding does:
- *   - "reported": never. A report's id, its priority and when it was filed are its reporter's
- *     own.
- *   - "investigationComplete": when its status is one the reporter reads as another
- *     ("fixSuggested", "fixInProgress"). Leaving "investigating" always changes the status the
- *     reporter reads, so that it ended, and when, is a public line of the thread.
- *   - "changed": for every write but a "reply". A reply is a public entry, the reporter's own
- *     or an admin's, and the status a reopening one carries is public. A note, an assignment
- *     and a report's links are for admins alone, and so is the time of a write to them. A
- *     "status" does whatever it set: the event carries the status as admins read it and not
- *     the one it replaced, so it does not say whether the reporter was shown the change (one
- *     between two statuses the reporter reads as the same is a line for admins alone).
- */
-function tellsWhatReporterIsNotShown(event: IssueReportHookEvent): boolean {
-  switch (event.kind) {
-    case "reported":
-      return false;
-    case "investigationComplete":
-      return issueReportStatusForReporter(event.status) !== event.status;
-    case "changed":
-      return event.change !== "reply";
-    default:
-      // A kind added to KINDS does not compile until it has a branch here.
-      return event satisfies never;
-  }
-}
 
 // ── Facet side ──────────────────────────────────────────────────────
 
@@ -184,14 +155,12 @@ export class IssueReportHookDeliveryImpl extends RpcTarget implements IssueRepor
 
   /**
    * Observes the event on the firing's queue, then calls the hook with it. The observation
-   * carries the whole binding's subresource, and the restricted-data flag for an event that
-   * tells what its report's reporter is not shown (see tellsWhatReporterIsNotShown()). The two
-   * together mark the workspace exactly as a read through the binding does, the latch and
-   * admins-only for good, before the callback has the event: no rule there applies a reply
-   * that passes it on to the reporter. A workspace that receives only new reports and replies
-   * keeps its rules. A refused observation calls no hook, and a throw from either is retried
-   * by the driver, as is a callback that has not answered within HOOK_CALLBACK_TIMEOUT_MS: it
-   * is not waited for, and whatever it comes to later is not looked at.
+   * carries the whole binding's subresource and the restricted-data flag, so every event marks
+   * the workspace exactly as a read through the binding does, the latch and admins-only for
+   * good, before the callback has the event. A refused observation calls no hook, and a throw
+   * from either is retried by the driver, as is a callback that has not answered within
+   * HOOK_CALLBACK_TIMEOUT_MS: it is not waited for, and whatever it comes to later is not looked
+   * at.
    */
   async deliver(
     callback: RpcStub<IssueReportHookTarget>, approvalQueue: RpcStub<ApprovalQueue>,
@@ -207,7 +176,7 @@ export class IssueReportHookDeliveryImpl extends RpcTarget implements IssueRepor
       description,
       ...(fields ? { fields } : {}),
       subresources: [ADMIN_SUBRESOURCE],
-      ...(tellsWhatReporterIsNotShown(event) ? { containsRestrictedData: true } : {}),
+      containsRestrictedData: true,
     });
     let timer: ReturnType<typeof setTimeout> | null = null;
     try {

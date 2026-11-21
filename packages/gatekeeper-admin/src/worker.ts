@@ -33,7 +33,7 @@ import {
   IssueReportHookDeliveryImpl, type IssueReportHookKind, type IssueReportHookParams,
   type IssueReportHookTarget, type SentIssueReportEvent, bindIssueReportHook, issueReportHookDriver,
 } from "./hooks.js";
-import { IssueReportSession, REPORT_SUBRESOURCE } from "./report-session.js";
+import { IssueReportSession } from "./report-session.js";
 import { ADMIN_SCHEMA, generatedDeclarations } from "./surface.js";
 import TYPES_CODE from "./types.txt";
 
@@ -219,17 +219,16 @@ export class AdminGatekeeperImpl
   async removeObserver(_id: string): Promise<void> {}
 
   /**
-   * Allows every observer it is asked about for the subresources this Worker reports (the whole
-   * binding's and a report session's), and none for any other. Who may see what the binding read
-   * is a question of who is a deployment admin, which this Worker cannot tell: the Workshop admits
-   * to a workspace with this connection, beside its owner, only users who are deployment admins at
-   * that moment.
+   * Allows every observer it is asked about for the one subresource this Worker reports, the
+   * whole binding's, and none for any other. Who may see what the binding read is a question of
+   * who is a deployment admin, which this Worker cannot tell: the Workshop admits to a workspace
+   * with this connection, beside its owner, only users who are deployment admins at that moment.
    */
   async verifyObserverAccess(
     observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
     subresources: string[],
   ): Promise<{ allowedObserverIds: string[] }> {
-    const known = subresources.every((id) => id === ADMIN_SUBRESOURCE || id === REPORT_SUBRESOURCE)
+    const known = subresources.every((id) => id === ADMIN_SUBRESOURCE);
     return { allowedObserverIds: known ? observers.map((observer) => observer.id) : [] };
   }
 

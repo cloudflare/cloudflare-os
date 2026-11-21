@@ -6373,9 +6373,8 @@ class OverseerImpl implements AgentHooks {
         if (description.containsRestrictedData) {
           this.storage.containsRestrictedData.put(true);
           // ADMIN_BINDING_SUBRESOURCE is the one subresource id the Workshop reads rather than
-          // treats as opaque: this gatekeeper's two capabilities observe on one queue and read
-          // through the same lent methods, so only its own declaration tells a read through the
-          // whole binding from a read of a session limited to one report (see adminsOnly()).
+          // treats as opaque: only the gatekeeper's own declaration says a read was made through
+          // its admin binding (see adminsOnly()).
           if (isAdminGatekeeper(gatekeeper) &&
               description.subresources?.includes(ADMIN_BINDING_SUBRESOURCE)) {
             this.storage.adminReads.put(true);
@@ -11479,13 +11478,12 @@ class OverseerImpl implements AgentHooks {
   }
 
   // Why this workspace admits, beside its owner, only deployment admins, or undefined when it
-  // admits whoever it is shared with: "reads" once anything was read through the whole admin
-  // binding of an admin gatekeeper connection (storage.adminReads: for good, whether or not the
-  // connection is still there, since removing it, or every chat, does not remove what was read),
-  // else "connection" while it has one. A workspace that had the connection and read nothing
-  // through the whole binding (sessions limited to one report included, whatever they marked) is
-  // ordinary again as soon as the connection is removed: the collaborators kept in its sharing
-  // list are admitted at their next open. Synchronous.
+  // admits whoever it is shared with: "reads" once anything was read through the admin binding of
+  // an admin gatekeeper connection (storage.adminReads: for good, whether or not the connection
+  // is still there, since removing it, or every chat, does not remove what was read), else
+  // "connection" while it has one. A workspace that had the connection and read nothing through
+  // it is ordinary again as soon as the connection is removed: the collaborators kept in its
+  // sharing list are admitted at their next open. Synchronous.
   adminsOnly(): "reads" | "connection" | undefined {
     return this.storage.adminReads.get() ? "reads"
         : this.hasAdminConnection() ? "connection" : undefined;

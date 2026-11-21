@@ -671,19 +671,17 @@ it("goes back to ordinary sharing when a connection that read nothing is removed
     await admin.setGatekeeperMode(VENDOR, "optional");
   }
 
-  // What it did do reads nothing through the whole binding: a session limited to one report,
-  // its reply, and a note.
+  // What it did do reads nothing through the connection: a session limited to one report,
+  // opened and never read, its reply, and a note. Reading the report would mark the workspace.
   const turn = await agentTurn(owner, ws, `
     const report = await env.ADMIN.openIssueReport(${JSON.stringify(report.id)});
-    await attempt("get", async () => (await report.get()).id);
     await attempt("reply", () => report.reply("We are looking into it."));
     await attempt("note", () => env.ADMIN.addIssueReportEntry(
         ${JSON.stringify(report.id)}, "Triaged from the scoped session", "admins"));`, { chatId });
-  expect(await turn.resumed()).toEqual(
-      { get: { value: report.id }, reply: { value: null }, note: { value: null } });
+  expect(await turn.resumed()).toEqual({ reply: { value: null }, note: { value: null } });
   expect((await reporterThread(reporter, report.id)).map(entry => entry.text))
       .toEqual(["We are looking into it."]);
-  expect((await observationTitles(ws)).filter(title => title.startsWith("Admin API:"))).toEqual([]);
+  expect(await observationTitles(ws)).toEqual([]);
   expect(await isRestricted(ws)).toBe(false);
 
   // Admins only while the connection is there.
@@ -700,7 +698,15 @@ it("goes back to ordinary sharing when a connection that read nothing is removed
   expect(await collaboratorIds(ws)).toEqual(expect.arrayContaining([nell.name, visitor.name]));
 });
 
-it("stays admins-only for good once it has read through the connection, removed or not", async () => {
+// A read through the whole binding, and one through a session limited to one report: a report's
+// text and images are whatever its author put there.
+it.each([
+  { through: "the whole binding", read: `await attempt("read", async () =>
+      (await env.ADMIN.listUsers({ limit: 1 })).users.length);` },
+  { through: "a report session", read: `await attempt("read", async () =>
+      (await (await env.ADMIN.openIssueReport(REPORT_ID)).get()).id === REPORT_ID ? 1 : 0);` },
+])("stays admins-only for good once it has read through $through, removed or not", async ({ read }) => {
+  const report = await fileReport(await newMember(suite, "readreporter"));
   const [nell, visitor, late] = [
     await newMember(suite, "nell"), await newMember(suite, "passerby"),
     await newMember(suite, "latecomer"),
@@ -716,8 +722,8 @@ it("stays admins-only for good once it has read through the connection, removed 
   expect(await opening(suite, grace, triage.id, { accountId: graceAccount.id })).toBe("opened");
 
   const turn = await agentTurn(owner, ws,
-      `await attempt("users", () => env.ADMIN.listUsers({ limit: 1 }));`, { connection });
-  expect(await turn.results()).toMatchObject({ users: { value: { users: [expect.anything()] } } });
+      read.replaceAll("REPORT_ID", JSON.stringify(report.id)), { connection });
+  expect(await turn.results()).toEqual({ read: { value: 1 } });
   expect(await isRestricted(ws)).toBe(true);
 
   await connection.client.remove();
