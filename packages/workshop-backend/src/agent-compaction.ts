@@ -70,13 +70,17 @@ export function shouldCompactChat(contextTokens: number, inputBudget: number): b
 /**
  * True when the chat's newest message is `/compact`. Such a turn compacts and then ends instead of
  * prompting the model. Both the agent and the turn loop derive this from the log rather than
- * passing a flag, so a turn resumed after a restart still behaves the same. Errors and textless
- * nudges after it don't count, so a Retry or Continue of a failed or stopped `/compact` reruns it.
+ * passing a flag, so a turn resumed after a restart still behaves the same. Records that ask
+ * nothing of the model don't count: errors, textless nudges, and `changes` (a user's edits, saved
+ * as a turn or Retry starts). So a Retry or Continue of a failed or stopped `/compact` reruns it.
  * Takes the log newest first, so a storage cursor stops at the first record that decides it.
  */
 export function isCompactionTurn(newestFirst: Iterable<AiChatMessage>): boolean {
   for (let msg of newestFirst) {
-    if (msg.type === "error" || (msg.type === "agentNudge" && msg.text === undefined)) continue;
+    if (msg.type === "error" || msg.type === "changes" ||
+        (msg.type === "agentNudge" && msg.text === undefined)) {
+      continue;
+    }
     return msg.type === "slashCommand" && msg.request.id.builtin === true &&
         msg.request.id.commandId === "compact";
   }

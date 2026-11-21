@@ -558,9 +558,13 @@ describe("decision handoff using the existing execution row", () => {
     expect(requests()).toBe(previous === "final response" ? 1 : 0); // Summary only, if compactable.
   });
 
-  // A /compact interrupted too often gets no note on Retry either: it is not an agent turn.
-  it.each([undefined, "resume_exhausted"])("Retry of a failed /compact compacts again (code: %s)",
-      async code => {
+  // A /compact interrupted too often gets no note on Retry either: it is not an agent turn. Nor do
+  // the user's edits since the failure, which Retry saves as a `changes` record, make it one.
+  it.each([
+    {code: undefined, edited: false},
+    {code: "resume_exhausted", edited: false},
+    {code: undefined, edited: true},
+  ])("Retry of a failed /compact compacts again (%o)", async ({code, edited}) => {
     const s = await scenario(null), requests = inference();
     await s.visit(async impl => {
       impl.addChatMessages(CHAT, USER, [{type: "message", message: "First"}]);
@@ -570,6 +574,8 @@ describe("decision handoff using the existing execution row", () => {
       impl.addChatMessages(CHAT, USER, [{type: "slashCommand",
         request: {id: {builtin: true, commandId: "compact"}, args: ""}}]);
       impl.postAgentErrorMessage(CHAT, MODEL.profile, "The summary request failed.", code);
+      // What Retry's flush of a draft edit logs, here without a gadget for the edit to touch.
+      if (edited) impl.addChatMessages(CHAT, USER, [{type: "changes"}]);
       using client = await decisionClient(impl);
       await client.retryAgent(CHAT, MODEL.profile.id);
       expect([...impl.storage.chats.list()].filter(m => m.type === "agentNudge" && m.text))

@@ -199,6 +199,9 @@ describe("compaction trigger", () => {
     });
     let error = record(2, agent, {type: "error", message: "The summary request failed."});
     expect(isCompactionTurn([record(3, user, {type: "agentNudge"}), error, compact])).toBe(true);
+    // The user's edits, saved as Retry or a turn starts, ask the model for nothing either.
+    expect(isCompactionTurn([record(3, user, {type: "changes"}), error, compact])).toBe(true);
+    expect(isCompactionTurn([record(2, user, {type: "changes"}), compact])).toBe(true);
     // A nudge the model reads asks for something else, as does a new prompt after the error.
     expect(isCompactionTurn([record(3, user, {type: "agentNudge", text: "Go."}), error, compact]))
         .toBe(false);
