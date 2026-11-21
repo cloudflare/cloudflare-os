@@ -133,6 +133,11 @@ export function cellCount(rect: Rect): number {
   return (rect.endRow - rect.startRow) * (rect.endColumn - rect.startColumn);
 }
 
+/** Orders ranges as a reader meets them: by their first row, then by their first column. */
+export function byPosition(a: Rect, b: Rect): number {
+  return a.startRow - b.startRow || a.startColumn - b.startColumn;
+}
+
 /** The cells two rectangles share, if any. */
 export function intersection(a: Rect, b: Rect): Rect | undefined {
   let rect = {

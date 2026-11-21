@@ -51,8 +51,60 @@ export interface GoogleDocReadSession {
 
   /**
    * Return one tab's content as Markdown. A line break within a paragraph is `\u000b`, while
-   * `\n` ends the paragraph. Native tables are raw HTML; tables of contents and interior section
-   * breaks are bracketed placeholders. These structures are read-only.
+   * `\n` ends the paragraph. Tables of contents and interior section breaks are bracketed
+   * placeholders.
+   *
+   * Native tables are raw HTML, written one row and one cell to a line with fixed indentation:
+   * a `<tr>` line for each row, indented two spaces, and under it a `<td>` line for each cell,
+   * indented four, a cell covered by a merged one included. A cell that holds more than one
+   * paragraph or list spans lines instead, each of them on a line indented six spaces:
+   *
+   * ```
+   * <table>
+   *   <tr>
+   *     <td><p>Name</p></td>
+   *     <td><p></p></td>
+   *   </tr>
+   *   <tr>
+   *     <td>
+   *       <p>First paragraph</p>
+   *       <p>Second paragraph</p>
+   *     </td>
+   *     <td><p>Total</p></td>
+   *   </tr>
+   * </table>
+   * ```
+   *
+   * A cell holds its paragraphs as `<p>`, heading and list elements, with `<strong>`, `<em>`,
+   * `<s>` and `<a href>` for bold, italic, strikethrough and links, `<br>` for a line break
+   * within a paragraph, and `&amp;`, `&lt;` and `&gt;` for `&`, `<` and `>` in its text. An
+   * empty cell reads `<td><p></p></td>`, as the second cell above does. A merged cell carries
+   * `rowspan`, `colspan` or both, and the cells it covers read as empty cells. Where a bulleted
+   * list item starts with its bullet character and a space, those show the bullet and are not
+   * part of the item's text.
+   *
+   * A table's look shows in `style` attributes, which a table as Google Docs adds it has none
+   * of. On `<td>`, after any spans, they give the cell's `background-color` (`#rrggbb`, or
+   * `transparent` for none), `vertical-align` (`top`, `middle` or `bottom`), `padding-top`,
+   * `-right`, `-bottom` and `-left` in points, and `border-top`, `-right`, `-bottom` and `-left`
+   * as `<width>pt solid|dotted|dashed #rrggbb` or `none`; four equal paddings or borders read
+   * as `padding` or `border`. What most cells share is written once on `<table>`, and a cell
+   * writes only what differs from it. Unstyled, a cell is unshaded, aligned to the top, padded
+   * 5pt and bordered `1pt solid #000000`. An edge two cells share shows on both, and a merged
+   * cell shows the look of the whole block. When a column has a fixed width, a line
+   * `  <colgroup><col><col style="width:120pt"></colgroup>` follows `<table>`, one `<col>` for
+   * each column, those without a width sharing what the others leave. A row's least height
+   * shows as `<tr style="height:30pt">`:
+   *
+   * ```
+   * <table style="border:1pt solid #cccccc">
+   *   <colgroup><col style="width:120pt"><col></colgroup>
+   *   <tr style="height:30pt">
+   *     <td style="background-color:#f3f3f3;vertical-align:middle"><p>Name</p></td>
+   *     <td><p></p></td>
+   *   </tr>
+   * </table>
+   * ```
    *
    * This reads exactly one tab and never combines tabs, so pass an ID returned by `listTabs()`.
    * Omitting `tabId` is valid only when `listTabs()` returns exactly one tab.

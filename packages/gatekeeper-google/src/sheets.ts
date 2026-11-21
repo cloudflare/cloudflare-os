@@ -22,11 +22,11 @@ import {
   type SheetArea,
   type SpreadsheetMetadata, type SpreadsheetReader,
 } from "./sheets-api";
-import type { BaseFormats } from "./sheets-format";
-import { isRangeChange, prepareChanges } from "./sheets-input";
+import type { BaseFormats, BaseSizes } from "./sheets-format";
+import { isLayoutChange, isRangeChange, prepareChanges } from "./sheets-input";
 import { findSheet, parseRange, type EnteredValue, type Rect } from "./sheets-model";
 import {
-  checkProtections, guardAfter, guardCells, guardDigest, guardOf, resolveChanges, sheetLabels,
+  checkProtections, guardAfter, guardCells, guardDigest, guardedSheets, guardOf, resolveChanges, sheetLabels,
 } from "./sheets-plan";
 import type {
   GoogleSpreadsheetReadSession, SpreadsheetFormats, SpreadsheetInfo, SpreadsheetRange,
@@ -34,7 +34,8 @@ import type {
 } from "./sheets-read-types";
 import {
   basePiecesOf, baseValues, conflictReason, enteredContent, gridOf, holdsFormula, MAX_REWRITE_WORK,
-  overlayRange, rangesToFetch, replayChanges, resolveArea, rewriteWork, simulatedFormats,
+  formatPiecesToFetch, overlayRange, rangesToFetch, replayChanges, resolveArea, rewriteWork,
+  simulatedFormats,
   simulatedRange, SimulatedTextTooLong, textBudget, UnsimulatedFormula, type Grid, type PlannedChange,
   type QueuedChange, type SheetBatch, type SheetsAction, type SheetsActions, type SimulatedArea,
 } from "./sheets-simulation";
@@ -267,6 +268,25 @@ export class GoogleSheetsGatekeeperImpl
   }
 }
 
+/**
+ * The sheets of `metadata` whose merges replaying `pending` over it, then finding the sheets `names`
+ * name, can consult: each sheet a queued change acts on, and each that a name finds among the rest.
+ * A sheet no queued change acts on keeps its title and its order among the others, and the first
+ * change of a batch to act on a sheet finds it by the title it has then, so the names of a batch's
+ * changes find every sheet it acts on that no queued change does.
+ */
+function mergesConsulted(
+  metadata: SpreadsheetMetadata, pending: readonly QueuedChange[], names: readonly (string | undefined)[],
+): Set<number> {
+  let consulted = new Set(pending.flatMap(({ action }) => guardedSheets(action.payload.changes)));
+  let untouched = metadata.sheets.filter(sheet => !consulted.has(sheet.id));
+  for (let name of names) {
+    let found = findSheet(untouched, name);
+    if (found) consulted.add(found.id);
+  }
+  return consulted;
+}
+
 /** A read with queued changes applied, and the first that no longer applies. */
 function replayed(base: Grid, changes: readonly QueuedChange[]): { grid: Grid; conflict?: string } {
   let result = replayChanges(base, changes);
@@ -290,19 +310,30 @@ function overlaid(
   });
 }
 
-/** Whether any of `pending` might move rows, columns or sheets, as only changes to ranges cannot. */
+/**
+ * Whether any of `pending` might move rows, columns or sheets, as only changes to ranges and to how
+ * lines are sized and frozen cannot.
+ */
 function mayMoveCells(pending: readonly QueuedChange[]): boolean {
-  return pending.some(({ action }) => action.payload.changes.some(change => !isRangeChange(change)));
+  return pending.some(({ action }) =>
+    action.payload.changes.some(change => !isRangeChange(change) && !isLayoutChange(change)));
 }
 
 /**
- * `read`, Google's formats for `rect` of sheet `sheetId` padded to its size, by cell of the
- * spreadsheet Google holds.
+ * `read`, Google's formats for `rect` of sheet `sheetId` padded to its size, by cell, and the
+ * sizes of its lines, by line, of the spreadsheet Google holds.
  */
-function formatsOf(read: SpreadsheetFormats, sheetId: number, rect: Rect): BaseFormats {
-  return (sheet, row, column) => sheet === sheetId
-    ? read.formats[row - rect.startRow]?.[column - rect.startColumn] ?? null
-    : null;
+function formatsOf(
+  read: SpreadsheetFormats, sheetId: number, rect: Rect,
+): { formats: BaseFormats; sizes: BaseSizes } {
+  return {
+    formats: (sheet, row, column) => sheet === sheetId
+      ? read.formats[row - rect.startRow]?.[column - rect.startColumn] ?? null
+      : null,
+    sizes: (sheet, axis, index) => sheet !== sheetId ? null
+      : axis === "rows" ? read.rowHeights[index - rect.startRow] ?? null
+      : read.columnWidths[index - rect.startColumn] ?? null,
+  };
 }
 
 /** A read refused for what it found, which is reported only once the read is authorized. */
@@ -353,19 +384,32 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
     this.#approvalQueue[Symbol.dispose]();
   }
 
+  /**
+   * The spreadsheet's metadata, with the merges of the sheets replaying `pending` and then finding
+   * the sheets `names` name can consult.
+   */
+  async #metadata(
+    pending: readonly QueuedChange[], names: readonly (string | undefined)[] = [],
+  ): Promise<SpreadsheetMetadata> {
+    let metadata = await this.#api.getMetadata(this.#spreadsheetId);
+    return this.#api.withMerges(this.#spreadsheetId, metadata, mergesConsulted(metadata, pending, names));
+  }
+
   async getSpreadsheet(): Promise<SpreadsheetInfo> {
     return this.#read(
       () => this.#changes.snapshot(async pending => {
         if (pending.length === 0) return this.#reader.getSpreadsheet(this.#spreadsheetId);
-        let metadata = await this.#api.getMetadata(this.#spreadsheetId);
+        let metadata = await this.#metadata(pending);
         let { grid, conflict } = replayed(gridOf(metadata), pending);
         return {
           id: metadata.id,
           title: metadata.title,
           ...(metadata.locale ? { locale: metadata.locale } : {}),
           ...(metadata.timeZone ? { timeZone: metadata.timeZone } : {}),
-          sheets: grid.sheets.map(({ id, title, index, rowCount, columnCount, hidden }) =>
-            ({ id, title, index, rowCount, columnCount, ...(hidden ? { hidden } : {}) })),
+          sheets: grid.sheets.map(({ id, title, index, rowCount, columnCount, hidden, frozenRowCount, frozenColumnCount }) => ({
+            id, title, index, rowCount, columnCount, ...(hidden ? { hidden } : {}),
+            ...(frozenRowCount ? { frozenRowCount } : {}), ...(frozenColumnCount ? { frozenColumnCount } : {}),
+          })),
           ...(conflict ? { queuedChangeConflict: conflict } : {}),
         };
       }),
@@ -405,15 +449,14 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
     let conflict: string | undefined;
     if (mayMoveCells(pending)) {
       validateRanges(ranges);
-      let replay = replayed(gridOf(await this.#api.getMetadata(this.#spreadsheetId)), pending);
+      let replay = replayed(gridOf(await this.#metadata(pending)), pending);
       conflict = replay.conflict;
       shown = replay.grid.log.length > 0
         ? await this.#movedRanges(replay.grid, parsed, mode ?? "formatted")
         : overlaid(await this.#api.readRanges(this.#spreadsheetId, ranges, mode), parsed, replay.grid, mode);
     } else {
       let [metadata, read] = await Promise.all([
-        this.#api.getMetadata(this.#spreadsheetId),
-        this.#api.readRanges(this.#spreadsheetId, ranges, mode),
+        this.#metadata(pending), this.#api.readRanges(this.#spreadsheetId, ranges, mode),
       ]);
       let replay = replayed(gridOf(metadata), pending);
       conflict = replay.conflict;
@@ -543,12 +586,12 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
     let parsed = parseFormatRange(range);
     let metadata: SpreadsheetMetadata;
     let read: SpreadsheetFormats | undefined;
+    // The merges a read shows are those of the sheet it reads.
     if (mayMoveCells(pending)) {
-      metadata = await this.#api.getMetadata(this.#spreadsheetId);
+      metadata = await this.#metadata(pending, [parsed.sheet]);
     } else {
       [metadata, read] = await Promise.all([
-        this.#api.getMetadata(this.#spreadsheetId),
-        this.#api.readFormats(this.#spreadsheetId, range),
+        this.#metadata(pending, [parsed.sheet]), this.#api.readFormats(this.#spreadsheetId, range),
       ]);
     }
     let { grid, conflict } = replayed(gridOf(metadata), pending);
@@ -556,7 +599,7 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
     let pieces: SheetArea[];
     try {
       area = resolveArea(grid, parsed);
-      pieces = grid.log.length > 0 ? rangesToFetch(grid, [area]) : [];
+      pieces = grid.log.length > 0 ? formatPiecesToFetch(grid, area) : [];
     } catch (error) {
       // These name the spreadsheet's sheets and sizes, so they wait for the read's authorization.
       throw new RefusedRead(error as Error);
@@ -567,7 +610,7 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
     let base = grid.log.length > 0
       ? await this.#api.readFormatAreas(this.#spreadsheetId, pieces)
       : formatsOf(read ?? await this.#api.readFormats(this.#spreadsheetId, range), area.sheetId, parsed.rect);
-    let shown = simulatedFormats(grid, area, base);
+    let shown = simulatedFormats(grid, area, base.formats, base.sizes);
     return conflict ? { ...shown, queuedChangeConflict: conflict } : shown;
   }
 
@@ -578,11 +621,16 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
     return this.#changes.queue(batchKind(prepared), async () => {
       let read = await this.#read(
         () => this.#changes.snapshot(async (pending): Promise<Prepared> => {
-          let [metadata, editable] = await Promise.all([
+          let [found, editable] = await Promise.all([
             this.#api.getMetadata(this.#spreadsheetId), this.#changes.editable(),
           ]);
+          if (!editable) return { title: found.title, editable };
+          // Only the sheets the queued changes and these act on are checked against their merges.
+          let names = prepared.flatMap(change => "sheet" in change ? [change.sheet] : []);
+          let metadata = await this.#api.withMerges(
+            this.#spreadsheetId, found, mergesConsulted(found, pending, names));
           let { grid, conflict } = replayed(gridOf(metadata), pending);
-          if (!editable || conflict) return { title: metadata.title, editable, conflict };
+          if (conflict) return { title: metadata.title, editable, conflict };
           let planned: PlannedChange[];
           let cells: SheetArea[];
           try {

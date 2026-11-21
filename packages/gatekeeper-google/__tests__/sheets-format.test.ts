@@ -1,13 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
-  baseFormats, CELL_FORMAT_FIELDS, colorStyle, FORMAT_READ_FIELDS, isSheetColor, mergeFormat,
-  projectFormat, sheetColor, THEME_COLORS, type BaseFormats, type RestCellFormat, type RestColorStyle,
+  baseFormats, baseSizes, CELL_FORMAT_FIELDS, colorStyle, FORMAT_READ_FIELDS, isSheetColor, mergeFormat,
+  projectFormat, sheetColor, THEME_COLORS, type BaseFormats, type BaseSizes, type RestCellFormat,
+  type RestColorStyle,
 } from "../src/sheets-format";
 import { BlankSpreadsheet } from "../src/sheets-api";
 import { formatRequests, gridRange } from "../src/sheets-plan";
 import type { SheetCellFormat } from "../src/sheets-read-types";
 import {
-  applyChange, gridOf, resolveArea, simulatedFormats, type Grid, type PlannedChange,
+  applyChange, formatPiecesToFetch, gridOf, resolveArea, simulatedFormats, type Grid, type PlannedChange,
 } from "../src/sheets-simulation";
 import type { SheetFormatChange } from "../src/sheets-types";
 import { FORMAT_READBACK, formatSheet, rect, sheet } from "./sheets-fixture";
@@ -23,6 +24,9 @@ function withChanges(grid: Grid, changes: PlannedChange[]): Grid {
 /** Base formats in which each cell's font size names its sheet, row and column. */
 const POSITIONED: BaseFormats = (sheetId, row, column) =>
   ({ fontSize: sheetId * 10_000 + row * 100 + column });
+
+/** Base sizes that name each line's sheet and position: rows from 20, columns from 100. */
+const SIZED: BaseSizes = (sheetId, axis, index) => sheetId * 1000 + (axis === "rows" ? 20 : 100) + index;
 
 describe("Google Sheets format projection", () => {
   it("reads a cell back as the agent sees it, preferring each colour's style", () => {
@@ -285,6 +289,15 @@ describe("Google Sheets base formats", () => {
     expect(formats(7, 1, 1)).toEqual({ italic: true });
     expect(formats(0, 1, 1)).toBeNull();
   });
+
+  it("reads each line's size by the first row and column Google gives its range, a size left out as 0", () => {
+    let sizes = baseSizes([{
+      properties: { sheetId: 7 },
+      data: [{ startRow: 2, startColumn: 1, rowMetadata: [{ pixelSize: 40 }, {}], columnMetadata: [{ pixelSize: 150 }] }],
+    }]);
+    expect([sizes(7, "rows", 2), sizes(7, "rows", 3), sizes(7, "columns", 1)]).toEqual([40, 0, 150]);
+    expect([sizes(7, "rows", 1), sizes(7, "columns", 2), sizes(0, "rows", 2)]).toEqual([null, null, null]);
+  });
 });
 
 describe("simulated format reads", () => {
@@ -294,13 +307,15 @@ describe("simulated format reads", () => {
     let base = gridOf({ sheets });
     let area = resolveArea(base, { sheet: "plan", rect: rect(8, 2, 3, 3) });
 
-    expect(simulatedFormats(base, area, POSITIONED)).toEqual({
+    expect(simulatedFormats(base, area, POSITIONED, SIZED)).toEqual({
       range: "Plan!C9:D10",
       formats: [
         [{ fontSize: 70_802 }, { fontSize: 70_803 }, null],
         [{ fontSize: 70_902 }, { fontSize: 70_903 }, null],
         [null, null, null],
       ],
+      rowHeights: [7028, 7029, null],
+      columnWidths: [7102, 7103, null],
     });
   });
 
@@ -312,13 +327,16 @@ describe("simulated format reads", () => {
     ]);
     let area = resolveArea(moved, { sheet: "Sales 2026", rect: rect(0, 0, 3, 2) });
 
-    expect(simulatedFormats(moved, area, POSITIONED)).toEqual({
+    expect(simulatedFormats(moved, area, POSITIONED, SIZED)).toEqual({
       range: "'Sales 2026'!A1:B3",
       formats: [
         [{ fontSize: 1 }, { fontSize: 2 }],
         [null, null],
         [{ fontSize: 101 }, { fontSize: 102 }],
       ],
+      // Google sizes an inserted row from the row beside it.
+      rowHeights: [20, null, 21],
+      columnWidths: [101, 102],
       pendingCells: ["A2", "B2"],
     });
   });
@@ -330,8 +348,9 @@ describe("simulated format reads", () => {
     let area = resolveArea(added, { sheet: "Q4", rect: rect(0, 0, 2, 2) });
 
     // "Q4" reads as a cell's name, so Google quotes it.
-    expect(simulatedFormats(added, area, POSITIONED))
-      .toEqual({ range: "'Q4'!A1:B2", formats: [[null, null], [null, null]] });
+    expect(simulatedFormats(added, area, POSITIONED, SIZED)).toEqual({
+      range: "'Q4'!A1:B2", formats: [[null, null], [null, null]], rowHeights: [21, 21], columnWidths: [100, 100],
+    });
   });
 
   it("reads a copy's formats from the sheet copied", () => {
@@ -340,16 +359,79 @@ describe("simulated format reads", () => {
     ]);
     let area = resolveArea(copied, { sheet: "Plan copy", rect: rect(1, 1) });
 
-    expect(simulatedFormats(copied, area, POSITIONED))
-      .toEqual({ range: "'Plan copy'!B2", formats: [[{ fontSize: 70_101 }]] });
+    expect(simulatedFormats(copied, area, POSITIONED, SIZED)).toEqual({
+      range: "'Plan copy'!B2", formats: [[{ fontSize: 70_101 }]], rowHeights: [7021], columnWidths: [7101],
+    });
+  });
+
+  it("lists the merges that overlap the range, whole", () => {
+    let merged = gridOf({ sheets: [sheet(0, "Sales", { merges: [rect(0, 0, 2, 2), rect(5, 3, 1, 2)] })] });
+    let read = (at: ReturnType<typeof rect>) =>
+      simulatedFormats(merged, resolveArea(merged, { sheet: "Sales", rect: at }), POSITIONED, SIZED).merges;
+    expect(read(rect(0, 0, 3, 2))).toEqual(["A1:B2"]);
+    expect(read(rect(0, 2))).toBeUndefined();
+    expect(read(rect(1, 1, 6, 4))).toEqual(["A1:B2", "D6:E6"]);
+  });
+
+  it("reads the sizes beside inserted lines from the runs Google holds, not the span between them", () => {
+    // Two deletions leave rows 1-2 and 100,003-100,004 beside an inserted column.
+    let base = gridOf({ sheets: [sheet(0, "Sales", { rowCount: 100_004, columnCount: 1 })] });
+    let queued = withChanges(base, [
+      { op: "deleteRows", sheetId: 0, start: 2, count: 50_000 },
+      { op: "deleteRows", sheetId: 0, start: 2, count: 50_000 },
+      { op: "insertColumns", sheetId: 0, start: 1, count: 1 },
+    ]);
+    let pieces = formatPiecesToFetch(queued, resolveArea(queued, { sheet: "Sales", rect: rect(0, 1, 4, 1) }));
+    expect(pieces).toEqual([
+      { sheetId: 0, rect: { startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 } },
+      { sheetId: 0, rect: { startRow: 100_002, endRow: 100_004, startColumn: 0, endColumn: 1 } },
+    ]);
+  });
+
+  it("lists merges in reading order, whatever order Google keeps them in", () => {
+    // A scratch spreadsheet listed C3:E5 before F2:G2 once a column was inserted through both.
+    let merged = gridOf({ sheets: [sheet(0, "Sales", { merges: [rect(2, 2, 3, 3), rect(1, 5, 1, 2), rect(2, 5, 1, 2)] })] });
+    let area = resolveArea(merged, { sheet: "Sales", rect: rect(0, 0, 10, 8) });
+    expect(simulatedFormats(merged, area, POSITIONED, SIZED).merges).toEqual(["F2:G2", "C3:E5", "F3:G3"]);
+  });
+
+  // As a scratch spreadsheet moved its merge C4:E6 and its two frozen rows and one frozen column.
+  it.each<[string, PlannedChange, string[], number, number]>([
+    ["a row inserted inside a merge grows it", { op: "insertRows", sheetId: 0, start: 4, count: 1 }, ["C4:E7"], 2, 1],
+    ["a row inserted at its top edge moves it", { op: "insertRows", sheetId: 0, start: 3, count: 1 }, ["C5:E7"], 2, 1],
+    ["a row inserted at its bottom edge leaves it", { op: "insertRows", sheetId: 0, start: 6, count: 1 }, ["C4:E6"], 2, 1],
+    ["a row inserted among the frozen ones is frozen", { op: "insertRows", sheetId: 0, start: 1, count: 1 }, ["C5:E7"], 3, 1],
+    ["a row inserted below the frozen ones is not", { op: "insertRows", sheetId: 0, start: 2, count: 1 }, ["C5:E7"], 2, 1],
+    ["a column inserted inside a merge grows it", { op: "insertColumns", sheetId: 0, start: 3, count: 1 }, ["C4:F6"], 2, 1],
+    ["a column inserted at its left edge moves it", { op: "insertColumns", sheetId: 0, start: 2, count: 1 }, ["D4:F6"], 2, 1],
+    ["deleting a row of a merge shrinks it", { op: "deleteRows", sheetId: 0, start: 3, count: 1 }, ["C4:E5"], 2, 1],
+    ["deleting rows through a merge shrinks it", { op: "deleteRows", sheetId: 0, start: 2, count: 2 }, ["C3:E4"], 2, 1],
+    ["deleting a merge's rows removes it", { op: "deleteRows", sheetId: 0, start: 3, count: 3 }, [], 2, 1],
+    ["deleting all but one of its rows keeps it", { op: "deleteRows", sheetId: 0, start: 3, count: 2 }, ["C4:E4"], 2, 1],
+    ["deleting frozen rows unfreezes them", { op: "deleteRows", sheetId: 0, start: 0, count: 2 }, ["C2:E4"], 0, 1],
+    ["deleting the frozen column unfreezes it", { op: "deleteColumns", sheetId: 0, start: 0, count: 1 }, ["B4:D6"], 2, 0],
+  ])("%s", (_name, change, merges, frozenRows, frozenColumns) => {
+    let base = gridOf({ sheets: [sheet(0, "Sales", { frozenRowCount: 2, frozenColumnCount: 1, merges: [rect(3, 2, 3, 3)] })] });
+    let moved = withChanges(base, [change]);
+    let [sales] = moved.sheets;
+    expect(simulatedFormats(moved, resolveArea(moved, { sheet: "Sales", rect: rect(0, 0, 10, 6) }), POSITIONED, SIZED).merges ?? [])
+      .toEqual(merges);
+    expect([sales.frozenRowCount ?? 0, sales.frozenColumnCount ?? 0]).toEqual([frozenRows, frozenColumns]);
+  });
+
+  it("gives a copy the merges and frozen lines of the sheet copied", () => {
+    let base = gridOf({ sheets: [sheet(0, "Sales", { frozenRowCount: 1, merges: [rect(0, 0, 1, 2)] })] });
+    let copied = withChanges(base, [{ op: "duplicateSheet", sheetId: 0, newSheetId: 8, title: "Copy", index: 1 }]);
+    expect(copied.sheets.find(s => s.id === 8)).toMatchObject({ frozenRowCount: 1, merges: [rect(0, 0, 1, 2)] });
   });
 });
 
 describe("Sheets formatting of a spreadsheet awaiting creation", () => {
   it("reads every cell of its one sheet as unformatted, and refuses another sheet", async () => {
     let blank = new BlankSpreadsheet("Budget");
-    expect(await blank.readFormats("", "sheet1!A1:B2"))
-      .toEqual({ range: "Sheet1!A1:B2", formats: [[null, null], [null, null]] });
+    expect(await blank.readFormats("", "sheet1!A1:B2")).toEqual({
+      range: "Sheet1!A1:B2", formats: [[null, null], [null, null]], rowHeights: [21, 21], columnWidths: [100, 100],
+    });
     await expect(blank.readFormats("", "'Q1 Data'!A1"))
       .rejects.toThrow('No sheet named "Q1 Data": a spreadsheet awaiting creation has only "Sheet1".');
     await expect(blank.readFormats("", "Sheet1!Z1000:AA1000")).rejects.toThrow("exceeds the 1000 rows");
