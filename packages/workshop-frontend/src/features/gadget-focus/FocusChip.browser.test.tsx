@@ -34,10 +34,10 @@ afterEach(async () => {
   await sendCdp('Emulation.setTouchEmulationEnabled', { enabled: false })
 })
 
-const renderChip = () => {
+const renderChip = (focus = FOCUS) => {
   container = document.body.appendChild(document.createElement('div'))
   root = createRoot(container)
-  flushSync(() => root!.render(<FocusChip focus={FOCUS} onDismiss={() => {}} />))
+  flushSync(() => root!.render(<FocusChip focus={focus} onDismiss={() => {}} />))
 }
 
 // Its coordinates are in the outer page, not Vitest's test iframe.
@@ -72,10 +72,24 @@ it('shows the context from the keyboard, with dismissing a separate stop', async
   await expect.element(chip()).toHaveFocus()
   await userEvent.keyboard('{Enter}')
   await expect.element(context()).toBeVisible()
+  await expect.element(page.getByRole('dialog', {
+    name: "The agent will be told you're viewing Budget › Q3 › cell B7",
+  })).toBeInTheDocument()
 
   await userEvent.keyboard('{Escape}')
   await expect.element(context()).not.toBeInTheDocument()
   await userEvent.tab()
   await expect.element(page.getByRole('button', { name: "Don't send Budget › Q3 › cell B7 with this message" }))
     .toHaveFocus()
+})
+
+it('lets a long context be scrolled to its end, since all of it is sent', async () => {
+  const lines = Array.from({ length: 40 }, (_, i) => `Row ${i + 1}`)
+  renderChip({ ...FOCUS, spot: { ...FOCUS.spot, context: lines.join('\n') } })
+  await userEvent.click(chip())
+  const description = page.getByText(/^Row 1\n/).element() as HTMLElement
+  expect(description.textContent).toContain('Row 40')
+  expect(description.scrollHeight).toBeGreaterThan(description.clientHeight)
+  description.scrollTop = description.scrollHeight
+  expect(description.scrollTop + description.clientHeight).toBeGreaterThanOrEqual(description.scrollHeight - 1)
 })

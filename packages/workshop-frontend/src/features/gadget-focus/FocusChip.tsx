@@ -3,10 +3,10 @@ import { Crosshair, X } from '@phosphor-icons/react'
 import { focusLabel, type TitledFocus } from './paneFocus'
 
 /**
- * A chip's tooltip or popover: its heading, then the spot's context (what the agent is told is there) as plain
- * text, clamped so a long quote doesn't fill the screen.
+ * A sent chip's tooltip: its heading, then the spot's context (what the agent was told is there) as
+ * plain text, clamped so a long quote doesn't fill the screen.
  */
-const FocusDetails = ({ heading, context }: { heading: string; context: string | undefined }) =>
+const FocusTooltip = ({ heading, context }: { heading: string; context: string | undefined }) =>
   context
     ? (
       <span className="block max-w-xs">
@@ -42,7 +42,7 @@ export const FocusChip = (props: { focus: TitledFocus } & (
 
   if ('onOpen' in props) {
     return (
-      <Tooltip content={<FocusDetails heading={label} context={context} />} side="top" asChild>
+      <Tooltip content={<FocusTooltip heading={label} context={context} />} side="top" asChild>
         <button
           type="button"
           onClick={props.onOpen}
@@ -77,7 +77,15 @@ export const FocusChip = (props: { focus: TitledFocus } & (
           positionMethod="fixed"
           className="themed-floating-shadow !z-[1100] !w-auto !min-w-0 !max-w-[min(20rem,calc(100vw-24px))] rounded-xl border border-kumo-line bg-kumo-base !px-3 !py-2 text-[12px] leading-[18px] text-kumo-default !outline-none [&>:first-child]:hidden"
         >
-          <FocusDetails heading={`The agent will be told you're viewing ${label}`} context={context} />
+          <Popover.Title className="block break-words text-[12px] font-normal leading-[18px] text-kumo-default">
+            The agent will be told you're viewing {label}
+          </Popover.Title>
+          {/* Scrolled rather than clamped, since this is where the user checks what will be sent. */}
+          {context && (
+            <Popover.Description className="mt-1 max-h-[min(40vh,15rem)] overflow-y-auto whitespace-pre-line break-words text-[12px] leading-[18px] text-kumo-subtle">
+              {context}
+            </Popover.Description>
+          )}
         </Popover.Content>
       </Popover>
       <button
