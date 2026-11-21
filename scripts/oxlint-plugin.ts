@@ -213,26 +213,32 @@ const named = (node: ESTree.Node | null | undefined, name: string) =>
   node?.type === "Identifier" && node.name === name;
 
 /**
- * The class's instance method named `name`, when it is declared with a plain name and a body. An
- * overload signature has no body and is not the method that runs.
+ * The name a key or a member's property is written as: a plain identifier, or a string literal with
+ * or without brackets. Undefined for one computed at run time and for a `#private` name.
+ */
+function writtenName(key: ESTree.Node, computed: boolean): string | undefined {
+  if (key.type === "Identifier") return computed ? undefined : key.name;
+  return key.type === "Literal" && typeof key.value === "string" ? key.value : undefined;
+}
+
+/**
+ * The class's instance method named `name`, when it is declared with a body. An overload signature
+ * has no body and is not the method that runs.
  */
 function methodNamed(body: ESTree.ClassBody, name: string): ESTree.MethodDefinition | undefined {
   return body.body.find((member): member is ESTree.MethodDefinition =>
-    member.type === "MethodDefinition" && !member.static && !member.computed &&
-    named(member.key, name) && !!member.value.body);
+    member.type === "MethodDefinition" && !member.static &&
+    writtenName(member.key, member.computed) === name && !!member.value.body);
 }
 
-/** Whether `node` reads the plain property `name`: not computed, not `#private`. */
+/** Whether `node` reads the property `name`. */
 function reads(node: ESTree.Node, name: string): boolean {
-  return node.type === "MemberExpression" && !node.computed && named(node.property, name);
+  return node.type === "MemberExpression" && writtenName(node.property, node.computed) === name;
 }
 
-/** The name a property is written under, quoted or not; undefined for a spread or a key computed at run time. */
+/** The name a property is written under; undefined for a spread. */
 function keyName(property: ESTree.Node): string | undefined {
-  if (property.type !== "Property") return undefined;
-  const { key, computed } = property;
-  if (key.type === "Identifier") return computed ? undefined : key.name;
-  return key.type === "Literal" && typeof key.value === "string" ? key.value : undefined;
+  return property.type === "Property" ? writtenName(property.key, property.computed) : undefined;
 }
 
 /** The value under wrappers that only change its type: `as`, `satisfies`, `!` and `<T>`. */

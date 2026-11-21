@@ -189,6 +189,8 @@ ruleTester.run("new-gatekeeper-observer-contract", plugin.rules["new-gatekeeper-
       "observation",
       "scoped ? { title, subresources: ids } : observation",
     ].map(call),
+    // A name computed at run time is not one the rule can read.
+    "await queue[method]({ title });",
     // A private helper of the same name is not the queue's method.
     "class Session {\n  #authorizeObservation(description, ids) {}\n" +
       "  read() { return this.#authorizeObservation({ title }, ids); }\n}",
@@ -232,6 +234,11 @@ ruleTester.run("new-gatekeeper-observer-contract", plugin.rules["new-gatekeeper-
       code: "class Facet implements Gatekeeper<Session> {\n  async addObserver(_id: string) {}\n}",
       errors: [{ messageId: "missingHistory" }],
     },
+    {
+      code: gatekeeper(`${history}  async "addObserver"(id: string) { this.observers.add(id); }\n` +
+        "  async removeObserver(_id: string) {}"),
+      errors: [{ messageId: "observerState", data: { name: "addObserver" } }],
+    },
     // A static method is not the facet's.
     {
       code: "class Facet implements Gatekeeper<Session> {\n  async addObserver(_id: string) {}\n" +
@@ -268,11 +275,13 @@ ruleTester.run("new-gatekeeper-observer-contract", plugin.rules["new-gatekeeper-
       code: "await this.queue.authorizeObservation({ title: \"Read inbox\" });",
       errors: [{ messageId: "unreported" }],
     },
+    { code: "await queue[\"authorizeObservation\"]({ title });", errors: [{ messageId: "unreported" }] },
     ...[
       call("{ title, subresources: [], excludeObservers: [id] }"),
       call("{ title, subresources: [], \"excludeObservers\": [id] }"),
       call("{ title, subresources: [], [\"excludeObservers\"]: [id] }"),
       `observation.excludeObservers = denied;\n${call("observation")}`,
+      `observation["excludeObservers"] = denied;\n${call("observation")}`,
     ].map(code => ({ code, errors: [{ messageId: "excludeObservers" }] })),
   ],
 });
