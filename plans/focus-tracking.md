@@ -172,7 +172,10 @@ onFocusReset?() }`. `onFocusReset` is optional because only the composer's state
   that a newer one replaced while it waited is skipped. Otherwise a slow call (one waiting on the
   gadget's data, say) could finish after a newer one and redraw and report the spot the user
   clicked away from. The guarantee is in `onNavigate()`'s contract, so a gadget needn't handle
-  overlapping calls itself.
+  overlapping calls itself. A removed anchor counts as a newer target, so going Back to an entry
+  without `at` drops a queued one. While a newer target has replaced the running call, the frame's
+  reports are dropped too: they describe the spot the user has moved on from, and would otherwise
+  reach `at` and the composer, where nothing might replace them if the newer call never reports.
 - A new frame starts with no callback, so it gets `navigate` when it registers. That is the whole
   restore mechanism for code-change reloads and page reloads. It is sent to `latestAnchor()`, not
   `anchor`: a code reload can replace the frame within the URL write hold, and the held report's
@@ -287,12 +290,13 @@ Frontend:
   the gadget's title, followed by the spot's label if the current frame has reported one:
   "Budget" or "Budget › Q3 › cell B7". Every gadget gets the first form, including legacy UIs and
   the bundled blueprints. The chip's details, here and on the transcript's chips, show the label
-  and below it the spot's context, if any, as plain text with its line breaks, clamped to a few
-  lines: the user can see what the agent is told without the context crowding the chip or its
-  accessible name. The transcript's chips show them in a tooltip. The composer chip, where the
-  context is shown nowhere else, shows them in a popover that opens on hover, a tap, or Enter or
-  Space, since a tap never opens a tooltip and a phone user should see what a message will carry
-  before sending it. Its face is a button with or without context, so that it is not a Tab stop
+  and below it the spot's context, if any, as plain text with its line breaks: the user can see
+  what the agent is told without the context crowding the chip or its accessible name. The
+  transcript's chips show them in a tooltip, with the context clamped to a few lines. The composer
+  chip, where the context is shown nowhere else, shows them in a popover that opens on hover, a
+  tap, or Enter or Space, since a tap never opens a tooltip and a phone user should see what a
+  message will carry before sending it. The popover scrolls the context rather than clamping it,
+  since all of it is sent. Its face is a button with or without context, so that it is not a Tab stop
   only some of the time; dismissing is a separate button beside it.
 - On a single-pane layout (under 48rem, where the chat and the pane take turns on screen), the
   composer treats a closed pane as still showing what it showed when last open, since switching to

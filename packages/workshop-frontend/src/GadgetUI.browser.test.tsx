@@ -350,6 +350,40 @@ describe('focus', () => {
     await expect.poll(() => recorder.navigations.map(n => n.anchor)).toEqual(['cell/B7', 'cell/D4'])
   })
 
+  it("drops a queued target once the anchor is removed, though the call before it is running", async () => {
+    const gadget = focusGadget()
+    await show(gadget, undefined)
+    await (await frame(0)).register()
+
+    await show(gadget, 'cell/B7')
+    await expect.poll(() => recorder.navigations.length).toBe(1)
+    await show(gadget, 'cell/C1')
+    await show(gadget, undefined)
+    recorder.navigations[0].resolve(true)
+    await settle()
+
+    expect(recorder.navigations.map(n => n.anchor)).toEqual(['cell/B7'])
+  })
+
+  it('ignores reports from a navigate call a newer target has replaced', async () => {
+    const gadget = focusGadget()
+    await show(gadget, undefined)
+    const control = await frame(0)
+    await control.register()
+
+    await show(gadget, 'cell/B7')
+    await expect.poll(() => recorder.navigations.length).toBe(1)
+    await show(gadget, 'cell/C1')
+    await control.report({ anchor: 'cell/B7', label: 'B7' })
+    recorder.navigations[0].resolve(true)
+    await expect.poll(() => recorder.navigations.length).toBe(2)
+    await control.report({ anchor: 'cell/C1', label: 'C1' })
+
+    expect(recorder.events.filter(e => e.startsWith('change'))).toEqual([
+      'change {"anchor":"cell/C1","label":"C1"}',
+    ])
+  })
+
   it('sends a frame reloaded before its last report reached the anchor to that report', async () => {
     const gadget = focusGadget()
     await show(gadget, 'cell/B7')

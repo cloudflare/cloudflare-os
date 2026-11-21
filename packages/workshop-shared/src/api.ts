@@ -4196,8 +4196,8 @@ export interface GadgetHost {
   reportFocus(focus: GadgetFocus | null): void;
 
   /**
-   * Registers how the host sends the user to a spot. The host calls `navigate` with an anchor
-   * this gadget reported earlier: right away if there is a spot to return to, and later when the
+   * Registers how the host sends the user to a spot. The host calls `navigate` with an anchor,
+   * usually one this gadget reported earlier: right away if there is a spot to return to, and later when the
    * user follows a link to one. `navigate` returns false if the anchor no longer resolves, and
    * otherwise should show the spot, even if the UI is already drawn, and report it with
    * `reportFocus()`. Calls never overlap: the host waits for one to settle before the next, and
