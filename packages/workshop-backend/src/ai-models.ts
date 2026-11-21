@@ -917,8 +917,9 @@ function getModelViaGateway(
 ): ModelHandle {
   const metadata = buildMetadata(initiator, options.metadata);
   const binding = gwConfig.bindingFor(config.provider);
-  // No binding means either the provider can't ride one or the deployment has none; the second
-  // case already required a token in the constructor, so this only fires for the first
+  // Kept for HTTPS_ONLY_PROVIDERS (currently empty; see api.ts): no binding
+  // means either the provider is listed there or the deployment has none, and
+  // the constructor already required a token for the second case.
   if (!binding && !gwConfig.apiToken) {
     throw new Error(`Provider "${config.provider}" cannot use the Workers AI binding transport, ` +
         "and no CF_AI_GATEWAY_API_TOKEN is configured for the HTTPS one.");

@@ -707,35 +707,37 @@ describe("GatewayModels", () => {
           .toEqual([undefined, "admin", "environment", undefined, undefined]);
     });
 
-  it("reports no provider needing a token when the binding is present", () => {
-    // Whether the provider is on or off.
-    expect(needsToken(tokenless())).toEqual([]);
-    expect(needsToken(tokenless(), ["google", "openai"])).toEqual([]);
-    // With a token, over HTTPS alone or beside the binding, none does.
-    expect(needsToken(gatewayEnv("anthropic,google"))).toEqual([]);
-    expect(needsToken(env({
-      CF_AI_GATEWAY_ACCOUNT_ID: "account-id", CF_AI_GATEWAY_API_TOKEN: "gateway-token",
-      CF_AI_GATEWAY_PROVIDERS: "anthropic", WORKERS_AI: undefined,
-    }))).toEqual([]);
-  });
+    it("reports no provider needing a token when the binding is present", () => {
+      // Whether the provider is on or off.
+      expect(needsToken(tokenless())).toEqual([]);
+      expect(needsToken(tokenless(), ["google", "openai"])).toEqual([]);
+      // With a token, over HTTPS alone or beside the binding, none does.
+      expect(needsToken(gatewayEnv("anthropic,google"))).toEqual([]);
+      expect(needsToken(env({
+        CF_AI_GATEWAY_ACCOUNT_ID: "account-id", CF_AI_GATEWAY_API_TOKEN: "gateway-token",
+        CF_AI_GATEWAY_PROVIDERS: "anthropic", WORKERS_AI: undefined,
+      }))).toEqual([]);
+    });
 
-  it("builds with google enabled by an admin on a deployment that has no token", async () => {
-    const models = new GatewayModels(
-      new AiGatewayConfig(tokenless()), { ...NO_CONFIG, addedProviders: ["google"] }
-    );
-    expect(models.providerSettings.find(({ provider }) => provider === "google")).toStrictEqual({
-      provider: "google", enabledBy: "admin", needsApiToken: false,
+    it("builds with google enabled by an admin on a deployment that has no token", async () => {
+      const models = new GatewayModels(
+        new AiGatewayConfig(tokenless()), { ...NO_CONFIG, addedProviders: ["google"] },
+      );
+      expect(models.providerSettings.find(({ provider }) => provider === "google")).toStrictEqual({
+        provider: "google", enabledBy: "admin", needsApiToken: false,
+      });
+      expect(ids(models.list("language"))).toContain(GEMINI);
+      expect(ids(models.list("language"))).toContain("claude-opus-5-5");
+      const read = await getGatewayModels({
+        ...tokenless(),
+        BLUEPRINTS: adminConfigKv({ addedProviders: ["google"] }) as unknown as KVNamespace,
+      });
+      expect(read!.providers.has("google")).toBe(true);
+      expect(getModel(tokenless(), read!.resolve(GEMINI)!.config, USER).model.id).toBe(GEMINI);
+      expect(getModel(tokenless(), read!.resolve("claude-opus-5-5")!.config, USER).model.id)
+          .toBe("claude-opus-5-5");
     });
-    expect(ids(models.list("language"))).toContain(GEMINI);
-    expect(ids(models.list("language"))).toContain("claude-opus-5-5");
-    const read = await getGatewayModels({
-      ...tokenless(), BLUEPRINTS: adminConfigKv({ addedProviders: ["google"] }) as unknown as KVNamespace,
-    });
-    expect(read!.providers.has("google")).toBe(true);
-    expect(getModel(tokenless(), read!.resolve(GEMINI)!.config, USER).model.id).toBe(GEMINI);
-    expect(getModel(tokenless(), read!.resolve("claude-opus-5-5")!.config, USER).model.id)
-        .toBe("claude-opus-5-5");
-  });
+
     // The table says which providers need a token by the rule getModel refuses a request on.
     // This holds the two in step.
     it.each([tokenless(), gatewayEnv()])(

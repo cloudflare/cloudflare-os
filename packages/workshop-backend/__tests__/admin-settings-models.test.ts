@@ -1259,6 +1259,7 @@ describe("AdminSettings.testGatewayProvider", () => {
       durationMs: expect.any(Number),
     }]);
   });
+
   // pi's Google adapter reports a refusal as the response body alone, which
   // names no status.
   it("reports a refused Google request without a status", async () => {
@@ -1290,6 +1291,7 @@ describe("AdminSettings.testGatewayProvider", () => {
     expect(requests[0]!.url).toContain("/google-ai-studio/v1beta/models/");
     expect(result.model).toBe("gemini-3.6-flash");
   });
+
   it("reports a model that does not answer in time", async () => {
     // Fifteen seconds, shortened for the test. The transport answers only by failing once the
     // request is aborted.
@@ -1570,6 +1572,7 @@ describe("AdminSettings.testGatewayModel", () => {
     expect(JSON.stringify(entries)).not.toContain(prompt);
     expect(JSON.stringify(entries)).not.toContain("Incorrect API key");
   });
+
   it("tests a google model over the binding when the deployment has no token", async () => {
     const { testModel, requests, inDo } = tested(() => new Response("data: {}\n\n", {
       status: 200, headers: { "content-type": "text/event-stream" },
@@ -1580,6 +1583,7 @@ describe("AdminSettings.testGatewayModel", () => {
     expect(requests[0]!.url).toContain("/google-ai-studio/v1beta/models/");
     expect(result.model).toBe("gemini-3.6-flash");
   });
+
   it("reports a model that does not answer in time", async () => {
     // Thirty seconds, shortened for the test. The transport answers only by failing once the
     // request is aborted.

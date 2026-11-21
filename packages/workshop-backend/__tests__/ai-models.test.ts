@@ -142,7 +142,24 @@ describe("getModel AI Gateway routing", () => {
       apiToken: "gateway-token",
     });
 
-    const request = await captureRequest(handle);
+    // Exercise the default globalThis.fetch fallback (no options.fetch) and
+    // verify `this` stays bound to globalThis for workerd compatibility.
+    const receivers: unknown[] = [];
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(
+        function (this: unknown, input, init) {
+          receivers.push(this);
+          return fetchStub(input, init);
+        });
+    try {
+      const stream = await handle.stream(handle.model, {
+        messages: [{ role: "user", content: "hello", timestamp: 0 }],
+      }, { maxRetries: 0 });
+      expect((await stream.result()).stopReason).toBe("error");
+    } finally {
+      spy.mockRestore();
+    }
+    expect(receivers).toEqual([globalThis]);
+    const request = capturedRequests[0]!;
     expect(urlWithoutQuery(request.url)).toBe(
         "https://gateway.ai.cloudflare.com/v1/gateway-account-id/platform-gateway/" +
         "google-ai-studio/v1beta/models/gemini-2.5-flash:streamGenerateContent");
@@ -228,6 +245,21 @@ describe("getModel AI Gateway routing", () => {
     expect(request.headers.get("cf-aig-authorization")).toBe("Bearer user-token");
     expect(request.headers.get("x-api-key")).toBeNull();
     expect(request.headers.get("authorization")).toBeNull();
+
+    capturedRequests.length = 0;
+    const googleHandle = getModel(env(), {
+      provider: "google",
+      model: "gemini-2.5-flash",
+      apiToken: "ignored-in-user-gateway-mode",
+    }, INITIATOR, {
+      userGateway: { accountId: "user-account-id", apiKey: "user-token" },
+    });
+    const googleRequest = await captureRequest(googleHandle);
+    expect(urlWithoutQuery(googleRequest.url)).toBe(
+        "https://gateway.ai.cloudflare.com/v1/user-account-id/default/" +
+        "google-ai-studio/v1beta/models/gemini-2.5-flash:streamGenerateContent");
+    expect(googleRequest.headers.get("cf-aig-authorization")).toBe("Bearer user-token");
+    expect(googleRequest.headers.get("x-goog-api-key")).toBeNull();
   }, 15000);
 
   it("routes Workers AI through the platform gateway like every other provider", async () => {
