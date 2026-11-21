@@ -25,8 +25,9 @@ import { diffOverview, type OverviewKind, type OverviewSegment } from './diffOve
 //   class shared by two gutters: a dedicated 3px change-bar gutter and the line-number gutter
 //   (which tints and recolors the number).
 // - Deleted content renders as block widgets above the modified line it preceded (stacked
-//   layout), with the deleted lines' own numbers rendered into the real gutters via the
-//   widget-marker hooks, and truncation past MAX_DELETED_ROWS behind an expand button.
+//   layout), one per deleted line so each wraps and sizes its gutter cells like a real line,
+//   with the deleted lines' own numbers rendered into the real gutters via the widget-marker
+//   hooks, and truncation past MAX_DELETED_ROWS behind an expand button.
 // - In the split layout, each side instead gets hatched blank-zone widgets where the other
 //   side has more lines, keeping unchanged lines vertically aligned (both editors disable
 //   wrapping and share a fixed line height).
@@ -111,9 +112,9 @@ function buildRenderState(side: Side, input: DiffRenderInput, doc: Text): DiffRe
       pushLineDecorations({ deco, gutterMarks, doc, run, side })
       pushInlineMarks(deco, doc, run, side)
       if (layout === 'stacked') {
-        if (run.originalCount > 0) {
-          pushZoneBefore(deco, doc, run.modifiedStart,
-            new DeletionZoneWidget(run, expandedDeletions.has(run.key), onExpandDeletion))
+        for (const widget of deletionZoneWidgets(
+          run, expandedDeletions.has(run.key), onExpandDeletion)) {
+          pushZoneBefore(deco, doc, run.modifiedStart, widget)
         }
       } else if (run.originalCount > run.modifiedCount) {
         pushZoneAfter(deco, doc, run.modifiedStart + run.modifiedCount - 1,
@@ -147,12 +148,16 @@ function overviewSegments(view: EditorView, render: DiffRenderState): OverviewSe
     }
   })
   // Zones are block widgets inside their anchor line's block. Read each widget off the block
-  // itself (the decoration's instance may have been swapped for an equal one), deduplicating
-  // by position because two zone decorations can share a line block.
+  // itself (the decoration's instance may have been swapped for an equal one), visiting each
+  // anchor once though a deletion zone puts a widget per row there, and deduplicating by
+  // position because two zone decorations can share a line block.
   const seenTops = new Set<number>()
+  let lastAnchor = -1
   for (const cursor = render.deco.iter(); cursor.value !== null; cursor.next()) {
+    if (cursor.from === lastAnchor) continue
     const widget: unknown = cursor.value.spec.widget
-    if (!(widget instanceof DeletionZoneWidget || widget instanceof BlankZoneWidget)) continue
+    if (zoneOverviewKind(widget) === null) continue
+    lastAnchor = cursor.from
     for (const block of subBlocks(view.lineBlockAt(cursor.from))) {
       const kind = zoneOverviewKind(block.widget)
       if (kind === null || seenTops.has(block.top)) continue
@@ -171,11 +176,11 @@ function subBlocks(block: BlockInfo): readonly BlockInfo[] {
   return Array.isArray(block.type) ? block.type : [block]
 }
 
-function zoneOverviewKind(widget: WidgetType | null): OverviewKind | null {
-  // A replacement's deleted lines match the yellow of the lines replacing them, in both layouts.
-  if (widget instanceof DeletionZoneWidget) {
-    return widget.run.modifiedCount > 0 ? 'modified' : 'delete'
+function zoneOverviewKind(widget: unknown): OverviewKind | null {
+  if (widget instanceof DeletedLineWidget || widget instanceof OmittedDeletionWidget) {
+    return widget.overviewKind
   }
+  // A replacement's blank zone matches the yellow of the lines it pads out.
   if (widget instanceof BlankZoneWidget) return widget.replacement ? 'modified' : 'delete'
   return null
 }
@@ -273,7 +278,9 @@ function pushZoneAfter(deco: Range<Decoration>[], doc: Text, lineNumber: number,
 }
 
 function widgetGutterMarker(widget: WidgetType, kind: 'bar' | 'num'): GutterMarker | null {
-  if (widget instanceof DeletionZoneWidget) return new DeletionZoneGutterMarker(widget, kind)
+  if (widget instanceof DeletedLineWidget || widget instanceof OmittedDeletionWidget) {
+    return deletedRowGutterMarker(widget, kind)
+  }
   if (widget instanceof BlankZoneWidget) return BLANK_ZONE_MARKER
   return null
 }
@@ -314,6 +321,10 @@ class BlankZoneClassMarker extends GutterMarker {
 const BLANK_ZONE_MARKER = new BlankZoneClassMarker()
 
 // ---- deletion zones ------------------------------------------------------------------------
+//
+// A deletion zone is a run of block widgets, one per deleted line plus one for the truncation
+// row, so CodeMirror sizes each row and its gutter cells as it does a real line: a deleted line
+// wraps when the editor wraps, and its number stays beside it.
 
 type ZoneRow =
   | { kind: 'line'; index: number }
@@ -332,103 +343,113 @@ function zoneRows(run: ChangeRun, expanded: boolean): ZoneRow[] {
   return rows
 }
 
-/** Everything a deletion zone renders, for cheap widget/marker equality across model rebuilds. */
-function zoneSignature(run: ChangeRun, expanded: boolean): string {
-  const parts: string[] = [run.key, expanded ? 'x' : '-', String(run.originalStart)]
-  for (let i = 0; i < run.originalCount; i++) {
-    const lineNumber = run.originalStart + i
+/** A zone's widgets, in order. */
+function deletionZoneWidgets(
+  run: ChangeRun, expanded: boolean, onExpand: (key: string) => void,
+): WidgetType[] {
+  // A replacement's deleted lines match the yellow of the lines replacing them.
+  const overviewKind: OverviewKind = run.modifiedCount > 0 ? 'modified' : 'delete'
+  return zoneRows(run, expanded).map(row => {
+    if (row.kind === 'omitted') {
+      return new OmittedDeletionWidget(run.key, row.hidden, overviewKind, onExpand)
+    }
+    const lineNumber = run.originalStart + row.index
     const paired = run.pairedOriginalLines.has(lineNumber)
-    parts.push(
-      run.deletedText[i] ?? '',
-      paired ? 'p' : '-',
-      paired ? JSON.stringify(run.inlineOriginalRanges.get(lineNumber) ?? null) : '',
+    return new DeletedLineWidget(
+      lineNumber,
+      run.deletedText[row.index] ?? '',
+      paired,
+      paired ? run.inlineOriginalRanges.get(lineNumber) ?? [] : [],
+      overviewKind,
     )
-  }
-  return parts.join('\u0000')
+  })
 }
 
-/** A change run's deleted lines, rendered as a block above the modified line they preceded. */
-class DeletionZoneWidget extends WidgetType {
-  readonly signature: string
+/** One deleted line, drawn above the modified line it preceded. */
+class DeletedLineWidget extends WidgetType {
+  private readonly slicesKey: string
   constructor(
-    readonly run: ChangeRun,
-    readonly expanded: boolean,
+    readonly lineNumber: number,
+    readonly text: string,
+    /** Replaced by a modified line (yellow), not purely deleted (red). */
+    readonly paired: boolean,
+    readonly slices: LineSlice[],
+    readonly overviewKind: OverviewKind,
+  ) {
+    super()
+    this.slicesKey = JSON.stringify(slices)
+  }
+  override eq(other: DeletedLineWidget): boolean {
+    return other.lineNumber === this.lineNumber && other.text === this.text &&
+      other.paired === this.paired && other.slicesKey === this.slicesKey &&
+      other.overviewKind === this.overviewKind
+  }
+  override get estimatedHeight(): number {
+    return LINE_HEIGHT_PX
+  }
+  override toDOM(): HTMLElement {
+    const row = document.createElement('div')
+    row.className = 'gadgets-deleted-code-row'
+    appendDeletedLineContent(row, this.text, this.slices)
+    return row
+  }
+}
+
+/** A truncated zone's middle: a button that expands the zone to all its deleted lines. */
+class OmittedDeletionWidget extends WidgetType {
+  constructor(
+    readonly runKey: string,
+    readonly hidden: number,
+    readonly overviewKind: OverviewKind,
     readonly onExpand: (key: string) => void,
   ) {
     super()
-    this.signature = zoneSignature(run, expanded)
   }
-  override eq(other: DeletionZoneWidget): boolean {
-    return other.signature === this.signature
+  override eq(other: OmittedDeletionWidget): boolean {
+    return other.runKey === this.runKey && other.hidden === this.hidden &&
+      other.overviewKind === this.overviewKind
   }
   override get estimatedHeight(): number {
-    return Math.max(1, zoneRows(this.run, this.expanded).length) * LINE_HEIGHT_PX
+    return LINE_HEIGHT_PX
   }
   override toDOM(): HTMLElement {
-    const zone = document.createElement('div')
-    zone.className = 'gadgets-deleted-code-zone'
-    for (const row of zoneRows(this.run, this.expanded)) {
-      if (row.kind === 'omitted') {
-        const button = document.createElement('button')
-        button.type = 'button'
-        button.className = 'gadgets-deleted-code-row gadgets-deleted-omitted-row'
-        button.textContent =
-          `Show ${row.hidden} hidden deleted line${row.hidden === 1 ? '' : 's'}`
-        button.addEventListener('click', () => this.onExpand(this.run.key))
-        zone.append(button)
-        continue
-      }
-      const lineNumber = this.run.originalStart + row.index
-      const codeRow = document.createElement('div')
-      codeRow.className = 'gadgets-deleted-code-row'
-      appendDeletedLineContent(
-        codeRow,
-        this.run.deletedText[row.index] ?? '',
-        this.run.pairedOriginalLines.has(lineNumber)
-          ? this.run.inlineOriginalRanges.get(lineNumber) ?? []
-          : [],
-      )
-      zone.append(codeRow)
-    }
-    return zone
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.className = 'gadgets-deleted-code-row gadgets-deleted-omitted-row'
+    button.textContent = `Show ${this.hidden} hidden deleted line${this.hidden === 1 ? '' : 's'}`
+    button.addEventListener('click', () => this.onExpand(this.runKey))
+    return button
   }
 }
 
-/**
- * A deletion zone's gutter column: the change bars (`bar`) or the deleted lines' original
- * numbers (`num`), row-aligned with the widget's content.
- */
-class DeletionZoneGutterMarker extends GutterMarker {
-  constructor(readonly widget: DeletionZoneWidget, readonly kind: 'bar' | 'num') {
+/** A deletion zone row's gutter cell: a class, plus the deleted line's number or "...". */
+class DeletedRowGutterMarker extends GutterMarker {
+  constructor(override readonly elementClass: string, readonly label: string) {
     super()
-    this.elementClass =
-      kind === 'bar' ? 'gadgets-deleted-bar-zone' : 'gadgets-deleted-margin'
   }
   eq(other: GutterMarker): boolean {
-    return other instanceof DeletionZoneGutterMarker && other.kind === this.kind &&
-      other.widget.signature === this.widget.signature
+    return other instanceof DeletedRowGutterMarker && other.elementClass === this.elementClass &&
+      other.label === this.label
   }
   override toDOM(): Node {
-    const { run, expanded } = this.widget
-    const column = document.createElement('div')
-    for (const row of zoneRows(run, expanded)) {
-      const rowDom = document.createElement('div')
-      if (row.kind === 'omitted') {
-        rowDom.className = 'gadgets-deleted-num-row gadgets-deleted-omitted-row'
-        if (this.kind === 'num') rowDom.textContent = '...'
-      } else {
-        const lineNumber = run.originalStart + row.index
-        const paired = run.pairedOriginalLines.has(lineNumber)
-        rowDom.className = paired
-          ? 'gadgets-deleted-num-row gadgets-replacement-num-row'
-          : 'gadgets-deleted-num-row'
-        if (this.kind === 'num' && !paired) rowDom.textContent = String(lineNumber)
-      }
-      column.append(rowDom)
-    }
-    return column
+    return document.createTextNode(this.label)
   }
 }
+
+function deletedRowGutterMarker(
+  widget: DeletedLineWidget | OmittedDeletionWidget, kind: 'bar' | 'num',
+): GutterMarker {
+  if (widget instanceof OmittedDeletionWidget) {
+    return kind === 'bar' ? DELETE_MARKER : OMITTED_NUM_MARKER
+  }
+  if (kind === 'bar') return widget.paired ? DELETE_MODIFIED_MARKER : DELETE_MARKER
+  // A replaced line's number would read as the number of the line replacing it.
+  return new DeletedRowGutterMarker(
+    'gadgets-deleted-margin', widget.paired ? '' : String(widget.lineNumber))
+}
+
+const OMITTED_NUM_MARKER =
+  new DeletedRowGutterMarker('gadgets-deleted-margin gadgets-deleted-omitted-row', '...')
 
 function appendDeletedLineContent(row: HTMLElement, text: string, slices: LineSlice[]) {
   if (slices.length === 0 || text.length > MAX_INLINE_DIFF_LINE_LENGTH) {

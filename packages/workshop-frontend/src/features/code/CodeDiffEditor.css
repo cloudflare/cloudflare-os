@@ -126,28 +126,14 @@
 
 /* ---- deletion zones ---- */
 
-.gadgets-diff-surface .gadgets-deleted-code-zone {
+.gadgets-diff-surface .gadgets-deleted-code-row {
+  min-height: 20px;
+  padding: 0 16px 0 12px;
   background: var(--gd-del-bg);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   font-size: 13px;
   line-height: 20px;
   color: var(--gd-fg);
-  white-space: pre;
-  overflow: hidden;
-}
-
-/*
- * When the editor wraps, a deleted row is still clipped to one line, and it must not widen the
- * content either: CodeMirror would take that width for the wrap width and estimate every
- * offscreen line as unwrapped, shrinking the document under a jump to the change.
- */
-.gadgets-diff-surface .cm-lineWrapping .gadgets-deleted-code-zone {
-  contain: inline-size;
-}
-
-.gadgets-diff-surface .gadgets-deleted-code-row {
-  height: 20px;
-  padding: 0 16px 0 12px;
 }
 
 /* The deleted lines' original numbers, rendered into the line-number gutter. */
@@ -157,19 +143,6 @@
   user-select: none;
   font-variant-numeric: tabular-nums;
   font-size: 12px;
-}
-
-.gadgets-diff-surface .gadgets-deleted-num-row {
-  height: 20px;
-}
-
-/* The change-bar gutter's rows for a deletion zone. */
-.gadgets-diff-surface .gadgets-deleted-bar-zone .gadgets-deleted-num-row {
-  background: var(--gd-del-bar);
-}
-
-.gadgets-diff-surface .gadgets-deleted-bar-zone .gadgets-replacement-num-row {
-  background: var(--gd-mod-bar);
 }
 
 /* The truncation row: "..." in the gutter, an expand button in the content. */

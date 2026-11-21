@@ -84,7 +84,7 @@ const changedLine = (text: string) =>
 
 describe.each(['stacked', 'split'] as const)('the overview strip (%s)', layout => {
   const deletionZone = layout === 'stacked'
-    ? '.gadgets-deleted-code-zone'
+    ? '.gadgets-deleted-code-row'
     : '.gadgets-diff-blank-zone'
 
   it('marks each change and scrolls to it when pressed', async () => {

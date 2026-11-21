@@ -81,7 +81,7 @@ describe('diffRenderExtension (modified side)', () => {
     expect(zones.length).toBe(1)
     expect(state.doc.lineAt(zones[0].from).number).toBe(2)
     const dom = zones[0].widget.toDOM(null as unknown as EditorView) as HTMLElement
-    expect(dom.className).toBe('gadgets-deleted-code-zone')
+    expect(dom.className).toBe('gadgets-deleted-code-row')
     expect(dom.textContent).toContain('bbb')
   })
 
@@ -146,10 +146,17 @@ describe('diffRenderExtension (modified side)', () => {
       model: diffModel,
       onExpandDeletion: key => { expanded = key },
     })
-    const dom = widgets(collapsed)[0].widget.toDOM(null as unknown as EditorView) as HTMLElement
-    const button = dom.querySelector('button')!
+    const rows = widgets(collapsed)
+      .map(({ widget }) => widget.toDOM(null as unknown as EditorView) as HTMLElement)
+    expect(rows.length).toBe(97) // 48 + button + 48
+    // In order: the head, the button, then the tail.
+    expect(rows[0].textContent).toBe('line 1')
+    expect(rows[47].textContent).toBe('line 48')
+    expect(rows[49].textContent).toBe('line 83')
+    expect(rows[96].textContent).toBe('line 130')
+    const button = rows[48]
+    expect(button.tagName).toBe('BUTTON')
     expect(button.textContent).toBe('Show 34 hidden deleted lines') // 130 - 2*48
-    expect(dom.children.length).toBe(97) // 48 + button + 48
     button.dispatchEvent(new MouseEvent('click'))
     expect(expanded).toBe(diffModel.changes[0].key)
 
@@ -157,10 +164,10 @@ describe('diffRenderExtension (modified side)', () => {
       model: diffModel,
       expandedDeletions: new Set([diffModel.changes[0].key]),
     })
-    const expandedDom =
-      widgets(expandedState)[0].widget.toDOM(null as unknown as EditorView) as HTMLElement
-    expect(expandedDom.querySelector('button')).toBeNull()
-    expect(expandedDom.children.length).toBe(130)
+    const expandedRows = widgets(expandedState)
+      .map(({ widget }) => widget.toDOM(null as unknown as EditorView) as HTMLElement)
+    expect(expandedRows.some(row => row.tagName === 'BUTTON')).toBe(false)
+    expect(expandedRows.map(row => row.textContent)).toEqual(deletedLines)
   })
 
   it('reuses equal widgets across model rebuilds (eq by content)', () => {
