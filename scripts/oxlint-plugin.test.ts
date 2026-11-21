@@ -167,6 +167,8 @@ ruleTester.run("new-gatekeeper-observer-contract", plugin.rules["new-gatekeeper-
   valid: [
     gatekeeper(contract),
     gatekeeper(`${contract}\n  async verifyObserverAccess(observers, ids) { return check(observers, ids); }`),
+    // Not a gatekeeper: its base is not one this file declares.
+    "class Roster extends Listeners {\n  async addObserver(id: string) { this.ids.add(id); }\n}",
     // Not a gatekeeper: it starts no session.
     "class Roster {\n  async addObserver(id: string) { this.ids.add(id); }\n}",
     // A base class may supply the session and the history; what this one defines is still checked.
@@ -263,6 +265,12 @@ ruleTester.run("new-gatekeeper-observer-contract", plugin.rules["new-gatekeeper-
       code: "abstract class Base extends DurableObject<Env> implements Gatekeeper<Session> {\n" +
         "  abstract get getHistoricalSubresources(): string[];\n  async addObserver(_id: string) {}\n}",
       errors: [{ messageId: "missingHistory" }],
+    },
+    // A facet is a gatekeeper through a base in the same file, without saying so again.
+    {
+      code: `${gatekeeper(contract)}\nclass Facet extends GatekeeperImpl {\n` +
+        "  override async addObserver(id: string) { this.observers.add(id); }\n}",
+      errors: [{ messageId: "observerState", data: { name: "addObserver" } }],
     },
     // A static method is not the facet's.
     {

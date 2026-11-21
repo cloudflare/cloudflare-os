@@ -275,7 +275,9 @@ function* branches(node: ESTree.Node | null | undefined): Generator<ESTree.Node>
  * came from. That is a gatekeeper class's own instance methods; each object literal written as
  * `authorizeObservation()`'s argument; and the name `excludeObservers` as a key or a member.
  * Anything built elsewhere (a variable, a helper's result, what a spread carries, a method of a
- * base class) is left to the read helper's types and to review.
+ * base class) is left to the read helper's types and to review. So is a facet whose base is in
+ * another file and which does not say it `implements Gatekeeper`, but for its history method,
+ * whose name is the contract's in any class.
  */
 const newGatekeeperObserverContract: Rule = {
   meta: {
@@ -300,6 +302,8 @@ const newGatekeeperObserverContract: Rule = {
     schema: [],
   },
   create(context) {
+    // The gatekeeper classes seen so far in the file, where a base comes before what extends it.
+    const gatekeepers = new Set<string>();
     return {
       "ClassDeclaration, ClassExpression"({ body, id, implements: interfaces, superClass }: ESTree.Class) {
         // Checked in any class: a facet that inherits its session need not say what it implements.
@@ -312,8 +316,10 @@ const newGatekeeperObserverContract: Rule = {
         }
 
         const addObserver = methodNamed(body, "addObserver");
-        const declared = interfaces?.some(({ expression }) => named(expression, "Gatekeeper"));
+        const declared = interfaces?.some(({ expression }) => named(expression, "Gatekeeper")) ||
+          (superClass?.type === "Identifier" && gatekeepers.has(superClass.name));
         if (!declared && !(methodNamed(body, "startSession") && addObserver)) return;
+        if (id) gatekeepers.add(id.name);
 
         // A facet base of the gatekeeper's own may supply it, as it may supply `startSession()`;
         // Cloudflare's `DurableObject` supplies neither. An abstract one is each subclass's to write.
