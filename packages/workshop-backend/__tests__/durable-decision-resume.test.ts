@@ -71,6 +71,15 @@ function modelRequestBodies() {
   return bodies;
 }
 
+// A user's draft edit, left in the chat's change stream for the next turn or Retry to save as a
+// `changes` record. An empty change needs no gadget to touch.
+function addDraftEdit(impl: Impl) {
+  impl.storage.chatChanges.put({chatId: CHAT, generation: 0, revision: 1,
+    timestamp: new Date(), author: USER, change: {}});
+  const meta = impl.storage.chatMeta.get(CHAT)!;
+  impl.storage.chatMeta.put({...meta, codeBase: {pins: [], generation: 0, revision: 1}});
+}
+
 function request(impl: Impl, kind: Kind, requestId = "1:connection") {
   if (kind === "connection") {
     impl.addChatMessages(CHAT, MODEL.profile, [{type: "connectionRequest", requestId,
@@ -563,6 +572,7 @@ describe("decision handoff using the existing execution row", () => {
     {code: undefined, edited: false},
     {code: "resume_exhausted", edited: false},
     {code: undefined, edited: true},
+    {code: "resume_exhausted", edited: true},
   ])("Retry of a failed /compact compacts again (%o)", async ({code, edited}) => {
     const s = await scenario(null), requests = inference();
     await s.visit(async impl => {
@@ -573,10 +583,11 @@ describe("decision handoff using the existing execution row", () => {
       impl.addChatMessages(CHAT, USER, [{type: "slashCommand",
         request: {id: {builtin: true, commandId: "compact"}, args: ""}}]);
       impl.postAgentErrorMessage(CHAT, MODEL.profile, "The summary request failed.", code);
-      // What Retry's flush of a draft edit logs, here without a gadget for the edit to touch.
-      if (edited) impl.addChatMessages(CHAT, USER, [{type: "changes"}]);
+      if (edited) addDraftEdit(impl);
       using client = await decisionClient(impl);
       await client.retryAgent(CHAT, MODEL.profile.id);
+      expect([...impl.storage.chats.list()].slice(-3).map(m => m.type))
+          .toEqual(edited ? ["error", "changes", "agentNudge"] : ["slashCommand", "error", "agentNudge"]);
       expect([...impl.storage.chats.list()].filter(m => m.type === "agentNudge" && m.text))
           .toEqual([]);
       await impl.waitForAllAgentsToComplete();
@@ -732,7 +743,9 @@ describe("decision handoff using the existing execution row", () => {
     expect(requests()).toBe(4);
   });
 
-  it("tells the model on Retry that the abandoned turn was interrupted", async () => {
+  // Edits since the abandoned turn are saved after Retry reads its error, so they still get the note.
+  it.each([false, true])("tells the model on Retry that the abandoned turn was interrupted (edited: %s)",
+      async edited => {
     const s = await scenario(), stalled = inference(new Promise(() => {}));
     for (let attempt = 1; attempt <= 4; attempt++) {
       await expect(s.visit(async impl => {
@@ -744,11 +757,14 @@ describe("decision handoff using the existing execution row", () => {
     }
     await s.visit(async impl => {
       await impl.waitForAllAgentsToComplete();
+      if (edited) addDraftEdit(impl);
       inference();
       const bodies = modelRequestBodies();
       using client = await decisionClient(impl);
       await client.retryAgent(CHAT, MODEL.profile.id);
       await impl.waitForAllAgentsToComplete();
+      if (edited) expect([...impl.storage.chats.list()]).toContainEqual(
+          expect.objectContaining({type: "changes", author: USER}));
       expect(bodies).toHaveLength(1);
       expect(bodies[0]).toContain("your previous turn was abandoned");
     });
