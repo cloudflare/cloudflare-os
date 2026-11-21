@@ -376,8 +376,7 @@ export async function grantedSites(api: GraphApi): Promise<GrantedSites> {
       from = page.nextFrom;
     }
   } catch (error) {
-    // Search (down for a day on a new tenant) or a check failing on Microsoft's side leaves what was
-    // found, or the home site.
+    // Search down on Microsoft's side, as on a new tenant, leaves what was found, or the home site.
     if (!(error instanceof GraphApiError && error.status >= 500)) throw error;
     complete = false;
     if (from === 0) await check([await root]);
@@ -389,7 +388,8 @@ export async function grantedSites(api: GraphApi): Promise<GrantedSites> {
  * The sites among `sites` a `Sites.Selected` connection can open. Graph answers any site's own
  * metadata but refuses its library (403) unless the site was granted to the app, so the library is
  * what's asked for. A site without one (404) isn't offered. Any other answer, such as throttling
- * that outlasted the batch's retries, leaves the site out and the result incomplete.
+ * that outlasted the batch's retries, or a batch that failed whole, leaves the site out and the
+ * result incomplete.
  */
 export async function checkSites(api: GraphApi, sites: readonly GraphSite[]): Promise<GrantedSites> {
   const chunks: GraphSite[][] = [];
@@ -398,7 +398,15 @@ export async function checkSites(api: GraphApi, sites: readonly GraphSite[]): Pr
   let complete = true;
   for (let start = 0; start < chunks.length; start += SITE_CHECKS_AT_ONCE) {
     await Promise.all(chunks.slice(start, start + SITE_CHECKS_AT_ONCE).map(async chunk => {
-      const answers = await api.batch(chunk.map((site, index) => ({ id: String(index), method: "GET" as const, url: `sites/${site.id}/drive?$select=id` })));
+      let answers: Awaited<ReturnType<GraphApi["batch"]>>;
+      try {
+        answers = await api.batch(chunk.map((site, index) => ({ id: String(index), method: "GET" as const, url: `sites/${site.id}/drive?$select=id` })));
+      } catch (error) {
+        // One batch throttled or failing on Microsoft's side costs its own sites, not the others'.
+        if (!(error instanceof GraphApiError && (error.status === 429 || error.status >= 500))) throw error;
+        complete = false;
+        return;
+      }
       chunk.forEach((site, index) => {
         const status = answers.get(String(index))?.status;
         if (status === 200) open.add(site);

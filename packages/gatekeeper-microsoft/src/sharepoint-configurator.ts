@@ -428,11 +428,14 @@ export class SharePointConfiguratorUI extends RpcTarget implements SharePointCon
     const from = token === undefined ? 0 : Number(token.replace(/^from:/, ""));
     if (!Number.isInteger(from) || from < 0) throw new Error("That page of sites has expired. Search again.");
     if (await this.#selected()) {
-      // The account knows every site there is to choose, so they are all listed at once.
+      // The account knows every site there is to choose, so paging them asks Graph nothing.
       const granted = await this.#account().grantedSites();
-      const items = granted.sites.filter(site => reads.siteMatches(site, query)).map(site => siteRow(site));
-      const notice = !granted.complete ? MAYBE_MORE_SITES : items.length === 0 && query === undefined ? NOT_ADDED_YET : undefined;
-      return { items, ...(notice ? { notice } : {}) };
+      const matches = granted.sites.filter(site => reads.siteMatches(site, query));
+      const notice = !granted.complete ? MAYBE_MORE_SITES : matches.length === 0 && query === undefined ? NOT_ADDED_YET : undefined;
+      return {
+        items: matches.slice(from, from + PAGE_SIZE).map(site => siteRow(site)),
+        ...(from + PAGE_SIZE < matches.length ? { nextPageToken: `from:${from + PAGE_SIZE}` } : {}), ...(notice ? { notice } : {}),
+      };
     }
     const page = await reads.browseSites(api, query, from, PAGE_SIZE);
     if (page.searchError !== undefined && searchUnavailable(page.searchError) === undefined) throw page.searchError;

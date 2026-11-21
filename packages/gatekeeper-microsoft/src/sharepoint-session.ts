@@ -442,7 +442,11 @@ export class SharePointReaderImpl extends RpcTarget implements SharePointReader 
         // and followed sites leave out, and otherwise nothing names it.
         // Under Sites.Selected the account knows every site there is to list, so there is one page.
         const browse = (api: GraphApi): ReturnType<typeof reads.browseSites> => this.ctx.host.sites === "selected"
-          ? this.ctx.host.grantedSites().then(granted => ({ sites: granted.sites.filter(site => reads.siteMatches(site, query)) }))
+          ? this.ctx.host.grantedSites().then(granted => ({
+            sites: granted.sites.filter(site => reads.siteMatches(site, query)),
+            // With nothing to return, sites that couldn't be checked are a failure, not an empty list.
+            ...(granted.complete ? {} : { searchError: new Error("SharePoint couldn't check every site just now. Try again, or open a site by its link with resolveUrl().") }),
+          }))
           : reads.browseSites(api, query, from, perPage);
         const [page, oneDrive] = await this.ctx.host.read(api => Promise.all([
           browse(api),

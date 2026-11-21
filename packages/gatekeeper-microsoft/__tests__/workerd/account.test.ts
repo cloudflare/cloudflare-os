@@ -573,6 +573,20 @@ describe("the sites a Sites.Selected connection can open", () => {
     expect(await storageKeys(id)).not.toContain("grantedSites");
   });
 
+  it("loses no site it kept when looking again couldn't check them all", async () => {
+    const granted = new Set([SITE_ID, MARKETING]);
+    let down = false;
+    const graph = tenant(granted).on("POST", /^\/v1\.0\/\$batch$/, request => down ? json({
+      responses: (JSON.parse(request.body!) as { requests: { id: string }[] }).requests.map(sub => ({ id: sub.id, status: 503, body: {} })),
+    }) : undefined);
+    const id = await seedAccount(graph);
+    await sitesOf(id);
+    down = true;
+    await age(id, 25 * 60 * 60_000);
+    expect(await sitesOf(id)).toMatchObject({ sites: [{ name: "Engineering" }, { name: "Marketing" }], complete: false });
+    expect(await sitesOf(id)).toMatchObject({ sites: [{ name: "Engineering" }, { name: "Marketing" }], complete: false });
+  });
+
   it("looks again under a new connection", async () => {
     const graph = tenant(new Set([SITE_ID]));
     const id = await seedAccount(graph);

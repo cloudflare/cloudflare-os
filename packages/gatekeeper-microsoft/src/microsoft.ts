@@ -864,14 +864,21 @@ export class UserAccount extends DurableObject<Env> {
 
   /** Looks for the granted sites and keeps them, once however many callers are waiting. */
   #findGrantedSites(): Promise<GrantedSites> {
-    return this.#findingGrantedSites.run(GRANTED_SITES_KEY, async () => {
-      const generation = this.#creds.connectionGeneration();
+    // Joined only under the connection it began under: a reconnect's first listing starts its own.
+    const generation = this.#creds.connectionGeneration();
+    return this.#findingGrantedSites.run(generation, async () => {
       const fetchedAt = Date.now();
       const identity = await this.getIdentity();
       const named = identity.sharePointTenant === undefined ? [] : selectedSiteUrls(this.env);
-      const found = await this.#graph(api => named.length === 0 ? grantedSites(api)
+      let found = await this.#graph(api => named.length === 0 ? grantedSites(api)
         : namedSites(api, named, { name: identity.sharePointTenant!, id: identity.tenantId }));
       if (this.#creds.connectionGeneration() !== generation) return found;
+      const kept = this.ctx.storage.kv.get<StoredGrantedSites>(GRANTED_SITES_KEY);
+      if (!found.complete && kept?.generation === generation) {
+        // A search that couldn't check every site loses none an earlier one found.
+        const sites = new Map([...kept.sites, ...found.sites].map(site => [site.id, site]));
+        found = { sites: [...sites.values()].toSorted((a, b) => a.name.localeCompare(b.name)), complete: false };
+      }
       this.ctx.storage.kv.delete(GRANTED_SITES_KEY);
       try {
         if (found.sites.length > 0) this.ctx.storage.kv.put<StoredGrantedSites>(GRANTED_SITES_KEY, { ...found, generation, fetchedAt });

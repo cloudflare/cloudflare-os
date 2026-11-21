@@ -101,7 +101,7 @@ describe("the sites a Sites.Selected connection can open", () => {
    * A tenant whose search names `named`, a page at a time, and whose libraries answer by site name:
    * 200 for one in `granted`, else what `refusal` says. Records each search's paging and each batch's size.
    */
-  function tenant(named: Record<string, unknown>[], granted: string[], options: { refusal?: (name: string) => number; search?: (from: number) => Response | undefined } = {}) {
+  function tenant(named: Record<string, unknown>[], granted: string[], options: { refusal?: (name: string) => number; search?: (from: number) => Response | undefined; failBatchWith?: string } = {}) {
     const searches: { from: number; size: number }[] = [];
     const batches: number[] = [];
     const other: string[] = [];
@@ -125,6 +125,9 @@ describe("the sites a Sites.Selected connection can open", () => {
           mostInFlight = Math.max(mostInFlight, ++inFlight);
           await new Promise(resolve => setTimeout(resolve, 1));
           inFlight--;
+          if (options.failBatchWith !== undefined && body!.requests.some(request => String(request.url).includes(collection(options.failBatchWith!)))) {
+            return Response.json({ error: { code: "generalException", message: "down" } }, { status: 500 });
+          }
           return Response.json({ responses: body!.requests.map(request => {
             const name = names.get(/^sites\/contoso\.sharepoint\.com,([^,]+),[^,/]+\/drive\?\$select=id$/.exec(String(request.url))?.[1] ?? "");
             if (name === undefined) throw new Error(`unexpected batched request ${String(request.url)}`);
@@ -171,6 +174,13 @@ describe("the sites a Sites.Selected connection can open", () => {
   it("is incomplete when a site's check got no answer, and keeps what did", async () => {
     const { api } = tenant([site("A"), site("B")], ["A"], { refusal: () => 503 });
     expect(await grantedSites(api)).toMatchObject({ sites: [{ name: "A" }], complete: false });
+  });
+
+  it("loses only a failed batch's sites, and reads on", async () => {
+    const named = Array.from({ length: 520 }, (_, index) => site(`S${String(index).padStart(3, "0")}`));
+    const { api, searches } = tenant(named, ["S005", "S030", "S510"], { failBatchWith: "S005" });
+    expect(await grantedSites(api)).toMatchObject({ sites: [{ name: "S030" }, { name: "S510" }], complete: false });
+    expect(searches).toHaveLength(2);
   });
 
   it("is incomplete when search fails on Microsoft's side: the home site alone at first, what was found later", async () => {
