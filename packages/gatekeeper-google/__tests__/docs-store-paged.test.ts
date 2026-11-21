@@ -1,11 +1,6 @@
-// What a read of a stored Google Doc tab, and the keying of its version under another digest
-// of the code, ask of storage: a version's list a page at a time, the lists a page of runs
-// names by one statement, and no content table scanned. Pinned by the statements each call
-// runs, on a tab of three pages whose every second run names a list of its own.
-// A file of its own, because it replaces a module for every test of its file: the renderer's
-// `initialCarry` and `advanceCarry` as other modules import them, each counted, so that a
-// test can hold that a read with nothing missing makes no carry and moves none, and
-// `renderRun`, so that a test can hold where in its tab a run rendered alone was decoded.
+// What a read of a stored tab and the keying of its version under another digest ask of
+// storage: its list a page at a time, a page's lists by one statement, no content table scanned.
+// A file of its own because it mocks the renderer's carry functions and `renderRun` to count them.
 
 import { describe, expect, it, vi } from "vitest";
 import type { GoogleDocsTab } from "../src/docs-api";
@@ -26,9 +21,7 @@ const carries = vi.hoisted(() => ({ advances: 0, made: 0 }));
 /** Where the first element of each run the store rendered ends in its tab; a test empties it. */
 const renderedTo = vi.hoisted((): number[] => []);
 
-// The module as it is but for `initialCarry`, `advanceCarry` and `renderRun` as other modules
-// import them: the first two counted before they run, the third noting where the run it is
-// handed stands. Plain counters and numbers and no spy: a spy keeps every call's arguments.
+// Plain counters and no spy: a spy keeps every call's arguments.
 vi.mock("../src/markdown-converter", async importOriginal => {
   let converter = await importOriginal<typeof import("../src/markdown-converter")>();
   let initialCarry: typeof converter.initialCarry = () => {
@@ -167,7 +160,7 @@ describe("a stored tab's list, a page at a time", () => {
 
   it("the lists a page statement answers are the lists its runs name, decoded", () => {
     type Cut = readonly [sizes: RunSizes, name: string];
-    let cuts: Cut[] = [[RUN_SIZES, "the store's sizes"], [RUNS_OF_THREE, "runs of three"]];
+    let cuts: Cut[] = [[RUN_SIZES, "the store's sizes"], [{ ...RUN_SIZES, elements: 1 }, "a run an element"]];
     let tabs: { name: string; tab: GoogleDocsTab; cuts?: Cut[] }[] = [
       ...recordedTabs(),
       ...fuzzedTabs(41, 60).filter(({ tab }) => namedListIds(tab.body.content).length > 0),
@@ -397,9 +390,8 @@ describe("a stored tab's list, a page at a time", () => {
   });
 });
 
-// What each call costs on `LISTED`, by the statements it runs over the tab's context: a
-// number of pages or a constant, never a number of runs. `edit` and `firstEditAfterDeploy`
-// are recorded as the edit path stands, which this file's subject is not.
+// What each read costs on `LISTED`, by the statements it runs over the tab's context: a number
+// of pages or a constant, never a number of runs. An edit's are in `docs-edit-counts.test.ts`.
 const PAGED_COUNTS = {
   // A version keyed under another digest: every run decoded and rendered once, the list read
   // with no join (three pages), the lists loaded once a page, the styles once; and then read
@@ -430,38 +422,6 @@ const PAGED_COUNTS = {
   markdownUnreadable: {
     lists: 1, styles: 1, runsDecoded: 1, runsRendered: 1, pages: 3 + 2, totals: 1, made: 1,
   },
-  // One edit in the first table's cell, the second run of the tab. THE SCAN for the edit's
-  // text and the pass that places its piece read the list's pages, each run's stored Markdown
-  // and summaries: they decode nothing, read no context and make no carry. THE PIECE: the
-  // closure of the table steps back to the tab's first run (an empty paragraph, which a step
-  // passes) and forward twice, past an empty paragraph each time, to the second table after
-  // it: the tab's first six runs. Tried from the table's run (1 run decoded and rendered,
-  // which says the closure goes on before it), then made from the run before, the tab's
-  // first (6). THE SLICE takes the table's run from the piece and decodes none; the run cut
-  // from it is rendered as it is stored (1). Over the context: the named styles once for
-  // each pass of the piece and once for the slice (2 + 1); the lists a pass's runs name, by
-  // one statement a pass (2), and for the slice its own lists by id and the ids of the
-  // model's form (2). NO STATEMENT A RUN, AND NO TERM IN THE TAB'S RUNS. A carry is made for
-  // each pass of the piece, for the walk to the slice and for the pair the slice is handed
-  // (4); it is moved past the one run before the first pass (1), past each run a pass renders
-  // (1 + 6), and past the one run before the slice (1); what the pair moves past the run cut
-  // is the renderer's own and is not in the count.
-  edit: {
-    lists: 2 + 2, styles: 2 + 1, advances: 1 + (1 + 6) + 1, made: 4, runsDecoded: 1 + 6,
-    runsRendered: (1 + 6) + 1,
-  },
-  // The same under a digest that has keyed nothing. Decoded: every run twice, one at a time
-  // (to ask whether the model follows the tab; for the keying the scan asks for), and the
-  // piece's runs. Rendered: every run once (the keying), the piece's runs and the run cut.
-  // Over the context: the ids of the model's form, for the question (1); a page each for the
-  // keying (3); the piece's and the slice's (2 + 2); and the named styles once for the keying
-  // beside the edit's. A carry is made for the keying beside the edit's four, and moved past
-  // every run by the keying beside the edit's moves. THE TERMS IN THE TAB'S RUNS are the
-  // question's and the keying's, and no other.
-  firstEditAfterDeploy: {
-    lists: 1 + 3 + (2 + 2), styles: 1 + (2 + 1), advances: RUNS + (1 + (1 + 6) + 1), made: 1 + 4,
-    runsDecoded: 2 * RUNS + (1 + 6), runsRendered: RUNS + (1 + 6) + 1,
-  },
 };
 
 describe("the statements over a stored tab's context", () => {
@@ -491,12 +451,6 @@ describe("the statements over a stored tab's context", () => {
          (SELECT run, context, carry FROM doc_seq WHERE version = ? AND seq = ?)`, base.id, table(350));
     measured.markdownUnreadable = cost(storage, "b", b => expect(b.markdown(base)).toBe(whole));
     expect(under(storage, "b").markdown(base)).toBe(whole);
-
-    measured.edit = cost(storage, "b", b => docEditResult(b, base, EDIT));
-    measured.firstEditAfterDeploy = cost(storage, "c", c => {
-      expect(c.unindexed(base)).toBe(false);
-      docEditResult(c, base, EDIT);
-    });
 
     expect(measured).toMatchObject(PAGED_COUNTS);
   });

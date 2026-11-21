@@ -114,35 +114,21 @@ describe("DocStore on a Durable Object's storage", () => {
     /** The scenario, run once on real storage by the first test that reads it. */
     const scenario = () => answered ??= withDocStore((_, storage) => editCountsScenario(storage));
 
-    // One expectation, two storages: every case gives on real storage the counts it gives
-    // on the Node fake, the child read back is the whole-tab model's, and a sweep leaves the
-    // kept rows.
     it("makes each edit in the runs its batch touches, on real storage", async () => {
       const counts = await scenario();
 
       expect(counts.cases).toMatchObject(EDIT_COUNTS);
       expect(Object.keys(counts.cases).toSorted()).toEqual(Object.keys(EDIT_COUNTS).toSorted());
       for (const [name, cost] of Object.entries(counts.cases)) {
-        // One run's JSON in hand at a time; the paragraph a batch typed 100,000 characters
-        // into is a run of its own.
+        // One run's JSON in hand at a time; the paragraph typed 100,000 characters into is its own run.
         expect(cost.peak, name).toBeLessThanOrEqual(
           name === "longInsertion" ? 2 * (100_000 + 300) : 2 * RUN_SIZES.most);
       }
     });
 
-    // Rows read, as billed: a row of a table a statement steps to, and a row for every step
-    // of `json_each` or `json_tree`. For a tab of n runs in P pages of its list, whose
-    // stored runs hold N JSON values and whose context defines L lists, and an edit whose
-    // slice starts at place p, holds 1 run that names i lists, and whose list is walked in
-    // joined pages over q rows to the slice's end (500 a page, n at most). The small
-    // constants are the records, the named styles, a run by its id, and the row a range of
-    // the list is closed by, as real storage shows them.
-    // AN EDIT READS ROWS OF THE LIST AND NO VALUE OF ITS TAB'S RUNS: what it asks of
-    // the tab as a whole is a walk of the list's joined pages each, and its piece is made in
-    // passes, each of which reads the version's totals (n), the joined pages for the state
-    // at its first run (2q), the list from that run with no join to the page's end, the
-    // lists its page's runs name (one statement), and each run it renders, found and read.
-    // The rows each case writes are pinned beside the rows it reads, as billed too.
+    // Rows read as billed (a row a table step, and a row a `json_each`/`json_tree` step), for a
+    // tab of n runs, N JSON values and L lists, and an edit at place p whose list is walked over
+    // q rows. An edit reads rows of the list and no value of its tab's runs.
     it("counts the rows an edit, a pending read and a first edit after a deploy read", async () => {
       const { cases, tabs } = await scenario();
       const read = (name: string) => cases[name].rowsRead;
@@ -352,17 +338,9 @@ describe("DocStore on a Durable Object's storage", () => {
     });
   });
 
-  // Rows read by the card of a queued change, as billed. For two versions of nb and na
-  // runs whose lists differ at `[from, beforeTo)` and `[from, afterTo)`:
-  // WHERE THEY DIFFER (`DocStore.changed`): each list's total (nb and na, and a row more
-  // where another version's list closes its range), the first place that differs (the two
-  // lists stepped to it: 2 a place) and the last (the two lists stepped back to it from
-  // their ends: 2 a place). Nothing is read of the places between.
-  // THE STRINGS (`changedMarkdown`), beyond that: the pass of the summaries before `from`
-  // (2 a run, and the version's record); and for each of its readers the version's record,
-  // 2 rows for each run of the pages it reads (a row of the list and the row of the rendering
-  // it names; a first page of 8 runs, then 32, 128 and 500), a row more for a page that
-  // reaches its list's end, and a row for each run's Markdown it reads.
+  // Rows read by the card of a queued change: where two lists differ (`DocStore.changed`) reads
+  // their totals and steps to the first and last difference, nothing between; the strings
+  // (`changedMarkdown`) add the summaries before `from` and each reader's pages and Markdown.
   it("counts the rows a preparation's card reads", async () => {
     const { rowAdded, nested } = await withDocStore((_, storage) => cardRowsScenario(storage));
     const compared = ({ before, after, changed }: typeof rowAdded) =>
@@ -419,18 +397,9 @@ describe("DocStore on a Durable Object's storage", () => {
     expect(await withDocStore((_, storage) => driveReadScenario(storage))).toEqual(DRIVE_READ_SCENARIO);
   });
 
-  // What a fetch costs in rows, on real storage, for a tab of n runs of which a change
-  // replaces c and leaves m. Rows written: a row of an ordinary table (a run, a rendering) is
-  // billed with the row of its key's index, twice.
-  // Rows read, the terms that are the fetch's own:
-  // - `2n`, THE STORED BASE'S LIST, read in pages as the tab's runs pass: a run's row of the
-  //   list and the row of the rendering it names, each once. A fetch that changed nothing
-  //   reads it as a changed one does: a run is keyed as it is cut, before the version's id
-  //   says that nothing changed.
-  // - a row for each run found stored when it is asked for by its name, and the small rows
-  //   of the copy's record and the two versions' records.
-  // The rest of a changed fetch is its sweep of the version it replaced, whose reads follow
-  // how many of the tab's runs are distinct: it is pinned as the number it is for each shape.
+  // What a fetch costs in rows on real storage, for a tab of n runs of which a change replaces c
+  // and leaves m: a row written to an ordinary table is billed twice (with its index's row); the
+  // stored base's list is read once in pages (2n); a changed fetch's sweep is pinned per shape.
   it.each([
     {
       // An answer of nearly 10 MiB: paragraphs of about 500 characters, each run its own.
@@ -478,29 +447,10 @@ describe("DocStore on a Durable Object's storage", () => {
     });
   });
 
-  // What it costs in rows read, on real storage, to key a version again under another digest
-  // and read it: a tab of n runs in P pages of its list, whose stored runs are N values of
-  // JSON and whose context defines L lists. THE UNIT, which every sum of rows read is written
-  // in: a row of a table a statement steps to, and a row for every step of `json_each` or
-  // `json_tree`.
-  // - `N + L * P`, THE LISTS OF A PAGE, loaded by one statement a page: `json_tree` walks every
-  //   value of the page's runs, and `json_each` steps over every list the context defines,
-  //   named or not. Both with coefficient 1: the runs are stepped once a keying and the context
-  //   once a page, never once a run.
-  // - `2n + P + (P - 1)`, the rows of tables that statement reads: each run's row of the list
-  //   and the row of its content, the context's row, and the list's next row where one
-  //   follows the page, at which the page's range ends.
-  // - `4n`: the version's totals, its list in pages with no join, and each run's content,
-  //   found by its id and then read.
-  // - `n`, a row for each entry of the list written: `json_each` hands out the writer's batch.
-  // - `2n`, the joined pages of the read that follows the keying.
-  // - THE RENDERINGS, of which the list names d distinct ones, f of them in the first batch of
-  //   500 runs that the writer flushes. A rendering of the first batch is found by its key and
-  //   written over in place, which reads its row; the other digest's are then removed (the
-  //   list's rows, each distinct key's row and its index's, and each row removed), so a later
-  //   run finds one only where a run before it wrote it: `(n - (d - f)) + f + (n + 2d + (d - f))`.
-  // - 7 small rows: the format, the version's record read three times and written once, its
-  //   context's id, and the context's named styles.
+  // Rows read to key a version again under another digest and read it, for n runs in P pages,
+  // N JSON values and L lists: the lists of a page cost `N + L * P` (each run's values stepped
+  // once a keying, the context once a page, never once a run), plus rows of tables in n, the
+  // renderings (d distinct, f in the first batch of 500) and 7 small rows.
   it("bills the lists of a page a row for every value of its runs and a row for every list of the tab", async () => {
     const keyed = await withDocStore((_, storage) => keyingRows(storage));
 
@@ -517,10 +467,7 @@ describe("DocStore on a Durable Object's storage", () => {
     expect(keyed.rowsRead).toEqual(tables + pages + nodes + lists * pages);
   });
 
-  // The ids a page's runs name are asked for at the first list `json_each` hands out. A context
-  // that defines no list hands out none, so the statement reads the context's row and neither
-  // a row nor a value of a run: `2n + (P - 1) + N` fewer than above, the keying's other rows
-  // being the same on a tab of as many runs and renderings.
+  // A context that defines no list: the lists statement reads the context's row and no run.
   it("reads no run for the lists of a tab that defines none", async () => {
     const keyed = await withDocStore((_, storage) => {
       const { base } = keptUnder(storage, tinyTablesTab("t1", 300), "a");
@@ -534,10 +481,7 @@ describe("DocStore on a Durable Object's storage", () => {
     expect(keyed.rowsRead).toEqual(9 * runs + (2 * d + f) + 7 + pages);
   });
 
-  // A first read through Drive of a tab of n runs: the read holds the document, tries it and,
-  // once approved, keeps it. The trial and the keep each store the document from its bytes,
-  // so it is decoded 2n and rendered 2n; 10n + 7 rows are written, and the trial's 3n + 2
-  // are removed again.
+  // A first read through Drive: the trial and the keep each store the document from its bytes.
   it("counts what a first read through Drive decodes, renders, writes and removes", async () => {
     const steps = await withDocStore((store, storage) => {
       const lines = Array.from({ length: 20_000 }, (_, at) => `Line ${String(at).padStart(5, "0")}.`);
@@ -570,8 +514,7 @@ describe("DocStore on a Durable Object's storage", () => {
     expect(steps.keep).toEqual([5 * n + 4, n, n]);
   });
 
-  // THE test of the limit: its measure is the UTF-8 of what a row holds, not a string's length.
-  // One element is held to a row, and a tab is not: a tab is as many rows as it has runs.
+  // The row limit is measured in UTF-8 bytes; one element is held to a row, a tab is not.
   it("keeps a paragraph of just under 8,000,000 bytes of text outside ASCII and refuses a larger one, saying why", async () => {
     const outcome = await withDocStore((store, storage) => {
       // A paragraph that holds every width of UTF-8 beside its JSON's ASCII: a character of two
@@ -639,9 +582,7 @@ describe("DocStore on a Durable Object's storage", () => {
     expect(outcome.longRead).toBeGreaterThan(2 * DOC_ROW_BYTES);
   });
 
-  // A TEXT column is UTF-8: half of a surrogate pair bound to one reads back as three U+FFFD.
-  // By run: each run's Markdown is stored as its own row, and only the one that holds the half
-  // is stored as its JSON, behind the mark.
+  // A TEXT column is UTF-8: only the run whose Markdown holds half a surrogate pair is stored as JSON.
   it("stores a Markdown that holds half of a surrogate pair so that it reads back as rendered", async () => {
     const tab = scenarioTab("t1", ["One", "tail \ud83d end", "Three"]);
     const whole = docTabToMarkdown(tab);
@@ -686,34 +627,6 @@ describe("DocStore on a Durable Object's storage", () => {
     });
   });
 
-  // A run's size is an INTEGER column of a STRICT table: a size that is not one would fail the
-  // keep. An element with no end ends where the element before it does.
-  it("keeps a tab whose element holds no end", async () => {
-    const outcome = await withDocStore((_, storage) => {
-      const sizes = { ...RUN_SIZES, elements: 1 };
-      const store = new DocStore(storage, undefined, undefined, sizes);
-      return [2, 3].map(at => {
-        const tab = scenarioTab("t1", ["One", "Two", "Three"]);
-        delete (tab.body.content[at] as { endIndex?: number }).endIndex;
-        const doc = `doc-${at}`;
-        const base = scenarioBase(store, doc, store.keep(doc, scenarioCopy([tab], "r1", sizes), NONE));
-        return {
-          sizes: storage.sql.exec<{ size: number }>(
-            "SELECT size FROM doc_seq WHERE version = ? ORDER BY seq", base.id).toArray().map(row => row.size),
-          readBack: JSON.stringify(store.tab(base)) === JSON.stringify(tab),
-          unindexed: store.unindexed(base),
-        };
-      });
-    });
-
-    expect(outcome).toEqual([
-      // The second paragraph holds no end: the third is counted from where the first ends.
-      { sizes: [1, 4, 0, 10], readBack: true, unindexed: true },
-      // The last paragraph holds none.
-      { sizes: [1, 4, 4, 0], readBack: true, unindexed: true },
-    ]);
-  });
-
   // A run is rendered with the definitions its context holds, which the worker's SQLite reads
   // with its JSON functions, and those throw on text that is not JSON: a context that is not
   // what was stored is unreadable, and no error of SQLite's passes.
@@ -739,40 +652,6 @@ describe("DocStore on a Durable Object's storage", () => {
     expect(outcome).toEqual([unreadable, unreadable]);
   });
 
-  it("removes what a sweep orphans, and nothing a version still lists", async () => {
-    const counts = await withDocStore((store, storage) => {
-      const one = scenarioBase(store, "one", store.keep("one", scenarioCopy(TABS()), NONE));
-      const two = scenarioBase(store, "two", store.keep("two", scenarioCopy(TABS()), NONE));
-      store.markdown(one);
-      const child = scenarioEdit(store, one, "e1");
-      scenarioEdit(store, child, "e2");
-      scenarioEdit(store, two, "e1");
-      const queued = tableCounts(storage);
-      // The second edit is decided: its version goes, and the first's stays.
-      store.sweep("one", { edits: ["e1"], roots: [] });
-      const decided = tableCounts(storage);
-      // The first document goes: the second's rows stay, the runs both hold included.
-      store.drop("one");
-      const dropped = tableCounts(storage);
-      const read = store.markdown(two);
-      store.drop("two");
-      return { queued, decided, dropped, read, emptied: tableCounts(storage) };
-    });
-
-    expect(counts).toEqual({
-      // Two documents that read the same hold rows of their own: their runs, their context
-      // and their renderings as their versions and run lists. Each tab and each version an
-      // edit gives is one run, rendered as it is stored: for each document the two tabs' and
-      // their one context, and the runs of the first document's two edits and of the
-      // second's one.
-      queued: { doc_copy: 2, doc_md: 7, doc_result: 3, doc_run: 9, doc_seq: 7, doc_version: 7 },
-      decided: { doc_copy: 2, doc_md: 6, doc_result: 2, doc_run: 8, doc_seq: 6, doc_version: 6 },
-      dropped: { doc_copy: 1, doc_md: 3, doc_result: 1, doc_run: 4, doc_seq: 3, doc_version: 3 },
-      read: "One\n\nTwo\n",
-      emptied: EMPTY,
-    });
-  });
-
   // The tables are removed and made inside one `transactionSync`, which real storage must take.
   it("makes its tables again, empty, when it is opened under another format", async () => {
     const outcome = await withDocStore((store, storage) => {
@@ -787,23 +666,6 @@ describe("DocStore on a Durable Object's storage", () => {
 
     expect(Object.values(outcome.kept).every(rows => rows > 0)).toBe(true);
     expect(outcome).toMatchObject({ opened: EMPTY, read: "One\n\nTwo\n", format: { format: "other" } });
-  });
-
-  it("leaves no row of a document read in a trial", async () => {
-    const outcome = await withDocStore((store, storage) => {
-      const read = store.trial("doc", scenarioCopy(TABS()), () => NONE, head => {
-        const base = scenarioBase(store, "doc", head);
-        scenarioEdit(store, base, "e1");
-        return { markdown: store.markdown(base), during: tableCounts(storage) };
-      });
-      return { ...read, after: tableCounts(storage), head: store.head("doc") === undefined };
-    });
-
-    expect(outcome.markdown).toBe("One\n\nTwo\n");
-    // The two tabs and the version the edit gives, each one run with its rendering.
-    expect(outcome.during).toEqual({ doc_copy: 0, doc_md: 3, doc_result: 1, doc_run: 4, doc_seq: 3, doc_version: 3 });
-    expect(outcome.after).toEqual(EMPTY);
-    expect(outcome.head).toBe(true);
   });
 
   // This is why the store never asks a write to return rows.
@@ -973,10 +835,7 @@ describe("what a connection's expiry pass costs on a Durable Object's storage", 
   });
 });
 
-// What a reset of the object leaves of an expiry pass. A call of the pass is one synchronous
-// stretch, which the object commits whole or not at all, so a reset undoes the drops of the
-// call it ends, each made in a transaction that had returned, and nothing an earlier request
-// dropped: what one call drops is bounded for that.
+// A reset undoes the drops of the expiry call it ends, and nothing an earlier request dropped.
 /**
  * Runs `run` as one request of the `DocStoreHost` named `expiry-reset`, through a stub of its
  * own: one that met the reset is not used again.

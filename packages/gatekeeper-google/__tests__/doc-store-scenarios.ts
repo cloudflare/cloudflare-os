@@ -237,18 +237,9 @@ export function linesWithTablesTab(
 }
 
 /**
- * `tinyTablesTab(tabId, pairs)` with each table's cell an item of a numbered list OF ITS OWN
- * (`kix.list<n>`, each defined in `tab.lists`): `2 * pairs + 1` runs and `pairs` lists, every
- * table a run that counts in one list no other run names. It is the shape on which what is
- * held or done for every list shows, so THE SIZE OF A DEFINITION IS FIXED: every figure in
- * bytes a list, and every statement over a tab's context, scales with it.
- * - `"short"`: nine levels of `{ glyphType: "DECIMAL" }`, 254 characters of JSON a definition,
- *   which is all a fetch keeps of a definition; 7,700 lists are a context of about 2 MB.
- * - `"long"`: nine levels with the fields Google sends of one (alignment, glyph format,
- *   indents, start number and text style), 1,923 characters of JSON a definition; 4,000 lists
- *   are a context of about 7.7 MB, under a row's limit. A fetch's walk prunes a definition to
- *   what the rendering reads, so this size is stored by a copy made of whole tabs
- *   (`wholeTabsFetched`) and by nothing that goes through the walk.
+ * `tinyTablesTab(tabId, pairs)` with each table's cell an item of a numbered list of its own:
+ * `pairs` lists, each named by one run. `"short"` definitions are 254 characters of JSON (what
+ * a fetch keeps); `"long"` 1,923 (what Google sends, stored only by `wholeTabsFetched`).
  */
 export function listedTablesTab(
   tabId: string, pairs: number, definition: "short" | "long" = "short",
@@ -278,14 +269,8 @@ export function listedTablesTab(
 }
 
 /**
- * A pruned tab of one empty paragraph and then `lists` paragraphs of about a hundred
- * characters, EACH AN ITEM OF A NUMBERED LIST OF ITS OWN (`kix.list<n>`, defined as
- * `listedTablesTab`'s short definition, 254 characters of JSON): under the store's sizes about
- * a hundred paragraphs are a run, so 3,000 lists are a few tens of runs, ONE PAGE of the
- * version's list, whose runs name every list the tab defines. It is the shape a tab of prose
- * under the limit on an answer has (about 320 runs: one page), kept beside the shapes of many
- * runs because what is held of a page's lists is here the tab's, where on those it is a
- * page's share.
+ * One empty paragraph and `lists` items of about a hundred characters, each a numbered list
+ * of its own: one page of a list whose runs name every list the tab defines.
  */
 export function listedProseTab(tabId: string, lists: number): GoogleDocsTab {
   let content: Content = [proseParagraph(1, "\n")];
@@ -525,12 +510,8 @@ export type StepCost = {
 };
 
 /**
- * The life of a tab of `paragraphs` paragraphs (`Line 00000.` and on) in `store`, as the
- * document `doc`: kept, read, edited in the middle, read pending, the edit rejected, made again
- * and approved, the tab fetched with one paragraph changed, and fetched unchanged. Answers what
- * each step moved of the store's counters, with how many runs the tab is (`n`), how many the
- * edit and the changed fetch replaced (`c`, `fetched`) and how many runs the tab after either
- * is (`m`).
+ * The life of a tab of `paragraphs` lines: kept, read, edited, read pending, rejected, edited
+ * again and approved, refetched changed and unchanged; what each step moved of the counters.
  */
 export function largeTabLife(store: DocStore, storage: DocStoreStorage, paragraphs = 20_000) {
   let lines = Array.from({ length: paragraphs }, (_, at) => `Line ${String(at).padStart(5, "0")}.`);
@@ -704,11 +685,8 @@ type AtomicCase = {
 };
 
 /**
- * Fetches that throw part way, with no copy stored and with a seven-tab copy stored: a keep
- * and a trial of a seven-tab document in which an element is one the copy refuses, the named
- * ranges are malformed, a paragraph is past a row, or a run is one the renderer throws on;
- * and, for the renderer's throw, which holding a document does not meet, a keep and a trial of
- * the document held. Answers, by case, what was thrown and whether storage is as it was.
+ * Fetches that throw part way (an element refused, malformed named ranges, a paragraph past a
+ * row, a run the renderer throws on), kept and tried, with no copy and with a copy stored.
  */
 export function fetchAtomicScenario(storage: DocStoreStorage): Record<string, AtomicCase> {
   let runsWritten = 0;
@@ -795,12 +773,8 @@ export const FETCH_ATOMIC_SCENARIO: ReturnType<typeof fetchAtomicScenario> = Obj
 type ReadCost = { runsDecoded: number; runsRendered: number; runsKeyed: number };
 
 /**
- * What a source of a Doc opened through Drive does with a fetched document, through the
- * connection's copies (`driveDocCopies`): held, tried in a read, and kept only once the read
- * is approved. A first read that is refused, the same read approved, a read of the document
- * changed that is refused beside the stored copy, and the document kept as a bound Doc keeps
- * it. Answers what each step decoded, rendered and keyed, with how many runs the document is
- * (`n`), and whether storage was as it was after each refused read.
+ * A Doc opened through Drive (`driveDocCopies`): a first read refused, the same read approved,
+ * a changed read refused beside the stored copy, and the document kept as a bound Doc keeps it.
  */
 export function driveReadScenario(storage: DocStoreStorage) {
   let lazy = lazyDocStore(storage);
@@ -980,12 +954,8 @@ export type FetchCost = {
 };
 
 /**
- * The fetches of one tab near the limit on an answer, in a store of its own over `storage`: a
- * first fetch, a fetch with a paragraph changed in the first run, one with a paragraph
- * changed in the last run as well, and a fetch that brings nothing changed. `prose` is a tab
- * of paragraphs of about 500 characters, an answer of nearly 10 MiB; `tables` a tab of 2,000
- * small tables, which is many runs. Answers what each fetch cost, with the bytes of the
- * answer's JSON, the runs of the tab (`n`), and for each changed fetch the runs it replaced.
+ * The fetches of one tab near the answer limit: first, a paragraph changed in the first run,
+ * one in the last run too, and nothing changed; `prose` (~10 MiB) or `tables` (2,000 tables).
  */
 export function fetchCounts(storage: CountedStorage, shape: "prose" | "tables") {
   let rowsRead = 0, listStatements = 0, listRows = 0;
@@ -1089,24 +1059,10 @@ export type StatementCounts = {
 };
 
 /**
- * `storage` wrapped so that each statement is counted by kind as it runs: hand `storage` of
- * the answer to a store and to nothing else, so that what is counted is the store's.
- * - `counts()`: the statements so far, by kind. A PAGE is every page of a version's list,
- *   whatever it selects: a statement that reads `doc_seq` in the order of `seq` up to a bound
- *   limit, which every page of a list is and no other statement.
- * - `definitions()`: the largest sum of the lengths of the definitions one `lists` statement
- *   answered, as text.
- * - `ran()`: every distinct statement run through the wrapper, for a census that plans the
- *   store's statements and not a test's own reads of rows.
- * - `rowsRead()`: THE ROWS READ AS STORAGE BILLS THEM, the sum of each cursor's `rowsRead`,
- *   read once a cursor when its rows have been taken, or when its `rowsWritten` is read where
- *   they are not. The unit is a row of a table a statement steps to AND a row for every step
- *   of `json_each` or `json_tree`. A Durable Object's cursor says it; the Node tests' does
- *   not, so there the answer is 0.
- * - `rowsWritten()`: the rows written, the sum of each cursor's `rowsWritten`, read where
- *   `rowsRead` is: as storage bills them on a Durable Object, and the rows each statement
- *   changed on the Node tests' storage.
- * - `answered()`: THE ROWS ANSWERED TO THE ISOLATE, every row a `toArray()` or a `one()` gave.
+ * `storage` wrapped so that each statement is counted by kind as it runs: `counts()`,
+ * `definitions()` (the most text of definitions one `lists` statement answered), `ran()`,
+ * `rowsRead()` (as a Durable Object bills them; 0 on the Node fake), `rowsWritten()` and
+ * `answered()` (rows a `toArray()` or `one()` gave the isolate).
  */
 export function countedStorage(storage: RowsReadStorage) {
   let counts: StatementCounts = { styles: 0, lists: 0, pages: 0, joined: 0, content: 0, all: 0 };
@@ -1171,13 +1127,8 @@ export function countedStorage(storage: RowsReadStorage) {
 }
 
 /**
- * The tables a statement scans, for a census of the statements a store ran (`ran()` of a
- * `countedStorage`): for each of `statements` but those that drop a table, the steps of its
- * plan that start `SCAN` and are not of a virtual table (`json_each`, `json_tree`), by the
- * statement with its white space folded; a statement with no such step is left out. A PLAN
- * NAMES A TABLE BY THE STATEMENT'S ALIAS, so no table's name is read here: a scan of `doc_run
- * AS run` plans as `SCAN run` and is answered like any other. A census asserts on what this
- * answers, never on a pattern of the tables' names.
+ * The steps that scan a table in the plans of `statements` (virtual tables excepted), by
+ * statement. A plan names a table by its alias, so census on this, never on table names.
  */
 export function tableScans(
   storage: { plan(statement: string): string[] }, statements: readonly string[],
@@ -1231,12 +1182,8 @@ export function spent(counted: { counts(): StatementCounts }, run: () => unknown
 }
 
 /**
- * ONE SCENARIO FOR REAL STORAGE: a tab of 300 one-cell tables, each an item of a list of its
- * own (601 runs, two pages of its list, 300 lists), kept under one digest and its version
- * keyed again under another by a read of its summary. Answers the runs the version lists, the
- * pages of its list, THE JSON NODES OF ITS STORED RUNS and the lists its context defines (both
- * counted by the functions storage bills a row a step for, beneath the counter), and for the
- * keying alone the rows read and the statements by kind. No document leaves it.
+ * A tab of 300 tables each a list of its own (601 runs, 300 lists) kept under one digest and
+ * keyed again under another by a read of its summary: its units, and the keying's rows read.
  */
 export function keyingRows(storage: RowsReadStorage) {
   let { base } = keptUnder(storage, listedTablesTab("t1", 300), "a");
@@ -1274,21 +1221,9 @@ export type SweepCost = {
 };
 
 /**
- * WHAT A REMOVAL COSTS IN A STORE THAT HOLDS OTHER DOCUMENTS: one store over `storage` keeps
- * `others` documents of one short paragraph each, one more such document (`small`) and one
- * document of THE MANY-RUN SHAPE (`tinyTablesTab("t1", pairs)`, `2 * pairs + 1` runs), and
- * answers what each of these cost, in order:
- * - `nothing`: a sweep of the many-run document that removes nothing;
- * - `rejection`: the sweep after a rejection: one edit made in the tab, swept with none pending;
- * - `approval`: the sweep of an approval's handoff: two edits pending, the second made in what
- *   the first gave, swept with the second alone;
- * - `trialChanged`: THE SWEEP of a trial of the document fetched changed in one run, with no
- *   edit pending, counted from where the trial's `use` returns;
- * - `trialFirst`: THE SWEEP of a trial of a many-run document of another text that has no
- *   stored copy and no root (nothing of it is live), counted the same way;
- * - `dropOther`: a drop of `small`; `dropLarge`: a drop of the many-run document.
- * Two calls that differ in `others` alone say whether a removal reads or writes a row for what
- * the store holds of other documents; two that differ in `pairs`, what grows with a tab's runs.
+ * What a removal costs in a store that holds `others` one-paragraph documents beside `small`
+ * and a many-run document (`2 * pairs + 1` runs): `nothing`, `rejection`, `approval`, the
+ * sweeps of `trialChanged` and `trialFirst`, `dropOther` and `dropLarge`.
  */
 export function sweepCostScenario(
   storage: RowsReadStorage, { others, pairs }: { readonly others: number; readonly pairs: number },
@@ -1353,10 +1288,8 @@ export type SweepCase = Exclude<keyof ReturnType<typeof sweepCostScenario>, "run
 export const SWEEP_COST_PAIRS: readonly number[] = WIDER ? [2_000, 9_800] : [2_000];
 
 /**
- * THE STATEMENTS each removal of `sweepCostScenario` runs and THE ROWS THEY ANSWER TO THE
- * ISOLATE, on the Node fake and on a Durable Object's storage alike, WHATEVER THE TAB'S RUNS
- * AND WHATEVER ELSE THE STORE HOLDS: a sweep answers the copy's record, the live versions'
- * results and the dead versions' ids, and no row of a list; a drop answers none.
+ * The statements and rows answered of each removal of `sweepCostScenario`, on any storage and
+ * whatever the tab's runs or the other documents: a sweep answers no row of a list; a drop none.
  */
 export const SWEEP_COST: Record<SweepCase, Pick<SweepCost, "statements" | "answered">> = {
   nothing: { statements: 3, answered: 1 },
@@ -1369,16 +1302,8 @@ export const SWEEP_COST: Record<SweepCase, Pick<SweepCost, "statements" | "answe
 };
 
 /**
- * THE ROWS each removal of `sweepCostScenario` is billed on a Durable Object's storage, by the
- * pairs of the many-run tab: `rowsRead` and `rowsWritten` in a store that holds no other
- * document, and `beside`, the rows read MORE where it holds two hundred (the rows written are
- * the same). `beside` is 6 at the most, and a removal is billed the same beside a thousand
- * other documents as beside two hundred (the workerd test holds both): it does not grow with
- * the documents stored. Which rows storage counts there is not established.
- * A sweep that removes a version reads each list of the document twice (once for the
- * renderings, once for the runs), searches a content row for each distinct name of the dead
- * lists, and reads each row of a dead list as it deletes it: at 19,601 runs a rejection is
- * billed 8.5 rows a run, and an approval's handoff that removes two versions 13.
+ * The rows each removal of `sweepCostScenario` is billed on real storage, by the pairs of the
+ * many-run tab, alone and (`beside`) the rows read more beside two hundred other documents.
  */
 export const SWEEP_ROWS: Record<number, Record<SweepCase, {
   rowsRead: number; beside: number; rowsWritten: number;
@@ -1411,21 +1336,10 @@ export const SWEEP_ROWS: Record<number, Record<SweepCase, {
 export type CapCost = SweepCost & { evicted: number };
 
 /**
- * WHAT A KEEP COSTS A CONNECTION AT ITS CAP OF 200 DOCUMENTS: one store over `storage` keeps
- * 196 one-paragraph documents, a document of prose cut a paragraph a run (300 runs) whose
- * approval is the oldest, and one of THE MANY-RUN SHAPE (`tinyTablesTab("t1", pairs)`,
- * `2 * pairs + 1` runs) whose approval is the next. Each keep below is of ONE MORE
- * one-paragraph document the store does not hold, so the five differ only in what the caps
- * add. In order:
- * - `plain`: `DocStore.keep` itself, with no limits, which brings the store to 199 documents;
- * - `nothing`: the connection's keep (`DriveDocCopyLimits.keep`, under the connection's own
- *   caps) that brings the store to 200 documents and evicts nothing;
- * - `prose`: the connection's keep that brings 200 documents to 201 and evicts the prose;
- * - `manyRuns`: the next, which evicts the many-run document;
- * - `fifty`: one under a cap of bytes that 151 one-paragraph documents fill, which evicts
- *   fifty of them at once.
- * Answers each one's cost, the runs of the two larger documents and the copies the store
- * holds after each of the connection's keeps.
+ * A keep at the cap of 200 documents: 196 one-paragraph documents, a prose of 300 runs approved
+ * first and a many-run tab next; each keep below is of one more one-paragraph document. `plain`
+ * (no limits), `nothing` (brings the store to 200), `prose` and `manyRuns` (each evicts that
+ * document) and `fifty` (a cap of bytes that evicts fifty at once).
  */
 export function capCostScenario(storage: RowsReadStorage, { pairs }: { readonly pairs: number }) {
   let counted = countedStorage(storage);
@@ -1490,10 +1404,8 @@ export type CapCase = "plain" | "nothing" | "prose" | "manyRuns" | "fifty";
 export const CAP_COST_PAIRS: readonly number[] = WIDER ? [2_000, 9_800] : [2_000];
 
 /**
- * THE STATEMENTS each keep of `capCostScenario` runs, THE ROWS THEY ANSWER TO THE ISOLATE and
- * the copies it evicts, on the Node fake and on a Durable Object's storage alike, WHATEVER
- * THE RUNS OF THE DOCUMENT EVICTED: the caps add one statement that answers a row a copy,
- * and six statements that answer nothing for each copy evicted.
+ * The statements, rows answered and evictions of each keep of `capCostScenario`, on any
+ * storage: the caps add one statement a row a copy, and six for each copy evicted.
  */
 export const CAP_COST: Record<CapCase, Pick<CapCost, "statements" | "answered" | "evicted">> = {
   // The keep itself answers one row: the digest the copy stored before was swept under.
@@ -1505,13 +1417,8 @@ export const CAP_COST: Record<CapCase, Pick<CapCost, "statements" | "answered" |
 };
 
 /**
- * THE ROWS each keep of `capCostScenario` is billed on a Durable Object's storage, whatever
- * the pairs of the many-run tab; the keep that evicts that tab is billed these of `plain`,
- * a row a copy listed and what a drop of the tab is billed (`SWEEP_ROWS`, `dropLarge` beside
- * other documents). Beyond the keep itself (`plain`), the caps read ONE ROW A COPY (200 and
- * then 201), and an eviction is billed what its deletes are: for the prose of 300 runs, the
- * 903 rows it held and a row for each row of its list as the list's delete finds it; for
- * fifty one-paragraph documents, six rows written and seventeen read each.
+ * The rows each keep of `capCostScenario` is billed on real storage: the caps read one row a
+ * copy, and an eviction is billed what its deletes are.
  */
 export const CAP_ROWS: Record<Exclude<CapCase, "manyRuns">, { rowsRead: number; rowsWritten: number }> = {
   plain: { rowsRead: 6, rowsWritten: 9 },
@@ -1532,18 +1439,9 @@ export const CAP_ROWS: Record<Exclude<CapCase, "manyRuns">, { rowsRead: number; 
 export type ExpiryCost = SweepCost & { removed: number; kvReads: number; kvWrites: number; ms: number };
 
 /**
- * WHAT THE EXPIRY PASS COSTS A CONNECTION AT ITS CAP OF 200 DOCUMENTS: one store over
- * `storage` keeps 200 one-paragraph documents, their last approved read a day after the
- * clock's start, and one `DriveDocCopyLimits` passes over it on a clock the scenario moves.
- * In order:
- * - `none`: the pass six days on, which reads the 200 records and removes none;
- * - `inside`: a call in the hour of that pass, which asks nothing of storage or of the KV;
- * - `two`: with a document of prose cut a paragraph a run (300 runs) and one of THE MANY-RUN
- *   SHAPE (`tinyTablesTab("t1", pairs)`, `2 * pairs + 1` runs) kept as approved at the clock's
- *   start, the pass seven days on, which removes those two and leaves the 200;
- * - `all`: the pass eight days on, which removes all 200.
- * Answers each one's cost, the runs of the two larger documents, the copies the store holds
- * after each call and the hour the KV names at the end.
+ * The expiry pass at the cap of 200 one-paragraph documents: `none` (six days on, removes
+ * nothing), `inside` (the same hour: asks nothing), `two` (seven days on, with a prose of 300
+ * runs and a many-run tab approved at the start: removes those two) and `all` (eight days on).
  * @param options.clock What the milliseconds are read from. Defaults to `performance.now`.
  */
 export function expiryCostScenario(
@@ -1613,12 +1511,8 @@ export type ExpiryCase = "none" | "inside" | "two" | "all";
 export const EXPIRY_COST_PAIRS: readonly number[] = WIDER ? [2_000, 9_800] : [2_000];
 
 /**
- * THE STATEMENTS each call of `expiryCostScenario` runs, THE ROWS THEY ANSWER TO THE ISOLATE,
- * the copies it removes and the keys it reads and writes, on the Node fake and on a Durable
- * Object's storage alike, WHATEVER THE RUNS OF A DOCUMENT REMOVED: a pass is one statement
- * that answers a row a copy and six statements that answer nothing for each copy removed,
- * and it writes one key; the activation's first reads that key; a call inside the hour of a
- * pass does nothing.
+ * The statements, rows answered, removals and KV keys of each call of `expiryCostScenario`, on
+ * any storage: a pass is one statement a row a copy and six for each copy removed, and writes one key.
  */
 export const EXPIRY_COST: Record<ExpiryCase, Omit<ExpiryCost, "rowsRead" | "rowsWritten" | "ms">> = {
   none: { statements: 1, answered: 200, removed: 0, kvReads: 1, kvWrites: 1 },
@@ -1628,12 +1522,8 @@ export const EXPIRY_COST: Record<ExpiryCase, Omit<ExpiryCost, "rowsRead" | "rows
 };
 
 /**
- * THE ROWS each call of `expiryCostScenario` is billed on a Durable Object's storage,
- * whatever the pairs of the many-run tab: a pass reads ONE ROW A COPY and writes none; the
- * pass that removes all 200 one-paragraph documents is billed the 200 records and what 200
- * drops are (six rows written each, and about seventeen read, fewer as the store empties).
- * The pass that removes the prose and the many-run document is billed a row a copy and what
- * a drop of each is (`EXPIRY_PROSE_DROP`; `SWEEP_ROWS`, `dropLarge` beside other documents).
+ * The rows each call of `expiryCostScenario` is billed on real storage: a pass reads one row a
+ * copy; a removal is billed what its drops are (`EXPIRY_PROSE_DROP`, `SWEEP_ROWS.dropLarge`).
  */
 export const EXPIRY_ROWS: Record<Exclude<ExpiryCase, "two">, { rowsRead: number; rowsWritten: number }> = {
   none: { rowsRead: 200, rowsWritten: 0 },
@@ -1690,22 +1580,11 @@ export type EditTab = {
 const BULLETED = "BULLET_DISC_CIRCLE_SQUARE";
 
 /**
- * ONE EDIT AT A TIME ON A TAB OF 20,000 PARAGRAPHS, on the fake and on real storage alike:
- * the tab is `Line 00000.` and on, with a 1x1 table before the paragraphs at 5,000, 10,000
- * and 15,000 (`linesWithTablesTab`), kept under the store's sizes; beside it, each under a
- * document of its own, `tinyTablesTab("t2", 200)` (the shape of many runs) and
- * `listedTablesTab("t3", 300)` (a list a table). The store runs on a `countedStorage` over
- * `storage`; each case is made with nothing of its tab in hand (`docEditResult` for an edit
- * the builders build, which reads what it asks of the tab as a whole from stored rows and
- * builds from the piece around the edit; `editedSlice` and `DocStore.putSlice` for a batch
- * written by hand), and the store's counters are read around that call alone. What the
- * scenario reads for itself (a list's sizes, a table as it reads, the child read back, the
- * tabs' nodes) goes through a store and statements BENEATH the counter, so it is counted in
- * no case. After each case the document is swept, as a rejection sweeps it.
- *
- * Answers `n`, the runs of the tab of lines; `cases`, by name; and `tabs`, each tab in the
- * units rows are read in. The child of a case is compared here with `applyDocsRequests` on
- * the tab in hand, and the answer is a boolean: no document leaves the scenario.
+ * One edit at a time on a tab of 20,000 paragraphs with three tables (`linesWithTablesTab`),
+ * beside `tinyTablesTab("t2", 200)` and `listedTablesTab("t3", 300)`, each its own document.
+ * Each case is measured around its one call through a `countedStorage`; the scenario's own
+ * reads go beneath the counter, the child is compared with the whole-tab model, and the
+ * document is swept after each case. Answers `n`, the cases and each tab in row units.
  */
 export function editCountsScenario(storage: RowsReadStorage) {
   let counted = countedStorage(storage);
@@ -2054,38 +1933,23 @@ const editCase = (
 });
 
 /**
- * What each case of `editCountsScenario` answers, on the fake and on real storage alike: every
- * field but the rows written and read, which each storage counts its own way, and the peak,
- * which is held to a bound. The tab of lines is `N` runs (138). A TEXT EDIT (a replacement,
- * an append) decodes and renders the runs of its piece, the closure of its own elements,
- * and the model's slice takes those runs as they were decoded; A TABLE CHANGE does the same
- * with the piece around its table, or around the place a new table goes; a batch written by
- * hand (`editedSlice`) has no piece and decodes its slice.
+ * What each case of `editCountsScenario` answers on any storage, but the rows (each storage's
+ * own) and the peak (held to a bound). The tab of lines is `N` runs. A text edit or a table
+ * change decodes and renders its piece, which the slice takes; a batch by hand decodes its slice.
  */
 export const EDIT_COUNTS: Record<string, Omit<EditCost, "rowsWritten" | "rowsRead" | "peak">> = {
-  // A replacement inside one paragraph in the middle of a run: its closure (the paragraph and
-  // two on each side) stands in that run, which is decoded once, for the piece, and taken
-  // by the slice. Rendered: the run for the piece, and the one run cut from the slice. The
-  // child lists every other run by the id it had.
+  // A replacement in the middle of a run: its closure's run is decoded once, for the piece, and the slice takes it.
   middle: editCase(1, 0, 1 + 1, N, N - 1, { at: { place: 48, runs: 1, named: 0, cut: 1 } }),
-  // The Markdown and the summary of the version that edit gave: every rendering is stored, so
-  // nothing is decoded and nothing rendered.
+  // The version that edit gave, read: every rendering is stored.
   pendingRead: editCase(0, 0, 0, N, N - 1, { at: { place: 48, runs: 1, named: 0, cut: 1 } }),
-  // A cell's style, and a row added with no text, on a table in the middle of the tab: the
-  // table is its own run. The piece around it is decoded and rendered for the builders
-  // (`PIECE_OF_TABLE`); the slice takes the table's run from the piece, and the run cut from
-  // it is rendered.
+  // A table change on the middle table, a run of its own: the piece around it, and the run cut.
   cellStyle: editCase(PIECE_OF_TABLE, 0, PIECE_OF_TABLE + 1, N, N - 1, {
     at: { place: 73, runs: 1, named: 0, cut: 1 },
   }),
   rowNoText: editCase(PIECE_OF_TABLE, 0, PIECE_OF_TABLE + 1, N, N - 1, {
     at: { place: 73, runs: 1, named: 0, cut: 1 },
   }),
-  // THE BUILDERS' OWN BATCHES, WRITTEN FRONT TO BACK. The table starts at index 120,012 and
-  // the run after it at 120,023. A row added with text: `insertTableRow` at 120,012, then the
-  // text typed into the cell just made, written past the table's stored end (120,024 and
-  // on), which is not counted: the table's run alone is the slice, and the run after it is
-  // listed by the id it had.
+  // The text typed past the table's stored end is not counted: the table's run alone is the slice.
   rowWithText: editCase(PIECE_OF_TABLE, 0, PIECE_OF_TABLE + 1, N, N - 1, {
     at: { place: 73, runs: 1, named: 0, cut: 1 },
   }),
@@ -2093,119 +1957,57 @@ export const EDIT_COUNTS: Record<string, Omit<EditCost, "rowsWritten" | "rowsRea
   columnWithText: editCase(PIECE_OF_TABLE, 0, PIECE_OF_TABLE + 1, N, N - 1, {
     at: { place: 73, runs: 1, named: 0, cut: 1 },
   }),
-  // A growing replacement in the paragraph that ends the run before the table (11 characters
-  // replaced by 45). Its closure steps forward twice, to the table and to the paragraph after
-  // it, each a run: the paragraph's run, the table's and the next are decoded and rendered
-  // for the piece (3). The deletion and the insertion are inside the paragraph, and the
-  // indexes the batch names after them, moved by 34, are not counted: the slice is the
-  // paragraph's run, taken from the piece, and the one run cut from it is rendered.
+  // The closure steps forward to the table and the paragraph after it: three runs for the piece.
   growingBeforeTable: editCase(3, 0, 3 + 1, N, N - 1, { at: { place: 72, runs: 1, named: 0, cut: 1 } }),
   // An append: the tab's last run holds the closure of the tab's end, and is the slice.
   append: editCase(1, 0, 1 + 1, N, N - 1, { at: { place: 137, runs: 1, named: 0, cut: 1 } }),
-  // A table added at the tab's end with its cells filled: `insertTable` in the last
-  // paragraph, then the cells' text past it. The tab's last run holds the closure of the
-  // tab's end (1 decoded and rendered) and is the slice, taken from the piece; it is cut in
-  // three (the paragraphs before, the table, the paragraph after), each rendered.
+  // The tab's last run is the slice, taken from the piece, and cut in three.
   tableFilled: editCase(1, 0, 1 + 3, N + 2, N),
   // A replacement that makes two list items of a paragraph in the middle of a run.
   listItems: editCase(1, 0, 1 + 1, N, N - 1, { at: { place: 48, runs: 1, named: 0, cut: 1 } }),
-  // `insertTable` after a paragraph in the middle of a run: the paragraph's closure stands in
-  // that run (1 decoded and rendered), which the slice takes from the piece and which is cut
-  // in three (the paragraphs before, the table, the paragraphs after), each rendered.
+  // The paragraph's run is the slice, taken from the piece, and cut in three.
   tableAfterParagraph: editCase(1, 0, 1 + 3, N + 2, N - 1, { at: { place: 48, runs: 1, named: 0, cut: 3 } }),
-  // A TABLE REMOVED WHOLE, by one `deleteContentRange` from its first index to its end: the
-  // deletion's exclusive end is the first index of the run after the table, which the reach
-  // counts (a deletion that ends inside an element joins into it), so that run is decoded
-  // too. It comes out as it went in: it is cut and rendered again, listed under the id it
-  // had, and no row of it is written. One run decoded and rendered that the batch did not
-  // change: the price of a rule that reads no content to choose.
+  // The deletion's exclusive end reaches the run after the table, which is decoded and comes out as it went in.
   tableRemoved: editCase(2, 0, 1, N - 1, N - 1),
-  // A replacement inside the first paragraph of a run, and one that starts at the run's first
-  // index. The closure steps back twice, into the run before: the piece is tried from the
-  // paragraph's run (1 run decoded and rendered), which answers that the closure goes on
-  // before it, and made again from the run before (2). The batch names the paragraph's run
-  // alone (the element before a run's first index is not read by the model), which the slice
-  // takes from the piece; the run before, which the piece keeps decoded, is let go.
+  // The closure steps back into the run before: the piece is tried from the run (1) and made from the run before (2).
   firstParagraph: editCase(1 + 2, 0, 1 + 2 + 1, N, N - 1, { at: { place: 48, runs: 1, named: 0, cut: 1 } }),
   runStart: editCase(1 + 2, 0, 1 + 2 + 1, N, N - 1, { at: { place: 48, runs: 1, named: 0, cut: 1 } }),
-  // A replacement inside the last paragraph of a run, shorter and longer than what it
-  // replaces. The closure steps forward twice, into the next run, which is added to the
-  // piece: 2 runs decoded and rendered, of which the slice takes the paragraph's.
+  // The closure steps forward into the next run: two runs for the piece.
   lastShorter: editCase(2, 0, 2 + 1, N, N - 1, { at: { place: 48, runs: 1, named: 0, cut: 1 } }),
   lastLonger: editCase(2, 0, 2 + 1, N, N - 1, { at: { place: 48, runs: 1, named: 0, cut: 1 } }),
-  // A deletion that ends at the next run's first index, joining two paragraphs across the
-  // boundary: the exclusive end is named, and it is the batch's first request, so it counts:
-  // both runs are decoded at once. Together they are under a run's maximum, so the cut makes
-  // one run of them.
+  // The exclusive end names the next run's first index: both runs are decoded, and cut as one.
   joinAcross: editCase(2, 0, 1, N - 1, N - 2),
-  // A replacement that makes a list item of the paragraph a run starts with: the bulleted
-  // range starts at the run's first index, so the run before is taken with it (the request
-  // reads the element before the paragraph). The piece is tried from the paragraph's run (1)
-  // and made again from the run before (2), and keeps both decoded: the slice takes both and
-  // decodes none. EVERY RUN CUT FROM A SLICE IS RENDERED, changed or not: two, of which the
-  // run before came out as it went in and writes no row.
+  // The bulleted range takes the run before; every run cut from a slice is rendered, changed or not.
   bulletAtRunStart: editCase(1 + 2, 0, 1 + 2 + 2, N, N - 1),
-  // A bulleted range, by hand, that starts one index past a run's first index: the run before
-  // is not taken at first (the start is matched with the run's first index), the model reads
-  // the element before, and the batch is applied again to both runs: 1 and then 2 decoded.
-  // The price of matching by equality; the builders bullet whole paragraphs.
+  // The model reads the element before, and the batch is applied again to both runs: one widening.
   bulletInsideFirst: editCase(1 + 2, 1, 2, N, N - 1),
-  // The same where an earlier request of the batch (the run's first paragraph deleted) moves
-  // the bulleted range onto the run's first element: its start is past where that request
-  // changed a length, so it is not counted.
+  // An earlier request moves the range onto the run's first element: not counted, one widening.
   bulletMovedOntoFirst: editCase(1 + 2, 1, 2, N, N - 1),
-  // A LONG INSERTION, THEN A REQUEST PAST IT: 100,000 characters typed in the run before the
-  // table, then an insertion in the run after the table, written 100,000 past where it is
-  // stored. The second index is not counted, so the first slice is the one run; the model
-  // reads past it at the written index, and the widening places that index in the stored
-  // sizes, 100,000 past the run the batch reads: 53 runs where the batch reads three. A
-  // widening's guess is over by what the batch typed; no batch of the builders is of this
-  // shape. The paragraph typed into passes a run's size, so the cut makes more runs.
+  // The widening places the written index 100,000 past the run the batch reads: 53 runs.
   longInsertion: editCase(1 + 53, 1, 55, N + 2, N - 2),
-  // A DELETION, THEN A REQUEST PAST IT: the written index, short by what was deleted, falls in
-  // the first slice's own run as stored, so the first widening adds the table's run alone, the
-  // model reads past it again, and the second adds the run after: 1, 2 and 3 decoded.
+  // The written index, short by what was deleted, needs two widenings.
   deletionThenPast: editCase(1 + 2 + 3, 2, 3, N, N - 2),
-  // A REFUSED BATCH THAT WIDENS: the bulleted range one index past the last run's first index,
-  // then the deletion of the tab's final line break. One widening, the attempts' runs
-  // decoded, Google's words, and no row written: the loop stores nothing.
+  // A refused batch that widens: Google's words, and no row written.
   refusedWidens: editCase(1 + 2, 1, 0, 0, 0, {
     refused: "byHand: Google Docs would refuse this change: Invalid deletion range. Cannot " +
       "delete the requested range.",
   }),
-  // THE LIMIT: A REPLACEMENT THAT SPANS N RUNS DECODES N. They are decoded one at a time (the
-  // peak is one run's string) and all N are in hand as elements. What is left of them is
-  // under a run's maximum, so the cut makes one run.
+  // A replacement that spans N runs decodes N, one at a time, and the cut makes one run of them.
   span3: editCase(3, 0, 1, N - 2, N - 3),
   span5: editCase(5, 0, 1, N - 4, N - 5),
-  // A range styled across five runs that changes text in none: five decoded and five rendered
-  // though no run's content changed. The child is its parent's runs under its parent's keys:
-  // no run and no rendering is written.
+  // A style across five runs: five decoded and rendered, no run or rendering written.
   styleSpan5: editCase(5, 0, 5, N, N),
-  // ON THE SHAPE OF MANY RUNS (401: a table and an empty paragraph in turn, each a run): a
-  // row added with 500 characters in its cell to the hundredth table. The piece around the
-  // table is the nine runs of `listedPiece` below, found the same way (`PIECE_OF_LISTED`), of
-  // which the slice takes the table's; the run cut from it is rendered, and the child lists
-  // 400 runs by the ids they had.
+  // On the shape of many runs: the nine-run piece of `listedPiece`, and the run cut.
   rowManyRuns: editCase(PIECE_OF_LISTED, 0, PIECE_OF_LISTED + 1, 401, 400, {
     at: { place: 199, runs: 1, named: 0, cut: 1 },
   }),
-  // A LIST A TABLE (601 runs, two pages, 300 lists; an empty paragraph between each two
-  // tables, each a run). THE PIECE AROUND THE 150TH TABLE: a step passes an empty paragraph
-  // and ends on a table, so the closure is four runs before the table's and four after it,
-  // nine in all. Tried from the table's run (1 run, which says the closure goes on before
-  // it) and from the run before (2), then the runs before are scouted, 2 and then 4 of them
-  // with the table's (3 and 5 runs), and the piece is made from the run the closure starts
-  // in (9): 1 + 2 + 3 + 5 + 9 runs decoded and rendered, and nothing of the tab's other 592.
+  // A list a table (601 runs): the closure of the 150th table is nine runs, found in five passes.
   listedPiece: editCase(PIECE_OF_LISTED, 0, PIECE_OF_LISTED, 601, 601),
-  // A replacement inside the cell of that table, whose run names one list: the same piece,
-  // whose own run the slice takes, and the run cut from it rendered.
+  // A replacement in that table's cell: the same piece, and the run cut.
   listedMiddle: editCase(PIECE_OF_LISTED, 0, PIECE_OF_LISTED + 1, 601, 600, {
     at: { place: 299, runs: 1, named: 1, cut: 1 },
   }),
-  // THE FIRST EDIT AFTER A DEPLOY: every run decoded twice (to ask whether the model follows
-  // the tab, and for the keying the scan of the tab's stored Markdown asks for) and the
-  // piece's one; every run rendered once (the keying), then the piece's run and the run cut.
+  // The first edit after a deploy: every run decoded twice and rendered once, then the edit.
   afterDeploy: editCase(2 * N + 1, 0, N + 1 + 1, N, N - 1, { at: { place: 48, runs: 1, named: 0, cut: 1 } }),
   // The same on the tab of a list a table (601 runs), with that tab's piece.
   listedAfterDeploy: editCase(2 * 601 + PIECE_OF_LISTED, 0, 601 + PIECE_OF_LISTED + 1, 601, 600, {
@@ -2335,10 +2137,8 @@ export type PieceCountsTab = {
    */
   full: boolean;
   /**
-   * The place in the list of the run each case's piece is asked at: the replacements and the
-   * approvals' edit (`text`), the table a row is added to (`table`), the line a table is
-   * added after (`line`), the tab's last run (`end`), each edit of the replay (`queue`) and,
-   * on prose, the large edit's first run (`large`).
+   * The place of the run each case's piece is asked at (`text`, `table`, `line`, `end`, `queue`,
+   * and on prose `large`).
    */
   places: { text: number; table: number; line: number; end: number; queue: number[]; large?: number };
   /**
@@ -2481,46 +2281,13 @@ export function pieceShapeKept(storage: RowsReadStorage, shape: "prose" | "table
 }
 
 /**
- * WHAT EACH STEP OF A DOCUMENT'S LIFE TAKES IN HAND, READS AND WRITES, one call at a time, on
- * the fake and on real storage alike, on one of two shapes kept under the store's sizes with
- * every rendering stored:
- * - `"prose"`: one tab of `size` paragraphs (`linesWithTablesTab`): 100 characters each
- *   (`Line 00000 ...`) but for 1,100 in a row, from 5% of the tab on, of 500 characters
- *   (`Long 00000 ...`, the same paragraphs whatever the tab's size), with a 1x1 table before
- *   the paragraphs at 1%, 2% and 3% of the tab.
- * - `"tables"`: `tinyTablesTab` of `size` pairs of a one-cell table and a paragraph, each a
- *   run (`2 * size + 1` runs), with the cases at its middle table and the one paragraph that
- *   holds text, which follows that table.
- *
- * The store runs on a `countedStorage`, and beneath that a wrapper counts the statements that
- * change a row; each case is one call made with nothing of the tab in hand, and the store's
- * counters, both peaks from 0, the statements and the rows read are taken around that call
- * alone. What the scenario reads for itself goes through a store and statements beneath the
- * counter. After each case the document is swept, as a rejection sweeps it.
- *
- * THE CASES, by name (a name that ends in `Again` is the same call a second time, its result
- * found stored: a preview's card made again):
- * - `pendingRead`: `store.markdown` of the version a queued replacement gave.
- * - `replaceMiddle`, and on prose `replaceFirst` and `replaceLast`: `prepareTextReplacement`
- *   inside a paragraph in the middle of a run, in a run's first paragraph and in its last; on
- *   tables, in the middle table's cell.
- * - `append`: `prepareAppend`.
- * - `rowAdded`, `tableAfterLine`, `tableAtEnd`: `prepareTableChange` for a row added to a
- *   table, and for a table added after a line and at the tab's end. Not on a tab whose
- *   tables already hold the cells a tab's may (5,000 pairs or more): the builders refuse.
- * - `largeEdit` (prose): `prepareTextReplacement` of 945 of the long paragraphs, over 0.45
- *   MiB of Markdown that spans tens of runs, by as much other text.
- * - `replay`, `replayAgain`: three queued replacements folded through `docTabReducer`.
- * - `rejection`: the same queue without its first edit, folded while what the fold of three
- *   stored is still there: the two edits left are made in other versions.
- * - `approvalStored`: `store.result` of an edit a replay made, which is all an approval reads
- *   of the tab while its revision pin holds.
- * - `approvalBuilt`: `tabEditRequests` over `storedTabReading` with no result stored.
- * - `fallback`: the same build inside a trial of the document fetched again.
- * - `scan`: `storedTabReading(...).find` of a text of over 1 MiB (prose) or of a cell's text.
- *
- * Answers the tab in the units the bounds are stated in and the cases by name. No document
- * leaves the scenario.
+ * What each step of a document's life takes in hand, reads and writes, one call at a time, on
+ * `"prose"` (`size` paragraphs with three tables and 1,100 long ones) or `"tables"` (`size`
+ * pairs of a one-cell table and a paragraph), every rendering stored. Each case is one call with
+ * nothing of the tab in hand, measured around that call through a `countedStorage`; the document
+ * is swept after it. A name ending in `Again` is the same call with its result stored. Cases:
+ * `pendingRead`, `replaceMiddle`/`First`/`Last`, `append`, `rowAdded`, `tableAfterLine`,
+ * `tableAtEnd`, `largeEdit`, `replay`, `rejection`, `approvalStored`, `approvalBuilt`, `fallback`, `scan`.
  */
 export function pieceCountsScenario(
   storage: RowsReadStorage, shape: "prose" | "tables", size: number,
@@ -2761,83 +2528,14 @@ export type PieceCountsExpected = {
 type Reads = { pages: number; joined: number; content: number; rows: number };
 
 /**
- * WHAT EACH CASE OF `pieceCountsScenario` IS HELD TO, on the fake and on real storage alike,
- * as formulas in the tab's runs `n` and the places of the runs the cases stand in. No case
- * decodes or renders a number of runs that grows with the tab: those figures are the piece's.
- *
- * THE PIECE, as passes `[from, runs]` (an attempt or a scout from the run at `from` that
- * decodes and renders `runs` runs; `DocStore.piece`), by shape:
- * - prose, where a run is a hundred paragraphs or one table. In the middle of a run the
- *   closure stands in the run: `[p, 1]`. In a run's first paragraph it steps back into the
- *   run before: `[p, 1]`, which answers that it starts earlier, then `[p - 1, 2]`. In a run's
- *   last paragraph it steps forward: `[p, 2]`, the run after added. Around a table, a run of
- *   its own: `[t, 1]`, then `[t - 1, 3]`. At the tab's end: `[n - 1, 1]`. The large edit:
- *   `[p, O + 1]`, its own `O` runs and the run after them.
- * - tables, where a table and a paragraph alternate, each a run, and a step of the closure
- *   passes an empty paragraph and ends on a table. Around a table: `[p, 1]`, `[p - 1, 2]`,
- *   scouts of the two and the four runs before with the table's (`[p - 2, 3]`, `[p - 4, 5]`)
- *   and the piece from the run the closure starts in, `[p - 4, 9]`; `[p - 4, 7]` around the
- *   middle table, whose paragraph after holds text and ends the first step forward. Around
- *   that paragraph, at `q`: the same four and `[q - 3, 7]`. At the tab's end, `e`: the same
- *   four and `[e - 3, 4]`.
- *
- * THE STATEMENTS, term by term (a page is 500 runs; `through(x)` is `floor(x / 500) + 1`,
- * the pages of a walk from the list's start that ends at the run of place `x`, or with the
- * list where `x` is `n`; `before(x)` is `ceil(x / 500)`, the pages of `x` runs):
- * - a walk of the stored summaries to place `x` (`DocStore.walk`): `through(x)` joined pages.
- *   Uniqueness is a walk of the whole list that also reads each run's Markdown (`n` content
- *   rows); the pass that places an edit's own elements ends at the run after the one it
- *   names (`through(p + 1)`), at the table's run for a table (`through(t)`), and with the
- *   list for the tab's end; the tables' totals and a table found by how it reads are a walk
- *   of the whole list each; blankness is one page.
- * - a pass of a piece from `a` over `r` runs: `before(a)` joined pages for the carry at `a`,
- *   one page of the list from `a`, and `r` content rows (each run's JSON).
- * - the model's slice of runs `s` to `e` and the version stored from it: `through(e + 1)`
- *   joined pages for the slice, and `before(s) + before(n - e - 1)` pages of the runs the
- *   child lists as its parent does, before the slice and after it.
- * - a card (`changedMarkdown`): `before(from)` joined pages of the summaries before the
- *   first run the two versions list otherwise, and its readers' pages of eight runs and the
- *   Markdown of the runs they compare and join, which are constants of the case.
- * - a result found stored: one content row.
- *
- * THE ROWS READ, as real storage bills them (a row of a table a statement steps to), by the
- * same terms; what is left of a case is a small constant (`PIECE_ROWS`):
- * - a walk reads its pages whole, a row of the list and a row of the rendering it names for
- *   each run, and the version's record: `1 + 2 * (the runs of the pages read)`; a scan reads
- *   each run's Markdown too, `1 + 3 * n`.
- * - a pass of a piece from `a` over `r` runs: the version's totals (`n`), the joined pages
- *   before `a` whole (`2 * min(n, 500 * before(a))`), the page of the list from `a`
- *   (`min(500, n - a)`), and each run found and read (`2 * r`).
- * - the slice of runs `s` to `e` and its version: the totals and the joined pages to the run
- *   after the slice (`n + 2 * (the runs of those pages)`), and for the version the totals,
- *   the sizes summed, the parent's runs before and after the slice read and copied
- *   (`2 * n + 2 * (s + n - e - 1)`) and `s` rows more.
- * - a card: both versions' totals and the two comparisons of their lists (`4 * n`), and the
- *   summaries before the first run that differs (`2 * from`); its readers are the constant.
- * - the line before a table read back over `k` runs: `4 * k`.
- *
- * THE LARGE EDIT (prose) STATES THE MULTIPLE OF THE EDIT'S TEXT, which every other case hides
- * behind a small edit. With `E` the longer of its two texts, in characters, `O` the runs its
- * own elements span and `M` the longest stored rendering's Markdown: it decodes `O + 1` runs
- * and holds one run's JSON at a time, on a short tab as on a long one. THE COUNTER'S PEAK IS
- * `2 * E` AND A FEW LINES, NOT `E`: the card counts its two strings together
- * (`changedMarkdown`), where the piece's joined Markdown, counted alone, is `E` and the
- * rest of the runs it stands in (`docs-piece-counts.test.ts` holds the peak over `2 * E`
- * and under `2 * E + M`).
- * WHAT IS IN HAND AT ONCE IS MORE THAN A COUNTER OF ONE STRING SHOWS. By the code, in
- * characters, beside the edit's two texts, which the caller holds throughout (`2 * E`):
- * - while the builders run: the piece's joined Markdown (`E`, and the run after the own),
- *   with its source map and the own runs decoded, whose paragraphs hold the text named once
- *   more: about `3 * E` of strings, and those objects;
- * - while the model runs and the version is stored: the batch, which holds the new text
- *   (`E`), the slice's runs, taken from the piece, and the runs cut from them, with one
- *   run's JSON and its rendering at a time, and no rendering of the tab before: about
- *   `3 * E` of strings, and those objects;
- * - at the card: the two strings of the runs in which the tab reads otherwise, each about
- *   `E`: about `4 * E`, and no decoded run.
- * The heap of each moment is measured in `docs-piece-heap.test.ts` ("a large edit holds a
- * stated multiple of its text"), where the objects of a decoded run count: the second is
- * the largest.
+ * What each case of `pieceCountsScenario` is held to, on any storage, as formulas in the tab's
+ * runs `n` and the places the cases stand in. No case decodes or renders a number of runs that
+ * grows with the tab. A piece is passes `[from, runs]` (`DocStore.piece`): on prose `[p, 1]` in
+ * a run, `[p, 1], [p - 1, 2]` at a run's first paragraph, `[p, 2]` at its last, `[t, 1], [t - 1, 3]`
+ * around a table; on tables the scouts `[p, 1], [p - 1, 2], [p - 2, 3], [p - 4, 5]` and the piece
+ * from the run the closure starts in. Statements and rows are summed from walks (`through(x)`
+ * joined pages), passes of a piece, the slice and its version, a card, and a result found; the
+ * large edit's peak is twice its text, as the card counts its two strings together.
  */
 export function pieceCountsExpected(
   shape: "prose" | "tables", tab: PieceCountsTab,
@@ -3046,15 +2744,9 @@ export type ClosurePiece = {
 const ONE_ELEMENT: RunSizes = { least: Infinity, target: Infinity, most: Infinity, elements: 1 };
 
 /**
- * PIECES WHOSE CLOSURE IS THE DOCUMENT'S, each tab kept under the store's sizes and under
- * runs of one element:
- * - `breaks`: a replacement in the paragraph after 200 empty ones. A step back passes every
- *   paragraph that writes line breaks alone, so the closure starts three paragraphs before
- *   the first of them and ends two after the paragraph changed.
- * - `nested`: a replacement in the item after 3,000 items deeper than level 0 of one level-0
- *   item (`nestedItemsTab`): the closure goes back through them to that item.
- * For each: the piece asked alone through a stored reading (its runs, the runs it kept
- * decoded, its Markdown and what it cost), and the replacement queued end to end.
+ * Pieces whose closure is the document's, under the store's sizes and under runs of one
+ * element: `breaks` (the paragraph after 200 empty ones) and `nested` (the item after 3,000
+ * deeper items of one level-0 item). Each: the piece alone, and the replacement queued end to end.
  */
 export function closurePieceScenario(storage: RowsReadStorage) {
   let seen: { place: number; from: number; to: number; decoded: number[]; closure: number }[] = [];
@@ -3113,11 +2805,7 @@ export function closurePieceScenario(storage: RowsReadStorage) {
 
 /**
  * What a piece asked at `place` decodes and renders, and its widenings, by `DocStore.piece`'s
- * rule, with `before` the runs of the closure before `place`, `own` the runs of the own
- * elements and `after` those after them. Tried from the run named, which adds the runs
- * after only where the closure starts in it; made again from the run before; then the runs
- * before are scouted, 2, 4, 8, ... of them (capped at `place`) with the run named, until a
- * scout reaches the run the closure starts in, and the piece is made from exactly that run.
+ * rule: `before`, `own` and `after` are the closure's runs before, of and after the own elements.
  */
 export function pieceCost(place: number, before: number, own: number, after: number) {
   if (before === 0) return { runs: own + after, widenings: after };
@@ -3133,15 +2821,9 @@ export function pieceCost(place: number, before: number, own: number, after: num
 }
 
 /**
- * THE SMALL CONSTANT OF EACH CASE'S ROWS READ, as real storage shows it on the tab the
- * bounds are stated on (prose: 20,000 paragraphs; tables: 2,000 pairs): what a case reads
- * beside the terms of `pieceCountsExpected(...).rows`. It is the version's records, a run
- * found by its id, the named styles and the lists of a pass, a result's rows, and A CARD'S
- * READERS: a page of up to eight runs with their renderings for each reader made, and the
- * Markdown of each run compared or joined (about 120 rows for a replacement's card, about
- * 30 for an append's at the list's end, where a page is cut short; 390 for the large
- * edit's, which joins its runs). On another size of the same shape a constant moves by a
- * reader's page at most, where the pages read stand otherwise in the list.
+ * The small constant of each case's rows read on real storage, beside the terms of
+ * `pieceCountsExpected(...).rows`: records, a run found by id, styles and lists of a pass, a
+ * result's rows and a card's readers. Another size of the shape moves it by a reader's page at most.
  */
 export const PIECE_ROWS: Record<"prose" | "tables", Record<string, number>> = {
   prose: {

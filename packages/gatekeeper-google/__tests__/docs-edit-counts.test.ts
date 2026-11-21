@@ -1,9 +1,5 @@
-// What one edit of a stored Google Doc decodes, renders and writes, case by case, and the
-// statements it runs. The cases are one scenario (`editCountsScenario`), run here on the Node
-// fake and in workerd on real storage, and held to one table of expectations (`EDIT_COUNTS`):
-// a case of one edit is added to the scenario, never to a test file. What is a test of this
-// file alone is not one edit on that tab: the piece around a table, counted apart, a chain
-// made again through the reducer, and the statements, whose counts are the same on any storage.
+// What an edit of a stored Google Doc decodes and renders outside the scenario's table, and the
+// statements it runs. Rows written and read per case live in the workerd count table.
 
 import { createSimulationStore } from "@gadgets/gatekeeper-kit/simulation-store";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -12,105 +8,13 @@ import { storedTabReading } from "../src/docs-reading";
 import {
   docEditResult, docTabReducer, editedSlice, type DocEdit, type QueuedDocRecord,
 } from "../src/docs-replay";
-import { RUN_SIZES } from "../src/docs-runs";
 import { DocStore, docStoreCost, type DocVersion } from "../src/docs-store";
 import { changedMarkdown, prepareTableChange, type TableCall } from "../src/docs-table-actions";
 import { docTabToMarkdown, MARKDOWN_RENDERING_VERSION } from "../src/markdown-converter";
 import { fakeDocStorage, type FakeDocStorage } from "./doc-store-fake";
 import {
-  countedStorage, EDIT_COUNTS, editCountsScenario, keptUnder, linesWithTablesTab, listedTablesTab,
-  spent, tableScans, under,
+  countedStorage, keptUnder, linesWithTablesTab, listedTablesTab, spent, tableScans, under,
 } from "./doc-store-scenarios";
-
-/**
- * Every case of the scenario: its name there, what the test is called, and the rows the fake
- * counts written (a changed row once). A row is written for each run cut from the slice that
- * the store does not hold, for its rendering, for each run the child lists, for the child's
- * version and, where the edit went through `docEditResult`, for its result; an edit that
- * makes a list writes the child's own context too.
- */
-const CASES: readonly [name: string, title: string, rowsWritten: number][] = [
-  // The run, its rendering, the list (138), the version and the result.
-  ["middle", "a replacement inside one paragraph in the middle of a run", 1 + 1 + 138 + 1 + 1],
-  ["pendingRead", "a pending read of the version that edit gave", 0],
-  ["cellStyle", "a cell's style, on a table in the middle of the tab", 1 + 1 + 138 + 1 + 1],
-  ["rowNoText", "a row added with no text, to a table in the middle of the tab", 1 + 1 + 138 + 1 + 1],
-  ["rowWithText", "a row added with text in its cells", 1 + 1 + 138 + 1 + 1],
-  ["columnWithText", "a column added with text", 1 + 1 + 138 + 1 + 1],
-  ["growingBeforeTable", "a growing replacement in the paragraph that ends the run before a table",
-    1 + 1 + 138 + 1 + 1],
-  ["append", "an append", 1 + 1 + 138 + 1 + 1],
-  // Of the three runs cut, the paragraphs before the table are the run the parent lists.
-  ["tableFilled", "a table added at the tab's end with its cells filled", 2 + 2 + 140 + 1 + 1],
-  // And the child's own context.
-  ["listItems", "a replacement that makes two list items of a paragraph in the middle of a run",
-    1 + 1 + 1 + 138 + 1 + 1],
-  ["tableAfterParagraph", "a table inserted after a paragraph in the middle of a run", 3 + 3 + 140 + 1 + 1],
-  // By hand, so no result: the list (137) and the version. The run after the table is stored.
-  ["tableRemoved", "a table removed whole decodes the run after it too", 137 + 1],
-  ["firstParagraph", "a replacement inside the first paragraph of a run", 1 + 1 + 138 + 1 + 1],
-  ["runStart", "a replacement that starts at a run's first index", 1 + 1 + 138 + 1 + 1],
-  ["lastShorter", "a replacement inside the last paragraph of a run, shorter than what it replaces",
-    1 + 1 + 138 + 1 + 1],
-  ["lastLonger", "a replacement inside the last paragraph of a run, longer than what it replaces",
-    1 + 1 + 138 + 1 + 1],
-  ["joinAcross", "a deletion that ends at the next run's first index decodes both runs", 1 + 1 + 137 + 1],
-  // The changed run and its rendering alone: the run before came out as it went in. And the
-  // child's own context.
-  ["bulletAtRunStart", "a bulleted range that starts at a run's first index takes the run before",
-    1 + 1 + 1 + 138 + 1 + 1],
-  ["bulletInsideFirst", "a bulleted range that starts one index past a run's first index widens once",
-    1 + 1 + 1 + 138 + 1],
-  ["bulletMovedOntoFirst", "a bulleted range an earlier request moved onto a run's first element widens once",
-    1 + 1 + 1 + 138 + 1],
-  ["longInsertion", "a long insertion, then a request past it, widens once and takes runs the batch does not read",
-    4 + 4 + 140 + 1],
-  ["deletionThenPast", "a deletion, then a request past it, widens twice", 2 + 2 + 138 + 1],
-  ["refusedWidens", "a refused batch that widens writes no row", 0],
-  ["span3", "THE LIMIT: a replacement that spans 3 runs decodes 3", 1 + 1 + 136 + 1],
-  ["span5", "THE LIMIT: a replacement that spans 5 runs decodes 5", 1 + 1 + 134 + 1],
-  // No run and no rendering: the list and the version.
-  ["styleSpan5", "a range styled across 5 runs decodes 5 and renders 5, and writes no run", 138 + 1],
-  ["rowManyRuns", "on the shape of many runs, a row added with text decodes its table's run", 1 + 1 + 401 + 1 + 1],
-  ["listedPiece", "the piece around a table of a tab of a list a table", 0],
-  ["listedMiddle", "a replacement in a cell that names a list", 1 + 1 + 601 + 1 + 1],
-  // The question's record (1); the keying's renderings, list and record (138 + 138 + 1); the edit.
-  ["afterDeploy", "the first edit after a deploy", 1 + (138 + 138 + 1) + (1 + 1 + 138 + 1 + 1)],
-  // As above, but for the keying's renderings (352, as the fake counts them): the paragraphs
-  // between two tables are one run under one key, so the renderings are fewer than the runs.
-  ["listedAfterDeploy", "the first edit after a deploy, on a tab that defines lists",
-    1 + (352 + 601 + 1) + (1 + 1 + 601 + 1 + 1)],
-];
-
-/**
- * The most bytes of run JSON a case may have in hand where that is not a run's maximum: the
- * paragraph a batch typed 100,000 characters into is a run of its own, as large as its one
- * element.
- */
-const PEAKS: Record<string, number> = { longInsertion: 2 * (100_000 + 300) };
-
-describe("what an edit costs on a tab of 20,000 paragraphs", () => {
-  let answered: ReturnType<typeof editCountsScenario> | undefined;
-  /** The scenario, run once on a fake of its own by the first test that reads it. */
-  const scenario = () => answered ??= editCountsScenario(fakeDocStorage());
-
-  it("every case of the scenario is held here", () => {
-    expect(CASES.map(([name]) => name).toSorted()).toEqual(Object.keys(EDIT_COUNTS).toSorted());
-    expect(Object.keys(scenario().cases).toSorted()).toEqual(Object.keys(EDIT_COUNTS).toSorted());
-    expect(scenario().n).toBe(138);
-  });
-
-  it.each(CASES)("%s: %s", (name, _title, rowsWritten) => {
-    let answer = scenario().cases[name];
-    expect(answer).toMatchObject(EDIT_COUNTS[name]);
-    // The fake's cursor says no rows read: rows read are held on real storage, in workerd.
-    expect(answer.rowsRead).toBe(0);
-    expect(answer.rowsWritten).toBe(rowsWritten);
-    // One run's JSON in hand at a time, however many runs the slice holds.
-    expect(answer.peak).toBeLessThanOrEqual(PEAKS[name] ?? 2 * RUN_SIZES.most);
-    expect([answer.same, answer.restored]).toEqual([true, true]);
-  });
-});
 
 describe("an edit's tab, rendered and folded", () => {
   afterEach(() => vi.restoreAllMocks());

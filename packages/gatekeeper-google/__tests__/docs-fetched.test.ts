@@ -1,10 +1,7 @@
-// The walk of a fetched Google Doc (`fetchedDoc`): that it hands each tab as the runs the tab
-// pruned whole is cut into, with what is known of the tab before its body; that it reads the
-// parsed answer once, as it is asked, and empties it as it reads; that what it has passed can
-// be collected; and what it throws, and when.
+// The walk of a fetched Google Doc (`fetchedDoc`): each tab as the runs its pruned whole is cut
+// into, the answer read once as asked and emptied as read, and what it throws, and when.
+// That what the walk passed can be collected is held through a store in docs-ingest.test.ts.
 
-import { setFlagsFromString } from "node:v8";
-import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 import type { GoogleDocsDocument, GoogleDocsTab } from "../src/docs-api";
 import { hasModelFootnotes, hasModelIndexes } from "../src/docs-model";
@@ -14,14 +11,8 @@ import { cutRuns, RUN_SIZES } from "../src/docs-runs";
 import type { CutRun, RunSizes } from "../src/docs-runs";
 import { thrownMessage } from "./doc-fixture";
 import {
-  CUTS, distinctTabs, documentOf, FORCED, FUZZED, LARGE, linesTab, MARKED, RECORDED, weakRefs,
-  writeMarkersOf,
+  CUTS, distinctTabs, documentOf, FORCED, FUZZED, LARGE, linesTab, MARKED, RECORDED, writeMarkersOf,
 } from "./docs-fetched-corpus";
-
-// The collector, for the test that what the walk has passed can be collected: a full
-// collection, run synchronously where it is called.
-setFlagsFromString("--expose-gc");
-const collect = runInNewContext("gc") as () => void;
 
 /** What a test reads of one tab of the walk, or builds of a tab whole, as plain data. */
 type ReadTab = Pick<FetchedDocTab, "identity" | "writeMarkers" | "context" | "first"> & {
@@ -33,10 +24,7 @@ type ReadTab = Pick<FetchedDocTab, "identity" | "writeMarkers" | "context" | "fi
 const copiedRun = ({ json, elements, size, footnotes, holds }: CutRun): CutRun =>
   ({ json, elements: [...elements], size, footnotes, holds });
 
-/**
- * THE WHOLE-TAB REFERENCE: what the walk must hand of `tab`, built of the tab pruned whole
- * and nothing of the walk.
- */
+/** The whole-tab reference: what the walk must hand of `tab`, built of the tab pruned whole. */
 function whole(tab: GoogleDocsTab, sizes: RunSizes): ReadTab {
   let pruned = pruneTab(tab);
   let { content } = pruned.body;
@@ -176,68 +164,6 @@ describe("the walk of a fetched document", () => {
     expect(at).toBe(held.length);
     expect(runs).toBeGreaterThan(held.length);
     expect(document.tabs).toEqual(held.map(() => undefined));
-  });
-
-  it("lets the elements it has passed be collected", async () => {
-    // The slots say that the answer let go; this says that nothing else holds on: a variable
-    // of a generator's frame, a closure, the cut.
-    //
-    // It is not flaky, for three reasons. `collect()` is a full collection run synchronously.
-    // A `WeakRef` keeps its target to the end of the job that made it, and a job ends with its
-    // macrotask: the refs are made in a function that has returned, and the walk starts after
-    // a `setImmediate`, with no `await` from there on. And a `deref()` that answers keeps its
-    // target to the end of the job, so each ref is dereferenced once, a run after the walk
-    // let its target go, and a ref whose target may still be held is never dereferenced.
-    let document = documentOf(distinctTabs(
-      [linesTab(1_000, [300]), linesTab(1_000, [1, 500]), linesTab(1_000, [998])]));
-    let contents = document.tabs.map(tab => tab.body.content);
-    let refs = weakRefs(document);
-    await new Promise(resolve => setImmediate(resolve));
-
-    let alive = 0;
-    let checked = 0;
-    let runsOfTabs: number[] = [];
-    // How many of each tab's element refs have been dereferenced.
-    let dereferenced = refs.elements.map(() => 0);
-    let at = 0;
-    for (let tab of fetchedDoc(document, 0).tabs) {
-      let content = contents[at];
-      // How many slots the answer had let go when the run before this one was handed over.
-      let released = 0;
-      let runs = 0;
-      // Each run is dropped as soon as it is handed over.
-      for (let _ of tab.runs) {
-        runs++;
-        collect();
-        for (; dereferenced[at] < released; dereferenced[at]++, checked++) {
-          if (refs.elements[at][dereferenced[at]].deref() !== undefined) alive++;
-        }
-        // The tab was opened a run ago, in a call that has returned.
-        if (runs === 2) {
-          for (let ref of refs.tabs[at]) {
-            checked++;
-            if (ref.deref() !== undefined) alive++;
-          }
-        }
-        while (released < content.length && content[released] === undefined) released++;
-      }
-      runsOfTabs.push(runs);
-      at++;
-    }
-    // What no run was handed over after: the elements each tab let go last.
-    collect();
-    let left = 0;
-    for (let [tab, elements] of refs.elements.entries()) {
-      for (let ref of elements.slice(dereferenced[tab])) {
-        if (ref.deref() !== undefined) left++;
-      }
-    }
-
-    expect(Math.min(...runsOfTabs)).toBeGreaterThanOrEqual(4);
-    expect(refs.tabs.flat()).toHaveLength(12);
-    expect(checked).toBeGreaterThan(2_500);
-    expect(alive).toBe(0);
-    expect(left).toBe(0);
   });
 
   it.each(["body", "content"] as const)(

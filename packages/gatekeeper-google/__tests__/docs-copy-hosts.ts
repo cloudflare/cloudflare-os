@@ -3,7 +3,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { removeUnreadDocCopyKeys, StoredDocCopy } from "../src/docs-copy";
 import type { GoogleDocsDocument } from "../src/docs-api";
-import { DOC_ROW_BYTES, DocStore, docStoreCost } from "../src/docs-store";
+import { DOC_ROW_BYTES, DocStore } from "../src/docs-store";
 import {
   anotherDigestScenario, scenarioTab, storeScenario, tableCounts,
 } from "./doc-store-scenarios";
@@ -53,7 +53,6 @@ export class DocCopyHost extends DurableObject {
   #answer: Record<string, string> = {};
   #now = 0;
   #fetches = 0;
-  #decoded = docStoreCost.runsDecoded;
   #store = new DocStore(this.ctx.storage);
   #opened: StoredDocCopy | undefined;
 
@@ -91,16 +90,10 @@ export class DocCopyHost extends DurableObject {
     return (await this.#copy.current()).copy.outline.map(({ tabId }) => tabId);
   }
 
-  /** The ids of the tabs of the copy as it is served now, fetching only where it must. */
-  async current(): Promise<string[]> {
-    return (await this.#copy.current()).copy.outline.map(({ tabId }) => tabId);
-  }
-
   /** Starts over as an activation after an eviction does: storage alone is kept. */
   evict(): void {
     this.#store = new DocStore(this.ctx.storage);
     this.#opened = undefined;
-    this.#decoded = docStoreCost.runsDecoded;
   }
 
   /** Ends this activation: the call fails, and the next reaches an instance that has storage alone. */
@@ -117,11 +110,6 @@ export class DocCopyHost extends DurableObject {
       .map(element => element.textRun?.content ?? "")
       .join("")
       .trimEnd();
-  }
-
-  /** How many runs were decoded since the last eviction. */
-  decodes(): number {
-    return docStoreCost.runsDecoded - this.#decoded;
   }
 
   /** How many times the document was fetched. */

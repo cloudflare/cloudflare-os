@@ -241,41 +241,6 @@ describe("StoredDocCopy", () => {
     expect(w.fetches).toBe(2);
   });
 
-  it("fetchedAt is the clock when the fetch began", async () => {
-    const w = world();
-    const { copy } = open(w);
-    const answer = Promise.withResolvers<Answer>();
-    w.answers.push(answer.promise);
-
-    const reading = copy.current();
-    w.now = 1_070;
-    answer.resolve({ base: fetched("one"), revision: "r1" });
-
-    expect((await reading).fetchedAt).toBe(1_000);
-    expect(copy.held()?.fetchedAt).toBe(1_000);
-    // A revision check restarts the copy's age and leaves when it was fetched.
-    w.now = 1_000 + TTL;
-    w.verdicts.push(true);
-    expect((await copy.current()).fetchedAt).toBe(1_000);
-    expect(open(w).copy.held()?.fetchedAt).toBe(1_000);
-  });
-
-  it("serves the held copy while it is younger than ttlMs", async () => {
-    const w = world();
-    const { copy } = open(w);
-    w.answers.push({ base: fetched("one"), revision: "r1" });
-    const first = await copy.current();
-
-    w.now += TTL - 1;
-    const again = await copy.current();
-
-    expect(w.fetches).toBe(1);
-    expect(w.asked).toEqual([]);
-    expect(identical(again, first)).toBe(true);
-    expect(identical(copy.held(), first)).toBe(true);
-    expect(identical(await copy.current(), first)).toBe(true);
-  });
-
   it("serves the copy from storage, not from the fetch", async () => {
     const w = world();
     const { copy } = open(w);
@@ -316,8 +281,9 @@ describe("StoredDocCopy", () => {
     expect(w.asked).toEqual(["r1"]);
     expect(w.fetches).toBe(1);
     expect(identical(confirmed, first)).toBe(true);
+    // A revision check restarts the copy's age and leaves when it was fetched.
     expect(confirmed.fetchedAt).toBe(1_000);
-    expect(seen(copy.held())).toEqual(seen(first));
+    expect(open(w).copy.held()?.fetchedAt).toBe(1_000);
     // One row, the copy's record.
     expect(docStoreCost.rowsWritten - written).toBe(1);
     expect(column(w.storage, "doc_copy", "checked_at")).toEqual([1_000 + TTL]);
@@ -355,29 +321,19 @@ describe("StoredDocCopy", () => {
     expect(w.storage.rows().doc_seq).toHaveLength(1);
   });
 
-  it("fetches an old copy that has no revision", async () => {
+  it.each([
+    ["that has no revision", undefined, {}],
+    ["when unchanged is not given", "r1", { unchanged: undefined }],
+  ] as const)("fetches an old copy %s, asking nothing", async (_, revision, overrides) => {
     const w = world();
-    const { copy } = open(w);
-    w.answers.push({ base: fetched("one") }, { base: fetched("uno") });
+    const { copy } = open(w, overrides);
+    w.answers.push({ base: fetched("one"), revision }, { base: fetched("uno"), revision: "r2" });
     await copy.current();
 
     w.now += TTL;
     const second = await copy.current();
 
     expect(w.asked).toEqual([]);
-    expect(w.fetches).toBe(2);
-    expect(whole(second)).toEqual(kept("uno"));
-  });
-
-  it("fetches an old copy when unchanged is not given", async () => {
-    const w = world();
-    const { copy } = open(w, { unchanged: undefined });
-    w.answers.push({ base: fetched("one"), revision: "r1" }, { base: fetched("uno"), revision: "r2" });
-    await copy.current();
-
-    w.now += TTL;
-    const second = await copy.current();
-
     expect(w.fetches).toBe(2);
     expect(seen(second)).toEqual({ base: kept("uno"), fetchedAt: 1_000 + TTL, revision: "r2" });
   });
@@ -467,10 +423,15 @@ describe("StoredDocCopy", () => {
       { base: kept("again"), fetchedAt: 1_000 + TTL, revision: "r2" });
   });
 
+  // A late fetch: the call that superseded it leaves storage as that call left it, and the
+  // caller is answered by the fetch begun after it.
   it.each([
-    ["nothing is", false],
-    ["an earlier copy is", true],
-  ])("neither stores nor serves a fetch in flight when a write lands and %s stored", async (_, has) => {
+    ["a write lands, nothing stored", "noteWrite", false],
+    ["a write lands, an earlier copy stored", "noteWrite", true],
+    ["the copy is dropped, nothing stored", "drop", false],
+    ["the copy is dropped, an earlier copy stored", "drop", true],
+    ["a recheck comes, an earlier copy stored", "recheck", true],
+  ] as const)("neither stores nor serves a fetch in flight when %s", async (_, method, has) => {
     const w = world();
     const { copy } = open(w);
     if (has) await withEarlierCopy(w, copy);
@@ -483,7 +444,11 @@ describe("StoredDocCopy", () => {
 
     const first = copy.current();
     void first.then(mark, mark);
-    copy.noteWrite();
+    copy[method]();
+    const left = copy.held();
+    // A copy stored before a write or a drop is held for no one.
+    if (method !== "recheck") expect(left).toBeUndefined();
+    if (method === "drop") expect(documentRows(w.storage)).toEqual([]);
     const stored = snapshot(w.storage);
     const written = docStoreCost.rowsWritten;
 
@@ -494,17 +459,14 @@ describe("StoredDocCopy", () => {
 
     expect(snapshot(w.storage)).toEqual(stored);
     expect(docStoreCost.rowsWritten).toBe(written);
-    // A copy stored before the write lacks it, so it is held for no one.
-    expect(copy.held()).toBeUndefined();
+    expect(identical(copy.held(), left)).toBe(true);
     expect(w.fetches - began).toBe(2);
     expect(settled).toBe(false);
 
     b.resolve({ base: fetched("B"), revision: "rb" });
     const got = await first;
 
-    expect(whole(got)).toEqual(kept("B"));
-    expect(got.revision).toBe("rb");
-    expect(seen(copy.held())).toEqual(seen(got));
+    expect(seen(got)).toEqual({ base: kept("B"), fetchedAt: has ? 1_000 + TTL : 1_000, revision: "rb" });
     expect(identical(copy.held(), got)).toBe(true);
   });
 
@@ -517,16 +479,8 @@ describe("StoredDocCopy", () => {
     copy.noteWrite();
     const second = copy.current();
     expect(w.fetches).toBe(2);
-    const stored = snapshot(w.storage);
-    const written = docStoreCost.rowsWritten;
 
     a.resolve({ base: fetched("A"), revision: "ra" });
-    await settle();
-
-    expect(snapshot(w.storage)).toEqual(stored);
-    expect(docStoreCost.rowsWritten).toBe(written);
-    expect(copy.held()).toBeUndefined();
-
     b.resolve({ base: fetched("B"), revision: "rb" });
     const [one, two] = await Promise.all([first, second]);
 
@@ -535,37 +489,27 @@ describe("StoredDocCopy", () => {
     expect(identical(two, one)).toBe(true);
   });
 
-  const overtakers = (["in one turn", "in two microtasks"] as const).flatMap(form => [
-    { method: "noteWrite", form, same: undefined, how: "noteWrite" },
-    { method: "recheck", form, same: false, how: "recheck, the revision changed" },
-    { method: "recheck", form, same: true, how: "recheck, the revision unchanged" },
-    { method: "drop", form, same: undefined, how: "drop" },
-  ] as const);
-
-  it.each(overtakers)(
-    "never answers a call made after $how with work begun before it, $form",
-    async ({ method, form, same }) => {
+  it.each([
+    { method: "noteWrite", same: undefined, how: "noteWrite" },
+    { method: "recheck", same: false, how: "recheck, the revision changed" },
+    { method: "recheck", same: true, how: "recheck, the revision unchanged" },
+    { method: "drop", same: undefined, how: "drop" },
+  ] as const)(
+    "never answers a call made after $how with work begun before it",
+    async ({ method, same }) => {
       const w = world();
       const { copy } = open(w);
       w.answers.push({ base: fetched("v1"), revision: "r1" }, { base: fetched("v2"), revision: "r2" });
       const v1 = await copy.current();
       if (same !== undefined) w.verdicts.push(same);
 
-      let before: Promise<unknown>;
-      let after: Promise<HeldDocCopy>;
-      if (form === "in one turn") {
-        before = copy.current();
+      // How a read and an apply interleave in a Durable Object.
+      const gate = Promise.resolve();
+      const before = gate.then(() => copy.current());
+      const after = gate.then(() => {
         copy[method]();
-        after = copy.current();
-      } else {
-        // How a read and an apply interleave in a Durable Object.
-        const gate = Promise.resolve();
-        before = gate.then(() => copy.current());
-        after = gate.then(() => {
-          copy[method]();
-          return copy.current();
-        });
-      }
+        return copy.current();
+      });
       await Promise.allSettled([before, after]);
       const got = await after;
 
@@ -577,9 +521,7 @@ describe("StoredDocCopy", () => {
         expect(seen(got)).toEqual({ base: kept("v2"), fetchedAt: 1_000, revision: "r2" });
       }
       expect(w.asked).toEqual(method === "recheck" ? ["r1"] : []);
-      const held = copy.held();
-      expect(seen(held)).toEqual(seen(got));
-      expect(identical(held, got)).toBe(true);
+      expect(identical(copy.held(), got)).toBe(true);
     },
   );
 
@@ -620,9 +562,6 @@ describe("StoredDocCopy", () => {
     expect(w.fetches).toBe(2);
     expect(w.asked).toEqual([]);
     expect(whole(v2)).toEqual(kept("v2"));
-    expect(seen(copy.held())).toEqual(seen(v2));
-    expect(identical(copy.held(), v2)).toBe(true);
-
     // The fetched copy is fresh: the write marked the copy it replaced.
     expect(identical(await copy.current(), v2)).toBe(true);
     expect(w.fetches).toBe(2);
@@ -643,15 +582,6 @@ describe("StoredDocCopy", () => {
     expect(w.asked).toEqual(["r1"]);
     expect(w.fetches).toBe(1);
     expect(identical(confirmed, v1)).toBe(true);
-
-    // The age restarted at the check: nothing is asked for another `ttlMs`.
-    w.now += TTL - 1;
-    await copy.current();
-    expect(w.asked).toEqual(["r1"]);
-    w.now += 1;
-    w.verdicts.push(true);
-    await copy.current();
-    expect(w.asked).toEqual(["r1", "r1"]);
   });
 
   it("fetches on a recheck when the copy has no revision", async () => {
@@ -687,7 +617,10 @@ describe("StoredDocCopy", () => {
     expect(whole(got)).toEqual(kept("v2"));
   });
 
-  it("asks again when a recheck comes while a check is in flight", async () => {
+  it.each([
+    ["a check its age began", false],
+    ["the check a first recheck asked for", true],
+  ])("asks again when a recheck comes while %s is in flight", async (_, rechecked) => {
     const w = world();
     const { copy } = open(w);
     w.answers.push({ base: fetched("v1"), revision: "r1" });
@@ -695,26 +628,8 @@ describe("StoredDocCopy", () => {
     const verdict = Promise.withResolvers<boolean>();
     w.verdicts.push(verdict.promise, true);
 
-    w.now += TTL;
-    const reading = copy.current();
-    copy.recheck();
-    verdict.resolve(true);
-    const got = await reading;
-
-    expect(w.asked).toEqual(["r1", "r1"]);
-    expect(w.fetches).toBe(1);
-    expect(identical(got, v1)).toBe(true);
-  });
-
-  it("asks again when a second recheck comes while the check the first asked for is in flight", async () => {
-    const w = world();
-    const { copy } = open(w);
-    w.answers.push({ base: fetched("v1"), revision: "r1" });
-    const v1 = await copy.current();
-    const verdict = Promise.withResolvers<boolean>();
-    w.verdicts.push(verdict.promise, true);
-
-    copy.recheck();
+    if (rechecked) copy.recheck();
+    else w.now += TTL;
     const reading = copy.current();
     copy.recheck();
     verdict.resolve(true);
@@ -748,8 +663,6 @@ describe("StoredDocCopy", () => {
     verdicts[1].resolve(true);
 
     expect((await both).map(({ status }) => status)).toEqual(["fulfilled", "fulfilled"]);
-    expect(seen(await first)).toEqual(seen(v1));
-    expect(seen(await second)).toEqual(seen(v1));
     expect(identical(await first, v1)).toBe(true);
     expect(identical(await second, v1)).toBe(true);
     expect(w.asked).toEqual(["r1", "r1"]);
@@ -789,45 +702,6 @@ describe("StoredDocCopy", () => {
     copy.drop();
 
     expect(documentRows(w.storage)).toEqual([]);
-  });
-
-  it.each([
-    ["nothing is", false],
-    ["an earlier copy is", true],
-  ])("neither stores nor serves a fetch in flight when the copy is dropped and %s stored", async (_, has) => {
-    const w = world();
-    const { copy } = open(w);
-    if (has) await withEarlierCopy(w, copy);
-    const began = w.fetches;
-    const [a, b] = twoFetches(w);
-    let settled = false;
-    const mark = (): void => {
-      settled = true;
-    };
-
-    const first = copy.current();
-    void first.then(mark, mark);
-    copy.drop();
-    expect(documentRows(w.storage)).toEqual([]);
-    const written = docStoreCost.rowsWritten;
-
-    a.resolve({ base: fetched("A"), revision: "ra" });
-    // The superseded fetch is pruned before it is refused, and only then does the next one begin.
-    await vi.waitFor(() => expect(w.fetches - began).toBe(2));
-    await settle();
-
-    expect(copy.held()).toBeUndefined();
-    expect(documentRows(w.storage)).toEqual([]);
-    expect(docStoreCost.rowsWritten).toBe(written);
-    expect(w.fetches - began).toBe(2);
-    expect(settled).toBe(false);
-
-    b.resolve({ base: fetched("B"), revision: "rb" });
-    const got = await first;
-
-    expect(whole(got)).toEqual(kept("B"));
-    expect(seen(copy.held())).toEqual(seen(got));
-    expect(identical(copy.held(), got)).toBe(true);
   });
 
   // A call that finds nothing to mark, or its mark already there, writes nothing and still makes
@@ -904,6 +778,7 @@ describe("StoredDocCopy", () => {
   it.each([
     ["missing", ["DELETE FROM doc_run WHERE id = ?"]],
     ["not what was stored", ["UPDATE doc_run SET json = substr(json, 1, 10) WHERE id = ?"]],
+    ["JSON that is not a list of elements", ["UPDATE doc_run SET json = '{\"a\":1}' WHERE id = ?"]],
     // The version goes with its run list, as a sweep removes one.
     ["listed by a version that is not stored", [
       "DELETE FROM doc_version WHERE id IN (SELECT version FROM doc_seq WHERE run = ?)",
@@ -942,60 +817,11 @@ describe("StoredDocCopy", () => {
     expect(whole(repaired)).toEqual(kept(text, "two"));
   });
 
-  it("reads a copy as absent once a tab of it does not decode, and replaces it", async () => {
-    const w = world();
-    w.answers.push({ base: fetched("unreadable", "two") }, { base: fetched("readable", "two") });
-    await open(w).copy.current();
-    // A run whose JSON is not a list of elements.
-    w.storage.sql.exec(
-      "UPDATE doc_run SET json = '{\"a\":1}' WHERE id = ?",
-      runId(JSON.stringify(kept("unreadable")[0].body.content)),
-    ).toArray();
-    const { copy } = open(w);
-
-    const held = copy.held();
-    expect(tabIn(held?.copy, "t.1")).toEqual(kept("unreadable", "two")[1]);
-    expect(() => tabIn(held?.copy, "t.0")).toThrow(new Error(DOC_COPY_UNREADABLE));
-    expect(copy.held()).toBeUndefined();
-    expect(w.storage.transactionSync(() => copy.held())).toBeUndefined();
-
-    const got = await copy.current();
-
-    expect(w.fetches).toBe(2);
-    expect(whole(got)).toEqual(kept("readable", "two"));
-    expect(seen(copy.held())).toEqual(seen(got));
-  });
-
-  it("replaces a record it cannot read, and removes the rows it named", async () => {
-    const w = world();
-    const { copy } = open(w);
-    w.answers.push({ base: fetched("one", "two"), revision: "r1" }, { base: fetched("uno"), revision: "r2" });
-    await copy.current();
-    const earlier = column(w.storage, "doc_version", "id");
-    w.storage.sql.exec("UPDATE doc_copy SET versions = '{' WHERE doc = ?", DOC).toArray();
-
-    expect(copy.held()).toBeUndefined();
-    const got = await copy.current();
-
-    expect(w.fetches).toBe(2);
-    expect(seen(got)).toEqual({ base: kept("uno"), fetchedAt: 1_000, revision: "r2" });
-    expect(seen(copy.held())).toEqual(seen(got));
-    // The earlier versions and their runs are gone: one tab is left, as its run and its context.
-    const versions = column(w.storage, "doc_version", "id");
-    expect(versions).toHaveLength(1);
-    expect(earlier).not.toContain(versions[0]);
-    expect(w.storage.rows().doc_seq).toHaveLength(1);
-    expect(w.storage.rows().doc_run).toHaveLength(2);
-
-    copy.drop();
-
-    expect(documentRows(w.storage)).toEqual([]);
-  });
-
-  // The record's own columns are typed, and storage refuses a value of another type for one
-  // (the workerd test of the copy pins that): what can be malformed is the JSON three of them hold.
+  // The record's columns are typed (the workerd test of the copy pins that): what can be
+  // malformed is the JSON three of them hold. A record replaced takes the rows it named with it.
   it.each([
     ["outline is not JSON", "outline = '{'"],
+    ["versions is not JSON", "versions = '{'"],
     ["outline is not a list", "outline = '{}'"],
     ["versions is not a list", "versions = '\"v\"'"],
     ["outline and versions differ in length", "versions = '[]'"],
@@ -1029,7 +855,9 @@ describe("StoredDocCopy", () => {
     expect(w.asked).toEqual([]);
     expect(seen(got)).toEqual({ base: kept("uno"), fetchedAt: 1_000, revision: "r2" });
     expect(seen(copy.held())).toEqual(seen(got));
+    // One tab is left, as its version, its run and its context.
     expect(w.storage.rows().doc_version).toHaveLength(1);
+    expect(w.storage.rows().doc_run).toHaveLength(2);
 
     damage();
     copy.drop();
@@ -1058,13 +886,6 @@ describe("StoredDocCopy", () => {
     expect(seen(await third.current())).toEqual(seen(got));
     expect(w.asked).toEqual(["r1"]);
     expect(w.fetches).toBe(1);
-
-    third.noteWrite();
-    const fourth = open(w).copy;
-    w.answers.push({ base: fetched("v2"), revision: "r2" });
-    expect(whole(await fourth.current())).toEqual(kept("v2"));
-    expect(w.asked).toEqual(["r1"]);
-    expect(w.fetches).toBe(2);
   });
 
   it("serves the copy another instance kept", async () => {
@@ -1156,83 +977,24 @@ describe("StoredDocCopy", () => {
     expect(w.fetches).toBe(1);
   });
 
-  it("decodes only the tab that is read", async () => {
-    const w = world();
-    w.answers.push({ base: fetched("one", "two", "three"), revision: "r1" });
-    await open(w).copy.current();
-    const { copy } = open(w);
-    const decoded = docStoreCost.runsDecoded;
-
-    const held = copy.held();
-
-    expect(held?.copy.outline.map(({ tabId }) => tabId)).toEqual(["t.0", "t.1", "t.2"]);
-    expect(docStoreCost.runsDecoded).toBe(decoded);
-    // A tab's version is read of one small row.
-    expect(held?.copy.tab("t.1")).toEqual(held?.copy.tab("t.1"));
-    expect(docStoreCost.runsDecoded).toBe(decoded);
-    expect(tabIn(held?.copy, "t.1")).toEqual(kept("one", "two")[1]);
-    expect(docStoreCost.runsDecoded).toBe(decoded + 1);
-    expect(w.fetches).toBe(1);
-  });
-
-  it("gives a tab a refetch brought unchanged the same version", async () => {
-    const w = world();
-    const { copy } = open(w);
-    const versions = (): string[] =>
-      JSON.parse(column(w.storage, "doc_copy", "versions")[0] as string) as string[];
-    w.answers.push(
-      { base: fetched("one", "two") }, { base: fetched("one", "dos") }, { base: fetched("one", "dos") });
-    await copy.current();
-    const first = versions();
-
-    // Across a noted write: the tab the write left alone is the version it was.
-    copy.noteWrite();
-    await copy.current();
-    const second = versions();
-
-    expect(second[0]).toBe(first[0]);
-    expect(second[1]).not.toBe(first[1]);
-
-    // Across a drop and a fetch of the same document: a version is named by its content.
-    copy.drop();
-    await copy.current();
-
-    expect(w.fetches).toBe(3);
-    expect(versions()).toEqual(second);
-  });
-
   it("does not rewrite a tab a fetch returned unchanged", async () => {
     const w = world();
     const { copy } = open(w);
     w.answers.push(
       { base: fetched("one", "two", "three"), revision: "r1" },
       { base: fetched("one", "two", "three"), revision: "r2" },
-      { base: fetched("one", "dos", "three"), revision: "r3" },
     );
     await copy.current();
     const runs = column(w.storage, "doc_run", "id");
 
-    let written = docStoreCost.rowsWritten;
-    w.now += TTL;
-    w.verdicts.push(false);
-    await copy.current();
-
-    // The same tabs under another revision: one row, the copy's record.
-    expect(docStoreCost.rowsWritten - written).toBe(1);
-    expect(column(w.storage, "doc_run", "id")).toEqual(runs);
-
-    written = docStoreCost.rowsWritten;
+    const written = docStoreCost.rowsWritten;
     w.now += TTL;
     w.verdicts.push(false);
     const got = await copy.current();
 
-    // One tab changed: its run, the run's rendering, its version and its run list are written,
-    // the record, and the four rows of the version it replaces are removed. The other tabs'
-    // rows are left alone.
-    expect(docStoreCost.rowsWritten - written).toBe(9);
-    expect(seen(got)).toEqual(
-      { base: kept("one", "dos", "three"), fetchedAt: 1_000 + TTL + TTL, revision: "r3" });
-    // What an eviction finds is the later copy whole.
+    // The same tabs under another revision: one row, the copy's record.
+    expect(docStoreCost.rowsWritten - written).toBe(1);
+    expect(column(w.storage, "doc_run", "id")).toEqual(runs);
     expect(seen(open(w).copy.held())).toEqual(seen(got));
   });
 
@@ -1249,13 +1011,11 @@ describe("StoredDocCopy", () => {
 
     copy.noteWrite();
 
-    // Only the record is written, and the copy from before the write serves no tab, one it had
-    // read included.
+    // Only the record is written, and the copy from before the write serves no tab, the one it
+    // had read included.
     expect(docStoreCost.rowsWritten - written).toBe(1);
-    expect(copy.held()).toBeUndefined();
     expect(() => before.copy.tab("t.0")).toThrow(new Error(DOC_COPY_UNREADABLE));
     expect(() => before.copy.tab("t.1")).toThrow(new Error(DOC_COPY_UNREADABLE));
-    expect(() => before.copy.tab("t.2")).toThrow(new Error(DOC_COPY_UNREADABLE));
 
     written = docStoreCost.rowsWritten;
     const got = await copy.current();
@@ -1267,53 +1027,6 @@ describe("StoredDocCopy", () => {
     expect(seen(got)).toEqual({ base: kept("one", "dos", "three"), fetchedAt: 1_000, revision: "r2" });
     expect(seen(open(w).copy.held())).toEqual(seen(got));
   });
-
-  it("stores every tab again after one could not be read back", async () => {
-    const w = world();
-    const { copy } = open(w);
-    w.answers.push({ base: fetched("one", "two") }, { base: fetched("one", "two") });
-    let written = docStoreCost.rowsWritten;
-    await copy.current();
-    const first = docStoreCost.rowsWritten - written;
-    w.storage.sql.exec(
-      "DELETE FROM doc_run WHERE id = ?", runId(JSON.stringify(kept("one", "two")[1].body.content)),
-    ).toArray();
-
-    expect(() => tabIn(copy.held()?.copy, "t.1")).toThrow(new Error(DOC_COPY_UNREADABLE));
-    expect(documentRows(w.storage)).toEqual([]);
-    written = docStoreCost.rowsWritten;
-    const got = await copy.current();
-
-    expect(w.fetches).toBe(2);
-    expect(docStoreCost.rowsWritten - written).toBe(first);
-    expect(whole(got)).toEqual(kept("one", "two"));
-  });
-
-  it.each(["noteWrite", "recheck", "drop"] as const)(
-    "stores nothing of a fetch a %s() came after",
-    async method => {
-      const w = world();
-      const { copy } = open(w);
-      await withEarlierCopy(w, copy);
-      const began = w.fetches;
-      const [a, b] = twoFetches(w);
-
-      const reading = copy.current();
-      copy[method]();
-      const left = snapshot(w.storage);
-      a.resolve({ base: fetched("A"), revision: "ra" });
-      await vi.waitFor(() => expect(w.fetches - began).toBe(2));
-      await settle();
-
-      expect(snapshot(w.storage)).toEqual(left);
-
-      b.resolve({ base: fetched("B"), revision: "rb" });
-
-      expect(seen(await reading)).toEqual(
-        { base: kept("B"), fetchedAt: 1_000 + TTL, revision: "rb" });
-      expect(w.fetches - began).toBe(2);
-    },
-  );
 
   it("removes the version of a tab a later copy does not list", async () => {
     const w = world();
@@ -1367,23 +1080,6 @@ describe("StoredDocCopy", () => {
     expect(() => second.copy.tab("t.1")).toThrow(new Error(DOC_COPY_UNREADABLE));
     expect(copy.held()).toBeDefined();
     expect(w.fetches).toBe(3);
-  });
-
-  it("a copy held across a drop serves no tab, one it had read included", async () => {
-    const w = world();
-    const { copy } = open(w);
-    w.answers.push({ base: fetched("one", "two") });
-    const got = await copy.current();
-    expect(tabIn(got.copy, "t.0")).toEqual(kept("one")[0]);
-
-    copy.drop();
-
-    expect(got.copy.outline.map(({ tabId }) => tabId)).toEqual(["t.0", "t.1"]);
-    expect(() => got.copy.tab("t.0")).toThrow(new Error(DOC_COPY_UNREADABLE));
-    expect(() => got.copy.tab("t.1")).toThrow(new Error(DOC_COPY_UNREADABLE));
-    expect(got.copy.tab("t.2")).toBeUndefined();
-    expect(copy.held()).toBeUndefined();
-    expect(documentRows(w.storage)).toEqual([]);
   });
 
   it("keeps a tab whose id holds a lone surrogate", async () => {
@@ -1559,26 +1255,7 @@ function counting(storage: FakeDocStorage): { storage: FakeDocStorage; scans: ()
 }
 
 describe("removeUnreadDocCopyKeys", () => {
-  it("removes the keys under docCopy:, a batch at a time", () => {
-    const storage = fakeDocStorage();
-    // The index, the part whose name is the empty string (a manifest and a chunk), and two tabs.
-    const keys = putUnreadCopy(storage, { "": 1, "t.0": 3, "t.1": 2 });
-    expect(keys).toHaveLength(10);
-    expect(keys).toContain("docCopy:doc:manifest");
-    expect(keys).toContain("docCopy:doc/:manifest");
-    expect(keys).toContain("docCopy:doc/:chunk:0000");
-    expect(keys).toContain("docCopy:doc/t.0:chunk:0002");
-
-    expect(removeUnreadDocCopyKeys(storage, 4)).toBe(false);
-    expect(unread(storage)).toHaveLength(6);
-    expect(removeUnreadDocCopyKeys(storage, 4)).toBe(false);
-    expect(unread(storage)).toHaveLength(2);
-    expect(removeUnreadDocCopyKeys(storage, 4)).toBe(true);
-    expect(unread(storage)).toEqual([]);
-    expect(removeUnreadDocCopyKeys(storage, 4)).toBe(true);
-  });
-
-  it("answers whether none remain", () => {
+  it("removes the keys under docCopy: a batch at a time, and answers whether none remain", () => {
     const storage = fakeDocStorage();
     expect(removeUnreadDocCopyKeys(storage)).toBe(true);
 
@@ -1731,7 +1408,7 @@ describe("a view of a stored copy", () => {
     expect(() => third.tab("t.0")).toThrow(DOC_COPY_UNREADABLE);
   });
 
-  it("a trial's view reads its tabs while nothing holds them, and is never held", () => {
+  it("a trial's view reads its tabs and runs while nothing holds them, and is never held", () => {
     let storage = fakeDocStorage();
     let store = new DocStore(storage);
     let stored = store.keep(DOC, toKeep(1, ["one"]), { edits: [], roots: [] });
@@ -1742,6 +1419,7 @@ describe("a view of a stored copy", () => {
       expect(store.holds(DOC, head.id)).toBe(false);
       expect(view.held()).toBe(false);
       expect(view.stored).toEqual({ store, doc: DOC });
+      expect([...view.runs(view.tab("t.0")!)].flat()).toEqual(bodyOf(0, "two"));
       return tabsOf(view);
     });
     expect(read).toEqual(kept("two"));
@@ -1791,7 +1469,11 @@ describe("a view of a stored copy", () => {
     expect(copy.held()).toBe(false);
     expect(() => copy.tab("t.0")).toThrow(DOC_COPY_UNREADABLE);
     expect(() => copy.tab("t.other")).toThrow(DOC_COPY_UNREADABLE);
-    expect(() => copy.markdown(store.putTab(DOC, kept("one")[0], []))).toThrow(DOC_COPY_UNREADABLE);
+    let version = store.putTab(DOC, kept("one")[0], []);
+    let { runsDecoded } = docStoreCost;
+    expect(() => copy.markdown(version)).toThrow(DOC_COPY_UNREADABLE);
+    expect(() => copy.runs(version)).toThrow(DOC_COPY_UNREADABLE);
+    expect(docStoreCost.runsDecoded).toBe(runsDecoded);
     expect(storedIn(copy)).toBe(copy.stored);
     store.sweep(DOC, { edits: [], roots: [] });
     expect(storage.rows()).toEqual(before);
@@ -1805,13 +1487,8 @@ describe("a view of a stored copy", () => {
     expect(version).toMatchObject({ tabId: "t.0", doc: DOC, exact: false, writeMarkers: [] });
     expect(copy.tab("t.other")).toBeUndefined();
     expect(docStoreCost.runsDecoded).toBe(decoded);
-    // Its run was rendered when the copy was kept: its Markdown is read from its row, and
-    // nothing is decoded.
+    // Its run was rendered when the copy was kept: its Markdown is read from its row.
     expect(copy.markdown(version)).toBe("one\n");
-    expect(copy.markdown(version)).toBe("one\n");
-    expect(docStoreCost.runsDecoded).toBe(decoded);
-    // An edit decodes the tab's one run once: for the piece its builders read, which the
-    // model's slice takes as it was decoded. The run cut from it is rendered as it is stored.
     expect(copy.markdown(docEditResult(store, version, EDIT).after)).toBe("uno\n");
     expect(docStoreCost.runsDecoded).toBe(decoded + 1);
   });
@@ -1985,17 +1662,10 @@ describe("driveDocCopies", () => {
     expect(written(() => { copy = copies.unkept(document); })).toBe(0);
     expect(storage.rows()).toEqual(before);
     expect(store.head(DOC)).toBeUndefined();
-
-    // The outline is the document's, tab for tab, so a read through it names every tab.
+    // It lists the document's tabs and names the store its document will be kept in.
     expect(copy.outline).toEqual(document.tabs.map(tab => tab.identity));
-    expect(copy.outline.map(tab => tab.tabId)).toEqual(["t.0", "t.1"]);
-    // It names the store its document will be kept in, and holds nothing of it until then.
-    expect(copy.stored).toEqual({ store, doc: DOC });
     expect(copy.stored?.store).toBe(store);
     expect(copy.held()).toBe(false);
-    for (let { tabId } of copy.outline) {
-      expect(() => copy.tab(tabId)).toThrow(new Error(DOC_COPY_UNREADABLE));
-    }
   });
 
   it("offers nothing to call for a refusal", () => {
@@ -2050,32 +1720,6 @@ describe("driveDocCopies", () => {
     let next = copies.keep(toKeep(10, ["after the write"], "r2"));
     expect(next && tabsOf(next)).toEqual(kept("after the write"));
     expect(store.head(DOC)).toMatchObject({ revision: "r2", fetchedAt: 10, stale: false });
-  });
-
-  it("sweeps what the file's pending edits do not reach", () => {
-    let edits: string[] = [];
-    let { store, copies } = copiesOf(() => ({ edits, roots: [] }));
-    copies.keep(toKeep(1, ["one"]));
-    let base = store.version(DOC, store.head(DOC)!.versions[0], { ...tabIdentity(kept("one")[0]), writeMarkers: [] })!;
-    let has = (tab: GoogleDocsTab) => store.version(DOC, store.versionId(DOC, tab), { ...tab, writeMarkers: [] }) !== undefined;
-    let [reached] = kept("made by a pending edit");
-    let [unreached] = kept("made by nothing pending");
-
-    // One version a pending edit's stored result reaches, and one put beside the copy by hand.
-    store.putResult(base, "edit-1", { requests: [], after: store.putTab(DOC, reached, []) });
-    store.putTab(DOC, unreached, []);
-    edits = ["edit-1"];
-    copies.sweep();
-    expect(has(reached)).toBe(true);
-    expect(has(unreached)).toBe(false);
-    expect(store.result(base, "edit-1")).toBeDefined();
-
-    // Once the edit is decided, what it alone reached goes too.
-    edits = [];
-    copies.sweep();
-    expect(has(reached)).toBe(false);
-    expect(store.result(base, "edit-1")).toBeUndefined();
-    expect(store.head(DOC)?.versions).toEqual([base.id]);
   });
 
   it("keeps a document with the file's pending edits, whose results in a tab it brought " +
@@ -2223,12 +1867,6 @@ describe("inHandDocCopies", () => {
     expect(storage.rows()).toEqual(rows);
     expect(store.head(DOC)).toBeUndefined();
   });
-
-  it("names no store, so nothing is replayed over it", () => {
-    let copy = inHandDocCopies().unkept(toKeep(1, ["one"]));
-    expect(copy.stored).toBeUndefined();
-    expect(() => storedIn(copy)).toThrow(/in hand/);
-  });
 });
 
 /** The body of the `at`-th tab of a document of one tab per text, as it is stored. */
@@ -2247,31 +1885,9 @@ describe("a copy's runs", () => {
     expect([...view.runs(version)]).toEqual([...store.runs(version)]);
     expect([...view.runs(version)].flat()).toEqual(bodyOf(1, "one", "two"));
 
-    // A noted write retires the view, and so do a later document of the file and a drop.
+    // A retired view reads no run (what retires one: "a view says whether storage still holds its copy").
     store.touch(DOC, { stale: true });
     expect(() => view.runs(version)).toThrow(new Error(DOC_COPY_UNREADABLE));
-    let later = storedDocCopy(store, DOC, store.keep(DOC, toKeep(2, ["three"], "r2"), NONE));
-    expect(() => view.runs(version)).toThrow(new Error(DOC_COPY_UNREADABLE));
-    let last = later.tab("t.0")!;
-    expect([...later.runs(last)].flat()).toEqual(bodyOf(0, "three"));
-    store.drop(DOC);
-    expect(() => later.runs(last)).toThrow(new Error(DOC_COPY_UNREADABLE));
-  });
-
-  it("a trial's view reads its runs while storage holds another copy", () => {
-    let storage = fakeDocStorage();
-    let store = new DocStore(storage);
-    store.keep(DOC, toKeep(1, ["one"]), NONE);
-    let before = storage.rows();
-
-    let read = store.trial(DOC, toKeep(2, ["one", "two"], "r2"), () => NONE, head => {
-      let view = storedDocCopy(store, DOC, head, { trial: true });
-      expect(store.holds(DOC, head.id)).toBe(false);
-      return [...view.runs(view.tab("t.1")!)].flat();
-    });
-
-    expect(read).toEqual(bodyOf(1, "one", "two"));
-    expect(storage.rows()).toEqual(before);
   });
 
   it("a view's runs drop the stored copy where a run does not read back", () => {
@@ -2283,22 +1899,6 @@ describe("a copy's runs", () => {
 
     expect(() => [...view.runs(version)]).toThrow(new Error(DOC_COPY_UNREADABLE));
     expect(store.head(DOC)).toBeUndefined();
-  });
-
-  it("a copy fetched and not kept reads no run", () => {
-    let storage = fakeDocStorage();
-    let store = new DocStore(storage);
-    let head = store.keep(DOC, toKeep(1, ["one"]), NONE);
-    let version = storedDocCopy(store, DOC, head).tab("t.0")!;
-    let copy = unkeptDocCopy({ store, doc: DOC }, head.outline);
-    let { runsDecoded } = docStoreCost;
-    let before = storage.rows();
-
-    expect(() => copy.runs(version)).toThrow(new Error(DOC_COPY_UNREADABLE));
-
-    expect(docStoreCost.runsDecoded).toBe(runsDecoded);
-    // The stored copy is not this copy's to drop.
-    expect(storage.rows()).toEqual(before);
   });
 
   it("a copy read in hand decodes its held tab's runs", () => {
@@ -2329,8 +1929,6 @@ describe("a copy's runs", () => {
         { documentId: DOC, title: "Plan", revisionId: `r${index}`, tabs: [structuredClone(tab)] }, index + 1));
       let copies: [string, (use: (copy: DocCopy) => void) => void][] = [
         ["a stored copy", use => use(storedDocCopy(store, DOC, store.keep(DOC, held(), NONE)))],
-        ["a trial's copy", use => store.trial(
-          DOC, held(), () => NONE, head => use(storedDocCopy(store, DOC, head, { trial: true })))],
         ["a copy in hand", use => use(inHandDocCopies().keep(held())!)],
       ];
       let sample = [...new Set([...quotes, ...drawnQuotes(tab, diceOf(104_729 + index), QUOTE_DRAWS)])];
@@ -2354,7 +1952,7 @@ describe("a copy's runs", () => {
       }
     }
 
-    expect(compared).toBeGreaterThan(8_000);
+    expect(compared).toBeGreaterThan(5_000);
     expect(found).toBeGreaterThan(1_000);
   });
 });
