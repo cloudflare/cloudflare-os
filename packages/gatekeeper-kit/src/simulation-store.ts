@@ -255,8 +255,10 @@ export type SimulatedListOptions<
    */
   readonly compare: (a: Row, b: Row) => number;
   /**
-   * Whether the listing shows a row as folded: the gatekeeper's own filter. Read at serve
-   * time, so it may close over state the gatekeeper refreshes. Absent, every row is shown.
+   * Whether the listing shows a row as folded: the gatekeeper's own filter. Asked of a provider
+   * row as `overlay` folds it, of each stand-in when the hooks make `inject.items` and again as
+   * it is served, never at `refresh()`, so it may close over state the gatekeeper refreshes or
+   * that changes while a page is fetched. Absent, every row is shown.
    */
   readonly keeps?: (row: Row) => boolean;
   /**
@@ -290,15 +292,18 @@ export type SimulatedList<Row> = {
     /** The caller's `compare`. */
     readonly compare: (a: Row, b: Row) => number;
     /**
-     * A stand-in as the last `refresh()` left it, or `null` once its create is no longer
-     * pending (as `created` answers it now, not as at that refresh), a record deleted it, or
-     * `keeps`, asked of it as it is served, no longer holds. `null` for any other row: a gatekeeper that injects rows of its
-     * own revalidates those itself.
+     * A stand-in as the last `refresh()` folded it, or `null` where its create is no longer
+     * pending, a record deleted it, its fold stopped, or `keeps` does not hold of it. `created`
+     * and `keeps` are asked as the stand-in is served, not as that refresh answered them: a
+     * stand-in that refresh's filter left out is served if the filter holds of it by then.
+     * `null` for any other row: a gatekeeper that injects rows of its own revalidates those
+     * itself.
      */
     readonly revalidate: (row: Row) => Row | null;
   };
   /**
-   * Reads the pending creates again and folds their stand-ins again, each from nothing. Call
+   * Reads the pending creates again and folds their stand-ins again, each from nothing, and
+   * keeps each fold that neither deleted nor stopped, whatever `keeps` answers of it now. Call
    * it from the cursor's `refresh`, after whatever the gatekeeper refreshes itself (what
    * `view`, `keeps` and `created` read).
    */
@@ -361,20 +366,21 @@ export function simulatedList<
 >(options: SimulatedListOptions<Id, Row, R>): SimulatedList<Row> {
   const { store, view, id, compare, keeps, created } = options;
 
-  // A row as its pending records leave it, when the listing shows it. A fold that stopped
-  // would show the row with only the records before the stop, so the row is not shown.
-  const shown = (entity: Id, base: Row | undefined): Row | undefined => {
+  // A row as its pending records leave it, or none where a record deleted it. A fold that
+  // stopped would show the row with only the records before the stop, so it gives none.
+  const folded = (entity: Id, base: Row | undefined): Row | undefined => {
     const { entity: row, stopped } = store.fold(entity, base, view().forTarget(entity));
-    if (stopped) return undefined;
-    return row !== undefined && (keeps?.(row) ?? true) ? row : undefined;
+    return stopped ? undefined : row;
   };
+  const kept = (row: Row): boolean => keeps?.(row) ?? true;
 
-  // The stand-ins of the pending creates the listing shows, as last folded.
+  // The stand-ins of the pending creates as last folded, whatever the filter answered then:
+  // it is asked as each is served.
   let standIns = new Map<Id, Row>();
   const refresh = (): void => {
     standIns = new Map(
       [...new Set(created?.() ?? [])].flatMap((entity): [Id, Row][] => {
-        const row = shown(entity, undefined);
+        const row = folded(entity, undefined);
         return row === undefined ? [] : [[entity, row]];
       }),
     );
@@ -383,19 +389,18 @@ export function simulatedList<
 
   return Object.freeze({
     overlay: (row: Row) => {
-      const folded = shown(id(row), row);
-      return folded === undefined ? [] : [folded];
+      const shown = folded(id(row), row);
+      return shown !== undefined && kept(shown) ? [shown] : [];
     },
     inject: Object.freeze({
-      items: Object.freeze([...standIns.values()].toSorted(compare)),
+      items: Object.freeze([...standIns.values()].filter(kept).toSorted(compare)),
       compare,
       revalidate: (row: Row) => {
         const entity = id(row);
         const standIn = standIns.get(entity);
-        // A create no longer pending since the last refresh, or a filter that changed since:
-        // `created` and `keeps` are asked as the stand-in is served.
+        // `created` and `keeps` are asked as the stand-in is served, not as it was folded.
         if (standIn === undefined || !(created?.() ?? []).includes(entity)) return null;
-        return keeps?.(standIn) ?? true ? standIn : null;
+        return kept(standIn) ? standIn : null;
       },
     }),
     refresh,

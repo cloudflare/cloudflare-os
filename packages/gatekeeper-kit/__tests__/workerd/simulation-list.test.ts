@@ -793,6 +793,46 @@ describe("a message listing over a TokenCursor", () => {
   });
 });
 
+describe("a stand-in whose filter changes while a page is fetched", () => {
+  type Row = { id: string; at: number };
+  type Queued = SimulationRecord<{ ref: string; at: number }>;
+
+  it("serves the stand-in where the filter holds again as it is served", async () => {
+    const queue: readonly Queued[] = [{ id: 1, action: { ref: "~1", at: 5 } }];
+    let shown = true;
+    const store = createSimulationStore<string, Row, Row, Queued>({
+      initial: row => row,
+      reduce: (row, { action }) => row === undefined
+        ? { kind: "applied", value: { id: action.ref, at: action.at } }
+        : { kind: "known-no-effect" },
+    });
+    const list = simulatedList({
+      store,
+      view: () => createSimulationView(queue, ({ ref }) => [ref]),
+      id: row => row.id,
+      compare: (a, b) => b.at - a.at,
+      keeps: () => shown,
+      created: () => ["~1"],
+    });
+    // The stand-in is listed as the walk opens. The filter then leaves it out at the walk's
+    // refresh, and holds again while the page is fetched.
+    shown = false;
+    const cursor = new OffsetCursor<Row>({
+      pageSize: 4,
+      fetchPage: async (offset, limit) => {
+        shown = true;
+        return [{ id: "r1", at: 10 }].slice(offset, offset + limit);
+      },
+      refresh: async () => list.refresh(),
+      overlay: list.overlay,
+      inject: { ...list.inject, authorize: true, identity: row => row.id },
+      authorizePage: async () => {},
+    });
+
+    expect(await drain(cursor)).toEqual([[{ id: "r1", at: 10 }, { id: "~1", at: 5 }]]);
+  });
+});
+
 describe("the folds of one walk", () => {
   type Row = { id: string; at: number; labels: string[] };
   type Change =

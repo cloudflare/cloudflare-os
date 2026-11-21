@@ -1067,6 +1067,13 @@ describe("simulatedList", () => {
     // The filter changes while a page is fetched, after the cursor's refresh.
     shown = false;
     expect(list.inject.revalidate(standIn)).toBeNull();
+
+    // A refresh the filter leaves it out of still folds it, so a filter that holds again by the
+    // time it is served serves it.
+    list.refresh();
+    expect(list.inject.revalidate(standIn)).toBeNull();
+    shown = true;
+    expect(list.inject.revalidate(standIn)).toEqual(task("~1", 5));
   });
 
   it("revalidates a stand-in as the records staged since leave it", () => {
