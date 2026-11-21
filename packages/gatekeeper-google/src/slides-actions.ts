@@ -151,8 +151,12 @@ type Fresh = Deck & { revisionId: string; skipped: ReadonlySet<string> };
 
 type Plan = {
   requests: unknown[];
-  /** Whether a read taken after a lost response shows the write landed; a throw means it does not. */
-  landed(after: Fresh): boolean;
+  /**
+   * Whether a read taken after a lost response shows the write landed; a throw means it does not.
+   * `after` holds no slide's page: `page` fetches one, whole, as the presentation then has it, or
+   * gives `undefined` for a slide `after.order` does not have.
+   */
+  landed(after: Fresh, page: (id: string) => Promise<RestSlide | undefined>): boolean | Promise<boolean>;
 };
 
 async function readFresh(host: SlidesHost, ids: readonly string[]): Promise<Fresh> {
@@ -223,7 +227,15 @@ async function write(
   }
   let landed: boolean;
   try {
-    landed = sent.landed(await readFresh(host, ids));
+    // The outline first, and each page after it, as a fresh read takes them, but one page at a
+    // time, as the plan asks for it: so the read holds one page beside the plan's, whatever the
+    // write left the pages holding together. A page may be read at a later revision than the one
+    // before it, which changes nothing the check relies on: the batch is either in a revision
+    // whole, being pinned to the one it was planned at, or not at all, so each page shows only
+    // what the presentation then holds of it, as one read of them all would.
+    let after = await readFresh(host, []);
+    landed = await sent.landed(after, async id =>
+      (await host.api.getSlides(host.presentationId, [id], after.order)).get(id));
   } catch (error) {
     // Unknown either way: the write may have landed, so it is never planned again.
     logger.warn("could not confirm a lost Slides write", { event: "slides.apply.confirm.failed", error });
@@ -520,20 +532,22 @@ function cellsOf(slide: RestSlide, id: string): string | undefined {
 }
 
 /**
- * Whether a read taken after a lost response shows a design batch landed. Only what the batch
- * would have changed counts, where it would leave it: which elements exist, the cells of a table
- * it adds or deletes rows or columns of, text, found where later changes to its table move it, and
- * the theme colours it sets and the backgrounds it leaves pages with, other than pictures. A batch
- * with none of those, such as one that only formats or moves elements or leaves a page a picture,
- * cannot be shown to have landed.
+ * What a read taken after a lost response shows of whether a design batch landed, from the
+ * changes on the pages `on` takes alone: one answer for each thing those changes would have
+ * changed, true where `after` holds it as the batch would leave it. Only what the batch would have
+ * changed counts, where it would leave it: which elements exist, the cells of a table it adds or
+ * deletes rows or columns of, text, found where later changes to its table move it, and the theme
+ * colours it sets and the backgrounds it leaves pages with, other than pictures. A change reads
+ * only its own page, so the pages may be read one at a time.
  */
-function designLanded(
+function designEvidence(
   changes: readonly DesignChange[], steps: readonly (DesignStep | null)[],
-  before: Deck, planned: Deck, after: Deck,
-): boolean {
-  let checks = changes.flatMap((change, i) => {
+  before: Deck, planned: Deck, after: Deck, on: (page: DesignPage) => boolean,
+): boolean[] {
+  return changes.flatMap((change, i) => {
     let evidence: boolean[] = [];
     let page = pageOf(change);
+    if (!on(page)) return [];
     let witness = <T>(read: (page: RestSlide) => T | undefined) => {
       let value = read(pageIn(planned, page) ?? {});
       if (value !== undefined && value !== read(pageIn(before, page) ?? {})) {
@@ -568,7 +582,28 @@ function designLanded(
     }
     return evidence;
   });
-  return checks.length > 0 && checks.every(Boolean);
+}
+
+/**
+ * Whether a read taken after a lost response shows a design batch landed: every answer of
+ * `designEvidence` true, and at least one. A batch with none, such as one that only formats or
+ * moves elements or leaves a page a picture, cannot be shown to have landed. The masters and
+ * layouts are checked from `after`, the outline; then each slide on its own, fetched by `page`
+ * and let go before the next, until one shows the batch did not land.
+ */
+async function designLanded(
+  changes: readonly DesignChange[], steps: readonly (DesignStep | null)[],
+  before: Deck, planned: Deck, after: Deck, page: (id: string) => Promise<RestSlide | undefined>,
+): Promise<boolean> {
+  let evidence = designEvidence(changes, steps, before, planned, after, on => on.pageType !== "SLIDE");
+  for (let id of slideIdsOf(changes)) {
+    if (evidence.includes(false)) return false;
+    let held = await page(id);
+    let read = { ...after, slides: new Map(held ? [[id, held]] : []) };
+    evidence.push(...designEvidence(changes, steps, before, planned, read,
+      on => on.pageType === "SLIDE" && on.id === id));
+  }
+  return evidence.length > 0 && evidence.every(Boolean);
 }
 
 // The slides a batch's changes are on, leaving out its layouts and masters, which every read holds.
@@ -612,7 +647,7 @@ function designBatch(kind: ActionKind, autoApprovable: boolean): ActionDefinitio
       let { deck, steps } = designDeck(fresh, changes);
       return {
         requests: steps.flatMap(step => step!.requests),
-        landed: after => designLanded(changes, steps, fresh, deck, after),
+        landed: (after, page) => designLanded(changes, steps, fresh, deck, after, page),
       };
     }),
   };

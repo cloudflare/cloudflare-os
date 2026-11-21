@@ -1612,6 +1612,34 @@ describe("Google Slides pages past what one read holds", () => {
     expect((await slides.slides("p5"))[0].queuedChangeConflict).toBe(conflict);
   });
 
+  it("confirms a lost write landed though its pages then pass what one read holds together", async () => {
+    // Five pages 100 characters short of the cap together, whose titles the batch grows by 196
+    // characters each: past the cap, though the fake stores each title as one run, without the
+    // paragraph's marker.
+    let ids = ["p1", "p2", "p3", "p4", "p5"];
+    let padding = 1_600_000;
+    let measured = await pageLength(new SlidesProvider(presentation([paddedSlide("p1", padding)])), "p1");
+    padding += Math.floor((MAX_READ_PAGES_LENGTH - 100) / 5) - measured;
+    let provider = new SlidesProvider(presentation(ids.map(id => paddedSlide(id, padding)))).install();
+    let total = async () => (await Promise.all(ids.map(id => pageLength(provider, id))))
+      .reduce((sum, length) => sum + length, 0);
+    expect(await total()).toBeGreaterThan(MAX_READ_PAGES_LENGTH - 105);
+    expect(await total()).toBeLessThanOrEqual(MAX_READ_PAGES_LENGTH - 100);
+    let slides = gatekeeper();
+    let grown = `piece, grown${" by far".repeat(27)}`;
+    let { actionId } = await slides.edit(ids.map(id => titleEdit(id, "piece", grown)));
+    provider.nextFailure = "lost";
+
+    expect(await slides.apply(actionId!)).toBeNull();
+
+    expect(await total()).toBeGreaterThan(MAX_READ_PAGES_LENGTH);
+    expect(provider.batches).toHaveLength(2);
+    expect(ids.map(id => provider.text(id, `${id}-title`)))
+      .toEqual(ids.map(id => `Slide ${id}: the ${grown} in hand\n`));
+    expect(await slides.apply(actionId!)).toBeNull();
+    expect(provider.batches).toHaveLength(2);
+  });
+
   it("names in the outline the first change of a stopped batch that no longer applies", async () => {
     let { ids, provider, slides } = fivePages();
     for (let id of ids.slice(0, 4)) await slides.edit([titleEdit(id, "piece", "part")]);

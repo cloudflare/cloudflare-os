@@ -1873,7 +1873,11 @@ element it deleted that was there before, text it edited, a table it adds or del
 of, by its size and its cells' positions, spans and text, a theme colour it set, and a background
 other than a picture it left a page with, that the page did not already have (every picture reads
 alike). If the read cannot tell, as for a batch that only formats or moves elements or leaves a page
-a picture, the change is marked as having an unknown outcome and never retried.
+a picture, the change is marked as having an unknown outcome and never retried. That read takes the
+outline, which holds the masters and layouts, and then each slide the write changed on its own,
+checking it and letting it go before the next, so it holds one page at a time and does not fail
+for the cap on what one read holds, which the write may have grown its pages past. The write is in
+a revision whole or not at all, so pages read at successive revisions show what one read would.
 
 Google returns a presentation's revision only to an account that can edit it, so a view-only
 account can read a presentation but every change to it fails. A queued change is stored in one
