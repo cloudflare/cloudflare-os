@@ -160,8 +160,7 @@ const changed = (w: World, base: GoogleDocsTab[] = fetched("uno", "a second tab"
   w.answers.push({ base, revision: "r1" });
 };
 
-// An earlier copy for the rows that have one: past `ttlMs` and with no revision, so the next
-// `current()` fetches.
+// An earlier copy past `ttlMs` with no revision, so the next `current()` fetches.
 const withEarlierCopy = async (w: World, copy: StoredDocCopy) => {
   w.answers.push({ base: fetched("zero") });
   const earlier = await copy.current();
@@ -423,8 +422,7 @@ describe("StoredDocCopy", () => {
       { base: kept("again"), fetchedAt: 1_000 + TTL, revision: "r2" });
   });
 
-  // A late fetch: the call that superseded it leaves storage as that call left it, and the
-  // caller is answered by the fetch begun after it.
+  // A superseded fetch stores nothing; its caller is answered by the fetch begun after it.
   it.each([
     ["a write lands, nothing stored", "noteWrite", false],
     ["a write lands, an earlier copy stored", "noteWrite", true],
@@ -704,8 +702,7 @@ describe("StoredDocCopy", () => {
     expect(documentRows(w.storage)).toEqual([]);
   });
 
-  // A call that finds nothing to mark, or its mark already there, writes nothing and still makes
-  // the work in flight worthless.
+  // A call with nothing new to mark writes nothing and still makes the work in flight worthless.
   it.each([
     ["a second write, the copy already stale", "noteWrite", true],
     ["a recheck with nothing stored", "recheck", false],
@@ -817,8 +814,8 @@ describe("StoredDocCopy", () => {
     expect(whole(repaired)).toEqual(kept(text, "two"));
   });
 
-  // The record's columns are typed (the workerd test of the copy pins that): what can be
-  // malformed is the JSON three of them hold. A record replaced takes the rows it named with it.
+  // The record's columns are typed; what can be malformed is the JSON three of them hold. A
+  // record replaced takes the rows it named with it.
   it.each([
     ["outline is not JSON", "outline = '{'"],
     ["versions is not JSON", "versions = '{'"],
@@ -1011,8 +1008,7 @@ describe("StoredDocCopy", () => {
 
     copy.noteWrite();
 
-    // Only the record is written, and the copy from before the write serves no tab, the one it
-    // had read included.
+    // Only the record is written, and the copy from before the write serves no tab.
     expect(docStoreCost.rowsWritten - written).toBe(1);
     expect(() => before.copy.tab("t.0")).toThrow(new Error(DOC_COPY_UNREADABLE));
     expect(() => before.copy.tab("t.1")).toThrow(new Error(DOC_COPY_UNREADABLE));
@@ -1021,8 +1017,8 @@ describe("StoredDocCopy", () => {
     const got = await copy.current();
 
     expect(w.asked).toEqual([]);
-    // The changed tab's run, its rendering, its version and its run list, the record, and the
-    // four rows of the version it replaces.
+    // The changed tab's run, rendering, version and list, the record, and four rows of the old
+    // version.
     expect(docStoreCost.rowsWritten - written).toBe(9);
     expect(seen(got)).toEqual({ base: kept("one", "dos", "three"), fetchedAt: 1_000, revision: "r2" });
     expect(seen(open(w).copy.held())).toEqual(seen(got));
@@ -1501,8 +1497,7 @@ describe("a view of a stored copy", () => {
     let kept = storage.rows();
     let made = () => docEditResult(store, storedDocCopy(store, DOC, head).tab("t.0")!, EDIT);
 
-    // An edit that was prepared and never queued: its result, the version it gave, and both
-    // renderings.
+    // An edit prepared and never queued: its result, its version and both renderings.
     made();
     let prepared = storage.rows();
     expect(prepared.doc_result).toHaveLength(1);
@@ -1669,9 +1664,8 @@ describe("driveDocCopies", () => {
   });
 
   it("offers nothing to call for a refusal", () => {
-    // None of these removes a copy for a refusal: a removal added here must come with its
-    // rule. `tend` is the connection's expiry pass, which removes a copy for its age alone,
-    // whatever the read that calls it is answered.
+    // None removes a copy for a refusal; a removal added here needs its rule. `tend` is the
+    // expiry pass, which removes a copy for its age alone.
     expect(Object.keys(copiesOf().copies).toSorted()).toEqual(
       ["approvedUnder", "hold", "keep", "sweep", "tend", "trial", "tryFetched", "unkept", "wrote"]);
   });

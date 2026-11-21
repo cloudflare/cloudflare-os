@@ -8,11 +8,7 @@ let touched = 0;
 /** How many counted carries were handed out so far. */
 let carries = 0;
 
-/**
- * A map that counts what is asked of it: `get`, `set`, `has` and `delete` are one entry
- * each; listing it (`entries`, `keys`, `values`, `forEach`, an iteration, and so a copy or a
- * spread) is every entry it holds. `size` is free: it reads no entry.
- */
+/** A map that counts entries asked: one a `get`, `set`, `has` or `delete`; all for a listing. */
 export class CountingMap<K, V> extends Map<K, V> {
   override get(key: K): V | undefined {
     touched++;
@@ -62,10 +58,7 @@ export class CountingMap<K, V> extends Map<K, V> {
   }
 }
 
-/**
- * `carry` with its numbers in a `CountingMap`: the same carry, whose every read and write of
- * a list's numbers is counted from here on. Each call counts one carry handed out.
- */
+/** `carry` with its numbers in a `CountingMap`, counted as one carry handed out. */
 export function countedCarry(carry: PassCarry): PassCarry {
   carries++;
   let listNumbers = new CountingMap<string, readonly (number | null)[]>();
@@ -74,11 +67,7 @@ export function countedCarry(carry: PassCarry): PassCarry {
   return { ...carry, listNumbers };
 }
 
-/**
- * What `call` cost: `touched`, the entries of counted carries' numbers it read or wrote, and
- * `carries`, the counted carries handed out while it ran (1 for a pass alone, 2 for a pass
- * that holds another version's carry beside its own).
- */
+/** The carry entries `call` read or wrote, and the counted carries handed out (2 with a pair). */
 export function counted(call: () => unknown): { touched: number; carries: number } {
   let before = { touched, carries };
   call();

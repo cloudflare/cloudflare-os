@@ -156,10 +156,7 @@ export function sliceOf(tab: GoogleDocsTab, from: number, to: number, lists: Lis
   };
 }
 
-/**
- * Whether `thrown` is a slice edge, told by what it holds and never by its class: a model
- * built from the source text has a `SliceEdgeError` class of its own.
- */
+/** Whether `thrown` is a slice edge, by what it holds: a model built from source has its own class. */
 export function isSliceEdge(
   thrown: unknown,
 ): thrown is { name: "SliceEdgeError"; side: "before" | "after"; index: number } {
@@ -498,7 +495,6 @@ const TAB_SPECS = {
   blocks: (table: TableSpec) => BlockSpec[]; lists: GoogleDocsTab["lists"]; table: TableSpec;
 }>;
 
-/** The name of one of the three tabs. */
 export type SliceTabName = keyof typeof TAB_SPECS;
 
 /** The tab `name`, with `table` in place of its own where given. */

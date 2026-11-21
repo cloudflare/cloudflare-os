@@ -173,9 +173,8 @@ type BesideWalk = {
 };
 
 /**
- * The walk of a version keyed beside another (`theirs`), each carry of the `CarryBeside` held to a
- * copy moved by `advancedCopy` after every move, and `same()` to `sameCarry`. `outside` moves our
- * carry outside the pair and only counts where `same()` is wrong.
+ * A walk keyed beside `theirs`, each `CarryBeside` carry held to an `advancedCopy` and `same()` to
+ * `sameCarry`. `outside` moves our carry outside the pair and only counts where `same()` is wrong.
  */
 function walkedBeside(
   name: string, summaries: readonly RunSummary[], theirs: readonly number[], outside = false,
@@ -311,8 +310,7 @@ function expectEveryBoundaryJoins(
       markdown: one.markdown, sourceMap: one.sourceMap, extendsProtected: one.extendsProtected,
       mdStart, starts: [], flags: [], carry: plainOf(whole),
     };
-    // By their JSON text first, as `expectSameRendering` compares: `toEqual` decides and
-    // gives the message where the texts differ.
+    // By JSON text first, as `expectSameRendering` compares; `toEqual` gives the message.
     if (JSON.stringify(got) !== JSON.stringify(want)) {
       expect(got, `${name}, elements ${from} to ${to} cut at ${cut}`).toEqual(want);
     }
@@ -330,8 +328,7 @@ describe("a tab rendered by runs", () => {
     }
   });
 
-  // One element a run holds the chain of carries; two long runs hold a run entered with a carry
-  // that is not the initial one; and every boundary, three elements on either side, every cut.
+  // One element a run, two long runs (a run entered with a non-initial carry), and every boundary.
   it.each(LARGE)("a large tab rendered by runs is the tab rendered whole: $name", ({ name, tab }) => {
     let whole = docTabToMarkdown(tab);
     let { length } = tab.body.content;
@@ -358,8 +355,7 @@ describe("a tab rendered by runs", () => {
       expect(new Set(texts).size, name).toBe(texts.length);
     }
 
-    // A table whose cells continue the body's list shows the numbers the body carried: its
-    // rendering depends on the carry it is entered with.
+    // A table whose cells continue the body's list depends on the carry it is entered with.
     let { tab } = LARGE.find(({ name }) => name === "tables between lists")!;
     let whole = docTabToMarkdown(tab);
     let inTab = whole.sourceMap.tables
@@ -408,8 +404,7 @@ describe("the carry", () => {
     expect(footnotes).toBeGreaterThanOrEqual(300);
   });
 
-  // A skipped level is a `null` in the carry, which only a level that does not start at 1 tells
-  // from a number of 0.
+  // A skipped level is `null`, told from 0 only by a level that does not start at 1.
   it("a level carried with no number starts at the level's first number", () => {
     let tab = buildTab([item("a", "L", 1), item("b", "L", 0)], {
       L: {
@@ -425,8 +420,7 @@ describe("the carry", () => {
     expectRendersByRuns(tab, "a skipped level that starts at 5");
   });
 
-  // The tab rendered whole and by runs would lose the blank line after its first structure
-  // alike, so this one is held to the Markdown itself.
+  // Whole and by runs would lose the blank line alike, so this is held to the Markdown itself.
   it.each<{ name: string; first: BlockSpec; ends: string }>([
     { name: "a table", first: { table: [["a"]] }, ends: "</table>\n\nb\n" },
     {
@@ -468,8 +462,7 @@ describe("the carry", () => {
       let { length } = frozen.body.content;
       for (let bounds of [oneElementRuns(length), forcedRuns(length, 7)]) {
         let joined = noRuns();
-        // A pass's carry: a map cannot be frozen, so its arrays are, and a copy that shares
-        // nothing with it is taken before the call and held to one taken after.
+        // A map cannot be frozen: its arrays are, and copies before and after are compared.
         let carry = carryOf(INITIAL_CARRY);
         for (let run = 0; run + 1 < bounds.length; run++) {
           deepFreeze([carry.continuedListLevels, ...carry.listNumbers.values()]);
@@ -485,8 +478,7 @@ describe("the carry", () => {
     }
   });
 
-  // Each run is entered with a pass's carry made of the copy of the carry before it, as its
-  // JSON text reads back: what a test keeps of a carry says all of it.
+  // Each run entered with a carry rebuilt from the JSON of the one kept before it.
   it("a carry kept as plain data is the same carry", () => {
     for (let { name, tab } of CORPUS) {
       let chain = renderedByRuns(tab, oneElementRuns(tab.body.content.length),
@@ -497,8 +489,7 @@ describe("the carry", () => {
 });
 
 describe("a run's summary and its keys", () => {
-  // The summary and the keys written out for one tab, so that each field is read once as data.
-  // The properties below hold them to the renderer; an over-specific key they would let pass.
+  // The summary and keys written out: the properties below would pass an over-specific key.
   it("says what a run leads with, shows, counts and leaves", () => {
     let noted: BlockSpec = { runs: ["f", { footnote: { id: "f1", number: "5" } }, "\n"] };
     let tab = buildTab([
@@ -531,8 +522,8 @@ describe("a run's summary and its keys", () => {
       lastWrites: "text", endListId: "N", levels: { lead: true, min: 0, tail: [true, true] },
       lists: { N: { keep: 1, add: 1, start: 3, tail: [1] } },
     });
-    // A paragraph, an item, a table whose cell opens the list again, and a bulleted item: the
-    // second level is shown before the first is counted, and not after it.
+    // Paragraph, item, table reopening the list, bulleted item: level 2 shown before level 1
+    // counts.
     let mixed = summaryOf(4, 8);
     expect(mixed).toEqual({
       emits: true, firstWrites: "paragraph", counters: [second, first], footnotes: 1,
@@ -551,12 +542,10 @@ describe("a run's summary and its keys", () => {
     });
     // A table alone: what the run writes first is a structure.
     expect(summaryOf(6, 7).firstWrites).toBe("structure");
-    // A leading item with a bullet, and one of a list the tab does not define: the levels a
-    // run leads with are the numbered ones.
+    // A bulleted lead and an undefined list's: a run leads with numbered levels only.
     expect(summaryOf(7, 8).lead).toEqual({ listId: "B", levels: [] });
     expect(summaryOf(9, 10).lead).toEqual({ listId: "none", levels: [] });
-    // A level is said once, however many of the run's items show its number: of two leading
-    // items at one level the first, and one entry for a list a paragraph interrupts twice.
+    // A level is said once, however many of the run's items show its number.
     let another = { listId: "A", level: 0, start: 1 };
     let repeats = buildTab([
       item("a", "N"), item("b", "N"), para("c"), item("d", "N"), para("e"), item("f", "N"),
@@ -571,8 +560,7 @@ describe("a run's summary and its keys", () => {
       hasOutput: true, abutsProtected: false, previousListId: "N",
       continuedListLevels: [true, true], listNumbers: { N: [7, 2] }, footnoteBase: 0,
     };
-    // The carried list continues at both levels: the items show `1.`, which for the first
-    // level is not what its start gives.
+    // Continued at both levels: the items show `1.`, not what the first level's start gives.
     expect(keyOf(items, carry)).toBe('{"n":{"N":{"0":0}}}');
     expect(keyOf(items, { ...carry, previousListId: "B" }))
       .toBe('{"n":{"N":{"0":7,"1":2}},"s":true}');
@@ -588,8 +576,7 @@ describe("a run's summary and its keys", () => {
     // The lists of a key are in the order of their ids, not the order the run shows them in.
     expect(keyOf(both, { ...carry, listNumbers: { N: [7], A: [4] } }))
       .toBe('{"n":{"A":{"0":4},"N":{"0":7}},"s":true}');
-    // A run that writes nothing shows nothing of a carry, whatever the carry holds, and moves
-    // nothing: every part is what it was, and every array the array it was.
+    // A run that writes nothing shows nothing of a carry and moves nothing of it.
     expect(keyOf(summaryOf(0, 1), carry)).toBe("");
     let pass = carryOf(carry);
     let levels = pass.continuedListLevels;
@@ -628,8 +615,7 @@ describe("a run's summary and its keys", () => {
       expectRendersByRuns(named, `a list named ${listId}`, "every", { stored: true });
     }
 
-    // A numbered footnote is one whose number is a whole number as its text: not one padded
-    // with zeros, not a word, not an empty number and not a reference with none.
+    // A numbered footnote's text is a whole number: not zero-padded, a word, empty or missing.
     let notedBy = (...numbers: (string | undefined)[]) => {
       let { body } = buildTab([{
         runs: [
@@ -700,8 +686,7 @@ describe("a run's summary and its keys", () => {
     });
   });
 
-  // The teeth of the check above: a run is otherwise only rendered again from a carry rebuilt
-  // from its own key, which a summary that leaks the carry it was recorded under would pass.
+  // Teeth: rendering again from a carry rebuilt from its own key would pass a leaking summary.
   describe("a run's summary is the same whatever is carried into it", () => {
     it("as the renderer records it, on every tab of the corpus", () => {
       expect(firstFailing(TEETH, { independenceAlone: true })).toBeUndefined();
@@ -829,8 +814,7 @@ describe("a run's summary and its keys", () => {
   it("a run renders the same wherever it stands", () => {
     let opening = (kind: string) =>
       FUZZED_FIRST.filter(({ name }) => name.includes(`opening section break: ${kind}`));
-    // A section break stands first in the body, with a start index of 0 and with none, and
-    // again directly after it, where it starts a run that nothing is written before.
+    // An opening section break with a start index of 0 and with none, and another right after it.
     let starts = (kind: string) => opening(kind).filter(({ tab }) => {
       let [first, second] = tab.body.content;
       return !!first.sectionBreak && !!second.sectionBreak;
@@ -840,8 +824,7 @@ describe("a run's summary and its keys", () => {
     expect(opening("none").length).toBeGreaterThan(0);
 
     expect(firstFailing(FUZZED_FIRST, {})).toBeUndefined();
-    // The teeth of the stored form: named with its start index, the section break that opens
-    // a body is the one after it, which is written.
+    // Teeth: named with its start index, an opening section break is the written one after it.
     expect(firstFailing(FUZZED_FIRST, { keepOpeningIndex: true })).toBeDefined();
   });
 
@@ -859,8 +842,8 @@ describe("a run's summary and its keys", () => {
       .toBeGreaterThanOrEqual(list.tab.body.content.length);
     expect(new Set(whole.keys).size).toBeLessThanOrEqual(8);
 
-    // An item put in near the start moves every later number of the list. The keys are of the
-    // carry and the summary, which no index is in, so the copy needs no index of its own.
+    // An item put in near the start renumbers the rest; keys hold no index, so neither does the
+    // copy.
     let { content } = interrupted.tab.body;
     let at = 5;
     let longer = {
@@ -954,9 +937,7 @@ describe("a run's summary and its keys", () => {
       expect(wrong).toBeGreaterThan(0);
     });
 
-    // Their list holds one more item of the first list, so the two differ at that list to
-    // the tab's end and the pair holds one list apart. Both carries are counted: what a run
-    // costs is the entries of the two maps together.
+    // Their list holds one more item of the first list: one list apart to the end. Both maps count.
     it("costs the lists a run counts in, on both sides", () => {
       let summaries = listedSummaries();
       expect(summaries.length).toBe(4_001);
@@ -982,9 +963,8 @@ describe("a run's summary and its keys", () => {
       expect(ours.listNumbers.size).toBe(2_000);
     });
 
-    // Their list holds every table twice, so every list holds another number on their side to
-    // the tab's end and the pair holds every list passed apart: thousands by the end, which is
-    // where a move that listed or copied what it holds apart would cost the lists so far.
+    // Their list holds every table twice: every list passed is apart, thousands by the end, where
+    // a move that listed or copied what is apart would cost the lists so far.
     it("that holds every list apart costs no more", () => {
       let summaries = listedSummaries();
       let ours = countedCarry(initialCarry()), apart = countedCarry(initialCarry());

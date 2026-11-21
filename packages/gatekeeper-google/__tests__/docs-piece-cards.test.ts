@@ -59,11 +59,8 @@ function outcome<T>(run: () => T): Outcome<T> {
   }
 }
 
-// ---------------------------------------------------------------------------
-// The cards from a tab in hand: the reference, made from the whole tab's rendering and its two
-// whole Markdown strings. A table change goes through the same card writers
-// (`tableChangeFrom`), whose words are pinned in `docs-table-actions.test.ts`.
-// ---------------------------------------------------------------------------
+// --- The cards from a tab in hand: the reference, from the whole tab's rendering and Markdown.
+// Table changes share its card writers (`tableChangeFrom`), pinned in `docs-table-actions.test.ts`.
 
 /** What `prepareTextReplacement` answers of a replacement in `tab`, or throws what it throws. */
 function wholeTextReplacement(
@@ -157,10 +154,7 @@ function styleOf(
   return call;
 }
 
-/**
- * The call that makes `change`, a stored table change, in the tab `whole` renders, by its
- * table's number; its caller holds that the call gives the change back.
- */
+/** The call, by table number, that makes the stored table change `change` in the tab `whole` renders. */
 function stepTableCall(change: TableChange, whole: DocTabSnapshot): TableCall {
   if (change.type === "insertTable") {
     let { rows, columns, cells, after } = change;
@@ -209,9 +203,7 @@ function stepTableCall(change: TableChange, whole: DocTabSnapshot): TableCall {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Beneath the store
-// ---------------------------------------------------------------------------
+// --- Beneath the store
 
 /** One run a version lists, read off `doc_seq` and `doc_md`: its entry and its stored Markdown. */
 type ListedRun = { entry: string; markdown: string };
@@ -264,9 +256,7 @@ function contentRows<T>(
   return { value, rows: content, pages };
 }
 
-// ---------------------------------------------------------------------------
-// The rule on two whole strings
-// ---------------------------------------------------------------------------
+// --- The rule on two whole strings
 
 type Range = { start: number; end: number };
 
@@ -354,10 +344,7 @@ const ruled = {
   front: { handed: 0, read: 0, most: 0 } as Reads, end: { handed: 0, read: 0, most: 0 } as Reads,
 };
 
-/**
- * Runs `run` with the readers counted by the comparison they serve: `changedMarkdown` makes two
- * for the front, then two for the end, then those that read the strings.
- */
+/** Runs `run` counting the readers of each comparison: two for the front, then two for the end. */
 function countedReaders<T>(run: () => T): T {
   let { reader } = DocStore.prototype;
   let made = 0;
@@ -469,9 +456,7 @@ function expectChanged(kept: { storage: FakeDocStorage; store: DocStore }, befor
   return changed;
 }
 
-// ---------------------------------------------------------------------------
-// A queue prepared in a store and in hand
-// ---------------------------------------------------------------------------
+// --- A queue prepared in a store and in hand
 
 /** What a test counts of the steps it prepared, by kind. */
 type Tally = Record<string, { prepared: number; refused: number; unmapped: number }>;
@@ -580,8 +565,8 @@ function heldRecording(
       let target = whole.sourceMap.tables[resolveTable(whole, made, made.type)];
       made = { ...made, copies: chipCopies(target, Math.min(made.at, target.rows.length - 1)) };
     }
-    // A table step is prepared by the call that names its table by number, which must give
-    // the same change.
+    // A table step is prepared by the call naming its table by number, which must give the same
+    // change.
     let call = outcome(() => stepTableCall(made, whole));
     let mapped = "value" in call
       ? outcome(() => tableCallChange(wholeTabReading(whole), (call as { value: TableCall }).value))
@@ -663,9 +648,7 @@ describe("the cards from stored runs against the cards from the whole tab", () =
   });
 });
 
-// ---------------------------------------------------------------------------
-// A card that reads far from its edit
-// ---------------------------------------------------------------------------
+// --- A card that reads far from its edit
 
 /** A version made BY HAND: `requests` applied by the model and stored, with no edit or builder. */
 function madeByHand(store: DocStore, version: DocVersion, requests: readonly GoogleDocsRequest[]): DocVersion {
@@ -826,8 +809,8 @@ describe("a card that reads far from its edit", () => {
       let lastNamed = starts.findLastIndex(start => start < named.mdEnd);
       expect(changed.from).toBeGreaterThan(lastNamed);
       expect(changed.from).toBe(runs.length - 2);
-      // Read: two runs where the comparison from the end meets the range, then the strings'
-      // own runs (one after, three before); none of the rest of the row.
+      // Read: two runs where the end's comparison meets the range, then the strings' (1 after, 3
+      // before).
       let { answer, rows } = expectRuled({ storage, sizes: ONE }, before, after, B, A, named, LIMIT.chars);
       expect(answer).not.toBe("too-long");
       expect(rows).toBe(2 + 1 + 3);
@@ -838,8 +821,8 @@ describe("a card that reads far from its edit", () => {
     });
 
     it("what stands after the last character that differs is not counted", () => {
-      // By hand: runs A, C, D, D, E before and A, D, E after, D one entry of 30,000
-      // characters, the range named in C.
+      // By hand: runs A, C, D, D, E before and A, D, E after; D one entry of 30,000 chars, range in
+      // C.
       let long = "d".repeat(30_000);
       let tab = asFetched(buildTab([para("A"), para("Short line here"), para(long), para(long), para("E")]));
       let { storage, store, base } = pieceStore(tab, ONE);
@@ -949,8 +932,8 @@ function heldOutdented(items: number, chars: number, sizes: RunSizes) {
 
 describe("text listed anew that reads as before is not read into the strings", () => {
   it("a nested list over the limit, bulleted again, is not refused", () => {
-    // Over 1 MiB of items before the item made a level-0 one, under the real cut: the runs
-    // before the range do not line up, and read alike.
+    // Over 1 MiB of items before the range, under the real cut: runs there do not line up yet read
+    // alike.
     let held = heldOutdented(600, 2_000, RUN_SIZES);
     expect(held.mdStart).toBeGreaterThan(LIMIT.chars);
     expect(held.ahead.after.count).not.toBe(held.ahead.before.count);
@@ -1011,8 +994,7 @@ describe("text listed anew that reads as before is not read into the strings", (
     expect(same.rows).toBeGreaterThanOrEqual(ahead(before) + ahead(after));
     expect(docStoreCost.peakMarkdownCharsInHand).toBeLessThanOrEqual(2 * 4 * 102);
 
-    // The range inside the run after those cut otherwise, one entry of both lists: the
-    // strings start at that run.
+    // The range inside the run both lists share after those cut otherwise: the strings start there.
     let c = changedIn(before, after);
     let shared = runStarts(after)[c.afterTo];
     expect(after[c.afterTo].entry).toBe(before[c.beforeTo].entry);
@@ -1040,8 +1022,8 @@ describe("text listed anew that reads as before is not read into the strings", (
     expect(refused.rows).toBe(upTo(before) + upTo(listedRuns(storage, far)));
     // One list page of each version.
     expect(refused.pages).toBe(2);
-    // The range at the tab's end: refused once the version before is passed by its summaries,
-    // one page more and no Markdown row more.
+    // The range at the tab's end: refused once the summaries pass the version before, one page
+    // more.
     expect(before.length).toBeGreaterThan(8);
     expect(before.length).toBeLessThan(8 + 32);
     expect(changedIn(before, listedRuns(storage, far)).afterTo).toBeGreaterThan(8);
@@ -1175,8 +1157,8 @@ describe("text listed anew that reads as before is not read into the strings", (
   });
 
   it("by hand: one run of both lists that stands at two offsets is compared as text", () => {
-    // The strings to the rule, no range named, where both lists hold the run `shared` as one
-    // entry at the offsets `starts`.
+    // The strings to the rule, no range named, with `shared` one entry of both lists at offsets
+    // `starts`.
     let heldAtTwoOffsets = (
       storage: FakeDocStorage, before: DocVersion, after: DocVersion, shared: string,
       starts: readonly [number, number],
@@ -1273,9 +1255,7 @@ describe("text listed anew that reads as before is not read into the strings", (
   });
 });
 
-// ---------------------------------------------------------------------------
-// A span that leaves its strings
-// ---------------------------------------------------------------------------
+// --- A span that leaves its strings
 
 const PAIR = ["a", "b"];
 const equalTables = (count: number): BlockSpec[] =>
@@ -1330,9 +1310,7 @@ describe("a span that leaves its strings is placed where the whole tab places it
   });
 });
 
-// ---------------------------------------------------------------------------
-// What a card reads and holds
-// ---------------------------------------------------------------------------
+// --- What a card reads and holds
 
 describe("what a card reads of its tab", () => {
   afterEach(() => vi.restoreAllMocks());
@@ -1359,8 +1337,8 @@ describe("what a card reads of its tab", () => {
     let card = wholeTableChange(tab, call, LABEL);
     expect(JSON.stringify(card.description)).toContain("Text before the table");
     expect(JSON.stringify(card.description)).toContain("Named line");
-    // Prepared again, no run is decoded but for the piece: the line before the table is read
-    // from stored Markdown.
+    // Prepared again, only the piece is decoded: the line before the table is read from stored
+    // Markdown.
     let { piece } = DocStore.prototype;
     let pieces = 0;
     vi.spyOn(DocStore.prototype, "piece").mockImplementation(function (this: DocStore, ...asked) {
@@ -1381,9 +1359,7 @@ function longestOf(storage: FakeDocStorage, version: DocVersion): number {
   return Math.max(...listedRuns(storage, version).map(run => run.markdown.length));
 }
 
-// ---------------------------------------------------------------------------
-// What the tests above counted
-// ---------------------------------------------------------------------------
+// --- What the tests above counted
 
 describe("where two versions' lists differ", () => {
   it("is what the two lists compared say, and the same version differs nowhere", () => {
@@ -1423,8 +1399,8 @@ describe("the strings are the rule's", () => {
     expect(queued!.extensions.after).toBe(0);
     expect(queued!.extensions.before).toBeGreaterThan(0);
     expect(ruled.extensions.after).toBe(0);
-    // Two versions that read alike: the hand-made ones, and in the wider queues a change of a
-    // table's look the Markdown does not show.
+    // Versions that read alike: the hand-made ones, and in the wider queues a look Markdown does
+    // not show.
     if (WIDER) expect(queued!.alike).toBeGreaterThanOrEqual(1);
     expect(ruled.alike).toBeGreaterThan(queued!.alike);
     // A comparison reads few rows.
@@ -1486,10 +1462,8 @@ describe("the strings are the rule's", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// A table added after tables that read alike: its span walks far back over text that repeats,
-// and its cost grows with the tab, not with its square.
-// ---------------------------------------------------------------------------
+// --- A table added after tables that read alike: its span walks far back over repeating text, at a
+// cost that grows with the tab, not its square.
 
 /** A table of one cell that reads as every table of an `equal` tab does, added at the tab's end. */
 const ADDED_TABLE: TableCall = { method: "insertTable", table: { rows: 1, columns: 1, cells: [["cell"]] } };

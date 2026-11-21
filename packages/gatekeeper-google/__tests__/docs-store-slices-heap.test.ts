@@ -29,10 +29,7 @@ describe("whether the model follows a version of another digest", () => {
       .refused.map(({ refusal }) => refusal);
   const UNINDEXED = [{ reason: unindexedTabRefusal("appendText").message, unindexed: true }];
 
-  /**
-   * `tab` kept by a store of another digest, and asked of the default store: its answer, what
-   * the walk decoded and held, and the answer and the cost of a second call.
-   */
+  /** `tab` kept under another digest and asked of the default store twice, the walk's cost held. */
   function asked(tab: GoogleDocsTab, sizes: RunSizes) {
     let storage = fakeDocStorage();
     let { base } = keptBy(storage, tab, sizes);
@@ -120,8 +117,7 @@ describe("whether the model follows a version of another digest", () => {
   });
 
   it("each run's footnote numbers are counted from the references before it", () => {
-    // Every tab above fails on an index: these are followed by their indexes, so the answer
-    // is the footnotes' alone. A run an element, so each reference stands in a run of its own.
+    // Every tab above fails on an index; these, a reference to a run, fail on footnotes alone.
     let noted = (...numbers: number[]) => asFetched(buildTab(numbers.flatMap((number, at) =>
       [{ runs: [`Noted ${at}`, footnote(number), ".\n"] }, para(`Plain ${at}.`)])));
     for (let [numbers, unindexed] of [

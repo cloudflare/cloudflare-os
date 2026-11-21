@@ -1,6 +1,5 @@
-// The path through runs held to the path with a tab whole: every recorded step and a chain of
-// drawn edits, made in hand, in a store under the sizes a store cuts to and in one that cuts a
-// run an element, give the same pending reads, cards and applied results.
+// Every recorded step and drawn edit chains give the same pending reads, cards and results in
+// hand, in a store under its own sizes and in one that cuts a run an element.
 
 import { describe, expect, it } from "vitest";
 import { googleDocDisplayLimit } from "../src/doc-actions";
@@ -74,10 +73,8 @@ function expectReads(paths: Path[], tab: GoogleDocsTab, where: string): void {
 }
 
 /**
- * Makes `edit` in `tab` in hand and in the version each path stands at, and holds the card,
- * the applied result and the pending read of the stores to each other and to the tab in hand.
- * Answers the tab the edit gives and moves each path to its version, or `undefined` where the
- * edit is refused, the same on the three.
+ * Makes `edit` in hand and on each path, holding card, result and pending read alike. Answers the
+ * tab it gives and moves each path on, or `undefined` where all three refuse.
  */
 function expectSameStep(
   paths: Path[], tab: GoogleDocsTab, edit: DocEdit, where: string,
@@ -105,8 +102,7 @@ function expectSameStep(
   return inHand.value.after;
 }
 
-// What the recordings' tests add to, for the file's last test: the tabs the forced store kept,
-// their runs, and the steps that applied.
+// Counted by the recordings' tests for the file's last test.
 const corpus = { tabs: 0, runs: 0, steps: 0, applied: 0 };
 
 describe("the path through runs against the path with a tab whole", () => {

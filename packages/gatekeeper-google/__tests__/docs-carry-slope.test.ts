@@ -1,6 +1,5 @@
-// What a pass of the Doc store over a tab of thousands of numbered lists reads and writes of
-// its carry, by a count of entries that grows with the lists and not with their square; and
-// that the store moves a carry nowhere else. A file of its own: it replaces a module.
+// A store pass over thousands of numbered lists touches carry entries in proportion to the lists,
+// not their square, and moves a carry nowhere else. A file of its own: it replaces a module.
 
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -13,8 +12,7 @@ import { fakeDocStorage } from "./doc-store-fake";
 import { listedTablesTab } from "./doc-store-scenarios";
 import { documentOf } from "./docs-fetched-corpus";
 
-// `initialCarry` as other modules import it: every pass of the store, and the second side of
-// every pair it makes, then owns a counted carry (`carries` is 1 for a pass, 2 with a pair).
+// Every pass, and each pair's second side, owns a counted carry.
 vi.mock("../src/markdown-converter", async importOriginal => {
   let converter = await importOriginal<typeof import("../src/markdown-converter")>();
   let { countedCarry } = await import("./carry-count");
@@ -53,11 +51,7 @@ function cellsOf(tab: GoogleDocsTab) {
   });
 }
 
-/**
- * `listedTablesTab("t1", lists)` with the second table's cell an item of the FIRST list: no
- * index moves and every list stays defined. The first list then holds one number more than
- * in the tab as it was, to the tab's end.
- */
+/** `listedTablesTab("t1", lists)` with the second table's cell an item of the first list. */
 function oneItemMore(lists: number): GoogleDocsTab {
   let tab = listedTablesTab("t1", lists);
   cellsOf(tab)[1].bullet = { listId: "kix.list0" };
@@ -75,16 +69,13 @@ describe("the carry of a pass over a tab of thousands of numbered lists", () => 
     expect(touchedBy(() => carry.listNumbers.get("kix.list7"))).toBe(1);
     expect(touchedBy(() => carry.listNumbers.size)).toBe(0);
 
-    // A keep with nothing stored before is one pass. A keep beside a stored version that
-    // differs holds that version's carry beside its own, and the pair's side is counted too.
+    // A first keep is one pass; a keep beside a differing version counts the pair's side too.
     let store = opened();
     expect(counted(() => keep(store, listedTablesTab("t1", 3), "r1")).carries).toBe(1);
     expect(counted(() => keep(store, oneItemMore(3), "r2")).carries).toBe(2);
   });
 
-  // A run reads and writes the numbers of the lists it counts in: here one list a table, read
-  // as the table is rendered and keyed and replaced as the pass moves. A pass that listed or
-  // copied its numbers at a run would touch about `lists * lists / 2` entries.
+  // One list a table; a pass that listed or copied its numbers would touch ~`lists * lists / 2`.
   it("a fetch's keep touches the lists each run counts in", () => {
     let touched = [3_000, 7_700].map(lists => {
       let cost = spent(() => keep(opened(), listedTablesTab("t1", lists), "r1"));
@@ -97,9 +88,7 @@ describe("the carry of a pass over a tab of thousands of numbered lists", () => 
     expect(touched[1] / touched[0]).toBeLessThan(2.8);
   });
 
-  // By the sources' text, read as files: each call of `advanceCarry` in the store is found
-  // with the function it is in, which is named by the last `function <name>(` or method
-  // header before it.
+  // By the sources' text: each `advanceCarry` call is named by the function header before it.
   it("the store moves a carry in `passed` and in `fetchedMarkdown`, and nowhere else", () => {
     let store = readFileSync(path.join(SOURCES, "docs-store.ts"), "utf8");
     let header = /^(?:export )?function (\w+)\(|^ {2}(?:async )?(#?\w+)\([^;]*$/gm;

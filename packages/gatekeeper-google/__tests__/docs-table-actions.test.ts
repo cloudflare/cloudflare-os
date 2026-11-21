@@ -684,8 +684,7 @@ describe("document refusals", () => {
   });
 
   it("passes on what the builders refuse of the table", () => {
-    // A table's size is asked first: before a default `at` is worked out from it, and of a
-    // deletion.
+    // A table's size is asked first: before a default `at` is worked out, and of a deletion.
     let ragged = read(buildTab([para("A"), { table: [["a\n", "b\n"], ["c\n"]] }, para("B")]));
     for (let call of [
       addRows({ table: 0 }), addColumns({ table: 0 }), dropRows({ table: 0, at: 0 }),
@@ -1044,9 +1043,8 @@ describe("cards", () => {
     expect(card(addRows({ table: 0, at: 0 }), roadmap).description).not.toContain("chips");
   });
 
-  // The card is written once, and the table can come to hold more than it said and still read
-  // the same: the change stores what its card said, and applies only to a table that holds no
-  // more of it.
+  // A table may come to hold more than its card said and still read the same: the change stores
+  // what the card said, and applies only to a table that holds no more of it.
   it("stores what a deletion's card says the content does not show, and holds the table to it", () => {
     let status = (cell: CellSpec = "\n") => read(buildTab([
       para("Before"),
@@ -1218,8 +1216,7 @@ describe("the result a table change's card shows", () => {
 /**
  * A tab for one call of every kind: text, two empty paragraphs, a table of three rows with a
  * merged cell and a numbered list in a cell, an empty paragraph, a second table that reads
- * otherwise, text. A call on the second table names table 2 of the tab, and the text before
- * it stands behind an empty paragraph, the first table and two more empty paragraphs.
+ * otherwise, text.
  */
 const EVERY_KIND = () => buildTab([
   para("Intro"), para(""), para(""),
@@ -1237,9 +1234,8 @@ const EVERY_KIND = () => buildTab([
   para("After"),
 ], LISTS);
 
-// The cards the cases above do not reach: a split, a least height, a merge of rows and
-// columns, on a table whose first row holds a merged cell and whose text before stands
-// behind empty paragraphs and another table.
+// The cards the cases above do not reach (a split, a least height, a merge of rows and
+// columns), on a table whose first row holds a merged cell, behind another table.
 describe("cards on a table with a merged cell, second in its tab", () => {
   const card = (call: TableCall) => {
     let { title, description } = prepare(read(EVERY_KIND()), call);
@@ -1368,8 +1364,7 @@ describe("a change prepared on a store", () => {
     ["insertTable", STATUS, addTable({ rows: 1, columns: 2, cells: [["x", "y"]] })],
     ["insertTable before a table", STATUS,
       addTable({ rows: 1, columns: 1, cells: [["x"]], after: "Before\n" })],
-    // The new table reads as the head of the one after it, so the lines that differ start in
-    // the first and end in the second.
+    // The new table reads as the head of the next, so the lines that differ span the two.
     ["insertTable before a table that begins as it does", STATUS,
       addTable({ rows: 1, columns: 2, cells: [["Task", "Status"]], after: "Before\n" }),
       "markdown"],
@@ -1401,8 +1396,7 @@ describe("a change prepared on a store", () => {
       expect(docStoreCost.resultsFound - before.resultsFound).toBe(1);
       // Title, description and every field, with its syntax.
       expect(found).toEqual(made);
-      // The stored summary says whether the lines shown are all of one table, as the source
-      // map does: HTML where they are, Markdown where they span two tables.
+      // The syntax follows the source map: HTML for lines of one table, Markdown across two.
       let result = resultOf(found);
       if (result) {
         expect(result, name).toMatchObject({ syntax });
@@ -1498,8 +1492,7 @@ describe("an append prepared", () => {
   });
 
   it("shows what stands at the tab's end where the append ends as the tab's last line reads", () => {
-    // The tab's last line and the nested item read the same one line earlier, where they are
-    // not what the append adds.
+    // The tab's last line and the nested item read the same one line earlier: not the append's.
     expect(appended(LISTED(), "  - nested\n- item")).toEqual({
       shown: "  - nested\n- item", after: "Intro\n\n- item\n  - nested\n- item\n",
     });
@@ -1670,8 +1663,7 @@ describe("a replacement prepared", () => {
   });
 
   it("refuses text that starts with `<`, added above a table, as a change to the table's tags", () => {
-    // The text shares its first character with the table, so what changes starts inside the
-    // table's HTML, and the table path decides.
+    // The text shares its first character with the table, so the table path decides.
     expect(thrownMessage(() => replace(from, "<table>", "<TODO: describe the figures>\n\n<table>")))
       .toBe(STRUCTURE);
     expect(STRUCTURE).not.toBe(besideTableRefusal("before").message);
@@ -1700,8 +1692,7 @@ describe("a replacement prepared", () => {
   });
 
   it("refuses to end a list item's section in front of a table, in the paragraph path's words", () => {
-    // Without `B` the list item ends its section in front of the table: the requests for that
-    // cannot be built.
+    // Without `B` the list item ends its section in front of the table, which cannot be built.
     let listed = read(buildTab(
       [para("Intro"), item("Item"), para("B"), grid(["Open", "b"]), para("After")], LISTS));
     expect(thrownMessage(() => replace(listed, "\n\nB", ""))).toBe(
@@ -1835,8 +1826,7 @@ const styled = (blocks: Parameters<typeof buildTab>[0], styles: NamedStyles["sty
 
 describe("a replacement in a paragraph its named style formats", () => {
   it("shows as it will read bold written where the style already gives it", () => {
-    // Bold written into a subtitle whose style gives bold: the markers write nothing a read
-    // shows, and the card says so.
+    // Bold written into a subtitle bold by its style writes nothing a read shows; the card says so.
     let source = read(styled(
       [para("Other text"), { runs: ["Notes here\n"], namedStyleType: "SUBTITLE" }, para("After")], [
         { namedStyleType: "NORMAL_TEXT", textStyle: { bold: false } },

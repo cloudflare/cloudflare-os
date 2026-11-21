@@ -37,10 +37,8 @@ describe("an edit's tab, rendered and folded", () => {
 
     let piece = storedTabReading(store, base).piece({ table: 1 });
 
-    // The table is a run of its own between two runs of prose. A pass from its run (one run)
-    // steps back out of the runs in hand; a pass from the run before takes the table's run and
-    // then the run after it, where the steps forward end (three runs): four runs decoded and
-    // rendered, one at a time, and the piece widened twice.
+    // The table is a run between two runs of prose: a pass from its run (1), then one from the
+    // run before through the run after (3), the piece widened twice.
     expect([
       docStoreCost.runsDecoded - before.runsDecoded, docStoreCost.runsRendered - before.runsRendered,
       docStoreCost.pieceWidenings - before.pieceWidenings,
@@ -66,13 +64,8 @@ describe("an edit's tab, rendered and folded", () => {
 
     // One table stands before line 7,000.
     expect(prepared.table).toBe(1);
-    // The paragraph's closure stands in one run. Before the edit: the tables' cells summed,
-    // the scan for the text the table follows and the pass that places the piece (three
-    // walks), and the piece (one run decoded and rendered), which the slice takes; the run
-    // is cut in three, each rendered. For the number, once the edit is made: the anchor's
-    // place is remembered, so one walk more, to the piece's place, and the piece made
-    // again (its one run decoded and rendered a second time). For the card: one walk of the
-    // summaries of the runs before the ones that differ, and nothing decoded or rendered.
+    // Before the edit: three walks and a piece of one run, cut in three. For the number: one
+    // walk and the piece made again. For the card: one walk, nothing decoded or rendered.
     expect(pieces).toHaveBeenCalledTimes(1 + 1);
     expect(walks).toHaveBeenCalledTimes(3 + 1 + 1);
     expect(docStoreCost.runsDecoded - before.runsDecoded).toBe(1 + 1);
@@ -94,17 +87,13 @@ describe("an edit's tab, rendered and folded", () => {
     let listed = (version: DocVersion) => linesKept().storage.sql.exec<{ runs: number }>(
       "SELECT COUNT(*) AS runs FROM doc_seq WHERE version = ?", version.id).one().runs;
     fold();
-    // Made again: what the first fold stored is removed, as a change of the code's digest
-    // leaves it unread.
+    // Made again, as after a change of the code's digest.
     store.sweep("doc", { edits: [], roots: [] });
     let before = { ...docStoreCost }, clones = replayCost.tabClones;
 
     let again = fold();
 
-    // Each edit changes one paragraph whose closure stands in one run: that run is decoded
-    // for the piece the builders read, and the model's slice takes it as it was decoded.
-    // Nothing is decoded of the other runs of the version each edit is made in (the first
-    // edit leaves one run more).
+    // One run decoded an edit, for its piece, which the model's slice takes as decoded.
     let runs = listed(base);
     expect(listed(again.entity!)).toBe(runs + 1);
     expect(docStoreCost.runsDecoded - before.runsDecoded).toBe(1 + 1 + 1);
@@ -115,10 +104,8 @@ describe("an edit's tab, rendered and folded", () => {
 describe("the statements an edit runs", () => {
   const LISTED = listedTablesTab("t1", 600);
   const RUNS = 1_201;
-  // The runs the piece around a table of this tab decodes: an empty paragraph stands between
-  // each two tables, so a step of the closure ends on the next table, and the closure is four
-  // runs before the table's and four after it. Tried from the table's run (1) and from the
-  // run before (2), scouted 2 and then 4 runs back (3 and 5), and made from its first run (9).
+  // The runs the piece around a table decodes: tried from the table's run (1) and the one before
+  // (2), two scouts (3, 5), made of a closure of nine runs (9).
   const PIECE = 1 + 2 + 3 + 5 + 9;
   const EDIT: DocEdit = {
     type: "replaceText", oldMarkdown: "cell 300", newMarkdown: "cell changed", inTable: true,
@@ -133,12 +120,8 @@ describe("the statements an edit runs", () => {
   it("an edit reads its context once for each pass of its piece and three times for its slice", () => {
     let { storage, base } = keptUnder(fakeDocStorage(), LISTED, "a");
 
-    // The piece around the table is made in five passes (from the table's run, from the run
-    // before, two scouts and the piece itself: `PIECE` runs decoded), each of which reads the
-    // named styles once and, by one statement, the definitions the page its runs stand in
-    // names; then the slice's definitions, asked for by the one id its run names, the ids of
-    // the model's form, and the named styles once more. NEVER A NUMBER OF RUNS: the scan and
-    // the pass that places the piece read no context.
+    // Each of the piece's five passes reads the styles and the lists once; the slice reads the
+    // styles once and the lists twice. NEVER A NUMBER OF RUNS.
     let whole = cost(storage, "a", a => docEditResult(a, base, EDIT));
     expect(whole).toMatchObject({ styles: 5 + 1, lists: 5 + 2, runsDecoded: PIECE });
   });
@@ -146,13 +129,9 @@ describe("the statements an edit runs", () => {
   it("the first edit after a deploy keys its version once and reads no context for a run", () => {
     let { storage, base } = keptUnder(fakeDocStorage(), LISTED, "a");
 
-    // Decoded: every run for the question whether the model follows the tab and for the
-    // keying the scan of the tab's stored Markdown asks for (2 * RUNS), and the piece's runs,
-    // of which the slice takes its one. Rendered: every run by the keying (RUNS), the piece's
-    // runs, and the run cut. Over the context: the ids of the model's form for the question
-    // (1), a page each for the keying (3), one statement for each pass of the piece (5), the
-    // slice's definitions by id and the model's ids (2); the named styles for the keying, for
-    // each pass of the piece and for the slice.
+    // Every run decoded twice (whether the model follows the tab, and the keying) and rendered
+    // once (the keying), then an edit's cost; the lists read once for the question and once a
+    // page of the keying (3), the styles once for the keying.
     let first = cost(storage, "b", b => {
       expect(b.unindexed(base)).toBe(false);
       docEditResult(b, base, EDIT);

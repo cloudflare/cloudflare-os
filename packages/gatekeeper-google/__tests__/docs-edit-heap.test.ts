@@ -1,8 +1,6 @@
-// What an edit of a stored Google Doc holds on the shapes that hurt: a tab of 19,601 runs
-// (one-cell tables, each a run, with a run between each two) and a tab of 20,000 paragraphs.
-// An edit holds nothing for every run and, while the model runs, nothing of its piece's
-// rendering; a widening holds one slice at a time. The carry's numbers an edit touches are
-// pinned by a count, with the renderer's `initialCarry` replaced for every test of this file.
+// What an edit of a stored Google Doc holds on a tab of 19,601 runs and one of 20,000 paragraphs:
+// nothing for every run, nothing of its piece's rendering while the model runs, one slice at a
+// time while widening. The file replaces the renderer's `initialCarry` to count carry entries.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { googleDocDisplayLimit } from "../src/doc-actions";
@@ -23,9 +21,7 @@ import { asFetched, kept, runStarts, undone } from "./docs-store-slice-shadow";
 import { buildTab, para } from "./doc-fixture";
 import { collect, HEAP_MEASURED, heapHeld, inUse } from "./heap-held";
 
-// The module as it is but for `initialCarry` as other modules import it: each carry made has
-// its numbers in a map that counts. A plain counter and no spy: a spy keeps every call's
-// arguments, which would pin each carry and spoil the measures.
+// Each carry made counts its numbers' reads and writes; no spy, which would pin every carry.
 vi.mock("../src/markdown-converter", async importOriginal => {
   let converter = await importOriginal<typeof import("../src/markdown-converter")>();
   let { countedCarry } = await import("./carry-count");
@@ -45,10 +41,8 @@ function nth(n: number, is: (query: string) => boolean): (query: string) => bool
 }
 
 /**
- * True at a result's row, and at the pages of a list read joined to its renderings that
- * start 500 runs into the list and every 8,000 runs after: a full page of a walk is then in
- * hand, so two tabs are read at the same moments of each walk and differ by what is held for
- * every run.
+ * True at a result's row, and at the joined pages that start 500 runs into the list and every
+ * 8,000 after: two tabs are then measured at the same moments of each walk.
  */
 function atPages(): (query: string, bindings: readonly unknown[]) => boolean {
   return (query, bindings) => putsResult(query) ||
@@ -59,11 +53,7 @@ function atPages(): (query: string, bindings: readonly unknown[]) => boolean {
 type Shape = { storage: FakeDocStorage; base: DocVersion; runs: number };
 const shapes = new Map<string, Shape>();
 
-/**
- * The tab `tab` makes, kept in a storage of its own: once a file, by the first test that reads
- * it. An edit is made in its first run and undone, so that what a first use of the path
- * allocates is not measured.
- */
+/** The tab `tab` makes, kept once a file, with one edit made and undone to warm the path. */
 function shapeKept(name: string, tab: () => GoogleDocsTab): Shape {
   let known = shapes.get(name);
   if (known) return known;
@@ -85,8 +75,7 @@ const listed = (lists: number) => shapeKept(`${lists} lists`, () => listedTables
 const APPEND: DocEdit = { type: "appendText", markdown: "More" };
 
 describe("what an edit holds on the shapes that hurt", HEAP_MEASURED, () => {
-  // The two tabs a slope is taken between, by their pairs of a table and a paragraph (8,001
-  // runs, and 19,601, which an answer under the limit can be) and by their lists.
+  // The two tabs a slope is taken between: 8,001 and 19,601 runs, and their lists.
   const PAIRS = [4_000, 9_800];
   const LISTED = [3_000, 7_700];
   const slope = (bytes: number[], sizes: number[]) => (bytes[1] - bytes[0]) / (sizes[1] - sizes[0]);
@@ -100,11 +89,8 @@ describe("what an edit holds on the shapes that hurt", HEAP_MEASURED, () => {
       });
       // Along the walks and at the result's row, not at a walk's first page alone.
       expect(cost.seen).toBeGreaterThanOrEqual(4);
-      // The piece at the tab's end, and no other run: every walk passes the runs before it
-      // and decodes none. The tab ends in a table and an empty paragraph, each a run, so the
-      // closure of its end is the last four runs: tried from the last run (1) and from the
-      // run before (2), scouted 2 and then 4 runs back (3 and 5), and made from its first
-      // run (4). The slice takes the last run from the piece.
+      // Runs decoded for the piece at the tab's end, and no other: tried from the last run (1)
+      // and the one before (2), two scouts (3, 5), made of the closure's four runs (4).
       expect(docStoreCost.runsDecoded - before.runsDecoded).toBe(1 + 2 + 3 + 5 + 4);
       expect(docStoreCost.viewWidenings - before.viewWidenings).toBe(0);
       return cost.bytes;
@@ -124,11 +110,8 @@ describe("what an edit holds on the shapes that hurt", HEAP_MEASURED, () => {
     let touched: number[] = [];
     for (let lists of LISTED) {
       let of = listed(lists);
-      // One edit in the tab's last table. Each pass over the runs before it moves a carry
-      // past them, which reads and writes the number of the one list each table's run counts
-      // in (2 entries a list): the five passes of the piece (from the table's run, from the
-      // run before, two scouts and the piece itself) and the walk to the slice, 6 * 2 a list.
-      // The walk after the slice reads nothing.
+      // An edit in the last table: the piece's five passes and the walk to the slice each
+      // read and write one number a list, 6 * 2 entries a list.
       let store = new DocStore(of.storage);
       let edit: DocEdit = {
         type: "replaceText", oldMarkdown: `cell ${lists - 1}`, newMarkdown: "cell changed", inTable: true,
@@ -155,20 +138,15 @@ describe("what the widening loop holds", HEAP_MEASURED, () => {
     let starts = runStarts(storage, base);
     let runs = starts.length - 1;
     expect(runs).toBeGreaterThan(200);
-    // A range styled from the second run's second index to the tab's end, and a bulleted
-    // range one index past the second run's first index: the first guess is every run but
-    // the first, the model reads the element before the bulleted paragraph, and the second
-    // attempt is the whole tab.
+    // A style to the tab's end and a bullet just inside the second run: the first guess is
+    // every run but the first, and the model's read of the element before widens it to all.
     let requests: GoogleDocsRequest[] = [
       styleText(starts[1] + 1, base.bodyEndIndex - 1, { bold: true }, "bold"),
       bullets(starts[1] + 1, starts[1] + 3, NUMBERED),
     ];
-    // Made once before anything is measured: what the first edge thrown allocates for good
-    // (the test runner reads its source maps to write an error's stack) is not what the loop
-    // holds.
+    // Made once first: what the first edge thrown allocates for good is not measured.
     void editedSlice(new DocStore(storage), base, "byHand", requests);
-    // A slice of every run, alone: what the widened attempt must hold. Measured at the read
-    // of its last run.
+    // A slice of every run alone, at the read of its last run: what the widened attempt holds.
     let whole = heapHeld(storage, nth(runs, readsRun), observed =>
       void new DocStore(observed).slice(base, { from: starts[0], to: base.bodyEndIndex - 1, behind: [] }));
     expect(whole.seen).toBe(1);
@@ -183,8 +161,7 @@ describe("what the widening loop holds", HEAP_MEASURED, () => {
     expect(docStoreCost.runsDecoded - before.runsDecoded).toBe(runs - 1 + runs);
     expect(held.bytes).toBeLessThanOrEqual(1.4 * whole.bytes);
 
-    // THE TEETH: the same batch through a loop that keeps the failed slice in a variable
-    // while the wider one is decoded holds both.
+    // THE TEETH: a loop that keeps the failed slice while the wider one is decoded holds both.
     let both = heapHeld(storage, nth(runs - 1 + runs, readsRun), observed => {
       let store = new DocStore(observed);
       let slice: DocSlice = store.slice(base, batchReach(requests));
@@ -203,11 +180,9 @@ describe("what the widening loop holds", HEAP_MEASURED, () => {
   });
 });
 
-// WHAT AN EDIT BUILT FROM A PIECE HOLDS OF THE TAB BEFORE, once its builders have returned:
-// the runs the piece decoded that the model's slice names, and nothing of the piece's
-// rendering. A weak reference keeps its target to the end of the job that made it, so the
-// piece is asked in one job (by a reading the caller makes and goes on holding, as a
-// preparation does) and the edit made in a later one.
+// Once its builders return, an edit holds of the tab before only the runs its slice names,
+// nothing of the piece's rendering. A weak reference lives to its job's end, so the piece is
+// asked in one job and the edit made in a later one.
 describe("what an edit holds of its piece while the model runs", HEAP_MEASURED, () => {
   const PARAGRAPHS = 20_000;
   const lines = () => shapeKept("20,000 lines", () => asFetched(linesTab(PARAGRAPHS)));
@@ -237,8 +212,7 @@ describe("what an edit holds of its piece while the model runs", HEAP_MEASURED, 
       ["an append", APPEND, () => "end"],
     ];
     let held: number[] = [];
-    // Each edit made once before anything is measured: what a first use of the path
-    // allocates for good is not what the edit holds.
+    // Each edit made once first, so a first use's allocations are not measured.
     for (let [, edit] of cases) {
       let warm = new DocStore(of.storage);
       undone(warm, () => void docEditResult(warm, of.base, edit));
@@ -256,9 +230,8 @@ describe("what an edit holds of its piece while the model runs", HEAP_MEASURED, 
       let collected: boolean | undefined, bytes = 0;
       let slice = DocStore.prototype.slice;
       vi.spyOn(DocStore.prototype, "slice").mockImplementation(function (this: DocStore, ...given) {
-        // At the model's first slice: the piece's rendering is unreachable, and what is in
-        // use more than before the reading was made is the decoded runs handed on, the
-        // batch and what the reading remembers of its answers.
+        // At the model's first slice: the rendering is unreachable; in use are the runs
+        // handed on, the batch and the reading's answers.
         if (collected === undefined) {
           bytes = Math.min(inUse(), inUse()) - before;
           collected = rendering.deref() === undefined;
@@ -275,15 +248,12 @@ describe("what an edit holds of its piece while the model runs", HEAP_MEASURED, 
       expect(reading.takeDecoded(), name).toBeUndefined();
       held.push(bytes);
     }
-    // The run handed on, decoded, the batch and the edit's text: a small multiple of a run
-    // and no term of the tab, whose rendering whole is megabytes.
+    // A small multiple of a run and no term of the tab (whose rendering is megabytes).
     for (let bytes of held) expect(bytes).toBeLessThanOrEqual(240_000);
   });
 
-  // A TABLE CHANGE'S PREPARATION makes its piece, its pending card and its edit in one job,
-  // where a weak reference tells nothing (it keeps its target to the job's end). So each
-  // piece the store answers is given a weight, hung on its source map and reachable from
-  // nothing else: it is in use for as long as that source map can be reached.
+  // A table change is prepared in one job, where a weak reference tells nothing: each piece's
+  // source map carries a weight instead, in use for as long as the map is reachable.
   describe("a table change prepared", () => {
     const WEIGHT = 8 * MIB;
     const text = (at: number) => `Line ${String(at).padStart(5, "0")}.`;
@@ -296,16 +266,14 @@ describe("what an edit holds of its piece while the model runs", HEAP_MEASURED, 
     ];
 
     /**
-     * `call` prepared on the tab, every piece weighted: how many pieces the store made, and
-     * what is in use more than before the preparation at the model's first slice and at the
-     * card's first read: where the lists of the tab before and after differ.
+     * `call` prepared with every piece weighted: the pieces made, and the bytes in use over the
+     * start at the model's first slice and at the card's first read.
      */
     function prepared(call: TableCall): { pieces: number; atSlice: number; atCard: number } {
       let of = tabled();
       let store = new DocStore(of.storage);
       let pieces = 0, atSlice: number | undefined, atCard: number | undefined;
-      // The three methods are replaced by hand: a spy keeps every call's answer, and the
-      // answer of `piece` is what must be let go.
+      // Replaced by hand: a spy would keep `piece`'s answer, which must be let go.
       let { piece, slice, changed } = DocStore.prototype;
       let before = Math.min(inUse(), inUse());
       DocStore.prototype.piece = function (this: DocStore, version, at) {
@@ -335,8 +303,7 @@ describe("what an edit holds of its piece while the model runs", HEAP_MEASURED, 
       prepared(call);
       let held = prepared(call);
       expect(held.pieces).toBe(pieces);
-      // The reading the preparation holds, and the pending card, keep nothing of the piece's
-      // source map: its weight is collected by the model's first slice.
+      // The weight is collected by the model's first slice.
       expect(held.atSlice).toBeLessThan(WEIGHT / 2);
     });
 
@@ -354,8 +321,7 @@ describe("what an edit holds of its piece while the model runs", HEAP_MEASURED, 
     let of = lines();
     let starts = runStarts(of.storage, of.base);
     let lineLength = (of.base.bodyEndIndex - 1) / PARAGRAPHS;
-    // The first paragraph of a run in the middle of the tab: its closure reaches the run
-    // before, which the piece keeps decoded and the batch does not name.
+    // A run's first paragraph: its closure reaches the run before, which the batch does not name.
     let place = Math.floor(of.runs / 2);
     let first = (starts[place] - 1) / lineLength;
     expect(Number.isInteger(first)).toBe(true);
@@ -389,15 +355,13 @@ describe("what an edit holds of its piece while the model runs", HEAP_MEASURED, 
       type: "replaceText", oldMarkdown: text.slice(5, 10), newMarkdown: "first",
     }, reading));
 
-    // Let go with the caller's reading still held: the first slice took the run it names,
-    // and the map was emptied of the run before.
+    // Let go with the caller's reading still held.
     expect(collected).toBe(true);
     expect(reading.version).toBe(of.base);
   });
 
   it("a result found stored lets go of the piece too", () => {
-    // Twelve paragraphs of 200,000 characters, each a run: the piece around the seventh is
-    // five of them, a megabyte of Markdown, so that a piece still in hand shows in the heap.
+    // Paragraphs of 200,000 characters, each a run: a piece still in hand shows in the heap.
     let wide = shapeKept("12 wide paragraphs", () => asFetched(buildTab(
       Array.from({ length: 12 }, (_, at) => para(`P${at} ${String(at).repeat(200_000)}`)))));
     let store = new DocStore(wide.storage);
@@ -416,13 +380,10 @@ describe("what an edit holds of its piece while the model runs", HEAP_MEASURED, 
       prepareTextReplacement(store, wide.base, "P6 ", "Q6 ", "Tab", googleDocDisplayLimit("replaceText"));
       vi.restoreAllMocks();
 
-      // Decoded: the piece the preparation asked for the path the replacement takes, and
-      // no run for an edit found stored. The closure is two runs before the paragraph's and
-      // two after it: tried from its run (1) and from the run before (2), scouted two runs
-      // back (3), and made (5).
+      // The piece alone, nothing for the stored edit: tried from its run (1) and the one before
+      // (2), one scout (3), made of the closure's five runs (5).
       expect(docStoreCost.runsDecoded - decoded).toBe(1 + 2 + 3 + 5);
-      // The piece is a megabyte of Markdown and two decoded runs of 200,000 characters: let
-      // go, what is in use is under an eighth of it.
+      // The piece (over a megabyte) is let go.
       expect(bytes).toBeDefined();
       expect(bytes!).toBeLessThanOrEqual(100_000);
     });

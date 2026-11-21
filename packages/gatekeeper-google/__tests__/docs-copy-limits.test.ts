@@ -1,7 +1,6 @@
-// The limits of the copies a Drive connection's Doc store keeps: the caps by count and by
-// bytes, the order copies are evicted in, and what an eviction leaves in storage; and the
-// expiry pass, which removes the copies no scope check approved a read of for 7 days; and
-// the removal of one copy whose record is still the one a refusal saw.
+// The limits of a Drive connection's Doc copies: the count and byte caps, eviction order and
+// what an eviction leaves; the expiry pass (no approved read for 7 days); and the removal of a
+// copy whose record is still the one a refusal saw.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -33,11 +32,8 @@ const small = (text: string) => scenarioCopy([scenarioTab("t1", [text])]);
 const ONE = new DocStore(fakeDocStorage()).keep("probe", small("doc-a"), NONE).bytes;
 
 /**
- * A connection's limits over `storage`, under `caps` (the connection's own where left out):
- * `keep` keeps a one-paragraph document as `doc`, approved at the hour `hour`; `pending` is
- * the set the limits read as the documents with a pending edit; `removed` lists what the
- * limits told of, with whether a transaction was open as they did and whether storage still
- * held the copy's record.
+ * A connection's limits under `caps` (its own by default). `keep` keeps a one-paragraph `doc`
+ * approved at `hour`; `removed` lists each removal told, whether in a transaction and still held.
  */
 function connection(caps?: Caps, storage: FakeDocStorage = fakeDocStorage()) {
   let open = 0;
@@ -400,11 +396,7 @@ describe("driveDocCopies under a connection's limits", () => {
     vi.useRealTimers();
   });
 
-  /**
-   * A connection that holds `doc-a`, `doc-b` and `doc-c`, approved in that order, under caps
-   * that came to allow two documents, so that it is over its cap; and the copies of `doc`
-   * over it, with `pending` as the file's pending edits.
-   */
+  /** A connection over a cap of two holding `doc-a`, `doc-b`, `doc-c` (approved in order), and `doc`'s copies. */
   function overCap(doc: string, pending: () => DocPending = () => NONE) {
     let storage = fakeDocStorage();
     let before = connection(NO_CAP, storage);
@@ -529,8 +521,7 @@ describe("driveDocCopies under a connection's limits", () => {
     expect(made(() => view.markdown(docEditResult(store, view.tab("t1")!, EDIT).after)))
       .toEqual({ markdown: "uno\n", stored: 0 });
 
-    // Another file's keep, when every other copy has a pending edit too: the file's copy goes
-    // with what its edit made.
+    // Another file's keep, every other copy pending too: the file's copy goes with its edit.
     for (let doc of ["doc-c", "doc-e"]) pendingDocs.add(doc);
     store.touch("doc-c", { approved: { at: 11 * HOUR } });
     vi.setSystemTime(12 * HOUR);
@@ -549,13 +540,9 @@ describe("DriveDocCopyLimits.expire", () => {
   const WEEK = DRIVE_DOC_COPY_EXPIRY_MS;
 
   /**
-   * A connection's limits over `storage`, on a clock the test moves (`clock.at`). `keep`
-   * keeps a one-paragraph document as `doc`, approved at the clock `at`; `pass` moves the
-   * clock to `at`, runs the expiry pass (as a read of `reading`, where one is named) and
-   * answers every statement it ran, the rows they answered, and the keys it read and wrote;
-   * `removed` lists what the limits told of, with whether a transaction was open as they did
-   * and whether storage still held the copy's record. `expiryCallBytes` is what one call
-   * drops, the connection's own where left out.
+   * A connection's limits on a clock the test moves. `pass` runs the expiry pass at `at` (as a
+   * read of `reading`, if named) and answers its statements, rows answered and KV keys touched;
+   * `removed` as in `connection`; `expiryCallBytes` is what one call drops.
    */
   function expiring(storage: FakeDocStorage = fakeDocStorage(), expiryCallBytes?: number) {
     let open = 0;
@@ -740,8 +727,7 @@ describe("DriveDocCopyLimits.expire", () => {
     expect(() => pass(WEEK)).toThrow("storage refused the write");
     storage.refuse(undefined);
 
-    // The first copy is gone and stays gone; the second and the third are whole; no hour is
-    // written, in the KV or in memory.
+    // The first copy stays gone, the others are whole, and no hour is written anywhere.
     expect(expired()).toEqual([first]);
     expect(storedRows(storage)).toBe(storedRows(control.storage));
     expect(passed()).toBeUndefined();
@@ -755,8 +741,7 @@ describe("DriveDocCopyLimits.expire", () => {
     // Each was told once its own drop's transaction returned, outside every transaction.
     expect(removed.map(({ inTransaction, held }) => [inTransaction, held]))
       .toEqual([[false, false], [false, false], [false, false]]);
-    // The activation whose pass failed wrote no hour to its memory either: it passes again,
-    // and asks the KV nothing more.
+    // The failed activation passes again, asking the KV nothing more.
     expect(pass(WEEK + 2 * MINUTE)).toEqual({
       statements: [COPIES], answered: 0, read: [], wrote: [DOC_COPY_EXPIRY_PASS_KEY],
     });
@@ -779,8 +764,7 @@ describe("DriveDocCopyLimits.expire", () => {
       expect(expired()).toEqual(["doc-a", "doc-b"]);
       expect(passed()).toBeUndefined();
 
-      // A call in the same hour goes on, and reads the records again: of this activation,
-      // which asks the KV nothing more, or of another, which reads the key.
+      // A call in the same hour goes on; another activation reads the key first.
       expect(pass(WEEK + MINUTE)).toMatchObject({ statements: { length: 1 + 2 * 6 }, answered: 4, read: [], wrote: [] });
       expect(expired()).toEqual(["doc-a", "doc-b", "doc-c", "doc-d"]);
       expect(passed()).toBeUndefined();
@@ -820,8 +804,7 @@ describe("DriveDocCopyLimits.expire", () => {
       // A read of the file whose approval is newest of the four past the limit.
       pass(WEEK + 3 * HOUR, undefined, "doc-c");
       expect(expired()).toEqual(["doc-c"]);
-      // A read of a file whose copy is not past the limit, of one that has no copy, and a
-      // call that names none: the oldest approval goes.
+      // A read of a fresh copy, of no copy, or of none named: the oldest approval goes.
       pass(WEEK + 3 * HOUR, undefined, "doc-e");
       pass(WEEK + 3 * HOUR, undefined, "doc-z");
       pass(WEEK + 3 * HOUR);

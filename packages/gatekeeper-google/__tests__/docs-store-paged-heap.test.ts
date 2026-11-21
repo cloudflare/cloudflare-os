@@ -1,6 +1,5 @@
-// What a read of a stored Google Doc tab holds, as the first read after an eviction or a
-// deploy makes it, on a tab of 19,601 runs: its answer and a page of the version's list, and
-// nothing a run but the answer.
+// What the first read of a stored Google Doc tab after an eviction or a deploy holds, on a tab of
+// 19,601 runs: its answer and a page of the version's list, and nothing a run but the answer.
 
 import { describe, expect, it } from "vitest";
 import type { DocStore } from "../src/docs-store";
@@ -24,9 +23,8 @@ let known: ReturnType<typeof keptUnder<ReturnType<typeof fakeDocStorage>>> | und
 const kept = () => known ??= keptUnder(fakeDocStorage(), tinyTablesTab("t1", 9_800), "a");
 
 /**
- * What `read` holds and costs, by a store of the digest `digest` over the kept tab: the bytes
- * in use at the statement `at` chooses over the bytes before the call (`heapHeld`), how many
- * statements it chose and its statements by kind. Numbers only.
+ * What `read` by a store of `digest` holds at the statement `at` chooses over the bytes before
+ * the call (`heapHeld`), how many statements it chose, and its statements by kind.
  */
 function measured(digest: string, at: (query: string) => boolean, read: (store: DocStore) => void) {
   let { storage } = kept();
@@ -53,8 +51,7 @@ describe("what a read of a stored tab holds", HEAP_MEASURED, () => {
   });
 
   it("a read after a change of digest keys the version a page of rows at a time", () => {
-    // Keyed a page a statement, then read: at the keying's last page, a page of rows and no
-    // list of the version (read whole, that list is hundreds of bytes a run).
+    // Keyed a page a statement, then read: at the last page, a page of rows and no whole list.
     let { base } = kept();
     let keyed = measured(`b${++digests}`, nth(PAGES, isPage), store => void store.summary(base));
     expect(keyed).toMatchObject({

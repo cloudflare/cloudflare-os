@@ -99,10 +99,7 @@ export function tableElement(tab: GoogleDocsTab, table = 0): StructuralElement {
   return element;
 }
 
-/**
- * The texts of the cells of the tab's `table`-th table, row by row: each cell's paragraphs
- * joined, with their line ends. What a cell holds that is no paragraph adds nothing.
- */
+/** The cell texts of the tab's `table`-th table, row by row: each cell's paragraphs joined. */
 export function tableTexts(tab: GoogleDocsTab, table = 0): string[][] {
   return (tableElement(tab, table).table?.tableRows ?? []).map(row =>
     (row.tableCells ?? []).map(cell => (cell.content ?? []).map(element =>

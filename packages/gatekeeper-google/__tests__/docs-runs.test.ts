@@ -302,8 +302,7 @@ describe("the stored form of a run", () => {
       // The absent index absent, the fraction as it was.
       expect(JSON.stringify(decodedBody(runs))).toBe(JSON.stringify(content));
     }
-    // One element a run: a run is as long as its element says, and of no length where its
-    // element holds no end.
+    // One element a run: as long as its element says, or of no length where it holds no end.
     let start: unknown = content[0].startIndex;
     let end = Number.isInteger(start) ? start as number : 0;
     expect(placedRuns(content, ONE_EACH).map(run => run.size)).toEqual(content.map(element => {
@@ -600,8 +599,7 @@ describe("the cut by content", () => {
       expect([...answers].toSorted()).toEqual([false, true]);
     }
 
-    // Each paragraph against the next, which differs from it in the last digit of its text
-    // (and in more of them one time in ten).
+    // Each paragraph against the next, which differs in the last digit (or more, one in ten).
     let stored = Array.from(cutRuns(LINES.body.content, ONE_EACH), run => run.json);
     let apart = (ends: typeof endsRun) => stored.filter((json, at) =>
       at > 1 && ends(json, RUN_SIZES) !== ends(stored[at - 1], RUN_SIZES)).length;
@@ -730,8 +728,7 @@ describe("the section break that opens a body", () => {
     let [several] = placedRuns(content, { ...FORCED, target: Infinity });
     expect((JSON.parse(several.json) as unknown[])[2]).toEqual(content[2]);
 
-    // Only the body's first element opens it: a section break at index 0 behind an element
-    // that holds no index keeps its start index.
+    // Only the body's first element opens it: one at index 0 after an unindexed element keeps it.
     let atZero = { startIndex: 0, endIndex: 1, sectionBreak: {} } as StructuralElement;
     let unplaced = [{ sectionBreak: {} } as StructuralElement, paragraphAt("", undefined, undefined)];
     for (let opening of unplaced) {
@@ -922,8 +919,8 @@ describe.each(CUTS)("a tab's stored runs rendered, $cut", ({ sizes }) => {
     for (let { name, tab } of tabs()) {
       let whole = docTabToMarkdown(tab);
       let runs = placedRuns(tab.body.content, sizes);
-      // The carry each run is entered with: one pass's, moved in place by `advanceCarry`, and
-      // a pass's made of the copy a copying advance gives.
+      // Each run entered with one pass's carry moved by `advanceCarry`, and with a copying
+      // advance's.
       for (let advance of [false, true]) {
         let joined = noRuns();
         let pass = initialCarry();
@@ -958,8 +955,7 @@ describe("the runs of the corpus", () => {
     for (let { name, tab } of LARGE) {
       let runs = placedRuns(tab.body.content, RUN_SIZES);
       expect(runs.length, name).toBeGreaterThan(10);
-      // Runs of many elements, but for a tab of tables: each run but the first is entered
-      // with a carry that is not the initial one.
+      // Runs of many elements: each but the first entered with a non-initial carry.
       if (!runs.some(run => run.holds === "table")) {
         expect(tab.body.content.length / runs.length, name).toBeGreaterThan(50);
       }
@@ -1003,8 +999,7 @@ describe("the runs of the corpus", () => {
         count("none", undefined, "undefined");
         let negative = count("negative", "-2", "number");
         let padded = count("padded", "007", "string");
-        // A run of one paragraph that holds one of the two the second notion gets wrong and
-        // nothing that hides it is the run the property names.
+        // A one-paragraph run holding a number the second notion gets wrong is the one named.
         if (failure?.endsWith(run.json)) {
           if (negative) failed.negative++;
           if (padded) failed.padded++;
@@ -1039,8 +1034,7 @@ const note = (footnoteNumber: unknown, startIndex: number) => JSON.stringify({
 });
 
 describe("endsRun", () => {
-  // A CHANGE HERE MOVES EVERY RUN'S ID, and every stored tab is cut again: record other answers
-  // only for a change meant to do that.
+  // A CHANGE HERE MOVES EVERY RUN'S ID and recuts every stored tab: only change it on purpose.
   it.each<[of: string, json: string, answers: string]>([
     ["an object of nothing", "{}", "0010000000000000"],
     ["a paragraph", line("Line 00007.\n", 0, 12), "1111111110100010"],
@@ -1068,8 +1062,7 @@ describe("endsRun", () => {
     }
     // An element as long as that room, or longer, always ends its run.
     expect(endsRun(json, { ...FORCED, target: 60 })).toBe(true);
-    // No room at all, a target at the least size or under it, is a room of one: every element
-    // ends its run (the hash leaves 964 over 1,000, more than the element is long).
+    // No room (a target at the least size or under) is a room of one: every element ends its run.
     for (let least of [400, 500, 1_400]) {
       expect(endsRun(json, { ...FORCED, least, target: 400 })).toBe(true);
     }
@@ -1084,8 +1077,7 @@ describe("endsRun", () => {
   });
 
   it("leaves a string where JSON does", () => {
-    // Were the scanner still in the string after an escaped backslash, or out of it at an
-    // escaped quote, the indexes after the text would be hashed as text and these would differ.
+    // A scanner wrong about escaped backslashes or quotes would hash the indexes as text.
     expect(pinnedAnswers(line("C:\\", 45, 48))).toBe(pinnedAnswers(line("C:\\", 0, 3)));
     expect(pinnedAnswers(line('She said "12" twice.\n', 300, 321)))
       .toBe(pinnedAnswers(line('She said "12" twice.\n', 0, 21)));

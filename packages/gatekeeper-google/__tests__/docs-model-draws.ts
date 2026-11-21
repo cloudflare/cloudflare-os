@@ -204,10 +204,8 @@ const PARAGRAPH_STYLES: [Record<string, unknown>, string][] = [
 ];
 
 /**
- * A tab of three to eight blocks of every kind the model indexes. A noted tab also holds
- * footnote references, numbered by their place as Google numbers them: in a paragraph before
- * a table, in two cells of that table that share neither row nor column, and in a paragraph
- * after it, or in two or three of those four.
+ * A tab of three to eight blocks of every kind the model indexes. A noted tab also holds two to
+ * four footnote references numbered by place, around and inside a table.
  */
 export function randomTab({ below, pick }: Dice, noted: boolean): GoogleDocsTab {
   let line = (text: string) => ({ runs: [`${text}\n`] });
@@ -482,9 +480,9 @@ export function sequenceRun(seed: number): SequenceRun {
 }
 
 /**
- * The property: after every request of a random sequence, the requests so far as one batch give
- * the tab the same requests give one batch each, with exact indexes, and refuse alike. `between`
- * is what the chain's tab passes through before each request; `each` replaces the checks.
+ * The property: after each request of a random sequence, the requests so far as one batch give
+ * the same tab, exact indexes, and refusals as one batch each. `between` is applied to the chain's
+ * tab before each request; `each` replaces the checks.
  */
 export function runSequences(
   seed: number, sequences: number, backToFront: boolean,
@@ -501,8 +499,7 @@ export function runSequences(
     let eager = tab;
     let applied: GoogleDocsRequest[] = [];
     let where = () => `seed ${seed}, sequence ${sequence}, after ${JSON.stringify(applied)}`;
-    // Every tab of the chain renders by runs as it renders whole, at every cut, and each of
-    // its runs is summarised and keyed as the renderer renders it.
+    // Every tab of the chain renders by runs as whole, and its runs' summaries and keys hold.
     if (!each) expectRendersByRuns(tab, where(), "every", { stored: true });
 
     /** Hold one request to the property. Gives the refusal's message when it is refused. */

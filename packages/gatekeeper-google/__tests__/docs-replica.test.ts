@@ -952,8 +952,8 @@ it("keeps exactly these fields under this format version", () => {
 
 describe("the copy of a document", () => {
   let recorded = FIXTURES[0].before;
-  // A tab of the fixture as Google sends one: with no start index on the section break that
-  // opens its body. A tab read back from the store holds none either, unless the model made it.
+  // A tab as Google sends one, with no start index on the opening section break; a tab read back
+  // from the store holds none either, unless the model made it.
   let sent = (tab: GoogleDocsTab): GoogleDocsTab => {
     let [{ startIndex: _, ...opening }, ...rest] = tab.body.content;
     return { ...tab, body: { content: [opening as GoogleDocsTab["body"]["content"][number], ...rest] } };
@@ -971,8 +971,7 @@ describe("the copy of a document", () => {
   it("reads back from the store what it kept", () => {
     let store = fakeDocStore();
     let tabs = [dressed(marked), plain, child, emptyRun];
-    // The store empties the document it is handed: it is given a copy of each fixture, since
-    // two of them share a body.
+    // The store empties the document it is handed, and two fixtures share a body: each is copied.
     let head = store.keep(
       "doc", store.fetched(documentOf(tabs.map(tab => structuredClone(tab))), 0),
       { edits: [], roots: [] });
@@ -1033,9 +1032,8 @@ describe("the named styles of a new document", () => {
 // --- The fields asked of Google
 
 /**
- * `tabs` as `getDocument` returns them from a fake Google that holds `answer(rawDocsDocument(…))`,
- * and answers under the mask the read carries (`masked`) or whole. The read is one request: a
- * mask the fake refused would be read again.
+ * `tabs` as `getDocument` returns them from a fake Google holding `answer(rawDocsDocument(…))`,
+ * answered under the read's mask (`masked`) or whole, in one request.
  */
 async function fetched(
   tabs: GoogleDocsTab[],
@@ -1124,7 +1122,7 @@ describe("the fields asked of documents.get", () => {
   });
 
   it("fits where a mask has been seen to fit", () => {
-    // The longest mask Google took in a URL; the `X-Goog-FieldMask` header carried 31,706.
+    // The longest mask Google has been seen to take in a URL.
     expect(DOCUMENT_FIELDS.length).toBeLessThanOrEqual(10_964);
     // Letters, commas and parentheses need no encoding in a header or in a query.
     expect(DOCUMENT_FIELDS).toMatch(/^[A-Za-z(),]+$/);
@@ -1152,9 +1150,8 @@ describe("the fields asked of documents.get", () => {
     expect(occurrences(DOCUMENT_FIELDS, "tableCells(startIndex,endIndex,content,tableCellStyle"))
       .toBe(3);
     for (let part of ["sectionBreak", "tableOfContents", "horizontalRule", "equation"]) {
-      // By its name alone wherever the mask spells a body out, never by a field of it: that the
-      // part is there must not rest on what Google answers for a part with none of the fields
-      // asked of it.
+      // By its name alone wherever the mask spells a body out, never by a field: that the part is
+      // there must not rest on what Google answers for a part none of whose fields were asked.
       expect(occurrences(DOCUMENT_FIELDS, part), part).toBe(6);
       expect(occurrences(DOCUMENT_FIELDS, `${part}(`), part).toBe(0);
     }
@@ -1268,8 +1265,7 @@ describe("the fields asked of documents.get", () => {
     let { tabs: [masked] } = await fetched([tab], { masked: true });
     let { tabs: [whole] } = await fetched([tab], { masked: false });
     expect(whole).toStrictEqual(tab);
-    // Each is asked for by its name alone, so it comes as it is: that it is there does not rest
-    // on what Google answers for a part with none of the fields asked of it.
+    // Each is asked for by its name alone, so it comes as it is.
     let [sectionBreak, tableOfContents, paragraph] = masked.body.content;
     expect(sectionBreak).toStrictEqual(tab.body.content[0]);
     expect(tableOfContents).toStrictEqual(tab.body.content[1]);
@@ -1315,13 +1311,9 @@ describe("the fields asked of documents.get", () => {
     }
   });
 
-  // The fake holds an answer in which every field outside the mask holds a value of the wrong
-  // kind, and answers whole, so each reader of a fetched tab is handed those fields. It shows
-  // that what the readers give does not depend on the fields these tabs hold outside the mask,
-  // not that no reader reads a field the tabs lack. It does not compare the bytes of a write
-  // built from a fetched tab: a builder forwards a fetched run's text style whole beside the
-  // `fields` it names, so those bytes follow the answer; the tests of a tab fetched under the
-  // mask hold what the style then is.
+  // Every field outside the mask holds a value of the wrong kind and the fake answers whole: what
+  // the readers give does not depend on those fields. A write's bytes are not compared: a builder
+  // forwards a fetched run's text style whole, so they follow the answer.
   it("reads nothing the mask does not ask for", async () => {
     let poison = (whole: unknown) => poisonOutsideMask(whole, DOCUMENT_FIELDS);
     for (let { name, tab } of CORPUS) {

@@ -168,8 +168,7 @@ const threeRowTable = () => buildTab([
   { runs: ["After\n"] },
 ]);
 
-// The table is [8, 29): row 0 [9, 18), cell (0,0) [10, 14) with its paragraph at 11, cell (0,1)
-// [14, 18) with its paragraph at 15.
+// The table is [8, 29): row 0 [9, 18), cells (0,0) [10, 14) and (0,1) [14, 18).
 const refusal = (requests: GoogleDocsRequest[], tab = threeRowTable()) =>
   () => applyDocsRequests(tab, requests);
 
@@ -463,11 +462,7 @@ describe("chips beside a new row or column", () => {
   });
 });
 
-/**
- * One row: a centred, indented heading whose first character is bold and 18 points, above a
- * second paragraph; an item of a list at its second level, which states no indent; and plain
- * text.
- */
+/** One row: a centred, indented heading partly bold above a paragraph; a level-2 item; plain text. */
 const styledRow = () => {
   let tab = buildTab([
     { runs: ["\n"] },
@@ -674,8 +669,7 @@ describe("the paragraph requests", () => {
   });
 
   it("keeps a list item's indent when its style is named", () => {
-    // Inferred: every recorded list item is indented as its level is, and no recorded document
-    // names the style of a paragraph while it is a list item.
+    // Inferred: recorded items are indented by level, and none names a style while an item.
     let tab = buildTab([{ runs: ["first\n"] }]);
     let result = applyDocsRequests(tab, [
       bullets(1, 7, "BULLET_DISC_CIRCLE_SQUARE"),
@@ -726,8 +720,7 @@ describe("the paragraph requests", () => {
     );
     let look = { bold: true, ...sized(18), foregroundColor: red };
 
-    // The red and the italic end where the break begins and reach it, and so does the second
-    // paragraph's bold.
+    // The red, the italic and the second paragraph's bold reach the break.
     expect(bodyParagraphs(styled).map(joinedRunsOf)).toEqual([
       [["Alpha ", look], ["beta\n", { ...look, italic: true }]],
       [["Gamma\n", { bold: true }]],
@@ -920,8 +913,7 @@ describe("what the model does not cover", () => {
       { table: [[{ paragraphs: [{ runs: ["\n"] }, { table: [["in\n"]] }, { runs: ["\n"] }] }]] },
       { runs: ["\n"] },
     ]);
-    // The outer table is at 2 and its cell at 4; the cell holds a paragraph at 5 and the inner
-    // table at 6.
+    // Outer table at 2, its cell at 4, a paragraph at 5, the inner table at 6.
     expectNotModelled(tab, insertRow(6, 0, true));
     let lengths = rowsOf(applyDocsRequests(tab, [insertRow(2, 0, true)]))
       .map(row => row.endIndex - row.startIndex);
@@ -961,8 +953,7 @@ describe("what the model does not cover", () => {
     expect(tab).toEqual(copy);
   });
 
-  // Inferred, not on record: nobody has seen what Google does with the image of a paragraph
-  // that is removed, or that text is joined into.
+  // Inferred, not on record: what Google does with such an image is unknown.
   it("does not answer for a positioned paragraph that loses its text or that text is joined into", () => {
     let positioned = (texts: string[], index: number) => {
       let tab = buildTab(texts.map(text => ({ runs: [text] })));
@@ -1181,8 +1172,7 @@ describe("bullets the gatekeeper creates", () => {
     }
   });
 
-  // Not on record: no recorded item lies deeper than the levels a list has. The builders
-  // refuse to write such an item.
+  // Not on record; the builders refuse to write such an item.
   it("has no answer for a level past the ninth", () => {
     let lead = { runs: ["a\n"], bullet: { listId: "made", nestingLevel: 8 } };
     let { tab, start, end } = afterLead(lead, ["x\n", "\ty\n"]);
@@ -1678,8 +1668,7 @@ describe("a text style that ends at a paragraph's line break", () => {
     expect(runsOf(bodyParagraphs(short)[0]))
       .toEqual([["some ", {}], ["wor", { bold: true }], ["d\n", {}]]);
 
-    // A range that holds the break is applied to it like any text, a link included, and ends
-    // where the next paragraph's break begins without reaching that one.
+    // A range holding the break styles it like text, link included, and stops short of the next.
     let whole = applyDocsRequests(tab, [styleText(6, 11, { link: LINK_A }, "link")]);
     expect(bodyParagraphs(whole).map(runsOf)).toEqual([
       [["some ", {}], ["word\n", { link: LINK_A, ...look }]],
@@ -1867,8 +1856,7 @@ describe("indexes kept by what a request touches", () => {
       expect(tally.refused).toBeGreaterThanOrEqual(100);
     });
 
-  // A tab that is stored, read back and known to the model again takes the next request as
-  // the tab in memory does: a round trip that changed an index, a field or a number fails here.
+  // A tab stored and read back between requests takes the next request as the tab in memory does.
   inParts("holds when every tab passes through the store between two requests",
     20261113, false, tally => {
       expect(tally.applied).toBeGreaterThanOrEqual(1500);
@@ -1910,8 +1898,7 @@ describe("indexes kept by what a request touches", () => {
     let merge = mergeCells(innermost(tab).startIndex, 0, 0, 3, 2);
     let grown = applyDocsRequests(tab, [merge]);
     expect(innermost(grown).endIndex - innermost(tab).endIndex).toBe(5);
-    // At the line break of the last cell, past where every holder ended before the merge. A
-    // request at the paragraph's start lies before those ends and reads none of them.
+    // At the last cell's line break, past every holder's end before the merge.
     let lastCell = innermost(grown).table?.tableRows?.[2]?.tableCells?.[2]?.content ?? [];
     let atBreak = insertText((lastCell.at(-1)?.endIndex ?? 0) - 1, "x");
 
@@ -1945,8 +1932,7 @@ describe("indexes kept by what a request touches", () => {
       expect(costOf(tab, requests)).toBe(2);
     }
 
-    // A paragraph write that makes list items pays for the items it reaches above what it
-    // wrote. These three runs of bullets lie inside the paragraphs the write changed.
+    // A write that makes list items pays for the items it reaches above what it wrote.
     let item = (text: string, nestingLevel = 0): BlockSpec =>
       ({ runs: [`${text}\n`], bullet: { listId: "made", nestingLevel } });
     let listed = (...blocks: BlockSpec[]) => buildTab(
@@ -1972,8 +1958,8 @@ describe("indexes kept by what a request touches", () => {
     expect(outdent.kinds.slice(-3)).toEqual(["insertText", "insertText", "createParagraphBullets"]);
     expect(outdent.cost).toBeLessThanOrEqual(2 + outdent.made);
 
-    // In general a run costs up to two: here it lies below a paragraph the same write changed,
-    // past the watermark that change left, so its first request pays a pass as well.
+    // Below a paragraph the same write changed, past its watermark: its first request pays a pass
+    // too.
     let below = written(
       buildTab([{ runs: ["A\n"] }, { runs: ["B\n"] }, { runs: ["C\n"] }, { runs: ["Tail\n"] }]),
       "A\n\nB\n\nC", "A2\n\nB\n\nC\n\n  - x");
@@ -2038,8 +2024,7 @@ describe("indexes kept by what a request touches", () => {
     ]);
     let result = applyDocsRequests(tab, [mergeCells(2, 0, 0, 2, 1)]);
 
-    // Inferred: Google numbers footnotes by where they stand, and no recorded document holds
-    // a merge over one. The request builders refuse a merge over a cell that holds one.
+    // Inferred: numbered by place; the builders refuse a merge over a cell holding one.
     expect(footnoteNumbers(result)).toEqual([["footnote-2", "1"], ["footnote-1", "2"]]);
     expect(hasModelFootnotes(result)).toBe(true);
   });
@@ -2338,10 +2323,7 @@ const cellIn = (element: StructuralElement, row: number, column: number): TableC
 /** Where the first paragraph of `cell` starts. */
 const textStart = (cell: TableCell): number => present(cell.content?.[0]).startIndex;
 
-/**
- * Where a walk of `tab` from its first element finds `index`: the first element that ends past
- * it, then, in a table, the first row and the first cell that do, and so on into the cell.
- */
+/** Where a walk of `tab` finds `index`: the first element, row and cell that end past it, nested. */
 function scannedPlace(tab: GoogleDocsTab, index: number): ModelPlace {
   let place: ModelPlace = {};
   let scan = (content: StructuralElement[], path: number[]): void => {
@@ -2366,9 +2348,8 @@ function scannedPlace(tab: GoogleDocsTab, index: number): ModelPlace {
 }
 
 /**
- * A tab for the lookups: paragraphs of several runs around three tables of the body. `wide` has
- * three rows or more and two columns or more, `holder` a table in a cell of its first row,
- * between two paragraphs, and `single` one cell. Their cells hold one paragraph or two.
+ * A tab for the lookups: multi-run paragraphs around three tables, `wide` (3+ by 2+), `holder` (a
+ * table in a first-row cell) and `single` (one cell).
  */
 function lookupTab({ below, pick }: Dice): GoogleDocsTab {
   let words = ["al", "be", "ga de", "eps"];
@@ -2470,8 +2451,7 @@ describe("lookups by index", () => {
       let tab = lookupTab(diceOf(seed));
       for (let [name, requests] of lookupBatches(tab)) {
         let result = applyDocsRequests(tab, requests);
-        // The batch's re-indexes without the one that ends it, which a batch pays once a
-        // request has moved an index: all that a lookup below the watermark spends.
+        // The batch's re-indexes but the closing one: all a lookup below the watermark spends.
         let unasked = costOf(tab, requests) - (requests.length > 0 ? 1 : 0);
         let below = 0;
         let past = 0;
@@ -2493,9 +2473,7 @@ describe("lookups by index", () => {
   });
 
   it("finds the boundaries", () => {
-    // A paragraph, a table whose second cell holds a table between two paragraphs, a second row
-    // and a paragraph. The text put in the nested cell brings the watermark to 18, where that
-    // cell's paragraph ends.
+    // A nested table in a cell; text put in its cell brings the watermark to 18, the cell's end.
     let tab = buildTab([
       para("ab"),
       { table: [["c\n", cellOf(para("d"), { table: [["e\n"]] }, para(""))], ["f\n", "g\n"]] },

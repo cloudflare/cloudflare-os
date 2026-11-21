@@ -10,9 +10,8 @@ setFlagsFromString("--expose-gc");
 export const collect = runInNewContext("gc") as () => void;
 
 /**
- * How a suite or a test that bounds a heap reading is declared: a failed test is run again,
- * twice at most, since a frame the engine has not yet optimised can keep the last values of
- * its registers, and when it is optimised moves with the machine's load.
+ * How a heap-bounding suite or test is declared: retried twice at most, since an unoptimised
+ * frame can keep its registers' last values alive for a while.
  */
 export const HEAP_MEASURED = { retry: 2 } as const;
 
@@ -29,11 +28,7 @@ export function observing(
   } as FakeDocStorage;
 }
 
-/**
- * What is in use after full collections: the heap's objects and the buffers outside the heap.
- * The engine's own code is left out: it comes and goes as a call runs, and none of it is what
- * the call holds.
- */
+/** What is in use after full collections: heap objects and outside buffers, not engine code. */
 export function inUse(): number {
   for (let pass = 0; pass < 4; pass++) collect();
   let objects = 0;
@@ -47,13 +42,9 @@ export function inUse(): number {
 const settled = () => Math.min(inUse(), inUse());
 
 /**
- * How much more is in use at a statement inside `call` than before it. `call` is handed
- * `storage` wrapped so that `inUse()` is read before each statement `at` answers true for;
- * the answer is the greatest of those readings less `inUse()` taken before `call`, and how
- * many statements `at` chose (0 says the measure is vacuous: assert it is not). `call`
- * builds its own store over the storage it is handed and answers nothing: this frame
- * holds numbers only, so no temporary of it pins what it measures. Each reading is the lower
- * of two taken in a row: what the calls before left on the stack can outlive one.
+ * The most more in use, at the statements `at` picks inside `call`, than before it, and how many
+ * it picked (0 means vacuous: assert it is not). `call` builds its own store and answers nothing,
+ * so this frame pins nothing it measures.
  */
 export function heapHeld(
   storage: FakeDocStorage,

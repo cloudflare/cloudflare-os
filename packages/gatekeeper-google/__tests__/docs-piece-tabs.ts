@@ -49,7 +49,6 @@ export const PIECE_SHAPES = [
   "sectionBreak",
 ] as const;
 
-/** One of `PIECE_SHAPES`. */
 export type PieceShape = (typeof PIECE_SHAPES)[number];
 
 /** The eleven kinds of table change, in the order the tests count them. */
@@ -63,7 +62,6 @@ export const TABLE_KINDS = [
 export type PieceTab = {
   readonly name: string;
   readonly tab: GoogleDocsTab;
-  /** The shapes the tab holds. */
   readonly shapes: ReadonlySet<PieceShape>;
   /** The body elements, by their place in the body, that are of each shape the tab holds. */
   readonly marks: ReadonlyMap<PieceShape, readonly number[]>;
@@ -277,7 +275,6 @@ export function pieceTabs(seed: number, count: number): PieceTab[] {
 
 /** An edit drawn on a generated tab. */
 export type PieceDraw = PieceCase & {
-  /** Whether the edit is an append. */
   readonly append: boolean;
   /** The shapes of the edit's own elements and of the elements beside them. */
   readonly beside: readonly PieceShape[];
@@ -495,13 +492,10 @@ export function tabEditCorpus(
     tabEdits(tab, seed + 7919 * (number + 1), edits).map(drawn => ({ tab, drawn })));
 }
 
-// ---------------------------------------------------------------------------
-// Table changes
-// ---------------------------------------------------------------------------
+// --- Table changes
 
 /** A table change drawn on a tab. */
 export type TableDraw = {
-  /** The kind of change. */
   readonly kind: TableChange["type"];
   /** The change by how its table reads, as a replay holds it; absent for a draw only a call makes. */
   readonly change?: TableChange;

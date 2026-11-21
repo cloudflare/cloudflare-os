@@ -1,6 +1,6 @@
-// What a fetch of a Google Doc stores and holds: stored as it is read, the rows are those of the
-// tabs stored whole, one run is in hand and what was written can be collected; a document held
-// for a Drive read is the bytes of its runs; a fetch that throws leaves storage as it was.
+// What a fetch of a Google Doc stores and holds: the rows of the tabs stored whole, one run in
+// hand, nothing written kept; a Drive read's document is its runs' bytes; a throwing fetch
+// leaves storage as it was.
 
 import { describe, expect, it } from "vitest";
 import type { GoogleDocsDocument, GoogleDocsTab, StructuralElement } from "../src/docs-api";
@@ -693,8 +693,7 @@ describe("what a fetch holds", () => {
   });
 
   it("lets the answer's elements be collected as their runs are written", HEAP_MEASURED, async () => {
-    // Nothing in the walk, the cut or the store holds an element the answer let go. Refs are
-    // made in a returned call before `nextJob`, and each is dereferenced once, after its release.
+    // Nothing holds an element the answer let go (refs made before `nextJob`, read once after).
     let answer = () => documentOf(distinctTabs(
       [linesTab(1_000, [300]), linesTab(1_000, [1, 500]), linesTab(1_000, [998])]));
     let document = answer();
@@ -739,8 +738,7 @@ describe("what a fetch holds", () => {
     expect(held.tabs).toHaveLength(3);
   });
 
-  // A cold read's peak: the answer (A characters) is let go as runs are written, and nothing a
-  // run makes is gathered, so no reading passes the heap before the keep by more than 512 KiB.
+  // A cold read lets the answer go as runs are written: no reading passes the start by 512 KiB.
   it("lets go of each run it has written", HEAP_MEASURED, () => {
     let paragraphs = 20_000;
     let tab = () => proseTab("t1", paragraphs);
