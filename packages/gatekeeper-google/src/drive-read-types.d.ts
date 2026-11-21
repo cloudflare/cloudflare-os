@@ -393,7 +393,7 @@ export interface GoogleDriveFolderReadSession extends Pick<GoogleDriveReadSessio
 
   /**
    * Return one live direct child, or the live target of a shortcut that is one. A nested
-   * descendant or a trashed entry is rejected.
+   * descendant without such a shortcut, or any trashed entry, is rejected.
    */
   getEntry(fileId: string): Promise<DriveEntry>;
 
