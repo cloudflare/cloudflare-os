@@ -123,7 +123,14 @@ export default function GadgetUseView({
               currentUserId={currentUserId}
             />
           </span>
-          <UserMenu />
+          {/* A "use" collaborator is never the workspace's owner, and has no chat open: the
+              gadget in front of them is what a report from here is about. */}
+          <UserMenu
+            report={{
+              workspace: { id: metadata.id, owned: false },
+              ...(selectedGadgetId !== null && { gadgetId: selectedGadgetId }),
+            }}
+          />
         </div>
       </div>
 

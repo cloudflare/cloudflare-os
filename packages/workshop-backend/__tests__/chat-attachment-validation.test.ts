@@ -4,6 +4,7 @@ import {
   canInlineChatAttachmentImage,
   decodeChatAttachmentText,
   isAllowedChatAttachmentImageMimeType,
+  sniffImageMimeType,
   validateChatAttachmentUpload,
 } from "../src/chat-attachment-validation.js";
 
@@ -199,5 +200,51 @@ describe("decodeChatAttachmentText", () => {
 
   it("does not infer text for explicitly binary MIME types", () => {
     expect(decodeChatAttachmentText("application/pdf", new TextEncoder().encode("%PDF-1.7"))).toBeUndefined();
+  });
+});
+
+describe("sniffImageMimeType", () => {
+  const png = Uint8Array.of(0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13);
+  const jpeg = Uint8Array.of(0xFF, 0xD8, 0xFF, 0xE0, 0, 16, 0x4A, 0x46, 0x49, 0x46, 0, 1);
+  const webp = Uint8Array.of(
+      0x52, 0x49, 0x46, 0x46, 0x24, 0x10, 0, 0, 0x57, 0x45, 0x42, 0x50);
+
+  it("recognises each format by its signature", () => {
+    expect(sniffImageMimeType(png)).toBe("image/png");
+    expect(sniffImageMimeType(jpeg)).toBe("image/jpeg");
+    expect(sniffImageMimeType(webp)).toBe("image/webp");
+  });
+
+  it("reads the signature alone, whatever follows it", () => {
+    let longer = new Uint8Array(64);
+    longer.set(webp);
+    longer.fill(0x3C, 12);
+    expect(sniffImageMimeType(longer)).toBe("image/webp");
+  });
+
+  it("recognises a WebP whatever its length field holds", () => {
+    let other = webp.slice();
+    other.set([0xFF, 0xFF, 0xFF, 0xFF], 4);
+    expect(sniffImageMimeType(other)).toBe("image/webp");
+  });
+
+  it("knows nothing of a prefix shorter than its signature", () => {
+    expect(sniffImageMimeType(new Uint8Array(0))).toBeUndefined();
+    expect(sniffImageMimeType(png.subarray(0, 3))).toBeUndefined();
+    expect(sniffImageMimeType(jpeg.subarray(0, 2))).toBeUndefined();
+    expect(sniffImageMimeType(webp.subarray(0, 11))).toBeUndefined();
+  });
+
+  it.each([
+    ["a PNG with one byte changed", Uint8Array.of(0x89, 0x50, 0x4E, 0x46, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13)],
+    ["a JPEG with one byte changed", Uint8Array.of(0xFF, 0xD8, 0xFE, 0xE0, 0, 16, 0x4A, 0x46, 0x49, 0x46, 0, 1)],
+    ["a RIFF file that is not a WebP", new TextEncoder().encode("RIFF\x24\x10\0\0WAVEfmt ")],
+    ["a WebP whose container is not RIFF", new TextEncoder().encode("RIFX\x24\x10\0\0WEBPVP8 ")],
+    ["a GIF", new TextEncoder().encode("GIF89a\x01\0\x01\0\0\0")],
+    ["an SVG", new TextEncoder().encode("<svg xmlns=\"http://www.w3.org/2000/svg\">")],
+    ["an HTML page", new TextEncoder().encode("<html><body></body></html>")],
+    ["a PDF", new TextEncoder().encode("%PDF-1.7\n1 0 obj")],
+  ])("knows nothing of %s", (_name, bytes) => {
+    expect(sniffImageMimeType(bytes)).toBeUndefined();
   });
 });

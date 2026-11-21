@@ -484,6 +484,16 @@ html {
   z-index: 1100;
 }
 
+/* While Report issue captures the tab, its dialog and backdrop stay mounted but out of the
+   picture. Kumo renders the backdrop itself, so this is keyed on the attribute the dialog puts on
+   the portal that holds both. No transition: the backdrop transitions every property, which would
+   keep it in sight for the length of one. */
+[data-report-issue-capturing],
+[data-report-issue-capturing] * {
+  visibility: hidden !important;
+  transition: none !important;
+}
+
 /* Keep global notifications above dialogs, which use z-indexes up to 1200. */
 [role="region"][aria-label="Notifications"] {
   z-index: 2000;

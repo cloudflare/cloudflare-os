@@ -1,26 +1,28 @@
 // The grants a workspace's owner gives deployment admins to read its content
 // (Overseer.grantAdminAccess(), renewAdminAccess(), revokeAdminAccess() and listAdminGrants()):
 // who may call them, what each stores and returns, how the answers are bounded, that nothing is
-// written to the admin audit log or anywhere else in the workspace, and that they never touch a
-// grant a second admin's approval gave.
+// written to the admin audit log or anywhere else in the workspace, that they never touch a
+// grant a second admin's approval gave, and how a grant given with an issue report reaches the
+// report that shows it.
 //
 // Runs against a real OverseerDurableObject (the TEST_OVERSEER binding) whose impl.env is replaced
 // per test, over real sessions opened on it. The deployment-wide log is the real
 // AdminAuditDurableObject the Overseer reaches through ctx.exports, read back through the
 // TEST_ADMIN_AUDIT binding.
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import {
   ADMIN_ACCESS_ERROR_CODES, ADMIN_GRANT_ERROR_CODES, ADMIN_GRANT_LIFETIME_SECONDS,
-  MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_GRANTS_LISTED, getAdminAccessErrorCode,
-  getAdminGrantErrorCode,
+  ISSUE_REPORT_ERROR_CODES, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_GRANTS_LISTED,
+  getAdminAccessErrorCode, getAdminGrantErrorCode, getIssueReportErrorCode,
   type AdminAccessGrant, type AdminWorkspaceAccess, type AiChatAuthorInfo,
   type CollaboratorRole, type Overseer,
 } from "@gadgets/workshop-shared/api";
 import type { OverseerDurableObject } from "../src/overseer.js";
 import type { AdminAuditDurableObject } from "../src/admin-audit.js";
+import type { IssueReportsDurableObject } from "../src/issue-reports.js";
 import { namedUser } from "../src/admin-access.js";
 import { ADMIN_CONFIG_KEY } from "../src/storage-schema/blueprints-kv.js";
 // Load the whole backend (the pool's `main`) up front, so its slow load does not count against the
@@ -31,6 +33,7 @@ declare module "cloudflare:workers" {
   interface ProvidedEnv {
     TEST_OVERSEER: DurableObjectNamespace<OverseerDurableObject>;
     TEST_ADMIN_AUDIT: DurableObjectNamespace<AdminAuditDurableObject>;
+    TEST_ISSUE_REPORTS: DurableObjectNamespace<IssueReportsDurableObject>;
   }
 }
 
@@ -233,6 +236,10 @@ async function refusalOf(promise: Promise<unknown>): Promise<{ code?: string; me
 }
 
 const NOT_FOUND = { code: ADMIN_GRANT_ERROR_CODES.notFound, message: "No such grant." };
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe("who may call the grant methods", () => {
   it("refuses a collaborator who builds, with the owner-only error", () => withWorkspace(async ws => {
@@ -718,5 +725,246 @@ describe("a workspace that is deleted", () => {
       expect(await client.listAdminGrants()).toStrictEqual([]);
       expect([...ws.state.storage.kv.list()]).toStrictEqual([]);
     });
+  }));
+});
+
+// A fresh issue report store of the real class, which the workspace reaches in place of the
+// deployment's. `calls` names each call the workspace makes to it; `fail.noteGrant` is how many
+// of the next noteGrant() calls reject without reaching it, and `fail.noteGrantAnswer` how many
+// reach it and then reject, as a call whose answer was lost does.
+function reportStore(ws: Workspace) {
+  let stub = env.TEST_ISSUE_REPORTS.getByName(crypto.randomUUID());
+  let calls: string[] = [];
+  let fail = { noteGrant: 0, noteGrantAnswer: 0 };
+  ws.impl.issueReports = { getByName: () => ({
+    checkGrantLink: (...args: Parameters<IssueReportsDurableObject["checkGrantLink"]>) => {
+      calls.push("checkGrantLink");
+      return stub.checkGrantLink(...args);
+    },
+    noteGrant: async (...args: Parameters<IssueReportsDurableObject["noteGrant"]>) => {
+      calls.push("noteGrant");
+      if (fail.noteGrant-- > 0) throw new Error("The issue report store is unreachable.");
+      await stub.noteGrant(...args);
+      if (fail.noteGrantAnswer-- > 0) throw new Error("The issue report store's answer was lost.");
+    },
+  }) };
+  return {
+    stub, calls, fail,
+    // Files a report about the workspace (or about `workspaceId`) for `reporter`.
+    file: async (reporter: AiChatAuthorInfo = OWNER, workspaceId: string = ws.id) =>
+        (await stub.submit(reporter, {
+          text: "The chart is blank.", priority: "high", context: { workspaceId },
+        }, reporter === OWNER)).id,
+    // The grant a report shows, as admins and as its reporter read it.
+    shown: async (reportId: string, reporter: AiChatAuthorInfo = OWNER) => {
+      let grant = (await stub.get(reportId)).grant;
+      expect((await stub.getOwn(reporter.id, reportId)).grant).toStrictEqual(grant);
+      return grant;
+    },
+    grantRows: () => runInDurableObject(stub, (_reports, state) =>
+        state.storage.sql.exec("SELECT id FROM grants").toArray().length),
+  };
+}
+
+// The code of the issue report refusal a call rejects with.
+async function reportRefusalOf(promise: Promise<unknown>): Promise<string | undefined> {
+  try {
+    await promise;
+  } catch (err) {
+    return getIssueReportErrorCode(err);
+  }
+  throw new Error("Expected a refusal.");
+}
+
+describe("a grant given with an issue report", () => {
+  it("is shown by the report, through its renewal and its end", () => withWorkspace(async ws => {
+    let store = reportStore(ws);
+    let reportId = await store.file();
+    await asOwner(ws, async client => {
+      let audit = await auditRecords();
+      let grant = await client.grantAdminAccess({ reportId });
+      expect(grant).toMatchObject({ source: "owner", scope: "workspace", reportId });
+      expect(storedGrants(ws)).toStrictEqual([grant]);
+      expect(await store.shown(reportId))
+          .toStrictEqual({ id: grant.id, scope: "workspace", expiresAt: grant.expiresAt });
+
+      vi.useFakeTimers({ toFake: ["Date"], now: Date.now() + HOUR_MS });
+      let renewed = await client.renewAdminAccess(grant.id);
+      expect(renewed.expiresAt.getTime()).toBeGreaterThan(grant.expiresAt.getTime());
+      expect(await store.shown(reportId))
+          .toStrictEqual({ id: grant.id, scope: "workspace", expiresAt: renewed.expiresAt });
+
+      await client.revokeAdminAccess(grant.id);
+      let [ended] = storedGrants(ws);
+      expect(await store.shown(reportId)).toStrictEqual({
+        id: grant.id, scope: "workspace", expiresAt: renewed.expiresAt, endedAt: ended.revokedAt,
+      });
+      expect(await auditRecords()).toStrictEqual(audit);
+    });
+  }));
+
+  it("refuses a report that cannot show the grant, and gives none", () => withWorkspace(async ws => {
+    let store = reportStore(ws);
+    let bobs = await store.file(BOB);
+    let elsewhere = await store.file(OWNER, "another-workspace");
+    let linked = await store.file();
+    await asOwner(ws, async client => {
+      let live = await client.grantAdminAccess({ reportId: linked });
+      let before = await client.listAdminGrants();
+      for (let reportId of [bobs, elsewhere, linked, "no-such-report"]) {
+        expect(await reportRefusalOf(client.grantAdminAccess({ reportId })))
+            .toBe(ISSUE_REPORT_ERROR_CODES.notFound);
+      }
+      expect(await client.listAdminGrants()).toStrictEqual(before);
+      expect(await store.shown(bobs, BOB)).toBeUndefined();
+      expect(await store.shown(elsewhere)).toBeUndefined();
+      expect(await store.shown(linked)).toMatchObject({ id: live.id });
+      // Each refusal came from the question asked before anything was stored.
+      expect(store.calls.slice(2)).toStrictEqual(Array(4).fill("checkGrantLink"));
+    });
+  }));
+
+  it("does not ask the store while the level in force is below content",
+      () => withWorkspace(async ws => {
+    let store = reportStore(ws);
+    let reportId = await store.file();
+    ws.config.adminWorkspaceAccess = "metadata";
+    await asOwner(ws, async client => {
+      expect((await refusalOf(client.grantAdminAccess({ reportId }))).code)
+          .toBe(ADMIN_ACCESS_ERROR_CODES.contentOff);
+    });
+    expect(store.calls).toStrictEqual([]);
+    expect(storedGrants(ws)).toStrictEqual([]);
+  }));
+
+  it("is refused a collaborator, who can file a report but not give a grant",
+      () => withWorkspace(async ws => {
+    let store = reportStore(ws);
+    let reportId = await store.file(BOB);
+    await asCollaborator(ws, "build", async client => {
+      await expect(client.grantAdminAccess({ reportId })).rejects.toThrow(OWNER_ONLY);
+    });
+    await asCollaborator(ws, "use", async client => {
+      await expect(client.grantAdminAccess({ reportId })).rejects.toThrow(USE_ONLY);
+    });
+    expect(store.calls).toStrictEqual([]);
+    expect(storedGrants(ws)).toStrictEqual([]);
+  }));
+
+  it("replaces the report's grant once that one was revoked or has expired",
+      () => withWorkspace(async ws => {
+    let store = reportStore(ws);
+    let reportId = await store.file();
+    await asOwner(ws, async client => {
+      let first = await client.grantAdminAccess({ reportId });
+      await client.revokeAdminAccess(first.id);
+      let second = await client.grantAdminAccess({ reportId });
+      expect(await store.shown(reportId)).toMatchObject({ id: second.id });
+
+      // The second grant expires: aged in the workspace and in the store's copy.
+      let past = new Date(Date.now() - HOUR_MS);
+      put(ws, { ...second, expiresAt: past });
+      await runInDurableObject(store.stub, (_reports, state) => {
+        state.storage.sql.exec("UPDATE grants SET expires_at = ?", past.getTime());
+      });
+      let third = await client.grantAdminAccess({ reportId });
+      expect(await store.shown(reportId))
+          .toStrictEqual({ id: third.id, scope: "workspace", expiresAt: third.expiresAt });
+      expect(await store.grantRows()).toBe(1);
+    });
+  }));
+
+  it("ends the grant at once when the link fails after it was stored",
+      () => withWorkspace(async ws => {
+    let store = reportStore(ws);
+    let reportId = await store.file();
+    await asOwner(ws, async client => {
+      store.fail.noteGrant = 1;
+      await expect(client.grantAdminAccess({ reportId }))
+          .rejects.toThrow("The issue report store is unreachable.");
+      // The second call tells the store of the end, which no report shows.
+      expect(store.calls).toStrictEqual(["checkGrantLink", "noteGrant", "noteGrant"]);
+      expect(storedGrants(ws)).toStrictEqual([{
+        id: expect.any(String), level: "content", source: "owner", scope: "workspace",
+        grantedBy: namedUser(OWNER), reportId, grantedAt: expect.any(Date),
+        expiresAt: expect.any(Date), revokedAt: expect.any(Date), revokedBy: namedUser(OWNER),
+      }]);
+      expect(ws.impl.liveAdminGrants()).toStrictEqual([]);
+      expect(await store.shown(reportId)).toBeUndefined();
+    });
+  }));
+
+  it("tells the report of the end when the link was made and its answer was lost",
+      () => withWorkspace(async ws => {
+    let store = reportStore(ws);
+    let reportId = await store.file();
+    await asOwner(ws, async client => {
+      store.fail.noteGrantAnswer = 1;
+      await expect(client.grantAdminAccess({ reportId }))
+          .rejects.toThrow("The issue report store's answer was lost.");
+      let [ended] = storedGrants(ws);
+      expect(ended.revokedAt).toBeInstanceOf(Date);
+      expect(ws.impl.liveAdminGrants()).toStrictEqual([]);
+      expect(await store.shown(reportId)).toStrictEqual({
+        id: ended.id, scope: "workspace", expiresAt: ended.expiresAt, endedAt: ended.revokedAt,
+      });
+
+      // The report shows an ended grant, so the owner's next try gives a fresh one.
+      let next = await client.grantAdminAccess({ reportId });
+      expect(next.id).not.toBe(ended.id);
+      expect(ws.impl.liveAdminGrants()).toStrictEqual([next]);
+      expect(await store.shown(reportId))
+          .toStrictEqual({ id: next.id, scope: "workspace", expiresAt: next.expiresAt });
+    });
+  }));
+
+  it("sends an end the report missed again when the grant is ended again",
+      () => withWorkspace(async ws => {
+    let store = reportStore(ws);
+    let reportId = await store.file();
+    await asOwner(ws, async client => {
+      let grant = await client.grantAdminAccess({ reportId });
+      store.fail.noteGrant = 1;
+      await client.revokeAdminAccess(grant.id);
+      let [ended] = storedGrants(ws);
+      expect(ended.revokedAt).toBeInstanceOf(Date);
+      expect(await store.shown(reportId))
+          .toStrictEqual({ id: grant.id, scope: "workspace", expiresAt: grant.expiresAt });
+
+      await client.revokeAdminAccess(grant.id);
+      expect(storedGrants(ws)).toStrictEqual([ended]);
+      expect(await store.shown(reportId)).toMatchObject({ endedAt: ended.revokedAt });
+
+      // A renewal's push is best effort too.
+      let next = await client.grantAdminAccess({ reportId });
+      store.fail.noteGrant = 1;
+      let renewed = await client.renewAdminAccess(next.id);
+      expect(ws.impl.liveAdminGrants()).toStrictEqual([renewed]);
+    });
+  }));
+
+  it("calls the store not at all for a grant given with no report", () => withWorkspace(async ws => {
+    let store = reportStore(ws);
+    await asOwner(ws, async client => {
+      let grant = await client.grantAdminAccess();
+      await client.renewAdminAccess(grant.id);
+      await client.revokeAdminAccess(grant.id);
+      await client.revokeAdminAccess(grant.id);
+    });
+    expect(store.calls).toStrictEqual([]);
+  }));
+
+  it("keeps one row in the store through fifty grants and ends on one report",
+      () => withWorkspace(async ws => {
+    let store = reportStore(ws);
+    let reportId = await store.file();
+    await asOwner(ws, async client => {
+      for (let turn = 0; turn < 50; turn++) {
+        let grant = await client.grantAdminAccess({ reportId });
+        await client.revokeAdminAccess(grant.id);
+      }
+    });
+    expect(storedGrants(ws)).toHaveLength(50);
+    expect(await store.grantRows()).toBe(1);
   }));
 });

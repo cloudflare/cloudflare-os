@@ -1372,6 +1372,74 @@ export interface AuthenticatedApi extends RpcTarget {
       vendorId: string, selectedUserId: string,
   ): Promise<GatekeeperUserSelection | null>;
 
+  // --- Issue reports ---
+
+  /**
+   * File an issue report for the deployment's admins: what went wrong, a priority and where the
+   * caller was. The server stamps who files it and when; its status is "new". A workspace it
+   * names must be one the caller owns or is a collaborator on, and a chat or gadget one they can
+   * open there (refused `contextNotFound`), so a report cannot point admins at somebody else's
+   * workspace. Images are added afterwards with addIssueReportImage(), and a grant, if the
+   * caller gives one, with Overseer.grantAdminAccess() or grantAccountAdminAccess() naming the
+   * report. Filing gives admins nothing but the report. Refused `tooManyReports` past
+   * MAX_ISSUE_REPORTS_PER_DAY. Reports are kept for the deployment's retention
+   * (DEFAULT_ISSUE_REPORT_RETENTION_DAYS unless an admin set another), then deleted with their
+   * thread and images.
+   */
+  submitIssueReport(report: IssueReportInput): Promise<OwnIssueReport>;
+
+  /**
+   * Add an image to an issue report the caller filed, as a stream of its bytes and their number.
+   * `byteLength` is how many bytes `image` holds: a whole number, checked before a byte is read.
+   * The server reads the format from the first bytes (see ISSUE_REPORT_IMAGE_TYPES) and stores
+   * the rest as it arrives: nothing is held whole. Refused `notFound` (also for a report that is
+   * already past the deployment's retention and about to be deleted), `closed`,
+   * `tooManyImages`, `imageNotRecognised`, `imageTooLarge` when `byteLength` is over
+   * MAX_ISSUE_REPORT_IMAGE_BYTES, `tooManyUploads` while the caller has
+   * MAX_ISSUE_REPORT_IMAGE_UPLOADS_PER_USER uploads in progress, and `imageQuotaReached` past
+   * MAX_ISSUE_REPORT_IMAGE_BYTES_PER_USER: the report stays filed either way, and a refused or
+   * interrupted upload leaves nothing stored. Throws for a `byteLength` that is not a whole
+   * number, for a stream that holds more or fewer bytes than it, and for an upload the server
+   * cut off because it took too long. An upload in progress holds `byteLength` of the caller's
+   * MAX_ISSUE_REPORT_IMAGE_BYTES_PER_USER until it ends.
+   */
+  addIssueReportImage(reportId: string, image: ReadableStream<Uint8Array>, byteLength: number)
+      : Promise<IssueReportImage>;
+
+  /** The issue reports the caller filed that are still kept, newest first, a page of at most
+   * ISSUE_REPORT_PAGE_SIZE at a time: a user can keep more reports than one answer holds.
+   * `cursor` is the previous page's `nextCursor`; absent for the first page. Throws for a cursor
+   * that is not one this method returned to the caller. */
+  listIssueReports(cursor?: string): Promise<OwnIssueReportPage>;
+
+  /** One issue report the caller filed, with its public thread, oldest entry first. An admin's
+   * entry names the admin without their id (see IssueReportAuthor). Refused `notFound` for any
+   * other report. */
+  getIssueReport(reportId: string): Promise<OwnIssueReport & { entries: IssueReportEntry[] }>;
+
+  /** The bytes of one image of an issue report the caller filed, as a stream. Render them only
+   * as an image of the type its IssueReportImage names. Refused `notFound`. */
+  readIssueReportImage(reportId: string, imageId: string): Promise<ReadableStream<Uint8Array>>;
+
+  /**
+   * Reply in the public thread of an issue report the caller filed: non-blank text of at most
+   * MAX_ISSUE_REPORT_TEXT_LENGTH characters. A reply to a report that is "answered" or
+   * "waitingOnReporter" moves it to "withAdmin". Refused `notFound`, `closed` for a closed
+   * report, `threadFull` once the report holds MAX_ISSUE_REPORT_THREAD_ENTRIES replies of the
+   * caller's (the admins' entries do not count), and `tooManyReplies` past
+   * MAX_ISSUE_REPORT_REPLIES_PER_DAY.
+   */
+  replyToIssueReport(reportId: string, text: string): Promise<IssueReportEntry>;
+
+  /** How many of the caller's issue reports hold a public entry an admin wrote that they have
+   * not marked seen (see OwnIssueReport.unseen). Read, not pushed: ask again to refresh it. */
+  getUnseenIssueReportCount(): Promise<number>;
+
+  /** Mark every public entry now in an issue report the caller filed as seen: what the report
+   * holds when the call arrives, which can be more than the caller last read, so read the
+   * report again afterwards. Refused `notFound`. */
+  markIssueReportSeen(reportId: string): Promise<void>;
+
   // --- Admin access grants ---
 
   /**
@@ -1384,11 +1452,14 @@ export interface AuthenticatedApi extends RpcTarget {
   /**
    * Let deployment admins read the content of every workspace the caller owns, those made later
    * included, for ADMIN_GRANT_LIFETIME_SECONDS: gives the account-wide grant, or moves the live
-   * one's end to that long from now, any number of times. A workspace learns of the grant when an
-   * admin next asks it for content. Refused `contentOff` (ADMIN_ACCESS_ERROR_CODES) as
-   * Overseer.grantAdminAccess() is.
+   * one's end to that long from now, any number of times. `reportId` links an issue report the
+   * caller filed, as for Overseer.grantAdminAccess(); one grant can be linked to several
+   * reports. A report that names a workspace the caller does not own is refused
+   * (ISSUE_REPORT_ERROR_CODES.notFound): the grant would not cover it. A workspace learns of the
+   * grant when an admin next asks it for content. Refused `contentOff`
+   * (ADMIN_ACCESS_ERROR_CODES) as that method is.
    */
-  grantAccountAdminAccess(): Promise<AdminAccessGrant>;
+  grantAccountAdminAccess(options?: { reportId?: string }): Promise<AdminAccessGrant>;
 
   /** End the account-wide grant now. A workspace stops answering content calls under it within
    * ADMIN_GRANT_ACCOUNT_CACHE_SECONDS. Changes nothing when there is no live one. */
@@ -1637,6 +1708,18 @@ export type AdminSettingsView = {
     /** The fewest days the deployment allows, which its ADMIN_AUDIT_RETENTION_MIN_DAYS environment
      * variable sets: DEFAULT_ADMIN_AUDIT_RETENTION_DAYS while that is unset, blank or not a
      * positive whole number. */
+    min: number;
+  };
+  /** How many days an issue report is kept (see AdminApi.setIssueReportRetentionDays):
+   * `effective`. */
+  issueReportRetentionDays: {
+    /** The retention enforced: the higher of `chosen` and `min`. */
+    effective: number;
+    /** The retention an admin set, DEFAULT_ISSUE_REPORT_RETENTION_DAYS until one does. */
+    chosen: number;
+    /** The fewest days the deployment allows, which its ISSUE_REPORT_RETENTION_MIN_DAYS
+     * environment variable sets: DEFAULT_ISSUE_REPORT_RETENTION_DAYS while that is unset, blank
+     * or not a positive whole number. */
     min: number;
   };
   /** Site name shown next to the top-bar logo ("" falls back to DEFAULT_SITE_NAME). */
@@ -2012,8 +2095,11 @@ export type AdminUserMethod = typeof ADMIN_USER_METHODS[number];
  * requestContentAccess(), approveContentAccess(), denyContentAccess() and endWorkspaceGrant() as
  * AdminGrantRecords. The rest change no setting and are not recorded: the reads (getSettings,
  * isBlueprintFeatured, getUpdateStatus, listUsers, listWorkspaces, listAdminAudit,
- * getAdminAuditStats, listContentAccessRequests, getContentAccessRequest), the gateway tests, and
- * checkForUpdates.
+ * getAdminAuditStats, listContentAccessRequests, getContentAccessRequest, whoami), the gateway
+ * tests, checkForUpdates, and the issue report methods (listIssueReports, getIssueReport,
+ * addIssueReportEntry, setIssueReportStatus, claimIssueReport, releaseIssueReport,
+ * setIssueReportLinks, readIssueReportImage): a report is written to admins, and its thread is its
+ * own record of who did what, when and how.
  */
 export const ADMIN_SETTING_METHODS = [
   "setSignupsEnabled", "setUserSearchEnabled", "setSiteName", "setSiteLogo",
@@ -2024,8 +2110,8 @@ export const ADMIN_SETTING_METHODS = [
   "setGatewayModelSettings", "setDefaultReasoning", "setGatewayProviderEnabled",
   "setUpdateChecksEnabled", "setUpdateCheckIntervalMinutes", "setUpdateMinimumAgeHours",
   "setUpdateNoticeSnoozeHours", "setRestrictedWebFetchHosts", "setRestrictedWebFetchApprovals",
-  "setAdminWorkspaceAccess", "setAdminAuditRetentionDays", "setGatewayProviderOrder",
-  "setGatewayModelOrder", "setSnapshotSharingEnabled",
+  "setAdminWorkspaceAccess", "setAdminAuditRetentionDays", "setIssueReportRetentionDays",
+  "setGatewayProviderOrder", "setGatewayModelOrder", "setSnapshotSharingEnabled",
 ] as const satisfies readonly (keyof AdminApi)[];
 
 /** One of ADMIN_SETTING_METHODS. */
@@ -2309,7 +2395,7 @@ export const MAX_ADMIN_GRANTS_LISTED = 20;
 export const ADMIN_GRANT_ACCOUNT_CACHE_SECONDS = 60;
 
 /**
- * A user as a record that admins read names them (a grant): their profile id
+ * A user as a record that admins read names them (a grant; an issue report): their profile id
  * and display name, and nothing else of their profile. Each is at most
  * MAX_ADMIN_AUDIT_ARG_LENGTH characters, since neither has a bound of its own and such records
  * are returned many at a time: a longer name is cut, its last character replaced with "…", and a
@@ -2365,6 +2451,8 @@ export type AdminAccessGrant = {
   requestId?: string;
   /** For "admins": why, as the requester gave it. */
   reason?: string;
+  /** For "owner": the issue report it was given with, when it was given with one. */
+  reportId?: string;
   /** When it was given. */
   grantedAt: Date;
   /** When it stops being live unless revoked sooner: ADMIN_GRANT_LIFETIME_SECONDS after it was
@@ -2517,6 +2605,377 @@ export type AdminGrantRecord = Pick<AdminAccessRecord,
    * one replaces, ending it as ended by its approver (AdminAccessGrant.id). Absent when there was
    * none. */
   replacedGrantId?: string;
+};
+
+/** How urgent a reporter says an issue is. */
+export const ISSUE_REPORT_PRIORITIES = ["low", "medium", "high"] as const;
+
+/** One of ISSUE_REPORT_PRIORITIES. */
+export type IssueReportPriority = typeof ISSUE_REPORT_PRIORITIES[number];
+
+/**
+ * Where an issue report stands:
+ *   - "new":               filed, and no admin has set a status;
+ *   - "investigating":     an admin is looking into it;
+ *   - "answered":          an admin answered, and expects nothing more;
+ *   - "waitingOnReporter": an admin asked the reporter something;
+ *   - "withAdmin":         back in front of the admins: the reporter replied to a report that was
+ *                          "answered" or "waitingOnReporter";
+ *   - "fixSuggested":      it needs a change to the code, which nobody has started;
+ *   - "fixInProgress":     a change to the code is being made;
+ *   - "fixProposed":       a change to the code was proposed, and waits for review;
+ *   - "closed":            done. The reporter can no longer reply.
+ * Admins set any status. A reporter sets none, except that their reply moves "answered" and
+ * "waitingOnReporter" to "withAdmin"; it moves no other status. "fixSuggested" and
+ * "fixInProgress" are the admins' own: the reporter reads both as "withAdmin" (see
+ * issueReportStatusForReporter()).
+ */
+export const ISSUE_REPORT_STATUSES = [
+  "new", "investigating", "answered", "waitingOnReporter", "withAdmin", "fixSuggested",
+  "fixInProgress", "fixProposed", "closed",
+] as const;
+
+/** One of ISSUE_REPORT_STATUSES. */
+export type IssueReportStatus = typeof ISSUE_REPORT_STATUSES[number];
+
+/**
+ * The status a report's reporter reads where the admins read `status`: "withAdmin" for
+ * "fixSuggested" and "fixInProgress", and `status` itself for every other. The one place that
+ * says so: the report store builds everything a reporter reads with it.
+ */
+export function issueReportStatusForReporter(status: IssueReportStatus): IssueReportStatus {
+  return status === "fixSuggested" || status === "fixInProgress" ? "withAdmin" : status;
+}
+
+/** The longest text of an issue report, and of one entry of its thread: UTF-16 code units (a
+ * string's `length`) of the text once trimmed. */
+export const MAX_ISSUE_REPORT_TEXT_LENGTH = 2000;
+
+/** The most images one issue report holds. */
+export const MAX_ISSUE_REPORT_IMAGES = 5;
+
+/** The largest image an issue report takes, in bytes: 5 MiB, which a PNG capture of a browser tab
+ * on a high-density display fits in. The Workshop re-encodes a larger capture before sending. */
+export const MAX_ISSUE_REPORT_IMAGE_BYTES = 5 * 1024 * 1024;
+
+/** The image formats an issue report takes, as the server recognises them from an image's first
+ * bytes: never from a name or a type its sender gave. */
+export const ISSUE_REPORT_IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp"] as const;
+
+/** One of ISSUE_REPORT_IMAGE_TYPES. */
+export type IssueReportImageType = typeof ISSUE_REPORT_IMAGE_TYPES[number];
+
+/** The most issue reports one user may file in a UTC day. */
+export const MAX_ISSUE_REPORTS_PER_DAY = 20;
+
+/** The most entries of each of three kinds one issue report's thread holds: the reporter's
+ * replies, the admins' public entries, and the admins-only ones. Each kind is counted apart, so
+ * that a reporter who fills their side cannot stop the admins answering, and a full thread
+ * tells a reporter nothing of the admins' notes. A bare change of status or of assignee is not
+ * counted, so a full thread can always be closed and its report taken. */
+export const MAX_ISSUE_REPORT_THREAD_ENTRIES = 200;
+
+/** The most replies one user may write in the threads of their issue reports in a UTC day. */
+export const MAX_ISSUE_REPORT_REPLIES_PER_DAY = 100;
+
+/** The most image bytes the issue reports one user filed hold together while they are kept:
+ * 50 MiB, ten images of the largest size. The deployment's images have no bound as a whole, so
+ * this is what bounds how much they grow. */
+export const MAX_ISSUE_REPORT_IMAGE_BYTES_PER_USER = 50 * 1024 * 1024;
+
+/** The most images one user may be uploading to their issue reports at one time. An upload that
+ * was interrupted counts until the server has cleared it away, some minutes later. */
+export const MAX_ISSUE_REPORT_IMAGE_UPLOADS_PER_USER = 2;
+
+/** The most links admins attach to one issue report. */
+export const MAX_ISSUE_REPORT_LINKS = 10;
+
+/** The longest link admins attach to an issue report, in characters. */
+export const MAX_ISSUE_REPORT_LINK_LENGTH = 2000;
+
+/** The longest app version an issue report keeps, in characters. */
+export const MAX_ISSUE_REPORT_APP_VERSION_LENGTH = 100;
+
+/** How many days an issue report is kept from its filing until an admin sets otherwise, and the
+ * fewest an admin may set unless the deployment's ISSUE_REPORT_RETENTION_MIN_DAYS says
+ * otherwise. */
+export const DEFAULT_ISSUE_REPORT_RETENTION_DAYS = 90;
+
+/** The longest retention an admin may set for issue reports, in days: ten years. */
+export const MAX_ISSUE_REPORT_RETENTION_DAYS = 3650;
+
+/** Stable error codes attached to expected refusals of the issue report methods. */
+export const ISSUE_REPORT_ERROR_CODES = {
+  notFound: "ISSUE_REPORT_NOT_FOUND",
+  contextNotFound: "ISSUE_REPORT_CONTEXT_NOT_FOUND",
+  closed: "ISSUE_REPORT_CLOSED",
+  tooManyReports: "ISSUE_REPORT_TOO_MANY",
+  tooManyReplies: "ISSUE_REPORT_TOO_MANY_REPLIES",
+  threadFull: "ISSUE_REPORT_THREAD_FULL",
+  assigned: "ISSUE_REPORT_ASSIGNED",
+  tooManyImages: "ISSUE_REPORT_TOO_MANY_IMAGES",
+  imageTooLarge: "ISSUE_REPORT_IMAGE_TOO_LARGE",
+  imageNotRecognised: "ISSUE_REPORT_IMAGE_NOT_RECOGNISED",
+  imageQuotaReached: "ISSUE_REPORT_IMAGE_QUOTA_REACHED",
+  tooManyUploads: "ISSUE_REPORT_TOO_MANY_UPLOADS",
+} as const;
+
+/** An expected refusal code from ISSUE_REPORT_ERROR_CODES. */
+export type IssueReportErrorCode =
+    typeof ISSUE_REPORT_ERROR_CODES[keyof typeof ISSUE_REPORT_ERROR_CODES];
+
+const issueReportErrors = codedErrorFamily<IssueReportErrorCode>({
+  [ISSUE_REPORT_ERROR_CODES.notFound]: "No such issue report.",
+  [ISSUE_REPORT_ERROR_CODES.contextNotFound]:
+      "This report names a workspace, chat or gadget you cannot open.",
+  [ISSUE_REPORT_ERROR_CODES.closed]: "This issue report is closed.",
+  [ISSUE_REPORT_ERROR_CODES.tooManyReports]:
+      "You have filed too many issue reports today. Try again tomorrow.",
+  [ISSUE_REPORT_ERROR_CODES.tooManyReplies]:
+      "You have replied to issue reports too many times today. Try again tomorrow.",
+  [ISSUE_REPORT_ERROR_CODES.threadFull]: "This issue report's thread is full.",
+  [ISSUE_REPORT_ERROR_CODES.assigned]: "Another admin holds this issue report.",
+  [ISSUE_REPORT_ERROR_CODES.tooManyImages]:
+      `An issue report holds at most ${MAX_ISSUE_REPORT_IMAGES} images.`,
+  [ISSUE_REPORT_ERROR_CODES.imageTooLarge]:
+      `An issue report's image can be at most ${MAX_ISSUE_REPORT_IMAGE_BYTES / (1024 * 1024)} MiB.`,
+  [ISSUE_REPORT_ERROR_CODES.imageNotRecognised]:
+      "Only PNG, JPEG and WebP images can be attached to an issue report.",
+  [ISSUE_REPORT_ERROR_CODES.imageQuotaReached]:
+      "Your issue reports already hold as many images as one user may keep. Your report was " +
+      "filed without this one.",
+  [ISSUE_REPORT_ERROR_CODES.tooManyUploads]:
+      "You are uploading too many images to issue reports at once. Try again in a few minutes.",
+});
+
+/** Creates an expected issue report refusal with a machine-readable code. */
+export const createIssueReportError = issueReportErrors.create;
+
+/** Reads the machine-readable code from an expected issue report refusal. */
+export const getIssueReportErrorCode = issueReportErrors.getCode;
+
+/** Where a reporter was when they filed an issue report, as ids only. Each is optional: a report
+ * from the home page names no workspace. */
+export type IssueReportContext = {
+  /** The workspace. One the reporter can open: one they own or are a collaborator on. */
+  workspaceId?: string;
+  /** The chat that was open, by AiChatMetadata.id. Needs `workspaceId`. */
+  chatId?: number;
+  /** The gadget that was open, by workpiece id. Needs `workspaceId`. */
+  gadgetId?: WorkpieceId;
+  /** The version of the app the reporter ran, as their client gave it: at most
+   * MAX_ISSUE_REPORT_APP_VERSION_LENGTH characters. A label, never read to make a decision. */
+  appVersion?: string;
+};
+
+/** What a user files with AuthenticatedApi.submitIssueReport(). */
+export type IssueReportInput = {
+  /** What went wrong, in the reporter's words: non-blank, at most MAX_ISSUE_REPORT_TEXT_LENGTH
+   * characters once trimmed. */
+  text: string;
+  /** How urgent the reporter says it is. */
+  priority: IssueReportPriority;
+  /** Where the reporter was. */
+  context?: IssueReportContext;
+};
+
+/** One image of an issue report. Its bytes are read with readIssueReportImage(). */
+export type IssueReportImage = {
+  /** Opaque, unique in its report. */
+  id: string;
+  /** The format the server recognised from the image's bytes. A client renders the bytes as an
+   * image of exactly this type, and as nothing else. */
+  type: IssueReportImageType;
+  /** Its size in bytes. */
+  byteLength: number;
+};
+
+/** Who wrote an entry of an issue report's thread, kept as a NamedUser is. A reporter reads an
+ * admin's entry with the admin's name alone: an admin's id is their account name, which can be
+ * an email address, and a thread only has to say who answered. */
+export type IssueReportAuthor = {
+  /** Their profile id, as NamedUser keeps one. Present on the reporter's own entries and on
+   * every entry as admins read it; absent on an admin's entry as the reporter reads it. */
+  id?: string;
+  /** Their display name when the entry was written, as NamedUser keeps one. */
+  name: string;
+};
+
+/** The grant given with an issue report, as the report shows it: the link is made by the server
+ * when the reporter gives the grant naming the report, after the grant is stored, and updated as
+ * they renew or end it. It is a copy, the last the grant's workspace or account reported: the
+ * workspace decides whether a grant is live when an admin asks for content. A report shows one
+ * grant: once it has ended, the reporter can give another with the same report, which replaces
+ * it. */
+export type IssueReportGrant = {
+  /** The grant (AdminAccessGrant.id). */
+  id: string;
+  /** Whether it covers the report's workspace or every workspace the reporter owns. An
+   * account-wide grant is linked only to a report that names no workspace or names one its
+   * reporter owns, so the report's workspace is always one the grant covers. */
+  scope: AdminAccessGrant["scope"];
+  /** When it ends unless ended sooner. */
+  expiresAt: Date;
+  /** When the reporter ended it early. */
+  endedAt?: Date;
+};
+
+/**
+ * How a thread entry changed its report's assignee (IssueReportEntry.assignment):
+ *   - "claimed":   its author took a report nobody held;
+ *   - "takenOver": its author took a report another admin held;
+ *   - "released":  its author gave up a report they held.
+ */
+export type IssueReportAssignment = "claimed" | "takenOver" | "released";
+
+/**
+ * The deployment admin who holds an issue report: the one who said they are dealing with it. A
+ * report has at most one, and only by that admin's own call (AdminApi.claimIssueReport()):
+ * nobody assigns another person. For admins alone: it is in nothing a reporter reads. Holding a
+ * report changes no status and no status needs a holder. An assignee who is no longer a
+ * deployment admin stays the assignee until an admin takes the report over.
+ */
+export type IssueReportAssignee = {
+  /** Their profile id, as NamedUser keeps one: the id an entry they wrote carries as its
+   * author's, and the id AdminApi.whoami() returns to them. */
+  id: string;
+  /** Their display name when they took the report. */
+  name: string;
+  /** Since when they hold it. */
+  at: Date;
+  /** How their claim reached the deployment (see AdminVia). */
+  via: AdminVia;
+};
+
+/** Options for AdminApi.claimIssueReport(). */
+export type IssueReportClaimOptions = {
+  /** Take the report from this admin, by the id a report shows for its assignee
+   * (IssueReportAssignee.id): the holder the caller confirmed. It takes the report only from
+   * them. Once another admin holds the report the claim is refused `assigned` as one without
+   * it is, and once nobody does it is a claim like any other. A client sets it after asking,
+   * naming the holder. */
+  takeOverFrom?: string;
+};
+
+/**
+ * One entry of an issue report's thread: a written entry (a reply or a note), a bare change of
+ * status, or a bare change of assignee. A reporter writes and reads "public" entries only.
+ * Admins write and read both kinds; an "admins" entry never reaches the reporter, through any
+ * method or count.
+ *
+ * A bare change of status is a line with no text that names the admin who made it (`author`).
+ * It is "public" when it changes the status the reporter reads, and "admins" when it does not:
+ * a move between statuses the reporter reads as the same one (see
+ * issueReportStatusForReporter()). A public one tells the reporter where the report stands
+ * without counting as an answer: it does not make the report unseen (see
+ * OwnIssueReport.unseen). Neither is counted in MAX_ISSUE_REPORT_THREAD_ENTRIES for a person.
+ */
+export type IssueReportEntry = {
+  /** Random and opaque: it says nothing of how many entries the thread holds. Entries come in
+   * the order they were written. */
+  id: string;
+  /** When it was written. */
+  at: Date;
+  /** Who wrote it. For a bare change of status, the admin who made it. */
+  author: IssueReportAuthor;
+  /** Who reads it: "public" for the reporter and the admins, "admins" for the admins alone. */
+  visibility: "public" | "admins";
+  /** For an admin's entry: how their calls reached the deployment (see AdminVia). Absent on the
+   * reporter's entries. */
+  via?: AdminVia;
+  /** Its text: at most MAX_ISSUE_REPORT_TEXT_LENGTH characters; "" for a bare change of status
+   * or of assignee. */
+  text: string;
+  /** The status this entry set, when it set one: an admin's change of status, or "withAdmin" on
+   * the reporter's reply that reopened the report. As its reader reads it: the reporter never
+   * reads "fixSuggested" or "fixInProgress" here. */
+  status?: IssueReportStatus;
+  /** How this entry changed the report's assignee, when it did: a line with no text, for admins
+   * alone, whose `author` is the admin who claimed, took over or released the report. */
+  assignment?: IssueReportAssignment;
+};
+
+/** One issue report, as its reporter and the admins list it. */
+export type IssueReport = {
+  /** Random and opaque. */
+  id: string;
+  /** When it was filed, as the server stamped it. */
+  filedAt: Date;
+  /** Who filed it, as the server stamped it. */
+  reporter: NamedUser;
+  /** What went wrong, in the reporter's words. */
+  text: string;
+  /** How urgent the reporter said it is. */
+  priority: IssueReportPriority;
+  /** Where the reporter was. */
+  context: IssueReportContext;
+  /** Where it stands, as its reader reads it: a reporter never reads "fixSuggested" or
+   * "fixInProgress" (see issueReportStatusForReporter()). */
+  status: IssueReportStatus;
+  /** Its images, in the order they were added. */
+  images: IssueReportImage[];
+  /** The grant given with it, if any. */
+  grant?: IssueReportGrant;
+};
+
+/** An issue report as its reporter reads it. */
+export type OwnIssueReport = IssueReport & {
+  /** Whether its thread holds a public entry an admin wrote that the reporter has not marked
+   * seen. A bare change of status does not count. */
+  unseen: boolean;
+};
+
+/** An issue report as admins read it. */
+export type AdminIssueReport = IssueReport & {
+  /** The links admins attached (a ticket, a pull request): http or https URLs. Never shown to
+   * the reporter. */
+  links: string[];
+  /** The admin who holds it, if one does. Never shown to the reporter. */
+  assignee?: IssueReportAssignee;
+  /** When its thread last grew, or it was filed. */
+  updatedAt: Date;
+};
+
+/** The most issue reports one page of AuthenticatedApi.listIssueReports() holds. */
+export const ISSUE_REPORT_PAGE_SIZE = 50;
+
+/** One page of AuthenticatedApi.listIssueReports(). */
+export type OwnIssueReportPage = {
+  /** The page's reports, newest first. */
+  reports: OwnIssueReport[];
+  /** Pass as `cursor` for the next page; absent once there is none. */
+  nextCursor?: string;
+};
+
+/** Options for AdminApi.listIssueReports(). The filters combine. */
+export type AdminIssueReportQuery = {
+  /** Only reports with this status. */
+  status?: IssueReportStatus;
+  /** Only reports of this priority. */
+  priority?: IssueReportPriority;
+  /** Only this user's reports, by the id a report shows (IssueReport.reporter.id). At most 1000
+   * characters. */
+  reporter?: string;
+  /** Only reports naming this workspace. At most 1000 characters. */
+  workspace?: string;
+  /** Only reports this admin holds, by the id a report shows (IssueReportAssignee.id). At most
+   * 1000 characters. */
+  assignee?: string;
+  /** Only reports nobody holds. With `assignee` it matches nothing: the filters combine. */
+  unassigned?: boolean;
+  /** The previous page's `nextCursor`; absent for the first page. */
+  cursor?: string;
+  /** The page size: a whole number from 1 to ADMIN_LIST_MAX_LIMIT, ADMIN_LIST_DEFAULT_LIMIT when
+   * absent. */
+  limit?: number;
+};
+
+/** One page of AdminApi.listIssueReports(). */
+export type AdminIssueReportPage = {
+  /** The page's reports, newest first. */
+  reports: AdminIssueReport[];
+  /** Pass as `cursor` for the next page; absent once there is none. */
+  nextCursor?: string;
 };
 
 /**
@@ -2964,6 +3423,17 @@ export interface AdminApi {
   setAdminAuditRetentionDays(days: number): Promise<void>;
 
   /**
+   * Set how many days an issue report is kept from its filing,
+   * DEFAULT_ISSUE_REPORT_RETENTION_DAYS by default. The store deletes older reports, with their
+   * threads and images, once a day, by the retention then in force: a report outlives it by
+   * about a day, and by longer only while its images cannot be deleted from their bucket.
+   * Throws unless `days` is a whole number from the deployment's minimum
+   * (AdminSettingsView.issueReportRetentionDays.min, set by its ISSUE_REPORT_RETENTION_MIN_DAYS
+   * environment variable) to MAX_ISSUE_REPORT_RETENTION_DAYS.
+   */
+  setIssueReportRetentionDays(days: number): Promise<void>;
+
+  /**
    * Change a workspace: `action` with `args` (see AdminWriteArgs), for `reason`. Off unless the
    * deployment's ADMIN_WORKSPACE_WRITES environment variable is "on". A reason is required, as for
    * inspectWorkspace(), and is kept in the admins' log only.
@@ -3053,6 +3523,63 @@ export interface AdminApi {
    * workspace.
    */
   endWorkspaceGrant(workspaceId: string, grantId: string, reason: string): Promise<void>;
+
+  // --- Issue reports ---
+  //
+  // Each re-checks that the caller is still a deployment admin (refused `notAdmin`). None is
+  // recorded in the admin audit log: a report is written to admins, and its thread is its own
+  // record of who did what, when and how.
+
+  /** The calling admin as issue reports name them: the `id` a thread entry they wrote carries
+   * as its author's and a report they hold as its assignee's, with their display name as it
+   * is now. What code compares an assignee or an author with to tell its own admin from
+   * another. */
+  whoami(): Promise<NamedUser>;
+
+  /** One page of the deployment's issue reports, newest first, filtered as `options` says.
+   * Rejects what listAdminAudit() rejects. */
+  listIssueReports(options?: AdminIssueReportQuery): Promise<AdminIssueReportPage>;
+
+  /** One issue report with its whole thread, admins-only entries included, oldest entry first.
+   * Refused `notFound` (ISSUE_REPORT_ERROR_CODES). */
+  getIssueReport(reportId: string): Promise<AdminIssueReport & { entries: IssueReportEntry[] }>;
+
+  /** Write in an issue report's thread: a reply the reporter reads ("public") or a note for
+   * admins alone ("admins"). Non-blank text of at most MAX_ISSUE_REPORT_TEXT_LENGTH characters.
+   * It changes no status. Refused `notFound`, and `threadFull` once the admins have written
+   * MAX_ISSUE_REPORT_THREAD_ENTRIES entries of that visibility (the reporter's replies do not
+   * count). */
+  addIssueReportEntry(reportId: string, text: string, visibility: IssueReportEntry["visibility"])
+      : Promise<IssueReportEntry>;
+
+  /** Set an issue report's status, entered in its thread as a line that names the caller (see
+   * IssueReportEntry): public, or for admins alone when the reporter reads the old status and
+   * the new one as the same. It does not raise the reporter's count of unseen reports, and a
+   * full thread does not refuse it. Setting the status it already has changes nothing. Refused
+   * `notFound`. */
+  setIssueReportStatus(reportId: string, status: IssueReportStatus): Promise<void>;
+
+  /** Claim an issue report: make the caller its assignee (see IssueReportAssignee). Entered in
+   * its thread as a line only admins read, which names the caller. It changes no status. A
+   * report the caller already holds is left as it is. Refused `notFound`, and `assigned` when
+   * another admin holds the report, unless `options.takeOverFrom` is that admin's id, which
+   * takes it from them. */
+  claimIssueReport(reportId: string, options?: IssueReportClaimOptions): Promise<void>;
+
+  /** Release an issue report the caller holds, which then has no assignee. Entered in its
+   * thread as a line only admins read. It changes no status. A report nobody holds is left as
+   * it is. Refused `notFound`; `assigned` when another admin holds the report, who alone
+   * releases it (an admin who is to hold it instead takes it over). */
+  releaseIssueReport(reportId: string): Promise<void>;
+
+  /** Replace the links attached to an issue report: at most MAX_ISSUE_REPORT_LINKS, each an http
+   * or https URL of at most MAX_ISSUE_REPORT_LINK_LENGTH characters. Each is kept as the URL the
+   * server parsed (its normalised form), so what a report returns is what was checked. Throws
+   * for anything else. Refused `notFound`. */
+  setIssueReportLinks(reportId: string, links: string[]): Promise<void>;
+
+  /** The bytes of one image of an issue report, as a stream. Refused `notFound`. */
+  readIssueReportImage(reportId: string, imageId: string): Promise<ReadableStream<Uint8Array>>;
 }
 
 /** A workspace as AdminWorkspaceView.describe() presents it. */
@@ -4965,10 +5492,16 @@ export interface Overseer extends RpcTarget {
    * content only through a view they open for it, and every call they make under the grant is
    * recorded with the grant's id in the deployment's admin audit log.
    *
+   * `reportId` names an issue report the caller filed about this workspace
+   * (AuthenticatedApi.submitIssueReport()): the server links the two, so the report shows the
+   * grant. A report that is not the caller's, names another workspace or already has a live
+   * grant is refused (ISSUE_REPORT_ERROR_CODES.notFound), and no grant is given; a report whose
+   * grant has ended can be given another.
+   *
    * Refused `contentOff` (ADMIN_ACCESS_ERROR_CODES) while the deployment does not allow content
    * to be read (see ServerConfig.adminContentGrants).
    */
-  grantAdminAccess(): Promise<AdminAccessGrant>;
+  grantAdminAccess(options?: { reportId?: string }): Promise<AdminAccessGrant>;
 
   /**
    * Move the end of a live grant the owner gave to ADMIN_GRANT_LIFETIME_SECONDS from now, any

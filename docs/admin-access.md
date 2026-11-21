@@ -7,7 +7,8 @@ changed which setting. What they see of a workspace or of an account is its meta
 workspace's content (chats, files, attachments) is read only where the deployment's environment
 allows it and only under a grant: a record, lasting 72 hours, given by the workspace's owner or by
 a second admin's approval (see [Grants](#grants)). Where the environment allows it, they can also
-change a workspace (see [Writes](#writes)). This document is the design record for that surface.
+change a workspace (see [Writes](#writes)). Users reach the admins through issue reports, which have a document of their
+own ([issue-reports.md](issue-reports.md)). This document is the design record for that surface.
 The API itself is documented on `AdminApi`, `AdminWorkspaceView` and `AdminUserView` in
 `packages/workshop-shared/src/api.ts`; the pieces are:
 
@@ -45,11 +46,12 @@ Everything goes through `AuthenticatedApi.getAdminApi()`, which returns null unl
 caller is an admin. The admin check runs once, when the capability is minted, for every `AdminApi`
 method except inspection, which checks again, of a workspace (see [Inspection](#inspection)) and of
 a user's account (see [User inspection](#user-inspection)) alike, and `writeWorkspace()` and the
-content access and grant methods, which check on every call (see [Writes](#writes)).
+content access, grant and issue report methods, which check on every call (see [Writes](#writes)).
 
 - **Settings**: the setters (signups, user search, view-only gadget sharing, site name and logo,
   instructions, resource and gatekeeper availability, models, update checks, ...), plus
-  `setAdminWorkspaceAccess()` and `setAdminAuditRetentionDays()`. Every setter is audited.
+  `setAdminWorkspaceAccess()`, `setAdminAuditRetentionDays()` and
+  `setIssueReportRetentionDays()`. Every setter is audited.
 - **The directory**: `listUsers()` and `listWorkspaces()`.
 - **Inspection**: `inspectWorkspace(workspaceId, reason, { lifetimeSeconds, access })`, which
   returns an `AdminWorkspaceView` of the workspace's metadata, or, when `access` asks for
@@ -60,6 +62,10 @@ content access and grant methods, which check on every call (see [Writes](#write
 - **Grants**: `endWorkspaceGrant(workspaceId, grantId, reason)` ends a grant a second admin
   approved (see [Grants](#grants)). It answers whatever the level and while writes are off.
 - **The audit log**: `listAdminAudit()` and `getAdminAuditStats()`.
+- **Issue reports**: the listing, a report with its thread, an entry, the status, a claim and a
+  release of a report (`claimIssueReport()`, `releaseIssueReport()`), the links and an image's
+  bytes, with `whoami()`, which names the caller as a report names its assignee. None of these
+  is audited: see [issue-reports.md](issue-reports.md).
 - **Writes**, while the deployment's `ADMIN_WORKSPACE_WRITES` is `on`:
   `writeWorkspace(workspaceId, action, args, reason)`.
 
@@ -557,6 +563,7 @@ An `AdminAccessGrant` holds:
 | `scope` | `"workspace"`: the one workspace it is stored in. `"account"` (an owner's only): every workspace its giver owns. |
 | `grantedBy` | The owner, or the approving admin. |
 | `requestedBy`, `requestId`, `reason` | For `"admins"`: the admin who asked, the content access request it was approved through, and why, as the requester gave it. |
+| `reportId` | For `"owner"`: the issue report it was given with, when it was given with one. |
 | `grantedAt`, `expiresAt` | When it was given, and when it stops being live unless ended sooner: 72 hours after it was given or last renewed. |
 | `revokedAt`, `revokedBy` | When it was ended early and by whom. Set once, never cleared. |
 
@@ -592,13 +599,15 @@ its age. Every grant of a workspace is deleted with it.
 Only the workspace's owner grants. Four methods on `Overseer`, refused for anyone else as
 `deleteSelf()` is and denied in a `use` session:
 
-- `grantAdminAccess()` stores a grant for 72 hours and returns it;
+- `grantAdminAccess({ reportId? })` stores a grant for 72 hours and returns it;
 - `renewAdminAccess(grantId)` moves a live grant's end to 72 hours from now, any number of times;
 - `revokeAdminAccess(grantId)` ends it, and works whatever the deployment's level;
 - `listAdminGrants()` lists the owner's grants, live and recently ended.
 
-A collaborator cannot grant. Giving and renewing are refused `contentOff` while the level in force
-is below `"content"`.
+A collaborator can file an issue report but cannot grant. Giving and renewing are refused
+`contentOff` while the level in force is below `"content"`. `reportId` names an issue report the
+owner filed about the workspace, which then shows the grant (see
+[issue-reports.md](issue-reports.md#the-grant-given-with-a-report)).
 
 **The four methods see only the owner's own grants.** They never write, delete or return a grant
 whose source is `"admins"`: such a grant is absent from `listAdminGrants()`, and renewing or
@@ -609,7 +618,7 @@ nothing, so an owner cannot learn by probing that one exists (see
 ### The account-wide grant
 
 "All my workspaces" is one record in the owner's account, given, renewed and ended through the
-owner's own `AuthenticatedApi`: `grantAccountAdminAccess()` gives it, in place of an
+owner's own `AuthenticatedApi`: `grantAccountAdminAccess({ reportId? })` gives it, in place of an
 ended one, or moves the live one's end to 72 hours from now, `revokeAccountAdminAccess()` ends it,
 and `getAccountAdminGrant()` returns it. It is never copied into a workspace, and it covers
 workspaces made after it was given.
@@ -754,6 +763,7 @@ write no record to the admin audit log. The log records what admins do. So nothi
 often an owner grants or renews. Admins learn of an owner's grant where they work:
 
 - among the workspace's live grants on the admin view (`describe().grants`);
+- on the issue report it was given with;
 - by its id (`grantId`) on the record of every content call made under it, which is all the audit
   log says of it.
 
@@ -912,6 +922,7 @@ admin can read; choosing Content alone is refused while the cap is below it.
 
 Below `"content"`:
 
+- the Report issue dialog offers no content grant;
 - `grantAdminAccess()`, `renewAdminAccess()` and the account-wide grant are refused
   (`contentOff`);
 - no content access can be requested or approved (`contentOff`);
@@ -931,21 +942,22 @@ for while it is absent is refused.
 
 ### The environment's bounds
 
-Two backend variables bound what admins may choose. They are environment variables for the reason
-authentication config is (`auth/config.ts`): a compromised admin session must not be able to widen
-them. A third, `ADMIN_WORKSPACE_WRITES`, is a switch with no admin setting under it, and an
-environment variable for the same reason.
+Three backend variables bound what admins may choose. They are environment variables for the
+reason authentication config is (`auth/config.ts`): a compromised admin session must not be able
+to widen them. A fourth, `ADMIN_WORKSPACE_WRITES`, is a switch with no admin setting under it, and
+an environment variable for the same reason.
 
 | Variable | Values | Default | Effect |
 | --- | --- | --- | --- |
 | `ADMIN_WORKSPACE_ACCESS_MAX` | `off`, `metadata`, `content` (any case, trimmed) | `metadata` (unset or blank) | The highest level admins may choose. `off` turns inspection off whatever admins choose. `content` is needed before any grant can be given or used: it lets admins choose Content, at which a workspace's content is read only under a live grant. A value that is not a level is `off`, logged as an error: it bounds a security setting, so `none`, `false` or a typo of `off` must fail closed, never grant the default. |
 | `ADMIN_AUDIT_RETENTION_MIN_DAYS` | a positive whole number of days, at most 3650 (`MAX_ADMIN_AUDIT_RETENTION_DAYS`); a larger value counts as 3650 | 90 (unset, blank or invalid; an invalid value is logged) | The fewest days the audit log keeps a record, whatever admins choose. |
+| `ISSUE_REPORT_RETENTION_MIN_DAYS` | a positive whole number of days, at most 3650 (`MAX_ISSUE_REPORT_RETENTION_DAYS`); a larger value counts as 3650 | 90 (unset, blank or invalid; an invalid value is logged) | The fewest days an [issue report](issue-reports.md#retention) is kept, whatever admins choose. |
 | `ADMIN_WORKSPACE_WRITES` | `on`, `off` (any case, trimmed) | `off` (unset or blank) | Whether admins may make [writes](#writes) to workspaces. Any other value is off, logged as an error, so `true`, `1` or a typo of `on` never enables them. |
 
 The admins' choice is kept in `AdminConfig` as they set it, and `adminAccessPolicy()` holds it within
 the bounds wherever it is enforced: `inspectWorkspace()`, `inspectUser()`, every view call, the
-grant methods, a content access request, its approval and its grant, the settings audit and the audit
-log's own floor. `getSettings()` reports `chosen`, the bound
+grant methods, a content access request, its approval and its grant, the settings audit, the audit
+log's own floor and the issue reports' deletion. `getSettings()` reports `chosen`, the bound
 (`max` or `min`), and `effective`, which is what is enforced. The setters refuse a value outside the
 bounds, naming the variable; a choice stored before a bound tightened is kept but not enforced.
 `setAdminWorkspaceAccess()` refuses a value that is not a level, storing and recording nothing.
@@ -961,10 +973,10 @@ write: the level does (see [Asking for content without the owner](#asking-for-co
 
 ### Setting the bounds
 
-All three are variables of the backend Worker (`workshop-backend`):
+All four are variables of the backend Worker (`workshop-backend`):
 
 - **Locally** (`pnpm run-local`, `pnpm dev-server`): set them in the shell or in the root
-  `.dev.vars`; `scripts/run-dev-server.ts` passes all three through to the backend, for example
+  `.dev.vars`; `scripts/run-dev-server.ts` passes all four through to the backend, for example
   `ADMIN_WORKSPACE_ACCESS_MAX=content pnpm dev-server` or
   `ADMIN_WORKSPACE_WRITES=on pnpm dev-server`. A local instance has one admin, `admin`, and an
   approval of content access needs two: `ADMINS` in the shell (comma-separated usernames)
@@ -976,11 +988,17 @@ All three are variables of the backend Worker (`workshop-backend`):
   they replace the Worker's variables on every deploy, so a value set in the Cloudflare dashboard
   lasts only until the next deploy, and until such a tool carries these variables its
   deployments run with the defaults. Any redeploy that writes its own variables must carry all
-  three.
+  four.
 - **Pull request previews** (`scripts/preview/staging-config.ts`): `ADMIN_WORKSPACE_WRITES` is `on`
   and `ADMIN_WORKSPACE_ACCESS_MAX` is `content` in each preview, so that writes, grants and content
   reads can be tried there, and both keep their defaults in the shared baseline the previews branch
-  from. The retention floor keeps its default.
+  from. The two retention floors keep their defaults.
+
+**The issue reports' floor** works as the audit log's does. `ISSUE_REPORT_RETENTION_MIN_DAYS` is
+the fewest days a report is kept from its filing, whatever admins choose;
+`setIssueReportRetentionDays()` refuses fewer, naming the variable, and `getSettings()` reports
+`issueReportRetentionDays` as `chosen`, `min` and `effective`. A retention an admin chose below a
+floor that is then raised is kept as chosen and held up to the floor wherever it is enforced.
 
 ### When a variable is dropped
 
@@ -989,8 +1007,10 @@ All three are variables of the backend Worker (`workshop-backend`):
   deploy that drops `ADMIN_WORKSPACE_ACCESS_MAX=content` puts the level in force back at
   `metadata` once it is live: no grant can be given or used, and a grant still live reads nothing
   unless the cap returns before the grant's end.
-- The floor falls back to 90 days, and with it the retention actually kept wherever the admins
-  chose less, which prunes the older records.
+- The audit floor falls back to 90 days, and with it the retention actually kept wherever the
+  admins chose less, which prunes the older records.
+- The issue reports' floor falls back to 90 days the same way, and the reports older than the
+  retention then in force are deleted by the store's next daily run.
 - Writes go off.
 
 So set what you want in the admin panel too: the admins' choices persist in the deployment's
@@ -1001,6 +1021,7 @@ settings across deploys, while a variable only bounds what an admin session can 
 - **To keep a retention**, set it in the Audit tab: the floor only stops an admin session from
   choosing less. The tab says when the floor is what holds retention up; it saves only a value
   that is typed, so type the number of days you want kept, even the minimum.
+- **To keep a retention for issue reports**, set it in the Reports tab, for the same reason.
 
 ## The audit
 
@@ -1173,7 +1194,8 @@ cannot be written does not happen. The workspace keeps no note of the write (see
 its step the same way: a request, a denial, an approval or an ending whose record cannot be
 written is not taken. A grant step writes nothing to the workspace a member can see.
 
-An owner's grant calls append nothing to the log.
+An owner's grant calls append nothing to the log, and neither do the issue report methods (see
+[issue-reports.md](issue-reports.md#what-is-recorded-where)).
 
 ### Which refusals are recorded
 
@@ -1198,10 +1220,11 @@ An owner's grant calls append nothing to the log.
 | An approval the workspace refuses (`notAdmin`, `secondAdminRequired`, `requestNotPending`, `contentOff`, `workspaceChanged`, `workspaceNotFound`) | No | No grant was given; the request is stored as `"failed"` with the refusal. |
 | An `endWorkspaceGrant()` refused `notAdmin`, `workspaceNotFound` or `notFound` (an id naming no live grant with source `"admins"`) | No. One refused `notFound` only after its record was appended, because another admin ended the grant meanwhile, leaves that record | No grant changed. A record left behind is of the attempt. |
 | An owner's grant call, refused or not (`grantAdminAccess()` and its siblings, the account-wide grant) | No | An owner's grant is the owner's own record: the log records what admins do. |
+| An issue report method, refused or not | No | A report's thread is its own record (see [issue-reports.md](issue-reports.md#what-is-recorded-where)). |
 
 ### Setting records
 
-Every setter of a setting is recorded before its
+Every setter of a setting, `setIssueReportRetentionDays()` among them, is recorded before its
 change takes effect. `AdminSettings.#mutateAdminConfig()`, which
 serializes every `AdminConfig` write, is the chokepoint: each admin-facing mutator takes a
 trailing `AdminSettingActor` (who, which session, `via`, and the `AdminApi` method), and the
@@ -1229,9 +1252,12 @@ chokepoint records `diffAdminConfig(current, next)` before `storage.adminConfig.
 
 Not recorded: reads (`getSettings`, `isBlueprintFeatured`, `getUpdateStatus`,
 `listContentAccessRequests`, `getContentAccessRequest`, the listings and the audit log itself), the
-gateway tests, `checkForUpdates`, and the deployment's own promotion of its bundled formats, which
-no admin made. The content access requests and `endWorkspaceGrant` are recorded, as grant records and not
-setting records.
+gateway tests, `checkForUpdates`, the deployment's own promotion of its bundled formats, which
+no admin made, and the issue report methods, the five that write to a report included
+(`addIssueReportEntry`, `setIssueReportStatus`, `claimIssueReport`, `releaseIssueReport`,
+`setIssueReportLinks`): a report's thread is its own record, of its entries, its status changes
+and its changes of assignee; replacing a report's links keeps no author and no time. The content
+access requests and `endWorkspaceGrant` are recorded, as grant records and not setting records.
 
 ### Text bounds
 
@@ -1259,7 +1285,8 @@ workspace whose isolate still runs code that sends no such field, during a rollo
 record kept; such a caller returns metadata only, so `metadata` is what its answer held. A value
 that is neither is a `TypeError`, as for any malformed record.
 
-A grant's `grantedBy` and `revokedBy` are bounded the same way before they are stored (`namedUser()`): the id as a long owner id is, the name cut to 256
+A grant's `grantedBy` and `revokedBy`, and every user an issue report keeps, are bounded the same
+way before they are stored (`namedUser()`): the id as a long owner id is, the name cut to 256
 characters.
 
 ### Retention and pruning
@@ -1336,6 +1363,9 @@ The grant methods refuse with a code from `ADMIN_GRANT_ERROR_CODES` (read with
 | `ADMIN_GRANT_WORKSPACE_UNLISTED` | A request for a workspace the directory does not list: whoever approves must see its owner. |
 | `ADMIN_GRANT_WORKSPACE_CHANGED` | An approval reached a workspace whose owner is not the one the request named, so no grant was given. |
 | `ADMIN_GRANT_SECOND_ADMIN_REQUIRED` | The admin who made a request tried to approve it, or the workspace was handed such an approval: another admin must approve it. |
+
+The issue report methods refuse with a code from `ISSUE_REPORT_ERROR_CODES`, listed in
+[issue-reports.md](issue-reports.md#error-codes); the admins' also refuse with `ADMIN_NOT_ADMIN`.
 
 ## Tests
 
@@ -1457,12 +1487,15 @@ Grants and content reads add these, in the same directory:
   giving, renewing any number of times and ending; each refused below `"content"` except ending
   and listing; the listing's order and bound; ended grants deleted after the retention; no admin
   audit record and nothing else of the workspace written; an approval's grant never touched,
-  listed or revealed; and a workspace deleted meanwhile.
+  listed or revealed; a workspace deleted meanwhile; and a grant given with an issue report,
+  through its renewal, its end and its replacement.
 - `admin-account-grant.test.ts`: the account-wide grant. One record, renewed under its id without
   a bound, replaced once ended; refused below `"content"` while ending still works; what a
-  workspace is answered; and no admin audit record.
+  workspace is answered; no admin audit record; and its link to issue reports, a failed link
+  included.
 - `admin-access.test.ts` also covers the cap's third level and what is not a level, the content
-  refusal (`adminContentRefusal()`), `namedUser()` and the `...HoldsContent` predicates.
+  refusal (`adminContentRefusal()`), `namedUser()`, the `...HoldsContent` predicates, and the
+  issue reports' floor.
 - `admin-content-requests.test.ts`: the store of content access requests. A request and a denial
   recorded before they are stored; one pending request per workspace and the deployment-wide cap;
   the claim of an approval, once, refused to the requester (two casings of one admin included)
@@ -1481,6 +1514,8 @@ Grants and content reads add these, in the same directory:
   names that differ only by the case of ASCII letters are one admin.
 - `git-cache.test.ts` also covers `readLocalFileAtCommit()`: text, a stream for a large file or
   one that is not text, a symlink and a submodule, and never a pull.
+
+The issue report suites are listed in [issue-reports.md](issue-reports.md#code-and-tests).
 
 Integration suites, in `packages/integration-tests/__tests__/`:
 
@@ -1547,5 +1582,5 @@ Frontend suites, in `packages/workshop-frontend/src/`:
   pending approvals, Approve and Deny on other admins' requests, and an admin's own request shown
   as waiting for another admin.
 
-The CLI's suites, in `packages/api-cli/`, pin the `cf-os api` commands for grants and content
-reads, and `--out <file>` saving the byte stream a result holds inside it.
+The CLI's suites, in `packages/api-cli/`, pin the `cf-os api` commands for grants, content reads
+and issue reports, and `--out <file>` saving the byte stream a result holds inside it.

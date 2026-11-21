@@ -5,6 +5,7 @@ import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER, MENU_POSITIONER_STYLE } from
 import { useState, useEffect, useRef } from 'react'
 import type { WorkspaceMetadataWithTimestamps, NotificationMute } from '@gadgets/workshop-shared/api'
 import { WorkspaceNotificationsMenu } from '../../features/notifications/WorkspaceNotificationsMenu'
+import { ReportIssueItem } from '../../features/issue-reports/ReportIssueItem'
 import { describeMute } from '../../features/notifications/notificationMute'
 import { isImeComposing } from '../../keyboardEvent'
 import { useUnreadState } from '../../features/notifications/UnreadStateBridge'
@@ -42,6 +43,7 @@ export default function SidebarGadgetRow({
   const [renaming, setRenaming] = useState(false)
   const [renameValue, setRenameValue] = useState(gadget.title || '')
   const inputRef = useRef<HTMLInputElement>(null)
+  const actionsButtonRef = useRef<HTMLButtonElement>(null)
   const unread = useUnreadState()
   const unreadMessages = unread?.state?.workspaces.find(workspace => workspace.workspaceId === gadget.id)?.unreadMessageCount ?? 0
 
@@ -116,6 +118,7 @@ export default function SidebarGadgetRow({
                 render={
                   <button
                     type="button"
+                    ref={actionsButtonRef}
                     aria-label="Workspace actions"
                     className="absolute inset-0 flex h-6 w-full items-center justify-center rounded-md text-kumo-subtle opacity-0 transition-[opacity,color,background-color] group-hover:opacity-100 hover:bg-kumo-fill hover:text-kumo-default focus:opacity-100"
                   >
@@ -153,6 +156,10 @@ export default function SidebarGadgetRow({
                   workspaceId={gadget.id}
                   mute={gadget.notificationMute}
                   onMuteChange={(mute) => onNotificationMuteChange(gadget, mute)}
+                />
+                <ReportIssueItem
+                  context={{ workspace: { id: gadget.id, owned: !gadget.owner } }}
+                  opener={actionsButtonRef}
                 />
                 <DropdownMenu.Separator />
                 <DropdownMenu.Item

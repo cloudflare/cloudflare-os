@@ -69,6 +69,10 @@ const mocks = vi.hoisted(() => {
     codeView: null as null | { selectedChatId?: number | null },
     connections: null as null | { chatId?: number },
     gadgetUi: null as null | { onConsoleLog?: (log: unknown) => void },
+    // The props the user menu in the top bar was last rendered with.
+    userMenu: null as null | { report?: unknown },
+    // What useReportIssue() hands the editor's own "Report issue" item.
+    openReport: vi.fn<(context: unknown, opener: HTMLElement | null) => void>(),
     // The props the use-only view was last rendered with.
     useView: null as null | {
       gadget: unknown
@@ -237,7 +241,15 @@ vi.mock('./TopBarNotice', () => ({ default: () => null }))
 vi.mock('./components/DeleteConfirmationDialog', () => ({ default: () => null }))
 vi.mock('./components/ReconnectingChip', () => ({ default: () => null }))
 vi.mock('./components/SiteLogo', () => ({ default: () => null }))
-vi.mock('./components/UserMenu', () => ({ default: () => null }))
+vi.mock('./components/UserMenu', () => ({
+  default: (props: NonNullable<typeof mocks.userMenu>) => {
+    mocks.userMenu = props
+    return null
+  },
+}))
+vi.mock('./features/issue-reports/ReportIssueHost', () => ({
+  useReportIssue: () => mocks.openReport,
+}))
 vi.mock('./components/WorkspaceOpenErrorPage', () => ({ default: () => null }))
 vi.mock('./features/notifications/WorkspaceNotificationsMenu', () => ({ WorkspaceNotificationsMenu: () => null }))
 // A gadget's tab with its menu's Delete beside it, and the confirmation as one button.
@@ -962,5 +974,76 @@ describe('GadgetEditor, deleting a gadget', () => {
     await openWorkspace('trips', ['Itinerary', 'Packing'])
     expect(hasButton('confirm deleting Packing')).toBe(false)
     expect(removed).toEqual([])
+  })
+})
+
+// The editor has two ways to "Report issue": the user menu in its top bar, and the phone
+// layout's menu. Both say the same of where the reporter was.
+const reportItems = () => [...container.querySelectorAll('button')]
+  .filter(candidate => candidate.textContent === 'Report issue')
+
+describe('GadgetEditor, reporting an issue', () => {
+  const workspace = mocks.workspace
+  const original = { overseer: workspace.overseer, metadata: workspace.metadata }
+  beforeEach(() => {
+    mocks.userMenu = null
+    mocks.openReport.mockReset()
+  })
+
+  afterEach(() => {
+    workspace.overseer = original.overseer
+    workspace.metadata = original.metadata
+  })
+
+  it.each(['phone', 'desktop'] as const)(
+    'names the workspace, the open chat and the open gadget on a %s', async screen => {
+      mocks.search = { chat: 3 }
+      await openEditor(screen)
+
+      const context = { workspace: { id: 'workspace', owned: true }, chatId: 3, gadgetId: 1 }
+      expect(mocks.userMenu?.report).toEqual(context)
+
+      // The user menu is mocked away, so the one item left is the phone menu's.
+      expect(reportItems()).toHaveLength(1)
+      await act(async () => { reportItems()[0].click() })
+      expect(mocks.openReport).toHaveBeenCalledOnce()
+      const [reported, opener] = mocks.openReport.mock.calls[0]
+      expect(reported).toEqual(context)
+      expect(opener).toBe(container.querySelector('[aria-label="More workspace views and actions"]'))
+      expect(opener).not.toBeNull()
+    },
+  )
+
+  it('says a collaborator does not own the workspace', async () => {
+    workspace.metadata = { ...original.metadata, owner: { id: 'olga', name: 'Olga Owner' } } as WorkspaceMetadata
+    mocks.search = { chat: 3 }
+    await openEditor('desktop')
+
+    const context = { workspace: { id: 'workspace', owned: false }, chatId: 3, gadgetId: 1 }
+    expect(mocks.userMenu?.report).toEqual(context)
+    await act(async () => { reportItems()[0].click() })
+    expect(mocks.openReport.mock.calls[0][0]).toEqual(context)
+  })
+
+  it('names no chat and no gadget when none is open', async () => {
+    const disposable = { [Symbol.dispose]() {} }
+    workspace.overseer = {
+      stub: {
+        ...original.overseer.stub,
+        subscribeToWorkpieces: async (subscriber: WorkpiecesSubscriber) => {
+          await subscriber.ready()
+          return disposable
+        },
+      },
+    }
+    await openEditor('desktop')
+
+    const context = { workspace: { id: 'workspace', owned: true } }
+    expect(mocks.userMenu?.report).toEqual(context)
+    expect(Object.keys(mocks.userMenu?.report as object)).toEqual(['workspace'])
+    await act(async () => { reportItems()[0].click() })
+    const reported = mocks.openReport.mock.calls[0][0]
+    expect(reported).toEqual(context)
+    expect(Object.keys(reported as object)).toEqual(['workspace'])
   })
 })

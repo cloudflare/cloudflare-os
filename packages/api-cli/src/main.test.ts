@@ -86,8 +86,9 @@ test("with CFOS_API_URL_UNAVAILABLE, a run that needs an instance exits 2 with t
   assert.equal(JSON.parse(explicit.stdout).url, "ws://localhost:9999/api");
 });
 
-test("search prints, among its five, the command that gives admins access, or reads a chat as an admin", () => {
+test("search prints, among its five, the command that files an issue report, gives admins access, or reads a chat as an admin", () => {
   const cases: [string, string][] = [
+    ["report an issue", "cf-os api submit-issue-report <report>"],
     ["give admins access", "cf-os api open-workspace <id> grant-admin-access"],
     ["read a chat as admin", "cf-os api get-admin-api inspect-workspace <workspaceId> <reason> get-chat <chatId>"],
   ];

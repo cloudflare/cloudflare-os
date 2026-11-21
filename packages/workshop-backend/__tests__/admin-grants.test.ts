@@ -119,6 +119,12 @@ describe("newAdminGrant", () => {
       source: "admins", requestedBy: "requester@example.test", requestId: "request-1",
       reason: "Asked to look",
     });
+    expect(grant).not.toHaveProperty("reportId");
+
+    let withReport = newAdminGrant(
+        { source: "owner", scope: "account", grantedBy: OWNER, reportId: "report-1" });
+    expect(withReport).toMatchObject({ scope: "account", reportId: "report-1" });
+    expect(withReport).not.toHaveProperty("requestId");
   });
 
   it("keeps an id and a bounded name of its giver, and nothing else of a profile", () => {

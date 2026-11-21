@@ -77,6 +77,7 @@ it("holds the admins' choices within the deployment's defaults", async () => {
   expect(settings.adminWorkspaceAccess)
       .toEqual({ effective: "metadata", chosen: "metadata", max: "metadata" });
   expect(settings.adminAuditRetentionDays).toEqual({ effective: 90, chosen: 90, min: 90 });
+  expect(settings.issueReportRetentionDays).toEqual({ effective: 90, chosen: 90, min: 90 });
 
   const before = await newest(admin, "setting");
   // Not a level, so the setter refuses it as a value of the wrong type, whatever the bound.
@@ -86,7 +87,24 @@ it("holds the admins' choices within the deployment's defaults", async () => {
       .rejects.toThrow(/ADMIN_WORKSPACE_ACCESS_MAX/);
   await expect(admin.setAdminAuditRetentionDays(89))
       .rejects.toThrow(/ADMIN_AUDIT_RETENTION_MIN_DAYS/);
+  // Issue reports have a floor of their own, of the same kind.
+  await expect(admin.setIssueReportRetentionDays(89))
+      .rejects.toThrow(/ISSUE_REPORT_RETENTION_MIN_DAYS/);
+  await expect(admin.setIssueReportRetentionDays(3651)).rejects.toThrow();
   expect(await newest(admin, "setting")).toEqual(before);
+
+  // Above the floor an admin chooses, and the choice is recorded as any setting is.
+  try {
+    await admin.setIssueReportRetentionDays(180);
+    expect((await admin.getSettings()).issueReportRetentionDays)
+        .toEqual({ effective: 180, chosen: 180, min: 90 });
+    expect(await newest(admin, "setting")).toMatchObject({
+      kind: "setting", admin: ADMIN_USERNAME, method: "setIssueReportRetentionDays",
+      changes: [{ setting: "issueReportRetentionDays", before: "90", after: "180" }],
+    });
+  } finally {
+    await admin.setIssueReportRetentionDays(90);
+  }
 
   try {
     await admin.setAdminWorkspaceAccess("off");
@@ -130,6 +148,7 @@ it("applies a redeploy's tighter bounds and demotion", async () => {
       ...config.vars,
       ADMINS: [ADMIN_USERNAME],
       ADMIN_AUDIT_RETENTION_MIN_DAYS: "120",
+      ISSUE_REPORT_RETENTION_MIN_DAYS: "150",
       // Not a level, so the cap must fail closed to "off".
       ADMIN_WORKSPACE_ACCESS_MAX: "full",
       // Not "on", so writes must fail closed to off.
@@ -153,6 +172,10 @@ it("applies a redeploy's tighter bounds and demotion", async () => {
   stack.use(fresh);
   const settings = await fresh.getSettings();
   expect(settings.adminAuditRetentionDays).toEqual({ effective: 120, chosen: 90, min: 120 });
+  // Each floor holds its own retention: the admins' choice stays stored, below what is enforced.
+  expect(settings.issueReportRetentionDays).toEqual({ effective: 150, chosen: 90, min: 150 });
+  await expect(fresh.setIssueReportRetentionDays(149))
+      .rejects.toThrow(/ISSUE_REPORT_RETENTION_MIN_DAYS/);
   expect(settings.adminWorkspaceAccess)
       .toEqual({ effective: "off", chosen: "metadata", max: "off" });
   await expect(fresh.setAdminWorkspaceAccess("metadata"))

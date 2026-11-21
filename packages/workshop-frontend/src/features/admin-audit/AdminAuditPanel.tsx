@@ -302,7 +302,7 @@ export const AdminAuditPanel = ({
               admins&rsquo; access to a workspace&rsquo;s content without its owner, kept for{' '}
               {NUMBER.format(retention.effective)} days. The log records what admins do: a grant a
               workspace&rsquo;s owner gives is the owner&rsquo;s own record, shown on the
-              workspace&rsquo;s admin page.
+              workspace&rsquo;s admin page and on the issue report it came with.
             </p>
           </div>
           <Button

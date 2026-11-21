@@ -1,4 +1,4 @@
-import { ADMIN_ACCESS_ERROR_CODES, ADMIN_CONTENT_REQUEST_LIFETIME_SECONDS, ADMIN_GRANT_ERROR_CODES, AdminApi, AdminAuditPage, AdminAuditQuery, AdminAuditStats, AdminAuditStatsQuery, AdminContentRequest, AdminFormat, AdminFormatPatch, AdminGrantMethod, AdminInspectOptions, AdminModel, AdminResourceVendor, AdminSettingChange, AdminSettingMethod, AdminSettingsView, AdminUserPage, AdminUserQuery, AdminUserView, AdminVia, AdminWorkspaceAccess, AdminWorkspaceInspectOptions, AdminWorkspacePage, AdminWorkspaceQuery, AdminWorkspaceView, AdminWriteAction, AdminWriteArgs, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, DeploymentUpdateStatus, GatewayModel, GatewayModelLevelTest, GatewayModelMode, GatewayModelSettings, GatewayModelTest, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_PENDING_CONTENT_REQUESTS, MAX_SITE_NAME_LENGTH, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, ReasoningLevel, SUGGESTED_MODELS, createAdminAccessError, createAdminGrantError, getAdminAccessErrorCode, isAdminWorkspaceAccess, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
+import { ADMIN_ACCESS_ERROR_CODES, ADMIN_CONTENT_REQUEST_LIFETIME_SECONDS, ADMIN_GRANT_ERROR_CODES, AdminApi, AdminAuditPage, AdminAuditQuery, AdminAuditStats, AdminAuditStatsQuery, AdminContentRequest, AdminFormat, AdminFormatPatch, AdminGrantMethod, AdminInspectOptions, AdminIssueReport, AdminIssueReportPage, AdminIssueReportQuery, AdminModel, AdminResourceVendor, AdminSettingChange, AdminSettingMethod, AdminSettingsView, AdminUserPage, AdminUserQuery, AdminUserView, AdminVia, AdminWorkspaceAccess, AdminWorkspaceInspectOptions, AdminWorkspacePage, AdminWorkspaceQuery, AdminWorkspaceView, AdminWriteAction, AdminWriteArgs, AiChatAuthorInfo, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, DeploymentUpdateStatus, GatewayModel, GatewayModelLevelTest, GatewayModelMode, GatewayModelSettings, GatewayModelTest, IssueReportClaimOptions, IssueReportEntry, IssueReportStatus, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_ISSUE_REPORT_RETENTION_DAYS, MAX_PENDING_CONTENT_REQUESTS, MAX_SITE_NAME_LENGTH, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, NamedUser, ReasoningLevel, SUGGESTED_MODELS, createAdminAccessError, createAdminGrantError, getAdminAccessErrorCode, isAdminWorkspaceAccess, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
 import { GatekeeperVendor, getResourceTypeId, findResourceType } from '@gadgets/workshop-shared/gatekeeper';
 import { DurableObject } from 'cloudflare:workers';
 import { RpcTarget, type RpcStub } from 'capnweb';
@@ -20,7 +20,8 @@ import { UserDurableObject } from './user.js';
 import type { UserDirectoryDurableObject } from './user-directory.js';
 import type { AdminAuditDurableObject } from './admin-audit.js';
 import type { OverseerDurableObject } from './overseer.js';
-import { type AdminGrantActor, type AdminSettingActor, type AdminWorkspaceViewTerms, adminAccessPolicy, adminAuditStatsDays, adminListLimit, adminSettingChange, adminViewLifetimeMs, adminWorkspaceWritesEnabled, auditOwnerId, cutAdminAuditText, lowerAdminWorkspaceAccess, maxAdminWorkspaceAccess, minAdminAuditRetentionDays, validateAdminAccessReason } from './admin-access.js';
+import type { IssueReportsDurableObject } from './issue-reports.js';
+import { type AdminGrantActor, type AdminSettingActor, type AdminWorkspaceViewTerms, adminAccessPolicy, adminAuditStatsDays, adminListLimit, adminSettingChange, adminViewLifetimeMs, adminWorkspaceWritesEnabled, auditOwnerId, cutAdminAuditText, lowerAdminWorkspaceAccess, maxAdminWorkspaceAccess, minAdminAuditRetentionDays, minIssueReportRetentionDays, namedUser, validateAdminAccessReason } from './admin-access.js';
 import { isDeploymentAdmin, sameDeploymentAdmin } from './auth/config.js';
 import { bundledBlueprintsManifestVersion, installBundledBlueprints } from './bundled-blueprints.js';
 import { BUNDLED_BLUEPRINTS } from './generated/bundled-blueprints.js';
@@ -607,6 +608,11 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
         chosen: config.adminAuditRetentionDays,
         min: minAdminAuditRetentionDays(this.env),
       },
+      issueReportRetentionDays: {
+        effective: policy.issueReportRetentionDays,
+        chosen: config.issueReportRetentionDays,
+        min: minIssueReportRetentionDays(this.env),
+      },
     };
   }
 
@@ -641,6 +647,21 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
           `${MAX_ADMIN_AUDIT_RETENTION_DAYS}.`);
     }
     await this.#mutateAdminConfig(actor, config => ({ ...config, adminAuditRetentionDays: days }));
+  }
+
+  /**
+   * Set how many days admins choose to keep issue reports for, recording the change `actor`
+   * makes. Throws unless a whole number from the minimum ISSUE_REPORT_RETENTION_MIN_DAYS sets to
+   * MAX_ISSUE_REPORT_RETENTION_DAYS.
+   */
+  async setIssueReportRetentionDays(days: number, actor: AdminSettingActor): Promise<void> {
+    let min = minIssueReportRetentionDays(this.env);
+    if (!Number.isInteger(days) || days < min || days > MAX_ISSUE_REPORT_RETENTION_DAYS) {
+      throw new Error(`The issue report retention must be a whole number of days from ${min}, ` +
+          `the fewest this deployment's ISSUE_REPORT_RETENTION_MIN_DAYS allows, to ` +
+          `${MAX_ISSUE_REPORT_RETENTION_DAYS}.`);
+    }
+    await this.#mutateAdminConfig(actor, config => ({ ...config, issueReportRetentionDays: days }));
   }
 
   // --- Requests to read a workspace's content without its owner ---
@@ -1498,19 +1519,21 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
 
 // Capability for managing and investigating the deployment, obtained via
 // AuthenticatedApi.getAdminApi() (which is null for non-admins). The admin access check happens
-// once, when the capability is minted in server.ts, so its methods don't re-check, with two
+// once, when the capability is minted in server.ts, so its methods don't re-check, with three
 // exceptions. inspectWorkspace() and inspectUser() re-check, as openForAdmin() and every call on
 // the view either mints do, since a view is what an admin holds that reads users' data.
 // writeWorkspace() re-checks admin status and the environment's switch (ADMIN_WORKSPACE_WRITES),
-// and the workspace checks both again in its own environment. The content access methods
-// re-check admin status on every call: a request opens a user's workspace. Setting by setting,
-// this is a thin validation+forwarding facade over the AdminSettings DO — fully user-independent —
-// so a disabled gatekeeper/resource can't be re-enabled via a crafted request, and the client
-// never receives a stub to the DO's internal methods. Every setter's change is recorded in the
-// deployment's audit log before it takes effect (see #mutateAdminConfig()). Covers branding, agent
-// instructions, signups, gatekeeper connector/resource availability, AI Gateway models, whether an
-// update is available, the user and workspace directory, admin access to workspaces and to users'
-// accounts, and admin writes to workspaces; authentication config stays env-var driven.
+// and the workspace checks both again in its own environment. The content access methods and the
+// issue report methods re-check admin status on every call: a request opens a user's workspace,
+// and a report is what a user wrote to admins. Setting by setting, this is a thin
+// validation+forwarding facade over the AdminSettings DO — fully user-independent — so a disabled
+// gatekeeper/resource can't be re-enabled via a crafted request, and the client never receives a
+// stub to the DO's internal methods. Every setting's change is recorded in the deployment's audit
+// log before it takes effect (see #mutateAdminConfig()); what admins read and write of issue
+// reports is not (see the issue report methods). Covers branding, agent instructions, signups,
+// gatekeeper connector/resource availability, AI Gateway models, whether an update is available,
+// the user and workspace directory, admin access to workspaces and to users' accounts, admin
+// writes to workspaces, and issue reports; authentication config stays env-var driven.
 @validateRpc()
 export class AdminApiImpl extends RpcTarget implements AdminApi {
   private admin: DurableObjectStub<AdminSettings>;
@@ -1518,15 +1541,16 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
   private audits: DurableObjectNamespace<AdminAuditDurableObject>;
   private overseers: DurableObjectNamespace<OverseerDurableObject>;
   private users: DurableObjectNamespace<UserDurableObject>;
+  private issueReports: DurableObjectNamespace<IssueReportsDurableObject>;
   #sessionId = crypto.randomUUID();
 
   /**
    * `adminUserId` is the requesting admin's canonical id and `via` the label derived from their
    * client's User-Agent (AdminVia). The capability's audit `sessionId` is minted here, so there is
    * one per AuthenticatedApi.getAdminApi() call. Reaches the AdminSettings, UserDirectory,
-   * AdminAudit, Overseer and User namespaces through `ctx.exports`, and reads ADMINS and the admin
-   * access bounds from `env`. `ctx` is kept for its waitUntil(), under which an approved content
-   * access request is granted and settled even if its client hangs up (see
+   * AdminAudit, Overseer, User and IssueReports namespaces through `ctx.exports`, and reads ADMINS
+   * and the admin access bounds from `env`. `ctx` is kept for its waitUntil(), under which an
+   * approved content access request is granted and settled even if its client hangs up (see
    * approveContentAccess()).
    */
   constructor(private ctx: ExecutionContext, private env: Cloudflare.Env,
@@ -1537,6 +1561,7 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
     this.audits = ctx.exports.AdminAuditDurableObject;
     this.overseers = ctx.exports.OverseerDurableObject;
     this.users = ctx.exports.UserDurableObject;
+    this.issueReports = ctx.exports.IssueReportsDurableObject;
   }
 
   // Who makes a change through `method` of this capability, as its audit record says.
@@ -1906,6 +1931,10 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
     return this.admin.setAdminAuditRetentionDays(days, this.#actor("setAdminAuditRetentionDays"));
   }
 
+  setIssueReportRetentionDays(days: number): Promise<void> {
+    return this.admin.setIssueReportRetentionDays(days, this.#actor("setIssueReportRetentionDays"));
+  }
+
   /** The one caller of OverseerDurableObject.applyAdminWrite(), which validates the call, checks
    * the admin and the switch again in its own environment, and records the write before it runs. */
   async writeWorkspace(workspaceId: string, action: AdminWriteAction, args: AdminWriteArgs,
@@ -2060,4 +2089,70 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
     }
   }
 
+  // --- Issue reports ---
+  //
+  // Each asks only for an admin, on every call. None appends to the audit log: a report is
+  // written to admins, and its thread is its own record of who did what, when and how. The store
+  // holds the images, and its stream is returned as it is.
+
+  // The caller as a thread names them: their account's profile, or the id alone for an admin
+  // whose account has no profile (as a workspace names the admin of a write).
+  async #profile(): Promise<AiChatAuthorInfo> {
+    return await this.users.getByName(this.adminUserId).whoamiIfExists() ??
+        { type: "user", id: this.adminUserId, name: this.adminUserId };
+  }
+
+  async whoami(): Promise<NamedUser> {
+    this.#requireAdmin();
+    return namedUser(await this.#profile());
+  }
+
+  async listIssueReports(options: AdminIssueReportQuery = {}): Promise<AdminIssueReportPage> {
+    this.#requireAdmin();
+    let limit = adminListLimit(options.limit);
+    let { status, priority, reporter, workspace, assignee, unassigned, cursor } = options;
+    return await this.issueReports.getByName("").list(
+        { status, priority, reporter, workspace, assignee, unassigned, cursor, limit });
+  }
+
+  async getIssueReport(reportId: string)
+      : Promise<AdminIssueReport & { entries: IssueReportEntry[] }> {
+    this.#requireAdmin();
+    return await this.issueReports.getByName("").get(reportId);
+  }
+
+  async addIssueReportEntry(reportId: string, text: string,
+      visibility: IssueReportEntry["visibility"]): Promise<IssueReportEntry> {
+    this.#requireAdmin();
+    return await this.issueReports.getByName("").addEntry(
+        await this.#profile(), this.via, reportId, text, visibility);
+  }
+
+  async setIssueReportStatus(reportId: string, status: IssueReportStatus): Promise<void> {
+    this.#requireAdmin();
+    await this.issueReports.getByName("").setStatus(
+        await this.#profile(), this.via, reportId, status);
+  }
+
+  async claimIssueReport(reportId: string, options: IssueReportClaimOptions = {}): Promise<void> {
+    this.#requireAdmin();
+    await this.issueReports.getByName("").claim(
+        await this.#profile(), this.via, reportId, options.takeOverFrom);
+  }
+
+  async releaseIssueReport(reportId: string): Promise<void> {
+    this.#requireAdmin();
+    await this.issueReports.getByName("").release(await this.#profile(), this.via, reportId);
+  }
+
+  async setIssueReportLinks(reportId: string, links: string[]): Promise<void> {
+    this.#requireAdmin();
+    await this.issueReports.getByName("").setLinks(reportId, links);
+  }
+
+  async readIssueReportImage(reportId: string, imageId: string)
+      : Promise<ReadableStream<Uint8Array>> {
+    this.#requireAdmin();
+    return await this.issueReports.getByName("").readImage(reportId, imageId);
+  }
 }

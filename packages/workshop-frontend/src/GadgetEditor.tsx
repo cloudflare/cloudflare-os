@@ -70,6 +70,8 @@ import { UpdateFromBlueprintDialog } from './features/blueprint-updates/UpdateFr
 import { useBlueprintUpdateAvailable } from './features/blueprint-updates/useBlueprintUpdateAvailable'
 import { reportVisibleChat } from './features/notifications/visibleChat'
 import { WorkspaceNotificationsMenu } from './features/notifications/WorkspaceNotificationsMenu'
+import { ReportIssueItem } from './features/issue-reports/ReportIssueItem'
+import type { ReportIssueContext } from './features/issue-reports/ReportIssueHost'
 import { logRpcFailure } from './rpcErrors'
 import TopBarNotice from './TopBarNotice'
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from './components/WorkshopControls'
@@ -1770,6 +1772,17 @@ export default function GadgetEditor() {
   // Gone if it was deleted while shared, which closes its dialog.
   const sharedGadget = sharedGadgetId === null ? undefined : allGadgets.find(g => g.id === sharedGadgetId)
 
+  // Where a report filed from this editor says its reporter was: one value, which the user menu
+  // in the top bar and the phone menu's item both hand on. The chat is the one shown, a spawned
+  // agent's when one is open over the working chat. A worktree is not a gadget, so with one open
+  // the report names none.
+  const ownsWorkspace = metadata !== null && !metadata.owner
+  const reportContext = useMemo<ReportIssueContext>(() => ({
+    ...(id !== undefined && { workspace: { id, owned: ownsWorkspace } }),
+    ...(shownChatId !== null && { chatId: shownChatId }),
+    ...(selectedGadgetId !== null && { gadgetId: selectedGadgetId }),
+  }), [id, ownsWorkspace, shownChatId, selectedGadgetId])
+
   // ── error / loading states ────────────────────────────────────────────────────
   if (error?.kind === 'open') {
     return (
@@ -2016,7 +2029,7 @@ export default function GadgetEditor() {
               saveScope={gadgetSaveScope}
             />
           </span>
-          <UserMenu />
+          <UserMenu report={reportContext} />
         </div>
       </div>
 
@@ -2124,6 +2137,7 @@ export default function GadgetEditor() {
                   prev?.workspaceId === workspaceMute.workspaceId ? { ...prev, mute } : prev)}
               />
             )}
+            <ReportIssueItem context={reportContext} opener={mobileMenuButtonRef} />
             {/* App-only actions are left out for a worktree rather than shown disabled, as the
                 desktop header leaves out its full-screen button. */}
             {selectedWorkpieceSummary?.type !== 'worktree' && (

@@ -8,6 +8,7 @@ import { RpcStub } from 'capnweb'
 import { useAuthenticatedApi } from '../AuthContext'
 import { WorkspaceMetadataWithTimestamps, BlueprintPublicInfo, Overseer, AiChatAuthorInfo, NotificationMute } from '@gadgets/workshop-shared/api'
 import { WorkspaceNotificationsMenu } from '../features/notifications/WorkspaceNotificationsMenu'
+import { ReportIssueItem } from '../features/issue-reports/ReportIssueItem'
 import { describeMute } from '../features/notifications/notificationMute'
 import ShareModal from '../ShareModal'
 import { BindingBadge, getGradient as getBlueprintGradient, uniqueBindingBadges } from './BlueprintCard'
@@ -59,6 +60,7 @@ function AppRow({
   const [isRenaming, setIsRenaming] = useState(false)
   const [renameValue, setRenameValue] = useState(gadget.title || '')
   const renameInputRef = useRef<HTMLInputElement>(null)
+  const actionsButtonRef = useRef<HTMLButtonElement>(null)
   const unread = useUnreadState()
   const unreadMessages = unread?.state?.workspaces.find(workspace => workspace.workspaceId === gadget.id)?.unreadMessageCount ?? 0
 
@@ -143,6 +145,8 @@ function AppRow({
         <DropdownMenu.Trigger
           render={
             <button
+              ref={actionsButtonRef}
+              aria-label="Workspace actions"
               className="p-1.5 text-kumo-subtle hover:text-kumo-default rounded-md hover:bg-kumo-fill transition-colors sm:opacity-0 sm:group-hover:opacity-100 focus:opacity-100"
             >
               <DotsThreeVertical size={16} />
@@ -176,6 +180,10 @@ function AppRow({
             workspaceId={gadget.id}
             mute={gadget.notificationMute}
             onMuteChange={mute => onNotificationMuteChange(gadget, mute)}
+          />
+          <ReportIssueItem
+            context={{ workspace: { id: gadget.id, owned: !gadget.owner } }}
+            opener={actionsButtonRef}
           />
           <DropdownMenu.Separator />
           <DropdownMenu.Item

@@ -13,7 +13,11 @@ import AdminFormatsPanel from './components/format/AdminFormatsPanel'
 import { AdminModelsPanel } from './features/ai-models/AdminModelsPanel'
 import { AdminUpdatesPanel } from './features/deployment-updates/AdminUpdatesPanel'
 import { AdminAuditPanel } from './features/admin-audit/AdminAuditPanel'
+import { auditFilterOf } from './features/admin-audit/auditFilter'
 import { auditSettingsOf, type AuditSettings } from './features/admin-audit/auditSettings'
+import { AdminReportsPanel } from './features/admin-reports/AdminReportsPanel'
+import { reportSearchOf } from './features/admin-reports/reportFilter'
+import { reportRetentionOf, type ReportRetention } from './features/admin-reports/reportSettings'
 import { PendingApprovalsCard } from './features/admin-grants/PendingApprovalsCard'
 import { latestReads } from './features/deployment-updates/latestReads'
 import { probeRouterTag } from './features/deployment-updates/probeRouterTag'
@@ -122,14 +126,23 @@ export default function AdminPage() {
   // Each grant decision the pending approvals card settles, which the audit panel loads again for.
   const [grantDecisions, setGrantDecisions] = useState(0)
 
-  // The tab lives in the URL so the notice can link to one, and so do the Audit tab's filters;
-  // changing either replaces the history entry on the same route, which keeps this component and
-  // its drafts.
+  // How long issue reports are kept, null while the backend has no issue report store and no
+  // Reports tab.
+  const [reportRetention, setReportRetention] = useState<ReportRetention | null>(null)
+  const [reloadReportRetention] = useState(() =>
+    latestReads<AdminSettingsView>((view) => setReportRetention(reportRetentionOf(view))))
+
+  // The tab lives in the URL so the notice can link to one, and so do the Audit tab's filters and
+  // the Reports tab's, with the report that is open; changing any of them stays on the same route,
+  // which keeps this component and its drafts.
   const navigate = useNavigate()
-  const { tab: requestedTab, ...auditFilter } = useSearch({ from: '/admin' })
-  const activeTab = resolveAdminTab(requestedTab, {
+  const search = useSearch({ from: '/admin' })
+  const auditFilter = auditFilterOf(search)
+  const { report: openReportId, ...reportFilter } = reportSearchOf(search)
+  const activeTab = resolveAdminTab(search.tab, {
     updatesAvailable: updateStatus === 'pending' ? 'pending' : updateStatus !== null,
     auditAvailable: auditSettings !== null,
+    reportsAvailable: reportRetention !== null,
   })
   const handleTabChange = (tab: string) => {
     if (isAdminTab(tab)) void navigate({ to: '/admin', search: { tab }, replace: true })
@@ -170,6 +183,7 @@ export default function AdminPage() {
     setFormats(view.formats)
     setGatewayModels(view.gatewayModels)
     setAuditSettings(auditSettingsOf(view))
+    setReportRetention(reportRetentionOf(view))
   }
 
   // Mint the admin capability once (the access check happens server-side) and load settings.
@@ -518,6 +532,7 @@ export default function AdminPage() {
           { value: 'models', label: 'Models' },
           { value: 'access', label: 'Access' },
           ...(auditSettings !== null ? [{ value: 'audit', label: 'Audit' }] : []),
+          ...(reportRetention !== null ? [{ value: 'reports', label: 'Reports' }] : []),
           // Also listed while a requested Updates tab waits for the status, so it shows as selected.
           ...(activeTab === 'updates' || (updateStatus !== null && updateStatus !== 'pending')
             ? [{ value: 'updates', label: 'Updates' }]
@@ -561,6 +576,19 @@ export default function AdminPage() {
           recorded={grantDecisions}
           filter={auditFilter}
           onFilterChange={(filter) => void navigate({ to: '/admin', search: { tab: 'audit', ...filter }, replace: true })}
+        />
+      )}
+
+      {/* Issue reports and their retention */}
+      {activeTab === 'reports' && reportRetention !== null && (
+        <AdminReportsPanel
+          admin={admin.api}
+          retention={reportRetention}
+          onSettingsChanged={() => reloadReportRetention(() => admin.api.getSettings())}
+          filter={reportFilter}
+          // Keeps the open report out of the URL: a change of filter is made from the list.
+          onFilterChange={(filter) => void navigate({ to: '/admin', search: { tab: 'reports', ...filter }, replace: true })}
+          reportId={openReportId}
         />
       )}
 

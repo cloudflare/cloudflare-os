@@ -65,7 +65,18 @@ pnpm cf-os api open-workspace <id> merge-changes <chatId>
 
 If `--timeout` runs out, the turn keeps going: wait again, or `stop-agent <chatId>`.
 
-## An admin's read of content
+## Issue reports, and an admin's read of content
+
+A report is filed first and its images are added to it after, each as a file followed by its
+length, which must be the file's exact size in bytes:
+
+```sh
+pnpm cf-os api submit-issue-report '{"text": "The chart is blank", "priority": "high", "context": {"workspaceId": "<id>"}}'
+pnpm cf-os api add-issue-report-image <reportId> shot.png $(wc -c < shot.png)
+```
+
+Leave the substitution unquoted: macOS's `wc` pads the number with blanks, which the shell drops
+only from an unquoted substitution, and the CLI refuses a number with blanks around it.
 
 An admin reads a workspace's content through a view opened for content, and only while a grant is
 live for that workspace. `--out <file>` saves a file the answer streams:

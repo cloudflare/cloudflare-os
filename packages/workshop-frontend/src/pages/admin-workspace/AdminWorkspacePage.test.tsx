@@ -158,13 +158,13 @@ const unmount = async () => {
 }
 
 // The page under a router, which its links need, beside a stub of the admin page they lead to.
-const renderPage = async (admin: FakeAdmin | null) => {
+const renderPage = async (admin: FakeAdmin | null, reportId?: string) => {
   mocks.authenticatedApi.getAdminApi.mockReturnValue(Promise.resolve(admin))
   const rootRoute = createRootRoute({ component: () => <Outlet /> })
   const pageRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: '/',
-    component: () => <AdminWorkspacePage workspaceId={WORKSPACE_ID} />,
+    component: () => <AdminWorkspacePage workspaceId={WORKSPACE_ID} reportId={reportId} />,
   })
   const adminRoute = createRoute({ getParentRoute: () => rootRoute, path: '/admin', component: () => null })
   const router = createRouter({
@@ -286,6 +286,15 @@ describe('opening a workspace', () => {
     expect(admin?.inspectWorkspace).not.toHaveBeenCalled()
     expect(text()).not.toContain('Access grants')
     expect(text()).not.toContain('grant-admins-1')
+  })
+
+  it('starts the reason as the issue report the admin came from', async () => {
+    const admin = await renderPage(fakeAdmin(), 'report-7f3a')
+
+    expect(field(REASON_LABEL).value).toBe('Issue report report-7f3a')
+    await click(button('Open'))
+
+    expect(admin?.inspectWorkspace.mock.calls).toEqual([[WORKSPACE_ID, 'Issue report report-7f3a']])
   })
 
   it('calls a workspace without a title untitled', async () => {
@@ -498,7 +507,7 @@ describe('the access grants', () => {
     expect(text()).toContain('This workspace stores no live grant.')
     expect(text()).toContain('The owner’s grant for all of their workspaces is not listed here')
     expect(text()).toContain('An owner’s grant is not in the audit log either.')
-    expect(text()).toContain('This list is where admins see it.')
+    expect(text()).toContain('This list and the issue report it came with are where admins see it.')
     expect(text()).not.toContain(BOUND_NOTE)
   })
 

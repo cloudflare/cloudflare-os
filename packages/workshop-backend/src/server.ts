@@ -1,7 +1,7 @@
 import { RpcStub, RpcTarget, newHttpBatchRpcResponse, newWebSocketRpcSession, RpcSessionOptions } from "capnweb";
 import { validateRpc } from "capnweb-validate";
 import type { JWTPayload } from "jose";
-import { PublicApi, ROUTER_TAG_PROBE_PATH, VERSION_PATH, AuthenticatedApi, Overseer, WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, RedactedAiModelConfig, AiGatewayInfo, ModelKind, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, ObserverConfigCallback, BlueprintLibrarySummary, BlueprintPublicInfo, BlueprintUserSummary, BlueprintBindingAssignment, AgentSpawnerConfig, WorkpieceId, BLUEPRINT_SCREENSHOT_PATH_PREFIX, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ServerConfig, CloudflareUsageInfo, CloudflareAccountOption, LoginAttempt, GatekeeperAppInfo, AdminApi, GatekeeperVendorInfo, OutputFormatOffer, ListOutputsResult, UserDirectoryRecord, createOpenWorkspaceError, getOpenWorkspaceErrorCode, OPEN_WORKSPACE_ERROR_CODES, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, NotificationSubscriber, NotificationMute, WebPushSubscription, type UnreadStateSubscriber, AdminVia, type AdminAccessGrant } from '@gadgets/workshop-shared/api';
+import { PublicApi, ROUTER_TAG_PROBE_PATH, VERSION_PATH, AuthenticatedApi, Overseer, WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, RedactedAiModelConfig, AiGatewayInfo, ModelKind, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, ObserverConfigCallback, BlueprintLibrarySummary, BlueprintPublicInfo, BlueprintUserSummary, BlueprintBindingAssignment, AgentSpawnerConfig, WorkpieceId, BLUEPRINT_SCREENSHOT_PATH_PREFIX, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ServerConfig, CloudflareUsageInfo, CloudflareAccountOption, LoginAttempt, GatekeeperAppInfo, AdminApi, GatekeeperVendorInfo, OutputFormatOffer, ListOutputsResult, UserDirectoryRecord, createOpenWorkspaceError, getOpenWorkspaceErrorCode, OPEN_WORKSPACE_ERROR_CODES, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, NotificationSubscriber, NotificationMute, WebPushSubscription, type UnreadStateSubscriber, AdminVia, type AdminAccessGrant, type IssueReportEntry, type IssueReportImage, type IssueReportInput, type OwnIssueReport, type OwnIssueReportPage, ISSUE_REPORT_ERROR_CODES, createIssueReportError } from '@gadgets/workshop-shared/api';
 import type { UiFeatureFlags } from "@gadgets/workshop-shared/feature-flags";
 import type { UnreadStateScope } from "@gadgets/workshop-shared/api";
 import { backendVersion, getServerConfig } from "./deployment-config.js";
@@ -25,6 +25,7 @@ import { GatekeeperConnectCallbackImpl, GatekeeperUserSelectionExchangeImpl, nor
 import { OverseerDurableObject, GatekeeperLoopback, CodeModeTailLoopback, AgentSpawnerGatekeeper, GatekeeperHookLoopback, GadgetTailLoopback, AgentSelfLoopback } from "./overseer";
 import { UserDirectoryDurableObject } from "./user-directory.js";
 import { AdminAuditDurableObject } from "./admin-audit.js";
+import { IssueReportsDurableObject } from "./issue-reports.js";
 import { RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { recordAnalytics } from "./analytics";
 import { handleClientErrorRequest } from "./client-errors.js";
@@ -71,6 +72,9 @@ export { UserDirectoryDurableObject };
 
 // Re-export the deployment-wide admin audit log Durable Object.
 export { AdminAuditDurableObject };
+
+// Re-export the deployment-wide issue report store Durable Object.
+export { IssueReportsDurableObject };
 
 // Re-export entrypoint types from user.ts.
 export { UserDurableObject, GatekeeperConnectCallbackImpl, GatekeeperUserSelectionExchangeImpl };
@@ -134,6 +138,11 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   // have to worry about detecting when a stub has become broken.
   get #user(): DurableObjectStub<UserDurableObject> {
     return wrapDoStubForTelemetry(this.users.get(this.#userId));
+  }
+
+  // The deployment's issue reports. A new stub for every request, as for the user DO.
+  get #issueReports(): DurableObjectStub<IssueReportsDurableObject> {
+    return this.ctx.exports.IssueReportsDurableObject.getByName("");
   }
 
   #isAdmin(): boolean {
@@ -699,6 +708,69 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     return selector.createGatekeeperUserSelection(app.accountId, selectedUserId);
   }
 
+  // --- Issue reports ---
+  //
+  // The reporter is always the session's user, by the profile their account gives (whoami()),
+  // never an argument: its id is what the store keeps a report under. The store decides who
+  // reads what, and holds the images: this Worker reads no byte of an image either way.
+
+  async submitIssueReport(report: IssueReportInput): Promise<OwnIssueReport> {
+    let owner = false;
+    let { workspaceId, chatId, gadgetId } = report.context ?? {};
+    if (workspaceId !== undefined) {
+      let id: DurableObjectId;
+      try {
+        id = this.overseers.idFromString(workspaceId);
+      } catch {
+        throw createIssueReportError(ISSUE_REPORT_ERROR_CODES.contextNotFound);
+      }
+      // The workspace says whether the reporter can open what the report names, and whether
+      // they own it: neither is taken on the client's word.
+      ({ owner } = await this.overseers.get(id).issueReportContext(
+          this.#userId.toString(), { chatId, gadgetId }));
+      // Kept as the workspace names itself, which is what a grant given with the report names.
+      report = { ...report, context: { ...report.context, workspaceId: id.toString() } };
+    }
+    return await this.#issueReports.submit(await this.whoami(), report, owner);
+  }
+
+  async addIssueReportImage(reportId: string, image: ReadableStream<Uint8Array>,
+      byteLength: number): Promise<IssueReportImage> {
+    let { id } = await this.whoami();
+    return await this.#issueReports.addImage(id, reportId, image, byteLength);
+  }
+
+  async listIssueReports(cursor?: string): Promise<OwnIssueReportPage> {
+    let { id } = await this.whoami();
+    return await this.#issueReports.listOwn(id, cursor);
+  }
+
+  async getIssueReport(reportId: string)
+      : Promise<OwnIssueReport & { entries: IssueReportEntry[] }> {
+    let { id } = await this.whoami();
+    return await this.#issueReports.getOwn(id, reportId);
+  }
+
+  async readIssueReportImage(reportId: string, imageId: string)
+      : Promise<ReadableStream<Uint8Array>> {
+    let { id } = await this.whoami();
+    return await this.#issueReports.readOwnImage(id, reportId, imageId);
+  }
+
+  async replyToIssueReport(reportId: string, text: string): Promise<IssueReportEntry> {
+    return await this.#issueReports.reply(await this.whoami(), reportId, text);
+  }
+
+  async getUnseenIssueReportCount(): Promise<number> {
+    let { id } = await this.whoami();
+    return await this.#issueReports.unseenCount(id);
+  }
+
+  async markIssueReportSeen(reportId: string): Promise<void> {
+    let { id } = await this.whoami();
+    await this.#issueReports.markSeen(id, reportId);
+  }
+
   // --- Admin access grants ---
   //
   // The caller's own account-wide grant, kept by their user object. Any user may give one: these
@@ -708,8 +780,8 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     return retryOnDoReset(() => this.#user.getAccountAdminGrant());
   }
 
-  grantAccountAdminAccess(): Promise<AdminAccessGrant> {
-    return this.#user.grantAccountAdminAccess();
+  grantAccountAdminAccess(options?: { reportId?: string }): Promise<AdminAccessGrant> {
+    return this.#user.grantAccountAdminAccess(options?.reportId);
   }
 
   revokeAccountAdminAccess(): Promise<void> {
