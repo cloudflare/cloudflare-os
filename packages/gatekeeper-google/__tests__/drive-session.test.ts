@@ -1554,11 +1554,11 @@ describe("positioned Drive folder session", () => {
       ["a child folder in the trash", ["R", "A"], "D1", "BT", []],
       ["an ID the account cannot see", ["R", "A"], "D1", "gone", [[
         "Check Google Drive folder",
-        "Check whether a requested file is a direct child of this Drive folder.", [],
+        "Check whether a requested file is in this Drive folder, directly or through a shortcut.", [],
       ]]],
       ["the alias root, which Drive answers under another ID", ["R", "A"], "D1", "root", [[
         "Check Google Drive folder",
-        "Check whether a requested file is a direct child of this Drive folder.", [],
+        "Check whether a requested file is in this Drive folder, directly or through a shortcut.", [],
       ]]],
       ["a child that is a Doc", ["R", "A"], "D1", "D3", [[
         "Check Google Drive folder", "Check whether a requested folder can be opened here.",

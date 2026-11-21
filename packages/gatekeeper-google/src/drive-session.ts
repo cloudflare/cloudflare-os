@@ -1384,7 +1384,7 @@ export class DriveFolderSessionCore extends DriveCoreBase {
       // direct child is objective, so refusing that discloses nothing either.
       await this.authorizeAccountRelative(
         "Check Google Drive folder",
-        "Check whether a requested file is a direct child of this Drive folder.");
+        "Check whether a requested file is in this Drive folder, directly or through a shortcut.");
       refuse();
     }
     let current = path[path.length - 1];
