@@ -2483,7 +2483,7 @@ export class GoogleDriveGatekeeperImpl
       // Validated here too, so a hand-built resource URL fails at connect rather than minting a
       // presentable binding whose every call then refuses.
       let folder = await readFolderRoot(scope.folderId, id => api.getFile(id));
-      let reads = "list and search direct children, navigate child folders, read native Google Docs, Sheets and Slides, read PDFs' text with readPdf() and any other file's bytes with readFile()";
+      let reads = "list and search direct children, navigate child folders, follow shortcuts among them to files and folders elsewhere in Drive for reading, read native Google Docs, Sheets and Slides, read PDFs' text with readPdf() and any other file's bytes with readFile()";
       return {
         // The natural browser URL, not the internal `_resource` selector the grant is keyed on.
         url: `https://drive.google.com/drive/folders/${encodeURIComponent(scope.folderId)}`,
