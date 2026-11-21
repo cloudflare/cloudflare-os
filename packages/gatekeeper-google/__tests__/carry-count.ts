@@ -1,6 +1,5 @@
-// Counts what a pass over a tab's runs reads and writes of its carry's numbers, for the tests
-// that pin a pass's cost by the lists it touches and never by a clock. Two numbers and no
-// record of a call, so a heap test may run with it in place.
+// Counts what a pass over a tab's runs reads and writes of its carry's numbers. Two numbers and
+// no record of a call, so a heap test may run with it in place.
 
 import type { PassCarry } from "../src/markdown-converter";
 
