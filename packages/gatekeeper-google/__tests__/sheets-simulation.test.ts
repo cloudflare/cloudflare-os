@@ -884,7 +884,7 @@ describe("Sheets formatted values with a number format queued", () => {
     let g = replayed(gridOf({ sheets }), [queued(1, [
       { op: "formatCells", sheetId: 0, rect: rect(0, 0), format: hidden },
       { op: "mergeCells", sheetId: 0, rect: rect(0, 0, 1, 2), merge: "ALL" },
-      { op: "unmergeCells", sheetId: 0, rect: rect(0, 0, 1, 2) },
+      { op: "unmergeCells", sheetId: 0, rect: rect(0, 0, 1, 2), merges: [rect(0, 0, 1, 2)] },
       { op: "writeCells", sheetId: 0, rect: rect(0, 1), values: [["x"]] },
     ])]);
     let area = { sheetId: 0, rect: rect(0, 1), rows: 1, columns: 1 };

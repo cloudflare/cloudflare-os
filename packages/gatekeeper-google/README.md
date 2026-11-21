@@ -1985,15 +1985,19 @@ others, as is an unmerge of a range holding part of one and a value written into
 covers, which Google accepts and drops. Since a merge clears cells, a batch with one is queued as
 "Spreadsheet changes that delete sheets, rows, columns or merged cells' values", which a user may
 let apply without asking, and its guard covers the cells it clears; an unmerge keeps every sheet,
-row and column, and is queued as the layout kind.
+row and column, and is queued as the layout kind. An unmerge splits only the merged cells its range
+held when it was queued: one whose range then holds others, because a merge or an unmerge queued
+before it was rejected or a collaborator changed the merges, fails without writing.
 
 Sheets has no revision to pin a write to, so each approved batch is planned against a fresh read
 and guarded by a digest of what it overwrites or removes: the cells it writes and the rows,
 columns and sheets it deletes, as entered, the title and size of each sheet it addresses, and,
 when it adds or copies a sheet, the order of every sheet, ignoring whitespace in formulas. Cells
 that changes queued before it write are expected to hold what those enter, and sheets those
-restructure to have the shape they leave, so a batch built on one that was rejected or failed fails
-too, as does a batch with a formula when any structural change queued before it was not applied,
+restructure to have the shape they leave, and an unmerge records the merged cells within its range
+as those changes leave them, which it applies only while the range holds exactly those, so a batch
+built on one that was rejected or failed fails too, as does a batch with a formula when any
+structural change queued before it was not applied,
 and a batch adding or copying a sheet when a sheet queued before it to be added, copied or deleted
 was not. A batch guards at most 50,000 cells. A change whose cells or sheet
 changed since it was queued fails without writing; a collaborator's edit between that read and the
