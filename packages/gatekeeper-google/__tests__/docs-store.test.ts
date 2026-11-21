@@ -3268,7 +3268,7 @@ describe("DocStore, runs cut by content", () => {
 
     // The store's part of an approval: the copy marked stale, the same sweep, the edit unqueued.
     it("approving it removes the same, and the next keep stores the changed runs again", () => {
-      let { storage, store, n, m, c } = editedLarge();
+      let { storage, store, n, c } = editedLarge();
       let before = counts(storage);
 
       store.touch(DOC, { stale: true });
@@ -3322,13 +3322,6 @@ describe("DocStore, runs cut by content", () => {
       expect(counts(storage)).toMatchObject({ doc_version: 3, doc_seq: 3 * 133 });
       expect(comparing.length * (listed(JSON.stringify([base.id, first.id])) + 133)).toBe(2 * 3 * 133);
     });
-
-    /** A document of one tab under runs of one element: the opening break and a run a text. */
-    const texts = (...lines: string[]) => copyOf([tabOf("t1", lines.map(text => para(text)))], {}, ONE);
-
-    /** The rows of `doc`'s content: its renderings, and its runs and contexts. */
-    const contentOf = (storage: FakeDocStorage, doc: string) =>
-      ["doc_md", "doc_run"].map(table => rowsOf(storage, table).filter(row => row.doc === doc));
 
     // RUNS SHARED BETWEEN TABS: the two tabs share the break, Alpha and Beta.
     it("a fetch that changes one tab leaves the runs its other tab shares", () => {
