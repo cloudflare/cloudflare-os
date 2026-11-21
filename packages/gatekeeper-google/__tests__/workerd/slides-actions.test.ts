@@ -1538,11 +1538,14 @@ function titleEdit(id: string, find: string, replace: string): SlideTextEdit {
   return { slideId: id, elementId: `${id}-title`, find, replace };
 }
 
+/** Sets slide `id`'s title in `held`, as `paddedSlide` names it. */
+function setTitle(held: RestPresentation, id: string, to: string): void {
+  held.slides!.find(page => page.objectId === id)!.pageElements![0].shape!.text = text([to]);
+}
+
 /** A collaborator's edit of slide `id`'s title, as `paddedSlide` names it. */
 function retitle(provider: SlidesProvider, id: string, to: string): void {
-  provider.edit(held => {
-    held.slides!.find(page => page.objectId === id)!.pageElements![0].shape!.text = text([to]);
-  });
+  provider.edit(held => setTitle(held, id, to));
 }
 
 describe("Google Slides pages past what one read holds", () => {
@@ -1638,6 +1641,38 @@ describe("Google Slides pages past what one read holds", () => {
       .toEqual(ids.map(id => `Slide ${id}: the ${grown} in hand\n`));
     expect(await slides.apply(actionId!)).toBeNull();
     expect(provider.batches).toHaveLength(2);
+  });
+
+  it("records an unknown outcome for a lost write whose pages each match at a different revision", async () => {
+    let ids = ["p1", "p2"];
+    let provider = new SlidesProvider(presentation(ids.map(id => paddedSlide(id, 10)))).install();
+    let slides = gatekeeper();
+    let { actionId } = await slides.edit(ids.map(id => titleEdit(id, "piece", "part")));
+    // Revision 2 has slide 1 as the batch would leave it, so the resend is refused as stale.
+    dropNextWrite(provider, held => setTitle(held, "p1", "Slide p1: the part in hand"));
+    // Revision 3, between the confirmation's reads of the two pages, puts slide 1 back and has
+    // slide 2 as the batch would leave it: no revision ever has both.
+    let fetch = globalThis.fetch;
+    let collaborated = false;
+    vi.stubGlobal("fetch", async (input: RequestInfo, init?: RequestInit) => {
+      let response = await fetch(input, init);
+      if (provider.batches.length === 2 && !collaborated && String(input).includes("/pages/p1")) {
+        collaborated = true;
+        provider.edit(held => {
+          setTitle(held, "p1", "Slide p1: the piece in hand");
+          setTitle(held, "p2", "Slide p2: the part in hand");
+        });
+      }
+      return response;
+    });
+
+    expect(await slides.apply(actionId!)).toContain("may or may not have taken effect");
+
+    expect(collaborated).toBe(true);
+    expect(provider.revision).toBe(3);
+    expect(provider.batches).toHaveLength(2);
+    expect(ids.map(id => provider.text(id, `${id}-title`)))
+      .toEqual(["Slide p1: the piece in hand\n", "Slide p2: the part in hand\n"]);
   });
 
   it("names in the outline the first change of a stopped batch that no longer applies", async () => {

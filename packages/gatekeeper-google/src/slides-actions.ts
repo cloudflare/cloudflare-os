@@ -229,13 +229,17 @@ async function write(
   try {
     // The outline first, and each page after it, as a fresh read takes them, but one page at a
     // time, as the plan asks for it: so the read holds one page beside the plan's, whatever the
-    // write left the pages holding together. A page may be read at a later revision than the one
-    // before it, which changes nothing the check relies on: the batch is either in a revision
-    // whole, being pinned to the one it was planned at, or not at all, so each page shows only
-    // what the presentation then holds of it, as one read of them all would.
+    // write left the pages holding together. Pages read one after another may each be read at a
+    // different revision, and a collaborator's edits between them can make every page match
+    // though no revision has them all as the batch would leave them. So a match that read a page
+    // counts only if the revision after the last page is the outline's: then every page was read
+    // at that one revision, as one read of them all would be.
     let after = await readFresh(host, []);
-    landed = await sent.landed(after, async id =>
-      (await host.api.getSlides(host.presentationId, [id], after.order)).get(id));
+    let paged = false;
+    landed = await sent.landed(after, async id => {
+      paged = true;
+      return (await host.api.getSlides(host.presentationId, [id], after.order)).get(id);
+    }) && (!paged || (await host.api.getOutline(host.presentationId)).revisionId === after.revisionId);
   } catch (error) {
     // Unknown either way: the write may have landed, so it is never planned again.
     logger.warn("could not confirm a lost Slides write", { event: "slides.apply.confirm.failed", error });

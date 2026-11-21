@@ -1876,8 +1876,11 @@ alike). If the read cannot tell, as for a batch that only formats or moves eleme
 a picture, the change is marked as having an unknown outcome and never retried. That read takes the
 outline, which holds the masters and layouts, and then each slide the write changed on its own,
 checking it and letting it go before the next, so it holds one page at a time and does not fail
-for the cap on what one read holds, which the write may have grown its pages past. The write is in
-a revision whole or not at all, so pages read at successive revisions show what one read would.
+for the cap on what one read holds, which the write may have grown its pages past. A collaborator's
+edit between two of those page reads could make each page match at a different revision, though no
+revision has them all as the write would leave them, so the read finds the write landed only if the
+presentation's revision after the last page is still the outline's; otherwise the outcome is
+unknown.
 
 Google returns a presentation's revision only to an account that can edit it, so a view-only
 account can read a presentation but every change to it fails. A queued change is stored in one
