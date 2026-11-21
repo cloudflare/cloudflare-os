@@ -7,7 +7,7 @@ import { missingCommand, slashRequestFor } from './slashCommands'
 import { assertAttachable, uploadAttachments } from './uploadAttachments'
 
 /** The part of a workspace's Overseer that starting a conversation uses. */
-export type NewConversationOverseer = Pick<Overseer, 'newChat' | 'getMetadata' | 'uploadBlob' | 'listSlashCommands' | 'newGatekeeper' | 'newAiModelGatekeeper'> & Disposable
+export type NewConversationOverseer = Pick<Overseer, 'newChat' | 'getMetadata' | 'uploadBlob' | 'listSlashCommands' | 'newGatekeeper' | 'newAiModelGatekeeper' | 'newAgentSpawnerGatekeeper'> & Disposable
 
 /** A connection the draft was given, in whichever workspace was chosen when it was added. */
 export type DraftConnection = Pick<AddedConnection, 'gatekeeperId' | 'workspaceId' | 'source' | 'description' | 'vendorId'>
@@ -15,9 +15,11 @@ export type DraftConnection = Pick<AddedConnection, 'gatekeeperId' | 'workspaceI
 // The id of the same connection made again in `overseer`'s workspace.
 const madeAgain = async (overseer: NewConversationOverseer, source: ConnectionSource) => {
   // Typed as nullable, but never null: it throws instead.
-  const gatekeeper = ('modelId' in source
-    ? overseer.newAiModelGatekeeper(source.modelId)
-    : overseer.newGatekeeper(source.accountId, source.resourceUrl)) as RpcPromise<GatekeeperClient<never>>
+  const gatekeeper = ('agent' in source
+    ? overseer.newAgentSpawnerGatekeeper({ displayName: source.agent.name, modelId: source.agent.modelId, env: {} })
+    : 'modelId' in source
+      ? overseer.newAiModelGatekeeper(source.modelId)
+      : overseer.newGatekeeper(source.accountId, source.resourceUrl)) as RpcPromise<GatekeeperClient<never>>
   try {
     return await gatekeeper.getId()
   } finally {

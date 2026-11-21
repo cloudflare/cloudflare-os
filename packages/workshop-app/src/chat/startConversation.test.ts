@@ -20,7 +20,8 @@ const fakeOverseer = (workspaceId = 'ws-1', chatId = 0) => {
   // Only getId() of what they return is used; the RPC types they would return cannot be built here.
   const newGatekeeper = ((accountId: number, resourceUrl: string) => connection(`${accountId} ${resourceUrl}`)) as unknown as Overseer['newGatekeeper']
   const newAiModelGatekeeper = ((modelId: string) => connection(modelId)) as unknown as Overseer['newAiModelGatekeeper']
-  const overseer: NewConversationOverseer = { newChat, getMetadata, uploadBlob, listSlashCommands, newGatekeeper, newAiModelGatekeeper, [Symbol.dispose]: dispose }
+  const newAgentSpawnerGatekeeper = (({ displayName, modelId }: { displayName: string; modelId: string | null }) => connection(`agent ${displayName} ${modelId}`)) as unknown as Overseer['newAgentSpawnerGatekeeper']
+  const overseer: NewConversationOverseer = { newChat, getMetadata, uploadBlob, listSlashCommands, newGatekeeper, newAiModelGatekeeper, newAgentSpawnerGatekeeper, [Symbol.dispose]: dispose }
   return { overseer, newChat, getMetadata, uploadBlob, dispose, made }
 }
 
@@ -101,13 +102,14 @@ describe('startConversation', () => {
       { gatekeeperId: 3, workspaceId: 'chosen', source: { modelId: 'kept' }, description: description('Kept'), vendorId: 'ai-model' },
       { gatekeeperId: 3, workspaceId: 'provisional', source: { accountId: 8, resourceUrl: 'https://example.com/repo' }, description: description('Repo'), vendorId: 'github' },
       { gatekeeperId: 4, workspaceId: 'provisional', source: { modelId: 'sonnet' }, description: description('Sonnet'), vendorId: 'ai-model' },
+      { gatekeeperId: 5, workspaceId: 'provisional', source: { agent: { name: 'Helper', modelId: 'haiku' } }, description: description('Helper'), vendorId: 'agent-spawner' },
     ]
 
     await startConversation(() => fake.overseer, 'Compare', [], 'model-1', undefined, undefined, connections)
 
-    expect(fake.made).toEqual(['8 https://example.com/repo', 'sonnet'])
+    expect(fake.made).toEqual(['8 https://example.com/repo', 'sonnet', 'agent Helper haiku'])
     const [text, , capsules] = fake.newChat.mock.calls[0]
-    expect(text).toBe('Compare [0] [1] [2]')
-    expect(capsules?.map(({ gatekeeperId, description: { title } }) => [title, gatekeeperId])).toEqual([['Kept', 3], ['Repo', 50], ['Sonnet', 51]])
+    expect(text).toBe('Compare [0] [1] [2] [3]')
+    expect(capsules?.map(({ gatekeeperId, description: { title } }) => [title, gatekeeperId])).toEqual([['Kept', 3], ['Repo', 50], ['Sonnet', 51], ['Helper', 52]])
   })
 })

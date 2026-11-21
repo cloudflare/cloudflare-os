@@ -1197,7 +1197,7 @@ opened from it (`fromItem`). Under them, a tab each (`?tab=`, kept in place in t
   Escape puts it back. One waiting in a chat is that chat's, and is not renamed here. Nothing is
   added here, neither a service nor an AI model: the agent asks for what it needs in a chat, and a
   model is added to a chat (`ChatModelDialog`, from Add a connection) for the agent to give to a
-  gadget. A model's row is titled by its model's name and changes model in place (`changeModel`,
+  gadget, as an agent is (`MakeAgent`, named and given a model, with access to nothing). A model's row is titled by its model's name and changes model in place (`changeModel`,
   `ModelBindingDialog`): a connection to the new model, then the binding pointed at it in one step
   (`GadgetClient.rebind`), which keeps its blueprint annotation and is refused if the binding
   changed since it was read. A chat proposing a model says so in plain words when its changes wait to be

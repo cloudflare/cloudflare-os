@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { CaretRightIcon, XIcon } from '@phosphor-icons/react'
 import { Button, Dialog, TextField } from '@gadgets/ui'
 import { ServiceLogo } from '@/components/ServiceLogo'
@@ -6,7 +6,7 @@ import { ServiceLogo } from '@/components/ServiceLogo'
 /** A kind of resource one of the services offers: a GitHub repository, a Google spreadsheet. */
 export type ConnectionChoice = {
   key: string
-  service: { name: string; logoUrl?: string; color?: string }
+  service: { name: string; logoUrl?: string; color?: string; glyph?: ReactNode }
   /** The kind, as the service names it: "Repository". */
   title: string
   /** What it is, as the service says, under the title. */
@@ -72,7 +72,7 @@ const AddConnectionContent = ({ to, choices, problem, onChoose }: Omit<AddConnec
                   onClick={() => onChoose(choice)}
                   className="group flex w-full cursor-pointer items-center gap-3 rounded-2xl p-3 text-left text-base hover:bg-kumo-contrast/5 focus-visible:bg-kumo-contrast/5"
                 >
-                  <ServiceLogo name={choice.service.name} src={choice.service.logoUrl} color={choice.service.color} small />
+                  <ServiceLogo name={choice.service.name} src={choice.service.logoUrl} glyph={choice.service.glyph} color={choice.service.color} small />
                   <span className="flex min-w-0 flex-1 flex-col leading-snug">
                     <span className="truncate font-medium text-kumo-default">{choice.title}</span>
                     <span className="truncate text-kumo-subtle">{choice.description ? `${choice.service.name} · ${choice.description}` : choice.service.name}</span>

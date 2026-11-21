@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
 
 export type ServiceLogoProps = {
@@ -6,6 +6,11 @@ export type ServiceLogoProps = {
   name: string
   /** The logo's address. */
   src?: string
+  /**
+   * What stands for it where it is not a service with a logo but something of the app's own, such
+   * as one of the user's models: a glyph, drawn in place of its first letter, at half its tile.
+   */
+  glyph?: ReactNode
   /** The service's own colour, for behind its logo. */
   color?: string
   /** As small as a row's picture, rather than a card's. */
@@ -28,7 +33,7 @@ const NOTCH = 'mask-[radial-gradient(circle_at_calc(100%-4px)_calc(100%-4px),tra
  * The logo of a service the app connects to, on a tile of its own as an app's icon is, or the
  * first letter of its name where it has no logo, or its logo does not load.
  */
-export const ServiceLogo = ({ name, src, color, small = false, tiny = false, notched = false, bare = false }: ServiceLogoProps) => {
+export const ServiceLogo = ({ name, src, glyph, color, small = false, tiny = false, notched = false, bare = false }: ServiceLogoProps) => {
   // The address that did not load, so that another is tried.
   const [failed, setFailed] = useState<string>()
   const shown = src !== undefined && src !== failed
@@ -64,7 +69,9 @@ export const ServiceLogo = ({ name, src, color, small = false, tiny = false, not
     >
       {shown
         ? <img src={src} alt="" className="size-3/5 object-contain" onError={() => setFailed(src)} />
-        : name.trim().slice(0, 1).toUpperCase() || '?'}
+        : glyph
+          ? <span className="grid size-full place-items-center [&>svg]:size-1/2">{glyph}</span>
+          : name.trim().slice(0, 1).toUpperCase() || '?'}
     </span>
   )
 }

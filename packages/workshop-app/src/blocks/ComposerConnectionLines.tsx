@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { Button, useReducedMotion } from '@gadgets/ui'
 import { XIcon } from '@phosphor-icons/react'
@@ -10,7 +11,7 @@ export type ComposerConnection = {
   title: string
   /** What kind it is, as its service names it: "Repository". */
   kind?: string
-  service: { name: string; logoUrl?: string; color?: string }
+  service: { name: string; logoUrl?: string; color?: string; glyph?: ReactNode }
   /** Still being made, from a link pasted into the draft: the draft cannot go until it is. */
   pending?: boolean
   /** Why it could not be made: it does not go with the draft, and says so until taken off. */
@@ -51,7 +52,7 @@ export const ComposerConnectionLines = ({ connections, refusal, onRemove }: {
         >
           <div className="px-1.5 pt-1.5">
             <div className="flex h-9 items-center gap-2 rounded-[15px] bg-kumo-base ps-1 pe-1.5 text-sm ring-1 ring-kumo-line ring-inset">
-              <ServiceLogo name={connection.service.name} src={connection.service.logoUrl} color={connection.service.color} tiny />
+              <ServiceLogo name={connection.service.name} src={connection.service.logoUrl} glyph={connection.service.glyph} color={connection.service.color} tiny />
               <span className="sr-only">Adding the connection:</span>
               <span className="min-w-0 shrink truncate font-medium text-kumo-default">{connection.title}</span>
               {/* Why it cannot go is said once, on the last line. */}
