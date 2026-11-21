@@ -1,8 +1,13 @@
 import { describe, it, expect } from "vitest";
-import { AutoApprovalDrainer, AutoApprovalStorage, ApplyPendingActionFn, autoApprovalRule }
-    from "../src/auto-approval.js";
+import {
+  AutoApprovalDrainer, AutoApprovalStorage, ApplyPendingActionFn, autoApprovalRule,
+  guardRuleExemption, ruleApplies,
+} from "../src/auto-approval.js";
 import type { ActionRecord, StoredActionDescription }
     from "../src/storage-schema/overseer-storage.js";
+import {
+  ADMIN_AGENT_ACTIONS, ADMIN_GATEKEEPER_VENDOR_ID, type AdminAgentAction,
+} from "@gadgets/workshop-shared/admin-agent";
 import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api";
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { makeMockStorage } from "./mock-storage.js";
@@ -17,6 +22,27 @@ function enableRule(storage: AutoApprovalStorage, actionTag = "edit", gatekeeper
   storage.autoApproveTags.put({
     gatekeeperId, actionKind: { tag: actionTag, label: "Edits" }, enabledBy: ENABLER });
 }
+
+// A connection of `vendorId`, as Overseer.newGatekeeper() stores one.
+function putConnection(storage: AutoApprovalStorage, vendorId: string, gatekeeperId = GK) {
+  let resourceUrl = `https://${vendorId}.example/resource`;
+  storage.gatekeepers.put({
+    id: gatekeeperId, class: {} as any,
+    creationSpec: { type: "gatekeeper", vendorId, resourceUrl, typeUrlPattern: resourceUrl },
+  });
+}
+
+// A workspace that holds restricted data which only its admin connection, GK, read: the one
+// state in which a rule still applies some actions.
+function makeAdminMarkedStorage() {
+  let storage = makeStorage();
+  putConnection(storage, ADMIN_GATEKEEPER_VENDOR_ID);
+  storage.containsRestrictedData.put(true);
+  storage.adminRestrictedDataOnly.put(true);
+  return storage;
+}
+
+const tagOf = (kind: AdminAgentAction) => ADMIN_AGENT_ACTIONS[kind].kind.tag;
 
 function getAction(storage: AutoApprovalStorage, id: number): ActionRecord & {type: "action"} {
   let record = storage.actions.get(id);
@@ -316,8 +342,10 @@ describe("AutoApprovalDrainer.drain", () => {
     expect(getAction(storage, 2).state).toBe("pending");
   });
 
-  it("applies nothing while the workspace is latched, even with a matching rule", async () => {
+  it("applies nothing of another vendor's connection while the workspace is latched, even with " +
+     "a matching rule", async () => {
     let storage = makeStorage();
+    putConnection(storage, "github");
     enableRule(storage);
     putAction(storage, 1);
     storage.containsRestrictedData.put(true);
@@ -327,6 +355,174 @@ describe("AutoApprovalDrainer.drain", () => {
 
     expect(apply.calls).toEqual([]);
     expect(getAction(storage, 1).state).toBe("pending");
+  });
+
+  describe("under the latch only the admin connection's reads set", () => {
+    const RULES: AdminAgentAction[] =
+        ["issueReportNote", "issueReportStatus", "issueReportAssignment", "issueReportScopedReply"];
+
+    // Pending actions 1, 2, ... of GK, one of each kind in `kinds`, with a rule on for every
+    // kind in RULES.
+    async function drainKinds(kinds: AdminAgentAction[]) {
+      let storage = makeAdminMarkedStorage();
+      for (let kind of RULES) enableRule(storage, tagOf(kind));
+      kinds.forEach((kind, index) => putAction(storage, index + 1, { actionTag: tagOf(kind) }));
+      let apply = makeImmediateApply(storage);
+      await new AutoApprovalDrainer(storage, apply.applyFn, NONE_DECIDING).drain(GK);
+      return { storage, calls: apply.calls };
+    }
+
+    it("applies a note, a status and an assignment in order", async () => {
+      let { calls } = await drainKinds(
+          ["issueReportNote", "issueReportStatus", "issueReportAssignment"]);
+      expect(calls).toEqual([1, 2, 3]);
+    });
+
+    it("applies nothing behind a scoped reply, which waits for a person", async () => {
+      let { storage, calls } = await drainKinds(["issueReportScopedReply", "issueReportNote"]);
+      expect(calls).toEqual([]);
+      expect(getAction(storage, 1).state).toBe("pending");
+      expect(getAction(storage, 2).state).toBe("pending");
+    });
+
+    it("applies a note and stops at the scoped reply behind it", async () => {
+      let { storage, calls } = await drainKinds(
+          ["issueReportNote", "issueReportScopedReply", "issueReportStatus"]);
+      expect(calls).toEqual([1]);
+      expect(getAction(storage, 2).state).toBe("pending");
+      expect(getAction(storage, 3).state).toBe("pending");
+    });
+
+    it("holds an action judged eligible once another vendor's read ended the exemption",
+       async () => {
+      let storage = makeAdminMarkedStorage();
+      enableRule(storage, tagOf("issueReportNote"));
+      putAction(storage, 1, { actionTag: tagOf("issueReportNote") });
+      expect(autoApprovalRule(storage, GK, getAction(storage, 1).description)).toBeDefined();
+
+      storage.adminRestrictedDataOnly.put(false);
+
+      let apply = makeImmediateApply(storage);
+      await new AutoApprovalDrainer(storage, apply.applyFn, NONE_DECIDING).drain(GK);
+      expect(apply.calls).toEqual([]);
+      expect(getAction(storage, 1).state).toBe("pending");
+    });
+  });
+});
+
+describe("ruleApplies", () => {
+  const KINDS = Object.keys(ADMIN_AGENT_ACTIONS) as AdminAgentAction[];
+
+  it("allows any tag of any connection while the workspace holds no restricted data", () => {
+    let storage = makeStorage();
+    putConnection(storage, "github");
+    expect(ruleApplies(storage, GK, "edit")).toBe(true);
+    expect(ruleApplies(storage, GK, tagOf("issueReportReply"))).toBe(true);
+    // A connection with no record too: the latch is all it reads here.
+    expect(ruleApplies(storage, GK + 1, "edit")).toBe(true);
+  });
+
+  it("allows exactly a note, a status and an assignment of the admin connection once only its " +
+     "reads marked the workspace", () => {
+    let storage = makeAdminMarkedStorage();
+    expect(KINDS).toHaveLength(7);
+    expect(KINDS.filter(kind => ruleApplies(storage, GK, tagOf(kind))))
+        .toEqual(["issueReportNote", "issueReportStatus", "issueReportAssignment"]);
+  });
+
+  it("refuses the right tag on another vendor's connection", () => {
+    let storage = makeAdminMarkedStorage();
+    putConnection(storage, "github", GK + 1);
+    expect(ruleApplies(storage, GK + 1, tagOf("issueReportNote"))).toBe(false);
+  });
+
+  it("refuses a tag that is none of the admin gatekeeper's kinds", () => {
+    let storage = makeAdminMarkedStorage();
+    expect(ruleApplies(storage, GK, "edit")).toBe(false);
+  });
+
+  it("refuses everything in a workspace latched before the singleton existed", () => {
+    let storage = makeStorage();
+    putConnection(storage, ADMIN_GATEKEEPER_VENDOR_ID);
+    storage.containsRestrictedData.put(true);
+    expect(KINDS.filter(kind => ruleApplies(storage, GK, tagOf(kind)))).toEqual([]);
+  });
+
+  it("refuses a connection that has no record", () => {
+    let storage = makeAdminMarkedStorage();
+    expect(ruleApplies(storage, GK + 1, tagOf("issueReportNote"))).toBe(false);
+  });
+});
+
+describe("guardRuleExemption", () => {
+  const NOTE = tagOf("issueReportNote");
+
+  // The workspace's storage as its object finds it when it starts: guarded, as the constructor
+  // guards it.
+  function start(disk: DurableObjectStorage) {
+    let storage = makeStorage(disk);
+    guardRuleExemption(storage);
+    return storage;
+  }
+
+  // What authorizeObservation() writes for a restricted observation of the admin connection
+  // that sets the latch: the singleton, the latch and the id the observation takes.
+  function markThroughAdmin(storage: AutoApprovalStorage) {
+    putConnection(storage, ADMIN_GATEKEEPER_VENDOR_ID);
+    storage.adminRestrictedDataOnly.put(true);
+    storage.containsRestrictedData.put(true);
+    takeId(storage);
+  }
+
+  function takeId(storage: AutoApprovalStorage) {
+    storage.nextActionId.put(storage.nextActionId.get() + 1);
+  }
+
+  it("keeps the exemption across restarts while this code takes every action id", () => {
+    let disk = makeMockStorage();
+    let storage = start(disk);
+    // Ids taken before the mark, as in any workspace's life.
+    takeId(storage);
+    markThroughAdmin(storage);
+    takeId(storage);
+    takeId(storage);
+
+    let restarted = start(disk);
+    expect(ruleApplies(restarted, GK, NOTE)).toBe(true);
+    takeId(restarted);
+    expect(ruleApplies(start(disk), GK, NOTE)).toBe(true);
+  });
+
+  it.each([
+    ["another connection's restricted observation", true],
+    ["anything else that takes an action id", false],
+  ])("ends the exemption once a version that does not keep it wrote %s", (_what, restricted) => {
+    let disk = makeMockStorage();
+    markThroughAdmin(start(disk));
+
+    // The older version: the same storage with no guard, which sets the latch, takes an id and
+    // leaves the singleton as it found it.
+    let older = makeStorage(disk);
+    if (restricted) older.containsRestrictedData.put(true);
+    takeId(older);
+    expect(older.adminRestrictedDataOnly.get()).toBe(true);
+
+    let upgraded = start(disk);
+    expect(upgraded.adminRestrictedDataOnly.get()).toBe(false);
+    expect(ruleApplies(upgraded, GK, NOTE)).toBe(false);
+    // Nothing restores it: not the ids this code takes next, nor another start.
+    takeId(upgraded);
+    expect(ruleApplies(start(disk), GK, NOTE)).toBe(false);
+  });
+
+  it("leaves a workspace that was never exempt as it is", () => {
+    let disk = makeMockStorage();
+    let storage = start(disk);
+    takeId(storage);
+    takeId(makeStorage(disk));
+    let restarted = start(disk);
+    expect(restarted.adminRestrictedDataOnly.get()).toBe(false);
+    expect(ruleApplies(restarted, GK, "edit")).toBe(true);
   });
 });
 
@@ -385,8 +581,11 @@ describe("autoApprovalRule", () => {
     expect(autoApprovalRule(storage, GK, eligibleDescription())).toBeUndefined();
   });
 
-  it("refuses every action while the restricted-data latch is set", () => {
+  it("refuses every action of another vendor's connections while the restricted-data latch is " +
+     "set", () => {
     let storage = makeStorage();
+    putConnection(storage, "github");
+    putConnection(storage, "github", GK + 1);
     enableRule(storage);
     enableRule(storage, "edit", GK + 1);
     storage.containsRestrictedData.put(true);
@@ -394,5 +593,30 @@ describe("autoApprovalRule", () => {
     // on every gatekeeper.
     expect(autoApprovalRule(storage, GK, eligibleDescription())).toBeUndefined();
     expect(autoApprovalRule(storage, GK + 1, eligibleDescription())).toBeUndefined();
+  });
+
+  it("returns the rule for a note of the admin connection under the latch only its reads set, " +
+     "and none for a scoped reply", () => {
+    let storage = makeAdminMarkedStorage();
+    enableRule(storage, tagOf("issueReportNote"));
+    enableRule(storage, tagOf("issueReportScopedReply"));
+    let described = (kind: AdminAgentAction) =>
+        eligibleDescription({ actionKind: ADMIN_AGENT_ACTIONS[kind].kind });
+
+    expect(autoApprovalRule(storage, GK, described("issueReportNote"))?.enabledBy)
+        .toEqual(ENABLER);
+    expect(autoApprovalRule(storage, GK, described("issueReportScopedReply"))).toBeUndefined();
+  });
+
+  it("gives a push its rule, and none while the restricted-data latch is set", () => {
+    let storage = makeStorage();
+    enableRule(storage);
+    let push = eligibleDescription({ pushedCommits: ["0123456789abcdef0123456789abcdef01234567"] });
+    // Without the latch the rule is the push's, so it is the latch that withholds it below.
+    expect(autoApprovalRule(storage, GK, push)?.enabledBy).toEqual(ENABLER);
+    // A push queued from a restricted workspace waits for the person who reads its commits,
+    // whatever the gatekeeper declares and whatever rules the workspace holds.
+    storage.containsRestrictedData.put(true);
+    expect(autoApprovalRule(storage, GK, push)).toBeUndefined();
   });
 });

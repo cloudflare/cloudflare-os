@@ -3,10 +3,24 @@ import { env } from "cloudflare:workers";
 import { deflateSync } from "node:zlib";
 import {
   MAX_BUFFERED_BLOB_SIZE,
+  MAX_RESTRICTED_PUSH_COMMITS,
+  MAX_RESTRICTED_PUSH_FILES,
+  MAX_RESTRICTED_PUSH_PATHS,
+  MAX_RESTRICTED_PUSH_TEXT_SIZE,
   type GitPullHints,
   type GitOid,
 } from "@gadgets/workshop-shared/gatekeeper";
-import { READ_FILES_RESPONSE_BUDGET } from "@gadgets/workshop-shared/api";
+import {
+  MAX_PUSH_REVIEW_CURSOR,
+  MAX_PUSH_REVIEW_WALK_BYTES,
+  MAX_PUSH_REVIEW_WALK_OBJECTS,
+  PUSH_REVIEW_PAGE_SIZE,
+  READ_FILES_RESPONSE_BUDGET,
+  type PushReviewEntry,
+  type PushReviewParentEntry,
+  type PushReviewSent,
+  type PushReviewTreeEntry,
+} from "@gadgets/workshop-shared/api";
 import { makeMockStorage } from "./mock-storage";
 import {
   EAGER_BLOB_LIMIT,
@@ -18,6 +32,7 @@ import { BlobReader, CHUNK_MAX_SIZE } from "../src/git-chunked-blob";
 import { buildSnapshotRelease } from "../src/blueprint-release";
 import { makeOverseerStorage } from "../src/storage-schema/overseer-storage";
 import {
+  EMPTY_TREE_OID,
   blobOid,
   buildPackBytes,
   concatBytes,
@@ -25,6 +40,7 @@ import {
   encodeLooseObject,
   gitObjectOid,
   parseGitTree,
+  scanGitTree,
   type GitTreeEntry,
   type PackableObject,
 } from "../src/git-codec";
@@ -35,6 +51,7 @@ import {
   COMMIT_3,
   FIXTURE_OBJECTS,
   GITLINK_TARGET,
+  GPGSIG_COMMIT,
   PACKED_OIDS,
   PACK_OFS_DELTA,
   TREE_1,
@@ -60,6 +77,15 @@ function makeStorage() {
   return makeOverseerStorage(makeMockStorage());
 }
 
+// Storage for a test over thousands of objects. The mock copies the whole store at the start
+// of every transaction, to roll it back, and every metadata write is one: here they run
+// without the copy, so nothing rolls back.
+function makeLargeStorage() {
+  let raw = makeMockStorage();
+  raw.transactionSync = callback => callback();
+  return makeOverseerStorage(raw);
+}
+
 type TestStorage = ReturnType<typeof makeStorage>;
 type PullHandler = (oids: GitOid[], hints: GitPullHints) => Promise<void>;
 
@@ -70,8 +96,7 @@ interface TestCache {
   sources: Map<number, PullHandler>;
 }
 
-function makeCache(): TestCache {
-  let storage = makeStorage();
+function makeCache(storage = makeStorage()): TestCache {
   let pulls: TestCache["pulls"] = [];
   let sources = new Map<number, PullHandler>();
   let cache = new WorkspaceGitCache(storage, {
@@ -136,6 +161,17 @@ function countPuts(t: TestCache): { count: number } {
     put(record);
   };
   return puts;
+}
+
+// Records the oid of every object record read from here on.
+function countReads(t: TestCache): GitOid[] {
+  let reads: GitOid[] = [];
+  let get = t.storage.gitObjects.get.bind(t.storage.gitObjects);
+  t.storage.gitObjects.get = oid => {
+    reads.push(oid);
+    return get(oid);
+  };
+  return reads;
 }
 
 function treePayload(entries: { mode: string, name: string, oid: GitOid }[]): Uint8Array {
@@ -1074,6 +1110,1943 @@ describe("buildPack", () => {
     t.sources.delete(G1);  // the source connection is gone
     await expect(new GitCacheImpl(t.cache, G2, ACTION).buildPack())
         .rejects.toThrow(/unreachable/);
+  });
+});
+
+// =======================================================================================
+
+const utf8 = (text: string) => new TextEncoder().encode(text);
+
+const treeEntry = (mode: GitTreeEntry["mode"]) =>
+    (name: string, oid: GitOid): GitTreeEntry => ({ mode, name, oid });
+const fileAt = treeEntry("100644");
+const executableAt = treeEntry("100755");
+const dirAt = treeEntry("40000");
+const linkAt = treeEntry("120000");
+const submoduleAt = treeEntry("160000");
+
+// Objects as an agent leaves them in the store: nothing recorded about them.
+const localBlob = (t: TestCache, content: string | Uint8Array) => storeLocal(t.storage,
+    { type: "blob", payload: typeof content === "string" ? utf8(content) : content });
+const localTree = (t: TestCache, entries: GitTreeEntry[]) =>
+    storeLocal(t.storage, { type: "tree", payload: encodeGitTree(entries) });
+const localCommit = (t: TestCache, tree: GitOid, parents: GitOid[], message = "change") =>
+    storeLocal(t.storage, { type: "commit", payload: commitPayload(tree, parents, message) });
+
+// A commit G1's remote has, with its tree. The blobs and subtrees it names are G1's to put.
+async function remoteCommit(t: TestCache, entries: GitTreeEntry[], parents: GitOid[] = [],
+                            message = "base") {
+  let tree = await t.cache.putFromGatekeeper(G1, "tree", encodeGitTree(entries));
+  let commit = await t.cache.putFromGatekeeper(
+      G1, "commit", commitPayload(tree, parents, message));
+  return { tree, commit };
+}
+
+// A store whose remote G1 has one commit, `base`, holding README.md alone.
+async function setupReview(t = makeCache()) {
+  let readme = await t.cache.putFromGatekeeper(G1, "blob", utf8("# Base\n"));
+  let { tree, commit } = await remoteCommit(t, [fileAt("README.md", readme)]);
+  return { ...t, readme, baseTree: tree, base: commit };
+}
+
+const sizeOf = (t: TestCache, oid: GitOid) => t.cache.readLocalObject(oid)!.payload.byteLength;
+
+// The whole review of a queued push, page by page. Checks what every review must hold: no
+// call stopped at the walk's budget, the commits, the paths that send an object and the
+// objects listed by id name exactly the action's marks, and reading them pulled nothing.
+function readReview(t: TestCache, heads: GitOid[], actionId = ACTION) {
+  let pulls = t.pulls.length;
+  let page = t.cache.readPushReview(actionId, heads);
+  let entries = [...page.entries];
+  while (page.next !== undefined) {
+    expect(page.truncated).toBeUndefined();
+    page = t.cache.readPushReview(actionId, heads, page.next);
+    entries.push(...page.entries);
+  }
+  expect(page.truncated).toBeUndefined();
+  let sent = entries.flatMap(entry =>
+      entry.kind !== "path" ? [entry.oid] : entry.sent ? [entry.entry!.oid] : []);
+  expect([...new Set(sent)].toSorted()).toStrictEqual(listMarks(t.storage, actionId).toSorted());
+  expect(page.objectCount).toBe(listMarks(t.storage, actionId).length);
+  expect(t.pulls.length).toBe(pulls);
+  return { entries, objectCount: page.objectCount, stackedOn: page.stackedOn };
+}
+
+function pathRow(commit: GitOid, path: string, entry: PushReviewTreeEntry | undefined,
+                 parents: PushReviewParentEntry[], sent?: PushReviewSent): PushReviewEntry {
+  return { kind: "path", commit, path, ...(entry && { entry }), parents, ...(sent && { sent }) };
+}
+
+const NONE: PushReviewParentEntry = { kind: "none" };
+const UNKNOWN: PushReviewParentEntry = { kind: "unknown" };
+const entryOf = (kind: PushReviewTreeEntry["kind"]) =>
+    (oid: GitOid): PushReviewTreeEntry => ({ kind, oid });
+const aFile = entryOf("file");
+const aDir = entryOf("dir");
+
+// The review's rows that are not commits, as `path kind` (or `path -` for a deletion), for
+// the tests that are about which paths are listed.
+const listed = (entries: PushReviewEntry[]) => entries.flatMap(entry =>
+    entry.kind === "path" ? [`${entry.path} ${entry.entry?.kind ?? "-"}`]
+        : entry.kind === "object" ? [`object ${entry.type}`] : []);
+
+// Trees no encoder writes, stored as an agent can store them: nothing checks a tree's form.
+const UNLISTABLE: [string, (a: GitOid, b: GitOid) => GitTreeEntry[]][] = [
+  ["a name twice", (a, b) => [fileAt("notes.txt", a), fileAt("notes.txt", b)]],
+  ["the name .", a => [fileAt(".", a)]],
+  ["the name ..", a => [fileAt("..", a)]],
+  ["entries out of order", (a, b) => [fileAt("b", a), fileAt("a", b)]],
+];
+
+describe("push review", () => {
+  it("lists a file under the commit that adds it and under the one that changes it",
+      async () => {
+    let t = await setupReview();
+    let one = await localBlob(t, "one\n"), two = await localBlob(t, "one\ntwo\n");
+    let other = await localBlob(t, "untouched\n");
+    let tree1 = await localTree(t,
+        [fileAt("README.md", t.readme), fileAt("notes.txt", one), fileAt("other.txt", other)]);
+    let tree2 = await localTree(t,
+        [fileAt("README.md", t.readme), fileAt("notes.txt", two), fileAt("other.txt", other)]);
+    let commit1 = await localCommit(t, tree1, [t.base], "add");
+    let commit2 = await localCommit(t, tree2, [commit1], "change");
+    t.cache.markPushClosure(G1, ACTION, [commit2]);
+
+    let review = readReview(t, [commit2]);
+    expect(review.entries).toStrictEqual([
+      { kind: "commit", oid: commit1, parents: [t.base], size: sizeOf(t, commit1),
+        text: new TextDecoder().decode(commitPayload(tree1, [t.base], "add")) },
+      pathRow(commit1, "", aDir(tree1), [aDir(t.baseTree)],
+          { kind: "dir", size: sizeOf(t, tree1) }),
+      pathRow(commit1, "notes.txt", aFile(one), [NONE], { kind: "text", size: 4 }),
+      pathRow(commit1, "other.txt", aFile(other), [NONE], { kind: "text", size: 10 }),
+      { kind: "commit", oid: commit2, parents: [commit1], size: sizeOf(t, commit2),
+        text: new TextDecoder().decode(commitPayload(tree2, [commit1], "change")) },
+      pathRow(commit2, "", aDir(tree2), [aDir(tree1)], { kind: "dir", size: sizeOf(t, tree2) }),
+      pathRow(commit2, "notes.txt", aFile(two), [aFile(one)], { kind: "text", size: 8 }),
+    ]);
+    expect(review.objectCount).toBe(7);
+    expect(review.stackedOn).toStrictEqual([]);
+  });
+
+  it("lists a root commit's every path with no parent", async () => {
+    let t = makeCache();
+    let blob = await localBlob(t, "text\n");
+    let docs = await localTree(t, [fileAt("guide.md", blob)]);
+    let tree = await localTree(t, [dirAt("docs", docs), fileAt("a.txt", blob)]);
+    let commit = await localCommit(t, tree, []);
+    t.cache.markPushClosure(G1, ACTION, [commit]);
+
+    expect(readReview(t, [commit]).entries.slice(1)).toStrictEqual([
+      pathRow(commit, "", aDir(tree), [], { kind: "dir", size: sizeOf(t, tree) }),
+      pathRow(commit, "a.txt", aFile(blob), [], { kind: "text", size: 5 }),
+      pathRow(commit, "docs", aDir(docs), [], { kind: "dir", size: sizeOf(t, docs) }),
+      pathRow(commit, "docs/guide.md", aFile(blob), [], { kind: "text", size: 5 }),
+    ]);
+  });
+
+  it("compares a merge's paths with each parent", async () => {
+    let t = await setupReview();
+    let ours = await localBlob(t, "ours\n"), theirs = await localBlob(t, "theirs\n");
+    let merged = await localBlob(t, "ours\ntheirs\n");
+    let side = async (blob: GitOid, name: string) => {
+      let sub = await localTree(t, [fileAt(name, blob)]);
+      let tree = await localTree(t, [
+        fileAt("README.md", t.readme), fileAt("both.txt", blob), fileAt(name, blob),
+        dirAt("d", sub),
+      ]);
+      return { sub, tree, commit: await localCommit(t, tree, [t.base], name) };
+    };
+    let left = await side(ours, "left.txt"), right = await side(theirs, "right.txt");
+    // Each side's own file is taken as it is, and `d` holds one file of each side.
+    let sub = await localTree(t, [fileAt("left.txt", ours), fileAt("right.txt", theirs)]);
+    let tree = await localTree(t, [
+      fileAt("README.md", t.readme), fileAt("both.txt", merged), fileAt("left.txt", ours),
+      fileAt("right.txt", theirs), dirAt("d", sub),
+    ]);
+    let merge = await localCommit(t, tree, [left.commit, right.commit], "merge");
+    t.cache.markPushClosure(G1, ACTION, [merge]);
+
+    let review = readReview(t, [merge]);
+    expect(review.entries.filter(entry => entry.kind === "commit").map(entry => entry.oid))
+        .toStrictEqual([left.commit, right.commit, merge]);
+    expect(review.entries.filter(entry => entry.kind === "path" && entry.commit === merge))
+        .toStrictEqual([
+          pathRow(merge, "", aDir(tree), [aDir(left.tree), aDir(right.tree)],
+              { kind: "dir", size: sizeOf(t, tree) }),
+          pathRow(merge, "both.txt", aFile(merged), [aFile(ours), aFile(theirs)],
+              { kind: "text", size: 12 }),
+          pathRow(merge, "d", aDir(sub), [aDir(left.sub), aDir(right.sub)],
+              { kind: "dir", size: sizeOf(t, sub) }),
+        ]);
+
+    // No row names left.txt, right.txt or what `d` holds: each is as one parent has it. An
+    // approver sees them as the entries of the two directories the merge sends, which the
+    // Workshop reads from the commit's tree, and learns which parent each is taken from by
+    // the paths at which the merge differs from that parent.
+    expect(await t.cache.readCommitTree(merge)).toStrictEqual([
+      { name: "README.md", kind: "file" }, { name: "both.txt", kind: "file" },
+      { name: "d", kind: "dir", children: [
+        { name: "left.txt", kind: "file" }, { name: "right.txt", kind: "file" },
+      ] },
+      { name: "left.txt", kind: "file" }, { name: "right.txt", kind: "file" },
+    ]);
+    let differsFrom = async (parent: GitOid) =>
+        [...await t.cache.changedFilePathsBetween(parent, merge)].toSorted();
+    expect(await differsFrom(left.commit))
+        .toStrictEqual(["both.txt", "d/right.txt", "right.txt"]);
+    expect(await differsFrom(right.commit))
+        .toStrictEqual(["both.txt", "d/left.txt", "left.txt"]);
+    expect(t.pulls).toStrictEqual([]);
+  });
+
+  it("lists what a merge lacks only where every parent has it, in name order", async () => {
+    let t = await setupReview();
+    let blob = await localBlob(t, "text\n");
+    let sub = await localTree(t, [fileAt("x", blob)]);
+    // The left side deleted README.md and the right side kept it. Both have `gone` and
+    // `gone.txt`, which a tree orders one way where `gone` is a directory (left) and the
+    // other way where it is a file (right).
+    let leftTree = await localTree(t, [dirAt("gone", sub), fileAt("gone.txt", blob)]);
+    let rightTree = await localTree(t,
+        [fileAt("README.md", t.readme), fileAt("gone", blob), fileAt("gone.txt", blob)]);
+    let left = await localCommit(t, leftTree, [t.base], "left");
+    let right = await localCommit(t, rightTree, [t.base], "right");
+    let tree = await localTree(t, [fileAt("merged.txt", blob)]);
+    let merge = await localCommit(t, tree, [left, right], "merge");
+    t.cache.markPushClosure(G1, ACTION, [merge]);
+
+    expect(parseGitTree(t.cache.readLocalObject(leftTree)!.payload, leftTree)
+        .map(entry => entry.name)).toStrictEqual(["gone.txt", "gone"]);
+    let review = readReview(t, [merge]);
+    expect(review.entries.filter(entry => entry.kind === "path" && entry.commit === left))
+        .toContainEqual(pathRow(left, "README.md", undefined, [aFile(t.readme)]));
+    // README.md is as the left side has it, so the merge does not list it.
+    expect(review.entries.filter(entry => entry.kind === "path" && entry.commit === merge))
+        .toStrictEqual([
+          pathRow(merge, "", aDir(tree), [aDir(leftTree), aDir(rightTree)],
+              { kind: "dir", size: sizeOf(t, tree) }),
+          pathRow(merge, "merged.txt", aFile(blob), [NONE, NONE], { kind: "text", size: 5 }),
+          pathRow(merge, "gone", undefined, [aDir(sub), aFile(blob)]),
+          pathRow(merge, "gone.txt", undefined, [aFile(blob), aFile(blob)]),
+        ]);
+  });
+
+  it("lists a change of mode alone as an entry that sends nothing", async () => {
+    let t = await setupReview();
+    let tree = await localTree(t, [executableAt("README.md", t.readme)]);
+    let commit = await localCommit(t, tree, [t.base]);
+    t.cache.markPushClosure(G1, ACTION, [commit]);
+
+    expect(readReview(t, [commit]).entries.slice(1)).toStrictEqual([
+      pathRow(commit, "", aDir(tree), [aDir(t.baseTree)], { kind: "dir", size: sizeOf(t, tree) }),
+      pathRow(commit, "README.md", { kind: "executable", oid: t.readme }, [aFile(t.readme)]),
+    ]);
+  });
+
+  it("says a parent's file was executable where a commit takes that mode away", async () => {
+    let t = makeCache();
+    let script = await t.cache.putFromGatekeeper(G1, "blob", utf8("#!/bin/sh\n"));
+    let base = await remoteCommit(t, [executableAt("run.sh", script)]);
+    let tree = await localTree(t, [fileAt("run.sh", script)]);
+    let commit = await localCommit(t, tree, [base.commit]);
+    t.cache.markPushClosure(G1, ACTION, [commit]);
+
+    expect(readReview(t, [commit]).entries.slice(1)).toStrictEqual([
+      pathRow(commit, "", aDir(tree), [aDir(base.tree)], { kind: "dir", size: sizeOf(t, tree) }),
+      pathRow(commit, "run.sh", aFile(script), [{ kind: "executable", oid: script }]),
+    ]);
+  });
+
+  it("lists a deleted file and a deleted directory as one row each", async () => {
+    let t = makeCache();
+    let blob = await t.cache.putFromGatekeeper(G1, "blob", utf8("text\n"));
+    let docs = await t.cache.putFromGatekeeper(
+        G1, "tree", encodeGitTree([fileAt("a.md", blob), fileAt("b.md", blob)]));
+    let base = await remoteCommit(t,
+        [dirAt("docs", docs), fileAt("gone.txt", blob), fileAt("kept.txt", blob)]);
+    let tree = await localTree(t, [fileAt("kept.txt", blob)]);
+    let commit = await localCommit(t, tree, [base.commit]);
+    t.cache.markPushClosure(G1, ACTION, [commit]);
+
+    expect(readReview(t, [commit]).entries.slice(1)).toStrictEqual([
+      pathRow(commit, "", aDir(tree), [aDir(base.tree)], { kind: "dir", size: sizeOf(t, tree) }),
+      pathRow(commit, "docs", undefined, [aDir(docs)]),
+      pathRow(commit, "gone.txt", undefined, [aFile(blob)]),
+    ]);
+  });
+
+  it("lists a file replaced by a directory, and a directory by a file, as that path's row",
+      async () => {
+    let t = makeCache();
+    let blob = await t.cache.putFromGatekeeper(G1, "blob", utf8("text\n"));
+    let was = await t.cache.putFromGatekeeper(G1, "tree", encodeGitTree([fileAt("x", blob)]));
+    let base = await remoteCommit(t, [fileAt("a", blob), dirAt("b", was)]);
+    let fresh = await localBlob(t, "fresh\n");
+    let now = await localTree(t, [fileAt("y", fresh), fileAt("z", blob)]);
+    let tree = await localTree(t, [dirAt("a", now), fileAt("b", fresh)]);
+    let commit = await localCommit(t, tree, [base.commit]);
+    t.cache.markPushClosure(G1, ACTION, [commit]);
+
+    expect(readReview(t, [commit]).entries.slice(1)).toStrictEqual([
+      pathRow(commit, "", aDir(tree), [aDir(base.tree)], { kind: "dir", size: sizeOf(t, tree) }),
+      pathRow(commit, "a", aDir(now), [aFile(blob)], { kind: "dir", size: sizeOf(t, now) }),
+      pathRow(commit, "a/y", aFile(fresh), [NONE], { kind: "text", size: 6 }),
+      pathRow(commit, "a/z", aFile(blob), [NONE]),
+      pathRow(commit, "b", aFile(fresh), [aDir(was)], { kind: "text", size: 6 }),
+    ]);
+  });
+
+  it("compares a path with the first entry of its name in a parent's directory", async () => {
+    let t = makeCache();
+    let a = await t.cache.putFromGatekeeper(G1, "blob", utf8("a\n"));
+    let b = await t.cache.putFromGatekeeper(G1, "blob", utf8("b\n"));
+    // A parent's directory may hold a name twice: nothing checks the form of a tree the
+    // remote has. A read by path resolves the first, so that is what the row is against.
+    let odd = await t.cache.putFromGatekeeper(
+        G1, "tree", treePayload([fileAt("notes.txt", a), fileAt("notes.txt", b)]));
+    let base = await t.cache.putFromGatekeeper(G1, "commit", commitPayload(odd, [], "base"));
+    let fresh = await localBlob(t, "fresh\n");
+    let tree = await localTree(t, [fileAt("notes.txt", fresh)]);
+    let commit = await localCommit(t, tree, [base]);
+    t.cache.markPushClosure(G1, ACTION, [commit]);
+
+    expect((await t.cache.pathEntryAtCommit(base, "notes.txt"))?.oid).toBe(a);
+    expect(readReview(t, [commit]).entries.slice(1)).toStrictEqual([
+      pathRow(commit, "", aDir(tree), [aDir(odd)], { kind: "dir", size: sizeOf(t, tree) }),
+      pathRow(commit, "notes.txt", aFile(fresh), [aFile(a)], { kind: "text", size: 6 }),
+    ]);
+  });
+
+  it("lists a path once when a parent's directory has a name that is not one path segment",
+      async () => {
+    let t = await setupReview();
+    let a = await localBlob(t, "a\n");
+    let b = await t.cache.putFromGatekeeper(G1, "blob", utf8("b\n"));
+    // No path reaches the parent's `a/b`, `.` or `..`, so none is a deletion: `a/b` is the
+    // path of the file this commit adds, and a read of `.` or `..` is refused.
+    let odd = await t.cache.putFromGatekeeper(G1, "tree",
+        treePayload([fileAt("a/b", b), fileAt(".", b), fileAt("..", b), fileAt("kept", b)]));
+    let remote = await t.cache.putFromGatekeeper(G1, "commit", commitPayload(odd, [], "odd"));
+    let inner = await localTree(t, [fileAt("b", a)]);
+    let tree = await localTree(t, [dirAt("a", inner)]);
+    let commit = await localCommit(t, tree, [remote]);
+    t.cache.markPushClosure(G1, ACTION, [commit]);
+
+    expect(readReview(t, [commit]).entries.slice(1)).toStrictEqual([
+      pathRow(commit, "", aDir(tree), [aDir(odd)], { kind: "dir", size: sizeOf(t, tree) }),
+      pathRow(commit, "a", aDir(inner), [NONE], { kind: "dir", size: sizeOf(t, inner) }),
+      pathRow(commit, "a/b", aFile(a), [NONE], { kind: "text", size: 2 }),
+      pathRow(commit, "kept", undefined, [aFile(b)]),
+    ]);
+  });
+
+  it("compares a path with a parent's entry whose name begins with a dot", async () => {
+    let t = await setupReview();
+    let a = await localBlob(t, "a\n");
+    let b = await t.cache.putFromGatekeeper(G1, "blob", utf8("b\n"));
+    // Unlike `.` and `..`, the names `...`, `.gitignore` and `.kept` are path segments like
+    // any other.
+    let dotted = await t.cache.putFromGatekeeper(G1, "tree", encodeGitTree(
+        [fileAt("...", b), fileAt(".gitignore", b), fileAt(".kept", b)]));
+    let remote = await t.cache.putFromGatekeeper(
+        G1, "commit", commitPayload(dotted, [], "dotted"));
+    let tree = await localTree(t, [fileAt(".gitignore", a)]);
+    let commit = await localCommit(t, tree, [remote]);
+    t.cache.markPushClosure(G1, ACTION, [commit]);
+
+    expect(readReview(t, [commit]).entries.slice(1)).toStrictEqual([
+      pathRow(commit, "", aDir(tree), [aDir(dotted)], { kind: "dir", size: sizeOf(t, tree) }),
+      pathRow(commit, ".gitignore", aFile(a), [aFile(b)], { kind: "text", size: 2 }),
+      pathRow(commit, "...", undefined, [aFile(b)]),
+      pathRow(commit, ".kept", undefined, [aFile(b)]),
+    ]);
+  });
+
+  it("says a parent's entry is unknown under a directory of the parent that is not held",
+      async () => {
+    let t = makeCache();
+    let blob = await t.cache.putFromGatekeeper(G1, "blob", utf8("text\n"));
+    // The remote has `docs`, and the store was never given that tree.
+    let docs = gitObjectOid("tree", encodeGitTree([fileAt("old.md", blob)]));
+    let base = await remoteCommit(t, [dirAt("docs", docs)]);
+    let fresh = await localBlob(t, "fresh\n");
+    let deep = await localTree(t, [fileAt("b.md", fresh)]);
+    let now = await localTree(t, [fileAt("a.md", fresh), dirAt("deep", deep)]);
+    let tree = await localTree(t, [dirAt("docs", now)]);
+    let commit = await localCommit(t, tree, [base.commit]);
+    t.cache.markPushClosure(G1, ACTION, [commit]);
+
+    // Nothing says what the parent had under `docs`: no path below it is compared, at any
+    // depth, and none is listed as deleted.
+    expect(readReview(t, [commit]).entries.slice(1)).toStrictEqual([
+      pathRow(commit, "", aDir(tree), [aDir(base.tree)], { kind: "dir", size: sizeOf(t, tree) }),
+      pathRow(commit, "docs", aDir(now), [aDir(docs)], { kind: "dir", size: sizeOf(t, now) }),
+      pathRow(commit, "docs/a.md", aFile(fresh), [UNKNOWN], { kind: "text", size: 6 }),
+      pathRow(commit, "docs/deep", aDir(deep), [UNKNOWN], { kind: "dir", size: sizeOf(t, deep) }),
+      pathRow(commit, "docs/deep/b.md", aFile(fresh), [UNKNOWN], { kind: "text", size: 6 }),
+    ]);
+  });
+
+  it("says a parent's entry is unknown under a directory entry of the parent that names no tree",
+      async () => {
+    let t = makeCache();
+    // The parent's `d` is a directory entry that names the empty blob, whose payload would
+    // parse as a directory with nothing in it.
+    let empty = await t.cache.putFromGatekeeper(G1, "blob", new Uint8Array());
+    let base = await remoteCommit(t, [dirAt("d", empty)]);
+    let blob = await localBlob(t, "x\n");
+    let sub = await localTree(t, [fileAt("x", blob)]);
+    let tree = await localTree(t, [dirAt("d", sub)]);
+    let commit = await localCommit(t, tree, [base.commit]);
+    t.cache.markPushClosure(G1, ACTION, [commit]);
+
+    expect(readReview(t, [commit]).entries.slice(1)).toStrictEqual([
+      pathRow(commit, "", aDir(tree), [aDir(base.tree)], { kind: "dir", size: sizeOf(t, tree) }),
+      pathRow(commit, "d", aDir(sub), [aDir(empty)], { kind: "dir", size: sizeOf(t, sub) }),
+      pathRow(commit, "d/x", aFile(blob), [UNKNOWN], { kind: "text", size: 2 }),
+    ]);
+  });
+
+  it("says a parent's entry is unknown under a directory of the parent that does not parse",
+      async () => {
+    let t = makeCache();
+    // The parent's `docs` holds a name that is not UTF-8, so its entries cannot be named.
+    await t.cache.putFromGatekeeper(G1, "tree", fixture(BAD_NAME_TREE).payload);
+    let base = await remoteCommit(t, [dirAt("docs", BAD_NAME_TREE)]);
+    let blob = await localBlob(t, "x\n");
+    let docs = await localTree(t, [fileAt("x", blob)]);
+    let tree = await localTree(t, [dirAt("docs", docs)]);
+    let commit = await localCommit(t, tree, [base.commit]);
+    t.cache.markPushClosure(G1, ACTION, [commit]);
+
+    expect(readReview(t, [commit]).entries.slice(1)).toStrictEqual([
+      pathRow(commit, "", aDir(tree), [aDir(base.tree)], { kind: "dir", size: sizeOf(t, tree) }),
+      pathRow(commit, "docs", aDir(docs), [aDir(BAD_NAME_TREE)],
+          { kind: "dir", size: sizeOf(t, docs) }),
+      pathRow(commit, "docs/x", aFile(blob), [UNKNOWN], { kind: "text", size: 2 }),
+    ]);
+  });
+
+  it("lists what a merge lacks beside a parent whose directory is not held", async () => {
+    let t = makeCache();
+    let blob = await t.cache.putFromGatekeeper(G1, "blob", utf8("text\n"));
+    // The remote has `docs` on both sides, and the store was never given the left side's.
+    let lost = gitObjectOid("tree", encodeGitTree([fileAt("left.md", blob)]));
+    let left = await remoteCommit(t, [dirAt("docs", lost)], [], "left");
+    let held = await t.cache.putFromGatekeeper(
+        G1, "tree", encodeGitTree([fileAt("a.md", blob), fileAt("old.md", blob)]));
+    let right = await remoteCommit(t, [dirAt("docs", held)], [], "right");
+    let docs = await localTree(t, [fileAt("a.md", blob)]);
+    let tree = await localTree(t, [dirAt("docs", docs)]);
+    let merge = await localCommit(t, tree, [left.commit, right.commit], "merge");
+    t.cache.markPushClosure(G1, ACTION, [merge]);
+
+    // a.md is as the right side has it, so it is not listed. old.md is gone from what the
+    // right side has, and nothing says whether the left side had it.
+    expect(readReview(t, [merge]).entries.slice(1)).toStrictEqual([
+      pathRow(merge, "", aDir(tree), [aDir(left.tree), aDir(right.tree)],
+          { kind: "dir", size: sizeOf(t, tree) }),
+      pathRow(merge, "docs", aDir(docs), [aDir(lost), aDir(held)],
+          { kind: "dir", size: sizeOf(t, docs) }),
+      pathRow(merge, "docs/old.md", undefined, [UNKNOWN, aFile(blob)]),
+    ]);
+  });
+
+  it("lists a symbolic link where it is added, with its target when the push sends it",
+      async () => {
+    let t = await setupReview();
+    let target = await localBlob(t, "README.md");
+    let tree1 = await localTree(t, [
+      fileAt("README.md", t.readme), linkAt("sent-link", target), linkAt("held-link", t.readme),
+    ]);
+    let commit1 = await localCommit(t, tree1, [t.base], "links");
+    let other = await localBlob(t, "other\n");
+    let tree2 = await localTree(t, [
+      fileAt("README.md", t.readme), linkAt("sent-link", target), linkAt("held-link", t.readme),
+      fileAt("other.txt", other),
+    ]);
+    let commit2 = await localCommit(t, tree2, [commit1], "more");
+    t.cache.markPushClosure(G1, ACTION, [commit2]);
+
+    let review = readReview(t, [commit2]);
+    expect(review.entries.filter(entry => entry.kind === "path")).toStrictEqual([
+      pathRow(commit1, "", aDir(tree1), [aDir(t.baseTree)],
+          { kind: "dir", size: sizeOf(t, tree1) }),
+      pathRow(commit1, "held-link", { kind: "symlink", oid: t.readme }, [NONE]),
+      pathRow(commit1, "sent-link", { kind: "symlink", oid: target }, [NONE],
+          { kind: "text", size: 9 }),
+      pathRow(commit2, "", aDir(tree2), [aDir(tree1)], { kind: "dir", size: sizeOf(t, tree2) }),
+      pathRow(commit2, "other.txt", aFile(other), [NONE], { kind: "text", size: 6 }),
+    ]);
+  });
+
+  it("says a symbolic link whose target is not text is binary", async () => {
+    let t = await setupReview();
+    let target = await localBlob(t, Uint8Array.of(0x61, 0xff, 0x62));
+    let tree = await localTree(t, [fileAt("README.md", t.readme), linkAt("link", target)]);
+    let commit = await localCommit(t, tree, [t.base]);
+    t.cache.markPushClosure(G1, ACTION, [commit]);
+
+    expect(readReview(t, [commit]).entries.at(-1)).toStrictEqual(
+        pathRow(commit, "link", { kind: "symlink", oid: target }, [NONE],
+            { kind: "binary", size: 3 }));
+  });
+
+  it("says a symbolic link that names a directory is mistyped, and one over the buffered " +
+      "size large", async () => {
+    let t = await setupReview();
+    let blob = await localBlob(t, "under\n");
+    let sub = await localTree(t, [fileAt("x", blob)]);
+    let long = t.cache.writeBlob(new Uint8Array(MAX_BUFFERED_BLOB_SIZE + 1).fill(0x61)).oid;
+    let tree = await localTree(t,
+        [fileAt("README.md", t.readme), linkAt("link", sub), linkAt("long", long)]);
+    let commit = await localCommit(t, tree, [t.base]);
+    t.cache.markPushClosure(G1, ACTION, [commit]);
+
+    expect(readReview(t, [commit]).entries.slice(2)).toStrictEqual([
+      pathRow(commit, "link", { kind: "symlink", oid: sub }, [NONE],
+          { kind: "mistyped", type: "tree", size: sizeOf(t, sub) }),
+      pathRow(commit, "long", { kind: "symlink", oid: long }, [NONE],
+          { kind: "large", size: MAX_BUFFERED_BLOB_SIZE + 1 }),
+      { kind: "object", oid: blob, type: "blob", size: 6 },
+    ]);
+  });
+
+  it("lists a submodule entry that is added or changed, and never as sent", async () => {
+    let t = makeCache();
+    let blob = await t.cache.putFromGatekeeper(G1, "blob", utf8("text\n"));
+    let other = "2".repeat(40);
+    let base = await remoteCommit(t,
+        [fileAt("a.txt", blob), submoduleAt("changed", GITLINK_TARGET),
+         submoduleAt("kept", GITLINK_TARGET)]);
+    let sub = await localTree(t, [submoduleAt("nested", other)]);
+    let tree = await localTree(t, [
+      fileAt("a.txt", blob), submoduleAt("added", other), submoduleAt("changed", other),
+      submoduleAt("kept", GITLINK_TARGET), dirAt("lib", sub),
+    ]);
+    let commit = await localCommit(t, tree, [base.commit]);
+    t.cache.markPushClosure(G1, ACTION, [commit]);
+
+    let gitlink = entryOf("submodule");
+    expect(readReview(t, [commit]).entries.slice(1)).toStrictEqual([
+      pathRow(commit, "", aDir(tree), [aDir(base.tree)], { kind: "dir", size: sizeOf(t, tree) }),
+      pathRow(commit, "added", gitlink(other), [NONE]),
+      pathRow(commit, "changed", gitlink(other), [gitlink(GITLINK_TARGET)]),
+      pathRow(commit, "lib", aDir(sub), [NONE], { kind: "dir", size: sizeOf(t, sub) }),
+      pathRow(commit, "lib/nested", gitlink(other), [NONE]),
+    ]);
+  });
+
+  it("lists a submodule entry that names an object the push sends as sending nothing",
+      async () => {
+    let t = await setupReview();
+    let blob = await localBlob(t, "added\n");
+    let tree1 = await localTree(t, [fileAt("README.md", t.readme), fileAt("a.txt", blob)]);
+    let commit1 = await localCommit(t, tree1, [t.base], "add");
+    // The entries name this push's own commit and a file it sends. Neither is sent for them.
+    let tree2 = await localTree(t, [
+      fileAt("README.md", t.readme), fileAt("a.txt", blob), submoduleAt("mod-blob", blob),
+      submoduleAt("mod-commit", commit1),
+    ]);
+    let commit2 = await localCommit(t, tree2, [commit1], "submodules");
+    t.cache.markPushClosure(G1, ACTION, [commit2]);
+
+    let gitlink = entryOf("submodule");
+    let review = readReview(t, [commit2]);
+    expect(review.entries.filter(entry => entry.kind === "path" && entry.commit === commit2))
+        .toStrictEqual([
+          pathRow(commit2, "", aDir(tree2), [aDir(tree1)], { kind: "dir", size: sizeOf(t, tree2) }),
+          pathRow(commit2, "mod-blob", gitlink(blob), [NONE]),
+          pathRow(commit2, "mod-commit", gitlink(commit1), [NONE]),
+        ]);
+  });
+
+  it("lists by id an object the push sends that only a submodule entry names", async () => {
+    let t = await setupReview();
+    let stray = await localBlob(t, "stray\n");
+    let tree = await localTree(t, [fileAt("README.md", t.readme), submoduleAt("mod", stray)]);
+    let commit = await localCommit(t, tree, [t.base]);
+    t.cache.markPushClosure(G1, ACTION, [commit]);
+    // The walk marks nothing a submodule entry names: only a mark made some other way sends it.
+    t.storage.gitObjectMetadata.put({
+      oid: stray, type: "blob", onRemote: [], pullableFrom: [],
+      pendingPush: [{ gatekeeperId: G1, actionId: ACTION }],
+    });
+
+    expect(readReview(t, [commit]).entries.slice(1)).toStrictEqual([
+      pathRow(commit, "", aDir(tree), [aDir(t.baseTree)], { kind: "dir", size: sizeOf(t, tree) }),
+      pathRow(commit, "mod", { kind: "submodule", oid: stray }, [NONE]),
+      { kind: "object", oid: stray, type: "blob", size: 6 },
+    ]);
+  });
+
+  it("says what each file it sends is, without reading one over the buffered size", async () => {
+    let t = await setupReview();
+    let exact = new Uint8Array(MAX_BUFFERED_BLOB_SIZE).fill(0x61);
+    let blobs = {
+      nul: await localBlob(t, Uint8Array.of(0x61, 0, 0x62)),
+      invalid: await localBlob(t, Uint8Array.of(0x61, 0xff, 0xfe)),
+      exact: await localBlob(t, exact),
+      over: t.cache.writeBlob(new Uint8Array(MAX_BUFFERED_BLOB_SIZE + 1).fill(0x62)).oid,
+      absent: gitObjectOid("blob", utf8("never stored\n")),
+      twice: await localBlob(t, "twice\n"),
+    };
+    let absentTree = gitObjectOid("tree", encodeGitTree([fileAt("x", blobs.twice)]));
+    let tree = await localTree(t, [
+      fileAt("README.md", t.readme), fileAt("a-nul", blobs.nul),
+      fileAt("b-invalid", blobs.invalid), fileAt("c-exact", blobs.exact),
+      fileAt("d-over", blobs.over), fileAt("e-absent", blobs.absent),
+      fileAt("f-twice", blobs.twice), fileAt("g-twice", blobs.twice),
+      dirAt("h-absent", absentTree), dirAt("i-empty", EMPTY_TREE_OID),
+    ]);
+    let commit = await localCommit(t, tree, [t.base]);
+    t.cache.markPushClosure(G1, ACTION, [commit]);
+
+    let reads = countReads(t);
+    let review = readReview(t, [commit]);
+    expect(review.entries.slice(2)).toStrictEqual([
+      pathRow(commit, "a-nul", aFile(blobs.nul), [NONE], { kind: "binary", size: 3 }),
+      pathRow(commit, "b-invalid", aFile(blobs.invalid), [NONE], { kind: "binary", size: 3 }),
+      pathRow(commit, "c-exact", aFile(blobs.exact), [NONE],
+          { kind: "text", size: MAX_BUFFERED_BLOB_SIZE }),
+      pathRow(commit, "d-over", aFile(blobs.over), [NONE],
+          { kind: "large", size: MAX_BUFFERED_BLOB_SIZE + 1 }),
+      pathRow(commit, "e-absent", aFile(blobs.absent), [NONE], { kind: "absent" }),
+      pathRow(commit, "f-twice", aFile(blobs.twice), [NONE], { kind: "text", size: 6 }),
+      pathRow(commit, "g-twice", aFile(blobs.twice), [NONE], { kind: "text", size: 6 }),
+      pathRow(commit, "h-absent", aDir(absentTree), [NONE], { kind: "absent" }),
+      pathRow(commit, "i-empty", aDir(EMPTY_TREE_OID), [NONE], { kind: "dir", size: 0 }),
+    ]);
+    // The large file's index row says how large it is; none of its chunks was read.
+    let chunks = chunksOf(t, blobs.over);
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(reads.filter(oid => chunks.includes(oid))).toStrictEqual([]);
+  });
+
+  for (let [what, entries] of UNLISTABLE) {
+    it(`does not list a directory with ${what}`, async () => {
+      let t = await setupReview();
+      let a = await localBlob(t, "a\n"), b = await localBlob(t, "b\n");
+      let payload = treePayload(entries(a, b));
+      let [odd] = await t.cache.consumePackFromGatekeeper(null,
+          byteStream(concatBytes(await buildPackBytes([{ type: "tree", payload }]))));
+      let tree = await localTree(t, [fileAt("README.md", t.readme), dirAt("odd", odd)]);
+      let commit = await localCommit(t, tree, [t.base]);
+      t.cache.markPushClosure(G1, ACTION, [commit]);
+
+      let review = readReview(t, [commit]);
+      expect(review.entries.slice(2)).toStrictEqual([
+        pathRow(commit, "odd", aDir(odd), [NONE],
+            { kind: "unlistable", size: payload.byteLength }),
+        ...[...new Set(entries(a, b).map(entry => entry.oid))].toSorted()
+            .map(oid => ({ kind: "object", oid, type: "blob", size: 2 })),
+      ]);
+    });
+  }
+
+  it("does not list a directory with a name that is not UTF-8", async () => {
+    let t = await setupReview();
+    await storeLocal(t.storage, fixture(BAD_NAME_TREE));
+    let [{ oid: blob }] = scanGitTree(fixture(BAD_NAME_TREE).payload);
+    await storeLocal(t.storage, fixture(blob));
+    let tree = await localTree(t, [fileAt("README.md", t.readme), dirAt("odd", BAD_NAME_TREE)]);
+    let commit = await localCommit(t, tree, [t.base]);
+    t.cache.markPushClosure(G1, ACTION, [commit]);
+
+    expect(readReview(t, [commit]).entries.slice(2)).toStrictEqual([
+      pathRow(commit, "odd", aDir(BAD_NAME_TREE), [NONE],
+          { kind: "unlistable", size: sizeOf(t, BAD_NAME_TREE) }),
+      { kind: "object", oid: blob, type: "blob", size: sizeOf(t, blob) },
+    ]);
+  });
+
+  it("does not list a root directory with a name holding a slash", async () => {
+    let t = await setupReview();
+    let a = await localBlob(t, "a\n"), b = await localBlob(t, "b\n");
+    let inner = await localTree(t, [fileAt("b", a)]);
+    // `a/b` names two entries here: the root's own, and the one in the directory `a`.
+    let payload = treePayload([fileAt("a/b", b), dirAt("a", inner)]);
+    let tree = await storeLocal(t.storage, { type: "tree", payload });
+    let commit = await localCommit(t, tree, [t.base]);
+    t.cache.markPushClosure(G1, ACTION, [commit]);
+
+    expect(readReview(t, [commit]).entries.slice(1)).toStrictEqual([
+      pathRow(commit, "", aDir(tree), [aDir(t.baseTree)],
+          { kind: "unlistable", size: payload.byteLength }),
+      ...[
+        { kind: "object", oid: a, type: "blob", size: 2 },
+        { kind: "object", oid: b, type: "blob", size: 2 },
+        { kind: "object", oid: inner, type: "tree", size: sizeOf(t, inner) },
+      ].toSorted((x, y) => x.oid < y.oid ? -1 : 1),
+    ]);
+  });
+
+  it("says a commit's tree that is a blob is mistyped", async () => {
+    let t = await setupReview();
+    let blob = await localBlob(t, "not a tree\n");
+    let commit = await localCommit(t, blob, [t.base]);
+    t.cache.markPushClosure(G1, ACTION, [commit]);
+
+    expect(readReview(t, [commit]).entries.slice(1)).toStrictEqual([
+      pathRow(commit, "", aDir(blob), [aDir(t.baseTree)],
+          { kind: "mistyped", type: "blob", size: 11 }),
+    ]);
+  });
+
+  it("says a directory entry that names a blob is mistyped", async () => {
+    let t = await setupReview();
+    let blob = await localBlob(t, "not a tree\n");
+    let tree = await storeLocal(t.storage,
+        { type: "tree", payload: treePayload([fileAt("README.md", t.readme), dirAt("d", blob)]) });
+    let commit = await localCommit(t, tree, [t.base]);
+    t.cache.markPushClosure(G1, ACTION, [commit]);
+
+    expect(readReview(t, [commit]).entries.slice(2)).toStrictEqual([
+      pathRow(commit, "d", aDir(blob), [NONE], { kind: "mistyped", type: "blob", size: 11 }),
+    ]);
+  });
+
+  it("says a file entry that names a tree is mistyped, and lists what is under it by id",
+      async () => {
+    let t = await setupReview();
+    let blob = await localBlob(t, "under\n");
+    let inner = await localTree(t, [fileAt("x", blob)]);
+    let tree = await localTree(t, [fileAt("README.md", t.readme), fileAt("f", inner)]);
+    let commit = await localCommit(t, tree, [t.base]);
+    t.cache.markPushClosure(G1, ACTION, [commit]);
+
+    expect(readReview(t, [commit]).entries.slice(2)).toStrictEqual([
+      pathRow(commit, "f", aFile(inner), [NONE],
+          { kind: "mistyped", type: "tree", size: sizeOf(t, inner) }),
+      { kind: "object", oid: blob, type: "blob", size: 6 },
+    ]);
+  });
+
+  it("says a file entry that names a commit is mistyped, and lists that commit's content by id",
+      async () => {
+    let t = await setupReview();
+    let blob = await localBlob(t, "under\n");
+    let inner = await localTree(t, [fileAt("x", blob)]);
+    let hidden = await localCommit(t, inner, [], "hidden");
+    let tree = await localTree(t, [fileAt("README.md", t.readme), fileAt("f", hidden)]);
+    let commit = await localCommit(t, tree, [t.base]);
+    t.cache.markPushClosure(G1, ACTION, [commit]);
+
+    let review = readReview(t, [commit]);
+    expect(review.entries.filter(entry => entry.kind === "commit").map(entry => entry.oid))
+        .toStrictEqual([commit]);
+    expect(review.entries.slice(2)).toStrictEqual([
+      pathRow(commit, "f", aFile(hidden), [NONE],
+          { kind: "mistyped", type: "commit", size: sizeOf(t, hidden) }),
+      ...[
+        { kind: "object", oid: blob, type: "blob", size: 6 },
+        { kind: "object", oid: inner, type: "tree", size: sizeOf(t, inner) },
+      ].toSorted((x, y) => x.oid < y.oid ? -1 : 1),
+    ]);
+  });
+
+  it("lists a marked parent that is not a commit by id, as what it is", async () => {
+    let t = await setupReview();
+    let blob = await localBlob(t, "not a commit\n");
+    let commit = await localCommit(t, t.baseTree, [blob]);
+    // Straight to the marks: the ancestry check refuses this push before it is queued.
+    t.cache.markPushClosure(G1, ACTION, [commit]);
+
+    expect(readReview(t, [commit]).entries).toStrictEqual([
+      { kind: "commit", oid: commit, parents: [blob], size: sizeOf(t, commit),
+        text: new TextDecoder().decode(commitPayload(t.baseTree, [blob], "change")) },
+      pathRow(commit, "", aDir(t.baseTree), [UNKNOWN]),
+      { kind: "object", oid: blob, type: "blob", size: 13 },
+    ]);
+  });
+
+  it("lists the root alone when a commit returns to a tree the remote has", async () => {
+    let t = await setupReview();
+    let blob = await t.cache.putFromGatekeeper(G1, "blob", utf8("later\n"));
+    let later = await remoteCommit(t, [fileAt("README.md", blob)], [t.base], "later");
+    let revert = await localCommit(t, t.baseTree, [later.commit], "revert");
+    let empty = await localCommit(t, t.baseTree, [revert], "empty");
+    t.cache.markPushClosure(G1, ACTION, [empty]);
+
+    expect(readReview(t, [empty]).entries).toStrictEqual([
+      expect.objectContaining({ kind: "commit", oid: revert }),
+      pathRow(revert, "", aDir(t.baseTree), [aDir(later.tree)]),
+      expect.objectContaining({ kind: "commit", oid: empty }),
+    ]);
+  });
+
+  it("lists nothing for a push whose head the remote already has", async () => {
+    let t = await setupReview();
+    t.cache.markPushClosure(G1, ACTION, [t.base]);
+    expect(t.cache.readPushReview(ACTION, [t.base]))
+        .toStrictEqual({ entries: [], objectCount: 0, stackedOn: [] });
+  });
+
+  it("returns a commit's payload as written, or says it is unreadable", async () => {
+    let t = makeCache();
+    await t.cache.putFromGatekeeper(G1, "commit", fixture(COMMIT_1).payload);
+    await storeLocal(t.storage, fixture(GPGSIG_COMMIT));
+    let headers = `tree ${TREE_1}\nparent ${GPGSIG_COMMIT}\n` +
+        "author A U Thor <a@example.com> 1700000000 -0730\n" +
+        "committer C O Mitter <c@example.com> 1700000001 +0100\n";
+    let commits = [GPGSIG_COMMIT];
+    let payloads = [
+      utf8(`${headers}encoding UTF-8\nx-extra one\n two\n\n\n\n  subject \r\nbody\r\n\n\n`),
+      utf8(`${headers}\n${"word ".repeat(100 * 1024 / 5)}\n`),
+      concatBytes([utf8(`${headers}\ninvalid `), Uint8Array.of(0xff, 0x0a)]),
+      utf8(`${headers}\nnul \0\n`),
+      utf8(`${headers}\n${"x".repeat(MAX_BUFFERED_BLOB_SIZE)}\n`),
+    ];
+    for (let payload of payloads) {
+      commits.push(await storeLocal(t.storage, { type: "commit", payload }));
+    }
+    t.cache.markPushClosure(G1, ACTION, commits);
+
+    let text = (payload: Uint8Array) => new TextDecoder().decode(payload);
+    let row = (index: number, readable: boolean) => ({
+      kind: "commit", oid: commits[index + 1], parents: [GPGSIG_COMMIT],
+      size: payloads[index].byteLength, ...(readable && { text: text(payloads[index]) }),
+    });
+    expect(readReview(t, commits).entries).toStrictEqual([
+      { kind: "commit", oid: GPGSIG_COMMIT, parents: [COMMIT_1],
+        size: fixture(GPGSIG_COMMIT).payload.byteLength,
+        text: text(fixture(GPGSIG_COMMIT).payload) },
+      row(0, true), row(1, true), row(2, false), row(3, false), row(4, false),
+    ]);
+    expect(text(fixture(GPGSIG_COMMIT).payload)).toMatch(/\ngpgsig -----BEGIN[^]*\n \n/);
+  });
+
+  it("lists a marked commit the store does not hold with no size and no parents", async () => {
+    let t = await setupReview();
+    let absent = gitObjectOid("commit", commitPayload(t.baseTree, [t.base], "never stored"));
+    let commit = await localCommit(t, t.baseTree, [absent]);
+    t.cache.markPushClosure(G1, ACTION, [commit]);
+
+    expect(readReview(t, [commit]).entries).toStrictEqual([
+      { kind: "commit", oid: absent, parents: [] },
+      expect.objectContaining({ kind: "commit", oid: commit, parents: [absent] }),
+      pathRow(commit, "", aDir(t.baseTree), [UNKNOWN]),
+    ]);
+  });
+
+  it("lists by id a marked object that no commit or path accounts for", async () => {
+    let t = await setupReview();
+    let blob = await localBlob(t, "added\n");
+    let tree = await localTree(t, [fileAt("README.md", t.readme), fileAt("a.txt", blob)]);
+    let commit = await localCommit(t, tree, [t.base]);
+    t.cache.markPushClosure(G1, ACTION, [commit]);
+    let stray = await localBlob(t, "stray\n");
+    t.storage.gitObjectMetadata.put({
+      oid: stray, type: "tree", onRemote: [], pullableFrom: [],
+      pendingPush: [{ gatekeeperId: G1, actionId: ACTION }],
+    });
+
+    expect(readReview(t, [commit]).entries.slice(3))
+        .toStrictEqual([{ kind: "object", oid: stray, type: "blob", size: 6 }]);
+  });
+
+  it("lists by id an object the store does not hold, as what its referrer says it is",
+      async () => {
+    let t = await setupReview();
+    let blob = await localBlob(t, "a\n");
+    let absent = gitObjectOid("tree", encodeGitTree([fileAt("x", blob)]));
+    // A directory whose entries are out of order is not opened, so what it names is listed
+    // by id: a subdirectory the store lacks, and a file.
+    let payload = treePayload([dirAt("b", absent), fileAt("a", blob)]);
+    let [odd] = await t.cache.consumePackFromGatekeeper(null,
+        byteStream(concatBytes(await buildPackBytes([{ type: "tree", payload }]))));
+    let tree = await localTree(t, [fileAt("README.md", t.readme), dirAt("odd", odd)]);
+    let commit = await localCommit(t, tree, [t.base]);
+    t.cache.markPushClosure(G1, ACTION, [commit]);
+
+    expect(readReview(t, [commit]).entries.slice(2)).toStrictEqual([
+      pathRow(commit, "odd", aDir(odd), [NONE], { kind: "unlistable", size: payload.byteLength }),
+      ...[
+        { kind: "object", oid: absent, type: "tree" },
+        { kind: "object", oid: blob, type: "blob", size: 2 },
+      ].toSorted((a, b) => a.oid < b.oid ? -1 : 1),
+    ]);
+  });
+
+  for (let other of [G1, G2]) {
+    it(`says which earlier push a push is stacked on, on connection ${other}`, async () => {
+      let t = await setupReview();
+      // Both remotes have the base.
+      await t.cache.putFromGatekeeper(G2, "blob", utf8("# Base\n"));
+      await t.cache.putFromGatekeeper(G2, "tree", encodeGitTree([fileAt("README.md", t.readme)]));
+      await t.cache.putFromGatekeeper(G2, "commit", commitPayload(t.baseTree, [], "base"));
+      let blob = await localBlob(t, "first\n");
+      let tree = await localTree(t, [fileAt("README.md", t.readme), fileAt("a.txt", blob)]);
+      let first = await localCommit(t, tree, [t.base], "first");
+      let second = await localCommit(t, t.baseTree, [first], "second");
+      t.cache.markPushClosure(G1, ACTION, [first]);
+      t.cache.markPushClosure(other, OTHER_ACTION, [second]);
+
+      let earlier = readReview(t, [first]);
+      expect(earlier.stackedOn).toStrictEqual([]);
+      let later = readReview(t, [second], OTHER_ACTION);
+      expect(later.stackedOn).toStrictEqual([ACTION]);
+      expect(later.entries.slice(0, earlier.entries.length)).toStrictEqual(earlier.entries);
+      expect(later.entries.length).toBeGreaterThan(earlier.entries.length);
+
+      // Rejecting the earlier push takes nothing out of the later one.
+      t.cache.clearPushMarks(ACTION);
+      expect(readReview(t, [second], OTHER_ACTION)).toStrictEqual({ ...later, stackedOn: [] });
+    });
+  }
+
+  it("names the earlier pushes a push is stacked on in ascending order", async () => {
+    let t = await setupReview();
+    let blob = await localBlob(t, "first\n");
+    let tree = await localTree(t, [fileAt("README.md", t.readme), fileAt("a.txt", blob)]);
+    let first = await localCommit(t, tree, [t.base], "first");
+    let second = await localCommit(t, t.baseTree, [first], "second");
+    // The higher action marks the shared objects before the lower one does.
+    let [low, high] = [ACTION, OTHER_ACTION].toSorted((a, b) => a - b);
+    t.cache.markPushClosure(G1, high, [first]);
+    t.cache.markPushClosure(G1, low, [first]);
+    t.cache.markPushClosure(G1, high + 1, [second]);
+
+    expect(readReview(t, [second], high + 1).stackedOn).toStrictEqual([low, high]);
+  });
+
+  // A commit whose payload is exactly `size` bytes.
+  function paddedCommit(tree: GitOid, parents: GitOid[], size: number): Uint8Array {
+    let bare = commitPayload(tree, parents, "").byteLength;
+    return commitPayload(tree, parents, "x".repeat(size - bare));
+  }
+
+  it("pages a long review, each page reading the text of its own files alone", async () => {
+    let t = await setupReview();
+    let blobs: GitOid[] = [];
+    for (let i = 0; i < PUSH_REVIEW_PAGE_SIZE + 20; i++) blobs.push(await localBlob(t, `${i}\n`));
+    let name = (i: number) => `f${String(i).padStart(3, "0")}`;
+    let tree = await localTree(t,
+        [fileAt("README.md", t.readme), ...blobs.map((oid, i) => fileAt(name(i), oid))]);
+    let commit = await localCommit(t, tree, [t.base]);
+    t.cache.markPushClosure(G1, ACTION, [commit]);
+
+    let first = t.cache.readPushReview(ACTION, [commit]);
+    expect(first.entries.length).toBe(PUSH_REVIEW_PAGE_SIZE);
+    expect(first.next).toBe(PUSH_REVIEW_PAGE_SIZE);
+    let reads = countReads(t);
+    let second = t.cache.readPushReview(ACTION, [commit], first.next);
+    expect(second.next).toBeUndefined();
+    expect(second.objectCount).toBe(first.objectCount);
+    expect(first.objectCount).toBe(listMarks(t.storage, ACTION).length);
+    // The commit and the root, then the files in order: the second page starts where the
+    // first ended.
+    expect([...first.entries, ...second.entries].slice(2)).toStrictEqual(blobs.map((oid, i) =>
+        pathRow(commit, name(i), aFile(oid), [NONE], { kind: "text", size: `${i}\n`.length })));
+    // It fetches a file of the first page once, for its size, and its own twice: the second
+    // time for their text.
+    let fetches = (oid: GitOid) => reads.filter(read => read === oid).length;
+    expect(blobs.map(fetches)).toStrictEqual(
+        blobs.map((_, i) => i < PUSH_REVIEW_PAGE_SIZE - 2 ? 1 : 2));
+    expect(readReview(t, [commit]).entries).toStrictEqual([...first.entries, ...second.entries]);
+  });
+
+  it("leaves `next` off a last page that is exactly full", async () => {
+    let t = await setupReview();
+    // The commit, the root and as many files as fill two pages exactly.
+    let blobs: GitOid[] = [];
+    for (let i = 0; i < 2 * PUSH_REVIEW_PAGE_SIZE - 2; i++) {
+      blobs.push(await localBlob(t, `${i}\n`));
+    }
+    let tree = await localTree(t, [
+      fileAt("README.md", t.readme),
+      ...blobs.map((oid, i) => fileAt(`f${String(i).padStart(3, "0")}`, oid)),
+    ]);
+    let commit = await localCommit(t, tree, [t.base]);
+    t.cache.markPushClosure(G1, ACTION, [commit]);
+
+    let first = t.cache.readPushReview(ACTION, [commit]);
+    expect(first.next).toBe(PUSH_REVIEW_PAGE_SIZE);
+    let second = t.cache.readPushReview(ACTION, [commit], first.next);
+    expect(second.entries.length).toBe(PUSH_REVIEW_PAGE_SIZE);
+    expect(second.next).toBeUndefined();
+  });
+
+  it("ends a page once the files read for it pass the response budget", async () => {
+    let t = await setupReview();
+    // Every other file is not text. It is read whole to find that out, so it counts the same.
+    let blobs: GitOid[] = [];
+    for (let i = 0; i < 20; i++) {
+      let content = new Uint8Array(MAX_BUFFERED_BLOB_SIZE).fill(0x41 + i);
+      if (i % 2 === 1) content[0] = 0;
+      blobs.push(await localBlob(t, content));
+    }
+    let tree = await localTree(t,
+        [fileAt("README.md", t.readme), ...blobs.map((oid, i) => fileAt(`f${i + 10}`, oid))]);
+    let commit = await localCommit(t, tree, [t.base]);
+    t.cache.markPushClosure(G1, ACTION, [commit]);
+
+    // The page holds the file that takes it past the budget, and no more.
+    let files = Math.ceil(READ_FILES_RESPONSE_BUDGET / MAX_BUFFERED_BLOB_SIZE);
+    let reads = countReads(t);
+    let first = t.cache.readPushReview(ACTION, [commit]);
+    expect(first.entries.length).toBe(2 + files);
+    expect(first.next).toBe(2 + files);
+    expect(first.entries.slice(2).map(entry => entry.kind === "path" && entry.sent?.kind))
+        .toStrictEqual(blobs.slice(0, files).map((_, i) => i % 2 === 1 ? "binary" : "text"));
+    // Each file of the page is fetched for its size and then for its text, and the file
+    // after them for its size alone: the rest are not touched.
+    let fetched = reads.filter(oid => blobs.includes(oid));
+    expect(new Set(fetched).size).toBe(files + 1);
+    expect(fetched.length).toBe(2 * files + 1);
+    expect(readReview(t, [commit]).entries.length).toBe(2 + blobs.length);
+  });
+
+  it("counts nothing toward a page for a file over the buffered size, which it does not read",
+      async () => {
+    let t = await setupReview();
+    // More such files than the budget holds, were their sizes counted.
+    let count = Math.ceil(READ_FILES_RESPONSE_BUDGET / MAX_BUFFERED_BLOB_SIZE) + 2;
+    let blobs = Array.from({ length: count }, (_, i) =>
+        t.cache.writeBlob(new Uint8Array(MAX_BUFFERED_BLOB_SIZE + 1).fill(65 + i)).oid);
+    let tree = await localTree(t, [
+      fileAt("README.md", t.readme),
+      ...blobs.map((oid, i) => fileAt(`big${String(i).padStart(2, "0")}`, oid)),
+    ]);
+    let commit = await localCommit(t, tree, [t.base]);
+    t.cache.markPushClosure(G1, ACTION, [commit]);
+
+    let page = t.cache.readPushReview(ACTION, [commit]);
+    expect(page.next).toBeUndefined();
+    expect(page.entries.slice(2).map(entry => entry.kind === "path" && entry.sent?.kind))
+        .toStrictEqual(blobs.map(() => "large"));
+  });
+
+  it("ends a page once the parents its entries name pass the response budget", async () => {
+    let t = makeCache(makeLargeStorage());
+    let before = await t.cache.putFromGatekeeper(G1, "blob", utf8("before\n"));
+    let paths = Array.from({ length: 150 }, (_, i) => `f${i + 100}`);
+    let baseTree = await t.cache.putFromGatekeeper(
+        G1, "tree", encodeGitTree(paths.map(path => fileAt(path, before))));
+    let parents: GitOid[] = [];
+    for (let i = 0; i < 2000; i++) {
+      parents.push(await t.cache.putFromGatekeeper(
+          G1, "commit", commitPayload(baseTree, [], `side ${i}`)));
+    }
+    let after = await localBlob(t, "after\n");
+    let tree = await localTree(t, paths.map(path => fileAt(path, after)));
+    let merge = await localCommit(t, tree, parents, "octopus");
+    t.cache.markPushClosure(G1, ACTION, [merge]);
+
+    let first = t.cache.readPushReview(ACTION, [merge]);
+    expect(first.entries.length).toBeLessThan(PUSH_REVIEW_PAGE_SIZE);
+    expect(first.next).toBe(first.entries.length);
+    // Every parent an entry names is at least an oid in the response.
+    let named = first.entries.reduce((sum, entry) =>
+        sum + (entry.kind === "object" ? 0 : entry.parents.length), 0);
+    expect((named - parents.length) * 40).toBeLessThanOrEqual(READ_FILES_RESPONSE_BUDGET);
+    let review = readReview(t, [merge]);
+    expect(review.entries.length).toBe(2 + paths.length);
+    expect(review.entries[2]).toStrictEqual(pathRow(merge, paths[0], aFile(after),
+        parents.map(() => aFile(before)), { kind: "text", size: 6 }));
+
+    // A commit's own parents count as a path's do. Each of these merges changes no file, so
+    // it is one row: its payload, and at least an oid for each parent it names.
+    let merges = [await localCommit(t, baseTree, parents, "merge 000")];
+    let least = sizeOf(t, merges[0]) + parents.length * 40;
+    let fit = Math.floor(READ_FILES_RESPONSE_BUDGET / least) + 1;
+    while (merges.length <= fit) {
+      merges.push(await localCommit(t, baseTree, parents,
+          `merge ${String(merges.length).padStart(3, "0")}`));
+    }
+    t.cache.markPushClosure(G1, OTHER_ACTION, merges);
+    let page = t.cache.readPushReview(OTHER_ACTION, merges);
+    expect(page.entries.length).toBeLessThanOrEqual(fit);
+    expect(page.next).toBe(page.entries.length);
+    expect(page.entries.map(entry => entry.kind === "commit" && entry.oid))
+        .toStrictEqual(merges.slice(0, page.entries.length));
+  });
+
+  it("ends a page once the commits read for it pass the response budget", async () => {
+    let t = await setupReview();
+    // The first three are a byte over the size a commit is read at: they are not read, and
+    // count as their rows alone.
+    let unread = 3, commits: GitOid[] = [];
+    for (let i = 0; i < unread + 10; i++) {
+      commits.push(await storeLocal(t.storage, {
+        type: "commit",
+        payload: paddedCommit(t.baseTree, [commits.at(-1) ?? t.base],
+            MAX_BUFFERED_BLOB_SIZE + (i < unread ? 1 : 0)),
+      }));
+    }
+    t.cache.markPushClosure(G1, ACTION, [commits.at(-1)!]);
+
+    let first = t.cache.readPushReview(ACTION, [commits.at(-1)!]);
+    let held = unread + Math.ceil(READ_FILES_RESPONSE_BUDGET / MAX_BUFFERED_BLOB_SIZE);
+    expect(held).toBeLessThan(commits.length);
+    expect(first.entries.map(entry => entry.kind === "commit" && entry.oid))
+        .toStrictEqual(commits.slice(0, held));
+    expect(first.next).toBe(held);
+    let review = readReview(t, [commits.at(-1)!]);
+    expect(review.entries.map(entry => entry.kind === "commit" && entry.text?.length))
+        .toStrictEqual(commits.map((_, i) => i < unread ? undefined : MAX_BUFFERED_BLOB_SIZE));
+  });
+
+  it("counts a path toward a page in bytes", async () => {
+    // Files under a directory with a long name, of the same number of UTF-16 units either
+    // way, each one byte or three. The page ends on the bytes of its paths.
+    let pathsOnPage = async (unit: string) => {
+      let t = await setupReview();
+      let blob = await localBlob(t, "text\n");
+      let long = unit.repeat(Math.ceil(READ_FILES_RESPONSE_BUDGET / 60));
+      let inner = await localTree(t,
+          Array.from({ length: PUSH_REVIEW_PAGE_SIZE }, (_, i) => fileAt(`${i + 100}`, blob)));
+      let tree = await localTree(t, [dirAt(long, inner)]);
+      let commit = await localCommit(t, tree, [t.base]);
+      t.cache.markPushClosure(G1, ACTION, [commit]);
+      let page = t.cache.readPushReview(ACTION, [commit]);
+      expect(page.next).toBe(page.entries.length);
+      return page.entries.filter(entry => entry.kind === "path" && entry.path !== "").length;
+    };
+    let ascii = await pathsOnPage("a"), wide = await pathsOnPage("\u20ac");
+    expect(ascii).toBeLessThan(PUSH_REVIEW_PAGE_SIZE - 2);
+    expect(Math.abs(ascii / 3 - wide)).toBeLessThanOrEqual(1);
+  });
+
+  it("walks a long history and a deep tree without recursion", async () => {
+    let t = await setupReview(makeCache(makeLargeStorage()));
+    let head = t.base;
+    for (let i = 0; i < 20000; i++) head = await localCommit(t, t.baseTree, [head], `${i}`);
+    t.cache.markPushClosure(G1, ACTION, [head]);
+    let page = t.cache.readPushReview(ACTION, [head]);
+    expect(page.entries.length).toBe(PUSH_REVIEW_PAGE_SIZE);
+    expect(page.objectCount).toBe(20000);
+
+    let tree = await localTree(t, [fileAt("leaf", await localBlob(t, "leaf\n"))]);
+    for (let i = 0; i < 5000; i++) tree = await localTree(t, [dirAt("d", tree)]);
+    let deep = await localCommit(t, tree, [t.base], "deep");
+    t.cache.markPushClosure(G1, OTHER_ACTION, [deep]);
+    // The commit, the root, the five thousand directories and the file at the bottom, then
+    // what the root no longer has.
+    page = t.cache.readPushReview(OTHER_ACTION, [deep], 5001);
+    expect(page.next).toBeUndefined();
+    expect(page.entries.map(entry => entry.kind === "path" && entry.path.length))
+        .toStrictEqual([2 * 5000 - 1, 2 * 5000 + "leaf".length, "README.md".length]);
+    expect(page.entries.map(entry => entry.kind === "path" && entry.sent?.kind))
+        .toStrictEqual(["dir", "text", undefined]);
+  });
+
+  it("stops a call that has read as many objects as one may, and says so", async () => {
+    let t = await setupReview(makeCache(makeLargeStorage()));
+    // Each commit is read to order the chain, before the first is listed, and each one listed
+    // reads its parent for its root. So a first page reads the chain and a page of parents:
+    // here, exactly what a call may read. Beyond those it reads the text of its own commits.
+    let within = MAX_PUSH_REVIEW_WALK_OBJECTS - PUSH_REVIEW_PAGE_SIZE;
+    let head = t.base;
+    for (let i = 0; i < within; i++) head = await localCommit(t, t.baseTree, [head], `${i}`);
+    t.cache.markPushClosure(G1, ACTION, [head]);
+    let reads = countReads(t);
+    let page = t.cache.readPushReview(ACTION, [head]);
+    expect(page.truncated).toBeUndefined();
+    expect(page.entries).toHaveLength(PUSH_REVIEW_PAGE_SIZE);
+    expect(page.next).toBe(PUSH_REVIEW_PAGE_SIZE);
+    expect(reads).toHaveLength(MAX_PUSH_REVIEW_WALK_OBJECTS + PUSH_REVIEW_PAGE_SIZE);
+
+    // The same call from further on needs one parent more: it stops, with what it listed
+    // until then.
+    reads.length = 0;
+    page = t.cache.readPushReview(ACTION, [head], PUSH_REVIEW_PAGE_SIZE / 2);
+    expect(page.truncated).toBe(true);
+    expect(page.next).toBeUndefined();
+    expect(page.entries).toHaveLength(PUSH_REVIEW_PAGE_SIZE / 2 + 1);
+    expect(reads).toHaveLength(MAX_PUSH_REVIEW_WALK_OBJECTS + page.entries.length);
+
+    // A chain longer than a call may read is never ordered: the call lists nothing, having
+    // read as many objects as it may and none after.
+    let longer = await localCommit(t, t.baseTree, [head], "one more");
+    for (let i = 0; i < PUSH_REVIEW_PAGE_SIZE; i++) {
+      longer = await localCommit(t, t.baseTree, [longer], `more ${i}`);
+    }
+    t.cache.markPushClosure(G1, OTHER_ACTION, [longer]);
+    reads.length = 0;
+    expect(t.cache.readPushReview(OTHER_ACTION, [longer])).toStrictEqual({
+      entries: [], objectCount: MAX_PUSH_REVIEW_WALK_OBJECTS + 1, stackedOn: [ACTION],
+      truncated: true,
+    });
+    expect(reads).toHaveLength(MAX_PUSH_REVIEW_WALK_OBJECTS);
+    // It writes a chain of as many commits as a call may read, which takes seconds.
+  }, 60_000);
+
+  it("stops a call that has read as many bytes as one may, in wide directories that list " +
+      "little", async () => {
+    let t = makeCache(makeLargeStorage());
+    let blob = await t.cache.putFromGatekeeper(G1, "blob", utf8("same\n"));
+    // A directory of about a mebibyte that every commit changes by one entry: each commit
+    // lists three rows, and reads its own directory twice and its parent's once.
+    let wide = Array.from({ length: 4096 }, (_, i) => fileAt(`${i}`.padStart(230, "n"), blob));
+    let listingOf = (i: number) => encodeGitTree([...wide, fileAt(`changed-${i}`, blob)]);
+    let size = listingOf(0).byteLength;
+    expect(size).toBeGreaterThan(MAX_BUFFERED_BLOB_SIZE);
+    let head = (await remoteCommit(t, wide)).commit, commits: GitOid[] = [];
+    let count = Math.ceil(MAX_PUSH_REVIEW_WALK_BYTES / size);
+    for (let i = 0; i < count; i++) {
+      let tree = await storeLocal(t.storage, { type: "tree", payload: listingOf(i) });
+      commits.push(head = await localCommit(t, tree, [head], `${i}`));
+    }
+    t.cache.markPushClosure(G1, ACTION, [head]);
+
+    let reads = countReads(t);
+    let page = t.cache.readPushReview(ACTION, [head]);
+    expect(page.truncated).toBe(true);
+    expect(page.next).toBeUndefined();
+    // It lists the commits whose directories it could read, whole, and then stops: the next
+    // directory is the last object it reads.
+    let listedCommits = page.entries.filter(entry => entry.kind === "commit");
+    expect(listedCommits.map(entry => entry.oid))
+        .toStrictEqual(commits.slice(0, listedCommits.length));
+    expect(page.entries.length).toBeGreaterThanOrEqual(3 * (listedCommits.length - 1));
+    expect(listedCommits.length).toBeGreaterThan(count / 4);
+    expect(listedCommits.length).toBeLessThan(count / 2);
+    let inflated = reads.reduce((sum, oid) => sum + sizeOf(t, oid), 0);
+    expect(inflated).toBeGreaterThan(MAX_PUSH_REVIEW_WALK_BYTES);
+    expect(inflated).toBeLessThanOrEqual(MAX_PUSH_REVIEW_WALK_BYTES + size);
+  });
+
+  it("lists other entries once a marked directory arrives between two pages", async () => {
+    let t = await setupReview();
+    let shared = await localBlob(t, "shared\n");
+    let inner = [await localBlob(t, "x\n"), await localBlob(t, "y\n"), await localBlob(t, "z\n")];
+    let late = encodeGitTree(inner.map((oid, i) => fileAt(`${i}`, oid)));
+    let lateOid = await storeLocal(t.storage, { type: "tree", payload: late });
+    let names = Array.from({ length: 120 }, (_, i) => `b${i + 100}`);
+    let tree = await localTree(t,
+        [dirAt("a", lateOid), ...names.map(name => fileAt(name, shared))]);
+    let commit = await localCommit(t, tree, [t.base]);
+    t.cache.markPushClosure(G1, ACTION, [commit]);
+
+    // The directory is not there for the first page, so what is under it is listed by id,
+    // at the end. Its entries are marked already.
+    t.storage.gitObjects.delete(lateOid);
+    let first = t.cache.readPushReview(ACTION, [commit]);
+    t.cache.importObjects([{ type: "tree", payload: late }]);
+    let second = t.cache.readPushReview(ACTION, [commit], first.next);
+    expect(second.objectCount).toBe(first.objectCount);
+    expect(second.next).toBeUndefined();
+
+    // The pages no longer fit together: the directory's files are in neither, and the paths
+    // that moved down past the cursor are in both.
+    let paths = [...first.entries, ...second.entries]
+        .flatMap(entry => entry.kind === "path" ? [entry.path] : []);
+    expect(paths.filter(path => path.startsWith("a/"))).toStrictEqual([]);
+    expect(paths.length - new Set(paths).size).toBe(inner.length);
+    // A read from the start lists each marked object once.
+    expect(listed(readReview(t, [commit]).entries).slice(1, 6))
+        .toStrictEqual(["a dir", "a/0 file", "a/1 file", "a/2 file", "b100 file"]);
+  });
+});
+
+// =======================================================================================
+
+type ReviewSetup = Awaited<ReturnType<typeof setupReview>>;
+
+const REFUSAL = new RegExp(
+    "^This workspace has observed sensitive data, so a push is accepted only when its approver " +
+    "can read everything it will send\\. This push was not queued: (.*)\\. Change the commits " +
+    "and push again\\.$", "s");
+
+// The reason assertPushReadable gives for refusing a marked push, or undefined when it accepts
+// the push.
+function refusalOf(t: TestCache, heads: GitOid[], actionId = ACTION): string | undefined {
+  try {
+    t.cache.assertPushReadable(actionId, heads);
+    return undefined;
+  } catch (error) {
+    let match = REFUSAL.exec((error as Error).message);
+    if (match === null) throw error;
+    return match[1];
+  }
+}
+
+// Marks a push of one head, as submitAction does, and judges it.
+function judge(t: TestCache, head: GitOid): string | undefined {
+  t.cache.markPushClosure(G1, ACTION, [head]);
+  return refusalOf(t, [head]);
+}
+
+// A path of a commit, as a refusal names it.
+const at = (path: string, commit: GitOid) =>
+    `${path === "" ? "the root directory" : JSON.stringify(path)} in commit ${commit}`;
+
+const NOT_HELD = " is not in the workspace's git store";
+const NOT_IN_FORM = " is not in the form git writes: an entry name is not valid UTF-8, is " +
+    "repeated, is out of order or is not a single path segment";
+const notComparable = (parent: GitOid) => ` cannot be compared with parent ${parent}, which is ` +
+    "not in the workspace's git store as far as that path. Read that directory at the parent " +
+    "commit, then push again";
+
+// A local commit, on `parents`, of a tree written here with these entries.
+async function snapshot(t: TestCache, entries: GitTreeEntry[], parents: GitOid[],
+                        message?: string): Promise<GitOid> {
+  return await localCommit(t, await localTree(t, entries), parents, message);
+}
+
+// A commit the remote G1 is known to have and the store does not hold: the parent of a commit
+// G1 put. `supply` stores it.
+async function unheldRemoteCommit(t: ReviewSetup) {
+  let payload = commitPayload(t.baseTree, [t.base], "not fetched");
+  let commit = gitObjectOid("commit", payload);
+  await t.cache.putFromGatekeeper(G1, "commit", commitPayload(t.baseTree, [commit], "tip"));
+  return { commit, supply: () => t.cache.putFromGatekeeper(G1, "commit", payload) };
+}
+
+describe("assertPushReadable", () => {
+  const ACCEPTED: [string, (t: ReviewSetup) => Promise<GitOid>][] = [
+    ["a file added in one commit and changed in the next", async t => {
+      let first = await snapshot(t,
+          [fileAt("README.md", t.readme), fileAt("notes.txt", await localBlob(t, "one\n"))],
+          [t.base], "add");
+      return await snapshot(t,
+          [fileAt("README.md", t.readme), fileAt("notes.txt", await localBlob(t, "one\ntwo\n"))],
+          [first], "change");
+    }],
+    ["a file that begins with a UTF-8 byte order mark", async t => snapshot(t,
+        [fileAt("bom.txt", await localBlob(t, Uint8Array.of(0xef, 0xbb, 0xbf, 0x61, 0x0a)))],
+        [t.base])],
+    ["a file of exactly the buffered size", async t => {
+      let blob = await localBlob(t, new Uint8Array(MAX_BUFFERED_BLOB_SIZE).fill(0x61));
+      return await snapshot(t, [fileAt("exact.txt", blob)], [t.base]);
+    }],
+    ["an empty file", async t =>
+        snapshot(t, [fileAt("empty.txt", await localBlob(t, ""))], [t.base])],
+    ["an empty directory", t =>
+        snapshot(t, [fileAt("README.md", t.readme), dirAt("empty", EMPTY_TREE_OID)], [t.base])],
+    ["a deletion", t => snapshot(t, [], [t.base])],
+    ["a change of mode alone", t => snapshot(t, [executableAt("README.md", t.readme)], [t.base])],
+    ["an unchanged submodule entry and an unchanged symbolic link beside a changed file",
+     async t => {
+      await t.cache.putFromGatekeeper(G1, "commit", fixture(COMMIT_1).payload);
+      await t.cache.putFromGatekeeper(G1, "tree", fixture(TREE_1).payload);
+      let entries = parseGitTree(fixture(TREE_1).payload);
+      expect(entries.map(entry => entry.name))
+          .toStrictEqual(expect.arrayContaining(["README.md", "link.md", "vendored"]));
+      let changed = await localBlob(t, "changed\n");
+      return await snapshot(t,
+          entries.map(entry => entry.name === "README.md" ? fileAt("README.md", changed) : entry),
+          [COMMIT_1]);
+    }],
+    ["a symbolic link to a file the remote has", t =>
+        snapshot(t, [fileAt("README.md", t.readme), linkAt("link", t.readme)], [t.base])],
+    ["a file turned into a symbolic link over the same content", t =>
+        snapshot(t, [linkAt("README.md", t.readme)], [t.base])],
+    ["a return to a tree the remote has", async t => {
+      let blob = await t.cache.putFromGatekeeper(G1, "blob", utf8("later\n"));
+      let later = await remoteCommit(t, [fileAt("README.md", blob)], [t.base], "later");
+      return await localCommit(t, t.baseTree, [later.commit], "revert");
+    }],
+    ["a head the remote already has", async t => t.base],
+    ["a merge whose root is one parent's, the other parent not in the store", async t =>
+        localCommit(t, t.baseTree, [t.base, (await unheldRemoteCommit(t)).commit], "merge")],
+  ];
+  for (let [what, build] of ACCEPTED) {
+    it(`accepts ${what}`, async () => {
+      let t = await setupReview();
+      expect(judge(t, await build(t))).toBeUndefined();
+    });
+  }
+
+  // Each builds a push that breaks one rule, and says what the refusal names.
+  const withFile = async (t: ReviewSetup, name: string, content: Uint8Array) =>
+      snapshot(t, [fileAt("README.md", t.readme), fileAt(name, await localBlob(t, content))],
+          [t.base]);
+  const withCommit = (t: ReviewSetup, payload: Uint8Array) =>
+      storeLocal(t.storage, { type: "commit", payload });
+  const notText = (commit: GitOid) =>
+      `commit ${commit} is not UTF-8 text of at most ${MAX_BUFFERED_BLOB_SIZE} bytes`;
+  const SUBMODULE = " adds or changes a submodule entry";
+  const SENT_LINK = " is a symbolic link whose target this push sends";
+  const REFUSED: [string, (t: ReviewSetup) => Promise<{ head: GitOid, reason: string }>][] = [
+    ["a commit the store does not hold", async t => {
+      let head = gitObjectOid("commit", commitPayload(t.baseTree, [t.base], "never stored"));
+      return { head, reason: `commit ${head}${NOT_HELD}` };
+    }],
+    ["a root directory the store does not hold", async t => {
+      let tree = gitObjectOid("tree", encodeGitTree([fileAt("x", t.readme)]));
+      let head = await localCommit(t, tree, [t.base]);
+      return { head, reason: at("", head) + NOT_HELD };
+    }],
+    ["a file the store does not hold", async t => {
+      let absent = gitObjectOid("blob", utf8("never stored\n"));
+      let head = await snapshot(t, [fileAt("gone.txt", absent)], [t.base]);
+      return { head, reason: at("gone.txt", head) + NOT_HELD };
+    }],
+
+    ["a commit whose tree is a file", async t => {
+      let head = await localCommit(t, await localBlob(t, "not a tree\n"), [t.base]);
+      return { head, reason: `${at("", head)} names a blob where a tree is expected` };
+    }],
+    ["a directory entry that names a file", async t => {
+      let head = await snapshot(t, [dirAt("d", await localBlob(t, "not a tree\n"))], [t.base]);
+      return { head, reason: `${at("d", head)} names a blob where a tree is expected` };
+    }],
+    ["a file entry that names a directory", async t => {
+      let sub = await localTree(t, [fileAt("x", t.readme)]);
+      let head = await snapshot(t, [fileAt("f", sub)], [t.base]);
+      return { head, reason: `${at("f", head)} names a tree where a blob is expected` };
+    }],
+    ["a file entry that names a commit", async t => {
+      let other = await localCommit(t, t.baseTree, [t.base], "other");
+      let head = await snapshot(t, [fileAt("f", other)], [t.base]);
+      return { head, reason: `${at("f", head)} names a commit where a blob is expected` };
+    }],
+
+    ...[...UNLISTABLE, ["a name holding a slash", a => [fileAt("a/b", a)]] as typeof UNLISTABLE[0]]
+        .map(([what, entries]): typeof REFUSED[0] => [`a directory with ${what}`, async t => {
+          let payload = treePayload(entries(await localBlob(t, "a\n"), await localBlob(t, "b\n")));
+          let odd = await storeLocal(t.storage, { type: "tree", payload });
+          let head = await snapshot(t,
+              [fileAt("README.md", t.readme), dirAt("odd", odd)], [t.base]);
+          return { head, reason: `the directory ${at("odd", head)}${NOT_IN_FORM}` };
+        }]),
+    ["a root directory with a name holding a slash", async t => {
+      let payload = treePayload([fileAt("a/b", await localBlob(t, "a\n"))]);
+      let head = await localCommit(t, await storeLocal(t.storage, { type: "tree", payload }),
+          [t.base]);
+      return { head, reason: at("", head) + NOT_IN_FORM };
+    }],
+    ["a directory with a name that is not UTF-8", async t => {
+      await storeLocal(t.storage, fixture(BAD_NAME_TREE));
+      await storeLocal(t.storage, fixture(scanGitTree(fixture(BAD_NAME_TREE).payload)[0].oid));
+      let head = await snapshot(t, [dirAt("odd", BAD_NAME_TREE)], [t.base]);
+      return { head, reason: `the directory ${at("odd", head)}${NOT_IN_FORM}` };
+    }],
+
+    ["a file with a NUL", async t => {
+      let head = await withFile(t, "a.bin", Uint8Array.of(0x61, 0, 0x62));
+      return { head, reason: `${at("a.bin", head)} is not UTF-8 text` };
+    }],
+    // The name is written as JSON, so that no character of it can pass for the refusal's own
+    // words.
+    ["a file that is not text, whose name holds a quote and a line break", async t => {
+      let name = 'a"\nb.bin';
+      let head = await withFile(t, name, Uint8Array.of(0x61, 0, 0x62));
+      expect(at(name, head)).toBe(String.raw`"a\"\nb.bin" in commit ` + head);
+      return { head, reason: `${at(name, head)} is not UTF-8 text` };
+    }],
+    ["a file that is not valid UTF-8", async t => {
+      let head = await withFile(t, "latin1.txt", Uint8Array.of(0x63, 0x61, 0x66, 0xe9, 0x0a));
+      return { head, reason: `${at("latin1.txt", head)} is not UTF-8 text` };
+    }],
+    ["a file of UTF-16 text with a byte order mark", async t => {
+      let head = await withFile(t, "wide.txt", Uint8Array.of(0xff, 0xfe, 0x68, 0, 0x69, 0));
+      return { head, reason: `${at("wide.txt", head)} is not UTF-8 text` };
+    }],
+
+    ["a symbolic link whose target it sends", async t => {
+      let target = await localBlob(t, "README.md");
+      let head = await snapshot(t, [fileAt("README.md", t.readme), linkAt("link", target)],
+          [t.base]);
+      return { head, reason: at("link", head) + SENT_LINK };
+    }],
+    ["such a link under the commit that adds it, where a later commit keeps it", async t => {
+      let link = linkAt("link", await localBlob(t, "README.md"));
+      let first = await snapshot(t, [fileAt("README.md", t.readme), link], [t.base], "link");
+      let head = await snapshot(t,
+          [fileAt("README.md", t.readme), link, fileAt("more.txt", await localBlob(t, "more\n"))],
+          [first], "more");
+      return { head, reason: at("link", first) + SENT_LINK };
+    }],
+
+    ["a submodule entry it adds", async t => {
+      let head = await snapshot(t,
+          [fileAt("README.md", t.readme), submoduleAt("mod", GITLINK_TARGET)], [t.base]);
+      return { head, reason: at("mod", head) + SUBMODULE };
+    }],
+    ["a submodule entry whose target it changes", async t => {
+      let base = await remoteCommit(t, [submoduleAt("mod", GITLINK_TARGET)], [t.base], "mod");
+      let head = await snapshot(t, [submoduleAt("mod", "2".repeat(40))], [base.commit]);
+      return { head, reason: at("mod", head) + SUBMODULE };
+    }],
+    ["a submodule entry in a subdirectory", async t => {
+      let lib = await localTree(t, [submoduleAt("nested", GITLINK_TARGET)]);
+      let head = await snapshot(t, [fileAt("README.md", t.readme), dirAt("lib", lib)], [t.base]);
+      return { head, reason: at("lib/nested", head) + SUBMODULE };
+    }],
+    ["a submodule entry where the parent's directory is not in the store", async t => {
+      // The remote's tree may hold this very entry, and nothing held here shows that it does.
+      let entries = [submoduleAt("mod", GITLINK_TARGET)];
+      let remote = await t.cache.putFromGatekeeper(G1, "commit",
+          commitPayload(gitObjectOid("tree", encodeGitTree(entries)), [], "remote"));
+      let head = await snapshot(t, [...entries, fileAt("new.txt", t.readme)], [remote]);
+      return { head, reason: at("mod", head) + SUBMODULE };
+    }],
+
+    ["a commit that is not valid UTF-8", async t => {
+      let head = await withCommit(t, concatBytes(
+          [commitPayload(t.baseTree, [t.base], "invalid"), Uint8Array.of(0xff, 0x0a)]));
+      return { head, reason: notText(head) };
+    }],
+    ["a commit with a NUL", async t => {
+      let head = await withCommit(t, commitPayload(t.baseTree, [t.base], "nul \0"));
+      return { head, reason: notText(head) };
+    }],
+    ["a commit over the buffered size", async t => {
+      let head = await withCommit(t,
+          commitPayload(t.baseTree, [t.base], "x".repeat(MAX_BUFFERED_BLOB_SIZE)));
+      return { head, reason: notText(head) };
+    }],
+
+    ["an object marked for it that is at no path of its commits", async t => {
+      let stray = await localBlob(t, "stray\n");
+      t.storage.gitObjectMetadata.put({
+        oid: stray, type: "blob", onRemote: [], pullableFrom: [],
+        pendingPush: [{ gatekeeperId: G1, actionId: ACTION }],
+      });
+      let head = await withFile(t, "a.txt", utf8("text\n"));
+      return {
+        head,
+        reason: `object ${stray} is sent but is neither a commit of this push nor at a path of one`,
+      };
+    }],
+    ["a parent that is not a commit", async t => {
+      // Straight to the marks: the ancestry check refuses this push before it is queued.
+      let blob = await localBlob(t, "not a commit\n");
+      let head = await localCommit(t, t.baseTree, [t.base, blob]);
+      return {
+        head,
+        reason: `object ${blob} is sent but is neither a commit of this push nor at a path of one`,
+      };
+    }],
+  ];
+  for (let [what, build] of REFUSED) {
+    it(`refuses ${what}`, async () => {
+      let t = await setupReview();
+      let { head, reason } = await build(t);
+      expect(judge(t, head)).toBe(reason);
+    });
+  }
+
+  it("refuses a directory with a name twice whichever of its two files is text", async () => {
+    for (let textFirst of [true, false]) {
+      let t = await setupReview();
+      let blobs = [await localBlob(t, "benign\n"), await localBlob(t, Uint8Array.of(0, 1, 2))];
+      if (!textFirst) blobs.reverse();
+      let odd = await storeLocal(t.storage, {
+        type: "tree",
+        payload: treePayload([fileAt("notes.txt", blobs[0]), fileAt("notes.txt", blobs[1])]),
+      });
+      let head = await snapshot(t, [fileAt("README.md", t.readme), dirAt("odd", odd)], [t.base]);
+      expect(judge(t, head)).toBe(`the directory ${at("odd", head)}${NOT_IN_FORM}`);
+    }
+  });
+
+  it("refuses a file over the buffered size without reading it", async () => {
+    let t = await setupReview();
+    let over = t.cache.writeBlob(new Uint8Array(MAX_BUFFERED_BLOB_SIZE + 1).fill(0x61)).oid;
+    let head = await snapshot(t, [fileAt("README.md", t.readme), fileAt("big.txt", over)],
+        [t.base]);
+    t.cache.markPushClosure(G1, ACTION, [head]);
+
+    let reads = countReads(t);
+    expect(refusalOf(t, [head]))
+        .toBe(`${at("big.txt", head)} is larger than ${MAX_BUFFERED_BLOB_SIZE} bytes`);
+    let chunks = chunksOf(t, over);
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(reads.filter(oid => chunks.includes(oid))).toStrictEqual([]);
+  });
+
+  // A push whose commit cannot be compared with a parent, and what stores the missing object.
+  const INCOMPARABLE: [string, (t: ReviewSetup) => Promise<
+      { head: GitOid, reason: string, supply: () => unknown }>][] = [
+    ["a commit whose parent is not in the store", async t => {
+      let parent = await unheldRemoteCommit(t);
+      let head = await snapshot(t,
+          [fileAt("README.md", t.readme), fileAt("a.txt", await localBlob(t, "a\n"))],
+          [parent.commit]);
+      return { head, reason: at("", head) + notComparable(parent.commit), supply: parent.supply };
+    }],
+    ...([
+      ["a changed file", "old.md", (t: ReviewSetup) => localBlob(t, "fresh\n")],
+      ["an entry over a file the remote has", "renamed.md", async (t: ReviewSetup) => t.readme],
+    ] as const).map(([what, name, blob]): typeof INCOMPARABLE[0] =>
+        [`${what} under a directory the parent's tree for which is not in the store`, async t => {
+          let docs = encodeGitTree([fileAt("old.md", t.readme)]);
+          let base = await remoteCommit(t, [dirAt("docs", gitObjectOid("tree", docs))], [], "docs");
+          let now = await localTree(t, [fileAt(name, await blob(t))]);
+          let head = await snapshot(t, [dirAt("docs", now)], [base.commit]);
+          return {
+            head,
+            reason: at(`docs/${name}`, head) + notComparable(base.commit),
+            supply: () => t.cache.putFromGatekeeper(G1, "tree", docs),
+          };
+        }]),
+    ["a merge that differs from a parent in the store and one that is not", async t => {
+      let parent = await unheldRemoteCommit(t);
+      let head = await snapshot(t,
+          [fileAt("README.md", t.readme), fileAt("m.txt", await localBlob(t, "merged\n"))],
+          [t.base, parent.commit], "merge");
+      return { head, reason: at("", head) + notComparable(parent.commit), supply: parent.supply };
+    }],
+  ];
+  for (let [what, build] of INCOMPARABLE) {
+    it(`refuses ${what}, and accepts it once that is stored`, async () => {
+      let t = await setupReview();
+      let { head, reason, supply } = await build(t);
+      expect(judge(t, head)).toBe(reason);
+
+      await supply();
+      let review = t.cache.readPushReview(ACTION, [head]);
+      expect(JSON.stringify(review)).not.toContain('"unknown"');
+      expect(refusalOf(t, [head])).toBeUndefined();
+      expect(t.cache.readPushReview(ACTION, [head])).toStrictEqual(review);
+    });
+  }
+  // The one way an accepted push's review changes while the push waits: an empty directory
+  // has no entry to compare, so nothing shows that the parent's directory there is not held.
+  it("accepts an empty directory over a parent's directory that is not in the store, and " +
+     "lists what that deletes once it is", async () => {
+    let t = await setupReview();
+    let docs = encodeGitTree([fileAt("old.md", t.readme), fileAt("plan.md", t.readme)]);
+    let base = await remoteCommit(t,
+        [fileAt("README.md", t.readme), dirAt("docs", gitObjectOid("tree", docs))], [], "docs");
+    let head = await snapshot(t,
+        [fileAt("README.md", t.readme), dirAt("docs", EMPTY_TREE_OID)], [base.commit]);
+    expect(judge(t, head)).toBeUndefined();
+    let before = readReview(t, [head]);
+    expect(listed(before.entries)).toStrictEqual([" dir", "docs dir"]);
+    expect(JSON.stringify(before)).not.toContain('"unknown"');
+
+    await t.cache.putFromGatekeeper(G1, "tree", docs);
+    let after = readReview(t, [head]);
+    expect(after.entries).toStrictEqual([
+      ...before.entries,
+      pathRow(head, "docs/old.md", undefined, [aFile(t.readme)]),
+      pathRow(head, "docs/plan.md", undefined, [aFile(t.readme)]),
+    ]);
+    expect(refusalOf(t, [head])).toBeUndefined();
+  });
+
+  // `count` file entries, over one blob or over one each.
+  const spread = (count: number, oid: (index: number) => GitOid) => Array.from(
+      { length: count }, (_, index) => fileAt(`f${String(index).padStart(3, "0")}`, oid(index)));
+  const TOO_MUCH_TEXT = `it sends more than ${MAX_RESTRICTED_PUSH_TEXT_SIZE} bytes of text`;
+
+  // Each builds a push of a given size in what one bound counts, the largest it allows and
+  // the reason one more gives.
+  const BOUNDS: [string, number, string, (t: ReviewSetup, size: number) => Promise<GitOid>][] = [
+    ["commits", MAX_RESTRICTED_PUSH_COMMITS,
+     `it sends more than ${MAX_RESTRICTED_PUSH_COMMITS} commits`, async (t, size) => {
+      let head = t.base;
+      for (let i = 0; i < size; i++) head = await localCommit(t, t.baseTree, [head], `${i}`);
+      return head;
+    }],
+    ["files", MAX_RESTRICTED_PUSH_FILES,
+     `it sends more than ${MAX_RESTRICTED_PUSH_FILES} files`, async (t, size) => {
+      let blobs: GitOid[] = [];
+      for (let i = 0; i < size; i++) blobs.push(await localBlob(t, `${i}\n`));
+      return await snapshot(t, spread(size, index => blobs[index]), [t.base]);
+    }],
+    // The root, a directory and its entries, each over a file the remote has: no file is sent.
+    ["paths", MAX_RESTRICTED_PUSH_PATHS,
+     `its commits change more than ${MAX_RESTRICTED_PUSH_PATHS} paths`, async (t, size) => {
+      let inner = await localTree(t, spread(size - 2, () => t.readme));
+      return await snapshot(t, [fileAt("README.md", t.readme), dirAt("d", inner)], [t.base]);
+    }],
+    // The same under a merge, whose every path is compared with two parents and counts twice.
+    ["paths of a merge", MAX_RESTRICTED_PUSH_PATHS / 2,
+     `its commits change more than ${MAX_RESTRICTED_PUSH_PATHS} paths`, async (t, size) => {
+      let other = await remoteCommit(t, [fileAt("other.txt", t.readme)], [], "other");
+      let inner = await localTree(t, spread(size - 2, () => t.readme));
+      return await snapshot(t, [dirAt("d", inner)], [t.base, other.commit], "merge");
+    }],
+    // A commit with no parent, marked directly since the ancestry check refuses to queue one
+    // the remote does not have: its paths are compared with nothing and each counts once.
+    ["paths of a parentless commit", MAX_RESTRICTED_PUSH_PATHS,
+     `its commits change more than ${MAX_RESTRICTED_PUSH_PATHS} paths`, (t, size) =>
+        snapshot(t, spread(size - 1, () => t.readme), [])],
+  ];
+  for (let [what, most, reason, build] of BOUNDS) {
+    it(`accepts ${most} ${what} and refuses one more`, async () => {
+      let t = await setupReview();
+      expect(judge(t, await build(t, most))).toBeUndefined();
+      t = await setupReview();
+      expect(judge(t, await build(t, most + 1))).toBe(reason);
+    });
+  }
+
+  it("counts a file once, at however many paths it is", async () => {
+    let t = await setupReview();
+    // One of them is half the text bound, so that counting it at both its paths would pass it.
+    let blobs = [await localBlob(t, new Uint8Array(MAX_BUFFERED_BLOB_SIZE).fill(0x61))];
+    for (let i = 1; i < MAX_RESTRICTED_PUSH_FILES; i++) blobs.push(await localBlob(t, `${i}\n`));
+    let head = await snapshot(t,
+        spread(2 * MAX_RESTRICTED_PUSH_FILES, index => blobs[index % blobs.length]), [t.base]);
+    expect(judge(t, head)).toBeUndefined();
+  });
+
+  // The text a push puts before its approver, counted from its review as
+  // MAX_RESTRICTED_PUSH_TEXT_SIZE says: commits, paths, listings and each file once.
+  function reviewText(t: TestCache, head: GitOid): number {
+    let files = new Map<GitOid, number>(), text = 0;
+    for (let entry of readReview(t, [head]).entries) {
+      if (entry.kind === "commit") text += entry.size!;
+      if (entry.kind !== "path") continue;
+      text += utf8(entry.path).byteLength;
+      if (entry.sent?.kind === "dir") text += entry.sent.size;
+      if (entry.sent?.kind === "text") files.set(entry.entry!.oid, entry.sent.size);
+    }
+    return text + [...files.values()].reduce((sum, size) => sum + size, 0);
+  }
+
+  // Trees that come close to the text bound by one kind of text. The commit's message makes
+  // up the rest, to the byte.
+  const NEAR_TEXT_BOUND: [string, (t: ReviewSetup) => Promise<GitTreeEntry[]>][] = [
+    ["its files", async t => [
+      fileAt("a.txt", await localBlob(t, new Uint8Array(MAX_BUFFERED_BLOB_SIZE).fill(0x61))),
+      fileAt("b.txt", await localBlob(t, new Uint8Array(
+          MAX_RESTRICTED_PUSH_TEXT_SIZE - MAX_BUFFERED_BLOB_SIZE - 4096).fill(0x62))),
+    ]],
+    // Four names over a file the remote has, each written in the listing and as a path.
+    ["the long names of a directory's listing", async t => Array.from({ length: 4 }, (_, i) =>
+        fileAt(`${i}`.padEnd(MAX_RESTRICTED_PUSH_TEXT_SIZE / 8 - 2048, "n"), t.readme))],
+    // Three directories with long names, one in the other, whose listings are small. The
+    // paths of the entries in the last repeat all three names.
+    ["its paths alone", async t => {
+      let tree = await localTree(t, spread(340, () => t.readme));
+      for (let name of ["c", "b", "a"]) {
+        tree = await localTree(t, [dirAt(name.repeat(2000), tree)]);
+      }
+      return parseGitTree(t.cache.readLocalObject(tree)!.payload);
+    }],
+  ];
+  for (let [what, entries] of NEAR_TEXT_BOUND) {
+    it(`counts ${what} toward the text bound, exactly`, async () => {
+      let push = async (pad: number) => {
+        let t = await setupReview();
+        let head = await snapshot(t, await entries(t), [t.base], "x".repeat(pad));
+        t.cache.markPushClosure(G1, ACTION, [head]);
+        return { t, head };
+      };
+      let bare = await push(0);
+      let slack = MAX_RESTRICTED_PUSH_TEXT_SIZE - reviewText(bare.t, bare.head);
+      expect(slack).toBeGreaterThan(0);
+      expect(slack).toBeLessThan(64 * 1024);
+
+      let exact = await push(slack);
+      expect(reviewText(exact.t, exact.head)).toBe(MAX_RESTRICTED_PUSH_TEXT_SIZE);
+      expect(refusalOf(exact.t, [exact.head])).toBeUndefined();
+      let over = await push(slack + 1);
+      expect(refusalOf(over.t, [over.head])).toBe(TOO_MUCH_TEXT);
+    });
+  }
+
+  it("counts a path in bytes: names of three-byte characters reach the text bound at a " +
+      "third of the length", async () => {
+    // Ten entries over a file the remote has, in a directory with a long name: the name is
+    // written in the listing above it, as its own path and in the path of each entry.
+    let refusal = async (unit: string, length: number) => {
+      let t = await setupReview();
+      let inner = await localTree(t,
+          Array.from({ length: 10 }, (_, i) => fileAt(`${i}`, t.readme)));
+      return judge(t, await snapshot(t, [dirAt(unit.repeat(length), inner)], [t.base]));
+    };
+    let ascii = Math.floor((MAX_RESTRICTED_PUSH_TEXT_SIZE - 1024) / 12);
+    expect(await refusal("a", ascii)).toBeUndefined();
+    expect(await refusal("a", ascii + 100)).toBe(TOO_MUCH_TEXT);
+    expect(await refusal("€", Math.floor(ascii / 3))).toBeUndefined();
+    expect(await refusal("€", Math.floor(ascii / 3) + 34)).toBe(TOO_MUCH_TEXT);
+  });
+
+  it("refuses more objects than the bounds allow before it reads one", async () => {
+    let t = await setupReview(makeCache(makeLargeStorage()));
+    let most = MAX_RESTRICTED_PUSH_COMMITS + MAX_RESTRICTED_PUSH_PATHS;
+    let head = t.base;
+    for (let i = 0; i < most; i++) head = await localCommit(t, t.baseTree, [head], `${i}`);
+    // As many objects as the bounds allow are walked, and refused by the bound they break.
+    t.cache.markPushClosure(G1, OTHER_ACTION, [head]);
+    expect(listMarks(t.storage, OTHER_ACTION).length).toBe(most);
+    expect(refusalOf(t, [head], OTHER_ACTION))
+        .toBe(`it sends more than ${MAX_RESTRICTED_PUSH_COMMITS} commits`);
+
+    head = await localCommit(t, t.baseTree, [head], "one more");
+    t.cache.markPushClosure(G1, ACTION, [head]);
+    expect(listMarks(t.storage, ACTION).length).toBe(most + 1);
+
+    let reads = countReads(t);
+    expect(refusalOf(t, [head])).toBe(
+        `it sends more objects than ${MAX_RESTRICTED_PUSH_COMMITS} commits changing ` +
+        `${MAX_RESTRICTED_PUSH_PATHS} paths can`);
+    expect(reads).toStrictEqual([]);
+  });
+
+  // A directory thirty levels deep in which every level names the level below twice: some
+  // thirty objects, and two to the power of thirty paths.
+  async function treeBomb(leaf: GitTreeEntry,
+                          store: (payload: Uint8Array) => GitOid | Promise<GitOid>) {
+    let tree = await store(encodeGitTree([leaf]));
+    for (let i = 0; i < 30; i++) {
+      tree = await store(encodeGitTree([dirAt("a", tree), dirAt("b", tree)]));
+    }
+    return tree;
+  }
+  const local = (t: TestCache) => (payload: Uint8Array) =>
+      storeLocal(t.storage, { type: "tree", payload });
+  const PATHS_REASON = `its commits change more than ${MAX_RESTRICTED_PUSH_PATHS} paths`;
+
+  it("stops at the paths bound in a tree of few objects and many paths", async () => {
+    let t = await setupReview();
+    let tree = await treeBomb(fileAt("x", await localBlob(t, "x\n")), local(t));
+    let head = await localCommit(t, tree, [t.base]);
+    t.cache.markPushClosure(G1, ACTION, [head]);
+    expect(listMarks(t.storage, ACTION).length).toBeLessThan(40);
+
+    let reads = countReads(t);
+    expect(refusalOf(t, [head])).toBe(PATHS_REASON);
+    expect(reads.length).toBeLessThanOrEqual(3 * MAX_RESTRICTED_PUSH_PATHS);
+  });
+
+  it("stops at the paths bound in a merge of such trees that sends no file", async () => {
+    let t = await setupReview();
+    let remote = (payload: Uint8Array) => t.cache.putFromGatekeeper(G1, "tree", payload);
+    let sides: GitOid[] = [];
+    for (let name of ["left", "right"]) {
+      let tree = await treeBomb(fileAt(name, t.readme), remote);
+      sides.push(await t.cache.putFromGatekeeper(G1, "commit", commitPayload(tree, [], name)));
+    }
+    // Every directory of the merge differs from both sides', down to an entry over a file the
+    // remote has.
+    let tree = await treeBomb(fileAt("merged", t.readme), local(t));
+    let head = await localCommit(t, tree, sides, "merge");
+    t.cache.markPushClosure(G1, ACTION, [head]);
+
+    let reads = countReads(t);
+    expect(refusalOf(t, [head])).toBe(PATHS_REASON);
+    expect(reads.length).toBeLessThanOrEqual(3 * MAX_RESTRICTED_PUSH_PATHS);
+  });
+
+  it("refuses a cursor past the ceiling before it walks such a tree", async () => {
+    let t = await setupReview();
+    let tree = await treeBomb(fileAt("x", await localBlob(t, "x\n")), local(t));
+    let head = await localCommit(t, tree, [t.base]);
+    t.cache.markPushClosure(G1, ACTION, [head]);
+
+    let reads = countReads(t);
+    expect(() => t.cache.readPushReview(ACTION, [head], MAX_PUSH_REVIEW_CURSOR + 1))
+        .toThrow(`A push review cannot be read past ${MAX_PUSH_REVIEW_CURSOR} entries.`);
+    expect(reads).toStrictEqual([]);
+    expect(t.cache.readPushReview(ACTION, [head], PUSH_REVIEW_PAGE_SIZE).entries)
+        .toHaveLength(PUSH_REVIEW_PAGE_SIZE);
+  });
+
+  it("reads a file once for its size and once for its text, however many paths name it",
+     async () => {
+    let t = await setupReview();
+    let blob = await localBlob(t, "same\n");
+    // The root, README.md's deletion and every path of the file: the most paths a push may change.
+    let head = await snapshot(t, spread(MAX_RESTRICTED_PUSH_PATHS - 2, () => blob), [t.base]);
+    t.cache.markPushClosure(G1, ACTION, [head]);
+
+    let reads = countReads(t);
+    expect(refusalOf(t, [head])).toBeUndefined();
+    expect(reads.filter(read => read === blob)).toHaveLength(2);
+  });
+
+  it("reads a parent once, however often a commit names it", async () => {
+    let t = await setupReview();
+    let head = await localCommit(t, t.baseTree, Array<GitOid>(1000).fill(t.base));
+    t.cache.markPushClosure(G1, ACTION, [head]);
+
+    let reads = countReads(t);
+    expect(refusalOf(t, [head])).toBeUndefined();
+    expect(reads.filter(read => read === t.base)).toHaveLength(1);
+    reads.length = 0;
+    expect(readReview(t, [head]).entries).toHaveLength(1);
+    expect(reads.filter(read => read === t.base)).toHaveLength(1);
+  });
+
+  it("accepts a push at every bound at once, and no call for its review stops short",
+     async () => {
+    let t = await setupReview();
+    // Each commit changes the root, a directory and every file in it, to one of two files of
+    // its own: with the commits before it, all the paths, and nearly all the text, a push may
+    // have.
+    let perCommit = MAX_RESTRICTED_PUSH_PATHS / MAX_RESTRICTED_PUSH_COMMITS - 2;
+    let fileSize = Math.floor(
+        (MAX_RESTRICTED_PUSH_TEXT_SIZE - 128 * 1024) / (2 * MAX_RESTRICTED_PUSH_COMMITS));
+    let head = t.base;
+    for (let i = 0; i < MAX_RESTRICTED_PUSH_COMMITS; i++) {
+      let pair = [
+        await localBlob(t, `${i}a`.padEnd(fileSize, "a")),
+        await localBlob(t, `${i}b`.padEnd(fileSize, "b")),
+      ];
+      let inner = await localTree(t, spread(perCommit, index => pair[index % 2]));
+      head = await snapshot(t, [fileAt("README.md", t.readme), dirAt("d", inner)], [head], `${i}`);
+    }
+    t.cache.markPushClosure(G1, ACTION, [head]);
+
+    let reads = countReads(t);
+    expect(refusalOf(t, [head])).toBeUndefined();
+    // The pass read every row and the text of every file, in a small part of what a call may.
+    expect(reads.length).toBeLessThan(MAX_PUSH_REVIEW_WALK_OBJECTS / 10);
+    expect(reads.reduce((sum, oid) => sum + sizeOf(t, oid), 0))
+        .toBeLessThan(MAX_PUSH_REVIEW_WALK_BYTES / 4);
+
+    let review = readReview(t, [head]);
+    let paths = review.entries.filter(entry => entry.kind === "path");
+    expect(review.entries.length - paths.length).toBe(MAX_RESTRICTED_PUSH_COMMITS);
+    expect(paths).toHaveLength(MAX_RESTRICTED_PUSH_PATHS);
+    expect(reviewText(t, head)).toBeGreaterThan(MAX_RESTRICTED_PUSH_TEXT_SIZE - 256 * 1024);
+  });
+
+  it("refuses a push that no call could list whole, for what its parents' directories hold",
+     async () => {
+    // A merge whose every parent has its own version of one wide directory. The merge sends
+    // the root and its version of that directory, within every bound, and lists them and the
+    // one entry no parent has; finding that entry reads each parent's version.
+    let merge = async (parents: number) => {
+      let t = await setupReview(makeCache(makeLargeStorage()));
+      let wide = Array.from(
+          { length: 4096 }, (_, i) => fileAt(`${i}`.padStart(230, "n"), t.readme));
+      let version = (name: string) => localTree(t, [...wide, fileAt(name, t.readme)]);
+      let sides: GitOid[] = [];
+      for (let i = 0; i < parents; i++) {
+        let tree = await localTree(t, [dirAt("d", await version(`side-${i}`))]);
+        sides.push(await t.cache.putFromGatekeeper(
+            G1, "commit", commitPayload(tree, [], `side ${i}`)));
+      }
+      let head = await snapshot(t, [dirAt("d", await version("merged"))], sides, "merge");
+      return { t, head, size: sizeOf(t, await version("merged")) };
+    };
+
+    let within = await merge(Math.floor(MAX_PUSH_REVIEW_WALK_BYTES / (1024 * 1024)) - 4);
+    expect(judge(within.t, within.head)).toBeUndefined();
+    expect(listed(readReview(within.t, [within.head]).entries))
+        .toStrictEqual([" dir", "d dir", "d/merged file"]);
+
+    let over = await merge(Math.ceil(MAX_PUSH_REVIEW_WALK_BYTES / (1024 * 1024)));
+    expect(over.size).toBeGreaterThan(1024 * 1024);
+    over.t.cache.markPushClosure(G1, ACTION, [over.head]);
+    let reads = countReads(over.t);
+    expect(refusalOf(over.t, [over.head])).toBe(
+        `listing it reads more than ${MAX_PUSH_REVIEW_WALK_OBJECTS} objects, or more than ` +
+        `${MAX_PUSH_REVIEW_WALK_BYTES} bytes of them: its commits and directories and those ` +
+        "of their parents");
+    expect(reads.reduce((sum, oid) => sum + sizeOf(over.t, oid), 0))
+        .toBeLessThanOrEqual(MAX_PUSH_REVIEW_WALK_BYTES + over.size);
+    // Its review says the same of itself.
+    let page = over.t.cache.readPushReview(ACTION, [over.head]);
+    expect(page.truncated).toBe(true);
+    expect(listed(page.entries)).toStrictEqual([" dir", "d dir"]);
+  });
+
+  it("reads no file past the files bound", async () => {
+    let t = await setupReview();
+    let blobs: GitOid[] = [];
+    for (let i = 0; i <= MAX_RESTRICTED_PUSH_FILES; i++) blobs.push(await localBlob(t, `${i}\n`));
+    let head = await snapshot(t, spread(blobs.length, index => blobs[index]), [t.base]);
+    t.cache.markPushClosure(G1, ACTION, [head]);
+
+    let reads = countReads(t);
+    expect(refusalOf(t, [head])).toBe(`it sends more than ${MAX_RESTRICTED_PUSH_FILES} files`);
+    // The walk looks up each file's size as it lists it, and the pass then reads the file for
+    // its text. The file that trips the bound is looked up and not read, and none follows it.
+    let timesRead = blobs.map(oid => reads.filter(read => read === oid).length);
+    expect(timesRead).toStrictEqual([...blobs.slice(1).map(() => 2), 1]);
   });
 });
 

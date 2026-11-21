@@ -1,6 +1,7 @@
 import type { ActionField } from '@gadgets/workshop-shared/gatekeeper'
 import type { ActionLogEntry } from '@gadgets/workshop-shared/api'
 import { formatAttachmentSize } from '../features/chat/attachmentFormatting'
+import { UNDISPLAYABLE, UNDISPLAYABLE_GLOBAL } from './ExactText'
 
 /** The typed values an entry's gatekeeper attached to its description; hooks carry none. */
 export function entryFields(entry: ActionLogEntry): ActionField[] {
@@ -28,14 +29,6 @@ const Placeholder = ({ children }: { children: string }) => (
 const Captions = ({ captions }: { captions: string[] }) =>
   captions.length > 0 && <p className={`m-0 mt-1 ${captionClass}`}>{captions.join(' · ')}</p>
 
-// Characters that render as nothing, or reorder the text around them: controls, and default-
-// ignorables such as zero-width spaces and bidi overrides, which can make `invoice\u202Efdp.exe`
-// read as `invoiceexe.pdf`.
-// oxlint-disable-next-line no-control-regex -- matching exactly these characters is the point
-const UNDISPLAYABLE = /[\u0000-\u001F\u007F-\u009F\p{Default_Ignorable_Code_Point}]/u
-// oxlint-disable-next-line no-control-regex -- as above
-const UNDISPLAYABLE_GLOBAL = /[\u0000-\u001F\u007F-\u009F\p{Default_Ignorable_Code_Point}]/gu
-
 /**
  * A file name or media type exactly as sent. The kit shows such a value as data rather than
  * rerouting it, so one with an undisplayable character is shown as an escaped JSON string instead.
@@ -49,7 +42,8 @@ const ExactName = ({ text, className = '' }: { text: string, className?: string 
   return <span className={`${className} ${exactClass} font-mono`}>{escaped}</span>
 }
 
-const formatSize = (size: number) => {
+/** A size for someone who has to know it exactly: "1.2 KB (1234 bytes)". */
+export const formatSize = (size: number) => {
   const bytes = `${size} byte${size === 1 ? '' : 's'}`
   return size < 1024 ? bytes : `${formatAttachmentSize(size)} (${bytes})`
 }

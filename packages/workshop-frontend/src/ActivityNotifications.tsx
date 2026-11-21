@@ -13,6 +13,8 @@ import {
   PENDING_ERROR_COPY,
   type ActivityView,
 } from './Activity'
+import { ApproveControl } from './features/approvals/ApproveControl'
+import { isPush } from './features/approvals/pushApproval'
 import { formatRelativeTime } from './utils/formatRelativeTime'
 import { useActions } from './useActions'
 import { useResolveAction } from './useResolveAction'
@@ -21,8 +23,9 @@ interface ActivityNotificationsProps {
   overseer: RpcStub<Overseer>
   onViewActivity: (view: ActivityView) => void
   // True once the workspace has read restricted data (WorkspaceMetadata.containsRestrictedData):
-  // the approver is the leak check, so each request is shown in full with a notice saying so.
-  restricted?: boolean
+  // the approver is the leak check, so each request is shown in full with a notice saying so,
+  // and a push is approved from the review of its commits.
+  restricted: boolean
 }
 
 const PREVIEW_LIMIT = 3
@@ -34,7 +37,8 @@ export default function ActivityNotifications({
 }: ActivityNotificationsProps) {
   const [open, setOpen] = useState(false)
   const [processing, setProcessing] = useState<Set<number>>(new Set())
-  const { resolveAction, creationAccountModal } = useResolveAction(overseer, setProcessing)
+  const { resolveAction, reviewPush, creationAccountModal, pushReviewDialog } =
+    useResolveAction(overseer, setProcessing, restricted)
   const { status, pending } = useActions(overseer)
   // While restricted each request's approve/deny buttons name the shared notice and their own
   // request text as their description: both follow the controls in DOM order.
@@ -46,7 +50,9 @@ export default function ActivityNotifications({
   }
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    // The review of a push opens over the popover, so every click in it lands outside this. The
+    // popover stays under it: closing the review returns to the request and its controls.
+    <Popover open={open} onOpenChange={next => { if (next || !pushReviewDialog) setOpen(next) }}>
       <Popover.Trigger
         render={
           <button
@@ -109,7 +115,9 @@ export default function ActivityNotifications({
                   key={action.id}
                   className={`px-3.5 py-2.5 ${index === 0 ? '' : 'border-t border-kumo-line'}`}
                 >
-                  <div className="flex items-start gap-2">
+                  {/* The controls wrap below the preview when a push's "Review commits" leaves
+                      them no room beside it. */}
+                  <div className="flex flex-wrap items-start gap-x-2 gap-y-1.5">
                     <button
                       type="button"
                       onClick={() => openFullView('review')}
@@ -140,11 +148,13 @@ export default function ActivityNotifications({
                         onClick={() => void resolveAction(action, 'deny')}
                         describedBy={describedBy}
                       />
-                      <ResolveButton
-                        tone="approve"
+                      <ApproveControl
+                        record={action}
+                        restricted={restricted}
                         disabled={isProcessing}
-                        onClick={() => void resolveAction(action, 'approve')}
                         describedBy={describedBy}
+                        onApprove={() => void resolveAction(action, 'approve')}
+                        onReviewPush={() => reviewPush(action)}
                       />
                     </div>
                   </div>
@@ -155,7 +165,7 @@ export default function ActivityNotifications({
                     </div>
                   )}
                   {incomplete && (
-                    <IncompleteDescriptionNotice id={incompleteId} className="mt-2 px-2.5 py-2" />
+                    <IncompleteDescriptionNotice id={incompleteId} push={isPush(action)} className="mt-2 px-2.5 py-2" />
                   )}
                 </div>
               )
@@ -179,6 +189,7 @@ export default function ActivityNotifications({
         </div>
       </Popover.Content>
       {creationAccountModal}
+      {pushReviewDialog}
     </Popover>
   )
 }

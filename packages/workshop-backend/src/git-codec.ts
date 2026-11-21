@@ -271,6 +271,22 @@ export function encodeGitTree(entries: readonly GitTreeEntry[]): Uint8Array {
   return concatBytes(encoded.map(entry => entry.bytes));
 }
 
+/**
+ * Whether a tree payload is byte for byte what encodeGitTree() writes for its parsed entries:
+ * sorted, with each name once and none that git cannot represent. Only in such a tree does a
+ * path name exactly one entry.
+ */
+export function isCanonicalTree(entries: readonly GitTreeEntry[], payload: Uint8Array): boolean {
+  let canonical: Uint8Array;
+  try {
+    canonical = encodeGitTree(entries);
+  } catch {
+    return false;  // it refuses these entries outright
+  }
+  return canonical.byteLength === payload.byteLength &&
+      canonical.every((byte, index) => byte === payload[index]);
+}
+
 // Lexicographic order over unsigned bytes, a prefix sorting first: C's memcmp, extended to
 // unequal lengths.
 function compareBytes(a: Uint8Array, b: Uint8Array): number {

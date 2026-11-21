@@ -50,10 +50,13 @@ observation marked **`containsRestrictedData`**
 puts the workspace into a restricted mode — web fetches reach only the hosts an admin trusts with
 that data (`AdminConfig.restrictedWebFetchHosts`, none by default) or, where the admin allows it
 (`AdminConfig.restrictedWebFetchApprovals`, off by default), a URL a user approves for the turn, and
-every action requires manual approval (auto-approval rules are suspended), the approver checking
+every action requires manual approval (auto-approval rules are suspended, except for the admin
+gatekeeper's admins-only notes, status changes and assignments in a workspace only its reads
+marked: see [admin-access.md](admin-access.md#through-an-agent)), the approver checking
 the action text for restricted
 data. An action whose description is not complete (`ActionDescription.descriptionIsComplete`)
-is accepted and flagged to the approver; only git pushes are refused. Its coverage rests on admission: nobody can open the workspace without being verified
+is accepted and flagged to the approver; a git push is accepted only when its approver can read
+everything it will send, and is otherwise refused (see §6, item 4). Its coverage rests on admission: nobody can open the workspace without being verified
 against the producing gatekeeper, and anything that widens what they must be verified against
 restarts every live session. An observation that also carries **`ownerInvitesOnly`** sets that
 flag on the workspace: from then on only direct grants from the owner count, so share links admit
@@ -821,10 +824,76 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
    scope widens"). Setting `containsRestrictedData` also
    puts the workspace into a restricted mode: web fetches reach only the hosts an admin trusts with
    that data or, where the admin allows it, a URL a user approves, and every action requires manual
-   approval (auto-approval rules are suspended), the
+   approval (auto-approval rules are suspended, except for the admin gatekeeper's admins-only
+   notes, status changes and assignments in a workspace only its reads marked: see
+   [admin-access.md](admin-access.md#through-an-agent)), the
    approver checking the action text for restricted data. An action whose description is not complete
-   (`ActionDescription.descriptionIsComplete`) is accepted and flagged to the approver; only git
-   pushes are refused.
+   (`ActionDescription.descriptionIsComplete`) is accepted and flagged to the approver. A git push
+   (`ActionDescription.pushedCommits`) is accepted only when its approver can read everything it
+   will send, and is otherwise refused with an error naming what failed, queuing nothing. The
+   rules are those of `ObservationDescription.containsRestrictedData`, enforced by
+   `assertPushReadable` in `packages/workshop-backend/src/git-cache.ts`:
+   - every object the push sends is in the workspace's git store, and is what the commit or
+     directory naming it says it is (a commit's tree a tree, a directory's entry a tree or a blob
+     as its mode says);
+   - each commit and each file it sends is UTF-8 text with no NUL, of at most 1 MiB
+     (`MAX_BUFFERED_BLOB_SIZE`);
+   - each directory it sends is in the form git writes: every entry name valid UTF-8, a single
+     path segment, present once, in order;
+   - no file it sends is the target of a symbolic link (a link to content the remote already has
+     sends nothing and is accepted), and no commit adds or changes a submodule entry;
+   - each path a commit changes can be compared with every parent of that commit: the parent and
+     its directories on the way to the path are in the store too (an agent that meets this
+     refusal reads that directory at the parent commit and pushes again);
+   - every object it sends is a commit of the push or sits at a path of one;
+   - it stays within `MAX_RESTRICTED_PUSH_COMMITS` (20 commits), `MAX_RESTRICTED_PUSH_FILES`
+     (50 files), `MAX_RESTRICTED_PUSH_PATHS` (500 paths at which its commits differ from their
+     parents, a merge's path counting once for each parent it is compared with) and
+     `MAX_RESTRICTED_PUSH_TEXT_SIZE` (2 MiB of text, in which a changed file, the listing of each
+     directory on the way to it and each changed path written in full, as UTF-8, count whole);
+   - one call can list its review whole: listing it reads no more than
+     `MAX_PUSH_REVIEW_WALK_OBJECTS` (50,000) objects and `MAX_PUSH_REVIEW_WALK_BYTES` (32 MiB)
+     of them. What the push sends is far within both, so only the directories of its parents,
+     which are read to compare with, can take it past them.
+
+   What is judged is the set of objects the Overseer marked for the push when it was queued,
+   which is exactly what the gatekeeper sends on approval, not a diff. An accepted push always
+   waits for a person: no auto-approval rule applies in restricted mode. The Workshop shows the
+   push through `Overseer.getPushReview()`: each commit's raw text, the paths each commit adds,
+   changes or deletes against its parents, and any object no path accounts for; in a restricted
+   workspace Approve is offered only inside that review. A commit lists a path only where it
+   differs from every parent, so that a merge does not list all that one side changed; what a
+   merge takes from one parent and what from another is then no row. It shows in the
+   directories instead: every directory the push sends is a row of its own, which opens to
+   the directory's entries as sent, each with its kind and mode and the parents that have the
+   same entry under that name. The Workshop reads them from the commit's tree (`listTree()`)
+   and, for a commit with several parents, from the paths at which it differs from each
+   (`listChangedPaths()`), where a directory counts as a parent's when no file beneath it
+   differs. Approve is enabled once every commit, every file the review shows as text and
+   the entries of every directory sent have loaded and agree with the review; it does not
+   track what the approver opened. The review wraps every line, draws spaces, tabs and
+   characters that are hard to see, and lists every path the push names, an empty directory
+   included. A push that was
+   already waiting when the workspace first read restricted data is not judged again (what it
+   sends was fixed before that read): its review says which of its files are not shown as text,
+   and Approve does not wait for those. A later push stacked on it would send the same objects,
+   so it is refused wherever they fail a rule, until the waiting push has been applied. A
+   waiting push too large for the Workshop to load by itself is not loaded whole unasked: the
+   approver loads it page by page and its files and directories on request, and Approve is
+   enabled once every page, every file the review shows as text and every directory sent has
+   loaded. `getPushReview()` reads no further
+   than `MAX_PUSH_REVIEW_CURSOR` entries, so the Workshop never enables Approve for a waiting
+   push that lists more. Every call lists the push from its start, its commits oldest first, so
+   a call reads at most `MAX_PUSH_REVIEW_WALK_OBJECTS` objects and `MAX_PUSH_REVIEW_WALK_BYTES`
+   of them, an object counted before it is read and whether or not it yields an entry. A call
+   that runs out returns what it listed until then, marked `truncated`: the Workshop shows
+   that much, says the push is too large to review whole, and does not enable Approve in the
+   review. That is what a very large push from a workspace that is not restricted, which
+   accepts any, comes to. `getPushReview()` refuses a push whose connection was removed from
+   the workspace: that push can never be applied. The review is the Workshop's surface, as the
+   restricted notice is: `approveAction()` called through the API approves a push whether or
+   not anyone opened its review.
+
    Verification is held to what each collaborator opened, because `ensureObserver` can never
    verify beyond it: a `use` collaborator can't be covered for a gatekeeper their gadget doesn't
    reach (one it doesn't bind, no enabled hook feeds, and none of its agent spawners
@@ -937,7 +1006,10 @@ its resource types.
   For data that must additionally never leak back out, the `containsRestrictedData` restricted
   mode (web fetches reach only admin-trusted hosts or user-approved URLs, and every action requires
   manual approval —
-  auto-approval rules are suspended — the approver checking the action text for restricted data) is
+  auto-approval rules are suspended, except for the admin gatekeeper's admins-only notes, status
+  changes and assignments in a workspace only its reads marked (see
+  [admin-access.md](admin-access.md#through-an-agent)) — the approver checking the action text
+  for restricted data) is
   available separately; combined with strategy A it makes the workspace effectively private once
   sensitive data is observed.
   `getVerifier()` must still exist (the overseer mints one on every open) but is never consulted,

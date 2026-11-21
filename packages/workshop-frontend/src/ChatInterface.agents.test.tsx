@@ -77,7 +77,7 @@ async function renderList(chats: AiChatMetadata[], extraOverseer: Record<string,
   const navigate = vi.fn<(chatId: number | null) => void>();
   const show = async () => {
     await testRoot.render(
-      <ChatInterface workspaceId="workspace" overseer={stub}
+      <ChatInterface workspaceId="workspace" overseer={stub} restricted={false}
         selectedChatId={selected} onNavigateToChat={navigate}
         pendingConsoleLogCount={0} consoleLogPreview="" consoleLogSeverity="info"
         onConsumeConsoleLogs={() => ""} onDiscardConsoleLogs={() => {}}

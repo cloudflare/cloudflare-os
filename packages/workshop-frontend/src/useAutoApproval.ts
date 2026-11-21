@@ -12,13 +12,28 @@ export interface AutoApprovalEntry {
   enabled: boolean
   /** Keep orphaned rules visible so a standing grant never becomes impossible to revoke. */
   orphaned: boolean
+  /**
+   * Whether the kernel lets a rule apply this kind as the workspace is now
+   * (`PreApprovableAction.ruleApplies`). Undefined where it did not say: an orphaned rule
+   * in a restricted workspace.
+   */
+  applies: boolean | undefined
 }
 
 export function autoApprovalKey(entry: { gatekeeperId: number; actionKind: ActionKind }): string {
   return `${entry.gatekeeperId}:${entry.actionKind.tag}`
 }
 
-export function useAutoApproval(overseer: RpcStub<Overseer> | null) {
+/**
+ * The Auto-approval tab's rows: the whole catalog, read while the tab is open, with the stored
+ * rules. `restricted` is the workspace's restricted-data latch and `rulesApply` the kernel's
+ * word on whether a rule still applies anything under it
+ * (`WorkspaceMetadata.rulesApplyWhileRestricted`): the kernel's answer on what a rule applies
+ * changes with either, so both lists are read again when one does.
+ */
+export function useAutoApproval(
+  overseer: RpcStub<Overseer> | null, restricted: boolean, rulesApply?: boolean,
+) {
   const toasts = useKumoToastManager()
   const [catalog, setCatalog] = useState<PreApprovableAction[]>([])
   const [rules, setRules] = useState<Array<{ gatekeeperId: number; actionKind: ActionKind }>>([])
@@ -65,10 +80,13 @@ export function useAutoApproval(overseer: RpcStub<Overseer> | null) {
     setIsLoading(false)
   }, [overseer])
 
+  // Also when the latch sets, and when another connection's restricted read ends what a rule
+  // applies under it: what the catalog said a rule applies was said of the workspace before.
+  const ended = restricted && rulesApply === false
   useEffect(() => {
     setIsLoading(true)
     void refresh()
-  }, [refresh])
+  }, [refresh, restricted, ended])
 
   const entries = useMemo((): AutoApprovalEntry[] => {
     const byKey = new Map<string, AutoApprovalEntry>()
@@ -80,6 +98,7 @@ export function useAutoApproval(overseer: RpcStub<Overseer> | null) {
         actionKind: action.actionKind,
         enabled: action.alreadyEnabled,
         orphaned: false,
+        applies: action.ruleApplies,
       })
     }
     for (const rule of rules) {
@@ -93,11 +112,12 @@ export function useAutoApproval(overseer: RpcStub<Overseer> | null) {
           actionKind: rule.actionKind,
           enabled: true,
           orphaned: true,
+          applies: restricted ? undefined : true,
         })
       }
     }
     return [...byKey.values()]
-  }, [catalog, rules])
+  }, [catalog, rules, restricted])
 
   const setEnabled = useCallback(async (entry: AutoApprovalEntry, enabled: boolean) => {
     if (!overseer) return

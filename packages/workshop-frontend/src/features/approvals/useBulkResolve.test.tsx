@@ -38,11 +38,15 @@ function request(id: number, autoApprovable = false, gatekeeperId = 1): PendingC
 }
 
 /** No rule covers anything, which is every case but the drain tests. */
-const NO_RULES: AutoApprovalRules = { isEnabled: () => false, restricted: false }
+const NO_RULES: AutoApprovalRules = {
+  known: true, isEnabled: () => false, applies: () => true, restricted: false,
+}
 
 /** A rule covers the "append" kind on connection 1, as the drain would see it. */
 const APPEND_COVERED: AutoApprovalRules = {
+  known: true,
   isEnabled: (gatekeeperId, tag) => gatekeeperId === 1 && tag === 'append',
+  applies: () => true,
   restricted: false,
 }
 
@@ -528,7 +532,7 @@ describe('useBulkResolve', () => {
 
     await harness.settle()
     expect(harness.calls).toEqual(['approve:1', 'approve:2'])
-    await harness.setRules({ isEnabled: () => false, restricted: true })
+    await harness.setRules({ known: true, isEnabled: () => false, applies: () => false, restricted: true })
     await harness.settle()
     await run
 
@@ -551,7 +555,7 @@ describe('useBulkResolve', () => {
     const harness = await mount({ pending: [1, 2], records: queue }, APPEND_COVERED)
     const run = harness.start(queue, 'approve')
 
-    await harness.setRules({ isEnabled: () => true, restricted: true })
+    await harness.setRules({ known: true, isEnabled: () => true, applies: () => false, restricted: true })
     await act(async () => { await vi.advanceTimersByTimeAsync(10_000) })
     await run
 
@@ -563,7 +567,7 @@ describe('useBulkResolve', () => {
   })
 
   it('carries on discarding while restricted, since withdrawing applies nothing', async () => {
-    const harness = await mount({ pending: [1, 2] }, { isEnabled: () => false, restricted: true })
+    const harness = await mount({ pending: [1, 2] }, { known: true, isEnabled: () => false, applies: () => false, restricted: true })
     const run = harness.start([request(1), request(2)], 'deny')
 
     await harness.settle()

@@ -13,6 +13,8 @@ export interface PendingChangeActions {
   processing: ReadonlySet<number>
   onApprove: (entry: PendingChange) => void
   onReject: (entry: PendingChange) => void
+  /** Opens the review of the commits a push will send. */
+  onReviewPush: (entry: PendingChange) => void
   /** Enables a standing rule for the request's kind on its connection. */
   onAlwaysApprove: (entry: PendingChange) => void
   /** Opens the pane where a standing rule is turned off again. */
@@ -164,6 +166,7 @@ export const PendingChangeGroupRow = ({
                     decide={{
                       onApprove: () => actions.onApprove(entry),
                       onReject: () => actions.onReject(entry),
+                      onReviewPush: () => actions.onReviewPush(entry),
                       onAlwaysApprove: canOfferAlwaysApprove(entry, rules)
                         ? () => actions.onAlwaysApprove(entry)
                         : undefined,

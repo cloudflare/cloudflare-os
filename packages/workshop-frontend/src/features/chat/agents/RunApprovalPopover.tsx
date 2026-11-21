@@ -30,8 +30,12 @@ export const RunApprovalPopover = ({
 }) => {
   const [open, setOpen] = useState(false)
   const [processing, setProcessing] = useState<Set<number>>(new Set())
-  const { resolveAction, creationAccountModal } = useResolveAction(overseer, setProcessing)
+  const { resolveAction, reviewPush, creationAccountModal, pushReviewDialog } =
+    useResolveAction(overseer, setProcessing, restricted)
   const changeOpen = (next: boolean) => {
+    // The review of a push opens over the popover, so every click in it lands outside this.
+    // The popover stays under it: closing the review returns to the request and its controls.
+    if (!next && pushReviewDialog) return
     setOpen(next)
     onOpenChange(next)
   }
@@ -60,6 +64,7 @@ export const RunApprovalPopover = ({
               restricted={restricted}
               busy={processing.has(record.id)}
               onResolve={decision => void resolveAction(record, decision)}
+              onReviewPush={() => reviewPush(record)}
             />
           ))}
         </div>
@@ -76,8 +81,9 @@ export const RunApprovalPopover = ({
         </div>
       </Popover.Content>
       {/* Outside the content: approving a creation opens this modal, and taking its first click
-          closes the popover. */}
+          closes the popover. The review of a push holds the popover open instead (changeOpen). */}
       {creationAccountModal}
+      {pushReviewDialog}
     </Popover>
   )
 }

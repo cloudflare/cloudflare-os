@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 /* eslint-disable react/react-in-jsx-scope */
 
+import { act } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@cloudflare/kumo', async (importOriginal) => {
@@ -12,9 +13,13 @@ vi.mock('@cloudflare/kumo', async (importOriginal) => {
   return { ...actual, Popover: parts, useKumoToastManager: () => toasts }
 })
 
-import { entry, flushFrames, makeOverseer, makeTestRoot } from './action-test-harness'
+import {
+  entry, flushFrames, makeOverseer, makeTestRoot, pushEntry, pushReviewDialog, settlePushReview,
+} from './action-test-harness'
 import ActivityNotifications from './ActivityNotifications'
-import { INCOMPLETE_DESCRIPTION_COPY } from './components/IncompleteDescriptionNotice'
+import {
+  INCOMPLETE_DESCRIPTION_COPY, PUSH_DESCRIPTION_COPY,
+} from './components/IncompleteDescriptionNotice'
 import { RESTRICTED_APPROVAL_COPY } from './components/RestrictedApprovalNotice'
 
 const view = makeTestRoot()
@@ -32,7 +37,7 @@ const longDescription = [
 
 // Renders the popover with one pending request and returns the span carrying its description.
 async function renderPending(
-  restricted?: boolean, descriptionIsComplete?: true, fields?: unknown[],
+  restricted = false, descriptionIsComplete?: true, fields?: unknown[],
 ): Promise<HTMLElement> {
   const server = makeOverseer()
   await view.render(
@@ -130,5 +135,63 @@ describe('ActivityNotifications action fields', () => {
   it('shows no count for a request without fields', async () => {
     await renderPending(false, true)
     expect(document.body.textContent).not.toMatch(/\d+ fields?/)
+  })
+})
+
+describe('ActivityNotifications push approval', () => {
+  // Renders the popover with one pending push.
+  async function renderPush(restricted: boolean) {
+    const server = makeOverseer()
+    await view.render(
+      <ActivityNotifications overseer={server.overseer} onViewActivity={() => {}} restricted={restricted} />,
+    )
+    await server.resolveSubscription()
+    await server.resolvePendingQuery({ entries: [pushEntry(1)] })
+    flushFrames()
+    return server
+  }
+  const DECISIONS = ['Deny', 'Review commits', 'Approve']
+  const decisionLabels = (within: ParentNode) => [...within.querySelectorAll('button')]
+    .map(button => button.textContent ?? '').filter(label => DECISIONS.includes(label))
+  const press = async (label: string, within: ParentNode) => {
+    await act(async () =>
+      [...within.querySelectorAll('button')].find(button => button.textContent === label)!.click())
+    await settlePushReview()
+  }
+
+  it('offers Review commits in place of Approve for a push in a restricted workspace', async () => {
+    const server = await renderPush(true)
+    expect(decisionLabels(document)).toEqual(['Deny', 'Review commits'])
+
+    await press('Review commits', document)
+    expect(server.decisionCalls).toEqual([])
+    expect(decisionLabels(pushReviewDialog()!)).toEqual(['Deny', 'Approve'])
+
+    await press('Approve', pushReviewDialog()!)
+    expect(server.decisionCalls).toEqual(['approve:1'])
+  })
+
+  it('offers both for a push in an unrestricted workspace', async () => {
+    const server = await renderPush(false)
+    expect(decisionLabels(document)).toEqual(['Deny', 'Review commits', 'Approve'])
+
+    await press('Review commits', document)
+    expect(decisionLabels(pushReviewDialog()!)).toEqual([])
+
+    await press('Approve', document)
+    expect(server.decisionCalls).toEqual(['approve:1'])
+  })
+
+  it('points a push at the review of its commits instead of calling its description incomplete', async () => {
+    await renderPush(false)
+    expect(document.body.textContent).toContain(PUSH_DESCRIPTION_COPY)
+    expect(document.body.textContent).not.toContain(INCOMPLETE_DESCRIPTION_COPY)
+  })
+
+  it('has to be told whether the workspace is restricted', () => {
+    const server = makeOverseer()
+    // @ts-expect-error `restricted` is required: left out, a restricted push would be approved unread.
+    const unsaid = <ActivityNotifications overseer={server.overseer} onViewActivity={() => {}} />
+    expect(unsaid.props.restricted).toBeUndefined()
   })
 })

@@ -4,7 +4,7 @@ import { Compartment, EditorState } from '@codemirror/state'
 import type { Extension } from '@codemirror/state'
 import {
   EditorView, keymap, lineNumbers, drawSelection, dropCursor, highlightSpecialChars,
-  rectangularSelection,
+  highlightTrailingWhitespace, highlightWhitespace, rectangularSelection,
 } from '@codemirror/view'
 import { bracketMatching, indentOnInput, indentUnit } from '@codemirror/language'
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
@@ -16,6 +16,7 @@ import { codeEditorTheme, monoFont } from './codeTheme'
 import { buildDiffModel, type DiffStatus } from './diff/diffModel'
 import { diffRenderExtension, setDiffRender } from './diff/diffRenderer'
 import { getLanguage } from './getLanguage'
+import { HARD_TO_SEE } from '../../components/ExactText'
 import { useTheme } from '../../ThemeContext'
 import './CodeDiffEditor.css'
 
@@ -44,12 +45,28 @@ interface CodeDiffEditorProps {
   session?: EditSession
   readOnly?: boolean
   height?: string | number
+  /**
+   * Draw what a reader cannot otherwise see: every hard-to-see character as a marked
+   * placeholder, every space as a dot and every tab as an arrow, with the whitespace that ends
+   * a line tinted. Read when the editors are built.
+   */
+  showInvisibles?: boolean
+  /**
+   * Wrap long lines at every width, so that no part of a line is off to the side of the view.
+   * The split layout aligns its sides by one row per line and cannot wrap, so the layout stays
+   * stacked. Read when the editors are built.
+   */
+  wrapLines?: boolean
 }
 
 type DiffLayoutPreference = 'stacked' | 'split'
 
 const DIFF_LAYOUT_STORAGE_KEY = 'gadgets:workshop:diffLayout'
 const SPLIT_DIFF_MIN_WIDTH = 1100
+
+// HARD_TO_SEE without the tab and the line break: the document is split on line breaks, and
+// highlightWhitespace() draws tabs.
+const INVISIBLE_CHARS = new RegExp(`(?![\\t\\n])${HARD_TO_SEE.source}`, 'gu')
 
 function getInitialDiffLayoutPreference(): DiffLayoutPreference {
   try {
@@ -79,6 +96,8 @@ export default function CodeDiffEditor({
   session,
   readOnly = false,
   height = '100%',
+  showInvisibles = false,
+  wrapLines = false,
 }: CodeDiffEditorProps) {
   const { resolvedThemeMode } = useTheme()
   const containerRef = useRef<HTMLDivElement | null>(null)
@@ -110,7 +129,8 @@ export default function CodeDiffEditor({
   isCompactRef.current = isCompact
   const [diffLayoutPreference, setDiffLayoutPreference] =
     useState<DiffLayoutPreference>(getInitialDiffLayoutPreference)
-  const splitDiff = canSplitDiff && diffLayoutPreference === 'split'
+  const splitAvailable = canSplitDiff && !wrapLines
+  const splitDiff = splitAvailable && diffLayoutPreference === 'split'
   const splitDiffRef = useRef(splitDiff)
   splitDiffRef.current = splitDiff
 
@@ -200,13 +220,19 @@ export default function CodeDiffEditor({
   // ---- editors -------------------------------------------------------------------------------
 
   // Shared base for both sides. No folding, and no line wrapping here: the split layout's
-  // alignment relies on one line per 20px. (The chat side alone word-wraps at phone widths via
-  // the wrap compartment -- compact widths are far below the split gate, so alignment never
+  // alignment relies on one line per 20px. (The chat side alone wraps, via the wrap compartment,
+  // at phone widths and under `wrapLines`. Both hold the stacked layout, so alignment never
   // coexists with wrapping.)
   const baseExtensions = useCallback((forFilename: string): Extension[] => [
     // Split documents only on "\n"; see CodeEditor for why this matters to the OT stream.
     EditorState.lineSeparator.of('\n'),
-    highlightSpecialChars(),
+    ...(showInvisibles
+      ? [
+        highlightSpecialChars({ addSpecialChars: INVISIBLE_CHARS }),
+        highlightWhitespace(),
+        highlightTrailingWhitespace(),
+      ]
+      : [highlightSpecialChars()]),
     drawSelection(),
     dropCursor(),
     EditorState.allowMultipleSelections.of(true),
@@ -216,7 +242,7 @@ export default function CodeDiffEditor({
     indentUnit.of('  '),
     EditorState.tabSize.of(2),
     getLanguage(forFilename),
-  ], [])
+  ], [showInvisibles])
 
   // (Re)build the chat-side editor when the document's identity changes: the file, the session
   // (or its key -- a chat switch or client rebuild), or the absence of one.
@@ -238,7 +264,7 @@ export default function CodeDiffEditor({
         EditorState.readOnly.of(readOnlyRef.current || !session),
         EditorView.editable.of(!readOnlyRef.current && !!session),
       ]),
-      wrapCompartment.current.of(isCompactRef.current ? EditorView.lineWrapping : []),
+      wrapCompartment.current.of(isCompactRef.current || wrapLines ? EditorView.lineWrapping : []),
       EditorView.updateListener.of(update => {
         if (update.docChanged) scheduleRecompute()
       }),
@@ -342,9 +368,10 @@ export default function CodeDiffEditor({
   }, [readOnly, session === undefined])
   useEffect(() => {
     modifiedViewRef.current?.dispatch({
-      effects: wrapCompartment.current.reconfigure(isCompact ? EditorView.lineWrapping : []),
+      effects: wrapCompartment.current.reconfigure(
+        isCompact || wrapLines ? EditorView.lineWrapping : []),
     })
-  }, [isCompact, viewsToken])
+  }, [isCompact, wrapLines, viewsToken])
 
   // Reset expansion state on file switch.
   useEffect(() => {
@@ -428,7 +455,7 @@ export default function CodeDiffEditor({
         className="gadgets-diff-surface relative min-h-0 flex-1 overflow-hidden bg-kumo-base md:m-4 md:rounded-[10px] md:border md:border-kumo-line"
         style={{ isolation: 'isolate' }}
       >
-        <div className="absolute right-3 top-3 flex items-center gap-2" style={{ zIndex: 1 }}>
+        <div data-diff-toolbar className="absolute right-3 top-3 flex items-center gap-2" style={{ zIndex: 1 }}>
           <div className="flex h-7 items-center gap-0.5 rounded-lg border border-kumo-line bg-kumo-base px-0.5 shadow-sm">
             <button
               type="button"
@@ -442,11 +469,13 @@ export default function CodeDiffEditor({
             </button>
             <button
               type="button"
-              className={layoutButtonClass(diffLayoutPreference === 'split' && canSplitDiff, !canSplitDiff)}
-              title={canSplitDiff ? 'Split diff' : 'Split diff needs more space'}
+              className={layoutButtonClass(splitDiff, !splitAvailable)}
+              title={splitAvailable
+                ? 'Split diff'
+                : wrapLines ? 'Split diff cannot wrap long lines' : 'Split diff needs more space'}
               aria-label="Use split diff layout"
-              aria-pressed={diffLayoutPreference === 'split' && canSplitDiff}
-              disabled={!canSplitDiff}
+              aria-pressed={splitDiff}
+              disabled={!splitAvailable}
               onClick={() => setDiffLayoutPreference('split')}
             >
               <Columns size={15} weight="regular" />
@@ -464,7 +493,10 @@ export default function CodeDiffEditor({
           </div>
         </div>
 
-        <div className={splitDiff ? 'flex h-full min-h-0' : 'h-full min-h-0'}>
+        {/* The toolbar floats over the editor's top right corner. A wrapped line runs to the right
+            edge on every row, so under `wrapLines` the editor starts below the toolbar and no text
+            is ever beneath it. */}
+        <div className={splitDiff ? 'flex h-full min-h-0' : `h-full min-h-0 ${wrapLines ? 'pt-11' : ''}`}>
           {splitDiff && (
             <div
               key="original"

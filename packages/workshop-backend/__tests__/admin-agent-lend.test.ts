@@ -14,13 +14,14 @@
 // the workspace's listing is read from its own user directory (see withWrites()). A write an
 // action runs is the workspace's on itself.
 
-import { env } from "cloudflare:workers";
+import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ADMIN_GRANT_ERROR_CODES, getAdminGrantErrorCode,
   type AdminAccessRecord, type AdminAuditRecord, type AdminContentRequest, type AdminGrantRecord,
   type AdminWriteRecord, type AiChatAuthorInfo, type IssueReportAssignee, type IssueReportEntry,
+  type Overseer, type WorkspaceMetadata,
 } from "@gadgets/workshop-shared/api";
 import {
   ADMIN_AGENT_ACTIONS, ADMIN_AGENT_LEND_SECONDS, type AdminAgentAction,
@@ -115,9 +116,9 @@ function enableRule(ws: AdminWorkspace, kind: AdminAgentAction, by: AiChatAuthor
 }
 
 // A report in the deployment's store, filed by a user who is not an admin.
-async function fileReport(ws: AdminWorkspace): Promise<string> {
+async function fileReport(ws: AdminWorkspace, reporter = NOT_ADMIN): Promise<string> {
   let report = await ws.impl.issueReports.getByName("").submit(
-      NOT_ADMIN, { text: "The export button does nothing.", priority: "medium" }, false);
+      reporter, { text: "The export button does nothing.", priority: "medium" }, false);
   return report.id;
 }
 
@@ -530,8 +531,24 @@ describe("an approved action of the admin gatekeeper", () => {
 const NOTE = (reportId: string) =>
     [{ method: "addIssueReportEntry", args: [reportId, "A note.", "admins"] }];
 
+// The one call that sets report `reportId` to "investigating".
+const STATUS = (reportId: string) =>
+    [{ method: "setIssueReportStatus", args: [reportId, "investigating"] }];
+
+// The one call of a public reply to report `reportId`'s reporter.
+const REPLY = (reportId: string) =>
+    [{ method: "addIssueReportEntry", args: [reportId, "To the reporter.", "public"] }];
+
+// What a lend refuses an auto-approval with where ruleApplies() does not allow its kind.
+const WAITS = "This workspace holds restricted data: this action waits for a person.";
+
 describe("restricted data", () => {
-  // Marks the workspace as an observation of restricted data does.
+  // A reporter of this describe's own: the store lets one reporter file only so many reports a
+  // day, and the rest of the suite files NOT_ADMIN's.
+  const REPORTER: AiChatAuthorInfo =
+      { type: "user", id: "reporter@example.test", name: "Reporter" };
+
+  // Marks the workspace as an observation of restricted data through the admin connection does.
   async function latch(ws: AdminWorkspace): Promise<void> {
     using session = await ws.session();
     await session.observe(
@@ -539,86 +556,406 @@ describe("restricted data", () => {
     expect(ws.impl.storage.containsRestrictedData.get()).toBe(true);
   }
 
-  it("lets a rule apply a note until the workspace holds restricted data",
-      () => adminWorkspace(async ws => {
-    let reportId = await fileReport(ws);
-    enableRule(ws, "issueReportNote");
+  // Adds a connection of another vendor and returns its id.
+  async function otherConnection(ws: AdminWorkspace): Promise<number> {
+    let client = await ws.impl.addGatekeeper(
+        ws.impl.ctx.exports.FakeAdminGatekeeper({ props: {} }),
+        { type: "gatekeeper", vendorId: "othervendor", resourceUrl: "https://other.example/",
+          typeUrlPattern: "https://other.example/" }, "owner-user-do");
+    return client.getId();
+  }
 
+  // Marks the workspace as an observation of restricted data through connection `id` does.
+  async function latchThrough(ws: AdminWorkspace, id: number): Promise<void> {
+    using session = await ws.impl.openGatekeeperSession(
+        id, await ws.impl.getGatekeeperFacet(id), { from: "user" });
+    await session.observe(
+        { title: "Read", description: "A read.", containsRestrictedData: true });
+  }
+
+  const lend = (ws: AdminWorkspace, kind: AdminAgentAction, autoApproved: boolean) =>
+      ws.impl.lendAdminApi(ws.gatekeeperId, AGENT,
+          { for: "action", kind, autoApproved, decidedBy: ADMIN.id });
+
+  it("keeps applying a note, a status and a claim by rule once the workspace holds what its own " +
+      "reads marked", () => adminWorkspace(async ws => {
+    let reportId = await fileReport(ws, REPORTER);
+    enableRule(ws, "issueReportNote");
+    enableRule(ws, "issueReportStatus");
+    enableRule(ws, "issueReportAssignment");
+
+    // Before the first read, as after it.
     let first = await queueAction(ws, 1, "issueReportNote", NOTE(reportId));
     await ws.impl.drainAutoApprovals(ws.gatekeeperId);
     expect(ws.impl.storage.actions.get(first)).toMatchObject(
         { state: "approved", autoApproved: true, resolvedBy: ADMIN });
-    expect(await entriesOf(ws, reportId)).toHaveLength(1);
 
     await latch(ws);
-    let second = await queueAction(ws, 2, "issueReportNote", NOTE(reportId));
+    let note = await queueAction(ws, 2, "issueReportNote", NOTE(reportId));
+    let status = await queueAction(ws, 3, "issueReportStatus", STATUS(reportId));
+    let claim = await queueAction(ws, 4, "issueReportAssignment", CLAIM(reportId));
     await ws.impl.drainAutoApprovals(ws.gatekeeperId);
-    expect(stateOf(ws, second)).toBe("pending");
-    expect(await entriesOf(ws, reportId)).toHaveLength(1);
 
-    // A person still approves it.
-    expect(await approve(ws, second)).toBeUndefined();
-    expect(await entriesOf(ws, reportId)).toHaveLength(2);
-  }));
+    for (let id of [note, status, claim]) {
+      expect(ws.impl.storage.actions.get(id)).toMatchObject(
+          { state: "approved", autoApproved: true, resolvedBy: ADMIN });
+    }
+    let origin = { via: "gatekeeper", agent: { workspaceId: ws.id, chatId: 5 } };
+    expect(await entriesOf(ws, reportId)).toMatchObject([
+      { visibility: "admins", text: "A note." },
+      { visibility: "admins", text: "A note.", author: { id: ADMIN.id }, ...origin },
+      { status: "investigating", author: { id: ADMIN.id }, ...origin },
+      { visibility: "admins", assignment: "claimed", author: { id: ADMIN.id }, ...origin },
+    ]);
+    expect(await assigneeOf(ws, reportId)).toMatchObject({ id: ADMIN.id, ...origin });
 
-  it("lets a rule apply a claim and a release in a workspace that holds no restricted data, " +
-      "and nothing once it does", () => adminWorkspace(async ws => {
-    let reportId = await fileReport(ws);
-    enableRule(ws, "issueReportAssignment");
-
-    let claim = await queueAction(ws, 1, "issueReportAssignment", CLAIM(reportId));
-    await ws.impl.drainAutoApprovals(ws.gatekeeperId);
-    expect(ws.impl.storage.actions.get(claim)).toMatchObject(
-        { state: "approved", autoApproved: true, resolvedBy: ADMIN });
-    expect(await assigneeOf(ws, reportId)).toMatchObject({ id: ADMIN.id, via: "gatekeeper" });
-
-    // The one rule is for both calls.
-    let release = await queueAction(ws, 2, "issueReportAssignment", RELEASE(reportId));
+    // The one rule is for both of an assignment's calls.
+    let release = await queueAction(ws, 5, "issueReportAssignment", RELEASE(reportId));
     await ws.impl.drainAutoApprovals(ws.gatekeeperId);
     expect(ws.impl.storage.actions.get(release)).toMatchObject(
         { state: "approved", autoApproved: true });
     expect(await assigneeOf(ws, reportId)).toBeUndefined();
-
-    await latch(ws);
-    let held = await queueAction(ws, 3, "issueReportAssignment", CLAIM(reportId));
-    await ws.impl.drainAutoApprovals(ws.gatekeeperId);
-    expect(stateOf(ws, held)).toBe("pending");
-    expect(await ws.facet.outcomes(3)).toBeUndefined();
-    expect(await assigneeOf(ws, reportId)).toBeUndefined();
-
-    // A person still approves it.
-    expect(await approve(ws, held)).toBeUndefined();
-    expect(await assigneeOf(ws, reportId)).toMatchObject({ id: ADMIN.id });
   }));
 
-  it("holds a note queued before the first read once the read has happened",
+  it("holds a scoped reply and a write under the mark, rule or not",
       () => adminWorkspace(async ws => {
-    let reportId = await fileReport(ws);
-    enableRule(ws, "issueReportNote");
-    // A manual action first, so that the note queued behind it is not applied yet.
-    let manual = await queueAction(ws, 1, "issueReportStatus",
-        [{ method: "setIssueReportStatus", args: [reportId, "investigating"] }]);
-    let note = await queueAction(ws, 2, "issueReportNote", NOTE(reportId));
+    let reportId = await fileReport(ws, REPORTER);
+    enableRule(ws, "issueReportScopedReply");
+    enableRule(ws, "workspaceWriteRequest");
+
+    await latch(ws);
+    let reply = await queueAction(ws, 1, "issueReportScopedReply", REPLY(reportId));
     await ws.impl.drainAutoApprovals(ws.gatekeeperId);
-    expect([stateOf(ws, manual), stateOf(ws, note)]).toEqual(["pending", "pending"]);
+    expect(stateOf(ws, reply)).toBe("pending");
+    expect(await ws.facet.outcomes(1)).toBeUndefined();
+    expect(await entriesOf(ws, reportId)).toEqual([]);
+
+    // A person still approves it, after which the write is first in line and waits too.
+    expect(await approve(ws, reply)).toBeUndefined();
+    expect((await entriesOf(ws, reportId)).map(entry => entry.visibility)).toEqual(["public"]);
+    let request = await queueAction(ws, 2, "workspaceWriteRequest",
+        [{ method: "writeWorkspace", args: [ws.id, "restartWorkspace", {}, REASON] }]);
+    await ws.impl.drainAutoApprovals(ws.gatekeeperId);
+    expect(stateOf(ws, request)).toBe("pending");
+    expect(await ws.facet.outcomes(2)).toBeUndefined();
+  }));
+
+  it("applies a note queued before the first read once the action ahead of it is approved, and " +
+      "holds a scoped reply queued the same way", () => adminWorkspace(async ws => {
+    let reportId = await fileReport(ws, REPORTER);
+    enableRule(ws, "issueReportNote");
+    enableRule(ws, "issueReportScopedReply");
+    // A manual action first, so that what is queued behind it is not applied yet.
+    let manual = await queueAction(ws, 1, "issueReportStatus", STATUS(reportId));
+    let note = await queueAction(ws, 2, "issueReportNote", NOTE(reportId));
+    let reply = await queueAction(ws, 3, "issueReportScopedReply", REPLY(reportId));
+    await ws.impl.drainAutoApprovals(ws.gatekeeperId);
+    expect([manual, note, reply].map(id => stateOf(ws, id)))
+        .toEqual(["pending", "pending", "pending"]);
 
     await latch(ws);
     expect(await approve(ws, manual)).toBeUndefined();
     await ws.impl.drainAutoApprovals(ws.gatekeeperId);
-    expect(stateOf(ws, note)).toBe("pending");
-    expect((await entriesOf(ws, reportId)).map(entry => entry.visibility)).toEqual(["public"]);
+    expect(ws.impl.storage.actions.get(note)).toMatchObject(
+        { state: "approved", autoApproved: true });
+    expect(stateOf(ws, reply)).toBe("pending");
+    expect((await entriesOf(ws, reportId)).map(entry => entry.visibility))
+        .toEqual(["public", "admins"]);
   }));
 
-  it("lends nothing to an auto-approval where the power is handed over",
-      () => adminWorkspace(async ws => {
-    let use = { for: "action", kind: "issueReportNote", decidedBy: ADMIN.id } as const;
-    let lent = await ws.impl.lendAdminApi(ws.gatekeeperId, AGENT, { ...use, autoApproved: true });
-    lent.end();
+  it("lends to an auto-approval, where the power is handed over, only for a note, a status and " +
+      "an assignment", () => adminWorkspace(async ws => {
+    const EXEMPT: AdminAgentAction[] =
+        ["issueReportNote", "issueReportStatus", "issueReportAssignment"];
+    const HELD: AdminAgentAction[] = ["issueReportScopedReply"];
+    for (let kind of [...EXEMPT, ...HELD]) (await lend(ws, kind, true)).end();
+    // A write is never lent to an auto-approval, marked or not.
+    await expect(lend(ws, "workspaceWriteRequest", true)).rejects.toThrow(/never auto-approved/);
+
     await latch(ws);
-    await expect(ws.impl.lendAdminApi(ws.gatekeeperId, AGENT, { ...use, autoApproved: true }))
-        .rejects.toThrow("This workspace holds restricted data: this action waits for a person.");
+    for (let kind of EXEMPT) (await lend(ws, kind, true)).end();
+    for (let kind of [...HELD, "workspaceWriteRequest" as const]) {
+      await expect(lend(ws, kind, true), kind).rejects.toThrow(WAITS);
+    }
     // A person's approval is lent to all the same.
-    (await ws.impl.lendAdminApi(ws.gatekeeperId, AGENT, { ...use, autoApproved: false })).end();
+    for (let kind of [...EXEMPT, ...HELD, "workspaceWriteRequest" as const]) {
+      (await lend(ws, kind, false)).end();
+    }
+  }));
+
+  it.each(["after", "before"] as const)(
+      "applies nothing once another vendor's restricted data was read here, %s the admin " +
+      "connection's", order => adminWorkspace(async ws => {
+    let reportId = await fileReport(ws, REPORTER);
+    let otherId = await otherConnection(ws);
+    enableRule(ws, "issueReportNote");
+
+    if (order === "before") await latchThrough(ws, otherId);
+    await latch(ws);
+    if (order === "after") await latchThrough(ws, otherId);
+    expect(ws.impl.storage.adminRestrictedDataOnly.get()).toBe(false);
+
+    let note = await queueAction(ws, 1, "issueReportNote", NOTE(reportId));
+    await ws.impl.drainAutoApprovals(ws.gatekeeperId);
+    expect(stateOf(ws, note)).toBe("pending");
+    expect(await ws.facet.outcomes(1)).toBeUndefined();
+    await expect(lend(ws, "issueReportNote", true)).rejects.toThrow(WAITS);
+
+    // A further read through the admin connection changes nothing, and a person still approves.
+    await latch(ws);
+    await ws.impl.drainAutoApprovals(ws.gatekeeperId);
+    expect(stateOf(ws, note)).toBe("pending");
+    expect(await approve(ws, note)).toBeUndefined();
+    expect(await entriesOf(ws, reportId)).toHaveLength(1);
+  }));
+
+  it("holds an action whose turn did not pause once another vendor's read lands before the drain",
+      () => adminWorkspace(async ws => {
+    let reportId = await fileReport(ws, REPORTER);
+    let otherId = await otherConnection(ws);
+    enableRule(ws, "issueReportNote");
+    await latch(ws);
+
+    // The drain submitAction() schedules is held back until the other vendor's read has landed.
+    let drain = ws.impl.drainAutoApprovals.bind(ws.impl);
+    let scheduled = 0;
+    ws.impl.drainAutoApprovals = async () => { scheduled++; };
+    let note = await queueAction(ws, 1, "issueReportNote", NOTE(reportId),
+        { claims: { awaitDecision: true } });
+    // The rule applied at submit: a drain was scheduled, and the turn was not told to wait.
+    expect(scheduled).toBe(1);
+    await latchThrough(ws, otherId);
+    ws.impl.drainAutoApprovals = drain;
+    await ws.impl.drainAutoApprovals(ws.gatekeeperId);
+
+    expect(stateOf(ws, note)).toBe("pending");
+    expect(await ws.facet.outcomes(1)).toBeUndefined();
+    expect(ws.impl.consumeCapturedActions(AGENT.chatId))
+        .toMatchObject({ actions: [note], awaitDecision: false });
+    expect(await approve(ws, note)).toBeUndefined();
+    expect(await entriesOf(ws, reportId)).toHaveLength(1);
+  }));
+
+  // The two waits between a rule's lend and the write it was lent for: the gatekeeper on its
+  // way to the call, and the lend asking, as the call arrives, whether the gatekeeper is off.
+  it.each(["before the gatekeeper makes its call", "while the lent call is checked"] as const)(
+      "holds an action a rule was lent for when another vendor's read lands %s",
+      gap => adminWorkspace(async ws => {
+    let reportId = await fileReport(ws, REPORTER);
+    let otherId = await otherConnection(ws);
+    enableRule(ws, "issueReportNote");
+    await latch(ws);
+
+    let lendAdminApi = ws.impl.lendAdminApi.bind(ws.impl);
+    let lent = false;
+    ws.impl.lendAdminApi = async (...args: unknown[]) => {
+      let lend = await lendAdminApi(...args);
+      lent = true;
+      if (gap === "before the gatekeeper makes its call") await latchThrough(ws, otherId);
+      return lend;
+    };
+    // The first read of the admin config after the lend is the lent call's.
+    let kv = ws.env.BLUEPRINTS as { get(key: string): Promise<string | null> };
+    let readConfig = kv.get;
+    kv.get = async key => {
+      if (lent && gap === "while the lent call is checked") {
+        lent = false;
+        await latchThrough(ws, otherId);
+      }
+      return readConfig(key);
+    };
+
+    // Queuing it schedules the drain that applies it.
+    let note = await queueAction(ws, 1, "issueReportNote", NOTE(reportId));
+    await ws.impl.drainAutoApprovals(ws.gatekeeperId);
+    expect(lent).toBe(gap === "before the gatekeeper makes its call");
+    expect(await ws.facet.outcomes(1)).toEqual([{ error: WAITS }]);
+    expect(stateOf(ws, note)).toBe("pending");
+    expect(await entriesOf(ws, reportId)).toEqual([]);
+
+    // Nothing was done, so a person still approves it.
+    expect(await approve(ws, note)).toBeUndefined();
+    expect(ws.impl.storage.actions.get(note)).toMatchObject(
+        { state: "approved", autoApproved: false });
+    expect(await entriesOf(ws, reportId)).toHaveLength(1);
+  }));
+
+  it("holds a note under the mark of a workspace latched before the singleton existed",
+      () => adminWorkspace(async ws => {
+    let reportId = await fileReport(ws, REPORTER);
+    enableRule(ws, "issueReportNote");
+    ws.impl.storage.containsRestrictedData.put(true);
+
+    let note = await queueAction(ws, 1, "issueReportNote", NOTE(reportId));
+    await ws.impl.drainAutoApprovals(ws.gatekeeperId);
+    expect(stateOf(ws, note)).toBe("pending");
+    await expect(lend(ws, "issueReportNote", true)).rejects.toThrow(WAITS);
+
+    // A read through the admin connection afterwards does not make the workspace exempt.
+    await latch(ws);
+    await ws.impl.drainAutoApprovals(ws.gatekeeperId);
+    expect(stateOf(ws, note)).toBe("pending");
+  }));
+
+  it("is not fooled by a tag: another vendor's action tagged as a note waits",
+      () => adminWorkspace(async ws => {
+    let otherId = await otherConnection(ws);
+    ws.impl.storage.autoApproveTags.put({
+      gatekeeperId: otherId, actionKind: ADMIN_AGENT_ACTIONS.issueReportNote.kind, enabledBy: ADMIN,
+    });
+    // Every action the drain goes on to apply, by its record's id.
+    let applied: number[] = [];
+    let apply = ws.impl.applyPendingAction.bind(ws.impl);
+    ws.impl.applyPendingAction = (record: { id: number }, ...rest: unknown[]) => {
+      applied.push(record.id);
+      return apply(record, ...rest);
+    };
+    using session = await ws.impl.openGatekeeperSession(
+        otherId, await ws.impl.getGatekeeperFacet(otherId), AGENT);
+    let queued = () => [...ws.impl.storage.actions.list()]
+        .filter((action: any) => action.type === "action" && action.gatekeeperId === otherId)
+        .map((action: any) => action.id);
+
+    // Unmarked, the rule is tried: the fixture facet applies nothing for another vendor, so
+    // the action stays first in line and each drain tries it again.
+    await session.submit(1, describeAction("issueReportNote"));
+    await ws.impl.drainAutoApprovals(otherId);
+    let [first] = queued();
+    expect(applied.length).toBeGreaterThan(0);
+    expect(new Set(applied)).toEqual(new Set([first]));
+
+    // Marked by the admin connection alone, which exempts that connection's notes and no other's:
+    // no drain tries either action again.
+    await latch(ws);
+    expect(ws.impl.storage.adminRestrictedDataOnly.get()).toBe(true);
+    let tried = applied.length;
+    await session.submit(2, describeAction("issueReportNote"));
+    await ws.impl.drainAutoApprovals(otherId);
+    expect(queued()).toHaveLength(2);
+    expect(applied).toHaveLength(tried);
+    expect(queued().map((id: number) => stateOf(ws, id))).toEqual(["pending", "pending"]);
+  }));
+
+  it("lets a rule-applied note under the mark add only an admins-only entry",
+      () => adminWorkspace(async ws => {
+    let reportId = await fileReport(ws, REPORTER);
+    enableRule(ws, "issueReportNote");
+    await latch(ws);
+
+    let note = await queueAction(ws, 1, "issueReportNote", REPLY(reportId));
+    await ws.impl.drainAutoApprovals(ws.gatekeeperId);
+    expect(await ws.facet.outcomes(1))
+        .toEqual([{ error: `This action may only write a "admins" entry.` }]);
+    expect(stateOf(ws, note)).toBe("pending");
+    expect(await entriesOf(ws, reportId)).toEqual([]);
+  }));
+});
+
+describe("the catalog of auto-approvable kinds", () => {
+  const KINDS = Object.values(ADMIN_AGENT_ACTIONS).filter(action => action.autoApprovable)
+      .map(action => action.kind);
+
+  // The catalog as the workspace's owner reads it, by connection: each kind's tag and whether a
+  // rule for it applies. Every connection's facet offers the admin gatekeeper's kinds.
+  async function catalog(ws: AdminWorkspace): Promise<Record<number, Record<string, boolean>>> {
+    ws.impl.getGatekeeperFacet = async () => ({ getAutoApprovableActions: async () => KINDS });
+    ws.impl.ensureAmbientCapsules = async () => {};
+    using notifyClosed = new NativeRpcStub<() => void>(() => {});
+    using client = await ws.instance.open(ws.impl.ownerId, ws.owner.id, notifyClosed) as
+        unknown as Overseer & Disposable;
+    let byConnection: Record<number, Record<string, boolean>> = {};
+    for (let entry of await client.listPreApprovableActions()) {
+      expect(byConnection[entry.gatekeeperId]?.[entry.actionKind.tag], entry.actionKind.tag)
+          .toBeUndefined();
+      (byConnection[entry.gatekeeperId] ??= {})[entry.actionKind.tag] = entry.ruleApplies;
+    }
+    return byConnection;
+  }
+
+  const tags = (applies: (kind: AdminAgentAction) => boolean) => Object.fromEntries(
+      (Object.keys(ADMIN_AGENT_ACTIONS) as AdminAgentAction[])
+          .filter(kind => ADMIN_AGENT_ACTIONS[kind].autoApprovable)
+          .map(kind => [ADMIN_AGENT_ACTIONS[kind].kind.tag, applies(kind)]));
+
+  it("lists the admin connection no gadget binds, with the kinds a rule applies as the " +
+      "workspace is", () => adminWorkspace(async ws => {
+    let client = await ws.impl.addGatekeeper(
+        ws.impl.ctx.exports.FakeAdminGatekeeper({ props: {} }),
+        { type: "gatekeeper", vendorId: "othervendor", resourceUrl: "https://other.example/",
+          typeUrlPattern: "https://other.example/" }, "owner-user-do");
+    let otherId: number = await client.getId();
+    let observe = async (id: number) => {
+      using session = await ws.impl.openGatekeeperSession(
+          id, await ws.impl.getGatekeeperFacet(id), { from: "user" });
+      await session.observe(
+          { title: "Read", description: "A read.", containsRestrictedData: true });
+    };
+    let facetOf = ws.impl.getGatekeeperFacet.bind(ws.impl);
+    let listed = async () => {
+      try {
+        return await catalog(ws);
+      } finally {
+        ws.impl.getGatekeeperFacet = facetOf;
+      }
+    };
+
+    // Unmarked: the admin connection alone, once, and a rule applies every kind. The other
+    // vendor's connection, which no gadget binds either, is not listed.
+    expect(await listed()).toEqual({ [ws.gatekeeperId]: tags(() => true) });
+
+    // Marked by the admin connection: a note, a status and an assignment.
+    await observe(ws.gatekeeperId);
+    expect(await listed()).toEqual({ [ws.gatekeeperId]: tags(kind =>
+        ["issueReportNote", "issueReportStatus", "issueReportAssignment"].includes(kind)) });
+
+    // Once another vendor's restricted data was read here: nothing.
+    await observe(otherId);
+    expect(await listed()).toEqual({ [ws.gatekeeperId]: tags(() => false) });
+  }));
+
+  it("tells a client that reads it when a rule starts and stops applying anything under the mark",
+      () => adminWorkspace(async ws => {
+    let other = await ws.impl.addGatekeeper(
+        ws.impl.ctx.exports.FakeAdminGatekeeper({ props: {} }),
+        { type: "gatekeeper", vendorId: "othervendor", resourceUrl: "https://other.example/",
+          typeUrlPattern: "https://other.example/" }, "owner-user-do");
+    let otherId: number = await other.getId();
+    let observe = async (id: number) => {
+      using session = await ws.impl.openGatekeeperSession(
+          id, await ws.impl.getGatekeeperFacet(id), { from: "user" });
+      await session.observe(
+          { title: "Read", description: "A read.", containsRestrictedData: true });
+    };
+    ws.impl.ensureAmbientCapsules = async () => {};
+    using notifyClosed = new NativeRpcStub<() => void>(() => {});
+    using client = await ws.instance.open(ws.impl.ownerId, ws.owner.id, notifyClosed) as
+        unknown as Overseer & Disposable;
+
+    // Each state the subscription was sent, a repeat of the one before left out.
+    let sent: string[] = [];
+    using callback = new NativeRpcStub((metadata: WorkspaceMetadata) => {
+      let state = `${metadata.containsRestrictedData ? "marked" : "unmarked"}, ` +
+          `${metadata.rulesApplyWhileRestricted ? "rules apply" : "no rule applies"}`;
+      if (sent.at(-1) !== state) sent.push(state);
+    });
+    using _subscription = await client.subscribeToMetadata(callback as never) as
+        unknown as Disposable;
+    const UNMARKED = "unmarked, no rule applies";
+    await vi.waitFor(() => expect(sent).toEqual([UNMARKED]));
+
+    // The admin connection's mark, twice: the second changes nothing.
+    await observe(ws.gatekeeperId);
+    await observe(ws.gatekeeperId);
+    let marked = [UNMARKED, "unmarked, rules apply", "marked, rules apply"];
+    await vi.waitFor(() => expect(sent).toEqual(marked));
+    expect(await client.getMetadata()).toMatchObject(
+        { containsRestrictedData: true, rulesApplyWhileRestricted: true });
+
+    // Another vendor's: the catalog a client read until now no longer holds.
+    await observe(otherId);
+    await vi.waitFor(() => expect(sent).toEqual([...marked, "marked, no rule applies"]));
+    expect(await client.getMetadata()).toMatchObject(
+        { containsRestrictedData: true, rulesApplyWhileRestricted: false });
   }));
 });
 

@@ -246,11 +246,15 @@ Three of these give less than their names promise:
   modification, so it always has one).
 - **`listAutoApprovals()` lists opt-ins, which apply nothing alone.** They are the rules members
   turned on. An action is applied without a manual approval only when its author also marked it
-  `autoApprovable`, and never once the workspace has read restricted data: the rules stay stored
-  and listed, and every action waits. A view shows both conditions, which is how an admin answers
-  why an action still waited: `describe()` reports `containsRestrictedData`, and `listActions()`
-  keeps each action's `autoApprovable` verdict and kind, with `autoApproved` on one a rule
-  applied.
+  `autoApprovable` and, once the workspace has read restricted data, only where
+  [the rule under the mark](#through-an-agent) says so: for an admins-only note, a status change
+  and an assignment of the admin gatekeeper, in a workspace only its reads marked. Every other
+  rule stays stored and listed while its actions wait, so a rule listed here may be applying
+  nothing. A view shows the first two conditions, which is how an admin answers why an action
+  still waited: `describe()` reports `containsRestrictedData`, and `listActions()` keeps each
+  action's `autoApprovable` verdict and kind, with `autoApproved` on one a rule applied. Whether
+  only the admin connection's reads marked the workspace is not a field of a view:
+  `listActions()` lists each observation with its connection.
 
 An admin read never reaches a connection, and reads only what the workspace stores:
 
@@ -971,13 +975,60 @@ without the connection, because its chats hold what was read.
 **Everything read or received through the connection marks the workspace as holding restricted
 data**, in this version: a read through the whole binding, a report session's read (the report,
 its images, its view of the reporter's workspace) and every hook's event. Each sets the
-platform's restricted-data latch and keeps the workspace admins-only for good. From then on no
-rule applies anything there, so every action waits for a person, a reply to a reporter
-included, and web fetches reach only the hosts the deployment trusts. A report's text and
-images are whatever its author put there, and anyone can file one, so what a report session
-reads is not safe to send anywhere just because its reporter could see it. This holds until
-[audience-based release](restricted-data-audiences.md) lets an action through when everyone who
-can see its effects can already see the data (see
+platform's restricted-data latch and keeps the workspace admins-only for good. From then on web
+fetches reach only the hosts the deployment trusts, a push is refused unless a person can read
+all it sends, and every action waits for a person, a reply to a reporter included, but for the
+three kinds a rule still applies there (below). A report's text and images are whatever its author put there, and anyone can file one,
+so what a report session reads is not safe to send anywhere just because its reporter could see
+it.
+
+**What a rule applies in a marked workspace.** A rule applies an action there only when all
+three of these hold:
+
+- **The action is of the admin gatekeeper's connection.** The Workshop reads the vendor from
+  its own record of the connection, never from a tag or anything else a Worker declares.
+- **Its kind is an admins-only note, a change of status or an assignment** (a claim or a
+  release): the three kinds the kernel's own table, `ADMIN_AGENT_ACTIONS`, flags
+  `autoApprovableWhileRestricted`.
+- **Every observation that marked the workspace came through that connection.** A report
+  session's reads and a hook's events count: they are that connection's.
+
+What the workspace holds is then what deployment admins can already read, and admins are who
+reads a note and an assignment. A status is read by the report's reporter too, which
+[issue-reports.md](issue-reports.md#limits) states among its limits.
+
+Everything else waits for a person there:
+
+- **A public reply**, through the whole binding or through a session limited to one report,
+  **a write and a content request.**
+- **Every action of a workspace that also read another vendor's restricted data**, before the
+  admin connection's reads or after them: other admins could not already see that data. Nothing
+  makes such a workspace exempt again.
+- **Every action of a workspace marked before workspaces kept track of whose reads marked
+  them.**
+- **Every action of a marked workspace that a version of the Workshop from before then wrote
+  to afterwards**, as after a rollback. It marks for any connection's read without ending the
+  exemption, so the kernel counts the action ids it takes while the exemption holds (every
+  observation takes one) and ends the exemption, for good, in a workspace that starts with
+  another count.
+- **Every action of any other connection.** No rule applies one in a marked workspace.
+
+Web fetches are held, and a push waits for a person or is refused, as in any marked workspace. The exception is the
+kernel's: nothing in a gatekeeper's declarations asks for it, and no other vendor can have it.
+The Workshop reads the answer for each kind from the workspace
+(`PreApprovableAction.ruleApplies`), and is told through the workspace's metadata when
+another connection's restricted read ends every such answer
+(`WorkspaceMetadata.rulesApplyWhileRestricted`). In a marked workspace "Always approve" is offered, and the
+Auto-approval tab lets a rule be turned on, only for the kinds one still applies there; a rule
+that applies nothing says so in the tab and can still be turned off.
+
+A rule for one of the three kinds that was turned on before the workspace was marked keeps
+applying after the admin connection's reads mark it, with no second confirmation: a rule is
+for a kind on a connection. The Auto-approval tab and the "Always approve" confirmation say
+so for these kinds in a workspace that is not marked yet.
+
+Both rules hold until [audience-based release](restricted-data-audiences.md) lets an action
+through when everyone who can see its effects can already see the data (see
 [the README](../packages/gatekeeper-admin/README.md#restricted-data)).
 
 **Where the person behind a call is found.** Every record names the owner, so:
@@ -1518,6 +1569,7 @@ Expected refusals carry a code from `ADMIN_ACCESS_ERROR_CODES` (read with
 | `ADMIN_CONTENT_NOT_REQUESTED` | A content read on a view opened for metadata. Inspect again, asking for content. |
 | `ADMIN_GRANT_REQUIRED` | A content read with no live grant for the workspace: its owner can give one, or a second admin can approve a request for one. |
 | `ADMIN_GATEKEEPER_OFF` | The deployment has turned the admin gatekeeper off: a lend to it, or a call through one. An action it refuses stays pending. |
+| `ADMIN_ACTION_NEEDS_PERSON` | Not a refusal of the Admin API: the call of an action of the admin gatekeeper that a rule approved, refused before it reaches the API because its workspace holds restricted data under which a rule no longer applies it (see [Through an agent](#through-an-agent)). Nothing was done, and the action waits for a person. |
 
 The grant methods refuse with a code from `ADMIN_GRANT_ERROR_CODES` (read with
 `getAdminGrantErrorCode()`):
@@ -1696,14 +1748,30 @@ The admin gatekeeper adds these, in the same directory (its own suites are liste
   lend has left.
 - `admin-agent-lend.test.ts`: `lendAdminApi()` on a real workspace. A session's reads and what
   each records, with `via` `"gatekeeper"`, the workspace and the chat, a view of a user's
-  account included; an approved action's one call; restricted data, marked by a read and
-  refusing a rule's approval afterwards; who is lent
-  nothing (the vendor off, an owner who is not an admin or holds no account, a member's direct
-  session); the insiders of a request for content, with a second admin who collaborates in the
-  workspace; and a spawned chat without the binding named.
+  account included; an approved action's one call; restricted data, marked by a read, after
+  which a rule applies a note, a status and a claim and holds a scoped reply and a write
+  request; the lend's own check, which lends to an auto-approval only for those three kinds;
+  another vendor's restricted read before the admin connection's and after it, one that
+  lands between an action's submission and the drain, and one that lands between the lend and
+  the write, which leaves the action pending and unapplied; a workspace marked before it kept track
+  of whose reads marked it; another vendor's action tagged as a note; a rule-applied note that
+  can only add an admins-only entry; the catalog listing the admin connection no gadget binds,
+  with whether a rule applies each kind; who is lent nothing (the vendor off, an owner who is
+  not an admin or holds no account, a member's direct session); the insiders of a request for
+  content, with a second admin who collaborates in the workspace; and a spawned chat without
+  the binding named.
+- `auto-approval.test.ts`: `ruleApplies()`, the one predicate, with each of its three
+  conditions failing alone; `autoApprovalRule()` following it; and the drain under the mark,
+  which applies a note, a status and an assignment in order, stops at a scoped reply, applies
+  nothing of another vendor's connection, and holds an action judged eligible once another
+  vendor's read ended the exemption; and `guardRuleExemption()`, which keeps the exemption
+  across restarts and ends it once a writer that keeps no count took an action id.
 - `admin-workspace-admission.test.ts`: the admission rule at each gate, for a workspace with the
   connection, for one that had it and read nothing, and for one that read through it, a
-  non-admin kept in the sharing list included.
+  non-admin kept in the sharing list included. It also covers whose reads marked a workspace:
+  the admin connection's alone when it set the mark first, never once another vendor set it
+  first or marked it later, never in a workspace marked before that was kept, and no longer
+  after a restart that finds an action id an older version took.
 - `provisioning-policy.test.ts` and `user-ambient-accounts.test.ts`: the gatekeeper's mode,
   Disabled until an admin chooses, and its account offered, provisioned and listed for
   deployment admins alone, in each mode.
@@ -1768,12 +1836,17 @@ Integration suites, in `packages/integration-tests/__tests__/`:
   only where the workspace's own check allows it; the admins-only workspace, while it has the
   connection and after; a content request no member of the workspace can approve; a public
   reply through the binding held for a person whatever the rules; a note, a status and a write
-  request applied by their rules; the restricted-data mark and its order; the session limited
-  to one report, its reply reaching the reporter with no person only before anything was read,
-  and the mark its reads make; the three hooks firing into a gadget's stored callback, once for
-  each kind of change to a report, each event marking the workspace; two admins'
-  workspaces claiming one report, of which exactly one holds it; and a spawned agent handed
-  one report's session.
+  request applied by their rules; the restricted-data mark and its order; in a workspace that
+  read through the whole binding, a note, a status and a claim applied by rule with no person
+  while a public reply, a scoped reply and a write are held, a note held behind a reply
+  until the reply is decided, and a subscriber told of its own rule-applied note; a workspace
+  that also read another vendor's restricted data, where a rule applies nothing; another
+  connection's action never applied by rule under the mark; the admin connection listed in the
+  catalog with no gadget binding it; the session limited to one report, its reply reaching the
+  reporter with no person only before anything was read, and the mark its reads make; the three
+  hooks firing into a gadget's stored callback, once for each kind of change to a report, each
+  event marking the workspace; two admins' workspaces claiming one report, of which exactly one
+  holds it; and a spawned agent handed one report's session.
 
 The integration suite reaches Durable Object storage directly (see
 [integration-testing.md](integration-testing.md#reaching-a-durable-objects-storage-from-a-test)): it
@@ -1787,6 +1860,16 @@ Frontend suites, in `packages/workshop-frontend/src/`:
   details, and, for content, the badge for what a call exposed, its filter, the count of content
   reads, the grant and the refusal a record carries, and the access setting's Content option under
   each cap.
+- `Activity.test.tsx` and `Activity.autoApproval.test.tsx` cover a marked workspace:
+  "Always approve" offered, and a rule's switch usable, only for the kinds a rule still applies
+  there, and a rule that applies nothing saying so and staying revocable; a rule the stored
+  list already holds not offered again; every offer withdrawn once the workspace's metadata
+  says no rule applies; and the sentence that tells whoever turns on a rule for one of the
+  three kinds that it keeps applying once the workspace is marked.
+  `features/approvals/autoApprovalRules.test.ts`, `useRuleCatalog.test.tsx` and
+  `useStandingRules.test.tsx` cover the answer both are built from, and
+  `features/approvals/PendingChangesTray.browser.test.tsx` the rule list's rows and keyboard
+  order there.
 - `pages/admin-workspace/AdminWorkspacePage.test.tsx`, with a browser test beside it: an admin's
   page for one workspace, its live grants, ending one a second admin approved, and Request
   content access pointing to the pending approvals.

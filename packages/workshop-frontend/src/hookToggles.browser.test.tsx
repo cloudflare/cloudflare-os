@@ -16,7 +16,9 @@ vi.mock('./AuthContext', () => {
   return { useAuthenticatedApi: () => context, useOptionalAuthenticatedApi: () => context }
 })
 vi.mock('./useAlwaysApproveTag', () => ({
-  useAlwaysApproveTag: () => ({ alwaysApproveTag: async () => {}, isTagAutoApproved: () => false }),
+  useAlwaysApproveTag: () => ({
+    alwaysApproveTag: async () => {}, isTagAutoApproved: () => false, forgetOptimisticTags: () => {},
+  }),
 }))
 
 import { deferred, entry, makeOverseer } from './action-test-harness'
@@ -170,7 +172,7 @@ describe('in chat', () => {
       viewChat: () => ({ [Symbol.dispose]: () => {} }),
     })
     await render(
-      <ChatInterface workspaceId="workspace" overseer={server.overseer} selectedChatId={1}
+      <ChatInterface workspaceId="workspace" overseer={server.overseer} restricted={false} selectedChatId={1}
         onNavigateToChat={() => {}} pendingConsoleLogCount={0} consoleLogPreview="" consoleLogSeverity="info"
         onConsumeConsoleLogs={() => ''} onDiscardConsoleLogs={() => {}} onOpenGadget={() => {}}
         outputOfWorkpiece={() => undefined} />,

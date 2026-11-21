@@ -26,7 +26,7 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { AccountDescription, ActionKind, ActionDescription, AgentCatalog, AvatarImage, GatekeeperUiFrame, GatekeeperUserSelection, ObservationDescription, ResourceDescription, ResourceConfiguratorFrame, SupportedResource, VendorDescription, HookDescription } from "./gatekeeper.js";
 import type { BytesRef, CodeChange } from "./code-change.js";
-import type { GitOid } from "./gatekeeper.js";
+import type { GitObjectType, GitOid } from "./gatekeeper.js";
 import type { UiFeatureFlags } from "./feature-flags.js";
 
 export const SERVICE_SALT = new Uint8Array([
@@ -663,6 +663,9 @@ export const getSnapshotSharingErrorCode = snapshotSharingErrors.getCode;
  * access are refused with while the level in force is below "content". `gatekeeperOff` refuses a
  * call through the Admin API lent to the admin gatekeeper, and that lend itself, while the
  * deployment has turned that gatekeeper off: the call reached nothing.
+ * `needsPerson` is no refusal of AdminApi's: it is what the call of an action a rule approved is
+ * refused with, before it reaches AdminApi, once the workspace that lent it holds restricted data
+ * under which a rule no longer applies the action (see AdminGatekeeper.applyAdminAction()).
  */
 export const ADMIN_ACCESS_ERROR_CODES = {
   workspaceNotFound: "ADMIN_WORKSPACE_NOT_FOUND",
@@ -675,6 +678,7 @@ export const ADMIN_ACCESS_ERROR_CODES = {
   grantRequired: "ADMIN_GRANT_REQUIRED",
   writesOff: "ADMIN_WORKSPACE_WRITES_OFF",
   gatekeeperOff: "ADMIN_GATEKEEPER_OFF",
+  needsPerson: "ADMIN_ACTION_NEEDS_PERSON",
 } as const;
 
 /** An expected refusal code from ADMIN_ACCESS_ERROR_CODES. */
@@ -701,6 +705,8 @@ const adminAccessErrors = codedErrorFamily<AdminAccessErrorCode>({
       "Admin writes to workspaces are turned off on this deployment. Only its " +
       "ADMIN_WORKSPACE_WRITES environment variable can turn them on.",
   [ADMIN_ACCESS_ERROR_CODES.gatekeeperOff]: "Gatekeeper is disabled.",
+  [ADMIN_ACCESS_ERROR_CODES.needsPerson]:
+      "This workspace holds restricted data: this action waits for a person.",
 });
 
 /** Creates an expected admin-access refusal with a machine-readable code. */
@@ -3913,9 +3919,12 @@ export type AdminObserver = {
  * One auto-approval rule of a workspace, as AdminWorkspaceView.listAutoApprovals() lists it: a
  * member's opt-in for actions of `actionKind` on the connection. A rule alone applies nothing. An
  * action of that kind is applied without a manual approval only when its author also marked it
- * `autoApprovable` (ActionDescription.autoApprovable), and never once the workspace has read
- * restricted data (`containsRestrictedData`, which describe() reports): the rule then stays
- * stored, and listed here, while every action waits for a manual approval.
+ * `autoApprovable` (ActionDescription.autoApprovable), and, once the workspace has read
+ * restricted data (`containsRestrictedData`, which describe() reports), only for the admin
+ * gatekeeper's kinds that ADMIN_AGENT_ACTIONS marks `autoApprovableWhileRestricted`, and only
+ * while no other connection's restricted data was read there (PreApprovableAction.ruleApplies
+ * is the answer for the workspace as it is): every other rule then stays stored, and listed
+ * here, while its actions wait for a manual approval.
  */
 export type AdminAutoApproval = {
   /** The connection the rule is on. */
@@ -4090,11 +4099,11 @@ export interface AdminWorkspaceView extends RpcTarget {
 
   /** The auto-approval rules, each with its connection, its kind of action and who turned it on.
    * A rule is a member's opt-in and applies nothing alone (see AdminAutoApproval): an action is
-   * applied without a manual approval only when its author also marked it `autoApprovable`, and
-   * never once the workspace has read restricted data (`containsRestrictedData`, which
-   * describe() reports), when every action waits whatever the rules say. listActions() shows
-   * each action's `description.autoApprovable` and `description.actionKind`, and `autoApproved`
-   * on one a rule applied. */
+   * applied without a manual approval only when its author also marked it `autoApprovable`, and,
+   * once the workspace has read restricted data (`containsRestrictedData`, which describe()
+   * reports), only as AdminAutoApproval says: a rule listed here may be applying nothing.
+   * listActions() shows each action's `description.autoApprovable` and
+   * `description.actionKind`, and `autoApproved` on one a rule applied. */
   listAutoApprovals(): Promise<AdminAutoApproval[]>;
 
   /** The published blueprints, as Overseer.listBlueprints() lists them. Unless the call runs
@@ -5091,9 +5100,21 @@ export type WorkspaceMetadata = {
    * `ObservationDescription`). It can still be shared, with collaborators verified per
    * gatekeeper (if `ownerInvitesOnly` is also set, only the owner can add them), but its web
    * fetches reach only the hosts the deployment admin trusts (none by default) or, where the admin
-   * allows it, a URL a user approves, and every action requires manual approval.
+   * allows it, a URL a user approves, and every action requires manual approval, but for the
+   * few a rule may still apply (see PreApprovableAction.ruleApplies).
    */
   containsRestrictedData?: boolean;
+
+  /**
+   * Whether a rule still applies some kinds of action in a workspace that
+   * `containsRestrictedData`: true while every observation that marked it came through the
+   * admin gatekeeper's connection. PreApprovableAction.ruleApplies says which kinds, and of
+   * which connection. Once it is false there, no rule applies anything, whatever the catalog
+   * said before, and it does not turn true again. It is false, and says nothing, where the
+   * workspace holds no restricted data. Sent to those who may read that catalog, the
+   * collaborators whose role is "build", and absent for everyone else.
+   */
+  rulesApplyWhileRestricted?: boolean;
 
   /**
    * True when the workspace has observed data marked `ownerInvitesOnly` (see
@@ -5399,9 +5420,178 @@ export const MAX_READ_FILES_PER_CALL = 64;
  * requested paths from its response (the client re-requests them). Keeps one response well
  * under the RPC message ceiling even with the UTF-16 inflation of serialized text. The first
  * file is always returned whole, however large, so every call makes progress. A `blob` entry
- * carries no content, so it does not count toward this budget.
+ * carries no content, so it does not count toward this budget. Overseer.getPushReview() ends a
+ * page on the same budget, counting what each entry holds and what was read to describe it.
  */
 export const READ_FILES_RESPONSE_BUDGET = 8 * 1024 * 1024;
+
+/** The most entries one Overseer.getPushReview() call returns. */
+export const PUSH_REVIEW_PAGE_SIZE = 100;
+
+/**
+ * The most objects one Overseer.getPushReview() call reads from the workspace's git store to
+ * list a review, and with MAX_PUSH_REVIEW_WALK_BYTES the most bytes of them: the commits and
+ * directories the push sends, those of their parents that they are compared with, and each
+ * file sent, for its size. Every call lists the review from its start, the commits oldest
+ * first, so it reads a whole chain of them before it lists the first entry, whatever the page
+ * holds: this bounds that work, counting what yields no entry too. A call that runs out says
+ * so (PushReview.truncated). No push within the bounds of a workspace that holds restricted
+ * data (see MAX_RESTRICTED_PUSH_COMMITS in `@gadgets/workshop-shared/gatekeeper`) sends or
+ * names as many objects.
+ */
+export const MAX_PUSH_REVIEW_WALK_OBJECTS = 50_000;
+
+/**
+ * The most bytes of objects one Overseer.getPushReview() call reads to list a review (see
+ * MAX_PUSH_REVIEW_WALK_OBJECTS): four times the budget a page ends on, so that a review of
+ * several full pages can be listed. An object's size is known only once it is read, so a call
+ * inflates at most this and one object more, and parses at most this.
+ */
+export const MAX_PUSH_REVIEW_WALK_BYTES = 4 * READ_FILES_RESPONSE_BUDGET;
+
+/**
+ * The largest `cursor` Overseer.getPushReview() accepts. Every call lists the review again from
+ * its start, and a few objects can list without end (a directory that names the one below it
+ * twice at every level), so this bounds the entries one call passes over. A review with more
+ * entries cannot be read past it.
+ */
+export const MAX_PUSH_REVIEW_CURSOR = 100_000;
+
+/** A tree entry as a push review names it: what it is (see TreeNode), and its object. */
+export type PushReviewTreeEntry = {
+  /** The entry's git mode, in TreeNode's vocabulary; `executable` is a file with mode 100755. */
+  kind: "file" | "executable" | "dir" | "symlink" | "submodule";
+
+  /** The oid the entry names: a blob, a tree for `dir`, a foreign commit for `submodule`. */
+  oid: GitOid;
+};
+
+/**
+ * What one parent of a commit has at a path a push review lists: its entry; `none` when the
+ * parent has nothing there; `unknown` when the parent, or its tree there, is not in the
+ * workspace's git store, so the review cannot say.
+ */
+export type PushReviewParentEntry = PushReviewTreeEntry | { kind: "none" } | { kind: "unknown" };
+
+/**
+ * What a push review says of an object the push sends at a path.
+ *
+ * `text`: a blob of at most MAX_BUFFERED_BLOB_SIZE (see `@gadgets/workshop-shared/gatekeeper`)
+ * that is strict UTF-8 with no NUL. Overseer.readFilesAtCommit() returns it as `text` where
+ * the entry is a file; where the entry is a symbolic link the blob is the link's target, and
+ * that call returns `unreadable` with the target in its message.
+ * `binary`: a file within that size that is not text. `large`: a file over that size, which was
+ * not checked. `dir`: a directory in the form git writes, every name valid UTF-8, a single
+ * path segment and present once; the entries of it that the commit changes follow as rows of
+ * their own. `unlistable`: a directory that is not in that form, so its entries are not listed:
+ * a path into it would not name one entry. `mistyped`: the object is not what the entry says
+ * (a `dir` entry or a commit's tree that is not a tree, a file entry that is not a blob);
+ * `type` is what it is. `absent`: not in the workspace's git store yet, so neither its size
+ * nor what it refers to is known.
+ */
+export type PushReviewSent =
+  | { kind: "text" | "binary" | "large" | "dir" | "unlistable"; size: number }
+  | { kind: "mistyped"; type: GitObjectType; size: number }
+  | { kind: "absent" };
+
+/**
+ * One entry of a push review (see Overseer.getPushReview()).
+ *
+ * `commit`: a commit the push sends. `text` is the commit object's payload exactly as stored,
+ * strictly decoded: every header line as written (`tree`, each `parent`, `author` and
+ * `committer` with name, email, time and zone, a `gpgsig` with its continuation lines, any
+ * other header), a blank line, then the message. Nothing is normalized or dropped. `text` is
+ * absent when the payload is not strict UTF-8, holds a NUL or is over MAX_BUFFERED_BLOB_SIZE:
+ * the commit is unreadable, and `size` says how large it is. `size` is absent too when the
+ * store does not hold the commit, and `parents` is then empty.
+ *
+ * `path`: one path of the commit named by `commit` whose entry differs from the entry every
+ * parent has there: added, changed in content or in mode alone, or deleted (`entry` absent).
+ * The commit's root directory is the path `""`. `parents` has one element per parent of the
+ * commit, in the commit's own order, so a merge says what each side had. `sent` is present
+ * when the push sends the entry's object, and says what it is; absent, the remote already has
+ * the object (or there is none: a deletion, a submodule), and the push sends only the entry.
+ * A directory the push does not send is one row, whatever is under it.
+ *
+ * Every tree and blob the push sends is the `entry.oid` of a `path` row with `sent`, or else
+ * an `object` entry. Where every directory from the root down to a row is `dir`,
+ * readFilesAtCommit(commit, [path]) reads that row's entry and no other: for a file whose
+ * `sent` is `text` it returns the content sent, and for a symbolic link the target sent, in
+ * the message of an `unreadable` result. The same call on a parent gives the content to
+ * compare with.
+ *
+ * `object`: an object the push sends that no `commit` or `path` entry accounts for, so that
+ * nothing sent is missing from the review. `size` is absent when the store does not hold it.
+ */
+export type PushReviewEntry =
+  | { kind: "commit"; oid: GitOid; parents: GitOid[]; size?: number; text?: string }
+  | {
+      kind: "path";
+      commit: GitOid;
+      path: string;
+      entry?: PushReviewTreeEntry;
+      parents: PushReviewParentEntry[];
+      sent?: PushReviewSent;
+    }
+  | { kind: "object"; oid: GitOid; type: GitObjectType; size?: number };
+
+/** One page of a push review, as Overseer.getPushReview() returns it. */
+export type PushReview = {
+  /**
+   * The entries, in order: each commit reachable from the pushed heads, parents before
+   * children, followed by its paths, a directory before what is under it; then the objects no
+   * commit or path accounts for, which come last and span pages as any other entry does.
+   */
+  entries: PushReviewEntry[];
+
+  /**
+   * The `cursor` that returns the next page; absent on the last page. It counts entries from
+   * the start, so it holds only while the review lists the same entries, and a `cursor` over
+   * MAX_PUSH_REVIEW_CURSOR is refused. The entries change when the push sends other objects
+   * (`objectCount` differs from an earlier page's) and when an object the store lacked arrives.
+   * An arrival can turn `object` entries into `path` entries and leave the count as it was. A
+   * parent's directory that arrives can add deletions under the directory the push has there,
+   * and can remove a `path` entry that had an `unknown` parent, when that parent turns out to
+   * have the same entry.
+   *
+   * A reader that holds the last page therefore checks that no entry came twice and that its
+   * `commit` entries, its `path` entries with `sent` and its `object` entries name exactly
+   * `objectCount` distinct objects, and reads the review again from the start when they do
+   * not. That shows every object the push sends is in the pages read. It does not show a
+   * `path` entry without `sent` that fell between two pages because an entry before it was
+   * removed. Only an entry with an `unknown` parent is ever removed, so pages that hold none
+   * miss nothing, and a reader that must rule it out for pages that hold one reads them again
+   * and compares.
+   *
+   * The review of a push queued from a workspace that holds restricted data has no `unknown`
+   * parent, so it never loses an entry while the push is pending. It can gain deletions, under
+   * an empty directory the push sends where a parent's directory was not in the store.
+   */
+  next?: number;
+
+  /**
+   * Present when the call read as much as one call may (MAX_PUSH_REVIEW_WALK_OBJECTS,
+   * MAX_PUSH_REVIEW_WALK_BYTES) before it had listed a whole page: `entries` holds what it
+   * listed from `cursor` until then, if anything, and `next` is absent. Every call starts
+   * over, so none lists further: the push is too large to review whole, and what `next` says
+   * of a last page does not hold for this one. A workspace that holds restricted data queues
+   * no push whose review is cut short.
+   */
+  truncated?: true;
+
+  /**
+   * How many objects the push sends in all: commits, trees and blobs. Zero when the remote
+   * already has the pushed commits: the push then only moves the branch.
+   */
+  objectCount: number;
+
+  /**
+   * Earlier pending actions of this workspace, on any connection, that send some of the same
+   * objects: this push is stacked on them. Rejecting one of them takes nothing out of this
+   * push, which still sends those objects.
+   */
+  stackedOn: number[];
+};
 
 /**
  * Specifies the state of an action in the action log:
@@ -5892,6 +6082,27 @@ export interface Overseer extends RpcTarget {
   rejectAction(id: number): Promise<void>;
 
   /**
+   * Read what a pending push will send: the action `actionId` must be pending and name pushed
+   * commits (ActionDescription.pushedCommits), else the call throws. It throws as well when the
+   * action's connection was removed from the workspace: that push can never be applied, and
+   * nothing is marked for it any more. The answer is built from the objects the workspace
+   * marked for the push when it was queued, which are exactly what the gatekeeper sends when
+   * the action is approved, not from a diff: see PushReviewEntry.
+   *
+   * At most PUSH_REVIEW_PAGE_SIZE entries per call, and fewer once what they hold and what
+   * was read to describe them passes READ_FILES_RESPONSE_BUDGET (the first entry of a page is
+   * always returned); pass the previous page's `next` as `cursor` for the following page. A
+   * call reads no more of the store than MAX_PUSH_REVIEW_WALK_OBJECTS allows, and a push too
+   * large to list within that comes back `truncated`. File content is not included: read it
+   * with readFilesAtCommit(), or readBlob() for an object listed by id. The read never pulls
+   * from a connection.
+   *
+   * This is how an approver reads a push before approving it. approveAction() does not check
+   * that it was read.
+   */
+  getPushReview(actionId: number, cursor?: number): Promise<PushReview>;
+
+  /**
    * List the hooks waking the workspace's gadgets: scheduled tasks (the scheduler's) and more.
    * A hook is a callback through which a gatekeeper wakes a gadget: for a scheduled task (the
    * scheduler gatekeeper), or for an incoming email or GitHub event.
@@ -5932,8 +6143,9 @@ export interface Overseer extends RpcTarget {
    * Auto-approval rules are workspace-wide per gatekeeper: approving an action kind approves it
    * no matter which gadget invokes it.
    *
-   * Once the workspace has read restricted data (`WorkspaceMetadata.containsRestrictedData`), rules
-   * are stored but never fire: every action pends for manual approval.
+   * Once the workspace has read restricted data (`WorkspaceMetadata.containsRestrictedData`), a
+   * rule is stored but applies nothing unless PreApprovableAction.ruleApplies says it does:
+   * every other action pends for manual approval.
    */
   setAutoApprovedActionKind(gatekeeperId: WorkpieceId, actionKind: ActionKind): Promise<void>;
 
@@ -5947,8 +6159,10 @@ export interface Overseer extends RpcTarget {
   listAutoApprovedActionKinds(): Promise<Array<{ gatekeeperId: WorkpieceId; actionKind: ActionKind }>>;
 
   /**
-   * List the auto-approvable action kinds offered by gatekeepers bound in this workspace. Each
-   * entry identifies its connection and reports whether a matching auto-approval rule is enabled.
+   * List the auto-approvable action kinds offered by gatekeepers bound in this workspace, and
+   * by its connections of the admin gatekeeper, which agents use whether or not anything binds
+   * them. Each entry identifies its connection and reports whether a matching auto-approval
+   * rule is enabled and whether one applies in the workspace as it is now.
    */
   listPreApprovableActions(): Promise<PreApprovableAction[]>;
 
@@ -8433,14 +8647,31 @@ export type GadgetBindingInfo = {
 };
 
 /**
- * An auto-approvable action kind offered by a specific connection. Aggregated from each bound
- * gatekeeper's getAutoApprovableActions(); `alreadyEnabled` reports whether a matching rule exists.
+ * An auto-approvable action kind offered by one connection of this workspace, as
+ * Overseer.listPreApprovableActions() lists it: each kind the connection's gatekeeper returns
+ * from getAutoApprovableActions(), with whether a rule for it is stored and whether one
+ * applies.
  */
 export type PreApprovableAction = {
+  /** The connection that offers the kind: the gatekeeper a rule for it is stored against. */
   gatekeeperId: WorkpieceId;
+  /** The connection's title, as its gatekeeper last described it; a placeholder when the
+   * Workshop holds none. */
   resourceTitle: string;
+  /** The kind: its `tag` is what a rule is stored under (see setAutoApprovedActionKind()). */
   actionKind: ActionKind;
+  /** Whether a rule for this kind is stored for this connection. A stored rule applies an
+   * action only where `ruleApplies` is true. */
   alreadyEnabled: boolean;
+  /**
+   * Whether a rule for this kind applies an action in the workspace as it is now. True in a
+   * workspace that holds no restricted data. In one that does
+   * (WorkspaceMetadata.containsRestrictedData), true only for the admin gatekeeper's kinds
+   * that ADMIN_AGENT_ACTIONS marks `autoApprovableWhileRestricted`, and only while no other
+   * connection's restricted data was read there; a later read can make it false, and
+   * nothing makes it true again. A client offers to turn a rule on only where this is true.
+   */
+  ruleApplies: boolean;
 
   /** Vendor of the gatekeeper holding this connection. Absent for vendorless gatekeepers. */
   vendorId?: string;

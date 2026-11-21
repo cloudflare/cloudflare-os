@@ -66,7 +66,7 @@ const setup = () => {
     activity, changes, proposed, listed, historyLoads,
     render: (selectedChatId: number | null, codeChatId?: number | null,
              returnChatId?: number | null) => testRoot.render(
-      <ChatInterface workspaceId="workspace" overseer={server.overseer}
+      <ChatInterface workspaceId="workspace" overseer={server.overseer} restricted={false}
         selectedChatId={selectedChatId} codeChatId={codeChatId} returnChatId={returnChatId}
         onNavigateToChat={() => {}}
         onAgentActiveChange={activity} onChatChangesChange={changes}

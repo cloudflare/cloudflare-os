@@ -34,6 +34,7 @@ import {
   encodeGitCommit,
   encodeGitTree,
   gitObjectOid,
+  isCanonicalTree,
   isReservedTreeEntryName,
   parseGitCommitRefs,
   parseGitTree,
@@ -337,19 +338,6 @@ function decodeText(payload: Uint8Array, what: string): string {
   } catch {
     throw invalid(`${what} is not valid UTF-8`);
   }
-}
-
-// Whether the tree is byte for byte what encodeGitTree() writes for its entries: sorted, with
-// each name once and none that git cannot represent.
-function isCanonicalTree(entries: GitTreeEntry[], payload: Uint8Array): boolean {
-  let canonical: Uint8Array;
-  try {
-    canonical = encodeGitTree(entries);
-  } catch {
-    return false;  // it refuses these entries outright
-  }
-  return canonical.byteLength === payload.byteLength &&
-      canonical.every((byte, index) => byte === payload[index]);
 }
 
 // =======================================================================================

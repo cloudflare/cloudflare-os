@@ -150,6 +150,9 @@ const OUTCOME_UNKNOWN = "The Admin API did not say whether this was done. Check 
  *   - the coded refusal of an owner who is no longer a deployment admin, or of a gatekeeper the
  *     deployment has turned off: `error` itself. Nothing was done, and the action is pending
  *     again, to be approved once the owner is an admin or the gatekeeper is on.
+ *   - the coded refusal of a call a rule approved in a workspace where that rule no longer
+ *     applies it (`needsPerson`): `error` itself. Nothing was done, and the action is pending
+ *     again for a person to approve.
  *   - anything else (a broken or timed-out call, an error with no code, a code this list does
  *     not know): the call may have been carried out, so an ActionOutcomeUnknownError, which is
  *     never run again.
@@ -161,7 +164,8 @@ export function classifyApplyFailure(error: unknown): unknown {
     return new ActionApplyError(error instanceof Error ? error.message : code, { cause: error });
   }
   if (code === ADMIN_ACCESS_ERROR_CODES.notAdmin ||
-      code === ADMIN_ACCESS_ERROR_CODES.gatekeeperOff) {
+      code === ADMIN_ACCESS_ERROR_CODES.gatekeeperOff ||
+      code === ADMIN_ACCESS_ERROR_CODES.needsPerson) {
     return error;
   }
   return new ActionOutcomeUnknownError(OUTCOME_UNKNOWN, { cause: error });

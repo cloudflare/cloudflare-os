@@ -4,10 +4,13 @@
 // same action. The apply is injected, keeping this constructible over a mock storage in tests.
 
 import type { Collection, NonUniqueIndex, Singleton } from "@gadgets/typed-storage";
+import { ADMIN_AGENT_ACTIONS, adminAgentAction } from "@gadgets/workshop-shared/admin-agent";
 import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api";
 import { createWorkshopLogger } from "./observability";
-import type {
-  ActionRecord, AutoApproveTagRecord, StoredActionDescription,
+import {
+  isAdminGatekeeper,
+  type ActionRecord, type AutoApproveTagRecord, type GatekeeperRecord,
+  type StoredActionDescription,
 } from "./storage-schema/overseer-storage.js";
 
 const logger = createWorkshopLogger("workshop.auto.approval");
@@ -16,16 +19,66 @@ export interface AutoApprovalStorage {
   actions: Collection<ActionRecord, number>
       & { pendingByGatekeeper: NonUniqueIndex<ActionRecord, number> };
   autoApproveTags: Collection<AutoApproveTagRecord>;
+  /** The connections, by id: ruleApplies() reads a connection's vendor from its record. */
+  gatekeepers: Collection<GatekeeperRecord, number>;
 
-  /** The restricted-data latch (see makeOverseerStorage). While set, nothing auto-approves. */
+  /** The restricted-data latch (see makeOverseerStorage). */
   containsRestrictedData: Singleton<boolean>;
+  /** Whether only the admin gatekeeper's observations set the latch (see makeOverseerStorage). */
+  adminRestrictedDataOnly: Singleton<boolean>;
+  /** `nextActionId` as last taken while that held (see makeOverseerStorage). */
+  adminRestrictedDataAsOf: Singleton<number>;
+  /** The id the next action or observation takes. */
+  nextActionId: Singleton<number>;
+}
+
+/**
+ * Ends the exemption `adminRestrictedDataOnly` records where a version of this code that does
+ * not keep it has written to the workspace since, as one deployed again after a rollback
+ * does: it sets the latch for any connection's restricted observation and leaves the
+ * singleton true. Every observation takes an action id, so while the exemption holds each id
+ * taken is mirrored in `adminRestrictedDataAsOf`, and an id taken by code that keeps no
+ * mirror leaves the two apart. Called once as the workspace's object starts, before anything
+ * reads ruleApplies(). It ends the exemption for any id such a version took, an observation's
+ * or not, and nothing restores it.
+ */
+export function guardRuleExemption(storage: AutoApprovalStorage): void {
+  if (storage.adminRestrictedDataOnly.get() &&
+      storage.adminRestrictedDataAsOf.get() !== storage.nextActionId.get()) {
+    storage.adminRestrictedDataOnly.put(false);
+  }
+  storage.nextActionId.subscribe({
+    update: next => {
+      if (storage.adminRestrictedDataOnly.get()) storage.adminRestrictedDataAsOf.put(next);
+    },
+  });
+}
+
+/**
+ * Whether a rule may apply an action tagged `tag` of connection `gatekeeperId` in the workspace
+ * as it is now. Always, while the workspace holds no restricted data. Once it does, only when
+ * all three hold: the connection is the admin gatekeeper's, by its stored record's vendor and
+ * nothing its Worker declares; `tag` is that of a kind ADMIN_AGENT_ACTIONS marks
+ * `autoApprovableWhileRestricted`; and every observation that marked the workspace came
+ * through the admin gatekeeper (storage.adminRestrictedDataOnly). The exception is the
+ * Workshop's own: no ActionDescription asks for it and no other vendor can have it. Read by
+ * autoApprovalRule(), by OverseerImpl.lendAdminApi() where the power is handed over, and by
+ * listPreApprovableActions(), which tells clients.
+ */
+export function ruleApplies(storage: AutoApprovalStorage, gatekeeperId: number, tag: string)
+    : boolean {
+  if (!storage.containsRestrictedData.get()) return true;
+  let kind = adminAgentAction(tag);
+  return kind !== undefined && ADMIN_AGENT_ACTIONS[kind].autoApprovableWhileRestricted &&
+      storage.adminRestrictedDataOnly.get() &&
+      isAdminGatekeeper(storage.gatekeepers.get(gatekeeperId));
 }
 
 /**
  * The single authority on whether an action may be applied without a human: the enabling rule if
  * the author marked the action `autoApprovable`, the user enabled a rule for its `actionKind` on
- * this gatekeeper, and the workspace has not latched restricted mode; else undefined. A stored
- * description may lack the verdict, which counts as no.
+ * this gatekeeper, and ruleApplies() allows it in the workspace as it is now; else undefined. A
+ * stored description may lack the verdict, which counts as no.
  */
 export function autoApprovalRule(
     storage: AutoApprovalStorage, gatekeeperId: number, description: StoredActionDescription)
@@ -33,7 +86,7 @@ export function autoApprovalRule(
   if (description.autoApprovable !== true) return undefined;
   let tag = description.actionKind?.tag;
   if (tag === undefined) return undefined;
-  if (storage.containsRestrictedData.get()) return undefined;
+  if (!ruleApplies(storage, gatekeeperId, tag)) return undefined;
   return storage.autoApproveTags.get(`${gatekeeperId}:${tag}`);
 }
 
@@ -90,7 +143,7 @@ export class AutoApprovalDrainer {
   // invariant that nothing is silently applied past a human gate.
   //
   // Eligibility is `autoApprovalRule()`: the author's `autoApprovable` verdict, a user-enabled
-  // rule for the action's kind, and no restricted-data latch.
+  // rule for the action's kind, and ruleApplies().
   async #drainOnce(gatekeeperId: number): Promise<void> {
     // Materialize before applying: the index yields lazily in ascending id order, and applying
     // mutates it mid-iteration. Actions created after this snapshot trigger their own drain(),

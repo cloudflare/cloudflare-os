@@ -184,7 +184,9 @@ export interface IssueReportSession {
    * alone, which the deployment's audit log keeps: the workspace is the report's, and an id
    * given before the reason is refused. Throws when the report names no workspace or one its
    * reporter does not own. Every answer of the view marks THIS workspace as holding restricted
-   * data, as get() and readImage() do.
+   * data, as get() and readImage() do: from then on a rule applies nothing here but an
+   * admins-only note, a change of status and a claim or release of the whole binding, never a
+   * reply through this session.
    */
   inspectWorkspace(reason: string): Promise<AdminWorkspaceView>;
 }

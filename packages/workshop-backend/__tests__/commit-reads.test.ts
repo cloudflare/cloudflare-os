@@ -1,6 +1,7 @@
 // The client-facing commit reads (Overseer.listTree / readFilesAtCommit / listChangedPaths /
-// readBlob) through the real OverseerInterface class: oid validation, the per-call path cap, the
-// order of listed paths, and the "use" role's denial. The read semantics themselves are covered by
+// readBlob / getPushReview) through the real OverseerInterface class: oid validation, the per-call
+// path cap, the order of listed paths, which actions have a push review, and the "use" role's
+// denial. The read semantics themselves are covered by
 // git-cache.test.ts; this file covers the RPC surface -- and, because
 // capnweb-validate is *not* mocked here, importing overseer.ts compiles the generated validators,
 // including the recursive TreeNode return shape.
@@ -14,8 +15,8 @@ import type { OverseerDurableObject } from "../src/overseer.js";
 import { WorkspaceGitCache } from "../src/git-cache";
 import { makeOverseerStorage } from "../src/storage-schema/overseer-storage";
 import { makeMockStorage } from "./mock-storage";
-import { openFakeOverseer } from "./fixtures";
-import { COMMIT_1, COMMIT_2, FIXTURE_OBJECTS, PACKED_OIDS, b64Bytes }
+import { openFakeOverseer, putAction } from "./fixtures";
+import { COMMIT_1, COMMIT_2, FIXTURE_OBJECTS, PACKED_OIDS, TREE_1, b64Bytes }
   from "./git-cache-fixtures";
 
 declare module "cloudflare:workers" {
@@ -157,5 +158,82 @@ describe("listChangedPaths and readBlob over the Overseer interface", () => {
       await expect(client.readBlob("0".repeat(40))).rejects.toThrow(/Could not pull git object/);
       await expect(client.readBlob("HEAD")).rejects.toThrow(/Invalid git object id/);
     });
+  });
+});
+
+describe("getPushReview over the Overseer interface", () => {
+  const PUSH = 1, PLAIN_ACTION = 2, OBSERVATION = 3, HOOK = 4, APPROVED_PUSH = 5;
+
+  // A workspace whose action log holds one of each kind of record. The pushes send `head`, a
+  // commit made here on a commit gatekeeper 1's remote has.
+  async function openWithActions(role: "build" | "use" = "build") {
+    let storage = makeOverseerStorage(makeMockStorage());
+    let gitCache = new WorkspaceGitCache(storage, {
+      pull: async () => { throw new Error("test: unexpected pull"); },
+    });
+    let base = FIXTURE_OBJECTS.find(object => object.oid === COMMIT_1)!;
+    await gitCache.putFromGatekeeper(1, base.type, b64Bytes(base.payload));
+    let head = gitCache.writeCommitForTree(TREE_1, {
+      parents: [COMMIT_1],
+      author: { name: "Alice", email: "alice@example.com" },
+      message: "local work",
+      timestamp: new Date(1700000000_000),
+    });
+    storage.gatekeepers.put({ id: 1, class: {} as any });
+    putAction(storage, PLAIN_ACTION);
+    putAction(storage, OBSERVATION, { type: "observation" });
+    putAction(storage, HOOK, { type: "bindHook" });
+    for (let [id, state] of [[PUSH, "pending"], [APPROVED_PUSH, "approved"]] as const) {
+      putAction(storage, id, { state });
+      let record = storage.actions.get(id)!;
+      if (record.type === "action") record.description.pushedCommits = [head];
+      storage.actions.put(record);
+    }
+    gitCache.markPushClosure(1, PUSH, [head]);
+    let client = await openFakeOverseer(storage, { role, impl: { gitCache } });
+    return { head, gitCache, client, storage };
+  }
+
+  it("returns a page of what a pending push will send", async () => {
+    let { head, gitCache, client } = await openWithActions();
+    let text = new TextDecoder().decode(gitCache.readLocalObject(head)!.payload);
+    expect(await client.getPushReview(PUSH)).toStrictEqual({
+      entries: [{ kind: "commit", oid: head, parents: [COMMIT_1], size: text.length, text }],
+      objectCount: 1,
+      stackedOn: [],
+    });
+    expect((await client.getPushReview(PUSH, 1)).entries).toStrictEqual([]);
+  });
+
+  it("refuses an action that is not a pending push", async () => {
+    let { client } = await openWithActions();
+    for (let id of [99, PLAIN_ACTION, OBSERVATION, HOOK, APPROVED_PUSH]) {
+      await expect(client.getPushReview(id)).rejects.toThrow(`Action ${id} is not a pending push.`);
+      // Whatever the cursor: the action is checked first.
+      await expect(client.getPushReview(id, -1))
+          .rejects.toThrow(`Action ${id} is not a pending push.`);
+    }
+  });
+
+  it("refuses a push whose connection was removed, rather than say it sends nothing", async () => {
+    let { gitCache, client, storage } = await openWithActions();
+    // What removeGatekeeper() leaves: the record still pending, its marks cleared.
+    gitCache.clearPushMarks(PUSH);
+    storage.gatekeepers.delete(1);
+    await expect(client.getPushReview(PUSH)).rejects.toThrow(
+        `Action ${PUSH} can never be applied: the connection it was submitted through has been ` +
+        "removed from this workspace.");
+  });
+
+  it("refuses a cursor that is not a count of entries", async () => {
+    let { client } = await openWithActions();
+    for (let cursor of [-1, 1.5]) {
+      await expect(client.getPushReview(PUSH, cursor)).rejects.toThrow("Invalid cursor.");
+    }
+  });
+
+  it("is denied to a \"use\" collaborator", async () => {
+    let { client } = await openWithActions("use");
+    await expect(client.getPushReview(PUSH)).rejects.toThrow(/^Unauthorized/);
   });
 });

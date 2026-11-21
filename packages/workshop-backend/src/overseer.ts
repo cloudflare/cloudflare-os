@@ -1,7 +1,7 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import type { ChatTimelineHead, GadgetSnapshotClient } from "@gadgets/workshop-shared/api";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
-import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, CollaboratorAccess, CollaboratorGrant, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, createGatekeeperError, GATEKEEPER_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
+import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, CollaboratorAccess, CollaboratorGrant, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PushReview, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, createGatekeeperError, GATEKEEPER_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
 import {
   ADMIN_ACCESS_ERROR_CODES, ADMIN_GRANT_ACCOUNT_CACHE_SECONDS, ADMIN_GRANT_ERROR_CODES,
   ADMIN_GRANT_LIFETIME_SECONDS, ISSUE_REPORT_ERROR_CODES, MAX_ADMIN_AUDIT_ARG_LENGTH,
@@ -20,8 +20,8 @@ import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeC
   requireTextFiles, type FileContent, type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
 import { type AgentCatalog, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, matchesResourceUrlPattern, HookController, HookDescription, ActionKind, GitCache, GitPullHints, MAX_BUFFERED_BLOB_SIZE, type GitPullTransfer, type GitShallowInfo, getResourceTypeId } from "@gadgets/workshop-shared/gatekeeper";
 import {
-  ADMIN_AGENT_LEND_SECONDS, ADMIN_BINDING_SUBRESOURCE, ADMIN_GATEKEEPER_VENDOR_ID,
-  adminAgentAction,
+  ADMIN_AGENT_ACTIONS, ADMIN_AGENT_LEND_SECONDS, ADMIN_BINDING_SUBRESOURCE,
+  ADMIN_GATEKEEPER_VENDOR_ID, adminAgentAction,
 } from "@gadgets/workshop-shared/admin-agent";
 import type {
   AdminAgentApi, AdminAgentQueue, AdminGatekeeper,
@@ -34,7 +34,7 @@ import { keyString } from "@gadgets/typed-storage";
 import type { ListOptions } from "@gadgets/typed-storage";
 import {
   actionLastChangedKey, chatChangeClientKey, chatKey, chatKeyPrefix, connectionVendorId,
-  makeOverseerStorage,
+  isAdminGatekeeper, makeOverseerStorage,
   type ActionRecord, type ActiveAgentRecord, type AgentSpawnerBindingProps,
   type AiChatAgentContext, type BindingRecord,
   type BlueprintGadgetRecord, type BoundHookRecord, type ChatBindingEntry,
@@ -138,7 +138,9 @@ import {
 import {
   MAX_VERIFICATION_PASSES, ObserverLedger, requireVerifier, sameObserverScope, type ObserverScope,
 } from "./observer-ledger";
-import { AutoApprovalDrainer, autoApprovalRule } from "./auto-approval";
+import {
+  AutoApprovalDrainer, autoApprovalRule, guardRuleExemption, ruleApplies,
+} from "./auto-approval";
 import { collectSlashCommands, invokeSlashCommand } from "./slash-commands";
 import { createWorkshopLogger, obsContext } from "./observability";
 import { traceAgentTurn, traceToolApproval } from "./agent-tracing";
@@ -471,12 +473,6 @@ function defaultBlueprintBindingTitle(record: GatekeeperRecord, bindingName?: st
 
 function gatekeeperVendorId(record: GatekeeperRecord | undefined): string | undefined {
   return connectionVendorId(record)?.toLowerCase();
-}
-
-// Whether `record` is a connection of the admin gatekeeper: its vendor is
-// ADMIN_GATEKEEPER_VENDOR_ID (connectionVendorId()).
-function isAdminGatekeeper(record: GatekeeperRecord | undefined): boolean {
-  return connectionVendorId(record) === ADMIN_GATEKEEPER_VENDOR_ID;
 }
 
 // What a connection of the admin gatekeeper is told once its workspace's owner holds no account
@@ -2000,6 +1996,7 @@ class OverseerImpl implements AgentHooks {
     migrateToMultiGadget(this);
     this.defaultGadgetId = this.storage.defaultGadgetId.get();
 
+    guardRuleExemption(this.storage);
     this.#autoApprovalDrainer = new AutoApprovalDrainer(
         this.storage,
         (record, resolvedBy, autoApproved) =>
@@ -6371,6 +6368,12 @@ class OverseerImpl implements AgentHooks {
       let actionId = this.storage.transaction(() => {
         let gatekeeper = this.storage.gatekeepers.get(gatekeeperId);
         if (description.containsRestrictedData) {
+          // Only the admin gatekeeper's observations have marked this workspace while this
+          // stays true: set by the first mark, kept by a later one of that connection, and
+          // ended for good by any other connection's (see storage.adminRestrictedDataOnly).
+          this.storage.adminRestrictedDataOnly.put(isAdminGatekeeper(gatekeeper) &&
+              (!this.storage.containsRestrictedData.get() ||
+               this.storage.adminRestrictedDataOnly.get()));
           this.storage.containsRestrictedData.put(true);
           // ADMIN_BINDING_SUBRESOURCE is the one subresource id the Workshop reads rather than
           // treats as opaque: only the gatekeeper's own declaration says a read was made through
@@ -7100,18 +7103,6 @@ class OverseerImpl implements AgentHooks {
           "removed from this workspace.");
     }
 
-    // Restricted mode: the approver vouches for the text they read, and a push's commits cannot
-    // be reviewed as text here, so a push is refused outright until there is a UI to review
-    // commits. Any other action pends for manual approval; one whose description is not complete
-    // (ActionDescription.descriptionIsComplete) is flagged to the approver rather than refused.
-    // The message reaches the agent as the tool error.
-    if (this.storage.containsRestrictedData.get() && description.pushedCommits?.length) {
-      throw new Error(
-          "This workspace has observed sensitive data. To prevent leaks, an action is only accepted " +
-          "when the approver can review everything it will send, and a git push cannot be " +
-          "reviewed as of yet.");
-    }
-
     // Push authorization (see ActionDescription.pushedCommits): before anything is queued,
     // verify that every declared head's ancestry reaches a commit proven on this gatekeeper's
     // remote. This is the chokepoint that makes an accidental push to an unrelated remote fail
@@ -7122,7 +7113,6 @@ class OverseerImpl implements AgentHooks {
     }
 
     let actionId = this.storage.nextActionId.get();
-    this.storage.nextActionId.put(actionId + 1);
 
     let record: ActionRecord = {
       id: actionId,
@@ -7140,9 +7130,22 @@ class OverseerImpl implements AgentHooks {
     // The marking walk stamps the verified push closure "pending push" -- the read grant that
     // lets the gatekeeper simulate the queued push -- in the same transaction that persists the
     // action record, so the marks and the action can never disagree.
+    //
+    // Restricted mode: the approver vouches for what they read, so a push is queued only when
+    // everything it will send reads as text (assertPushReadable). The check runs over the marks
+    // just written, in their transaction: a refusal leaves no marks, no record and no used id,
+    // and reaches the agent as the tool error. An accepted push sends exactly what was judged,
+    // since marks grow only when an absent marked object arrives, and none is absent. Any other
+    // action pends for a person unless ruleApplies() lets a rule apply it; one whose description
+    // is not complete (ActionDescription.descriptionIsComplete) is flagged to the approver rather
+    // than refused.
     this.storage.transaction(() => {
+      this.storage.nextActionId.put(actionId + 1);
       if (description.pushedCommits !== undefined && description.pushedCommits.length > 0) {
         this.gitCache.markPushClosure(gatekeeperId, actionId, description.pushedCommits);
+        if (this.storage.containsRestrictedData.get()) {
+          this.gitCache.assertPushReadable(actionId, description.pushedCommits);
+        }
       }
       this.storage.actions.put(record);
     });
@@ -7689,11 +7692,12 @@ class OverseerImpl implements AgentHooks {
    * gatekeeper could end, so removing it ends its connections here, where the power is lent), a
    * session a member opened directly from the connection was opened by the owner and, for an
    * approved action, whoever approved it is an admin too; and for an auto-approved
-   * action, unless the workspace holds no restricted data. The origin recorded with every call
-   * is this workspace and the chat `caller` is tied to, if any. A lend that files a request for
-   * content access also says who was here (see AdminAgentInsiders). THE one place an AdminApiImpl
-   * is made with via "gatekeeper": it hands that AdminApiImpl to restrictAdminApi()
-   * (admin-agent.ts) and returns the result.
+   * action, unless ruleApplies() allows its kind in the workspace as it is now, which the lend
+   * asks again as it makes the action's call (refused `needsPerson`). The origin
+   * recorded with every call is this workspace and the chat `caller` is tied to, if any. A lend
+   * that files a request for content access also says who was here (see AdminAgentInsiders).
+   * THE one place an AdminApiImpl is made with via "gatekeeper": it hands that AdminApiImpl to
+   * restrictAdminApi() (admin-agent.ts) and returns the result.
    *
    * What a lend costs, none of it cached, so that turning the gatekeeper off stops the very next
    * call and removing the account the next lend: one read of the admin config
@@ -7722,15 +7726,21 @@ class OverseerImpl implements AgentHooks {
     if (use.for === "session" && use.opener !== undefined && use.opener !== admin) {
       throw new Error(ADMIN_CONNECTION_OWNER_ONLY);
     }
+    // What autoApprovalRule() asked, asked once more where the power is handed over, and by the
+    // lend as it makes the action's call: another connection's restricted read can land while
+    // the gatekeeper is on its way to that call.
+    let approved = () => {
+      if (use.for === "action" && use.autoApproved &&
+          !ruleApplies(this.storage, gatekeeperId, ADMIN_AGENT_ACTIONS[use.kind].kind.tag)) {
+        throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.needsPerson);
+      }
+    };
     if (use.for === "action") {
       // A member who was demoted cannot decide, and a rule such a member enabled applies nothing.
       if (!isDeploymentAdmin(this.env, use.decidedBy)) {
         throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.notAdmin);
       }
-      // The latch autoApprovalRule() reads, read once more where the power is handed over.
-      if (use.autoApproved && this.storage.containsRestrictedData.get()) {
-        throw new Error("This workspace holds restricted data: this action waits for a person.");
-      }
+      approved();
     }
 
     // The connection may have been removed across the awaits. Nothing is awaited from here on.
@@ -7746,7 +7756,7 @@ class OverseerImpl implements AgentHooks {
     return restrictAdminApi(
         new AdminApiImpl(this.ctx, this.env, admin,
                          {via: "gatekeeper", agent, ...(insiders && {insiders})}),
-        this.env, admin, use, off);
+        this.env, admin, use, off, approved);
   }
 
   // Throws unless connection `gatekeeperId` is the admin gatekeeper's, the deployment has not
@@ -13358,6 +13368,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       title: this.impl.storage.title.get(),
       totalCost: this.impl.storage.totalCost.get(),
       containsRestrictedData: this.impl.storage.containsRestrictedData.get(),
+      rulesApplyWhileRestricted: this.impl.storage.adminRestrictedDataOnly.get(),
       ownerInvitesOnly: this.impl.storage.ownerInvitesOnly.get(),
       role: "build",
       defaultGadgetId: this.impl.defaultGadgetId,
@@ -13383,6 +13394,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       title: this.impl.storage.title.get(),
       totalCost: this.impl.storage.totalCost.get(),
       containsRestrictedData: this.impl.storage.containsRestrictedData.get(),
+      rulesApplyWhileRestricted: this.impl.storage.adminRestrictedDataOnly.get(),
       ownerInvitesOnly: this.impl.storage.ownerInvitesOnly.get(),
       role: "build",
       defaultGadgetId: this.impl.defaultGadgetId,
@@ -13407,6 +13419,14 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         callback(metadata).catch(unsubscribe);
       }
     };
+    let rulesApplySubscriber = {
+      update(value: boolean) {
+        // Written with every restricted observation: only a change is sent.
+        if (value === metadata.rulesApplyWhileRestricted) return;
+        metadata.rulesApplyWhileRestricted = value;
+        callback(metadata).catch(unsubscribe);
+      }
+    };
     let ownerInvitesOnlySubscriber = {
       update(value: boolean | undefined) {
         metadata.ownerInvitesOnly = value;
@@ -13418,6 +13438,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       this.impl.storage.title.unsubscribe(titleSubscriber);
       this.impl.storage.totalCost.unsubscribe(costSubscriber);
       this.impl.storage.containsRestrictedData.unsubscribe(restrictedDataSubscriber);
+      this.impl.storage.adminRestrictedDataOnly.unsubscribe(rulesApplySubscriber);
       this.impl.storage.ownerInvitesOnly.unsubscribe(ownerInvitesOnlySubscriber);
       callback[Symbol.dispose]();
     };
@@ -13425,6 +13446,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     this.impl.storage.title.subscribe(titleSubscriber);
     this.impl.storage.totalCost.subscribe(costSubscriber);
     this.impl.storage.containsRestrictedData.subscribe(restrictedDataSubscriber);
+    this.impl.storage.adminRestrictedDataOnly.subscribe(rulesApplySubscriber);
     this.impl.storage.ownerInvitesOnly.subscribe(ownerInvitesOnlySubscriber);
 
     callback(metadata).catch(unsubscribe);
@@ -14079,6 +14101,25 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     this.impl.ctx.waitUntil(this.#drainAutoApprovalsAndResume(action.gatekeeperId));
   }
 
+  async getPushReview(actionId: number, cursor?: number): Promise<PushReview> {
+    let action = this.impl.storage.actions.get(actionId);
+    if (action?.type !== "action" || action.state !== "pending" ||
+        !action.description.pushedCommits?.length) {
+      throw new Error(`Action ${actionId} is not a pending push.`);
+    }
+    // removeGatekeeper() leaves such a push pending with its marks cleared, which would read
+    // as a push that sends nothing.
+    if (!this.impl.storage.gatekeepers.get(action.gatekeeperId)) {
+      throw new Error(
+          `Action ${actionId} can never be applied: the connection it was submitted through ` +
+          "has been removed from this workspace.");
+    }
+    if (cursor !== undefined && !(Number.isInteger(cursor) && cursor >= 0)) {
+      throw new Error("Invalid cursor.");
+    }
+    return this.impl.gitCache.readPushReview(actionId, action.description.pushedCommits, cursor);
+  }
+
   // Enable auto-approval of actions carrying `actionKind` on the given gatekeeper. Stores the
   // opt-in rule (one of the two gates required to auto-apply -- the action's own `autoApprovable`
   // verdict is the other) with the kind's display label, and immediately drains any pending
@@ -14124,6 +14165,11 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         boundIds.add(edge.target);
       }
     }
+    // The admin gatekeeper's connections too: an agent uses one with no gadget binding it,
+    // and its rules are the ones that can apply under the restricted-data mark.
+    for (let gk of this.impl.storage.gatekeepers.list()) {
+      if (isAdminGatekeeper(gk)) boundIds.add(gk.id);
+    }
 
     // TODO: a single gatekeeper failing (e.g. a rejected RPC) currently fails the whole catalog,
     // since we let getAutoApprovableActions() reject. Eventually we should isolate per-gatekeeper
@@ -14145,6 +14191,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         actionKind,
         alreadyEnabled:
             this.impl.storage.autoApproveTags.get(`${gk.id}:${actionKind.tag}`) !== undefined,
+        ruleApplies: ruleApplies(this.impl.storage, gk.id, actionKind.tag),
       }));
     });
 
@@ -15108,6 +15155,7 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   }
   async approveAction(_id: number): Promise<void> { this.#deny(); }
   async rejectAction(_id: number): Promise<void> { this.#deny(); }
+  async getPushReview(_actionId: number, _cursor?: number): Promise<PushReview> { this.#deny(); }
   async listHooks(): Promise<BoundHookInfo[]> { this.#deny(); }
   async enableHook(_id: number): Promise<void> { this.#deny(); }
   async disableHook(_id: number): Promise<void> { this.#deny(); }

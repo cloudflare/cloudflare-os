@@ -405,6 +405,51 @@ describe("the verdicts", () => {
   });
 });
 
+/** The names of the fields `kind` carries. */
+const kindFields = (kind: object) => Object.keys(kind).toSorted();
+
+/**
+ * The tags of the kinds a rule may approve, by whether the Workshop's table says a rule still
+ * applies one in a workspace marked as holding restricted data.
+ */
+const ruleTags = (whileRestricted: boolean) => Object.values(ADMIN_AGENT_ACTIONS)
+    .filter((action) => action.autoApprovable &&
+        action.autoApprovableWhileRestricted === whileRestricted)
+    .map((action) => action.kind.tag).toSorted();
+
+describe("the Worker", () => {
+  it("declares nothing of the exception under the mark", async () => {
+    // All an action tells the Workshop: which kinds a rule still applies in a workspace marked
+    // as holding restricted data is the Workshop's own table, and nothing here asks for it.
+    const declared = [
+      "title", "description", "fields", "descriptionIsComplete", "pushedCommits",
+      "implementsRevert", "awaitDecision", "autoApprovable", "actionKind",
+    ] satisfies (keyof ActionDescription)[] as string[];
+
+    for (const candidate of CASES) {
+      const { kind } = candidate;
+      const { queue } = await queued(candidate);
+      const { description } = queue.submitted[0]!;
+
+      expect(Object.keys(description).filter((field) => !declared.includes(field)), kind)
+          .toEqual([]);
+      expect(kindFields(description.actionKind!), kind).toEqual(["label", "tag"]);
+      expect(description.actionKind, kind).toEqual(ADMIN_AGENT_ACTIONS[kind].kind);
+      expect(description.autoApprovable, kind).toBe(ADMIN_AGENT_ACTIONS[kind].autoApprovable);
+    }
+
+    const offered = await facet().getAutoApprovableActions();
+    expect(offered.map(kindFields)).toEqual(offered.map(() => ["label", "tag"]));
+    // The verdict is the table's `autoApprovable` alone: a rule is offered for a kind whether
+    // or not the Workshop still applies it under the mark.
+    expect(ruleTags(true)).toEqual(
+        ["issue-report-assignment", "issue-report-note", "issue-report-status"]);
+    expect(ruleTags(false)).toEqual(["issue-report-scoped-reply"]);
+    expect(offered.map((kind) => kind.tag).toSorted())
+        .toEqual([...ruleTags(true), ...ruleTags(false)].toSorted());
+  });
+});
+
 describe("what is refused before anything is queued", () => {
   it("blank and over-long text, through the binding and through a report session", async () => {
     const { log, queue } = workshop(lends);
@@ -521,6 +566,7 @@ describe("an action that fails to apply", () => {
     for (const [what, code] of [
       ["an owner who is no longer an admin", ADMIN_ACCESS_ERROR_CODES.notAdmin],
       ["the gatekeeper turned off after the lend", ADMIN_ACCESS_ERROR_CODES.gatekeeperOff],
+      ["a rule that no longer applies it", ADMIN_ACCESS_ERROR_CODES.needsPerson],
     ] as const) {
       it(`${kind}: ${what} leaves it pending`, async () => {
         const { gatekeeper, id } = await queued(candidate);

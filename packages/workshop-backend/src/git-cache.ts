@@ -74,6 +74,8 @@
 // - `verifyPushAncestry()`/`markPushClosure()` implement `ActionDescription.pushedCommits`
 //   authorization at the `submitAction` chokepoint, and the mark lifecycle helpers convert or
 //   clear the marks when the action applies, is rejected, or its gatekeeper is deleted.
+//   `readPushReview()` reads the review of a queued push from the same marks, and
+//   `assertPushReadable()` judges from them whether an approver can read all of it.
 //
 // Trust model note (do not document the view as a confinement boundary): oids are capabilities
 // and gatekeepers are trusted with the objects whose oids they know. The scoped read view and
@@ -85,18 +87,30 @@ import { validateRpc } from "capnweb-validate";
 import type { Collection, NonUniqueIndex } from "@gadgets/typed-storage";
 import {
   MAX_BUFFERED_BLOB_SIZE,
+  MAX_RESTRICTED_PUSH_COMMITS,
+  MAX_RESTRICTED_PUSH_FILES,
+  MAX_RESTRICTED_PUSH_PATHS,
+  MAX_RESTRICTED_PUSH_TEXT_SIZE,
   type GitCache,
   type GitObjectType,
   type GitOid,
   type GitPullHints,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
+  MAX_PUSH_REVIEW_CURSOR,
+  MAX_PUSH_REVIEW_WALK_BYTES,
+  MAX_PUSH_REVIEW_WALK_OBJECTS,
+  PUSH_REVIEW_PAGE_SIZE,
   READ_FILES_RESPONSE_BUDGET,
   type AdminFileContent,
   type AiChatAuthorInfo,
   type CommitIdentity,
   type CommitInfo,
   type FileAtCommit,
+  type PushReview,
+  type PushReviewEntry,
+  type PushReviewParentEntry,
+  type PushReviewSent,
   type TreeNode,
   type WorkpieceId,
 } from "@gadgets/workshop-shared/api";
@@ -115,6 +129,7 @@ import {
   encodeGitTree,
   encodeLooseObject,
   gitObjectOid,
+  isCanonicalTree,
   isReservedTreeEntryName,
   parseGitCommit,
   parseGitCommitRefs,
@@ -126,6 +141,7 @@ import {
   validateGitOid,
   type GitCommitFields,
   type GitCommitHeader,
+  type GitCommitRefs,
   type GitTreeEntry,
   type PackEntrySource,
   type PackableObject,
@@ -154,6 +170,13 @@ const logger = createWorkshopLogger("workshop.git-cache");
  * this shape.
  */
 export const EAGER_BLOB_LIMIT = 64 * 1024;
+
+// Roughly what an oid and its field names cost in a push review's response.
+const PUSH_REVIEW_ENTRY_COST = 64;
+
+// Thrown inside the walk of a push review that has read as much as one call may (see
+// MAX_PUSH_REVIEW_WALK_OBJECTS), and caught where the walk is started.
+class PushReviewWalkSpent extends Error {}
 
 // =======================================================================================
 // Storage
@@ -1884,6 +1907,361 @@ export class WorkspaceGitCache {
     return buildPackStream(marks.length, objects());
   }
 
+  /**
+   * One page of what a queued push will send (the read behind `Overseer.getPushReview`; see
+   * PushReviewEntry for the contract), built from the action's pending-push marks and the
+   * objects this store holds: never pulls.
+   */
+  readPushReview(actionId: number, heads: GitOid[], cursor = 0): PushReview {
+    let marks = this.#recordsMarkedFor(actionId);
+    let earlier = marks.flatMap(mark => mark.pendingPush.map(push => push.actionId))
+        .filter(id => id < actionId);
+    let review: PushReview = {
+      entries: [],
+      objectCount: marks.length,
+      stackedOn: [...new Set(earlier)].toSorted((a, b) => a - b),
+    };
+    // Every call runs the walk again from its start, since nothing is kept between calls. For
+    // the entries it skips, that parses their commits and directories again and looks up each
+    // sent file's size, and decodes none of their text: only the page returned is settled. A
+    // few objects can list without end (a directory that names the one below it twice at every
+    // level), so the entries a call may skip are bounded.
+    if (cursor > MAX_PUSH_REVIEW_CURSOR) {
+      throw new Error(`A push review cannot be read past ${MAX_PUSH_REVIEW_CURSOR} entries.`);
+    }
+    let index = 0, bytes = 0, walk: { spent?: true } = {};
+    for (let entry of this.#pushReviewEntries(actionId, heads, walk)) {
+      if (index++ < cursor) continue;
+      // Checked before each entry, so the first of a page is always returned.
+      if (review.entries.length === PUSH_REVIEW_PAGE_SIZE || bytes > READ_FILES_RESPONSE_BUDGET) {
+        review.next = cursor + review.entries.length;
+        break;
+      }
+      entry = this.#settlePushReviewEntry(entry);
+      // What the entry holds and what settling it read, so that neither the size of a page nor
+      // what a call reads for it is the pusher's to choose.
+      bytes += PUSH_REVIEW_ENTRY_COST;
+      if (entry.kind === "commit") {
+        bytes += PUSH_REVIEW_ENTRY_COST * entry.parents.length;
+        if (entry.size !== undefined && entry.size <= MAX_BUFFERED_BLOB_SIZE) bytes += entry.size;
+      } else if (entry.kind === "path") {
+        bytes += PUSH_REVIEW_ENTRY_COST * entry.parents.length +
+            new TextEncoder().encode(entry.path).byteLength;
+        if (entry.sent?.kind === "text" || entry.sent?.kind === "binary") bytes += entry.sent.size;
+      }
+      review.entries.push(entry);
+    }
+    if (walk.spent) review.truncated = true;
+    return review;
+  }
+
+  /**
+   * Throws unless an approver can read everything the queued push will send (see
+   * `ObservationDescription.containsRestrictedData` for the rules). The error is agent-visible
+   * and names the rule and the commit, path or object that failed it, never content. Callers
+   * run this in the transaction that marks the push, so a refusal queues nothing.
+   */
+  assertPushReadable(actionId: number, heads: GitOid[]): void {
+    // Every tree and blob sent has a path of its own and every commit is one, so no push within
+    // the bounds sends more. Checked before the walk, which reads every marked commit to order
+    // them before it lists the first.
+    if (this.#recordsMarkedFor(actionId).length >
+        MAX_RESTRICTED_PUSH_COMMITS + MAX_RESTRICTED_PUSH_PATHS) {
+      refusePush(`it sends more objects than ${MAX_RESTRICTED_PUSH_COMMITS} commits changing ` +
+          `${MAX_RESTRICTED_PUSH_PATHS} paths can`);
+    }
+
+    // The review's own rows, judged one at a time: what the row says as the walk left it, then
+    // the bounds, and only then its text, so that nothing is read for a push over a bound.
+    let commits = 0, paths = 0, text = 0, files = new Set<GitOid>();
+    let commitParents: GitOid[] = [], walk: { spent?: true } = {};
+    for (let row of this.#pushReviewEntries(actionId, heads, walk)) {
+      let where = "", judged = false;
+      if (row.kind === "object") {
+        refusePush(
+            `object ${row.oid} is sent but is neither a commit of this push nor at a path of one`);
+      } else if (row.kind === "commit") {
+        if (row.size === undefined) {
+          refusePush(`commit ${row.oid} is not in the workspace's git store`);
+        }
+        commitParents = row.parents;
+        commits++;
+        text += row.size;
+      } else {
+        let { entry, sent } = row;
+        where = `${row.path === "" ? "the root directory" : JSON.stringify(row.path)} in commit ` +
+            row.commit;
+        if (entry?.kind === "submodule") refusePush(`${where} adds or changes a submodule entry`);
+        if (sent?.kind === "absent") refusePush(`${where} is not in the workspace's git store`);
+        if (sent?.kind === "mistyped") {
+          refusePush(`${where} names a ${sent.type} where a ` +
+              `${entry?.kind === "dir" ? "tree" : "blob"} is expected`);
+        }
+        if (sent?.kind === "unlistable") {
+          refusePush(`${row.path === "" ? "" : "the directory "}${where} is not in the form ` +
+              "git writes: an entry name is not valid UTF-8, is repeated, is out of order or is " +
+              "not a single path segment");
+        }
+        if (sent?.kind === "large") {
+          refusePush(`${where} is larger than ${MAX_BUFFERED_BLOB_SIZE} bytes`);
+        }
+        if (sent !== undefined && entry?.kind === "symlink") {
+          refusePush(`${where} is a symbolic link whose target this push sends`);
+        }
+        // Last, so that a more specific reason wins. A row compared with a parent the store
+        // lacks could vanish once that parent arrives, moving the rows after it.
+        let unknown = row.parents.findIndex(parent => parent.kind === "unknown");
+        if (unknown >= 0) {
+          refusePush(`${where} cannot be compared with parent ${commitParents[unknown]}, which ` +
+              "is not in the workspace's git store as far as that path. Read that directory at " +
+              "the parent commit, then push again");
+        }
+        paths += Math.max(1, row.parents.length);
+        text += new TextEncoder().encode(row.path).byteLength;
+        if (sent?.kind === "dir") {
+          text += sent.size;
+        } else if (sent?.kind === "text") {
+          judged = files.has(entry!.oid);
+          files.add(entry!.oid);
+          if (!judged) text += sent.size;
+        }
+      }
+
+      if (commits > MAX_RESTRICTED_PUSH_COMMITS) {
+        refusePush(`it sends more than ${MAX_RESTRICTED_PUSH_COMMITS} commits`);
+      }
+      if (paths > MAX_RESTRICTED_PUSH_PATHS) {
+        refusePush(`its commits change more than ${MAX_RESTRICTED_PUSH_PATHS} paths`);
+      }
+      if (files.size > MAX_RESTRICTED_PUSH_FILES) {
+        refusePush(`it sends more than ${MAX_RESTRICTED_PUSH_FILES} files`);
+      }
+      if (text > MAX_RESTRICTED_PUSH_TEXT_SIZE) {
+        refusePush(`it sends more than ${MAX_RESTRICTED_PUSH_TEXT_SIZE} bytes of text`);
+      }
+
+      // The same file at another path is the same text, read where it was first listed.
+      if (judged) continue;
+      let settled = this.#settlePushReviewEntry(row);
+      if (settled.kind === "commit" && settled.text === undefined) {
+        refusePush(
+            `commit ${settled.oid} is not UTF-8 text of at most ${MAX_BUFFERED_BLOB_SIZE} bytes`);
+      }
+      if (settled.kind === "path" && settled.sent?.kind === "binary") {
+        refusePush(`${where} is not UTF-8 text`);
+      }
+    }
+    // What the walk did not reach was not judged, and no review of the push would list it.
+    if (walk.spent) {
+      refusePush(`listing it reads more than ${MAX_PUSH_REVIEW_WALK_OBJECTS} objects, or ` +
+          `more than ${MAX_PUSH_REVIEW_WALK_BYTES} bytes of them: its commits and directories ` +
+          "and those of their parents");
+    }
+  }
+
+  // The walk of a push review (see `#walkPushReview`) under one call's budget: it ends where
+  // the walk has read as much as a call may, and `walk.spent` then says the entries are not all.
+  *#pushReviewEntries(actionId: number, heads: GitOid[], walk: { spent?: true })
+      : Generator<PushReviewEntry> {
+    try {
+      yield* this.#walkPushReview(actionId, heads);
+    } catch (err) {
+      if (!(err instanceof PushReviewWalkSpent)) throw err;
+      walk.spent = true;
+    }
+  }
+
+  // Every entry of the review, in order, lazily, without reading any file: a commit row has no
+  // `text` yet, a sent file within MAX_BUFFERED_BLOB_SIZE is provisionally `text`, and an
+  // `object` row has the recorded type and no size. Callers settle the entries they use.
+  //
+  // What the push sends is its marked objects, so the walk lists exactly those: the marked
+  // commits reachable from the heads through marked parents, under each the entries that
+  // differ from every parent's, and then whatever marked object those rows did not name. It
+  // keeps its own stacks, as the marking walk does, so that neither a long history nor a deep
+  // tree can overflow the call stack.
+  *#walkPushReview(actionId: number, heads: GitOid[]): Generator<PushReviewEntry> {
+    let marks = this.#recordsMarkedFor(actionId);
+    let marked = new Set(marks.map(mark => mark.oid));
+    let accounted = new Set<GitOid>();
+
+    // Every read of the store the walk makes is charged to the call: one object before the
+    // read, and the bytes it inflated as it returns, since only the read says how large an
+    // object is. What is read past the budget is not parsed. A file over CHUNK_MAX_SIZE costs
+    // no bytes: it is stored in chunks (bar a row from before chunking), and only its index
+    // row is read for its size.
+    let objects = MAX_PUSH_REVIEW_WALK_OBJECTS, bytes = MAX_PUSH_REVIEW_WALK_BYTES;
+    let charged = <T>(read: () => T, size: (held: T) => number): T => {
+      if (objects-- === 0) throw new PushReviewWalkSpent();
+      let held = read();
+      if ((bytes -= size(held)) < 0) throw new PushReviewWalkSpent();
+      return held;
+    };
+    let readHeld = (oid: GitOid) =>
+        charged(() => this.#readLocalShallow(oid), local => local?.payload?.byteLength ?? 0);
+
+    // A held tree's entries, or undefined when the store does not hold the object, it is not
+    // a tree, or it does not parse (parseGitTree refuses a name that is not UTF-8).
+    let listing = (oid: GitOid, canonical: boolean): GitTreeEntry[] | undefined => {
+      let local = readHeld(oid);
+      if (local?.type !== "tree") return undefined;
+      try {
+        let entries = parseGitTree(local.payload, oid);
+        return !canonical || isCanonicalTree(entries, local.payload) ? entries : undefined;
+      } catch {
+        return undefined;
+      }
+    };
+    // A parent's directory by name: the first entry of each name, the one readFilesAtCommit
+    // resolves. Undefined when the parent's entries there are not known, null when it has no
+    // directory there. Parents that have the same directory share one listing, through `known`.
+    // A name that is not one path segment (see splitTreePath) is left out: no path reaches
+    // it, so it is the parent's entry at no path, and its row would carry another entry's path.
+    type Directory = Map<string, GitTreeEntry> | null | undefined;
+    let directory = (entry: GitTreeEntry | null | undefined, known: Map<GitOid, Directory>)
+        : Directory => {
+      if (entry === undefined) return undefined;
+      if (entry === null || entry.mode !== "40000") return null;
+      if (!known.has(entry.oid)) {
+        let entries = listing(entry.oid, false);
+        let byName = entries && new Map<string, GitTreeEntry>();
+        for (let child of entries ?? []) {
+          if (!byName!.has(child.name) && !/^\.{0,2}$|\//.test(child.name)) {
+            byName!.set(child.name, child);
+          }
+        }
+        known.set(entry.oid, byName);
+      }
+      return known.get(entry.oid);
+    };
+    let entryAt = (parent: Directory, name: string) =>
+        parent === undefined ? undefined : parent?.get(name) ?? null;
+    // The store is read once for an object, however many paths or parent lines name it.
+    let stat = oncePerOid(oid => charged(() => this.#statLocal(oid), held =>
+        held === undefined || (held.type === "blob" && held.size > CHUNK_MAX_SIZE)
+            ? 0 : held.size));
+    // A parent commit's root, as the directory that holds it; undefined when the commit is not
+    // held.
+    let root = oncePerOid((parent): Directory => {
+      let local = readHeld(parent);
+      return local?.type !== "commit" ? undefined : new Map(
+          [["", rootTreeEntry(parseGitCommitRefs(local.payload, parent).tree)]]);
+    });
+
+    // Commits, depth first from the heads: a commit comes off the stack once to be read and
+    // once more, after its marked parents, to be listed.
+    let seen = new Set<GitOid>();
+    let commits: { oid: GitOid, read?: GitCommitRefs & { size: number } }[] =
+        heads.map(oid => ({ oid })).toReversed();
+    while (commits.length > 0) {
+      let { oid: commit, read } = commits.pop()!;
+      if (read === undefined) {
+        if (!marked.has(commit) || seen.has(commit)) continue;
+        seen.add(commit);
+        let local = readHeld(commit);
+        if (local === undefined) {
+          accounted.add(commit);
+          yield { kind: "commit", oid: commit, parents: [] };
+        } else if (local.type === "commit") {
+          let refs = parseGitCommitRefs(local.payload, commit);
+          commits.push({ oid: commit, read: { ...refs, size: local.payload.byteLength } });
+          for (let parent of refs.parents.toReversed()) commits.push({ oid: parent });
+        }
+        // A held object that is not a commit is left for the `object` rows.
+        continue;
+      }
+      accounted.add(commit);
+      yield { kind: "commit", oid: commit, parents: read.parents, size: read.size };
+
+      // The commit's paths. Each frame is a directory the push sends, part way through its
+      // entries, beside the same directory of each parent. The first holds the root alone.
+      let frames: { path: string, entries: GitTreeEntry[], next: number, parents: Directory[] }[] =
+          [{
+            path: "",
+            entries: [rootTreeEntry(read.tree)],
+            next: 0,
+            parents: read.parents.map(root),
+          }];
+      while (frames.length > 0) {
+        let frame = frames.at(-1)!;
+        if (frame.next === frame.entries.length) {
+          // What a parent has here and this directory has not, unless some parent has
+          // nothing there either: the path is then unchanged from that parent.
+          let kept = new Set(frame.entries.map(entry => entry.name));
+          // Parents with the same directory share one map: its names are taken once.
+          let names = new Set<string>();
+          for (let parent of new Set(frame.parents)) {
+            for (let name of parent?.keys() ?? []) names.add(name);
+          }
+          for (let name of [...names].toSorted()) {
+            if (kept.has(name)) continue;
+            let parents = frame.parents.map(parent => entryAt(parent, name));
+            if (parents.includes(null)) continue;
+            yield { kind: "path", commit, path: joinTreePath(frame.path, name),
+                    parents: parents.map(pushReviewParentEntry) };
+          }
+          frames.pop();
+          continue;
+        }
+        let entry = frame.entries[frame.next++];
+        let path = joinTreePath(frame.path, entry.name);
+        let parents = frame.parents.map(parent => entryAt(parent, entry.name));
+        // Unchanged from some parent, whatever it is: it is listed where it first differs
+        // from every parent, and an object sent under it that no such row names is an
+        // `object` row.
+        if (parents.some(parent => parent?.mode === entry.mode && parent.oid === entry.oid)) {
+          continue;
+        }
+        // Whether the push sends the entry's object, and what the store holds for it, which
+        // is not always what the entry's mode says. A submodule's commit is never sent.
+        let sent: PushReviewSent | undefined, entries: GitTreeEntry[] | undefined;
+        if (entry.mode !== "160000" && marked.has(entry.oid)) {
+          accounted.add(entry.oid);
+          let held = stat(entry.oid);
+          if (held === undefined) {
+            sent = { kind: "absent" };
+          } else if (held.type !== treeEntryObjectType(entry.mode)) {
+            sent = { kind: "mistyped", ...held };
+          } else if (held.type === "tree") {
+            entries = listing(entry.oid, true);
+            sent = { kind: entries === undefined ? "unlistable" : "dir", size: held.size };
+          } else {
+            sent = { kind: held.size > MAX_BUFFERED_BLOB_SIZE ? "large" : "text", size: held.size };
+          }
+        }
+        yield { kind: "path", commit, path, entry: { kind: MODE_KINDS[entry.mode], oid: entry.oid },
+                parents: parents.map(pushReviewParentEntry), ...(sent && { sent }) };
+        // Only a directory the push sends, in the form where a path names one entry, is opened.
+        if (entries !== undefined) {
+          let known = new Map<GitOid, Directory>();
+          frames.push({
+            path, entries, next: 0, parents: parents.map(parent => directory(parent, known)),
+          });
+        }
+      }
+    }
+
+    for (let mark of marks.toSorted((a, b) => a.oid < b.oid ? -1 : 1)) {
+      if (!accounted.has(mark.oid)) yield { kind: "object", oid: mark.oid, type: mark.type };
+    }
+  }
+
+  // Reads what the walk left unread for one entry: a commit's text, whether a provisionally
+  // `text` file really is (else `binary`), an `object` row's held type and size.
+  #settlePushReviewEntry(entry: PushReviewEntry): PushReviewEntry {
+    if (entry.kind === "commit") {
+      if (entry.size === undefined || entry.size > MAX_BUFFERED_BLOB_SIZE) return entry;
+      let text = blobText(this.#heldPayload(entry.oid, "commit")!);
+      return text === undefined ? entry : { ...entry, text };
+    }
+    if (entry.kind === "path") {
+      if (entry.entry === undefined || entry.sent?.kind !== "text") return entry;
+      return blobText(this.#heldPayload(entry.entry.oid, "blob")!) === undefined
+          ? { ...entry, sent: { kind: "binary", size: entry.sent.size } } : entry;
+    }
+    return { ...entry, ...this.#statLocal(entry.oid) };
+  }
+
   // -------------------------------------------------------------------------------------
   // Metadata plumbing
 
@@ -2085,6 +2463,42 @@ function symlinkMessage(path: string, target: Uint8Array): string {
 
 function submoduleMessage(path: string, target: GitOid): string {
   return `${path} is a submodule (gitlink) pointing at commit ${target}`;
+}
+
+// The path of an entry `name` of the directory at `path`, the root being "".
+function joinTreePath(path: string, name: string): string {
+  return path === "" ? name : `${path}/${name}`;
+}
+
+// A commit's root directory as a tree entry, so that a push review compares and lists it like
+// any other.
+function rootTreeEntry(tree: GitOid): GitTreeEntry {
+  return { mode: "40000", name: "", oid: tree };
+}
+
+// `read`, remembering what it returned for each oid.
+function oncePerOid<T>(read: (oid: GitOid) => T): (oid: GitOid) => T {
+  let known = new Map<GitOid, T>();
+  return oid => {
+    if (!known.has(oid)) known.set(oid, read(oid));
+    return known.get(oid) as T;
+  };
+}
+
+// What a parent has at a path, as a push review says it: its entry, null where it has none,
+// undefined where the store cannot tell.
+function pushReviewParentEntry(entry: GitTreeEntry | null | undefined): PushReviewParentEntry {
+  if (entry === undefined) return { kind: "unknown" };
+  return entry === null ? { kind: "none" } : { kind: MODE_KINDS[entry.mode], oid: entry.oid };
+}
+
+// Refuses a push from a workspace that holds restricted data (see `assertPushReadable`). The
+// message reaches the agent, which can change its commits and push again.
+function refusePush(reason: string): never {
+  throw new Error(
+      "This workspace has observed sensitive data, so a push is accepted only when its " +
+      "approver can read everything it will send. This push was not queued: " + reason +
+      ". Change the commits and push again.");
 }
 
 // A Git blob payload as strict text, or undefined if it is not text.

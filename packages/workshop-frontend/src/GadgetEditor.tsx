@@ -2225,6 +2225,7 @@ export default function GadgetEditor() {
                   // A collaborator's metadata names the workspace's owner; the owner's own none.
                   ownsWorkspace={metadata !== null && metadata.owner === undefined}
                   restricted={metadata?.containsRestrictedData === true}
+                  rulesApplyWhileRestricted={metadata?.rulesApplyWhileRestricted}
                   selectedChatId={shownChatId}
                   codeChatId={paneChatId}
                   returnChatId={agentChatId !== null ? workingChatId : null}
@@ -2418,6 +2419,7 @@ export default function GadgetEditor() {
                 <Activity
                   overseer={overseer.stub}
                   restricted={metadata?.containsRestrictedData === true}
+                  rulesApplyWhileRestricted={metadata?.rulesApplyWhileRestricted}
                   view={activityView}
                   onViewChange={setActivityView}
                   autoApproval={autoApproval}

@@ -12,14 +12,17 @@ import { useActionHistory } from './useActionHistory'
 import type { HistoryViewFilter } from './useActionHistory'
 import { useAutoApproval, autoApprovalKey, type AutoApprovalEntry } from './useAutoApproval'
 import type { AutoApprovalChannel } from './features/approvals/autoApprovalChannel'
-import { useAlwaysApproveTag } from './useAlwaysApproveTag'
+import {
+  canOfferAlwaysApprove, keepsApplyingWhileRestricted, mayApplyWhileRestricted,
+} from './features/approvals/autoApprovalRules'
+import { useAutoApprovalRules } from './features/approvals/useAutoApprovalRules'
 import { useAuthenticatedApi } from './AuthContext'
 import { useAvatar } from './useAvatar'
 import { useVendorBranding } from './useVendorBranding'
 import { useResolveAction } from './useResolveAction'
 import { safeExternalUrl } from './utils/safeExternalUrl'
 import { ReviewRequest } from './features/approvals/ReviewRequest'
-import AutoApproveConfirmDialog from './components/AutoApproveConfirmDialog'
+import AutoApproveConfirmDialog, { KEEPS_APPLYING_COPY } from './components/AutoApproveConfirmDialog'
 import { ActionFields, entryFields } from './components/ActionFields'
 
 export type ActivityView = 'review' | 'history' | 'auto'
@@ -29,9 +32,14 @@ const PANE_BAR = 'flex h-9 flex-shrink-0 items-center border-b border-kumo-line'
 interface ActivityProps {
   overseer: RpcStub<Overseer>
   // True once the workspace has read restricted data (WorkspaceMetadata.containsRestrictedData).
-  // Latched actions are never auto-approved, so the always-approve affordance is hidden and
-  // existing rules are shown as suspended but stay revocable.
-  restricted?: boolean
+  // A rule applies under it only what the kernel says (`AutoApprovalRules.applies`), so "Always
+  // approve" is offered for those kinds alone. A stored rule that applies nothing says so and
+  // stays revocable. Required, because approving a push goes through the review of its commits
+  // while it is true (see useResolveAction).
+  restricted: boolean
+  // WorkspaceMetadata.rulesApplyWhileRestricted: once false, no rule applies anything under
+  // the latch, so no rule is offered and none reads as applying.
+  rulesApplyWhileRestricted?: boolean
   view: ActivityView
   onViewChange: (view: ActivityView) => void
   // Shared with the chat: a rule changed here has to reach the tray's own list.
@@ -148,6 +156,7 @@ function ActivityNotice({ icon, title, description, children }: {
 export default function Activity({
   overseer,
   restricted,
+  rulesApplyWhileRestricted,
   view,
   onViewChange,
   autoApproval,
@@ -162,7 +171,6 @@ export default function Activity({
     gatekeeperId: number
     resourceTitle: string
     actionKind: ActionKind
-    actionLabel: string
   } | null>(null)
 
   const toasts = useKumoToastManager()
@@ -182,7 +190,11 @@ export default function Activity({
     return groups
   }, [history.entries])
 
-  const { resolveAction, creationAccountModal } = useResolveAction(overseer, setProcessingActions)
+  // Under the latch a request decided by hand may be one whose rule the kernel stopped applying
+  // before this client was told: have every surface read its answer again.
+  const { resolveAction, reviewPush, creationAccountModal, pushReviewDialog } =
+    useResolveAction(overseer, setProcessingActions, restricted,
+      () => { if (restricted) autoApproval?.changed() })
 
   const handleToggleHook = async (hookId: number, enabled: boolean) => {
     setTogglingHooks(previous => new Set(previous).add(hookId))
@@ -201,8 +213,17 @@ export default function Activity({
     }
   }
 
-  const { alwaysApproveTag, isTagAutoApproved } =
-    useAlwaysApproveTag(overseer, setProcessingActions, autoApproval?.changed)
+  // The stored rule list, as in the chat's tray: a request whose rule exists can wait here
+  // behind an older one, and is not offered that rule again. The catalog is read under the
+  // latch only while Needs review shows a request a rule might still apply: it starts every
+  // gatekeeper it lists.
+  const { rules, alwaysApproveTag } = useAutoApprovalRules(overseer, {
+    vendors: false,
+    restricted: restricted === true,
+    applies: restricted === true && view === 'review' &&
+      pendingActions.some(record => record.type === 'action' && mayApplyWhileRestricted(record)),
+    rulesApply: rulesApplyWhileRestricted,
+  }, setProcessingActions, autoApproval)
 
   const toggleExpanded = (id: number) => {
     setExpandedActionId(previous => (previous === id ? null : id))
@@ -221,17 +242,16 @@ export default function Activity({
           <div className="min-h-0 flex-1 overflow-auto">
             {pendingActions.map(record => {
               const autoApproveTarget =
-                // Never auto-approved while restricted, so no rule is offered.
-                !restricted &&
+                // Offered where a rule would apply the request: the tray's own check.
                 record.type === 'action' && record.gatekeeperId !== undefined &&
                 record.description.actionKind !== undefined &&
-                record.description.autoApprovable === true
+                canOfferAlwaysApprove(
+                  { gatekeeperId: record.gatekeeperId, description: record.description }, rules)
                   ? {
                       actionId: record.id,
                       gatekeeperId: record.gatekeeperId,
                       resourceTitle: record.resourceTitle,
                       actionKind: record.description.actionKind,
-                      actionLabel: record.description.title,
                     }
                   : undefined
               return (
@@ -245,11 +265,10 @@ export default function Activity({
                   decide={{
                     onApprove: () => void resolveAction(record, 'approve'),
                     onReject: () => void resolveAction(record, 'deny'),
-                    onAlwaysApprove:
-                      autoApproveTarget &&
-                      !isTagAutoApproved(autoApproveTarget.gatekeeperId, autoApproveTarget.actionKind.tag)
-                        ? () => setConfirmAutoApprove(autoApproveTarget)
-                        : undefined,
+                    onReviewPush: () => reviewPush(record),
+                    onAlwaysApprove: autoApproveTarget
+                      ? () => setConfirmAutoApprove(autoApproveTarget)
+                      : undefined,
                   }}
                 />
               )
@@ -427,6 +446,7 @@ export default function Activity({
           <AutoApprovalPanel
             overseer={overseer}
             restricted={restricted}
+            rulesApplyWhileRestricted={rulesApplyWhileRestricted}
             reloadTrigger={autoApproval?.reloadTrigger}
             onChanged={autoApproval?.changed}
           />
@@ -438,12 +458,18 @@ export default function Activity({
     <div className="flex h-full flex-col bg-kumo-base">
       {renderActivityContent()}
 
-      {/* The workspace latched: the affordance is gone and confirming could only error. */}
-      {!restricted && confirmAutoApprove && (
+      {/* The kind stopped applying, or its rule was enabled meanwhile: the affordance is gone,
+          and confirming could only store a rule that does nothing or replace who enabled one. */}
+      {confirmAutoApprove &&
+          rules.applies(confirmAutoApprove.gatekeeperId, confirmAutoApprove.actionKind.tag) &&
+          !rules.isEnabled(confirmAutoApprove.gatekeeperId, confirmAutoApprove.actionKind.tag) && (
         <AutoApproveConfirmDialog
           open
-          actionLabel={confirmAutoApprove.actionLabel}
+          actionLabel={confirmAutoApprove.actionKind.label}
           resourceTitle={confirmAutoApprove.resourceTitle}
+          // This list reads no vendors: the kind's tag is all it has to go by.
+          keepsApplyingWhileRestricted={!restricted &&
+            keepsApplyingWhileRestricted(confirmAutoApprove.actionKind.tag, undefined)}
           isProcessing={processingActions.has(confirmAutoApprove.actionId)}
           onOpenChange={open => { if (!open) setConfirmAutoApprove(null) }}
           onConfirm={async () => {
@@ -455,6 +481,7 @@ export default function Activity({
         />
       )}
       {creationAccountModal}
+      {pushReviewDialog}
     </div>
   )
 }
@@ -462,16 +489,19 @@ export default function Activity({
 function AutoApprovalPanel({
   overseer,
   restricted,
+  rulesApplyWhileRestricted,
   reloadTrigger,
   onChanged,
 }: {
   overseer: RpcStub<Overseer>
   restricted?: boolean
+  rulesApplyWhileRestricted?: boolean
   reloadTrigger?: number
   /** Reports that a change made here has settled; see `AutoApprovalChannel`. */
   onChanged?: () => void
 }) {
-  const { entries, isLoading, loadError, pending, refresh, setEnabled } = useAutoApproval(overseer)
+  const { entries, isLoading, loadError, pending, refresh, setEnabled } =
+    useAutoApproval(overseer, restricted === true, rulesApplyWhileRestricted)
   const { authenticatedApi } = useAuthenticatedApi()
   const vendorBranding = useVendorBranding(authenticatedApi)
 
@@ -596,22 +626,32 @@ function AutoApprovalPanel({
                       {entry.actionKind.label}
                     </span>
                     <span className="mt-0.5 block text-[12px] leading-4 tracking-[-0.2px] text-kumo-inactive">
-                      {restricted
-                        // Rules don't apply while restricted; say so, but keep them revocable.
-                        ? "Won't apply: this workspace has read sensitive data, so actions always require manual approval."
+                      {entry.applies === false
+                        // The kernel applies nothing for this kind in the workspace as it is; say
+                        // so, but keep the rule revocable.
+                        ? "Won't apply: this workspace has read sensitive data, so this kind of action always requires manual approval."
                         : entry.orphaned
-                          ? 'This connection no longer offers this action; the rule still applies.'
+                          ? entry.applies
+                            ? 'This connection no longer offers this action; the rule still applies.'
+                            : 'This connection no longer offers this action.'
                           : entry.enabled
                             ? 'Applied without asking'
                             : 'Waits for your approval'}
                     </span>
+                    {/* Before the latch only: under it, the other kinds' rows say they stop. */}
+                    {!restricted && !entry.orphaned &&
+                        keepsApplyingWhileRestricted(entry.actionKind.tag, entry.vendorId) && (
+                      <span className="mt-0.5 block text-[12px] leading-4 tracking-[-0.2px] text-kumo-inactive">
+                        {KEEPS_APPLYING_COPY}
+                      </span>
+                    )}
                   </span>
                   <Switch
                     size="sm"
                     checked={entry.enabled}
-                    // A rule never fires while restricted, so enabling one is pointless; disabling
-                    // must stay possible.
-                    disabled={busy || (restricted === true && !entry.enabled)}
+                    // Enabling a rule the kernel would not apply is pointless; disabling must stay
+                    // possible.
+                    disabled={busy || (entry.applies === false && !entry.enabled)}
                     aria-label={`${entry.enabled ? 'Disable' : 'Enable'} auto-approval for ${entry.actionKind.label}`}
                     // Toggling here is the only way to turn a rule off, and the chat tray
                     // labels its requests from this same list, so it has to be told.

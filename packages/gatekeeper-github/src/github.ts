@@ -454,10 +454,11 @@ function remainingLabels(action: RemoveLabelsAction): string[] {
 
 /**
  * The approver-facing text for a staged action, rendered from the payload that will be applied so
- * every body, title, label and commit message the agent wrote is there to read in full. A push is
- * the one action whose content (git objects) cannot be shown as text, so its description is a
- * summary and never claims to be complete. Prose interpolates only the gatekeeper's logical ids
- * and the bound repository; agent arguments, enums included, sit in fields or code spans.
+ * every body, title, label and commit message the agent wrote is there to read in full. A push's
+ * content is its commits, which the Workshop shows from the workspace's git store
+ * (`Overseer.getPushReview()`), so its description is a summary and never claims to be complete.
+ * Prose interpolates only the gatekeeper's logical ids and the bound repository; agent arguments,
+ * enums included, sit in fields or code spans.
  */
 function describeGitHubAction(action: GitHubAction): RenderedDescription {
   const repo = `${action.owner}/${action.repo}`;
@@ -560,7 +561,9 @@ function describeGitHubAction(action: GitHubAction): RenderedDescription {
     }
     case "push": {
       const creating = action.expectedOldSha === ZERO_OID;
-      const description = creating
+      // The sentence names the branch through `codeSpan`, which is lossy; the ref this push
+      // moves and both heads are the fields, which show each exactly.
+      const builder = buildDescription(creating
         ? `Push commit ${codeSpan(action.newSha)} to ${repo}, ` +
           `creating branch ${codeSpan(action.branch)}.`
         : `Push commit ${codeSpan(action.newSha)} to branch ${codeSpan(action.branch)} of ${repo}, ` +
@@ -569,9 +572,13 @@ function describeGitHubAction(action: GitHubAction): RenderedDescription {
           (action.gatedBranch === true
             ? ` Branch ${codeSpan(action.branch)} is the repository's default branch or a protected ` +
               `branch, the repository is empty, or GitHub could not be asked which.`
-            : "");
-      // The commits themselves cannot be reviewed as text here, so no completeness claim.
-      return { description };
+            : ""))
+        .inline("Branch", action.branch);
+      if (!creating) builder.inline("Current head", action.expectedOldSha);
+      // The commits are reviewed through the Workshop's push review, not this text, so no
+      // completeness claim.
+      const { description, fields } = builder.inline("New head", action.newSha).finish();
+      return { description, fields };
     }
   }
 }

@@ -122,7 +122,7 @@ import {
   chatRequestIds, pendingChangeGroups, type PendingChange,
 } from "./features/approvals/pendingChangeGroups";
 import {
-  canOfferAlwaysApprove, type AutoApprovalRules,
+  canOfferAlwaysApprove, keepsApplyingWhileRestricted, mayApplyWhileRestricted,
 } from "./features/approvals/autoApprovalRules";
 import { useBulkResolve } from "./features/approvals/useBulkResolve";
 import { useActionOutcomes } from "./features/approvals/useActionOutcomes";
@@ -133,9 +133,10 @@ import {
   agentsNeedingAttention, deriveAgents, ownConversations,
 } from "./features/chat/agents/agentList";
 import { actionLogResumed, useActionEntries, useActions } from "./useActions";
-import { useAlwaysApproveTag } from "./useAlwaysApproveTag";
-import { useStandingRules } from "./features/approvals/useStandingRules";
+import { useAutoApprovalRules } from "./features/approvals/useAutoApprovalRules";
 import { useResolveAction } from "./useResolveAction";
+import { ApproveControl } from "./features/approvals/ApproveControl";
+import { isPush } from "./features/approvals/pushApproval";
 import type { ActivityView } from "./Activity";
 import type { AutoApprovalChannel } from "./features/approvals/autoApprovalChannel";
 import { safeExternalUrl } from "./utils/safeExternalUrl";
@@ -2400,8 +2401,13 @@ interface ChatInterfaceProps {
   // Whether the current user owns the workspace (see GatekeeperModalProps.ownsWorkspace).
   ownsWorkspace?: boolean;
   // True once the workspace has read restricted data (WorkspaceMetadata.containsRestrictedData).
-  // Latched actions are never auto-approved, so the always-approve affordance is hidden.
-  restricted?: boolean;
+  // A rule applies under it only what the kernel says (`AutoApprovalRules.applies`), so "Always
+  // approve" is offered for those kinds alone. Required, because approving a push goes through
+  // the review of its commits while it is true (see useResolveAction).
+  restricted: boolean;
+  // WorkspaceMetadata.rulesApplyWhileRestricted: once false, no rule applies anything under
+  // the latch, so no rule is offered and none reads as applying.
+  rulesApplyWhileRestricted?: boolean;
   selectedChatId: number | null;
   // The chat whose code the host's code view shows, when that isn't the selected chat: the
   // Workshop shows a spawned agent's chat over the chat the user works in, whose code it keeps
@@ -2633,6 +2639,7 @@ function ChatInterface({
   overseer,
   restricted,
   ownsWorkspace,
+  rulesApplyWhileRestricted,
   selectedChatId,
   codeChatId: codeChatIdProp,
   returnChatId,
@@ -4592,19 +4599,15 @@ function ChatInterface({
 
   // Pending "always approve this type" confirmation, opened from a pending action card.
   const [autoApproveConfirm, setAutoApproveConfirm] = useState<
-    { actionId: number; gatekeeperId: number; resourceTitle: string;
-      actionKind: ActionKind; actionLabel: string } | null
+    { actionId: number; gatekeeperId: number; resourceTitle: string; actionKind: ActionKind } | null
   >(null);
 
-  // Enable auto-approval of an action tag on its connection (gated by the confirm dialog). The
-  // server applies the now-eligible pending action(s) via its drain, and the action state flips to
-  // "approved" through the actions subscription -- so we don't optimistically mutate it here.
-  const { alwaysApproveTag, isTagAutoApproved, forgetOptimisticTags } =
-    useAlwaysApproveTag(overseer, setProcessingActions, autoApproval?.changed);
-
-  const { resolveAction, creationAccountModal } =
-    useResolveAction(overseer, setProcessingActions, (actionId, state) => {
+  const { resolveAction, reviewPush, creationAccountModal, pushReviewDialog } =
+    useResolveAction(overseer, setProcessingActions, restricted, (actionId, state) => {
       if (applyOptimisticActionState(actionId, state)) forceUpdate();
+      // Under the latch a request decided by hand may be one whose rule the kernel stopped
+      // applying before this client was told: have every surface read its answer again.
+      if (restricted) autoApproval?.changed();
     });
 
   // Everything the workspace is waiting on, grouped by the resource it touches, for the tray
@@ -4630,36 +4633,22 @@ function ChatInterface({
 
   // The real rule list, not an inference from a request still being pending: the drain stops at
   // the first manual gate and never skips ahead, so a covered request can sit behind an uncovered
-  // one indefinitely.
+  // one indefinitely. Turning a rule on is gated by the confirm dialog.
   const {
-    enabledRuleKeys,
+    rules: autoApprovalRules,
+    alwaysApproveTag,
     vendorIdByGatekeeper,
     isLoading: autoApprovalLoading,
     loadError: autoApprovalLoadError,
-    refresh: refreshAutoApproval,
-  } = useStandingRules(overseer, trayGroups.length > 0);
-  const autoApproveReload = autoApproval?.reloadTrigger;
-  // Re-read whenever a change settles anywhere in this view. The refreshed list is authoritative,
-  // including about a rule someone has just turned off, so the optimistic overlay has nothing left
-  // to add and must stop outranking it -- unless the read was overtaken or failed, which set
-  // nothing: retiring the overlay against a list that never landed would read a just-enabled rule
-  // as off.
-  const rulesReadFor = useRef(autoApproveReload);
-  useEffect(() => {
-    if (autoApproveReload === rulesReadFor.current) return;
-    rulesReadFor.current = autoApproveReload;
-    void refreshAutoApproval().then(applied => {
-      if (applied) forgetOptimisticTags();
-    });
-  }, [autoApproveReload, refreshAutoApproval, forgetOptimisticTags]);
-
-  const autoApprovalRules: AutoApprovalRules = useMemo(() => ({
-    // A rule enabled in this session counts before the catalog is re-read, so the affordance
-    // disappears on the click rather than a round trip later.
-    isEnabled: (gatekeeperId, tag) =>
-      enabledRuleKeys.has(`${gatekeeperId}:${tag}`) || isTagAutoApproved(gatekeeperId, tag),
+  } = useAutoApprovalRules(overseer, {
+    vendors: trayGroups.length > 0,
     restricted: restricted === true,
-  }), [enabledRuleKeys, isTagAutoApproved, restricted]);
+    // Not the latch alone: this component is always mounted, and the catalog starts every
+    // gatekeeper it lists. While the queue has not loaded nothing is asked, and nothing offered.
+    applies: restricted === true &&
+      trayGroups.some(group => group.entries.some(mayApplyWhileRestricted)),
+    rulesApply: rulesApplyWhileRestricted,
+  }, setProcessingActions, autoApproval);
 
   // The pending snapshot pages in, and a run that trusted a partial one could apply a later
   // request while earlier ones on the same connection were still out of sight.
@@ -4692,6 +4681,7 @@ function ChatInterface({
     processing: processingActions,
     onApprove: (entry: PendingChange) => void resolveAction(entry, "approve"),
     onReject: (entry: PendingChange) => void resolveAction(entry, "deny"),
+    onReviewPush: reviewPush,
     onAlwaysApprove: (entry: PendingChange) => {
       if (!entry.description.actionKind) return;
       setAutoApproveConfirm({
@@ -4699,11 +4689,10 @@ function ChatInterface({
         gatekeeperId: entry.gatekeeperId,
         resourceTitle: entry.resourceTitle,
         actionKind: entry.description.actionKind,
-        actionLabel: entry.description.title,
       });
     },
     onManageRules: () => onViewActivity?.("auto"),
-  }), [processingActions, resolveAction, onViewActivity]);
+  }), [processingActions, resolveAction, reviewPush, onViewActivity]);
 
   // The queue belongs to the workspace, not to whichever conversation happens to be open, so it
   // docks above the new-chat composer as well as the in-chat one. Going back to the conversation
@@ -5416,7 +5405,6 @@ function ChatInterface({
             gatekeeperId: log.gatekeeperId,
             resourceTitle: log.resourceTitle,
             actionKind: log.description.actionKind,
-            actionLabel: log.description.title,
           }
         : undefined;
 
@@ -5460,12 +5448,14 @@ function ChatInterface({
           disabled={decisionLocked}
           describedBy={describedBy}
         />
-        <ResolveButton
-          tone="approve"
+        <ApproveControl
+          record={log}
+          restricted={restricted}
           variant={isBlocking ? "filled" : "quiet"}
-          onClick={() => void resolveAction(log, "approve")}
           disabled={decisionLocked}
           describedBy={describedBy}
+          onApprove={() => void resolveAction(log, "approve")}
+          onReviewPush={() => reviewPush(log)}
         />
       </>
     ) : null;
@@ -5501,11 +5491,15 @@ function ChatInterface({
       return (
         <div className="group/work max-w-[860px] text-[14px] leading-5 tracking-[-0.25px] text-kumo-subtle">
           <div className="rounded-2xl border border-kumo-brand/40 bg-kumo-brand/10 px-4 py-3">
-            <div className="flex items-start gap-3">
+            {/* The controls wrap below the request rather than squeeze it, and among themselves
+                where the callout is narrower than they are: a push adds "Review commits" to
+                them. The request's minimum leaves the icon its place on the first line at any
+                width. */}
+            <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
               <span className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-kumo-tint text-kumo-brand" aria-hidden="true">
                 <ShieldCheck size={20} weight="fill" />
               </span>
-              <div className="min-w-0 flex-1">
+              <div className="min-w-[min(12rem,calc(100%-3rem))] flex-1">
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
                   <span className="min-w-0 truncate font-medium text-kumo-default">
                     {log.description.title}
@@ -5521,9 +5515,9 @@ function ChatInterface({
                     <ActionFields fields={entryFields(log)} uncapped={restricted} />
                   </div>
                 )}
-                {incomplete && <IncompleteDescriptionNotice id={incompleteId} className="mt-2" />}
+                {incomplete && <IncompleteDescriptionNotice id={incompleteId} push={isPush(log)} className="mt-2" />}
               </div>
-              <div className="ml-3 flex flex-shrink-0 items-center gap-1 self-center">
+              <div className="ml-auto flex max-w-full flex-shrink-0 flex-wrap items-center justify-end gap-1 self-center pl-3">
                 {actionControls}
               </div>
             </div>
@@ -5544,11 +5538,11 @@ function ChatInterface({
 
     return (
       <div className="group/work max-w-[860px] text-[14px] leading-5 tracking-[-0.25px] text-kumo-subtle">
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
           <button
             type="button"
             onClick={() => toggleActionExpansion(msg.actionId)}
-            className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-xl px-1.5 py-1 text-left transition-colors duration-150 ease-out hover:text-kumo-default focus-visible:text-kumo-default focus-visible:outline-none"
+            className="flex min-w-[8rem] flex-1 cursor-pointer items-center gap-3 rounded-xl px-1.5 py-1 text-left transition-colors duration-150 ease-out hover:text-kumo-default focus-visible:text-kumo-default focus-visible:outline-none"
             aria-expanded={open}
           >
             {titleIcon}
@@ -5567,9 +5561,13 @@ function ChatInterface({
             </span>
           </button>
           {/* Only reached when the tray could not load its queue, or loaded it without this
-              request: the cases a non-blocking request still has to be answered here. */}
+              request: the cases a non-blocking request still has to be answered here. The
+              controls wrap among themselves where the pane is narrower than they are: a push
+              that also offers a rule carries four. */}
           {actionControls && (
-            <div className="flex flex-shrink-0 items-center gap-1">{actionControls}</div>
+            <div className="ml-auto flex max-w-full flex-shrink-0 flex-wrap items-center justify-end gap-1">
+              {actionControls}
+            </div>
           )}
         </div>
         {showDescription && (
@@ -5583,7 +5581,7 @@ function ChatInterface({
                 <ActionFields fields={entryFields(log)} uncapped={restrictedReview} />
               </div>
             )}
-            {incomplete && <IncompleteDescriptionNotice id={incompleteId} />}
+            {incomplete && <IncompleteDescriptionNotice id={incompleteId} push={isPush(log)} />}
             {resourceMeta}
           </div>
         )}
@@ -7095,12 +7093,18 @@ function ChatInterface({
         onConfirm={handleDeleteConfirm}
       />
 
-      {/* The workspace latched: the affordance is gone and confirming could only error. */}
-      {!restricted && autoApproveConfirm && (
+      {/* The kind stopped applying, or its rule was enabled meanwhile: the affordance is gone,
+          and confirming could only store a rule that does nothing or replace who enabled one. */}
+      {autoApproveConfirm &&
+          autoApprovalRules.applies(autoApproveConfirm.gatekeeperId, autoApproveConfirm.actionKind.tag) &&
+          !autoApprovalRules.isEnabled(autoApproveConfirm.gatekeeperId, autoApproveConfirm.actionKind.tag) && (
         <AutoApproveConfirmDialog
           open
-          actionLabel={autoApproveConfirm.actionLabel}
+          actionLabel={autoApproveConfirm.actionKind.label}
           resourceTitle={autoApproveConfirm.resourceTitle}
+          keepsApplyingWhileRestricted={!restricted && keepsApplyingWhileRestricted(
+            autoApproveConfirm.actionKind.tag,
+            vendorIdByGatekeeper.get(autoApproveConfirm.gatekeeperId))}
           isProcessing={processingActions.has(autoApproveConfirm.actionId)}
           onOpenChange={(open) => {
             if (!open) setAutoApproveConfirm(null);
@@ -7115,6 +7119,7 @@ function ChatInterface({
       )}
 
       {creationAccountModal}
+      {pushReviewDialog}
 
       {/* Accept flow for an agent connection request: pre-seeds the gatekeeper modal and, on
           creation, finalizes the request so the agent resumes. */}

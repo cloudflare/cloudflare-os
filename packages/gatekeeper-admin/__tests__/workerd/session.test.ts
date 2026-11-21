@@ -225,7 +225,11 @@ describe("the facet", () => {
         "reads do.");
     expect(unwrappedDocs).toContain(
         "Every answer of the view marks THIS workspace as holding restricted data, as get() and " +
-        "readImage() do.");
+        "readImage() do");
+    // And what a rule still applies there: never this session's reply.
+    expect(unwrappedDocs).toContain(
+        "from then on a rule applies nothing here but an admins-only note, a change of status and " +
+        "a claim or release of the whole binding, never a reply through this session.");
     // How a session is handed to a spawned agent: never from the report id.
     expect(HAND_WRITTEN_TYPES).toContain("never from the report id");
     expect(HAND_WRITTEN_TYPES).toContain("crypto.randomUUID()");

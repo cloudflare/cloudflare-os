@@ -129,6 +129,12 @@ describe("auto-approval policy", () => {
       using gadget = await ws.overseer.createGadget("Test Gadget", undefined, "TEST_GADGET");
       await gadget.bind("TEST_THING", ws.gatekeeperId);
       await ws.overseer.setAutoApprovedActionKind(ws.gatekeeperId, SET_VALUE);
+      await expect(ws.overseer.listPreApprovableActions()).resolves.toEqual([
+        expect.objectContaining({
+          gatekeeperId: ws.gatekeeperId, actionKind: SET_VALUE, alreadyEnabled: true,
+          ruleApplies: true,
+        }),
+      ]);
       await ws.session.readValue(true);
 
       // Actions still pend, but the rule the user enabled before the latch must not fire.
@@ -139,10 +145,11 @@ describe("auto-approval policy", () => {
       expect(held.state).toBe("pending");
 
       // The catalog still names each existing rule's connection so it stays identifiable and
-      // revocable in the UI.
+      // revocable in the UI, and says the rule applies nothing.
       await expect(ws.overseer.listPreApprovableActions()).resolves.toEqual([
         expect.objectContaining({
           gatekeeperId: ws.gatekeeperId, actionKind: SET_VALUE, alreadyEnabled: true,
+          ruleApplies: false,
         }),
       ]);
 
