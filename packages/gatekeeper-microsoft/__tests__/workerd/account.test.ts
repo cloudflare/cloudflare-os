@@ -10,7 +10,7 @@ import worker from "../../src/microsoft";
 import type { PublicGrant } from "../../src/microsoft-credentials";
 import { SHAREPOINT_RESOURCE, getRedirectUri, scopesFor, type Env } from "../../src/microsoft-env";
 import {
-  CLIENT_ID, FakeGraph, LOGIN, MALLORY, OTHER_TENANT, PHILLIP, SARAH, TENANT, accountStub, failure, hooks,
+  CLIENT_ID, FakeGraph, LOGIN, MALLORY, ORIGIN, OTHER_TENANT, PHILLIP, SARAH, SITE_ID, TENANT, accountStub, failure, hooks,
   json, reconnectAs, seedAccount, storedGrant, unwrap,
 } from "./fake-graph";
 
@@ -499,5 +499,88 @@ describe("disconnecting", () => {
     unwrap(await hooks().user(id, "revoke"));
     expect(failure(await hooks().account(id, "commitReconnect", staged.handoff.ticket))).toMatch(/No reconnect is awaiting/);
     expect(await storedGrant(id)).toBeUndefined();
+  });
+});
+
+describe("the sites a Sites.Selected connection can open", () => {
+  const MARKETING = "contoso.sharepoint.com,dddddddd-0000-0000-0000-000000000004,eeeeeeee-0000-0000-0000-000000000005";
+  const named = [
+    { id: SITE_ID, displayName: "Engineering", webUrl: `${ORIGIN}/sites/Engineering` },
+    { id: MARKETING, displayName: "Marketing", webUrl: `${ORIGIN}/sites/Marketing` },
+  ];
+
+  /** A tenant whose search names both sites, and whose libraries open for the sites in `granted`. */
+  function tenant(granted: Set<string>) {
+    return new FakeGraph()
+      .on("POST", /^\/v1\.0\/search\/query$/, () => json({ value: [{ hitsContainers: [{ hits: named.map(resource => ({ resource })) }] }] }))
+      .on("POST", /^\/v1\.0\/\$batch$/, request => json({
+        responses: (JSON.parse(request.body!) as { requests: { id: string; url: string }[] }).requests
+          .map(sub => ({ id: sub.id, status: granted.has(sub.url.split("/")[1]!) ? 200 : 403, body: {} })),
+      }))
+      .install();
+  }
+  const searches = (graph: FakeGraph) => graph.count("POST", /search\/query/);
+  const sitesOf = async (id: string) => unwrap<{ sites: { name: string }[]; complete: boolean }>(await hooks().account(id, "grantedSites"));
+  /** Makes what the account keeps look `ms` old. */
+  const age = (id: string, ms: number) => runInDurableObject(accountStub(id), async (_instance, state) => {
+    const kept = state.storage.kv.get<{ fetchedAt: number }>("grantedSites")!;
+    state.storage.kv.put("grantedSites", { ...kept, fetchedAt: Date.now() - ms });
+  });
+
+  it("looks for them once, and answers from what it kept", async () => {
+    const graph = tenant(new Set([SITE_ID]));
+    const id = await seedAccount(graph);
+    expect(await sitesOf(id)).toMatchObject({ sites: [{ name: "Engineering" }], complete: true });
+    const asked = graph.requests.length;
+    expect(await sitesOf(id)).toMatchObject({ sites: [{ name: "Engineering" }], complete: true });
+    expect(graph.requests.length).toBe(asked);
+  });
+
+  it("answers at once from what it kept past five minutes, and looks again behind the answer", async () => {
+    const granted = new Set([SITE_ID]);
+    const graph = tenant(granted);
+    const id = await seedAccount(graph);
+    await sitesOf(id);
+    granted.add(MARKETING);
+    await age(id, 6 * 60_000);
+    expect((await sitesOf(id)).sites.map(site => site.name)).toEqual(["Engineering"]);
+    await vi.waitFor(async () => expect((await sitesOf(id)).sites.map(site => site.name)).toEqual(["Engineering", "Marketing"]));
+    expect(searches(graph)).toBe(2);
+  });
+
+  it("waits to look again for what it kept a day ago", async () => {
+    const granted = new Set([SITE_ID]);
+    const graph = tenant(granted);
+    const id = await seedAccount(graph);
+    await sitesOf(id);
+    granted.add(MARKETING);
+    await age(id, 25 * 60 * 60_000);
+    expect((await sitesOf(id)).sites.map(site => site.name)).toEqual(["Engineering", "Marketing"]);
+  });
+
+  it("keeps nothing while no site is granted, so the first one granted shows the next time", async () => {
+    const granted = new Set<string>();
+    const graph = tenant(granted);
+    const id = await seedAccount(graph);
+    expect(await sitesOf(id)).toEqual({ sites: [], complete: true });
+    expect(await storageKeys(id)).not.toContain("grantedSites");
+    granted.add(MARKETING);
+    expect((await sitesOf(id)).sites.map(site => site.name)).toEqual(["Marketing"]);
+    // And a site taken away is dropped once looked for again, leaving nothing kept.
+    granted.clear();
+    await age(id, 25 * 60 * 60_000);
+    expect(await sitesOf(id)).toEqual({ sites: [], complete: true });
+    expect(await storageKeys(id)).not.toContain("grantedSites");
+  });
+
+  it("looks again under a new connection", async () => {
+    const graph = tenant(new Set([SITE_ID]));
+    const id = await seedAccount(graph);
+    await sitesOf(id);
+    await runInDurableObject(accountStub(id), async (_instance, state) => {
+      state.storage.kv.put("grantedSites", { ...state.storage.kv.get<object>("grantedSites")!, generation: "another" });
+    });
+    await sitesOf(id);
+    expect(searches(graph)).toBe(2);
   });
 });

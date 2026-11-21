@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   MicrosoftConfigurationError, SHAREPOINT_RESOURCE, acceptsTenant, effectiveSharePoint, fixedTenant, getBasePath, getRedirectUri,
-  grantedResourcePatterns, grantedSharePoint, oauthEndpoints, scopesFor, sharePointAccess, tenantPolicy, type Env,
+  grantedResourcePatterns, grantedSharePoint, oauthEndpoints, scopesFor, selectedSiteUrls, sharePointAccess, tenantPolicy, type Env,
   OUTLOOK_RESOURCE, effectiveOutlookAccess, grantedOutlookAccess, grantsSharedMailboxes, outlookAccess,
 } from "../src/microsoft-env";
 
@@ -210,5 +210,15 @@ describe("reading a grant", () => {
     expect(effectiveSharePoint(env(), read)?.access).toBe("read");
     expect(effectiveSharePoint(env({ MICROSOFT_SHAREPOINT_ACCESS: "read" }), write)?.access).toBe("read");
     expect(effectiveSharePoint(env({ MICROSOFT_SHAREPOINT_ACCESS: "read" }), ["User.Read"])).toBeNull();
+  });
+});
+
+describe("selectedSiteUrls", () => {
+  it("reads the named sites' links, separated by commas or whitespace, each once", () => {
+    expect(selectedSiteUrls(env())).toEqual([]);
+    expect(selectedSiteUrls(env({ MICROSOFT_SHAREPOINT_SELECTED_SITES: " , " }))).toEqual([]);
+    expect(selectedSiteUrls(env({
+      MICROSOFT_SHAREPOINT_SELECTED_SITES: "https://contoso.sharepoint.com/sites/Eng, https://contoso.sharepoint.com/sites/Mkt\n https://contoso.sharepoint.com/sites/Eng,",
+    }))).toEqual(["https://contoso.sharepoint.com/sites/Eng", "https://contoso.sharepoint.com/sites/Mkt"]);
   });
 });

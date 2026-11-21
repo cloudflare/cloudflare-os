@@ -293,20 +293,22 @@ function isSystemSite(site: GraphSite): boolean {
     || /^https:\/\/[^/]+\/contentstorage\//i.test(site.webUrl);
 }
 
+/** Whether a site's name or description holds `query`, or there is no query. */
+export function siteMatches(site: GraphSite, query: string | undefined): boolean {
+  const needle = query?.toLowerCase();
+  return needle === undefined || site.name.toLowerCase().includes(needle) || (site.description ?? "").toLowerCase().includes(needle);
+}
+
 /**
  * One page of the sites a user can open, for browsing: on the first page, the home site and the
  * sites they follow (what they most likely mean), then everything Microsoft Search finds; OneDrives
- * and system sites left out, each site once. With a query, every source is narrowed to it.
- * @param selected Whether the grant reaches only the sites granted to the app (`Sites.Selected`).
- * Search names every site the user can open, so only those whose library opens are kept.
+ * and system sites left out, each site once. With a query, every source is narrowed to it. Under
+ * `Sites.Selected` this names sites the app can't open: see {@link grantedSites}.
  * @returns The sites, the next page's offset, and the search failure when only the first two
  * sources answered.
  */
-export async function browseSites(api: GraphApi, query: string | undefined, from: number, size: number, selected = false):
+export async function browseSites(api: GraphApi, query: string | undefined, from: number, size: number):
     Promise<{ sites: GraphSite[]; nextFrom?: number; searchError?: unknown }> {
-  const needle = query?.toLowerCase();
-  const matches = (site: GraphSite) => needle === undefined || site.name.toLowerCase().includes(needle)
-    || (site.description ?? "").toLowerCase().includes(needle);
   const [pinned, search] = await Promise.all([
     from > 0 ? Promise.resolve([]) : Promise.all([
       getSite(api, "root").catch(() => null),
@@ -314,34 +316,97 @@ export async function browseSites(api: GraphApi, query: string | undefined, from
     ]).then(([root, followed]) => [root, ...followed]),
     searchSites(api, query, from, size).then(result => ({ result }), (searchError: unknown) => ({ searchError })),
   ]);
-  const seen = new Set<string>();
-  const keep = (site: GraphSite | null): site is GraphSite => {
-    if (site === null || site.personal || isSystemSite(site) || seen.has(site.id)) return false;
-    seen.add(site.id);
-    return true;
-  };
-  const first = pinned.filter((site): site is GraphSite => site !== null && matches(site)).filter(keep);
-  const open = (sites: GraphSite[]) => selected ? reachableSites(api, sites) : Promise.resolve(sites);
-  if ("searchError" in search) return { sites: await open(first), searchError: search.searchError };
+  const keep = distinctBrowsable();
+  const first = pinned.filter((site): site is GraphSite => site !== null && siteMatches(site, query)).filter(keep);
+  if ("searchError" in search) return { sites: first, searchError: search.searchError };
   return {
-    sites: await open([...first, ...search.result.sites.filter(keep)]),
+    sites: [...first, ...search.result.sites.filter(keep)],
     ...(search.result.nextFrom !== undefined ? { nextFrom: search.result.nextFrom } : {}),
   };
 }
 
+/** A filter keeping each site worth offering once: no OneDrives, no system sites. */
+function distinctBrowsable(): (site: GraphSite | null) => site is GraphSite {
+  const seen = new Set<string>();
+  return (site): site is GraphSite => {
+    if (site === null || site.personal || isSystemSite(site) || seen.has(site.id)) return false;
+    seen.add(site.id);
+    return true;
+  };
+}
+
+/** The sites a `Sites.Selected` connection can open, by name, and whether every candidate could be checked. */
+export type GrantedSites = { sites: GraphSite[]; complete: boolean };
+
+/** How many sites Microsoft Search is asked for at a time when every site is wanted, its most. */
+const GRANTED_SEARCH_SIZE = 500;
+/** The most search pages read for the granted sites: 10,000 sites. Past it the answer is incomplete. */
+const MAX_GRANTED_SEARCH_PAGES = 20;
+/** How many batches of site checks are in flight at once: more gains little and invites throttling (measured live). */
+export const SITE_CHECKS_AT_ONCE = 4;
+
 /**
- * The sites among `sites` this connection can open, asked together. Under `Sites.Selected`, Graph
- * answers any site's own metadata but refuses its library unless the site was granted to the app,
- * so the library is what's asked for. A site without one isn't offered.
+ * Every site a `Sites.Selected` connection can open. Graph lists the sites granted to an app to
+ * nobody, and Microsoft Search names every site the user can open whether granted or not (both
+ * verified live), so each site Search names, and the home site, is asked for its library: see
+ * {@link checkSites}. That is a request per twenty sites, so the caller keeps the answer.
+ * Followed sites aren't asked for: under `Sites.Selected` Graph refuses to list them.
+ * @returns The sites, and `complete: false` when Search failed part-way or named more sites than
+ * are read, or a site's check was throttled: what was found stands, and others may exist.
  */
-export async function reachableSites(api: GraphApi, sites: readonly GraphSite[]): Promise<GraphSite[]> {
-  const open = new Set<string>();
-  for (let start = 0; start < sites.length; start += MAX_BATCH_REQUESTS) {
-    const answers = await api.batch(sites.slice(start, start + MAX_BATCH_REQUESTS)
-      .map((site, index) => ({ id: String(start + index), method: "GET" as const, url: `sites/${site.id}/drive?$select=id` })));
-    for (const [id, answer] of answers) if (answer.status === 200) open.add(id);
+export async function grantedSites(api: GraphApi): Promise<GrantedSites> {
+  const keep = distinctBrowsable();
+  const sites: GraphSite[] = [];
+  let complete = true;
+  const check = async (candidates: (GraphSite | null)[]) => {
+    const checked = await checkSites(api, candidates.filter(keep));
+    sites.push(...checked.sites);
+    complete &&= checked.complete;
+  };
+  const root = getSite(api, "root").catch(() => null);
+  let from: number | undefined = 0;
+  try {
+    for (let pages = 0; from !== undefined; pages++) {
+      if (pages === MAX_GRANTED_SEARCH_PAGES) {
+        complete = false;
+        break;
+      }
+      const page = await searchSites(api, undefined, from, GRANTED_SEARCH_SIZE);
+      await check(pages === 0 ? [await root, ...page.sites] : page.sites);
+      from = page.nextFrom;
+    }
+  } catch (error) {
+    // Search (down for a day on a new tenant) or a check failing on Microsoft's side leaves what was
+    // found, or the home site.
+    if (!(error instanceof GraphApiError && error.status >= 500)) throw error;
+    complete = false;
+    if (from === 0) await check([await root]);
   }
-  return sites.filter((_, index) => open.has(String(index)));
+  return { sites: sites.toSorted((a, b) => a.name.localeCompare(b.name)), complete };
+}
+
+/**
+ * The sites among `sites` a `Sites.Selected` connection can open. Graph answers any site's own
+ * metadata but refuses its library (403) unless the site was granted to the app, so the library is
+ * what's asked for. A site without one (404) isn't offered. Any other answer, such as throttling
+ * that outlasted the batch's retries, leaves the site out and the result incomplete.
+ */
+export async function checkSites(api: GraphApi, sites: readonly GraphSite[]): Promise<GrantedSites> {
+  const chunks: GraphSite[][] = [];
+  for (let start = 0; start < sites.length; start += MAX_BATCH_REQUESTS) chunks.push(sites.slice(start, start + MAX_BATCH_REQUESTS));
+  const open = new Set<GraphSite>();
+  let complete = true;
+  for (let start = 0; start < chunks.length; start += SITE_CHECKS_AT_ONCE) {
+    await Promise.all(chunks.slice(start, start + SITE_CHECKS_AT_ONCE).map(async chunk => {
+      const answers = await api.batch(chunk.map((site, index) => ({ id: String(index), method: "GET" as const, url: `sites/${site.id}/drive?$select=id` })));
+      chunk.forEach((site, index) => {
+        const status = answers.get(String(index))?.status;
+        if (status === 200) open.add(site);
+        else if (status !== 403 && status !== 404) complete = false;
+      });
+    }));
+  }
+  return { sites: sites.filter(site => open.has(site)), complete };
 }
 
 // -- lists --------------------------------------------------------------------------------------

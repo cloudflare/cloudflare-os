@@ -79,6 +79,8 @@ export type SessionHost = ReadAuthority & {
   access: SharePointAccess;
   /** Whether the grant reaches every site the user can open, or only those granted to the app. */
   sites: SharePointSites;
+  /** Under `Sites.Selected`, the sites the connection can open, kept by its account. */
+  grantedSites(): Promise<reads.GrantedSites>;
   /** Runs a read as the connection, replayed once on a credential refresh. */
   read<T>(op: (api: GraphApi) => Promise<T>): Promise<T>;
   cached<T>(key: string, ttlMs: number, load: () => Promise<T>): Promise<T>;
@@ -438,8 +440,12 @@ export class SharePointReaderImpl extends RpcTarget implements SharePointReader 
         const from = token === undefined ? 0 : Number(token);
         // The user's own OneDrive heads the first page: it is a personal site, which site search
         // and followed sites leave out, and otherwise nothing names it.
+        // Under Sites.Selected the account knows every site there is to list, so there is one page.
+        const browse = (api: GraphApi): ReturnType<typeof reads.browseSites> => this.ctx.host.sites === "selected"
+          ? this.ctx.host.grantedSites().then(granted => ({ sites: granted.sites.filter(site => reads.siteMatches(site, query)) }))
+          : reads.browseSites(api, query, from, perPage);
         const [page, oneDrive] = await this.ctx.host.read(api => Promise.all([
-          reads.browseSites(api, query, from, perPage, this.ctx.host.sites === "selected"),
+          browse(api),
           from === 0 ? reads.myOneDriveSite(api) : Promise.resolve(null),
         ]));
         const sites = oneDrive !== null && (query === undefined || /one\s*drive/i.test(query) || oneDrive.name.toLowerCase().includes(query.toLowerCase()))

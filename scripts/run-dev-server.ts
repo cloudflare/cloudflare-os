@@ -533,7 +533,7 @@ const PASSTHROUGH_GATEKEEPER_VARS: Record<string, string[]> = {
   // refuses to start, the most agents may do in SharePoint, Outlook and Calendar (unset: write, send
   // and schedule), and whether SharePoint asks for every site or only those granted to the app
   // (unset, every site).
-  "gatekeeper-microsoft": ["MICROSOFT_TENANT_ID", "MICROSOFT_ALLOWED_TENANT_IDS", "MICROSOFT_SHAREPOINT_ACCESS", "MICROSOFT_SHAREPOINT_SITES", "MICROSOFT_OUTLOOK_ACCESS", "MICROSOFT_CALENDAR_ACCESS"],
+  "gatekeeper-microsoft": ["MICROSOFT_TENANT_ID", "MICROSOFT_ALLOWED_TENANT_IDS", "MICROSOFT_SHAREPOINT_ACCESS", "MICROSOFT_SHAREPOINT_SITES", "MICROSOFT_SHAREPOINT_SELECTED_SITES", "MICROSOFT_OUTLOOK_ACCESS", "MICROSOFT_CALENDAR_ACCESS"],
 };
 
 for (const gk of gatekeepers) {
