@@ -227,11 +227,11 @@ function reads(node: ESTree.Node, name: string): boolean {
   return node.type === "MemberExpression" && !node.computed && named(node.property, name);
 }
 
-/** The name a property is written under, quoted or not; undefined for a spread or a computed key. */
+/** The name a property is written under, quoted or not; undefined for a spread or a key computed at run time. */
 function keyName(property: ESTree.Node): string | undefined {
-  if (property.type !== "Property" || property.computed) return undefined;
-  const { key } = property;
-  if (key.type === "Identifier") return key.name;
+  if (property.type !== "Property") return undefined;
+  const { key, computed } = property;
+  if (key.type === "Identifier") return computed ? undefined : key.name;
   return key.type === "Literal" && typeof key.value === "string" ? key.value : undefined;
 }
 
@@ -245,14 +245,19 @@ function unwrap(node: ESTree.Node | null | undefined): ESTree.Node | null | unde
   return value;
 }
 
-/** What a value written in place may turn out to be: itself, or a branch of `?:`, `??`, `||` or `&&`. */
+/**
+ * What a value written in place may turn out to be: itself, or a branch of `?:`, `??`, `||` or
+ * `&&`. An `undefined` on the left of `??` or `||` gives way to the right and is never the value.
+ */
 function* branches(node: ESTree.Node | null | undefined): Generator<ESTree.Node> {
   const value = unwrap(node);
   if (value?.type === "ConditionalExpression") {
     yield* branches(value.consequent);
     yield* branches(value.alternate);
   } else if (value?.type === "LogicalExpression") {
-    yield* branches(value.left);
+    for (const left of branches(value.left)) {
+      if (value.operator === "&&" || !named(left, "undefined")) yield left;
+    }
     yield* branches(value.right);
   } else if (value) {
     yield value;

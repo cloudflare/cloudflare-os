@@ -180,7 +180,11 @@ ruleTester.run("new-gatekeeper-observer-contract", plugin.rules["new-gatekeeper-
       "{ title, subresources }",
       "{ title, \"subresources\": [id] }",
       "{ title, subresources: [id] } satisfies ObservationDescription",
+      "{ title, [\"subresources\"]: [id] }",
       "{ title, subresources: id ? [id] : [] }",
+      // An `undefined` on the left of `??` or `||` gives way to the fallback.
+      "{ title, subresources: (id ? [id] : undefined) ?? [] }",
+      "{ title, subresources: (scoped ? ids : undefined) || all }",
       // A description built elsewhere is checked by its helper's type, not here.
       "observation",
       "scoped ? { title, subresources: ids } : observation",
@@ -251,6 +255,7 @@ ruleTester.run("new-gatekeeper-observer-contract", plugin.rules["new-gatekeeper-
       "{ title, subresources: id ? [id] : undefined }",
       "{ title, subresources: (id ? undefined : [id]) as string[] }",
       "{ title, subresources: ids ?? undefined }",
+      "{ title, subresources: scoped && undefined }",
       // Each branch written at the call is one that may be sent.
       "scoped ? { title, subresources: ids } : { title }",
       "given ?? { title }",
@@ -266,6 +271,7 @@ ruleTester.run("new-gatekeeper-observer-contract", plugin.rules["new-gatekeeper-
     ...[
       call("{ title, subresources: [], excludeObservers: [id] }"),
       call("{ title, subresources: [], \"excludeObservers\": [id] }"),
+      call("{ title, subresources: [], [\"excludeObservers\"]: [id] }"),
       `observation.excludeObservers = denied;\n${call("observation")}`,
     ].map(code => ({ code, errors: [{ messageId: "excludeObservers" }] })),
   ],
