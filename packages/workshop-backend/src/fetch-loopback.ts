@@ -22,6 +22,13 @@ export type FetchLoopbackProps = {
   executionId?: string;
 
   /**
+   * Whether an agent itself sends the requests, as the webFetch tool and fetch() in executeCode
+   * do, which subjects responses to the site's Content-Signal. A gadget's and a gatekeeper's
+   * requests are not agent-driven, even when an agent's executeCode call drives the gatekeeper.
+   */
+  agentDriven: boolean;
+
+  /**
    * The policy as it stood when the fetcher was minted, which it applies without asking the
    * workspace. Absent: ask the workspace on every request.
    */
@@ -73,14 +80,10 @@ const RESERVED_HEADER_PREFIX = "cloudflare-os-fetch-";
  */
 export class FetchLoopback extends WorkerEntrypoint<Cloudflare.Env, FetchLoopbackProps> {
   fetch(request: Request): Promise<Response> {
-    let { overseerId, caller, executionId, snapshot } = this.ctx.props;
+    let { overseerId, caller, executionId, agentDriven, snapshot } = this.ctx.props;
     let ns = this.ctx.exports.OverseerDurableObject;
     let ask = (href: string) => ns.get(ns.idFromString(overseerId))
         .authorizeFetch(caller, executionId, request.method, href);
-    // An agent's own requests, from the webFetch tool or fetch() in executeCode, are agent-driven.
-    // A gadget's are not, and nor are a gatekeeper's, the only fetchers minted with a snapshot,
-    // even when an agent's executeCode call drives the gatekeeper.
-    let agentDriven = caller.from === "agent" && snapshot === undefined;
     return sendFetch(request, snapshot ? snapshotAuthorizer(snapshot, caller, ask) : ask,
                      { agentDriven });
   }

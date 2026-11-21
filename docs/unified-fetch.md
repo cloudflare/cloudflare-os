@@ -51,8 +51,8 @@ All four are minted by `OverseerImpl.makeFetchLoopback()`. Nothing else can fetc
 - **User-agent.** Always `Cloudflare-OS/1.0`.
 - **Content signals.** For an agent-driven request, the response is refused if it sets
   `Content-Signal: ai-input=no`. Agent-driven means the `webFetch` tool's requests and `fetch()`
-  called directly from `executeCode`: `FetchLoopback.fetch()` treats an agent caller's requests as
-  agent-driven unless it has a snapshot. A gadget's requests and a gatekeeper's are not, even when
+  called directly from `executeCode`, whose fetchers `makeFetchLoopback()` mints with
+  `agentDriven: true`. A gadget's requests and a gatekeeper's are not, even when
   an agent's `executeCode` call drives the gatekeeper. The signal is a site's request to comply
   with, not a security boundary, and this is a reasonable line rather than the only correct one.
   A redirect that goes back to the caller is not judged by its own signal, since it carries no

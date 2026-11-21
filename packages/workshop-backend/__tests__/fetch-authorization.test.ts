@@ -109,8 +109,9 @@ describe("ApprovalQueueImpl.getFetcher", () => {
       impl.storage.containsRestrictedData.put(true);
       let fetcher = await queue.getFetcher();
       expect(minted.mock.calls).toEqual([
-        [AGENT, "exec", { approvals: false }],
-        [AGENT, "exec", { allowedHosts: ["docs.example.com"], approvals: false }],
+        [AGENT, { executionId: "exec", agentDriven: false, snapshot: { approvals: false } }],
+        [AGENT, { executionId: "exec", agentDriven: false,
+                  snapshot: { allowedHosts: ["docs.example.com"], approvals: false } }],
       ]);
 
       // The fetcher refuses by its snapshot, without asking the workspace.

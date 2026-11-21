@@ -3346,12 +3346,13 @@ class OverseerImpl implements AgentHooks {
     return this.ctx.exports.GatekeeperLoopback({props});
   }
 
-  // A fetcher for `caller`'s requests (see fetch-loopback.ts), which asks this workspace about
-  // each one unless given a `snapshot` of its policy to apply. `executionId` names the executeCode
-  // call it is minted for, which its requests to the workspace stop being allowed with.
-  makeFetchLoopback(caller: GatekeeperCaller, executionId?: string, snapshot?: FetchPolicy) {
-    let props: FetchLoopbackProps =
-        {overseerId: this.ctx.id.toString(), caller, executionId, snapshot};
+  // A fetcher for `caller`'s requests (see fetch-loopback.ts and FetchLoopbackProps), which asks
+  // this workspace about each one unless given a `snapshot` of its policy to apply. `executionId`
+  // names the executeCode call it is minted for, which its requests to the workspace stop being
+  // allowed with.
+  makeFetchLoopback(caller: GatekeeperCaller,
+                    options: {executionId?: string, agentDriven: boolean, snapshot?: FetchPolicy}) {
+    let props: FetchLoopbackProps = {overseerId: this.ctx.id.toString(), caller, ...options};
     return this.ctx.exports.FetchLoopback({props});
   }
 
@@ -5393,7 +5394,8 @@ class OverseerImpl implements AgentHooks {
         env: this.getEnvForLoader(gadgetId, {from: "gadget", chatId, gadgetId}, chatId),
         // The worker is cached across calls, which may read restricted data, so its fetcher asks
         // the workspace about every request.
-        globalOutbound: this.makeFetchLoopback({from: "gadget", chatId, gadgetId}),
+        globalOutbound: this.makeFetchLoopback({from: "gadget", chatId, gadgetId},
+                                               {agentDriven: false}),
 
         // TODO: Switch to streaming tails when the workerd log spam issue is fixed.
         tails: [this.ctx.exports.GadgetTailLoopback({props: tailProps})],
@@ -6791,7 +6793,7 @@ class OverseerImpl implements AgentHooks {
     return {
       ai: this.env.WORKERS_AI,
       gateway: getAiGatewayConfig(this.env),
-      fetcher: this.makeFetchLoopback({from: "agent", chatId}),
+      fetcher: this.makeFetchLoopback({from: "agent", chatId}, {agentDriven: true}),
     };
   }
 
@@ -10287,7 +10289,8 @@ class OverseerImpl implements AgentHooks {
         tails: [this.ctx.exports.CodeModeTailLoopback({props: tailProps})],
         // The code can read restricted data through its env and fetch on the next line, so its
         // fetcher asks the workspace about every request.
-        globalOutbound: this.makeFetchLoopback({from: "agent", chatId}, executionId),
+        globalOutbound: this.makeFetchLoopback({from: "agent", chatId},
+                                               {executionId, agentDriven: true}),
       };
 
       let entrypoint = this.env.LOADER.load(workerDef).getEntrypoint<CodeModeEntrypoint>();
@@ -15472,7 +15475,8 @@ class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
     let snapshot = await this.impl.fetchPolicy();
     // After the await, so a session that ended while the policy was read gets no fetcher.
     await this.requireLive();
-    return this.impl.makeFetchLoopback(this.caller, this.executionId, snapshot);
+    return this.impl.makeFetchLoopback(this.caller,
+        {executionId: this.executionId, agentDriven: false, snapshot});
   }
 
   // The gatekeeper released its last stub of this queue.

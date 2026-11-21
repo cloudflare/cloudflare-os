@@ -74,6 +74,10 @@ type FetchLoopbackProps = {
   // The executeCode call the fetcher was minted for, for an agent caller.
   executionId?: string;
 
+  // Whether an agent itself sends the requests (the webFetch tool, fetch() in executeCode), which
+  // subjects responses to Content-Signal. Added after review; see Decisions.
+  agentDriven: boolean;
+
   // The policy as it stood when the fetcher was minted, which it applies without asking the
   // workspace. Absent: ask the workspace on every request.
   snapshot?: FetchPolicy;
