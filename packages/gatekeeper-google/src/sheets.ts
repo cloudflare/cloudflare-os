@@ -393,8 +393,9 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
     pending: readonly QueuedChange[], names: readonly (string | undefined)[] = [],
   ): Promise<SpreadsheetMetadata> {
     if (names.length === 0) {
+      // One list, so a sheet an earlier batch adds, which Google does not have yet, is not asked for.
       return this.#api.getMetadataWithMerges(
-        this.#spreadsheetId, pending.flatMap(({ action }) => guardedSheets(action.payload.changes)));
+        this.#spreadsheetId, guardedSheets(pending.flatMap(({ action }) => action.payload.changes)));
     }
     let metadata = await this.#api.getMetadata(this.#spreadsheetId);
     return this.#api.withMerges(this.#spreadsheetId, metadata, mergesConsulted(metadata, pending, names));

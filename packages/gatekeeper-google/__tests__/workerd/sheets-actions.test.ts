@@ -1510,6 +1510,21 @@ describe.each(RUNS)("Google Sheets changes ($name)", run => {
     expect(provider.mergeReads).toEqual([[7], [7], [0], [7]]);
   });
 
+  it("asks for no merges of a sheet a queued batch adds", async () => {
+    let provider = laidOut();
+    let sheets = gatekeeper(run);
+    await sheets.queued([{ op: "addSheet", title: "New" }]);
+    await sheets.queued([
+      { op: "writeCells", range: "New!A1", values: [["x"]] },
+      { op: "writeCells", range: "Sales!A1", values: [["y"]] },
+    ]);
+    provider.mergeReads = [];
+
+    expect((await sheets.info()).sheets.map(sheet => sheet.title)).toEqual(["Sales", "Q3 Plan", "New"]);
+    expect((await sheets.read("New!A1")).values).toEqual([["x"]]);
+    expect(provider.mergeReads).toEqual([[0], [0]]);
+  });
+
   it("reads again the merges of the sheets a change acts on that are left when another is gone", async () => {
     let provider = laidOut();
     let sheets = gatekeeper(run);
