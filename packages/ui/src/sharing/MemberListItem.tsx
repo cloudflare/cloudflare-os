@@ -3,7 +3,7 @@ import { cn } from '@cloudflare/kumo/utils'
 import { Avatar } from '../Avatar'
 
 export type MemberListItemProps = {
-  /** Who, or which group of people: "Ada Lovelace", "Anyone with the link". */
+  /** Who, or which group of people: "Ada Lovelace", "Anyone with your link". */
   name: string
   /** What they may do, as the list puts it: "Owner", "Member". */
   role: string

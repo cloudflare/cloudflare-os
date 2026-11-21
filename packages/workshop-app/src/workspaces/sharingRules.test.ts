@@ -13,6 +13,7 @@ import {
   canChange,
   covers,
   grantOf,
+  holdsOnlyView,
   invitedBy,
   inviteRefusal,
   listed,
@@ -58,6 +59,18 @@ describe('access', () => {
     expect(grantOf(gadget(3))).toEqual({ gadgetId: 3 })
   })
 
+  it('grants a gadget to view only where asked, and a workspace never', () => {
+    expect(grantOf(gadget(3), 'view')).toEqual({ gadgetId: 3, mode: 'view' })
+    expect(grantOf(WHOLE, 'view')).toBe('workspace')
+  })
+
+  it('takes someone to view only the gadgets named as viewed, and whoever edits none', () => {
+    expect(holdsOnlyView({ role: 'use', gadgetIds: [3], viewOnly: [3] }, 3)).toBe(true)
+    expect(holdsOnlyView({ role: 'use', gadgetIds: [3, 4], viewOnly: [4] }, 3)).toBe(false)
+    expect(holdsOnlyView(uses(3), 3)).toBe(false)
+    expect(holdsOnlyView(BUILD, 3)).toBe(false)
+  })
+
   it('takes editing to cover everything, and using only the gadgets it names', () => {
     expect(covers(BUILD, gadget(3))).toBe(true)
     expect(covers(uses(3), gadget(3))).toBe(true)
@@ -90,6 +103,13 @@ describe('inviteRefusal', () => {
     expect(inviteRefusal('alan', WHOLE, ada, people)).toBeUndefined()
     expect(inviteRefusal('alan', gadget(4), ada, people)).toBeUndefined()
     expect(inviteRefusal('barbara', gadget(3), ada, people)).toBeUndefined()
+  })
+
+  it('lets someone who only views a gadget be let use it, and whoever uses it not be given less', () => {
+    const viewers = [collaborator('alan', uses(3)), collaborator('edsger', { role: 'use', gadgetIds: [3], viewOnly: [3] })]
+    expect(inviteRefusal('edsger', gadget(3), ada, viewers)).toBeUndefined()
+    expect(inviteRefusal('edsger', gadget(3), ada, viewers, 'view')).toBe('edsger can already view Budget.')
+    expect(inviteRefusal('alan', gadget(3), ada, viewers, 'view')).toBe('alan can already use Budget.')
   })
 })
 

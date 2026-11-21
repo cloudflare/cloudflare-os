@@ -12,7 +12,7 @@ export type AccessChoice<Value extends string> = {
 export type AccessMenuProps<Value extends string> = {
   /** What they have now, as the trigger reads: "Can use". */
   label: string
-  /** Whose access it is, for the trigger's name: "Ada Lovelace", "anyone with the link". */
+  /** Whose access it is, for the trigger's name: "Ada Lovelace", "anyone with your link". */
   of: string
   /** What they could have instead, with the one they have ticked. */
   choices?: { options: readonly AccessChoice<Value>[]; value: Value; onChange: (value: Value) => void }

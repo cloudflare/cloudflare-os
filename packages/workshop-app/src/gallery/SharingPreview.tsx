@@ -162,7 +162,7 @@ const DialogDemo = ({ setup }: { setup: keyof typeof SETUPS }) => {
 const Column = ({ children }: { children: ReactNode }) => <div className="flex w-full max-w-lg flex-col gap-3">{children}</div>
 
 const LINK = [
-  { value: 'on', label: 'Can join', hint: 'Anyone with the link can join' },
+  { value: 'on', label: 'Can join', hint: 'Anyone with your link can join' },
   { value: 'off', label: 'No access', hint: 'Only people you add can join' },
 ] as const
 
@@ -194,7 +194,7 @@ const RowsPreview = () => {
           <MemberListItem icon={UsersThreeIcon} name="Everyone in Engineering Notes" detail="2 people" role="Can edit" />
           <MemberListItem
             icon={BuildingsIcon}
-            name="Anyone with the link"
+            name="Anyone with your link"
             detail="Signed in to Cloudflare OS"
             role=""
             access={<AccessMenu label={LINK.find(({ value }) => value === link)!.label} of="anyone with your link" choices={{ options: LINK, value: link, onChange: setLink }} />}

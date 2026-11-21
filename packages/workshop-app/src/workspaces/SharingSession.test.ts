@@ -104,6 +104,36 @@ describe('SharingSession', () => {
     expect(overseer.addCollaborator).toHaveBeenLastCalledWith('grace', { gadgetId: 3 })
   })
 
+  it('shares one gadget to view only', async () => {
+    const { overseer } = fakeOverseer()
+    const session = new SharingSession(sharing(overseer, BUDGET))
+    session.start()
+    await ready(session)
+    await session.invite('grace', 'view')
+    expect(overseer.addCollaborator).toHaveBeenLastCalledWith('grace', { gadgetId: 3, mode: 'view' })
+  })
+
+  it('lets someone who views a gadget use it, and narrows them to a view in one call', async () => {
+    const viewer: CollaboratorInfo = { ...grace, access: { role: 'use', gadgetIds: [3], viewOnly: [3] } }
+    const { overseer } = fakeOverseer({ collaborators: [viewer] })
+    const session = new SharingSession(sharing(overseer, BUDGET))
+    session.start()
+    await ready(session)
+    expect(await session.changeAccess('grace', 'use')).toBe('use')
+    expect(overseer.addCollaborator).toHaveBeenLastCalledWith('grace', { gadgetId: 3 })
+    overseer.removeCollaborator.mockResolvedValueOnce([{ profile: grace.profile, addedBy: [], oldAccess: grace.access, newAccess: viewer.access }])
+    expect(await session.changeAccess('grace', 'view')).toBe('view')
+    expect(overseer.removeCollaborator).toHaveBeenLastCalledWith('grace', [], 3, true)
+  })
+
+  it('says they still use it when narrowing changed nothing, as someone else shared it with them', async () => {
+    const { overseer } = fakeOverseer({ collaborators: [grace] })
+    const session = new SharingSession(sharing(overseer, BUDGET))
+    session.start()
+    await ready(session)
+    expect(await session.changeAccess('grace', 'view')).toBe('use')
+  })
+
   it('previews and removes someone, reading the people again', async () => {
     const { overseer } = fakeOverseer({ collaborators: [grace] })
     const session = new SharingSession(sharing(overseer))
@@ -151,14 +181,26 @@ describe('SharingSession', () => {
     const session = new SharingSession(sharing(overseer, BUDGET))
     session.start()
     await vi.waitFor(() => expect(session.getSnapshot()).toMatchObject({ link: { status: 'on' } }))
-    await session.setLink(false)
+    await session.setLink('off')
     expect(overseer.revokeShareLink).toHaveBeenCalledWith('old', 'everyone')
     expect(session.getSnapshot()).toMatchObject({ link: { status: 'off' } })
-    await session.setLink(true)
+    await session.setLink('use')
     expect(overseer.createShareLink).toHaveBeenCalledWith({ gadgetId: 3 }, undefined, { default: true })
     expect(session.getSnapshot()).toMatchObject({ link: { status: 'on', linkId: 'new', url: `${PAGE}#share=fresh` } })
     expect(await session.linkToCopy()).toBe(`${PAGE}#share=fresh`)
     expect(overseer.newShareLinkKey).not.toHaveBeenCalled()
+  })
+
+  it('changes what the link gives by making the new one before turning the old one off', async () => {
+    const { overseer } = fakeOverseer({ own: 'old' })
+    const session = new SharingSession(sharing(overseer, BUDGET))
+    session.start()
+    await vi.waitFor(() => expect(session.getSnapshot()).toMatchObject({ link: { status: 'on', access: 'use' } }))
+    await session.setLink('view')
+    expect(overseer.createShareLink).toHaveBeenCalledWith({ gadgetId: 3, mode: 'view' }, undefined, { default: true })
+    expect(overseer.createShareLink.mock.invocationCallOrder[0]).toBeLessThan(overseer.revokeShareLink.mock.invocationCallOrder[0])
+    expect(overseer.revokeShareLink).toHaveBeenCalledWith('old', 'everyone')
+    expect(session.getSnapshot()).toMatchObject({ link: { status: 'on', linkId: 'new', access: 'view' } })
   })
 
   it('says why it could not be read, and is safe to stop before anything arrives', async () => {

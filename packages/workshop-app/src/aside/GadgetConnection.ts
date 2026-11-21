@@ -75,6 +75,8 @@ export type GadgetOverseer = {
 export type GadgetConnectionOptions = {
   /** Shows the gadget with the changes proposed in this chat. */
   chatId?: number
+  /** What is shown is a snapshot of the gadget, which its page is told (`gadgetPage`). */
+  renderMode?: 'snapshot'
   /** The signed-in user, who is not among the `people`. */
   viewerId?: string
   /** Escape was pressed in the gadget's page, which keeps its keys from the app. */
@@ -385,7 +387,7 @@ export class GadgetConnection {
       if (!current()) return
       this.#retryDelay = 0
       if (!bundle) this.#unlink()
-      const page = bundle && gadgetPage(bundle)
+      const page = bundle && gadgetPage(bundle, this.options.renderMode)
       if (page) this.#pathsByUrl = page.pathsByUrl
       this.#publish({ ui: page ? { status: 'ready', page: page.html, load } : { status: 'none' } })
     } catch (error) {

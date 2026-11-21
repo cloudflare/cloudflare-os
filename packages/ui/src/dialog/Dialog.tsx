@@ -18,6 +18,11 @@ export type DialogProps = {
   /** Narrower than most, for one that holds little: a few lines of words and a card (a template's is 15rem wide), which it is about as wide as. */
   narrow?: boolean
   /**
+   * As wide as the window has room for, for one that holds something to look at closely, such as a
+   * gadget drawn in it. It widens and narrows to this about its middle, where it is changed while open.
+   */
+  expanded?: boolean
+  /**
    * Which page it shows, where it has several, one after another: it then stays as it goes from
    * one to the next, its surface taking the new page's size and the page sliding in where it
    * goes. A `Dialog` within it is the page it shows, drawn there rather than as a dialog of its
@@ -67,7 +72,7 @@ const DialogRoot = (props: DialogProps) => {
   return page ? <DialogAsPage page={page} onOpenChange={props.onOpenChange}>{props.children}</DialogAsPage> : <DialogSurface {...props} />
 }
 
-const DialogSurface = ({ open, onOpenChange, onOpenChangeComplete, wide, narrow, page, children }: DialogProps) => {
+const DialogSurface = ({ open, onOpenChange, onOpenChangeComplete, wide, narrow, expanded, page, children }: DialogProps) => {
   const key = page?.key ?? ''
   const depth = page?.depth ?? 0
   // What each page was last drawn with, so that one that leaves goes as it was.
@@ -171,6 +176,22 @@ const DialogSurface = ({ open, onOpenChange, onOpenChangeComplete, wide, narrow,
     }
   }, [leaving, key])
 
+  // Widened or narrowed while open, it goes from the one width to the other as it does between
+  // pages, rather than jumping; its height glides after what it then holds.
+  const wasExpanded = useRef(expanded)
+  useLayoutEffect(() => {
+    const popup = popupRef.current
+    const from = width.current
+    if (wasExpanded.current === expanded) return
+    wasExpanded.current = expanded
+    if (!popup || from === undefined || isMotionOff()) return
+    const to = popup.offsetWidth
+    if (from === to) return
+    const [{ keyframes, options }] = pageMotion({ from, to, forward: true, reduced: false })
+    const animation = popup.animate(keyframes, options)
+    return () => animation.cancel()
+  }, [expanded])
+
   return (
     <BaseDialog.Root open={open} onOpenChange={(next) => (owners.get(key) ?? onOpenChange)(next)} onOpenChangeComplete={onOpenChangeComplete}>
       <BaseDialog.Portal>
@@ -184,6 +205,7 @@ const DialogSurface = ({ open, onOpenChange, onOpenChangeComplete, wide, narrow,
           '[--surface-radius:1rem] fixed inset-0 z-50 m-auto flex h-fit max-h-[calc(100dvh-2rem)] w-[min(34rem,calc(100vw-1.5rem))] flex-col overflow-hidden rounded-3xl bg-kumo-base text-base text-kumo-default ring-1 ring-kumo-contrast/6 outline-none transition-[opacity,scale] duration-150 data-ending-style:scale-95 data-ending-style:opacity-0 data-starting-style:scale-95 data-starting-style:opacity-0 motion-reduce:transition-none',
           wide && 'w-[min(40rem,calc(100vw-1.5rem))]',
           narrow && 'w-[min(21rem,calc(100vw-1.5rem))]',
+          expanded && 'w-[min(72rem,calc(100vw-1.5rem))]',
         )}>
           {page ? (
             <>
