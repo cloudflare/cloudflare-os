@@ -237,10 +237,21 @@ function enteredValue(value: RestExtendedValue | undefined): EnteredValue {
   throw new Error("Google Sheets returned an unsupported cell value.");
 }
 
-/** The Google Sheets API, as far as the gatekeeper uses it. */
 /** The one sheet a created spreadsheet gets, named here so it doesn't depend on the account's locale. */
 const BLANK_SHEET = { sheetId: 0, title: "Sheet1", rowCount: 1000, columnCount: 26 } as const;
 
+/** The side, in rows and in columns, of the tiles `readEntered` finds a cell's ranges by. */
+const TILE = 32;
+/** More tiles than a sheet's columns make: Google allows 18,278 columns. */
+const TILE_COLUMNS = 1_024;
+
+/** The tile a row or a column is in. */
+const tileOf = (line: number): number => Math.floor(line / TILE);
+
+/** One number for the tile at `row` and `column`, counted in tiles. */
+const tileKey = (row: number, column: number): number => row * TILE_COLUMNS + column;
+
+/** The Google Sheets API, as far as the gatekeeper uses it. */
 export class GoogleSheetsApi {
   constructor(private getAccessToken: AccessTokenProvider) {}
 
@@ -275,6 +286,9 @@ export class GoogleSheetsApi {
   async getSpreadsheet(spreadsheetId: string): Promise<SpreadsheetInfo> {
     let url = new URL(`${API_BASE}/${encodeURIComponent(spreadsheetId)}`);
     url.searchParams.set("fields", `${SPREADSHEET_FIELDS},sheets(${SHEET_PROPERTIES_FIELDS})`);
+    // Every read asks for compact JSON: Google indents an answer otherwise, and the indentation is
+    // fetched, held as text and counted against the response cap.
+    url.searchParams.set("prettyPrint", "false");
     return spreadsheetInfo(await this.#request<RestSpreadsheet>(url, "get spreadsheet"));
   }
 
@@ -358,6 +372,7 @@ export class GoogleSheetsApi {
     url.searchParams.set("majorDimension", "ROWS");
     url.searchParams.set("valueRenderOption", valueRenderOption(valueMode));
     if (valueMode === "raw") url.searchParams.set("dateTimeRenderOption", "SERIAL_NUMBER");
+    url.searchParams.set("prettyPrint", "false");
 
     let result = await this.#request<{ valueRanges?: RestValueRange[] }>(
       url,
@@ -406,27 +421,52 @@ export class GoogleSheetsApi {
       provider: "Google Sheets", operation: "read entered values", maxBytes: MAX_RESPONSE_BYTES,
     });
     // Each range's cells are placed by the position Google gives them, whichever order they come
-    // in, so a range is answered when its sheet holds data starting where it does. A cell Google
-    // trims from the end of a row or range is blank.
+    // in, so a range is answered when its sheet holds data starting where it does. A returned cell
+    // is written straight into every range that holds its position, a later block's over an
+    // earlier one's; a cell Google trims from the end of a row or range stays blank.
+    let padded = areas.map(({ rect }) =>
+      Array.from({ length: rect.endRow - rect.startRow }, () =>
+        Array.from({ length: rect.endColumn - rect.startColumn }, (): EnteredValue => null)));
+    // The ranges by the tiles of their sheet they reach, so a cell is tried against the few
+    // ranges near it and not every range asked for: a guard can ask for thousands of fragments.
+    let tilesOn = new Map<number, Map<number, number[]>>();
+    areas.forEach(({ sheetId, rect }, i) => {
+      let tiles = tilesOn.get(sheetId);
+      if (!tiles) tilesOn.set(sheetId, tiles = new Map());
+      for (let row = tileOf(rect.startRow); row <= tileOf(rect.endRow - 1); row++) {
+        for (let column = tileOf(rect.startColumn); column <= tileOf(rect.endColumn - 1); column++) {
+          let key = tileKey(row, column);
+          let on = tiles.get(key);
+          if (on) on.push(i);
+          else tiles.set(key, [i]);
+        }
+      }
+    });
     let starts = new Set<string>();
-    let cells = new Map<string, EnteredValue>();
     for (let sheet of result.sheets ?? []) {
       let sheetId = sheet.properties?.sheetId ?? 0;
+      let tiles = tilesOn.get(sheetId);
       for (let { startRow = 0, startColumn = 0, rowData } of sheet.data ?? []) {
         starts.add(`${sheetId}:${startRow}:${startColumn}`);
         rowData?.forEach((row, r) => row.values?.forEach((cell, c) => {
-          cells.set(`${sheetId}:${startRow + r}:${startColumn + c}`, enteredValue(cell.userEnteredValue));
+          // Converted wherever it lies: a value of a kind this cannot hold is refused, not dropped.
+          let value = enteredValue(cell.userEnteredValue);
+          let at = startRow + r, column = startColumn + c;
+          for (let i of tiles?.get(tileKey(tileOf(at), tileOf(column))) ?? []) {
+            let { rect } = areas[i];
+            if (at >= rect.startRow && at < rect.endRow && column >= rect.startColumn && column < rect.endColumn) {
+              padded[i][at - rect.startRow][column - rect.startColumn] = value;
+            }
+          }
         }));
       }
     }
-    return areas.map(({ sheetId, rect }) => {
+    areas.forEach(({ sheetId, rect }) => {
       if (!starts.has(`${sheetId}:${rect.startRow}:${rect.startColumn}`)) {
         throw new Error("Google Sheets did not return every range it was asked for.");
       }
-      return Array.from({ length: rect.endRow - rect.startRow }, (_row, r) =>
-        Array.from({ length: rect.endColumn - rect.startColumn }, (_cell, c) =>
-          cells.get(`${sheetId}:${rect.startRow + r}:${rect.startColumn + c}`) ?? null));
     });
+    return padded;
   }
 
   /**
@@ -439,8 +479,11 @@ export class GoogleSheetsApi {
     spreadsheetId: string, areas: readonly SheetArea[], valueMode: SpreadsheetValueMode,
   ): Promise<SpreadsheetCellValue[][][]> {
     if (areas.length === 0) return [];
+    let url = new URL(
+      `${API_BASE}/${encodeURIComponent(spreadsheetId)}/values:batchGetByDataFilter`);
+    url.searchParams.set("prettyPrint", "false");
     let response = await fetchWithAuthRetry(
-      `${API_BASE}/${encodeURIComponent(spreadsheetId)}/values:batchGetByDataFilter`,
+      url.toString(),
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -577,6 +620,7 @@ export class GoogleSheetsApi {
     let url = new URL(
       `${API_BASE}/${encodeURIComponent(spreadsheetId)}/developerMetadata/${metadataId}`);
     url.searchParams.set("fields", "metadataValue");
+    url.searchParams.set("prettyPrint", "false");
     let response = await fetchWithAuthRetry(
       url.toString(), {}, this.getAccessToken, { timeoutMs: REQUEST_TIMEOUT_MS },
     );

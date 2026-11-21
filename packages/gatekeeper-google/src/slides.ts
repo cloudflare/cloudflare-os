@@ -12,26 +12,31 @@ import { DriveApi } from "./drive-api";
 import { unguardedNativeRead, type NativeRead } from "./drive-session";
 import { requireFileSubresources } from "./file-subresources";
 import { verifyGoogleSubresourceAccess, type GoogleVerifierApi } from "./google-verifier-types";
+import { jsonLength } from "./json-length";
 import { Mutex } from "./mutex";
 import { explainUnopenedFile } from "./office-conversion";
 import { QueuedChanges } from "./queued-changes";
 import { nativeFileUrl } from "./resources";
 import { batchKind, SLIDES_ACTIONS } from "./slides-actions";
 import {
-  BlankPresentation, GoogleSlidesApi, type PresentationReader, type ThumbnailSize,
+  BlankPresentation, fetchedLength, GoogleSlidesApi, MAX_READ_PAGES_LENGTH, pagesTooLarge,
+  type PresentationReader, type RestPresentation, type RestSlide, type ThumbnailSize,
 } from "./slides-api";
 import {
-  layoutNames, mastersOf, presentationInfo, slideIds, slideOf, themePagesOf, titleOf,
+  layoutNames, mastersOf, presentationInfo, slideIds, slideOf, summaryOf, themePagesOf, titleOf,
 } from "./slides-model";
 import type {
-  PresentationInfo, Slide, SlideThumbnail, SlideThumbnailSize,
+  PresentationInfo, Slide, SlideSummary, SlideThumbnail, SlideThumbnailSize,
 } from "./slides-read-types";
-import { designDeck, pageOf, slideIdOf, type DesignChange, type DesignStep } from "./slides-design";
+import {
+  conflictedChange, designDeck, pageOf, slideIdOf, type DesignChange, type DesignStep,
+} from "./slides-design";
 import { prepareChanges } from "./slides-design-input";
 import {
-  batchSlides, conflictReason, instantiatedPlaceholders, mintObjectId, movedOrder, newSlidePlace,
-  replayChanges, slidesToFetch, type Deck, type QueuedChange, type SlideLabel, type SlidesAction,
-  type SlidesActions, type ThemeLabel,
+  batchSlides, conflictReason, copiedFrom, createReplay, instantiatedPlaceholders, isDesignBatch,
+  mintObjectId, movedOrder, newSlidePlace, slidesToFetch, slidesToRead, type Deck, type QueuedChange,
+  type SlideLabel,
+  type SlidesAction, type SlidesActions, type ThemeLabel,
 } from "./slides-simulation";
 import { elementIdsOf } from "./slides-target";
 import { ChangeConflict } from "./slides-text";
@@ -227,14 +232,6 @@ export class GoogleSlidesGatekeeperImpl
   }
 }
 
-/** A read with queued changes applied, and the first that no longer applies. */
-function replayed(base: Deck, changes: readonly QueuedChange[]): { deck: Deck; conflict?: string } {
-  let result = replayChanges(base, changes);
-  return result.kind === "complete"
-    ? { deck: result.value }
-    : { deck: result.partial, conflict: conflictReason(result.unsupported, result.reason) };
-}
-
 function asError(error: unknown): never {
   if (error instanceof ChangeConflict) {
     throw new Error(`${error.message.charAt(0).toUpperCase()}${error.message.slice(1)}.`);
@@ -265,6 +262,10 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
   #approvalQueue: RpcStub<ApprovalQueue>;
   #read: NativeRead;
   #changes: SlidesChangeQueue;
+  // Replays the queued changes over the deck of each read, as one entity under the presentation's
+  // ID. It keeps nothing between reads: each folds every queued change again, on a deck of the
+  // fold's own, and leaves the deck it fetched as it was.
+  #replay = createReplay();
 
   constructor(
     api: PresentationReader,
@@ -285,37 +286,53 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
     this.#approvalQueue[Symbol.dispose]();
   }
 
+  /** A read with queued changes applied, and the first that no longer applies. */
+  #replayed(base: Deck, changes: readonly QueuedChange[]): { deck: Deck; conflict?: string } {
+    let { entity, stopped } = this.#replay.fold(this.#presentationId, base, changes);
+    // The fold of a fetched deck always holds one: no queued change deletes the deck.
+    let deck = entity!;
+    return stopped ? { deck, conflict: conflictReason(stopped.record, stopped.reason) } : { deck };
+  }
+
   /**
-   * The slide order, every master and layout, and the content of the slides among `pages`, with
-   * queued changes applied. A slide that no longer exists, or never did, is absent from
-   * `deck.order`.
+   * The slide order, every master and layout, the content of the slides among `pages`, and of
+   * those among `labelled` what labels them (see `slidesToRead`), with queued changes applied. A
+   * slide that no longer exists, or never did, is absent from `deck.order`. `fetched` holds the
+   * length each slide read whole came as (see `fetchedLength`), and a queued copy of one that its
+   * original's.
    */
-  async #simulated(pages: readonly string[]) {
+  async #simulated(pages: readonly string[], labelled: readonly string[] = []) {
     return this.#changes.snapshot(async changes => {
       let outline = await this.#api.getOutline(this.#presentationId);
       let order = slideIds(outline);
+      let { needed, labelOnly } = slidesToRead(pages, labelled, changes);
+      let slides = await this.#api.getSlides(this.#presentationId, needed, order, labelOnly);
       return {
         title: outline.title ?? "Untitled presentation",
         // Google reports the revision only to an account that can edit the presentation.
         editable: outline.revisionId !== undefined,
         layouts: layoutNames(outline),
-        ...replayed({
-          order,
-          slides: await this.#api.getSlides(this.#presentationId, slidesToFetch(pages, changes), order),
-          ...mastersOf(outline),
-          themePages: themePagesOf(outline),
-        }, changes),
+        fetched: new Map([...needed].flatMap(id => {
+          let original = slides.get(copiedFrom(id, changes));
+          let length = original && fetchedLength(original);
+          return length === undefined ? [] : [[id, length] as const];
+        })),
+        ...this.#replayed({ order, slides, ...mastersOf(outline), themePages: themePagesOf(outline) }, changes),
       };
     });
   }
 
   /**
    * Reads `ids`, and the masters and layouts `themePages` names, to prepare a change, refusing one
-   * that is absent, that a conflict blocks, or that the account may not make.
+   * that is absent, that a conflict blocks, or that the account may not make. A change that only
+   * names `ids` is `labelled`: it reads their labels, not their pages.
    */
-  async #prepare(ids: readonly string[], purpose: string, themePages: readonly string[] = []) {
+  async #prepare(
+    ids: readonly string[], purpose: string,
+    { themePages = [], labelled = false }: { themePages?: readonly string[]; labelled?: boolean } = {},
+  ) {
     return preparable(ids, await this.#read(
-      () => this.#simulated([...ids, ...themePages]),
+      () => labelled ? this.#simulated(themePages, ids) : this.#simulated([...ids, ...themePages]),
       ({ title }) => ids.length === 0 && themePages.length > 0 ? {
         title: "Read Google Slides masters and layouts to change them",
         description: `Read the masters and layouts of "${title}" to ${purpose}.`,
@@ -327,25 +344,91 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
       }));
   }
 
+  /**
+   * `rest`, a summary read, as one fold of `changes` over the whole deck shows it: the deck of
+   * the slides no queued batch edits, the summaries of those it does, and the first change that
+   * no longer applies.
+   *
+   * A summary holds no tables or grouped shapes, so the slides queued batches edit are read
+   * whole, and every change is checked as approving it would check it. They are read in groups
+   * that each fit in what one read holds (see `getSlideGroups`), and the changes are folded over
+   * each group's pages alone, and over the summaries of the other slides apart: a change edits one
+   * page, so it comes out the same on that page whatever else the deck holds, does nothing to a
+   * slide the deck does not hold, and finds the order, masters and layouts as every other fold
+   * does while none has stopped. A queued copy is made where the slide it copies is held. So the
+   * read holds one group's pages at a time, and keeps of each only its slides' summaries.
+   *
+   * Only the stop is shared: the first change that no longer applies in any fold hides every
+   * later change from all of them, and of a batch, its earliest change that no longer applies is
+   * named, as one fold would. A group is folded through the stop found so far, so that it can
+   * find an earlier one; a group folded before the stop was found, whose slides a change from the
+   * stop on reached, is read and folded again, up to the stop.
+   */
+  async #summarized(rest: RestPresentation, changes: readonly QueuedChange[]) {
+    let order = slideIds(rest);
+    let layouts = layoutNames(rest);
+    let deckOf = (slides: ReadonlyMap<string, RestSlide>): Deck =>
+      ({ order, slides, ...mastersOf(rest), themePages: themePagesOf(rest) });
+    let whole = slidesToFetch(changes.flatMap(({ action }) => batchSlides(action)), changes);
+    let stop: { at: number; reason: string } | undefined;
+    let shown = () => stop?.at ?? changes.length;
+    let through = () => stop ? stop.at + 1 : changes.length;
+    // The deck of the first `count` changes folded over `slides`, and how many of them it shows.
+    let fold = (slides: ReadonlyMap<string, RestSlide>, count: number) => {
+      let { entity, stopped } = this.#replay.fold(
+        this.#presentationId, deckOf(slides), changes.slice(0, count));
+      if (!stopped) return { deck: entity!, end: count };
+      let at = changes.indexOf(stopped.record);
+      let { reason } = stopped;
+      let earlier = !stop || at < stop.at ||
+        at === stop.at && conflictedChange(reason) < conflictedChange(stop.reason);
+      if (earlier) stop = { at, reason };
+      return { deck: entity!, end: at };
+    };
+
+    let summaryPages = new Map((rest.slides ?? []).flatMap(slide =>
+      whole.has(slide.objectId!) ? [] : [[slide.objectId!, slide] as const]));
+    let outline = fold(summaryPages, through());
+    let groups: { ids: string[]; end: number; summaries: Map<string, SlideSummary> }[] = [];
+    let unread = [...whole];
+    let count = through;
+    while (unread.length > 0) {
+      await this.#api.getSlideGroups(this.#presentationId, unread, order, pages => {
+        let { deck, end } = fold(pages, count());
+        groups.push({
+          ids: [...pages.keys()],
+          end,
+          summaries: new Map([...deck.slides].flatMap(([id, page]) =>
+            outline.deck.slides.has(id) ? [] : [[id, summaryOf(page, 0, layouts)] as const])),
+        });
+      });
+      let stale = groups.filter(({ end, summaries }) =>
+        changes.slice(shown(), end).some(({ action }) =>
+          !isDesignBatch(action) || batchSlides(action).some(id => summaries.has(id))));
+      groups = groups.filter(group => !stale.includes(group));
+      unread = stale.flatMap(({ ids }) => ids);
+      count = shown;
+    }
+    let { deck } = outline.end === shown() ? outline : fold(summaryPages, shown());
+    return {
+      deck,
+      summaries: new Map(groups.flatMap(({ summaries }) => [...summaries])
+        .filter(([id]) => !deck.slides.has(id))),
+      conflict: stop && conflictReason(changes[stop.at], stop.reason),
+    };
+  }
+
   async getPresentation(): Promise<PresentationInfo> {
     return this.#read(
       () => this.#changes.snapshot(async changes => {
         let rest = await this.#api.getPresentation(this.#presentationId);
-        let order = slideIds(rest);
-        // A summary holds no tables or grouped shapes, so slides queued edits address are read in
-        // full, and every edit is checked as it would be when approved.
-        let edited = changes.flatMap(({ action }) => batchSlides(action));
-        let slides = new Map([
-          ...(rest.slides ?? []).map(slide => [slide.objectId!, slide] as const),
-          ...await this.#api.getSlides(this.#presentationId, slidesToFetch(edited, changes), order),
-        ]);
-        let { deck, conflict } = replayed(
-          { order, slides, ...mastersOf(rest), themePages: themePagesOf(rest) }, changes);
+        let { deck, summaries, conflict } = await this.#summarized(rest, changes);
         return {
           // Less any master, and its layouts, a queued deletion leaves with no slide, as Google
           // removes them.
-          ...presentationInfo(
-            { ...rest, slides: deck.order.map(id => deck.slides.get(id)!) }, deck.themePages),
+          ...presentationInfo({
+            ...rest, slides: deck.order.map(id => deck.slides.get(id) ?? { objectId: id }),
+          }, deck.themePages, summaries),
           ...(conflict ? { queuedChangeConflict: conflict } : {}),
         };
       }),
@@ -371,7 +454,7 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
           ...slideOf(deck.slides.get(id)!, deck.order.indexOf(id), layouts),
           ...(conflict ? { queuedChangeConflict: conflict } : {}),
         }));
-        if (JSON.stringify(slides).length > MAX_SLIDES_READ_LENGTH) {
+        if (jsonLength(slides) > MAX_SLIDES_READ_LENGTH) {
           throw new Error(`These ${ids.length} slides are too large to read at once. Request fewer.`);
         }
         return { title, missing, slides };
@@ -422,7 +505,14 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
       return pageType === "SLIDE" ? [] : [id];
     }))];
     return this.#changes.queue(batchKind(prepared), async () => {
-      let { deck } = await this.#prepare(ids, "queue changes to them", themePages);
+      let { deck, fetched } = await this.#prepare(ids, "queue changes to them", { themePages });
+      // Approving the batch reads each of its slides whole, a queued copy then a slide of its own,
+      // and is refused if they pass what one read holds; so a batch that cannot be approved is
+      // refused now, while it can still be split. Each counts as its page came to this read, a
+      // queued copy as the slide it copies, and a queued new slide as replay holds it.
+      let approvalRead = ids.reduce(
+        (length, id) => length + (fetched.get(id) ?? jsonLength(deck.slides.get(id) ?? {})), 0);
+      if (approvalRead > MAX_READ_PAGES_LENGTH) throw pagesTooLarge();
       // Google names a new slide's notes shape itself, as it creates the slide, so until then an
       // edit has nothing to address. Every slide Google has, and a queued copy of one, has notes.
       let unborn = prepared.find((change): change is Extract<DesignChange, { op: "editText" }> =>
@@ -484,7 +574,7 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
 
   async deleteSlide(slideId: string): Promise<void> {
     await this.#changes.queue("deleteSlide", async () => {
-      let { deck } = await this.#prepare([slideId], "queue deleting one");
+      let { deck } = await this.#prepare([slideId], "queue deleting one", { labelled: true });
       return { payload: { slideId, slide: labelOf(deck, slideId) }, result: undefined };
     });
   }
@@ -496,7 +586,7 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
     if (new Set(slideIds).size !== slideIds.length) throw new Error("A slide is listed twice.");
     await this.#changes.queue("moveSlides", async () => {
       let ids = after === null ? slideIds : [...slideIds, after];
-      let { deck } = await this.#prepare(ids, "queue moving them");
+      let { deck } = await this.#prepare(ids, "queue moving them", { labelled: true });
       let moved: string[];
       try {
         moved = movedOrder(deck.order, slideIds, after);
@@ -526,7 +616,7 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
       // read to copy its placeholders into the change.
       let { page, ...simulated } = await this.#read(
         async () => {
-          let read = await this.#simulated(ids);
+          let read = await this.#simulated([], ids);
           return {
             ...read,
             page: read.layouts.has(layoutId)
@@ -573,7 +663,8 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
     }
     if (new Set(slideIds).size !== slideIds.length) throw new Error("A slide is listed twice.");
     await this.#changes.queue("skipSlides", async () => {
-      let { deck } = await this.#prepare(slideIds, skipped ? "queue skipping them" : "queue unskipping them");
+      let { deck } = await this.#prepare(
+        slideIds, skipped ? "queue skipping them" : "queue unskipping them", { labelled: true });
       if (slideIds.every(id => (deck.slides.get(id)?.slideProperties?.isSkipped === true) === skipped)) {
         throw new Error(skipped ? "Those slides are already skipped." : "None of those slides is skipped.");
       }

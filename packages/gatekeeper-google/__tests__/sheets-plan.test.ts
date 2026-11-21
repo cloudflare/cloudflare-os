@@ -14,12 +14,51 @@ import {
 } from "../src/sheets-simulation";
 import type { SheetChange } from "../src/sheets-types";
 import { ChangeConflict } from "../src/slides-text";
+import { seeded } from "./doc-fixture";
 import { NEW_SHEET_SIZE, TYPED_INPUT, WHITESPACE_DRIFT, grid, rect, sheet } from "./sheets-fixture";
 
 // Every export calls through to its own code; the spies only count how many lines are listed.
 vi.mock("../src/sheets-structure", { spy: true });
 
 const SHEETS = [sheet(0, "Sales"), sheet(7, "It's", { index: 1, rowCount: 100, columnCount: 26 })];
+
+/** A value of every kind a guard's digest tells apart, with text that JSON escapes or encodes in several bytes. */
+const DIGESTED_VALUES: EnteredValue[] = [
+  null, "", "plain", 'say "hi"', "back\\slash", "line\u2028end", "é ü 日本", "😀 pair", "half \ud83d", "=1", '["f","=1"]',
+  0, -1.5, 2e21, true, false,
+  { formula: "=SUM( A1 : B2 )" }, { formula: '=A1 & " b c"' }, { error: "REF" }, { error: "N_A" },
+];
+
+/**
+ * A guard's digest taken over its whole JSON text at once: an array of every digested value for
+ * each area, the text of all of it, and that text's UTF-8 bytes. Queued batches hold digests of
+ * exactly these bytes.
+ */
+async function wholeTextDigest(
+  sheets: readonly SheetMeta[],
+  guard: { sheetIds: readonly number[]; cells: readonly SheetArea[]; order?: boolean },
+  entered: readonly (readonly (readonly EnteredValue[])[])[],
+): Promise<string> {
+  let described = guard.sheetIds.map(id => {
+    let found = sheets.find(candidate => candidate.id === id);
+    return found ? [id, found.title, found.rowCount, found.columnCount] : [id, null];
+  });
+  let cells = guard.cells.map(({ rect: area }, i) => {
+    let values: unknown[] = [];
+    for (let row = area.startRow; row < area.endRow; row++) {
+      for (let column = area.startColumn; column < area.endColumn; column++) {
+        let value = entered[i]?.[row - area.startRow]?.[column - area.startColumn] ?? null;
+        if (value === null || typeof value !== "object") values.push(value);
+        else values.push("formula" in value ? ["f", compactFormula(value.formula)] : ["e", value.error]);
+      }
+    }
+    return values;
+  });
+  let order = guard.order ? [sheets.toSorted((a, b) => a.index - b.index).map(({ id }) => id)] : [];
+  let bytes = new TextEncoder().encode(JSON.stringify([described, cells, ...order]));
+  let digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  return Array.from(digest, byte => byte.toString(16).padStart(2, "0")).join("");
+}
 
 /** A mint handing out `ids` in turn, then 999. */
 function minter(...ids: number[]): () => number {
@@ -653,6 +692,66 @@ describe("Sheets apply guard", () => {
     expect(await guardDigest(SHEETS, guard, [[[3]], [["old", { formula: stored }]]])).toBe(expected);
     let named = { ...batch, guard: { ...batch.guard, cells: [{ sheetId: 0, rect: rect(5, 5) }] } };
     expect(guardOf(named).cells).toEqual([{ sheetId: 0, rect: rect(5, 5) }]);
+  });
+
+  it("digests as the SHA-256 of the whole JSON text, for generated guards", async () => {
+    let random = seeded(50_000);
+    let below = (count: number) => Math.floor(random() * count);
+    let pick = <T>(from: readonly T[]) => from[below(from.length)];
+    let pool = [
+      ...SHEETS, sheet(12, 'Größe "Q3" \\ 日本 😀', { index: 2, rowCount: 3, columnCount: 2 }), sheet(31, "", { index: 3 }),
+    ];
+    let shapes = new Set<string>();
+    for (let n = 0; n < 300; n++) {
+      // Fewer sheets than the guard describes, as often as not: one it names is then missing.
+      let sheets = pool.filter(() => below(5) > 0);
+      let sheetIds = Array.from({ length: below(5) }, () => pick(pool).id);
+      if (sheetIds.some(id => !sheets.some(candidate => candidate.id === id))) shapes.add("a sheet missing");
+      let areas: SheetArea[] = [];
+      let content: EnteredValue[][][] = [];
+      for (let left = below(6); left > 0; left--) {
+        let rows = below(7);
+        let columns = below(6);
+        let short = below(3) === 0;
+        areas.push({ sheetId: pick(pool).id, rect: rect(below(4), below(4), rows, columns) });
+        content.push(Array.from({ length: short ? below(rows + 1) : rows }, () =>
+          Array.from({ length: short ? below(columns + 1) : columns }, () => pick(DIGESTED_VALUES))));
+        shapes.add(rows * columns === 0 ? "an area of no cell" : short ? "arrays shorter than the area" : "a whole area");
+      }
+      if (areas.length === 0) shapes.add("no area");
+      if (areas.length > 0 && below(5) === 0) {
+        content.length = below(areas.length);
+        shapes.add("an area with no arrays");
+      }
+      let order = pick([undefined, false, true]);
+      shapes.add(`order ${order}`);
+      let guard = { sheetIds, cells: areas, ...(order === undefined ? {} : { order }) };
+      expect(await guardDigest(sheets, guard, content), `guard ${n}`).toBe(await wholeTextDigest(sheets, guard, content));
+    }
+    expect([...shapes].toSorted()).toEqual([
+      "a sheet missing", "a whole area", "an area of no cell", "an area with no arrays", "arrays shorter than the area",
+      "no area", "order false", "order true", "order undefined",
+    ]);
+  });
+
+  it("gives the digest a batch queued earlier holds", async () => {
+    // Each digest is the one a queued batch stores for its guard: approval compares a fresh one
+    // with it, so one byte of difference in what is hashed would refuse every batch already queued.
+    expect(await guardDigest(SHEETS, { sheetIds: [0, 7], cells }, entered)).toBe("84a6d2256782c062d56cbe7f434b61f6af06e5147d54733d76164046d541c35c");
+    expect(await guardDigest(
+      SHEETS,
+      {
+        sheetIds: [7, 3],
+        cells: [{ sheetId: 7, rect: rect(1, 1, 2, 3) }, { sheetId: 0, rect: rect(4, 0, 3, 0) }, { sheetId: 0, rect: rect(0, 5) }],
+        order: true,
+      },
+      [[['say "hi" \\ line\u2028end', 1.5, true], [{ error: "DIVIDE_BY_ZERO" }]], [], [[{ formula: '=A1 & " b c"' }]]],
+    )).toBe("f2009fb9bd97444f0d6cf1e67dc28b8b32bcb14ff5c7386e74c07a6a588a7094");
+    expect(await guardDigest(
+      [sheet(12, "Größe 日本 😀", { index: 0, rowCount: 3, columnCount: 2 }), ...SHEETS],
+      { sheetIds: [12], cells: [{ sheetId: 12, rect: rect(0, 0, 3, 2) }], order: false },
+      [[["é", "😀"], [false, 0], [null, -2e21]]],
+    )).toBe("cb23cb5e51bc600c509a781ec1afe3b8e4893509a89f48181254ab655dbb4670");
   });
 
   it("fits only cells each sheet still has", () => {

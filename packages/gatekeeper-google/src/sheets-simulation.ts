@@ -25,6 +25,7 @@ import type { TaggedAction } from "@gadgets/gatekeeper-kit/actions";
 import {
   replaySimulation, type SimulationResult, type SimulationStep,
 } from "@gadgets/gatekeeper-kit/simulation";
+import { createSimulationStore, type SimulationStore } from "@gadgets/gatekeeper-kit/simulation-store";
 import type { SheetArea } from "./sheets-api";
 import {
   DEFAULT_COLUMN_WIDTH, DEFAULT_ROW_HEIGHT, mergeFormat, type Axis, type BaseFormats, type BaseSizes,
@@ -38,7 +39,7 @@ import {
   a1Of, byPosition, cellName, enteredOf, findSheet, intersection, isFormula, rectName, shownValue, type EnteredValue,
   type Rect,
 } from "./sheets-model";
-import { cellKey, lineKey, planSheet } from "./sheets-plan";
+import { cellKey, lineKey, planInPlace, planSheet, working, type Working } from "./sheets-plan";
 import type {
   SpreadsheetCellValue, SpreadsheetFormats, SpreadsheetRange, SpreadsheetValueMode,
 } from "./sheets-read-types";
@@ -175,12 +176,9 @@ export function gridOf(metadata: { sheets: readonly SheetMeta[] }): Grid {
   };
 }
 
-/**
- * Applies one queued change to `grid`, returning a new grid. `id` is the change's action ID, which
- * the cells it enters record. Throws `ChangeConflict`, also for a sheet it acts on that is no longer
- * titled as when it was queued, which its guard would refuse.
- */
-export function applyChange(grid: Grid, action: SheetsAction, id = 0): Grid {
+// Throws `ChangeConflict` for a sheet `action` acts on that is no longer titled as when it was
+// queued, which its guard would refuse.
+function requireTitles(grid: Grid, action: SheetsAction): void {
   for (let [sheetId, title] of Object.entries(action.payload.sheets)) {
     // A sheet the change creates is not there yet.
     let sheet = grid.sheets.find(candidate => candidate.id === Number(sheetId));
@@ -188,6 +186,15 @@ export function applyChange(grid: Grid, action: SheetsAction, id = 0): Grid {
       throw new ChangeConflict(`the sheet "${title}" it acts on has been renamed "${sheet.title}"`);
     }
   }
+}
+
+/**
+ * Applies one queued change to `grid`, returning a new grid. `id` is the change's action ID, which
+ * the cells it enters record. Throws `ChangeConflict`, also for a sheet it acts on that is no longer
+ * titled as when it was queued, which its guard would refuse.
+ */
+export function applyChange(grid: Grid, action: SheetsAction, id = 0): Grid {
+  requireTitles(grid, action);
   return planSheet(grid, action.payload.changes, id).grid;
 }
 
@@ -201,7 +208,64 @@ function replayStep(grid: Grid, change: QueuedChange): SimulationStep<Grid> {
   }
 }
 
-/** Replays queued changes over a read, stopping at the first that no longer applies. */
+// The queued changes a fold's grid has applied, oldest first: what puts the grid back when a
+// batch stops after an earlier change of it wrote. It is that grid's own bookkeeping, a part of
+// the fold's draft kept beside it so the grid stays a `Grid` and nothing more: reached only
+// through the grid, and gone with it. The store holds nothing, and no fold reads another's.
+const APPLIED = new WeakMap<Working, QueuedChange[]>();
+
+// Makes `work` what a fold of `applied` over `base` is, in the same object: what `base` holds,
+// then each change again, under its own ID. They applied once over this base, so they apply again
+// and write the same entries in the same order.
+function restore(work: Working, base: Grid, applied: readonly QueuedChange[]): void {
+  Object.assign(work, working(base));
+  for (let { id, action } of applied) planInPlace(work, action.payload.changes, id);
+}
+
+// One queued change applied to a fold's grid in place. A batch of several changes cannot decide
+// before it writes, since each change is checked against what the one before it wrote: when one
+// of them no longer applies, the grid is put back as the batches before made it.
+function replayInPlace(work: Working, change: QueuedChange, base: Grid): SimulationStep<Working> {
+  let { changes } = change.action.payload;
+  try {
+    requireTitles(work, change.action);
+    if (changes.length === 0) return { kind: "known-no-effect" };
+    planInPlace(work, changes, change.id);
+  } catch (error) {
+    if (!(error instanceof ChangeConflict)) throw error;
+    // The title check and a batch's one change both throw before they write.
+    if (changes.length > 1) restore(work, base, APPLIED.get(work)!);
+    return { kind: "unsupported", reason: error.message };
+  }
+  APPLIED.get(work)!.push(change);
+  return { kind: "applied", value: work };
+}
+
+/**
+ * Creates a store that replays queued changes over the grid a read fetched, stopping at the first
+ * that no longer applies. The grid is its one entity, folded under the spreadsheet's own ID. The
+ * store keeps nothing: every call folds the changes it is given from the first. Each fold works
+ * on one grid of its own, which every batch changes in place: nothing is copied for a batch, and
+ * the fetched grid is left as it was. A batch that stops part-way leaves that grid as the batches
+ * before it made it.
+ */
+export function createReplay(): SimulationStore<string, Grid, Working, QueuedChange> {
+  return createSimulationStore<string, Grid, Working, QueuedChange>({
+    initial: grid => {
+      let work = working(grid);
+      APPLIED.set(work, []);
+      return work;
+    },
+    // A grid is always given: every fold has one for its base, and no change deletes it.
+    reduce: (work, change, { base }) => replayInPlace(work!, change, base!),
+  });
+}
+
+/**
+ * Replays queued changes over a grid, stopping at the first that no longer applies: what the
+ * store of `createReplay()` folds, and how many of the changes had an effect. `base` is left as
+ * it was.
+ */
 export function replayChanges(
   base: Grid, changes: readonly QueuedChange[],
 ): SimulationResult<Grid, QueuedChange> {
@@ -271,6 +335,9 @@ type LogView = {
   hosts: Map<number, { start: number; host: number }[]>;
 };
 
+// A view is made for a grid whose log is complete. A fold changes its grid's log in place, and
+// that holds for it too: no step of a fold reads a view, the grid is read through `formulaAt` only
+// once its fold has returned, and nothing changes it after.
 const LOG_VIEWS = new WeakMap<Grid, LogView>();
 
 // Adds `value` to the list `map` holds for `key`.
@@ -696,21 +763,83 @@ export function formatPiecesToFetch(grid: Grid, area: SimulatedArea): SheetArea[
   return lines;
 }
 
+/** The rows of a band, by which `baseValues` finds the pieces that hold a row. */
+const ROW_BAND = 256;
+
+/** The band a row is in. */
+const bandOf = (row: number): number => Math.floor(row / ROW_BAND);
+
+/**
+ * The columns of a band, by which `baseValues` finds the pieces of a row that hold a cell. Few:
+ * the pieces queued column changes cut a guard into are a few columns wide, and indexing a row
+ * costs its cells over `COLUMN_BAND` at most.
+ */
+const COLUMN_BAND = 16;
+
+/** The band a column is in. */
+const columnBandOf = (column: number): number => Math.floor(column / COLUMN_BAND);
+
 /** Values of cells of the sheets Google holds, by sheet ID and zero-based row and column. */
 export type BaseCells<T> = (sheetId: number, row: number, column: number) => T | null;
 
 /** Cells of the sheets Google holds as a read shows them. */
 export type BaseValues = BaseCells<SpreadsheetCellValue>;
 
-/** `values[i]`, what a read of `pieces[i]` returned padded to its size, by cell. */
+/**
+ * `values[i]`, what a read of `pieces[i]` returned padded to its size, by cell. It reads the
+ * arrays it is given, which it keeps, and copies nothing: a cell is looked for in the pieces of
+ * its sheet that hold its row, the last first, and is the first value found that is not null.
+ * Those pieces are found once for a run of lookups on one row, which is how a caller walks an
+ * area.
+ */
 export function baseValues<T extends EnteredValue = SpreadsheetCellValue>(
   pieces: readonly SheetArea[], values: readonly (readonly (readonly (T | null)[])[])[],
 ): BaseCells<T> {
-  let cells = new Map<string, T>();
-  pieces.forEach(({ sheetId, rect }, i) => values[i]?.forEach((line, r) => line.forEach((value, c) => {
-    if (value !== null) cells.set(`${sheetId}:${rect.startRow + r}:${rect.startColumn + c}`, value);
-  })));
-  return (sheetId, row, column) => cells.get(`${sheetId}:${row}:${column}`) ?? null;
+  // The pieces by the bands of `ROW_BAND` rows of their sheet they reach, in piece order, so the
+  // pieces of a row are looked for among those near it and not among every piece of the sheet.
+  let bandsOn = new Map<number, Map<number, number[]>>();
+  pieces.forEach(({ sheetId, rect }, i) => {
+    let bands = bandsOn.get(sheetId);
+    if (!bands) bandsOn.set(sheetId, bands = new Map());
+    for (let band = bandOf(rect.startRow); band <= bandOf(rect.endRow - 1); band++) {
+      let on = bands.get(band);
+      if (on) on.push(i);
+      else bands.set(band, [i]);
+    }
+  });
+  // The pieces that hold the row last asked for, by the bands of `COLUMN_BAND` columns they
+  // reach, in piece order. Every caller walks an area a row at a time (`rewriteWork`,
+  // `enteredContent` and the simulated read all loop rows, then columns), so a run of lookups
+  // shares one index, and a lookup costs the pieces that hold its row near its column, not every
+  // piece of its sheet: a guarded area that queued insertions or deletions cut up has hundreds,
+  // across its rows or its columns. A caller that asked in another order would get the same
+  // answers at the cost of indexing the pieces near the row a lookup.
+  let heldSheet: number | undefined;
+  let heldRow = 0;
+  let holding = new Map<number, number[]>();
+  return (sheetId, row, column) => {
+    if (sheetId !== heldSheet || row !== heldRow) {
+      holding = new Map();
+      for (let i of bandsOn.get(sheetId)?.get(bandOf(row)) ?? []) {
+        let { rect } = pieces[i];
+        if (values[i]?.[row - rect.startRow] === undefined) continue;
+        for (let band = columnBandOf(rect.startColumn); band <= columnBandOf(rect.endColumn - 1); band++) {
+          let on = holding.get(band);
+          if (on) on.push(i);
+          else holding.set(band, [i]);
+        }
+      }
+      heldSheet = sheetId;
+      heldRow = row;
+    }
+    let near = holding.get(columnBandOf(column)) ?? [];
+    for (let at = near.length - 1; at >= 0; at--) {
+      let { rect } = pieces[near[at]];
+      let value = values[near[at]]?.[row - rect.startRow]?.[column - rect.startColumn];
+      if (value !== undefined && value !== null) return value;
+    }
+    return null;
+  };
 }
 
 /**

@@ -2,9 +2,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { DOCUMENT_FIELDS, GoogleDocsApi, type GoogleDocsTab } from "../src/docs-api";
 import { GOOGLE_SHEET_MIME_TYPE } from "../src/drive-session";
 import { explainUnopenedFile } from "../src/office-conversion";
-import { GoogleSheetsApi } from "../src/sheets-api";
+import { GoogleSheetsApi, type SheetArea } from "../src/sheets-api";
+import { GoogleSlidesApi } from "../src/slides-api";
 import { GoogleApiError, readGoogleJson } from "../src/google-response";
 import { docsGetResponse } from "./docs-fields";
+import { printedAsGoogle } from "./slides-provider";
 
 const token = async () => "access-token";
 
@@ -695,5 +697,95 @@ describe("explainUnopenedFile for a spreadsheet", () => {
 
     await expect(explainUnopenedFile("sheets", denied, mimeType)).resolves.toBe(denied);
     expect(mimeType).not.toHaveBeenCalled();
+  });
+});
+
+/** Answers every request with `body`, printed as Google prints it, and lists the URLs asked. */
+function answerAsGoogle(body: unknown): string[] {
+  let urls: string[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+    let url = input instanceof Request ? input.url : input.toString();
+    urls.push(url);
+    return printedAsGoogle(new URL(url), Response.json(body));
+  }));
+  return urls;
+}
+
+describe("compact JSON", () => {
+  const slides = new GoogleSlidesApi(token);
+  const sheets = new GoogleSheetsApi(token);
+  const CELL: SheetArea = { sheetId: 0, rect: { startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 } };
+  /** A sheet's answer holding data that starts at `CELL`. */
+  const GRID = { sheets: [{ properties: { sheetId: 0, title: "Data" }, data: [{}] }] };
+  const DECK = { presentationId: "deck-1" };
+
+  it.each([
+    { name: "Slides getPresentation", read: () => slides.getPresentation("deck-1"), body: DECK },
+    { name: "Slides getPresentationTitle", read: () => slides.getPresentationTitle("deck-1"), body: DECK },
+    { name: "Slides getOutline", read: () => slides.getOutline("deck-1"), body: DECK },
+    { name: "Slides getSlide", read: () => slides.getSlide("deck-1", "s1"), body: { objectId: "s1" } },
+    { name: "Slides getLayout", read: () => slides.getLayout("deck-1", "l1"), body: { objectId: "l1" } },
+    {
+      name: "Slides getThumbnail",
+      // The image is fetched next, and is no PNG here.
+      read: () => slides.getThumbnail("deck-1", "s1", "MEDIUM").catch(() => undefined),
+      body: { contentUrl: "https://lh3.googleusercontent.com/thumbnail" },
+    },
+    { name: "Sheets getSpreadsheet", read: () => sheets.getSpreadsheet("sheet-1"), body: sheetBody() },
+    { name: "Sheets getMetadata", read: () => sheets.getMetadata("sheet-1"), body: sheetBody() },
+    { name: "Sheets readRanges", read: () => sheets.readRanges("sheet-1", ["Data!A1"]), body: {} },
+    { name: "Sheets readEntered", read: () => sheets.readEntered("sheet-1", [CELL]), body: GRID },
+    {
+      name: "Sheets readAreas",
+      read: () => sheets.readAreas("sheet-1", [CELL], "formatted"),
+      body: { valueRanges: [{ dataFilters: [{ gridRange: { endRowIndex: 1, endColumnIndex: 1 } }] }] },
+    },
+    { name: "Sheets readFormats", read: () => sheets.readFormats("sheet-1", "Data!A1"), body: GRID },
+    { name: "Sheets readFormatAreas", read: () => sheets.readFormatAreas("sheet-1", [CELL]), body: GRID },
+    {
+      name: "Sheets getDeveloperMetadata",
+      read: () => sheets.getDeveloperMetadata("sheet-1", 7), body: { metadataValue: "kept" },
+    },
+  ])("asks Google for compact JSON: $name", async ({ read, body }) => {
+    let urls = answerAsGoogle(body);
+
+    await read();
+
+    expect(new URL(urls[0]).searchParams.get("prettyPrint")).toBe("false");
+  });
+
+  it("reads a slide page that fits its cap only as compact JSON", async () => {
+    let side = { magnitude: 3_000_000, unit: "EMU" };
+    let slide = {
+      objectId: "s1",
+      pageElements: Array.from({ length: 5_500 }, (_element, at) => ({
+        objectId: `element-${at}`,
+        size: { width: side, height: side },
+        transform: { scaleX: 1, scaleY: 1, translateX: 311_700 + at, translateY: 1_152_475, unit: "EMU" },
+      })),
+    };
+    let cap = 2 * 1024 * 1024;
+    expect(JSON.stringify(slide).length).toBeLessThan(cap);
+    expect(`${JSON.stringify(slide, null, 2)}\n`.length).toBeGreaterThan(cap);
+    answerAsGoogle(slide);
+
+    await expect(slides.getSlide("deck-1", "s1")).resolves.toEqual(slide);
+  });
+
+  it("reads values that fit the cap only as compact JSON", async () => {
+    let values = Array.from({ length: 500 }, (_row, r) => Array.from({ length: 100 }, (_cell, c) =>
+      `${r}:${c}`.padEnd(95, "x")));
+    let body = {
+      spreadsheetId: "sheet-1",
+      valueRanges: [{ range: "Data!A1:CV500", majorDimension: "ROWS", values }],
+    };
+    let cap = 5 * 1024 * 1024;
+    expect(JSON.stringify(body).length).toBeLessThan(cap);
+    expect(`${JSON.stringify(body, null, 2)}\n`.length).toBeGreaterThan(cap);
+    answerAsGoogle(body);
+
+    await expect(sheets.readRanges("sheet-1", ["Data!A1:CV500"])).resolves.toEqual([
+      { range: "Data!A1:CV500", values },
+    ]);
   });
 });

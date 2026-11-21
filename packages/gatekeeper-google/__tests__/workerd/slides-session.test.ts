@@ -165,9 +165,32 @@ describe("Google Slides presentation session", () => {
     let { session } = newSession();
     using _session = session;
 
-    await expect(Promise.resolve(session.getSlides(ids))).rejects.toThrow("Request fewer");
+    // Their pages pass what one read holds before the slides read from them could pass what one
+    // read returns.
+    await expect(Promise.resolve(session.getSlides(ids))).rejects.toThrow(
+      "Read or change fewer slides at a time.");
     expect(await session.getSlides(ids.slice(0, 4))).toHaveLength(4);
     expect(await session.getSlides(ids.slice(4))).toHaveLength(1);
+  });
+
+  it("refuses slides too large to return together when queued copies make them so", async () => {
+    // Three pages fit in one read; with a queued copy of each, the six slides read from them are
+    // too large to return.
+    let body = text(["x".repeat(1_800_000)]);
+    deck = presentation(Array.from({ length: 3 }, (_, i) => slide(`big${i}`, [shape(`b${i}`, body)])));
+    let copies: QueuedChange[] = deck.slides!.map((page, i) => ({ id: i + 1, action: {
+      kind: "duplicateSlide", payload: {
+        slideId: page.objectId!, newSlideId: `copy${i}`, objectIds: { [`b${i}`]: `copy-b${i}` },
+        slide: { number: i + 1 },
+      },
+    } }));
+    let { session } = newSession(undefined, copies);
+    using _session = session;
+
+    let ids = ["big0", "copy0", "big1", "copy1", "big2", "copy2"];
+    await expect(Promise.resolve(session.getSlides(ids))).rejects.toThrow(
+      "These 6 slides are too large to read at once. Request fewer.");
+    expect(await session.getSlides(ids.slice(0, 4))).toHaveLength(4);
   });
 
   it("reads a queued new slide from replay alone, skips it as queued, and does not render it", async () => {

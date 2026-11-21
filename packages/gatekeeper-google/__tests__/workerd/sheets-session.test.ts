@@ -406,6 +406,10 @@ function answering(answer: unknown): Request[] {
   return requests;
 }
 
+/** A row of cells holding each of `texts` as entered, as Google returns them. */
+const textRow = (...texts: string[]) =>
+  ({ values: texts.map(stringValue => ({ userEnteredValue: { stringValue } })) });
+
 describe("Google Sheets entered values", () => {
   let api = new GoogleSheetsApi(async () => "access-token");
   let areas = [
@@ -479,6 +483,102 @@ describe("Google Sheets entered values", () => {
 
     await expect(api.readEntered("sheet-1", areas))
       .rejects.toThrow("Google Sheets did not return every range it was asked for.");
+  });
+
+  it("places a returned cell in every range that holds it", async () => {
+    // A1:B2 and B2:C3 share B2, which only the first range's block returns: the second's leaves
+    // its first row out.
+    answering({
+      sheets: [{
+        properties: {},
+        data: [
+          { rowData: [textRow("a1", "b1"), textRow("a2", "b2")] },
+          { startRow: 1, startColumn: 1, rowData: [{}, textRow("b3", "c3")] },
+        ],
+      }],
+    });
+
+    let overlapping = [{ sheetId: 0, rect: rect(0, 0, 2, 2) }, { sheetId: 0, rect: rect(1, 1, 2, 2) }];
+    expect(await api.readEntered("sheet-1", overlapping))
+      .toEqual([[["a1", "b1"], ["a2", "b2"]], [["b2", null], ["b3", "c3"]]]);
+  });
+
+  it("lets a later block's cell replace an earlier one's, a blank cell included", async () => {
+    answering({
+      sheets: [{
+        properties: {},
+        data: [
+          { rowData: [textRow("a1", "b1", "c1")] },
+          { rowData: [{ values: [{ userEnteredValue: { stringValue: "later" } }, {}] }] },
+        ],
+      }],
+    });
+
+    expect(await api.readEntered("sheet-1", [{ sheetId: 0, rect: rect(0, 0, 1, 3) }]))
+      .toEqual([[["later", null, "c1"]]]);
+  });
+
+  it("places every cell as a scan of every range would, ranges across tiles and overlapping", async () => {
+    // A small deterministic generator: ranges and blocks of one sheet or another, crossing the
+    // tiles the read indexes ranges by, overlapping, with blank and trimmed cells.
+    let seed = 20261120;
+    let next = (below: number) => {
+      seed = (seed * 1103515245 + 12345) % 2147483648;
+      return seed % below;
+    };
+    for (let round = 0; round < 40; round++) {
+      let areas = Array.from({ length: 1 + next(30) }, () => {
+        let startRow = next(120), startColumn = next(90);
+        return { sheetId: next(2) * 7, rect: rect(startRow, startColumn, 1 + next(40), 1 + next(40)) };
+      });
+      // A block where each range starts, as Google answers, and some more over them.
+      let blocks = [...areas, ...areas.slice(0, next(areas.length))].map(({ sheetId, rect: r }) => ({
+        sheetId,
+        startRow: r.startRow, startColumn: r.startColumn,
+        rowData: Array.from({ length: next(r.endRow - r.startRow + 1) }, () => ({
+          values: Array.from({ length: next(r.endColumn - r.startColumn + 1) }, () =>
+            next(4) === 0 ? {} : { userEnteredValue: { numberValue: next(1000) } }),
+        })),
+      }));
+      answering({
+        sheets: [0, 7].map(sheetId => ({
+          properties: { sheetId },
+          data: blocks.filter(block => block.sheetId === sheetId).map(({ sheetId: _, ...block }) => block),
+        })),
+      });
+
+      // Every returned cell written into every range that holds it, in the order returned.
+      let expected = areas.map(({ rect: r }) =>
+        Array.from({ length: r.endRow - r.startRow }, () =>
+          Array.from({ length: r.endColumn - r.startColumn }, (): unknown => null)));
+      for (let sheetId of [0, 7]) {
+        for (let block of blocks.filter(block => block.sheetId === sheetId)) {
+          block.rowData.forEach((row, i) => row.values.forEach((cell, j) => {
+            let at = block.startRow + i, column = block.startColumn + j;
+            areas.forEach(({ sheetId: on, rect: r }, k) => {
+              if (on === sheetId && at >= r.startRow && at < r.endRow && column >= r.startColumn &&
+                column < r.endColumn) {
+                expected[k][at - r.startRow][column - r.startColumn] =
+                  cell.userEnteredValue?.numberValue ?? null;
+              }
+            });
+          }));
+        }
+      }
+      expect(await api.readEntered("sheet-1", areas), `round ${round}`).toEqual(expected);
+    }
+  });
+
+  it("refuses an unsupported value in a block no range holds", async () => {
+    answering({
+      sheets: [
+        { properties: {}, data: [{ rowData: [textRow("a1")] }] },
+        { properties: { sheetId: 9 }, data: [{ startRow: 40, rowData: [{ values: [{ userEnteredValue: {} }] }] }] },
+      ],
+    });
+
+    await expect(api.readEntered("sheet-1", [{ sheetId: 0, rect: rect(0, 0) }]))
+      .rejects.toThrow("Google Sheets returned an unsupported cell value.");
   });
 });
 

@@ -1707,14 +1707,40 @@ not slow as the connection stores more documents; neither does the removal of a 
 that keeps a document reads one small row for each copy the connection stores.
 
 A Google Slides presentation's slide summaries come from one response capped at 10 MiB. It holds the
-text of every slide's shapes and speaker notes, but no styles or geometry: about 4 KiB a slide on a
+text of every slide's shapes and speaker notes, but no styles or geometry: about 2 KiB a slide on a
 live deck, so a presentation needs thousands of slides to exceed it. It also holds every master's
 and layout's name and background and the masters' theme colours, a few KiB in all. Slide content is
-read one slide at a time, capped at 2 MiB each. While changes await approval, reads also fetch the
+read one slide at a time, capped at 2 MiB each. Reads ask Google for compact JSON, so a cap counts
+content and no indentation. While changes await approval, reads also fetch the
 slides they address, so each can be checked as approving it would: slide content reads the other
 slides of any batch touching a slide it shows, since a batch applies all or none, and the summaries
 read every slide a queued batch changes, since they hold no tables or grouped shapes. Large batches
-awaiting approval therefore cost reads more requests against Google's per-user quota.
+awaiting approval therefore cost reads more requests against Google's per-user quota. Queueing a
+move, a skip, a deletion, or a new slide placed after another reads, of each slide it names, only
+its shapes' text and whether it is skipped, a couple of KiB, and reads the slide whole when a queued
+change edits it. A read fetches the slides it needs whole first, four at a time, and then those it
+needs only that much of, six at a time, which is as many connections as a Worker holds open at once.
+The whole pages one read holds, the slides queued changes touch among them, are capped at
+8,388,608 characters of compact JSON together (`MAX_READ_PAGES_LENGTH`), counted as each page
+arrives. A slide read or a change that needs more fails with `The slides this needs exceed 8388608
+characters of content together, the most one read holds. Read or change fewer slides at a time.`,
+starts no request after the page that passed the cap, and parses none from it on. Approving an
+`updateSlides()` batch reads each slide it changes whole, a queued copy by then a slide of its own,
+so the batch is refused with the same message when it is queued if those pages pass the cap: each
+counted as the read that queues it fetched it, a queued copy as the slide it copies, and a queued
+new slide as replay holds it, so the agent can split it while it is still unqueued. Changes queued
+before it may still grow those pages past the cap by the time it is approved. The summaries, which
+take no slide IDs, never fail for the cap: they read the slides queued batches change in groups
+that each fit in it, a page alone being within it, fold the queued changes over each group's pages
+apart, and keep of each only its slides' summaries. A change edits one page, and does nothing to a
+slide the fold does not hold, so it comes out on each page as one fold of the whole deck would
+have it; only the first change that no longer applies is shared, and hides every later change, on
+any slide, as it does in one fold. A group folded before such a change was found in a later group,
+whose slides a change from that one on reached, is read and folded again. A page of tables
+takes up to three times its JSON in memory once parsed, and each copy that a queued or new change
+makes of a page it edits two times more, so at the cap a read and two copies of every page hold
+under 60 MiB of the isolate's 128 MB. All 100 slides of a deck of a title, a body and a table each
+are about 3 MiB.
 
 The simulated presentation was recorded from an English-locale account, so until it is created it
 reads with locale `en` and English layout names. Google translates those names: a presentation a
@@ -1847,7 +1873,14 @@ element it deleted that was there before, text it edited, a table it adds or del
 of, by its size and its cells' positions, spans and text, a theme colour it set, and a background
 other than a picture it left a page with, that the page did not already have (every picture reads
 alike). If the read cannot tell, as for a batch that only formats or moves elements or leaves a page
-a picture, the change is marked as having an unknown outcome and never retried.
+a picture, the change is marked as having an unknown outcome and never retried. That read takes the
+outline, which holds the masters and layouts, and then each slide the write changed on its own,
+checking it and letting it go before the next, so it holds one page at a time and does not fail
+for the cap on what one read holds, which the write may have grown its pages past. A collaborator's
+edit between two of those page reads could make each page match at a different revision, though no
+revision has them all as the write would leave them, so the read finds the write landed only if the
+presentation's revision after the last page is still the outline's; otherwise the outcome is
+unknown.
 
 Google returns a presentation's revision only to an account that can edit it, so a view-only
 account can read a presentation but every change to it fails. A queued change is stored in one
