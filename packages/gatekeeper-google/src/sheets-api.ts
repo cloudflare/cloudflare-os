@@ -4,7 +4,7 @@ import type {
   SpreadsheetValueMode,
 } from "./sheets-read-types";
 import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
-import { readGoogleJson } from "./google-response";
+import { GoogleApiError, readGoogleJson } from "./google-response";
 import {
   baseFormats, baseSizes, DEFAULT_COLUMN_WIDTH, DEFAULT_ROW_HEIGHT, FORMAT_READ_FIELDS,
   type BaseFormats, type BaseSizes, type RestFormatSheet, type RestGridRange,
@@ -346,8 +346,11 @@ export class GoogleSheetsApi {
 
   /**
    * The merges of each sheet in `sheetIds` that has any, read in one request by sheet ID with
-   * `spreadsheets:getByDataFilter`, which needs a grant that may edit the spreadsheet; with no IDs
-   * nothing is read. Throws `Error` when Google's list of them is over 5 MiB.
+   * `spreadsheets:getByDataFilter`; with no IDs nothing is read. That request needs a grant that may
+   * edit the spreadsheet, so where Google refuses it for the grant (403), as for an account that has
+   * lost its write grant but can still read, the merges of every sheet are read with
+   * `spreadsheets.get` instead, as main reads them. Throws `Error` when Google's list of them is
+   * over 5 MiB.
    */
   async getMerges(spreadsheetId: string, sheetIds: readonly number[]): Promise<Map<number, Rect[]>> {
     let ids = [...new Set(sheetIds)];
@@ -355,13 +358,32 @@ export class GoogleSheetsApi {
     let url = new URL(`${API_BASE}/${encodeURIComponent(spreadsheetId)}:getByDataFilter`);
     url.searchParams.set("fields", MERGE_FIELDS);
     url.searchParams.set("prettyPrint", "false");
-    let response = await fetchWithAuthRetry(
-      url.toString(),
-      {
+    let merges: Map<number, Rect[]>;
+    try {
+      merges = await this.#readMerges(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ dataFilters: ids.map(sheetId => ({ gridRange: { sheetId } })), includeGridData: false }),
-      },
+      }, "The sheets the changes act on hold more merged cells than can be read at once: Google's list of " +
+        "them is over 5 MiB, so the changes cannot be checked against them. Unmerge cells on those sheets " +
+        "in Google Sheets, or change other sheets.");
+    } catch (error) {
+      if (!(error instanceof GoogleApiError && error.httpStatus === 403)) throw error;
+      let all = new URL(`${API_BASE}/${encodeURIComponent(spreadsheetId)}`);
+      all.searchParams.set("fields", MERGE_FIELDS);
+      all.searchParams.set("prettyPrint", "false");
+      merges = await this.#readMerges(all, {}, "The spreadsheet holds more merged cells than can be read at once " +
+        "without a grant that may edit it: Google's list of them is over 5 MiB. Reconnect the account with " +
+        "edit access, or unmerge cells in Google Sheets.");
+    }
+    return new Map([...merges].filter(([id]) => ids.includes(id)));
+  }
+
+  // The merges a `MERGE_FIELDS` read answers, by sheet ID, of each sheet that has any, failing with
+  // `tooMany` when Google's answer is over 5 MiB.
+  async #readMerges(url: URL, init: RequestInit, tooMany: string): Promise<Map<number, Rect[]>> {
+    let response = await fetchWithAuthRetry(
+      url.toString(), init,
       // A read, however it is sent.
       this.getAccessToken, { timeoutMs: REQUEST_TIMEOUT_MS, idempotent: true },
     );
@@ -372,9 +394,7 @@ export class GoogleSheetsApi {
       });
     } catch (error) {
       if (!(error instanceof Error && error.cause instanceof ResponseTooLargeError)) throw error;
-      throw new Error("The sheets the changes act on hold more merged cells than can be read at once: " +
-        "Google's list of them is over 5 MiB, so the changes cannot be checked against them. Unmerge " +
-        "cells on those sheets in Google Sheets, or change other sheets.", { cause: error });
+      throw new Error(tooMany, { cause: error });
     }
     return new Map((result.sheets ?? []).flatMap(({ properties, merges: held }) =>
       held?.length ? [[properties?.sheetId ?? 0, held.map(mergeOf)] as const] : []));

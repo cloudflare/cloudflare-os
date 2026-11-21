@@ -163,6 +163,11 @@ class SheetsProvider {
   /** Every request, in order. */
   requests: URL[] = [];
   canEdit = true;
+  /**
+   * Whether the token may only read: Google refuses `spreadsheets:getByDataFilter`, which needs a
+   * grant that may edit, with 403, and answers `spreadsheets.get`.
+   */
+  readOnlyGrant = false;
   /** Lands once, just before the next batch is checked, as a collaborator's edit would. */
   beforeNextBatch?: () => void;
   /** Lands once, just after the next batch is answered. */
@@ -213,6 +218,7 @@ class SheetsProvider {
     if (path === ":batchUpdate") return this.#batch((await request.json() as { requests: BatchRequest[] }).requests);
     // Entered values for the guard, merges, or formats: the field mask says which.
     if (path === ":getByDataFilter") {
+      if (this.readOnlyGrant) return Response.json({ error: { code: 403, status: "PERMISSION_DENIED" } }, { status: 403 });
       let fields = url.searchParams.get("fields") ?? "";
       if (fields.includes("userEnteredValue")) return this.#gridData(url, await request.json());
       if (!fields.includes("data(")) return this.#mergesByDataFilter(url, await request.json());
@@ -1508,6 +1514,22 @@ describe.each(RUNS)("Google Sheets changes ($name)", run => {
     // naming the gone sheet. Google refuses that, and with no sheet left to read the merges of, none is
     // read again. Queuing reads the merges after the metadata, of the sheet it names.
     expect(provider.mergeReads).toEqual([[7], [7], [0], [7]]);
+  });
+
+  it("reads every sheet's merges with spreadsheets.get while changes are queued and the grant may only read", async () => {
+    let provider = laidOut();
+    let sheets = gatekeeper(run);
+    await sheets.queued([{ op: "writeCells", range: "Sales!A1", values: [["Area"]] }]);
+    provider.readOnlyGrant = true;
+    provider.requests = [];
+
+    expect((await sheets.info()).queuedChangeConflict).toBeUndefined();
+    expect(await sheets.read("Sales!A1:B1")).toMatchObject({ values: [["Area", "Total"]] });
+    expect(await sheets.formats("Sales!B3:D5")).toMatchObject({ merges: ["C4:E6"] });
+    // Each read tries the read by sheet ID, then reads the merges of every sheet.
+    let merges = provider.requests.filter(url => url.searchParams.get("fields") === "sheets(properties(sheetId),merges)");
+    expect(merges.map(url => url.pathname.endsWith(":getByDataFilter") ? "byId" : "all"))
+      .toEqual(["byId", "all", "byId", "all", "byId", "all"]);
   });
 
   it("asks for no merges of a sheet a queued batch adds", async () => {

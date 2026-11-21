@@ -2030,10 +2030,12 @@ no write. Applying a batch, `getSpreadsheet()` and a range read send the two req
 since the changes name their sheets by ID; queuing a batch and `readFormats()` find sheets by title,
 so they send the second once the first answers. Google refuses a merges request that names a sheet a
 collaborator has deleted (400, `INVALID_ARGUMENT`), so one that fails while a sheet it names is gone
-is sent again for the sheets left, if any. Google's list of those merges may be at most 5 MiB, about
-70,000 merges; a batch acting on sheets holding more is refused with an error saying so, as is a
-read with such a change queued. Google allows 60 write requests a minute per user; a write over that
-quota stays pending.
+is sent again for the sheets left, if any. The request needs a grant that may edit the spreadsheet,
+so where Google refuses it for the grant (403), as for a read and write connection whose account can
+now only read, the merges of every sheet are read with `spreadsheets.get` instead. Google's list of
+those merges may be at most 5 MiB, about 70,000 merges; a batch acting on sheets holding more is
+refused with an error saying so, as is a read with such a change queued. Google allows 60 write
+requests a minute per user; a write over that quota stays pending.
 
 ## Google Drive bindings
 
