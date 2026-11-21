@@ -36,6 +36,12 @@ type ProviderSheet = SheetMeta & {
   columnWidths?: Record<number, number>;
 };
 
+/** `body` as Google answers a request: indented two spaces a level unless it asks `prettyPrint=false`. */
+function jsonAnswer(url: URL, body: unknown): Response {
+  let text = url.searchParams.get("prettyPrint") === "false" ? JSON.stringify(body) : JSON.stringify(body, null, 2);
+  return new Response(text, { headers: { "Content-Type": "application/json; charset=UTF-8" } });
+}
+
 /** Whether `outer` holds every cell of `inner`. */
 function holds(outer: Rect, inner: Rect): boolean {
   return inner.startRow >= outer.startRow && inner.endRow <= outer.endRow &&
@@ -205,11 +211,12 @@ class SheetsProvider {
     if (drive) return Response.json({ capabilities: { canEdit: this.canEdit } });
     let path = url.pathname.slice(base.length);
     if (path === ":batchUpdate") return this.#batch((await request.json() as { requests: BatchRequest[] }).requests);
-    // Entered values for the guard, or formats: the field mask says which.
+    // Entered values for the guard, merges, or formats: the field mask says which.
     if (path === ":getByDataFilter") {
-      return url.searchParams.get("fields")?.includes("userEnteredValue")
-        ? this.#gridData(url, await request.json())
-        : this.#formatsByDataFilter(url, await request.json());
+      let fields = url.searchParams.get("fields") ?? "";
+      if (fields.includes("userEnteredValue")) return this.#gridData(url, await request.json());
+      if (!fields.includes("data(")) return this.#mergesByDataFilter(url, await request.json());
+      return this.#formatsByDataFilter(url, await request.json());
     }
     if (path === "" && url.searchParams.has("ranges")) return this.#formatRead(url);
     if (path === "/values:batchGetByDataFilter") return this.#byDataFilter(await request.json());
@@ -221,7 +228,7 @@ class SheetsProvider {
         ? Response.json({ metadataId: Number(metadataId), ...marker })
         : Response.json({ error: { code: 404, status: "NOT_FOUND" } }, { status: 404 });
     }
-    if (path === "") return this.#metadata(url.searchParams.get("fields") ?? "");
+    if (path === "") return this.#metadata(url);
     throw new Error(`Unexpected provider request: ${url.href}`);
   }
 
@@ -360,7 +367,8 @@ class SheetsProvider {
     return this.requests.flatMap(url => url.searchParams.getAll("fields"));
   }
 
-  #metadata(fields: string): Response {
+  #metadata(url: URL): Response {
+    let fields = url.searchParams.get("fields") ?? "";
     let body = spreadsheetMetadata(this.spreadsheetId, this.title, this.sheets);
     // A field the mask does not name is left out, as Google leaves it out.
     for (let sheet of body.sheets) {
@@ -370,7 +378,36 @@ class SheetsProvider {
         if (!fields.includes("editors")) delete (range as Partial<typeof range>).editors;
       }
     }
-    return Response.json(body);
+    return jsonAnswer(url, body);
+  }
+
+  /** The sheet IDs each read of merges named, in order. */
+  mergeReads: number[][] = [];
+
+  /**
+   * `spreadsheets:getByDataFilter` for the merges of whole sheets, each named by its ID alone: one
+   * entry per sheet named, in the spreadsheet's order, its ID left out when 0.
+   */
+  #mergesByDataFilter(url: URL, body: { dataFilters: { gridRange: FixtureGridRange }[]; includeGridData?: boolean }): Response {
+    if (url.searchParams.get("fields") !== "sheets(properties(sheetId),merges)") {
+      this.violations.push(`a merges read asks for ${url.searchParams.get("fields")}`);
+    }
+    if (body.includeGridData) this.violations.push("a merges read asks for grid data");
+    if (body.dataFilters.some(({ gridRange }) => Object.keys(gridRange).join() !== "sheetId")) {
+      this.violations.push("a merges read names part of a sheet");
+    }
+    let ids = body.dataFilters.map(({ gridRange }) => gridRange.sheetId);
+    this.mergeReads.push(ids);
+    if (ids.some(id => !this.sheets.some(sheet => sheet.id === id))) {
+      return Response.json({ error: { code: 400, status: "INVALID_ARGUMENT" } }, { status: 400 });
+    }
+    return jsonAnswer(url, {
+      sheets: this.sheets.filter(sheet => ids.includes(sheet.id)).toSorted((a, b) => a.index - b.index)
+        .map(sheet => ({
+          properties: sheet.id === 0 ? {} : { sheetId: sheet.id },
+          ...(sheet.merges?.length ? { merges: sheet.merges.map(merge => gridRangeOf(sheet.id, merge)) } : {}),
+        })),
+    });
   }
 
   #shown(value: EnteredValue, mode: string): SheetCellInput {
@@ -2550,6 +2587,21 @@ function laidOut() {
   ]);
 }
 
+/**
+ * The spreadsheet of `budget()` with an "Archive" sheet of 80,000 two-cell merges, whose list,
+ * compact, is over the 5 MiB Google's answer to a read may be.
+ */
+function archived() {
+  return budget([
+    sheetMeta(0, "Sales"),
+    sheetMeta(7, "Q3 Plan", { index: 1, rowCount: 10, columnCount: 4 }),
+    sheetMeta(9, "Archive", {
+      index: 2, rowCount: 80_000, columnCount: 4,
+      merges: Array.from({ length: 80_000 }, (_merge, row) => rectOf(row, 0, 1, 2)),
+    }),
+  ]);
+}
+
 describe.each(RUNS)("Google Sheets layout ($name)", run => {
   useRun(run);
 
@@ -2683,6 +2735,45 @@ describe.each(RUNS)("Google Sheets layout ($name)", run => {
     expect((await sheets.formats("Sales!A2:B3")).merges).toBeUndefined();
     expect(await sheets.apply(unmerge.actionId!)).toBeNull();
     expect(provider.sheets[0].merges).toEqual([]);
+  });
+
+  it("plans and applies a write without reading the merges of sheets no change acts on", async () => {
+    let provider = archived();
+    let sheets = gatekeeper(run);
+
+    let { actionId } = await sheets.queued([{ op: "writeCells", range: "Sales!A1", values: [["Area"]] }]);
+    expect(await sheets.read("Sales!A1:B1")).toMatchObject({ values: [["Area", "Total"]] });
+    expect(await sheets.apply(actionId!)).toBeNull();
+
+    expect(provider.get("Sales!A1")).toBe("Area");
+    expect(provider.masks.filter(mask => mask.startsWith("spreadsheetId,")).every(mask => !mask.includes("merges")))
+      .toBe(true);
+    // Queuing, the read with the write queued, and applying it each read the merges of "Sales" alone.
+    expect(provider.mergeReads).toEqual([[0], [0], [0]]);
+  });
+
+  it("shows the merges of a sheet read while only changes to another are queued", async () => {
+    let provider = laidOut();
+    let sheets = gatekeeper(run);
+
+    await sheets.queued([{ op: "writeCells", range: "'Q3 Plan'!A1", values: [[1]] }]);
+    expect(await sheets.formats("Sales!B3:D5")).toMatchObject({ merges: ["C4:E6"] });
+    await sheets.queued([{ op: "insertRows", sheet: "Q3 Plan", at: 1 }]);
+    // A range naming no sheet reads the first visible one.
+    expect(await sheets.formats("B3:D5")).toMatchObject({ range: "Sales!B3:D5", merges: ["C4:E6"] });
+    expect(provider.mergeReads.at(-1)).toEqual([0, 7]);
+  });
+
+  it("refuses a change to a sheet whose merges are too many to read, saying so", async () => {
+    let provider = archived();
+    let sheets = gatekeeper(run);
+
+    expect((await sheets.update([{ op: "writeCells", range: "Archive!C1", values: [[1]] }])).error).toBe(
+      "The sheets the changes act on hold more merged cells than can be read at once: Google's list of " +
+      "them is over 5 MiB, so the changes cannot be checked against them. Unmerge cells on those sheets " +
+      "in Google Sheets, or change other sheets.");
+    expect(provider.mergeReads).toEqual([[9]]);
+    expect(provider.batches).toEqual([]);
   });
 
   it("fails a merge whose cleared cells a collaborator edited since it was queued, without writing", async () => {

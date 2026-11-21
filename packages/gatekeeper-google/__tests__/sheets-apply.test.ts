@@ -35,10 +35,15 @@ class FakeSheets {
   onSend?: () => void;
   #held: BatchRequest[][] = [];
 
-  api: Pick<GoogleSheetsApi, "getMetadata" | "readEntered" | "getDeveloperMetadata" | "batchUpdate"> = {
+  api: Pick<GoogleSheetsApi, "getMetadata" | "withMerges" | "readEntered" | "getDeveloperMetadata" | "batchUpdate"> = {
     getMetadata: async spreadsheetId => {
       this.calls++;
       return { id: spreadsheetId, title: "Budget", sheets: SHEETS, protectedRanges: [] };
+    },
+    // The sheet holds no merges.
+    withMerges: async (_spreadsheetId, metadata) => {
+      this.calls++;
+      return metadata;
     },
     readEntered: async (_spreadsheetId, areas: readonly SheetArea[]) => {
       this.calls++;

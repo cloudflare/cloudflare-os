@@ -200,9 +200,11 @@ async function guarded(host: SheetsHost, batch: SheetBatch): Promise<unknown[] |
   if (unapplied !== undefined) {
     throw new ChangeConflict(`it builds on change ${unapplied}, which was not applied`);
   }
-  let metadata = await host.api.getMetadata(host.spreadsheetId);
-  let { requests } = planSheet(gridOf(metadata), batch.changes);
   let guard = guardOf(batch);
+  // The batch is checked against the merges of the sheets it acts on alone.
+  let metadata = await host.api.withMerges(
+    host.spreadsheetId, await host.api.getMetadata(host.spreadsheetId), guard.sheetIds);
+  let { requests } = planSheet(gridOf(metadata), batch.changes);
   // Cells the sheets no longer hold cannot be read, and have changed.
   if (!guardFits(metadata.sheets, guard.cells)) return undefined;
   let entered = await host.api.readEntered(host.spreadsheetId, guard.cells);
