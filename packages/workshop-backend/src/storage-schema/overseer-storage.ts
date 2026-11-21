@@ -28,7 +28,6 @@ import {
   type GatekeeperCreationSpec, type PermissionEdge, type WorkpieceId,
 } from "@gadgets/workshop-shared/api";
 import type { CodeChange } from "@gadgets/workshop-shared/code-change";
-import type { ChatGatewayRpcTarget } from "@gadgets/workshop-shared/external-message-gateway";
 import type {
   ActionDescription, ActionKind, Gatekeeper, GitObjectType, GitOid, HookController,
   HookDescription, ObservationDescription,
@@ -931,43 +930,6 @@ type PendingAgentCallRecord = {
   initiatorModelId: string | null;  // null when the spawner has no model (see spawnAgent)
 };
 
-/**
- * External message gateways pass a response target when submitting a prompt. While the agent turn is
- * in progress, `waiting` records persist that target across DO eviction/restart; once response
- * text is known, `ready` records retry delivery until acknowledged; `delivered` records are
- * retained briefly so retries of the same external message remain idempotent.
- */
-export type ExternalMessageRecord = {
-  /** Namespaced external message key used to dedupe retries of the same submission. */
-  idempotencyKey: string;
-  chatId: number;
-  /**
-   * Chat log sequence number of the external prompt. The target sends the latest agent/error
-   * response after this sequence, stopping before the next user message.
-   */
-  promptSequence: number;
-  createdAt: number;
-} & (
-  | {
-      status: "waiting";
-      chatGatewayRpcTarget: NativeRpcStub<ChatGatewayRpcTarget>;
-    }
-  | {
-      status: "ready";
-      chatGatewayRpcTarget: NativeRpcStub<ChatGatewayRpcTarget>;
-      responseText: string;
-    }
-  | {
-      status: "delivered";
-      deliveredAt: number;
-    }
-);
-
-export type ExternalChatRecord = {
-  externalChatKey: string;
-  chatId: number;
-};
-
 type ChatAttachmentContentRecord = {
   fileId: string;
   data: Uint8Array;
@@ -1170,6 +1132,9 @@ export type ShareLinkRecord = {
    * migrateToFrozenGadgetGrants() in overseer-migrations.ts). No such link is created anymore.
    */
   gadgetIds?: WorkpieceId[];
+
+  /** Set on a "use" link that grants only a view of its gadget (see CollaboratorGrant). */
+  mode?: "view";
 
   /**
    * Set on its creator's default link for what it grants (see Overseer.createShareLink). Each
@@ -1432,10 +1397,6 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // `defaultGadgetId` can be cached in memory after it is first read.
       defaultGadgetId: <WorkpieceId | undefined>undefined,
 
-      // External-message Gadgets claim ownership before registering in the owner's UserDO. If that
-      // registration fails, this keeps the owner-table write retryable.
-      ownerRegistrationPending: false,
-
       codeVersion: 0,
       totalCost: 0,
 
@@ -1601,6 +1562,13 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
         }
       }),
 
+      // Facets holding static gadget snapshots (see Overseer.getGadgetSnapshot), recorded before
+      // each is cloned. A snapshot lives no longer than the instance that made it, whose sessions
+      // are its only users, so the next instance deletes every one still recorded.
+      gadgetSnapshots: collection<{facetName: string; gadgetId: WorkpieceId}>()({
+        primaryKey: "facetName",
+      }),
+
       gatekeepers: collection<GatekeeperRecord>()({
         primaryKey: "id",
 
@@ -1695,29 +1663,6 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // `ActiveAgentRecord`.
       activeAgents: collection<ActiveAgentRecord>()({
         primaryKey: "chatId"
-      }),
-
-      gadgetResponseDeliveries: collection<ExternalMessageRecord>()({
-        primaryKey: "idempotencyKey",
-        uniqueIndexes: {
-          undeliveredByChatId(record: ExternalMessageRecord) {
-            return record.status === "delivered" ? null : record.chatId;
-          },
-        },
-        nonUniqueIndexes: {
-          // Retry delivery by listing only ready records, not the whole idempotency history.
-          readyByIdempotencyKey(record: ExternalMessageRecord) {
-            return record.status === "ready" ? record.idempotencyKey : null;
-          },
-          // Sweep expired delivered records by age without scanning pending/ready records.
-          deliveredByDeliveredAt(record: ExternalMessageRecord) {
-            return record.status === "delivered" ? record.deliveredAt : null;
-          },
-        },
-      }),
-
-      externalChats: collection<ExternalChatRecord>()({
-        primaryKey: "externalChatKey",
       }),
 
       chats: collection<StoredChatMessage>()({

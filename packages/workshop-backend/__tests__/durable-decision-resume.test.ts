@@ -8,7 +8,6 @@ import type { OverseerDurableObject } from "../src/overseer";
 import { UserDurableObject } from "../src/user";
 import { OVERSEER_STORAGE_VERSION } from "../src/storage-schema/overseer-migrations";
 import { openFakeOverseer } from "./fixtures";
-import type { FakeChatResponseTarget } from "./response-target";
 
 const CHAT = 1;
 const USER = {type: "user" as const, id: "original-user", name: "Original user"};
@@ -663,9 +662,9 @@ describe("decision handoff using the existing execution row", () => {
         if (attempt < 4) {
           await expect(impl.runAlarmTasks(0)).rejects.toThrow("reset");
           expect(impl.storage.activeAgents.get(CHAT)?.resumeAttempts).toBe(attempt);
-          // An unrelated response-delivery pass recomputes the shared alarm, resetting its
+          // An unrelated unread fan-out pass recomputes the shared alarm, resetting its
           // platform retry count. It must not reset this execution's budget.
-          await impl.deliverReadyExternalMessageResponses();
+          await impl.deliverDirtyChats();
           expect(await impl.ctx.storage.getAlarm()).not.toBeNull();
         } else {
           await expect(impl.runAlarmTasks(0)).resolves.toBeUndefined();
@@ -845,7 +844,7 @@ describe("decision handoff using the existing execution row", () => {
       modelLookup(impl, async () => { await gate.promise; return {profile: USER, aiModel: MODEL}; });
       decide(impl, "connection"); impl.resumeAgentAfterDecision(CHAT);
       await impl.deliverDirtyChats();
-      const deliveries = vi.spyOn(impl, "deliverReadyExternalMessageResponses");
+      const deliveries = vi.spyOn(impl, "waitForAllAgentsToComplete");
       vi.useFakeTimers({toFake: ["setTimeout", "clearTimeout"]});
       try {
         let settled = false;
@@ -911,30 +910,46 @@ describe("decision handoff using the existing execution row", () => {
     expect(requests()).toBe(0);
   });
 
-  it("re-arms failed response delivery after the platform's last retry, then recovers", async () => {
-    const s = await scenario(), name = crypto.randomUUID();
+  it("re-arms failed unread fan-out after the platform's last retry, then recovers", async () => {
+    const s = await scenario(null);
     await s.visit(async impl => {
-      impl.storage.activeAgents.delete(CHAT);
-      // Mint in the storing DO's invocation, not through a test-pool wrapper or another DO.
-      using target: RpcStub<FakeChatResponseTarget> = await impl.ctx.restore({
-        type: "test-response-target", name,
+      // Settle the fan-out the fixture's chat started, which the failure below must not join.
+      await impl.deliverDirtyChats();
+      expect(impl.storage.dirtyChats.get(CHAT)).toBeUndefined();
+
+      // The owner's user DO refuses the chat's unread handoff until it recovers.
+      let recipientDown = true;
+      const users = impl.users;
+      impl.users = new Proxy(users, {
+        get(target, key) {
+          if (key === "get") return (id: DurableObjectId) => new Proxy(target.get(id), {
+            get(user, member) {
+              if (member !== "messageArrived") return Reflect.get(user, member);
+              return (...args: Parameters<UserDurableObject["messageArrived"]>) => recipientDown
+                ? Promise.reject(new Error("Recipient unavailable")) : user.messageArrived(...args);
+            },
+          });
+          if (key === "idFromString") return (id: string) => target.idFromString(id);
+          if (key === "idFromName") return (name: string) => target.idFromName(name);
+          return Reflect.get(target, key);
+        },
       });
-      await target.setAvailable(false);
-      impl.storage.gadgetResponseDeliveries.put({idempotencyKey: "external-response", chatId: CHAT,
-        promptSequence: 0, createdAt: Date.now(), status: "ready", responseText: "Done.",
-        chatGatewayRpcTarget: target});
+      impl.addChatMessages(CHAT, USER, [{type: "message", message: "Hello"}]);
+      await expect(impl.deliverDirtyChats()).rejects.toThrow("Recipient unavailable");
+      expect(impl.storage.dirtyChats.get(CHAT)).toBeDefined();
+
+      // A failed alarm arms nothing of its own: the platform retries it, until its last retry.
       for (let retry = 0; retry <= 6; retry++) {
-        await impl.ctx.storage.deleteAlarm();
-        await expect(impl.runAlarmTasks(retry)).rejects.toThrow("Response target unavailable");
-        expect(impl.storage.gadgetResponseDeliveries.get("external-response")?.status).toBe("ready");
+        await impl.ctx.storage.deleteAlarm(); // The platform consumed the scheduled alarm.
+        await expect(impl.runAlarmTasks(retry)).rejects.toThrow("Recipient unavailable");
+        expect(impl.storage.dirtyChats.get(CHAT)).toBeDefined();
+        if (retry < 6) expect(await impl.ctx.storage.getAlarm()).toBeNull();
       }
-      const next = await impl.ctx.storage.getAlarm();
-      expect(next).toBeGreaterThan(Date.now()); // Avoid an immediate failure loop.
-      await target.setAvailable(true);
+      expect(await impl.ctx.storage.getAlarm()).toBeGreaterThan(Date.now()); // Not a failure loop.
+
+      recipientDown = false;
       await impl.runAlarmTasks();
-      expect(await target.calls()).toBe(8);
-      expect(impl.storage.gadgetResponseDeliveries.get("external-response")?.status).toBe("delivered");
-      expect(await impl.ctx.storage.getAlarm()).toBeGreaterThan(next!); // Retention sweep only.
+      expect(impl.storage.dirtyChats.get(CHAT)).toBeUndefined();
     });
   });
 

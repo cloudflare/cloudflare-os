@@ -83,8 +83,8 @@ type TestExports = {
     ensureResources(patterns: string[]): Promise<{ url?: string }>;
   };
   TestVerifier(options: { props: UserProps }): {
-    hasProjectAccess(projectId: number, minAccessLevel?: number): Promise<boolean>;
-    hasProjectPathAccess(projectPath: string, minAccessLevel?: number): Promise<boolean>;
+    hasProjectAccess(projectId: number): Promise<boolean>;
+    hasProjectPathAccess(projectPath: string): Promise<boolean>;
     checkSubresourceAccess(subresources: string[]): Promise<boolean[]>;
   };
   TestCallback(options: { props: UserProps }): Fetcher<GatekeeperConnectCallback>;
@@ -597,11 +597,11 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
   }
 
   /** The verifier's membership check, by the project's id (a number) or its path (a string). */
-  async hasProjectAccess(userObjectId: string, project: number | string, minAccessLevel?: number): Promise<Outcome<boolean>> {
+  async hasProjectAccess(userObjectId: string, project: number | string): Promise<Outcome<boolean>> {
     const verifier = (this.ctx.exports as unknown as TestExports).TestVerifier({ props: { userObjectId } });
     return await outcome(() => typeof project === "number"
-      ? verifier.hasProjectAccess(project, minAccessLevel)
-      : verifier.hasProjectPathAccess(project, minAccessLevel));
+      ? verifier.hasProjectAccess(project)
+      : verifier.hasProjectPathAccess(project));
   }
 
   async checkSubresourceAccess(userObjectId: string, subresources: string[]): Promise<Outcome<boolean[]>> {

@@ -32,7 +32,7 @@ afterEach(async () => {
 })
 
 // Runs `bundle` in a frame, returning each console message the UI reports, as one string.
-const run = async (bundle: UiBundle, onIframeEscape?: () => void) => {
+const run = async (bundle: UiBundle, onIframeEscape?: () => void, renderMode?: 'snapshot') => {
   const logs: string[] = []
   const gadget = {
     getUiBundle: async () => bundle,
@@ -41,7 +41,7 @@ const run = async (bundle: UiBundle, onIframeEscape?: () => void) => {
   const onConsoleLog = (log: ConsoleLogEvent) => logs.push(log.message.join(' '))
   await act(async () => {
     root.render(
-      <GadgetUI gadget={gadget} height="100px" onConsoleLog={onConsoleLog} onIframeEscape={onIframeEscape} />,
+      <GadgetUI gadget={gadget} height="100px" renderMode={renderMode} onConsoleLog={onConsoleLog} onIframeEscape={onIframeEscape} />,
     )
   })
   return logs
@@ -83,6 +83,23 @@ gadget.read().then(value => console.log("read:", value));`,
 
   await expect.poll(() => logs).toContain('read: from the server')
   expect(logs).toContain('globals: function function function')
+})
+
+it('sets gadgetRenderMode before any module evaluates for a snapshot, and leaves it unset live', async () => {
+  const bundle = (label: string): UiBundle => ({
+    modules: [{ path: 'client.js', code: `console.log("${label}:", String(globalThis.gadgetRenderMode));
+export default { main() {} };` }],
+  })
+  const snapshot = await run(bundle('snapshot'), undefined, 'snapshot')
+  await expect.poll(() => snapshot).toContain('snapshot: snapshot')
+  // Each run is a fresh frame, as a different view would mount.
+  await act(async () => root.render(null))
+  const legacy = await run({ jsCode: 'console.log("legacy:", String(globalThis.gadgetRenderMode));' },
+    undefined, 'snapshot')
+  await expect.poll(() => legacy).toContain('legacy: snapshot')
+  await act(async () => root.render(null))
+  const live = await run(bundle('live'))
+  await expect.poll(() => live).toContain('live: undefined')
 })
 
 it('reports a default export with no main()', async () => {

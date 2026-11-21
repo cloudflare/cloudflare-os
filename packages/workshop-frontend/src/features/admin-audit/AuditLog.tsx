@@ -101,10 +101,10 @@ export const AuditLog = ({ admin, filter, onFilterChange, adminSuggestions, relo
       ?.focus()
   }
   const targetSuggestions = [...new Set(page?.records.flatMap((record) => targetUserOf(record) ?? []))]
-  const workspaceRecord = page?.records.find((record) =>
-    record.kind === 'workspace' && record.workspaceId === workspace && record.workspaceTitle)
-  const workspaceLabel = workspace === undefined ? undefined
-    : (workspaceRecord?.kind === 'workspace' ? workspaceRecord.workspaceTitle : undefined)
+  // A call into a workspace and a write to one name the workspace and its title.
+  const workspaceLabel = page?.records
+    .flatMap((record) => record.kind === 'workspace' || record.kind === 'write' ? [record] : [])
+    .find(({ workspaceId, workspaceTitle }) => workspaceId === workspace && workspaceTitle)?.workspaceTitle
 
   // A page button is disabled on the first or the last page, and a browser drops the focus of a
   // control that becomes disabled without giving it back. So once a turn lands there, focus moves

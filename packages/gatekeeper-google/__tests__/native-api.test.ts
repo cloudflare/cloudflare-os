@@ -367,6 +367,43 @@ describe("native Google content API safety", () => {
       message: "Google Sheets get spreadsheet failed [http=400]",
     });
   });
+
+  // A 403 without reasons says the account can't open the file only when Google's whole error
+  // was read; one cut off says nothing about what Google gave.
+  it("says whether a refusal's error body was read, in the error and in the log", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      error: { code: 403, message: "The caller does not have permission" },
+    }, { status: 403 })));
+    const read = await new GoogleDocsApi(token).getDocumentMetadata("doc-1").catch(value => value);
+    expect(read).toBeInstanceOf(GoogleApiError);
+    expect(read).toMatchObject({ providerReasons: [], providerErrorRead: true });
+    expect(warn.mock.calls[0]?.[0]).toMatchObject({ providerErrorRead: true });
+
+    warn.mockClear();
+    vi.useFakeTimers();
+    try {
+      vi.stubGlobal("fetch", vi.fn(async () => new Response(new ReadableStream({
+        start(controller) { controller.enqueue(new TextEncoder().encode('{"error": {"code": 403')); },
+      }), { status: 403 })));
+      const failed = new GoogleDocsApi(token).getDocumentMetadata("doc-1").catch(value => value);
+      await vi.advanceTimersByTimeAsync(2000);
+      const cutOff = await failed;
+      expect(cutOff).toBeInstanceOf(GoogleApiError);
+      expect(cutOff).toMatchObject({ providerReasons: [], providerErrorRead: false });
+      expect(warn.mock.calls[0]?.[0]).not.toHaveProperty("providerErrorRead");
+
+      // A body that parses but never ends is cut off all the same.
+      vi.stubGlobal("fetch", vi.fn(async () => new Response(new ReadableStream({
+        start(controller) { controller.enqueue(new TextEncoder().encode('{"error": {"code": 403}}')); },
+      }), { status: 403 })));
+      const stalled = new GoogleDocsApi(token).getDocumentMetadata("doc-1").catch(value => value);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(await stalled).toMatchObject({ providerReasons: [], providerErrorRead: false });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("explainUnopenedFile for a spreadsheet", () => {

@@ -1139,7 +1139,7 @@ export class WorkspaceGitCache {
    * comparison with a stamp from `readFileAtCommitWithOid` or `blobOid` -- at tree-walk cost.
    */
   async fileOidAtCommit(commitOid: GitOid, path: string): Promise<GitOid | undefined> {
-    let { entry } = await this.#resolveEntryAt(commitOid, path);
+    let { entry } = await this.#resolveEntryAt(commitOid, path, false);
     return entry?.mode === "100644" || entry?.mode === "100755" ? entry.oid : undefined;
   }
 
@@ -1176,19 +1176,18 @@ export class WorkspaceGitCache {
   // segment is absent, or an intermediate segment is absent or not a directory (absence takes
   // one shape so readFileAtCommitIfExists can report "no base text" uniformly).
   //
-  // This is the worktree base resolver, so a miss anywhere along the walk pulls eagerly
-  // (`eagerTree`): the first fault against a base commit brings the whole tree closure and
-  // every small blob in one round trip -- the same shape as the worktree-creation pull --
-  // rather than one gatekeeper round trip per path segment. Reads that follow hit locally.
-  async #resolveEntryAt(commitOid: GitOid, path: string)
+  // Content reads fault eagerly: the first miss brings the tree closure and small blobs in
+  // one round trip, as worktree creation does. Metadata-only OID lookups use exact-object
+  // pulls instead, leaving all blobs untouched.
+  async #resolveEntryAt(commitOid: GitOid, path: string, eagerTree = true)
       : Promise<{ tree: GitOid, entry: GitTreeEntry | undefined }> {
     let segments = splitTreePath(path);
     let name = segments.pop()!;
-    let commit = await this.ensureObject(commitOid, { type: "commit", eagerTree: true });
+    let commit = await this.ensureObject(commitOid, { type: "commit", eagerTree });
     let treeOid = parseGitCommitRefs(commit.payload, commitOid).tree;
     let referencedBy = commitOid;
     for (let segment of segments) {
-      let tree = await this.ensureObject(treeOid, { type: "tree", referencedBy, eagerTree: true });
+      let tree = await this.ensureObject(treeOid, { type: "tree", referencedBy, eagerTree });
       let entry = parseGitTree(tree.payload, treeOid).find(e => e.name === segment);
       if (entry === undefined || entry.mode !== "40000") {
         return { tree: treeOid, entry: undefined };
@@ -1196,7 +1195,7 @@ export class WorkspaceGitCache {
       referencedBy = treeOid;
       treeOid = entry.oid;
     }
-    let tree = await this.ensureObject(treeOid, { type: "tree", referencedBy, eagerTree: true });
+    let tree = await this.ensureObject(treeOid, { type: "tree", referencedBy, eagerTree });
     return { tree: treeOid, entry: parseGitTree(tree.payload, treeOid).find(e => e.name === name) };
   }
 

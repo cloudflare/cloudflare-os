@@ -4,8 +4,7 @@
 // against only the connections that gadget reaches (see #gadgetReach in overseer.ts). So binding a
 // connection into a gadget widens the scope of everyone holding it, and since a held gadget is
 // verified only when it is got, that widening restarts the workspace if a live session holds it:
-// the next getGadget() re-verifies against the new scope. The external-message gate's access
-// scoping is covered by external-message-verification.test.ts.
+// the next getGadget() re-verifies against the new scope.
 //
 // This lives in its own file -- with its own harness, like every suite here -- rather than in
 // sensitive-observations.test.ts, because both suites restart the workspace, and a DO reset makes

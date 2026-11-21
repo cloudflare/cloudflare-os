@@ -7,6 +7,12 @@ How customer instances get deployed.
   the contract between this repo's CI and the deploy service, produced by `manifest-lib.ts` from each
   package's wrangler.jsonc with account-specific values replaced by placeholders (`$ACCOUNT_ID`,
   `$WORKER_NAME(...)`, `$SECRET(...)`, `$PUBLIC_BASE_URL`, ...).
+- Each worker's manifest entry has a `kind`: `backend`, `router`, `gatekeeper` or `internal`. An
+  `internal` worker (`INTERNAL_WORKERS` in `manifest-lib.ts`, listed by name) is one that other
+  workers reach through a service binding and nothing routes to. Its kind is what says it is
+  deployed with every instance, as the backend and the router are: it is not `installable`, and it
+  carries no `shortName`, `BASE_URL`, inputs or `preinstall`, each of which belongs to a gatekeeper
+  install.
 - `upload-release.ts` mirrors the release to R2 content-addressed, manifest last; with `--candidate`
   the manifest lands under `candidates/<id>/` (invisible to the deploy service) so e2e can verify it,
   and `promote-release.ts` then copies it to `releases/<id>/` — publishing is that single
