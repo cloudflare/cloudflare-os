@@ -3502,7 +3502,8 @@ describe("Google Sheets replay cost", () => {
     //
     // An answer of cells as entered is 40 bytes around its blocks, one for each area. Wherever the
     // sheets are read to queue, replay or apply, the merges of the sheets the changes act on are
-    // read after them (`MERGES`).
+    // read too (`MERGES`): after the sheets to queue, which finds sheets by title, and beside them
+    // to read or apply, which know the sheets' IDs from the queued changes.
     expect(measured).toEqual([
       {
         ...none, phase: "build", pending: 5,
@@ -3523,20 +3524,21 @@ describe("Google Sheets replay cost", () => {
         // queueing fold hold the 100,000 entries.
         overlayCopies: 20, overlayEntries: 1_000_000,
         // To queue: the sheets and whether the account may edit, together, then the guarded cell
-        // as entered, a block of 94 bytes. To read: the sheets and the 50,000 values, together.
+        // as entered, a block of 94 bytes. To read: the sheets, the merges and the 50,000 values,
+        // together.
         fetches: 35, responseBytes: 10 * SHEETS + 5 * CAN_EDIT + 10 * MERGES + 5 * 134 + 5 * VALUES,
-        mostOpen: 2,
+        mostOpen: 3,
       },
       {
         ...none, phase: "read", pending: 5 + N,
         overlayCopies: 1,
-        // The sheets and the 50,000 values, together.
-        fetches: 3, responseBytes: SHEETS + MERGES + VALUES, mostOpen: 2,
+        // The sheets, the merges and the 50,000 values, together.
+        fetches: 3, responseBytes: SHEETS + MERGES + VALUES, mostOpen: 3,
       },
       {
         ...none, phase: "formats read", pending: 5 + N,
         overlayCopies: 1,
-        // The sheets, and the formats Google holds for the cells, together.
+        // The sheets and then the merges, beside the formats Google holds for the cells.
         fetches: 3, responseBytes: SHEETS + MERGES + 35_008, mostOpen: 2,
       },
       {
@@ -3564,16 +3566,17 @@ describe("Google Sheets replay cost", () => {
       {
         ...none, phase: "moved read", pending: 7 + N,
         overlayCopies: 1, keysIndexed: 100_000,
-        // The sheets, then the 49,900 cells of the 499 rows below the inserted one as entered, at
-        // 53 bytes a cell, and as shown, at 16, together.
+        // The sheets and the merges, together, then the 49,900 cells of the 499 rows below the
+        // inserted one as entered, at 53 bytes a cell, and as shown, at 16, together.
         fetches: 4, responseBytes: SHEETS + MERGES + 2_651_240 + 799_562, mostOpen: 2,
       },
       {
         ...none, phase: "approve", pending: 6 + N,
         // The batch is planned again over the sheets as they are, with nothing queued. It formats,
-        // so its digest is of no cell. The sheets, then the write, whose answer is 20 bytes.
+        // so its digest is of no cell. The sheets and the merges, together, then the write, whose
+        // answer is 20 bytes.
         overlayCopies: 1,
-        fetches: 3, responseBytes: SHEETS + MERGES + 20, mostOpen: 1,
+        fetches: 3, responseBytes: SHEETS + MERGES + 20, mostOpen: 2,
       },
       // A rejection reads nothing.
       { ...none, phase: "reject", pending: 5 + N },
