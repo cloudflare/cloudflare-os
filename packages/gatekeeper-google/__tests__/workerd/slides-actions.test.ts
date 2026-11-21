@@ -1511,6 +1511,56 @@ describe.each(RUNS)("Google Slides backgrounds and theme ($name)", run => {
   });
 });
 
+/** A slide of a title and a body, whose page is about `length` characters as compact JSON. */
+function paddedSlide(id: string, length: number): RestSlide {
+  return slide(id, [
+    shape(`${id}-title`, text([`Slide ${id}: the piece in hand`]), { placeholder: "TITLE" }),
+    shape(`${id}-body`, text(["x".repeat(length)])),
+  ]);
+}
+
+/** The length of `id`'s page as Google answers a full read of it, compact. */
+async function pageLength(provider: SlidesProvider, id: string): Promise<number> {
+  return (await (await provider.handle(new Request(
+    `https://slides.googleapis.com/v1/presentations/deck-1/pages/${id}?fields=${SLIDE_FIELDS}&prettyPrint=false`,
+  )))!.text()).length;
+}
+
+describe("Google Slides pages past what one read holds", () => {
+  /** What one read holds of whole pages together, as compact JSON. */
+  const MAX_READ_PAGES_LENGTH = 8 * 1024 * 1024;
+  const TOO_MANY = `The slides this needs exceed ${MAX_READ_PAGES_LENGTH} characters of content ` +
+    "together, the most one read holds. Read or change fewer slides at a time.";
+
+  it("refuses a batch whose slides approving it reads pass what one read holds, a queued copy as the slide it copies", async () => {
+    // Four copies of the slide fit in one read; five do not.
+    let provider = new SlidesProvider(presentation([paddedSlide("big", 1_800_000)])).install();
+    expect(await pageLength(provider, "big")).toBeGreaterThan(MAX_READ_PAGES_LENGTH / 5);
+    expect(await pageLength(provider, "big")).toBeLessThan(MAX_READ_PAGES_LENGTH / 4 - 1_000);
+    let slides = gatekeeper();
+    let copies: { id: string; actionId: number }[] = [];
+    for (let i = 0; i < 5; i++) {
+      let { value, actionId } = await slides.queued("duplicateSlide", "big");
+      copies.push({ id: value as string, actionId: actionId! });
+    }
+    let changes = [];
+    for (let { id } of copies) {
+      let [copy] = await slides.slides(id);
+      let title = copy.elements.find(element => (element as ShapeElement).text?.startsWith("Slide"))!;
+      changes.push({ op: "editText", slideId: id, elementId: title.id, find: "piece", replace: "part" });
+    }
+
+    expect((await slides.call("updateSlides", changes)).error).toBe(TOO_MANY);
+    let { actionId } = await slides.queued("updateSlides", changes.slice(0, 4));
+
+    for (let copy of copies) expect(await slides.apply(copy.actionId)).toBeNull();
+    expect(await slides.apply(actionId!)).toBeNull();
+    expect(provider.batches).toHaveLength(6);
+    expect(changes.slice(0, 4).map(({ slideId, elementId }) => provider.text(slideId, elementId)))
+      .toEqual(Array(4).fill("Slide big: the part in hand\n"));
+  });
+});
+
 // What a bound presentation stores, by its literal keys, so that moving its code cannot move its
 // storage.
 describe("Google Slides stored layout", () => {

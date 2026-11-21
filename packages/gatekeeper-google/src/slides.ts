@@ -19,7 +19,8 @@ import { QueuedChanges } from "./queued-changes";
 import { nativeFileUrl } from "./resources";
 import { batchKind, SLIDES_ACTIONS } from "./slides-actions";
 import {
-  BlankPresentation, GoogleSlidesApi, type PresentationReader, type ThumbnailSize,
+  BlankPresentation, fetchedLength, GoogleSlidesApi, MAX_READ_PAGES_LENGTH, pagesTooLarge,
+  type PresentationReader, type ThumbnailSize,
 } from "./slides-api";
 import {
   layoutNames, mastersOf, presentationInfo, slideIds, slideOf, themePagesOf, titleOf,
@@ -30,7 +31,7 @@ import type {
 import { designDeck, pageOf, slideIdOf, type DesignChange, type DesignStep } from "./slides-design";
 import { prepareChanges } from "./slides-design-input";
 import {
-  batchSlides, conflictReason, createReplay, instantiatedPlaceholders, mintObjectId, movedOrder,
+  batchSlides, conflictReason, copiedFrom, createReplay, instantiatedPlaceholders, mintObjectId, movedOrder,
   newSlidePlace, slidesToFetch, slidesToRead, type Deck, type QueuedChange, type SlideLabel,
   type SlidesAction, type SlidesActions, type ThemeLabel,
 } from "./slides-simulation";
@@ -293,24 +294,27 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
   /**
    * The slide order, every master and layout, the content of the slides among `pages`, and of
    * those among `labelled` what labels them (see `slidesToRead`), with queued changes applied. A
-   * slide that no longer exists, or never did, is absent from `deck.order`.
+   * slide that no longer exists, or never did, is absent from `deck.order`. `fetched` holds the
+   * length each slide read whole came as (see `fetchedLength`), and a queued copy of one that its
+   * original's.
    */
   async #simulated(pages: readonly string[], labelled: readonly string[] = []) {
     return this.#changes.snapshot(async changes => {
       let outline = await this.#api.getOutline(this.#presentationId);
       let order = slideIds(outline);
       let { needed, labelOnly } = slidesToRead(pages, labelled, changes);
+      let slides = await this.#api.getSlides(this.#presentationId, needed, order, labelOnly);
       return {
         title: outline.title ?? "Untitled presentation",
         // Google reports the revision only to an account that can edit the presentation.
         editable: outline.revisionId !== undefined,
         layouts: layoutNames(outline),
-        ...this.#replayed({
-          order,
-          slides: await this.#api.getSlides(this.#presentationId, needed, order, labelOnly),
-          ...mastersOf(outline),
-          themePages: themePagesOf(outline),
-        }, changes),
+        fetched: new Map([...needed].flatMap(id => {
+          let original = slides.get(copiedFrom(id, changes));
+          let length = original && fetchedLength(original);
+          return length === undefined ? [] : [[id, length] as const];
+        })),
+        ...this.#replayed({ order, slides, ...mastersOf(outline), themePages: themePagesOf(outline) }, changes),
       };
     });
   }
@@ -432,7 +436,14 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
       return pageType === "SLIDE" ? [] : [id];
     }))];
     return this.#changes.queue(batchKind(prepared), async () => {
-      let { deck } = await this.#prepare(ids, "queue changes to them", { themePages });
+      let { deck, fetched } = await this.#prepare(ids, "queue changes to them", { themePages });
+      // Approving the batch reads each of its slides whole, a queued copy then a slide of its own,
+      // and is refused if they pass what one read holds; so a batch that cannot be approved is
+      // refused now, while it can still be split. Each counts as its page came to this read, a
+      // queued copy as the slide it copies, and a queued new slide as replay holds it.
+      let approvalRead = ids.reduce(
+        (length, id) => length + (fetched.get(id) ?? jsonLength(deck.slides.get(id) ?? {})), 0);
+      if (approvalRead > MAX_READ_PAGES_LENGTH) throw pagesTooLarge();
       // Google names a new slide's notes shape itself, as it creates the slide, so until then an
       // edit has nothing to address. Every slide Google has, and a queued copy of one, has notes.
       let unborn = prepared.find((change): change is Extract<DesignChange, { op: "editText" }> =>

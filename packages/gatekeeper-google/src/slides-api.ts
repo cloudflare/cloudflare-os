@@ -22,7 +22,7 @@ const MAX_PAGE_FETCHES = 4;
  * page holds under 60 MiB of the isolate's 128 MB. All 100 slides of a deck of a title, a body
  * and a table each, about 30 KiB a slide, are 3 MiB.
  */
-const MAX_READ_PAGES_LENGTH = 8 * 1024 * 1024;
+export const MAX_READ_PAGES_LENGTH = 8 * 1024 * 1024;
 /**
  * The most pages one read fetches at a time by label alone: the connections a Worker invocation
  * holds open at once, so a larger bound would only queue the rest in the runtime.
@@ -36,6 +36,23 @@ const MAX_THUMBNAIL_RESPONSE_BYTES = 16 * 1024;
 const MAX_THUMBNAIL_BYTES = 8 * 1024 * 1024;
 const THUMBNAIL_HOST_SUFFIX = ".googleusercontent.com";
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+
+/** The refusal of a read, or of a change, whose whole pages pass `MAX_READ_PAGES_LENGTH` together. */
+export function pagesTooLarge(): Error {
+  return new Error(`The slides this needs exceed ${MAX_READ_PAGES_LENGTH} characters of content ` +
+    "together, the most one read holds. Read or change fewer slides at a time.");
+}
+
+// The length of the compact JSON each whole page a read returned came as, by the page.
+const FETCHED_LENGTHS = new WeakMap<RestSlide, number>();
+
+/**
+ * The length, in UTF-16 units, of the compact JSON `page` came as, the length it counts against
+ * `MAX_READ_PAGES_LENGTH`, if it is a whole page `getSlides` returned.
+ */
+export function fetchedLength(page: RestSlide): number | undefined {
+  return FETCHED_LENGTHS.get(page);
+}
 
 /** A `Dimension`; Slides reports sizes in EMU or points. */
 export type RestDimension = { magnitude?: number; unit?: "EMU" | "PT" | "UNIT_UNSPECIFIED" };
@@ -394,19 +411,17 @@ export class GoogleSlidesApi {
   // and a request for a later ID cannot change it. Those still running then finish unawaited,
   // their answers dropped. The answer that brings the JSON received past `maxLength` UTF-16 units
   // fails unparsed, as does every one after it: whether the pages pass it does not depend on the
-  // order they come in, but which request fails for it does.
+  // order they come in, but which request fails for it does. What `keep` returns for a page, told
+  // the length of its JSON, is what the read holds of it.
   #getPages(
     presentationId: string, ids: readonly string[], limit: number, fields: string,
     { keep = page => page, maxLength = Infinity }:
-      { keep?: (page: RestSlide) => RestSlide; maxLength?: number } = {},
+      { keep?: (page: RestSlide, length: number) => RestSlide; maxLength?: number } = {},
   ): Promise<RestSlide[]> {
     let received = 0;
     let count = (length: number) => {
       received += length;
-      if (received > maxLength) {
-        throw new Error(`The slides this needs exceed ${maxLength} characters of content together, ` +
-          "the most one read holds. Read or change fewer slides at a time.");
-      }
+      if (received > maxLength) throw pagesTooLarge();
     };
     return new Promise((resolve, reject) => {
       let pages: RestSlide[] = [];
@@ -431,8 +446,12 @@ export class GoogleSlidesApi {
       let start = () => {
         if (done || failures.size > 0 || next >= ids.length) return;
         let index = next++;
-        this.getSlide(presentationId, ids[index], fields, count).then(
-          page => { pages[index] = keep(page); },
+        let length = 0;
+        this.getSlide(presentationId, ids[index], fields, pageLength => {
+          length = pageLength;
+          count(pageLength);
+        }).then(page => keep(page, length)).then(
+          page => { pages[index] = page; },
           (error: unknown) => { failures.set(index, error); },
         ).finally(() => {
           answered[index] = true;
@@ -448,8 +467,8 @@ export class GoogleSlidesApi {
 
   /**
    * Fetch the slides among `ids` that `order`, the deck's slide IDs, still has, in the order of
-   * `ids`: a full page of each, but of each in `labelOnly` only what `slideLabel` keeps of what
-   * `LABEL_FIELDS` names.
+   * `ids`: a full page of each, whose length `fetchedLength` gives, but of each in `labelOnly` only
+   * what `slideLabel` keeps of what `LABEL_FIELDS` names.
    */
   async getSlides(
     presentationId: string, ids: Iterable<string>, order: readonly string[],
@@ -461,8 +480,13 @@ export class GoogleSlidesApi {
     // against `MAX_READ_PAGES_LENGTH`: a label is cut to a few hundred bytes as it arrives.
     let pages = [
       ...await this.#getPages(
-        presentationId, wanted.filter(id => !labelOnly.has(id)), MAX_PAGE_FETCHES, SLIDE_FIELDS,
-        { maxLength: MAX_READ_PAGES_LENGTH }),
+        presentationId, wanted.filter(id => !labelOnly.has(id)), MAX_PAGE_FETCHES, SLIDE_FIELDS, {
+          keep: (page, length) => {
+            FETCHED_LENGTHS.set(page, length);
+            return page;
+          },
+          maxLength: MAX_READ_PAGES_LENGTH,
+        }),
       ...await this.#getPages(
         presentationId, wanted.filter(id => labelOnly.has(id)), MAX_LABEL_FETCHES, LABEL_FIELDS,
         { keep: slideLabel }),

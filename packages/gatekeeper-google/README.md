@@ -1724,7 +1724,12 @@ The whole pages one read holds, the slides queued changes touch among them, are 
 8,388,608 characters of compact JSON together (`MAX_READ_PAGES_LENGTH`), counted as each page
 arrives. A read or change that needs more fails with `The slides this needs exceed 8388608
 characters of content together, the most one read holds. Read or change fewer slides at a time.`,
-starts no request after the page that passed the cap, and parses none from it on. A page of tables
+starts no request after the page that passed the cap, and parses none from it on. Approving an
+`updateSlides()` batch reads each slide it changes whole, a queued copy by then a slide of its own,
+so the batch is refused with the same message when it is queued if those pages pass the cap: each
+counted as the read that queues it fetched it, a queued copy as the slide it copies, and a queued
+new slide as replay holds it, so the agent can split it while it is still unqueued. Changes queued
+before it may still grow those pages past the cap by the time it is approved. A page of tables
 takes up to three times its JSON in memory once parsed, and each copy that a queued or new change
 makes of a page it edits two times more, so at the cap a read and two copies of every page hold
 under 60 MiB of the isolate's 128 MB. All 100 slides of a deck of a title, a body and a table each

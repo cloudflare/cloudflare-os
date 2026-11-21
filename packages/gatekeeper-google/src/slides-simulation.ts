@@ -474,6 +474,17 @@ export function slidesToFetch(pages: readonly string[], changes: readonly Queued
 }
 
 /**
+ * The slide `id` is a queued copy of, back to its original: a slide Google has, or one a queued
+ * `createSlide` adds. `id` itself when no queued copy makes it.
+ */
+export function copiedFrom(id: string, changes: readonly QueuedChange[]): string {
+  for (let { action } of changes.toReversed()) {
+    if (action.kind === "duplicateSlide" && action.payload.newSlideId === id) id = action.payload.slideId;
+  }
+  return id;
+}
+
+/**
  * The slides a read fetches to show `pages` whole and to name `labelled` with queued changes:
  * `needed`, what `slidesToFetch` gives for all of them, and `labelOnly`, those of `needed` that
  * no queued change edits and `pages` does not reach, of which `LABEL_FIELDS` is enough. A slide a
