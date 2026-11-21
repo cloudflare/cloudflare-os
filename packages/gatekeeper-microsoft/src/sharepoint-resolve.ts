@@ -5,7 +5,7 @@
 // resolve each kind of URL unambiguously. A link the user cannot open fails like one that does not
 // exist.
 
-import { GraphApiError, type GraphApi } from "./graph-api";
+import { GraphApiError, GraphTransportError, type GraphApi } from "./graph-api";
 import {
   ITEM_SELECT, LIST_SELECT, SITE_SELECT, canonicalSiteId, parseDriveItem, parseList, parseSite,
   type GraphDriveItem, type GraphList, type GraphSite,
@@ -194,7 +194,7 @@ export async function namedSites(api: GraphApi, urls: readonly string[], tenant:
       } catch (error) {
         if (error instanceof UnresolvableUrlError) return;
         // Whatever kept one link from being checked, the others stand; a dead grant is the account's to see.
-        if (!(error instanceof GraphApiError) || error.isAuthError) throw error;
+        if (!(error instanceof GraphTransportError) && (!(error instanceof GraphApiError) || error.isAuthError)) throw error;
         complete = false;
       }
     }));

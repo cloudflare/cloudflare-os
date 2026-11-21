@@ -176,6 +176,16 @@ describe("the sites a Sites.Selected connection can open", () => {
     expect(await grantedSites(api)).toMatchObject({ sites: [{ name: "A" }], complete: false });
   });
 
+  it("answers with what it has, incomplete, once a minute has gone", async () => {
+    const named = Array.from({ length: 620 }, (_, index) => site(`S${String(index).padStart(3, "0")}`));
+    const { api, searches, batches } = tenant(named, ["S001", "S611"]);
+    // Each look at the clock is 9 seconds on: the first group of checks is asked, and little after.
+    let clock = 0;
+    expect(await grantedSites(api, () => clock += 9_000)).toMatchObject({ sites: [{ name: "S001" }], complete: false });
+    expect(searches).toHaveLength(1);
+    expect(batches.length).toBeLessThan(26);
+  });
+
   it("loses only a failed batch's sites, and reads on", async () => {
     const named = Array.from({ length: 520 }, (_, index) => site(`S${String(index).padStart(3, "0")}`));
     const { api, searches } = tenant(named, ["S005", "S030", "S510"], { failBatchWith: "S005" });

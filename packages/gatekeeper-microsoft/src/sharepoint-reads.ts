@@ -342,6 +342,8 @@ export type GrantedSites = { sites: GraphSite[]; complete: boolean };
 const GRANTED_SEARCH_SIZE = 500;
 /** The most search pages read for the granted sites: 10,000 sites. Past it the answer is incomplete. */
 const MAX_GRANTED_SEARCH_PAGES = 20;
+/** How long the search for the granted sites runs before answering with what it has, incomplete. */
+const GRANTED_SITES_BUDGET_MS = 60_000;
 /** How many batches of site checks are in flight at once: more gains little and invites throttling (measured live). */
 export const SITE_CHECKS_AT_ONCE = 4;
 
@@ -351,15 +353,19 @@ export const SITE_CHECKS_AT_ONCE = 4;
  * verified live), so each site Search names, and the home site, is asked for its library: see
  * {@link checkSites}. That is a request per twenty sites, so the caller keeps the answer.
  * Followed sites aren't asked for: under `Sites.Selected` Graph refuses to list them.
+ * @param now The clock the search's time budget is read from.
  * @returns The sites, and `complete: false` when Search failed part-way or named more sites than
- * are read, or a site's check was throttled: what was found stands, and others may exist.
+ * are read, a site's check was throttled, or the search ran out of time: what was found stands,
+ * and others may exist.
  */
-export async function grantedSites(api: GraphApi): Promise<GrantedSites> {
+export async function grantedSites(api: GraphApi, now: () => number = Date.now): Promise<GrantedSites> {
   const keep = distinctBrowsable();
   const sites: GraphSite[] = [];
   let complete = true;
+  // A Graph that stalls would otherwise be waited on for every remaining site.
+  const deadline = now() + GRANTED_SITES_BUDGET_MS;
   const check = async (candidates: (GraphSite | null)[]) => {
-    const checked = await checkSites(api, candidates.filter(keep));
+    const checked = await checkSites(api, candidates.filter(keep), () => now() >= deadline);
     sites.push(...checked.sites);
     complete &&= checked.complete;
   };
@@ -367,7 +373,7 @@ export async function grantedSites(api: GraphApi): Promise<GrantedSites> {
   let from: number | undefined = 0;
   try {
     for (let pages = 0; from !== undefined; pages++) {
-      if (pages === MAX_GRANTED_SEARCH_PAGES) {
+      if (pages === MAX_GRANTED_SEARCH_PAGES || now() >= deadline) {
         complete = false;
         break;
       }
@@ -393,13 +399,19 @@ export async function grantedSites(api: GraphApi): Promise<GrantedSites> {
  * what's asked for. A site without one (404) isn't offered. Any other answer, such as throttling
  * that outlasted the batch's retries, or a batch that failed whole, leaves the site out and the
  * result incomplete.
+ * @param outOfTime Asked before each group of batches; once true, the sites not yet asked are left
+ * out and the result is incomplete.
  */
-export async function checkSites(api: GraphApi, sites: readonly GraphSite[]): Promise<GrantedSites> {
+export async function checkSites(api: GraphApi, sites: readonly GraphSite[], outOfTime: () => boolean = () => false): Promise<GrantedSites> {
   const chunks: GraphSite[][] = [];
   for (let start = 0; start < sites.length; start += MAX_BATCH_REQUESTS) chunks.push(sites.slice(start, start + MAX_BATCH_REQUESTS));
   const open = new Set<GraphSite>();
   let complete = true;
   for (let start = 0; start < chunks.length; start += SITE_CHECKS_AT_ONCE) {
+    if (outOfTime()) {
+      complete = false;
+      break;
+    }
     await Promise.all(chunks.slice(start, start + SITE_CHECKS_AT_ONCE).map(async chunk => {
       let answers: Awaited<ReturnType<GraphApi["batch"]>>;
       try {

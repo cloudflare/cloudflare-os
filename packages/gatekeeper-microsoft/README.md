@@ -138,7 +138,8 @@ connection holding both kinds of permission reaches every site. Under `Sites.Sel
   or bound, and a pasted link to one says to ask the SharePoint admin.
 - Microsoft lists the sites granted to an app to nobody, so the first time a user's sites are
   listed, every site they can open is tested, twenty to a request: a second or two on most tenants,
-  and up to half a minute where a user can open thousands. What is found is kept with the
+  and up to half a minute where a user can open thousands (after a minute it stops, lists what it
+  found and says some sites may be missing). What is found is kept with the
   connection and shown at once from then on, and looked for again behind that once it is five
   minutes old, so a newly granted site appears the second time a user looks (at once if none was
   granted before, or by pasting its link). To skip the search altogether, list the granted sites'
