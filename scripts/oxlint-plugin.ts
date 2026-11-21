@@ -209,11 +209,152 @@ const selfContainedAgentTypes: Rule = {
   },
 };
 
+const named = (node: ESTree.Node | null | undefined, name: string) =>
+  node?.type === "Identifier" && node.name === name;
+
+/**
+ * The name a key or a member's property is written as: a plain identifier, or a string literal with
+ * or without brackets. Undefined for one computed at run time and for a `#private` name.
+ */
+function writtenName(key: ESTree.Node, computed: boolean): string | undefined {
+  if (key.type === "Identifier") return computed ? undefined : key.name;
+  return key.type === "Literal" && typeof key.value === "string" ? key.value : undefined;
+}
+
+/**
+ * The class's instance method named `name`, when it is declared with a body. An overload signature
+ * has no body and is not the method that runs.
+ */
+function methodNamed(body: ESTree.ClassBody, name: string): ESTree.MethodDefinition | undefined {
+  return body.body.find((member): member is ESTree.MethodDefinition =>
+    member.type === "MethodDefinition" && member.kind === "method" && !member.static &&
+    writtenName(member.key, member.computed) === name && !!member.value.body);
+}
+
+/** Whether `node` reads the property `name`. */
+function reads(node: ESTree.Node, name: string): boolean {
+  return node.type === "MemberExpression" && writtenName(node.property, node.computed) === name;
+}
+
+/** The name a property is written under; undefined for a spread. */
+function keyName(property: ESTree.Node): string | undefined {
+  return property.type === "Property" ? writtenName(property.key, property.computed) : undefined;
+}
+
+/** The value under wrappers that only change its type: `as`, `satisfies`, `!` and `<T>`. */
+function unwrap(node: ESTree.Node | null | undefined): ESTree.Node | null | undefined {
+  let value = node;
+  while (value?.type === "TSAsExpression" || value?.type === "TSSatisfiesExpression" ||
+         value?.type === "TSNonNullExpression" || value?.type === "TSTypeAssertion") {
+    value = value.expression;
+  }
+  return value;
+}
+
+/**
+ * What a value written in place may turn out to be: itself, or a branch of `?:`, `??`, `||` or
+ * `&&`. An `undefined` on the left of `??` or `||` gives way to the right and is never the value.
+ */
+function* branches(node: ESTree.Node | null | undefined): Generator<ESTree.Node> {
+  const value = unwrap(node);
+  if (value?.type === "ConditionalExpression") {
+    yield* branches(value.consequent);
+    yield* branches(value.alternate);
+  } else if (value?.type === "LogicalExpression") {
+    for (const left of branches(value.left)) {
+      if (value.operator === "&&" || !named(left, "undefined")) yield left;
+    }
+    yield* branches(value.right);
+  } else if (value) {
+    yield value;
+  }
+}
+
+/**
+ * Syntactic only: it checks what is written in place in a gatekeeper package, never where a value
+ * came from. That is a gatekeeper class's own instance methods; each object literal written as
+ * `authorizeObservation()`'s argument; and the name `excludeObservers` as a key or a member.
+ * Anything built elsewhere (a variable, a helper's result, what a spread carries, a method of a
+ * base class) is left to the read helper's types and to review.
+ */
+const newGatekeeperObserverContract: Rule = {
+  meta: {
+    type: "problem",
+    docs: {
+      description: "Hold a gatekeeper to the parts of the new-gatekeeper observer contract that " +
+        "its types do not enforce (see the write-gatekeeper skill)",
+    },
+    messages: {
+      missingHistory: "A gatekeeper needs `getHistoricalSubresources()`, which the `Gatekeeper` " +
+        "interface does not declare. A new gatekeeper returns `[]` from it.",
+      history: "A new gatekeeper's `getHistoricalSubresources()` only returns `[]`: it has no " +
+        "reads made before subresources were reported.",
+      observerState: "A new gatekeeper's `{{name}}()` does nothing. Report `subresources` on every " +
+        "read and check each observer in `verifyObserverAccess()`.",
+      unreported: "Pass `subresources` explicitly, after any spread, which could replace it, and " +
+        "`[]` for a read nothing restricts. Leaving it out adds no requirement and reads as one " +
+        "that was forgotten.",
+      excludeObservers: "`excludeObservers` belongs to the legacy observer protocol. Report " +
+        "`subresources` and deny in `verifyObserverAccess()`.",
+    },
+    schema: [],
+  },
+  create(context) {
+    return {
+      "ClassDeclaration, ClassExpression"({ body, id, implements: interfaces, superClass }: ESTree.Class) {
+        const addObserver = methodNamed(body, "addObserver");
+        const declared = interfaces?.some(({ expression }) => named(expression, "Gatekeeper"));
+        if (!declared && !(methodNamed(body, "startSession") && addObserver)) return;
+
+        const history = methodNamed(body, "getHistoricalSubresources");
+        const statements = history?.value.body?.body;
+        const returned = statements?.length === 1 && statements[0].type === "ReturnStatement"
+          ? unwrap(statements[0].argument) : undefined;
+        // A facet base of the gatekeeper's own may supply it, as it may supply `startSession()`.
+        // Cloudflare's `DurableObject` supplies neither.
+        const inherits = superClass && !named(superClass, "DurableObject");
+        if (!history) {
+          if (!inherits) context.report({ node: addObserver?.key ?? id ?? body, messageId: "missingHistory" });
+        } else if (returned?.type !== "ArrayExpression" || returned.elements.length) {
+          context.report({ node: history.key, messageId: "history" });
+        }
+
+        for (const name of ["addObserver", "removeObserver"]) {
+          const method = methodNamed(body, name);
+          if (method?.value.body?.body.length) {
+            context.report({ node: method.key, messageId: "observerState", data: { name } });
+          }
+        }
+      },
+      CallExpression(node) {
+        if (!reads(node.callee, "authorizeObservation")) return;
+        for (const description of branches(node.arguments[0])) {
+          if (description.type !== "ObjectExpression") continue;
+          // The last word on the field: a spread after it can replace it, and the kernel reads
+          // `subresources: undefined` as the field left out.
+          const last = description.properties.findLast(property =>
+            property.type === "SpreadElement" || keyName(property) === "subresources");
+          const reported = last?.type === "Property" &&
+            !branches(last.value).some(value => named(value, "undefined"));
+          if (!reported) context.report({ node: description, messageId: "unreported" });
+        }
+      },
+      Property(node) {
+        if (keyName(node) === "excludeObservers") context.report({ node, messageId: "excludeObservers" });
+      },
+      MemberExpression(node) {
+        if (reads(node, "excludeObservers")) context.report({ node, messageId: "excludeObservers" });
+      },
+    };
+  },
+};
+
 export default {
   meta: {
     name: "gadgets",
   },
   rules: {
+    "new-gatekeeper-observer-contract": newGatekeeperObserverContract,
     "prefer-jsdoc": preferJsdoc,
     "self-contained-agent-types": selfContainedAgentTypes,
   },
