@@ -2,7 +2,7 @@
 // takes a `GraphApi`, asks for exactly the fields its parser keeps, and returns parsed values; none
 // decides what is in scope (sharepoint-scope.ts) or what an observer may see (the sessions do).
 
-import { GraphApiError, MAX_BATCH_REQUESTS, isGraphUrl, type GraphApi } from "./graph-api";
+import { GraphApiError, GraphTransportError, MAX_BATCH_REQUESTS, isGraphUrl, type GraphApi } from "./graph-api";
 import {
   DRIVE_SELECT, ITEM_SELECT, LIST_SELECT, PAGE_SELECT, SITE_SELECT, optRecord, optStr,
   parseColumn, parseDrive, parseDriveItem, parseList, parseListItem, parsePage, parseRange, parseSite,
@@ -377,8 +377,10 @@ export async function grantedSites(api: GraphApi): Promise<GrantedSites> {
     }
   } catch (error) {
     // Search down on Microsoft's side, as on a new tenant, leaves what was found, or the home site;
-    // so does Search throttled part-way, where failing would throw away every site already found.
-    if (!(error instanceof GraphApiError && (error.status >= 500 || (error.status === 429 && from !== 0)))) throw error;
+    // so does Search throttled or unanswered part-way, where failing would throw away every site
+    // already found.
+    const partWay = from !== 0 && (error instanceof GraphTransportError || (error instanceof GraphApiError && error.status === 429));
+    if (!partWay && !(error instanceof GraphApiError && error.status >= 500)) throw error;
     complete = false;
     if (from === 0) await check([await root]);
   }
@@ -403,8 +405,8 @@ export async function checkSites(api: GraphApi, sites: readonly GraphSite[]): Pr
       try {
         answers = await api.batch(chunk.map((site, index) => ({ id: String(index), method: "GET" as const, url: `sites/${site.id}/drive?$select=id` })));
       } catch (error) {
-        // One batch throttled or failing on Microsoft's side costs its own sites, not the others'.
-        if (!(error instanceof GraphApiError && (error.status === 429 || error.status >= 500))) throw error;
+        // One batch throttled, unanswered or failing on Microsoft's side costs its own sites, not the others'.
+        if (!(error instanceof GraphTransportError || (error instanceof GraphApiError && (error.status === 429 || error.status >= 500)))) throw error;
         complete = false;
         return;
       }

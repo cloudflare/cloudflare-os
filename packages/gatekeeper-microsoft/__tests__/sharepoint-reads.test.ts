@@ -195,6 +195,9 @@ describe("the sites a Sites.Selected connection can open", () => {
     const midway = tenant(named, ["S3"], { search: from => from === 0 ? undefined : throttled() });
     expect(await grantedSites(midway.api)).toMatchObject({ sites: [{ name: "S3" }], complete: false });
     await expect(grantedSites(tenant(named, ["S3"], { search: throttled }).api)).rejects.toThrow(/limiting how fast/);
+    // So does a later page that never answers.
+    const dropped = tenant(named, ["S3"], { search: from => { if (from !== 0) throw new TypeError("fetch failed"); return undefined; } });
+    expect(await grantedSites(dropped.api)).toMatchObject({ sites: [{ name: "S3" }], complete: false });
   });
 
   it("fails when search refuses the request, which is no answer about the sites", async () => {
