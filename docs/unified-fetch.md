@@ -179,7 +179,9 @@ When the policy refuses an agent's URL and approvals are on, `authorizeFetch()` 
 user has already approved exactly that URL in the current turn (`#webFetchApproved()`: an approved
 `webFetchRequest` since the turn's prompt or agent callback). If so, the request is allowed, and
 its redirects with it. If not, it captures a `webFetchRequest` card with
-`#captureDecisionRequest()` and refuses with `approval-requested`. Because an agent's execution is
+`#captureDecisionRequest()` and refuses with `approval-requested`. A step that asks for the same URL
+again, as a retry or a parallel fetch would, gets the refusal without a second card, so the user
+approves each URL once. Because an agent's execution is
 checked for liveness first, the capture happens only while the agent's turn runs, so the card
 always attaches to a step.
 

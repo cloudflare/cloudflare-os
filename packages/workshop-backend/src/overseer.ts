@@ -6834,10 +6834,14 @@ class OverseerImpl implements AgentHooks {
       // Only an agent can wait for the user's decision: nothing else has a turn to end.
       if (!policy.approvals || caller.from !== "agent") return {allowed: false, message: refusal};
       if (!this.#webFetchApproved(caller.chatId, href)) {
-        // What the trusted hosts refuse is what the user is asked to decide.
-        this.#captureDecisionRequest(caller.chatId,
-            {type: "webFetchRequest", requestId: `${caller.chatId}:${crypto.randomUUID()}`,
-             url: href, state: "pending"});
+        // What the trusted hosts refuse is what the user is asked to decide, once per URL however
+        // often the step asks for it: the user would otherwise have to approve each copy.
+        let captured = this.#capturedDecisionRequests.get(caller.chatId) ?? [];
+        if (!captured.some(body => body.type === "webFetchRequest" && body.url === href)) {
+          this.#captureDecisionRequest(caller.chatId,
+              {type: "webFetchRequest", requestId: `${caller.chatId}:${crypto.randomUUID()}`,
+               url: href, state: "pending"});
+        }
         return {allowed: false, approvalRequested: true, message:
             `This workspace has observed sensitive data, so fetching ${href} needs the user's ` +
             `approval. The request was sent to the user and your turn will end now. If they ` +

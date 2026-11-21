@@ -182,11 +182,11 @@ it("ends the turn when executeCode's fetch needs approval, and fetches once appr
       "authorization": "Bearer secret", "accept": "application/json", "accept-language": "x-secret",
       "x-custom": "secret",
     };
-    const fetchStep = (id: string) => fetchCode(id, [[page, { headers }]]);
+    // The first step asks twice, as a retry would, and gets one card.
     const model = models.script([
       readRestricted(),
-      fetchStep("ask"),
-      fetchStep("fetch-approved"),
+      fetchCode("ask", [[page, { headers }], [page, { headers }]]),
+      fetchCode("fetch-approved", [[page, { headers }]]),
       { text: "Done." },
     ]);
     await using session = await openSession(model);
