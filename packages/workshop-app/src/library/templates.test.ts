@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import type { BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintPublicInfo, BlueprintSource, GatekeeperVendorInfo } from '@gadgets/workshop-shared/api'
-import { narrowList } from '@/components/listView'
-import { mostUsed, recentlyAdded, templateList, templatesByType } from './templateList'
+import type { BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintPublicInfo, BlueprintSource, BlueprintUserSummary, GatekeeperVendorInfo } from '@gadgets/workshop-shared/api'
+import { narrowList } from '@gadgets/ui'
+import { recentlyAdded, templateList, templatesByType } from './templateList'
 import { templateNeeds, templateSearchText, templatesOf, templateTypes, type Template } from './templates'
 
 const DOCUMENT: BlueprintOutput = { id: 'document', noun: 'Document', plural: 'Documents', icon: 'fileText' }
@@ -9,9 +9,8 @@ const DOCUMENT: BlueprintOutput = { id: 'document', noun: 'Document', plural: 'D
 const service = (title: string, spawnerOnly?: true): BlueprintBinding =>
   ({ type: 'gatekeeper', title, description: `What it does with ${title}`, gatekeeperName: title.toLowerCase(), typeUrlPattern: '*', spawnerOnly })
 
-const template = (title: string, { output, bindings = {}, uses = 0, day = 1 }: { output?: BlueprintOutput; bindings?: Record<string, BlueprintBinding>; uses?: number; day?: number } = {}): Template => ({
+const template = (title: string, { output, bindings = {}, day = 1 }: { output?: BlueprintOutput; bindings?: Record<string, BlueprintBinding>; day?: number } = {}): Template => ({
   id: title,
-  uses,
   metadata: {
     title,
     description: `What ${title} is for`,
@@ -59,25 +58,21 @@ describe('templates', () => {
 })
 
 describe('templateList', () => {
-  const NOTES = template('Notes', { output: DOCUMENT, uses: 5, day: 1 })
-  const DASHBOARD = template('Dashboard', { uses: 9, day: 2, bindings: { JIRA: service('Jira') } })
-  const RETRO = template('Retro', { output: DOCUMENT, uses: 5, day: 3 })
-  const TRIAGE = template('Triage', { uses: 1, day: 4, bindings: { JIRA: service('Jira'), GMAIL: service('Gmail') } })
+  const NOTES = template('Notes', { output: DOCUMENT, day: 1 })
+  const DASHBOARD = template('Dashboard', { day: 2, bindings: { JIRA: service('Jira') } })
+  const RETRO = template('Retro', { output: DOCUMENT, day: 3 })
+  const TRIAGE = template('Triage', { day: 4, bindings: { JIRA: service('Jira'), GMAIL: service('Gmail') } })
   const ALL = [NOTES, DASHBOARD, RETRO, TRIAGE]
   const spec = templateList(ALL, new Set(['Retro']))
   const left = (...ids: string[]) => titles(narrowList(ALL, { query: '', searchText: spec.searchText, filters: spec.filters!.filter(({ id }) => ids.includes(id)) }))
-
-  it('puts the most used first, and of those used as much, the latest created', () => {
-    expect(titles(mostUsed(ALL))).toEqual(['Dashboard', 'Retro', 'Notes', 'Triage'])
-  })
 
   it('puts the latest created first', () => {
     expect(titles(recentlyAdded(ALL))).toEqual(['Triage', 'Retro', 'Dashboard', 'Notes'])
   })
 
-  it('gathers them under what they make, the kind of the most used first', () => {
+  it('gathers them under what they make, the latest created first, the kind of the latest first', () => {
     expect(templatesByType(ALL).map(({ type, templates }) => [type.plural, titles(templates)])).toEqual([
-      ['Apps', ['Dashboard', 'Triage']],
+      ['Apps', ['Triage', 'Dashboard']],
       ['Documents', ['Retro', 'Notes']],
     ])
   })
@@ -97,13 +92,13 @@ describe('templateList', () => {
 
 const metadata = (title: string, extra: Partial<BlueprintMetadata> = {}): BlueprintMetadata => ({ ...template(title).metadata, ...extra })
 const info = (id: string, title: string): BlueprintPublicInfo => ({ id, metadata: metadata(title), screenshotUrl: `/blueprint-screenshot/${id}` })
-const summary = (id: string, source: BlueprintSource, pinned?: true) =>
-  ({ id, title: id, description: '', source, version: 1, lastUpdated: new Date(2026, 1, 1), pinned })
+const summary = (id: string, title: string, source: BlueprintSource, pinned?: true): BlueprintUserSummary =>
+  ({ ...info(id, title), title, description: '', source, version: 1, lastUpdated: new Date(2026, 1, 1), pinned })
 
 describe('templatesOf', () => {
   it('says where one the user created was made from, which is where it is released to and deleted from', () => {
     const source: BlueprintSource = { type: 'workspace', workspaceId: 'notes', workspaceTitle: 'Notes' }
-    const { templates } = templatesOf({ featured: [], library: [], own: [{ summary: summary('d', source), info: info('d', 'Counter') }], vendors: [] })
+    const { templates } = templatesOf({ featured: [], library: [], own: [summary('d', 'Counter', source)], vendors: [] })
     expect(templates.map(({ id, mine, source: from }) => [id, mine, from])).toEqual([['d', true, source]])
   })
 
@@ -115,16 +110,15 @@ describe('templatesOf', () => {
         { id: 'c', metadata: metadata('Planner', { screenshot: true }), addedAt: new Date(), uploaded: true },
       ],
       own: [
-        { summary: summary('b', { type: 'deletedWorkspace' }, true), info: info('b', 'Standup') },
+        summary('b', 'Standup', { type: 'deletedWorkspace' }, true),
         // Added, not created: listed from the library, where it is.
-        { summary: summary('c', { type: 'imported' }), info: info('c', 'Planner') },
-        // Its record could not be read: there is nothing to show of it.
-        { summary: summary('z', { type: 'deletedWorkspace' }), info: null },
+        summary('c', 'Planner', { type: 'imported' }),
       ],
       vendors: [],
     })
     expect(templates.map(({ id, organization, mine }) => [id, organization, mine])).toEqual([['a', true, undefined], ['c', undefined, undefined], ['b', undefined, true]])
     expect(templates.find(({ id }) => id === 'c')!.screenshotUrl).toMatch(/^\/blueprint-screenshot\/c\?v=/)
+    expect(templates.find(({ id }) => id === 'b')!.metadata.title).toBe('Standup')
     expect(stars).toEqual(['a', 'b'])
   })
 

@@ -1,6 +1,5 @@
 import type { OutputSummary } from '@gadgets/workshop-shared/api'
-import { DropdownMenu } from '@/components/DropdownMenu'
-import { OptionPicker } from '@/components/OptionPicker'
+import { DropdownMenu, OptionPicker } from '@gadgets/ui'
 import { FormatIcon } from '@/components/FormatIcon'
 import { outputKey, outputTitle } from './libraryList'
 

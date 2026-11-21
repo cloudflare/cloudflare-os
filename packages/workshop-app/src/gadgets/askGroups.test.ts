@@ -9,6 +9,8 @@ const ask = (id: number, change: Partial<Ask> = {}, description: Partial<Ask['de
   type: 'action',
   state: 'pending',
   gatekeeperId: 3,
+  from: 'gadget',
+  gadgetId: 7,
   resourceTitle: 'Q3 notes',
   createdAt: NOW,
   ...change,
@@ -23,36 +25,40 @@ const ask = (id: number, change: Partial<Ask> = {}, description: Partial<Ask['de
 })
 
 describe('isAskOf', () => {
-  const scope = { targets: targetsOf([{ target: 3 }, { target: 9 }]), agents: new Map([[12, 'Researcher']]) }
+  const scope = { gadgetId: 7, agents: new Map([[12, 'Researcher']]) }
+  const shownFrom = { ...scope, chat: { chatId: 5, targets: targetsOf([{ target: 3 }, { target: 9 }]) } }
 
-  it('is what went through its connections from outside any chat', () => {
+  it('is what its code or its hooks asked outside any chat, whatever connection it went through', () => {
     expect(isAskOf(ask(1), scope)).toBe(true)
-    expect(isAskOf(ask(2, { gatekeeperId: 4 }), scope)).toBe(false)
-    expect(isAskOf(ask(3, { gatekeeperId: undefined }), scope)).toBe(false)
+    expect(isAskOf(ask(2, { from: 'hook', gatekeeperId: 4 }), scope)).toBe(true)
+    // Another gadget's, though it shares the connection; and one that names no gadget.
+    expect(isAskOf(ask(3, { gadgetId: 8 }), scope)).toBe(false)
+    expect(isAskOf(ask(4, { gadgetId: undefined }), scope)).toBe(false)
   })
 
-  it('is what its agents ask, through whatever they were given', () => {
-    expect(isAskOf(ask(1, { chatId: 12, gatekeeperId: 40 }), scope)).toBe(true)
+  it('is what the agents it started ask, through whatever they were given', () => {
+    expect(isAskOf(ask(1, { from: 'agent', gadgetId: undefined, chatId: 12, gatekeeperId: 40 }), scope)).toBe(true)
   })
 
   it('leaves a chat’s to the chat, unless it is the one it is shown from, out of sight', () => {
     expect(isAskOf(ask(1, { chatId: 5 }), scope)).toBe(false)
-    expect(isAskOf(ask(1, { chatId: 5 }), { ...scope, chatId: 5 })).toBe(true)
-    // Through a connection that is not the gadget's, it is the chat's agent's, not the gadget's.
-    expect(isAskOf(ask(1, { chatId: 5, gatekeeperId: 4 }), { ...scope, chatId: 5 })).toBe(false)
+    expect(isAskOf(ask(1, { chatId: 5 }), shownFrom)).toBe(true)
+    // The chat's agent, through the gadget's connection or not.
+    expect(isAskOf(ask(2, { from: 'agent', gadgetId: undefined, chatId: 5 }), shownFrom)).toBe(true)
+    expect(isAskOf(ask(3, { from: 'agent', gadgetId: undefined, chatId: 5, gatekeeperId: 4 }), shownFrom)).toBe(false)
   })
 
   it('is only what still waits, and never an observation or a hook', () => {
     expect(isAskOf(ask(1, { state: 'approved' }), scope)).toBe(false)
-    const observation = { id: 1, type: 'observation', state: 'approved', gatekeeperId: 3, resourceTitle: '', createdAt: NOW, description: { title: 'Read' } } as ActionLogEntry
+    const observation = { id: 1, type: 'observation', state: 'approved', gatekeeperId: 3, from: 'gadget', gadgetId: 7, resourceTitle: '', createdAt: NOW, description: { title: 'Read' } } as ActionLogEntry
     expect(isAskOf(observation, scope)).toBe(false)
   })
 })
 
 describe('agentsOf', () => {
-  it('is the chats its spawners started, named as they were', () => {
-    const chats = [{ id: 1 }, { id: 2, spawnerId: 9, spawnerName: 'Researcher' }, { id: 3, spawnerId: 8, spawnerName: 'Other' }]
-    expect(agentsOf(chats, new Set([9]))).toEqual(new Map([[2, 'Researcher']]))
+  it('is the chats of the agents the gadget started, named as their spawner was', () => {
+    const chats = [{ id: 1 }, { id: 2, spawnerName: 'Researcher', spawnedByGadgetId: 7 }, { id: 3, spawnerName: 'Other', spawnedByGadgetId: 8 }]
+    expect(agentsOf(chats, 7)).toEqual(new Map([[2, 'Researcher']]))
   })
 })
 
@@ -69,7 +75,7 @@ describe('askGroups', () => {
   it('asks a creation, or one with no kind, on its own', () => {
     const groups = askGroups([ask(1, { creation: true }), ask(2, { creation: true }), ask(3, {}, { actionKind: undefined, autoApprovable: false }), ask(4, {}, { actionKind: undefined, autoApprovable: false })])
     expect(groups.map(({ key }) => key)).toEqual(['action:1', 'action:2', 'action:3', 'action:4'])
-    expect(groups.map(({ creation }) => creation)).toEqual([true, true, false, false])
+    expect(groups.map(({ creation }) => creation)).toEqual([true, true, undefined, undefined])
     expect(groups[2].allowable).toBeUndefined()
   })
 

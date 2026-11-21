@@ -36,32 +36,58 @@ export const useGadgetSettings = (workspaceId: string, workpieceId: number) => {
  */
 export type BlueprintInfo = { title: string; description?: string } & TemplateRelease
 
+/** How often settings left open on a shown tab read the template's release again. */
+const BLUEPRINT_RECHECK_INTERVAL_MS = 60_000
+
 /**
- * What a blueprint says it is, which anyone may read (`PublicApi.getBlueprint()`): for the gadget
- * made from it. Undefined until it is known, and for no blueprint; null for one that is no longer
- * there. Read again when `release` changes, which is the gadget taking an update: nothing says a
- * template was published again, which is noticed then or once the page is opened again.
+ * The template description and release as published in KV. Undefined until it is read (or there
+ * is no upstream to read); null for an upstream that no longer exists. Keep what was read while
+ * reconnecting or refreshing, and read again when the gadget takes a release. Nothing says when
+ * a template is released, so while mounted it also reads again as the window is focused and
+ * every minute the tab is shown, never while a read is still under way.
  */
-export const useBlueprintInfo = (blueprintId: string | undefined, release?: string) => {
+export const useBlueprintInfo = (blueprintId: string | undefined, release: string | undefined) => {
   const publicApi = useTemplateReader()
+  const { reconnecting } = useApi()
   const [found, setFound] = useState<{ id: string; info: BlueprintInfo | null }>()
+  const [revision, setRevision] = useState(0)
   useEffect(() => {
-    if (!blueprintId || !publicApi) return
+    if (!blueprintId || !publicApi || reconnecting) return
     let current = true
-    publicApi.getBlueprint(blueprintId).then(
-      (blueprint) => {
-        if (!current) return
-        const { title, description, version, commitId } = blueprint?.metadata ?? {}
-        setFound({ id: blueprintId, info: blueprint ? { title: title || 'Untitled template', description: description || undefined, version: version ?? 0, ...(commitId ? { commitId } : {}) } : null })
-      },
-      // It only says more of the gadget, which shows without it.
-      () => {},
-    )
+    let reading = false
+    const read = () => {
+      if (reading) return
+      reading = true
+      publicApi.getBlueprint(blueprintId).then(
+        (blueprint) => {
+          reading = false
+          if (!current) return
+          if (!blueprint) {
+            setFound({ id: blueprintId, info: null })
+            return
+          }
+          const { title, description, version, commitId } = blueprint.metadata
+          setFound({ id: blueprintId, info: { title: title || 'Untitled template', description: description || undefined, version, commitId } })
+        },
+        // The gadget settings still work without this extra information.
+        () => {
+          reading = false
+        },
+      )
+    }
+    const recheck = () => {
+      if (document.visibilityState !== 'hidden') read()
+    }
+    read()
+    window.addEventListener('focus', recheck)
+    const interval = setInterval(recheck, BLUEPRINT_RECHECK_INTERVAL_MS)
     return () => {
       current = false
+      window.removeEventListener('focus', recheck)
+      clearInterval(interval)
     }
-  }, [blueprintId, release, publicApi])
-  return found && found.id === blueprintId ? found.info : undefined
+  }, [blueprintId, release, publicApi, reconnecting, revision])
+  return { info: found?.id === blueprintId ? found?.info : undefined, refresh: () => setRevision((was) => was + 1) }
 }
 
 /** A service a gadget is bound through, as its row draws it. */

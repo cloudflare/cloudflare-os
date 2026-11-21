@@ -1,12 +1,7 @@
 import { PlusIcon, XIcon } from '@phosphor-icons/react'
-import { Button } from '@/components/Button'
-import { DropdownMenu } from '@/components/DropdownMenu'
-import { OptionPicker } from '@/components/OptionPicker'
+import { Button, CardAction, DropdownMenu, LIST_ACTION, OptionPicker, SettingsGroup } from '@gadgets/ui'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
-import type { WorkspaceLook } from '@/components/workspaceLook'
-import { CardAction } from './CardAction'
-import { SettingsGroup } from './SettingsGroup'
-import { LIST_ACTION } from './StarButton'
+import type { WorkspaceLook } from '@/prefs/preferenceFields'
 
 /** A workspace as it is listed and offered here. */
 export type MutableWorkspace = {

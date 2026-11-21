@@ -23,7 +23,7 @@ import {
   type GatekeeperCaller, type GatekeeperRecord, type ObserverContext, type ObserverRecord,
   type OverseerStorage,
 } from "./storage-schema/overseer-storage";
-import { accessIncludesGadget, type SharingManager } from "./sharing";
+import { accessIncludesLiveGadget, type SharingManager } from "./sharing";
 import type { UserDurableObject } from "./user";
 import type { WorkshopLogger } from "./observability";
 
@@ -45,7 +45,7 @@ const MAX_SUBRESOURCES_TOTAL_LENGTH = 500_000;
 
 /**
  * Most observers sent to `verifyObserverAccess()` in one call, bounding the verifier fan-out each
- * call asks of the gatekeeper (gatekeeper-kit caps a binding's per-read fan-out the same way).
+ * call asks of the gatekeeper.
  */
 const CHECK_OBSERVER_BATCH_SIZE = 10;
 
@@ -309,10 +309,14 @@ export class ObserverLedger {
       let observer = this.#storage.observers.get(profileId);
       let accountId = observer?.accountChoices[gatekeeperId];
       if (access === undefined || observer === undefined || accountId === undefined) continue;
-      if (access.role !== "build" && context.type !== "workspace") {
-        if (context.type === "chat") continue;
-        readers ??= this.host.gadgetsReaching(context.gadgetId);
-        if (!readers.some(gadgetId => accessIncludesGadget(access, gadgetId))) continue;
+      if (access.role !== "build") {
+        // A collaborator with only snapshots opens nothing that sees new reads of any context.
+        if (!access.gadgetIds.some(gadgetId => accessIncludesLiveGadget(access, gadgetId))) continue;
+        if (context.type !== "workspace") {
+          if (context.type === "chat") continue;
+          readers ??= this.host.gadgetsReaching(context.gadgetId);
+          if (!readers.some(gadgetId => accessIncludesLiveGadget(access, gadgetId))) continue;
+        }
       }
       let {observerId} = observer;
       audience.push({

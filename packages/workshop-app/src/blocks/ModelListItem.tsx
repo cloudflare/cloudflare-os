@@ -1,9 +1,6 @@
 import { Badge } from '@cloudflare/kumo'
 import { CopyIcon, DotsThreeIcon, PencilSimpleIcon, TrashIcon } from '@phosphor-icons/react'
-import { ConfirmMenu } from '@/components/ConfirmMenu'
-import { DropdownMenu } from '@/components/DropdownMenu'
-import { Tag } from '@/components/Tag'
-import { LIST_ACTION } from './StarButton'
+import { ConfirmMenu, DropdownMenu, LIST_ACTION, Tag } from '@gadgets/ui'
 
 export type ModelListItemProps = {
   /** What the model is called. */

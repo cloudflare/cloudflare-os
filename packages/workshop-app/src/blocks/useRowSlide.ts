@@ -1,7 +1,6 @@
 import { useLayoutEffect, useRef, type RefObject } from 'react'
 import { animate, type AnimationPlaybackControls } from 'motion/react'
-import { motionTransition } from '@/hooks/motionTransition'
-import { isMotionOff } from '@/prefs/motion'
+import { isMotionOff, motionTransition } from '@gadgets/ui'
 
 const SLIDE = { type: 'spring', duration: 0.45, bounce: 0.1 } as const
 const ARRIVE = { duration: 0.25, ease: 'easeOut' } as const

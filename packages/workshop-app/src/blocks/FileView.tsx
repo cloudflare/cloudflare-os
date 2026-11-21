@@ -1,5 +1,5 @@
 import { FileIcon, MusicNotesIcon, WarningCircleIcon } from '@phosphor-icons/react'
-import { Markdown } from '@/components/Markdown'
+import { Markdown } from '@gadgets/ui'
 import { DrawnPreview, type DrawnPreviewKind } from './file-preview/DrawnPreview'
 import { PaneNotice } from './PaneNotice'
 

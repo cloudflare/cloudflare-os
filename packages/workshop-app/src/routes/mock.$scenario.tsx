@@ -11,15 +11,16 @@ import { MockControls } from '@/chat/mock/MockControls'
 import { createMockApi, MOCK_WORKSPACE_ID } from '@/chat/mock/mockApi'
 import type { Scenario } from '@/chat/mock/scenario'
 import { SCENARIOS } from '@/chat/mock/scenarios'
-import { useNarrowScreen } from '@/hooks/useNarrowScreen'
+import { useNarrowScreen } from '@gadgets/ui'
 import { NarrowShell } from '@/layouts/NarrowShell'
 import { SplitLayout } from '@/layouts/SplitLayout'
 import { ApiContext } from '@/rpc/ApiContext'
 import { ConnectionNotice } from '@/rpc/ConnectionNotice'
 import { ConnectionNoticeContext } from '@/rpc/ConnectionNoticeContext'
-import { WorkspacePane, type WorkspaceTab } from '@/workspaces/WorkspacePane'
 import { PublicApiContext } from '@/rpc/PublicApiContext'
+import { WorkspacePane, type WorkspaceTab } from '@/workspaces/WorkspacePane'
 import { WorkspacesProvider } from '@/workspaces/WorkspacesProvider'
+import { OutputsFeedProvider } from '@/library/OutputsFeedProvider'
 
 /** One scripted chat: the real `ChatPane` over a fake backend, so it needs no server. */
 export const Route = createFileRoute('/mock/$scenario')({
@@ -56,7 +57,7 @@ const MockChat = ({ scenario, onSelectScenario, onOpenScenarios, onRestart }: {
   onRestart: () => void
 }) => {
   // Made once, so the callbacks handed to the chat stay the same.
-  const [{ session: signedIn, overseer, publicApi, notice, onSetUpConnection, onAlwaysApprove }] = useState(() => {
+  const [{ session: signedIn, publicApi, overseer, notice, onSetUpConnection, onAlwaysApprove }] = useState(() => {
     const mock = createMockApi(scenario)
     return {
       ...mock,
@@ -92,29 +93,31 @@ const MockChat = ({ scenario, onSelectScenario, onOpenScenarios, onRestart }: {
 
   return (
     <ConnectionNoticeContext value={notice}>
-      <PublicApiContext value={publicApi}>
-        <ApiContext value={session}>
-          <WorkspacesProvider>
-            <ChatSessionsProvider>
-              <MockLayout
-                onOpenScenarios={onOpenScenarios}
-                onSetUpConnection={onSetUpConnection}
-                onAlwaysApprove={onAlwaysApprove}
-                status={<ConnectionIsland state={connectionState.status === 'hidden' ? undefined : connectionState} onDismiss={notice.dismiss} />}
-              >
-                <MockControls
-                  scenarios={SCENARIOS}
-                  scenario={scenario}
-                  player={overseer.player}
-                  onSelectScenario={onSelectScenario}
-                  onRestart={onRestart}
-                  onKeepElsewhere={() => overseer.keepElsewhere()}
-                />
-              </MockLayout>
-            </ChatSessionsProvider>
-          </WorkspacesProvider>
-        </ApiContext>
-      </PublicApiContext>
+      <ApiContext value={session}>
+        <WorkspacesProvider>
+          <ChatSessionsProvider>
+            <OutputsFeedProvider>
+              <PublicApiContext value={publicApi}>
+                <MockLayout
+                  onOpenScenarios={onOpenScenarios}
+                  onSetUpConnection={onSetUpConnection}
+                  onAlwaysApprove={onAlwaysApprove}
+                  status={<ConnectionIsland state={connectionState.status === 'hidden' ? undefined : connectionState} onDismiss={notice.dismiss} />}
+                >
+                  <MockControls
+                    scenarios={SCENARIOS}
+                    scenario={scenario}
+                    player={overseer.player}
+                    onSelectScenario={onSelectScenario}
+                    onRestart={onRestart}
+                    onKeepElsewhere={() => overseer.keepElsewhere()}
+                  />
+                </MockLayout>
+              </PublicApiContext>
+            </OutputsFeedProvider>
+          </ChatSessionsProvider>
+        </WorkspacesProvider>
+      </ApiContext>
     </ConnectionNoticeContext>
   )
 }

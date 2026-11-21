@@ -3,8 +3,9 @@
 // This app runs in an opaque-origin, network-isolated iframe, so it can't read the Workshop's stored
 // theme choice (localStorage) the way workshop-frontend does. Instead the host pushes the resolved
 // mode over the RPC bridge (see main.tsx / SandboxedGatekeeperApp.tsx), and we apply it to <html>
-// via `data-mode`, matching workshop-frontend's convention so Kumo's semantic tokens and our
-// `[data-mode="dark"]` palette (styles.css) resolve consistently.
+// via `data-mode`, matching the Workshop's convention so Kumo's semantic tokens and the shared
+// `@gadgets/ui` tokens (styles.css), each a `light-dark()` pair, resolve consistently. The accent
+// colour is set over those tokens (`applyAccentColor`).
 //
 // A subscription is exposed so imperative widgets that can't rely on CSS variables — the CodeMirror
 // editor and the emoji picker — can react when the mode changes at runtime.

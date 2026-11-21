@@ -1,4 +1,6 @@
 import type { OutputSummary } from '@gadgets/workshop-shared/api'
+import { MAX_OPENED_OUTPUTS, type OutputRef } from '@/prefs/preferenceFields'
+import type { UserPreferences } from '@/prefs/UserPreferences'
 import { outputKey } from './libraryList'
 
 /** How many of those opened last the Recent tab shows, after what needs the user. */
@@ -23,4 +25,18 @@ export const recentOutputs = (outputs: readonly OutputSummary[], opened: readonl
     needsYou,
     opened: opened.flatMap((key) => (waiting.has(key) ? [] : byKey.get(key) ?? [])).slice(0, RECENT_SHOWN),
   }
+}
+
+/**
+ * Remembers that `output` was opened now, in the user's preferences (`openedOutputs`), for the
+ * Recent tab: latest first, each once, the latest MAX_OPENED_OUTPUTS. Nothing is sent when it
+ * already is the latest.
+ */
+export const recordOpened = (preferences: UserPreferences, output: OutputRef) => {
+  const key = outputKey(output)
+  const [latest] = preferences.getSnapshot().openedOutputs
+  if (latest && outputKey(latest) === key) return
+  preferences.change(({ openedOutputs }) => ({
+    openedOutputs: [output, ...openedOutputs.filter((other) => outputKey(other) !== key)].slice(0, MAX_OPENED_OUTPUTS),
+  }))
 }

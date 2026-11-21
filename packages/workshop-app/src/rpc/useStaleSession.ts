@@ -4,13 +4,13 @@ import type { PublicApi } from '@gadgets/workshop-shared/api'
 import type { Connection } from './Connection'
 import { PageUpdates, StaleBackend } from './staleSession'
 import { useSessionCheck } from './useSessionCheck'
-import { entryScriptOf, fetchBackendVersion, fetchEntryScript } from './versionChecks'
+import { fetchVersions } from './versionChecks'
 
 /**
  * Makes `connection` again once its socket has outlived a deploy (`StaleBackend`): each socket is
- * asked which backend it reached (`ServerConfig.backendVersion`), which is compared on each session
- * check with what a new request reaches. Making it again is what a drop does, which `RpcGate`
- * rides out with everything left as it is.
+ * asked which backend it reached (`ServerConfig.backendVersion`), which is compared on each
+ * session check with what a new request reaches. Making it again is what a drop does, which
+ * `RpcGate` rides out with everything left as it is.
  */
 export const useStaleBackendReconnect = (connection: Connection) => {
   const { publicApi } = useSyncExternalStore(connection.subscribe, connection.getSnapshot)
@@ -40,18 +40,19 @@ export const useStaleBackendReconnect = (connection: Connection) => {
     const at = current.current
     if (checking.current || at === undefined || stale.hasLeft(at)) return
     checking.current = true
-    void fetchBackendVersion().then((latest) => {
+    void fetchVersions().then(({ backend }) => {
       checking.current = false
       // Not for a socket that has been replaced meanwhile.
-      if (current.current === at && stale.leave(at, latest)) connection.reconnect()
+      if (current.current === at && stale.leave(at, backend)) connection.reconnect()
     })
   })
 }
 
 /**
- * Whether to say that a fresh load would get a newer app than this page runs (`PageUpdates`),
- * checked on each session check. The page is never reloaded for the user, which could lose what
- * they were writing: they are told, and choose.
+ * Whether to say that a fresh load would get a newer app than this page runs (`PageUpdates`): the
+ * build id this page was built with against the one `VERSION_PATH` answers, on each session check.
+ * The page is never reloaded for the user, which could lose what they were writing: they are told,
+ * and choose.
  */
 export const usePageUpdate = (): { available: boolean; dismiss: () => void } => {
   const [updates] = useState(() => new PageUpdates())
@@ -59,12 +60,12 @@ export const usePageUpdate = (): { available: boolean; dismiss: () => void } => 
   const checking = useRef(false)
 
   useSessionCheck(() => {
-    const own = entryScriptOf(document)
+    const own = import.meta.env.ASSETS_BUILD_ID
     if (checking.current || own === undefined) return
     checking.current = true
-    void fetchEntryScript().then((latest) => {
+    void fetchVersions().then(({ assets }) => {
       checking.current = false
-      if (updates.newer(own, latest)) setAvailable(true)
+      if (updates.newer(own, assets)) setAvailable(true)
     })
   })
 

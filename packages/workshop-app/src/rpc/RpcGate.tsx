@@ -10,12 +10,11 @@ import {
 } from '@gadgets/workshop-shared/api'
 import { SignInForm, type SignInMode } from '@/blocks/SignInForm'
 import { ApiContext, type ApiSession } from './ApiContext'
-import { CF_ACCESS_MODE } from './cfAccess'
+import { readServerConfig, useServerConfig } from './serverConfig'
 import type { Connection } from './Connection'
 import { ConnectionNotice } from './ConnectionNotice'
 import { ConnectionNoticeContext } from './ConnectionNoticeContext'
 import { setReportedUserId } from './errorReporting'
-import { useServerConfig } from './serverConfig'
 import { SignInPane } from './SignInPane'
 import { clearToken, readToken, storeToken } from './token'
 
@@ -46,10 +45,11 @@ export type RpcGateProps = {
  * first connection is waited for with the page to itself. What the user is told meanwhile, and
  * whether what they ask for can be done, is the `ConnectionNotice` it provides.
  *
- * The user is signed in with the token this browser keeps (`token.ts`), or, built for Cloudflare
- * Access, as whoever Access says (`CF_ACCESS_MODE`). Signed out, the sign-in page (`SignInPane`)
- * is in place of `children`, at the address the user was going to, so that signing in shows them
- * what they were going to.
+ * The user is signed in with the token this browser keeps (`token.ts`), or, where the deployment
+ * says it is behind Cloudflare Access (`ServerConfig.authMode`), as whoever Access says: Access
+ * signed them in before the page could load, so the sign-in page is never shown. Signed out, the
+ * sign-in page (`SignInPane`) is in place of `children`, at the address the user was going to, so
+ * that signing in shows them what they were going to.
  */
 export const RpcGate = ({ connection, startsAt, children }: RpcGateProps) => {
   const { publicApi } = useSyncExternalStore(connection.subscribe, connection.getSnapshot)
@@ -64,7 +64,9 @@ export const RpcGate = ({ connection, startsAt, children }: RpcGateProps) => {
     storeToken(token)
     setSignIns((n) => n + 1)
   })
-  const siteName = resolveSiteName(useServerConfig()?.siteName)
+  const config = useServerConfig()
+  const siteName = resolveSiteName(config?.siteName)
+  const access = config?.authMode === 'cfAccess'
   // Stable, as the session it is part of is kept by whatever reads it.
   const [userChanged] = useState(() => (user: AiChatAuthorInfo) =>
     setState((current) =>
@@ -84,8 +86,10 @@ export const RpcGate = ({ connection, startsAt, children }: RpcGateProps) => {
     }
 
     const signIn = async () => {
+      let viaAccess = false
       try {
-        if (CF_ACCESS_MODE) {
+        viaAccess = (await (readServerConfig() ?? publicApi.getServerConfig())).authMode === 'cfAccess'
+        if (viaAccess) {
           // Access signed the user in before the page could load, and its session goes with every
           // request, so there is no token to keep.
           api = publicApi.authenticateFromCfAccess()
@@ -102,7 +106,7 @@ export const RpcGate = ({ connection, startsAt, children }: RpcGateProps) => {
         const value: ApiSession = { api, user: await api.whoami(), userChanged, reconnecting: false }
         finish({ phase: 'ready', value, reconnecting: { ...value, reconnecting: true } })
       } catch (error) {
-        if (!CF_ACCESS_MODE && getAuthErrorCode(error) === AUTH_ERROR_CODES.invalidSessionToken) {
+        if (!viaAccess && getAuthErrorCode(error) === AUTH_ERROR_CODES.invalidSessionToken) {
           clearToken()
           finish({ phase: 'signedOut' })
         } else {
@@ -152,11 +156,11 @@ export const RpcGate = ({ connection, startsAt, children }: RpcGateProps) => {
 
   switch (session.phase) {
     case 'connecting':
-      return CF_ACCESS_MODE ? <SignInForm siteName={siteName} state="access" /> : <Notice>Connecting…</Notice>
+      return access ? <SignInForm siteName={siteName} state="access" /> : <Notice>Connecting…</Notice>
     case 'signedOut':
       return <SignInPane publicApi={publicApi!} startsAt={startsAt} onToken={tokenReceived} />
     case 'failed':
-      return CF_ACCESS_MODE
+      return access
         ? <SignInForm siteName={siteName} state="access" problem={session.message} onRetry={() => setSignIns((n) => n + 1)} />
         : <Notice>Couldn’t sign in: {session.message}</Notice>
     case 'ready':

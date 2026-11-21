@@ -10,7 +10,8 @@ import type {
   GatekeeperAppTheme,
   GatekeeperAppThemeReceiver,
 } from '@gadgets/workshop-shared/theme'
-import ContextLibraryPage from './ContextLibraryPage'
+import { MotionProvider, watchMotionLevel } from '@gadgets/ui'
+import ContextApp from './ContextApp'
 import {
   ContextApiProvider,
   PresentationProvider,
@@ -25,6 +26,8 @@ import ErrorBoundary from './ErrorBoundary'
 import { installErrorReporting, reportIssue } from './error-reporting'
 
 installErrorReporting()
+// The frame has no settings of its own, so it moves as the system asks.
+watchMotionLevel()
 
 // The only capability the iframe exposes back to the host: a receiver for theme pushes.
 class AppIframe extends RpcTarget implements GatekeeperAppThemeReceiver {
@@ -66,11 +69,13 @@ function main() {
     <ErrorBoundary><ContextApiProvider value={host.ui}>
       <SelectUsersProvider value={selectUsers}>
         <PresentationProvider setPresenting={(active) => host.setPresenting(active)}>
-          <TooltipProvider>
-            <Toasty>
-              <ContextLibraryPage />
-            </Toasty>
-          </TooltipProvider>
+          <MotionProvider>
+            <TooltipProvider>
+              <Toasty>
+                <ContextApp />
+              </Toasty>
+            </TooltipProvider>
+          </MotionProvider>
         </PresentationProvider>
       </SelectUsersProvider>
     </ContextApiProvider></ErrorBoundary>,

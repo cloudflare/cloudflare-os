@@ -31,7 +31,9 @@ gatekeeper deployment.
 ## Verification
 
 Use Node tests for pure logic. Use the workerd project for persisted RPC stubs, `RpcTarget`,
-Durable Object behavior, and `crypto.subtle.timingSafeEqual`.
+Durable Object behavior, and `crypto.subtle.timingSafeEqual`. One Node test,
+`connect-form-browser.test.ts`, drives Chromium through Playwright and fails without it: install
+it once with `pnpm --filter @gadgets/workshop-frontend exec playwright install chromium`.
 
 From the repository root:
 

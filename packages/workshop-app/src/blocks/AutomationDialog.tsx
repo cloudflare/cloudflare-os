@@ -1,13 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import { ArrowRightIcon, XIcon } from '@phosphor-icons/react'
-import { cn } from '@cloudflare/kumo/utils'
-import { Banner } from '@/components/Banner'
-import { Button } from '@/components/Button'
-import { ConfirmMenu } from '@/components/ConfirmMenu'
-import { Dialog } from '@/components/Dialog'
-import { LinkButton } from '@/components/LinkButton'
-import { Markdown } from '@/components/Markdown'
-import { Switch } from '@/components/Switch'
+import { Banner, Button, ConfirmMenu, Dialog, LinkButton, Markdown, Switch } from '@gadgets/ui'
 import { AutomationGlyph } from './AutomationGlyph'
 import { deletionProblem, deletionWords, type AutomationDetails } from './automationDetails'
 import { ResourceLink } from './ResourceLink'
@@ -29,7 +22,7 @@ const Fact = ({ label, children }: { label: string; children: ReactNode }) => (
 )
 
 // What the dialog holds, which is only there while it is open: why the last try failed starts over each time.
-const AutomationDialogContent = ({ kind, title, when, next, note, description, resource, gadget, workspace, enabled, onEnabledChange, onDelete, problem, pending, onAsk, onClose }: AutomationDetails & {
+const AutomationDialogContent = ({ title, description, resource, gadget, workspace, enabled, onEnabledChange, onDelete, problem, pending, onAsk, onClose }: AutomationDetails & {
   pending: boolean
   onAsk: (action: () => ActionResult) => void
   onClose: () => void
@@ -51,15 +44,14 @@ const AutomationDialogContent = ({ kind, title, when, next, note, description, r
       }
     })
   })
-  const kindWords = kind === 'schedule' ? 'Scheduled' : 'When something happens'
 
   return (
     <>
       <header className="flex items-start gap-3 p-6 pb-5">
-        <AutomationGlyph kind={kind} enabled={enabled} />
+        <AutomationGlyph enabled={enabled} />
         <div className="flex min-h-10 min-w-0 flex-1 flex-col justify-center gap-0.5 leading-snug">
           <Dialog.Title className="text-lg font-medium wrap-anywhere text-kumo-default">{title}</Dialog.Title>
-          <Dialog.Description className="text-sm text-kumo-subtle">{enabled ? kindWords : `${kindWords} · Off`}</Dialog.Description>
+          <Dialog.Description className="text-sm text-kumo-subtle">{enabled ? 'On' : 'Off'}</Dialog.Description>
         </div>
         <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<XIcon weight="bold" />} aria-label="Close" disabled={pending} className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
       </header>
@@ -67,18 +59,7 @@ const AutomationDialogContent = ({ kind, title, when, next, note, description, r
       <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-6 pb-1">
         {description && <div className="leading-normal text-kumo-default"><Markdown>{description}</Markdown></div>}
         <ul aria-label="Details" className="flex flex-col rounded-(--surface-radius) bg-kumo-tint px-5 py-1">
-          {when && <Fact label="Runs">{when}</Fact>}
-          {kind === 'event' && <Fact label="Watches">{resource ? <ResourceLink {...resource} /> : 'Something a connected service sends'}</Fact>}
-          {kind === 'schedule' && (
-            <Fact label="Next run">
-              {!enabled
-                ? <span className="text-kumo-subtle">Not while it’s off</span>
-                : note
-                  ? <span className={cn(note.tone === 'warning' && 'text-kumo-warning')}>{note.words}</span>
-                  : next ? next.at.charAt(0).toUpperCase() + next.at.slice(1) : <span className="text-kumo-subtle">Not known yet</span>}
-            </Fact>
-          )}
-          {kind === 'event' && enabled && note && <Fact label="Status"><span className={cn(note.tone === 'warning' && 'text-kumo-warning')}>{note.words}</span></Fact>}
+          {resource && <Fact label="Watches"><ResourceLink {...resource} /></Fact>}
           {gadget && (
             <Fact label="Runs app">
               <LinkButton href={gadget.href} onClick={go(gadget.onOpen)} className={LINK}>
@@ -134,8 +115,8 @@ const AutomationDialogContent = ({ kind, title, when, next, note, description, r
 }
 
 /**
- * One automation, opened from its row: what it does, when it runs and when next (or why it
- * stopped), what it watches, the app it runs and the workspace it is in, each of which goes there,
+ * One automation, opened from its row: what it does, what it watches, the app it runs and the
+ * workspace it is in, each of which goes there,
  * then its switch, and at its foot Delete, which asks first. Once deleted, whoever shows it takes
  * it away with its row; a failure stays in it, under why.
  */

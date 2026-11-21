@@ -1,8 +1,7 @@
 import { PlusIcon } from '@phosphor-icons/react'
-import { DropdownMenu } from '@/components/DropdownMenu'
-import { OptionPicker } from '@/components/OptionPicker'
+import { DropdownMenu, OptionPicker } from '@gadgets/ui'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
-import type { WorkspaceLook } from '@/components/workspaceLook'
+import type { WorkspaceLook } from '@/prefs/preferenceFields'
 
 export type WorkspacePickerProps = {
   /** The workspaces there are to choose from, in the order they are offered. */

@@ -1,21 +1,14 @@
 import { useState } from 'react'
-import type { AiChatAuthorInfo, AiChatMetadata } from '@gadgets/workshop-shared/api'
+import { isAgentRun, type AiChatAuthorInfo, type AiChatMetadata } from '@gadgets/workshop-shared/api'
 import { ChatsCircleIcon, EyeIcon, NotePencilIcon, QuestionIcon, ShieldCheckIcon, WarningCircleIcon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
-import { isAgentRun } from '@/automations/agents'
 import { ChatListItem, type ChatBadge } from '@/blocks/ChatListItem'
-import { ListGroup } from '@/blocks/ListGroup'
-import { ListToolbar } from '@/blocks/ListToolbar'
-import { NoMatches } from '@/blocks/NoMatches'
+import { Button, EmptyState, formatActivity, formatActivityShort, ListGroup, ListToolbar, NoMatches, useListView } from '@gadgets/ui'
 import type { StatusPillProps } from '@/blocks/StatusPill'
-import { Button } from '@/components/Button'
-import { EmptyState } from '@/components/EmptyState'
-import { useListView } from '@/hooks/useListView'
 import type { LatestMessage } from './activity/WorkspaceActivity'
 import { favoritesFirst, groupChats, ownerOf } from './chatGroups'
 import { chatList, chatTitle, type ChatGrouping } from './chatList'
 import { chatByOf, speakerOf, type ChatState } from './chatStates'
-import { formatActivity, formatActivityShort } from './formatActivity'
 
 export type ChatListViewProps = {
   status: { status: 'loading' } | { status: 'failed'; message: string } | { status: 'ready' }

@@ -1,4 +1,4 @@
-import { EditableTitle } from '@/components/EditableTitle'
+import { EditableTitle } from '@gadgets/ui'
 import { ProfilePicture } from './ProfilePicture'
 
 export type OnboardingProfileProps = {

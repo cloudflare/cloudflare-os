@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ActionLogEntry, AiChatAuthorInfo } from '@gadgets/workshop-shared/api'
-import { narrowList } from '@/components/listView'
+import { narrowList } from '@gadgets/ui'
 import { activityStatus, outcomeOf } from './activityEntries'
 import { activityList, type ActivityItem } from './activityList'
 
@@ -18,8 +18,8 @@ const action = (id: number, more: Record<string, unknown> = {}): ActionLogEntry 
   description: { title: `Action ${id}`, description: '', implementsRevert: false, autoApprovable: true },
   ...more,
 }) as ActionLogEntry
-const read: ActionLogEntry = { id: 50, type: 'observation', resourceTitle: 'Sheet', createdAt: minutesAgo(3), state: 'approved', description: { title: 'Budget', description: '' } }
-const hook: ActionLogEntry = { id: 51, type: 'bindHook', resourceTitle: 'Mondays', createdAt: minutesAgo(4), state: 'approved', enabled: false, hookId: 2, description: { title: 'Digest', description: '' } }
+const read: ActionLogEntry = { id: 50, type: 'observation', from: 'agent', resourceTitle: 'Sheet', createdAt: minutesAgo(3), state: 'approved', description: { title: 'Budget', description: '' } }
+const hook: ActionLogEntry = { id: 51, type: 'bindHook', from: 'agent', resourceTitle: 'Mondays', createdAt: minutesAgo(4), state: 'approved', enabled: false, hookId: 2, description: { title: 'Digest', description: '' } }
 
 const items: ActivityItem[] = [
   { entry: action(1), chat: { id: 7, title: 'Deploy fix' } },

@@ -165,6 +165,15 @@ test("roots the table at authenticate()'s result, with the entry as public, less
   assert.equal(withPassword.nodes.FixtureAuthedApi!.commands["change-password"], undefined);
 });
 
+test("write-workspace's own help says what each action does, and what refuses the call", () => {
+  // Only what a method's doc says reaches its command's help: a constant's doc is not in the schema.
+  const { doc, args } = real.nodes.AdminApi!.commands["write-workspace"]!;
+  const actions = args.find((arg) => arg.name === "action")?.choices ?? [];
+  assert.equal(actions.length, 2);
+  for (const action of actions) assert.ok(doc.includes(`- "${action}": `), action);
+  for (const refusal of ["notAdmin", "writesOff"]) assert.ok(doc.includes(`\`${refusal}\``), refusal);
+});
+
 test("makes required parameters positional and optional ones flags, clear of the runtime's", () => {
   const { args } = buildTable(fixture()).nodes.FixtureAuthedApi!.commands["find-notes"]!;
   assert.deepEqual(args.map(({ name, index, flag, encoding }) => ({ name, index, flag, encoding })), [
@@ -312,7 +321,7 @@ test("records the capabilities a value result holds in its top-level properties,
   const ui = { ui: { property: "ui", returns: { kind: "untyped" }, doc } };
   assert.deepEqual(authed["get-gatekeeper-app"]!.returns, {
     ...authed["get-gatekeeper-app"]!.returns, nullable: true,
-    capabilities: { ui: { ...ui.ui, byArgument: { index: 0, nodes: { context: "context:ContextApi", scheduler: "scheduler:ScheduleManagementApi" } } } },
+    capabilities: { ui: { ...ui.ui, byArgument: { index: 0, nodes: { context: "context:ContextApi" } } } },
   });
   for (const command of ["start-resource-configurator", "start-creation-configurator"]) {
     assert.deepEqual(capabilities(command), ui, command);
@@ -673,12 +682,11 @@ test("@appApi types a capability property by an argument, as each gatekeeper app
   assert.throws(() => buildTable(fixture(), [{ ...apps()[0]!, vendor: "Sketch" }]), /gatekeeper app "Sketch": a vendor id is lowercase/);
   assert.throws(() => buildTable(fixture(), [...apps(), ...apps()]), /gatekeeper app "sketch" is given twice/);
 
-  // The real table: Context's and the scheduler's app UIs, by the vendor id getGatekeeperApp takes.
+  // The real table: Context's app UI, by the vendor id getGatekeeperApp takes.
   const app = real.nodes.AuthenticatedApi!.commands["get-gatekeeper-app"]!;
   assert.doesNotMatch(app.doc, /@appApi/);
-  assert.deepEqual(Object.keys(real.nodes).filter((name) => name.includes(":")), ["context:ContextApi", "scheduler:ScheduleManagementApi"]);
+  assert.deepEqual(Object.keys(real.nodes).filter((name) => name.includes(":")), ["context:ContextApi"]);
   assert.deepEqual(real.nodes["context:ContextApi"]!.commands["create-context-skill"]!.args.map((arg) => arg.name),
     ["collectionId", "path", "doc"]);
   assert.match(real.nodes["context:ContextApi"]!.commands["create-context-skill"]!.doc, /YAML frontmatter/);
-  assert.deepEqual(Object.keys(real.nodes["scheduler:ScheduleManagementApi"]!.commands), ["list"]);
 });

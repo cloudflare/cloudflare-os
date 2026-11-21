@@ -44,7 +44,6 @@ const testEnv = env as unknown as {
   TEST_HOOKS: Fetcher<TestHooks>;
 };
 
-const gadgetId = 3;
 const MAX_ENABLED_SCHEDULES_PER_ACCOUNT = 500;
 const MAX_ENABLED_SCHEDULES_PER_WORKSPACE = 100;
 
@@ -113,7 +112,6 @@ async function putScheduleRows(
           },
           title: "Seeded schedule",
           description: "Quota fixture.",
-          gadgetId,
         });
       }
     });
@@ -134,7 +132,6 @@ async function revokeWhileDeliveryIsBlocked(
       spec: { kind: "interval", everyMs: 60_000, anchorMs: activationTime },
       title: "Blocked task",
       description: "Test revocation during delivery.",
-      gadgetId,
     },
     activationTime,
   );
@@ -175,7 +172,6 @@ describe("ScheduleDriver", () => {
         spec: { kind: "interval", everyMs: 60_000, anchorMs: activationTime },
         title: "Heartbeat",
         description: "Run the heartbeat callback.",
-        gadgetId,
       },
       activationTime,
     );
@@ -230,7 +226,6 @@ describe("ScheduleDriver", () => {
         },
         title: "Weekly task",
         description: "Run twice each week.",
-        gadgetId,
       },
       sundayMorning,
     );
@@ -261,7 +256,6 @@ describe("ScheduleDriver", () => {
         spec: { kind: "once", fireAt: activationTime + 60_000, timeZone: "UTC" },
         title: "One shot",
         description: "Run once.",
-        gadgetId,
       },
       activationTime,
     );
@@ -286,16 +280,14 @@ describe("ScheduleDriver", () => {
       occurrences: { count: 2 },
       title: "Initial title",
       description: "Test capability replacement.",
-      gadgetId,
     };
     await enableSchedule(driver, activation, activationTime);
-    await enableSchedule(driver, { ...activation, gadgetId: 7 }, activationTime + 1);
+    await enableSchedule(driver, { ...activation, title: "Refreshed title" }, activationTime + 1);
 
-    expect((await driver.getSchedule("workspace-a", "schedule-a"))?.gadgetId).toBe(7);
     expect(await driver.listWorkspace("workspace-a")).toEqual([
       {
         scheduleId: "schedule-a",
-        title: "Initial title",
+        title: "Refreshed title",
         description: "Test capability replacement.",
         cadence: { kind: "interval", everyMs: 60_000, anchorMs: activationTime },
         occurrences: { count: 2 },
@@ -304,20 +296,6 @@ describe("ScheduleDriver", () => {
         nextFire: activationTime + 60_000,
       },
     ]);
-    expect(
-      await driver.listAccount({ query: "capability replacement", statuses: ["active"] }),
-    ).toEqual({
-      schedules: [
-        expect.objectContaining({
-          scheduleId: "schedule-a",
-          workspaceId: "workspace-a",
-          gadgetId: 7,
-        }),
-      ],
-    });
-
-    await enableSchedule(driver, { ...activation, gadgetId: undefined }, activationTime + 2);
-    expect((await driver.listAccount())[0]?.gadgetId).toBeUndefined();
 
     await makeActiveScheduleDue(driver, "workspace-a", "schedule-a");
     expect(await runDurableObjectAlarm(driver)).toBe(true);
@@ -358,7 +336,6 @@ describe("ScheduleDriver", () => {
         },
         title: "Weekly task",
         description: "Test public cadence projection.",
-        gadgetId,
       },
       activationTime,
     );
@@ -405,7 +382,6 @@ describe("ScheduleDriver", () => {
             spec: { kind: "interval", everyMs: 60_000, anchorMs: Date.now() },
             title: "Replacement",
             description: "Must not replace an unsupported row.",
-            gadgetId,
           },
           testInitiator(instance),
         ),
@@ -432,7 +408,6 @@ describe("ScheduleDriver", () => {
         spec: { kind: "interval", everyMs: 60_000, anchorMs: activationTime },
         title: "Healthy task",
         description: "Continue past an unsupported sibling row.",
-        gadgetId,
       },
       activationTime,
     );
@@ -457,7 +432,7 @@ describe("ScheduleDriver", () => {
 
   it("does not persist metadata when an empty account is read", async () => {
     const driver = testEnv.SCHEDULE_DRIVER.getByName("empty-account");
-    await expect(driver.listAccount()).resolves.toEqual({ schedules: [], cursor: undefined });
+    await expect(driver.listWorkspace("workspace-a")).resolves.toEqual([]);
     const keys = await runInDurableObject(driver, (_instance, state) => [
       ...state.storage.kv.list(),
     ]);
@@ -476,7 +451,6 @@ describe("ScheduleDriver", () => {
         spec: { kind: "interval", everyMs: 60_000, anchorMs: activationTime },
         title: "Retrying task",
         description: "Fail once and retry.",
-        gadgetId,
       },
       activationTime,
     );
@@ -514,7 +488,6 @@ describe("ScheduleDriver", () => {
         spec: { kind: "once", fireAt: activationTime + 60_000, timeZone: "UTC" },
         title: "Authorized task",
         description: "Retry authorization before delivery.",
-        gadgetId,
       },
       activationTime,
     );
@@ -558,7 +531,6 @@ describe("ScheduleDriver", () => {
         spec: { kind: "interval", everyMs: 60_000, anchorMs: activationTime },
         title: "Recover admission",
         description: "Recover before admission completes.",
-        gadgetId,
       },
       activationTime,
     );
@@ -598,7 +570,6 @@ describe("ScheduleDriver", () => {
         spec: { kind: "interval", everyMs: 60_000, anchorMs: activationTime },
         title: "Recover delivery",
         description: "Recover after admission completes.",
-        gadgetId,
       },
       activationTime,
     );
@@ -640,7 +611,6 @@ describe("ScheduleDriver", () => {
         spec: { kind: "interval", everyMs: 60_000, anchorMs: activationTime },
         title: "Exhaust delivery",
         description: "Exhaust a delivery abandoned by the runtime.",
-        gadgetId,
       },
       activationTime,
     );
@@ -704,7 +674,6 @@ describe("ScheduleDriver", () => {
           spec: { kind: "interval", everyMs: 60_000, anchorMs: activationTime },
           title: `Task ${index}`,
           description: "Test bounded alarm delivery.",
-          gadgetId,
         },
         activationTime,
       );
@@ -756,7 +725,6 @@ describe("ScheduleDriver", () => {
         spec: { kind: "once", fireAt: activationTime + 60_000, timeZone: "UTC" },
         title: "Rejected task",
         description: "Count opaque admission rejection.",
-        gadgetId,
       },
       activationTime,
     );
@@ -786,7 +754,6 @@ describe("ScheduleDriver", () => {
         spec: { kind: "once", fireAt: activationTime + 60_000, timeZone: "UTC" },
         title: "Pending task",
         description: "Summarize pending delivery.",
-        gadgetId,
       },
       activationTime,
     );
@@ -828,7 +795,6 @@ describe("ScheduleDriver", () => {
           spec: { kind: "interval", everyMs: 60_000, anchorMs: activationTime },
           title: scheduleId,
           description: "Test isolated alarm delivery failures.",
-          gadgetId,
         },
         activationTime,
       );
@@ -894,7 +860,6 @@ describe("ScheduleDriver", () => {
         spec: { kind: "interval", everyMs: 60_000, anchorMs: activationTime },
         title: "Missing capability",
         description: "Test infrastructure reporting.",
-        gadgetId,
       },
       activationTime,
     );
@@ -957,7 +922,6 @@ describe("ScheduleDriver", () => {
       spec: { kind: "interval" as const, everyMs: 60_000, anchorMs: activationTime },
       title: "Alarm ordering",
       description: "Require recovery before durable mutation.",
-      gadgetId,
     };
     const enableDriver = testEnv.SCHEDULE_DRIVER.getByName("enable-arm-failure");
     const enableResult = await runInDurableObject(enableDriver, async (instance, state) => {
@@ -1014,7 +978,6 @@ describe("ScheduleDriver", () => {
             spec: { kind: "interval", everyMs: 0, anchorMs: now },
             title: "Invalid task",
             description: "Fail after recovery arming.",
-            gadgetId,
           },
           testInitiator(instance),
           now,
@@ -1045,7 +1008,6 @@ describe("ScheduleDriver", () => {
           spec: { kind: "interval", everyMs: 60_000, anchorMs: activationTime },
           title: "Recoverable task",
           description: "Keep durable state after precise planning fails.",
-          gadgetId,
         },
         testInitiator(instance),
         activationTime,
@@ -1076,7 +1038,6 @@ describe("ScheduleDriver", () => {
       spec: { kind: "interval" as const, everyMs: 60_000, anchorMs: activationTime },
       title: "Counted task",
       description: "Test direct schedule row counting.",
-      gadgetId,
     };
     await enableSchedule(driver, activation, activationTime);
     await enableSchedule(driver, activation, activationTime + 1);
@@ -1088,13 +1049,11 @@ describe("ScheduleDriver", () => {
 
     expect(await driver.listWorkspace("workspace-a")).toHaveLength(1);
     expect(await driver.listWorkspace("workspace-b")).toHaveLength(1);
-    expect((await driver.listAccount()).schedules).toHaveLength(2);
 
     await driver.disable("workspace-a", "schedule-a");
     await driver.disable("workspace-a", "schedule-a");
     expect(await driver.listWorkspace("workspace-a")).toEqual([]);
     expect(await driver.listWorkspace("workspace-b")).toHaveLength(1);
-    expect((await driver.listAccount()).schedules).toHaveLength(1);
   });
 
   it("enforces account and workspace quotas from persisted schedule rows", async () => {
@@ -1105,7 +1064,6 @@ describe("ScheduleDriver", () => {
       spec: { kind: "interval" as const, everyMs: 60_000, anchorMs: activationTime },
       title: "Quota task",
       description: "Test durable quota enforcement.",
-      gadgetId,
     };
 
     const accountDriver = testEnv.SCHEDULE_DRIVER.getByName("account-quota");
@@ -1154,7 +1112,6 @@ describe("ScheduleDriver", () => {
       spec: { kind: "once", fireAt: activationTime + 60_000, timeZone: "UTC" },
       title: "Terminal task",
       description: "Releases its capability when it completes.",
-      gadgetId,
     }, activationTime);
 
     const capsKey = "caps:workspace-a:one-shot";
@@ -1183,7 +1140,6 @@ describe("ScheduleDriver", () => {
         occurrences: { until: activationTime - 1 },
         title: "Lapsed task",
         description: "Its bound passed before it could run.",
-        gadgetId,
       },
       activationTime,
     );
@@ -1210,7 +1166,6 @@ describe("ScheduleDriver", () => {
             spec: { kind: "interval", everyMs: 60_000, anchorMs: activationTime },
             title: `Task ${index}`,
             description: "Test revocation cleanup.",
-            gadgetId,
           },
           testInitiator(instance),
           activationTime,
@@ -1229,7 +1184,6 @@ describe("ScheduleDriver", () => {
             spec: { kind: "interval", everyMs: 60_000, anchorMs: activationTime },
             title: "Stale task",
             description: "Must not recreate a revoked account.",
-            gadgetId,
           },
           testInitiator(instance),
           activationTime,

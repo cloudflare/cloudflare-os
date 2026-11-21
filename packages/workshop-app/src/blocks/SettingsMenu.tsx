@@ -1,7 +1,5 @@
 import { CaretRightIcon, SignOutIcon } from '@phosphor-icons/react'
-import { Avatar } from '@/components/Avatar'
-import { ConfirmMenu } from '@/components/ConfirmMenu'
-import { LinkButton } from '@/components/LinkButton'
+import { Avatar, ConfirmMenu, LinkButton } from '@gadgets/ui'
 import type { SettingsNavGroup } from './SettingsSidebar'
 
 export type SettingsMenuProps = {

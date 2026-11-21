@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { OutOfCreditsDialog, type OutOfCreditsState } from '@/blocks/OutOfCreditsDialog'
-import { Button } from '@/components/Button'
+import { Button } from '@gadgets/ui'
 import { useReport } from './previewState'
 import { Section } from './Section'
 

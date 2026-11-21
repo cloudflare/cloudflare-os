@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import { PlusIcon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
-import { Button } from './Button'
+import { Button } from '@gadgets/ui'
 
 export type ConnectButtonProps = {
   /** The logos of the apps already connected, shown after the add control. */

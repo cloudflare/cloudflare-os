@@ -1,20 +1,16 @@
 import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from 'react'
 import { animate, motion, useMotionValue, useMotionValueEvent, useTransform } from 'motion/react'
-import { useReducedMotion } from '@/hooks/useReducedMotion'
+import { Button, DropdownMenu, HeaderBubble, motionTransition, useReducedMotion } from '@gadgets/ui'
 import {
   ArrowClockwiseIcon, ArrowLeftIcon, ArrowLineRightIcon, ArrowSquareOutIcon,
   CodeIcon, CornersInIcon, CornersOutIcon, DotsThreeIcon, DownloadSimpleIcon, EyeIcon, CheckIcon, FileArrowDownIcon, GearSixIcon, ShareNetworkIcon, XIcon,
 } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
 import { AvatarStack, type AvatarStackProps } from '@/components/AvatarStack'
-import { Button } from '@/components/Button'
-import { DropdownMenu } from '@/components/DropdownMenu'
 import { Illustration } from '@/components/Illustration'
 import { Grabber } from '@/components/Grabber'
-import { HeaderBubble } from '@/components/HeaderBubble'
 import { clampSize, resistSize } from '@/components/resizing'
 import { IconSwitch } from '@/components/IconSwitch'
-import { motionTransition } from '@/hooks/motionTransition'
 import { CopyLinkButton } from './CopyLinkButton'
 import { ExportItems, type ExportItemsProps } from './ExportItems'
 import { GadgetChatMenu, type GadgetChatMenuProps } from './GadgetChatMenu'

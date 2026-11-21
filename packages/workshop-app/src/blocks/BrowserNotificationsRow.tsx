@@ -1,5 +1,4 @@
-import { Switch } from '@/components/Switch'
-import { SettingRow } from './SettingRow'
+import { SettingRow, Switch } from '@gadgets/ui'
 
 /**
  * Where this browser stands: notifications `on` or `off` (`loading` until that is known, shown as

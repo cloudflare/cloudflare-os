@@ -1,10 +1,8 @@
 import type { ReactNode } from 'react'
 import { AppWindowIcon, ChatsCircleIcon, CirclesFourIcon, ClockIcon, CompassIcon, FileTextIcon, FolderIcon, LayoutIcon, LightningIcon, NotePencilIcon, PlusIcon, PuzzlePieceIcon, TrayIcon } from '@phosphor-icons/react'
-import { NoMatches } from '@/blocks/NoMatches'
+import { DropdownMenu, EmptyState, NoMatches } from '@gadgets/ui'
 import { PaneNotice } from '@/blocks/PaneNotice'
 import { Sidebar } from '@/blocks/Sidebar'
-import { DropdownMenu } from '@/components/DropdownMenu'
-import { EmptyState } from '@/components/EmptyState'
 import { useReport } from './previewState'
 import { Section } from './Section'
 

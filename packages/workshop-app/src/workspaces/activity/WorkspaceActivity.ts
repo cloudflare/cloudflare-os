@@ -9,7 +9,7 @@ import {
   type Overseer,
 } from '@gadgets/workshop-shared/api'
 import { ActionUpdates, ChatSubscriber } from '@/chat/ChatSubscriber'
-import { isAgentRun } from '@/automations/agents'
+import { isAgentRun } from '@gadgets/workshop-shared/api'
 import type { ActionEntry } from './activityEntries'
 
 /** The history read so far, newest first by id, and whether there is more of it to read. */

@@ -29,7 +29,7 @@ const fakeWorkspace = ({ heads = ['c1'], files = {}, chats = [chat(1)], merges =
     }),
     readFilesAtCommit: vi.fn<SavingOverseer['readFilesAtCommit']>(async (commit, paths) =>
       paths.map((path): [string, FileAtCommit] => [path, path in (files[commit] ?? {}) ? text(files[commit][path]) : { kind: 'absent' }])),
-    listChats: vi.fn<SavingOverseer['listChats']>(async () => listed),
+    getChatMetadata: vi.fn<SavingOverseer['getChatMetadata']>(async (chatId) => listed.find(({ id }) => id === chatId)),
     newChat: vi.fn<() => Promise<number>>(async () => {
       listed.push(chat(9))
       return 9

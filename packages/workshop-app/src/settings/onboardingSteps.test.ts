@@ -57,25 +57,25 @@ describe('onboardingSteps', () => {
 })
 
 const fakeApi = (failing: string[] = []) => {
-  const calls: string[] = []
-  const api: OnboardingApi = {
-    setOwnDisplayName: vi.fn<OnboardingApi['setOwnDisplayName']>(async (name: string) => void calls.push(`name ${name}`)),
-    provisionAmbientAccount: vi.fn<OnboardingApi['provisionAmbientAccount']>(async (id: string) => {
-      if (failing.includes(id)) throw new Error('disabled')
-      calls.push(`provision ${id}`)
+  const api = {
+    setOwnDisplayName: vi.fn<OnboardingApi['setOwnDisplayName']>(async () => {}),
+    provisionAmbientAccount: vi.fn<OnboardingApi['provisionAmbientAccount']>(async (vendorId) => {
+      if (failing.includes(vendorId)) throw new Error('disabled')
     }),
-    completeOnboarding: vi.fn<OnboardingApi['completeOnboarding']>(async () => void calls.push('complete')),
-  }
-  return { api, calls }
+    completeOnboarding: vi.fn<OnboardingApi['completeOnboarding']>(async () => {}),
+  } satisfies OnboardingApi
+  return { api }
 }
 
 const TOOLS = [{ vendorId: 'context', name: 'Context Library' }, { vendorId: 'scheduler', name: 'Scheduled Tasks' }]
 
 describe('finishOnboarding', () => {
-  it('keeps a changed name and turns the tools on, then marks the user set up', async () => {
-    const { api, calls } = fakeApi()
+  it('keeps a changed name, turns on the tools, and marks the user set up', async () => {
+    const { api } = fakeApi()
     const result = await finishOnboarding(api, { name: '  Ada  ', previousName: 'ada', tools: TOOLS })
-    expect(calls).toEqual(['name Ada', 'provision context', 'provision scheduler', 'complete'])
+    expect(api.setOwnDisplayName).toHaveBeenCalledExactlyOnceWith('Ada')
+    expect(api.provisionAmbientAccount.mock.calls).toEqual([['context'], ['scheduler']])
+    expect(api.completeOnboarding).toHaveBeenCalledOnce()
     expect(result).toEqual({ name: 'Ada', failedTools: [] })
   })
 
@@ -84,19 +84,20 @@ describe('finishOnboarding', () => {
       const { api } = fakeApi()
       expect((await finishOnboarding(api, { name, previousName: 'ada', tools: [] })).name).toBeUndefined()
       expect(api.setOwnDisplayName).not.toHaveBeenCalled()
+      expect(api.completeOnboarding).toHaveBeenCalledOnce()
     }
   })
 
-  it('goes on past a tool that cannot be turned on, saying which', async () => {
-    const { api, calls } = fakeApi(['scheduler'])
+  it('goes on past a tool that could not be turned on, saying which by name', async () => {
+    const { api } = fakeApi(['scheduler'])
     const result = await finishOnboarding(api, { name: 'ada', previousName: 'ada', tools: TOOLS })
     expect(result.failedTools).toEqual(['Scheduled Tasks'])
-    expect(calls).toContain('complete')
+    expect(api.completeOnboarding).toHaveBeenCalledOnce()
   })
 
   it('leaves the user to be set up when the name cannot be kept', async () => {
     const { api } = fakeApi()
-    vi.mocked(api.setOwnDisplayName).mockRejectedValueOnce(new Error('offline'))
+    api.setOwnDisplayName.mockRejectedValueOnce(new Error('offline'))
     await expect(finishOnboarding(api, { name: 'Ada', previousName: 'ada', tools: TOOLS })).rejects.toThrow('offline')
     expect(api.completeOnboarding).not.toHaveBeenCalled()
   })

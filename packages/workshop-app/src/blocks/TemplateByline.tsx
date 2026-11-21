@@ -1,7 +1,6 @@
 import { BuildingsIcon } from '@phosphor-icons/react'
-import { Avatar } from '@/components/Avatar'
+import { Avatar, Tooltip } from '@gadgets/ui'
 import { ServiceStack } from '@/components/ServiceStack'
-import { Tooltip } from '@/components/Tooltip'
 
 /** Who a template is by: one of the organization's people, or the organization itself. */
 export type TemplateCreator = { name: string; organization?: boolean }

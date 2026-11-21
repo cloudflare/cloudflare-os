@@ -7,6 +7,7 @@ import { TimelineReadItem } from "./features/notifications/TimelineReadItem";
 import { timelineReadRanges } from "./features/notifications/timelineReadRanges";
 import {
   Fragment,
+  createContext,
   isValidElement,
   memo,
   useState,
@@ -15,6 +16,7 @@ import {
   useRef,
   useMemo,
   useCallback,
+  useContext,
   type ComponentPropsWithoutRef,
   type ReactNode,
   type PointerEvent as ReactPointerEvent,
@@ -61,7 +63,7 @@ import {
   GitBranch,
 } from "@phosphor-icons/react";
 import { RpcStub, RpcTarget } from "capnweb";
-import ReactMarkdown, { type Components } from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform, type Components, type UrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import styles from "./ChatInterface.module.css";
 import {
@@ -77,6 +79,7 @@ import {
   AiChatHistoryPage,
   AiChatMetadata,
   AiChatMessage,
+  ChatEmbeds,
   AiChatSubscriber,
   ActionLogEntry,
   AiChatAuthorInfo,
@@ -149,6 +152,9 @@ import {
 } from "./features/chat/mergeConflicts";
 import { UnresolvedConflictsDialog } from "./features/chat/UnresolvedConflictsDialog";
 import { UiBlockCard, type UiBlockCardProps } from "./features/chat/UiBlockCard";
+import type { FileSnapshots } from "./features/chat/inlineFiles";
+import { FileLink } from "./features/chat/FileLink";
+import { FileImage, type FileImageLayout } from "./features/chat/FileImage";
 import { parseInlineHtmlBlocks } from "@gadgets/workshop-shared/inline-html-blocks";
 import { BlueprintProposalNotice } from "./features/blueprint-updates/BlueprintProposalNotice";
 import { appliedBlueprintMerges } from "./features/blueprint-updates/blueprintProposal";
@@ -1206,10 +1212,31 @@ function CodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
   );
 }
 
+// ReactMarkdown owns the image props. Context keeps its renderer's identity stable when files
+// arrive, so previously pinned files keep their downloaded bytes.
+const MarkdownFiles = createContext<{files?: FileSnapshots; layout?: FileImageLayout}>({});
+const MarkdownImage: NonNullable<Components["img"]> = ({ node: _node, src, alt, title, ...props }) => {
+  const {files, layout} = useContext(MarkdownFiles);
+  if (typeof src === "string" && src.startsWith("worktree://")) {
+    return files
+      ? <FileImage key={files.oids[src] ?? src} oid={files.oids[src]} alt={alt} title={title} readBlob={files.readBlob} layout={layout} />
+      : <span>{alt}</span>;
+  }
+  return <img {...props} src={src || undefined} alt={alt} title={title} />;
+};
+const MarkdownFileLink = ({ source, children, title }: { source: string; children: ReactNode; title?: string }) => {
+  const {files} = useContext(MarkdownFiles);
+  return <FileLink key={files?.oids[source] ?? source} source={source} files={files} title={title}>{children}</FileLink>;
+};
+const markdownUrlTransform: UrlTransform = (url, key, node) =>
+  ((key === "src" && node.tagName === "img") || (key === "href" && node.tagName === "a")) && url.startsWith("worktree://")
+    ? url : defaultUrlTransform(url);
+
 function getMarkdownComponents(
   mentionsByToken?: Map<string, Mention>,
 ): Components {
   return {
+    img: MarkdownImage,
     pre: ({ node: _node, ...props }) => <CodeBlock {...props} />,
     table: ({ node: _node, children, ...props }) => (
       <div className={styles.markdownTableWrapper}>
@@ -1227,6 +1254,9 @@ function getMarkdownComponents(
         }
       }
 
+      if (href?.startsWith("worktree://")) {
+        return <MarkdownFileLink source={href} title={props.title}>{children}</MarkdownFileLink>;
+      }
       const safeHref = safeExternalUrl(href);
       if (!safeHref) {
         return <>{children}</>;
@@ -1253,11 +1283,13 @@ const MARKDOWN_COMPONENTS_NO_CAPSULES = getMarkdownComponents();
  * single newlines as hard breaks, for text people typed rather than Markdown a model wrote.
  */
 export const MarkdownMessage = memo(function MarkdownMessage(
-  { message, capsules, formats, preserveLineBreaks }: {
+  { message, capsules, formats, preserveLineBreaks, files, fileLayout }: {
     message: string;
     capsules?: CapsuleSpecifier[];
     formats?: MessageFormatRef[];
     preserveLineBreaks?: boolean;
+    files?: FileSnapshots;
+    fileLayout?: FileImageLayout;
   },
 ): ReactNode {
   const tokenizedMessage = useMemo(
@@ -1281,14 +1313,16 @@ export const MarkdownMessage = memo(function MarkdownMessage(
     [preserveLineBreaks, tokenizedMessage],
   );
 
+  const fileContext = useMemo(() => ({files, layout: fileLayout}), [files, fileLayout]);
   return (
-    <ReactMarkdown
+    <MarkdownFiles value={fileContext}><ReactMarkdown
       skipHtml={true}
       remarkPlugins={remarkPlugins}
       components={components}
+      urlTransform={markdownUrlTransform}
     >
       {tokenizedMessage?.markdown ?? message}
-    </ReactMarkdown>
+    </ReactMarkdown></MarkdownFiles>
   );
 });
 
@@ -1305,23 +1339,28 @@ type AnswerBlocks = Omit<UiBlockCardProps, "block">;
  * An agent answer: Markdown prose, with each `<inline-html>` block drawn as a live view. A block
  * draws as it streams, and shows as code if its stored answer never closed it.
  */
-const AgentAnswer = (
+export const AgentAnswer = (
   { message, blocks, streaming }: { message: string; blocks: AnswerBlocks; streaming: boolean },
 ): ReactNode => {
   // ChatInterface renders every message again on each streamed delta; an answer is parsed only
   // when it changes.
   const parts = useMemo(() => parseInlineHtmlBlocks(message, { streaming }), [message, streaming]);
+  // The caller rebuilds blocks, but unchanged pins must not invalidate MarkdownMessage's memo.
+  const oids = blocks.files?.oids, readBlob = blocks.files?.readBlob;
+  const files = useMemo(() => oids && readBlob ? { oids, readBlob } : undefined, [oids, readBlob]);
 
+  const imageLayout = useMemo(() => ({scrollRoot: blocks.scrollRoot, onHeightChange: blocks.onHeightChange}),
+      [blocks.scrollRoot, blocks.onHeightChange]);
   return parts.map((part, i) => {
     switch (part.kind) {
       case "text":
-        return <MarkdownMessage key={i} message={part.text} />;
+        return <MarkdownMessage key={i} message={part.text} files={files} fileLayout={imageLayout} />;
       case "block":
       case "open":
         // An open block's view stays the closed block's: the same component, at the same place.
         return part.kind === "open" && !streaming
           ? <MarkdownMessage key={i} message={asCodeBlock(part.text)} />
-          : <UiBlockCard key={i} {...blocks} block={part} />;
+          : <UiBlockCard key={i} {...blocks} files={files} block={part} />;
     }
   });
 };
@@ -1894,6 +1933,7 @@ export type StreamingAnswer = {
   author: AiChatAuthorInfo;
   text: string;
   reasoning: string;
+  embeds?: ChatEmbeds;
 };
 
 export function buildChatDisplayEntries(
@@ -2139,7 +2179,7 @@ export function buildChatDisplayEntries(
 
   // Drawn as the message it will become, after the model-change row that message will get.
   if (answers.streaming) {
-    const {key, chatId, author, text, reasoning} = answers.streaming;
+    const {key, chatId, author, text, reasoning, embeds} = answers.streaming;
     const message: AiChatMessage = {
       type: "message",
       chatId,
@@ -2150,6 +2190,7 @@ export function buildChatDisplayEntries(
       author,
       message: text,
       reasoning,
+      embeds,
     };
     maybePushModelChange(message);
     result.push({type: "message", key, message, streaming: true});
@@ -2508,6 +2549,7 @@ type ProvisionalToolCallState = {
 
 type ProvisionalChatState = {
   text: string;
+  embeds?: ChatEmbeds;
   reasoning: string;
   // The React key of the row the streamed text and reasoning are drawn in, minted when they start.
   // The stored message keeps it (see answerKeysRef), so the views in it keep running.
@@ -2533,6 +2575,7 @@ function createProvisionalChatState(): ProvisionalChatState {
 
 function clearProvisionalTextState(state: ProvisionalChatState) {
   state.text = "";
+  state.embeds = undefined;
   state.reasoning = "";
   state.answerKey = undefined;
   state.toolCalls = [];
@@ -3139,6 +3182,7 @@ function ChatInterface({
   const streamingKey = currentProvisionalState?.answerKey;
   const streamingAuthor = currentChatMetadata?.activeAgent;
   const streamingText = currentProvisionalState?.text ?? "";
+  const streamingEmbeds = currentProvisionalState?.embeds;
   const streamingReasoning = showThinkingTraces ? (currentProvisionalState?.reasoning ?? "") : "";
   const displayEntries = useMemo(
     () =>
@@ -3152,11 +3196,11 @@ function ChatInterface({
             streaming: selectedChatId !== null && streamingKey !== undefined && streamingAuthor &&
                 (streamingText.trim() !== "" || streamingReasoning !== "")
               ? {key: streamingKey, chatId: selectedChatId, author: streamingAuthor,
-                 text: streamingText, reasoning: streamingReasoning}
+                 text: streamingText, reasoning: streamingReasoning, embeds: streamingEmbeds}
               : undefined,
           }),
     [currentMessages, messageStates, currentCompactions, resolveToolOutput, selectedChatId,
-     streamingKey, streamingAuthor, streamingText, streamingReasoning],
+     streamingKey, streamingAuthor, streamingText, streamingReasoning, streamingEmbeds],
   );
 
   const entryTopClasses = useMemo(() => {
@@ -3434,6 +3478,7 @@ function ChatInterface({
     ? JSON.stringify(codeChatMetadata.codeBase ?? null) : undefined;
   const codeChangesVersion =
     codeChatId !== null ? (changesVersionsRef.current.get(codeChatId) ?? 0) : 0;
+  const readFileBlob = useCallback((oid: string) => overseer.readBlob(oid), [overseer]);
   useEffect(() => {
     if (codeChatId === null || codeBaseSignature === undefined ||
         !cacheRef.current.messages.has(codeChatId) ||
@@ -3729,6 +3774,7 @@ function ChatInterface({
           break;
         case "textDelta":
           provisional.text += event.delta;
+          if (event.embeds) provisional.embeds = {...provisional.embeds, ...event.embeds};
           break;
         case "reasoningDelta":
           provisional.reasoning += event.delta;
@@ -6384,7 +6430,8 @@ function ChatInterface({
                                   {msg.author.type === "agent" ? (
                                     <AgentAnswer
                                       message={msg.message}
-                                      blocks={{ onSendMessage: handleSend, sendBlockedReason, onHeightChange: keepAtBottom, scrollRoot: messagesContainerRef }}
+                                      blocks={{ onSendMessage: handleSend, sendBlockedReason, onHeightChange: keepAtBottom,
+                                        scrollRoot: messagesContainerRef, files: msg.embeds ? {oids: msg.embeds, readBlob: readFileBlob} : undefined }}
                                       streaming={entry.streaming === true}
                                     />
                                   ) : (

@@ -10,7 +10,7 @@ import {
   PushPinIcon,
   PushPinSlashIcon,
 } from '@phosphor-icons/react'
-import { DropdownMenu } from '@/components/DropdownMenu'
+import { DropdownMenu } from '@gadgets/ui'
 import type { SidebarChat } from './SidebarChatItem'
 
 /** What can be done from the sidebar to what it lists, each only where it is given. */

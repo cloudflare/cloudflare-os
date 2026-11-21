@@ -1,7 +1,6 @@
 import { PlusIcon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
-import { LinkButton } from '@/components/LinkButton'
-import { Tooltip } from '@/components/Tooltip'
+import { LinkButton, Tooltip } from '@gadgets/ui'
 
 export type NewWorkspaceRowProps = {
   /** Where a new workspace is started, so that it can be opened in another tab. */

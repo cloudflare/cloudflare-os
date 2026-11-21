@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { LinkButton } from '@/components/LinkButton'
+import { LinkButton } from '@gadgets/ui'
 
 export type ContextRowProps = {
   /** What kind of thing it is: a format's glyph, a service's logo. */

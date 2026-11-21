@@ -30,7 +30,7 @@ interface OverseerInternals {
     };
   };
   storage: {
-    chatMeta: { put(meta: AiChatMetadata): void };
+    chatMeta: { get(id: number): AiChatMetadata | undefined, put(meta: AiChatMetadata): void };
     chats: { put(message: AiChatMessage): void };
     gatekeepers: { put(record: object): void };
     actions: { list(): Iterable<ActionRecord>, put(record: ActionRecord): void };
@@ -557,5 +557,57 @@ describe("turn notifications", () => {
 
     await turn.session;
     expect(turn.notifications).toEqual([notification(turn, kind)]);
+  });
+});
+
+describe("whether a chat's last turn failed", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  let reply = () => anthropicResponse([{ type: "text", text: "Done." }], "end_turn",
+      { input: 1, cacheRead: 0, cacheWrite: 0, output: 1 });
+  let lastTurnFailed = async (turn: Turn) => {
+    let failed: true | undefined;
+    await inOverseer(turn.workspace, impl => {
+      failed = impl.storage.chatMeta.get(CHAT_ID)?.lastTurnFailed;
+    });
+    return failed;
+  };
+
+  it("is said once a turn fails, and no longer once the next starts", async () => {
+    let turn = startTurn([() => Response.json(
+        { type: "error", error: { type: "invalid_request_error", message: "bad" } },
+        { status: 400 })]);
+    turn.release();
+    await turn.session;
+    expect(await lastTurnFailed(turn)).toBe(true);
+
+    stubProvider([reply]).release();
+    await inOverseer(turn.workspace, async impl => {
+      impl.startAgent(CHAT_ID, { profile: MODEL, config: {
+        provider: "anthropic", model: MODEL_ID, apiToken: "test-key", apiUrl: API_URL,
+      } }, OWNER, INITIATOR_USER_ID);
+      expect(impl.storage.chatMeta.get(CHAT_ID)?.lastTurnFailed).toBeUndefined();
+      await impl.waitForAllAgentsToComplete();
+    });
+    expect(await lastTurnFailed(turn)).toBeUndefined();
+  });
+
+  it("is said of a turn the usage limit blocks", async () => {
+    let turn = startTurn([], { usageLimited: true });
+    await turn.session;
+    expect(await lastTurnFailed(turn)).toBe(true);
+  });
+
+  it("is not said of a turn that succeeded or that the user stopped", async () => {
+    let done = startTurn([reply]);
+    done.release();
+    await done.session;
+    expect(await lastTurnFailed(done)).toBeUndefined();
+
+    let stopped = startTurn([reply]);
+    await stopped.requested;
+    await inOverseer(stopped.workspace, impl => impl.cancelAgent(CHAT_ID));
+    await stopped.session;
+    expect(await lastTurnFailed(stopped)).toBeUndefined();
   });
 });

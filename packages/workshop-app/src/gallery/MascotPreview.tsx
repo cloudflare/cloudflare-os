@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
 import { Tabs } from '@cloudflare/kumo'
-import { Switch } from '@/components/Switch'
+import { Switch } from '@gadgets/ui'
 import { Mascot, type MascotColor, type MascotEmotion } from '@/components/mascot/Mascot'
 import { Section } from './Section'
 

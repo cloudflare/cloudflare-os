@@ -1,10 +1,7 @@
 import { createElement } from 'react'
 import type { AsideItem } from '@/aside/asideItems'
-import { groupByTime } from '@/chat/timeGroups'
+import { type ListFilter, type ListOrder, type ListViewSpec, groupByName, groupByTime } from '@gadgets/ui'
 import { FormatIcon } from '@/components/FormatIcon'
-import type { ListFilter, ListOrder } from '@/components/listView'
-import { groupByName } from '@/components/nameGroups'
-import type { ListViewSpec } from '@/hooks/useListView'
 import { APP } from '@/library/libraryList'
 
 /** What an item is: the format an output was made as, or an app. */

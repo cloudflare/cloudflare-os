@@ -1,11 +1,10 @@
 import { useState, type ReactNode } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
-import { EditableTitle } from '@/components/EditableTitle'
+import { EditableTitle, LIST_ACTION, LinkButton } from '@gadgets/ui'
 import { FormatIcon, type FormatIconName } from '@/components/FormatIcon'
-import { LinkButton } from '@/components/LinkButton'
 import { LibraryMoreMenu, type LibraryMoreActions } from './LibraryMoreMenu'
 import { RowAction } from './RowAction'
-import { LIST_ACTION, StarButton } from './StarButton'
+import { StarButton } from './StarButton'
 import { WaitingBadge } from './WaitingBadge'
 
 export type LibraryRowProps = {

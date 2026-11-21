@@ -1,34 +1,50 @@
 import { describe, expect, it } from 'vitest'
-import type { AiChatMetadata } from '@gadgets/workshop-shared/api'
+import type { RpcStub } from 'capnweb'
+import type { AuthenticatedApi, UnreadStateSubscriber, UnreadThread } from '@gadgets/workshop-shared/api'
 import { RecentChats } from './RecentChatsStore'
 
-const chat = (id: number, at: number) => ({ id, title: '', started: new Date(0), lastActive: new Date(at) }) as AiChatMetadata
-const reading = (chats: AiChatMetadata[]) => ({ chats, readStates: [], approvals: new Set<number>() })
+const thread = (chatId: number, more: Partial<UnreadThread> = {}): UnreadThread => ({
+  workspaceId: 'w', chatId, unreadMessageCount: 0, readThroughSequence: 0, notificationsEnabled: true,
+  chatTitle: 'Chat', latestSequence: 0, latestMessagePreview: 'Hi', latestActivityAt: new Date(0), ...more,
+})
+
+const started = () => {
+  const store = new RecentChats()
+  let listener: UnreadStateSubscriber | undefined
+  const api = {
+    subscribeToUnreadState: async (scope: unknown, given: UnreadStateSubscriber) => {
+      expect(scope).toBe('recent')
+      listener = given
+      return { [Symbol.dispose]() {} }
+    },
+  } as unknown as RpcStub<AuthenticatedApi>
+  const stop = store.start(api)
+  return { store, stop, listener: () => listener! }
+}
+const summary = { unreadChatCount: 0, unreadMessageCount: 0, workspaces: [] }
+const update = { unreadChatCount: 0, unreadMessageCount: 0, workspace: { workspaceId: 'w', unreadChatCount: 0, unreadMessageCount: 0 } }
 
 describe('RecentChats', () => {
-  it('is known once every workspace expected has answered, or could not', () => {
-    const store = new RecentChats()
-    store.expect(['a', 'b'])
-    store.set('a', reading([]))
+  it('takes the snapshot, then each chat as the account says it changed, dropping one it says is gone', async () => {
+    const { store, stop, listener } = started()
+    await Promise.resolve()
     expect(store.snapshot().known).toBe(false)
-    store.failed('b')
+    await listener().updated({ ...summary, chats: [thread(1), thread(2)] })
+    await listener().chatUpdated('w', 1, thread(1, { latestMessagePreview: 'Later' }), update)
+    await listener().chatUpdated('w', 2, null, update)
     expect(store.snapshot().known).toBe(true)
+    expect([...store.snapshot().threads.values()].map(({ chatId, latestMessagePreview }) => [chatId, latestMessagePreview])).toEqual([[1, 'Later']])
+    stop()
   })
 
-  it('reads a chat’s last messages again only once it has been active since', () => {
-    const store = new RecentChats()
-    store.set('a', reading([chat(1, 5)]), new Map([[1, { lastActive: 5, wrote: true }]]))
-    expect(store.needsTail('a', chat(1, 5))).toBe(false)
-    expect(store.needsTail('a', chat(1, 9))).toBe(true)
-    expect(store.needsTail('a', chat(2, 5))).toBe(true)
-  })
-
-  it('shows a change to a chat’s read state at once, and puts it back as it was', () => {
-    const store = new RecentChats()
-    store.set('a', reading([chat(1, 5)]))
-    const was = store.markChat('a', 1, { notificationsEnabledOverride: false })
-    expect(store.snapshot().readings.get('a')!.readStates).toEqual([{ workspaceId: 'a', chatId: 1, unreadMessageCount: 0, readThroughSequence: -1, notificationsEnabledOverride: false }])
-    store.restoreChat('a', 1, was)
-    expect(store.snapshot().readings.get('a')!.readStates).toEqual([])
+  it('shows a change at once and puts it back when told how it was', async () => {
+    const { store, stop, listener } = started()
+    await Promise.resolve()
+    await listener().updated({ ...summary, chats: [thread(1)] })
+    const was = store.markChat('w', 1, { notificationsEnabledOverride: false })
+    expect(store.snapshot().threads.get('w:1')?.notificationsEnabledOverride).toBe(false)
+    store.restoreChat('w', 1, was)
+    expect(store.snapshot().threads.get('w:1')?.notificationsEnabledOverride).toBeUndefined()
+    stop()
   })
 })

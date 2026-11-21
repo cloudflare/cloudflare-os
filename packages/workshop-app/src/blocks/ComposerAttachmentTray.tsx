@@ -1,5 +1,5 @@
 import { AnimatePresence, MotionConfig, motion } from 'motion/react'
-import { useReducedMotion } from '@/hooks/useReducedMotion'
+import { useReducedMotion } from '@gadgets/ui'
 import { ComposerAttachmentCard } from './ComposerAttachmentCard'
 import type { ComposerAttachment } from './useComposerAttachments'
 

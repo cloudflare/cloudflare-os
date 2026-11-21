@@ -53,7 +53,6 @@ test("the gatekeeper app UIs are the gatekeepers with a src/app-api.ts, by vendo
   const apps = findGatekeeperApps();
   assert.deepEqual(apps.map(({ vendor, file, source }) => ({ vendor, file, entryName: source.entryName })), [
     { vendor: "context", file: "packages/gatekeeper-context/src/app-api.ts", entryName: "AppApi" },
-    { vendor: "scheduler", file: "packages/gatekeeper-scheduler/src/app-api.ts", entryName: "AppApi" },
   ]);
   for (const { vendor, source } of apps) assert.equal(source.tsconfig, join(ROOT, "packages", `gatekeeper-${vendor}`, "tsconfig.json"));
 });

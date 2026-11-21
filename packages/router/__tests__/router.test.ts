@@ -175,6 +175,36 @@ describe('router version header', () => {
   });
 });
 
+describe('router version endpoint', () => {
+  const backend = {
+    fetch: async () => Response.json({ version: 'backend-v' }, { headers: { 'Cache-Control': 'no-store' } }),
+  } as unknown as Fetcher;
+  /** Assets that hold `files`, answering anything else with their index.html, as the SPA fallback does. */
+  const assets = (files: Record<string, string>) => ({
+    fetch: async (input: RequestInfo | URL) =>
+      new Response(files[new URL(input instanceof Request ? input.url : input).pathname] ?? '<!doctype html>'),
+  } as unknown as Fetcher);
+
+  async function version(env: Env): Promise<Response> {
+    return router.fetch!(new Request('https://example.com/api/version'), env, {} as ExecutionContext);
+  }
+
+  it("adds the build id of the assets it serves to the backend's answer, uncached", async () => {
+    const res = await version(makeEnv({ WORKSHOP_BACKEND: backend, ASSETS: assets({ '/assets-build-id': '0123abcd\n' }) }));
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
+    expect(await res.json()).toEqual({ version: 'backend-v', assets: '0123abcd' });
+  });
+
+  it('answers a null build id for assets that name none', async () => {
+    const res = await version(makeEnv({ WORKSHOP_BACKEND: backend, ASSETS: assets({}) }));
+    expect(await res.json()).toEqual({ version: 'backend-v', assets: null });
+  });
+
+  it("answers the backend's alone where it serves no frontend", async () => {
+    expect(await (await version(makeEnv({ WORKSHOP_BACKEND: backend }))).json()).toEqual({ version: 'backend-v' });
+  });
+});
+
 describe('router email', () => {
   it('forwards to GATEKEEPER_EMAIL when bound', async () => {
     const received: unknown[] = [];

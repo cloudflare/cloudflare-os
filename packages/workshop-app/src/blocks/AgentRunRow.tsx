@@ -1,6 +1,6 @@
 import { CheckCircleIcon, CircleNotchIcon, HandPalmIcon, PencilSimpleLineIcon, WarningCircleIcon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
-import { LinkButton } from '@/components/LinkButton'
+import { LinkButton } from '@gadgets/ui'
 
 /** How a run stands, as `automations/agents.ts` says. */
 export type AgentRunStatus = 'running' | 'waiting' | 'failed' | 'changes' | 'done'

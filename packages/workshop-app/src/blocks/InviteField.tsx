@@ -1,8 +1,6 @@
-import { useId, useLayoutEffect, useRef, useState } from 'react'
+import { useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
-import { Avatar } from '@/components/Avatar'
-import { Button } from '@/components/Button'
-import { TextField } from '@/components/TextField'
+import { Avatar, Button, TextField } from '@gadgets/ui'
 
 /** People who match what is typed in an `InviteField`. */
 export type InviteSuggestions = {
@@ -26,6 +24,12 @@ export type InviteFieldProps = {
   invalid?: boolean
   /** The note under the field, which describes it. */
   describedBy?: string
+  /** What whoever is invited is given, to choose before the button, where there is a choice. */
+  access?: ReactNode
+  /** Nothing can be sent as it stands, such as with a choice that is not to be had. */
+  disabled?: boolean
+  /** What its button says, and says while it is under way, where it adds rather than invites. */
+  action?: { label: string; pendingLabel: string }
 }
 
 /**
@@ -33,7 +37,7 @@ export type InviteFieldProps = {
  * deployment can be searched, matches open under it as it is typed, as a menu does, moved through
  * with the arrow keys, and choosing one sends it.
  */
-export const InviteField = ({ value, onValueChange, onInvite, pending, suggestions, invalid, describedBy }: InviteFieldProps) => {
+export const InviteField = ({ value, onValueChange, onInvite, pending, suggestions, invalid, describedBy, access, disabled, action = { label: 'Invite', pendingLabel: 'Inviting…' } }: InviteFieldProps) => {
   const listId = useId()
   const [focused, setFocused] = useState(false)
   // Put away with Escape, until something more is typed.
@@ -70,7 +74,7 @@ export const InviteField = ({ value, onValueChange, onInvite, pending, suggestio
     onInvite(userId)
   }
   const submit = () => {
-    if (pending) return
+    if (pending || disabled) return
     if (chosen) invite(chosen.id)
     else if (query) invite(query)
   }
@@ -161,8 +165,9 @@ export const InviteField = ({ value, onValueChange, onInvite, pending, suggestio
           </div>
         )}
       </div>
-      <Button variant="primary" disabled={pending || query === ''} onClick={submit}>
-        {pending ? 'Inviting…' : 'Invite'}
+      {access}
+      <Button variant="primary" disabled={pending || disabled || query === ''} onClick={submit}>
+        {pending ? action.pendingLabel : action.label}
       </Button>
     </div>
   )

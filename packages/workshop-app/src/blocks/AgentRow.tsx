@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
-import { LinkButton } from '@/components/LinkButton'
+import { LinkButton } from '@gadgets/ui'
 import { AgentMark } from './AgentMark'
 
 export type AgentRowProps = {

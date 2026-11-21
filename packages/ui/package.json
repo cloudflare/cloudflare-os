@@ -8,10 +8,7 @@
       "types": "./src/index.ts",
       "import": "./src/index.ts"
     },
-    "./hierarchical-list": {
-      "types": "./src/HierarchicalList/index.ts",
-      "import": "./src/HierarchicalList/index.ts"
-    }
+    "./styles.css": "./src/styles.css"
   },
   "scripts": {
     "build": "tsc",
@@ -24,14 +21,15 @@
   },
   "dependencies": {
     "@phosphor-icons/react": "^2.1.10",
-    "motion": "^14.11.1"
+    "motion": "^14.11.1",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@cloudflare/kumo": "^2.17.0",
     "@gadgets/scripts": "workspace:*",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
-    "jsdom": "^26.1.0",
     "motion": "^14.11.1",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",

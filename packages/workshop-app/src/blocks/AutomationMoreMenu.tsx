@@ -1,5 +1,5 @@
 import { AppWindowIcon, DotsThreeIcon, FolderSimpleIcon, InfoIcon, TrashIcon } from '@phosphor-icons/react'
-import { DropdownMenu } from '@/components/DropdownMenu'
+import { DropdownMenu } from '@gadgets/ui'
 import type { AutomationDetails } from './automationDetails'
 
 export type AutomationMoreMenuProps = Pick<AutomationDetails, 'title' | 'gadget' | 'workspace'> & {

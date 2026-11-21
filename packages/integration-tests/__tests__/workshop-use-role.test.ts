@@ -75,11 +75,12 @@ async function outcomes<T>(calls: Calls<T>, target: T) {
 const allDenied = (calls: object) =>
   Object.fromEntries(Object.keys(calls).map(name => [name, DENIED]));
 
-// What renders the gadget UI, plus the inert action/console reads. Everything else must be
-// classified below, so a new Overseer or GadgetClient method fails to compile until it is.
+// What renders the gadget UI (live, or as a snapshot), plus the inert action/console reads.
+// Everything else must be classified below, so a new Overseer or GadgetClient method fails to
+// compile until it is.
 type UseSurface = "getMetadata" | "subscribeToMetadata" | "subscribeToPresence" |
-    "subscribeToWorkpieces" | "getGadget" | "listActions" | "subscribeToActions" |
-    "subscribeToConsoleLogs";
+    "subscribeToWorkpieces" | "getGadget" | "isViewOnly" | "getGadgetSnapshot" |
+    "listActions" | "subscribeToActions" | "subscribeToConsoleLogs";
 
 const DENIED_OVERSEER: Record<Exclude<keyof Overseer, keyof RpcTarget | UseSurface>,
     (ws: RpcStub<Overseer>) => unknown> = {
@@ -99,6 +100,7 @@ const DENIED_OVERSEER: Record<Exclude<keyof Overseer, keyof RpcTarget | UseSurfa
   newAiModelGatekeeper: ws => ws.newAiModelGatekeeper("model"),
   newAgentSpawnerGatekeeper: ws =>
     ws.newAgentSpawnerGatekeeper({ displayName: "Spawner", modelId: null, env: {} }),
+  listAgentSpawners: ws => ws.listAgentSpawners(),
   approveAction: ws => ws.approveAction(0),
   rejectAction: ws => ws.rejectAction(0),
   listHooks: ws => ws.listHooks(),
@@ -118,6 +120,9 @@ const DENIED_OVERSEER: Record<Exclude<keyof Overseer, keyof RpcTarget | UseSurfa
   approveWebFetchRequest: ws => ws.approveWebFetchRequest("1:request"),
   denyWebFetchRequest: ws => ws.denyWebFetchRequest("1:request"),
   listChats: ws => ws.listChats(),
+  getChatMetadata: ws => ws.getChatMetadata(1),
+  listChatArtifacts: ws => ws.listChatArtifacts(1),
+  getChatAttachment: ws => ws.getChatAttachment(1, "attachment"),
   listModels: ws => ws.listModels(),
   getChatHistory: ws => ws.getChatHistory(1),
   getChatMessage: ws => ws.getChatMessage(1, 0),
@@ -173,6 +178,7 @@ const deniedGadget = (chatId: number): Record<
   bindWithSuggestedName: g => g.bindWithSuggestedName(1),
   unbind: g => g.unbind("DATA"),
   renameBinding: g => g.renameBinding("DATA", "OTHER"),
+  rebind: g => g.rebind("DATA", 1, 2),
   getBlueprintAnnotation: g => g.getBlueprintAnnotation("DATA"),
   setBlueprintAnnotation: g => g.setBlueprintAnnotation("DATA", { title: "Data", description: "" }),
   createBlueprint: g => g.createBlueprint(),

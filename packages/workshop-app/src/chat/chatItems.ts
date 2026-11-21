@@ -1,7 +1,7 @@
 import type { ActionLogEntry, AiChatAuthorInfo, AiChatMessage, AiToolCall, OutputIcon } from '@gadgets/workshop-shared/api'
 import type { ActionField, ActionKind } from '@gadgets/workshop-shared/gatekeeper'
 import type { AnswerPart } from '@/blocks/AssistantMessage'
-import { webUrl } from '@/components/webUrl'
+import { webUrl } from '@gadgets/ui'
 import { answerParts } from './answerParts'
 import { splitQuote } from './replyQuote'
 import { toolIcon, toolLabel, toolSections, type ToolIcon, type ToolSection } from './toolCalls'
@@ -65,7 +65,9 @@ export type UserItem = Row & {
   kind: 'user'
   /** The message as it was sent: with the quote it opens with, when it is a reply. */
   text: string
-  /** The message it replies to, as the line that was quoted. */
+  /** The sequence of the message it replies to (`replyToSequence`). */
+  replyTo?: number
+  /** The line of that message it opens with; only on a reply. */
   quote?: string
   /** What was written, without the quote. */
   parts: MessagePart[]
@@ -121,7 +123,8 @@ export type ActionItem = Row & {
   rule?: { gatekeeperId: number; actionKind: ActionKind }
   /**
    * It creates something in one of the user's accounts (`ActionLogEntry.creation`), which approving
-   * it asks for, by the gatekeeper standing in for what is created. Only while it is pending.
+   * it asks where: through the connection it creates, whose creation spec says what and on which
+   * service. Only while it is pending.
    */
   creation?: { gatekeeperId: number }
 }
@@ -211,7 +214,7 @@ export const continuesRun = (before: ChatItem | undefined, item: ChatItem): bool
  * A message sent to the running agent that is not among the chat's messages: it waits to be read
  * (`unread`), or it has just been read and its message is on its way.
  */
-export type PendingSteer = { text: string; from?: string; unread: boolean }
+export type PendingSteer = { text: string; from?: string; unread: boolean; replyTo?: number }
 
 /** What the mapping cannot read from the messages themselves. */
 export type FeedContext = {
@@ -224,6 +227,12 @@ export type FeedContext = {
   compactedTo?: number
   /** Formats seen while their `createGadget` call streamed, by tool call id. */
   outputFormats?: ReadonlyMap<string, OutputFormat>
+  /**
+   * The chat's actions not decided yet whose messages are not in `messages` (a slash command's has
+   * none), oldest first, which are shown first under the conversation, with the open turn's
+   * artefacts, until the messages they are in load.
+   */
+  waitingBefore?: readonly ActionLogEntry[]
 }
 
 /**
@@ -313,14 +322,23 @@ const formatMentions = (formats: Message<'message'>['formats'], shiftFrom = Infi
 const senderOf = ({ type, id, name }: AiChatAuthorInfo, viewerId: string | undefined) =>
   type === 'user' && id === viewerId ? undefined : name
 
+/**
+ * What a message replies to, and what was written after the quote it opens with (see
+ * replyQuote.ts). One that names no message is shown as it was written, whatever it opens with:
+ * an old reply from before replies were recorded among them, unlinked.
+ */
+const replyOf = (text: string, replyTo: number | undefined): Pick<UserItem, 'replyTo' | 'quote'> & { body: string; offset: number } =>
+  replyTo === undefined ? { body: text, offset: 0 } : { replyTo, ...splitQuote(text) }
+
 const userItem = (message: Message<'message'>, viewerId: string | undefined): Omit<UserItem, 'key'> => {
-  // A reply opens with what it answers (see replyQuote.ts). What the message mentions is placed
-  // by where it is in the whole text, so it moves back by as much as is taken off the front.
-  const { quote, body, offset } = splitQuote(message.message)
+  // What the message mentions is placed by where it is in the whole text, so it moves back by as
+  // much as the quote takes off the front.
+  const { replyTo, quote, body, offset } = replyOf(message.message, message.replyToSequence)
   return {
     kind: 'user',
     id: message.sequence,
     text: message.message,
+    replyTo,
     quote,
     parts: withMentions(body, [
       ...(message.capsules ?? []).map(({ position, length, description }): Mention => ({
@@ -406,6 +424,29 @@ const actionItem = (id: number, log: ActionLog): Omit<ActionItem, 'key'> => {
     creation: state === 'pending' && log.creation && gatekeeperId !== undefined ? { gatekeeperId } : undefined,
   }
 }
+
+const connectionItem = (message: Message<'connectionRequest'>): Omit<ConnectionItem, 'key'> => ({
+  kind: 'connection',
+  id: message.sequence,
+  requestId: message.requestId,
+  vendorId: message.vendorId,
+  vendorName: message.vendorName,
+  logoUrl: message.vendorLogoUrl,
+  scope: message.resourceTitle ?? message.resourceUrl,
+  resourceUrlPattern: message.resourceUrlPattern,
+  resourceUrl: message.resourceUrl,
+  reason: message.reason,
+  state: message.state === 'accepted' ? 'connected' : message.state,
+})
+
+const webFetchItem = (message: Message<'webFetchRequest'>, others: readonly string[] | undefined): Omit<WebFetchItem, 'key'> => ({
+  kind: 'webFetch',
+  id: message.sequence,
+  requestId: message.requestId,
+  url: message.url,
+  state: message.state,
+  others,
+})
 
 type CallEntry = Extract<ToolEntry, { type: 'call' }>
 type ObservationEntry = Extract<ToolEntry, { type: 'observation' }>
@@ -513,7 +554,11 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
   ])
   const creationState = creationStates(messages)
   const createdTitles = new Map(messages.flatMap((message) => (message.type === 'changes' ? message.createdGadgets ?? [] : []).map(({ gadgetId, title }) => [gadgetId, title] as const)))
-  const waitingFetches = messages.flatMap((message) => (message.type === 'webFetchRequest' && message.state === 'pending' ? [message.requestId] : []))
+  const waitingFetches = messages
+    .flatMap((message) => (message.type === 'webFetchRequest' && message.state === 'pending' ? [message.requestId] : []))
+  // On the last of several waiting, the others, so all can be approved at once.
+  const othersWaiting = (requestId: string) =>
+    waitingFetches.length > 1 && waitingFetches.at(-1) === requestId ? waitingFetches.slice(0, -1) : undefined
   const { viewerId, compactedTo } = context
   const actor = ({ id, name }: AiChatAuthorInfo) => (id === viewerId ? 'You' : name)
 
@@ -706,19 +751,7 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
 
       case 'connectionRequest': {
         carryOn()
-        const item = emit<ConnectionItem>(`connection:${id}`, [message], () => ({
-          kind: 'connection',
-          id,
-          requestId: message.requestId,
-          vendorId: message.vendorId,
-          vendorName: message.vendorName,
-          logoUrl: message.vendorLogoUrl,
-          scope: message.resourceTitle ?? message.resourceUrl,
-          resourceUrlPattern: message.resourceUrlPattern,
-          resourceUrl: message.resourceUrl,
-          reason: message.reason,
-          state: message.state === 'accepted' ? 'connected' : message.state,
-        }))
+        const item = emit<ConnectionItem>(`connection:${id}`, [message], () => connectionItem(message))
         if (item.state === 'pending') pinned.push(item)
         else items.push(item)
         break
@@ -726,16 +759,8 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
 
       case 'webFetchRequest': {
         carryOn()
-        const { requestId } = message
-        const others = waitingFetches.length > 1 && waitingFetches.at(-1) === requestId ? waitingFetches.slice(0, -1) : undefined
-        const item = emit<WebFetchItem>(`webFetch:${id}`, [message, others?.join(' ')], () => ({
-          kind: 'webFetch',
-          id,
-          requestId,
-          url: message.url,
-          state: message.state,
-          others,
-        }))
+        const others = othersWaiting(message.requestId)
+        const item = emit<WebFetchItem>(`webFetch:${id}`, [message, others?.join(' ')], () => webFetchItem(message, others))
         if (item.state === 'pending') pinned.push(item)
         else items.push(item)
         break
@@ -797,13 +822,14 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
   settle()
   // Last in the conversation, where their messages will be once the agent has read them.
   const after = messages.at(-1)?.sequence ?? 0
-  for (const { text, from, unread } of context.steers ?? []) {
-    items.push(emit<UserItem>(steerKey(), [text, from, unread], () => {
-      const { quote, body } = splitQuote(text)
+  for (const { text, from, unread, replyTo: repliedTo } of context.steers ?? []) {
+    items.push(emit<UserItem>(steerKey(), [text, from, unread, repliedTo], () => {
+      const { replyTo, quote, body } = replyOf(text, repliedTo)
       return {
         kind: 'user',
         id: after,
         text,
+        replyTo,
         quote,
         parts: [{ type: 'text', text: body }],
         attachments: [],
@@ -812,7 +838,13 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
       }
     }))
   }
-  const tail = [...pinned, ...acts]
+  // What waits from before the loaded messages is under the conversation, first. An action's
+  // message is not known until it loads, so it is placed as the steers are: at the end.
+  const earlier: ArtefactItem[] = []
+  for (const log of context.waitingBefore ?? []) {
+    if (log.type === 'action') earlier.push(emit<ActionItem>(`waiting:action:${log.id}`, [log, after], () => actionItem(after, log)))
+  }
+  const tail = [...earlier, ...pinned, ...acts]
   return {
     items: sameItems(previous?.items, items) ? previous!.items : items,
     work: sameItems(previous?.work, work) ? previous!.work : work,

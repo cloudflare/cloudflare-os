@@ -15,8 +15,8 @@ import { withVitestTask, type GlobWithBase } from "./vitest-task-vite-config.ts"
  * restarted the worker on the change -- and a cached artifact built under one value of the variable
  * would be restored under the other. vp forbids a task and a script sharing a name, so there is no
  * `build:configurator` script: `deploy` reaches this task with
- * `vp run --no-cache build:configurator`, the same way `gatekeeper-context` and
- * `gatekeeper-scheduler` reach `build:app`. Invoking the builder directly there would also work --
+ * `vp run --no-cache build:configurator`, the same way `gatekeeper-context` reaches `build:app`.
+ * Invoking the builder directly there would also work --
  * `deploy` is manual and does not run under vp, so it keeps the real environment -- but it
  * duplicated the command in thirteen packages, and a script shadowing a declared task is the shape
  * of the bug described below.

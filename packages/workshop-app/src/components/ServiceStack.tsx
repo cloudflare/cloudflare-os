@@ -1,5 +1,5 @@
 import { ServiceLogo } from './ServiceLogo'
-import { Tooltip } from './Tooltip'
+import { Tooltip } from '@gadgets/ui'
 
 export type ServiceStackProps = {
   services: { name: string; logoUrl?: string; color?: string }[]

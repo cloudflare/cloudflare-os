@@ -1,12 +1,8 @@
 import { Fragment, useRef } from 'react'
 import { ArrowLeftIcon, SignOutIcon, type Icon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
-import { Button } from '@/components/Button'
-import { ConfirmMenu } from '@/components/ConfirmMenu'
-import { LinkButton } from '@/components/LinkButton'
-import { Tooltip } from '@/components/Tooltip'
+import { Button, ConfirmMenu, LinkButton, Tooltip, useScrollFadeFallback } from '@gadgets/ui'
 import { RailDivider } from './Sidebar'
-import { useScrollFadeFallback } from './useScrollFadeFallback'
 import { useWorkspaceUnderlay } from './useWorkspaceUnderlay'
 
 /** One part of the settings, as the ways to it name it. */

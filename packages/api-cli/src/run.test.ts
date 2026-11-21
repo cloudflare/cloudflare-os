@@ -460,12 +460,14 @@ test("search reads a command's option names and the callback methods it may be a
 test("search finds the commands for agents' everyday tasks in the API's own words", () => {
   const gatekeeperApp = /^cf-os api (get-gatekeeper-app|provision-ambient-account) /;
   const openWorkspace = /^cf-os api open-workspace <id>$/;
+  // Redeeming a key is done apart from opening, or in the same step.
+  const redeem = /^cf-os api (open-workspace <id>|redeem-workspace-share-link <id> <shareKey>)$/;
   // Each task, what it should find, and the rank that must reach: the first, or among the first `top`.
   const cases: [string, RegExp, number][] = [
     // Skills/Context collections, a gatekeeper app.
     ...["skill", "skills", "skills collection", "create skill", "collection", "SKILL.md", "context collections",
       "list my skills collections", "open the Skills app"].map((task): [string, RegExp, number] => [task, gatekeeperApp, 1]),
-    // Scheduling: the scheduler's app, or the hooks a schedule is.
+    // Scheduling: turning the scheduler on, or the hooks a schedule is.
     ...["schedule", "scheduler", "scheduled tasks", "Scheduled Tasks", "schedule a task"].map((task): [string, RegExp, number] =>
       [task, /^cf-os api (get-gatekeeper-app|provision-ambient-account) | (list|enable|disable|delete)-hook/, 1]),
     ["schedule", / list-hooks$/, 3],
@@ -488,8 +490,9 @@ test("search finds the commands for agents' everyday tasks in the API's own word
     ["rename workspace", /^cf-os api open-workspace <id> set-title </, 1],
     // Sharing, and redeeming a share link's key.
     ["share workspace with another user", / add-collaborator </, 3],
-    ["share a workspace", / create-share-link </, 3],
-    ["share a workspace", / add-collaborator </, 5],
+    // Redeeming a link's key is about sharing too.
+    ["share a workspace", / create-share-link </, 4],
+    ["share a workspace", / add-collaborator </, 6],
     ["invite user to workspace", / add-collaborator </, 1],
     ["give another user access to my workspace", / add-collaborator </, 1],
     ["share with bob by username", / add-collaborator </, 1],
@@ -498,10 +501,12 @@ test("search finds the commands for agents' everyday tasks in the API's own word
     ["list who has access to workspace", / list-collaborators$/, 1],
     ...["redeem share link", "redeem a share link", "open workspace with share key", "join workspace from link",
       "join a shared workspace", "open a workspace shared with me", "configure observers"]
-      .map((task): [string, RegExp, number] => [task, openWorkspace, 1]),
+      .map((task): [string, RegExp, number] => [task, redeem, 1]),
     ["observer verification", openWorkspace, 4],
     ["choose accounts to observe a shared workspace", openWorkspace, 3],
-    ["share key", openWorkspace, 3],
+    ["share key", redeem, 2],
+    // An admin's write to a workspace.
+    ["write to a workspace", / write-workspace </, 1],
   ];
   for (const [task, wanted, top] of cases) {
     const rank = rankOf(realTable, task, wanted);
@@ -509,19 +514,20 @@ test("search finds the commands for agents' everyday tasks in the API's own word
   }
   // A share link's key says where it is redeemed.
   assert.match(flat(commandHelp(realTable, "Overseer", "create-share-link", ["open-workspace", "w", "create-share-link"])),
-    /redeems the key by passing it as `shareKey` to `open-workspace` \(on AuthenticatedApi\)/);
+    /redeems the key with `redeem-workspace-share-link` \(on AuthenticatedApi\)/);
 });
 
 test("search finds the commands for gadget-worded tasks, by what the API says of gadgets", () => {
   // A workspace holds the user's gadgets, a gadget is one workpiece of it: listing them is the
   // workspace's workpiece list, found by default beside the workspaces it is read on, and deleting
-  // one is removing that workpiece, not deleting the whole workspace.
+  // one is removing that workpiece, not deleting the whole workspace. Listing what else names its
+  // gadgets (hooks, blueprints, agent spawners, a chat's artifacts) may rank beside it.
   const workpieces = /^cf-os api open-workspace <id> subscribe-to-workpieces$/;
   const cases: [string, RegExp, number][] = [
     ["list my gadgets", /^cf-os api list-workspaces$/, 1],
-    ["list my gadgets", workpieces, 5],
-    ["list gadgets", workpieces, 5],
-    ["list the gadgets in a workspace", workpieces, 5],
+    ["list my gadgets", workpieces, 7],
+    ["list gadgets", workpieces, 7],
+    ["list the gadgets in a workspace", workpieces, 7],
     ["gadget id", workpieces, 2],
     ["delete gadget", /^cf-os api open-workspace <id> get-gadget <id> remove$/, 1],
     ["remove a gadget from a workspace", /^cf-os api open-workspace <id> get-gadget <id> remove$/, 1],
@@ -542,7 +548,7 @@ test("search finds the commands for gadget-worded tasks, by what the API says of
     // Round 3's workspace-worded tasks still find theirs.
     ["list my workspaces", /^cf-os api list-workspaces$/, 1],
     ["rename a workspace", /^cf-os api open-workspace <id> set-title <title>$/, 1],
-    ["share a workspace", / create-share-link </, 3],
+    ["share a workspace", / create-share-link </, 4],
     ["list schedules", / list-hooks$/, 1],
     ["wait for the agent to finish", / wait-for-agent <chatId>$/, 1],
   ];
@@ -558,6 +564,20 @@ test("search finds the commands for gadget-worded tasks, by what the API says of
   }
   assert.equal(searchCommands(realTable, "create a skill")[0]!.command,
     "cf-os api get-gatekeeper-app context ui create-context-skill <collectionId> <path> <doc>");
+});
+
+test("search lists a method several capabilities inherit once among the others, its best copy where it ranks", () => {
+  // GadgetClient and GadgetSnapshotClient both have connect-to-gadget, get-export-formats and export.
+  const gadget = / get-gadget <id> (connect-to-gadget|get-export-formats|export <id>)$/;
+  const snapshot = / get-gadget-snapshot <id> (connect-to-gadget|get-export-formats|export <id>)$/;
+  const top = searchCommands(realTable, "export gadget data").map((match) => match.command);
+  assert.match(top[0], / get-gadget <id> connect-to-gadget$/);
+  assert.equal(top.filter((command) => gadget.test(command)).length, 3, top.join("\n"));
+  assert.ok(!top.some((command) => snapshot.test(command)), top.join("\n"));
+  // The repeats still come later, in the order of their best copies.
+  const all = searchCommands(realTable, "export gadget data", Infinity).map((match) => match.command);
+  assert.deepEqual(all.filter((command) => snapshot.test(command)).map((command) => command.replace(" get-gadget-snapshot ", " get-gadget ")),
+    all.filter((command) => gadget.test(command)));
 });
 
 test("search finds create-account for making a user, and signing in as one, which are no generated command", () => {
@@ -949,9 +969,9 @@ test("an argument types a capability property as a gatekeeper app UI's node, whi
   assert.equal(searchCommands(table, "pick the pen colour")[0]!.command, "cf-os api get-panel sketch ui pick <color>");
   assert.equal(searchCommands(realTable, "create a skill")[0]!.command,
     "cf-os api get-gatekeeper-app context ui create-context-skill <collectionId> <path> <doc>");
+  // Bare "skills" is most like listing them, which the app's list-skill-collections does.
   assert.equal(searchCommands(realTable, "skills")[0]!.command,
-    "cf-os api get-gatekeeper-app context ui create-context-skill <collectionId> <path> <doc>");
-  assert.ok(searchCommands(realTable, "list scheduled tasks").some((match) => match.command === "cf-os api get-gatekeeper-app scheduler ui list"));
+    "cf-os api get-gatekeeper-app context ui list-skill-collections");
   // And an app's command typed on another node is pointed at its line.
   usage(["pick"], /^FixtureAuthedApi has no command "pick"\. pick is on sketch:SketchApi: `cf-os api get-panel sketch ui pick <color>`\. /);
 });

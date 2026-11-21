@@ -1,6 +1,5 @@
 import { AppWindowIcon, ArrowSquareOutIcon, DotsThreeIcon, GearSixIcon, LinkIcon, PencilSimpleIcon, StackPlusIcon, TrashIcon, UserPlusIcon } from '@phosphor-icons/react'
-import type { ButtonProps } from '@/components/Button'
-import { DropdownMenu } from '@/components/DropdownMenu'
+import { type ButtonProps, DropdownMenu } from '@gadgets/ui'
 
 /** What can be done to an output from its more menu, besides opening it: each left out for whoever may not. */
 export type LibraryMoreActions = {

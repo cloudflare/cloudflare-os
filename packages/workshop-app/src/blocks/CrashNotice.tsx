@@ -1,4 +1,4 @@
-import { Button } from '@/components/Button'
+import { Button } from '@gadgets/ui'
 
 export type CrashNoticeProps = {
   /** What the deployment calls itself. */

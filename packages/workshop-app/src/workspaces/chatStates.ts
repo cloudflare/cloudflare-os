@@ -1,5 +1,4 @@
-import type { AiChatAuthorInfo, AiChatMetadata } from '@gadgets/workshop-shared/api'
-import { isAgentRun } from '@/automations/agents'
+import { isAgentRun, type AiChatAuthorInfo, type AiChatMetadata } from '@gadgets/workshop-shared/api'
 import type { AttentionGroup, Review, Working } from './activity/overview'
 
 /** An agent whose latest run failed, which nothing has run since to put right. */

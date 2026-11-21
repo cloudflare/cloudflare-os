@@ -13,6 +13,10 @@
       "types": "./vitest-task-vite-config.ts",
       "import": "./vitest-task-vite-config.ts"
     },
+    "./assets-build-id": {
+      "types": "./assets-build-id.ts",
+      "import": "./assets-build-id.ts"
+    },
     "./gatekeeper-configurator": {
       "types": "./gatekeeper-configurator-vite-config.ts",
       "import": "./gatekeeper-configurator-vite-config.ts"

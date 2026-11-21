@@ -1,6 +1,6 @@
 import type { CommitInfo } from '@gadgets/workshop-shared/api'
 import type { CodeBrowserCommit } from '@/blocks/CodeBrowser'
-import { formatActivity } from '@/workspaces/formatActivity'
+import { formatActivity } from '@gadgets/ui'
 
 /** A commit as the history lists it: its message's first line, who kept it, and when. */
 export const historyEntry = ({ oid, message, author, timestamp }: CommitInfo): CodeBrowserCommit =>

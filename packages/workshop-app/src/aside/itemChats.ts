@@ -14,8 +14,8 @@ const SHOWN = 4
 
 /**
  * The chats of a workspace to carry on in with one of its items beside them: those that last had
- * it open first, then the most recently active. Not one an agent started, which is that agent's
- * run rather than somewhere to talk.
+ * it open first, then the most recently active. `chats` are those people have
+ * (`useWorkspaceChats`), as an agent's run is that agent's rather than somewhere to talk.
  */
 export const itemChats = (
   chats: readonly AiChatMetadata[],
@@ -26,7 +26,6 @@ export const itemChats = (
   shownIn: (workspaceId: string, chatId: number) => string | undefined,
 ): ItemChat[] =>
   chats
-    .filter((chat) => chat.spawnerName === undefined)
     .map((chat): ItemChat => ({
       chatId: chat.id,
       title: chat.title || 'Untitled chat',

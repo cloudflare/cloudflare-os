@@ -1,9 +1,6 @@
 import { useState } from 'react'
-import { BrainIcon, XIcon } from '@phosphor-icons/react'
-import { Banner } from '@/components/Banner'
-import { Button } from '@/components/Button'
-import { Dialog } from '@/components/Dialog'
-import { Select } from '@/components/Select'
+import { SparkleIcon, XIcon } from '@phosphor-icons/react'
+import { Banner, Button, Dialog, Select } from '@gadgets/ui'
 import type { ModelChoice } from './ModelBindingDialog'
 
 export type ChatModelDialogProps = {
@@ -45,7 +42,7 @@ const ChatModelContent = ({ models, initialModel, onBack, onAdd, onDone }: Omit<
     <form className="contents" onSubmit={(event) => { event.preventDefault(); void submit() }}>
       <header className="flex items-start gap-3 p-6">
         <span aria-hidden="true" className="grid size-12 shrink-0 place-items-center rounded-full bg-kumo-fill text-kumo-default">
-          <BrainIcon className="size-6" />
+          <SparkleIcon className="size-6" />
         </span>
         <div className="flex min-h-12 min-w-0 flex-1 flex-col justify-center gap-0.5 leading-snug">
           <Dialog.Title className="text-lg font-medium text-kumo-default">Add an AI model</Dialog.Title>

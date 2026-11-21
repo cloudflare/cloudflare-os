@@ -3,7 +3,7 @@ import { validateRpc } from "capnweb-validate";
 import type { JWTPayload } from "jose";
 import { PublicApi, ROUTER_TAG_PROBE_PATH, VERSION_PATH, AuthenticatedApi, Overseer, WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, RedactedAiModelConfig, AiGatewayInfo, ModelKind, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, ObserverConfigCallback, BlueprintLibrarySummary, BlueprintPublicInfo, BlueprintUserSummary, BlueprintBindingAssignment, AgentSpawnerConfig, WorkpieceId, BLUEPRINT_SCREENSHOT_PATH_PREFIX, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ServerConfig, CloudflareUsageInfo, CloudflareAccountOption, LoginAttempt, GatekeeperAppInfo, AdminApi, GatekeeperVendorInfo, OutputFormatOffer, ListOutputsResult, UserDirectoryRecord, createOpenWorkspaceError, getOpenWorkspaceErrorCode, OPEN_WORKSPACE_ERROR_CODES, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, NotificationSubscriber, NotificationMute, WebPushSubscription, type UnreadStateSubscriber, AdminVia } from '@gadgets/workshop-shared/api';
 import type { UiFeatureFlags } from "@gadgets/workshop-shared/feature-flags";
-import type { UnreadStateScope } from "@gadgets/workshop-shared/api";
+import type { OutputsSubscriber, OwnBlueprintsSubscriber, UnreadStateScope, UserPreferences, UserPreferencesSubscriber, WorkspaceSummarySubscriber, WorkspacesSubscriber } from "@gadgets/workshop-shared/api";
 import { backendVersion, getServerConfig } from "./deployment-config.js";
 import { isDeploymentAdmin, isPasswordAuthEnabled, getAuthGatekeeperAllowlist } from "./auth/config.js";
 import { getAuthVendorBinding } from "./auth/auth-vendors.js";
@@ -25,7 +25,6 @@ import { GatekeeperConnectCallbackImpl, GatekeeperUserSelectionExchangeImpl, nor
 import { OverseerDurableObject, GatekeeperLoopback, CodeModeTailLoopback, AgentSpawnerGatekeeper, GatekeeperHookLoopback, GadgetTailLoopback, AgentSelfLoopback } from "./overseer";
 import { UserDirectoryDurableObject } from "./user-directory.js";
 import { AdminAuditDurableObject } from "./admin-audit.js";
-import { ExternalMessageGateway } from "./external-message-gateway";
 import { RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { recordAnalytics } from "./analytics";
 import { handleClientErrorRequest } from "./client-errors.js";
@@ -80,9 +79,6 @@ export { UserDurableObject, GatekeeperConnectCallbackImpl, GatekeeperUserSelecti
 export { OverseerDurableObject, GatekeeperLoopback, GatekeeperHookLoopback,
     CodeModeTailLoopback, AgentSpawnerGatekeeper, GadgetTailLoopback,
     AgentSelfLoopback };
-
-// Re-export service-binding entrypoint for external channel integrations.
-export { ExternalMessageGateway };
 
 // Declare optional environment variables here since they may be omitted from wrangler.jsonc.
 type Env = Cloudflare.Env & {
@@ -231,6 +227,14 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     return retryOnDoReset(() => this.#user.getUnreadSummary());
   }
 
+  updatePreferences(update: UserPreferences): Promise<void> {
+    return retryOnDoReset(() => this.#user.updatePreferences(update));
+  }
+
+  subscribeToPreferences(subscriber: RpcStub<UserPreferencesSubscriber>): Promise<RpcStub<{}>> {
+    return this.#user.subscribeToPreferences(subscriber);
+  }
+
   subscribeToUnreadState(scope: UnreadStateScope,
       subscriber: RpcStub<UnreadStateSubscriber>): Promise<RpcStub<{}>> {
     return this.#user.subscribeToUnreadState(scope, subscriber);
@@ -375,6 +379,17 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     return this.#openWorkspaceInternal(id, shareKey, configureObservers);
   }
 
+  async redeemWorkspaceShareLink(id: string, shareKey: string): Promise<boolean> {
+    let overseerId;
+    try {
+      overseerId = this.overseers.idFromString(id);
+    } catch {
+      return false;
+    }
+    return this.overseers.get(overseerId)
+        .redeemShareLink(this.#userId.toString(), this.#userId.name!, shareKey);
+  }
+
   async newWorkspace(): Promise<RpcStub<Overseer>> {
     let id = this.overseers.newUniqueId().toString();
     await this.#user.newWorkspace(id, "Untitled Workspace");
@@ -399,8 +414,20 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     return retryOnDoReset(() => this.#user.updatePinned(workspaceId, pinned));
   }
 
+  subscribeToWorkspaces(subscriber: RpcStub<WorkspacesSubscriber>): Promise<RpcStub<{}>> {
+    return this.#user.subscribeToWorkspaces(subscriber);
+  }
+
   listOutputs(): Promise<ListOutputsResult> {
     return this.#user.listOutputs();
+  }
+
+  subscribeToOutputs(subscriber: RpcStub<OutputsSubscriber>): Promise<RpcStub<{}>> {
+    return this.#user.subscribeToOutputs(subscriber);
+  }
+
+  subscribeToWorkspaceSummaries(subscriber: RpcStub<WorkspaceSummarySubscriber>): Promise<RpcStub<{}>> {
+    return this.#user.subscribeToWorkspaceSummaries(subscriber);
   }
 
   async listOutputFormats(): Promise<OutputFormatOffer[]> {
@@ -473,6 +500,10 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
 
   async getOwnBlueprint(blueprintId: string): Promise<BlueprintUserSummary | null> {
     return retryOnDoReset(() => this.#user.getBlueprint(blueprintId));
+  }
+
+  subscribeToOwnBlueprints(subscriber: RpcStub<OwnBlueprintsSubscriber>): Promise<RpcStub<{}>> {
+    return this.#user.subscribeToOwnBlueprints(subscriber);
   }
 
   async listLibraryBlueprints(): Promise<BlueprintLibrarySummary[]> {

@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import type { RpcPromise } from 'capnweb'
 import { AGENT_SPAWNER_CONNECTION_ID, type GatekeeperClient } from '@gadgets/workshop-shared/api'
 import { getResourceTypeId, type ResourceConfiguratorFrame as Frame } from '@gadgets/workshop-shared/gatekeeper'
-import { SetUpAgentDialog, type AgentModel } from '@/blocks/SetUpAgentDialog'
+import { SetUpAgentDialog, type AgentModel, type AgentSetup } from '@/blocks/SetUpAgentDialog'
 import { SetUpConnectionDialog } from '@/blocks/SetUpConnectionDialog'
 import { useDefaultModel } from '@/chat/useDefaultModel'
 import { useApi } from '@/rpc/ApiContext'
@@ -66,7 +66,29 @@ const useAgentModels = (open: boolean) => {
   return models
 }
 
-const SetUpAgent = ({ workspaceId, request, open, onOpenChange }: SetUpConnectionProps) => {
+/** A workspace, opened (`openWorkspace`). */
+type OpenWorkspace = ReturnType<ReturnType<typeof useApi>['api']['openWorkspace']>
+
+export type MakeAgentProps = {
+  workspaceId: string
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  /** Why the chat's agent asked for it; left out where the user chose to add one. */
+  reason?: string
+  /** Goes back to choosing what to connect. */
+  onBack?: () => void
+  /**
+   * Hands the agent just made in the workspace to what it was made for; the dialog closes once
+   * it resolves. Both are let go of after.
+   */
+  onMade: (made: { overseer: OpenWorkspace; agent: ReturnType<OpenWorkspace['newAgentSpawnerGatekeeper']>; setup: AgentSetup }) => Promise<void>
+}
+
+/**
+ * Makes an agent in a workspace (an agent spawner, `newAgentSpawnerGatekeeper`), named and given
+ * one of the user's models, with access to nothing: the chat's agent gives it what its runs need.
+ */
+export const MakeAgent = ({ workspaceId, open, onOpenChange, reason, onBack, onMade }: MakeAgentProps) => {
   const { api } = useApi()
   const models = useAgentModels(open)
   const preferred = useDefaultModel()
@@ -74,15 +96,16 @@ const SetUpAgent = ({ workspaceId, request, open, onOpenChange }: SetUpConnectio
     <SetUpAgentDialog
       open={open}
       onOpenChange={onOpenChange}
-      reason={request.reason}
+      reason={reason}
       models={models}
       initialModel={preferred.status === 'ready' ? preferred.id : undefined}
-      onSetUp={async ({ name, modelId }) => {
+      onBack={onBack}
+      onSetUp={async (setup) => {
         // Disposed by hand: `using` is not lowered for every browser this runs in.
         const overseer = api.openWorkspace(workspaceId)
-        const agent = overseer.newAgentSpawnerGatekeeper({ displayName: name, modelId, env: {} })
+        const agent = overseer.newAgentSpawnerGatekeeper({ displayName: setup.name, modelId: setup.modelId, env: {} })
         try {
-          await overseer.acceptConnectionRequest(request.requestId, { gatekeeperId: await agent.getId() })
+          await onMade({ overseer, agent, setup })
         } finally {
           agent[Symbol.dispose]()
           overseer[Symbol.dispose]()
@@ -91,6 +114,18 @@ const SetUpAgent = ({ workspaceId, request, open, onOpenChange }: SetUpConnectio
     />
   )
 }
+
+const SetUpAgent = ({ workspaceId, request, open, onOpenChange }: SetUpConnectionProps) => (
+  <MakeAgent
+    workspaceId={workspaceId}
+    open={open}
+    onOpenChange={onOpenChange}
+    reason={request.reason}
+    onMade={async ({ overseer, agent }) => {
+      await overseer.acceptConnectionRequest(request.requestId, { gatekeeperId: await agent.getId() })
+    }}
+  />
+)
 
 const SetUpService = ({ workspaceId, request, open, onOpenChange }: SetUpConnectionProps) => {
   const { api } = useApi()

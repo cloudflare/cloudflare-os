@@ -1,13 +1,20 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
-import type { ChatTimelineHead } from "@gadgets/workshop-shared/api";
+import type { ChatTimelineHead, GadgetSnapshotClient } from "@gadgets/workshop-shared/api";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
-import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, CollaboratorAccess, CollaboratorGrant, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, createGatekeeperError, GATEKEEPER_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
+import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, CollaboratorAccess, CollaboratorGrant, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, BlueprintUnpublishedChanges, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, createGatekeeperError, GATEKEEPER_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
 import {
-  ADMIN_ACCESS_ERROR_CODES, MAX_ADMIN_AUDIT_ARG_LENGTH, createAdminAccessError,
-  type AdminAccessRecord, type AdminAutoApproval, type AdminChatAttachment, type AdminChatState,
+  ACCESS_CONFIRMATION_ERROR_CODES, ADMIN_ACCESS_ERROR_CODES, MAX_ADMIN_AUDIT_ARG_LENGTH,
+  SNAPSHOT_SHARING_ERROR_CODES,
+  createAccessConfirmationError, createAdminAccessError, createSnapshotSharingError,
+  getAccessConfirmationErrorCode, isAgentRun,
+  type AccessConfirmationErrorCode,
+  type AdminAccessRecord, type AdminAutoApproval, type AdminChatState,
   type AdminGatekeeperInfo, type AdminObserver, type AdminPendingChange,
   type AdminWorkspaceDescription, type AdminWorkspaceDiagnostics, type AdminWorkspaceMethod,
-  type AdminWorkspaceView,
+  type AdminWorkspaceView, type AdminWriteAction, type AdminWriteArgs, type AdminWriteRecord,
+  type AgentSpawnerInfo, type ChatArtifact, type ChatArtifactPage,
+  type ChatAttachmentInfo, type ChatConnectionUse, type ChatListOptions, type WorkspaceSummary,
+  type WorkspaceWaitingChat, MAX_SUMMARY_WAITING_CHATS,
 } from "@gadgets/workshop-shared/api";
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
@@ -20,24 +27,26 @@ import {
 import { keyString } from "@gadgets/typed-storage";
 import type { ListOptions } from "@gadgets/typed-storage";
 import {
-  actionLastChangedKey, chatChangeClientKey, chatKey, chatKeyPrefix, connectionVendorId,
+  actionLastChangedKey, chatAttachmentKey, chatChangeClientKey, chatConnectionKeyPrefix, chatKey,
+  chatKeyPrefix, chatListingSpawnerKey, connectionVendorId,
   makeOverseerStorage,
   type ActionRecord, type ActiveAgentRecord, type AgentSpawnerBindingProps,
   type AiChatAgentContext, type BindingRecord,
   type BlueprintGadgetRecord, type BoundHookRecord, type ChatBindingEntry,
   type ChatChangeBoundaryRecord, type ChatChangeRecord, type ChatFanoutStart, type CompactionCheckpoint,
-  type ExternalChatRecord, type ExternalMessageRecord, type GadgetRecord, type GatekeeperCaller,
+  type GadgetRecord, type GatekeeperCaller,
   type GatekeeperClass, type GatekeeperRecord, type ObserverRecord, type OverseerStorage,
   isChatParticipation, type StoredAssistantMessage, type StoredChatMessage, type StoredChatMetadata,
   type WorkpieceRecord, type WorktreeRecord,
 } from "./storage-schema/overseer-storage";
 import type { UserAiModelRecord, WorkspaceOutputEntry } from "./storage-schema/user-storage";
+import type { ListedBlueprintChanges, WorkspaceListing } from "./workspace-listing.js";
 import { filesEqual, threeWayMerge, type MergeResult } from "./three-way-merge";
 import { GitCacheImpl, WorkspaceGitCache, assertNoNul, commitIdentityForAuthor } from "./git-cache";
 import { blobByteStream, type BlobReader } from "./git-chunked-blob";
 import {
   OVERSEER_STORAGE_VERSION, migrateToActionIndexes, migrateToBlueprintUpstreams,
-  migrateToFrozenGadgetGrants, migrateToGitStorage, migrateToMultiGadget,
+  migrateToChatIndexes, migrateToFrozenGadgetGrants, migrateToGitStorage, migrateToMultiGadget,
   migrateToSpawnerBindings, migrateToWorkpieceTypes,
 } from "./storage-schema/overseer-migrations";
 import type { Usage } from "@earendil-works/pi-ai";
@@ -53,7 +62,7 @@ import {
   getAiGatewayLogCost,
   type AiGatewayLogRoute,
 } from "./ai-gateway";
-import { AgentGadgetInfo, AgentHooks, SeedBindingInfo, agentCodeChangeShape, alwaysAvailableResources, formatMissingBlueprintBindings, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type WorktreeTurnAccess, GIT_BINDING_NAME } from "./agent";
+import { AgentGadgetInfo, AgentHooks, SeedBindingInfo, agentCodeChangeShape, alwaysAvailableResources, formatMissingBlueprintBindings, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type StepUsage, type WorktreeTurnAccess, GIT_BINDING_NAME } from "./agent";
 import { WorktreeSessionImpl } from "./worktree-session";
 import { GitImpl } from "./git-binding";
 import type { WorktreeGitPullHints, WorktreeReplicator } from "@gadgets/workshop-shared/worktree-replica";
@@ -65,14 +74,17 @@ import { scanWorkpieceForGrep, type GrepScan } from "./grep";
 import WORKTREE_BINDING_TYPES from "./worktree-binding.txt";
 import EXPORTS_BINDING_TYPES from "./exports-binding.txt";
 import { deploymentOutputForBlueprint, FormatOffer, listFormatOffers, readAdminConfig } from "./admin-config";
+import { canonicalJson } from "./canonical-json.js";
 import {
-  adminCommitLogDepth, assertAdminViewLive, cutAdminAuditText, redactAdminAuditArgs,
-  withholdActionContent, withholdBlueprintContent, withholdChatContent, withholdCommitContent,
-  withholdCreationContent, withholdHookContent,
+  adminCommitLogDepth, adminWorkspaceWritesEnabled, assertAdminViewLive, cutAdminAuditText, redactAdminAuditArgs, validateAdminAccessReason, withholdActionContent,
+  withholdBlueprintContent, withholdChatContent, withholdCommitContent, withholdCreationContent,
+  withholdHookContent,
   type AdminViewTerms,
 } from "./admin-access";
 import { adminViewCall } from "./admin-view";
 import type { AdminAuditDurableObject } from "./admin-audit";
+import { adminWriteArgs, type AdminWriteCall } from "./admin-writes";
+import { isDeploymentAdmin } from "./auth/config";
 import { DIRECTORY_ACTIVITY_INTERVAL_MS, type UserDirectoryDurableObject } from "./user-directory";
 import { chatChangeStatuses, foldCompactedCode, isTurnPrompt } from "./agent-compaction";
 import type { CachedRequest } from "./ai-models";
@@ -100,7 +112,9 @@ import type { ProductAnalyticsConnectionType, ProductAnalyticsGadgetInput } from
 import { checkUsageAndBalance } from "./ai-gateway-billing/limits/usage-checker";
 import { normalizeAgentCatalog } from "./agent-catalog";
 import { refreshCachedBalance } from "./ai-gateway-billing/cloudflare/connection-service";
-import { SharingManager, SharingCaller, accessIncludesGadget } from "./sharing";
+import {
+  SharingManager, SharingCaller, accessIncludesGadget, accessIncludesLiveGadget,
+} from "./sharing";
 import {
   MAX_VERIFICATION_PASSES, ObserverLedger, requireVerifier, sameObserverScope, type ObserverScope,
 } from "./observer-ledger";
@@ -109,7 +123,6 @@ import { collectSlashCommands, invokeSlashCommand } from "./slash-commands";
 import { createWorkshopLogger, obsContext } from "./observability";
 import { traceAgentTurn, traceToolApproval } from "./agent-tracing";
 import { isLoopLimitError, retryOnDoReset, shouldRetryAfterReset, wrapDoStubForTelemetry } from "./do-retry";
-import type { ChatGatewayRpcTarget, SubmitExternalMessageResult } from "@gadgets/workshop-shared/external-message-gateway";
 import type { CreationApproval, GadgetExportFormat } from "@gadgets/workshop-shared/api";
 import {
   assertChatAttachmentSize,
@@ -137,7 +150,8 @@ function isCountableChatMessage(message: StoredChatMessage): boolean {
 function headForMessage(meta: AiChatMetadata, message?: StoredChatMessage): ChatTimelineHead {
   return message && isCountableChatMessage(message) ? {chatTitle: meta.title, latestSequence: message.sequence,
     latestActivityAt: message.timestamp, latestMessagePreview: message.type === "message"
-      ? message.message.trim().split(/[\r\n]/, 1)[0].slice(0, 240) || "Attachment" : ""}
+      ? message.message.trim().split(/[\r\n]/, 1)[0].slice(0, 240) || "Attachment" : "",
+    latestAuthor: {type: message.author.type, id: message.author.id, name: message.author.name}}
     : {chatTitle: meta.title, latestSequence: -1, latestMessagePreview: ""};
 }
 
@@ -266,6 +280,110 @@ let RESTORE_FORGER_WORKER: WorkerLoaderWorkerCode = {
     "forger.js": RESTORE_FORGER_HARNESS,
   },
   globalOutbound: null,
+};
+
+// The compatibility date gadget code runs at, whether in its own facet or in a snapshot's.
+// TODO: compatibility date configuration
+const GADGET_COMPATIBILITY_DATE = "2026-02-01";
+
+// The modules a gadget's files define: its .js files, by path.
+function gadgetModules(files: ReadonlyMap<string, string>): Record<string, string> {
+  let modules: Record<string, string> = {};
+  for (let [file, content] of files) {
+    if (file.endsWith(".js")) {
+      modules[file] = content;
+    }
+  }
+  return modules;
+}
+
+// Wrap a gadget facet stub so it can be returned to a client. Since facet stubs currently can't
+// be sent over RPC, the stub is wrapped in a Proxy to make it look like an RpcTarget instead.
+// `onDispose` runs when the client disposes the stub, and `onError` receives each error one of
+// the gadget's methods throws, as a console log event.
+function facetRpcStub(facet: Fetcher<DurableObject>, onDispose?: () => void,
+                      onError?: (event: ConsoleLogEvent) => void): RpcStub<any> {
+  // TODO: Make possible to return facet stub over RPC. This Proxy is a hack.
+  let proxy = new Proxy(facet, {
+    get(target, prop, receiver) {
+      // A lease ends when the client disposes the stub. (The DO reset that severs sessions
+      // releases it implicitly, by discarding this object -- and joinSession's leave is
+      // idempotent, so a double dispose is harmless.)
+      if (prop === Symbol.dispose && onDispose) {
+        let inner = Reflect.get(target, prop, target);
+        return () => {
+          onDispose();
+          if (typeof inner === "function") Reflect.apply(inner, target, []);
+        };
+      }
+
+      // Note: We need `target` to be used as the receiver. If we use `receiver` as the receiver,
+      //   we'll get an illegal invocation, as `receiver` points to our Proxy.
+      let method = Reflect.get(target, prop, target);
+
+      // Note that all wildcart properties of a stub appear as functions. So this check only
+      // really catches when `get()` returns `undefined`, as it does e.g. for the property
+      // named "then". Also if the prop is a symbol then it's definitely not an RPC so we handle
+      // that here.
+      if (typeof method !== "function" || typeof prop === "symbol") return method;
+
+      // HACK: We're going to assume all top-level properties are methods, and we are going to
+      //   intercept exceptions thrown by these methods and deliver them to the console log
+      //   subscriber. In theory we shouldn't have to do this, because these exceptions should
+      //   be reported to the tail worker. However, for some reason, that isn't working --
+      //   possibly a runtime bug which needs investigation.
+      // TODO: Fix exception reporting it tail workers so we can remove this hack.
+      return (...args: unknown[]) => {
+        let result: Promise<unknown> = Reflect.apply(method, target, args);
+        if (!onError) return result;
+        return result.catch((err: unknown) => {
+          let msg = err;
+          if (err instanceof Error) {
+            // Sadly the caught errors are missing any useful stack at the moment. Perhaps if
+            // we at least specify the method that was called it's somewhat useful to the agent.
+            msg = `${err}\n    at ${prop}()`;
+          }
+
+          onError({
+            timestamp: new Date(),
+            level: "error",
+            message: [msg],
+          });
+          throw err;
+        });
+      }
+    },
+    getPrototypeOf(target) {
+      return RpcTarget.prototype;
+    },
+  });
+
+  // Explicitly construct an RpcStub around the proxy to work around a workerd bug where
+  // returning an RpcTarget proxy as the top-level return value from an RPC isn't detected
+  // correctly.
+  // @ts-expect-error NativeRpcStub still has infinite recursion problems, fixed in Cap'n Web.
+  return new NativeRpcStub(proxy) as RpcStub<any>;
+}
+
+// A static snapshot of a gadget (see OverseerImpl.createGadgetSnapshot).
+type GadgetSnapshot = {
+  // The facet holding the copy: unique to this snapshot, and recorded in `gadgetSnapshots`.
+  facetName: string;
+  gadgetId: WorkpieceId;
+  // The gadget's head when it was copied, whose code the snapshot runs.
+  commitId: string;
+  refreshedAt: Date;
+};
+
+// What an export runs: a gadget's files, the worker they load as, and its facet (a gadget's or a
+// snapshot's). The worker and facet are loaded only for a gadget with a server. `renderMode` is
+// set only for a snapshot, which a browser-mode export tells the client as `gadgetRenderMode`.
+type GadgetExportSource = {
+  gadgetId: WorkpieceId;
+  files: ReadonlyMap<string, string>;
+  worker(): WorkerStub;
+  facet(): Promise<RpcStub<any>>;
+  renderMode?: "snapshot";
 };
 
 interface CodeModeEntrypoint extends WorkerEntrypoint {
@@ -511,29 +629,6 @@ function validateChatAttachmentId(id: string): string {
 // the gatekeeper, so no lookup is ever attempted.
 const BUILTIN_TOOL_GATEKEEPER_ID = -1;
 
-type ExternalMessageResponseTargetRegistration = {
-  idempotencyKey: string;
-  chatGatewayRpcTarget: NativeRpcStub<ChatGatewayRpcTarget>;
-};
-
-type ExternalMessageResponseTargetRegistrationDecision =
-  | {
-      reuseExisting: false;
-    }
-  | {
-      reuseExisting: true;
-      record: ExternalMessageRecord;
-    };
-
-type ExternalMessageSubmitInput = {
-  callerEmail: string;
-  externalChatKey: string;
-  idempotencyKey: string;
-  prompt: string;
-  chatGatewayRpcTarget: NativeRpcStub<ChatGatewayRpcTarget>;
-  title: string;
-};
-
 // If live change rows exist whose newest author differs from a new submission's author and the
 // stream has been idle this long, the older author's rows are materialized into their own
 // "changes" message first, keeping attribution per author (see submitCodeChange).
@@ -558,8 +653,6 @@ const CHAT_CHANGE_RETIRED_TTL_MS = 60_000;
 // structure.
 const CHAT_CHANGE_CLIENT_ID_PATTERN = /^[0-9A-Za-z_-]{1,64}$/;
 
-const AGENT_RESPONSE_DELIVERED_RETENTION_MS = 24 * 60 * 60 * 1000;
-
 // How long after agent work becomes outstanding (a turn starts, or a call to a callable agent is
 // recorded) the keep-alive alarm fires. See #agentKeepAliveTime.
 const AGENT_KEEPALIVE_ALARM_MS = 60_000;
@@ -581,6 +674,21 @@ const WAIT_FOR_AGENT_RESULT_TYPES =
 // How old a workspace instance must be before a loop-limit rejection restarts it. See
 // OverseerImpl.restartIfLoopLimited.
 const LOOP_LIMIT_RESTART_MIN_AGE_MS = 60_000;
+
+// The parts of the workspace listing (see OverseerImpl.markListingDirty()). Blueprint changes are
+// one part, however many blueprints there are.
+type ListingPart = "outputs" | "summary" | "blueprints" | "title" | "activity";
+const LISTING_PARTS: readonly ListingPart[] = ["outputs", "summary", "blueprints", "title", "activity"];
+
+// The whole workspace listing as last computed (see OverseerImpl.#refreshListing()): what each
+// recipient's parts are cut from.
+type CurrentListing = {
+  outputs: WorkspaceOutputEntry[];
+  summary?: WorkspaceSummary;
+  title?: {title: string, titleRev: number};
+  activity?: {lastActive: Date, totalCost: number};
+  blueprints: Map<string, ListedBlueprintChanges>;
+};
 
 // The error an accept throws when writing a workpiece's commit fails (most likely because
 // storage refused a file too large to hold, which the git store's error names), prefixed with
@@ -647,6 +755,20 @@ function workpieceSummary(record: WorkpieceRecord, includeUpstream: boolean): Wo
   return summary;
 }
 
+// The gadget whose code made a call, or that the hook firing it wakes, for the action log, the
+// waiting summary and the runs a gadget starts. Never the default gadget for a caller that names
+// none: the default can change, and attribution must not (see GatekeeperCaller).
+function callerGadgetId(caller: GatekeeperCaller): WorkpieceId | undefined {
+  return caller.from === "gadget" || caller.from === "hook" ? caller.gadgetId : undefined;
+}
+
+// These log records end the search for unconsumed decisions from the current turn.
+function isDecisionBoundary(msg: AiChatMessage): boolean {
+  return msg.type === "agentCallback" || msg.type === "agentNudge" ||
+      (msg.type === "slashCommand" && msg.request.id.builtin === true &&
+       msg.request.id.commandId === "compact") || isTurnPrompt(msg);
+}
+
 function actionRecordToLog(record: ActionRecord): ActionLogEntry {
   // TODO: ActionRecord and ActionLogEntry are almost identical. The main difference is that
   // ActionRecord includes `action`, which should NOT be provided to the client. We could make
@@ -656,6 +778,8 @@ function actionRecordToLog(record: ActionRecord): ActionLogEntry {
   // (built-in agent tools use the BUILTIN_TOOL_GATEKEEPER_ID sentinel).
   let gatekeeperId = record.gatekeeperId >= 0 ? record.gatekeeperId : undefined;
   let chatId = record.caller.from === "hook" ? undefined : record.caller.chatId;
+  let gadgetId = callerGadgetId(record.caller);
+  let origin = {chatId, from: record.caller.from, ...(gadgetId !== undefined ? {gadgetId} : {})};
 
   switch (record.type) {
     case "observation": {
@@ -665,7 +789,7 @@ function actionRecordToLog(record: ActionRecord): ActionLogEntry {
       return {
         id: record.id,
         gatekeeperId,
-        chatId,
+        ...origin,
         resourceTitle: record.resourceTitle || "(title unavailable)",
         resourceUrl: record.resourceUrl,
         createdAt: record.createdAt,
@@ -678,7 +802,7 @@ function actionRecordToLog(record: ActionRecord): ActionLogEntry {
       return {
         id: record.id,
         gatekeeperId,
-        chatId,
+        ...origin,
         resourceTitle: record.resourceTitle || "(title unavailable)",
         resourceUrl: record.resourceUrl,
         createdAt: record.createdAt,
@@ -696,7 +820,7 @@ function actionRecordToLog(record: ActionRecord): ActionLogEntry {
       return {
         id: record.id,
         gatekeeperId,
-        chatId,
+        ...origin,
         resourceTitle: record.resourceTitle || "(title unavailable)",
         resourceUrl: record.resourceUrl,
         createdAt: record.createdAt,
@@ -774,6 +898,21 @@ export const ACTION_REPLAY_PAGE_SIZE = 256;
 
 /** listActions() entries returned per page. Exported for tests. */
 export const ACTION_HISTORY_PAGE_DEFAULT_LIMIT = 50;
+
+/** listChatArtifacts() messages read per page. Exported for tests. */
+export const CHAT_ARTIFACT_PAGE_SIZE = 50;
+
+/**
+ * Messages deleteChat() reads per page: bounds the memory a long transcript (whose change messages
+ * carry their payloads) takes to delete. Exported for tests.
+ */
+export const CHAT_DELETE_PAGE_SIZE = 100;
+
+// A chat message's ChatAttachmentRef as metadata alone, without its bytes or scratch path.
+function chatAttachmentInfo({id, oid, mimeType, name, size}: ChatAttachmentRef, sequence: number)
+    : ChatAttachmentInfo {
+  return {id, oid, mimeType, name, size, sequence};
+}
 
 // Throws for a listActions() `beforeId` that cannot name an action.
 function validateBeforeId(beforeId: number | undefined): void {
@@ -1211,19 +1350,6 @@ class OverseerImpl implements AgentHooks {
       times.push(this.#agentKeepAliveTime);
     }
 
-    // External-message responses: a ready one is delivered as soon as possible, and delivered
-    // records are swept once they age out.
-    this.#sweepDeliveredExternalMessageResponses();
-    let hasReadyExternalMessageResponse = [...this.storage.gadgetResponseDeliveries.readyByIdempotencyKey.list({ limit: 1 })]
-      .length > 0;
-    if (hasReadyExternalMessageResponse) {
-      times.push(Date.now());
-    }
-    let nextDeliveredRecord = [...this.storage.gadgetResponseDeliveries.deliveredByDeliveredAt.list({ limit: 1 })][0];
-    if (nextDeliveredRecord?.status === "delivered") {
-      times.push(nextDeliveredRecord.deliveredAt + AGENT_RESPONSE_DELIVERED_RETENTION_MS);
-    }
-
     let next = times.length > 0 ? Math.max(notBefore, Math.min(...times)) : null;
     this.#setAlarm(next);
   }
@@ -1237,7 +1363,7 @@ class OverseerImpl implements AgentHooks {
 
   // The body of the alarm handler: perform every concern the alarm exists for, together, and hold
   // the DO open until all of them are done. They run concurrently so none waits on another -- in
-  // particular a response retry never waits behind an unrelated chat's long turn -- and since work
+  // particular a chat delivery never waits behind an unrelated chat's long turn -- and since work
   // begets work (a drain starts a turn, a turn's end drains more calls), passes repeat until one
   // ends with no turn running and no drain in flight. Both checks are needed: between a turn's end
   // and the next turn's start, the only sign of work in progress is the drain (which the next pass
@@ -1245,7 +1371,7 @@ class OverseerImpl implements AgentHooks {
   // here; the recompute at the end re-arms the alarm for them, starting a fresh keep-alive period
   // from now rather than re-firing on the time that has just passed. A delivery failure is
   // rethrown once everything else has settled, so the platform retries the alarm. After its last
-  // retry, schedule a fresh wake-up: a long response-target outage must not strand durable work.
+  // retry, schedule a fresh wake-up: a long outage must not strand durable work.
   //
   // That work is one run, which may outlast an invocation: each holds the DO open for at most
   // ALARM_HANDLER_BUDGET_MS. When that runs out first, the invocation returns successfully and
@@ -1290,7 +1416,6 @@ class OverseerImpl implements AgentHooks {
         let results = await Promise.allSettled([
           this.waitForAllAgentsToComplete(),
           this.drainAllPendingAgentCalls(),
-          this.deliverReadyExternalMessageResponses(),
           this.deliverDirtyChats(),
           this.deliverUserUpdates(),
         ]);
@@ -1343,8 +1468,10 @@ class OverseerImpl implements AgentHooks {
       await Promise.allSettled(updates.map(async update => {
         try {
           // Re-admission supersedes a pending revocation; never replay an old removal after it.
+          let access: CollaboratorAccess | undefined;
           if (!deleting) {
-            let role = sharing!.getEffectiveAccess(update.profileId!)?.role ?? null;
+            access = sharing!.getEffectiveAccess(update.profileId!);
+            let role = access?.role ?? null;
             if (role === "build") {
               this.storage.pendingUserUpdates.delete(update.userId);
               return;
@@ -1354,12 +1481,20 @@ class OverseerImpl implements AgentHooks {
               this.storage.pendingUserUpdates.put(update);
             }
           }
+          // A narrowing leaves their outputs those their access now holds, sent with the accessRev
+          // read with it, so that no push of wider ones from before can land after.
+          let narrowed = access && update.accessRev !== undefined
+              ? {outputs: this.outputsSnapshot(access), accessRev: this.storage.accessRev.get()}
+              : undefined;
           let user = this.users.get(this.users.idFromString(update.userId));
           await boundedUserUpdate(deleting ? user.workspaceRemoved(this.ctx.id.toString()) :
             update.role === null ? user.forgetSharedWorkspace(this.ctx.id.toString()) :
               user.updateSharedWorkspaceRole(this.ctx.id.toString(), update.role));
+          if (narrowed) await boundedUserUpdate(user.syncWorkspaceListing(this.ctx.id.toString(), narrowed));
+          // Unless journaled again meanwhile, a later narrowing included.
           let current = this.storage.pendingUserUpdates.get(update.userId);
-          if (current?.role === update.role && current.profileId === update.profileId) {
+          if (current?.role === update.role && current.profileId === update.profileId &&
+              current.accessRev === update.accessRev) {
             this.storage.pendingUserUpdates.delete(update.userId);
           }
         } catch (error) {
@@ -1685,22 +1820,6 @@ class OverseerImpl implements AgentHooks {
     }
   }
 
-  #deleteExternalMessageResponseDeliveryRecord(record: ExternalMessageRecord): void {
-    this.storage.gadgetResponseDeliveries.delete(record.idempotencyKey);
-    if (record.status !== "delivered") {
-      record.chatGatewayRpcTarget[Symbol.dispose]();
-    }
-  }
-
-  #sweepDeliveredExternalMessageResponses(): void {
-    let cutoff = Date.now() - AGENT_RESPONSE_DELIVERED_RETENTION_MS;
-    this.ctx.storage.transactionSync(() => {
-      for (let record of Array.from(this.storage.gadgetResponseDeliveries.deliveredByDeliveredAt.list({ end: cutoff }))) {
-        this.storage.gadgetResponseDeliveries.delete(record.idempotencyKey);
-      }
-    });
-  }
-
   // Resolves once no agents are running. Used by `alarm()` to keep the DO alive until all running
   // agents complete.
   async waitForAllAgentsToComplete(): Promise<void> {
@@ -1815,9 +1934,9 @@ class OverseerImpl implements AgentHooks {
   // The hand-off once a chat's turn is over and its running-agent state has been torn down: drop
   // the turn's live context, then deliver whatever was waiting for the chat to go idle -- steers
   // the turn never read, calls to the agent recorded during the turn (which start another turn),
-  // or failing that the response an external message is waiting on. Every path that ends a turn
-  // goes through here, so nothing sent mid-turn is stranded by the way the turn ended. `turn` is
-  // the turn that ended, absent if none ran.
+  // or failing that a turn whose awaited decision has been made (see resumeAgentAfterDecision).
+  // Every path that ends a turn goes through here, so nothing sent mid-turn is stranded by the way
+  // the turn ended. `turn` is the turn that ended, absent if none ran.
   #finishAgentTurn(chatId: number, turn?: {
     aiModel: UserAiModelRecord, initiator: AiChatAuthorInfo, initiatorUserId: string,
   }): void {
@@ -1843,9 +1962,6 @@ class OverseerImpl implements AgentHooks {
       this.drainPendingAgentCalls(chatId);
     } else {
       this.resumeAgentAfterDecision(chatId);
-      if (!this.storage.chatMeta.get(chatId)?.activeAgent) {
-        this.#deliverWaitingExternalMessageResponse(chatId);
-      }
     }
   }
 
@@ -1879,26 +1995,27 @@ class OverseerImpl implements AgentHooks {
         this.#addRequestCost(
             chatId, resent.usage, resent.aiGatewayLogId, resent.aiGatewayLogRoute, false));
 
-    // Mirror every gadget-registry change into the owner's outputs index. Subscribing here makes
+    // Mirror every gadget-registry change into the outputs indexes. Subscribing here makes
     // the registry the single chokepoint, so creation, acceptance, renaming, reverting and
     // deletion all propagate without each call site remembering to. (Workspace deletion is handled
     // by UserDurableObject.deleteWorkspace(), which drops the whole workspace's entries.)
     this.storage.gadgets.subscribe({
-      add: () => this.markOutputsDirty(),
-      update: () => this.markOutputsDirty(),
-      remove: () => this.markOutputsDirty(),
+      add: () => this.markListingDirty("outputs"),
+      update: () => this.markListingDirty("outputs"),
+      remove: () => this.markListingDirty("outputs"),
     });
 
-    // Mirror the title into the deployment directory. The title singleton is the one chokepoint
-    // every writer passes (renames, agent-chosen titles, blueprint and external-message
+    // Mirror the title into the deployment directory and collaborators' listings. The title
+    // singleton is the one chokepoint every writer passes (renames, agent-chosen titles, blueprint
     // initialisation). typed-storage runs this inside the write's transaction, before the value
-    // lands, so the revision bump is atomic with the write and the sync itself is deferred. The
-    // revision is time-based so that a workspace reinitialised under the same id (an external
-    // message names its workspace by key) outranks whatever its earlier life reported.
+    // lands, so the revision bump is atomic with the write and the syncs themselves are deferred.
+    // The revision is time-based so that a workspace reinitialised under the same id outranks
+    // whatever its earlier life reported.
     this.storage.title.subscribe({
       update: () => {
         this.storage.titleRev.put(Math.max(this.storage.titleRev.get() + 1, Date.now()));
         this.markDirectoryDirty();
+        this.markListingDirty("title");
       },
     });
 
@@ -1909,6 +2026,11 @@ class OverseerImpl implements AgentHooks {
       migrateToBlueprintUpstreams(this);
       migrateToSpawnerBindings(this);
       migrateToFrozenGadgetGrants(this);
+      migrateToChatIndexes(this);
+      // A snapshot dies with the instance whose sessions used it (see createGadgetSnapshot).
+      for (let {facetName} of Array.from(this.storage.gadgetSnapshots.list())) {
+        this.deleteGadgetSnapshot(facetName);
+      }
       // Do not replace an existing alarm during constructor recovery: setAlarm would reset the
       // platform's retry budget. Cache its time before registering any recovered executions.
       this.#scheduledAlarm = await this.ctx.storage.getAlarm();
@@ -1916,6 +2038,8 @@ class OverseerImpl implements AgentHooks {
         this.#agentKeepAliveTime = this.#scheduledAlarm ?? undefined;
       }
       this.#initializeUnreadTracking();
+      this.#initializeSummaryTracking();
+      this.#initializeBlueprintChangesTracking();
       if (this.storage.deleting.get() || [...this.storage.pendingUserUpdates.list({limit: 1})].length) {
         this.#userUpdatesRetryAt = this.#scheduledAlarm ?? Date.now() + 1_000;
         this.#updateAlarm();
@@ -1963,9 +2087,10 @@ class OverseerImpl implements AgentHooks {
       if (thread.activeAgent && !this.#runningAgents.has(thread.id)) {
         this.postAgentErrorMessage(thread.id, thread.activeAgent,
             "Agent interrupted due to server restart.");
-        delete thread.activeAgent;
-        this.storage.chatMeta.put(thread);
-        this.#deliverWaitingExternalMessageResponse(thread.id);
+        // Read again: posting the error logged the turn's steers and marked it failed.
+        let meta = this.storage.chatMeta.get(thread.id)!;
+        delete meta.activeAgent;
+        this.storage.chatMeta.put(meta);
       }
     }
 
@@ -2150,20 +2275,26 @@ class OverseerImpl implements AgentHooks {
     return record;
   }
 
-  // Create a new worktree workpiece rooted at the given commit id, provisional to (and permanently
-  // private to) the given chat. The id is resolved -- and the commit pulled, if only a gatekeeper
+  // Create a new worktree workpiece, empty or rooted at the given commit id, provisional to
+  // (and permanently private to) the given chat. The id is resolved -- and the commit pulled, if only a gatekeeper
   // has it -- by WorkspaceGitCache.fetchCommit. Like createGadget, the
   // caller (the agent's createWorktree tool) is responsible for getting the creation recorded in
   // the chat log -- `createdWorktrees` on the step's "changes" message -- which makes the pending
   // record permanent. The worktree is not pinned in the chat by its creation: it reads as its
   // accepted commit (`pinBase`) until the first modification pins it (see commitAgentStep).
-  async createWorktree(title: string, chatId: number, commitId: string)
+  async createWorktree(title: string, chatId: number, commitId?: string)
       : Promise<{id: WorkpieceId, title: string, baseCommit: string}> {
     title = title.trim();
     if (!title) {
       throw new Error("A worktree requires a non-empty title.");
     }
-    let baseCommit = await this.gitCache.fetchCommit(commitId);
+    // Share a canonical empty root; this initialization has no user-authored content.
+    let baseCommit = commitId === undefined
+        ? await this.gitCache.writeFilesAsCommit(new Map(), {
+          parents: [], message: "Initialize empty worktree", timestamp: new Date(0),
+          author: {name: "Cloudflare OS", email: "worktree@localhost"},
+        })
+        : await this.gitCache.fetchCommit(commitId);
 
     // The awaits above could have outlived the chat; a pending record for a deleted chat would
     // never be reaped.
@@ -2386,17 +2517,7 @@ class OverseerImpl implements AgentHooks {
     }
     let gadget = this.getGadgetRecord(gadgetId);
     assertBindingNameFree(gadget.bindings, name, chatId);
-    let targetRecord = this.storage.gatekeepers.get(target);
-    if (!targetRecord) {
-      let record = this.storage.gadgets.get(target);
-      if (record?.type === "worktree") {
-        throw new Error(`Worktrees cannot be bound into gadgets.`);
-      }
-      if (record) {
-        throw new Error(`Gadget-to-gadget bindings are not supported yet.`);
-      }
-      throw new Error(`No such gatekeeper: ${target}`);
-    }
+    this.#requireBindableTarget(target);
     // A permanent edge can put an account-requiring connection into the verification scope of
     // everyone holding this gadget (or one whose agent spawner reaches it), since the gadget UI
     // they drive can now invoke it. Snapshot the scopes first and compare after, exactly as
@@ -2414,6 +2535,19 @@ class OverseerImpl implements AgentHooks {
 
     this.#restartIfGadgetScopesWidened(
         reachesBefore, "Gadget restarted because a connection was bound to a gadget.");
+  }
+
+  // Throws unless `target` is a gatekeeper a gadget may bind.
+  #requireBindableTarget(target: WorkpieceId): void {
+    if (this.storage.gatekeepers.get(target)) return;
+    let record = this.storage.gadgets.get(target);
+    if (record?.type === "worktree") {
+      throw new Error(`Worktrees cannot be bound into gadgets.`);
+    }
+    if (record) {
+      throw new Error(`Gadget-to-gadget bindings are not supported yet.`);
+    }
+    throw new Error(`No such gatekeeper: ${target}`);
   }
 
   // Remove the named binding edge from the gadget. The target gatekeeper itself survives,
@@ -2453,6 +2587,30 @@ class OverseerImpl implements AgentHooks {
     this.bumpVersion([gadgetId]);
   }
 
+  // Point the accepted binding edge `name` at `target` in one step, if it still points at
+  // `expectedTarget`, keeping the rest of the edge (its blueprint annotation). Restarts sessions
+  // only where the new target widens a gadget's reach, as bindWorkpiece does.
+  rebindWorkpiece(gadgetId: WorkpieceId, name: string, expectedTarget: WorkpieceId,
+                  target: WorkpieceId): void {
+    let gadget = this.getGadgetRecord(gadgetId);
+    let edge = gadget.bindings[name];
+    if (!edge || edge.pending) {
+      throw new Error(`No such binding: ${name}`);
+    }
+    if (edge.target !== expectedTarget) {
+      throw new Error(`The binding ${name} has changed since it was read.`);
+    }
+    this.#requireBindableTarget(target);
+    if (target === expectedTarget) return;
+
+    let reachesBefore = this.#gadgetReaches();
+    gadget.bindings[name] = {...edge, target};
+    this.storage.gadgets.put(gadget);
+    this.bumpVersion([gadgetId]);
+    this.#restartIfGadgetScopesWidened(
+        reachesBefore, "Gadget restarted because a connection was bound to a gadget.");
+  }
+
   // Permanently delete a workpiece: its hooks, its registry entry (which for a gadget carries
   // its binding map and head commit -- the gadget's only "ref"), and its running facet (a
   // worktree has no hooks or facet, so those steps are no-ops for one). Gatekeepers a gadget
@@ -2480,6 +2638,9 @@ class OverseerImpl implements AgentHooks {
     this.storage.gadgets.delete(id);  // notifies workpiece subscribers
     this.#runningChatIds.delete(id);
     this.ctx.facets.delete(facetName);
+    for (let snapshot of Array.from(this.storage.gadgetSnapshots.list())) {
+      if (snapshot.gadgetId === id) this.deleteGadgetSnapshot(snapshot.facetName);
+    }
     // An agent spawner may bind the gadget (see GatekeeperRecord.bindings).
     for (let chatId of this.#deleteBindingEdges(edge => edge.target === id)) {
       affectedChats.add(chatId);
@@ -2842,6 +3003,21 @@ class OverseerImpl implements AgentHooks {
 
   invalidateChatContent(chatId: number): void {
     this.#chatContentCache.delete(chatId);
+  }
+
+  async getWorktreeFileOid(chatId: number, id: WorkpieceId, path: string,
+      turn: WorktreeTurnAccess): Promise<string | undefined> {
+    const record = this.storage.gadgets.get(id);
+    if (record?.type !== "worktree" || record.chatId !== chatId) {
+      throw new Error(`No worktree in this chat: ${id}`);
+    }
+    const value = turn.getOverlayFiles(id).get(path);
+    if (value !== undefined) {
+      return typeof value === "string" ? this.gitCache.writeBlob(new TextEncoder().encode(value)).oid : value.oid;
+    }
+    if (turn.getRemovedPaths(id).has(path)) return undefined;
+    const base = turn.getBaseCommit(id);
+    return base === undefined ? undefined : this.gitCache.fileOidAtCommit(base, path);
   }
 
   // Live row count that triggers materialization (see submitCodeChange). A field so tests can
@@ -3554,7 +3730,7 @@ class OverseerImpl implements AgentHooks {
         blueprintMerges: BlueprintMerge[],
         reRoots?: {worktreeId: WorkpieceId, baseCommit: string}[],
       },
-      usage?: Usage, aiGatewayLogId?: string,
+      usage?: StepUsage, aiGatewayLogId?: string,
       aiGatewayLogRoute?: AiGatewayLogRoute): Promise<boolean> {
     let meta = this.storage.chatMeta.get(chatId);
     if (!meta) return false;  // chat deleted mid-turn
@@ -5290,13 +5466,6 @@ class OverseerImpl implements AgentHooks {
             : new Map();
       }
 
-      let modules: Record<string, string> = {};
-      for (let [file, content] of files) {
-        if (file.endsWith(".js")) {
-          modules[file] = content;
-        }
-      }
-
       let tailProps: GadgetTailLoopbackProps = {
         chatId,
         gadgetId,
@@ -5304,14 +5473,13 @@ class OverseerImpl implements AgentHooks {
       };
 
       return {
-        // TODO: compatibility date configuration
-        compatibilityDate: "2026-02-01",
+        compatibilityDate: GADGET_COMPATIBILITY_DATE,
         compatibilityFlags: [
           // Make ctx.restore() available.
           "allow_irrevocable_stub_storage",
         ],
         mainModule: "server.js",
-        modules,
+        modules: gadgetModules(files),
         env: this.getEnvForLoader(gadgetId, {from: "gadget", chatId, gadgetId}, chatId),
         globalOutbound: null,
 
@@ -5400,7 +5568,7 @@ class OverseerImpl implements AgentHooks {
     });
   }
 
-  // Get an RpcStub for the gadget facet, which can be returned to the client.
+  // Get an RpcStub for the gadget facet, which can be returned to the client (see facetRpcStub).
   //
   // `joinAs` counts the returned stub toward #hasCollaboratorSession for its own lifetime, like
   // every other capability minted into a collaborator's session (see GadgetClientImpl): the facet
@@ -5409,76 +5577,89 @@ class OverseerImpl implements AgentHooks {
   // while the retained stub kept reading. Passed by the collaborator-facing connectToGadget
   // mints; omitted for the owner's and for internal callers (binding loopbacks already live
   // inside a counted session).
-  //
-  // Since facet stubs currently can't be sent over RPC, the stub is wrapped in a Proxy to make it
-  // look like an RpcTarget instead.
   async getGadgetFacet(gadgetId: WorkpieceId, chatId?: number, joinAs?: SessionHolder)
       : Promise<RpcStub<any>> {
     let facet = await this.getGadgetFacetFetcher(gadgetId, chatId);
     let leaveSession = joinAs ? this.joinSession(joinAs, gadgetId) : undefined;
+    return facetRpcStub(facet, leaveSession,
+        event => this.deliverGadgetLogs(chatId ?? null, [event]));
+  }
 
-    let self = this;
+  // --- Static snapshots (see Overseer.getGadgetSnapshot) ---
+  //
+  // A snapshot is a facet cloned from a gadget's, running the gadget's code as of the commit it
+  // was cloned at, and reaching nothing the gadget can: its worker has no env, no network and no
+  // tail (see #loadSnapshotWorker), and no stub to it was minted by ctx.restore(), so it can't
+  // mint persistent stubs either. Each is recorded in `gadgetSnapshots` before it is cloned, and
+  // deleted when its session disposes it or its gadget is deleted; the next instance deletes any
+  // this one leaves behind.
 
-    // TODO: Make possible to return facet stub over RPC. This Proxy is a hack.
-    let proxy = new Proxy(facet, {
-      get(target, prop, receiver) {
-        // The lease ends when the client disposes the stub. (The DO reset that severs sessions
-        // releases it implicitly, by discarding this object -- and joinSession's leave is
-        // idempotent, so a double dispose is harmless.)
-        if (prop === Symbol.dispose && leaveSession) {
-          let inner = Reflect.get(target, prop, target);
-          return () => {
-            leaveSession!();
-            if (typeof inner === "function") Reflect.apply(inner, target, []);
-          };
-        }
+  // Throw unless the deployment allows sharing gadgets to view only (see
+  // AdminConfig.snapshotSharingEnabled). Opening or refreshing a snapshot checks it, as does
+  // making a view grant or minting a view link's key through the Overseer API, so turning it off
+  // suspends the view grants already made, untouched. A view link's existing keys still redeem,
+  // into view grants as dormant as those.
+  async requireSnapshotSharing(): Promise<void> {
+    if (!(await readAdminConfig(this.env)).snapshotSharingEnabled) {
+      throw createSnapshotSharingError(SNAPSHOT_SHARING_ERROR_CODES.disabled);
+    }
+  }
 
-        // Note: We need `target` to be used as the receiver. If we use `receiver` as the receiver,
-        //   we'll get an illegal invocation, as `receiver` points to our Proxy.
-        let method = Reflect.get(target, prop, target);
+  // Copy gadget `gadgetId`'s stored state into a new snapshot of it.
+  createGadgetSnapshot(gadgetId: WorkpieceId): GadgetSnapshot {
+    let commitId = this.getGadgetHead(gadgetId);
+    if (!this.isShareableGadget(gadgetId) || commitId === undefined) {
+      throw new Error(`No such gadget: ${gadgetId}`);
+    }
+    let snapshot: GadgetSnapshot = {
+      facetName: `snapshot-${crypto.randomUUID()}`, gadgetId, commitId, refreshedAt: new Date(),
+    };
+    this.storage.gadgetSnapshots.put({facetName: snapshot.facetName, gadgetId});
+    this.ctx.facets.clone(this.gadgetFacetName(gadgetId), snapshot.facetName);
+    return snapshot;
+  }
 
-        // Note that all wildcart properties of a stub appear as functions. So this check only
-        // really catches when `get()` returns `undefined`, as it does e.g. for the property
-        // named "then". Also if the prop is a symbol then it's definitely not an RPC so we handle
-        // that here.
-        if (typeof method !== "function" || typeof prop === "symbol") return method;
+  deleteGadgetSnapshot(facetName: string): void {
+    this.storage.gadgetSnapshots.delete(facetName);
+    this.ctx.facets.delete(facetName);
+  }
 
-        // HACK: We're going to assume all top-level properties are methods, and we are going to
-        //   intercept exceptions thrown by these methods and deliver them to the console log
-        //   subscriber. In theory we shouldn't have to do this, because these exceptions should
-        //   be reported to the tail worker. However, for some reason, that isn't working --
-        //   possibly a runtime bug which needs investigation.
-        // TODO: Fix exception reporting it tail workers so we can remove this hack.
-        return (...args: any[]) => {
-          let result: Promise<any> = Reflect.apply(method, target, args);
-          return result.catch((err: any) => {
-            let msg = err;
-            if (err instanceof Error) {
-              // Sadly the caught errors are missing any useful stack at the moment. Perhaps if
-              // we at least specify the method that was called it's somewhat useful to the agent.
-              msg = `${err}\n    at ${prop}()`;
-            }
+  // Throw unless `snapshot` is still recorded: it is gone once disposed, or deleted with its gadget.
+  requireGadgetSnapshot(snapshot: GadgetSnapshot): GadgetSnapshot {
+    if (!this.storage.gadgetSnapshots.get(snapshot.facetName)) {
+      throw new Error("This snapshot is no longer available.");
+    }
+    return snapshot;
+  }
 
-            let event: ConsoleLogEvent = {
-              timestamp: new Date(),
-              level: "error",
-              message: [msg],
-            };
-            self.deliverGadgetLogs(chatId ?? null, [event]);
-            throw err;
-          });
-        }
-      },
-      getPrototypeOf(target) {
-        return RpcTarget.prototype;
-      },
-    });
+  // A stub to `snapshot`'s facet, which can be returned to the client. The gadget's console
+  // doesn't get its errors: they are a viewer's, not the gadget's.
+  getSnapshotFacet(snapshot: GadgetSnapshot): RpcStub<any> {
+    return facetRpcStub(this.ctx.facets.get<DurableObject>(snapshot.facetName, () => {
+      // A stub outliving its snapshot must not restart the facet, empty and unrecorded, where
+      // nothing would ever delete it.
+      this.requireGadgetSnapshot(snapshot);
+      return {
+        class: this.#loadSnapshotWorker(snapshot).getDurableObjectClass<DurableObject>("Gadget"),
+        // The gadget's own facet ID, so code reading ctx.id sees what it sees in the gadget.
+        id: this.gadgetFacetName(snapshot.gadgetId),
+      };
+    }));
+  }
 
-    // Explicitly construct an RpcStub around the proxy to work around a workerd bug where
-    // returning an RpcTarget proxy as the top-level return value from an RPC isn't detected
-    // correctly.
-    // @ts-expect-error NativeRpcStub still has infinite recursion problems, fixed in Cap'n Web.
-    return new NativeRpcStub(proxy) as RpcStub<any>;
+  // The worker a snapshot runs: its gadget's code at the snapshot's commit, with an empty env,
+  // no network, and no tail (what it logs is a viewer's, not the gadget's). Unlike a gadget's
+  // worker, it lacks allow_irrevocable_stub_storage, so a stub the gadget stored -- a binding, or
+  // a persistent stub from ctx.restore() -- fails to load from the copied storage instead of
+  // reaching what the gadget can. Keyed by facet, so no two snapshots share module state.
+  #loadSnapshotWorker(snapshot: GadgetSnapshot): WorkerStub {
+    return this.env.LOADER.get(`${this.ctx.id}.${snapshot.facetName}`, () => ({
+      compatibilityDate: GADGET_COMPATIBILITY_DATE,
+      mainModule: "server.js",
+      modules: gadgetModules(this.gitCache.readCommitFiles(snapshot.commitId)),
+      env: {},
+      globalOutbound: null,
+    }));
   }
 
   // The gadget's file tree as seen from `chatId` (its chat content; the caller is presumed to
@@ -5509,15 +5690,46 @@ class OverseerImpl implements AgentHooks {
   async getGadgetExportFormats(gadgetId: WorkpieceId, chatId?: number)
       : Promise<GadgetExportFormat[]> {
     this.checkChatExistsAndMaterializeChanges(chatId);
-    let resolved = await this.#resolveGadgetExportFormats(gadgetId, chatId);
-    resolved.gadget?.[Symbol.dispose]();
-    return resolved.formats;
+    return this.listExportFormats(await this.#gadgetExportSource(gadgetId, chatId));
   }
 
   async exportGadget(gadgetId: WorkpieceId, formatId: string, chatId?: number)
       : Promise<ReadableStream<Uint8Array>> {
     this.checkChatExistsAndMaterializeChanges(chatId);
-    let {formats, handler, gadget} = await this.#resolveGadgetExportFormats(gadgetId, chatId);
+    return this.runExport(await this.#gadgetExportSource(gadgetId, chatId), formatId);
+  }
+
+  // What exporting gadget `gadgetId`, as seen from `chatId`, runs.
+  async #gadgetExportSource(gadgetId: WorkpieceId, chatId?: number)
+      : Promise<GadgetExportSource> {
+    return {
+      gadgetId,
+      files: await this.readGadgetFiles(gadgetId, chatId),
+      worker: () => this.loadGadgetWorker(gadgetId, chatId),
+      facet: () => this.getGadgetFacet(gadgetId, chatId),
+    };
+  }
+
+  // What exporting `snapshot` runs: its own code and copy, never its gadget's.
+  snapshotExportSource(snapshot: GadgetSnapshot): GadgetExportSource {
+    return {
+      gadgetId: snapshot.gadgetId,
+      files: this.gitCache.readCommitFiles(snapshot.commitId),
+      worker: () => this.#loadSnapshotWorker(snapshot),
+      facet: async () => this.getSnapshotFacet(snapshot),
+      renderMode: "snapshot",
+    };
+  }
+
+  async listExportFormats(source: GadgetExportSource): Promise<GadgetExportFormat[]> {
+    let resolved = await this.#resolveExportFormats(source);
+    resolved.gadget?.[Symbol.dispose]();
+    return resolved.formats;
+  }
+
+  async runExport(source: GadgetExportSource, formatId: string)
+      : Promise<ReadableStream<Uint8Array>> {
+    let {formats, handler, gadget} = await this.#resolveExportFormats(source);
     if (!gadget) throw new Error("The Gadget server stub is unavailable.");
     using exportGadget = gadget;
     let format = formats.find(candidate => candidate.id === formatId);
@@ -5530,10 +5742,11 @@ class OverseerImpl implements AgentHooks {
     } else {
       let browser = this.env.BROWSER;
       if (!browser) throw new Error("Gadget export is not configured for this deployment.");
-      let bundle = await this.getGadgetUiBundle(gadgetId, chatId);
+      let bundle = buildUiBundle(source.files);
       if (!bundle) throw new Error("This Gadget does not have a UI to export.");
-      let title = this.getGadgetRecord(gadgetId).title;
-      return renderGadgetInBrowser(browser, bundle, title, exportGadget.dup(), format);
+      let title = this.getGadgetRecord(source.gadgetId).title;
+      return renderGadgetInBrowser(
+          browser, bundle, title, exportGadget.dup(), format, source.renderMode);
     }
   }
 
@@ -5544,19 +5757,19 @@ class OverseerImpl implements AgentHooks {
     }
   }
 
-  async #resolveGadgetExportFormats(gadgetId: WorkpieceId, chatId?: number): Promise<{
+  async #resolveExportFormats(source: GadgetExportSource): Promise<{
     formats: GadgetExportFormat[];
     handler: Fetcher<GadgetExportEntrypoint> | null;
     gadget: NativeRpcStub<any> | null;
   }> {
-    let files = await this.readGadgetFiles(gadgetId, chatId);
+    let {files} = source;
     if (!files.has("server.js")) return {formats: [], handler: null, gadget: null};
 
-    let handler = this.loadGadgetWorker(gadgetId, chatId)
+    let handler = source.worker()
       .getEntrypoint<GadgetExportEntrypoint>(GADGET_EXPORT_ENTRYPOINT);
-    // getGadgetFacet() wraps this native stub for Cap'n Web's type system, but this path invokes
+    // facetRpcStub() wraps this native stub for Cap'n Web's type system, but this path invokes
     // native Worker RPC and needs its actual runtime type.
-    let gadget = await this.getGadgetFacet(gadgetId, chatId) as unknown as NativeRpcStub<any>;
+    let gadget = await source.facet() as unknown as NativeRpcStub<any>;
     try {
       let formats = await readCustomExportFormats(handler, gadget);
       return formats === null
@@ -6424,7 +6637,7 @@ class OverseerImpl implements AgentHooks {
       : Promise<PreparedScratchWorktree | undefined> {
     if (files.size === 0 || this.#scratchWorktree(chatId) !== undefined) return undefined;
     let bindingName = fallbackBindingName(
-        "SCRATCH", name => this.chatScopeNames(chatId).has(name));
+        "ATTACHMENTS", name => this.chatScopeNames(chatId).has(name));
     let commitId = (await this.#writeWorkspaceAttachmentCommit(files, author))!;
     return {commitId, bindingName};
   }
@@ -6441,7 +6654,7 @@ class OverseerImpl implements AgentHooks {
     let record: WorktreeRecord = {
       type: "worktree",
       id: this.allocateWorkpieceId(),
-      title: "Scratch space",
+      title: "Attachments",
       created: new Date(),
       chatId,
       baseCommit: prepared.commitId,
@@ -6637,7 +6850,7 @@ class OverseerImpl implements AgentHooks {
           .filter(([, reach]) => reach.gatekeeperIds.has(gatekeeperId))
           .map(([gadgetId]) => gadgetId);
       if (access.role === "build" || vendorless ||
-          reachingGadgets.some(gadgetId => accessIncludesGadget(access, gadgetId))) {
+          reachingGadgets.some(gadgetId => accessIncludesLiveGadget(access, gadgetId))) {
         throw new Error(
             "This observation was blocked because it contains data that a current collaborator " +
             "is not permitted to see.");
@@ -6888,14 +7101,13 @@ class OverseerImpl implements AgentHooks {
     this.#associateAction(caller, actionId);
   }
 
-  // What is the last active time that we know the user DO has been made aware of?
-  #lastActiveTimeKnownToUserDo?: Date;
-  // What is the last active time we've seen locally?
+  // The last-active time last marked in the owner's listing, and the latest seen locally.
+  #lastActiveListed?: Date;
   #lastActiveTimeKnownToUs?: Date;
-  // Do we currently have a timeout scheduled after which we plan to send a last active update?
+  // Do we currently have a timeout scheduled after which we plan to mark it?
   #lastActiveBumpScheduled: boolean = false;
 
-  // Update the last-active time and cost counter as recorded for this gadget in the user-level DO.
+  // Update the last-active time and cost counter in the owner's listing, at most once a minute.
   bumpLastActive(now: Date = new Date()) {
     if (this.#lastActiveTimeKnownToUs && this.#lastActiveTimeKnownToUs >= now) {
       // Redundant bump.
@@ -6910,56 +7122,36 @@ class OverseerImpl implements AgentHooks {
     }
 
     // Only bump once a minute to reduce network traffic.
-    let timeToNextBump: number = this.#lastActiveTimeKnownToUserDo
-        ? this.#lastActiveTimeKnownToUserDo.getTime() + 60000 - now.getTime()
+    let timeToNextBump: number = this.#lastActiveListed
+        ? this.#lastActiveListed.getTime() + 60000 - now.getTime()
         : 0;
 
     if (timeToNextBump <= 0) {
-      // Bump now!
-      // Let this run async -- no need to make the caller wait for it.
       this.#bumpLastActiveImpl();
     } else {
       // Schedule bump in the future, coalescing with any other bumps that happen before then.
       this.#lastActiveBumpScheduled = true;
       scheduler.wait(timeToNextBump).then(() => {
         this.#lastActiveBumpScheduled = false;
-        if (!this.#lastActiveTimeKnownToUserDo ||
-            this.#lastActiveTimeKnownToUserDo < this.#lastActiveTimeKnownToUs!) {
+        if (!this.#lastActiveListed || this.#lastActiveListed < this.#lastActiveTimeKnownToUs!) {
           this.#bumpLastActiveImpl();
         }
       });
     }
   }
 
-  async #bumpLastActiveImpl() {
-    try {
-      if (!this.ownerId) {
-        // Gadget must have been deleted, ignore.
-        return;
-      }
+  #bumpLastActiveImpl(): void {
+    // A deleted gadget has no owner to tell.
+    if (!this.ownerId) return;
+    let lastActive = this.#lastActiveTimeKnownToUs!;
+    this.#lastActiveListed = lastActive;
+    this.markListingDirty("activity");
 
-      let owner = this.users.get(this.users.idFromString(this.ownerId));
-
-      let lastActive = this.#lastActiveTimeKnownToUs!;
-      this.#lastActiveTimeKnownToUserDo = lastActive;
-      await owner.setWorkspaceLastActive(this.ctx.id.toString(), lastActive,
-                                      this.storage.totalCost.get());
-
-      // The directory's activity is precise only to DIRECTORY_ACTIVITY_INTERVAL_MS, so it hears
-      // of activity far less often than the owner does.
-      if (Date.now() - this.#directoryActivityAt >= DIRECTORY_ACTIVITY_INTERVAL_MS) {
-        this.#directoryActivityAt = Date.now();
-        this.syncDirectory(lastActive);
-      }
-    } catch (err) {
-      this.logger.warn("failed to bump gadget last-active on user DO", {
-        event: "gadget.last.active.bump.failed",
-        gadgetId: this.ctx.id.toString(), error: err,
-      });
-      this.restartIfLoopLimited(err);
-
-      // Force retry on next bump.
-      this.#lastActiveTimeKnownToUserDo = undefined;
+    // The directory's activity is precise only to DIRECTORY_ACTIVITY_INTERVAL_MS, so it hears
+    // of activity far less often than the owner does.
+    if (Date.now() - this.#directoryActivityAt >= DIRECTORY_ACTIVITY_INTERVAL_MS) {
+      this.#directoryActivityAt = Date.now();
+      this.syncDirectory(lastActive);
     }
   }
 
@@ -6967,11 +7159,7 @@ class OverseerImpl implements AgentHooks {
   //
   // Each non-provisional gadget here is an "output". The `gadgets` registry is authoritative, but
   // the Outputs page lists across all of a user's workspaces, so the registry is mirrored into an
-  // index in each interested user's DO (see UserDurableObject.syncWorkspaceOutputs()).
-
-  // Whether a flush is already queued. Registry mutations arrive in synchronous bursts (a chat's
-  // changes may create and stamp several gadgets), so pushes coalesce onto a single flush.
-  #outputsFlushScheduled = false;
+  // index in each interested user's DO, as part of the workspace listing (see #pushListings()).
 
   // User DO ids whose outputs index this workspace is keeping live, one token per open session,
   // and the access of the latest session to join, for those who hold some gadgets rather than
@@ -6980,7 +7168,9 @@ class OverseerImpl implements AgentHooks {
   //
   // In memory, not persisted, which is what makes fanning out to collaborators safe: revoking
   // access aborts the DO (see scheduleAccessRestart()), so this is destroyed with the sessions
-  // it describes and can only be rebuilt by an open() that re-checks the permission graph.
+  // it describes and can only be rebuilt from the permission graph, by an open() that re-checks
+  // it. Until then, a narrowing narrows the access of the sessions it affects (see
+  // refreshAffectedCollaboratorListings()).
   #connectedIndexes = new Map<string, {tokens: Set<object>, access?: CollaboratorAccess}>();
 
   // Keep `userId`'s outputs index up to date for the duration of one session, listing only the
@@ -7027,80 +7217,306 @@ class OverseerImpl implements AgentHooks {
     return entries;
   }
 
-  // Push the current snapshot into one user's index. Best-effort: the index is a denormalized
-  // view, so a failed push costs a stale Outputs page until the next change or open, never
-  // correctness.
-  // Returns whether the index actually took it. Failures are logged rather than thrown -- an index
-  // is a convenience view and the workspace itself is unaffected -- but callers that remember what
-  // they have sent need to know the difference.
-  async syncOutputsTo(user: DurableObjectStub<UserDurableObject>,
-                      snapshot = this.outputsSnapshot()): Promise<boolean> {
-    try {
-      await user.syncWorkspaceOutputs(this.ctx.id.toString(), snapshot);
-      return true;
-    } catch (err) {
-      this.logger.warn("failed to sync workspace outputs to user DO", {
-        event: "workspace.outputs.sync.failed", gadgetId: this.ctx.id.toString(), error: err,
+  // A push of this workspace's state into User DOs, scheduled by mark(): it runs after the write
+  // that marked it (storage subscribers run before the write lands), and again for whatever is
+  // marked while it runs, one push at a time so that pushes arrive in order. Best-effort: a push
+  // that throws is logged as `event`, and the next mark sends again.
+  #serialPush(push: () => Promise<void>, what: string, event: string): {mark(): void} {
+    let running: Promise<void> | undefined;
+    let dirty = false;
+    let mark = (): void => {
+      dirty = true;
+      if (running) return;
+      running = (async () => {
+        await scheduler.wait(0);
+        while (dirty) {
+          dirty = false;
+          await push();
+        }
+      })().catch(error => {
+        this.logger.warn(`failed to flush ${what}`, {event, gadgetId: this.ctx.id.toString(), error});
+      }).finally(() => {
+        running = undefined;
+        if (dirty) mark();
       });
-      this.restartIfLoopLimited(err);
-      return false;
-    }
+      this.ctx.waitUntil(running);
+    };
+    return {mark};
   }
 
-  // Note that the gadget registry changed, scheduling a push to every index that should be live.
-  markOutputsDirty(): void {
-    if (this.#outputsFlushScheduled || !this.ownerId) return;
-    this.#outputsFlushScheduled = true;
-    scheduler.wait(0).then(() => {
-      // Cleared before the push, so a change made while it is in flight schedules another.
-      this.#outputsFlushScheduled = false;
-      return this.#syncOutputsToWatchers();
-    }).catch(err => {
-      this.logger.warn("failed to flush workspace outputs", {
-        event: "workspace.outputs.flush.failed", gadgetId: this.ctx.id.toString(), error: err,
-      });
+  // --- Workspace summaries -------------------------------------------------------------
+  //
+  // What waits on someone here and the hooks bound here (see WorkspaceSummary), mirrored into the
+  // User DO of the owner and of every "build" collaborator admitted to background reads, as part
+  // of the workspace listing, so that their sidebar, Library and Automations page need open no
+  // workspace (see AuthenticatedApi.subscribeToWorkspaceSummaries()). Recipients drop it
+  // themselves when their listing goes or narrows to "use".
+
+  // Changes that can alter the summary: actions, hooks, a turn starting or ending, a request's
+  // decision, and removals of what hooks and asks name.
+  #initializeSummaryTracking(): void {
+    let dirty = () => this.markListingDirty("summary");
+    this.storage.actions.subscribe({
+      add: record => { if (record.state === "pending") dirty(); },
+      update: (old, record) => {
+        if ((old.state === "pending") !== (record.state === "pending")) dirty();
+      },
+      remove: record => { if (record.state === "pending") dirty(); },
     });
+    this.storage.boundHooks.subscribe({add: dirty, update: dirty, remove: dirty});
+    this.storage.chatMeta.subscribe({
+      add: dirty,
+      update: (old, meta) => {
+        if (!old.activeAgent !== !meta.activeAgent || old.spawnerId !== meta.spawnerId ||
+            old.spawnerName !== meta.spawnerName || old.spawnedByGadgetId !== meta.spawnedByGadgetId ||
+            old.title !== meta.title) dirty();
+      },
+      remove: dirty,
+    });
+    let changesDecision = (message: AiChatMessage) => {
+      if (isDecisionBoundary(message) || (message.author.type === "agent" && (
+          ((message.type === "connectionRequest" || message.type === "webFetchRequest") && message.state === "pending") ||
+          (message.type === "message" && !message.toolCalls?.length)))) dirty();
+    };
+    this.storage.chats.subscribe({
+      add: changesDecision,
+      update: (old, message) => {
+        if ((old.type === "connectionRequest" || old.type === "webFetchRequest") &&
+            (message.type === "connectionRequest" || message.type === "webFetchRequest") &&
+            (old.state === "pending") !== (message.state === "pending")) dirty();
+      },
+      remove: changesDecision,
+    });
+    this.storage.gatekeepers.subscribe({
+      add: () => {},
+      update: (old, record) => {
+        if (old.resourceTitle !== record.resourceTitle || old.resourceUrl !== record.resourceUrl) dirty();
+      },
+      remove: dirty,
+    });
+    this.storage.gadgets.subscribe({add: () => {}, update: () => {}, remove: dirty});
   }
 
-  // Push the current snapshot to the owner's index and to every collaborator with a session open.
-  // The owner is included whether or not they are connected, since a workspace goes on producing
-  // while its owner is away; a disconnected collaborator is caught up by the sync in open().
-  async #syncOutputsToWatchers(): Promise<void> {
-    let ownerId = this.ownerId;
-    if (!ownerId) return;
+  workspaceSummary(): WorkspaceSummary {
+    let workingChatIds = Array.from(this.storage.activeAgents.list(), ({chatId}) => chatId)
+        .filter(chatId => this.storage.chatMeta.get(chatId)?.activeAgent);
+    return {workspaceId: this.ctx.id.toString(), ...this.#waiting(), workingChatIds, hooks: boundHookInfos(this)};
+  }
 
-    // Built once and shared, rather than once per recipient: the registry is the same for all of
-    // them, and rebuilding it per viewer is what made a push cost outputs times viewers. (Those
-    // holding some gadgets get it filtered, which reads no storage.)
-    let snapshot = this.outputsSnapshot();
-
-    // The registry notifies on every gadget update, but this carries only titles and presentation,
-    // so code commits, binding edits and activity stamps all produce a snapshot nobody's index
-    // would change on. Skipping those is most of the traffic. Safe to compare against what this
-    // instance last sent because a newly connected watcher is synced by open() before it joins the
-    // fan-out, and a cold DO has nothing recorded and so always pushes. (A session's access never
-    // narrows without a restart, so a filtered view changes only when the snapshot does or the
-    // session reopens.)
-    let encoded = JSON.stringify(snapshot);
-    if (encoded === this.#lastOutputsPushed) return;
-
-    let watchers = new Map<string, CollaboratorAccess | undefined>([[ownerId, undefined]]);
-    for (let [userId, {access}] of this.#connectedIndexes) {
-      if (userId !== ownerId) watchers.set(userId, access);
+  // A chat waits while its agent is stopped on a decision (as AiChatMetadata.awaitingDecision
+  // says) or while an action it made is pending. A pending action outside any chat is its
+  // gadget's; one a run made is also the gadget that started the run's.
+  #waiting(): Pick<WorkspaceSummary, "waiting" | "waitingChats"> {
+    let waitingOn = new Map<number, Pick<WorkspaceWaitingChat, "waiting" | "ask">>();
+    let gadgetActions = new Map<WorkpieceId, number>();
+    for (let record of this.storage.actions.byHistoryFilter.get("pending")) {
+      let chatId = record.caller.from === "hook" ? undefined : record.caller.chatId;
+      if (chatId !== undefined && !waitingOn.get(chatId)?.ask) {
+        waitingOn.set(chatId, {waiting: "approval",
+          ask: record.type === "action" ? {type: "action", title: record.description.title.slice(0, 240)} : undefined});
+      }
+      if (record.type !== "action") continue;
+      let gadgetId = chatId === undefined
+          ? callerGadgetId(record.caller) : this.storage.chatMeta.get(chatId)?.spawnedByGadgetId;
+      if (gadgetId !== undefined && this.storage.gadgets.get(gadgetId)?.type === "gadget") {
+        gadgetActions.set(gadgetId, (gadgetActions.get(gadgetId) ?? 0) + 1);
+      }
     }
-    let delivered = await Promise.all([...watchers].map(([userId, access]) => this.syncOutputsTo(
-        this.users.get(this.users.idFromString(userId)),
-        access ? snapshot.filter(entry => accessIncludesGadget(access, entry.workpieceId))
-            : snapshot)));
-
-    // Recorded only once every index has it, so that a recipient this failed for is included in
-    // the next flush instead of being remembered as up to date. If nothing changes again, their
-    // open() corrects it.
-    if (delivered.every(ok => ok)) this.#lastOutputsPushed = encoded;
+    // A chat stopped on a decision has a pending request or a pending action (see
+    // #decisionWait()), so only chats with a pending request and no pending action need their log
+    // read. Listed whole first: #decisionWait() lists a chat's log, which would end this listing.
+    for (let request of Array.from(this.storage.chats.pendingRequestsByChat.list())) {
+      let {chatId} = request;
+      if (waitingOn.has(chatId) || this.storage.chatMeta.get(chatId)?.activeAgent ||
+          !this.#decisionWait(chatId)?.pending) continue;
+      waitingOn.set(chatId, {waiting: "action", ask:
+        request.type === "connectionRequest" ? {type: "connection",
+          vendorName: request.vendorName.slice(0, 240), reason: request.reason.slice(0, 240)}
+        : request.type === "webFetchRequest" ? {type: "webFetch", url: request.url.slice(0, 240)}
+        : undefined});
+    }
+    let runs = 0, chats = 0;
+    let waitingChats: WorkspaceWaitingChat[] = [];
+    for (let [chatId, {waiting, ask}] of waitingOn) {
+      let meta = this.storage.chatMeta.get(chatId);
+      if (!meta) continue;
+      if (isAgentRun(meta)) runs++;
+      else chats++;
+      waitingChats.push({chatId, title: meta.title, lastActive: meta.lastActive, waiting, ask,
+        spawnerId: meta.spawnerId, spawnerName: meta.spawnerName});
+    }
+    return {
+      waiting: {runs, chats, gadgets: [...gadgetActions].map(([gadgetId, actions]) => ({gadgetId, actions}))},
+      waitingChats: waitingChats.toSorted((a, b) => b.lastActive.getTime() - a.lastActive.getTime())
+          .slice(0, MAX_SUMMARY_WAITING_CHATS),
+    };
   }
 
-  // The snapshot every watcher last acknowledged, to suppress pushes that would change nothing.
-  #lastOutputsPushed?: string;
+  // --- Workspace listings --------------------------------------------------------------
+  //
+  // What each person this workspace is listed for mirrors of it in their User DO (see
+  // WorkspaceListing and UserDurableObject.syncWorkspaceListing()):
+  // - the owner: every output, the summary, each blueprint's unpublished changes, the title and
+  //   the last-active time and cost;
+  // - a user with a session open here (see joinOutputsFanout()), and a collaborator once on
+  //   opening it (see resyncListingTo()): the outputs they may see;
+  // - a "build" collaborator admitted to background reads (see mayReadChatState()): the summary;
+  // - every collaborator: the title they list it under (see
+  //   UserDurableObject.recordSharedWorkspaceOpen() for where a listing starts).
+  // A push sends each recipient the parts that changed since the last push; resyncListingTo()
+  // sends one recipient every part. Recipients take each part idempotently, so nothing tracks
+  // what each took. Best-effort: a push that fails, or a part its recipient ignores (as for a
+  // workspace it does not list yet), is corrected when the part next changes or when the
+  // recipient next opens the workspace.
+
+  #listingPush = this.#serialPush(() => this.#pushListings(), "workspace listing",
+      "workspace.listing.flush.failed");
+
+  // The listing as last computed, and each computed part's canonical JSON, which tells a mark
+  // that changed nothing from one that did. A cold DO has computed nothing, and pushes nothing
+  // until a part is marked or a recipient resynced.
+  #listing: CurrentListing = {outputs: [], blueprints: new Map()};
+  #listingJson = new Map<ListingPart, string>();
+
+  // The parts marked since the last push, and the recipients to send every part, with the profile
+  // id of each collaborator among them.
+  #listingStale = new Set<ListingPart>();
+  #listingResyncs = new Map<string, string | undefined>();
+
+  // Note that `part` of the listing may have changed, scheduling a push.
+  markListingDirty(part: ListingPart): void {
+    this.#listingStale.add(part);
+    this.#listingPush.mark();
+  }
+
+  // Push every part of the listing to one user whose copy may be missing or stale: one opening
+  // the workspace, which corrects a push that failed with nothing changing since. A collaborator
+  // (`profileId`) is sent the outputs their access holds when it is sent, whether or not a session
+  // of theirs is still open (one may end before their listing is recorded); after that, outputs
+  // reach them only while one is (see joinOutputsFanout()).
+  resyncListingTo(userId: string, profileId?: string): void {
+    this.#listingResyncs.set(userId, profileId);
+    this.#listingPush.mark();
+  }
+
+  // Recompute the parts marked since the last push (and, given `all`, those never computed),
+  // returning the marked parts whose value changed.
+  #refreshListing(all: boolean): Set<ListingPart> {
+    let marked = this.#listingStale;
+    this.#listingStale = new Set();
+    let listing = this.#listing;
+    let changed = new Set<ListingPart>();
+    for (let part of LISTING_PARTS) {
+      if (!marked.has(part) && !(all && !this.#listingJson.has(part))) continue;
+      let value: unknown;
+      if (part === "outputs") {
+        value = listing.outputs = this.outputsSnapshot();
+      } else if (part === "summary") {
+        value = listing.summary = this.workspaceSummary();
+      } else if (part === "title") {
+        value = listing.title = {title: this.storage.title.get(), titleRev: this.storage.titleRev.get()};
+      } else if (part === "activity") {
+        let lastActive = this.#lastActiveListed;
+        value = listing.activity = lastActive && {lastActive, totalCost: this.storage.totalCost.get()};
+      } else {
+        let was = listing.blueprints;
+        listing.blueprints = new Map();
+        for (let record of Array.from(this.storage.blueprints.list())) {
+          // A release is written locally before it is public. Keep the last confirmed changes
+          // until propagation succeeds and the clean record marks this again.
+          let entry = record.dirty ? was.get(record.id) : {
+            blueprintId: record.id,
+            changes: this.#unpublishedChanges(record) ?? null,
+            gadgetId: (record.gadgetId ?? this.defaultGadgetId)!,
+          };
+          if (entry) listing.blueprints.set(record.id, entry);
+        }
+        value = [...listing.blueprints.values()];
+      }
+      let json = canonicalJson(value);
+      if (marked.has(part) && json !== this.#listingJson.get(part)) changed.add(part);
+      this.#listingJson.set(part, json);
+    }
+    return changed;
+  }
+
+  async #pushListings(): Promise<void> {
+    let ownerId = this.ownerId;
+    if (!ownerId || this.storage.deleting.get()) return;
+    let resyncs = this.#listingResyncs;
+    this.#listingResyncs = new Map();
+    let changed = this.#refreshListing(resyncs.size > 0);
+    if (!changed.size && !resyncs.size) return;
+    let listing = this.#listing;
+    let sharing = await this.getSharingManager();
+    // Read in the same synchronous step as every access below: each collaborator's outputs carry
+    // the revision their access was read at.
+    let accessRev = this.storage.accessRev.get();
+
+    // What each recipient is sent, by User DO id: each part they are entitled to that changed,
+    // or every one for a recipient being resynced. With the profile id of a collaborator whose
+    // summary depends on their admission.
+    let sends = new Map<string, {listing: WorkspaceListing, profileId?: string}>();
+    let sendTo = (userId: string, part: ListingPart) => {
+      if (!changed.has(part) && !resyncs.has(userId)) return undefined;
+      let entry = sends.get(userId) ?? {listing: {}};
+      sends.set(userId, entry);
+      return entry;
+    };
+    let entry;
+    if ((entry = sendTo(ownerId, "outputs"))) entry.listing.outputs = listing.outputs;
+    if ((entry = sendTo(ownerId, "summary"))) entry.listing.summary = listing.summary;
+    if ((entry = sendTo(ownerId, "title"))) entry.listing.title = listing.title;
+    if (listing.activity && (entry = sendTo(ownerId, "activity"))) entry.listing.activity = listing.activity;
+    if (listing.blueprints.size && (entry = sendTo(ownerId, "blueprints"))) {
+      entry.listing.blueprintChanges = [...listing.blueprints.values()];
+    }
+    // Each collaborator sent outputs, with the access scoping them (none: every output): each
+    // with a session open here, and each being resynced, as their access now stands.
+    let scopes = new Map<string, CollaboratorAccess | undefined>();
+    for (let [userId, {access}] of this.#connectedIndexes) scopes.set(userId, access);
+    for (let [userId, profileId] of resyncs) {
+      let access = profileId === undefined ? undefined : sharing.getEffectiveAccess(profileId);
+      if (access) scopes.set(userId, access);
+    }
+    for (let [userId, access] of scopes) {
+      if (userId === ownerId || !(entry = sendTo(userId, "outputs"))) continue;
+      // Filtered rather than rebuilt per recipient, which reads no storage.
+      entry.listing.outputs = access
+          ? listing.outputs.filter(output => accessIncludesGadget(access, output.workpieceId))
+          : listing.outputs;
+      entry.listing.accessRev = accessRev;
+    }
+    for (let {profile, access} of sharing.listCollaborators()) {
+      let userId = this.users.idFromName(profile.id).toString();
+      if ((entry = sendTo(userId, "title"))) entry.listing.title = listing.title;
+      if (access.role === "build" && (entry = sendTo(userId, "summary"))) {
+        entry.listing.summary = listing.summary;
+        entry.profileId = profile.id;
+      }
+    }
+    await Promise.all([...sends].map(([userId, {listing, profileId}]) =>
+        this.#pushListingTo(userId, listing, profileId)));
+  }
+
+  async #pushListingTo(userId: string, listing: WorkspaceListing, profileId?: string): Promise<void> {
+    // A collaborator's summary only while admitted (access to what this workspace reads
+    // confirmed): not admitted, theirs stays unknown.
+    if (listing.summary && profileId !== undefined &&
+        !await this.mayReadChatState(userId, profileId).catch(() => false)) {
+      delete listing.summary;
+    }
+    if (!Object.keys(listing).length) return;
+    try {
+      await boundedUserUpdate(this.users.get(this.users.idFromString(userId))
+          .syncWorkspaceListing(this.ctx.id.toString(), listing));
+    } catch (error) {
+      this.logger.warn("failed to push workspace listing", {
+        event: "workspace.listing.push.failed", gadgetId: this.ctx.id.toString(), error,
+      });
+      this.restartIfLoopLimited(error);
+    }
+  }
 
   // --- Deployment directory ----------------------------------------------------------
   //
@@ -7726,7 +8142,8 @@ class OverseerImpl implements AgentHooks {
       attachments: ChatAttachmentRef[] | undefined,
       formats: MessageFormatRef[] | undefined,
       scratchWorktree?: PreparedScratchWorktree,
-      attachmentSourceCommit?: string): number | undefined {
+      attachmentSourceCommit?: string,
+      replyToSequence?: number): number | undefined {
     this.#validateCapsules(chatId, capsules);
     // Format references describe the text the user wrote, which for a slash command is its
     // arguments, what the transcript shows, not the message the provider expanded them into.
@@ -7760,8 +8177,9 @@ class OverseerImpl implements AgentHooks {
         capsules,
         attachments,
         formats,
+        replyToSequence,
       });
-      return messageSequence;
+      return;
     }
 
     if (prepared.message === undefined) return;
@@ -7781,8 +8199,8 @@ class OverseerImpl implements AgentHooks {
       capsules,
       attachments,
       formats,
+      replyToSequence,
     });
-    return messageSequence;
   }
 
   async newChat(
@@ -7791,14 +8209,8 @@ class OverseerImpl implements AgentHooks {
     initialMessage: string | SlashCommandRequest,
     capsules?: CapsuleSpecifier[],
     attachments?: ChatAttachmentHandle[],
-    responseTargetRegistration?: ExternalMessageResponseTargetRegistration,
-    externalChatKey?: string,
     formats?: MessageFormatRef[],
   ): Promise<number> {
-    if (responseTargetRegistration) {
-      let decision = this.#prepareExternalMessageResponseTargetRegistration(responseTargetRegistration);
-      if (decision.reuseExisting) return decision.record.chatId;
-    }
     if (typeof initialMessage !== "string" && (capsules?.length || attachments?.length)) {
       throw new Error("Slash commands cannot include resources or attachments.");
     }
@@ -7828,29 +8240,13 @@ class OverseerImpl implements AgentHooks {
       this.storage.chatMeta.put(meta);
       this.storage.chatContext.put({...this.getChatAgentContext(chatId), attachmentsMigrated: true});
 
-      let promptSequence = this.#commitPreparedChatMessage(
+      this.#commitPreparedChatMessage(
           chatId, timestamp, userMeta.profile, prepared, capsules, canonicalAttachments, formats,
           scratchWorktree, scratchWorktree?.commitId);
-      if (responseTargetRegistration) {
-        if (promptSequence === undefined) {
-          throw new Error("External messages require a prompt.");
-        }
-        this.registerExternalMessageResponseTarget(
-          responseTargetRegistration.idempotencyKey,
-          chatId,
-          promptSequence,
-          responseTargetRegistration.chatGatewayRpcTarget,
-        );
-      }
-      if (externalChatKey) {
-        this.storage.externalChats.put({ externalChatKey, chatId });
-      }
     });
 
     if (prepared.message !== undefined && userMeta.aiModel) {
-      let needsAgentTurnKeepAlive = responseTargetRegistration !== undefined;
-      this.startAgent(chatId, userMeta.aiModel, userMeta.profile,
-                      clientUser.id.toString(), false, needsAgentTurnKeepAlive);
+      this.startAgent(chatId, userMeta.aiModel, userMeta.profile, clientUser.id.toString());
     }
 
     if (userMeta.quickModel) {
@@ -7876,14 +8272,16 @@ class OverseerImpl implements AgentHooks {
   // queue to whoever stopped it. Returns whether `message` was queued.
   steerRunningTurn(chatId: number, userId: string, author: AiChatAuthorInfo,
                    message: string | SlashCommandRequest, capsules?: CapsuleSpecifier[],
-                   attachments?: ChatAttachmentHandle[], formats?: MessageFormatRef[]): boolean {
+                   attachments?: ChatAttachmentHandle[], formats?: MessageFormatRef[],
+                   replyToSequence?: number): boolean {
     const isPlainTextMessage = typeof message === "string" && message.trim() !== "" &&
         !capsules?.length && !attachments?.length && !formats?.length;
     const turnTakesSteers = this.#runningAgents.has(chatId) &&
         !this.#liveChats.get(chatId)?.cancelController.signal.aborted;
     if (!isPlainTextMessage || !turnTakesSteers) return false;
     let meta = this.getChatMetaOrThrow(chatId);
-    meta.queuedSteers = [...meta.queuedSteers ?? [], {text: message, author}];
+    meta.queuedSteers = [...meta.queuedSteers ?? [],
+      {text: message, author, ...(replyToSequence !== undefined ? {replyToSequence} : {})}];
     meta.lastActive = this.getChatTimestamp();
     this.storage.chatMeta.put(meta);
     this.recordGadgetAnalytics({
@@ -7902,13 +8300,9 @@ class OverseerImpl implements AgentHooks {
     message: string | SlashCommandRequest,
     capsules?: CapsuleSpecifier[],
     attachments?: ChatAttachmentHandle[],
-    responseTargetRegistration?: ExternalMessageResponseTargetRegistration,
     formats?: MessageFormatRef[],
+    replyToSequence?: number,
   ): Promise<void> {
-    if (responseTargetRegistration) {
-      let decision = this.#prepareExternalMessageResponseTargetRegistration(responseTargetRegistration);
-      if (decision.reuseExisting) return;
-    }
     if (typeof message !== "string" && (capsules?.length || attachments?.length)) {
       throw new Error("Slash commands cannot include resources or attachments.");
     }
@@ -7956,22 +8350,11 @@ class OverseerImpl implements AgentHooks {
     try {
       this.ctx.storage.transactionSync(() => {
         this.storage.chatMeta.put(meta);
-        let promptSequence = this.#commitPreparedChatMessage(
+        this.#commitPreparedChatMessage(
             chatId, meta.lastActive, userMeta.profile, prepared, capsules, canonicalAttachments,
-            formats, preparedScratchWorktree, attachmentSourceCommit);
+            formats, preparedScratchWorktree, attachmentSourceCommit, replyToSequence);
         if (scratchWorktree && attachmentFiles.size) {
           this.#appendWorkspaceAttachments(chatId, scratchWorktree, attachmentChanges, userMeta.profile);
-        }
-        if (responseTargetRegistration) {
-          if (promptSequence === undefined) {
-            throw new Error("External messages require a prompt.");
-          }
-          this.registerExternalMessageResponseTarget(
-            responseTargetRegistration.idempotencyKey,
-            chatId,
-            promptSequence,
-            responseTargetRegistration.chatGatewayRpcTarget,
-          );
         }
       });
     } catch (error) {
@@ -7982,9 +8365,7 @@ class OverseerImpl implements AgentHooks {
     }
 
     if (runsAgentTurn && userMeta.aiModel) {
-      let needsAgentTurnKeepAlive = responseTargetRegistration !== undefined;
-      this.startAgent(chatId, userMeta.aiModel, userMeta.profile,
-                      clientUser.id.toString(), false, needsAgentTurnKeepAlive);
+      this.startAgent(chatId, userMeta.aiModel, userMeta.profile, clientUser.id.toString());
     }
     this.recordGadgetAnalytics({
       event_name: "gadget_interaction",
@@ -7992,130 +8373,6 @@ class OverseerImpl implements AgentHooks {
       chat_id: chatId,
       interaction_type: "chat_message_sent",
     });
-  }
-
-  registerExternalMessageResponseTarget(
-    idempotencyKey: string,
-    chatId: number,
-    promptSequence: number,
-    chatGatewayRpcTarget: NativeRpcStub<ChatGatewayRpcTarget>,
-  ): void {
-    if (this.storage.gadgetResponseDeliveries.undeliveredByChatId.get(chatId)) {
-      throw new Error("This chat already has an undelivered workspace response target.");
-    }
-    chatGatewayRpcTarget = chatGatewayRpcTarget.dup();
-    try {
-      this.storage.gadgetResponseDeliveries.put({
-        idempotencyKey,
-        chatId,
-        promptSequence,
-        chatGatewayRpcTarget,
-        createdAt: Date.now(),
-        status: "waiting",
-      });
-    } catch (err) {
-      chatGatewayRpcTarget[Symbol.dispose]();
-      throw err;
-    }
-  }
-
-  #prepareExternalMessageResponseTargetRegistration(
-    { idempotencyKey }: ExternalMessageResponseTargetRegistration,
-  ): ExternalMessageResponseTargetRegistrationDecision {
-    let existing = this.storage.gadgetResponseDeliveries.get(idempotencyKey);
-
-    // No prior record exists for this external message, so process it as fresh.
-    if (!existing) return { reuseExisting: false };
-
-    // A prior record points at a deleted chat, so discard it and process the retry fresh.
-    if (!this.storage.chatMeta.get(existing.chatId)) {
-      this.#deleteExternalMessageResponseDeliveryRecord(existing);
-      return { reuseExisting: false };
-    }
-
-    if (existing.status === "ready") {
-      this.deliverExternalMessageResponse(existing, existing.responseText);
-    }
-    return { reuseExisting: true, record: existing };
-  }
-
-  #deliverWaitingExternalMessageResponse(chatId: number): void {
-    let response = this.storage.gadgetResponseDeliveries.undeliveredByChatId.get(chatId);
-    if (response?.status !== "waiting") return;
-
-    // Chat storage is a single ordered table for all threads; each key starts with the chat ID.
-    let messagesAfterPrompt = [...this.storage.chats.list({
-      prefix: chatKeyPrefix(chatId),
-      startAfter: chatKey(chatId, response.promptSequence),
-    })];
-    let nextUserMessageIndex = messagesAfterPrompt.findIndex(
-      message => message.type === "message" && message.author.type === "user" && !message.steered,
-    );
-    // Stop at the next user message, which starts a later turn in the same chat. A steer doesn't.
-    let messagesInSameTurn = nextUserMessageIndex === -1
-      ? messagesAfterPrompt
-      : messagesAfterPrompt.slice(0, nextUserMessageIndex);
-    // Prefer the final agent message or terminal agent error in this turn.
-    for (let message of messagesInSameTurn.toReversed()) {
-      if (
-        (message.type === "error" ||
-          (message.type === "message" && message.author.type === "agent")) &&
-        message.message.trim()
-      ) {
-        this.deliverExternalMessageResponse(response, message.message);
-        return;
-      }
-    }
-    this.deliverExternalMessageResponse(response, "Agent turn completed without a response.");
-  }
-
-  deliverExternalMessageResponse(record: ExternalMessageRecord, text: string): void {
-    if (record.status === "delivered") return;
-
-    let readyRecord: ExternalMessageRecord = { ...record, status: "ready", responseText: text };
-    this.storage.gadgetResponseDeliveries.put(readyRecord);
-    this.#updateAlarm();
-    this.ctx.waitUntil(this.#deliverExternalMessageResponseToTarget(readyRecord).finally(() => {
-      this.#updateAlarm();
-    }));
-  }
-
-  async #deliverExternalMessageResponseToTarget(record: ExternalMessageRecord): Promise<void> {
-    if (record.status !== "ready") return;
-
-    try {
-      await record.chatGatewayRpcTarget.onGadgetResponse({
-        text: record.responseText,
-      });
-    } catch (err) {
-      this.logger.error("failed to deliver external message response", {
-        event: "external.message.response.delivery.failed",
-        chatId: record.chatId,
-        error: err,
-      });
-      throw err;
-    }
-    this.storage.gadgetResponseDeliveries.put({
-      idempotencyKey: record.idempotencyKey,
-      chatId: record.chatId,
-      promptSequence: record.promptSequence,
-      status: "delivered",
-      createdAt: record.createdAt,
-      deliveredAt: Date.now(),
-    });
-    record.chatGatewayRpcTarget[Symbol.dispose]();
-  }
-
-  async deliverReadyExternalMessageResponses(): Promise<void> {
-    let readyRecords = [...this.storage.gadgetResponseDeliveries.readyByIdempotencyKey.list()];
-
-    let results = await Promise.allSettled(
-      readyRecords.map(record => this.#deliverExternalMessageResponseToTarget(record)),
-    );
-    for (let result of results) {
-      if (result.status === "rejected") throw result.reason;
-    }
-    this.#updateAlarm();
   }
 
   // Stops the chat's running agent. Its queued steers are dropped: the client that stops puts them
@@ -8160,10 +8417,10 @@ class OverseerImpl implements AgentHooks {
   }
 
   // Moves the chat's queued steers into its log as user messages, `steered` unless they prompt a
-  // turn, then writes `meta` without them. Subscribers thus get the messages before the metadata,
-  // as subscribeToChat's catch-up delivers them.
+  // turn and keeping what each replies to, then writes `meta` without them. Subscribers thus get
+  // the messages before the metadata, as subscribeToChat's catch-up delivers them.
   #logQueuedSteers(meta: StoredChatMetadata, steered: boolean): string[] {
-    let steers = (meta.queuedSteers ?? []).map(({text, author}) => {
+    let steers = (meta.queuedSteers ?? []).map(({text, author, replyToSequence}) => {
       this.storage.chats.put({
         chatId: meta.id,
         sequence: this.nextChatSequence(meta.id),
@@ -8171,6 +8428,7 @@ class OverseerImpl implements AgentHooks {
         author,
         type: "message",
         message: text,
+        replyToSequence,
         ...(steered ? {steered: true} : {}),
       });
       return text;
@@ -8384,6 +8642,7 @@ class OverseerImpl implements AgentHooks {
       // The prompt is about to shrink, so the recorded total no longer describes it. Without this
       // the next turn would weigh a short prompt's usage against a long one and never re-trigger.
       delete meta.totalTokens;
+      delete meta.contextBudget;
       this.storage.chatMeta.put(meta);
     });
   }
@@ -8416,12 +8675,17 @@ class OverseerImpl implements AgentHooks {
   // needed to re-resolve the model config on resume.
   startAgent(chatId: number, aiModel: UserAiModelRecord,
              initiator: AiChatAuthorInfo, initiatorUserId: string,
-             callbackInitiated: boolean = false,
-             keepAlive: boolean = false): void {
+             callbackInitiated: boolean = false): void {
     // Register before starting the turn so registration always precedes the turn's teardown
     // (`#unregisterRunningAgent`, in `#runAgentTurn`'s finally).
     this.#registerRunningAgent(chatId);
     this.#resumeErrors.delete(chatId);
+    // A new turn, which the last one's failure no longer describes.
+    let meta = this.storage.chatMeta.get(chatId);
+    if (meta?.lastTurnFailed) {
+      delete meta.lastTurnFailed;
+      this.storage.chatMeta.put(meta);
+    }
     this.storage.activeAgents.put({
       chatId,
       initiatorUserId,
@@ -8431,9 +8695,7 @@ class OverseerImpl implements AgentHooks {
     });
 
     let liveChat = this.#getLiveChat(chatId);
-    let turn = this.#runAgentTurn(
-        chatId, aiModel, initiator, initiatorUserId, callbackInitiated, liveChat);
-    if (keepAlive) this.ctx.waitUntil(turn);
+    this.#runAgentTurn(chatId, aiModel, initiator, initiatorUserId, callbackInitiated, liveChat);
   }
 
   #runAgentTurn(chatId: number, aiModel: UserAiModelRecord,
@@ -8811,12 +9073,10 @@ class OverseerImpl implements AgentHooks {
         });
         this.postAgentErrorMessage(chatId, author,
             `Could not start the agent to handle its call(s): ${stringifyError(modelError)}`);
-        this.#deliverWaitingExternalMessageResponse(chatId);
         return;
       }
       if (!userMeta.aiModel) {
         // The spawner has no model: the calls sit in the chat for a human to pick up.
-        this.#deliverWaitingExternalMessageResponse(chatId);
         return;
       }
 
@@ -8832,7 +9092,6 @@ class OverseerImpl implements AgentHooks {
       if (author) {
         this.postAgentErrorMessage(chatId, author,
             `Failed to start the agent to handle its pending call(s): ${stringifyError(err)}`);
-        this.#deliverWaitingExternalMessageResponse(chatId);
       }
     } finally {
       // The set of pending calls changed (or a turn started): recompute the alarm.
@@ -9836,7 +10095,7 @@ class OverseerImpl implements AgentHooks {
     // Propagate to User DO.
     let owner = this.users.get(this.users.idFromString(this.ownerId));
     let isFeatured = await owner.updateBlueprint(
-      record.id, record.metadata, this.ctx.id.toString()
+      record.id, record.metadata, this.ctx.id.toString(), (record.gadgetId ?? this.defaultGadgetId)!
     );
 
     if (isFeatured) {
@@ -9883,6 +10142,7 @@ class OverseerImpl implements AgentHooks {
   blueprintSummaries(): BlueprintGadgetSummary[] {
     let result: BlueprintGadgetSummary[] = [];
     for (let record of Array.from(this.storage.blueprints.list())) {
+      let unpublishedChanges = this.#unpublishedChanges(record);
       result.push({
         id: record.id,
         title: record.metadata.title,
@@ -9891,10 +10151,21 @@ class OverseerImpl implements AgentHooks {
         codeVersionDate: this.#blueprintCodeDate(record),
         screenshotUrl: blueprintScreenshotUrl(record.id, record.metadata),
         dirty: record.dirty,
-        ...(this.#hasUnpublishedChanges(record) ? {unpublishedChanges: true} : {}),
+        // A record from before multi-gadget support is the default gadget's, which any workspace
+        // old enough to hold one has (see BlueprintGadgetRecord.gadgetId).
+        gadgetId: (record.gadgetId ?? this.defaultGadgetId)!,
+        ...(unpublishedChanges ? {unpublishedChanges} : {}),
       });
     }
     return result;
+  }
+
+  // What the gadget a blueprint exports has that the blueprint has not released, if anything.
+  #unpublishedChanges(record: BlueprintGadgetRecord): BlueprintUnpublishedChanges | undefined {
+    let code = this.#hasUnpublishedCode(record);
+    let bindings = this.#hasUnpublishedBindings(record);
+    if (!code && !bindings) return undefined;
+    return {...(code ? {code: true} : {}), ...(bindings ? {bindings: true} : {})};
   }
 
   // Whether the gadget a blueprint exports has committed files other than the ones the
@@ -9905,7 +10176,7 @@ class OverseerImpl implements AgentHooks {
   // The trees are what is compared, not the commits: publishing an unchanged tree mints nothing
   // and leaves `commitId` where it was (see mintBlueprintRelease), so a head that has moved on
   // to the same files would otherwise count as a change that no publish could clear.
-  #hasUnpublishedChanges(record: BlueprintGadgetRecord): boolean {
+  #hasUnpublishedCode(record: BlueprintGadgetRecord): boolean {
     let gadgetId = record.gadgetId ?? this.defaultGadgetId;
     let gadget = gadgetId === undefined ? undefined : this.storage.gadgets.get(gadgetId);
     let head = gadget?.type === "gadget" ? gadget.commitId : undefined;
@@ -9913,6 +10184,58 @@ class OverseerImpl implements AgentHooks {
     if (head === undefined || published === undefined || head === published) return false;
     let store = this.gitCache;
     return store.commitTree(head) !== store.commitTree(published);
+  }
+
+  // Whether the gadget's bindings, as updateBlueprint() would collect them now, differ from the
+  // ones the blueprint last published. Compared as canonical JSON, so the order bindings and
+  // their fields were written in does not count. Bindings that cannot be collected (a binding
+  // with no creation spec) could not be published either, so they count as none, and are only
+  // logged: this runs in the flush that pushes the code flag too.
+  #hasUnpublishedBindings(record: BlueprintGadgetRecord): boolean {
+    let gadgetId = record.gadgetId ?? this.defaultGadgetId;
+    if (gadgetId === undefined || this.storage.gadgets.get(gadgetId)?.type !== "gadget") return false;
+    try {
+      return canonicalJson(this.collectBindingMetadata(gadgetId)) !==
+          canonicalJson(record.metadata.bindings);
+    } catch (error) {
+      this.logger.warn("failed to collect blueprint bindings", {
+        event: "blueprint.bindings.collect.failed", gadgetId: this.ctx.id.toString(),
+        blueprintId: record.id, error,
+      });
+      return false;
+    }
+  }
+
+  // Whether each blueprint published from here has unpublished changes is mirrored into the
+  // owner's User DO record of it, as part of the workspace listing (see
+  // AuthenticatedApi.subscribeToOwnBlueprints()), so that their template list learns of a change
+  // kept in any chat without opening the workspace.
+
+  // A gadget's head or bindings changing or the gadget going, a connection a binding may name
+  // changing or going (collectBindingMetadata() reads its title, creationSpec and, for an agent
+  // spawner, its own bindings), and a blueprint being published, released or deleted. Bindings are
+  // compared whole, so a rename, a rebinding and a new annotation all count; a push that would send
+  // what was last taken is skipped, so a connection change that alters no blueprint costs no write.
+  #initializeBlueprintChangesTracking(): void {
+    let dirty = () => this.markListingDirty("blueprints");
+    this.storage.gadgets.subscribe({
+      add: () => {},
+      update: (old, record) => {
+        if (old.type === "gadget" && record.type === "gadget" && (old.commitId !== record.commitId ||
+            canonicalJson(old.bindings) !== canonicalJson(record.bindings))) dirty();
+      },
+      remove: dirty,
+    });
+    this.storage.gatekeepers.subscribe({
+      add: () => {},
+      update: (old, record) => {
+        if (old.resourceTitle !== record.resourceTitle ||
+            canonicalJson(old.creationSpec) !== canonicalJson(record.creationSpec) ||
+            canonicalJson(old.bindings) !== canonicalJson(record.bindings)) dirty();
+      },
+      remove: dirty,
+    });
+    this.storage.blueprints.subscribe({add: dirty, update: dirty, remove: dirty});
   }
 
   // The timestamp of the code exported into a blueprint: the exported commit's author date, or
@@ -9968,6 +10291,10 @@ class OverseerImpl implements AgentHooks {
       message,
       ...(code ? { code } : {}),
     });
+    // Any error but the user's stop is the turn failing (see AiChatMetadata.lastTurnFailed).
+    if (code !== "stopped" && !meta.lastTurnFailed) {
+      this.storage.chatMeta.put({...meta, lastTurnFailed: true});
+    }
   }
 
   // Auto-generate a title for the given
@@ -10007,8 +10334,6 @@ class OverseerImpl implements AgentHooks {
       // apply the same title as the chat itself.
       if (chatId === 0 && ["Untitled Gadget", "Untitled Workspace"].includes(this.storage.title.get()) && this.ownerId) {
         this.storage.title.put(result);
-        let owner = this.users.get(this.users.idFromString(this.ownerId));
-        await owner.updateTitle(this.ctx.id.toString(), result);
       }
 
       // TODO: Should we track costs for title generation? It's pretty negligible.
@@ -10049,8 +10374,6 @@ class OverseerImpl implements AgentHooks {
       let title = gadgetTitle.trim();
       if (title && this.ownerId) {
         this.storage.title.put(title);
-        let owner = this.users.get(this.users.idFromString(this.ownerId));
-        await owner.updateTitle(this.ctx.id.toString(), title);
       }
     } catch (err) {
       // Oh well, just leave the title as-is.
@@ -10062,7 +10385,7 @@ class OverseerImpl implements AgentHooks {
 
   addChatMessages(chatId: number, author: AiChatAuthorInfo,
         msgs: AiChatMessageBodyWithModelData[],
-        usage?: Usage, aiGatewayLogId?: string,
+        usage?: StepUsage, aiGatewayLogId?: string,
         aiGatewayLogRoute?: AiGatewayLogRoute): void {
     let meta = this.storage.chatMeta.get(chatId);
     if (!meta) {
@@ -10153,17 +10476,26 @@ class OverseerImpl implements AgentHooks {
     }
 
     if (usage !== undefined) {
-      meta.totalTokens = usage.totalTokens;
+      let {reported, inputBudget} = usage;
+      // The step's author is the model it ran on. A step the provider reported no tokens for
+      // measured nothing, so it leaves no figure to weigh the next prompt or show.
+      if (reported.totalTokens > 0) {
+        meta.totalTokens = reported.totalTokens;
+        meta.contextBudget = {tokens: inputBudget, model: author.id};
+      } else {
+        delete meta.totalTokens;
+        delete meta.contextBudget;
+      }
       meta.promptTokens =
-          (meta.promptTokens ?? 0) + usage.input + usage.cacheRead + usage.cacheWrite;
-      meta.cacheReadTokens = (meta.cacheReadTokens ?? 0) + usage.cacheRead;
-      meta.cacheWriteTokens = (meta.cacheWriteTokens ?? 0) + usage.cacheWrite;
+          (meta.promptTokens ?? 0) + reported.input + reported.cacheRead + reported.cacheWrite;
+      meta.cacheReadTokens = (meta.cacheReadTokens ?? 0) + reported.cacheRead;
+      meta.cacheWriteTokens = (meta.cacheWriteTokens ?? 0) + reported.cacheWrite;
     }
 
     meta.lastActive = this.getChatTimestamp();
     this.storage.chatMeta.put(meta);
 
-    this.#addRequestCost(chatId, usage, aiGatewayLogId, aiGatewayLogRoute, true);
+    this.#addRequestCost(chatId, usage?.reported, aiGatewayLogId, aiGatewayLogRoute, true);
   }
 
   // Adds a model request's cost to the chat's and workspace's totals: the cost AI Gateway logged
@@ -10430,12 +10762,7 @@ class OverseerImpl implements AgentHooks {
     let steered = false;
     let agent: AiChatAuthorInfo | undefined;
     for (let msg of this.storage.chats.list({prefix: chatKeyPrefix(chatId), reverse: true})) {
-      if (msg.type === "agentCallback" || msg.type === "agentNudge" ||
-          (msg.type === "slashCommand" && msg.request.id.builtin === true &&
-           msg.request.id.commandId === "compact") ||
-          isTurnPrompt(msg)) {
-        break;
-      }
+      if (isDecisionBoundary(msg)) break;
       // Null means a committed final response, not an interrupted segment to run again.
       // It also consumed any earlier inline approvals without suspending. A steer the agent read
       // after that response still needs an answer, so the turn is unfinished, waiting on nothing.
@@ -10513,6 +10840,7 @@ class OverseerImpl implements AgentHooks {
             : "The web fetches you requested have been approved. Fetch those URLs now.";
     this.addChatMessages(chatId, record.initiator, [{type: "agentNudge", text}]);
     meta.activeAgent = wait.agent;
+    delete meta.lastTurnFailed;
     meta.lastActive = this.getChatTimestamp();
     this.storage.chatMeta.put(meta);
     this.#registerRunningAgent(chatId);
@@ -11105,6 +11433,7 @@ class OverseerImpl implements AgentHooks {
     if (grant !== "workspace" && !this.isShareableGadget(grant.gadgetId)) {
       throw new Error(`No such gadget: ${grant.gadgetId}`);
     }
+    if (grant !== "workspace" && grant.mode === "view") return [];
     return this.#inScopeGatekeepers(grant).map(observerBindingNeed);
   }
 
@@ -11174,50 +11503,45 @@ class OverseerImpl implements AgentHooks {
 
   // Reconcile this workspace's cached listing for collaborators whose access changed: remove it
   // for those who lost access entirely, and for those who kept some, refresh the
-  // presentation-only role and their Outputs index, which may list gadgets they no longer hold.
+  // presentation-only role and their Outputs index, which may list gadgets they no longer hold
+  // (see deliverUserUpdates()).
   async refreshAffectedCollaboratorListings(affected: AffectedCollaborator[]): Promise<void> {
     if (!affected.length || this.storage.deleting.get()) return;
     // Persist in the sharing mutation's synchronous continuation, before a session restart or
     // gatekeeper teardown can interrupt it. Retries use this same source alarm after eviction.
+    // Journaled whether or not the role changes, as when one gadget of several is taken away.
     this.ctx.storage.transactionSync(() => {
-      for (let entry of affected) {
-        let userId = this.users.idFromName(entry.profile.id).toString();
-        let current = this.storage.pendingUserUpdates.get(userId);
-        let role = entry.newAccess?.role ?? null;
-        if (current?.role !== role) this.storage.pendingUserUpdates.put({
-          userId, profileId: entry.profile.id, role,
-        });
+      let accessRev = Math.max(Date.now(), this.storage.accessRev.get() + 1);
+      this.storage.accessRev.put(accessRev);
+      for (let {profile, newAccess} of affected) {
+        this.storage.pendingUserUpdates.put({userId: this.users.idFromName(profile.id).toString(),
+          profileId: profile.id, role: newAccess?.role ?? null, accessRev});
       }
     });
+    // Their sessions fan out only what they keep, until the restart that follows every narrowing
+    // ends this instance.
+    for (let {profile, newAccess} of affected) {
+      let sessions = this.#connectedIndexes.get(this.users.idFromName(profile.id).toString());
+      if (sessions && newAccess) sessions.access = newAccess;
+    }
     this.#userUpdatesRetryAt = 0;
     this.#updateAlarm();
     let work = this.deliverUserUpdates();
     this.ctx.waitUntil(work);
-    // Preserve the scoped Outputs refresh when access narrows without changing the role.
-    let outputs = await Promise.allSettled(affected.flatMap(entry => entry.newAccess === null ? [] : [
-      boundedUserUpdate(this.users.get(this.users.idFromName(entry.profile.id)).syncWorkspaceOutputs(
-        this.ctx.id.toString(), this.outputsSnapshot(entry.newAccess))),
-    ]));
-    for (let result of outputs) if (result.status === "rejected") {
-      this.logger.warn("failed to refresh affected collaborator's workspace outputs", {
-        event: "shared.gadget.access.refresh.failed", gadgetId: this.ctx.id.toString(), error: result.reason,
-      });
-    }
     await work;
   }
 
-  // The authorization gate every non-owner entry point (open(), receiveExternalMessage()) must
-  // pass through: resolve the caller's effective access, then verify a "build" collaborator as an
-  // observer of everything this workspace has read. Returns null for no access; verification
-  // failures throw. Collaborators with "use" access are not verified here: what they are admitted
-  // to is a workspace shell showing nothing any gadget read, and they are verified for each gadget
-  // as they get it (see authorizeGadget). A caller that requires "build" (e.g.
-  // receiveExternalMessage) passes `requireBuild` so other access is denied *before* verification
-  // runs -- otherwise the caller would be verified (real addObserver calls, a persisted observer
-  // record) only to be turned away, or worse, told to fix a verification failure that can never
-  // grant them access. `configureCb` is forwarded to ensureObserver to prompt for unconfigured
-  // account choices; without it, verification is non-interactive and an unconfigured binding
-  // denies access.
+  // The authorization gate every non-owner entry point (open(), and resumed agent turns in
+  // #resumeAgent) must pass through: resolve the caller's effective access, then verify a "build"
+  // collaborator as an observer of everything this workspace has read. Returns null for no access;
+  // verification failures throw. Collaborators with "use" access are not verified here: what they
+  // are admitted to is a workspace shell showing nothing any gadget read, and they are verified for
+  // each gadget as they get it (see authorizeGadget). A caller that requires "build" passes
+  // `requireBuild`, which returns null for any other access: without it, a "use" collaborator's
+  // access comes back unverified and truthy. #resumeAgent relies on this to hold a resumed turn's
+  // initiator to build access. `configureCb` is forwarded to ensureObserver to prompt for
+  // unconfigured account choices; without it, verification is non-interactive and an unconfigured
+  // binding denies access.
   async authorizeCollaborator(
       profileId: string,
       clientUser: DurableObjectStub<UserDurableObject>,
@@ -11247,24 +11571,32 @@ class OverseerImpl implements AgentHooks {
     return access;
   }
 
+  // How `profileId` may open gadget `gadgetId`: "live", only to "view" it as a snapshot, or not at
+  // all (null). Their effective access decides -- re-read live, since the workspace shell they
+  // hold was admitted with whatever access they had then -- and the gadget must be one that can be
+  // opened.
+  async gadgetOpenMode(profileId: string, gadgetId: WorkpieceId)
+      : Promise<"live" | "view" | null> {
+    let access = (await this.getSharingManager()).getEffectiveAccess(profileId);
+    if (!access || !accessIncludesGadget(access, gadgetId) || !this.isShareableGadget(gadgetId)) {
+      return null;
+    }
+    return accessIncludesLiveGadget(access, gadgetId) ? "live" : "view";
+  }
+
   // The gate a "use" collaborator passes to get gadget `gadgetId` (UseOverseerInterface.getGadget):
-  // confirm their effective access includes it -- re-read live, since the workspace shell they hold
-  // was admitted with whatever access they had then -- and that it can be opened, then verify them
-  // as an observer of what that one gadget reaches. Returns false for no access, so the caller can
-  // deny without revealing whether the gadget exists; verification failures throw. A failure
-  // denies only this gadget: the others they hold keep the access their own gets verified.
-  // `configureCb` is as for authorizeCollaborator. The in-flight session lease and its handoff are
-  // too: it counts as a session holding this gadget, so widening the gadget's scope mid-
-  // verification restarts it.
+  // confirm they may open it live (see gadgetOpenMode), then verify them as an observer of what
+  // that one gadget reaches. Returns false for no live access, so the caller can deny without
+  // revealing whether the gadget exists; verification failures throw. A failure denies only this
+  // gadget: the others they hold keep the access their own gets verified. `configureCb` is as for
+  // authorizeCollaborator. The in-flight session lease and its handoff are too: it counts as a
+  // session holding this gadget, so widening the gadget's scope mid-verification restarts it.
   async authorizeGadget(
       profileId: string,
       clientUser: DurableObjectStub<UserDurableObject>,
       gadgetId: WorkpieceId,
       configureCb?: RpcStub<ObserverConfigCallback>): Promise<boolean> {
-    let access = (await this.getSharingManager()).getEffectiveAccess(profileId);
-    if (!access || !accessIncludesGadget(access, gadgetId) || !this.isShareableGadget(gadgetId)) {
-      return false;
-    }
+    if (await this.gadgetOpenMode(profileId, gadgetId) !== "live") return false;
     let leaveSession = this.joinSession({kind: "use", profileId}, gadgetId);
     try {
       await this.ensureObserver(profileId, clientUser, {gadgetId}, configureCb);
@@ -11369,11 +11701,14 @@ class OverseerImpl implements AgentHooks {
 
         // 4. If there are uncovered bindings, ask the client to choose accounts for them.
         if (uncovered.length > 0) {
+          // Refused naming what it was for, so the client can tell which to offer to ask again.
+          let unconfirmed = (code: AccessConfirmationErrorCode) => createAccessConfirmationError(code, {
+            workspaceId: this.ctx.id.toString(),
+            ...(grant === "workspace" ? {} : {gadgetId: grant.gadgetId}),
+          });
           if (!configureCb) {
             // Non-interactive open (e.g. no UI). We can't configure, so deny.
-            throw new Error(
-                "To open this workspace, you must choose connected accounts for the services it " +
-                "uses, but no configuration channel was provided.");
+            throw unconfirmed(ACCESS_CONFIRMATION_ERROR_CODES.notAsked);
           }
 
           let needs: ObserverBindingNeed[] = uncovered.map(gk => ({
@@ -11383,7 +11718,12 @@ class OverseerImpl implements AgentHooks {
             failure: passFailures.get(gk.id),
           }));
 
-          let choices = await configureCb.configure(needs);
+          // A client that cannot or will not answer says why with a code; failing without one, it
+          // could not be asked, as when its connection was lost.
+          let choices = await configureCb.configure(needs).catch((err: unknown): never => {
+            throw unconfirmed(
+                getAccessConfirmationErrorCode(err) ?? ACCESS_CONFIRMATION_ERROR_CODES.disconnected);
+          });
           // The prompt may wait on the user indefinitely; check everything again after it.
           checked.clear();
           let uncoveredIds = new Set(uncovered.map(gk => gk.id));
@@ -11637,6 +11977,7 @@ class OverseerImpl implements AgentHooks {
         createdBy,
         role: record.role ?? "build",
         ...(record.gadgetId !== undefined ? {gadgetId: record.gadgetId} : {}),
+        ...(record.mode !== undefined ? {mode: record.mode} : {}),
         ...(record.gadgetIds !== undefined ? {gadgets: record.gadgetIds
           .filter(id => this.isShareableGadget(id))
           .map(id => ({id, title: this.getGadgetRecord(id).title}))} : {}),
@@ -11819,7 +12160,6 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
    *   alarm, picking the work up yet again. Work that outlasts ALARM_HANDLER_BUDGET_MS is held
    *   open by a chain of invocations, each handing off to the next, since the runtime aborts a DO
    *   whose alarm handler runs past 15 minutes.
-   * - External-message responses ready to deliver, and delivered records due to be swept.
    *
    * See OverseerImpl.runAlarmTasks for how the concerns are run together.
    */
@@ -11923,11 +12263,9 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
         ? owner
         : this.impl.users.get(this.impl.users.idFromString(userId));
 
-    // Refresh the owner's outputs index. Pushes are best-effort, and workspaces predating the
-    // index have never pushed at all, so re-syncing on open is what corrects both.
-    if (isOwner) {
-      this.impl.markOutputsDirty();
-    }
+    // Push the owner's listing again. Pushes are best-effort, and workspaces predating the listing
+    // have never pushed at all, so re-syncing on open is what corrects them.
+    if (isOwner) this.impl.resyncListingTo(this.impl.ownerId!);
 
     // The caller's effective access. The owner always has "build".
     let access: CollaboratorAccess = {role: "build"};
@@ -11969,7 +12307,6 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
 
       // Fire-and-forget a call to the collaborator's user DO so the gadget appears on
       // (or is refreshed on) their home page.
-      let title = this.impl.storage.title.get();
       let gadgetId = this.impl.ctx.id.toString();
       // Initial admission skips earlier alerts. Carry the timeline boundaries in this existing
       // callback so the User DO can initialize under its thread mutex without another RPC.
@@ -11990,16 +12327,19 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       void (async () => {
         try {
           const ownerProfile = await owner.whoami();
-          await clientUser.recordSharedWorkspaceOpen(gadgetId, title, ownerProfile, role, notificationBaselines);
+          await clientUser.recordSharedWorkspaceOpen(gadgetId, this.impl.storage.title.get(), ownerProfile,
+              role, notificationBaselines, this.impl.storage.titleRev.get());
         } catch (err) {
           this.impl.logger.warn("failed to record shared gadget open", {
             event: "shared.gadget.open.record.failed", gadgetId, error: err,
           });
           return;
         }
-        // Catch up whatever happened while they were away; changes from here on reach them
-        // through the session fan-out (joinOutputsFanout).
-        await this.impl.syncOutputsTo(clientUser, this.impl.outputsSnapshot(access));
+        // Catch up whatever happened while they were away, once listed (their User DO ignores a
+        // listing it doesn't have), their outputs as their access stands when sent, even if this
+        // session has ended by then; changes from here on reach them as they happen, their
+        // outputs while a session of theirs lasts (joinOutputsFanout).
+        this.impl.resyncListingTo(userId, profileId);
       })();
     }
 
@@ -12018,6 +12358,23 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     return new OverseerClientInterface(
         this.impl, profileId, userId, isOwner, notifyClosed.dup(),
         ensureCapsules);
+  }
+
+  /**
+   * Redeem `shareKey` for the user `userId` (profile `profileId`), opening no session: see
+   * AuthenticatedApi.redeemWorkspaceShareLink(). A workspace never initialised or being deleted
+   * answers false, as an unknown key does, and is left as it was.
+   */
+  async redeemShareLink(userId: string, profileId: string, shareKey: string): Promise<boolean> {
+    if (!this.impl.ownerId || this.impl.storage.deleting.get()) return false;
+    // The owner already has full access and should not appear in the collaborators table.
+    if (userId === this.impl.ownerId) return true;
+    let clientUser = this.impl.users.get(this.impl.users.idFromString(userId));
+    return (await this.impl.getSharingManager()).redeemShareKey({
+      rawKey: shareKey,
+      profileId,
+      fetchProfile: () => clientUser.whoami(),
+    });
   }
 
   /**
@@ -12058,167 +12415,94 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     return view;
   }
 
-  #getExternalChat(externalChatKey: string): ExternalChatRecord | undefined {
-    let externalChat = this.impl.storage.externalChats.get(externalChatKey);
-    if (externalChat && !this.impl.storage.chatMeta.get(externalChat.chatId)) {
-      this.impl.storage.externalChats.delete(externalChat.externalChatKey);
-      externalChat = undefined;
-    }
-    return externalChat;
-  }
-
-  async receiveExternalMessage(
-    input: ExternalMessageSubmitInput,
-  ): Promise<SubmitExternalMessageResult> {
-    if (this.impl.storage.deleting.get()) return {accepted: false, message: "Workspace was deleted."};
-    if (!input.prompt.trim()) {
-      return { accepted: false, message: "Please include a prompt." };
-    }
-
-    // Resolve the caller.
-    let caller = this.impl.users.getByName(input.callerEmail);
-    let callerId = caller.id.toString();
-    let callerProfile = await caller.whoamiIfExists();
-    if (!callerProfile) {
-      let siteName = resolveSiteName((await readAdminConfig(this.impl.env)).siteName);
-      return {
-        accepted: false,
-        message: `Please create a ${siteName} account to continue.`,
-      };
-    }
-
-    // Create the Gadget if it doesn't exist yet.
-    let ownerId = this.impl.ownerId;
-    if (!ownerId) {
-      this.impl.ownerId = callerId;
-      this.impl.ownerProfileId = callerProfile.id;
-      this.impl.storage.ownerId.put(callerId);
-      this.impl.storage.title.put(input.title);
-      this.impl.storage.ownerRegistrationPending.put(true);
-      this.#initializeNewWorkspace();
-      ownerId = callerId;
-      this.impl.recordGadgetAnalytics({
-        event_name: "gadget_created",
-        user_id: callerId,
-        source: "external_message",
-      });
+  /**
+   * Run an admin write (AdminApiImpl.writeWorkspace()). Reachable only over the Workshop's Durable
+   * Object binding, never through a capability a user holds. Reads its environment only through
+   * the OverseerImpl.
+   *
+   * As for openForAdmin(), by explicit policy the admin is not checked by authorizeCollaborator()
+   * or observer verification and joins no session, presence or outputs fan-out. Unlike
+   * openForAdmin(), a write does to the workspace what its operation does for a member.
+   *
+   * Refuses, writing and recording nothing:
+   *   - a workspace never initialised or since deleted (`workspaceNotFound`), before anything else
+   *     and again once its owner has been read;
+   *   - a malformed call (TypeError): a blank or over-long reason, a `via` that is not "api" or
+   *     "cli", or arguments that are not the action's;
+   *   - an admin who is no longer a deployment admin (`notAdmin`), and writes turned off
+   *     (`writesOff`), both read from this workspace's own environment.
+   *
+   * Then, in this order:
+   *   1. The AdminWriteRecord is appended to the deployment-wide log. A write whose record cannot
+   *      be written does not happen. Nor does one whose workspace was deleted while the record was
+   *      appended (`workspaceNotFound`): the record is kept, and nothing follows it.
+   *   2. The operation runs (see runAdminWrite()). If it throws, the error is rethrown; the
+   *      record stays.
+   * The workspace keeps no note of the write: the record is its only trace, and members see only
+   * what the operation did.
+   */
+  async applyAdminWrite(call: AdminWriteCall): Promise<void> {
+    let impl = this.impl;
+    if (!impl.ownerId) {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
     }
 
-    // A non-owner caller counts as a live "build" session from the moment they are authorized
-    // until this call completes: their reply is produced from whatever the workspace holds, and
-    // this path never constructs one of the counted client interfaces, so without a lease a scope
-    // widening mid-call would find no session to sever and the reply would be produced under
-    // stale verification. With it, the widening resets the DO, this call dies with it, and the
-    // caller retries. The lease deliberately starts only after authorizeCollaborator returns:
-    // verification itself is covered by that call's own internal lease, and a caller it turns
-    // away must never have counted at all -- a stranger racing an addGatekeeper would otherwise
-    // cause a needless workspace reset. The handoff between the two leases is microtask-only,
-    // the same argument as open()'s.
-    //
-    // KNOWN GAP, tolerable only while nothing calls this endpoint: this call's lease does not
-    // cover the fire-and-forget turn's initial run. A scope widening after this call returns can
-    // find no session to sever, and the reply can egress under stale verification. #resumeAgent
-    // already re-authorizes the original non-owner person and holds a build lease through a
-    // resumed run; its existing ActiveAgentRecord carries that identity. Before wiring this
-    // endpoint to real callers, give the initial run its own per-turn build lease too.
-    let leaveSession = () => {};
-    using _sessionLease = {[Symbol.dispose]: () => leaveSession()};
+    let reason = validateAdminAccessReason(call.reason);
+    if (call.via !== "api" && call.via !== "cli") {
+      throw new TypeError("An admin write's via must be \"api\" or \"cli\".");
+    }
+    let args = adminWriteArgs(call.action, call.args);
 
-    // Caller must be the owner or a build collaborator. The agent's reply can surface anything
-    // the workspace has already read (chat history, gadget storage), so a collaborator passes the
-    // same authorization gate as open() -- but non-interactively: with no way to configure
-    // accounts here, an unverified caller is sent to open the workspace, which is where
-    // verification happens. Requiring "build" up front means a "use" collaborator gets the plain
-    // denial below rather than being verified (or told to fix a verification failure) for access
-    // this path can never grant them.
-    if (ownerId !== callerId) {
-      let access: CollaboratorAccess | null;
-      try {
-        access = await this.impl.authorizeCollaborator(
-            callerProfile.id, caller, {requireBuild: true});
-      } catch (err) {
-        return {
-          accepted: false,
-          message: "Your access to the data this workspace has read could not be verified. Open " +
-              "the workspace in your browser to verify your access, then try again. " +
-              `(${stringifyError(err)})`,
-        };
-      }
-      if (access?.role !== "build") {
-        return {
-          accepted: false,
-          message: "You do not have access to interact with this workspace through its agent.",
-        };
-      }
-      leaveSession = this.impl.joinSession({kind: "build", profileId: callerProfile.id});
+    // Read from the OverseerImpl's environment, so that the checks hold for this workspace's
+    // isolate even if the Worker that called ran an older config.
+    if (!isDeploymentAdmin(impl.env, call.admin)) {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.notAdmin);
+    }
+    if (!adminWorkspaceWritesEnabled(impl.env)) {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.writesOff);
     }
 
-    // Complete pending registration in the owner's UserDO.
-    if (this.impl.storage.ownerRegistrationPending.get()) {
-      let owner = this.impl.users.get(this.impl.users.idFromString(ownerId));
-      await owner.ensureWorkspaceRegistered(this.ctx.id.toString(), this.impl.storage.title.get());
-      this.impl.storage.ownerRegistrationPending.put(false);
+    // Resolved before the record, so that nothing but its append is awaited between the record
+    // and the effect.
+    let ownerId = await impl.getOwnerProfileId();
+    // Deleted during that read: a deleted workspace gets no record, as for a view's call.
+    if (!impl.ownerId) {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
     }
 
-    // Find the external conversation's chat if it exists.
-    let externalChat = this.#getExternalChat(input.externalChatKey);
-    let modelId = null;
-    if (externalChat) {
-      // Continue existing chats with the most recent agent model used in that chat.
-      for (let msg of this.impl.storage.chats.list({ prefix: chatKeyPrefix(externalChat.chatId), reverse: true })) {
-        if (msg.author.type === "agent") {
-          modelId = msg.author.id;
-          break;
-        }
-      }
-    }
-
-    // Resolve the caller's profile and model.
-    let userContext = await caller.getExternalMessageChatContext(modelId);
-
-    // The caller must have an available agent model.
-    let aiModel = userContext.aiModel;
-    if (!aiModel) {
-      let siteName = resolveSiteName((await readAdminConfig(this.impl.env)).siteName);
-      return {
-        accepted: false,
-        message: `Your ${siteName} account needs an AI model configured before it can respond.`,
-      };
-    }
-
-    // Re-check because another request may have created the external chat while resolving the model.
-    externalChat = this.#getExternalChat(input.externalChatKey);
-
-    // Submit the prompt to the existing external chat, or start a new external chat.
-    let responseTargetRegistration: ExternalMessageResponseTargetRegistration = {
-      idempotencyKey: input.idempotencyKey,
-      chatGatewayRpcTarget: input.chatGatewayRpcTarget,
+    let record: AdminWriteRecord = {
+      kind: "write",
+      at: new Date(),
+      admin: call.admin,
+      sessionId: call.sessionId,
+      via: call.via,
+      workspaceId: impl.ctx.id.toString(),
+      workspaceOwner: ownerId,
+      workspaceTitle: cutAdminAuditText(impl.storage.title.get(), MAX_ADMIN_AUDIT_ARG_LENGTH),
+      method: call.action,
+      args: redactAdminAuditArgs(args),
+      reason,
     };
-    let chatId: number;
-    if (externalChat) {
-      await this.impl.sendChatMessage(
-        caller,
-        userContext,
-        externalChat.chatId,
-        input.prompt,
-        undefined,
-        undefined,
-        responseTargetRegistration,
-      );
-      chatId = externalChat.chatId;
-    } else {
-      chatId = await this.impl.newChat(
-        caller,
-        userContext,
-        input.prompt,
-        undefined,
-        undefined,
-        responseTargetRegistration,
-        input.externalChatKey,
-      );
+    try {
+      // No retention, as for a view's call (see adminViewCall()).
+      await impl.adminAudits.getByName("").append(record);
+    } catch (err) {
+      // Nothing has changed.
+      impl.logger.warn("failed to append to the admin audit log", {
+        event: "admin.audit.append.failed", operation: call.action, error: err,
+      });
+      throw err;
+    }
+    // Deleted while the record was appended.
+    if (!impl.ownerId) {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
     }
 
-    return { accepted: true, chatPath: `/workspace/${this.ctx.id.toString()}?chat=${chatId}` };
+    await runAdminWrite(impl, call.action, args);
+    // Never the reason or the arguments.
+    impl.logger.info("admin write applied", {
+      event: "admin.write.applied", operation: call.action,
+    });
   }
 
   /**
@@ -12671,12 +12955,15 @@ function boundHookInfos(impl: OverseerImpl): BoundHookInfo[] {
   let result: BoundHookInfo[] = [];
   for (let record of impl.storage.boundHooks.list()) {
     let gatekeeper = impl.storage.gatekeepers.get(record.gatekeeperId);
+    let caller = impl.storage.actions.get(record.actionId)?.caller;
     result.push({
       id: record.id,
       gatekeeperId: record.gatekeeperId,
       // Hooks recorded before multi-gadget support carry no gadgetId; they belong to the
       // default gadget, which necessarily exists in any workspace old enough to have them.
       gadgetId: (record.gadgetId ?? defaultGadgetId)!,
+      vendorId: record.vendorId ?? gatekeeperVendorId(gatekeeper),
+      chatId: caller && caller.from !== "hook" ? caller.chatId : undefined,
       resourceTitle: gatekeeper?.resourceTitle,
       resourceUrl: gatekeeper?.resourceUrl,
       description: record.description,
@@ -12894,7 +13181,6 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   async setTitle(title: string): Promise<void> {
     this.impl.storage.title.put(title);
-    await this.#owner.updateTitle(this.impl.ctx.id.toString(), title);
   }
 
   async subscribeToWorkpieces(subscriber: RpcStub<WorkpiecesSubscriber>): Promise<RpcStub<{}>> {
@@ -12988,6 +13274,19 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     // @ts-expect-error An RpcTarget implementing the interface works in place of a stub, but the
     //     type system doesn't know this.
     return new GadgetClientImpl(this.impl, id, this.clientUserId, this.#mintedCapabilityHolder());
+  }
+
+  async isViewOnly(id: WorkpieceId): Promise<boolean> {
+    this.impl.getGadgetRecord(id);  // validate it exists
+    return false;
+  }
+
+  async getGadgetSnapshot(id: WorkpieceId): Promise<RpcStub<GadgetSnapshotClient>> {
+    await this.impl.requireSnapshotSharing();
+    // @ts-expect-error An RpcTarget implementing the interface works in place of a stub, but the
+    //     type system doesn't know this.
+    return new GadgetSnapshotClientImpl(
+        this.impl, async () => true, this.impl.createGadgetSnapshot(id));
   }
 
   async deleteSelf(): Promise<void> {
@@ -13174,6 +13473,26 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         await this.#getClientProfile());
     await this.recordConnectionCreated(result, "agent_spawner");
     return result;
+  }
+
+  async listAgentSpawners(chatId?: number): Promise<AgentSpawnerInfo[]> {
+    let storage = this.impl.storage;
+    // The gadgets the chat sees: permanent ones, and its own provisional ones.
+    let gadgets = [...storage.gadgets.list()].filter((record): record is GadgetRecord =>
+        record.type === "gadget" && (!record.pending || record.pending.chatId === chatId));
+    return [...storage.gatekeepers.list()].flatMap(record => {
+      let spec = record.creationSpec;
+      if (spec?.type !== "agentSpawner") return [];
+      let bindings = gadgets.flatMap(gadget => this.impl.visibleBindings(gadget, chatId)
+          .filter(([, edge]) => edge.target === record.id)
+          .map(([name, edge]) => ({
+            gadgetId: gadget.id, name, ...(edge.pending ? {chatId: edge.pending.chatId} : {}),
+          })));
+      return [{
+        id: record.id, config: spec.config,
+        ...(spec.modelName !== undefined ? {modelName: spec.modelName} : {}), bindings,
+      }];
+    });
   }
 
   async listActions(options?: {beforeId?: number, filter?: ActionHistoryFilter})
@@ -13613,9 +13932,22 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     await this.impl.setChatNotificationsEnabled(this.clientUserId, chatId, enabled, this.clientProfileId);
   }
 
-  async listChats(): Promise<AiChatMetadata[]> {
-    return [...this.impl.storage.chatMeta.list({reverse: true})]
+  async listChats({kind, spawnerId, beforeId, limit}: ChatListOptions = {})
+      : Promise<AiChatMetadata[]> {
+    if (limit !== undefined && !(Number.isInteger(limit) && limit > 0)) {
+      throw new Error("A chat list's limit must be a positive integer.");
+    }
+    // One ranged read: off the collection itself for every chat, off byListing otherwise.
+    let chatMeta = this.impl.storage.chatMeta;
+    let range = {end: beforeId, reverse: true, limit};
+    let key = spawnerId !== undefined ? chatListingSpawnerKey(spawnerId) : kind;
+    return [...(key === undefined ? chatMeta.list(range) : chatMeta.byListing.get(key, range))]
         .map(meta => this.impl.chatMetaForClient(meta));
+  }
+
+  async getChatMetadata(chatId: number): Promise<AiChatMetadata | undefined> {
+    let meta = this.impl.storage.chatMeta.get(chatId);
+    return meta && this.impl.chatMetaForClient(meta);
   }
 
   async listModels(): Promise<AiChatAuthorInfo[]> {
@@ -13644,6 +13976,64 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   // caller already has its canonical metadata from the ChatAttachmentRef in the message.
   async getChatAttachmentContent(chatId: number, id: string): Promise<Uint8Array> {
     return await this.impl.getChatAttachmentData(chatId, id);
+  }
+
+  async listChatArtifacts(chatId: number, afterSequence?: number): Promise<ChatArtifactPage> {
+    if (afterSequence !== undefined && (!Number.isSafeInteger(afterSequence) || afterSequence < 0)) {
+      throw new TypeError(`Invalid afterSequence: ${afterSequence}`);
+    }
+    let storage = this.impl.storage;
+    // The +1 message probes whether there is a page after this one.
+    let messages = [...storage.chats.artifactsByChat.get(keyString(chatId), {
+      startAfter: afterSequence === undefined ? undefined : chatKey(chatId, afterSequence),
+      limit: CHAT_ARTIFACT_PAGE_SIZE + 1,
+    })];
+    let more = messages.length > CHAT_ARTIFACT_PAGE_SIZE;
+    if (more) messages.pop();
+
+    let artifacts: ChatArtifact[] = [];
+    for (let msg of messages) {
+      if (msg.type === "message") {
+        for (let ref of msg.attachments ?? []) {
+          artifacts.push({type: "attachment", timestamp: msg.timestamp,
+                          attachment: chatAttachmentInfo(ref, msg.sequence)});
+        }
+      } else if (msg.type === "changes") {
+        let created = [...(msg.createdGadgets ?? []).map(({gadgetId}) => gadgetId),
+                       ...(msg.createdWorktrees ?? []).map(({worktreeId}) => worktreeId)];
+        for (let id of created) {
+          // A reverted creation, or a gadget deleted since, is no longer the workspace's.
+          let record = storage.gadgets.get(id);
+          if (record) {
+            artifacts.push({type: "workpiece", sequence: msg.sequence, timestamp: msg.timestamp,
+                            workpiece: workpieceSummary(record, true)});
+          }
+        }
+      }
+    }
+
+    let connections: ChatConnectionUse[] | undefined;
+    if (afterSequence === undefined) {
+      let prefix = chatConnectionKeyPrefix(chatId);
+      connections = [];
+      for (let key of storage.actions.connectionsByChat.listKeys({prefix})) {
+        let gatekeeperId = Number(key.slice(prefix.length));
+        let gatekeeper = storage.gatekeepers.get(gatekeeperId);
+        if (!gatekeeper) continue;
+        connections.push({gatekeeperId, vendorId: gatekeeperVendorId(gatekeeper),
+                          resourceTitle: gatekeeper.resourceTitle, resourceUrl: gatekeeper.resourceUrl});
+      }
+    }
+    return {artifacts, nextAfterSequence: more ? messages.at(-1)!.sequence : undefined, connections};
+  }
+
+  async getChatAttachment(chatId: number, id: string): Promise<ChatAttachmentInfo | undefined> {
+    let key = chatAttachmentKey(chatId, validateChatAttachmentId(id));
+    for (let msg of this.impl.storage.chats.artifactsByChat.get(key)) {
+      let ref = msg.type === "message" ? msg.attachments?.find(a => a.id === id) : undefined;
+      if (ref) return chatAttachmentInfo(ref, msg.sequence);
+    }
+    return undefined;
   }
 
   // Existing clients page by compaction checkpoint. Bounded UI reads can cross those boundaries:
@@ -13826,25 +14216,34 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     let userMeta = await retryOnDoReset(
         () => this.#clientUser.getChatContext(chosenModelId), this.impl.logger);
     return this.impl.newChat(this.#clientUser, userMeta, initialMessage, capsules, attachments,
-                             undefined, undefined, formats);
+                             formats);
   }
 
   async sendChatMessage(
       chatId: number, message: string | SlashCommandRequest, chosenModelId: string | null,
       capsules?: CapsuleSpecifier[], attachments?: ChatAttachmentHandle[],
-      formats?: MessageFormatRef[]): Promise<void> {
+      formats?: MessageFormatRef[], replyToSequence?: number): Promise<void> {
     using _starting = this.#startingTurn(chatId);
+    // Messages leave a chat only with the whole chat, so one there now is there when this commits.
+    if (replyToSequence !== undefined) {
+      let repliedTo = Number.isInteger(replyToSequence)
+          ? this.impl.storage.chats.get(chatKey(chatId, replyToSequence)) : undefined;
+      if (repliedTo?.type !== "message" && repliedTo?.type !== "slashCommand") {
+        throw new Error(`Chat ${chatId} has no message ${replyToSequence} to reply to.`);
+      }
+    }
     // A steer runs on the running turn's model, so it is queued before the sender's model is
     // looked up: a collaborator need not have that model.
     let author = await this.#getClientProfile();
-    if (this.impl.steerRunningTurn(
-        chatId, this.clientUserId, author, message, capsules, attachments, formats)) {
+    if (this.impl.steerRunningTurn(chatId, this.clientUserId, author, message, capsules,
+        attachments, formats, replyToSequence)) {
       return;
     }
     let userMeta = await retryOnDoReset(
         () => this.#clientUser.getChatContext(chosenModelId), this.impl.logger);
     return this.impl.sendChatMessage(
-        this.#clientUser, userMeta, chatId, message, capsules, attachments, undefined, formats);
+        this.#clientUser, userMeta, chatId, message, capsules, attachments, formats,
+        replyToSequence);
   }
 
   async setChatTitle(chatId: number, title: string): Promise<void> {
@@ -13876,11 +14275,6 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   async deleteChat(chatId: number): Promise<void> {
     let startedAt = Date.now();
-    let response = this.impl.storage.gadgetResponseDeliveries.undeliveredByChatId.get(chatId);
-    if (response?.status === "waiting") {
-      this.impl.deliverExternalMessageResponse(response, "The chat was deleted before the agent responded.");
-    }
-
     // Delete the chat's workpiece registry footprint: provisional gadgets, all of its worktrees,
     // and provisional binding edges.
     await this.impl.removeChatWorkpieces(chatId);
@@ -13910,18 +14304,22 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     }
 
     // Delete the chat's messages and the attachment content referenced by them. Attachment metadata
-    // is canonical in each message's ChatAttachmentRef, so no separate attachment index is needed.
+    // is canonical in each message's ChatAttachmentRef. Buffer a page at a time: deleting a message
+    // updates the chats' non-unique indexes, which lists storage and so invalidates an open cursor.
     this.impl.ctx.storage.transactionSync(() => {
-      for (let msg of this.impl.storage.chats.list({prefix: chatKeyPrefix(chatId)})) {
-        if (msg.type === "message") {
-          for (let attachment of msg.attachments ?? []) {
-            let content = this.impl.storage.chatAttachmentContent.get(attachment.id);
-            if (content?.state.type === "committed" && content.state.chatId === chatId) {
-              this.impl.storage.chatAttachmentContent.delete(attachment.id);
+      for (let page; (page = Array.from(this.impl.storage.chats.list(
+          {prefix: chatKeyPrefix(chatId), limit: CHAT_DELETE_PAGE_SIZE}))).length;) {
+        for (let msg of page) {
+          if (msg.type === "message") {
+            for (let attachment of msg.attachments ?? []) {
+              let content = this.impl.storage.chatAttachmentContent.get(attachment.id);
+              if (content?.state.type === "committed" && content.state.chatId === chatId) {
+                this.impl.storage.chatAttachmentContent.delete(attachment.id);
+              }
             }
           }
+          this.impl.storage.chats.deleteRecord(msg);
         }
-        this.impl.storage.chats.deleteRecord(msg);
       }
     });
 
@@ -14111,6 +14509,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   async addCollaborator(username: string, grant: CollaboratorGrant, note?: string)
       : Promise<CollaboratorInfo | null> {
+    if (grant !== "workspace" && grant.mode === "view") await this.impl.requireSnapshotSharing();
     // Look up the user DO to check if the account exists.
     let userDoId = this.impl.users.idFromName(username);
     let userDo = this.impl.users.get(userDoId);
@@ -14133,10 +14532,12 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         .previewRemoveCollaborator(this.#sharingCaller(), profileId, gadgetId);
   }
 
-  async removeCollaborator(profileId: string, keepUsers: string[], gadgetId?: WorkpieceId)
-      : Promise<AffectedCollaborator[]> {
+  async removeCollaborator(profileId: string, keepUsers: string[], gadgetId?: WorkpieceId,
+                           keepView?: boolean): Promise<AffectedCollaborator[]> {
+    // Before the mutation, which severs their grants in the same step as it gives the view.
+    if (keepView) await this.impl.requireSnapshotSharing();
     let affected = (await this.impl.getSharingManager())
-        .removeCollaborator(this.#sharingCaller(), profileId, keepUsers, gadgetId);
+        .removeCollaborator(this.#sharingCaller(), profileId, keepUsers, gadgetId, keepView);
     let refresh = this.impl.refreshAffectedCollaboratorListings(affected);
     // Schedule the restart in the same synchronous step as the sharing mutation: the revoked
     // collaborator's live sessions must not outlive the cleanup below, which crosses gatekeeper
@@ -14163,7 +14564,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         .previewRevokeShareLink(this.#sharingCaller(), linkId);
   }
 
-  async revokeShareLink(linkId: string, keepUsers: string[]): Promise<AffectedCollaborator[]> {
+  async revokeShareLink(linkId: string, keepUsers: string[] | "everyone")
+      : Promise<AffectedCollaborator[]> {
     let affected = (await this.impl.getSharingManager())
         .revokeShareLink(this.#sharingCaller(), linkId, keepUsers);
     let refresh = this.impl.refreshAffectedCollaboratorListings(affected);
@@ -14184,13 +14586,16 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   async createShareLink(grant: CollaboratorGrant, note?: string, options?: {default?: boolean})
       : Promise<{ key: string; linkId: string }> {
+    if (grant !== "workspace" && grant.mode === "view") await this.impl.requireSnapshotSharing();
     return (await this.impl.getSharingManager()).createShareLink(
         { caller: this.#sharingCaller(), grant, note, default: options?.default });
   }
 
   async newShareLinkKey(linkId: string): Promise<{ key: string }> {
-    return (await this.impl.getSharingManager())
-        .newShareLinkKey({ caller: this.#sharingCaller(), linkId });
+    return (await this.impl.getSharingManager()).newShareLinkKey({
+      caller: this.#sharingCaller(), linkId,
+      requireViewSharing: () => this.impl.requireSnapshotSharing(),
+    });
   }
 
   async listShareLinks(): Promise<ShareLinkInfo[]> {
@@ -14208,8 +14613,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 // interface but permits only the handful of methods needed to render and interact with the
 // deployed UIs of the gadgets their access includes: getMetadata() (restricted to
 // id/title/owner), a restricted subscribeToMetadata(), subscribeToPresence(),
-// subscribeToWorkpieces() (listing only those gadgets), and getGadget() (verifying them for that
-// gadget, then returning a restricted, mainline-only UseGadgetClientInterface). Presence includes
+// subscribeToWorkpieces() (listing only those gadgets), getGadget() (for a gadget they may open
+// live, verifying them for it, then returning a restricted, mainline-only
+// UseGadgetClientInterface), isViewOnly(), and getGadgetSnapshot() (verifying nothing; see
+// GadgetSnapshotClientImpl). Presence includes
 // active viewers' names, profile IDs, and roles. Every other
 // method throws "Unauthorized", with a few exceptions: subscribeToConsoleLogs() and
 // subscribeToActions() return inert subscriptions (they never deliver data), and
@@ -14367,6 +14774,26 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
     return new UseGadgetClientInterface(this.impl, id, this.clientUserId, this.clientProfileId);
   }
 
+  async isViewOnly(id: WorkpieceId): Promise<boolean> {
+    let mode = await this.impl.gadgetOpenMode(this.clientProfileId, id);
+    if (!mode) throw new Error(`No such gadget: ${id}`);
+    return mode === "view";
+  }
+
+  // Unlike getGadget(), verifies nothing: a snapshot reaches none of what its gadget can (see
+  // GadgetSnapshotClientImpl). Open only to a view grant alone: a live grant opens the live
+  // gadget, through verification, and nothing else. Any other gadget is refused the same way, as
+  // is a refresh once the grant is no longer a view alone.
+  async getGadgetSnapshot(id: WorkpieceId): Promise<RpcStub<GadgetSnapshotClient>> {
+    await this.impl.requireSnapshotSharing();
+    let mayOpen = async () => await this.impl.gadgetOpenMode(this.clientProfileId, id) === "view";
+    if (!await mayOpen()) throw new Error(`No such gadget: ${id}`);
+    // @ts-expect-error An RpcTarget implementing the interface works in place of a stub, but the
+    //     type system doesn't know this.
+    return new GadgetSnapshotClientImpl(
+        this.impl, mayOpen, this.impl.createGadgetSnapshot(id));
+  }
+
   // --- Denied methods (build-only) ---
 
   async setTitle(_title: string): Promise<void> { this.#deny(); }
@@ -14399,6 +14826,7 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   async newAgentSpawnerGatekeeper(_config: AgentSpawnerConfig): Promise<GatekeeperClient<any>> {
     this.#deny();
   }
+  async listAgentSpawners(_chatId?: number): Promise<AgentSpawnerInfo[]> { this.#deny(); }
   // Pending actions are queried eagerly for the badge; resolved history is demand-loaded. Return
   // an empty terminal page so this speculative read does not fail for "use" collaborators.
   async listActions(_options?: {beforeId?: number, filter?: ActionHistoryFilter})
@@ -14438,7 +14866,8 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   async markChatRead(_chatId: number, _throughSequence?: number): Promise<void> { this.#deny(); }
   async markChatUnread(_chatId: number, _fromSequence?: number): Promise<boolean> { this.#deny(); }
   async setChatNotificationsEnabled(_chatId: number, _enabled: boolean): Promise<void> { this.#deny(); }
-  async listChats(): Promise<AiChatMetadata[]> { this.#deny(); }
+  async listChats(_options?: ChatListOptions): Promise<AiChatMetadata[]> { this.#deny(); }
+  async getChatMetadata(_chatId: number): Promise<AiChatMetadata | undefined> { this.#deny(); }
   async listModels(): Promise<AiChatAuthorInfo[]> { this.#deny(); }
   async getChatHistory(_chatId: number, _beforeSequence?: number, _limit?: number): Promise<AiChatHistoryPage> {
     this.#deny();
@@ -14465,6 +14894,12 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   }
   async readBlob(_oid: string): Promise<ReadableStream<Uint8Array>> { this.#deny(); }
   async getChatAttachmentContent(_chatId: number, _id: string): Promise<Uint8Array> { this.#deny(); }
+  async listChatArtifacts(_chatId: number, _afterSequence?: number): Promise<ChatArtifactPage> {
+    this.#deny();
+  }
+  async getChatAttachment(_chatId: number, _id: string): Promise<ChatAttachmentInfo | undefined> {
+    this.#deny();
+  }
   async setChatTitle(_chatId: number, _title: string): Promise<void> { this.#deny(); }
   async mergeChanges(_chatId: number): Promise<MergeChangesResult> {
     this.#deny();
@@ -14501,8 +14936,8 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   async listCollaborators(): Promise<CollaboratorInfo[]> { this.#deny(); }
   async addCollaborator(_username: string, _grant: CollaboratorGrant, _note?: string)
       : Promise<CollaboratorInfo | null> { this.#deny(); }
-  async removeCollaborator(_profileId: string, _keepUsers: string[], _gadgetId?: WorkpieceId)
-      : Promise<AffectedCollaborator[]> { this.#deny(); }
+  async removeCollaborator(_profileId: string, _keepUsers: string[], _gadgetId?: WorkpieceId,
+                           _keepView?: boolean): Promise<AffectedCollaborator[]> { this.#deny(); }
   async previewRemoveCollaborator(_profileId: string, _gadgetId?: WorkpieceId)
       : Promise<AffectedCollaborator[]> {
     this.#deny();
@@ -14514,7 +14949,8 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   async newShareLinkKey(_linkId: string): Promise<{ key: string }> { this.#deny(); }
   async listShareLinks(): Promise<ShareLinkInfo[]> { this.#deny(); }
   async updateShareLink(_linkId: string, _note?: string): Promise<void> { this.#deny(); }
-  async revokeShareLink(_linkId: string, _keepUsers: string[]): Promise<AffectedCollaborator[]> {
+  async revokeShareLink(_linkId: string, _keepUsers: string[] | "everyone")
+      : Promise<AffectedCollaborator[]> {
     this.#deny();
   }
   async previewRevokeShareLink(_linkId: string): Promise<AffectedCollaborator[]> { this.#deny(); }
@@ -14705,16 +15141,17 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
     });
   }
 
-  // The scan deleteChat() makes: a message's ChatAttachmentRef is the one record of an
-  // attachment's metadata. Each entry names the fields its type declares, since a stored
-  // reference also holds its path in the chat's scratch worktree, and can hold bytes.
-  async listChatAttachments(chatId: number): Promise<AdminChatAttachment[]> {
+  // A message's ChatAttachmentRef is the one record of an attachment's metadata, read off the
+  // index of the messages that record what a chat has (see listChatArtifacts()). Each entry names
+  // the fields its type declares, since a stored reference also holds its path in the chat's
+  // scratch worktree, and can hold bytes.
+  async listChatAttachments(chatId: number): Promise<ChatAttachmentInfo[]> {
     return this.#call("listChatAttachments", {chatId}, () => {
-      let attachments: AdminChatAttachment[] = [];
-      for (let msg of this.#impl.storage.chats.list({prefix: chatKeyPrefix(chatId)})) {
+      let attachments: ChatAttachmentInfo[] = [];
+      for (let msg of this.#impl.storage.chats.artifactsByChat.get(keyString(chatId))) {
         if (msg.type !== "message") continue;
-        for (let {id, oid, mimeType, name, size} of msg.attachments ?? []) {
-          attachments.push({id, oid, mimeType, name, size, sequence: msg.sequence});
+        for (let ref of msg.attachments ?? []) {
+          attachments.push(chatAttachmentInfo(ref, msg.sequence));
         }
       }
       return attachments;
@@ -14920,10 +15357,37 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
         storageBytes: impl.ctx.storage.sql.databaseSize,
         present: impl.presenceSnapshot(),
         nextAlarm: nextAlarm === null ? undefined : new Date(nextAlarm),
-        ownerRegistrationPending: storage.ownerRegistrationPending.get(),
       };
     });
   }
+}
+
+// Runs the operation of an admin write (see OverseerDurableObject.applyAdminWrite()): for each
+// action, the one a member's session runs for it, but for a stop that keeps the chat's queued
+// messages (see AdminApi.writeWorkspace()). `args` are as adminWriteArgs() kept them.
+async function runAdminWrite(impl: OverseerImpl, action: AdminWriteAction, args: AdminWriteArgs)
+    : Promise<void> {
+  // adminWriteArgs() checked that every argument the action needs was given.
+  let {chatId} = args as Required<AdminWriteArgs>;
+
+  switch (action) {
+    case "stopAgent":
+      impl.getChatMetaOrThrow(chatId);
+      // A stop drops the chat's queued steers, which the client that stops puts in its draft. No
+      // client stops this turn, so they are logged first, as when a turn fails: they stay in the
+      // chat as their senders' messages, and the agent reads them when it next runs.
+      impl.takeSteers(chatId);
+      impl.cancelAgent(chatId);
+      return;
+
+    case "restartWorkspace":
+      // Not awaited: the restart ends every call on the workspace, and this one is answered
+      // first.
+      impl.scheduleAccessRestart("Gadget restarted.");
+      return;
+  }
+  // Reached by no action: one without an operation above does not compile.
+  action satisfies never;
 }
 
 // Capability representing one gadget workpiece, handed to "build"-role sessions via
@@ -15000,13 +15464,13 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
     // Edges pending in other chats are those chats' unaccepted proposals, so they aren't listed.
     return this.impl.visibleBindings(record, chatId).map(([name, edge]) => {
       let gatekeeper = this.impl.storage.gatekeepers.get(edge.target);
+      let spec = gatekeeper?.creationSpec;
       return {
         name,
         target: edge.target,
         resourceTitle: gatekeeper?.resourceTitle || "(title unavailable)",
-        vendorId: gatekeeper?.creationSpec?.type === "gatekeeper"
-            ? gatekeeper.creationSpec.vendorId
-            : undefined,
+        vendorId: spec?.type === "gatekeeper" ? spec.vendorId : undefined,
+        ...(spec ? {kind: spec.type} : {}),
         ...(edge.pending ? {chatId: edge.pending.chatId} : {}),
       };
     });
@@ -15074,6 +15538,10 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
 
   async renameBinding(oldName: string, newName: string): Promise<void> {
     this.impl.renameBinding(this.id, oldName, newName);
+  }
+
+  async rebind(name: string, expectedTarget: WorkpieceId, target: WorkpieceId): Promise<void> {
+    this.impl.rebindWorkpiece(this.id, name, expectedTarget, target);
   }
 
   #getBindingEdge(name: string): {record: GadgetRecord, edge: BindingRecord} {
@@ -15191,6 +15659,7 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
       codeVersionDate,
       screenshotUrl: blueprintScreenshotUrl(id, metadata),
       dirty: record.dirty,
+      gadgetId: this.id,
     };
   }
 
@@ -15288,6 +15757,8 @@ class UseGadgetClientInterface extends RpcTarget implements GadgetClient {
   async bindWithSuggestedName(_target: WorkpieceId): Promise<string> { this.#deny(); }
   async unbind(_name: string): Promise<void> { this.#deny(); }
   async renameBinding(_oldName: string, _newName: string): Promise<void> { this.#deny(); }
+  async rebind(_name: string, _expectedTarget: WorkpieceId, _target: WorkpieceId)
+      : Promise<void> { this.#deny(); }
   async getBlueprintAnnotation(_name: string): Promise<BlueprintBindingAnnotation | null> {
     this.#deny();
   }
@@ -15301,6 +15772,85 @@ class UseGadgetClientInterface extends RpcTarget implements GadgetClient {
                        _options: {modelId: string | null, allowUnrelated?: boolean})
       : Promise<ApplyBlueprintResult> {
     this.#deny();
+  }
+}
+
+// A static snapshot of one gadget (see Overseer.getGadgetSnapshot), handed to the owner, "build"
+// collaborators, and a "use" collaborator who may only view the gadget. It runs the gadget's code
+// against its own copy of the gadget's storage, with no bindings (see
+// OverseerImpl.createGadgetSnapshot): what it shows is what the gadget had stored when it was
+// copied, and nothing it does reaches the gadget or anything the gadget can. So minting one
+// verifies nobody as an observer, and it counts as no session holding the gadget: a widening adds
+// nothing it can reach, and a revocation restarts the workspace, ending every snapshot. Its
+// interface picks only what a viewer needs from GadgetClient, so a new GadgetClient method never
+// reaches a snapshot unless it is added there deliberately.
+@validateRpc()
+class GadgetSnapshotClientImpl extends RpcTarget implements GadgetSnapshotClient {
+  #snapshot: GadgetSnapshot;
+
+  // `mayOpen` says whether its holder may still open the gadget, checked before each refresh
+  // after the deployment's own check (see OverseerImpl.requireSnapshotSharing).
+  constructor(private impl: OverseerImpl,
+              private mayOpen: () => Promise<boolean>, snapshot: GadgetSnapshot) {
+    super();
+    this.#snapshot = snapshot;
+  }
+
+  [Symbol.dispose]() {
+    this.impl.deleteGadgetSnapshot(this.#snapshot.facetName);
+  }
+
+  #deny(): never {
+    throw new Error("Unauthorized: a gadget snapshot can only be viewed.");
+  }
+
+  // The snapshot, unless it was deleted (by dispose, or with its gadget).
+  get #current(): GadgetSnapshot {
+    return this.impl.requireGadgetSnapshot(this.#snapshot);
+  }
+
+  async getId(): Promise<WorkpieceId> {
+    return this.#snapshot.gadgetId;
+  }
+
+  async getTitle(): Promise<string> {
+    return this.impl.getGadgetRecord(this.#current.gadgetId).title;
+  }
+
+  async getRefreshedAt(): Promise<Date> {
+    return this.#current.refreshedAt;
+  }
+
+  async refresh(): Promise<Date> {
+    let {gadgetId} = this.#current;
+    await this.impl.requireSnapshotSharing();
+    if (!await this.mayOpen()) throw new Error(`No such gadget: ${gadgetId}`);
+    // Re-read after the await, so a refresh racing dispose (or another refresh) replaces only the
+    // snapshot still held.
+    let previous = this.#current.facetName;
+    this.#snapshot = this.impl.createGadgetSnapshot(gadgetId);
+    this.impl.deleteGadgetSnapshot(previous);
+    return this.#snapshot.refreshedAt;
+  }
+
+  async getUiBundle(chatId?: number): Promise<UiBundle | null> {
+    if (chatId !== undefined) this.#deny();
+    return buildUiBundle(this.impl.gitCache.readCommitFiles(this.#current.commitId));
+  }
+
+  async connectToGadget(chatId?: number): Promise<RpcStub<any>> {
+    if (chatId !== undefined) this.#deny();
+    return this.impl.getSnapshotFacet(this.#current);
+  }
+
+  async getExportFormats(chatId?: number): Promise<GadgetExportFormat[]> {
+    if (chatId !== undefined) this.#deny();
+    return this.impl.listExportFormats(this.impl.snapshotExportSource(this.#current));
+  }
+
+  async export(id: string, chatId?: number): Promise<ReadableStream<Uint8Array>> {
+    if (chatId !== undefined) this.#deny();
+    return this.impl.runExport(this.impl.snapshotExportSource(this.#current), id);
   }
 }
 
@@ -15494,7 +16044,7 @@ class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
   readonly #end: SessionEnd;
 
   constructor(protected impl: OverseerImpl, protected gatekeeperId: number,
-              private caller: GatekeeperCaller, private hookId?: number,
+              protected caller: GatekeeperCaller, private hookId?: number,
               private executionId?: string, private leaveSession?: () => void) {
     super();
     this.#end = impl.sessionWatchers.newQueue();
@@ -15722,6 +16272,7 @@ class AgentSpawnerQueueImpl extends ApprovalQueueImpl implements AgentSpawnerQue
 
     let chatId = this.impl.nextChatId();
     let timestamp = this.impl.getChatTimestamp();
+    let spawnedByGadgetId = callerGadgetId(this.caller);
     let meta: AiChatMetadata = {
       id: chatId,
       title,
@@ -15730,6 +16281,7 @@ class AgentSpawnerQueueImpl extends ApprovalQueueImpl implements AgentSpawnerQue
       chatToken: crypto.randomUUID(),
       spawnerName: config.displayName,
       spawnerId: this.gatekeeperId,
+      ...(spawnedByGadgetId !== undefined ? {spawnedByGadgetId} : {}),
     };
     this.impl.storage.chatMeta.put(meta);
 

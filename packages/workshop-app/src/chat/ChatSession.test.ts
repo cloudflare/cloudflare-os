@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
 import type { FileChange } from '@gadgets/workshop-shared/code-change'
 import type {
+  ActionHistoryPage,
   ActionLogEntry,
   AiChatAuthorInfo,
   AiChatHistoryPage,
@@ -63,7 +64,11 @@ const fakeOverseer = (chats: Promise<AiChatMetadata[]>, histories: Record<number
   const actionsLease = { [Symbol.dispose]: actionsLeaseDispose } as unknown as RpcStub<{}>
   const viewDispose = vi.fn<() => void>()
 
+  // The workspace's chats, which the one asked for is read from.
   const listChats = vi.fn<() => Promise<AiChatMetadata[]>>(() => chats)
+  const getChatMetadata = vi.fn<Overseer['getChatMetadata']>((chatId) => listChats().then((listed) => listed.find(({ id }) => id === chatId)))
+  const listChatArtifacts = vi.fn<Overseer['listChatArtifacts']>(async () => ({ artifacts: [], connections: [] }))
+  const listActions = vi.fn<Overseer['listActions']>(async () => ({ entries: [] }))
   const getChatHistory = vi.fn<Overseer['getChatHistory']>(
     async (chatId) => histories[chatId] ?? page(),
   )
@@ -105,7 +110,9 @@ const fakeOverseer = (chats: Promise<AiChatMetadata[]>, histories: Record<number
 
   const broken = new Set<(error: unknown) => void>()
   const overseer: ChatOverseer = {
-    listChats,
+    getChatMetadata,
+    listChatArtifacts,
+    listActions,
     getChatHistory,
     subscribeToChat,
     subscribeToActions,
@@ -118,6 +125,9 @@ const fakeOverseer = (chats: Promise<AiChatMetadata[]>, histories: Record<number
   return {
     overseer,
     listChats,
+    getChatMetadata,
+    listChatArtifacts,
+    listActions,
     getChatHistory,
     subscribeToChat,
     subscribeToActions,
@@ -189,6 +199,7 @@ const steering = async () => {
 const log = (change: Partial<ActionLogEntry & { type: 'action' }> = {}): ActionLogEntry => ({
   id: 7,
   type: 'action',
+  from: 'agent',
   resourceTitle: 'Jira',
   createdAt: new Date(0),
   state: 'pending',
@@ -256,6 +267,50 @@ describe('ChatSession', () => {
       expect(session.getSnapshot()).toEqual({ status: 'failed', message: 'This chat doesn’t exist, or was deleted.' })
     })
 
+    it('shows its actions waiting from before the loaded messages, read from every page of the workspace’s pending ones', async () => {
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]), { 0: page(userMessage(5, 'go')) })
+      fake.listActions.mockImplementation(async ({ beforeId } = {}) => beforeId === undefined
+        ? { entries: [log({ id: 9, chatId: 0 }), log({ id: 8, chatId: 4 })], nextBeforeId: 8 }
+        : { entries: [log({ id: 3, chatId: 0 })] })
+      const session = await started(fake)
+
+      expect(fake.listActions).toHaveBeenLastCalledWith({ filter: 'pending', beforeId: 8 })
+      expect(ready(session).pinned.map(({ key }) => key)).toEqual(['waiting:action:3', 'waiting:action:9'])
+    })
+
+    it('keeps the decisions and new pending actions that arrive while the pending ones are still being read', async () => {
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]), { 0: page(userMessage(5, 'go')) })
+      const older = deferred<ActionHistoryPage>()
+      fake.listActions.mockImplementation(({ beforeId } = {}) => beforeId === undefined
+        ? Promise.resolve({ entries: [log({ id: 9, chatId: 0 })], nextBeforeId: 9 })
+        : older.promise)
+      const session = await started(fake)
+      await vi.waitFor(() => expect(fake.listActions).toHaveBeenCalledTimes(2))
+
+      fake.actions().entry(log({ id: 9, chatId: 0, state: 'rejected', resolvedBy: userAuthor }))
+      fake.actions().entry(log({ id: 12, chatId: 0 }))
+      older.resolve({ entries: [log({ id: 3, chatId: 0 })] })
+      await flush()
+
+      expect(ready(session).pinned.map(({ key }) => key)).toEqual(['waiting:action:3', 'waiting:action:12'])
+    })
+
+    it('fetches the history back to a request it waits on from before the loaded messages', async () => {
+      const request: AiChatMessage = {
+        chatId: 0, sequence: 2, timestamp: new Date(0), author: agentAuthor, type: 'connectionRequest',
+        requestId: 'r', vendorId: 'jira', vendorName: 'Jira', reason: 'To file it', state: 'pending',
+      }
+      const fake = fakeOverseer(Promise.resolve([{ ...chat(0, 'Chat', 1), awaitingDecision: true }]))
+      fake.getChatHistory.mockImplementation(async (_chatId, before) => before === undefined
+        ? { messages: [agentMessage(5, 'Waiting')], nextBeforeSequence: 5 }
+        : { messages: [userMessage(1, 'file it'), request], nextBeforeSequence: 1 })
+      const session = await started(fake)
+
+      await vi.waitFor(() => expect(ready(session).pinned.map(({ kind }) => kind)).toContain('connection'))
+      expect(fake.getChatHistory).toHaveBeenCalledTimes(2)
+      expect(fake.getChatHistory).toHaveBeenLastCalledWith(0, 5, 200)
+    })
+
     it('shows the messages before the chat list arrives, then the title and agent state', async () => {
       const chats = deferred<AiChatMetadata[]>()
       const fake = fakeOverseer(chats.promise, { 0: page(userMessage(0, 'hello')) })
@@ -291,18 +346,19 @@ describe('ChatSession', () => {
       await settled(session)
       expect(ready(session).usage).toEqual({})
 
-      fake.server().metadata({ ...chat(0, 'Chat', 1), totalTokens: 83_312, totalCost: 0.04 })
+      fake.server().metadata({ ...chat(0, 'Chat', 1), totalTokens: 83_312, contextBudget: { tokens: 168_000, model: 'claude' }, totalCost: 0.04 })
       await flush()
       const usage = ready(session).usage
-      expect(usage).toMatchObject({ tokens: 83_312, cost: 0.04 })
+      expect(usage).toMatchObject({ context: { tokens: 83_312, budget: 168_000, model: 'claude' }, cost: 0.04 })
 
-      fake.server().metadata({ ...chat(0, 'Renamed', 1), totalTokens: 83_312, totalCost: 0.04 })
+      fake.server().metadata({ ...chat(0, 'Renamed', 1), totalTokens: 83_312, contextBudget: { tokens: 168_000, model: 'claude' }, totalCost: 0.04 })
       await flush()
       expect(ready(session).usage).toBe(usage)
     })
 
     it('reports why loading failed', async () => {
-      const fake = fakeOverseer(Promise.reject(new Error("You don't have access to this workspace.")))
+      const fake = fakeOverseer(Promise.resolve([]))
+      fake.getChatMetadata.mockReturnValue(Promise.reject(new Error("You don't have access to this workspace.")))
       const session = await started(fake)
 
       expect(session.getSnapshot()).toEqual({ status: 'failed', message: "You don't have access to this workspace." })
@@ -328,8 +384,8 @@ describe('ChatSession', () => {
       const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]))
       await started(fake)
 
-      expect(fake.subscribeToChat.mock.invocationCallOrder[0]).toBeLessThan(fake.listChats.mock.invocationCallOrder[0])
-      expect(fake.subscribeToActions.mock.invocationCallOrder[0]).toBeLessThan(fake.listChats.mock.invocationCallOrder[0])
+      expect(fake.subscribeToChat.mock.invocationCallOrder[0]).toBeLessThan(fake.getChatMetadata.mock.invocationCallOrder[0])
+      expect(fake.subscribeToActions.mock.invocationCallOrder[0]).toBeLessThan(fake.getChatMetadata.mock.invocationCallOrder[0])
       expect(fake.subscribeToChat.mock.invocationCallOrder[0]).toBeLessThan(
         fake.getChatHistory.mock.invocationCallOrder[0],
       )
@@ -516,27 +572,23 @@ describe('ChatSession', () => {
       expect(ready(session).work).toEqual([])
     })
 
-    it('when the agent stops, drops text that never became a message and reports the turn end', async () => {
-      const onTurnEnded = vi.fn<() => void>()
+    it('when the agent stops, drops text that never became a message', async () => {
       const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1, agentAuthor)]))
-      const session = await started(fake, 0, { onTurnEnded })
+      const session = await started(fake, 0)
 
       fake.server().stream(0, { type: 'textDelta', delta: 'cut off' })
       fake.server().metadata(chat(0, 'Chat', 2))
 
       expect(ready(session)).toMatchObject({ work: [], activity: undefined })
-      expect(onTurnEnded).toHaveBeenCalledOnce()
     })
 
-    it('does not report a turn end for a title change', async () => {
-      const onTurnEnded = vi.fn<() => void>()
+    it('takes a title change from the chat’s metadata', async () => {
       const fake = fakeOverseer(Promise.resolve([chat(0, 'New Chat', 1)]))
-      const session = await started(fake, 0, { onTurnEnded })
+      const session = await started(fake, 0)
 
       fake.server().metadata(chat(0, 'Jira dashboard', 2))
 
       expect(ready(session).title).toBe('Jira dashboard')
-      expect(onTurnEnded).not.toHaveBeenCalled()
     })
 
     it('ignores activity in the workspace’s other chats', async () => {
@@ -846,7 +898,7 @@ describe('ChatSession', () => {
         author: agentAuthor,
         type: 'action',
         actionId: 3,
-        actionLog: { id: 3, type: 'bindHook', resourceTitle: 'Jira', createdAt: new Date(0), state: 'approved', description: { title: 'New issue', description: '' }, hookId: 1, enabled: true },
+        actionLog: { id: 3, type: 'bindHook', from: 'agent', resourceTitle: 'Jira', createdAt: new Date(0), state: 'approved', description: { title: 'New issue', description: '' }, hookId: 1, enabled: true },
       }
       const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]), { 0: page(userMessage(0, 'watch it'), hook, agentMessage(2, 'Watching.')) })
       const session = await started(fake)
@@ -989,7 +1041,7 @@ describe('ChatSession', () => {
     })
 
     it('switches a hook on and off, following the record for its state', async () => {
-      const hook: ActionLogEntry = { id: 7, type: 'bindHook', resourceTitle: 'Jira', createdAt: new Date(0), state: 'approved', description: { title: 'New issue', description: '' }, hookId: 3, enabled: true }
+      const hook: ActionLogEntry = { id: 7, type: 'bindHook', from: 'agent', resourceTitle: 'Jira', createdAt: new Date(0), state: 'approved', description: { title: 'New issue', description: '' }, hookId: 3, enabled: true }
       const { fake, session } = await withAction(hook)
 
       await session.setHookEnabled(3, false)
@@ -1250,7 +1302,7 @@ describe('ChatSession', () => {
 
       expect(await session.send('hello', 'model-1')).toBe(true)
 
-      expect(fake.sendChatMessage).toHaveBeenCalledExactlyOnceWith(4, 'hello', 'model-1', undefined, undefined)
+      expect(fake.sendChatMessage).toHaveBeenCalledExactlyOnceWith(4, 'hello', 'model-1', undefined, undefined, undefined, undefined)
       expect(fake.uploadBlob).not.toHaveBeenCalled()
       expect(ready(session).sendError).toBeUndefined()
     })
@@ -1271,7 +1323,7 @@ describe('ChatSession', () => {
         { oid: 'oid-3', mimeType: 'image/png', name: 'chart.png' },
         { oid: 'oid-5', mimeType: 'text/plain', name: 'notes.txt' },
         { oid: 'oid-1', mimeType: 'application/octet-stream', name: undefined },
-      ])
+      ], undefined, undefined)
     })
 
     it('does not send the message when a file cannot be uploaded', async () => {
@@ -1304,7 +1356,7 @@ describe('ChatSession', () => {
       const request = { id: { gatekeeperId: 7, commandId: 'c1/brief/SKILL.md' }, args: 'for Tuesday', commandPosition: 0 }
       const idle = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]))
       expect(await (await started(idle)).send(request, 'model-1')).toBe(true)
-      expect(idle.sendChatMessage).toHaveBeenCalledExactlyOnceWith(0, request, 'model-1', undefined, undefined)
+      expect(idle.sendChatMessage).toHaveBeenCalledExactlyOnceWith(0, request, 'model-1', undefined, undefined, undefined, undefined)
 
       const working = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1, agentAuthor)]))
       const session = await started(working)
@@ -1317,12 +1369,18 @@ describe('ChatSession', () => {
       const capsules = [{ position: 6, length: 3, gatekeeperId: 4, description: { url: 'https://docs.google.com/d/1', title: 'Q3', snippet: '', suggestedBindingName: 'Q3', tsType: 'Doc' } }]
       const idle = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]))
       expect(await (await started(idle)).send('about [0]', 'model-1', [], capsules)).toBe(true)
-      expect(idle.sendChatMessage).toHaveBeenCalledExactlyOnceWith(0, 'about [0]', 'model-1', capsules, undefined)
+      expect(idle.sendChatMessage).toHaveBeenCalledExactlyOnceWith(0, 'about [0]', 'model-1', capsules, undefined, undefined, undefined)
 
       const working = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1, agentAuthor)]))
       const session = await started(working)
       expect(await session.send('about [0]', 'model-1', [], capsules)).toBe(false)
       expect(ready(session).sendError).toBe('Connections can be added once the agent has finished.')
+    })
+
+    it('names the message a reply answers', async () => {
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]))
+      expect(await (await started(fake)).send('> go\n\nand faster', 'model-1', [], undefined, 3)).toBe(true)
+      expect(fake.sendChatMessage).toHaveBeenCalledExactlyOnceWith(0, '> go\n\nand faster', 'model-1', undefined, undefined, undefined, 3)
     })
 
     it('holds files back while the agent works, which only plain text can steer', async () => {

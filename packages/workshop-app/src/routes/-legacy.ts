@@ -25,7 +25,9 @@ const RENAMED: Record<string, string> = {
 export const legacyTarget = (pathname: string, search: Record<string, unknown>): LegacyTarget | undefined => {
   const path = pathname.replace(/\/+$/, '') || '/'
   if (RENAMED[path]) return { href: RENAMED[path] }
-  if (path.startsWith('/gatekeepers/')) return { href: '/connections' }
+  // A gatekeeper's app was at /gatekeepers/<id>.
+  const app = /^\/gatekeepers\/([^/]+)$/.exec(path)
+  if (app) return { href: `/apps/${app[1]}` }
 
   const template = /^\/blueprint\/([^/]+)$/.exec(path)
   if (template) return { href: `/library/templates/${template[1]}` }

@@ -1,6 +1,5 @@
 import { createFileRoute, notFound, useLocation, useNavigate, useRouter } from '@tanstack/react-router'
 import { formatAsideRef, parseItemPageId } from '@/aside/asideItems'
-import { agentKeyOf } from '@/automations/agents'
 import { GadgetSettingsPane } from '@/gadgets/GadgetSettingsPane'
 import { DEFAULT_GADGET_SETTINGS_TAB, GADGET_SETTINGS_TABS, type GadgetSettingsTab } from '@/gadgets/GadgetSettingsView'
 
@@ -53,8 +52,9 @@ function GadgetSettings() {
       onUpdateProposed={(chatId) => navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId, chatId }, search: { open: formatAsideRef(ref) } })}
       // A new chat in its workspace, beside it, with the start of the request written for the user to finish.
       onConnect={(title) => navigate({ to: '/', search: { workspace: workspaceId, open: formatAsideRef(ref) }, state: { gadgetTitle: title, draft: title ? `Connect “${title}” to ` : 'Connect this app to ' } })}
-      onOpenAgent={(spawnerId) => navigate({ to: '/workspace/$workspaceId/agent/$agentKey', params: { workspaceId, agentKey: agentKeyOf(spawnerId) } })}
-      agentHref={(spawnerId) => router.buildLocation({ to: '/workspace/$workspaceId/agent/$agentKey', params: { workspaceId, agentKey: agentKeyOf(spawnerId) } }).href}
+      // By the spawner's id, which the agent's page takes to its agent.
+      onOpenAgent={(spawnerId) => navigate({ to: '/workspace/$workspaceId/agent/$agentKey', params: { workspaceId, agentKey: String(spawnerId) } })}
+      agentHref={(spawnerId) => router.buildLocation({ to: '/workspace/$workspaceId/agent/$agentKey', params: { workspaceId, agentKey: String(spawnerId) } }).href}
     />
   )
 }

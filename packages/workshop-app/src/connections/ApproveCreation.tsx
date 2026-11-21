@@ -2,28 +2,28 @@ import { useCallback, useRef, useState } from 'react'
 import type { CreationApproval } from '@gadgets/workshop-shared/api'
 import { useApi } from '@/rpc/ApiContext'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
-import { creationAccountOf } from './connectionList'
+import { creationAccountOf, creationKindOf } from './connectionList'
 import { ConnectResource } from './SetUpConnection'
 import { useConnections } from './useConnections'
 
 /** A pending creation an agent asked for (`ActionLogEntry.creation`), as its card has it. */
 export type CreationAction = {
   actionId: number
-  /** The gatekeeper standing in for what is created, which says what it is (`getCreationSpec`). */
-  gatekeeperId: number
   /** What the card says: "Create Document: Weekly notes". */
   title: string
+  /** The connection it creates, whose creation spec says what and on which service. */
+  gatekeeperId: number
 }
 
 // What is being asked about, kept as the dialog closes so that it does not change as it goes.
 type Asking = {
   action: CreationAction
   vendorId: string
-  typeUrlPattern: string
+  typeUrlPattern?: string
   name: string
   logoUrl?: string
   resource?: string
-  /** What the agent suggested it be (`GatekeeperCreationSpec.configuration`), which the form opens on. */
+  /** What the agent suggested it be (the creation spec's `configuration`), which the form opens on. */
   configuration?: string
   open: boolean
 }
@@ -55,8 +55,8 @@ export const useApproveCreation = (workspaceId: string) => {
 
   const approveCreation = useCallback(async (action: CreationAction) => {
     if (connection?.blocked()) return
-    // Disposed by hand: `using` is not lowered for every browser this runs in.
     const overseer = api.openWorkspace(workspaceId)
+    // Pipelined: the connection is asked what it creates as it is reached.
     const gatekeeper = overseer.getGatekeeperById(action.gatekeeperId)
     let spec
     try {
@@ -65,19 +65,21 @@ export const useApproveCreation = (workspaceId: string) => {
       gatekeeper[Symbol.dispose]()
       overseer[Symbol.dispose]()
     }
-    if (spec.type !== 'gatekeeper') throw new Error('This can’t be created from here.')
-    const { vendorId, typeUrlPattern, configuration } = spec
+    if (spec.type !== 'gatekeeper') throw new Error('This isn’t something a service makes.')
+    const { vendorId, configuration } = spec
+    // One queued before stable type ids names its kind by its pattern alone.
+    const resourceTypeId = spec.resourceTypeId ?? spec.typeUrlPattern
     const known = latest.current
     const listed = known.status === 'ready' ? known.connections.filter((each) => each.vendorId === vendorId) : []
     const accounts = listed.flatMap((each) => (each.kind === 'account' ? [each.account] : []))
-    const kind = listed[0]?.resources.find(({ urlPattern }) => urlPattern === typeUrlPattern)
+    const kind = listed[0] && creationKindOf(listed[0].resources, resourceTypeId)
     // Where it goes is the user's to choose, in a form of the service's, so that is always asked.
-    const accountId = kind?.creationConfigurator ? undefined : creationAccountOf(accounts, vendorId, typeUrlPattern)
+    const accountId = kind?.creationConfigurator ? undefined : creationAccountOf(accounts, vendorId, resourceTypeId)
     if (accountId !== undefined) return approve(action.actionId, { accountId })
     const vendor = listed[0]?.vendor
     if (!vendor) throw new Error('This service isn’t offered here anymore.')
-    setAsking({ action, vendorId, typeUrlPattern, name: vendor.displayName, logoUrl: vendor.logo?.url, resource: kind?.title, configuration, open: true })
-  }, [api, connection, workspaceId, approve])
+    setAsking({ action, vendorId, typeUrlPattern: kind?.urlPattern, name: vendor.displayName, logoUrl: vendor.logo?.url, resource: kind?.title, configuration, open: true })
+  }, [api, workspaceId, connection, approve])
 
   const dialog = asking && (
     <ConnectResource

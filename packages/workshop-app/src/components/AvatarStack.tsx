@@ -1,4 +1,4 @@
-import { Avatar } from './Avatar'
+import { Avatar } from '@gadgets/ui'
 
 export type AvatarStackProps = {
   people: { id: string; name: string; src?: string }[]

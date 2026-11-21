@@ -12,7 +12,7 @@ import {
   type PreviewOAuthState,
 } from "@gadgets/gatekeeper-kit/preview-oauth";
 import { formatSubresourceId, parseSubresourceId } from "@gadgets/gatekeeper-kit/subresource-ids";
-import { exchangeAuthCode, getAccessToken, getGoogleAccountDescription, getGoogleAccountProfile, getGoogleVerifiedEmail, GoogleAccessToken, revokeGoogleToken } from "./google-api";
+import { exchangeAuthCode, getAccessToken, getGoogleAccountDescription, getGoogleAccountProfile, getGoogleVerifiedEmail, GoogleAccessToken, GoogleUserInfoError, RefreshFailure, revokeGoogleToken } from "./google-api";
 import type { GoogleDocEditSession, GoogleDocReadSession } from "./docs-types";
 import { GoogleDocsApi } from "./docs-api";
 import { GoogleSheetsApi } from "./sheets-api";
@@ -72,9 +72,11 @@ import {
   writeRefusal, WRITE_CONNECTION_REFUSED, WRITES_GRANT_MISSING, type DriveActor,
   type DriveWriteTargetPayload, type QueuedWrite,
 } from "./drive-writes";
-import { CONVERSION_FAILED, pdfToText, type PdfConverter } from "./drive-pdf";
+import {
+  CONVERSION_FAILED, pdfConverter, pdfUpload, releasedAtEnd, TranscriptionRefusal,
+  type PdfConverter, type PdfRangeReader, type PdfRead,
+} from "./drive-pdf";
 import { downloadableFile, exactRange, fileReadRange, FILE_CHANGED } from "./drive-file-read";
-import type { AiFetcher } from "./workers-ai-markdown";
 import { driveObserverTracker, type DriveObservation } from "./drive-observers";
 import {
   DOCS_SUBRESOURCE_NAMESPACE, DRIVE_SUBRESOURCE_NAMESPACE, parseFileSubresource,
@@ -86,7 +88,7 @@ import {
   DriveFolderSessionCore, DriveSessionCore, GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE,
   GOOGLE_SLIDES_MIME_TYPE, MOVE_INTO_ITSELF, MOVE_SINGLE_FILE, PDF_MIME_TYPE,
   requireDriveBindingScope, type DriveBindingScope, type DriveCore, type DriveWriteTarget,
-  type NativeRead,
+  type NativeRead, type NativeReadOptions,
 } from "./drive-session";
 import type {
   DocSuggestion, DriveAccess, DriveComment, DriveCommentOptions, DriveCommentReply, DriveEntry,
@@ -97,6 +99,7 @@ import type {
 } from "./drive-types";
 import { ChatApi, ChatApiError } from "./chat-api";
 import { verifyGoogleSubresourceAccess, type GoogleVerifierApi } from "./google-verifier-types";
+import { CloudIdentityApi, CloudIdentityApiError } from "./cloud-identity-api";
 import { BigQueryApi, BigQueryApiError, DEFAULT_MAX_BYTES_BILLED } from "./bigquery-api";
 import {
   BigQueryDataset, BigQueryDryRunResult, BigQueryField, BigQueryProject,
@@ -130,6 +133,7 @@ import {
   ChatSpaceConfiguratorUI,
   ChatThreadConfiguratorUI,
   GmailConfiguratorUI,
+  GoogleGroupConfiguratorUI,
   DriveConfiguratorUI,
   CreationLocationConfiguratorUI,
 } from "./google-configurators";
@@ -139,11 +143,12 @@ import CHAT_ACCOUNT_CONFIGURATOR_HTML from "./generated/chat-account-configurato
 import CHAT_SPACE_CONFIGURATOR_HTML from "./generated/chat-space-configurator-ui.txt";
 import CHAT_THREAD_CONFIGURATOR_HTML from "./generated/chat-thread-configurator-ui.txt";
 import GMAIL_CONFIGURATOR_HTML from "./generated/gmail-configurator-ui.txt";
+import GOOGLE_GROUP_CONFIGURATOR_HTML from "./generated/google-group-configurator-ui.txt";
 import DRIVE_CONFIGURATOR_HTML from "./generated/drive-configurator-ui.txt";
 import CREATION_LOCATION_CONFIGURATOR_HTML from "./generated/creation-location-configurator-ui.txt";
 import GOOGLE_LOGO_SVG from "./google-logo.svg";
 import { obsContext } from "./observability.js";
-import { AccessTokenCache, AccessTokenRequest, ACCESS_TOKEN_EXPIRY_SAFETY_MS } from "./auth-retry";
+import { AccessTokenCache, AccessTokenRequest, ACCESS_TOKEN_EXPIRY_SAFETY_MS, type AccessTokenProvider } from "./auth-retry";
 import { Mutex } from "./mutex";
 import { PendingActionStore } from "./pending-actions";
 import {
@@ -155,7 +160,7 @@ import { saveFile } from "./save-file";
 import {
   BIGQUERY_HOST, BIGQUERY_QUERY_PROJECT_PARAM, BIGQUERY_RESOURCE, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE,
   GOOGLE_CHAT_RESOURCE, GOOGLE_CHAT_SPACE_RESOURCE, GOOGLE_CHAT_THREAD_RESOURCE,
-  GOOGLE_DRIVE_RESOURCE,
+  GOOGLE_DRIVE_RESOURCE, GOOGLE_GROUP_RESOURCE,
   RESOURCE_BY_KIND,
   SUPPORTED_RESOURCES, creatableKind, nativeFileUrl,
   DRIVE_WRITES_GRANT, grantedResourceUrlPatterns, hasDriveResourceGrant, isPrivateGrant,
@@ -217,7 +222,7 @@ function getGoogleDriveTypesCode(write: boolean): string {
 }
 
 import {
-  GMAIL_SUBRESOURCE_NAMESPACE, parseGmailUserSubresource, type GmailGatekeeperImplProps,
+  GMAIL_SUBRESOURCE_NAMESPACE, parseGmailSubresource, type GmailGatekeeperImplProps, type GmailSubresource,
 } from "./gmail";
 import {
   CHAT_SUBRESOURCE_NAMESPACE, parseChatSubresource, type ChatSubresource, type GoogleChatGatekeeperImplProps,
@@ -456,7 +461,7 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
           "Connect your Google account to give Cloudflare OS access to Gmail, Google Docs, Google " +
           "Sheets, Google Slides, Google Drive, Google Calendar, Google Chat, and BigQuery. Build " +
           "agents that triage email, draft and edit documents, spreadsheets and presentations, " +
-          "search Drive and read native Docs and Sheets, find focus time, " +
+          "search Drive and read its Docs, Sheets, Slides, PDFs and other files, find focus time, " +
           "schedule meetings, follow and post to Chat conversations, or run analytics queries on " +
           "your data.",
       providesAuth: true,
@@ -548,13 +553,14 @@ const SUBRESOURCE_ACCESS_DENIED_TTL_MS = 15_000;
 type AccountSubresource =
   | { kind: "calendar" | "freeBusy"; calendarId: string }
   | { kind: "bigQueryDataset"; dataset: BigQueryDatasetRef }
-  | { kind: "gmailUser"; subject: string }
+  | GmailSubresource
   | ChatSubresource
   | FileSubresource;
 
 /**
  * What a subresource a Google gatekeeper asks an account about names: a calendar or its free/busy
- * (see parseCalendarSubresource), a BigQuery dataset, a Gmail mailbox's owner, a Google Chat
+ * (see parseCalendarSubresource), a BigQuery dataset, a Gmail mailbox's owner or a Google Group
+ * whose mail a Gmail binding shares (see parseGmailSubresource), a Google Chat
  * conversation, its member list or account (see parseChatSubresource), or a Drive file, its content
  * or a folder, or a native Docs, Sheets or Slides file (see parseFileSubresource). Throws for any
  * other ID.
@@ -566,7 +572,7 @@ function parseAccountSubresource(subresource: string): AccountSubresource {
     case BIGQUERY_SUBRESOURCE_NAMESPACE:
       return { kind: "bigQueryDataset", dataset: parseBigQueryDatasetSubresource(subresource) };
     case GMAIL_SUBRESOURCE_NAMESPACE:
-      return { kind: "gmailUser", subject: parseGmailUserSubresource(subresource) };
+      return parseGmailSubresource(subresource);
     case CHAT_SUBRESOURCE_NAMESPACE:
       return parseChatSubresource(subresource);
     case DRIVE_SUBRESOURCE_NAMESPACE:
@@ -577,6 +583,22 @@ function parseAccountSubresource(subresource: string): AccountSubresource {
     default:
       throw new Error("Not a Google subresource.");
   }
+}
+
+/** What a caller is told when Google permanently refuses to refresh the account's access token. */
+function refreshFailureMessage(failure: RefreshFailure): string {
+  if (failure.reason === "policyBlocked") {
+    return "A Google Workspace admin has restricted access this connection needs " +
+        `(${failure.detail}). Ask your administrator to allow it — re-authenticating will not help.`;
+  }
+  // The account's organization limits how long a sign-in lasts for Google Cloud, which a connection
+  // holding a Cloud scope such as BigQuery's is subject to. Only signing in again renews it. Google
+  // names the condition with either subtype.
+  if (failure.subtype === "invalid_rapt" || failure.subtype === "rapt_required") {
+    return "Google needs this account to sign in again: its organization requires a new sign-in " +
+        "for Google Cloud access (such as BigQuery) every so often. Please re-authenticate.";
+  }
+  return "Google credentials have expired or been revoked. Please re-authenticate.";
 }
 
 export class UserAccount extends DurableObject<Env> {
@@ -781,6 +803,7 @@ export class UserAccount extends DurableObject<Env> {
     let calendars = new Map<string, string>();
     let datasets = new Map<string, BigQueryDatasetRef>();
     let owners = new Map<string, string>();
+    let groups = new Map<string, string>();
     let conversations = new Map<string, { spaceName: string; members: boolean }>();
     let driveUnits = new Map<string, DriveUnit>();
     let nativeFiles = new Map<string, NativeFileSubresource>();
@@ -788,6 +811,8 @@ export class UserAccount extends DurableObject<Env> {
       if (resource.kind === "bigQueryDataset") datasets.set(subresource, resource.dataset);
       else if (resource.kind === "gmailUser" || resource.kind === "chatUser") {
         owners.set(subresource, resource.subject);
+      } else if (resource.kind === "gmailGroup") {
+        groups.set(subresource, resource.groupName);
       } else if (resource.kind === "chatSpace" || resource.kind === "chatSpaceMembers") {
         conversations.set(subresource,
           { spaceName: resource.spaceName, members: resource.kind === "chatSpaceMembers" });
@@ -852,6 +877,12 @@ export class UserAccount extends DurableObject<Env> {
       let answers = await mapWithConcurrency(entries, DEFAULT_CONCURRENCY, ([subresource, file]) =>
           this.#access.cached(subresource, ttl, () => hasNativeFileAccess(getToken, file)));
       entries.forEach(([subresource], index) => access.set(subresource, answers[index]));
+    }
+    if (groups.size > 0) {
+      for (let [subresource, groupName] of groups) {
+        access.set(subresource, await this.#access.cached(subresource, ttl,
+            () => hasGoogleGroupMembership(getToken, groupName)));
+      }
     }
     if (owners.size > 0) {
       // A mailbox or a Chat account is private to its owner, so only that same Google account can
@@ -940,14 +971,18 @@ export class UserAccount extends DurableObject<Env> {
       let result = await getAccessToken(refreshToken, clientId, clientSecret,
           AbortSignal.timeout(TOKEN_MINT_TIMEOUT_MS));
       if (!result.ok) {
-        // Both are permanent, so both mark the connection dead. They differ in the remedy:
+        // Google's codes only, never its prose: they tell a revoked or expired grant
+        // (`invalid_grant`) from a Google Cloud session that ran out (`invalid_rapt` or
+        // `rapt_required`).
+        logger.warn("Google refused to refresh an access token", {
+          event: "google.token.mint.refused",
+          providerError: result.reason === "policyBlocked" ? "admin_policy_enforced" : "invalid_grant",
+          ...(result.reason === "revoked" && result.subtype !== undefined
+              ? { providerSubtype: result.subtype } : {}),
+        });
+        // All are permanent, so all mark the connection dead. They differ in the remedy:
         // re-authenticating fixes a revoked grant but cannot grant a scope an admin has blocked.
-        let error = new Error(
-            result.reason === "policyBlocked"
-                ? "A Google Workspace admin has restricted access this connection needs " +
-                  `(${result.detail}). Ask your administrator to allow it — re-authenticating ` +
-                  "will not help."
-                : "Google credentials have expired or been revoked. Please re-authenticate.");
+        let error = new Error(refreshFailureMessage(result));
         // Recorded before notifying so only the first caller of a burst does either.
         this.#mintFailure = { error, at: Date.now() };
         this.#notifyCredentialsDead();
@@ -1096,6 +1131,13 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
         };
         return {class: this.ctx.exports.GmailGatekeeperImpl({props}), resource};
       }
+      case "group": {
+        let props: GmailGatekeeperImplProps = {
+          userObjectId, groupAddress: target.groupAddress,
+          ...(target.outsideSenders ? {groupOutsideSenders: true} : {}),
+        };
+        return {class: this.ctx.exports.GmailGatekeeperImpl({props}), resource};
+      }
       case "doc": {
         let props: GoogleDocGatekeeperImplProps = {userObjectId, documentId: target.documentId};
         return {class: this.ctx.exports.GoogleDocGatekeeperImpl({props}), resource};
@@ -1189,6 +1231,13 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
       return {
         iframeHtml: GMAIL_CONFIGURATOR_HTML,
         ui: new RpcStub(new GmailConfiguratorUI()),
+      };
+    }
+
+    if (resourceUrlPattern === GOOGLE_GROUP_RESOURCE.urlPattern) {
+      return {
+        iframeHtml: GOOGLE_GROUP_CONFIGURATOR_HTML,
+        ui: new RpcStub(new GoogleGroupConfiguratorUI(getToken, holds)),
       };
     }
 
@@ -1322,6 +1371,10 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
 //   - Gmail Mailbox — strategy A (private-only), kernel-checked: every read reports its owner's
 //     account as a `gmail/user/<sub>` subresource, which checkSubresourceAccess grants only to that
 //     same Google account. addObserver still always throws, for reads made before they reported it.
+//   - Google Group — strategy B (ACL check, single unit), kernel-checked: every read reports the
+//     group as `gmail/group/<groupId>`, which checkSubresourceAccess grants only to an account that
+//     is a direct member of it, as Cloud Identity answers that account's own token (see
+//     hasGoogleGroupMembership).
 //   - Google Doc, Sheets and Slides — strategy B (ACL check, single unit), kernel-checked: every
 //     read reports the bound file as `docs/document/<documentId>`,
 //     `sheets/spreadsheet/<spreadsheetId>` or `slides/presentation/<presentationId>`, which
@@ -1423,11 +1476,51 @@ async function hasChatAccess(api: ChatApi, spaceName: string, members: boolean):
 }
 
 /**
+ * Whether the account behind `getToken` is a direct member of the Google Group named `groupName`,
+ * asked of Cloud Identity with that account's own token, about the address Google's userinfo
+ * verified for the same token: false when it isn't one (404) or the group doesn't let it see its
+ * members (403), which is all a group that shows its members only to them tells anyone else, and a
+ * throw for any other failure. Two 403s say nothing about membership, and throw: the account never
+ * let this app see its groups, or the deployment's project lacks the API.
+ */
+async function hasGoogleGroupMembership(getToken: AccessTokenProvider, groupName: string): Promise<boolean> {
+  // The address and the membership are asked with one token, so both are one account's: a
+  // reconnect between two tokens would have one account answer for another's address. A token
+  // Google refuses (401) is replaced once, and both are asked again with the new one.
+  let token = await getToken();
+  let ask = async () => {
+    let email = await getGoogleVerifiedEmail(token);
+    if (!email) throw new Error("This Google account has no verified email address.");
+    return await new CloudIdentityApi(async () => token).isDirectMember(groupName, email.toLowerCase());
+  };
+  let refused = (error: unknown) =>
+    (error instanceof CloudIdentityApiError || error instanceof GoogleUserInfoError) && error.status === 401;
+  try {
+    try {
+      return await ask();
+    } catch (error) {
+      if (!refused(error)) throw error;
+      token = await getToken({forceRefresh: true, staleToken: token});
+      return await ask();
+    }
+  } catch (error) {
+    if (!(error instanceof CloudIdentityApiError) || error.status !== 403) throw error;
+    if (error.reason === "ACCESS_TOKEN_SCOPE_INSUFFICIENT") {
+      throw new Error("A collaborator's Google account hasn't let this app see its groups. They " +
+          "need to grant it access to Google Groups.", {cause: error});
+    }
+    if (error.reason === "SERVICE_DISABLED") throw error;
+    return false;
+  }
+}
+
+/**
  * Whether the account behind `getToken` can open a native file in the API that reads it (Docs,
  * Sheets or Slides): false when Google refuses it without giving a reason (403) or doesn't hold it
  * for the account (404), and a throw for any other failure. Google gives a reason for the refusals
- * that say nothing about the account's access, such as a missing scope or a disabled API, and a
- * 401 that survives a fresh token means the credentials, not the file.
+ * that say nothing about the account's access, such as a missing scope or a disabled API, so a
+ * refusal whose reasons couldn't be read throws; a 401 that survives a fresh token means the
+ * credentials, not the file.
  */
 async function hasNativeFileAccess(
     getToken: (opts?: AccessTokenRequest) => Promise<string>,
@@ -1442,7 +1535,8 @@ async function hasNativeFileAccess(
   } catch (error) {
     let status = httpStatusFromError(error);
     if (error instanceof GoogleApiError &&
-        (status === 404 || (status === 403 && error.providerReasons.length === 0))) {
+        (status === 404 ||
+          (status === 403 && error.providerErrorRead && error.providerReasons.length === 0))) {
       return false;
     }
     throw error;
@@ -2441,11 +2535,7 @@ export class GoogleDriveGatekeeperImpl
     this.#attempts.sweep(new Set(this.#journal.listPending().map(({ id }) => id)));
     this.#editors.sweep();
     let getDriveAccessToken = (opts?: AccessTokenRequest) => this.#getAccessToken(opts);
-    // `pnpm dev-server` drops the AI binding unless started with --use-workers-ai-binding.
-    // `Ai` declares no `fetch`, but the binding has one; conversion goes through it so it can stream.
-    let ai = this.env.AI as unknown as AiFetcher | undefined;
-    let gatewayId = this.env.CF_AI_GATEWAY;
-    let convertPdf: PdfConverter | undefined = ai && (pdf => pdfToText(ai, gatewayId, pdf));
+    let convertPdf = pdfConverter(this.env);
     let writes: DriveQueue = {
       access: this.#writes ? "write" : "read",
       writeRefusal: () => this.#writeRefusal(),
@@ -2770,36 +2860,80 @@ export class GoogleDriveSessionImpl extends RpcTarget
   }
 
   async readPdf(fileId: string): Promise<DrivePdfText> {
-    // The text stream needs no queue of its own, so this reads through the session's, as getEntry.
-    let core = this.#core;
+    // A text that reads the file again has those reads authorized as it is read, which may be
+    // after this session is disposed, so the text holds a queue of its own until it ends. Any
+    // other text needs none, and its queue is let go before it is returned.
+    return this.#withQueue(async (queue, core) => {
+      let {text, hasText, transcribed, rereads} = await this.#readPdf(core, fileId);
+      let release = () => queue[Symbol.dispose]();
+      if (rereads) return {text: releasedAtEnd(text, release), hasText, transcribed};
+      release();
+      return {text, hasText, transcribed};
+    });
+  }
+
+  async #readPdf(core: DriveCore, fileId: string): Promise<PdfRead> {
     let id = await core.openNativeFile(fileId, PDF_MIME_TYPE, "PDF");
     let convert = this.#convertPdf;
     if (!convert) throw new Error("PDF reading is not available on this deployment.");
-    let converted: DrivePdfText | undefined;
-    return core.nativeRead(id, PDF_MIME_TYPE, {content: true})(async () => {
+    let converted: PdfRead | undefined;
+    // A text may read the file again: whole, to render its pages, or page by page, at places
+    // found in the bytes converted. So its reads must all be of that file as it was. A folder
+    // binding's re-proofs see the modification time, which must not move from the first one on;
+    // a file of another size is refused on any binding. As for readFile(), an account or
+    // exact-file binding does not detect a rewrite that kept the size.
+    let modifiedTime: string | undefined;
+    let read: NativeReadOptions = {
+      content: true,
+      unchanged: current => {
+        modifiedTime ??= current.modifiedTime;
+        if (current.modifiedTime !== modifiedTime) throw new Error(FILE_CHANGED);
+      },
+    };
+    // Each of those reads is a content read of its own, made as the text is read: checked against
+    // the binding's scope, re-proved on a folder binding, and reported, like the first.
+    let readRange: PdfRangeReader = async ({page, offset, length, fileSize}) => {
+      let opened: ReadableStream<Uint8Array> | undefined;
+      let download = await core.nativeRead(id, PDF_MIME_TYPE, read)(async () => {
+        let answer = await this.#driveApi.downloadRange(id, offset, length)
+          .catch((error: unknown) => { throw fileReadError(error); });
+        opened = answer.content;
+        if ((answer.fileSize ?? fileSize) !== fileSize || (answer.length ?? length) < length) {
+          throw new Error(FILE_CHANGED);
+        }
+        return opened;
+      }, () => ({
+        title: "Read PDF from Google Drive",
+        description: page === undefined
+          ? `Read Drive file ${id} whole, to render its pages and transcribe them.`
+          : `Read page image ${page} of Drive file ${id}, to transcribe it.`,
+      })).catch(async (error: unknown) => {
+        await opened?.cancel().catch(() => undefined);
+        throw error;
+      });
+      return exactRange(download, length);
+    };
+    // A refusal to transcribe says what the file's content is like, so it discloses something
+    // too and has to be authorized. It rides back as a value so one guarded read covers both
+    // outcomes.
+    let outcome = await core.nativeRead(id, PDF_MIME_TYPE, read)(async (
+    ): Promise<PdfRead | { refusal: TranscriptionRefusal }> => {
       let download = (await this.#driveApi.openDownload(id).catch((error: unknown) => {
         throw lacksFileContentAccess(error) ? new Error(contentAccessMissing("PDFs")) : error;
       })).getReader();
       // The checks after this fetch must cover everything the text is converted from, so a
       // conversion that answers before the download has ended is refused.
-      let downloaded = false;
-      converted = await convert(new ReadableStream<Uint8Array>({
-        async pull(controller) {
-          let chunk = await download.read();
-          if (chunk.done) {
-            downloaded = true;
-            controller.close();
-          } else {
-            controller.enqueue(chunk.value);
-          }
-        },
-        cancel: reason => download.cancel(reason),
-      }, { highWaterMark: 0 }));
-      if (!downloaded) {
+      let upload = pdfUpload(download);
+      let result = await convert(upload.pdf, readRange).catch((error: unknown) => {
+        if (error instanceof TranscriptionRefusal) return { refusal: error };
+        throw error;
+      });
+      if (!("refusal" in result)) converted = result;
+      if (!upload.whole()) {
         await download.cancel().catch(() => undefined);
         throw new Error(CONVERSION_FAILED);
       }
-      return converted;
+      return result;
     }, () => ({
       title: "Read PDF from Google Drive",
       description: `Read the text of Drive file ${id}.`,
@@ -2808,11 +2942,13 @@ export class GoogleDriveSessionImpl extends RpcTarget
       await converted?.text.cancel().catch(() => undefined);
       throw error;
     });
+    if ("refusal" in outcome) throw outcome.refusal;
+    return outcome;
   }
 
   async readFile(fileId: string, options: DriveFileReadOptions = {}): Promise<DriveFileBytes> {
     let range = fileReadRange(options);
-    // The stream needs no queue of its own, so this reads through the session's, as readPdf.
+    // The stream needs no queue of its own, so this reads through the session's, as getEntry.
     let core = this.#core;
     let file = await core.openFile(fileId, "file");
     let {mimeType, size, modifiedTime} = downloadableFile(file);

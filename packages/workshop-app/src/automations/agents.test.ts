@@ -1,37 +1,48 @@
 import { describe, expect, it } from 'vitest'
-import type { AiChatMetadata } from '@gadgets/workshop-shared/api'
-import { agentByKey, agentsOf, type AgentRun, type AgentSetup, attentionWords, foldRuns, runFilterCounts, runsMatching, runStatus, runsWantingAttention, runsWords, isAgentRun, isFailure } from './agents'
+import type { AgentSpawnerInfo, AiChatMetadata } from '@gadgets/workshop-shared/api'
+import { agentsOf, type AgentRun, type AgentSetup, attentionWords, foldRuns, gadgetsOf, gadgetTitles, runFilterCounts, runsMatching, runStatus, runsWantingAttention, runsWords, setupsOf } from './agents'
 
 const at = (minutes: number) => new Date(Date.UTC(2026, 10, 14, 12, minutes))
 const chat = (id: number, minutes: number, more: Partial<AiChatMetadata> = {}): AiChatMetadata =>
   ({ id, title: `Run ${id}`, started: at(0), lastActive: at(minutes), ...more }) as AiChatMetadata
-const signals = (pending: number[] = [], failed: number[] = []) => ({ pending: new Set(pending), failed: new Set(failed) })
-
-describe('isAgentRun', () => {
-  it('tells an agent’s run from a chat someone started, by its spawner', () => {
-    expect(isAgentRun(chat(1, 0, { spawnerId: 4 }))).toBe(true)
-    expect(isAgentRun(chat(1, 0, { spawnerName: 'Old' }))).toBe(true)
-    expect(isAgentRun(chat(1, 0))).toBe(false)
-  })
-})
+const signals = (pending: number[] = []) => ({ pending: new Set(pending) })
+const spawner = (id: number, displayName: string, bindings: AgentSpawnerInfo['bindings'] = [], modelName?: string): AgentSpawnerInfo =>
+  ({ id, config: { displayName, modelId: modelName ?? null }, ...(modelName ? { modelName } : {}), bindings })
+const setup = (spawnerId: number, name: string, more: Partial<AgentSetup> = {}): AgentSetup => ({ spawnerId, name, gadgets: [], ...more })
 
 describe('runStatus', () => {
   it('puts waiting on a person first, then at work, then failed, then changes to keep', () => {
     expect(runStatus(chat(1, 0, { awaitingDecision: true, activeAgent: { type: 'agent', id: 'm', name: 'M' } }))).toBe('waiting')
     expect(runStatus(chat(1, 0), signals([1]))).toBe('waiting')
-    expect(runStatus(chat(1, 0, { activeAgent: { type: 'agent', id: 'm', name: 'M' } }), signals([], [1]))).toBe('running')
-    expect(runStatus(chat(1, 0, { proposedChangeWorkpieces: [3] }), signals([], [1]))).toBe('failed')
+    expect(runStatus(chat(1, 0, { activeAgent: { type: 'agent', id: 'm', name: 'M' }, lastTurnFailed: true }))).toBe('running')
+    expect(runStatus(chat(1, 0, { proposedChangeWorkpieces: [3], lastTurnFailed: true }))).toBe('failed')
     expect(runStatus(chat(1, 0, { proposedChangeWorkpieces: [3] }))).toBe('changes')
     expect(runStatus(chat(1, 0, { proposedChangeWorkpieces: [] }))).toBe('done')
   })
 })
 
-describe('isFailure', () => {
-  it('is an error, unless a person stopped the turn', () => {
-    const base = { chatId: 1, sequence: 1, timestamp: at(0), author: { type: 'agent', id: 'm', name: 'M' } } as const
-    expect(isFailure({ ...base, type: 'error', message: 'Boom' })).toBe(true)
-    expect(isFailure({ ...base, type: 'error', message: 'Stopped', code: 'stopped' })).toBe(false)
-    expect(isFailure({ ...base, type: 'message', message: 'Hi' })).toBe(false)
+describe('setupsOf', () => {
+  const gadgets = new Map([[7, 'Inbox'], [8, 'Triage']])
+
+  it('makes one agent of each spawner, named and given its model as it was made, bound to every gadget it is', () => {
+    const setups = setupsOf([
+      spawner(4, 'Inbox helper', [{ gadgetId: 8, name: 'HELPER' }, { gadgetId: 7, name: 'HELPER' }], 'Sonnet'),
+      spawner(5, 'Idle'),
+    ], gadgets)
+    expect(setups).toEqual([
+      { spawnerId: 4, name: 'Inbox helper', model: 'Sonnet', gadgets: [{ id: 8, title: 'Triage', bindingName: 'HELPER' }, { id: 7, title: 'Inbox', bindingName: 'HELPER' }] },
+      { spawnerId: 5, name: 'Idle', gadgets: [] },
+    ])
+  })
+
+  it('leaves out a binding still waiting in a chat, and one to a gadget not listed', () => {
+    const [only] = setupsOf([spawner(4, 'A', [{ gadgetId: 7, name: 'A', chatId: 3 }, { gadgetId: 99, name: 'A' }, { gadgetId: 8, name: 'A' }])], gadgets)
+    expect(only.gadgets.map(({ id }) => id)).toEqual([8])
+  })
+
+  it('says each gadget once, though it knows the agent by two names', () => {
+    const [only] = setupsOf([spawner(4, 'A', [{ gadgetId: 7, name: 'A' }, { gadgetId: 7, name: 'B' }, { gadgetId: 8, name: 'A' }])], gadgets)
+    expect(gadgetTitles(gadgetsOf(only))).toBe('Inbox and Triage')
   })
 })
 
@@ -49,29 +60,27 @@ describe('agentsOf', () => {
     expect(agentsOf([chat(4, 30)])).toEqual([])
   })
 
-  it('keeps two agents of one name apart, and one renamed together, by their spawners', () => {
+  it('joins runs by their spawner, whatever name they were started under, and two agents of one name stay apart', () => {
     const agents = agentsOf([
       chat(1, 5, { spawnerId: 4, spawnerName: 'Helper' }),
       chat(2, 4, { spawnerId: 6, spawnerName: 'Helper' }),
       chat(3, 3, { spawnerId: 4, spawnerName: 'Old name' }),
     ])
-    expect(agents.map(({ key, runs }) => [key, runs.map(({ chatId }) => chatId)])).toEqual([['4', [1, 3]], ['6', [2]]])
+    expect(agents.map(({ key, name, runs }) => [key, name, runs.map(({ chatId }) => chatId)])).toEqual([['4', 'Helper', [1, 3]], ['6', 'Helper', [2]]])
   })
 
-  it('puts a run from before runs said their spawner with the agent whose latest run has its name', () => {
-    const agents = agentsOf([chat(1, 5, { spawnerId: 4, spawnerName: 'Helper' }), chat(2, 1, { spawnerName: 'Helper' }), chat(3, 0, { spawnerName: 'Gone' })])
-    expect(agents.map(({ key, runs }) => [key, runs.length])).toEqual([['4', 2], ['name:Gone', 1]])
+  it('joins a run that names no spawner to no agent, even one of its name', () => {
+    const agents = agentsOf([chat(1, 5, { spawnerId: 4, spawnerName: 'Helper' }), chat(2, 1, { spawnerName: 'Helper' })], signals(), [setup(4, 'Helper')])
+    expect(agents.map(({ key, runs }) => [key, runs.map(({ chatId }) => chatId)])).toEqual([['4', [1]]])
   })
 
   it('takes what an agent is from how it was set up, and lists one that has not run after those that have', () => {
-    const setups = [
-      { spawnerId: 4, name: 'Inbox helper', model: 'Sonnet', gadget: { id: 7, title: 'Inbox', bindingName: 'HELPER' } },
-      { spawnerId: 9, name: 'Idle', gadget: { id: 8, title: 'Forecast', bindingName: 'IDLE' } },
-    ]
-    const [helper, idle] = agentsOf([chat(1, 5, { spawnerId: 4, spawnerName: 'Old name' })], signals(), setups)
-    expect(helper).toMatchObject({ name: 'Inbox helper', model: 'Sonnet', gadget: { title: 'Inbox' } })
+    const helper = setup(4, 'Inbox helper', { model: 'Sonnet', gadgets: [{ id: 7, title: 'Inbox', bindingName: 'HELPER' }] })
+    const [found, idle] = agentsOf([chat(1, 5, { spawnerId: 4, spawnerName: 'Old name' })], signals(), [helper, setup(9, 'Idle')])
+    expect(found).toMatchObject({ key: '4', name: 'Inbox helper', model: 'Sonnet', gadgets: helper.gadgets, runs: [{ chatId: 1 }] })
     expect(idle).toMatchObject({ key: '9', runs: [] })
-    expect(runsWords(idle)).toBe('Hasn’t run yet')
+    expect(runsWords(idle, true)).toBe('Hasn’t run yet')
+    expect(runsWords(idle, false)).toBe('No recent runs')
   })
 
   it('counts what waits and what works, says a latest run failed, and puts those that want a person first', () => {
@@ -79,10 +88,10 @@ describe('agentsOf', () => {
       chat(1, 30, { spawnerId: 1, spawnerName: 'Busy' }),
       chat(2, 20, { spawnerId: 2, spawnerName: 'Waiting', awaitingDecision: true }),
       chat(3, 19, { spawnerId: 2, spawnerName: 'Waiting' }),
-      chat(4, 10, { spawnerId: 3, spawnerName: 'Failed' }),
+      chat(4, 10, { spawnerId: 3, spawnerName: 'Failed', lastTurnFailed: true }),
       chat(5, 25, { spawnerId: 4, spawnerName: 'Recovered' }),
-      chat(6, 24, { spawnerId: 4, spawnerName: 'Recovered' }),
-    ], signals([3], [4, 6]))
+      chat(6, 24, { spawnerId: 4, spawnerName: 'Recovered', lastTurnFailed: true }),
+    ], signals([3]))
     expect(agents.map(({ name, waiting, failed }) => [name, waiting, failed])).toEqual([
       ['Waiting', 2, false],
       ['Failed', 0, true],
@@ -95,23 +104,14 @@ describe('agentsOf', () => {
     expect(attentionWords(agents[2])).toBeUndefined()
   })
 
-  it('says how many runs there were and when the latest was', () => {
-    const [one] = agentsOf([chat(1, 0, { spawnerName: 'A' })])
-    expect(runsWords(one, at(0))).toBe('One run · latest just now')
-    const [many] = agentsOf([chat(1, 0, { spawnerName: 'A' }), chat(2, 0, { spawnerName: 'A' })])
-    expect(runsWords(many, new Date(at(0).getTime() + 2 * 3_600_000))).toBe('2 runs · latest 2 hours ago')
+  it('says how many runs there were and when the latest was, or at least how many where not all were read', () => {
+    const [one] = agentsOf([chat(1, 0, { spawnerId: 1 })])
+    expect(runsWords(one, true, at(0))).toBe('One run · latest just now')
+    expect(runsWords(one, false, at(0))).toBe('At least one run · latest just now')
+    const [many] = agentsOf([chat(1, 0, { spawnerId: 1 }), chat(2, 0, { spawnerId: 1 })])
+    expect(runsWords(many, true, new Date(at(0).getTime() + 2 * 3_600_000))).toBe('2 runs · latest 2 hours ago')
+    expect(runsWords(many, false, new Date(at(0).getTime() + 2 * 3_600_000))).toBe('At least 2 runs · latest 2 hours ago')
   })
-
-  it('folds the runs of a spawner set up again into the one set up now, by its name, which its old key still names', () => {
-    const setup: AgentSetup = { spawnerId: 9, name: 'Test', gadget: { id: 1, title: 'Hello World', bindingName: 'HELLO_AGENTS' } }
-    const old = { ...chat(4, 30), spawnerId: 7, spawnerName: 'Test' }
-    const agents = agentsOf([old], undefined, [setup])
-    expect(agents).toHaveLength(1)
-    expect(agents[0]).toMatchObject({ key: '9', gadget: setup.gadget, aliases: ['7'] })
-    expect(agents[0]!.runs.map(({ chatId }) => chatId)).toEqual([4])
-    expect(agentByKey(agents, '7')).toBe(agents[0])
-  })
-
 })
 
 const agentRun = (chatId: number, title: string, status: AgentRun['status']): AgentRun => ({ chatId, title, status, started: at(chatId), lastActive: at(chatId) })

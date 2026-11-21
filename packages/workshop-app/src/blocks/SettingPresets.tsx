@@ -1,7 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { Select } from '@/components/Select'
-import { SettingRow } from './SettingRow'
-import { useEditedField, type SaveOutcome } from './useEditedField'
+import { type SaveOutcome, Select, SettingRow, useEditedField } from '@gadgets/ui'
 
 // Chosen for a value of the user's own. No value is this.
 const CUSTOM = '::custom'

@@ -811,7 +811,7 @@ describe("chat notification preferences", () => {
     await evictDurableObject(fixture.workspace);
     await evictDurableObject(reader);
     await withImpl(fixture.workspace, async impl => {
-      expect(impl.storage.version.get()).toBe(7);
+      expect(impl.storage.version.get()).toBe(OVERSEER_STORAGE_VERSION);
       expect(impl.storage.nextChatSequences.get(1)?.notificationParticipants).toBeUndefined();
       expect([...impl.storage.dirtyChats.list()]).toEqual([]);
       using scan = vi.spyOn(impl.storage.chats, "list");
@@ -1140,7 +1140,8 @@ describe("local counts and explicit read boundaries", () => {
     await vi.waitFor(() => expect(deltas).toHaveLength(2));
     expect(await fixture.user.getUnreadThreads()).toEqual([
       {workspaceId: fixture.workspaceId, chatId: 1, readThroughSequence: -1, unreadMessageCount: 1, notificationsEnabled: true,
-        chatTitle: "Renamed", latestSequence: 0, latestMessagePreview: "First line", latestActivityAt: new Date(1_000)},
+        chatTitle: "Renamed", latestSequence: 0, latestMessagePreview: "First line", latestActivityAt: new Date(1_000),
+        latestAuthor: {type: "agent", id: "test", name: "Test"}},
     ]);
     // A repeated ACK-lost packet doesn't rewrite the row or emit another invalidation.
     const head = (await cursor(fixture))!.head!;
@@ -1382,7 +1383,7 @@ describe("durable forward handoff", () => {
     await runInDurableObject(fixture.workspace, async instance => {
       const impl = instance.impl;
       using _ambient = vi.spyOn(impl, "ensureAmbientCapsules").mockResolvedValue(undefined);
-      using _outputs = vi.spyOn(impl, "markOutputsDirty").mockImplementation(() => {});
+      using _listing = vi.spyOn(impl, "markListingDirty").mockImplementation(() => {});
       using _restart = vi.spyOn(impl, "scheduleAccessRestart").mockResolvedValue(undefined);
       using closed = new NativeRpcStub<() => void>(() => {});
       using client = await instance.open(fixture.user.id.toString(), "owner", closed);
@@ -2019,7 +2020,8 @@ describe("source authorization and removal", () => {
         await instance.messageArrived(fixture.workspaceId, 1, {...progress(5, 2), firstVisibleSequence: 2});
         release.resolve(); await pending;
         expect(await instance.getWorkspaceUnreadState(fixture.workspaceId))
-          .toEqual([{workspaceId: fixture.workspaceId, chatId: 1, readThroughSequence: 1, unreadMessageCount: 1, notificationsEnabled: true}]);
+          .toEqual([{workspaceId: fixture.workspaceId, chatId: 1, readThroughSequence: 1, unreadMessageCount: 1, notificationsEnabled: true,
+            participated: true}]);
       });
     } finally { release.resolve(); }
   });
@@ -2327,4 +2329,34 @@ describe("unread counts property", () => {
     await fc.assert(fc.asyncProperty(fc.array(step, {minLength: 1, maxLength: 24, size: "max"}), replay),
       {...PROPERTY_RUN_OPTIONS, numRuns: 60, examples});
   }, 120_000);
+});
+
+describe("recent chats", () => {
+  it("lists tracked chats read or unread with who last spoke and whether the user took part, and follows new messages", async () => {
+    const fixture = await setup(undefined, false);
+    const author = {type: "user" as const, id: fixture.profile.id, name: fixture.profile.name};
+    await withImpl(fixture.workspace, async impl => {
+      write(impl, 0, "Can you look at this?", 1, author);
+      await impl.deliverDirtyChats();
+    });
+    await setRead(fixture, 0);
+
+    const updates = new UnreadUpdates();
+    using callback = new RpcStub(updates);
+    using _subscription = await fixture.user.subscribeToUnreadState("recent", callback);
+    await vi.waitFor(() => expect(updates.snapshots).toHaveLength(1));
+    expect(updates.snapshots[0].chats).toEqual([expect.objectContaining({
+      workspaceId: fixture.workspaceId, chatId: 1, unreadMessageCount: 0, participated: true,
+      chatTitle: "Demo", latestMessagePreview: "Can you look at this?", latestAuthor: author,
+    })]);
+
+    await withImpl(fixture.workspace, async impl => {
+      write(impl, 1, "Done.");
+      await impl.deliverDirtyChats();
+    });
+    await vi.waitFor(() => expect(updates.deltas.at(-1)).toEqual([fixture.workspaceId, 1, expect.objectContaining({
+      unreadMessageCount: 1, latestMessagePreview: "Done.",
+      latestAuthor: {type: "agent", id: "test", name: "Test"},
+    }), expect.anything()]));
+  });
 });

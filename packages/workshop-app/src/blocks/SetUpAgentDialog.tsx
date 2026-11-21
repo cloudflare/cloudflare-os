@@ -1,10 +1,7 @@
 import { useState } from 'react'
-import { RobotIcon, XIcon } from '@phosphor-icons/react'
-import { Banner } from '@/components/Banner'
-import { Button } from '@/components/Button'
-import { Dialog } from '@/components/Dialog'
-import { Select } from '@/components/Select'
-import { TextField } from '@/components/TextField'
+import { XIcon } from '@phosphor-icons/react'
+import { Banner, Button, Dialog, Select, TextField } from '@gadgets/ui'
+import { AgentMark } from './AgentMark'
 
 /** A model an agent can think with. */
 export type AgentModel = { id: string; name: string }
@@ -19,12 +16,14 @@ export type AgentSetup = {
 export type SetUpAgentDialogProps = {
   open: boolean
   onOpenChange: (open: boolean) => void
-  /** Why the chat's agent asked for it, in its own words. */
-  reason: string
+  /** Why the chat's agent asked for it, in its own words. Left out where the user chose to add one. */
+  reason?: string
   /** The models it can think with; none given, they are still being read. */
   models?: readonly AgentModel[]
   /** The model it starts on: the one the user's messages are answered by. */
   initialModel?: string
+  /** Goes back to choosing what to connect, where it was chosen from there. */
+  onBack?: () => void
   /** Sets it up, holding the dialog while it does, and leaving it open under why if it cannot. */
   onSetUp: (setup: AgentSetup) => Promise<void>
 }
@@ -32,7 +31,7 @@ export type SetUpAgentDialogProps = {
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
 // What the dialog holds, which is only there while it is open: what is typed starts over each time.
-const SetUpAgentContent = ({ reason, models, initialModel, onSetUp, onDone }: Omit<SetUpAgentDialogProps, 'open' | 'onOpenChange'> & {
+const SetUpAgentContent = ({ reason, models, initialModel, onBack, onSetUp, onDone }: Omit<SetUpAgentDialogProps, 'open' | 'onOpenChange'> & {
   onDone: () => void
 }) => {
   const [name, setName] = useState('')
@@ -60,9 +59,8 @@ const SetUpAgentContent = ({ reason, models, initialModel, onSetUp, onDone }: Om
   return (
     <form className="contents" onSubmit={(event) => { event.preventDefault(); void submit() }}>
       <header className="flex items-start gap-3 p-6">
-        <span aria-hidden="true" className="grid size-12 shrink-0 place-items-center rounded-full bg-kumo-fill text-kumo-default">
-          <RobotIcon className="size-6" />
-        </span>
+        {/* As an agent is drawn everywhere it is listed: the Workshop's cloud. */}
+        <span aria-hidden="true" className="flex shrink-0"><AgentMark className="size-12 rounded-full" /></span>
         <div className="flex min-h-12 min-w-0 flex-1 flex-col justify-center gap-0.5 leading-snug">
           <Dialog.Title className="text-lg font-medium text-kumo-default">Set up an agent</Dialog.Title>
           <Dialog.Description className="text-sm text-kumo-subtle">It works on its own whenever it’s called on, each run a chat of its own.</Dialog.Description>
@@ -88,6 +86,7 @@ const SetUpAgentContent = ({ reason, models, initialModel, onSetUp, onDone }: Om
       <footer className="flex flex-col gap-3 p-6">
         {problem && <Banner title={problem} />}
         <div className="flex items-center justify-end gap-2">
+          {onBack && <Button variant="ghost" className="me-auto" disabled={pending} onClick={onBack}>Back</Button>}
           <Dialog.Close render={(props) => <Button {...props} disabled={pending}>Cancel</Button>} />
           <Button type="submit" variant="primary" disabled={!ready}>{pending ? 'Setting up…' : 'Set up agent'}</Button>
         </div>
@@ -97,7 +96,7 @@ const SetUpAgentContent = ({ reason, models, initialModel, onSetUp, onDone }: Om
 }
 
 /**
- * Setting up an agent a chat asked for: one that works on its own each time it is called on, by a
+ * Setting up an agent, which a chat asked for or the user chose to add: one that works on its own each time it is called on, by a
  * gadget, a schedule or the chat, each run a chat of its own. It is named and given a model to
  * think with, and starts with access to nothing, which it says.
  */

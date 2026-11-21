@@ -9,12 +9,10 @@ import type {
   AccountDescription,
   ActionKind,
   AgentCatalog,
-  AppUiContext,
   ApprovalQueue,
   Gatekeeper,
   GatekeeperConnectCallback,
   GatekeeperConnectOptions,
-  GatekeeperUiFrame,
   GatekeeperUser,
   GatekeeperUserVerifier,
   HookController,
@@ -34,8 +32,6 @@ import {
 } from "./scheduler-core.js";
 import { ScheduleDriver } from "./schedule-driver.js";
 import type { ScheduleSpec } from "./schedule-types.js";
-import type { ManagementListOptions, ManagementSchedulePage } from "./management.js";
-import type { ScheduleManagementApi as ScheduleManagementApiShape } from "./management-types.js";
 import type {
   CalendarRule,
   NormalizedScheduleOccurrences,
@@ -47,7 +43,6 @@ import type {
   ScheduledTaskHook,
 } from "./types.js";
 import TYPES_CODE from "./types.txt";
-import APP_HTML from "./generated/app.txt";
 
 const SCHEDULER_ICON = {
   url:
@@ -184,18 +179,14 @@ export class ScheduleSessionImpl extends RpcTarget implements ScheduleSession {
   }
 }
 
-/** Enables a controller's immutable activation, recording where the hook delivers. */
+/** Enables a controller's immutable activation. */
 export async function enableScheduleController(
   props: ScheduleControllerProps,
   initiator: ScheduleInitiator,
   driver: Pick<ControllerDriver, "enable">,
-  target: HookTargetMetadata,
 ): Promise<void> {
   const { accountId: _accountId, ...activation } = props;
-  await driver.enable(
-    { ...activation, ...(target.gadgetId !== undefined ? { gadgetId: target.gadgetId } : {}) },
-    initiator,
-  );
+  await driver.enable(activation, initiator);
 }
 
 /** Disables the immutable workspace schedule represented by controller props. */
@@ -211,9 +202,9 @@ export class ScheduleHookController
   extends WorkerEntrypoint<Cloudflare.Env, ScheduleControllerProps>
   implements HookController<ScheduleHookTarget>
 {
-  /** Activates the schedule, recording the gadget it delivers into. */
-  enable(initiator: ScheduleInitiator, target: HookTargetMetadata): Promise<void> {
-    return enableScheduleController(this.ctx.props, initiator, this.#driver(), target);
+  /** Activates the schedule. */
+  enable(initiator: ScheduleInitiator, _target: HookTargetMetadata): Promise<void> {
+    return enableScheduleController(this.ctx.props, initiator, this.#driver());
   }
 
   /** Removes all driver state for this schedule activation. */
@@ -307,28 +298,14 @@ export class SchedulerGatekeeper
   }
 }
 
-/** The account's {@link ScheduleManagementApiShape}, over its driver. */
-@validateRpc()
-export class ScheduleManagementApi extends RpcTarget implements ScheduleManagementApiShape {
-  constructor(private readonly driver: Pick<ScheduleDriver, "listAccount">) {
-    super();
-  }
-
-  /** Lists schedules across this account without mutation authority. */
-  list(options?: ManagementListOptions): Promise<ManagementSchedulePage> {
-    return this.driver.listAccount(options);
-  }
-}
-
 type ScheduleAccountProps = { accountId: string };
 
-/** Describes the account's ambient capability and generic management app. */
+/** Describes the account's ambient capability. */
 export function describeScheduleAccount(): AccountDescription {
   return {
     displayName: "Scheduled Tasks",
     avatar: SCHEDULER_ICON,
     singleton: { tsType: "ScheduleSession" },
-    providesUi: { title: "Scheduled", icon: SCHEDULER_ICON },
   };
 }
 
@@ -345,12 +322,6 @@ export class ScheduleAccount
   /** Returns the account-imbued ambient workspace facet class. */
   async getSingletonGatekeeperClass(): Promise<DurableObjectClass<Gatekeeper<ScheduleSession>>> {
     return this.ctx.exports.SchedulerGatekeeper({ props: this.ctx.props });
-  }
-
-  /** Opens the account's read-only management frame. */
-  async startAppUi(_context: AppUiContext): Promise<GatekeeperUiFrame> {
-    const ui = new NativeRpcStub(new ScheduleManagementApi(this.#driver()));
-    return { iframeHtml: APP_HTML, ui };
   }
 
   /** Returns no URL-addressed resources. */

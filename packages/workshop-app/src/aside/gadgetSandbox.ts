@@ -114,8 +114,14 @@ const MAIN_RUNTIME_URL = runtimeUrl(true)
 /** A gadget's UI as a page for its frame, and each of its modules' paths, to name where a log came from. */
 export type GadgetPage = { html: string; pathsByUrl: ReadonlyMap<string, string> }
 
-/** The page a gadget's UI runs in, inside a frame with scripts and nothing else allowed. */
-export const gadgetPage = (bundle: UiBundle): GadgetPage => {
+// Tells the gadget's code it runs as a snapshot (`globalThis.gadgetRenderMode`), before any of it does.
+const SNAPSHOT_MODE_URL = `data:text/javascript;charset=utf-8,${encodeURIComponent('globalThis.gadgetRenderMode = "snapshot";')}`
+
+/**
+ * The page a gadget's UI runs in, inside a frame with scripts and nothing else allowed. A
+ * snapshot's (`renderMode`) tells its code so, as `globalThis.gadgetRenderMode`, which is unset live.
+ */
+export const gadgetPage = (bundle: UiBundle, renderMode?: 'snapshot'): GadgetPage => {
   const page = prepareUiPage(bundle, CAPNWEB_MODULE_URL)
   return {
     html: `<!DOCTYPE html>
@@ -125,6 +131,7 @@ export const gadgetPage = (bundle: UiBundle): GadgetPage => {
   <script type="importmap">${page.importMap}</script>
 </head>
 <body>
+  ${renderMode ? `<script type="module" src="${SNAPSHOT_MODE_URL}"></script>` : ''}
   <script type="module" src="${page.callsMain ? MAIN_RUNTIME_URL : LEGACY_RUNTIME_URL}"></script>
   <script type="module" src="${page.entryUrl}"></script>
 </body>

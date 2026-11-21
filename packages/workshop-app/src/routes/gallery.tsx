@@ -2,30 +2,22 @@ import { useState } from 'react'
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { Checkbox, Input, Tabs } from '@cloudflare/kumo'
 import { CaretLeftIcon, CirclesFourIcon, FileTextIcon, MagnifyingGlassIcon, PlusIcon, PresentationIcon, SignOutIcon, TableIcon } from '@phosphor-icons/react'
+import { WORKSPACE_ICON_COLORS, WORKSPACE_ICON_SHAPES, type WorkspaceLook } from '@/prefs/preferenceFields'
 import { Composer } from '@/blocks/Composer'
 import type { ComposerCommand } from '@/blocks/ComposerCommandPicker'
 import { ComposerAttachmentTray } from '@/blocks/ComposerAttachmentTray'
 import { ChatListItem } from '@/blocks/ChatListItem'
 import { ChatStart } from '@/blocks/ChatStart'
 import type { ComposerAttachment } from '@/blocks/useComposerAttachments'
-import { MemberListItem } from '@/blocks/MemberListItem'
+import { Avatar, Banner, Button, ConfirmMenu, DropdownMenu, type DropdownMenuProps, MemberListItem, Switch, Tabs as PageTabs, Tag } from '@gadgets/ui'
 import { WorkspaceIconPicker } from '@/blocks/WorkspaceIconPicker'
 import { WorkspaceListItem } from '@/blocks/WorkspaceListItem'
 import type { WorkspacePickerProps } from '@/blocks/WorkspacePicker'
 import { MessageBubble } from '@/blocks/MessageBubble'
 import { Sidebar, type SidebarActions, type SidebarChat, type SidebarWorkspace } from '@/blocks/Sidebar'
-import { Avatar } from '@/components/Avatar'
-import { Tag } from '@/components/Tag'
-import { Banner } from '@/components/Banner'
-import { Button } from '@/components/Button'
-import { ConfirmMenu } from '@/components/ConfirmMenu'
-import { Switch } from '@/components/Switch'
 import { ShimmerText } from '@/components/ShimmerText'
-import { Tabs as PageTabs } from '@/components/Tabs'
 import { ConnectButton } from '@/components/ConnectButton'
-import { DropdownMenu, type DropdownMenuProps } from '@/components/DropdownMenu'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
-import { workspaceColors, workspaceShapes, type WorkspaceLook } from '@/components/workspaceLook'
 import { AdminAuditPreview } from '@/gallery/AdminAuditPreview'
 import { AdminFormatsPreview } from '@/gallery/AdminFormatsPreview'
 import { AdminModelsPreview } from '@/gallery/AdminModelsPreview'
@@ -62,6 +54,7 @@ import { AddConnectionPreview, SetUpConnectionPreview } from '@/gallery/SetUpCon
 import { SearchPreview } from '@/gallery/SearchPreview'
 import { SettingsPreview } from '@/gallery/SettingsPreview'
 import { SharingPreview } from '@/gallery/SharingPreview'
+import { UserPickerPreview } from '@/gallery/UserPickerPreview'
 import { SignInPreview } from '@/gallery/SignInPreview'
 import { ShellPreview } from '@/gallery/ShellPreview'
 import { SystemBlocksPreview } from '@/gallery/SystemBlocksPreview'
@@ -99,6 +92,13 @@ const manyCommands: ComposerCommand[] = [
     }),
   ),
   { key: 'compact', name: 'compact', title: 'Compact', description: 'Sum up the chat so far, to make room for more', kind: 'builtin' },
+]
+
+// A made-up icon, a book's outline, as a gatekeeper's app may have one.
+const PREVIEW_APP_ICON = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256"><path fill="none" stroke="black" stroke-width="16" d="M40 48h72a32 32 0 0 1 32 32v128a24 24 0 0 0-24-24H40ZM216 48h-72a32 32 0 0 0-32 32v128a24 24 0 0 1 24-24h80Z"/></svg>')}`
+const PREVIEW_APPS = [
+  { id: 'example-library', title: 'Example Library', iconUrl: PREVIEW_APP_ICON },
+  { id: 'example-tool', title: 'Example Tool' },
 ]
 
 const previewWorkspaces: SidebarWorkspace[] = [
@@ -351,13 +351,13 @@ const WorkspaceIconsPage = () => (
     <Section title="WorkspaceIcon (every shape, and small; every colour)">
       <div className="flex w-full flex-col gap-4">
         <div className="flex flex-wrap items-center gap-4">
-          {workspaceShapes.map((shape) => <WorkspaceIcon key={shape} label="EN" shape={shape} />)}
+          {WORKSPACE_ICON_SHAPES.map((shape) => <WorkspaceIcon key={shape} label="EN" shape={shape} />)}
         </div>
         <div className="flex flex-wrap items-center gap-4">
-          {workspaceShapes.map((shape) => <WorkspaceIcon key={shape} label="MW" shape={shape} small />)}
+          {WORKSPACE_ICON_SHAPES.map((shape) => <WorkspaceIcon key={shape} label="MW" shape={shape} small />)}
         </div>
         <div className="flex flex-wrap items-center gap-4">
-          {workspaceColors.map((color, index) => <WorkspaceIcon key={color} label="EN" shape={workspaceShapes[index % workspaceShapes.length]} color={color} />)}
+          {WORKSPACE_ICON_COLORS.map((color, index) => <WorkspaceIcon key={color} label="EN" shape={WORKSPACE_ICON_SHAPES[index % WORKSPACE_ICON_SHAPES.length]} color={color} />)}
         </div>
       </div>
     </Section>
@@ -417,7 +417,7 @@ const ListRowsPage = () => (
 const SidebarPage = () => {
   const [selectedWorkspace, setSelectedWorkspace] = useState<string | undefined>('greeting')
   const [selectedChat, setSelectedChat] = useState<string>()
-  const [sidebarPage, setSidebarPage] = useState<'library' | 'workspaces' | 'connections' | 'settings'>()
+  const [sidebarPage, setSidebarPage] = useState<string>()
   const [chats, setChats] = useState(previewChats)
   const [hidden, setHidden] = useState<string[]>([])
   const [pinned, setPinned] = useState(['greeting', 'dashboard'])
@@ -499,6 +499,9 @@ const SidebarPage = () => {
                   connections={[{ name: 'Google' }, { name: 'Linear' }, { name: 'Cloudflare' }]}
                   library={{ current: sidebarPage === 'library', onOpen: () => setSidebarPage('library'), waiting: 3 }}
                   workspacesPage={{ current: sidebarPage === 'workspaces', onOpen: () => setSidebarPage('workspaces') }}
+                  automationsPage={{ current: sidebarPage === 'automations', onOpen: () => setSidebarPage('automations') }}
+                  // Made up: one with an icon of its own, and one with none, which has a window's.
+                  apps={PREVIEW_APPS.map((app) => ({ ...app, current: sidebarPage === `app:${app.id}`, onOpen: () => setSidebarPage(`app:${app.id}`) }))}
                   connectionsPage={{ current: sidebarPage === 'connections', onOpen: () => setSidebarPage('connections') }}
                   // The user's own menu has the settings and signing out.
                   settingsPage={{ current: sidebarPage === 'settings', onOpen: () => setSidebarPage('settings') }}
@@ -707,6 +710,7 @@ const PAGES: GalleryPage[] = [
   { id: 'agents', group: 'Workspace', name: 'Agents', Page: AgentsPreview },
   { id: 'automations', group: 'Workspace', name: 'Automations', Page: AutomationsPreview },
   { id: 'sharing', group: 'Workspace', name: 'Sharing', Page: SharingPreview },
+  { id: 'user-picker', group: 'Workspace', name: 'User picker', Page: UserPickerPreview },
   { id: 'workspace-removal', group: 'Workspace', name: 'Removing a workspace', Page: WorkspaceRemovalPreview },
 
   { id: 'library', group: 'Library', name: 'Library page', Page: LibraryPagePreview },

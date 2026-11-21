@@ -1,5 +1,5 @@
 import type { Icon } from '@phosphor-icons/react'
-import { EmptyState } from '@/components/EmptyState'
+import { EmptyState } from '@gadgets/ui'
 
 export type PaneNoticeProps = {
   /** Left out for something under way, which is held back a moment, as most are soon over. */

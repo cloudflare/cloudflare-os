@@ -1,6 +1,5 @@
 import { ArrowSquareOutIcon, DotsThreeIcon, EnvelopeOpenIcon, EyeSlashIcon, LinkIcon, TrashIcon } from '@phosphor-icons/react'
-import type { ButtonProps } from '@/components/Button'
-import { DropdownMenu } from '@/components/DropdownMenu'
+import { type ButtonProps, DropdownMenu } from '@gadgets/ui'
 
 /**
  * How the viewer takes a workspace out of their list: its owner deletes it, for everyone, and

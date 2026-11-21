@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { CollaboratorInfo } from '@gadgets/workshop-shared/api'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import type { SharingSession } from './SharingSession'
+import type { GadgetAccess } from './sharingRules'
 
 /** What the last invite did: why it failed, why it changed nothing, or who was just let in. */
 export type InviteFeedback = { tone: 'error' | 'info' | 'success'; message: string }
@@ -16,8 +17,10 @@ const messageOf = (error: unknown) => (error instanceof Error ? error.message : 
  * of it, and who was just let in. A typed name that would change nothing says why without asking
  * the server, and nothing is tried over a lost connection.
  */
-export const useInvite = ({ session, refusal, admitted }: {
+export const useInvite = ({ session, access, refusal, admitted }: {
   session: SharingSession
+  /** What a gadget is shared for with whoever is invited: its use, unless said. */
+  access?: GadgetAccess
   /** Why inviting them would change nothing, if it would not. */
   refusal: (userId: string) => string | undefined
   /** What to say of someone let in. */
@@ -42,7 +45,7 @@ export const useInvite = ({ session, refusal, admitted }: {
     setPending(true)
     setFeedback(undefined)
     try {
-      const person = await session.invite(userId)
+      const person = await session.invite(userId, access)
       if (!person) return setFeedback({ tone: 'error', message: 'There’s no account with that username or email.' })
       setValue('')
       setFeedback({ tone: 'success', message: admitted(person) })

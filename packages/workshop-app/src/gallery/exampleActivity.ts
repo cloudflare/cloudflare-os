@@ -81,6 +81,7 @@ const action = (
   return {
     id,
     type: 'action',
+    from: 'agent',
     chatId,
     gatekeeperId: 5,
     resourceTitle,
@@ -125,13 +126,13 @@ const decided = (entry: ActionEntry, state: 'approved' | 'rejected', by: AiChatA
 export const EXAMPLE_HISTORY: ActionLogEntry[] = [
   ...EXAMPLE_PENDING,
   decided(action(99, 7, 40, 'Create issue “Theme: onboarding is slow”', 'Linear · Research'), 'approved', ADA, 35),
-  { id: 98, type: 'observation', chatId: 7, resourceTitle: 'Interview transcripts', createdAt: ago(42), state: 'approved', description: { title: 'Interview transcripts', description: 'Read 6 files from the shared folder.' } },
+  { id: 98, type: 'observation', from: 'agent', chatId: 7, resourceTitle: 'Interview transcripts', createdAt: ago(42), state: 'approved', description: { title: 'Interview transcripts', description: 'Read 6 files from the shared folder.' } },
   decided(action(97, 1, 70, 'Push 2 commits to fix/login-redirect', 'cloudflare/workshop'), 'approved', EXAMPLE_VIEWER, 69, true),
   decided(action(96, 8, 400, 'Book a table for 12', 'OpenTable'), 'rejected', ALAN, 380),
-  { id: 95, type: 'bindHook', resourceTitle: 'Every Monday at 9:00', createdAt: ago(60 * 26), state: 'approved', enabled: true, hookId: 3, description: { title: 'Ticket digest every Monday', description: 'Starts **Ticket digest** with the week’s new tickets.' } },
+  { id: 95, type: 'bindHook', from: 'agent', resourceTitle: 'Every Monday at 9:00', createdAt: ago(60 * 26), state: 'approved', enabled: true, hookId: 3, description: { title: 'Ticket digest every Monday', description: 'Starts **Ticket digest** with the week’s new tickets.' } },
   decided(action(94, 2, 60 * 27, 'Create document “Q3 plan”', 'Google Drive'), 'approved', EXAMPLE_VIEWER, 60 * 27 - 3),
-  { id: 93, type: 'observation', chatId: 4, resourceTitle: 'Sprint 42', createdAt: ago(60 * 30), state: 'approved', description: { title: 'Sprint 42 board', description: '' } },
+  { id: 93, type: 'observation', from: 'agent', chatId: 4, resourceTitle: 'Sprint 42', createdAt: ago(60 * 30), state: 'approved', description: { title: 'Sprint 42 board', description: '' } },
   decided(action(92, 6, 60 * 50, 'Comment on WEB-214', 'Jira · Web'), 'approved', ADA, 60 * 50, true),
-  { id: 91, type: 'bindHook', resourceTitle: 'When an email arrives', createdAt: ago(60 * 75), state: 'approved', enabled: false, hookId: 2, description: { title: 'Answer new email', description: '' } },
+  { id: 91, type: 'bindHook', from: 'agent', resourceTitle: 'When an email arrives', createdAt: ago(60 * 75), state: 'approved', enabled: false, hookId: 2, description: { title: 'Answer new email', description: '' } },
   decided(action(90, 3, 60 * 80, 'Send an email to the venue', 'Gmail · grace@example.com'), 'rejected', EXAMPLE_VIEWER, 60 * 79),
 ]

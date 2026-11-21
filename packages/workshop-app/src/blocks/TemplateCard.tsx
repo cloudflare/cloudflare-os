@@ -1,7 +1,5 @@
 import { FormatIcon, type FormatIconName } from '@/components/FormatIcon'
-import { LinkButton } from '@/components/LinkButton'
-import { Tooltip } from '@/components/Tooltip'
-import { CardAction } from './CardAction'
+import { CardAction, LinkButton, Tooltip } from '@gadgets/ui'
 import { StarButton } from './StarButton'
 import { TemplateByline, type TemplateCreator } from './TemplateByline'
 import { TemplatePreview } from './TemplatePreview'
@@ -31,10 +29,10 @@ export type TemplateCardProps = {
 const TOOLTIP_DELAY = 150
 
 /**
- * One template that a store makes much of: a picture of what it makes (`TemplatePreview`), with
- * what kind that is in its corner, then its title over what it is for, and at its end who it is
- * by and the services it needs connected (`TemplateByline`). Pointed at, its star shows in its
- * corner; a starred one keeps its star.
+ * One template as a card, as Create template shows the one made: a picture of what it makes
+ * (`TemplatePreview`), with what kind that is in its corner, then its title over what it is for,
+ * and at its end who it is by and the services it needs connected (`TemplateByline`). Pointed at,
+ * its star shows in its corner; a starred one keeps its star.
  */
 export const TemplateCard = ({ title, description, kind, icon, creator, connections, previewUrl, starred, onStarredChange, href, onSelect }: TemplateCardProps) => (
   <div className="group relative flex flex-col rounded-3xl bg-kumo-tint">

@@ -20,7 +20,6 @@
     "@gadgets/workshop-shared": "workspace:*",
     "capnweb": "catalog:",
     "capnweb-validate": "catalog:",
-    "isomorphic-git": "^1.44.12",
     "yaml": "^2.9.1",
     "zod": "catalog:"
   },

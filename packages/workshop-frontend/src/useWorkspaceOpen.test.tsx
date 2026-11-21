@@ -6,6 +6,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
 import {
+  ACCESS_CONFIRMATION_ERROR_CODES,
   AUTH_ERROR_CODES,
   createAuthError,
   createOpenWorkspaceError,
@@ -260,7 +261,7 @@ describe('useWorkspaceOpen', () => {
 
   describe('account prompts for opening gadgets', () => {
     let observerConfig: { needs: ObserverBindingNeed[]; resolve: (choices: ObserverAccountChoice[]) => void } | null
-    let createObserverConfigCallback: (signal: AbortSignal) => RpcStub<ObserverConfigCallback>
+    let createObserverConfigCallback: (signal: AbortSignal, subject: 'gadget') => RpcStub<ObserverConfigCallback>
 
     async function renderHook() {
       const overseer = disposableStub({
@@ -287,7 +288,7 @@ describe('useWorkspaceOpen', () => {
 
     // Wrapped, since an async function returning the pending answer would wait for it.
     async function prompt(signal: AbortSignal, needs: ObserverBindingNeed[]) {
-      const callback = createObserverConfigCallback(signal)
+      const callback = createObserverConfigCallback(signal, 'gadget')
       let answer!: Promise<unknown>
       await act(async () => { answer = Promise.resolve(callback.configure(needs)) })
       answer.catch(() => {})
@@ -311,12 +312,12 @@ describe('useWorkspaceOpen', () => {
       const first = await prompt(new AbortController().signal, [need(1)])
       const second = await prompt(left.signal, [need(2)])
 
-      await expect(first.answer).rejects.toThrow('Cancelled')
+      await expect(first.answer).rejects.toMatchObject({ code: ACCESS_CONFIRMATION_ERROR_CODES.notAsked })
       expect(observerConfig?.needs).toEqual([need(2)])
 
       await act(async () => left.abort())
 
-      await expect(second.answer).rejects.toThrow('Cancelled')
+      await expect(second.answer).rejects.toMatchObject({ code: ACCESS_CONFIRMATION_ERROR_CODES.notAsked })
       expect(observerConfig).toBeNull()
     })
   })

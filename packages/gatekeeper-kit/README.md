@@ -78,9 +78,9 @@ import {
 | Subpath | Purpose | Use it when |
 | --- | --- | --- |
 | `./connect-nonce` | Nonce generation, expiry, and constant-time comparison. | A connect flow mints or checks its own nonce. The handshake and credential modules already use it. |
-| `./connect-handshake` | Two-stage `initiation` to `oauth` nonce storage, and the once-only `complete()` marker. | A connect link or form redirects through an OAuth provider, or has no single-use nonce to keep `complete()` from running twice. |
+| `./connect-handshake` | Two-stage `initiation` to `oauth` nonce storage, a check that does not claim (`peekOAuth`), and the once-only `complete()` marker. | A connect link or form redirects through an OAuth provider, or has no single-use nonce to keep `complete()` from running twice. |
 | `./credential-stage` | Durable reconnect escrow, exact commit, and exact-stage cleanup. | A reconnect must remain inert until Workshop commits the completed stage. |
-| `./connect-pages` | Hardened connect HTML, escaping, and browser mutation guards. | A gatekeeper serves HTML from its own origin. |
+| `./connect-pages` | Hardened connect HTML, escaping, browser mutation guards, and a guarded form page (`connectFormHtml`, `formPageResponse`, `readConnectForm`) for a pasted key. | A gatekeeper serves HTML from its own origin. |
 | `./credentials` | Account-side `CredentialCoordinator` and consumer-side `CredentialSource`. | An OAuth-shaped provider stores, refreshes, or rejects credentials. |
 | `./credential-expiry` | Durable, deduplicated `credentialsExpired()` notification. | An account has a Workshop connect callback to notify. |
 | `./auth-retry` | One refresh and replay without account adjudication. | A token flow has no `CredentialSource`; otherwise use `CredentialSource.run()`. |

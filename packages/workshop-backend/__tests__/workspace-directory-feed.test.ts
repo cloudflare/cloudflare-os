@@ -47,7 +47,7 @@ function fakeUsers(feed: Pick<Feed, "id" | "owner" | "gadgetReads">) {
       return { id: feed.id, title: "Untitled Workspace", created: CREATED, lastActive: CREATED };
     },
     workspaceRemoved: async () => {},
-    syncWorkspaceOutputs: async () => {},
+    syncWorkspaceListing: () => {},
     setWorkspaceLastActive: async () => {},
   };
   return { idFromString: (id: string) => id, get: () => user };

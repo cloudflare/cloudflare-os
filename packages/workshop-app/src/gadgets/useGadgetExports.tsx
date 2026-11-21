@@ -2,11 +2,12 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { ExportChoices as MenuChoices, ExportItemsProps } from '@/blocks/ExportItems'
 import type { PaneStatusProps } from '@/blocks/PaneStatus'
 import { UpdateFileDialog } from '@/blocks/UpdateFileDialog'
-import { TextField } from '@/components/TextField'
+import { TextField } from '@gadgets/ui'
 import type { AsideOutput } from '@/aside/asideItems'
 import { ConnectResource } from '@/connections/SetUpConnection'
 import { saveStream } from '@/files/saveStream'
-import { readSavedExport, writeSavedExport } from '@/prefs/savedExports'
+import { rememberSavedExport } from '@/prefs/savedExports'
+import { usePreferences } from '@/prefs/UserPreferencesContext'
 import { useApi } from '@/rpc/ApiContext'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { GadgetExports, savedExportKey, type ExportChoices, type ExportGadget, type GadgetExportsSnapshot, type SaveChoice } from './GadgetExports'
@@ -40,11 +41,15 @@ const menuChoices = (choices: ExportChoices | undefined): MenuChoices | undefine
  * may build in its workspace (`saves`) are offered saving it to their accounts, as in the old app.
  */
 export const useGadgetExports = (gadget: AsideOutput | undefined, title: string, { saves }: { saves: boolean }) => {
-  const { api, user } = useApi()
+  const { api } = useApi()
   const notice = useConnectionNotice()
   // The API each call opens the workspace with, read when it is made.
   const latestApi = useRef(api)
   latestApi.current = api
+  // Likewise the preferences the file a save made is kept in, which are each connection's.
+  const preferences = usePreferences()
+  const latestPreferences = useRef(preferences)
+  latestPreferences.current = preferences
   const key = gadget?.type === 'gadget' ? `${gadget.workspaceId}/${gadget.workpieceId}/${gadget.chatId}/${saves}` : undefined
   const [current, setCurrent] = useState<{ key?: string; exports?: GadgetExports }>({})
   if (current.key !== key) {
@@ -69,9 +74,9 @@ export const useGadgetExports = (gadget: AsideOutput | undefined, title: string,
           saving: saves ? {
             listVendors: () => latestApi.current.listGatekeeperVendors(),
             saveFile: (...args) => latestApi.current.saveFile(...args),
-            keyOf: (target) => savedExportKey(user.id, gadget, target),
-            read: readSavedExport,
-            write: writeSavedExport,
+            keyOf: (target) => savedExportKey(gadget, target),
+            read: (savedKey) => latestPreferences.current.getSnapshot().savedExports[savedKey],
+            write: (savedKey, saved) => rememberSavedExport(latestPreferences.current, savedKey, saved),
           } : undefined,
         })
       : undefined

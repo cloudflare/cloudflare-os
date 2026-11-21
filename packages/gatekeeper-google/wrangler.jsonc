@@ -8,6 +8,9 @@
     "allow_irrevocable_stub_storage",
     "nodejs_als"
   ],
+  "limits": {
+    "subrequests": 100000
+  },
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1,
@@ -18,6 +21,13 @@
   "ai": {
     "binding": "AI"
   },
+  "services": [
+    {
+      "binding": "PDF_RENDERER",
+      "service": "pdf-renderer",
+      "entrypoint": "PdfRenderer"
+    }
+  ],
   "build": {
     "command": "pnpm exec capnweb-validate build --out .wrangler/validate",
     "watch_dir": "src"

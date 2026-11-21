@@ -1,8 +1,7 @@
 import { useId, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { XIcon } from '@phosphor-icons/react'
 import type { AiModelProvider } from '@gadgets/workshop-shared/api'
-import { Button } from '@/components/Button'
-import { TextField } from '@/components/TextField'
+import { Button, TextField } from '@gadgets/ui'
 import { addAllowedNames, PROVIDER_LABELS, type AllowedModelSuggestion } from './modelForm'
 
 const POOL_DOCS = 'https://developers.cloudflare.com/ai-gateway/features/auto-router/#models'

@@ -623,7 +623,8 @@ function BlueprintRow({
           {bp.title}
         </p>
 
-        {bp.unpublishedChanges && <Badge variant="warning">Unpublished changes</Badge>}
+        {bp.unpublishedChanges?.code && <Badge variant="warning">Unpublished changes</Badge>}
+        {bp.unpublishedChanges?.bindings && !bp.unpublishedChanges.code && <Badge variant="warning">Unpublished binding changes</Badge>}
 
         <span
           className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] leading-4 font-semibold tracking-[-0.1px] ${

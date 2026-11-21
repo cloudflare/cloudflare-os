@@ -1,10 +1,7 @@
 import { useState } from 'react'
 import { Checkbox } from '@cloudflare/kumo'
 import { XIcon } from '@phosphor-icons/react'
-import { Avatar } from '@/components/Avatar'
-import { Banner } from '@/components/Banner'
-import { Button } from '@/components/Button'
-import { Dialog } from '@/components/Dialog'
+import { Avatar, Banner, Button, Dialog } from '@gadgets/ui'
 import { usePending, type ActionResult } from './usePending'
 
 /** Someone who has access only through the person whose access is taken away. */

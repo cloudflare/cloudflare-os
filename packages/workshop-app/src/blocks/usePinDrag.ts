@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState, type DragEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { animate, useMotionValue, type AnimationPlaybackControls } from 'motion/react'
 import { nearestSlot } from '@/components/cardGridLayout'
-import type { WorkspaceLook } from '@/components/workspaceLook'
-import { motionTransition } from '@/hooks/motionTransition'
-import { isMotionOff } from '@/prefs/motion'
+import { isMotionOff, motionTransition } from '@gadgets/ui'
+import type { WorkspaceLook } from '@/prefs/preferenceFields'
 
 /** The workspace a row or a tile is of, which dragging it pins, moves among the pinned, or unpins. */
 export type PinDragSource = {
