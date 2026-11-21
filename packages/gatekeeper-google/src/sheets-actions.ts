@@ -202,8 +202,7 @@ async function guarded(host: SheetsHost, batch: SheetBatch): Promise<unknown[] |
   }
   let guard = guardOf(batch);
   // The batch is checked against the merges of the sheets it acts on alone.
-  let metadata = await host.api.withMerges(
-    host.spreadsheetId, await host.api.getMetadata(host.spreadsheetId), guard.sheetIds);
+  let metadata = await host.api.getMetadataWithMerges(host.spreadsheetId, guard.sheetIds);
   let { requests } = planSheet(gridOf(metadata), batch.changes);
   // Cells the sheets no longer hold cannot be read, and have changed.
   if (!guardFits(metadata.sheets, guard.cells)) return undefined;

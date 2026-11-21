@@ -99,7 +99,7 @@ export type SheetProtection = {
 
 /** A spreadsheet's metadata, with its protected ranges and the merges of the sheets read for them. */
 export type SpreadsheetMetadata = Omit<SpreadsheetInfo, "sheets"> & {
-  /** The sheets, each `withMerges` read with its merged cells when it has any. */
+  /** The sheets, each with its merged cells when they were read and it has any. */
   sheets: (SpreadsheetSheetInfo & { merges?: readonly Rect[] })[];
   protectedRanges: SheetProtection[];
 };
@@ -202,6 +202,20 @@ function mergeOf(range: RestGridRange): Rect {
   };
 }
 
+// `metadata` with the merges `merges` holds for its sheets, by sheet ID.
+function withMergesOf(
+  metadata: SpreadsheetMetadata, merges: ReadonlyMap<number, readonly Rect[]>,
+): SpreadsheetMetadata {
+  if (merges.size === 0) return metadata;
+  return {
+    ...metadata,
+    sheets: metadata.sheets.map(sheet => {
+      let held = merges.get(sheet.id);
+      return held?.length ? { ...sheet, merges: held } : sheet;
+    }),
+  };
+}
+
 // A range with no bounds covers the whole sheet it is listed under.
 function areaOf(range: RestGridRange | undefined, sheetId: number): SheetArea {
   return {
@@ -280,7 +294,7 @@ export class GoogleSheetsApi {
 
   /**
    * A spreadsheet's metadata and the ranges it protects, but not who may edit them, nor any sheet's
-   * merges, which only `withMerges` reads, for the sheets a caller needs.
+   * merges, which only `getMerges` reads, for the sheets a caller needs.
    */
   async getMetadata(spreadsheetId: string): Promise<SpreadsheetMetadata> {
     let url = new URL(`${API_BASE}/${encodeURIComponent(spreadsheetId)}`);
@@ -301,17 +315,43 @@ export class GoogleSheetsApi {
   }
 
   /**
-   * `metadata` with the merges of each of its sheets in `sheetIds`, read in one request by sheet ID
-   * with `spreadsheets:getByDataFilter`, which needs a grant that may edit the spreadsheet. IDs of
-   * sheets `metadata` does not have are passed over, and with none left nothing is read. Throws
-   * `Error` when Google's list of those merges is over 5 MiB.
+   * `metadata` with the merges of each of its sheets in `sheetIds`, as `getMerges` reads them. IDs
+   * of sheets `metadata` does not have are passed over, and with none left nothing is read.
    */
   async withMerges(
     spreadsheetId: string, metadata: SpreadsheetMetadata, sheetIds: Iterable<number>,
   ): Promise<SpreadsheetMetadata> {
     let wanted = new Set(sheetIds);
     let ids = metadata.sheets.flatMap(({ id }) => wanted.has(id) ? [id] : []);
-    if (ids.length === 0) return metadata;
+    return withMergesOf(metadata, await this.getMerges(spreadsheetId, ids));
+  }
+
+  /**
+   * The metadata `withMerges` of its sheets in `sheetIds`, with the two read together. Google refuses
+   * a merges read naming a sheet deleted since its ID was taken, so a failed merges read that named
+   * one the metadata no longer has is sent again without it, and a caller sees the sheet as gone.
+   */
+  async getMetadataWithMerges(
+    spreadsheetId: string, sheetIds: Iterable<number>,
+  ): Promise<SpreadsheetMetadata> {
+    let ids = [...sheetIds];
+    let [metadata, merges] = await Promise.allSettled([
+      this.getMetadata(spreadsheetId), this.getMerges(spreadsheetId, ids),
+    ]);
+    if (metadata.status === "rejected") throw metadata.reason;
+    if (merges.status === "fulfilled") return withMergesOf(metadata.value, merges.value);
+    if (ids.every(id => metadata.value.sheets.some(sheet => sheet.id === id))) throw merges.reason;
+    return this.withMerges(spreadsheetId, metadata.value, ids);
+  }
+
+  /**
+   * The merges of each sheet in `sheetIds` that has any, read in one request by sheet ID with
+   * `spreadsheets:getByDataFilter`, which needs a grant that may edit the spreadsheet; with no IDs
+   * nothing is read. Throws `Error` when Google's list of them is over 5 MiB.
+   */
+  async getMerges(spreadsheetId: string, sheetIds: readonly number[]): Promise<Map<number, Rect[]>> {
+    let ids = [...new Set(sheetIds)];
+    if (ids.length === 0) return new Map();
     let url = new URL(`${API_BASE}/${encodeURIComponent(spreadsheetId)}:getByDataFilter`);
     url.searchParams.set("fields", MERGE_FIELDS);
     url.searchParams.set("prettyPrint", "false");
@@ -336,15 +376,8 @@ export class GoogleSheetsApi {
         "Google's list of them is over 5 MiB, so the changes cannot be checked against them. Unmerge " +
         "cells on those sheets in Google Sheets, or change other sheets.", { cause: error });
     }
-    let merges = new Map((result.sheets ?? []).map(({ properties, merges: held }) =>
-      [properties?.sheetId ?? 0, (held ?? []).map(mergeOf)] as const));
-    return {
-      ...metadata,
-      sheets: metadata.sheets.map(sheet => {
-        let held = merges.get(sheet.id) ?? [];
-        return held.length > 0 ? { ...sheet, merges: held } : sheet;
-      }),
-    };
+    return new Map((result.sheets ?? []).flatMap(({ properties, merges: held }) =>
+      held?.length ? [[properties?.sheetId ?? 0, held.map(mergeOf)] as const] : []));
   }
 
   async readRanges(

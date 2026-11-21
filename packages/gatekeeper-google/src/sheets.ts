@@ -386,11 +386,16 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
 
   /**
    * The spreadsheet's metadata, with the merges of the sheets replaying `pending` and then finding
-   * the sheets `names` name can consult.
+   * the sheets `names` name can consult. With no names, those are the sheets `pending` acts on,
+   * known before the metadata, so the two are read together.
    */
   async #metadata(
     pending: readonly QueuedChange[], names: readonly (string | undefined)[] = [],
   ): Promise<SpreadsheetMetadata> {
+    if (names.length === 0) {
+      return this.#api.getMetadataWithMerges(
+        this.#spreadsheetId, pending.flatMap(({ action }) => guardedSheets(action.payload.changes)));
+    }
     let metadata = await this.#api.getMetadata(this.#spreadsheetId);
     return this.#api.withMerges(this.#spreadsheetId, metadata, mergesConsulted(metadata, pending, names));
   }

@@ -17,7 +17,7 @@ import type {
 } from "../../src/sheets-read-types";
 import type { SheetMeta, SheetsAction } from "../../src/sheets-simulation";
 import type { SheetCellInput, SheetChange } from "../../src/sheets-types";
-import { serveFakes, type ProviderFake } from "../slides-provider";
+import { meterFetches, serveFakes, type ProviderFake } from "../slides-provider";
 import {
   gridRangeOf, protectedRange, rect as rectOf, sheet as sheetMeta, spreadsheetMetadata, WHITESPACE_DRIFT, type FixtureGridRange,
 } from "../sheets-fixture";
@@ -1491,6 +1491,7 @@ describe.each(RUNS)("Google Sheets changes ($name)", run => {
     let { actionId } = await sheets.queued([{ op: "writeCells", range: "'Q3 Plan'!A1", values: [["x"]] }]);
 
     provider.sheets = provider.sheets.filter(s => s.id !== 7);
+    provider.mergeReads = [];
 
     let conflict = `Queued change ${actionId} no longer applies, so it and the changes queued after it ` +
       "are not shown: change 1 (writeCells): the spreadsheet has no sheet with ID 7.";
@@ -1502,6 +1503,27 @@ describe.each(RUNS)("Google Sheets changes ($name)", run => {
 
     expect(await sheets.apply(actionId!)).toBe(
       "This change no longer applies: change 1 (writeCells): the spreadsheet has no sheet with ID 7.");
+    expect(provider.batches).toEqual([]);
+    // The metadata read, the range read and the approval each read the merges beside the metadata,
+    // naming the gone sheet. Google refuses that, and with no sheet left to read the merges of, none is
+    // read again. Queuing reads the merges after the metadata, of the sheet it names.
+    expect(provider.mergeReads).toEqual([[7], [7], [0], [7]]);
+  });
+
+  it("reads again the merges of the sheets a change acts on that are left when another is gone", async () => {
+    let provider = laidOut();
+    let sheets = gatekeeper(run);
+    let { actionId } = await sheets.queued([
+      { op: "writeCells", range: "Sales!A1", values: [["x"]] },
+      { op: "writeCells", range: "'Q3 Plan'!A1", values: [["y"]] },
+    ]);
+
+    provider.sheets = provider.sheets.filter(s => s.id !== 7);
+    provider.mergeReads = [];
+
+    expect(await sheets.apply(actionId!)).toBe(
+      "This change no longer applies: change 2 (writeCells): the spreadsheet has no sheet with ID 7.");
+    expect(provider.mergeReads).toEqual([[0, 7], [0]]);
     expect(provider.batches).toEqual([]);
   });
 
@@ -2750,6 +2772,28 @@ describe.each(RUNS)("Google Sheets layout ($name)", run => {
       .toBe(true);
     // Queuing, the read with the write queued, and applying it each read the merges of "Sales" alone.
     expect(provider.mergeReads).toEqual([[0], [0], [0]]);
+  });
+
+  it("reads the merges together with the metadata for reads with changes queued and for an approval", async () => {
+    let provider = laidOut();
+    let sheets = gatekeeper(run);
+    let write = await sheets.queued([{ op: "writeCells", range: "Sales!A1", values: [["Area"]] }]);
+    let meter = meterFetches();
+    let mostOpen = async (step: () => Promise<unknown>) => {
+      meter.mostOpen = 0;
+      await step();
+      return meter.mostOpen;
+    };
+
+    // The metadata and merges, and the values beside them for a range read.
+    expect(await mostOpen(() => sheets.info())).toBe(2);
+    expect(await mostOpen(() => sheets.read("Sales!A1:B2"))).toBe(3);
+    expect(await mostOpen(() => sheets.apply(write.actionId!))).toBe(2);
+    let rows = await sheets.queued([{ op: "insertRows", sheet: "Sales", at: 1 }]);
+    // Moved rows are read only once the metadata places them.
+    expect(await mostOpen(() => sheets.read("Sales!A1:B2"))).toBe(2);
+    expect(await mostOpen(() => sheets.apply(rows.actionId!))).toBe(2);
+    expect(provider.mergeReads.slice(1)).toEqual([[0], [0], [0], [0], [0], [0]]);
   });
 
   it("shows the merges of a sheet read while only changes to another are queued", async () => {

@@ -2024,11 +2024,15 @@ changes to rows, columns and sheets, and a queued batch is capped at 100 KiB. Wh
 queued, a read or a batch may involve at most 5,000,000 characters of formulas times their number,
 since each formula is rewritten through each of them, and hold at most 5 MiB of text as rewritten.
 Queuing a batch, applying it, and a read while changes are queued fetch the spreadsheet's sheets and
-protected ranges, then, in a second request, the merges of only the sheets the batch and the changes
+protected ranges, and, in a second request, the merges of only the sheets the batch and the changes
 queued before it act on (and, for `readFormats()`, the sheet it reads), so merges elsewhere hold up
-no write. Google's list of those merges may be at most 5 MiB, about 70,000 merges; a batch acting on
-sheets holding more is refused with an error saying so, as is a read with such a change queued.
-Google allows 60 write requests a minute per user; a write over that quota stays pending.
+no write. Applying a batch, `getSpreadsheet()` and a range read send the two requests together,
+since the changes name their sheets by ID; queuing a batch and `readFormats()` find sheets by title,
+so they send the second once the first answers. A merges request Google refuses while naming a sheet
+a collaborator has deleted is sent again for the sheets left, if any. Google's list of those merges
+may be at most 5 MiB, about 70,000 merges; a batch acting on sheets holding more is refused with an
+error saying so, as is a read with such a change queued. Google allows 60 write requests a minute
+per user; a write over that quota stays pending.
 
 ## Google Drive bindings
 
