@@ -2437,6 +2437,11 @@ function mergeTableCells(draft: Draft, range: TableRange): void {
     if (inside(hr, hc) !== inside(r, c)) cut = true;
   }));
   if (cut) throw new Error("A non-rectangular collection of cells cannot be merged.");
+  // What a merge does with a positioned object anchored to a paragraph of the range, which it
+  // moves, joins or leaves out as one empty paragraph, nobody has seen.
+  let anchors = range.rowSpan * range.columnSpan > 1 && grid.some((row, r) => row.some((cell, c) =>
+    inside(r, c) && cell.content?.some(({ paragraph }) => paragraph?.positionedObjectIds?.length)));
+  if (anchors) notModelled("merging cells that anchor a positioned object");
   // A merge moves the cells below the first ahead of the cells beside it, and a footnote with
   // them. That Google then numbers the footnotes by where they stand is inferred: no recorded
   // document holds a merge over one.
