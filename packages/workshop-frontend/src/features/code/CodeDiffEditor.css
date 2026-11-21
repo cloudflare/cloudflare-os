@@ -136,6 +136,15 @@
   overflow: hidden;
 }
 
+/*
+ * When the editor wraps, a deleted row is still clipped to one line, and it must not widen the
+ * content either: CodeMirror would take that width for the wrap width and estimate every
+ * offscreen line as unwrapped, shrinking the document under a jump to the change.
+ */
+.gadgets-diff-surface .cm-lineWrapping .gadgets-deleted-code-zone {
+  contain: inline-size;
+}
+
 .gadgets-diff-surface .gadgets-deleted-code-row {
   height: 20px;
   padding: 0 16px 0 12px;
