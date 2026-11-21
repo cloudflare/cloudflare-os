@@ -413,26 +413,27 @@ describe("Google Doc edit definitions", () => {
     expect(landed).not.toHaveBeenCalled();
   }));
 
-  it("builds a write from the copy without storing anything", inStore(async () => {
+  it("builds a write from the copy as a replay makes it, and keeps nothing of it", inStore(async () => {
     let held = snapshotOf(docAt("r-copy", "Draft"));
     let { api, landed, docHost } = host(docAt("r-now", "Other"), undefined, held);
     let before = { ...docStoreCost };
-    let atBatch: typeof before | undefined;
+    let rows = storedRows(storage!);
+    let atBatch: { cost: typeof before; rows: string } | undefined;
     api.batchUpdate.mockImplementationOnce(async () => {
-      atBatch = { ...docStoreCost };
+      atBatch = { cost: { ...docStoreCost }, rows: storedRows(storage!) };
       return { revisionId: "r-next", writeMarkerId: "marker-new", replies: [] };
     });
 
     await DOC_DEFINITIONS.appendText.apply(APPEND, docHost, { id: 4 });
 
-    // No result was stored for the edit: the tab is decoded and rendered once, whole, in hand,
-    // and nothing is written. The base version is one run, so one run is decoded and the
-    // render counts one run.
+    // No result was stored for the edit: it is made and checked as a replay makes it, in a
+    // transaction that is undone. The base version's one run is decoded and rendered, and so is
+    // the run the edit gives.
     expect(api.getDocument).not.toHaveBeenCalled();
-    expect(atBatch).toMatchObject({
-      rowsWritten: before.rowsWritten, runsDecoded: before.runsDecoded + 1,
-      runsRendered: before.runsRendered + 1, resultsStored: before.resultsStored,
-      resultsFound: before.resultsFound,
+    expect(atBatch!.rows).toBe(rows);
+    expect(atBatch!.cost).toMatchObject({
+      runsDecoded: before.runsDecoded + 1, runsRendered: before.runsRendered + 2,
+      resultsStored: before.resultsStored + 1, resultsFound: before.resultsFound,
     });
     expect(landings(landed)).toEqual([{ id: 4, marker: { id: "marker-new", tabId: "tab-1" } }]);
   }));
@@ -976,6 +977,32 @@ describe.each(FORMS)("an edit built from the document its approval fetched, on %
       expect(unapplyable).not.toHaveBeenCalled();
       expectStoredAs(before);
     }));
+
+  it("refuses an edit that would leave a paragraph of the fetched document past a row, and sends nothing", inStore(async () => {
+    // The copy held is small; the document fetched has grown the edit's paragraph to near a row,
+    // which it still fits, and the replacement would take it past one, as a replay refuses.
+    let fresh = twoTabs("r-now", "stored", "stored");
+    let grown = `Draft ${"a".repeat(DOC_ROW_BYTES - 2_000)}`;
+    fresh.tabs[0] = { ...buildTab([para(grown), para("Kept")]), tabId: "tab-1", title: "Main" };
+    let replace: Replace = {
+      ...BASE, type: "replaceText", oldMarkdown: "Draft", newMarkdown: `Final ${"b".repeat(4_000)}`,
+      display: { tab: "x" },
+    };
+    let before = fallback(fresh);
+    let { api, landed, unapplyable, docHost } = before;
+
+    let failure = await rejection(DOC_DEFINITIONS.replaceText.apply(replace, docHost, { id: 4 }));
+
+    expect(failure).toBeInstanceOf(ActionApplyError);
+    expect((failure as Error).message).toContain("this edit is too large");
+    expect(unapplyable.mock.calls).toEqual(
+      [[4, replace, `Pending Google Doc edit could not be applied: ${(failure as Error).message}`]]);
+    expect(landed).not.toHaveBeenCalled();
+    // The pinned batch Google refused, and none after the fetch.
+    expect(api.getDocument).toHaveBeenCalledTimes(1);
+    expect(api.batchUpdate).toHaveBeenCalledTimes(1);
+    expectStoredAs(before);
+  }));
 
   it.each<[string, FetchedTab, FetchedTab]>([
     ["the edit's tab", "unrendered", "stored"],

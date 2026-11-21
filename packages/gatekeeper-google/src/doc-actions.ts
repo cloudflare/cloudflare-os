@@ -18,10 +18,10 @@ import {
   type GoogleDocsTab,
 } from "./docs-api";
 import { replayCost } from "./docs-model";
-import { DocReadingFault, storedTabReading, unwrapped } from "./docs-reading";
+import { unwrapped } from "./docs-reading";
 import {
-  assertDocEditReplayable, docEditKey, docEditTab, docRefusal, docTabReducer,
-  replayableDocEdits, tabEditRequests, type DocEdit, type DocRefusal,
+  assertDocEditReplayable, docEditKey, DocEditRefusedError, docEditResult, docEditTab, docRefusal,
+  docTabReducer, replayableDocEdits, type DocEdit, type DocRefusal,
 } from "./docs-replay";
 import { storedIn, type DocCopy } from "./docs-copy";
 import {
@@ -852,15 +852,39 @@ async function reconcileDocWriteReceipt(
   return host.api.getDocument(host.documentId);
 }
 
+/** Thrown to undo the transaction `checkedEditRequests` runs in. */
+const CHECKED = new Error("undone: an approval's check keeps nothing");
+
+/**
+ * The requests of `edit` in `version`, made by `docEditResult` and so held to every check a
+ * replay makes of the version they give, a paragraph or a table grown past a row among them, in
+ * a transaction that is undone: an approval stores nothing of the check.
+ * @throws What `docEditResult` throws: `DocEditRefusedError` for an edit the version refuses,
+ * and faults of storage.
+ */
+function checkedEditRequests(
+  store: DocStore, version: DocVersion, edit: DocEdit,
+): readonly GoogleDocsBatchRequest[] {
+  let made: { requests: readonly GoogleDocsBatchRequest[] } | undefined;
+  try {
+    store.transaction(() => {
+      made = { requests: docEditResult(store, version, edit).requests };
+      throw CHECKED;
+    });
+  } catch (error) {
+    if (error !== CHECKED) throw error;
+  }
+  return made!.requests;
+}
+
 /**
  * What the copy `held` says of `action`'s write: the marker of a write that already landed,
  * or the batch to send pinned to the copy's revision. `undefined` where the copy cannot say
  * and the document as it is then decides: no revision to pin the batch to, a tab the copy
  * lacks, cannot index or cannot read back, an edit the copy's tab refuses or that changes
  * nothing in it, or more than one marker of the write. The batch is the one a replay stored for
- * the edit in the tab's base version; where none is stored it is built from the piece of that
- * tab around the edit. No version and no result is stored and the model is not run; the build
- * writes only what a read of the tab writes (a keying, the rendering of a run that had none).
+ * the edit in the tab's base version; where none is stored it is made as a replay makes it and
+ * held to the same checks (`checkedEditRequests`), and nothing of that is kept.
  */
 function planFromCopy(action: GoogleDocEditAction, held: GoogleDocSnapshot):
   | { landed: GoogleDocWriteMarker }
@@ -890,11 +914,10 @@ function planFromCopy(action: GoogleDocEditAction, held: GoogleDocSnapshot):
     let base = copy.tab(docEditTab(copy.outline, action).tabId);
     let { store } = storedIn(copy);
     if (!base || store.unindexed(base)) return undefined;
-    // The requests a replay stored for the edit; otherwise built from the piece of the tab
-    // around the edit, with no version and no result stored and the model not run.
+    // The requests a replay stored for the edit; otherwise made as a replay makes them.
     let stored = store.result(base, docEditKey(action));
     if (stored && "refusal" in stored) return undefined;
-    let requests = stored?.requests ?? tabEditRequests(storedTabReading(store, base), action);
+    let requests = stored?.requests ?? checkedEditRequests(store, base, action);
     return requests.length > 0 ? { write: { tab: base, requests }, revisionId } : undefined;
   } catch {
     // A tab that cannot be read back, or an edit the copy's tab refuses, a batch that leaves
@@ -920,13 +943,12 @@ function editTabId(tabs: readonly { tabId: string }[], action: GoogleDocEditActi
  * The write of the edit `action`, built from `document`, just fetched, as the store holds it.
  * An edit that no longer replays, or whose tab the document does not hold, is refused first,
  * from the tab identities in hand and with nothing stored; otherwise the document is stored
- * as it is read, in a trial, and the edit is built from the piece of its tab around it, read
- * from that copy (`tabEditRequests` over `storedTabReading`: no tab is decoded or rendered
- * whole). Synchronous.
- * @returns The write, or `refused`: what building it threw (the edit's own refusals and the
- * builders', a batch that leaves the piece it was built from among them), or, for a run the
- * renderer threw on, while the document was stored or as the piece was rendered from the
- * copy, what the renderer threw.
+ * as it is read, in a trial, and the edit is made in its tab of that copy as a replay makes it
+ * and held to the same checks (`checkedEditRequests`). Synchronous.
+ * @returns The write, or `refused`: the edit's own refusals and the replay's
+ * (`DocEditRefusedError`: the builders', the model's, a version with an element too large for a
+ * row), or, for a run the renderer threw on while the document was stored, what the renderer
+ * threw.
  * @throws What cannot be stored (`DocHost.tryFetched`, but for `DocRunRenderError`) and a copy
  * that does not read back (`DOC_COPY_UNREADABLE`): faults that fail the approval and leave the
  * edit pending, since approving again may find them mended and no edit may be failed for good
@@ -946,13 +968,12 @@ function fetchedEdit(
       let base = copy.tab(tabId);
       if (!base) throw new Error(DOC_COPY_UNREADABLE);
       try {
-        let requests = tabEditRequests(storedTabReading(storedIn(copy).store, base), action);
-        return { write: { tab: base, requests } };
+        return { write: { tab: base, requests: checkedEditRequests(storedIn(copy).store, base, action) } };
       } catch (error) {
-        // A tab that does not read back is a fault of storage, not of the edit, and passes as
-        // storage threw it (`unwrapped`); what the renderer threw on a run is told below.
-        if (error instanceof DocReadingFault || error instanceof DocRunRenderError) throw error;
-        return { refused: error };
+        // Anything else is a fault of storage, not of the edit, and passes as storage threw it
+        // (`unwrapped`).
+        if (error instanceof DocEditRefusedError) return { refused: error };
+        throw error;
       }
     }));
   } catch (error) {

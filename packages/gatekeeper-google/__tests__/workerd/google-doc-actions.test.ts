@@ -6505,8 +6505,9 @@ describe("Google Doc replay cost", () => {
    * trial and its keep each read them back, as `cold read` shows (the two tabs' runs, twice)
    * and `queue` five times over, once for each of its fetches. A document stored as it is
    * read, the one an approval fetches after its write, is decoded by nothing. An approval that
-   * builds its write from a document it fetched decodes the piece around the edit from the
-   * copy stored of that document: through Drive, `approval`.
+   * builds its write from a document it fetched makes the edit as a replay does, in the copy
+   * stored of that document, and finds the result a replay stored where the edit's tab came
+   * back as it was: through Drive, `approval`.
    * `runsRendered` counts every rendering of a run. A tab that is stored beside no earlier
    * version of it has each of its runs rendered, alone: the cold read renders the 126 runs of
    * the two tabs, and no read after it renders any. An edit that is made renders its piece for
@@ -6527,7 +6528,7 @@ describe("Google Doc replay cost", () => {
    * builds from the snapshot the read before it left, and reads the document once, after the
    * write. Its `approval` follows a write that landed, so no snapshot may build it: the document
    * is read before the write, stored as it is read, in a trial that keeps nothing, and the
-   * piece around the edit is decoded from that copy and rendered for the builders. The
+   * edit's tab came back as the replay left it, so its result is found there. The
    * stored copy lacks the other tab as the approval before left it, so the trial writes that
    * tab's rows, renders its one run and removes them: ten rows. The paragraphs document is read
    * after the write too, one edit being still queued. A revision probe is answered with the
@@ -6625,7 +6626,7 @@ describe("Google Doc replay cost", () => {
       "rejection": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3],
       "read after rejection": [0, 0, 2, 2, 1, 0, 100, 0, 0, 1, 0, 125, 264, 2, 4, 0, 2, 0, 3],
       "approval (other tab)": [0, 1, 2, 2, 1, 0, 28, 1, 0, 5, 1423, 4279160, 10, 0, 1, 0, 0, 3, 2],
-      "approval": [0, 1, 3, 1, 1, 0, 128, 2, 0, 6, 1434, 8557708, 533, 2, 5, 1, 1, 0, 1],
+      "approval": [0, 1, 3, 1, 1, 0, 128, 2, 0, 6, 1434, 8557708, 533, 1, 4, 1, 1, 1, 1],
       "read after approval": [0, 0, 1, 1, 1, 0, 44, 1, 0, 2, 0, 4278673, 798, 253, 6, 2, 1, 0, 1],
     },
     "cells, opened from a read and write Drive binding": {
@@ -6636,7 +6637,7 @@ describe("Google Doc replay cost", () => {
       "rejection": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2],
       "read after rejection": [0, 0, 1, 1, 1, 0, 36, 1, 0, 2, 0, 1273305, 28, 47, 6, 0, 1, 0, 2],
       "approval (other tab)": [0, 1, 2, 1, 1, 0, 28, 1, 0, 5, 1423, 1274095, 10, 0, 1, 0, 0, 2, 1],
-      "approval": [0, 1, 2, 0, 0, 0, 46, 1, 0, 5, 1339, 1274092, 34, 5, 6, 0, 0, 0, 0],
+      "approval": [0, 1, 2, 0, 0, 0, 46, 1, 0, 5, 1339, 1274092, 34, 0, 1, 0, 0, 1, 0],
       "read after approval": [0, 0, 0, 0, 1, 0, 0, 1, 0, 2, 0, 1273604, 117, 42, 4, 2, 0, 0, 0],
     },
   };
@@ -7274,7 +7275,7 @@ describe.each(RUNS)("an approved Google Doc edit built from the document its app
     expect(docs.text(MAIN_TAB)).toBe("Alpha\nGamma\nNew");
   });
 
-  it("builds an approval's write from the copy and writes no row until the write lands", async () => {
+  it("builds an approval's write from the copy and keeps no row until the write lands", async () => {
     let facet = "copy-built-write";
     vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
@@ -7301,8 +7302,10 @@ describe.each(RUNS)("an approved Google Doc edit built from the document its app
     // The batch is the first request: no document was read to build it.
     expect(docsRequestsSince(from)[0]).toBe("content");
     expect(built).toHaveBeenCalled();
-    // No version and no result stored, and nothing else: the build wrote no row.
-    expect(atWrite! - written).toBe(0);
+    // Made and checked as a replay makes it, in a transaction that is undone: the two rows it
+    // writes, the result the test deleted among them, are not kept (the unit tests of
+    // `doc-actions` read the rows back), and nothing else is written.
+    expect(atWrite! - written).toBe(2);
     expect(docs.text(MAIN_TAB)).toBe("Alpha\nGamma");
     built.mockRestore();
   });
@@ -9644,7 +9647,8 @@ describe.each(RUNS)("what a Google Doc session takes in hand, $name", r => {
 
   // The collaborator's edit changes the tab's last paragraph, so Google refuses the pin: one
   // `documents.get`, the answer stored as it is read (one run of it is not stored yet, and
-  // is rendered), and the batch built from the piece around the edit in that copy.
+  // is rendered), and the batch made from the piece around the edit in that copy as a replay
+  // makes it, which renders the run the edit gives too.
   it("an approval whose pin Google refuses reads the document once and builds from the piece", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     let facet = "piece-fallback";
@@ -9657,7 +9661,7 @@ describe.each(RUNS)("what a Google Doc session takes in hand, $name", r => {
 
     let fallback = await taken(async () => expect(await hooks().applyAction(facet, actionId)).toBeNull());
 
-    expect(counts(fallback)).toEqual(counted(1, 1 + 1, 0, ["content", "read", "content", "cleanup"]));
+    expect(counts(fallback)).toEqual(counted(1, 1 + 1 + 1, 0, ["content", "read", "content", "cleanup"]));
     expectPiece(fallback, 1, REPLACEMENT[1].length, content.length);
     expect(docs.text()).toContain(REPLACEMENT[1]);
   });
