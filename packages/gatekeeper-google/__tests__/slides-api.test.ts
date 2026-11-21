@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GoogleSlidesApi } from "../src/slides-api";
 import { LABEL_FIELDS, SLIDE_FIELDS } from "../src/slides-fields";
+import { titleOf } from "../src/slides-model";
 
 const token = async () => "access-token";
 
@@ -96,7 +97,45 @@ describe("GoogleSlidesApi.getSlides", () => {
     await pages.reaches(5);
     for (let page of pages.asked.slice(3).toReversed()) page.answer();
 
-    expect([...await read]).toEqual(wanted.map(id => [id, { objectId: id }]));
+    let labelled = new Set(["s1", "s5"]);
+    expect([...await read]).toEqual(wanted.map(id =>
+      [id, labelled.has(id) ? { objectId: id, pageElements: [] } : { objectId: id }]));
+  });
+
+  it("keeps of a label page the title and the slide numbers, and lets the rest of its text go", async () => {
+    // Twenty label pages, each a title that shows its number and a body of about 1 MiB of text.
+    let body = Array.from({ length: 10_000 }, (_run, at) => ({ textRun: { content: `${"x".repeat(99)}${at}\n` } }));
+    let page = (id: string, number: number) => ({
+      objectId: id,
+      slideProperties: { isSkipped: number % 2 === 0 },
+      pageElements: [
+        { objectId: `${id}-body`, shape: { placeholder: { type: "BODY" }, text: { textElements: body } } },
+        { objectId: `${id}-title`, shape: { placeholder: { type: "TITLE" }, text: { textElements: [
+          { textRun: { content: "Part " } }, { autoText: { type: "SLIDE_NUMBER", content: `${number}` } },
+          { textRun: { content: `${"y".repeat(300)}\n` } },
+        ] } } },
+        { objectId: `${id}-footer`, shape: { placeholder: { type: "FOOTER" }, text: { textElements: [
+          { textRun: { content: "Page " } }, { autoText: { type: "SLIDE_NUMBER", content: `${number}` } },
+        ] } } },
+      ],
+    });
+    let ids = Array.from({ length: 20 }, (_id, at) => `s${at + 1}`);
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      let id = decodeURIComponent(new URL(String(input)).pathname.split("/").at(-1)!);
+      return Response.json(page(id, ids.indexOf(id) + 1));
+    }));
+
+    let read = await api.getSlides("deck-1", ids, ids, new Set(ids));
+
+    for (let [id, kept] of read) {
+      let whole = page(id, ids.indexOf(id) + 1);
+      expect(titleOf(kept)).toBe(titleOf(whole));
+      expect(kept.slideProperties).toEqual({ isSkipped: whole.slideProperties.isSkipped });
+      let numbers = kept.pageElements!.flatMap(element =>
+        (element.shape?.text?.textElements ?? []).filter(text => text.autoText?.type === "SLIDE_NUMBER"));
+      expect(numbers.map(text => text.autoText!.content)).toEqual([`${ids.indexOf(id) + 1}`, `${ids.indexOf(id) + 1}`]);
+      expect(JSON.stringify(kept).length).toBeLessThan(1_024);
+    }
   });
 
   it("skips the IDs the deck's order no longer has, and asks for nothing when none is left", async () => {
