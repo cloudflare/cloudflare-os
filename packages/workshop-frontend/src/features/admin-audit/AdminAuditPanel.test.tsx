@@ -14,6 +14,7 @@ import type {
   AdminAuditStats,
   AdminSettingRecord,
   AdminUserAccessRecord,
+  AdminWriteRecord,
 } from '@gadgets/workshop-shared/api'
 import { formatFullTimestamp } from '../../utils/formatTimestamp'
 import type { AuditFilter } from './auditFilter'
@@ -75,12 +76,14 @@ const testStats = (patch: Partial<AdminAuditStats> = {}): AdminAuditStats => ({
     { day: '2026-10-21', count: 2 },
   ],
   topAdmins: [{ admin: 'admin', count: 4 }, { admin: 'second-admin', count: 1 }],
+  writes: 0,
   ...patch,
 })
 
 const SETTING_AT = new Date('2026-10-21T08:00:00Z')
 const ACCESS_AT = new Date('2026-10-21T09:15:00Z')
 const USER_AT = new Date('2026-10-21T10:30:00Z')
+const WRITE_AT = new Date('2026-10-21T11:45:00Z')
 
 const accessRecord = (patch: Partial<AdminAccessRecord> = {}): AdminAccessRecord => ({
   kind: 'workspace',
@@ -121,6 +124,21 @@ const settingRecord = (patch: Partial<AdminSettingRecord> = {}): AdminSettingRec
   via: 'api',
   method: 'setSiteName',
   changes: [{ setting: 'siteName', before: 'Old name', after: 'New name' }],
+  ...patch,
+})
+
+const writeRecord = (patch: Partial<AdminWriteRecord> = {}): AdminWriteRecord => ({
+  kind: 'write',
+  at: WRITE_AT,
+  admin: 'second-admin',
+  sessionId: 'session-3',
+  via: 'api',
+  workspaceId: 'ws-titled',
+  workspaceOwner: 'owner@example.test',
+  workspaceTitle: 'Quarterly report',
+  method: 'stopAgent',
+  args: { chatId: 3 },
+  reason: 'Ticket 42: agent stuck',
   ...patch,
 })
 
@@ -198,12 +216,12 @@ const key = (target: HTMLElement, init: KeyboardEventInit) => act(async () => {
 // The log's page controls.
 const pages = () => document.body.querySelector('nav[aria-label="Audit log pages"]')!
 
-// What a record's details say under `term`.
-const detail = (details: HTMLElement, term: string) =>
-  [...details.querySelectorAll('dt')].find((dt) => dt.textContent === term)?.nextElementSibling?.textContent
-
 // Each change in a record's details, as its name and its two sides.
 const changesIn = (details: HTMLElement) => [...details.querySelectorAll('li')].map((li) => li.textContent)
+
+// What a record's details say under `term`, or null when they have no such entry.
+const detail = (details: HTMLElement, term: string) =>
+  [...details.querySelectorAll('dt')].find((dt) => dt.textContent === term)?.nextElementSibling?.textContent ?? null
 
 // What listAdminAudit() is asked for when the panel loads a page.
 const pageQuery = (query: Parameters<AdminApi['listAdminAudit']>[0] = {}) =>
@@ -341,6 +359,30 @@ describe('AdminAuditPanel', () => {
       for (const title of ['Admin actions, last 7 days', 'Most active admins']) {
         expect(card(title).textContent).not.toMatch(/content read/i)
       }
+    })
+
+    it('counts the week’s writes, one as a singular', async () => {
+      const admin = fakeAdmin()
+      admin.getAdminAuditStats.mockResolvedValueOnce(testStats({ writes: 1 }))
+      admin.getAdminAuditStats.mockResolvedValue(testStats({ writes: 1234 }))
+      await render(settingsWith(), admin)
+
+      expect(card('Admin actions, last 7 days').textContent).toMatch(/1 write(?!s)/)
+      await click(button('Refresh'))
+      expect(card('Admin actions, last 7 days').textContent).toContain('1,234 writes')
+    })
+
+    it('says nothing of writes to a backend whose statistics lack the count', async () => {
+      const admin = fakeAdmin()
+      // As a backend older than admin writes sends them.
+      const { writes: _, ...older } = testStats()
+      admin.getAdminAuditStats.mockResolvedValue(older as AdminAuditStats)
+      await render(settingsWith(), admin)
+
+      const shown = card('Admin actions, last 7 days').textContent
+      expect(shown).toMatch(/\d+ actions, by UTC day/)
+      expect(shown).not.toMatch(/\d+ writes?\b/)
+      expect(shown).not.toContain('NaN')
     })
 
     it('says when the window holds no activity', async () => {
@@ -797,12 +839,37 @@ describe('AdminAuditPanel', () => {
       expect(detail(await expand(1), 'Access')).toBe('Off · refused: Access off')
     })
 
+    it('shows a write: its kind, its workspace’s owner, and in its details the workspace, reason, arguments and how it came', async () => {
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockResolvedValue(testPage([
+        writeRecord(),
+        writeRecord({ method: 'restartWorkspace', args: {}, via: 'cli' }),
+      ]))
+      await render(settingsWith(), admin)
+
+      const cells = [...logRows()[0].querySelectorAll('td')].map((cell) => cell.textContent)
+      expect(cells.slice(1)).toEqual([
+        formatFullTimestamp(WRITE_AT), 'second-admin', 'stopAgent', 'Workspace write', 'owner@example.test',
+      ])
+      const details = await expand()
+      expect(detail(details, 'Workspace')).toBe('Quarterly reportws-titled')
+      expect(detail(details, 'Reason')).toBe('Ticket 42: agent stuck')
+      expect(detail(details, 'Arguments')).toBe('chatId: 3')
+      expect(detail(details, 'Via')).toBe('API')
+      expect([...details.querySelectorAll('dt')].map((dt) => dt.textContent))
+        .toEqual(['Workspace', 'Reason', 'Arguments', 'Via'])
+
+      const restart = await expand(1)
+      expect(detail(restart, 'Arguments')).toBeNull()
+      expect(detail(restart, 'Via')).toBe('CLI')
+    })
+
     it('filters by kind, which the log asks the server for as it is', async () => {
       const { listAdminAudit, onFilterChange } = await render()
 
       expect(kindSelect().textContent).toBe('Any kind')
       expect((await openOptions(kindSelect())).map((option) => option.textContent))
-        .toEqual(['Any kind', 'Workspace access', 'User access', 'Setting change'])
+        .toEqual(['Any kind', 'Workspace access', 'User access', 'Workspace write', 'Setting change'])
       await choose(kindSelect(), 'Workspace access')
       expect(onFilterChange).toHaveBeenLastCalledWith({ kind: 'workspace' })
       expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ kind: 'workspace' }))
@@ -817,6 +884,11 @@ describe('AdminAuditPanel', () => {
       expect(onFilterChange).toHaveBeenLastCalledWith({ kind: 'setting' })
       expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ kind: 'setting' }))
       expect(kindSelect().textContent).toBe('Setting change')
+
+      await choose(kindSelect(), 'Workspace write')
+      expect(onFilterChange).toHaveBeenLastCalledWith({ kind: 'write' })
+      expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ kind: 'write' }))
+      expect(kindSelect().textContent).toBe('Workspace write')
 
       await choose(kindSelect(), 'Any kind')
       expect(onFilterChange).toHaveBeenLastCalledWith({ kind: undefined })
@@ -837,6 +909,19 @@ describe('AdminAuditPanel', () => {
       expect([...card('Activity log').querySelectorAll('thead th')].map((head) => head.firstChild?.textContent))
         .toEqual(['Expand', 'Time', 'Admin', 'Action', 'Kind', 'Target user'])
       expect(document.body.textContent).not.toMatch(/sensitivity|workspace metadata|content read/i)
+    })
+
+    it('filters by a write action picked in the Action filter', async () => {
+      const { listAdminAudit, onFilterChange } = await render()
+      const [, field] = card('Activity log').querySelectorAll<HTMLInputElement>('input[role="combobox"]')
+
+      await type(field, 'restartW')
+      const options = [...document.body.querySelectorAll('[role="option"]')]
+      expect(options.map((option) => option.textContent)).toEqual(['restartWorkspace'])
+      await act(async () => { options[0].dispatchEvent(new MouseEvent('click', { bubbles: true })) })
+
+      expect(onFilterChange).toHaveBeenLastCalledWith({ method: 'restartWorkspace' })
+      expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ method: 'restartWorkspace' }))
     })
 
     it('filters by a workspace chosen in a record’s details, named in a chip that removes it', async () => {
@@ -913,6 +998,29 @@ describe('AdminAuditPanel', () => {
         owner.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
       })
       expect(onFilterChange).toHaveBeenLastCalledWith({ owner: 'grace' })
+    })
+
+    it('filters by the owner and the workspace a write record names, offering and titling them from write records alone', async () => {
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockResolvedValue(testPage([
+        writeRecord({ workspaceOwner: 'grace' }), writeRecord({ workspaceOwner: 'linus' }),
+      ]))
+      const { listAdminAudit, onFilterChange } = await render(settingsWith(), admin)
+
+      await click(within(logRows()[1], 'Show only calls targeting linus'))
+      expect(onFilterChange).toHaveBeenLastCalledWith({ owner: 'linus' })
+      expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ owner: 'linus' }))
+      const target = [...card('Activity log').querySelectorAll<HTMLInputElement>('input[role="combobox"]')]
+        .find((input) => input.placeholder.startsWith('Any user'))!
+      await type(target, '')
+      await act(async () => { target.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })) })
+      expect([...document.body.querySelectorAll('[role="option"]')].map((option) => option.textContent))
+        .toEqual(expect.arrayContaining(['grace', 'linus']))
+
+      await click(within(await expand(), 'Show only calls into Quarterly report'))
+      expect(onFilterChange).toHaveBeenLastCalledWith({ owner: 'linus', workspace: 'ws-titled' })
+      expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ owner: 'linus', workspace: 'ws-titled' }))
+      expect(button('Show every workspace, not only Quarterly report').textContent).toBe('Workspace: Quarterly report')
     })
 
     it('loads the counts and the page again on Refresh, keeping the page shown until then', async () => {

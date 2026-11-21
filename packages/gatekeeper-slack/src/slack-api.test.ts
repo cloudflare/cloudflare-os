@@ -209,7 +209,8 @@ describe("Slack org installations", () => {
     let release = Promise.withResolvers<void>();
     let checks = 0;
     vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
-      if (input.includes("auth.test")) {
+      // Each access proof starts with the first page of app-granted workspaces.
+      if (input.includes("auth.teams.list") && !input.includes("cursor=")) {
         checks++;
         started.resolve();
         await release.promise;
@@ -516,5 +517,59 @@ describe("Slack org installations", () => {
     let error = new SlackApiError("team_access_not_granted", 200);
     expect(error.isAccessError).toBe(true);
     expect(error.isAuthError).toBe(false);
+  });
+});
+
+describe("Slack external users", () => {
+  const users: Record<string, Record<string, unknown>> = {
+    WSELF: { team_id: "TONE", enterprise_user: { enterprise_id: "EORG", teams: ["TONE"] } },
+    WCOLLEAGUE: { team_id: "TTWO", enterprise_user: { enterprise_id: "EORG" } },
+    UPARTNER: { team_id: "TPARTNER", profile: { image_48: "https://a/48", image_72: "https://a/72" } },
+    WPARTNER: { team_id: "TPARTNERONE", enterprise_user: { enterprise_id: "EPARTNER" } },
+    UUNKNOWN: {},
+  };
+
+  function mockUsers(failAuthTest = false) {
+    mockSlack();
+    let fetchSlack = fetch;
+    vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
+      let url = new URL(input);
+      switch (url.pathname.split("/").pop()) {
+        case "auth.test": return Response.json(failAuthTest ? { ok: false, error: "fatal_error" }
+            : { ok: true, team_id: "TONE", enterprise_id: "EORG", user_id: "WSELF" });
+        case "users.info": {
+          let id = url.searchParams.get("user")!;
+          return Response.json({ ok: true, user: { id, name: id, ...users[id] } });
+        }
+        case "conversations.history": return Response.json({ ok: true, messages: [
+          { ts: "123.000002", user: "UPARTNER" }, { ts: "123.000001", user: "WSELF" }] });
+      }
+      return fetchSlack(input, init);
+    });
+    return { recover: () => { failAuthTest = false; } };
+  }
+
+  it("compares each user's organization with the account's", async () => {
+    mockUsers();
+    let client = api();
+    for (let [id, isExternal] of Object.entries(
+        { WCOLLEAGUE: false, UPARTNER: true, WPARTNER: true, UUNKNOWN: undefined })) {
+      expect((await client.getUser(id)).isExternal, id).toBe(isExternal);
+    }
+  });
+
+  it("describes message authors", async () => {
+    mockUsers();
+    let page = await api().listHistory("CONE", undefined, 10);
+    expect(page.items.map(({ author }) => [author?.isExternal, author?.avatarUrl]))
+        .toEqual([[true, "https://a/72"], [false, undefined]]);
+  });
+
+  it("leaves isExternal unset while the account's organization is unavailable", async () => {
+    let slack = mockUsers(true);
+    let client = new SlackApi(async () => "token");
+    expect((await client.getUser("UPARTNER")).isExternal).toBeUndefined();
+    slack.recover();
+    expect((await client.getUser("WPARTNER")).isExternal).toBe(true);
   });
 });

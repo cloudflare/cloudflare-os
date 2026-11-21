@@ -5,6 +5,7 @@ import {
   isConnectAttempted,
   markConnectAttempted,
   NONCE_KEY,
+  peekOAuth,
   putInitiation,
   type ConnectNonceKv,
   type StoredNonce,
@@ -129,5 +130,86 @@ describe("once-only complete()", () => {
     expect(isConnectAttempted(kv)).toBe(false);
     markConnectAttempted(kv);
     expect(kv.get("connectAttempted")).toBe(true);
+  });
+});
+
+// A pasted-key form checks its nonce, asks the provider, and claims only once the key is good.
+describe("checking an attempt before claiming it", () => {
+  const EXPIRY = 101 + 10 * 60 * 1000;
+  function shown(kv: ConnectNonceKv): string {
+    putInitiation(kv, "init", 100, { firstConnect: true });
+    return advanceToOAuth(kv, "init", 101, { startedUnder: "g1" })!;
+  }
+
+  it("reads the attempt and leaves it claimable, however often", () => {
+    const kv = makeKv();
+    const nonce = shown(kv);
+    const before = kv.get(NONCE_KEY);
+
+    expect(peekOAuth(kv, nonce, 102)).toMatchObject({ firstConnect: true, startedUnder: "g1", stage: "oauth" });
+    expect(peekOAuth(kv, nonce, 103)).not.toBeNull();
+    expect(kv.get(NONCE_KEY)).toEqual(before);
+    expect(claimOAuth(kv, nonce, 104)).toMatchObject({ firstConnect: true, startedUnder: "g1" });
+    expect(peekOAuth(kv, nonce, 105)).toBeNull();
+  });
+
+  it("refuses what a claim would refuse", () => {
+    const kv = makeKv();
+    putInitiation(kv, "init", 100);
+    expect(peekOAuth(kv, "init", 101)).toBeNull();
+    const nonce = advanceToOAuth(kv, "init", 101)!;
+    expect(peekOAuth(kv, "wrong", 102)).toBeNull();
+    expect(peekOAuth(kv, "", 102)).toBeNull();
+    expect(peekOAuth(kv, nonce, EXPIRY)).toBeNull();
+    expect(peekOAuth(kv, nonce, Number.NaN)).toBeNull();
+    expect(peekOAuth(makeKv(), nonce, 102)).toBeNull();
+  });
+
+  // What can happen while the provider is asked: each ends the attempt at the claim.
+  it.each([
+    ["a newer link is made", (kv: ConnectNonceKv) => putInitiation(kv, "newer", 103)],
+    ["a newer link is opened", (kv: ConnectNonceKv) => {
+      putInitiation(kv, "newer", 103);
+      advanceToOAuth(kv, "newer", 104);
+    }],
+    ["a newer attempt is claimed", (kv: ConnectNonceKv) => {
+      putInitiation(kv, "newer", 103);
+      claimOAuth(kv, advanceToOAuth(kv, "newer", 104)!, 105);
+    }],
+    ["the nonce is deleted, as a disconnect does", (kv: ConnectNonceKv) => kv.delete(NONCE_KEY)],
+  ])("fails the claim when %s between the check and the claim", (_name, meanwhile) => {
+    const kv = makeKv();
+    const nonce = shown(kv);
+    expect(peekOAuth(kv, nonce, 102)).not.toBeNull();
+    meanwhile(kv);
+    expect(claimOAuth(kv, nonce, 106)).toBeNull();
+  });
+
+  it("fails the claim when the attempt expires between the check and the claim", () => {
+    const kv = makeKv();
+    const nonce = shown(kv);
+    expect(peekOAuth(kv, nonce, EXPIRY - 1)).not.toBeNull();
+    expect(claimOAuth(kv, nonce, EXPIRY)).toBeNull();
+    expect(kv.get<StoredNonce>(NONCE_KEY)?.expiresAt).toBe(EXPIRY);
+  });
+
+  it("lets only one of two submissions that both passed the check claim", () => {
+    const kv = makeKv();
+    const nonce = shown(kv);
+    expect(peekOAuth(kv, nonce, 102)).not.toBeNull();
+    expect(peekOAuth(kv, nonce, 102)).not.toBeNull();
+    expect(claimOAuth(kv, nonce, 103)).not.toBeNull();
+    expect(claimOAuth(kv, nonce, 103)).toBeNull();
+    expect(kv.get(NONCE_KEY)).toBeUndefined();
+  });
+
+  it("returns the stored metadata at the claim, whatever was done to the checked copy", () => {
+    const kv = makeKv();
+    const nonce = shown(kv);
+    const checked = peekOAuth<{ startedUnder: string }>(kv, nonce, 102)!;
+    checked.startedUnder = "forged";
+    checked.expiresAt = EXPIRY + 60_000;
+    expect(claimOAuth(kv, nonce, EXPIRY)).toBeNull();
+    expect(claimOAuth<{ startedUnder: string }>(kv, nonce, EXPIRY - 1)?.startedUnder).toBe("g1");
   });
 });

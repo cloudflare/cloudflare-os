@@ -93,6 +93,20 @@ it("lets an admin inspect another user's workspace", async () => {
   expect(description).not.toHaveProperty("access");
 });
 
+/** Expects `api` to refuse a write as a deployment without ADMIN_WORKSPACE_WRITES "on" does,
+ * recording nothing. */
+async function expectWritesOff(api: RpcStub<AdminApi>): Promise<void> {
+  const before = (await api.listAdminAudit({ limit: 1 })).records;
+  const code = await api.writeWorkspace(workspaceId, "restartWorkspace", {}, REASON)
+      .then(() => null, getAdminAccessErrorCode);
+  expect(code).toBe(ADMIN_ACCESS_ERROR_CODES.writesOff);
+  expect((await api.listAdminAudit({ limit: 1 })).records).toEqual(before);
+}
+
+it("refuses writes to workspaces while ADMIN_WORKSPACE_WRITES is unset", async () => {
+  await expectWritesOff(admin);
+});
+
 it("applies a redeploy's tighter bounds and demotion", async () => {
   await harness.redeployWorkshop(config => {
     config.vars = {
@@ -101,6 +115,8 @@ it("applies a redeploy's tighter bounds and demotion", async () => {
       ADMIN_AUDIT_RETENTION_MIN_DAYS: "120",
       // Not a level, so the cap must fail closed to "off".
       ADMIN_WORKSPACE_ACCESS_MAX: "full",
+      // Not "on", so writes must fail closed to off.
+      ADMIN_WORKSPACE_WRITES: "true",
     };
   });
 
@@ -148,4 +164,6 @@ it("applies a redeploy's tighter bounds and demotion", async () => {
   const demotedRecords = (await fresh.listAdminAudit({ admin: DEMOTED_USERNAME })).records;
   expect(demotedRecords.map(record => record.kind === "workspace" && record.method))
       .toEqual(["describe", "inspectWorkspace"]);
+
+  await expectWritesOff(fresh);
 });

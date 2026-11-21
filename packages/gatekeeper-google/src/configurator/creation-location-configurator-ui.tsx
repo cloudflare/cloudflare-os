@@ -49,10 +49,10 @@ const toItem = (node: DriveNode): ConfiguratorUIHierarchyItem => ({
 /**
  * Whether creating in `folder` needs CREATED_FILES_GRANT: a new folder does anywhere, and a file
  * outside My Drive. A host that does not say which type it creates (`accepted` absent) may be
- * creating a folder, so it is asked for there too.
+ * creating a folder, so it is asked for there too. A saved file is uploaded, which needs it anywhere.
  */
 const needsGrant = (folder: string, accepted: readonly string[] | undefined) =>
-  folder !== MY_DRIVE || accepted?.includes(FOLDER_PATTERN) !== false;
+  saving || folder !== MY_DRIVE || accepted?.includes(FOLDER_PATTERN) !== false;
 
 type Context = ConfiguratorUIRenderContext<CreationLocationConfiguratorRpc, CreationLocationConfiguratorValues>;
 type Note = { text: string; tone?: "error" };
@@ -60,6 +60,9 @@ type Note = { text: string; tone?: "error" };
 // Module state, as the runtime keeps none for a module.
 /** Whether the account holds CREATED_FILES_GRANT, once asked or given. */
 let canCreate: boolean | undefined;
+/** Whether the folder is for a file the user saves, not one an approval creates, once `ui` says so. */
+let saving = false;
+const verb = () => saving ? "save" : "create";
 let askedCanCreate = false;
 /** The grant listing the location shown needs (shared drives'), while the picker shows it could not. */
 let listingGrant: string | null = null;
@@ -75,6 +78,10 @@ const checkCanCreate = ({ ui, setValues }: Context) => {
     canCreate ??= held;
     setValues({});
   });
+  void ui.purpose().then(purpose => {
+    saving = purpose === "save";
+    setValues({});
+  }, () => {});
 };
 
 const ACCESS_POLL_MS = 2_000;
@@ -136,13 +143,13 @@ export default {
     typeof folder === "string" && (!needsGrant(folder, accepted) || canCreate === true),
   // `creationFolderId` in creation.ts reads this back with `parseResourceUrl`.
   resourceUrl: ({ values: { folder } }) => {
-    if (!folder) throw new Error("Choose where to create it.");
+    if (!folder) throw new Error(`Choose where to ${verb()} it.`);
     return FOLDER_PATTERN.replace(":folderId", encodeURIComponent(folder.slice(folder.indexOf(":") + 1)));
   },
   render(context) {
     const { values: { folder = null, suggested }, setValues, ui, acceptedResourceUrlPatterns: accepted } = context;
     return <Section>
-      <Field label="Where to create it">
+      <Field label={`Where to ${verb()} it`}>
         <HierarchyPicker
           name="folder"
           value={folder}
@@ -178,7 +185,7 @@ export default {
         "your Drive files\". It is used only to list your shared drives.")}
       {folder && needsGrant(folder, accepted) && canCreate === false && grantNotice(context, CREATED_FILES_GRANT,
         "Google will ask to let this app \"See, edit, create, and delete only the specific Google Drive files you " +
-        "use with this app\". It is used only to put what you create where you choose.")}
+        `use with this app". It is used only to put what you ${verb()} where you choose.`)}
     </Section>;
   },
 } satisfies ConfiguratorUISpec<CreationLocationConfiguratorRpc, CreationLocationConfiguratorValues>;

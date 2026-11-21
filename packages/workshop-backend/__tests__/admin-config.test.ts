@@ -32,6 +32,17 @@ describe("parseAdminConfig", () => {
     expect(normalizeAdminConfig({ signupsEnabled: false }).userSearchEnabled).toBe(true);
   });
 
+  it("allows snapshot sharing unless that is stored as off, on configs stored before it too", () => {
+    expect(parseAdminConfig(null).snapshotSharingEnabled).toBe(true);
+    for (let stored of ['{"signupsEnabled":false}', '{"snapshotSharingEnabled":null}',
+        '{"snapshotSharingEnabled":"false"}', '{"snapshotSharingEnabled":0}']) {
+      expect(parseAdminConfig(stored).snapshotSharingEnabled, stored).toBe(true);
+    }
+    expect(parseAdminConfig(serializeAdminConfig(
+        { ...DEFAULT_ADMIN_CONFIG, snapshotSharingEnabled: false })).snapshotSharingEnabled)
+        .toBe(false);
+  });
+
   it("drops malformed format entries rather than the whole list", () => {
     let config = parseAdminConfig(JSON.stringify({
       formats: [

@@ -602,8 +602,8 @@ export class SharePointConfiguratorUI extends RpcTarget implements SharePointCon
   /** Where a URL sits in the picker: its row, its tab, and the places above it. Null for "all". */
   async #locate(url: string): Promise<{ row: SharePointBrowserItem; tab: string; path: SharePointBrowserCrumb[] } | null> {
     const { identity, grant } = await this.#state();
-    const tenant = identity.sharePointTenant;
-    if (tenant === undefined) throw new UnresolvableUrlError("This Microsoft 365 account has no SharePoint.");
+    if (identity.sharePointTenant === undefined) throw new UnresolvableUrlError("This Microsoft 365 account has no SharePoint.");
+    const tenant = { name: identity.sharePointTenant, id: identity.tenantId };
     return await this.#read(async api => {
       const resolved = await resolveSharePointUrl(api, url, tenant, { selected: grant?.sites === "selected" });
       const scope = resolved.scope;

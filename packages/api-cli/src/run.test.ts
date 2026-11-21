@@ -502,6 +502,8 @@ test("search finds the commands for agents' everyday tasks in the API's own word
     ["observer verification", openWorkspace, 4],
     ["choose accounts to observe a shared workspace", openWorkspace, 3],
     ["share key", openWorkspace, 3],
+    // An admin's write to a workspace.
+    ["write to a workspace", / write-workspace </, 1],
   ];
   for (const [task, wanted, top] of cases) {
     const rank = rankOf(realTable, task, wanted);
@@ -558,6 +560,20 @@ test("search finds the commands for gadget-worded tasks, by what the API says of
   }
   assert.equal(searchCommands(realTable, "create a skill")[0]!.command,
     "cf-os api get-gatekeeper-app context ui create-context-skill <collectionId> <path> <doc>");
+});
+
+test("search lists a method several capabilities inherit once among the others, its best copy where it ranks", () => {
+  // GadgetClient and GadgetSnapshotClient both have connect-to-gadget, get-export-formats and export.
+  const gadget = / get-gadget <id> (connect-to-gadget|get-export-formats|export <id>)$/;
+  const snapshot = / get-gadget-snapshot <id> (connect-to-gadget|get-export-formats|export <id>)$/;
+  const top = searchCommands(realTable, "export gadget data").map((match) => match.command);
+  assert.match(top[0], / get-gadget <id> connect-to-gadget$/);
+  assert.equal(top.filter((command) => gadget.test(command)).length, 3, top.join("\n"));
+  assert.ok(!top.some((command) => snapshot.test(command)), top.join("\n"));
+  // The repeats still come later, in the order of their best copies.
+  const all = searchCommands(realTable, "export gadget data", Infinity).map((match) => match.command);
+  assert.deepEqual(all.filter((command) => snapshot.test(command)).map((command) => command.replace(" get-gadget-snapshot ", " get-gadget ")),
+    all.filter((command) => gadget.test(command)));
 });
 
 test("search finds create-account for making a user, and signing in as one, which are no generated command", () => {

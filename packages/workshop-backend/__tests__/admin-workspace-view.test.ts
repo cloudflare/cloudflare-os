@@ -1144,7 +1144,7 @@ describe("the records' bounds", () => {
     let diagnostics = await view.getDiagnostics();
     expect(diagnostics).toMatchObject({
       chats: 2, pendingActions: 3, hooks: { total: 1, enabled: 1 }, observers: 1,
-      ownerRegistrationPending: false, activeAgentChatIds: [], pendingAgentCalls: 1,
+      activeAgentChatIds: [], pendingAgentCalls: 1,
     });
     expect(diagnostics.storageBytes).toBeGreaterThan(0);
     // No member has the workspace open, and the admin's own view is not presence.

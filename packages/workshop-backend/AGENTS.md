@@ -65,7 +65,10 @@ orthogonal — an account can declare either, both, or neither.
   wire it into a gadget's binding list with `setGadgetBinding` when the gadget's persistent code
   needs it.
 - The UI is hosted at `/gatekeepers/$appId` (the gatekeeper's vendor id, e.g.
-  `/gatekeepers/context`) via `startAppUi({ isAdmin })`.
+  `/gatekeepers/context`) via `startAppUi({ isAdmin })`. Anything after that prefix is the app's
+  own path, so apps can be deep-linked: the Workshop owns the URL and syncs it with the iframe over
+  `GatekeeperAppNavigation` (`@gadgets/workshop-shared/gatekeeper-app`); the Context Library uses
+  `/collections/<id>` and `/collections/<id>/files/<path>`.
 
 ## Admin settings
 
@@ -109,6 +112,7 @@ them:
   gatekeepers/resources are enforced before a capability is minted. Both mints call it:
   `getGatekeeperClassFor()` (gadget/agent code can't reach it directly) and
   `createResourceGatekeeper()` (reached only through the agent's `createExternalResource` tool).
+  `saveFile()` mints nothing but writes to the vendor directly, so it calls it too.
 - In AI Gateway mode the deployment's models are admin settings too (`AdminConfig.modelModes`,
   `addedModels`, `modelSettings`, `addedProviders`, `providerOrder`, `modelOrder`,
   `userModelsEnabled`). `GatewayModels` in
