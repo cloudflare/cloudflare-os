@@ -1,0 +1,208 @@
+// A session limited to one issue report: the report as its reporter reads it, its images, a
+// reply in its public thread, and the reporter's workspace as the reporter chose to show it. It
+// exists so that code can be handed what the reporter could see and nothing else. Everything it
+// reads is observed as the whole binding's reads are: restricted data, under the binding's
+// subresource, so the workspace that reads is latched and admins-only for good.
+
+import { RpcStub, RpcTarget } from "cloudflare:workers";
+import { skipRpcValidation, validateRpc } from "capnweb-validate";
+import { buildDescription } from "@gadgets/gatekeeper-kit/action-description";
+import type { AdminAgentQueue } from "@gadgets/workshop-shared/admin-gatekeeper";
+import {
+  type AdminIssueReport, type AdminSettingsView, ISSUE_REPORT_ERROR_CODES, ISSUE_REPORT_STATUSES,
+  type IssueReport, type IssueReportEntry, type IssueReportStatus, getIssueReportErrorCode,
+  issueReportStatusForReporter,
+} from "@gadgets/workshop-shared/api";
+import type { ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
+import { type BoundAdminActions, entryText } from "./actions.js";
+import { ADMIN_SUBRESOURCE, type AdminSession, Lend, forwarderFor } from "./forward.js";
+
+/**
+ * An issue report as its reporter reads it: the report, and the public entries of its thread
+ * with an author's id only on the reporter's own, and each status as the reporter reads it. No
+ * links, no admins-only entry, and nothing of where an admin's entry came from.
+ */
+export type ScopedIssueReport = IssueReport & { entries: Omit<IssueReportEntry, "agent">[] };
+
+/**
+ * `status` as a report session gives it: itself when this build knows it, and "withAdmin" when
+ * it does not. The Workshop is deployed apart from this Worker and may store a status added
+ * since this build, which may be one the reporter is not shown.
+ */
+function knownStatus(status: IssueReportStatus): IssueReportStatus {
+  return ISSUE_REPORT_STATUSES.includes(status) ? status : "withAdmin";
+}
+
+/**
+ * `report` as its reporter reads it. An allowlist: each field is copied by name, so one the
+ * Admin API adds later does not come through until it is named here and in types.d.ts, and
+ * neither does a status this build does not know (see knownStatus()).
+ *
+ * The reporter's own entry is the one with no `via`, which is the report store's rule too: no
+ * id is compared, so it holds for an admin who filed the report and later answered it as one.
+ */
+export function scopedReport(
+  report: AdminIssueReport & { entries: IssueReportEntry[] },
+): ScopedIssueReport {
+  const { context, grant } = report;
+  return {
+    id: report.id,
+    filedAt: report.filedAt,
+    reporter: { id: report.reporter.id, name: report.reporter.name },
+    text: report.text,
+    priority: report.priority,
+    context: {
+      ...(context.workspaceId !== undefined && { workspaceId: context.workspaceId }),
+      ...(context.chatId !== undefined && { chatId: context.chatId }),
+      ...(context.gadgetId !== undefined && { gadgetId: context.gadgetId }),
+      ...(context.appVersion !== undefined && { appVersion: context.appVersion }),
+    },
+    status: issueReportStatusForReporter(knownStatus(report.status)),
+    images: report.images.map(({ id, type, byteLength }) => ({ id, type, byteLength })),
+    ...(grant && {
+      grant: {
+        id: grant.id,
+        scope: grant.scope,
+        expiresAt: grant.expiresAt,
+        ...(grant.endedAt !== undefined && { endedAt: grant.endedAt }),
+      },
+    }),
+    entries: report.entries.filter((entry) => entry.visibility === "public").map((entry) => ({
+      id: entry.id,
+      at: entry.at,
+      author: entry.via === undefined
+          ? { id: entry.author.id, name: entry.author.name } : { name: entry.author.name },
+      visibility: entry.visibility,
+      ...(entry.via !== undefined && { via: entry.via }),
+      text: entry.text,
+      ...(entry.status !== undefined &&
+          { status: issueReportStatusForReporter(knownStatus(entry.status)) }),
+    })),
+  };
+}
+
+/**
+ * What a workspace's activity records for one read of a report session, before the read is
+ * made: restricted data, under the whole binding's subresource. A report's text and images are
+ * whatever its reporter put there (a screenshot of anything on their screen), and anyone can
+ * write a report, so a read marks the workspace as the binding's own reads do.
+ */
+function describeRead(
+  method: string, intro: string, values: Record<string, string>,
+): ObservationDescription {
+  const rendered = buildDescription(intro);
+  for (const [label, value] of Object.entries(values)) rendered.inline(label, value);
+  const { description, fields } = rendered.finish();
+  return {
+    title: `Issue report: ${method}`,
+    description,
+    ...(fields ? { fields } : {}),
+    containsRestrictedData: true,
+    subresources: [ADMIN_SUBRESOURCE],
+  };
+}
+
+/**
+ * The session `AdminBinding.openIssueReport()` returns. It owns its queue and asks it for a lend
+ * of its own, so it shares nothing with the session that opened it and outlives it. No method
+ * takes a report id, and nothing it returns leads to another report, a listing, the audit log,
+ * settings, a write or a content access request.
+ *
+ * State lives in real private fields: RPC exposes an RpcTarget's properties as well as its
+ * methods.
+ */
+@validateRpc()
+export class IssueReportSession extends RpcTarget {
+  readonly #reportId: string;
+  readonly #queue: RpcStub<AdminAgentQueue>;
+  readonly #actions: BoundAdminActions;
+  readonly #lend: Lend;
+
+  constructor(reportId: string, queue: RpcStub<AdminAgentQueue>, actions: BoundAdminActions) {
+    super();
+    this.#reportId = reportId;
+    this.#queue = queue;
+    this.#actions = actions;
+    this.#lend = new Lend(queue);
+  }
+
+  /** The report as its reporter reads it. */
+  async get(): Promise<ScopedIssueReport> {
+    const admin = await this.#lend.get();
+    await this.#queue.authorizeObservation(describeRead(
+        "get", "Read an issue report, as its reporter sees it.", { Report: this.#reportId }));
+    return scopedReport(await admin.getIssueReport(this.#reportId));
+  }
+
+  /** One image of the report, as the stream the Admin API returned: it is never read here. */
+  async readImage(imageId: string): Promise<ReadableStream<Uint8Array>> {
+    const admin = await this.#lend.get();
+    await this.#queue.authorizeObservation(describeRead(
+        "readImage", "Read an image of an issue report.",
+        { Report: this.#reportId, Image: imageId }));
+    return await admin.readIssueReportImage(this.#reportId, imageId);
+  }
+
+  /**
+   * Queues a public reply in the report's thread, as the kind only this session queues. It
+   * reads nothing: its card names the report by id, so queuing a reply marks nothing.
+   */
+  async reply(text: string): Promise<void> {
+    await this.#actions.submit(this.#queue, "issueReportScopedReply",
+        { reportId: this.#reportId, text: entryText(text) });
+  }
+
+  /**
+   * An audited view of the workspace the report names, when its reporter owns it. The session
+   * decides nothing about what the view shows: the workspace answers or refuses each call under
+   * `forIssueReport`, and refuses the open itself unless the report is one its owner filed
+   * about it. No id is compared here.
+   *
+   * Skips validation: the view is a forwarder, whose type declares none of the methods it
+   * defines from the schema, and a validated return would be wrapped in a proxy that refuses
+   * them all. So the arguments are checked here, and the Workshop validates `reason` again.
+   * One argument too many is refused as the generated surface refuses it: a caller that gave
+   * the Admin API's `(workspaceId, reason)` would have the id recorded as its reason.
+   */
+  @skipRpcValidation()
+  async inspectWorkspace(reason: string, ...others: unknown[]): Promise<AdminSession> {
+    if (typeof reason !== "string" || others.some((other) => other !== undefined)) {
+      throw new TypeError("Invalid arguments for IssueReportSession.inspectWorkspace: it takes " +
+          "the reason alone, a string. The workspace is the report's.");
+    }
+    const admin = await this.#lend.get();
+    // The session's own reads: nothing of either is returned, so neither is observed. Each is
+    // typed as declared: the lent stub's own type loses what nested objects hold (see LentApi).
+    const { context }: AdminIssueReport = await admin.getIssueReport(this.#reportId);
+    if (context.workspaceId === undefined) throw new Error("This report names no workspace.");
+    // Content is asked for only where the deployment allows it: asking and falling back would
+    // write a refused record for every view opened on a deployment that reads metadata alone.
+    const { adminWorkspaceAccess }: AdminSettingsView = await admin.getSettings();
+    const access = adminWorkspaceAccess.effective === "content" ? "content" : "metadata";
+
+    // Before the open, which returns a capability and no data.
+    await this.#queue.authorizeObservation(describeRead(
+        "inspectWorkspace", "Open the workspace of an issue report, as its reporter shows it.",
+        { Report: this.#reportId, Reason: reason }));
+    let view;
+    try {
+      view = await admin.inspectWorkspace(
+          context.workspaceId, reason, { access, forIssueReport: this.#reportId });
+    } catch (error) {
+      if (getIssueReportErrorCode(error) === ISSUE_REPORT_ERROR_CODES.notFound) {
+        throw new Error("This report's workspace is not its reporter's.", { cause: error });
+      }
+      throw error;
+    }
+
+    // Every call on the view is observed as reading restricted data before it is forwarded,
+    // whatever the reporter's workspace holds.
+    return new (forwarderFor("AdminWorkspaceView"))(
+        this.#queue.dup(), { restricted: true, subresource: ADMIN_SUBRESOURCE }, view);
+  }
+
+  [Symbol.dispose](): void {
+    this.#queue[Symbol.dispose]();
+    this.#lend[Symbol.dispose]();
+  }
+}

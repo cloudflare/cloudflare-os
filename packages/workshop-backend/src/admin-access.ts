@@ -21,13 +21,13 @@ import {
   isAdminWorkspaceAccess,
   type ActionLogEntry, type AdminAccessRecord, type AdminChatState, type AdminFileContent,
   type AdminContentRequest, type AdminGrantRecord, type AdminSettingChange,
-  type AdminSettingRecord, type AdminVia, type AdminViewAccess,
-  type AdminWorkspaceAccess, type AdminWorkspaceMethod, type AiChatAuthorInfo,
-  type AiChatHistoryPage, type AiChatMetadata, type BlueprintGadgetSummary, type BoundHookInfo,
-  type CommitInfo, type GatekeeperCreationSpec, type NamedUser, type WorkpieceSummary,
+  type AdminSettingRecord, type AdminVia, type AdminViewAccess, type AdminWorkspaceAccess,
+  type AdminWorkspaceMethod, type AiChatAuthorInfo, type AiChatHistoryPage, type AiChatMetadata,
+  type BlueprintGadgetSummary, type BoundHookInfo, type CommitInfo, type GatekeeperCreationSpec,
+  type NamedUser, type WorkpieceSummary, type AdminAgentOrigin,
 } from "@gadgets/workshop-shared/api";
 import type { AdminConfig } from "./storage-schema/admin-settings-storage.js";
-import { isDeploymentAdmin } from "./auth/config.js";
+import { isDeploymentAdmin, sameDeploymentAdmin } from "./auth/config.js";
 import { createWorkshopLogger } from "./observability";
 
 const logger = createWorkshopLogger("workshop.admin.access");
@@ -173,21 +173,86 @@ export type AdminSettingActor = Pick<AdminSettingRecord, "admin" | "sessionId" |
 
 /** Who takes a step of a request to read a workspace's content without its owner, as its
  * AdminGrantRecord says. */
-export type AdminGrantActor = Pick<AdminGrantRecord, "admin" | "sessionId" | "via">;
+export type AdminGrantActor = Pick<AdminGrantRecord, "admin" | "sessionId" | "via" | "agent">;
 
 /** What OverseerDurableObject.grantAdminContent() is given: a claimed content access request, and
  * the admin who approved it, through which session, for the AdminGrantRecord the workspace
  * appends. `workspaceOwner` is the owner the request named: the workspace refuses
  * (`workspaceChanged`) a call naming another owner than its own, since a deleted workspace's id
- * can be initialised again for someone else. */
+ * can be initialised again for someone else. `insiders` is the list a request filed through the
+ * admin gatekeeper keeps (see AdminCaller): none of them may approve it. */
 export type AdminContentGrantCall = AdminGrantActor &
-    Pick<AdminContentRequest, "reason" | "requestedBy" | "workspaceOwner"> & { requestId: string };
+    Pick<AdminContentRequest, "reason" | "requestedBy" | "workspaceOwner"> &
+    { requestId: string; insiders?: readonly string[] };
+
+/** Whether admin `approver` may not approve `request` because they had a part in asking for it:
+ * they are its requester or, for a request filed through the admin gatekeeper, one of the
+ * people who were in the workspace it was filed from. Each compared with sameDeploymentAdmin(). */
+export function isRequestInsider(
+    request: { requestedBy: string; insiders?: readonly string[] }, approver: string): boolean {
+  return [request.requestedBy, ...request.insiders ?? []].some(
+      insider => sameDeploymentAdmin(insider, approver));
+}
+/**
+ * Who an AdminApiImpl acts for and how its calls are labelled: a client's session (`via` from its
+ * User-Agent), or a workspace's lend to the admin gatekeeper, which alone says "gatekeeper" and
+ * always with where the call came from. The union is the rule: no value has "gatekeeper" without
+ * an origin, or an origin without it.
+ */
+export type AdminCaller =
+  | { via: Exclude<AdminVia, "gatekeeper">; agent?: undefined; insiders?: undefined }
+  | { via: "gatekeeper"; agent: AdminAgentOrigin;
+      /** Who was in the lending workspace when it lent this to file a request for content
+       * access, by profile id (see OverseerImpl.lendAdminApi()): absent for every other lend.
+       * The request keeps the list, and no record does. */
+      insiders?: readonly string[] };
+
+/**
+ * `caller` as a record keeps it, once it is shown to be well formed: `{ via }` for "api" and
+ * "cli", `{ via, agent }` for "gatekeeper" with a non-empty `workspaceId` string and a `chatId`
+ * that is absent or a whole number. Throws TypeError for anything else, a "gatekeeper" without an
+ * origin and an origin without "gatekeeper" included. THE one check of a `via`: AdminApiImpl
+ * labels everything it sends with what this returns, so a view's terms reach openForAdmin()
+ * checked, and applyAdminWrite(), endAdminGrant() and the issue report store, which are handed
+ * a label over a Durable Object binding, call it instead of comparing strings.
+ */
+export function adminCallerTerms(caller: { via: unknown; agent?: unknown })
+    : Pick<AdminAccessRecord, "via" | "agent"> {
+  let { via, agent } = caller;
+  if (via === "api" || via === "cli") {
+    if (agent !== undefined) {
+      throw new TypeError(`An admin call made via "${via}" has no agent origin.`);
+    }
+    return { via };
+  }
+  if (via !== "gatekeeper") {
+    throw new TypeError(`Invalid admin via: ${JSON.stringify(via)}`);
+  }
+  if (typeof agent !== "object" || agent === null) {
+    throw new TypeError(`An admin call made via "gatekeeper" needs its agent origin.`);
+  }
+  let { workspaceId, chatId } = agent as { workspaceId?: unknown; chatId?: unknown };
+  if (typeof workspaceId !== "string" || !workspaceId ||
+      workspaceId.length > MAX_ADMIN_AUDIT_ARG_LENGTH) {
+    throw new TypeError("An agent origin's workspaceId must be a non-empty string of at most " +
+        `${MAX_ADMIN_AUDIT_ARG_LENGTH} characters.`);
+  }
+  if (chatId === undefined) {
+    return { via, agent: { workspaceId } };
+  }
+  if (typeof chatId !== "number" || !Number.isInteger(chatId) || chatId < 0) {
+    throw new TypeError("An agent origin's chatId must be a whole number.");
+  }
+  return { via, agent: { workspaceId, chatId } };
+}
 
 /** What an admin view is minted with (see OverseerDurableObject.openForAdmin() and
  * UserDurableObject.openForAdmin()), fixed for the view's life. */
 export type AdminViewTerms = {
   /** Recorded on every record the view makes (see AdminVia). */
   via: AdminVia;
+  /** Recorded with `via` on every record the view makes. */
+  agent?: AdminAgentOrigin;
   /** When the view stops working. */
   expiresAt: Date;
 };
@@ -198,6 +263,10 @@ export type AdminWorkspaceViewTerms = AdminViewTerms & {
   /** What the view was opened for (AdminWorkspaceInspectOptions.access): recorded on every
    * record the view makes, and the most any of its calls returns. */
   access: AdminViewAccess;
+  /** The view reads content, and lists grants, only under the grant the owner gave with this
+   * issue report or the owner's account-wide grant
+   * (AdminWorkspaceInspectOptions.forIssueReport). */
+  forIssueReport?: string;
 };
 
 // --- Validation ---

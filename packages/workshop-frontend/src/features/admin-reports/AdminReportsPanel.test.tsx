@@ -286,6 +286,9 @@ const heading = (name: string) =>
   [...container!.querySelectorAll<HTMLElement>('h2, h3')].find((element) => element.textContent === name)
 const detail = () => heading('Issue report')?.closest('section') ?? null
 const thread = () => [...detail()!.querySelectorAll('ol[aria-label="Thread"] > li')]
+// Where a thread entry says it came from, as pairs of term and value.
+const origin = (entry: Element) => [...entry.querySelectorAll('dl > div')].map((pair) =>
+  [pair.querySelector('dt')?.textContent, pair.querySelector('dd')?.textContent])
 // Whether the list is what the panel shows: an open report takes its place.
 const listShown = () => !heading('Issue reports')!.closest('[hidden]')
 // A card of the open report, by its heading.
@@ -1046,6 +1049,29 @@ describe('an open report', () => {
     ])
   })
 
+  it('names an agent’s entry and its change of status as the agent’s, with the workspace and the chat they came from', async () => {
+    const at = new Date('2026-10-12T10:05:00Z')
+    await renderPanel(fakeAdmin([report('r-1', { status: 'answered', entries: [
+      adminEntry('e-1', 'Which browser are you using?'),
+      adminEntry('e-2', 'Looks like the export worker.', {
+        visibility: 'admins', via: 'gatekeeper', agent: { workspaceId: 'ws-triage', chatId: 4 },
+      }),
+      // An agent's call the workspace tied to no chat.
+      adminEntry('e-3', '', { status: 'answered', via: 'gatekeeper', agent: { workspaceId: 'ws-triage' }, at }),
+    ] })]), '/admin?tab=reports&report=r-1')
+
+    const [person, note, statusLine] = thread()
+    expect(person.textContent).toBe(
+      `Grace AdminAdmin${formatFullTimestamp(new Date('2026-10-12T10:00:00Z'))}Which browser are you using?`)
+    expect(origin(person)).toEqual([])
+    expect(note.textContent).toContain('Agent, for Grace AdminAdminAdmins only')
+    expect(note.textContent).not.toContain('via the CLI')
+    expect(origin(note)).toEqual([['From workspace', 'ws-triage'], ['From chat', '4']])
+    expect(statusLine.textContent).toBe(
+      `Agent, for Grace Admin, set the status to Answered${formatFullTimestamp(at)}From workspacews-triage`)
+    expect(origin(statusLine)).toEqual([['From workspace', 'ws-triage']])
+  })
+
   it('sets the status, which adds a line naming the admin who set it, and shows it in the list', async () => {
     const admin = await renderPanel(fakeAdmin([report('r-1'), report('r-2')]))
     await click(rowLink('r-1'))
@@ -1188,12 +1214,16 @@ describe('the admins’ lines in the thread', () => {
       adminEntry('e-3', '', {
         visibility: 'admins', assignment: 'released', at, author: { id: 'hal@example.test', name: 'Hal Admin' },
       }),
+      adminEntry('e-4', '', {
+        visibility: 'admins', assignment: 'claimed', at, via: 'gatekeeper', agent: { workspaceId: 'ws-board', chatId: 2 },
+      }),
     ] })]), '/admin?tab=reports&report=r-1')
 
     expect(thread().map((entry) => entry.textContent)).toEqual([
       `Grace Admin took this report${when}`,
       `Hal Admin took this report overvia the CLI${when}`,
       `Hal Admin released this report${when}`,
+      `Agent, for Grace Admin, took this report${when}From workspacews-boardFrom chat2`,
     ])
     expect(thread().every((entry) => entry.querySelector('p') === null)).toBe(true)
   })
@@ -1267,6 +1297,20 @@ describe('the assignee of an open report', () => {
     expect(assigneeButtons()).toEqual(['Assign to me'])
     expect(thread().at(-1)?.textContent).toContain('Ada Admin released this report')
     expect(document.activeElement).toBe(button('Assign to me'))
+  })
+
+  it('says when an agent claimed the report for its holder', async () => {
+    await renderPanel(fakeAdmin([
+      report('r-1', { assignee: heldBy({ ...ADA, via: 'gatekeeper', agent: { workspaceId: 'ws-board' } }) }),
+      report('r-2', { assignee: heldBy({ via: 'gatekeeper', agent: { workspaceId: 'ws-board' } }) }),
+    ]), '/admin?tab=reports&report=r-1')
+
+    expect(holder()).toBe(`You, since ${since}, by an agent`)
+
+    await act(async () => { await router!.navigate({ to: '/admin', search: { tab: 'reports', report: 'r-2' } }) })
+    await settle()
+
+    expect(holder()).toBe(`Grace Admin, since ${since}, by an agent`)
   })
 
   it('names another admin who holds the report, and takes it over only once the dialog is confirmed', async () => {

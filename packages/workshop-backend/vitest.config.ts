@@ -3,6 +3,7 @@ import path from 'node:path'
 import type { Plugin } from 'vite'
 import { defineConfig } from 'vitest/config'
 import { cloudflareTest } from '@cloudflare/vitest-plugin'
+import { kCurrentWorker } from 'miniflare'
 import { COMPATIBILITY_DATE } from '@gadgets/scripts/worker-config'
 import capnwebValidate from 'capnweb-validate/vite'
 
@@ -77,7 +78,14 @@ export default defineConfig({
         // `allow_irrevocable_stub_storage` as in cloudflare.config.ts: the user DO persists account stubs.
         compatibilityFlags: ['experimental', 'nodejs_compat', 'allow_irrevocable_stub_storage'],
         streamingTails: ['span-recorder'],
-        serviceBindings: { SPAN_RECORDER: { name: 'span-recorder', entrypoint: 'SpanRecorder' } },
+        serviceBindings: {
+          SPAN_RECORDER: { name: 'span-recorder', entrypoint: 'SpanRecorder' },
+          // Two vendors every user object finds among its `GATEKEEPER_*` bindings (see
+          // __tests__/test-worker.ts): the admin gatekeeper's stand-in, and one more that
+          // auto-provisions its account.
+          GATEKEEPER_ADMIN: { name: kCurrentWorker, entrypoint: 'FakeAdminVendor' },
+          GATEKEEPER_AMBIENTFIXTURE: { name: kCurrentWorker, entrypoint: 'FakeAmbientVendor' },
+        },
         workers: [{
           name: 'span-recorder',
           modules: true,
@@ -115,6 +123,9 @@ export default defineConfig({
           // `ctx.exports`.
           TEST_ISSUE_REPORTS: { className: 'IssueReportsDurableObject', useSQLite: true },
           TEST_GATEKEEPER_USER_PICKER: { className: 'GatekeeperUserPickerTestHooks', useSQLite: true },
+          // Likewise only reached through `ctx.exports`: the facet that stands for the admin
+          // gatekeeper where a workspace lends it the Admin API.
+          TEST_ADMIN_GATEKEEPER: { className: 'FakeAdminGatekeeper', useSQLite: true },
         },
       },
     }),

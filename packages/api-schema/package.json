@@ -6,6 +6,8 @@
   "exports": {
     "./schema": "./src/schema.ts",
     "./extract": "./src/extract.ts",
+    "./subset": "./src/subset.ts",
+    "./check": "./src/check.ts",
     "./emit/dts": "./src/emit/dts.ts",
     "./emit/tools": "./src/emit/tools.ts",
     "./generated/*": "./generated/*"

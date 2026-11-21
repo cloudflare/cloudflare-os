@@ -92,6 +92,12 @@ function accountSupportsResource(account: AccountEntry, resource: SupportedResou
     getResourceTypeId(candidate) === getResourceTypeId(resource) && candidate.connectable !== false)
 }
 
+// A vendor that provisions its own account has no connect flow and gives a user at most one account,
+// so its row adds that account and is gone once the account is listed.
+function offersConnectRow(vendor: VendorDescription, listedAccounts: number, accountsOnly?: boolean): boolean {
+  return !accountsOnly && !(vendor.autoProvisionsAccount && listedAccounts > 0)
+}
+
 function missingResourceGrants(account: AccountDescription, resource: SupportedResource): string[] {
   if (!resource.grantable) return []
   const granted = getGrantedResourceTypeIds(account, [resource])
@@ -151,7 +157,10 @@ export default function ResourcePicker({
         setAccountsLoaded(true)
       },
     })
-    const subscription = authenticatedApi.subscribeConnectedAccounts(subscriber)
+    // A deployment may force an auto-provisioned account that offers a resource, and the feed sends
+    // a forced account only to a subscriber that asks for it.
+    const subscription = authenticatedApi.subscribeConnectedAccounts(
+      subscriber, { includeForcedAutoProvisionedAccounts: true })
     subscription.catch(error => {
       if (cancelled) return
       logRpcFailure('Failed to subscribe to connected accounts:', error)
@@ -198,8 +207,12 @@ export default function ResourcePicker({
   const trimmedSearch = searchText.trim()
   const lowerSearch = trimmedSearch.toLowerCase()
 
+  // The picker matches and completes a link, which its caller sends on as a web URL, so a resource
+  // whose pattern is under any other scheme has no row here.
   const allResourceItems = allVendors.flatMap(v =>
-    v.supportedResources.filter(r => r.connectable !== false).map(r => ({ resource: r, vendor: v }))
+    v.supportedResources
+      .filter(r => r.connectable !== false && /^https?:\/\//i.test(r.urlPattern))
+      .map(r => ({ resource: r, vendor: v }))
   )
 
   // The first placeholder (:name or *) still in the search URL, which blocks choosing an account.
@@ -337,8 +350,7 @@ export default function ResourcePicker({
         })
       }
 
-      // "Connect new account" row (not shown in accountsOnly mode).
-      if (!accountsOnly) {
+      if (offersConnectRow(vendor.description, vendorAccounts.length, accountsOnly)) {
         items.push({
           type: 'connect',
           vendorId: vendor.id,
@@ -403,7 +415,12 @@ export default function ResourcePicker({
   const handleConnectNew = async (vendorId: string, resourceTypeIds?: string[]) => {
     setConnectingVendor(vendorId)
     try {
-      await openConnectWindow(await authenticatedApi.connectAccount(vendorId, resourceTypeIds), authenticatedApi)
+      if (allVendors.find(vendor => vendor.id === vendorId)?.description.autoProvisionsAccount) {
+        // The account arrives through the accounts subscription, which turns the row into its row.
+        await authenticatedApi.provisionAmbientAccount(vendorId)
+      } else {
+        await openConnectWindow(await authenticatedApi.connectAccount(vendorId, resourceTypeIds), authenticatedApi)
+      }
     } catch (error) {
       if (error instanceof AuthPopupCancelledError) return
       console.error('Failed to initiate connection:', error)
@@ -600,9 +617,12 @@ export default function ResourcePicker({
 
                 {/* Connect new account */}
                 {(() => {
-                  if (accountsOnly) return null
+                  if (!offersConnectRow(vendor.description, vendorAccounts.length, accountsOnly)) return null
                   const isActive = itemIdx === activeIndex
                   itemIdx++
+                  const [idleLabel, busyLabel] = vendor.description.autoProvisionsAccount
+                    ? [`Add ${vendor.description.displayName}`, 'Adding…']
+                    : ['Connect new account', 'Opening…']
                   return (
                   <div
                     onClick={() => !connectingVendor && handleConnectNew(vendor.id, resource.grantable ? [getResourceTypeId(resource)] : undefined)}
@@ -619,7 +639,7 @@ export default function ResourcePicker({
                       )}
                     </span>
                     <span className="flex-1 text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle">
-                      {connectingVendor === vendor.id ? 'Opening…' : 'Connect new account'}
+                      {connectingVendor === vendor.id ? busyLabel : idleLabel}
                     </span>
                     {isActive && <KeyHint keyName="Tab" />}
                   </div>

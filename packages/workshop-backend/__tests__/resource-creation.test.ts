@@ -40,7 +40,10 @@ function fixture(resources: SupportedResource[] = [CREATION], config: Partial<Ad
   }));
   const vendor = { describe: async () => description, getSupportedResources: vi.fn(async () => resources),
     connectAccount: vi.fn(async () => ({ url: "https://example.com/connect" })), createResource };
-  const vars = { ...env, GATEKEEPER_EXAMPLE: vendor,
+  // This deployment has the one vendor: the pool's own (vitest.config.ts) are left out.
+  const pool = Object.fromEntries(
+      Object.entries(env).filter(([name]) => !name.startsWith("GATEKEEPER_")));
+  const vars = { ...pool, GATEKEEPER_EXAMPLE: vendor,
     BLUEPRINTS: { get: async () => JSON.stringify(config), put: async () => {} },
   } as unknown as Cloudflare.Env;
   const stub = env.TEST_USER.getByName(`resource-creation-${++counter}`);

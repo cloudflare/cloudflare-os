@@ -1,20 +1,17 @@
 // The pure parts of admin writes to workspaces: what is computed from its arguments alone, with no
 // storage read and no call made.
 
-import type { AdminWriteAction, AdminWriteArgs, AdminWriteRecord } from "@gadgets/workshop-shared/api";
+import {
+  ADMIN_WRITE_ARGS,
+  type AdminWriteAction, type AdminWriteArgs, type AdminWriteRecord,
+} from "@gadgets/workshop-shared/api";
 
 /** What OverseerDurableObject.applyAdminWrite() is given: the write, and the admin who makes it,
  * through which session, for the AdminWriteRecord the workspace appends. */
-export type AdminWriteCall = Pick<AdminWriteRecord, "admin" | "sessionId" | "via" | "reason"> & {
+export type AdminWriteCall =
+    Pick<AdminWriteRecord, "admin" | "sessionId" | "via" | "agent" | "reason"> & {
   action: AdminWriteAction;
   args: AdminWriteArgs;
-};
-
-// The arguments each action takes: exactly the list in AdminWriteArgs' doc.
-const WRITE_ARGS: Record<AdminWriteAction,
-    { required: (keyof AdminWriteArgs)[]; optional?: (keyof AdminWriteArgs)[] }> = {
-  stopAgent: { required: ["chatId"] },
-  restartWorkspace: { required: [] },
 };
 
 // What an argument's value must be beyond its type, which the RPC validator has checked: `keep`
@@ -46,8 +43,8 @@ function keepWriteArg<Name extends keyof WriteArgValues>(
  * safe integer. */
 export function adminWriteArgs(action: AdminWriteAction, args: AdminWriteArgs): AdminWriteArgs {
   // An own entry only: "constructor" names no action.
-  if (!Object.hasOwn(WRITE_ARGS, action)) throw new TypeError("No such write action.");
-  let { required, optional = [] } = WRITE_ARGS[action];
+  if (!Object.hasOwn(ADMIN_WRITE_ARGS, action)) throw new TypeError("No such write action.");
+  let { required, optional = [] } = ADMIN_WRITE_ARGS[action];
   let taken: string[] = [...required, ...optional];
   // The validator lets through properties the type does not declare, so every key is looked at.
   // Only an argument some write takes is named: a name the client made up is never repeated, since

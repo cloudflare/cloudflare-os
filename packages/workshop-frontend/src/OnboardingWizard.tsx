@@ -180,8 +180,10 @@ export default function OnboardingWizard({
         for (const v of vendorList) {
           urlToVendorId.set(v.description.url, v.id)
         }
+        // An auto-provisioned vendor has no account to connect: it is added among the built-in
+        // tools below while it is addable, as Connectors offers it.
         setVendors(
-          vendorList.map((v) => ({
+          vendorList.filter((v) => !v.description.autoProvisionsAccount).map((v) => ({
             id: v.id,
             description: v.description,
             logoKey: VENDOR_LOGO_MAP[v.id] ?? v.id.toLowerCase(),

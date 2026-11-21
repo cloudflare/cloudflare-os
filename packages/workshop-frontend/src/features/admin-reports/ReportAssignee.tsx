@@ -141,6 +141,7 @@ export const ReportAssignee = ({ assignee, me, onClaim, onRelease }: {
           {assignee === undefined ? 'Unassigned' : (
             <>
               {mine ? 'You' : assignee.name}, since <Since at={assignee.at} />
+              {assignee.via === 'gatekeeper' && ', by an agent'}
             </>
           )}
         </p>

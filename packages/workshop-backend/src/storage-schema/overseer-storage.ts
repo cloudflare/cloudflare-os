@@ -1424,6 +1424,15 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // data. The key on disk predates the flag's rename.
       containsRestrictedData: singleton(false, {storageKey: "prohibitAllSharing"}),
 
+      // True once this workspace read through the whole admin binding of an admin gatekeeper
+      // connection: an observation of that connection flagged `containsRestrictedData` that names
+      // ADMIN_BINDING_SUBRESOURCE. Written in the same transaction as the latch above, inside the
+      // same test of the same flag, and like it never cleared: it keeps what the latch alone cannot
+      // say once the connection is removed, that the restricted data is what only admins see. While
+      // set, the workspace admits only its owner and deployment admins (see
+      // OverseerImpl.adminsOnly()), with or without the connection: its chats hold what was read.
+      adminReads: singleton(false),
+
       // True if any past observation was authorized that had the `ownerInvitesOnly` flag set in
       // its `ObservationDescription`. Share links stop working and only the owner can add
       // collaborators (enforced by SharingManager).

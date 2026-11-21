@@ -19,6 +19,13 @@ import {
   type ReasoningLevel,
 } from "@gadgets/workshop-shared/api";
 
+/** A content access request as AdminSettings stores it: the API's, with, for one filed through
+ * the admin gatekeeper, who was in the workspace it was filed from, by profile id (see
+ * AdminCaller.insiders). None of them may approve it (see isRequestInsider()). Kept with the
+ * request and handed to the workspace with its approval; never returned by the API or recorded:
+ * it is not something the approver reads. */
+export type StoredContentRequest = AdminContentRequest & { insiders?: string[] };
+
 export type AdminConfig = {
   /**
    * Whether new account signups are allowed (default true). Note: this is an access toggle, not
@@ -250,7 +257,7 @@ export function makeAdminSettingsStorage(storage: DurableObjectStorage) {
 
       // The requests admins made to read a workspace's content without its owner, by id: the
       // pending ones and, for a day after, the resolved ones.
-      contentAccessRequests: collection<AdminContentRequest>()({
+      contentAccessRequests: collection<StoredContentRequest>()({
         primaryKey: 'id',
       }),
     },

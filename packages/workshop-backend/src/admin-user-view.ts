@@ -135,6 +135,7 @@ class AdminUserViewImpl extends RpcTarget implements AdminUserView {
       admin: this.#adminId,
       sessionId: this.#sessionId,
       via: this.#terms.via,
+      ...(this.#terms.agent && { agent: this.#terms.agent }),
       method,
       args: redactAdminAuditArgs(args),
       reason: this.#reason,

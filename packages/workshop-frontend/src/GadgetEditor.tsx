@@ -2222,6 +2222,8 @@ export default function GadgetEditor() {
                   key={id}
                   workspaceId={id}
                   overseer={overseer.stub}
+                  // A collaborator's metadata names the workspace's owner; the owner's own none.
+                  ownsWorkspace={metadata !== null && metadata.owner === undefined}
                   restricted={metadata?.containsRestrictedData === true}
                   selectedChatId={shownChatId}
                   codeChatId={paneChatId}
@@ -2486,6 +2488,7 @@ export default function GadgetEditor() {
                 <Connections
                   key={selectedGadgetId}
                   overseer={overseer.stub}
+                  ownsWorkspace={metadata !== null && metadata.owner === undefined}
                   gadget={selectedGadgetStub}
                   chatId={paneChatId ?? undefined}
                   authenticatedApi={authenticatedApi}

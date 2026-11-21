@@ -1,6 +1,7 @@
 import {
   issueReportStatusForReporter,
   type IssueReportAssignment,
+  type IssueReportEntry,
   type IssueReportPriority,
   type IssueReportStatus,
 } from '@gadgets/workshop-shared/api'
@@ -56,3 +57,11 @@ export const ASSIGNMENT_LINES: Record<IssueReportAssignment, string> = {
   takenOver: 'took this report over',
   released: 'released this report',
 }
+
+/**
+ * Who a thread entry or a change of status is shown as written by: its author's name, or, for
+ * one an agent wrote for an admin through the admin gatekeeper, "Agent, for" that admin. The
+ * reporter and the admins read the same words.
+ */
+export const entryAuthorLabel = ({ author, via }: Pick<IssueReportEntry, 'author' | 'via'>): string =>
+  via === 'gatekeeper' ? `Agent, for ${author.name}` : author.name
