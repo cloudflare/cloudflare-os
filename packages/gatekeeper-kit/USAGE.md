@@ -680,7 +680,186 @@ accumulate until the cap refuses every new file-backed action.
 
 A declaration using `delivery: "continue-with-simulation"` must project pending actions onto later
 reads. Use `createSimulationView`, `replaySimulation`, and `ProvisionalIds` for that projection and
-for mapping provisional IDs to provider IDs.
+for mapping provisional IDs to provider IDs. A gatekeeper folds the entity it reads with
+`createSimulationStore`, over `createSimulationView(...).forTarget(id)`: see
+[Replaying pending actions](#replaying-pending-actions).
+
+## Replaying pending actions
+
+`createSimulationStore` (`@gadgets/gatekeeper-kit/simulation-store`) folds the pending records that
+target one entity (a document's tab; the whole deck, for an editor whose state is one thing) over
+what the provider holds of it, with the gatekeeper's own reducer, and holds nothing between two
+calls: each read fetches its base, or takes it from wherever the gatekeeper keeps it, and folds.
+What a gatekeeper wants kept between reads (a copy of the provider's state, a fold's result) it
+keeps itself. A listing whose rows are the entities takes its cursor's hooks from the same module:
+see [A listing over a simulation store](#a-listing-over-a-simulation-store).
+
+The store runs no callback but the reducer's. A reducer that cannot replay a record on the entity
+returns `refused` with its reason and the fold goes on; the result lists what that call refused, and
+the gatekeeper marks those records after the fold, leaves marked records out of the lists it folds,
+and fails the apply of a marked record before it reaches the provider. A mark outlives the read, so
+the fetch, the fold and the marks run against apply and reject (`runExclusive`): a read then waits
+for an apply in flight. Inside a resource Durable Object that reads a document one tab at a time,
+where `#journal` is the gatekeeper's own pending store:
+
+```ts
+// `invalidatedReason` is the mark, stored with the record under the same id.
+type Change = { tabId: string; edit: Edit; invalidatedReason?: string };
+type Queued = { id: number; action: Change };
+
+// The entity is a tab, by the provider's tab id; a refusal is the reason shown for the record.
+// The reducer never writes the tab it is given, so the fold's draft is the provider's tab itself.
+#replay = createSimulationStore<string, Tab, Tab, Queued, string>({
+  initial: tab => tab,
+  reduce: (tab, { action }) => {
+    if (tab === undefined) return { kind: "refused", refusal: "The tab is not in the document." };
+    const edited = applyEdit(tab, action.edit); // pure: a changed Tab, or why not
+    return edited.ok
+      ? { kind: "applied", value: edited.tab }
+      : { kind: "refused", refusal: edited.reason };
+  },
+});
+
+// The fetch, the fold and the marks run on the queue apply and reject run on (`#actions`, the
+// bound action set): a record that applied, or was staged and applied, while the document was
+// fetched would leave the fold a copy that holds it beside a journal that still lists it, or
+// one that lacks it beside a record built on it, and a mark outlives the read.
+read(tabId: string): Promise<string> {
+  return this.#actions.runExclusive(async () => {
+    const doc = await this.#api.get();
+    const tab = doc.tabs.find(tab => tab.id === tabId);
+    return render(this.#fold(tabId, tab)); // once the observation is authorized, as for any read
+  });
+}
+
+// Folds the records of one tab over the provider's copy of it, or over nothing where the document
+// has no such tab, then marks what the fold refused, with no `await` in between.
+#fold(tabId: string, tab: Tab | undefined): Tab | undefined {
+  const view = createSimulationView(this.#journal.listPending(), action => [action.tabId]);
+  const { entity, refused } = this.#replay.fold(
+    tabId, tab, view.forTarget(tabId).filter(record => !record.action.invalidatedReason));
+  for (const { record, refusal } of refused) this.#journal.markInvalid(record.id, refusal);
+  return entity;
+}
+
+// The action set's `reject` and `apply`, which its queue runs one at a time.
+reject(id: number): void {
+  this.ctx.storage.transactionSync(() => {
+    this.#journal.remove(id);
+  });
+}
+
+async apply(id: number, edit: Edit): Promise<void> {
+  // An edit a read refused and marked is not sent: the reads leave it out, and the provider may
+  // still accept it (a positional edit whose offset is still in the tab) and change text no read
+  // showed changing. The record is read here, on the queue the reads mark it on.
+  const reason = this.#journal.get(id)?.action.invalidatedReason;
+  if (reason) throw new ActionApplyError(reason); // terminal: nothing reached the provider
+  await this.#api.update(edit);
+  this.ctx.storage.transactionSync(() => {
+    this.#journal.remove(id);
+  });
+}
+```
+
+`targets`, the second argument of `createSimulationView`, names every entity a record changes.
+Where a pending create will make the entity, resolve the id through `ProvisionalIds` there
+(`action => [ids.resolve(action.tabId)]`), so that the records queued under the provisional id and
+those queued under the provider's id fold as one entity.
+
+An editor whose state is one thing folds it as its one entity. One that stops at the first record
+it cannot replay returns `unsupported` from its reducer instead of `refused`: the result's
+`stopped` then names that record and the reason, which become the conflict shown with the read,
+over `entity` as it stood before the record.
+
+```ts
+#replay = createSimulationStore<"deck", Deck, Deck, Queued>({
+  initial: deck => deck,
+  reduce: (deck, { action }) => step(deck!, action), // `unsupported` for a change that conflicts
+});
+
+const { entity, stopped } = this.#replay.fold("deck", deck, this.#journal.listPending());
+return stopped ? { deck: entity, conflict: stopped.reason } : { deck: entity };
+```
+
+An editor whose entity is large and whose queue is long works on the fold's draft instead of
+copying the entity for each record. `initial` copies what `reduce` writes, and `reduce` checks
+first, returns `refused` or `unsupported` without having written, then writes the draft and returns
+it as `applied`:
+
+```ts
+type Grid = { readonly sheetId: number; readonly cells: Map<string, Cell> };
+type Queued = { id: number; action: { cell: string; value: Cell } };
+
+#replay = createSimulationStore<"grid", Grid, Grid, Queued, string>({
+  // The fold's own draft: `cells` is copied because `reduce` writes it, and nothing deeper is.
+  initial: grid => ({ ...grid, cells: new Map(grid.cells) }),
+  reduce: (grid, { action }) => {
+    if (grid === undefined) return { kind: "unsupported", reason: "The sheet is not there." };
+    if (isProtected(grid, action.cell)) {
+      return { kind: "refused", refusal: "The cell is protected." };
+    }
+    grid.cells.set(action.cell, action.value); // every check is made: the draft is written
+    return { kind: "applied", value: grid };
+  },
+});
+```
+
+What a fold does:
+
+- **Every call folds from the first record.** `fold` calls `initial(base)` where a base is given,
+  then reduces its records in order, from the first up to and including the first `unsupported`
+  one, and keeps nothing: the next call does the same again, on a draft of its own.
+- **The store reads no mark.** It reduces a marked record as any other, so a marked record is one
+  the caller leaves out of the list. A refused record presented again is reduced, and refused,
+  again.
+- **`context.refusals` holds the refusals of the call alone**, in order, so a reducer may read them
+  only to refuse (a gate an earlier refusal closes): a step that applies, deletes or has no effect
+  is the same whatever they hold.
+- **The fold keeps no reference to the entity it returns**, and that entity shares with the base
+  whatever `initial` and `reduce` left shared. It is the base itself, or a part of it, where
+  `initial` returned that and no record replaced it (the first example's store); where `initial`
+  copies, it is the draft (the last example's). So a caller changes only what its reducer copied.
+
+A record that targets several entities is folded once for each, by the call that folds that
+entity, and each of those folds stands alone: refused on one entity, the record still applies to
+the others until the caller leaves it out or removes it. A gatekeeper whose record must take effect
+on all of its entities or none folds the entity that can refuse it first and leaves what that fold
+refused out of the lists it folds next.
+
+A reducer on a draft:
+
+- **What `initial` returns is the fold's.** `reduce` is given it and may change it in place. Where
+  `reduce` writes its entity, `initial` returns a value of its own, copied as deep as `reduce`
+  writes, and never `base` or a part of it: the caller keeps `base` and may fold it again. Where
+  `reduce` never writes its entity, `initial` may return `base` itself or a part of it.
+- **A value given as `applied` is the fold's too**: the draft itself, changed in place, or another
+  value, which is the draft from then on. Where a later step may change it in place, a record that
+  creates the entity builds it, and does not hand over an object the record or the caller keeps.
+- **`refused`, `known-no-effect` and `unsupported` leave the draft exactly as it was given.** A
+  reducer that works in place decides before it writes, or puts back what it wrote before it
+  answers.
+- **`deleted` ends the draft.** The next record is given `undefined`, and one that creates the
+  entity again starts another draft, which holds nothing of the one deleted.
+- **The fold checks none of it and copies nothing.** Whoever writes the reducer keeps these rules.
+- **The same step every time.** `reduce` gives the same step for the same record, context and
+  entity, however often it is called (every read folds again, and a cursor folds a row each time it
+  serves it), and leaves `record`, `context.base` and `context.refusals` as they were.
+- **Beyond the draft, only what is safe to repeat.** A reducer may count its work, and may keep a
+  result under the content it was computed from, where a repeated call finds it or writes it again
+  the same. No step may rest on anything else it left behind.
+
+Sharp edges:
+
+- **The store runs no callback but the reducer's and writes nothing.** `unsupported` stops the fold
+  and the result names the record; `refused` goes on past it, and the gatekeeper acts on the
+  result's `refused` after the fold.
+- **Transactions.** `fold` is synchronous, so it belongs inside `transactionSync` with the journal
+  change it goes with. Nothing outside storage keeps a fold, so a rollback leaves nothing to undo.
+- **A store whose reducer reads what only one call knows** (who is asking) is made for that call.
+  Any other is made once, for a module or a Durable Object.
+- **A base the gatekeeper keeps between reads is provider data.** A read served from it authorizes
+  as any cached read does ([Observations](#observations)).
 
 ## Observations
 
@@ -1155,6 +1334,122 @@ A refused page's retry re-reads its rows, so `overlay` may make more or fewer of
 no provider row the refusal did not cover; one a dropped injected row had hidden, one `overlay`
 had dropped, or one the page no longer has room for leads the next page instead, with the rows
 after it.
+
+#### A listing over a simulation store
+
+Where the rows of a listing are entities pending actions create, change or delete, `simulatedList`
+(`./simulation-store`) makes the three values from a simulation store: `overlay` folds a provider
+row's pending records into it and serves none for a row a record deleted; `inject` carries the
+stand-in of each pending create, folded from nothing, with a `revalidate` that drops one whose
+create is no longer pending; `refresh` reads the pending creates again and folds their stand-ins
+again. A listing of incidents, where `me` is who is asking, `ids` a `ProvisionalIds` and `journal`
+the gatekeeper's pending store:
+
+```ts
+// Built with the listing: the reducer assigns an acknowledged incident to whoever is asking.
+const store = createSimulationStore<string, Incident, Incident, Queued>({
+  initial: row => row,
+  reduce: (incident, { action }) => step(incident, action, me),
+});
+// A pending create targets its temporary id until the provider's id takes its place.
+const targets = (action: IncidentAction): string[] => action.kind === "createIncident"
+  ? ids.isResolved(action.ref) ? [] : [action.ref]
+  : [ids.resolve(action.incident.id)];
+let pending = journal.listPending();
+const list = simulatedList({
+  store,
+  // Built on the call, so a record on a temporary id follows the id once it is bound.
+  view: () => createSimulationView(pending, targets),
+  id: row => row.id,
+  compare: newestFirst,
+  keeps: row => matchesFilter(row, filter),
+  // The journal as it is now, not as at the last refresh: a create rejected or applied while a
+  // page is fetched drops its stand-in.
+  created: () => journal.listPending().flatMap(({ action }) =>
+    action.kind === "createIncident" && !ids.isResolved(action.ref) ? [action.ref] : []),
+});
+return new OffsetCursor<Incident>({
+  pageSize,
+  fetchPage: (offset, limit) => api.listIncidents(filter, offset, limit),
+  authorizePage,
+  overlay: list.overlay,
+  inject: { ...list.inject, authorize: true, identity: row => ids.resolve(row.id) },
+  refresh: async () => {
+    pending = journal.listPending();
+    list.refresh();
+  },
+});
+```
+
+The reducer creates the stand-in: given no entity and the create's record, it returns the row the
+listing shows until the provider has one, as `applied`. A record that deletes a row returns
+`deleted`. A refused record leaves the row as it was, and the hooks mark nothing. A fold that stops
+at `unsupported` would show the row with only the records before the stop, so that row is not shown;
+nothing is thrown, since the hooks run before the page is authorized. `overlay` folds a row when it
+is served and the stand-ins are folded at each `refresh()`, which `revalidate` then looks up,
+dropping one whose create `created` no longer lists, so a create bound before its stand-in is served
+leaves the provider's row to be served; one bound after (between two fetches of one `next()`
+included) leaves the stand-in, and the cursor's `identity` keeps the provider's row out of the walk.
+So above, where `refresh` reads the pending records before each page, a record staged between two
+pages shows on every row served after it, a buffered one included, and an id bound while a page is
+being fetched shows on the provider's rows of that page, since the view is built on the call. No
+fold is remembered from one call to the next: a row read again (a refused page's retry) is folded
+again, and so is every stand-in at each `refresh()`, each fold reducing its records again from the
+first. What is kept is the stand-in rows the last `refresh()` made, which `revalidate` looks up.
+
+What stays the gatekeeper's, because two listings rarely agree on it:
+
+- **The filter and the order.** `keeps` is asked of every folded row as it is served, stand-ins
+  included (a `refresh()` folds a stand-in whatever the filter then answers), and `compare` sorts
+  the stand-ins and is handed back as `inject.compare`. The kit calls both and implements neither;
+  state `keeps` reads that needs a provider call is re-read in the cursor's `refresh`, before
+  `list.refresh()`. The cursor places a row before it is folded, so a fold must not change where
+  `compare` puts it: a listing whose pending changes reorder its rows (a rename in a listing sorted
+  by title) sorts by a key they do not change.
+- **Which provider rows to read again, and where they go.** A provider that filters before pending
+  changes apply leaves out a row they move into the listing. The gatekeeper reads those rows
+  itself and passes each through `list.overlay`. One listing merges them into `inject.items` at
+  their sort position and answers for them in `revalidate`, falling back to the list's own for the
+  stand-ins:
+
+  ```ts
+  inject: {
+    ...list.inject,
+    items: [...list.inject.items, ...reread.flatMap(list.overlay)].toSorted(newestFirst),
+    revalidate: row => {
+      const read = rereadById.get(row.id);
+      return read ? list.overlay(read)[0] ?? null : list.inject.revalidate(row);
+    },
+    authorize: true,
+    identity: row => ids.resolve(row.id),
+  },
+  ```
+
+  Another returns them ahead of its first provider page and leaves `inject` to the stand-ins.
+- **`authorize` and `identity`.** Whether the stand-ins carry provider data, and what makes a
+  stand-in and the provider's row of a create that landed mid-walk the same thing.
+- **When pending records are read again, and when ids resolve.** `view` is called at every fold
+  and never kept. A gatekeeper whose targets resolve temporary ids builds the view on the call, as
+  above, so an action on a temporary id reaches the provider's row on the page that serves it,
+  even when the create applied while that page was being fetched. One whose targets cannot change
+  between two refreshes keeps a view and rebuilds it in its `refresh`.
+- **Where the store is built.** With the listing, when the reducer reads what only that call
+  knows: who is asking, the folder listed, names read ahead of the walk (the reducer is
+  synchronous, so anything it needs from the provider is read before the walk and in `refresh`).
+- **A reducer that works in place.** A provider row is folded each time the cursor reads it for a
+  page (the page it is served on, a refused page's retry, and a page that reads it and leaves it for
+  the next, as a retry does with a row the refusal did not cover), and a row the gatekeeper reads
+  itself each time it is passed to `overlay`. The store's `initial` returns a copy of the row where
+  its reducer writes its entity, so the row is folded the same every time.
+- **What the hooks hold.** The stand-in rows of the last `refresh()`, which `inject.revalidate`
+  answers from, for as long as the hooks are kept. That is the listing's own, and the one thing
+  this module holds between calls: the store under the hooks holds nothing, so a walk reduces a
+  stand-in's records again at every `next()` (the cursor refreshes at each) and a provider row's
+  each time the cursor reads the row for a page.
+
+`inject.items` is fixed when `simulatedList` is called, since a cursor reads it once: a create
+staged after that is not in the walk. `revalidate` answers a stand-in as the last `refresh()`
+left it, and `null` for any row that is not a stand-in.
 
 ### Existing-code migration only: refusal and failure
 
