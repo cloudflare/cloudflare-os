@@ -375,7 +375,8 @@ export interface GoogleDriveReadSession {
 /**
  * Read-only navigation within the originally selected folder, with its direct children's content
  * and comments. A shortcut among those children stands for its target, file or folder, wherever
- * that lives: the methods below take the target's ID as they take a direct child's. Editing Google Docs, Sheets and Slides files, commenting, sharing and moving take
+ * that lives: `getEntry`, the native opens, `readPdf`, `readFile` and `openFolder` take the
+ * target's ID as they take a direct child's; `listComments` does not. Editing Google Docs, Sheets and Slides files, commenting, sharing and moving take
  * a binding with read and write access, requested as {@link GoogleDriveReadSession} describes.
  */
 export interface GoogleDriveFolderReadSession extends Pick<GoogleDriveReadSession, "getScope"> {
@@ -395,34 +396,40 @@ export interface GoogleDriveFolderReadSession extends Pick<GoogleDriveReadSessio
    */
   getEntry(fileId: string): Promise<DriveEntry>;
 
-  /** Open a live direct-child native Google Doc as an independently disposable capability. */
+  /**
+   * Open a live direct-child native Google Doc, or a shortcut's target, as an independently
+   * disposable capability.
+   */
   openGoogleDoc(fileId: string): Promise<GoogleDocReadSession>;
 
-  /** Open a live direct-child native Google Sheet as an independently disposable capability. */
+  /**
+   * Open a live direct-child native Google Sheet, or a shortcut's target, as an independently
+   * disposable capability.
+   */
   openGoogleSheet(fileId: string): Promise<GoogleSpreadsheetReadSession>;
 
   /**
-   * Open a live direct-child native Google Slides presentation as an independently disposable
-   * capability.
+   * Open a live direct-child native Google Slides presentation, or a shortcut's target, as an
+   * independently disposable capability.
    */
   openGoogleSlides(fileId: string): Promise<GooglePresentationReadSession>;
 
   /**
-   * Read a live direct-child PDF's text, converted to Markdown and streamed, as
+   * Read a live direct-child PDF's, or a shortcut target's, text, converted to Markdown and streamed, as
    * `GoogleDriveReadSession.readPdf()` does. Fails asking to reconnect when the Google account
    * was connected before Drive bindings could read file content.
    */
   readPdf(fileId: string): Promise<DrivePdfText>;
 
   /**
-   * Read a live direct child's own content as a stream of bytes, as
+   * Read a live direct child's, or a shortcut target's, own content as a stream of bytes, as
    * `GoogleDriveReadSession.readFile()` does.
    */
   readFile(fileId: string, options?: DriveFileReadOptions): Promise<DriveFileBytes>;
 
   /**
    * List a live direct child's comments, as {@link GoogleDriveReadSession.listComments} does. A
-   * file moved out of this folder ends the listing.
+   * file moved out of this folder ends the listing. Shortcuts are not followed here.
    */
   listComments(fileId: string): Promise<Cursor<DriveComment>>;
 

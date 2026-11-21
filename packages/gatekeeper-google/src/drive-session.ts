@@ -985,16 +985,16 @@ export class DriveSessionCore extends DriveCoreBase {
   }
 }
 
-/**
- * The positioned folder is the only parent a folder binding searches, so a caller-supplied one is
- * refused rather than dropped: the provider call overrides it, but it would still reach the
- * observation description and report a folder that was never read.
- */
 /** The corpus a folder in `driveId` (a shared drive's, or none for My Drive) is listed in. */
 function corpusOf(driveId: string | undefined): DriveCorpus {
   return driveId ? {kind: "drive", driveId} : {kind: "user"};
 }
 
+/**
+ * The positioned folder is the only parent a folder binding searches, so a caller-supplied one is
+ * refused rather than dropped: the provider call overrides it, but it would still reach the
+ * observation description and report a folder that was never read.
+ */
 function rejectDirectParent(query: DriveFolderListOptions | DriveFolderSearchQuery): void {
   if ((query as DriveSearchQuery).directParentId !== undefined) {
     throw new Error("A Drive folder binding is already scoped; directParentId is not accepted.");
