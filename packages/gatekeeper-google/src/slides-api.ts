@@ -5,6 +5,7 @@ import {
   LABEL_FIELDS, LAYOUT_PAGE_FIELDS, OUTLINE_FIELDS, SLIDE_FIELDS, SUMMARY_FIELDS,
 } from "./slides-fields";
 import BLANK_RECORDING from "./blank-presentation.json";
+import { slideLabel } from "./slides-model";
 
 const API_BASE = "https://slides.googleapis.com/v1/presentations";
 // 10 MiB matches the Docs bound for a document body.
@@ -376,6 +377,7 @@ export class GoogleSlidesApi {
   // their answers dropped.
   #getPages(
     presentationId: string, ids: readonly string[], limit: number, fields: string,
+    keep: (page: RestSlide) => RestSlide = page => page,
   ): Promise<RestSlide[]> {
     return new Promise((resolve, reject) => {
       let pages: RestSlide[] = [];
@@ -401,7 +403,7 @@ export class GoogleSlidesApi {
         if (done || failures.size > 0 || next >= ids.length) return;
         let index = next++;
         this.getSlide(presentationId, ids[index], fields).then(
-          page => { pages[index] = page; },
+          page => { pages[index] = keep(page); },
           (error: unknown) => { failures.set(index, error); },
         ).finally(() => {
           answered[index] = true;
@@ -417,7 +419,8 @@ export class GoogleSlidesApi {
 
   /**
    * Fetch the slides among `ids` that `order`, the deck's slide IDs, still has, in the order of
-   * `ids`: a full page of each, but of each in `labelOnly` only what `LABEL_FIELDS` names.
+   * `ids`: a full page of each, but of each in `labelOnly` only what `slideLabel` keeps of what
+   * `LABEL_FIELDS` names.
    */
   async getSlides(
     presentationId: string, ids: Iterable<string>, order: readonly string[],
@@ -430,7 +433,8 @@ export class GoogleSlidesApi {
       ...await this.#getPages(
         presentationId, wanted.filter(id => !labelOnly.has(id)), MAX_PAGE_FETCHES, SLIDE_FIELDS),
       ...await this.#getPages(
-        presentationId, wanted.filter(id => labelOnly.has(id)), MAX_LABEL_FETCHES, LABEL_FIELDS),
+        presentationId, wanted.filter(id => labelOnly.has(id)), MAX_LABEL_FETCHES, LABEL_FIELDS,
+        slideLabel),
     ];
     let byId = new Map(pages.map(page => [page.objectId!, page]));
     return new Map(wanted.map(id => [id, byId.get(id)!]));

@@ -9,7 +9,8 @@
  */
 
 import type {
-  RestBorderRow, RestPageElement, RestPresentation, RestSlide, RestText, RestThemePage,
+  RestBorderRow, RestPageElement, RestPresentation, RestSlide, RestText, RestTextElement,
+  RestThemePage,
 } from "./slides-api";
 import {
   emu, IDENTITY, localBox, matrixOf, multiply, placementOf, points, roundedPlacement, slidePoint,
@@ -263,6 +264,51 @@ export function titleOf(slide: RestSlide): string | undefined {
     .map(({ shape }) => textOf(shape?.text))
     .find(text => text.length > 0)
     ?.slice(0, MAX_TITLE_LENGTH);
+}
+
+/**
+ * What a read keeps of `slide`, read with `LABEL_FIELDS`: its ID, whether it is skipped, the text
+ * of its title placeholder as far as `titleOf` reads it, numbers included, and each other element
+ * that shows the slide's number, holding those numbers alone. Every other text of the answer, a
+ * body's above all, is let go as each answer comes, so a change that names many slides holds a
+ * few hundred bytes of each, whatever its pages hold. A title keeps its slide numbers as they are,
+ * since a queued move renumbers them.
+ */
+export function slideLabel(slide: RestSlide): RestSlide {
+  let titled = false;
+  let pageElements = (slide.pageElements ?? []).flatMap(({ objectId, shape }): RestPageElement[] => {
+    let placeholder = shape?.placeholder;
+    let elements = shape?.text?.textElements ?? [];
+    if (!titled && TITLE_PLACEHOLDERS.has(placeholder?.type ?? "") && textOf(shape?.text).length > 0) {
+      titled = true;
+      return [{ objectId, shape: { placeholder, text: { textElements: titlePrefix(elements) } } }];
+    }
+    let numbers = elements.filter(({ autoText }) => autoText?.type === "SLIDE_NUMBER");
+    return numbers.length > 0 ? [{ objectId, shape: { placeholder, text: { textElements: numbers } } }] : [];
+  });
+  return {
+    objectId: slide.objectId, pageElements,
+    ...(slide.slideProperties ? { slideProperties: { isSkipped: slide.slideProperties.isSkipped } } : {}),
+  };
+}
+
+// The text elements of a title up to one character past what `titleOf` shows, counting only the
+// text that does not change: a number shown is kept whole, whatever it will read once renumbered,
+// so the title read from what is kept is the one read from the whole text.
+function titlePrefix(elements: readonly RestTextElement[]): RestTextElement[] {
+  let kept: RestTextElement[] = [];
+  let left = MAX_TITLE_LENGTH + 1;
+  for (let element of elements) {
+    if (left <= 0) break;
+    let content = element.textRun?.content;
+    if (content === undefined) {
+      if (element.autoText) kept.push({ autoText: element.autoText });
+      continue;
+    }
+    kept.push({ textRun: { content: content.slice(0, left) } });
+    left -= content.length;
+  }
+  return kept;
 }
 
 // Works on a summary read too, whose elements carry only placeholders and text.
