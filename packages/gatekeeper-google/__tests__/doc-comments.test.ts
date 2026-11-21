@@ -185,6 +185,27 @@ describe("Docs comment threads", () => {
     expect(toCommentRecord(threads[1])).not.toHaveProperty("quotedText");
   });
 
+  it("reads the Doc with its suggestions as compact JSON, so indentation alone cannot pass the cap", async () => {
+    // 60,000 one-line paragraphs: about 6 MB as compact JSON, and over the 10 MiB cap indented.
+    let content = Array.from({ length: 60_000 }, (_paragraph, i) => ({
+      startIndex: 1 + 2 * i, endIndex: 3 + 2 * i,
+      paragraph: { elements: [{ startIndex: 1 + 2 * i, endIndex: 3 + 2 * i, textRun: { content: "x\n" } }] },
+    }));
+    let body = { documentId: "doc-1", tabs: [{ tabProperties: { tabId: "t.0", title: "Tab 1" }, documentTab: { body: { content } } }] };
+    let requested: URL[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      let asked = new URL(url);
+      requested.push(asked);
+      let text = asked.searchParams.get("prettyPrint") === "false" ? JSON.stringify(body) : JSON.stringify(body, null, 2);
+      return new Response(text, { headers: { "Content-Type": "application/json" } });
+    });
+    expect(JSON.stringify(body, null, 2).length).toBeGreaterThan(10 * 1024 * 1024);
+
+    let { document } = await new GoogleDocsApi(async () => "token").getDocumentWithSuggestions("doc-1");
+    expect(document.documentId).toBe("doc-1");
+    expect(requested[0].searchParams.get("prettyPrint")).toBe("false");
+  });
+
   it("reads a Doc with no comments as no threads, and refuses a malformed one", async () => {
     let answer: unknown = { documentId: "doc-1" };
     vi.stubGlobal("fetch", async () => Response.json(answer));

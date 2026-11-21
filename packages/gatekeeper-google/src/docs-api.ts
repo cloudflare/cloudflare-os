@@ -725,7 +725,7 @@ export class GoogleDocsApi {
   ): Promise<{ document: GoogleDocsDocument; suggestions: DocsSuggestionRecord[] }> {
     let raw = await this.#request<GoogleDocsResponse & { suggestions?: unknown }>(
       `${DOCS_API_BASE}/${encodeURIComponent(documentId)}?includeTabsContent=true&` +
-        "suggestionsViewMode=SUGGESTIONS_INLINE&commentsViewMode=COMMENTS_VIEW_MODE_INCLUDED",
+        "suggestionsViewMode=SUGGESTIONS_INLINE&commentsViewMode=COMMENTS_VIEW_MODE_INCLUDED&prettyPrint=false",
       {},
       "get document with suggestions",
     );
