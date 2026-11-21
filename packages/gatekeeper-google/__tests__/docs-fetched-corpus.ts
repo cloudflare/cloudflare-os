@@ -10,13 +10,13 @@ import type { BlockSpec } from "./doc-fixture";
 import { readFixtures } from "./docs-live-fixtures";
 import { fuzzedTabs, largeTabs, throughJson } from "./render-run-tabs";
 
-/** Sizes that force runs of one to three elements. */
-export const FORCED: RunSizes = { least: 1, target: 2, most: 4_096, elements: 3 };
+/** Sizes that force runs of one element: the harshest cut. */
+export const FORCED: RunSizes = { least: 1, target: 2, most: 4_096, elements: 1 };
 
 /** The two cuts the walk is compared under. */
 export const CUTS: { cut: string; sizes: RunSizes }[] = [
   { cut: "about 32 KiB a run", sizes: RUN_SIZES },
-  { cut: "one to three elements a run", sizes: FORCED },
+  { cut: "one element a run", sizes: FORCED },
 ];
 
 /** A document of copies of `tabs`, which a walk may empty. */
@@ -66,11 +66,7 @@ export function linesTab(paragraphs: number, tables: readonly number[] = []): Go
   };
 }
 
-/**
- * `tab` with fields the copy does not keep, in its tab, its paragraphs and their text, and
- * with what an answer not held to the copy's fields has in a tab's context: a list whose
- * level and a named style that each hold such fields, and a list with no levels.
- */
+/** `tab` with fields the copy does not keep: in the tab, its paragraphs, its lists and named styles. */
 export function withUnkeptFields(tab: GoogleDocsTab): GoogleDocsTab {
   let copy: GoogleDocsTab & { documentStyle?: unknown } = throughJson(tab);
   copy.documentStyle = { pageSize: { height: { magnitude: 792, unit: "PT" } } };
@@ -137,11 +133,7 @@ export const MARKED: NamedTabs = {
   ]),
 };
 
-/**
- * A weak reference to every body element of `document` as the answer holds it, by tab and
- * place, and to each tab with its lists, its named ranges and its named styles. Made in a
- * call of its own, so that no variable of the caller names what they refer to.
- */
+/** Weak references to each body element and each tab's parts, made here so no caller variable pins them. */
 export function weakRefs(document: GoogleDocsDocument): {
   elements: WeakRef<StructuralElement>[][];
   tabs: WeakRef<object>[][];

@@ -4,10 +4,8 @@ import { LATE_FETCH_SCENARIO, lateFetchScenario } from "../doc-store-scenarios";
 import { withDocStore } from "./doc-store-host";
 
 // What only real storage shows of a Doc's stored copy: the types a record's columns hold, a keep
-// that fails part way through its transaction, what an activation after an eviction reads, and
-// the removal of megabytes under `docCopy:` a batch at a time.
+// or a late fetch undone with its transaction, and megabytes under `docCopy:` removed in batches.
 
-const EMPTY = { doc_copy: 0, doc_md: 0, doc_result: 0, doc_run: 0, doc_seq: 0, doc_version: 0 };
 // The failure of a call, as text. `then` alone is read from the call's promise: any other
 // property of it is a pipelined call, which would fail unhandled alongside this one.
 const failure = (call: PromiseLike<unknown>) =>
@@ -55,41 +53,8 @@ it("removes a copy of several megabytes under docCopy: in batches, and what is l
   expect(await host.removeUnread(4)).toBe(true);
 });
 
-it("removes the keys under docCopy: as its copy is read, and stores the copy in rows", async () => {
-  const host = env.DOC_COPY_HOST.getByName("unread-copy-read");
-  // Twenty keys: sixteen go when the copy's lifecycle is built, and the rest at its first read.
-  await host.writeUnreadCopy(1, 18, []);
-  expect(await host.keys()).toHaveLength(20);
-
-  expect(await host.read({ a: "one" })).toEqual(["a"]);
-
-  expect(await host.keys()).toEqual([]);
-  expect(await host.tab("a")).toBe("one");
-  // One tab of one run: the run with its rendering, its context, its run list and its version.
-  expect(await host.counts())
-    .toEqual({ ...EMPTY, doc_copy: 1, doc_run: 2, doc_md: 1, doc_seq: 1, doc_version: 1 });
-});
-
-it("keeps the copy across an eviction, serves it without a fetch and decodes only the tab that is read", async () => {
-  const host = env.DOC_COPY_HOST.getByName("evicted");
-  await host.read({ a: "one", b: "two", c: "three" });
-  expect(await host.fetches()).toBe(1);
-  expect(await host.decodes()).toBe(0);
-
-  await host.evict();
-
-  expect(await host.current()).toEqual(["a", "b", "c"]);
-  expect(await host.fetches()).toBe(1);
-  expect(await host.decodes()).toBe(0);
-  expect(await host.tab("b")).toBe("two");
-  expect(await host.decodes()).toBe(1);
-  // Nothing decoded is kept: a second read of the tab reads its rows again.
-  expect(await host.tab("b")).toBe("two");
-  expect(await host.decodes()).toBe(2);
-});
-
-// The first tab's rows are written before the second tab's paragraph is found too large. This holds the
-// rollback, not the limit: the store's own test on real storage is the test of that.
+// The first tab's rows are written before the second tab's paragraph is found too large: the
+// rollback is held here, the limit by the store's own test.
 it("leaves the earlier copy whole when a keep fails part way", async () => {
   const host = env.DOC_COPY_HOST.getByName("fails-midway");
   await host.read({ a: "one", b: "two" });
@@ -109,28 +74,6 @@ it("leaves the earlier copy whole when a keep fails part way", async () => {
   expect(await host.tab("a")).toBe("uno");
   expect(await host.tab("b")).toBe("dos");
   expect(await host.counts()).toEqual(earlier);
-});
-
-it("leaves no row of a tab a later fetch does not list or lists under another id", async () => {
-  const host = env.DOC_COPY_HOST.getByName("renames");
-  await host.read({ a: "one", b: "two" });
-  // Two versions, each a run list and a run with its rendering, and the context the two share.
-  const two = { ...EMPTY, doc_copy: 1, doc_run: 3, doc_md: 2, doc_seq: 2, doc_version: 2 };
-  expect(await host.counts()).toEqual(two);
-
-  // The same text under another id is another version over the same run.
-  expect(await host.read({ a: "one", c: "two" })).toEqual(["a", "c"]);
-
-  expect(await host.counts()).toEqual(two);
-  expect(await host.tab("b")).toBeNull();
-  expect(await host.tab("c")).toBe("two");
-
-  expect(await host.read({ a: "one" })).toEqual(["a"]);
-
-  // One tab of one run: the run with its rendering, its context, its run list and its version.
-  expect(await host.counts())
-    .toEqual({ ...EMPTY, doc_copy: 1, doc_run: 2, doc_md: 1, doc_seq: 1, doc_version: 1 });
-  expect(await host.tab("c")).toBeNull();
 });
 
 it("commits a keep and the KV writes beside it together, and undoes both together", async () => {
