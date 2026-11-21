@@ -1573,7 +1573,8 @@ export function CollectionEditor({
 }: {
   collectionId: string;
   selectedPath: string | null;
-  onSelectPath: (path: string | null) => void;
+  /** `replace` is for a host that keeps history, which this app's own navigation does not. */
+  onSelectPath: (path: string | null, replace?: boolean) => void;
   backLabel: string;
   onBack: () => void;
   onGone: () => void;
@@ -1778,7 +1779,7 @@ export function CollectionEditor({
       await context.moveContextDocument(collectionId, from, dest);
     }
     if (selectedPath === from || selectedPath?.startsWith(from + "/")) {
-      setSelectedPath(replacePathPrefix(selectedPath, from, dest));
+      setSelectedPath(replacePathPrefix(selectedPath, from, dest), true);
     }
     await loadDocs();
   };
@@ -1855,9 +1856,9 @@ export function CollectionEditor({
       afterDeleteExitRef.current = () => {
         if (isDir) {
           if (selectedPath === path || selectedPath?.startsWith(path + "/"))
-            setSelectedPath(null);
+            setSelectedPath(null, true);
         } else if (selectedPath === path) {
-          setSelectedPath(null);
+          setSelectedPath(null, true);
         }
         void loadDocs();
       };
@@ -2056,7 +2057,7 @@ export function CollectionEditor({
       >
         <div className="flex h-14 shrink-0 items-center px-5">
           <button
-            onClick={onBack}
+            onClick={() => onBack()}
             className="press -ml-1 inline-flex items-center gap-1 rounded-md px-1 py-0.5 text-[13px] font-medium tracking-[-0.25px] text-kumo-subtle transition-colors hover:text-kumo-default"
           >
             <CaretLeft size={14} />
@@ -2208,10 +2209,11 @@ export function CollectionEditor({
                   onChanged={loadDocs}
                   onRenamed={(newPath) => {
                     setDirty(false);
-                    setSelectedPath(newPath);
+                    setSelectedPath(newPath, true);
                     loadDocs();
                   }}
                   onRequestDelete={() => deletePath(selectedPath, false)}
+                  onUnavailable={() => setSelectedPath(null, true)}
                 />
               </div>
             </>
@@ -2410,6 +2412,7 @@ function DocumentEditor({
   onRenamed,
   onRequestDelete,
   onDirtyChange,
+  onUnavailable,
 }: {
   collectionId: string;
   path: string;
@@ -2421,6 +2424,8 @@ function DocumentEditor({
   onRenamed: (newPath: string) => void;
   onRequestDelete: () => void;
   onDirtyChange: (dirty: boolean) => void;
+  // Leaves a document that doesn't exist (e.g. a stale link) for the collection overview.
+  onUnavailable: () => void;
 }) {
   const context = useContextApi();
   const toasts = useKumoToastManager();
@@ -2434,6 +2439,8 @@ function DocumentEditor({
   // fallback while the document loads.
   const [contentType, setContentType] = useState(() => contentTypeFromPath(path));
   const [loading, setLoading] = useState(true);
+  // A link can name a document that doesn't exist; never present it as an empty, editable file.
+  const [unavailable, setUnavailable] = useState(false);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const savedDocumentRef = useRef<{ description: string; body: string } | null>(null);
@@ -2474,8 +2481,9 @@ function DocumentEditor({
         setSkillName(d.skillName ?? null);
         setDirty(false);
         setMode(readOnly || initialMode !== "edit" ? "read" : "edit");
+      } else {
+        setUnavailable(true);
       }
-      // Also clears loading for not-found.
       setLoading(false);
     }).catch((err) => {
       if (cancelled) return;
@@ -2563,6 +2571,25 @@ function DocumentEditor({
     return (
       <div className="flex h-full items-center justify-center text-sm text-kumo-subtle">
         Loading…
+      </div>
+    );
+  }
+
+  if (unavailable) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
+        <FileText size={32} className="text-kumo-subtle" />
+        <div>
+          <p className="m-0 text-[15px] leading-5 font-medium tracking-[-0.25px] text-kumo-default">
+            This document is unavailable
+          </p>
+          <p className="mt-1 text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle">
+            It may have been renamed or deleted.
+          </p>
+        </div>
+        <WorkshopButton tone="secondary" className="!h-8" onClick={onUnavailable}>
+          Back to collection
+        </WorkshopButton>
       </div>
     );
   }

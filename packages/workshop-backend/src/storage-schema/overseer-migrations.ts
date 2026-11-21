@@ -90,7 +90,7 @@ export function migrateToMultiGadget(host: OverseerMigrationHost): void {
     // Brand-new (or never-initialized) DO: there is nothing to migrate. We deliberately avoid
     // writing anything here, so that probing a nonexistent DO leaves no storage behind; the
     // version singleton is set when the workspace is first initialized (see
-    // OverseerDurableObject.open() / receiveExternalMessage()).
+    // OverseerDurableObject.open()).
     return;
   }
 

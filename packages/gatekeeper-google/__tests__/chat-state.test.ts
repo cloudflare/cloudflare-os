@@ -28,6 +28,7 @@ function message(name: string, text: string, extra: Partial<ChatMessageInfo> = {
     isReply: false,
     attachments: [],
     cards: [],
+    buttons: [],
     reactions: [],
     ...extra,
   } satisfies ChatMessageInfo;

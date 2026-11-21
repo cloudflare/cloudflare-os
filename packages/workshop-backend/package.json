@@ -26,6 +26,7 @@
     "capnweb-validate": "catalog:",
     "diff": "catalog:",
     "diff3": "0.0.3",
+    "entities": "^8.1.0",
     "es-module-lexer": "3.0.4",
     "jose": "^6.2.16",
     "typebox": "1.4.6",

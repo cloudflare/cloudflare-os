@@ -205,6 +205,8 @@ export function advanceToOAuth<Extra extends object>(
   kv, initiationNonce: string, now: number, extra?: Extra & NonceExtra): string | null;
 export function claimOAuth<Extra extends object>(
   kv, oauthNonce: string, now: number): StoredNonce<Extra> | null;
+export function peekOAuth<Extra extends object>(
+  kv, oauthNonce: string, now: number): StoredNonce<Extra> | null;
 ```
 
 `advanceToOAuth` verifies the initiation nonce (constant time, TTL, stage) and mints the OAuth-stage
@@ -217,6 +219,18 @@ property; the reserved keys (`value`, `expiresAt`, `stage`) are intersected onto
 `meta` and `advanceToOAuth`'s `extra` parameters, which both exclude them statically and reject them
 at runtime. The exclusion lives on the parameter rather than the `Extra` constraint: as a constraint
 it is a weak type, which defeats inference and collapses `StoredNonce<Extra>` to `never`.
+
+`peekOAuth` is `claimOAuth` without the delete, for a pasted-key form: the account checks the
+form's nonce, asks the provider whether the key is good, and claims only then. A refused key
+spends nothing, so the form is shown again with the same nonce; without this a typo spends the
+nonce and the user starts again from the Workshop. Nothing is written until the claim, so whatever
+ends an attempt while the provider is asked — a newer link, a disconnect, its expiry — makes the
+claim fail with no state of the retry's own to keep in step, and the attempt's metadata and
+deadline are only ever read from storage. An earlier shape claimed first and gave the claim back
+on a refusal, which needed a third stage and a record of the claim, and three review rounds found
+a way for that record to disagree with the slot. The cost of checking first is exclusivity: two
+submissions of one form both reach the provider, though only one can claim. An OAuth callback has
+no use for `peekOAuth`: its provider calls back once.
 
 Initiation metadata records what a link was minted for, so a callback need not infer it: deriving
 "reconnect" from `stored() !== undefined` at callback time (GitLab's and X's original check)
@@ -243,8 +257,9 @@ revoke removes it with the account.
 
 The browser pages and request guards used during connect. Exports `escapeHtml`,
 `htmlResponse(body, status = 200)`, `connectMutationError(req, options)`,
-`connectHandoffPageHtml(handoff)`, `INVALID_LINK_HTML`, `errorPageHtml(title, detail)`, and
-`PAGE_STYLE`.
+`connectHandoffPageHtml(handoff)`, `INVALID_LINK_HTML`, `errorPageHtml(title, detail)`,
+`PAGE_STYLE`, and the guarded form: `connectFormHtml(options)`, `formPageResponse(body, status)`,
+`readConnectForm(req, options)`, `CONNECT_FORM_NONCE_FIELD` and the `ConnectFormField` type.
 
 `connectHandoffPageHtml` rejects a `targetOrigin` that is not exactly an origin. It redirects the
 popup to `<targetOrigin>/connect/handoff#<encoded-ticket>` with `location.replace()`. The opaque
@@ -275,6 +290,30 @@ connect route, has none. A page served `Referrer-Policy: no-referrer`, as `htmlR
 submits its forms with `Origin: null` (checked in Chromium 154), so a guarded HTML form is served
 with `Referrer-Policy: same-origin`, which still keeps the bearer URL out of cross-origin `Referer`.
 `fetch()` posts keep their `Origin` under either policy, which is why Marketo's JSON flow works.
+
+The guarded form is the three pieces a pasted-credential flow would otherwise write by hand, and
+easily gets wrong: a form served through `htmlResponse` renders and can never be submitted. `connectFormHtml({ title, intro, action, nonce, fields,
+submitLabel? })` renders a `PAGE_STYLE` page whose form posts `application/x-www-form-urlencoded`
+to `action`, with the attempt's nonce in the hidden field `CONNECT_FORM_NONCE_FIELD` and one input
+per `{ name, label, secret?, placeholder? }`, and `error?` above them when the form is shown again
+after a refused submission (§4.2, `peekOAuth`); it escapes every value and throws on no fields, on a
+repeated or malformed field name, and on a field named `nonce`. `formPageResponse` is `htmlResponse` with
+`Referrer-Policy: same-origin` and `form-action 'self'` added to its policy, so the browser will
+not post the credential to another origin whatever `action` says. Browsers differ on applying
+that to a redirect, so the handler must not answer the POST with a cross-origin 307 or 308; the
+handoff page, which is HTML, forwards no body. `readConnectForm(req, { origin, maxBytes = 16 KiB })` refuses a
+non-POST (405), runs `connectMutationError` (403, 415), reads the body through `readTextCapped`
+(413 over the cap, 400 for a body that cannot be read) and returns the fields, or the refusal as an
+HTML `Response`. It does not check the nonce: the account does, in the same step that spends it.
+The origin compared is the deployment's, which the Workshop and every gatekeeper share, and the
+POST's `Referer` carries the form page's URL to that origin, so spend the link's nonce before the
+form is shown. These are leaves, with no opinion on the account.
+
+`readConnectForm` and `formPageResponse` fit any guarded form. `connectFormHtml` is narrower: it
+serves a single pasted key, its first use, and does not yet express what homeassistant's and
+gatekeeper-mcp's forms need — a `url` input, a hint under a
+field, rich help, and a nonce carried in the path rather than a hidden field. Those ports, and
+`tokenAuth` (§5.4), either widen it or keep their own page and take the other two.
 
 The expected `origin` is **required and explicit** rather than derived from `req.url` (the shape
 client-errors uses): the form's action URL is built from the configured base URL, so the legitimate
@@ -655,7 +694,6 @@ export type ObserverTrackerOptions<V> = {
                                                       // shown verbatim to the denied collaborator
   vendorId?: string;                       // log attribution
   maxTrackedCollections?: number;              // default 1000; refuses to reveal set 1001
-  maxObservers?: number;                // default 10; refuses to admit observer 11
   concurrency?: number;                 // default 6; concurrent verifier round trips
 };
 export class ObserverTracker<V> {
@@ -744,8 +782,8 @@ why the copy is the mechanism and the type is only the documentation.
 await, writes the verifier only if that nonce is still current, and throws when it is not — a quiet
 return would report an admission that did not happen, and an untracked observer is excluded from
 nothing. Durable rather than an in-memory counter, so a `removeObserver` reaching a different
-tracker instance over the same storage still cancels the admission. A stranded attempt does not hold
-its `maxObservers` slot for good: each admission sweeps attempts past `OBSERVER_ATTEMPT_LIFETIME_MS`,
+tracker instance over the same storage still cancels the admission. A stranded attempt does not stay
+in the roster for good: each admission sweeps attempts past `OBSERVER_ATTEMPT_LIFETIME_MS`,
 and one swept while its admission is still alive merely fails closed at its next nonce check and
 retries.
 
@@ -1273,7 +1311,7 @@ the leaf contract that closed or deliberately adjudicated the finding.
 | **A revoke-raced mint now has a drain seam.** A refresh in flight when `revoke()` wipes storage may still complete after its identity fence moved, producing live provider-side authority the coordinator will never store. | every port with a refresh flow | **Resolved in Layer 1:** `CredentialCoordinatorOptions.discardMint` receives that successful fenced-out mint; `#refresh` awaits it before returning the winning credentials, and logs a throwing handler as `credentials.mint.discard.failed` without rethrowing (`credentials.ts:139-145,332-378`). `revoke()` itself still belongs to the account base (§5.6), which owns revoking the captured grant; the coordinator owns only the mint that lost its fence. |
 | **Baseline verification is admission-time policy.** `verifyBaseline` and `aclObservers.hasAccess` run only when admitting an observer; the tracked-set oracle alone runs on every set-scoped read. | every observer port | **Adjudicated as doctrine:** Workshop membership removal is the revocation path, and a provider needing per-read baseline freshness folds that check into `hasCollectionAccess` (`observers.ts:50-54,103-129`; `observer-tracker.ts:149-161`). *Trigger for a new seam:* a provider whose binding-level grant is revocable independently of Workshop membership **and** whose reads are baseline-shaped. |
 | **`maxTrackedCollections` is a default, not a corpus constant.** 1000 comes from google's generic default, but its concrete Drive tracker overrides to **2000** (`drive-observers.ts:49-53`), sized against `ceil(N/100)` subrequests. | supabase, notion, linear ports, which had no cap at all | A port inherits a bound it never had; the number is per-provider and belongs in that port's options. |
-| **`maxObservers` is a platform bound the corpus does not have.** Every retained observer costs one verifier call per read, and Workers cap a request at **32 Worker invocations** — past that the call throws, so a binding with too many collaborators fails *every* read rather than degrading. No shipped tracker caps this: notion, confluence, context, linear and internal `gatekeeper-shared` fan out over all observers with unbounded `Promise.all`, and google throttles concurrency without bounding the total. | every strategy-C port | The kit refuses at admission instead, which is the legible half of the same failure. The default is **10**, not 20: an observer count prices only the kit's own hop, and every verifier in the corpus spends a second invocation calling its account DO (`notion.ts:615-635`), so 20 observers is 40 invocations before the read does anything. The real ceiling is per-deployment, so the number belongs in that port's options. `concurrency` is a throttle and never a bound. |
+| **There is no observer cap, as in the corpus.** The kit shipped `maxObservers` (default 10), first refusing the eleventh collaborator at admission and then the read that would fan out over them, on the reading that Workers cap a request at 32 Worker invocations and each retained observer costs two per read. That limit, like the Durable Object loop limit, bounds call *depth*: each subrequest receives its caller's remaining budget less one, so sibling verifier calls spend nothing between them. The calling invocation's subrequest count can grow with observers, one per check that opens a request, against a limit set by the plan and the Worker's configuration; a check that fails on it excludes its observer. | every strategy-C port | Removed. The cap priced nothing and blocked sharing: a workspace with a Context binding in scope stopped at 10 collaborators. `concurrency` still throttles the fan-out. |
 | **Re-fetch after a reported expiry.** The account keeps the dead grant until reconnect — `reportCredentialsRejected` notifies, it does not clear — so any later `get()` fetches the same credentials back and its callers 401 again. | all | Self-healing and bounded: each round costs a redundant 401 (the account notifies once), never a wrong authorization. The source keeps reported identities in a per-activation dead set and refuses to re-adopt their generations, and fences out fetches already in flight at the report; without those, a cache hit under the restored partition never reaches the provider, so hit-only paths would mask the outage for the TTL and across the reconnect. A fetch started after the report, adopting an identity not in the set — successful refresh or reconnect — re-establishes the authority. |
 | **Warm-path credential memo.** Every `run` and `get` opens an account round trip even when the same operation read credentials moments ago; the kit deliberately ships no consumer-side cache (§4.6), so a facet fanning out N provider calls pays N same-colo hops. | high-read-volume ports | The corpus survey behind §4.6 stands — 21 of 33 gatekeepers fetch per provider request, and the three that memoize gate on the *provider-issued expiry*, a projection the stored/public credential split does not carry today. An expiry-gated memo is additive (an `expiresAt` on the public projection plus a source option) and wants a port with measured hop cost in view, not a speculative default that would hold a stale principal for its window. |
 | **403 scope-regrant healing.** The rejection adjudication heals *credentials* — a stale bearer minted from a live grant. A 403 whose cause is a missing scope is a different failure: the grant is alive, no mint fixes it, and the recovery is a reconnect flow with incremental consent. Classifying it as an auth error would retire a healthy connection; classifying it as no-access hides the regrant path from the user. | google port first (incremental-consent scopes) | Needs surface the kit does not have: a per-operation scope requirement, a reconnect prompt distinct from expiry, and provider-specific insufficient-scope detection (google's `403 insufficientPermissions` vs. its resource-level 403s). Land it with the first port whose provider does incremental consent, so the classification is designed against real error bodies. |
@@ -2736,7 +2774,8 @@ need): `begin` returns `{ html }` — a minimal form styled with `PAGE_STYLE` an
 `Referrer-Policy: same-origin` (under `htmlResponse`'s `no-referrer` the browser sends
 `Origin: null` and every submission 403s, §4.3), fields from
 `config.fields: { name, label, secret?: boolean }[]`, a hidden `state`, posting to
-`${baseUrl}/connect/${accountId}`; `routes` handles that POST, first calls
+`${baseUrl}/connect/${accountId}` (the shipped `connectFormHtml` names its hidden field `nonce`
+and takes any `action`, §4.3; reconcile the two when this is built); `routes` handles that POST, first calls
 `connectMutationError(req, { origin: baseUrl, contentType: "application/x-www-form-urlencoded" })`
 (the expected origin is the base URL's, never `req.url`'s — §4.3) and renders any refusal, then reads
 the form and calls `completeAuth(formFields, state)`. It renders a returned handoff with
@@ -3564,12 +3603,13 @@ recorded here because the pass found it. Each entry names why it waits and what 
   `complete()` today (§4.2). The guard would have to reserve the id synchronously, before
   `describe()` is awaited, or two concurrent calls both pass it. *Trigger:* a gatekeeper found able
   to call `complete()` twice.
-- **Connect-form reader** in `./connect-pages`. Homeassistant and gatekeeper-mcp read their forms
-  through `readTextCapped` (16 KiB): each route reads the body before the account checks the nonce,
-  so anyone holding one connect URL could otherwise buffer a request body as large as the plan
-  allows (5 GB on Enterprise) into a 128 MB isolate. Internal sentry and http still call
-  `formData()`. A kit reader would pair the cap with `connectMutationError`, but that guard does not
-  fit mcp's `htmlResponse` form (§4.3). *Trigger:* `tokenAuth` (§5.4), which owns the form read.
+- **Connect-form reader** in `./connect-pages`. *Shipped* as `readConnectForm` (§4.3), ahead of
+  `tokenAuth`, for a gatekeeper that connects with a pasted API key. What stays deferred is the ports:
+  homeassistant and gatekeeper-mcp read their forms through `readTextCapped` (16 KiB) with no
+  origin check, and internal sentry and http still call `formData()`, which has no cap, so anyone
+  holding one connect URL can buffer a request body as large as the plan allows (5 GB on
+  Enterprise) into a 128 MB isolate. A port serves its form through `formPageResponse`, without
+  which the guard refuses every submission. *Trigger:* `tokenAuth` (§5.4), or either port.
 - **Token memo** for `withAuthRetry`'s `getToken({ forceRefresh, staleToken })`. Zylo, the only
   production caller, ignores `staleToken` and does not coalesce: redundant mints, not wrong
   results, and `SingleFlight` fixes it locally. Google coalesces at the account (§4.13). *Trigger:*

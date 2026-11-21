@@ -236,6 +236,7 @@ export default defineConfig({
           'packages/workshop-backend/**/*.ts',
           'packages/router/**/*.ts',
           'packages/gatekeeper-*/src/**/*.ts',
+          'packages/pdf-renderer/src/**/*.ts',
           'packages/workshop-shared/**/*.ts',
           'packages/typed-storage/**/*.ts',
         ],

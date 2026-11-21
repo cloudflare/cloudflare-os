@@ -1,10 +1,11 @@
-import { type RefObject, useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from 'react'
+import { type RefObject, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Banner, Text } from '@cloudflare/kumo'
 import { PaperPlaneRightIcon } from '@phosphor-icons/react'
 import { newMessagePortRpcSession, type RpcStub } from 'capnweb'
 import type { InlineHtmlSegment } from '@gadgets/workshop-shared/inline-html-blocks'
 import { useTheme } from '../../ThemeContext'
 import { WorkshopButton } from '../../components/WorkshopControls'
+import { readSnapshotFile, type FileSnapshots } from './inlineFiles'
 import {
   createUiBlockDocumentStart,
   createUiBlockShell,
@@ -27,6 +28,8 @@ export type UiBlockCardProps = {
   onHeightChange: () => void
   /** The chat's scrolling message list. It clips the view before the window does. */
   scrollRoot: RefObject<HTMLElement | null>
+  /** Immutable files pinned into this message by the host parser. */
+  files?: FileSnapshots
 }
 
 /** A message the view asked to send, waiting on the viewer's Send, and whether that Send is running. */
@@ -37,7 +40,7 @@ const clampHeight = (height: number) =>
 
 /** A live `<inline-html>` block of an agent answer, drawn in place in a sandboxed frame. */
 export const UiBlockCard = ({
-  block, onSendMessage, sendBlockedReason, onHeightChange, scrollRoot,
+  block, onSendMessage, sendBlockedReason, onHeightChange, scrollRoot, files,
 }: UiBlockCardProps) => {
   const { resolvedThemeMode } = useTheme()
   const cardRef = useRef<HTMLDivElement>(null)
@@ -52,7 +55,29 @@ export const UiBlockCard = ({
   const refused = block.kind === 'block' ? block.error : undefined
   // The latest uncaught error in the block's own code. The view keeps running.
   const [codeError, setCodeError] = useState<string | null>(null)
+  const [imageError, setImageError] = useState<string | null>(null)
   const [chip, setChip] = useState<Chip | null>(null)
+  // Parse the original block, not the frame's mutable DOM or its requests. A download pin
+  // elsewhere in the message doesn't grant this view access to that file.
+  const imageSources = useMemo(() => {
+    const template = document.createElement('template')
+    template.innerHTML = block.html
+    const sources = new Set<string>()
+    const collect = (content: DocumentFragment) => {
+      for (const image of content.querySelectorAll('img[src]')) sources.add(image.getAttribute('src')!)
+      // Template contents are separate fragments, which selectors on their parent do not visit.
+      for (const nested of content.querySelectorAll('template')) {
+        if (nested instanceof HTMLTemplateElement) collect(nested.content)
+      }
+    }
+    collect(template.content)
+    return sources
+  }, [block.html])
+  const readCurrentImage = useEffectEvent(async (source: string) => {
+    if (!imageSources.has(source)) throw new Error(`File unavailable: ${source}`)
+    if (!files) throw new Error('Files are unavailable in this view.')
+    return readSnapshotFile(files, source)
+  })
 
   // Sends the frame what it lacks of the block: the HTML that arrived since its last write, then
   // the end of its document once the block closes. Each call is settled so that capnweb releases
@@ -70,6 +95,10 @@ export const UiBlockCard = ({
     }
   })
   useEffect(() => writeBlock(), [block.html, block.kind])
+
+  useEffect(() => {
+    loadRef.current?.frame.retryImages().catch(() => {})
+  }, [files?.readBlob])
 
   const live = nearViewport && refused === undefined && !stopped
 
@@ -93,6 +122,7 @@ export const UiBlockCard = ({
       // A request needs the frame that made it, and an error the document that threw it.
       setChip(null)
       setCodeError(null)
+      setImageError(null)
     }
 
     // Each load of the frame's document, its first or one its own code started, handshakes once,
@@ -107,6 +137,8 @@ export const UiBlockCard = ({
         onMessageRequest: message => setChip({ message, sending: false }),
         onResize: reported => setHeight(clampHeight(reported)),
         onError: setCodeError,
+        onImageError: setImageError,
+        readImage: readCurrentImage,
       }))
       loadRef.current = { frame, written: 0, closed: false }
       frame.write(createUiBlockDocumentStart(readUiBlockTheme())).catch(() => {})
@@ -152,9 +184,9 @@ export const UiBlockCard = ({
           {live && <ViewFrame ref={iframeRef} title={title} />}
         </div>
       )}
-      {refused === undefined && codeError !== null && (
+      {refused === undefined && (codeError !== null || imageError !== null) && (
         <div className="mt-1">
-          <Text size="sm" variant="error">{codeError}</Text>
+          <Text size="sm" variant="error">{codeError ?? imageError}</Text>
         </div>
       )}
       {refused === undefined && (

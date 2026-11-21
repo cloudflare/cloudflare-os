@@ -74,7 +74,10 @@ orthogonal — an account can declare either, both, or neither.
   needs it.
 - The UI is served by `startAppUi({ isAdmin })` and hosted by the frontend: the old one at
   `/gatekeepers/$appId` (the gatekeeper's vendor id, e.g. `/gatekeepers/context`), workshop-app at
-  `/apps/$appId`, which redirects the old path there.
+  `/apps/$appId`, which redirects the old path there. Anything after that prefix is the app's
+  own path, so apps can be deep-linked: the Workshop owns the URL and syncs it with the iframe over
+  `GatekeeperAppNavigation` (`@gadgets/workshop-shared/gatekeeper-app`); the Context Library uses
+  `/collections/<id>` and `/collections/<id>/files/<path>`.
 
 ## Admin settings
 
