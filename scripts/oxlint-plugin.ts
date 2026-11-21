@@ -302,23 +302,26 @@ const newGatekeeperObserverContract: Rule = {
   create(context) {
     return {
       "ClassDeclaration, ClassExpression"({ body, id, implements: interfaces, superClass }: ESTree.Class) {
-        const addObserver = methodNamed(body, "addObserver");
-        const declared = interfaces?.some(({ expression }) => named(expression, "Gatekeeper"));
-        if (!declared && !(methodNamed(body, "startSession") && addObserver)) return;
-
+        // Checked in any class: a facet that inherits its session need not say what it implements.
         const history = methodNamed(body, "getHistoricalSubresources");
         const statements = history?.value.body?.body;
         const returned = statements?.length === 1 && statements[0].type === "ReturnStatement"
           ? unwrap(statements[0].argument) : undefined;
+        if (history && (returned?.type !== "ArrayExpression" || returned.elements.length)) {
+          context.report({ node: history.key, messageId: "history" });
+        }
+
+        const addObserver = methodNamed(body, "addObserver");
+        const declared = interfaces?.some(({ expression }) => named(expression, "Gatekeeper"));
+        if (!declared && !(methodNamed(body, "startSession") && addObserver)) return;
+
         // A facet base of the gatekeeper's own may supply it, as it may supply `startSession()`;
         // Cloudflare's `DurableObject` supplies neither. An abstract one is each subclass's to write.
         const elsewhere = (superClass && !named(superClass, "DurableObject")) ||
-          body.body.some(member => member.type === "TSAbstractMethodDefinition" &&
+          body.body.some(member => member.type === "TSAbstractMethodDefinition" && member.kind === "method" &&
             writtenName(member.key, member.computed) === "getHistoricalSubresources");
-        if (!history) {
-          if (!elsewhere) context.report({ node: addObserver?.key ?? id ?? body, messageId: "missingHistory" });
-        } else if (returned?.type !== "ArrayExpression" || returned.elements.length) {
-          context.report({ node: history.key, messageId: "history" });
+        if (!history && !elsewhere) {
+          context.report({ node: addObserver?.key ?? id ?? body, messageId: "missingHistory" });
         }
 
         for (const name of ["addObserver", "removeObserver"]) {
