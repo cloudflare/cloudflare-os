@@ -2742,7 +2742,7 @@ const MOVE_NEEDS_A_FOLDER =
  */
 const THROUGH_SHORTCUT =
   "This folder was opened through a shortcut, so its files can be read here but not changed, " +
-  "commented on, shared or moved.";
+  "commented on, shared, listed for who they are shared with, or moved.";
 
 /** The Drive session methods that open a native file. */
 type NativeOpener = "openGoogleDoc" | "openGoogleSheet" | "openGoogleSlides";
@@ -3095,6 +3095,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
     // A listing is a read, and each refusal speaks of changes, so it is said what the two share.
     let refused = await this.#writes.writeRefusal();
     if (refused !== undefined) throw new Error(`${LISTING_TAKES_WRITES} ${refused}`);
+    this.#refuseThroughShortcut();
     let actor = await this.#writes.actor();
     let { target } = await this.#sharing(fileId);
     let id = target.fileId;
@@ -3192,8 +3193,9 @@ export class GoogleDriveSessionImpl extends RpcTarget
   }
 
   /**
-   * Refuses a write in a folder opened through a shortcut up front. Its proof at approval, along
-   * the saved path alone, would refuse it anyway.
+   * Refuses a write, or a listing of who has access, in a folder opened through a shortcut. A
+   * write's proof at approval, along the saved path alone, would refuse it anyway; a listing
+   * proves the positioned folder as a sharing target and would not.
    */
   #refuseThroughShortcut(): void {
     if (this.#location?.shortcuts) throw new Error(THROUGH_SHORTCUT);

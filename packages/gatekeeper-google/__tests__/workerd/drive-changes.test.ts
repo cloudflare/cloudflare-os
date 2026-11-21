@@ -66,7 +66,7 @@ const MOVE_SINGLE_FILE =
 const OUTSIDE = "The requested file is outside this Drive binding.";
 const THROUGH_SHORTCUT =
   "This folder was opened through a shortcut, so its files can be read here but not changed, " +
-  "commented on, shared or moved.";
+  "commented on, shared, listed for who they are shared with, or moved.";
 const ACCESS_NAME =
   "That does not name access. Pass the id of an entry listAccess() returned, or a grantee: " +
   "{ type: \"user\", emailAddress }, { type: \"group\", emailAddress }, " +
@@ -1816,6 +1816,8 @@ describe("moves", () => {
       [await drive.call("listAccess", "far-doc"), OUTSIDE],
       [await drive.call("move", "far-doc", "inner"), OUTSIDE],
       [await drive.callIn(["far-folder"], "comment", "deep-doc", "Hi"), THROUGH_SHORTCUT],
+      [await drive.callIn(["far-folder"], "listAccess", "far-folder"), THROUGH_SHORTCUT],
+      [await drive.callIn(["far-folder"], "listAccess", "deep-doc"), THROUGH_SHORTCUT],
       [await drive.callIn(["far-folder"], "move", "deep-doc", "far-folder"), THROUGH_SHORTCUT],
     ] as const;
     for (let [outcome, message] of refused) {

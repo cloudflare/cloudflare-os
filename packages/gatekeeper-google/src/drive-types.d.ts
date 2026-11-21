@@ -319,7 +319,7 @@ export interface GoogleDriveFileSession
  * files among the positioned folder's direct children, comment writes on those children, sharing of them
  * and of the positioned folder itself, and moves within the originally selected folder. Writes do
  * not follow shortcuts: a shortcut's target, and anything in a folder opened through one, can be
- * read but not edited, commented on, shared or moved.
+ * read but not edited, commented on, shared, listed for who it is shared with, or moved.
  */
 export interface GoogleDriveFolderSession
     extends GoogleDriveFolderReadSession, DriveCommentWrites, DriveSharing {
