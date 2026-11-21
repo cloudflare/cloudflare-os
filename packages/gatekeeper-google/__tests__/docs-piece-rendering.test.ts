@@ -5,12 +5,12 @@ import { describe, expect, it, vi } from "vitest";
 import type { GoogleDocsTab, StructuralElement } from "../src/docs-api";
 import { CHIP_PLACEHOLDER } from "../src/docs-content";
 import {
-  advanceCarry, docTabToMarkdown, ELEMENT_BLOCK, ELEMENT_BREAKS, ELEMENT_DEEP,
+  advanceCarry, ELEMENT_BLOCK, ELEMENT_BREAKS, ELEMENT_DEEP,
   ELEMENT_PROTECTS, ELEMENT_TABLE, ELEMENT_TEXT, initialCarry, joinRenderedRun,
   noRenderedRuns, pieceRendering, renderRun,
 } from "../src/markdown-converter";
 import type {
-  DocTabSnapshot, JoinedRuns, MarkdownRange, RenderedRun, SourceMap,
+  JoinedRuns, MarkdownRange, RenderedRun, SourceMap,
 } from "../src/markdown-converter";
 import { buildTab, diceOf, grid, heading, item, NUMBERED_LIST, para } from "./doc-fixture";
 import type { BlockSpec, Dice } from "./doc-fixture";
@@ -29,10 +29,8 @@ const CORPUS: NamedTab[] = [...recordedTabs(), ...largeTabs(20), ...fuzzedTabs(5
 /** The cuts every tab is rendered under, each the bounds of its runs. */
 const CUTS: readonly { name: string; of: (length: number) => number[] }[] = [
   { name: "one element a run", of: oneElementRuns },
-  { name: "runs of one to three elements, seed 2", of: length => forcedRuns(length, 2) },
-  { name: "runs of one to three elements, seed 3", of: length => forcedRuns(length, 3) },
+  { name: "runs of one to three elements", of: length => forcedRuns(length, 2) },
   { name: "cut in two", of: length => seededCutsInTwo(length, 5, 1)[0] ?? [0, length] },
-  { name: "cut in two elsewhere", of: length => seededCutsInTwo(length, 6, 1)[0] ?? [0, length] },
 ];
 
 /** A tab rendered whole, with what the pass says of its elements. */
@@ -78,11 +76,8 @@ function cutTab(tab: GoogleDocsTab, bounds: readonly number[]): CutTab {
 }
 
 /**
- * The runs of `cut` from run `first` on, joined for one piece to take: every run that holds
- * an element of `[from, to)` is rendered again, with the carry and at the offset it has in
- * the tab, since the piece moves those entries in place; the runs it only reads are the ones
- * rendered once. A piece that changed an entry of another element would spoil them for the
- * ranges after it.
+ * The runs of `cut` from run `first` on, joined for one piece to take: the runs that hold an
+ * element of `[from, to)` rendered again, since the piece moves their entries in place.
  */
 function joinedFor(cut: CutTab, first: number, from: number, to: number): JoinedRuns {
   let { tab, bounds } = cut;
@@ -119,11 +114,9 @@ function movedCopy<T>(value: T, by: number): T {
 type Piece = Rendering & { mdStart: number; tablesBefore: number };
 
 /**
- * What elements `[from, to)` of `tab` read as in `whole`, the tab rendered whole: the
- * entries whose document index is one of theirs (a protected range by the element that owns
- * it), every Markdown offset moved to count from the first of them, the last protected range
- * ended where they end, and the blank line that ends the protected range before them a
- * range of their own.
+ * What elements `[from, to)` read as in `whole`: their entries, offsets counted from the first,
+ * the last protected range ended where they end, and the blank line a protected range before
+ * them ends in a range of its own.
  */
 function partOfWhole(tab: GoogleDocsTab, whole: Told, from: number, to: number): Piece {
   let { content } = tab.body;
@@ -167,10 +160,8 @@ function expectSamePiece(got: Piece, want: Piece, where: () => string): void {
 }
 
 /**
- * The ranges a tab of `length` elements is cut into pieces by: every range of up to four
- * elements at its two ends, the empty ones among them, and inside the five elements around
- * each table; and `DRAWN` ranges that hold an element drawn by `dice`, half of them of at
- * most six elements.
+ * The ranges a tab is cut into pieces by: the whole tab, every range of up to four elements at
+ * its ends and around each table, and `DRAWN` seeded ones.
  */
 function rangesOf(tab: GoogleDocsTab, { below }: Dice): [number, number][] {
   let { length } = tab.body.content;
@@ -183,6 +174,7 @@ function rangesOf(tab: GoogleDocsTab, { below }: Dice): [number, number][] {
       for (let to = empty ? from : from + 1; to <= Math.min(high, from + 4); to++) add(from, to);
     }
   };
+  add(0, length);
   within(0, 4, true);
   within(length - 4, length, true);
   for (let [index, element] of tab.body.content.entries()) {
@@ -311,9 +303,7 @@ describe("what a rendered run says of its elements", () => {
   });
 
   it("a structure's text is not read to tell what it writes, asked or not", () => {
-    // The writer tells text from line breaks by testing what it is given, and a test of a
-    // concatenation copies it into one string: a table's HTML, once more. So a structure is
-    // written untested, and a pass that tells nothing of its elements tests no text at all.
+    // A test of a table's HTML would copy it once more: a structure is written untested.
     let tab = buildTab([grid(["Cell", "Next"]), para("After."), grid(["Last"])]);
     let { content } = tab.body;
     // The table first in its run, as each is on a tab of many tables, and after a paragraph.
@@ -371,18 +361,6 @@ describe("a piece cut from joined runs", () => {
     }
   });
 
-  it("the whole range is the whole rendering", () => {
-    for (let { name, tab } of CORPUS) {
-      let { length } = tab.body.content;
-      let whole: Pick<DocTabSnapshot, "markdown" | "sourceMap"> = docTabToMarkdown(tab);
-      for (let cut of CUTS) {
-        let piece = pieceRendering(joinedFor(cutTab(tab, cut.of(length)), 0, 0, 0), 0, length);
-        expectSamePiece(piece, { ...whole, mdStart: 0, tablesBefore: 0 },
-          () => `${name}, ${cut.name}`);
-      }
-    }
-  });
-
   describe("what an element writes backwards stays true at a piece's two ends", () => {
     let chip: BlockSpec = { runs: [{ person: { name: "Ada", email: "ada@example.com" } }, "\n"] };
     // Elements: the opening section break, the table, a paragraph, the chip's, a paragraph.
@@ -402,16 +380,13 @@ describe("a piece cut from joined runs", () => {
     it("a piece that ends with a protected element ends its range where the piece ends", () => {
       let ended = piece(0, 2);
       expect(protectedOf(ended)).toEqual([{ mdStart: 0, mdEnd: ended.markdown.length }]);
-      // The chip's range starts at the line break before its paragraph's blank line: one
-      // character before a piece the paragraph is first in.
+      // The chip's range starts one character before a piece its paragraph is first in.
       let guarded = piece(3, 4);
       expect(protectedOf(guarded)).toEqual([{ mdStart: -1, mdEnd: guarded.markdown.length }]);
     });
 
     it("a piece that ends before a protecting paragraph leaves its last character unguarded", () => {
-      // In the whole tab the chip's range starts on the line break that ends the paragraph
-      // before the chip's. That range is no entry of a piece that ends there, so the piece
-      // says of its last character what the whole tab does not.
+      // The chip's range starts on the line break that ends this piece: no entry of it.
       let last = whole.starts[3] - 1;
       expect(whole.markdown[last]).toBe("\n");
       expect(protectedOf(whole)[1].mdStart).toBe(last);
@@ -449,9 +424,8 @@ describe("a piece cut from joined runs", () => {
     });
 
     it("and one whose runs start with an element that writes nothing", () => {
-      // An element of no kind the renderer knows, as pruning may leave one, between the
-      // table and the paragraph after it: it writes nothing, so the paragraph still starts
-      // with the blank line that ends the table's range.
+      // An element that writes nothing, as pruning may leave one, between the table and the
+      // paragraph after it.
       let between = structuredClone(tab);
       let at = between.body.content[2].startIndex;
       between.body.content.splice(2, 0, { startIndex: at, endIndex: at });

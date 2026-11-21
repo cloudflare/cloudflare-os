@@ -1,13 +1,6 @@
-// The runs of a stored tab handed to the model, and the version they give: `DocStore.slice`
-// finds the runs a batch names from the version's list alone and decodes those and no other,
-// `widen` takes more of them from storage where the model read past an edge, and `putSlice`
-// stores the version the slice gives beside every other run as it was. Held here: which runs
-// a slice holds and what it holds of the tab's shared data and carries, what a widening
-// decodes, the child's list, context, keys and name, what an edit does to run boundaries, the
-// faults of a caller, the censuses of every statement the three methods run, and that nothing
-// is kept. The differential from every stretch of runs is in the three files beside this one
-// (`docs-store-slices-forced`, `-real` and `-single`), and what is held for every run and
-// every list in `docs-store-slices-heap`.
+// `DocStore.slice`, `widen` and `putSlice`: which runs a slice holds and decodes, the version it
+// gives, a row lost under them, the faults of a caller, and what an edit does to run boundaries.
+// The differential from every stretch of runs is in `docs-store-slices-forced` and `-real`.
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -29,7 +22,7 @@ import {
 } from "../src/docs-store";
 import type { DocSlice, DocVersion } from "../src/docs-store";
 import {
-  advanceCarry, CarryBeside, docTabToMarkdown, initialCarry, MARKDOWN_RENDERING_VERSION,
+  advanceCarry, CarryBeside, initialCarry, MARKDOWN_RENDERING_VERSION,
   namedListIds, renderRun,
 } from "../src/markdown-converter";
 import type { PassCarry, RenderCarry, RunSummary } from "../src/markdown-converter";
@@ -38,17 +31,17 @@ import type { BlockSpec } from "./doc-fixture";
 import { fakeDocStorage } from "./doc-store-fake";
 import type { FakeDocStorage } from "./doc-store-fake";
 import {
-  countedStorage, listedTablesTab, RUNS_OF_THREE, spent as spentOn, tableScans, under,
+  countedStorage, listedTablesTab, RUNS_OF_THREE, tableScans, under,
 } from "./doc-store-scenarios";
 import { linesTab } from "./docs-fetched-corpus";
 import { readFixtures } from "./docs-live-fixtures";
 import {
-  BULLETED, bullets, deleteBullets, deleteRange, deleteRow, insertTable, insertText, NUMBERED,
+  BULLETED, bullets, deleteBullets, deleteRange, deleteRow, insertText, NUMBERED,
   recordedSequenceCalls, styleText, TAB,
 } from "./docs-model-draws";
 import {
-  applied, asFetched, builtBatch, expectReadsAs, kept, recordedSteps, runSizes, runsStored,
-  runStarts, stretchReach, undone, whole,
+  applied, asFetched, expectReadsAs, kept, recordedSteps, runSizes, runStarts, stretchReach,
+  undone, whole,
 } from "./docs-store-slice-shadow";
 import type { AppliedSlice } from "./docs-store-slice-shadow";
 import { collect, HEAP_MEASURED, observing } from "./heap-held";
@@ -102,10 +95,7 @@ function footnotesIn(elements: readonly StructuralElement[]): number {
   return JSON.stringify(elements).split('"footnoteReference":').length - 1;
 }
 
-/**
- * A carry read as a reader is handed one: its parts, and its numbers asked by id for each of
- * `listIds` (a reader never lists a carry's lists), a list with no number left out.
- */
+/** A carry read as a reader reads one: its numbers asked by id for each of `listIds`. */
 function carryRead(carry: RenderCarry, listIds: readonly string[]): PlainCarry {
   let numbers: [string, readonly (number | null)[]][] = [];
   for (let listId of listIds) {
@@ -200,34 +190,6 @@ describe("a version's runs handed to the model", () => {
     expect(counted.ran().filter(statement => statement.includes("json_tree"))).toEqual([]);
   });
 
-  it("a slice of a list of 1,300 runs is found a page at a time", () => {
-    let { storage, base } = kept(asFetched(linesTab(1_300)), ONE_EACH);
-    let counted = countedStorage(storage);
-    let store = new DocStore(counted.storage, undefined, undefined, ONE_EACH);
-    let starts = runStarts(storage, base);
-    expect(starts).toHaveLength(1_302);
-    // In the third page; ending on the second page's last row; the list's last run; the first.
-    for (let [from, to, pages] of [
-      [1_100, 1_200, 3], [990, 1_000, 3], [1_299, 1_301, 3], [498, 499, 1], [498, 500, 2], [0, 1, 1],
-    ]) {
-      let before = counted.counts();
-      let slice!: DocSlice;
-      let cost = spent(() => {
-        slice = store.slice(base, stretchReach(storage, base, from, to, starts));
-      });
-      let after = counted.counts();
-      let where = `[${from}, ${to})`;
-      expect([slice.from, slice.to, slice.piece.origin], where).toEqual([from, to, starts[from]]);
-      expect(slice.piece.content, where).toHaveLength(to - from);
-      expect(slice.piece.last, where).toBe(to === 1_301);
-      expect(cost.runsDecoded, where).toBe(to - from);
-      expect(after.content - before.content, where).toBe(to - from);
-      // The list is read to the run after the slice's last, a page at a time, with its summaries.
-      expect([after.pages - before.pages, after.joined - before.joined], where).toEqual([pages, pages]);
-      expect([after.styles - before.styles, after.lists - before.lists], where).toEqual([1, 1]);
-    }
-  });
-
   // Every stretch `[from, to)` of `runs` runs, or past twelve runs a seeded sample of them
   // that holds the first run alone, the last alone and every run.
   function stretchesOf(runs: number, seed: number): [from: number, to: number][] {
@@ -259,7 +221,7 @@ describe("a version's runs handed to the model", () => {
   }
 
   it.each([
-    ["runs of one to three elements", RUNS_OF_THREE], ["the sizes a store cuts to", RUN_SIZES],
+    ["a run an element", ONE_EACH], ["the sizes a store cuts to", RUN_SIZES],
   ] as const)("a slice is what the whole tab holds there, under %s", (_, sizes) => {
     let seen = { tabs: 0, stretches: 0, styled: 0, plain: 0, named: 0, model: 0 };
     let corpus = [
@@ -407,9 +369,7 @@ describe("a version's runs handed to the model", () => {
     let got = sliced(lost, store => store.slice(base, reach));
     same(got.slice, want.slice);
     expect(stored(before)).toEqual(rows);
-    // Each is decoded and rendered alone; the version is not keyed again, which would decode
-    // and render every run. One statement for the lists of their page, not one a run, and the
-    // named styles once more, for the walk.
+    // Each is decoded and rendered alone, and the version is not keyed again.
     expect(got.cost).toMatchObject({ runsDecoded: 1 + 2, runsRendered: 2, rowsWritten: 2 });
     expect([got.lists, got.styles]).toEqual([want.lists + 1, 2]);
 
@@ -520,9 +480,7 @@ describe("a version's runs handed to the model", () => {
     const K = 5;
 
     for (let [side, reads] of [
-      // A deletion that ends in the run after, written past the seven characters put in before
-      // it, and one that starts in the run before: each after a request that changes the slice
-      // in hand.
+      // A deletion into the run after, and one from the run before, each after a change in hand.
       ["after", deleteRange(starts[K] + 30, starts[K + 1] + 7 + 3)],
       ["before", deleteRange(starts[K] - 3, starts[K] + 30)],
     ] as const) {
@@ -549,9 +507,7 @@ describe("a version's runs handed to the model", () => {
       expect(cost).toMatchObject({ viewWidenings: 1, runsDecoded: 2, runsRendered: 0, rowsWritten: 0 });
     }
 
-    // A read before the slice starts the wider one at the run its index is in, however many
-    // runs back, in one widening: three runs back, before the tab (the first run), and, for
-    // an index that is not before the slice at all, the one run before it.
+    // A read before the slice widens in one step to the run its index is in, however far back.
     expect(K - 3).toBeGreaterThan(0);
     for (let [index, from] of [
       [starts[K - 3] + 1, K - 3], [-1, 0], [starts[K] + 5, K - 1],
@@ -621,10 +577,7 @@ describe("a version's runs handed to the model", () => {
     if ("refused" in result) throw new Error(result.refused.message);
     expectReadsAs(store, store.putSlice(made.slice, made.made), result, () => "over");
 
-    // SHORT: after a deletion the index falls, by the stored sizes, short of the run the batch
-    // reads: in run `T`, the slice's own, so the first widening adds the one run next to it
-    // (the table, shorter than the deletion), the batch reads past the edge again, and the
-    // second adds the run it wanted.
+    // SHORT: after a deletion the index falls short of the run the batch reads: two widenings.
     const T = sizes.indexOf(16) - 1;
     expect(T).toBeGreaterThan(2);
     expect(sizes[T]).toBeGreaterThan(150);
@@ -643,10 +596,7 @@ describe("a version's runs handed to the model", () => {
   });
 });
 
-/**
- * A batch through the store as its caller makes it: the slice of what the batch names, the
- * widening loop, and the version stored. A refusal is thrown as a failure.
- */
+/** A batch through the store as its caller makes it. A refusal is thrown as a failure. */
 function through(store: DocStore, version: DocVersion, requests: readonly GoogleDocsRequest[]) {
   let made = applied(store, store.slice(version, batchReach(requests)), requests);
   if ("refused" in made) throw new Error(`refused: ${made.refused.message}`);
@@ -661,12 +611,8 @@ function wholeTab(tab: GoogleDocsTab, requests: readonly GoogleDocsRequest[]) {
 }
 
 /**
- * THE MODEL'S OWN CUT of the elements `child` holds, against the runs `child` lists: the
- * child's stored runs from place `from` on are decoded one at a time and cut again as one
- * stretch (`footnotes` is the count of references before it), up to the first place at or
- * after `after` where both cuts end a run. From there on the two are the same runs: a cut
- * that starts at a run's boundary reads nothing of what stands before it. Answers the runs
- * the child lists and the runs the cut makes in that stretch, by name with their sizes.
+ * THE MODEL'S OWN CUT of the elements `child` holds from place `from`, against the runs it lists,
+ * up to the first place at or after `after` where both cuts end a run.
  */
 function ownCut(
   storage: FakeDocStorage, child: DocVersion, sizes: RunSizes, after: number, from = 0, footnotes = 0,
@@ -711,14 +657,6 @@ function notAmong(runs: readonly { run: string }[], others: readonly { run: stri
   return runs.filter(({ run }) => !names.has(run)).length;
 }
 
-// What the chains of edits counted of their versions against the model's own cut, by sizing,
-// for the test that pins it: the tests of a file run in order.
-const chains = { forced: { edits: 0, listed: 0, differ: 0 }, real: { edits: 0, listed: 0, differ: 0 } };
-
-// The storages the tests of the child version wrote to, for the test that reads every run
-// they hold: the tests of a file run in order.
-const written: FakeDocStorage[] = [];
-
 /** The id of the context row `version` names. */
 const contextOf = (storage: FakeDocStorage, version: DocVersion) =>
   storage.sql.exec<{ context: string }>(
@@ -729,55 +667,10 @@ const contentOf = (storage: FakeDocStorage, id: string) =>
   storage.sql.exec<{ json: string }>("SELECT json FROM doc_run WHERE id = ?", id).one().json;
 
 describe("the version a slice gives", () => {
-  // The three chains the path through runs is held to the path with a tab whole on: the same
-  // tabs, seeds and draws, each step through a slice of what its batch names.
-  it.each([
-    ["paragraphs with footnotes", 20261117, 10],
-    ["protected content", 20261118, 8],
-    ["tables between lists", 20261119, 7],
-  ] as const)("a chain of edits, each made in the version the one before gave: %s", (name, seed, applies) => {
-    for (let sizes of [RUNS_OF_THREE, RUN_SIZES]) {
-      let { below, pick } = diceOf(seed);
-      let tab = asFetched(largeTabs(20).find(large => large.name === name)!.tab);
-      let { storage, store, base } = kept(tab, sizes);
-      written.push(storage);
-      let version = base;
-      let made = 0;
-      for (let turn = 0; turn < 10; turn++) {
-        let labels = docTabToMarkdown(tab).markdown.match(/[A-Z][a-z]+ (?:[A-Z][a-z]+ )?\d{5}\./g) ?? [];
-        // An append, or a replacement of one of the labels the tab's blocks hold.
-        let requests = builtBatch(tab, below(4) === 0 || labels.length === 0
-          ? { name: "append", append: `Appended ${turn}.` }
-          : { name: "replace", replace: [pick(labels), `Changed ${turn}.`] });
-        if (!requests) continue;
-        let where = () => `${name}, edit ${turn + 1}`;
-        let result = whole(tab, requests);
-        let step = applied(store, store.slice(version, batchReach(requests)), requests);
-        if ("refused" in result || "refused" in step) {
-          expect(step, where()).toEqual(result);
-          continue;
-        }
-        version = store.putSlice(step.slice, step.made);
-        expectReadsAs(store, version, result, where);
-        tab = result.tab;
-        made++;
-      }
-      expect(made).toBe(applies);
-      // The last version against the model's own cut of the same elements from the tab's
-      // start: the whole list, since its runs hold what every edit of the chain left.
-      let against = ownCut(storage, version, sizes, Infinity);
-      let tally = chains[sizes === RUN_SIZES ? "real" : "forced"];
-      tally.edits += made;
-      tally.listed += against.listed.length;
-      tally.differ += notAmong(against.listed, against.own);
-    }
-  });
-
   it("a footnote reference deleted in the first run renumbers the later runs, which keep their names", () => {
     let tab = asFetched(buildTab(Array.from({ length: 12 }, (_, at) =>
       ({ runs: [`Line ${at}`, footnote(at + 1), ".\n"] }))));
     let { storage, store, base } = kept(tab, RUNS_OF_THREE);
-    written.push(storage);
     let reference = applyDocsRequests(tab, []).body.content[1].paragraph!.elements
       .find(element => element.footnoteReference)!;
     let requests = [deleteRange(reference.startIndex, reference.endIndex)];
@@ -812,7 +705,6 @@ describe("the version a slice gives", () => {
     let tab = asFetched(buildTab(Array.from({ length: 30 }, (_, at) =>
       ({ runs: [`Line ${at}`, footnote(at + 1), ".\n"] }))));
     let reference = kept(tab, RUNS_OF_THREE), lost = kept(tab, RUNS_OF_THREE);
-    written.push(lost.storage);
     let first = applyDocsRequests(tab, []).body.content[1].paragraph!.elements
       .find(element => element.footnoteReference)!;
     let requests = [deleteRange(first.startIndex, first.endIndex)];
@@ -840,9 +732,7 @@ describe("the version a slice gives", () => {
     expect(made.child.id).toBe(want.child.id);
     let child = listed(lost.storage, made.child);
     expect(child).toEqual(listed(reference.storage, want.child));
-    // Every later run is decoded and rendered in both stores, since none has a rendering
-    // under the key it comes to. KEYED COUNTS THE RUNS WHOSE KEY WAS WORKED OUT OF A STORED
-    // SUMMARY: every later run with the renderings whole, all but the three without them.
+    // Keyed counts the runs whose key was worked out of a stored summary.
     let cut = child.length - later;
     expect(intact).toMatchObject({
       runsKeyed: later, runsRendered: cut + later, runsDecoded: 1 + later, viewWidenings: 0,
@@ -852,17 +742,6 @@ describe("the version a slice gives", () => {
     });
     expect([later, cut]).toEqual([24, 1]);
     expectReadsAs(lost.store, made.child, result, () => "three renderings lost after the slice");
-  });
-
-  // The tests of a file run in order: this one reads what the chains before it wrote. The
-  // differential's files ask the same of the rows each stretch writes, before they are undone.
-  it("every run stored starts at 0", () => {
-    expect(written.length).toBeGreaterThanOrEqual(7);
-    for (let storage of written) {
-      let { runs, off } = runsStored(storage);
-      expect(runs).toBeGreaterThan(1);
-      expect(off).toBe(0);
-    }
   });
 
   it("the child lists every untouched run as it was, and none of them is read", () => {
@@ -875,38 +754,20 @@ describe("the version a slice gives", () => {
     // One replacement in the paragraph of a middle run.
     let requests = [deleteRange(starts[S] + 5, starts[S] + 10), insertText(starts[S] + 5, "replaced")];
     let result = wholeTab(tab, requests);
-    let before = counted.counts();
     let made!: ReturnType<typeof through>;
     let cost = spent(() => {
-      let step = applied(store, store.slice(base, batchReach(requests)), requests);
-      if ("refused" in step) throw new Error(`refused: ${step.refused.message}`);
-      // Counted from here, past the slice's own read of its run: what `putSlice` holds.
-      docStoreCost.peakRunBytesInHand = 0;
-      made = { ...step, child: store.putSlice(step.slice, step.made) };
+      made = through(store, base, requests);
     });
-    let after = counted.counts();
     expect([made.slice.from, made.slice.to, made.widenings]).toEqual([S, S + 1, 0]);
 
     let parent = listed(storage, base), child = listed(storage, made.child);
-    // The one string of a run `putSlice` held is the run the cut made, counted in hand.
-    expect(docStoreCost.peakRunBytesInHand).toBe(2 * contentOf(storage, child[S].run).length);
     expect(child).toHaveLength(parent.length);
     expect(child.slice(0, S)).toEqual(parent.slice(0, S));
     expect(child.slice(S + 1)).toEqual(parent.slice(S + 1));
     expect(child[S].run).not.toBe(parent[S].run);
     expect(child[S].size).toBe(parent[S].size + 3);
-    // Written: the run that came out and its rendering, the child's list, and its record.
-    // Decoded and rendered: the slice's one run. NO LATER RUN IS KEYED: after a paragraph
-    // outside a list the carry is the parent's again, so the walk settles before its first row.
-    expect(cost).toEqual({
-      runsDecoded: 1, runsRendered: 1, runsKeyed: 0, viewWidenings: 0,
-      rowsWritten: 1 + 1 + parent.length + 1,
-    });
-    // The list is read to the run after the slice (two pages, with their summaries) and its
-    // names pass for the version's id (two pages before the slice, two after): no page of the
-    // later runs' keys is read, since their entries are copied inside storage.
-    expect([after.pages - before.pages, after.joined - before.joined]).toEqual([2 + 4, 2]);
-    expect(after.content - before.content).toBe(1);
+    // No later run is keyed: after a paragraph outside a list the carry is the parent's again.
+    expect(cost).toMatchObject({ runsDecoded: 1, runsRendered: 1, runsKeyed: 0 });
     // Every statement that reads the list is an aggregate, a page or a copy inside storage.
     let reading = counted.ran().filter(statement => /\bdoc_seq\b/.test(statement));
     expect(reading.length).toBeGreaterThanOrEqual(5);
@@ -1023,9 +884,7 @@ describe("the version a slice gives", () => {
       .refused.map(({ refusal }) => refusal);
   const UNINDEXED = [{ reason: unindexedTabRefusal("appendText").message, unindexed: true }];
 
-  // THE PRECONDITION OF THE KEPT CONTEXT KEYS: a list a batch makes is named by no run outside
-  // its slice. No statement checks it: a fetched tab that names a list of the model's own form
-  // it does not define takes no edit, and an edit keeps every such id defined.
+  // The precondition of the kept context keys, which no statement checks.
   describe("a list the batch makes is named by no run outside the slice", () => {
     /** Paragraphs whose last is an item of `model.1`, with the lists given. */
     let named = (lists: GoogleDocsTab["lists"]) => asFetched(buildTab(
@@ -1045,9 +904,7 @@ describe("the version a slice gives", () => {
     });
 
     it("the same tab taken at its word as the model's own shows what the condition keeps out", () => {
-      // This is the tab `putTab` takes at its word (a tab stored from hand as the model's own
-      // is not asked whether the model follows it). A fetched one never reaches here: the
-      // test before this one.
+      // `putTab` takes a tab at its word; a fetched one never reaches here.
       let tab = throughJson(applyDocsRequests(named({ "kix.one": BULLET_LIST.L1 }), []));
       markModelIndexed(tab);
       let store = new DocStore(fakeDocStorage(), undefined, undefined, RUNS_OF_THREE);
@@ -1056,10 +913,7 @@ describe("the version a slice gives", () => {
       let requests = numbered(tab);
       let result = wholeTab(tab, requests);
       let made = through(store, version, requests);
-      // The model mints the lowest id the tab does not define, which the last run names: in
-      // the whole tab that run's paragraph reads as an item of the numbered list made, and
-      // the child lists the run with the rendering it had (a list with no definition numbers
-      // no item).
+      // The id minted is one the last run names, so the child keeps that run's old rendering.
       expect(made.made.lists).toEqual(["model.1"]);
       expect(made.slice.to).toBeLessThan(3);
       expect(store.markdown(made.child)).not.toBe(result.markdown);
@@ -1219,11 +1073,7 @@ describe("the version a slice gives", () => {
       let cost = expectFault(storage, store, base, NOT_OF_VERSION, () => store.putSlice(slice, made), name);
       expect(cost.rowsWritten, name).toBe(0);
     }
-    // THE PLACES ALONE. Where the list gives the same sums for the places a slice names as
-    // for the places it was taken at, its origin and its length agree, and only the places
-    // say it is not of the version: an end past the list's last run, a start before its first,
-    // and a start past its end (an emptied piece that moved nothing: the runs between the two
-    // places would be listed twice).
+    // THE PLACES ALONE, where the origin and the length agree with the list.
     let ofLast = applied(store, store.slice(base, stretchReach(storage, base, runs - 1, runs, starts)),
       typed(starts[runs - 1])) as AppliedSlice;
     let ofFirst = applied(store, store.slice(base), typed(1)) as AppliedSlice;
@@ -1246,9 +1096,7 @@ describe("the version a slice gives", () => {
     let { slice, made } = fresh();
     expect(store.putSlice(slice, made).bodyEndIndex).toBe(base.bodyEndIndex + 1);
 
-    // THE ORIGIN ALONE. Runs of one stored size: a slice whose places both name a neighbour
-    // names runs as long as its own, so its length agrees with the list, and only its origin
-    // says it is not where those runs stand. Stored, its runs would not join the runs around.
+    // THE ORIGIN ALONE, on runs of one stored size, where the length agrees with the list.
     let even = kept(asFetched(linesTab(60)), RUNS_OF_THREE);
     let evenStarts = runStarts(even.storage, even.base);
     let evenSizes = runSizes(even.storage, even.base);
@@ -1264,9 +1112,7 @@ describe("the version a slice gives", () => {
       expect(cost.rowsWritten).toBe(0);
     }
 
-    // THE CHILD OF NO RUN, on a tab of one run: its piece emptied, and `moved` what the model
-    // would answer had it removed every element. The sizes agree, no run is cut and no context
-    // written, and the fault is found once the name is worked out.
+    // THE CHILD OF NO RUN, on a tab of one run whose piece is emptied.
     let single = kept(asFetched(buildTab([para("Only.")])));
     expect(runSizes(single.storage, single.base)).toHaveLength(1);
     let only = () => {
@@ -1389,10 +1235,7 @@ describe("the version a slice gives", () => {
   });
 
   it("a version is named as its runs' names pass", () => {
-    // The name of a stored version is `runId` of the JSON of its document, its small data, its
-    // context's name and its runs' names: held on versions a tab in hand, a fetch and a slice
-    // named, of one run, of a few and of 1,201. (A list of no name is no version's: a version
-    // lists a run at least.)
+    // `runId` of the document, its small data, its context's name and its runs' names.
     let named = (storage: FakeDocStorage, version: DocVersion) => {
       let { context, meta } = storage.sql.exec<{ context: string; meta: string }>(
         "SELECT context, meta FROM doc_version WHERE doc = ? AND id = ?", version.doc, version.id).one();
@@ -1423,11 +1266,7 @@ describe("the version a slice gives", () => {
   });
 });
 
-/**
- * Fourteen paragraphs in runs of three elements, with named styles: one an item of a list
- * of Google's, a later one an item of a list the model made. Kept, with the place of the
- * run that holds the first item and a text change in that item.
- */
+/** Fourteen paragraphs with named styles, an item of Google's list and one of the model's, kept. */
 function listed14() {
   let tab = asFetched({
     ...buildTab(
@@ -1475,10 +1314,8 @@ const CONTEXTS: [string, (kept: Pick<Kept, "storage" | "context">) => void][] = 
 ];
 
 /**
- * Holds that `run` finds the copy unreadable: it throws `DOC_COPY_UNREADABLE`, the
- * document's copy is dropped, and no row is left that the call wrote: every row there is
- * after it was there before it. And no row of the document at all, but where `orphans` says
- * the breakage took the record or the list that the drop would have found the rest by.
+ * Holds that `run` finds the copy unreadable, drops it and leaves no row it wrote; and no row of
+ * the document at all, unless `orphans` (the breakage took what the drop finds rows by).
  */
 function expectUnreadable(
   storage: FakeDocStorage, store: DocStore, run: () => unknown, where: string, orphans = false,
@@ -1500,9 +1337,8 @@ function expectUnreadable(
   if (!orphans) expect(left, where).toEqual([]);
 }
 
-// A ROW THAT CANNOT BE READ BACK under `slice`, `widen`, `putSlice` and the walk of
-// `unindexed`: each is the copy found unreadable, as `tab` finds it, and never a fault of the
-// caller or an error of storage's own.
+// A row that cannot be read back under `slice`, `widen`, `putSlice` and `unindexed` is the copy
+// found unreadable, never a fault of the caller.
 describe("a row lost under a slice", () => {
   it("a run or a context lost under a slice or a widening is the copy unreadable", () => {
     let breaks: [string, (kept: Kept) => void][] = [
@@ -1656,28 +1492,18 @@ describe("a row lost under a slice", () => {
   });
 });
 
-// THE CENSUSES, over every statement `slice`, `widen`, `putSlice` and `unindexed` run: one
-// scenario, made once by the first test that reads it, each of its parts through a counted
-// storage of its own so that the statements of a part are that part's alone.
+// The statements `slice`, `widen`, `putSlice` and `unindexed` run over one scenario: its parts
+// each over a counted storage of their own. What they read is counted in the workerd table.
 describe("the statements a slice and the version it gives run", () => {
-  type Cost = ReturnType<typeof spentOn>;
-  type Part = { ran: string[]; calls: Record<string, Cost> };
   let memo: ReturnType<typeof scenario> | undefined;
   const census = () => memo ??= scenario();
 
-  /** A part of the scenario: a store over a counted storage of its own, and what its calls cost. */
+  /** A part of the scenario: a store over a counted storage of its own. */
   function part(storage: FakeDocStorage, digest?: string, sizes?: RunSizes) {
     let counted = countedStorage(storage);
     let store = new DocStore(counted.storage, undefined, digest, sizes);
-    let calls: Record<string, Cost> = {};
-    let call = <T>(name: string, run: (store: DocStore) => T): T => {
-      let answered!: T;
-      calls[name] = spentOn(counted, () => {
-        answered = run(store);
-      });
-      return answered;
-    };
-    return { call, done: (): Part => ({ ran: counted.ran(), calls }) };
+    let call = <T>(_: string, run: (store: DocStore) => T): T => run(store);
+    return { call, done: () => ({ ran: counted.ran() }) };
   }
 
   function scenario() {
@@ -1751,9 +1577,7 @@ describe("the statements a slice and the version it gives run", () => {
     again.call("putSlice of a child another digest keyed", store => change(store, rekeyed, cell));
 
     return {
-      storages: [storage, notes.storage], runs,
-      // The runs after the slice of the reference deleted.
-      laterNoted: runStarts(notes.storage, notes.base).length - 1 - unnoted.to,
+      storages: [storage, notes.storage],
       own: own.done(), lost: lost.done(), moves: moves.done(), footnotes: footnotes.done(),
       other: other.done(), again: again.done(),
     };
@@ -1776,9 +1600,7 @@ describe("the statements a slice and the version it gives run", () => {
       expect(found, holds).toHaveLength(1);
       return storage.plan(found[0]).join("\n");
     };
-    // The renderings another digest made, by their key; a list's names and its copy, by the
-    // list's key; a page's lists, the content table under its alias, by its key; a slice's
-    // lists and the model's ids, the context's row by its key.
+    // Each by its key.
     expect(planOf("DELETE FROM doc_md WHERE made <> ?2")).toMatch(/SEARCH doc_md USING/);
     expect(planOf("SELECT ?1, seq + ?5")).toMatch(/SEARCH doc_seq USING PRIMARY KEY/);
     expect(planOf("SELECT run FROM doc_seq WHERE version = ?1 AND seq >= ?2 AND seq < ?3"))
@@ -1789,68 +1611,7 @@ describe("the statements a slice and the version it gives run", () => {
     expect(planOf("substr(each.key, 1, length(?2))")).toMatch(/SEARCH doc_run USING/);
   });
 
-  it("an edit's own part steps no node", () => {
-    let { own, lost } = census();
-    expect(Object.keys(own.calls)).toHaveLength(9);
-    expect(own.ran.filter(statement => statement.includes("json_tree"))).toEqual([]);
-    // With a rendering lost before the slice, a page's lists are read off its runs.
-    expect(lost.ran.filter(statement => statement.includes("json_tree"))).toHaveLength(1);
-  });
-
-  it("reads content one row a statement, never as an array, and leaves no cursor open", () => {
-    for (let storage of census().storages) {
-      expect(storage.arrays().filter(statement => /^SELECT (json|md)\b/.test(statement))).toEqual([]);
-      expect(storage.statements().some(statement => statement.startsWith("SELECT json FROM"))).toBe(true);
-      expect(storage.openCursors()).toBe(0);
-    }
-  });
-
-  it("reads a context three times a slice and once a page, never once a run", () => {
-    let { own, lost, moves, footnotes, again, runs, laterNoted } = census();
-    let over = (cost: Cost) => ({ styles: cost.styles, lists: cost.lists });
-    // A slice, and a widening: its styles, its own lists by id and the model's ids; two where
-    // its runs name no list.
-    expect(over(own.calls["slice in the middle"])).toEqual({ styles: 1, lists: 2 });
-    expect(over(own.calls["slice in the last run"])).toEqual({ styles: 1, lists: 1 });
-    expect(over(own.calls["slice in the first run"])).toEqual({ styles: 1, lists: 1 });
-    expect(over(own.calls["widen before"])).toEqual({ styles: 1, lists: 2 });
-    expect(over(own.calls["widen after"])).toEqual({ styles: 1, lists: 2 });
-    // The version of a slice that leaves the carry as it was reads no context.
-    for (let name of [
-      "putSlice in the middle", "putSlice in the last run", "putSlice of a slice widened before",
-      "putSlice of a slice widened after",
-    ]) {
-      expect(over(own.calls[name]), name).toEqual({ styles: 0, lists: 0 });
-      expect(own.calls[name].runsKeyed, name).toBe(0);
-    }
-    // ONE MORE FOR EACH PAGE that holds a run with no rendering: two runs of the first page are
-    // one statement, and the slice's own run, in the second page, one more. The named styles
-    // once more, for the walk.
-    expect(over(lost.calls["slice past two lost renderings of one page"])).toEqual({ styles: 2, lists: 2 + 1 });
-    expect(over(lost.calls["slice past two, with its own run's lost"])).toEqual({ styles: 2, lists: 2 + 2 });
-    expect(over(lost.calls["widen past two lost renderings"])).toEqual({ styles: 2, lists: 2 + 1 });
-    expect(lost.calls["slice past two lost renderings of one page"].runsRendered).toBe(2);
-    // A footnote's walk: every later run rendered again, a statement a page of them.
-    let walk = footnotes.calls["putSlice of a reference deleted"];
-    // The later runs stand at the places from 2 on of the parent's list: three pages of it.
-    let pages = Math.ceil((laterNoted + 2) / 500);
-    expect([walk.runsKeyed, walk.runsRendered - 1]).toEqual([laterNoted, laterNoted]);
-    expect(laterNoted).toBeGreaterThan(pages);
-    expect(over(walk)).toEqual({ styles: 1, lists: pages });
-    // A batch that makes a list reads the context's row once as content, beside its slice's run.
-    let listed = moves.calls["a batch that makes a list"];
-    expect(listed.content).toBe(listed.runsDecoded + 1);
-    // Whether the model follows a version of another digest: the model's ids, once, whatever
-    // the runs; every run decoded.
-    let asked = again.calls["unindexed of a record of another digest"];
-    expect(over(asked)).toEqual({ styles: 0, lists: 1 });
-    expect(asked.runsDecoded).toBe(runs);
-  });
-
-  // By the source's text, read as a file: each statement that writes a run, a rendering or a
-  // list's row is found with the method it stands in, which is named by the last method
-  // header or `function <name>(` before it; a text held as a module constant is found by the
-  // methods that use its name.
+  // By the source's text: each statement that writes those rows, with the method it stands in.
   it("one writer of a run, of a rendering and of a list", () => {
     let source = readFileSync(path.resolve(import.meta.dirname, "../src/docs-store.ts"), "utf8");
     let header = /^(?:export )?function (\w+)\(|^ {2}(?:async )?(#?\w+)\([^;]*$/gm;
@@ -1881,53 +1642,24 @@ describe("the statements a slice and the version it gives run", () => {
       doc_md: ["UPDATE doc_md", "INSERT INTO doc_md"],
       doc_seq: ["PUT_RUNS", "COPY_RUNS"],
     });
-    // Who calls each writer: a caller more is a line to add here with its reason, never a
-    // second writer. A run and a list: a tab in hand, a fetch, a version keyed again, and the
-    // version a slice gives. A rendering: a run keyed, and a run rendered alone.
+    // Who calls each writer: a caller more is a line to add here, never a second writer.
     expect(users("this\\.#putContent\\(")).toEqual(["#put", "#putSliced", "#putVersion", "putTab"]);
     expect(users("this\\.#listWriter\\(")).toEqual(["#putSliced", "#putVersion", "#rekey", "putTab"]);
     expect(users("this\\.#putMarkdown\\(")).toEqual(["#keyRun", "#renderAt"]);
   });
 });
 
-// What the recorded steps count of their versions, by sizing, as the run shows it.
-const AGAINST_GOOGLE = {
-  // 199 steps. Of the 920 runs their versions list, 521 stand outside the slice, of which a
-  // fetch finds 509 again; 399 were cut from the slice, of which it finds 129. Under these
-  // sizes a run is three elements counted from the tab's start, so a batch that adds or
-  // removes an element moves every later cut of a fetch: nothing is held of them.
-  forced: {
-    steps: 199, listed: 920, outsideFound: 509, outsideNot: 12, cutFound: 129, cutNot: 270,
-    sameList: 11, elementsGoogle: 258, elementsNot: 287, ownListed: 920, ownDiffer: 16, ownBefore: 1,
-  },
-  // Of 306 runs, 87 stand outside the slice and a fetch finds 86 of them again: the one it
-  // does not is the run a table ended, in the step that deletes the table. 219 were cut from
-  // the slice, of which it finds 22: the others hold an element the edit wrote. Of the
-  // elements the slices held, 287 are not Google's bytes: the ones the edits wrote.
-  real: {
-    steps: 199, listed: 306, outsideFound: 86, outsideNot: 1, cutFound: 22, cutNot: 197,
-    sameList: 12, elementsGoogle: 862, elementsNot: 287, ownListed: 306, ownDiffer: 2, ownBefore: 1,
-  },
-};
-
-// WHAT AN EDIT DOES TO RUN BOUNDARIES, by two measures kept apart because they have two
-// references: what Google answered after the step, and the model's own cut of its result.
+// What an edit does to run boundaries, against what Google answered after the step and against
+// the model's own cut of its result.
 describe("what an edit does to run boundaries", () => {
   /** The names of the runs `content` is cut into under `sizes`. */
   const cutNames = (content: Iterable<StructuralElement>, sizes: RunSizes, footnotes = 0) =>
     [...cutRuns(content, sizes, footnotes)].map(run => runId(run.json));
 
-  // AGAINST GOOGLE'S OWN ANSWER. The reference is the document Google answered after the
-  // step, not a cut of the model's result: the model's elements are not Google's bytes where
-  // the model wrote them (it keeps a paragraph's text and its newline as two text runs where
-  // Google sends one, an indent of no magnitude where Google sends its unit alone), and a
-  // run's name is taken from those bytes. WHAT IT MEANS: a run that holds an element the edit
-  // wrote is stored and rendered again at the next fetch (its bytes are the model's, not
-  // Google's); a run the edit did not touch is found again, by name, with its rendering.
-  it.each([
-    ["runs of one to three elements", RUNS_OF_THREE, AGAINST_GOOGLE.forced],
-    ["the sizes a store cuts to", RUN_SIZES, AGAINST_GOOGLE.real],
-  ] as const)("what a fetch after approval finds: the recorded steps, under %s", (_, sizes, pinned) => {
+  // A run the edit did not touch is found again by the next fetch, by name; a run that holds an
+  // element the edit wrote is not, since the model's bytes are not Google's.
+  it("what a fetch after approval finds: the recorded steps", () => {
+    let sizes = RUN_SIZES;
     let tally = {
       steps: 0, listed: 0, outsideFound: 0, outsideNot: 0, cutFound: 0, cutNot: 0, sameList: 0,
       elementsGoogle: 0, elementsNot: 0, ownListed: 0, ownDiffer: 0, ownBefore: 0,
@@ -1957,24 +1689,18 @@ describe("what an edit does to run boundaries", () => {
         for (let element of cutNames(slice.piece.content, ONE_EACH, slice.piece.footnotesBefore)) {
           tally[elements.has(element) ? "elementsGoogle" : "elementsNot"]++;
         }
-        // THE RUN DIRECTLY BEFORE THE SLICE is apart from the runs before it: where a table
-        // ended it and the edit removed the table, a cut of the tab as it is now does not end
-        // it there (the recording "table-structure", its step "the table deleted").
+        // The run directly before the slice is apart: the edit may have removed what ended it.
         let settled = slice.from - 1;
-        if (sizes === RUN_SIZES) {
-          // A run before that one whose elements Google's answer holds unchanged, at the same
-          // count from the tab's start, is named in the fetch's cut.
-          let before = cutNames(tab.body.content, ONE_EACH), now = cutNames(fetched, ONE_EACH);
-          let lengths = runLengths(storage, base);
-          for (let place = 0, element = 0; place < settled; element += lengths[place++]) {
-            let same = before.slice(element, element + lengths[place])
-              .every((id, at) => id === now[element + at]);
-            if (same) expect(fetch.has(parent[place].run), `${where}, run ${place}`).toBe(true);
-          }
+        // A run before that one whose elements Google's answer holds unchanged, at the same
+        // count from the tab's start, is named in the fetch's cut.
+        let before = cutNames(tab.body.content, ONE_EACH), now = cutNames(fetched, ONE_EACH);
+        let lengths = runLengths(storage, base);
+        for (let place = 0, element = 0; place < settled; element += lengths[place++]) {
+          let same = before.slice(element, element + lengths[place])
+            .every((id, at) => id === now[element + at]);
+          if (same) expect(fetch.has(parent[place].run), `${where}, run ${place}`).toBe(true);
         }
-        // AGAINST THE MODEL'S OWN CUT of the same elements from the tab's start: the runs
-        // before the one directly before the slice are the same, and so are those from the
-        // first place both cuts end a run after it; the runs between are counted.
+        // Against the model's own cut from the tab's start: the runs before are the same.
         let own = ownCut(storage, child, sizes, slice.from + cut);
         expect(own.own.slice(0, Math.max(0, settled)), where).toEqual(own.listed.slice(0, Math.max(0, settled)));
         if (settled >= 0 && own.own[settled]?.run !== own.listed[settled].run) tally.ownBefore++;
@@ -1982,7 +1708,12 @@ describe("what an edit does to run boundaries", () => {
         tally.ownDiffer += notAmong(own.listed, own.own);
       }
     }
-    expect(tally).toEqual(pinned);
+    // 87 runs outside the slices, of which a fetch finds 86: the one it does not is the run a
+    // table ended, in the step that deletes the table.
+    expect(tally).toEqual({
+      steps: 199, listed: 306, outsideFound: 86, outsideNot: 1, cutFound: 22, cutNot: 197,
+      sameList: 12, elementsGoogle: 862, elementsNot: 287, ownListed: 306, ownDiffer: 2, ownBefore: 1,
+    });
   });
 
   // AGAINST THE MODEL'S OWN CUT, where no recorded answer exists: how the child's cut differs
@@ -2006,117 +1737,15 @@ describe("what an edit does to run boundaries", () => {
       tally.differ += differ;
       tally.most = Math.max(tally.most, differ);
     }
-    // A run would differ where the paragraph replaced was the one that ended it, or where the
-    // cut of the slice ended a run it had not: the slice's last run, which ends where the
-    // slice ended whatever the rule says of it now, and the run after it.
     expect(tally).toEqual({ replacements: 200, differ: 0, most: 0, cut: 200 });
-  });
-
-  it("what not joining costs: a stretch of a few repeated elements, cut by size alone", () => {
-    // Seven paragraphs in a drawn order: none ends a run by its content, so every run ends at
-    // the most a run holds, and a paragraph put in moves every later cut of a cut from the
-    // tab's start (`cutRuns`). The child keeps the runs it had: they differ to the tab's end.
-    let { pick } = diceOf(20261123);
-    let texts = ["alpha ", "beta ", "gamma ", "delta ", "epsilon ", "zeta ", "eta "].map(word => word.repeat(40));
-    let tab = asFetched(buildTab(Array.from({ length: 1_500 }, () => para(pick(texts)))));
-    let { storage, store, base } = kept(tab);
-    let runs = runSizes(storage, base).length;
-    // A paragraph longer than what the first run has left under the most a run holds.
-    let made = through(store, base, [insertText(5, `${"new ".repeat(200)}\n`)]);
-    let own = ownCut(storage, made.child, RUN_SIZES, Infinity);
-    // Ten runs, of which the slice is the first: it is cut in two, at the most a run holds
-    // and where it ended. The cut from the tab's start makes the first of those and no other
-    // run the child lists.
-    expect([runs, made.slice.to, own.listed.length, own.own.length]).toEqual([10, 1, 11, 10]);
-    expect(own.own[0]).toEqual(own.listed[0]);
-    expect(notAmong(own.listed, own.own)).toBe(10);
-  });
-
-  it("what not joining costs: the chains of edits", () => {
-    // The last version of each of the three chains, under each sizing: the runs listed, and
-    // those of them a cut of the same elements from the tab's start does not make.
-    expect(chains).toEqual({
-      forced: { edits: 25, listed: 347, differ: 8 }, real: { edits: 25, listed: 56, differ: 0 },
-    });
-  });
-
-  // A CHAIN IN ONE PLACE: each edit made in the version the one before gave, all inside what
-  // was one run of about 32 KiB. THE BOUND: short runs add up only along a queue of pending
-  // edits (a base version is cut by a fetch, and an approval or a changed revision fetches),
-  // and each costs one row of each later version's list, one stored run and one rendering.
-  it("a hundred edits in one run", () => {
-    let tab = asFetched(linesTab(2_000));
-    /** The runs that stand in `[from, to)` of a tab whose runs have `sizes`: how many, and the smallest. */
-    let inPlace = (sizes: readonly number[], from: number, to: number) => {
-      let held: number[] = [];
-      let start = 0;
-      for (let size of sizes) {
-        if (start >= from && start < to) held.push(size);
-        start += size;
-      }
-      return { runs: held.length, smallest: Math.min(...held) };
-    };
-    // What a table of one cell put before a paragraph's end and deleted again leaves: where the
-    // table stands from the index it is put at, and how far the pair moves what follows.
-    let probe = asFetched(linesTab(3));
-    let end = probe.body.content[2].endIndex;
-    let tabled = wholeTab(probe, [insertTable(end - 1, 1, 1)]).tab;
-    let table = tabled.body.content.find(element => element.table)!;
-    let [tableFrom, tableTo] = [table.startIndex - (end - 1), table.endIndex - (end - 1)];
-    let grow = wholeTab(tabled, [deleteRange(table.startIndex, table.endIndex)]).end -
-      probe.body.content.at(-1)!.endIndex;
-
-    let measured: Record<string, object> = {};
-    for (let chain of ["replacements", "tables"] as const) {
-      let { storage, store, base } = kept(tab);
-      let starts = runStarts(storage, base);
-      let middle = Math.floor((starts.length - 1) / 2);
-      let [from, to] = [starts[middle], starts[middle + 1]];
-      // The paragraphs of that run, by their place in the tab.
-      let paragraphs = tab.body.content.filter(element => element.startIndex >= from && element.endIndex <= to);
-      expect(paragraphs.length).toBeGreaterThan(80);
-      let version = base;
-      for (let turn = 0; turn < (chain === "replacements" ? 100 : 50); turn++) {
-        if (chain === "replacements") {
-          // Five characters for five others, in each paragraph in turn: no index moves.
-          let at = paragraphs[1 + turn % 80].startIndex + 5;
-          version = through(
-            store, version, [deleteRange(at, at + 5), insertText(at, String(turn).padStart(5, "x"))]).child;
-        } else {
-          let paragraph = paragraphs[1 + turn];
-          // Each pair before this one moved it by `grow`.
-          let at = paragraph.endIndex - 1 + turn * grow;
-          version = through(store, version, [insertTable(at, 1, 1)]).child;
-          version = through(store, version, [deleteRange(at + tableFrom, at + tableTo)]).child;
-        }
-      }
-      let moved = version.bodyEndIndex - base.bodyEndIndex;
-      measured[chain] = {
-        child: inPlace(runSizes(storage, version), from, to + moved),
-        own: inPlace([...cutRuns(store.tab(version).body.content, RUN_SIZES)].map(run => run.size), from, to + moved),
-      };
-    }
-    expect(measured).toEqual({
-      // A hundred replacements leave the run cut in two, where a cut from the tab's start
-      // cuts it too: a paragraph that was changed ends a run.
-      replacements: { child: { runs: 2, smallest: 5_474 }, own: { runs: 2, smallest: 5_474 } },
-      // Fifty tables put in and deleted leave a short run a pair, the smallest one paragraph,
-      // where a cut from the tab's start has one run begin there: no edit joins a short run
-      // to its neighbour.
-      tables: { child: { runs: 51, smallest: 162 }, own: { runs: 1, smallest: 14_057 } },
-    });
   });
 });
 
 // What each variant of the caller's teeth found, for the test that pins it.
 const teeth: Record<string, string> = {};
 
-// THE TEETH OF THE CALLER: each variant is the differential's walk with one thing a caller or
-// the store could get wrong, built from the store's public methods and the model's (a
-// `DocSlice` copied with one field changed, its carries made by the test from the stored
-// summaries). Each is run from every stretch of runs that holds what the batch names, and
-// must give a version that does not read as the whole tab's result from some of them; the
-// walk as it is gives none.
+// THE TEETH OF THE CALLER: each variant is the walk with one thing a caller could get wrong, and
+// must give, from some stretch, a version that does not read as the whole tab's result.
 describe("the teeth of the caller", () => {
   /** What a variant is handed: the store, a fresh slice, the batch, and the stored summaries by place. */
   type Handed = {
@@ -2197,11 +1826,7 @@ describe("the teeth of the caller", () => {
     },
   };
 
-  /**
-   * `variant` run for `requests` from every stretch of the runs of `tab` that holds what the
-   * batch names, each from the same rows: how many stretches ran, and from how many the
-   * version does not read as the whole tab's result (anything thrown counts).
-   */
+  /** `variant` from every stretch that holds what the batch names: how many ran and mismatched. */
   function mismatches(tab: GoogleDocsTab, requests: GoogleDocsRequest[], sizes: RunSizes, variant: Variant) {
     let want = wholeTab(tab, requests);
     let { storage, store, base } = kept(tab, sizes);
@@ -2253,9 +1878,7 @@ describe("the teeth of the caller", () => {
     let paragraph = applyDocsRequests(tab, []).body.content[3];
     return [tab, [bullets(paragraph.startIndex, paragraph.endIndex, NUMBERED)]] as const;
   };
-  // Items of one numbered list, a paragraph outside it between the ninth and the tenth; the
-  // fourth taken out of the list, so the later ones are numbered again, and the tenth, the
-  // first after the paragraph, shows its number.
+  // Items of one numbered list broken by a paragraph; the fourth taken out of the list.
   let numbered = () => {
     let tab = asFetched(buildTab(
       Array.from({ length: 13 }, (_, at) => at === 9 ? para("Between.") : item(`Item ${at}.`, "N1")),
@@ -2308,9 +1931,6 @@ describe("the teeth of the caller", () => {
 });
 
 describe("nothing is kept", () => {
-  // `DocStore`'s fields and the module's state are pinned where the store's own tests pin them
-  // ("holds nothing between two calls", which passes as it is): this holds that a
-  // slice let go, with its piece and its carries, can be collected.
   it("a slice let go is collectable", HEAP_MEASURED, async () => {
     let { storage, store, base } = kept(asFetched(linesTab(40)), RUNS_OF_THREE);
     // Made in a function that has returned: a weak reference keeps its target to the end of

@@ -1,18 +1,6 @@
-// What a pending read, a queued edit, a preview's card made again, a replay, an approval and
-// a rejection of a stored Google Doc take in hand ON REAL STORAGE: the scenario the Node
-// tests run on the fake (`pieceCountsScenario`, `docs-piece-counts.test.ts`), held here to
-// the same counts and, since only a Durable Object's storage says them, to THE ROWS IT READS
-// AS BILLED, each case a formula in the tab's runs and the places its pieces stand at
-// (`pieceCountsExpected(...).rows`) and a small constant (`PIECE_ROWS`).
-//
-// THROUGH THE SESSIONS, for a bound Doc and for a Doc opened from a read and write Drive
-// binding, the same steps are held with the requests Google is sent in
-// `google-doc-actions.test.ts` ("what a Google Doc session takes in hand"), beside the fake
-// of Google's API that file builds: this file reaches the store alone.
-//
-// COUNTS, ROWS AND NO HEAP: the workerd pool exposes no collector. What a call holds as live
-// heap, and that nothing of a document is held once it returns, is measured in Node
-// (`docs-piece-heap.test.ts`).
+// `pieceCountsScenario` on real storage: the counts the fake gives, and the rows each case
+// reads as billed, a formula in the tab's runs (`pieceCountsExpected(...).rows`) plus a small
+// constant (`PIECE_ROWS`).
 
 import { describe, expect, it } from "vitest";
 import {
@@ -20,12 +8,7 @@ import {
 } from "../doc-store-scenarios";
 import { withDocStore } from "./doc-store-host";
 
-/**
- * The two shapes at the size their rows are pinned on, and a smaller one on which the same
- * formula holds to a reader's page: 16 rows, the eight runs of one page with their
- * renderings, by which a card's constant moves where its readers' pages stand otherwise in
- * the list.
- */
+/** The two shapes at the size their rows are pinned on, and a smaller one where the formula holds to a page. */
 const SHAPES = [
   { shape: "prose", size: 20_000, smaller: 5_000 },
   { shape: "tables", size: 2_000, smaller: 1_000 },
@@ -55,8 +38,7 @@ describe.each(SHAPES)("what each step takes in hand on real storage, on $shape",
       }).toEqual({ name, ...counts });
       expect({ name, ok: measured.ok, restored: measured.restored })
         .toEqual({ name, ok: true, restored: true });
-      // ROWS WRITTEN, as billed: a row for each row a table gains, and one more for each
-      // run, each rendering and each result, whose tables keep an index beside their rows.
+      // Rows written as billed: each row gained, and one more for each indexed run, rendering and result.
       let { doc_run: runs = 0, doc_md: renderings = 0, doc_result: results = 0 } = counts.stored ?? {};
       let gained = Object.values(counts.stored ?? {}).reduce((sum, rows) => sum + rows, 0);
       expect({ name, rowsWritten: measured.rowsWritten })
@@ -68,12 +50,7 @@ describe.each(SHAPES)("what each step takes in hand on real storage, on $shape",
     }
   });
 
-  // ROWS READ, as billed: a row of a table a statement steps to. Each case's terms are
-  // written out in `pieceCountsExpected`'s comment: a walk of the list's joined pages for
-  // what is asked of the tab as a whole (uniqueness reads each run's Markdown too), a pass
-  // of the piece for each attempt and scout (the version's totals, the joined pages before
-  // its first run, a page of the list, each run found and read), the slice and its version,
-  // and the card's two comparisons of the lists and its readers.
+  // Rows read as billed; each case's terms are in `pieceCountsExpected`.
   it("reads the rows each case's formula gives", async () => {
     let { tab, cases } = await scenario(size);
     let expected = pieceCountsExpected(shape, tab);
@@ -92,23 +69,20 @@ describe.each(SHAPES)("what each step takes in hand on real storage, on $shape",
     }
   });
 
-  // What the walks of the list cost where a tab is thousands of runs: stated, not hidden.
   it("reads rows of the list and of renderings, in proportion to the tab's runs", async () => {
     let { tab, cases } = await scenario(size);
     let perRun = (name: string) => cases[name].rowsRead / tab.n;
-    // A scan and a pending read: a row of the list, of the rendering and of its Markdown.
+    // A scan and a pending read: a row of the list, of the rendering and of its Markdown a run.
     expect(perRun("scan")).toBeCloseTo(3, 1);
     expect(perRun("pendingRead")).toBeCloseTo(3, 1);
     // An approval while the pin holds reads the stored result, whatever the tab.
     expect(cases.approvalStored.rowsRead).toBe(3);
     expect(cases.replayAgain.rowsRead).toBe(12);
     if (shape === "prose") {
-      // One page of runs: an edit reads its list a few tens of times.
       expect(perRun("replaceMiddle")).toBeLessThan(23);
       expect(perRun("tableAfterLine")).toBeLessThan(30);
     } else {
-      // Five passes of a piece, each a walk of the list to its place: 27 rows a run of the
-      // tab for a replacement, 50 for a table added at the end, whose piece is made twice.
+      // A table added at the end makes its piece twice.
       expect(perRun("replaceMiddle")).toBeLessThan(28);
       expect(perRun("tableAtEnd")).toBeLessThan(51);
       expect(perRun("tableAtEnd")).toBeGreaterThan(49);

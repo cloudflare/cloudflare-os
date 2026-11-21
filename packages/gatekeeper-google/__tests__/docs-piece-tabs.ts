@@ -1,10 +1,6 @@
-// Seeded tabs and edits for the differential of the request builders on a piece of a tab:
-// tabs of the shapes a closure must get right (runs of empty paragraphs, nested, tabbed and
-// off-preset list items, positioned objects, protected content, tables beside tables, in cells
-// and suggested, section breaks), each saying which it holds and where; replacements and
-// appends drawn on them, a share of them beside a shape; and table changes, each as a replay
-// holds it and as a call names it, on those tabs and on tabs made for what a table change
-// asks of its tab as a whole. The same draws at every run. A helper and no test of its own.
+// Seeded tabs of the shapes a closure must get right, and the text edits and table changes
+// drawn on them, for the piece differential; and tabs made for what a table change asks of
+// its tab as a whole. The same draws at every run.
 
 import type { GoogleDocsTab } from "../src/docs-api";
 import { applyDocsRequests, hasModelIndexes } from "../src/docs-model";
@@ -55,6 +51,13 @@ export const PIECE_SHAPES = [
 
 /** One of `PIECE_SHAPES`. */
 export type PieceShape = (typeof PIECE_SHAPES)[number];
+
+/** The eleven kinds of table change, in the order the tests count them. */
+export const TABLE_KINDS = [
+  "insertTable", "insertTableRows", "insertTableColumns", "deleteTableRows", "deleteTableColumns",
+  "deleteTable", "setTableCellStyle", "setTableColumnWidths", "setTableRowHeights",
+  "mergeTableCells", "unmergeTableCells",
+] as const satisfies readonly TableChange["type"][];
 
 /** A generated tab, as a fetch hands it to a store, with the shapes it holds. */
 export type PieceTab = {
@@ -218,12 +221,8 @@ function plain(draft: Draft): void {
 }
 
 /**
- * `count` generated tabs of 20 to 60 body elements, the same at every run of a `seed`: each
- * holds three shapes that turn with its number, so that every shape is in a quarter of the
- * tabs, and others as drawn, between plain paragraphs and headings; one in five starts with
- * empty paragraphs and one in four ends with some, and every tenth holds a run of 40 of
- * them. Each is as a fetch hands a tab to a store (`asFetched`) and is indexed as the model
- * indexes a tab.
+ * `count` seeded tabs of 20 to 60 body elements, each holding three shapes that turn with its
+ * number and others as drawn; every tenth holds a run of 40 empty paragraphs.
  */
 export function pieceTabs(seed: number, count: number): PieceTab[] {
   let dice = diceOf(seed);
@@ -280,17 +279,11 @@ export function pieceTabs(seed: number, count: number): PieceTab[] {
 export type PieceDraw = PieceCase & {
   /** Whether the edit is an append. */
   readonly append: boolean;
-  /**
-   * The shapes the edit stands beside: those of which an element is one of the edit's own, or
-   * the element before or after them.
-   */
+  /** The shapes of the edit's own elements and of the elements beside them. */
   readonly beside: readonly PieceShape[];
 };
 
-/**
- * `old` with a list item written after it or before it, at levels 0 to 5, of the kind of
- * `old`'s last item and of the other, and `old` with its own items brought to level 0.
- */
+/** `old` with a list item written beside it at several levels and kinds, or its items at level 0. */
 function itemsBeside(old: string, word: string): string[] {
   let marker = /^ *(-|\d+\.) [^\n]*$/.exec(old)?.[1] ?? "-";
   let other = marker === "-" ? "1." : "-";
@@ -343,16 +336,9 @@ function appended({ below, pick }: Dice, word: string): string {
 }
 
 /**
- * Up to `count` text edits of `tab`, the same at every run of a `seed`: one in ten an append;
- * of the others, half replace whole lines (one to four blocks, with or without the line
- * break after them or before them) and half ARBITRARY SUBSTRINGS of the rendering (starting
- * and ending inside a line, on a line break, one or two characters before a block, across up
- * to five blocks), each by one of `replacements`. Two in five start at a block BESIDE a
- * marked element of the tab (the block before or after it, or the block itself), one in five
- * at a list item deeper than level 0, where the tab has one, and one in ten at the last of
- * four such items in a row, which is brought to level 0 or has an item written at level 0
- * after it. A text that is not there exactly once, or that holds a character of a table's
- * HTML, is not drawn.
+ * Up to `count` seeded text edits of `tab`: one in ten an append; the others replace whole
+ * lines or arbitrary substrings that stand once outside tables, many beside a marked shape or
+ * at a deeper list item.
  */
 export function pieceEdits(tab: PieceTab, seed: number, count: number): PieceDraw[] {
   let dice = diceOf(seed);
@@ -366,8 +352,7 @@ export function pieceEdits(tab: PieceTab, seed: number, count: number): PieceDra
   let besides = elements.flatMap((element, block) =>
     [element - 1, element, element + 1].some(near => marked.has(near)) ? [block] : []);
   let deeper = blocks.flatMap((block, at) => block.listType !== null && block.listNestingLevel > 0 ? [at] : []);
-  // The deeper items that end a run of four, one body element after the other: an item
-  // written at level 0 there is read with every item of the run and the one before them.
+  // The deeper items that end a run of four in a row.
   let runEnds = deeper.filter(block => [1, 2, 3].every(back =>
     deeper.includes(block - back) && elements[block - back] === elements[block] - back));
   let beside = (first: number, last: number) => [...tab.marks].flatMap(([shape, at]) =>
@@ -409,8 +394,6 @@ export function pieceEdits(tab: PieceTab, seed: number, count: number): PieceDra
       if (oldMarkdown === "" || markdown.indexOf(oldMarkdown) !== start ||
           markdown.indexOf(oldMarkdown, start + 1) >= 0 ||
           tables.some(table => start < table.mdEnd && end > table.mdStart)) continue;
-      // Beside a deeper item, half the edits write an item: what a walk back through the
-      // items before it is for.
       let newMarkdown = pick(atRunEnd ? itemsBeside(oldMarkdown, word).slice(0, 2)
         : atDeeper && below(2) === 0 ? itemsBeside(oldMarkdown, word)
         : replacements(oldMarkdown, word));
@@ -424,16 +407,10 @@ export function pieceEdits(tab: PieceTab, seed: number, count: number): PieceDra
   return draws;
 }
 
-/**
- * The table the differential's seeded tests and the teeth run in the default pass: its seed,
- * its tabs and the edits drawn on each.
- */
+/** The seeded table of text edits of the default pass. */
 export const DEFAULT_CORPUS = { seed: 20261119, tabs: 120, edits: 10 } as const;
 
-/**
- * Every edit drawn on every tab of a table: `tabs` tabs of `seed`, and up to `edits` edits on
- * each, the edits of a tab seeded by the table's seed and the tab's number.
- */
+/** Every edit drawn on every tab of a table. */
 export function pieceCorpus(
   { seed, tabs, edits }: { readonly seed: number; readonly tabs: number; readonly edits: number },
 ): { tab: PieceTab; drawn: PieceDraw }[] {
@@ -444,11 +421,7 @@ export function pieceCorpus(
 /** An edit of a tab as `tabEditRequests` takes it, drawn for the differential, and its kind. */
 export type TabEditDraw = {
   readonly edit: DocEdit;
-  /**
-   * A replacement outside tables or of the text of a table's cells, each of a text that
-   * stands once; an append; or a replacement the scan refuses: of a text that is not there,
-   * or that stands more than once.
-   */
+  /** A replacement outside tables or in cells, an append, or one the scan refuses (absent, twice). */
   readonly kind: "replace" | "cell" | "append" | "absent" | "twice";
   /** For a replacement of a text that stands once: where it stands in the tab's Markdown. */
   readonly matchStart?: number;
@@ -460,12 +433,8 @@ function cellReplacements(old: string, word: string): string[] {
 }
 
 /**
- * The edits `pieceEdits` draws on `tab`, as `tabEditRequests` takes them (a replacement's
- * path as `replacementPath` says it on the whole rendering), and up to `count / 2` more of
- * the kinds it does not draw, by a dice of their own so that its draws stand as they are:
- * replacements of the text of a table's cell (the whole text of a cell's paragraph, or a
- * part of it, that stands once in the tab), a replacement of a text the tab does not hold,
- * and one of a text it holds more than once.
+ * The edits `pieceEdits` draws, as `tabEditRequests` takes them, and up to `count / 2` more by
+ * their own dice: replacements in cells, of a text not there and of one there twice.
  */
 export function tabEdits(tab: PieceTab, seed: number, count: number): TabEditDraw[] {
   let { rendering } = renderedOf(tab.tab);
@@ -548,16 +517,9 @@ const newCells = (rows: number, columns: number, word: string): string[][] =>
     Array.from({ length: columns }, (__, column) => (row + column) % 2 ? "" : `${word}r${row}c${column}`));
 
 /**
- * Up to `count` table changes of `tab`, the same at every run of a `seed`. Two in three change
- * a table the tab holds, where it holds one: rows and columns added at every place and
- * deleted, the table deleted, its cells' look, its columns' widths and its rows' heights set,
- * cells merged and a cell split, each as a change by how the table reads (built with no check
- * of the call's, so that what only the builders refuse is drawn too) and as a call by the
- * table's number; a look change's stored form is the call's, and is absent where the call is
- * refused. The others add a table: at the tab's end, after a line, after the text of a cell,
- * after a table (between two where another follows it), after a text the tab does not hold
- * and after one it holds twice. One draw in twelve is a refusal by the tab as a whole: a
- * call that names a table past the tab's last, or a change whose table reads as none does.
+ * Up to `count` seeded table changes of `tab`, each as a change (built with no check of the
+ * call's) and as a call by number: most change a table the tab holds, the others add one; one
+ * in twelve names a table past the last or one that reads as none does.
  */
 export function pieceTableEdits(tab: PieceTab, seed: number, count: number): TableDraw[] {
   let dice = diceOf(seed);
@@ -716,16 +678,10 @@ export function pieceTableEdits(tab: PieceTab, seed: number, count: number): Tab
   return draws;
 }
 
-/**
- * The table the differential's seeded tests of table changes and the teeth run in the default
- * pass: its seed, its tabs and the changes drawn on each.
- */
+/** The seeded table of table changes of the default pass. */
 export const DEFAULT_TABLE_CORPUS = { seed: DEFAULT_CORPUS.seed + 900, tabs: 30, edits: 6 } as const;
 
-/**
- * The tabs of a table, each with the table changes drawn on it: `tabs` tabs of `seed`, and
- * up to `edits` changes on each, seeded by the table's seed and the tab's number.
- */
+/** The tabs of a table, each with the table changes drawn on it. */
 export function pieceTableCorpus(
   { seed, tabs, edits }: { readonly seed: number; readonly tabs: number; readonly edits: number },
 ): { tab: PieceTab; draws: TableDraw[] }[] {
@@ -741,25 +697,9 @@ const filler = (name: string, count: number) =>
   Array.from({ length: count }, (_, at) => para(`${name} filler ${at}.`));
 
 /**
- * The tabs made for what a table change asks of its tab AS A WHOLE, far from the piece
- * around its table, each with the draws that ask it:
- * - TWINS: two tables that read the same, twenty elements apart, and one that reads alone
- *   between them (a change by how its table reads meets "another table", a call by number
- *   the refusal that names both numbers);
- * - NUMBERED AFTER: a table whose cells hold items of a numbered list, with an item of a
- *   numbered list far after it, and the same with an ordered list in a far later table and
- *   no such item (the table deleted, and its rows);
- * - THE CELLS A TAB MAY HOLD: tables of 4,984 cells in all, far from a small one (rows, a
- *   column and a table added that fit, and that pass the limit);
- * - AN ANCHOR TWICE: a line that stands at the tab's two ends (a table after it);
- * - A MERGED CELL: a table with a cell that spans two columns, made by the model (the cell
- *   split, cells merged beside it, and lines added and deleted across it);
- * - TABLES OF SEVERAL ROWS AND COLUMNS between paragraphs, two of them with one empty
- *   paragraph between, with forty seeded draws (`pieceTableEdits`): the lines a seeded tab's
- *   small tables cannot lose;
- * - THE TAB'S TWO ENDS: a table that opens the body, and tables before the tab's last
- *   paragraph, one with text and one empty (the table deleted, a row added, and a table added
- *   after it): what a builder compares with the end of the Markdown in hand.
+ * Tabs made for what a table change asks of its tab as a whole, far from its piece: twin
+ * tables, a numbered list after a table of numbered items, the cells a tab may hold, an anchor
+ * twice, a merged cell, tables of several rows and columns, and tables at the tab's two ends.
  */
 export function madeTableCases(): MadeTableCase[] {
   let made = (name: string, tab: GoogleDocsTab, draw: (drawn: ReturnType<typeof renderedOf>) => TableDraw[]): MadeTableCase => {
@@ -869,7 +809,7 @@ export function madeTableCases(): MadeTableCase[] {
   cases.push(made("tables of several rows and columns", several, () => pieceTableEdits(
     { name: "tables of several rows and columns", tab: several, shapes: new Set(), marks: new Map() },
     DEFAULT_CORPUS.seed + 1, 40)));
-  // A cell that spans two columns: the merge made in a table by the model, as Google makes it.
+  // A cell that spans two columns, merged by the model.
   let plain = asFetched(buildTab([
     ...filler("Lead", 8), sized(3, 3, "m"), ...filler("Tail", 8),
   ]));

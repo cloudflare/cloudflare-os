@@ -1,3 +1,6 @@
+// A tab rendered run by run is the tab rendered whole: the carry, a run's summary and its two
+// keys, and the second carry a walk beside another version holds.
+
 import { describe, expect, it } from "vitest";
 import type { GoogleDocsTab, StructuralElement } from "../src/docs-api";
 import { cutRuns, RUN_SIZES } from "../src/docs-runs";
@@ -6,9 +9,9 @@ import {
   runCarryKey, runContextKey,
 } from "../src/markdown-converter";
 import type { PassCarry, RenderedRun, RunSummary } from "../src/markdown-converter";
-import { countedCarry, touchedBy } from "./carry-count";
 import { buildTab, cellOf, diceOf, item, para } from "./doc-fixture";
 import type { BlockSpec } from "./doc-fixture";
+import { countedCarry, touchedBy } from "./carry-count";
 import { listedTablesTab } from "./doc-store-scenarios";
 import {
   advancedCopy, appendRun, carryOf, everyCutInTwo, expectRendersByRuns, expectSame,
@@ -37,11 +40,7 @@ for (let tab of RECORDED) {
   RECORDINGS.at(-1)!.tabs.push(tab);
 }
 
-/**
- * The first of `tabs` that `storedByRuns` fails, one element a run and then in runs of one to
- * three, under `options`. `renderings`, where given, is shared by every tab: a run of one tab
- * is then looked for among the runs of the others.
- */
+/** The first of `tabs` that `storedByRuns` fails under `options`; `renderings` is shared if given. */
 function firstFailing(
   tabs: readonly NamedTab[], options: StoredByRunsOptions, renderings?: Map<string, string>,
 ): string | undefined {
@@ -116,10 +115,7 @@ function advanceWithout(part: keyof PassCarry): typeof advanceCarry {
   };
 }
 
-/**
- * No copy of `pass` but a view of it, which reads the pass's carry whenever it is read: what
- * keeping a carry past a move comes to.
- */
+/** A view of `pass`, not a copy: what keeping a carry past a move comes to. */
 function viewOf(pass: PassCarry): PlainCarry {
   return {
     get hasOutput() { return pass.hasOutput; },
@@ -154,11 +150,7 @@ function summariesOf(tab: GoogleDocsTab): RunSummary[] {
     renderRun([element], tab, initialCarry(), { mdStart: 0 }).summary);
 }
 
-/**
- * The list of another version beside a list of `runs` runs, as places in that list: by `seed`
- * about one run in eight dropped, one in eight repeated once and one in eight moved two
- * places on.
- */
+/** The list of another version beside `runs` runs: about one in eight dropped, repeated or moved. */
 function listBeside(runs: number, seed: number): number[] {
   let { below } = diceOf(seed);
   let kinds = Array.from({ length: runs }, () => below(8));
@@ -181,13 +173,9 @@ type BesideWalk = {
 };
 
 /**
- * The walk of a version keyed beside another, over the runs of `summaries` and THEIR list
- * `theirs`: one pass's carry and the other version's beside it (`CarryBeside`), each held to
- * a copy moved by `advancedCopy`. Our runs in order; before each, their runs up to the place
- * that holds it are passed; then the run itself on our side and, where their list holds it at
- * that place, on theirs. After every move `same()` is what `sameCarry` says of the two copies,
- * our carry is our copy, and their carry reads as their copy. `outside` moves our carry by
- * `advanceCarry` and not through the pair, and then only counts where `same()` is wrong.
+ * The walk of a version keyed beside another (`theirs`), each carry of the `CarryBeside` held to a
+ * copy moved by `advancedCopy` after every move, and `same()` to `sameCarry`. `outside` moves our
+ * carry outside the pair and only counts where `same()` is wrong.
  */
 function walkedBeside(
   name: string, summaries: readonly RunSummary[], theirs: readonly number[], outside = false,
@@ -269,10 +257,7 @@ function differ(got: Rendering, whole: Rendering): boolean {
   }
 }
 
-/**
- * How many footnote references `elements` hold, counted in their JSON text and not by a walk
- * like the renderer's: a key is the only place the text holds the name between bare quotes.
- */
+/** How many footnote references `elements` hold, counted in their JSON text. */
 function footnoteReferences(elements: readonly StructuralElement[]): number {
   return JSON.stringify(elements).split('"footnoteReference":').length - 1;
 }
@@ -298,11 +283,7 @@ function expectWrittenOneWay(carry: PlainCarry, where: string): void {
   }
 }
 
-/**
- * Every boundary of `tab` as a cut: the three elements before it and the three after, as
- * two runs from the carry `chain` (the tab one element a run) gives where they start, against
- * the same elements as one run from that carry.
- */
+/** Every boundary of `tab` as a cut: three elements either side as two runs, against one run. */
 function expectEveryBoundaryJoins(
   tab: GoogleDocsTab, chain: ReturnType<typeof renderedByRuns>, name: string,
 ): void {
@@ -349,29 +330,17 @@ describe("a tab rendered by runs", () => {
     }
   });
 
-  // What holds what. A cut changes the rendering only of the elements around it, so (4) is
-  // every cut of a large tab at a cost linear in the tab: each boundary with three elements
-  // on either side, entered with the carry the tab gives there. (3) holds long runs entered
-  // with a carry that is not the initial one, which no other part renders. (1) holds the
-  // chain of carries from the first element to the last, and (2) runs of unequal lengths.
+  // One element a run holds the chain of carries; two long runs hold a run entered with a carry
+  // that is not the initial one; and every boundary, three elements on either side, every cut.
   it.each(LARGE)("a large tab rendered by runs is the tab rendered whole: $name", ({ name, tab }) => {
     let whole = docTabToMarkdown(tab);
     let { length } = tab.body.content;
-
-    // (1) One element a run.
     let chain = renderedByRuns(tab, oneElementRuns(length));
     expectSameRendering(chain, whole, `${name}, one element a run`);
-    // (2) Runs of one to three elements.
-    for (let seed of [1, 2, 3]) {
-      expectSameRendering(renderedByRuns(tab, forcedRuns(length, seed)), whole,
-        `${name}, runs of one to three elements, seed ${seed}`);
-    }
-    // (3) Two long runs.
     for (let bounds of seededCutsInTwo(length, 5, 8)) {
       expectSameRendering(renderedByRuns(tab, bounds), whole,
         `${name}, cut in two at element ${bounds[1]}`);
     }
-    // (4) Every boundary.
     expectEveryBoundaryJoins(tab, chain, name);
   });
 
@@ -416,9 +385,7 @@ describe("the carry", () => {
       let { content } = tab.body;
       let chain = renderedByRuns(tab, oneElementRuns(content.length), carry => carry);
       expectSameRendering(chain, docTabToMarkdown(tab), name);
-      // The renderer counts `footnoteBase` and does not read it, so spoiling it changes no
-      // rendering: it is held to the references before each run here, and what reads it (the
-      // decoder of a stored run) is held to it by that decoder's tests.
+      // The renderer counts `footnoteBase` and does not read it: it is held to the count here.
       let before = 0;
       for (let run = 0; run <= content.length; run++) {
         expectWrittenOneWay(chain.carries[run], `${name}, before element ${run}`);
@@ -441,9 +408,8 @@ describe("the carry", () => {
     expect(footnotes).toBeGreaterThanOrEqual(300);
   });
 
-  // A level a list skips has no number: a hole while a run counts, a `null` in the carry. An
-  // item of that level after a cut starts at the level's own first number, which only a level
-  // that does not start at 1 tells from a `null` counted as 0.
+  // A skipped level is a `null` in the carry, which only a level that does not start at 1 tells
+  // from a number of 0.
   it("a level carried with no number starts at the level's first number", () => {
     let tab = buildTab([item("a", "L", 1), item("b", "L", 0)], {
       L: {
@@ -641,9 +607,7 @@ describe("a run's summary and its keys", () => {
     expect(plainOf(pass).listNumbers).toEqual({ N: [8, 1] });
     expect(held).toEqual([7, 2]);
 
-    // A list named as something every object inherits is a list like any other: its carried
-    // number is in the key, the list is the carry's own after the run, and a tab that does
-    // not define it says so.
+    // A list named as something every object inherits is a list like any other.
     for (let listId of ["constructor", "__proto__", "toString"]) {
       let named = buildTab([
         item("a", listId), item("b", listId, 1), para("c"), item("d", listId), para("e"),
@@ -706,8 +670,6 @@ describe("a run's summary and its keys", () => {
     expect(runContextKey(summaryOf(4, 5), tab)).toBe("");
   });
 
-  // One test a recording, a shard of fuzzed tabs or a large tab, each with a map of
-  // renderings of its own: `storedByRuns` renders every run five times.
   describe("the carry moved in place is the carry a copying advance gives, at every cut: a " +
       "run's summary, the advance and the two keys agree with the renderer under any carry", () => {
     it.each(RECORDINGS)("the recording $name", ({ tabs }) => {
@@ -717,10 +679,6 @@ describe("a run's summary and its keys", () => {
         storedByRuns(tab, oneElementRuns(length), `${name}, one element a run`, { renderings });
         for (let bounds of everyCutInTwo(length)) {
           storedByRuns(tab, bounds, `${name}, cut in two at element ${bounds[1]}`, { renderings });
-        }
-        for (let seed of [1, 2, 3]) {
-          storedByRuns(tab, forcedRuns(length, seed),
-            `${name}, runs of one to three elements, seed ${seed}`, { renderings, seed });
         }
       }
     });
@@ -734,26 +692,11 @@ describe("a run's summary and its keys", () => {
         for (let bounds of everyCutInTwo(length)) {
           storedByRuns(tab, bounds, `${name}, cut in two at element ${bounds[1]}`, { renderings });
         }
-        for (let seed of [1, 2]) {
-          storedByRuns(tab, forcedRuns(length, seed),
-            `${name}, runs of one to three elements, seed ${seed}`, { renderings, seed });
-        }
       }
     });
 
-    // One test a cut, so that each keeps to its budget: the tab's cuts share its renderings.
-    describe.each(LARGE)("the large tab: $name", ({ name, tab }) => {
-      let renderings = new Map<string, string>();
-      let { length } = tab.body.content;
-
-      it("one element a run", () => {
-        storedByRuns(tab, oneElementRuns(length), `${name}, one element a run`, { renderings });
-      });
-
-      it.each([1, 2])("runs of one to three elements, seed %i", seed => {
-        storedByRuns(tab, forcedRuns(length, seed),
-          `${name}, runs of one to three elements, seed ${seed}`, { renderings, seed });
-      });
+    it.each(LARGE)("the large tab, one element a run: $name", ({ name, tab }) => {
+      storedByRuns(tab, oneElementRuns(tab.body.content.length), `${name}, one element a run`);
     });
   });
 

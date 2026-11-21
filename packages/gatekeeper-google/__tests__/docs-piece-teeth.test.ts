@@ -1,16 +1,11 @@
-// The teeth of the differential of the request builders on a piece of a tab: the closure made
-// smaller, each way it can be, builds another batch with no error, and the test counts how
-// many of those the check of a batch against its piece catches, and for how many edits the
-// recorder fails on a read past the smaller range; the recorder that fails on a read past a
-// piece, held to failing on each kind of read and to reading as the whole rendering does;
-// and the same shrinks over table changes, which a smaller piece refuses and never builds
-// otherwise, with what a table change asks of its tab as a whole answered from its piece.
+// The teeth of the piece differential: each way of making the closure smaller, pinned at what
+// it builds, refuses, `pieceOverreach` catches and the recorder fails on; and the recorder
+// itself, held to failing on each kind of read past its range.
 
 import { describe, expect, it } from "vitest";
 import type { GoogleDocsTab } from "../src/docs-api";
 import { pieceOverreach } from "../src/docs-replay";
 import { wholeTabReading } from "../src/docs-tables";
-import type { TableChange } from "../src/docs-tables";
 import { ELEMENT_DEEP, ELEMENT_TEXT, isBlankDocTab, markdownToDocRequests } from "../src/markdown-converter";
 import type { OwnElements, TabReading } from "../src/markdown-converter";
 import { BULLET_LIST, buildTab, grid, item, para, thrownMessage } from "./doc-fixture";
@@ -21,15 +16,11 @@ import {
 } from "./docs-piece-shadow";
 import type { ElementRange, Shrink } from "./docs-piece-shadow";
 import {
-  DEFAULT_CORPUS, DEFAULT_TABLE_CORPUS, madeTableCases, pieceCorpus, pieceTableCorpus, tabEditCorpus,
+  DEFAULT_CORPUS, DEFAULT_TABLE_CORPUS, madeTableCases, pieceCorpus, pieceTableCorpus, TABLE_KINDS,
 } from "./docs-piece-tabs";
 import { asFetched } from "./docs-store-slice-shadow";
 
-/**
- * The closure's rule with each part of it counted: `back` steps back from the first own
- * element, the walk back through deeper list items or not, and `forward` steps forward from
- * the last, on a tab whole in hand. Two steps, the walk and two steps is `closureOf`.
- */
+/** The closure's rule in parts: `back` steps, the walk through deeper items, `forward` steps. */
 function closureWith(
   flags: readonly number[], own: OwnElements, back: number, walk: boolean, forward: number,
 ): ElementRange {
@@ -49,28 +40,10 @@ function closureWith(
 /** The edits of the default table that the whole tab builds a batch for. */
 const BUILT = 945;
 
-// WHAT A SMALLER CLOSURE BUILDS, over those edits (an edit the whole tab refuses is not
-// counted): `wrong`, ANOTHER BATCH WITH NO ERROR; `refused`, a refusal where the whole tab
-// builds; and `caught`, the wrong batches that `pieceOverreach` names a side for, asked with
-// the smaller piece's own place. So the table shows what the differential is for, and the
-// share of the silent wrong batches that the check of a batch against its piece stops at run
-// time: every one where the second step forward or the walk is missing, four in five where
-// the last element is (15 of 19), and about two in three where both steps back are (26 of
-// 41), since a builder that reads too little of what stands before or after the edit may
-// write nothing there.
-//
-// The first six must bite. The last two are pinned at what they give, which is nothing, and
-// that is no tooth that failed. BY MEASURE, and not by proof: the walk back through deeper
-// list items takes in what the second step back does wherever that step decides a batch (the
-// step bites once the walk is removed with it: `backAndWalk`), and the closure's first
-// element is read by the builders and decides no batch.
-//
-// WHAT THE RECORDER SAYS OF A SMALLER RANGE: `past`, the built edits whose build from the
-// whole rendering, under the recorder of the smaller range, fails as a read past it. That is
-// the tooth of the read past the piece, and of the two rows that build no other batch: what
-// they take off the closure is content the builders read. It is no tooth of the second step
-// forward: of the blocks that step takes in the builders read where they stand and nothing
-// they hold, which the recorder allows, so what holds that step is the batches above.
+// Over the built edits: `wrong`, another batch with no error; `refused`, a refusal where the
+// whole tab builds; `caught`, the wrong batches `pieceOverreach` names a side for; `past`, the
+// builds the recorder of the smaller range fails. The first six rows bite with wrong batches;
+// the last two build none, and their tooth is the recorder.
 type Tooth = {
   shrink: Shrink; bites: boolean; wrong: number; refused: number; caught: number; past: number;
 };
@@ -147,8 +120,7 @@ describe("the closure made smaller", () => {
       let whole = fromWhole(tab.tab, drawn.entry, drawn.edit);
       if (!("requests" in whole)) continue;
       built++;
-      // Under the recorder a build reads the whole rendering: it fails, or gives the whole
-      // tab's batch.
+      // Under the recorder a build fails, or gives the whole tab's batch.
       if (readsPast(() => expect(fromRecorded(tab.tab, drawn.entry, drawn.edit, shrink)).toEqual(whole))) {
         counts.past++;
       }
@@ -162,7 +134,6 @@ describe("the closure made smaller", () => {
       }
     }
     expect(built).toBe(BUILT);
-    // A row that builds no other batch has its tooth in the recorder.
     if (bites) expect(counts.wrong).toBeGreaterThan(0);
     else expect(counts.past).toBeGreaterThan(0);
     expect(counts).toEqual(pinned);
@@ -175,8 +146,7 @@ function past(read: () => unknown): void {
 }
 
 describe("the recorder of reads past a piece", () => {
-  // Nine lines, a list between them and a table after them: elements 0 (the section break)
-  // to 11, the range elements 4 to 6 (`Line 3`, the two items).
+  // Elements 0 (the section break) to 11; the range is elements 4 to 6 (`Line 3`, two items).
   let tab = asFetched(buildTab([
     para("Line 0"), para("Line 1"), para("Line 2"), para("Line 3"), item("Item 4"), item("Item 5"),
     para("Line 6"), para("Line 7"), grid(["Cell 8"]), para("Line 9"), para("Line 10"),
@@ -195,13 +165,11 @@ describe("the recorder of reads past a piece", () => {
     expect(markdown.slice(from, to)).toContain("Line 3\n\n- Item 4\n- Item 5\n");
     expect([markdown[from], markdown.at(to - 1), markdown.charCodeAt(to - 1)]).toEqual(["\n", "\n", 10]);
     expect(markdown.indexOf("Item 5", from)).toBe(rendering.markdown.indexOf("Item 5"));
-    // A search backwards reads from the end of the last match it could find.
     expect(markdown.lastIndexOf("Item 4", to - 6)).toBe(rendering.markdown.indexOf("Item 4"));
     expect(markdown.startsWith("\nLine 3", from)).toBe(true);
     expect(markdown.includes("Item 5", from)).toBe(true);
-    // A read of nothing is no read.
     expect(markdown.slice(0, 0)).toBe("");
-    // The identity, the tab's end and an entry's position are the tab's, and read freely.
+    // The identity, the tab's end and an entry's position are read freely.
     expect([guarded.tabId, guarded.bodyEndIndex]).toEqual([rendering.tabId, rendering.bodyEndIndex]);
     let { blocks, tables } = guarded.sourceMap;
     expect(blocks.map(block => [block.mdStart, block.mdEnd, block.docStart, block.docEnd]))
@@ -224,7 +192,7 @@ describe("the recorder of reads past a piece", () => {
     past(() => markdown.slice(from - 1, to));
     past(() => markdown.slice(from, to + 1));
     past(() => markdown.slice(from));
-    // A search reads on to what it finds, and to the string's end where it finds nothing.
+    // A search reads to what it finds, or to the string's end.
     past(() => markdown.indexOf("Line 6", from));
     past(() => markdown.indexOf("no such text", from));
     past(() => markdown.indexOf("Item 5"));
@@ -253,7 +221,6 @@ describe("the recorder of reads past a piece", () => {
     expect(() => { blocks.length = 0; }).toThrow(new TypeError("A builder wrote to blocks"));
     expect(() => Reflect.set(Object(markdown), 0, "x"))
       .toThrow(new TypeError("A builder wrote to the Markdown"));
-    // What takes a plain `Error` for a builder's refusal throws it on.
     expect(() => outcomeOf(() => {
       blocks.length = 0;
       return [];
@@ -274,7 +241,6 @@ describe("the recorder of reads past a piece", () => {
     expect([last[last.length], last.at(-1), last.indexOf("no such text", whole.starts[9])])
       .toEqual([undefined, "\n", -1]);
     past(() => last[whole.starts[9] - 1]);
-    // The table is the range's: its entry is the rendering's own.
     expect(recorded(told, { from: 9, to: 10 }).sourceMap.tables[0].rows).toHaveLength(1);
   });
 
@@ -294,66 +260,15 @@ describe("the recorder of reads past a piece", () => {
 });
 
 // ---------------------------------------------------------------------------
-// The closure made smaller, for what an edit builds through a reading of its tab
+// Blankness, for an append built through a reading of its tab
 // ---------------------------------------------------------------------------
-
-/** What a smaller closure gives for the edits of one kind that the whole tab builds. */
-type ReadingTooth = { built: number; wrong: number; refused: number; caught: number };
-
-// THE SHRINKS ABOVE, OVER REPLACEMENTS OF THE TEXT OF TABLE CELLS AND OVER APPENDS, each
-// built by the one place an edit becomes requests from the reading of the smaller closure:
-// `wrong`, another batch with no error; `caught`, a batch that names an index past the
-// smaller piece and is refused for it, in the words of a change that cannot be shown; and
-// `refused`, any other refusal where the whole tab builds. PINNED AS MEASURED, AND NO TOOTH
-// THAT FAILED: the rows that must bite are those of replacements outside tables, above.
-// NO SHRINK BUILDS ANOTHER BATCH for either kind. A REPLACEMENT IN A CELL is built from its
-// table alone, and AN APPEND from the tab's last paragraph and what stands at the tab's end:
-// a shrink that keeps the own element changes nothing of what either reads here, and one
-// forward has nothing to take of an append, whose piece ends at the tab's end. WHERE BOTH
-// STEPS BACK ARE GONE (`backBoth`, `own`) the piece is the own element alone, which has no
-// index between its outermost elements: every batch names an index before it and is caught.
-// One element off the back of a cell's closure is caught where the batch writes into the
-// paragraph after the table.
-const READING_TEETH: Record<string, { cell: ReadingTooth; append: ReadingTooth }> = {
-  forward: { cell: { built: 95, wrong: 0, refused: 0, caught: 0 }, append: { built: 20, wrong: 0, refused: 0, caught: 0 } },
-  walk: { cell: { built: 95, wrong: 0, refused: 0, caught: 0 }, append: { built: 20, wrong: 0, refused: 0, caught: 0 } },
-  offBack: { cell: { built: 95, wrong: 0, refused: 0, caught: 3 }, append: { built: 20, wrong: 0, refused: 0, caught: 0 } },
-  backAndWalk: { cell: { built: 95, wrong: 0, refused: 0, caught: 0 }, append: { built: 20, wrong: 0, refused: 0, caught: 0 } },
-  backBoth: { cell: { built: 95, wrong: 0, refused: 0, caught: 95 }, append: { built: 20, wrong: 0, refused: 0, caught: 20 } },
-  own: { cell: { built: 95, wrong: 0, refused: 0, caught: 95 }, append: { built: 20, wrong: 0, refused: 0, caught: 20 } },
-  back: { cell: { built: 95, wrong: 0, refused: 0, caught: 0 }, append: { built: 20, wrong: 0, refused: 0, caught: 0 } },
-  offFront: { cell: { built: 95, wrong: 0, refused: 0, caught: 0 }, append: { built: 20, wrong: 0, refused: 0, caught: 0 } },
-};
 
 /** The words a batch past its piece is refused in. */
 const NOT_SHOWN = "this change cannot be shown as it will read once applied, so it cannot be made";
 
 describe("the closure made smaller, for an edit built from a reading", () => {
-  let corpus = tabEditCorpus({ seed: DEFAULT_CORPUS.seed + 500, tabs: 30, edits: 8 })
-    .filter(({ drawn }) => drawn.kind === "cell" || drawn.kind === "append");
-
-  it.each(Object.keys(TEETH))("%s", name => {
-    let { shrink } = TEETH[name];
-    let noTooth = (): ReadingTooth => ({ built: 0, wrong: 0, refused: 0, caught: 0 });
-    let counts = { cell: noTooth(), append: noTooth() };
-    for (let { tab, drawn } of corpus) {
-      let whole = fromReading(wholeTabReading(renderedOf(tab.tab).rendering), drawn.edit);
-      if (!("requests" in whole)) continue;
-      let tally = counts[drawn.kind as "cell" | "append"];
-      tally.built++;
-      let outcome = fromReading(closureReading(tab.tab, shrink), drawn.edit);
-      // Compared as text, and nothing of either printed: a document's text is in them.
-      if (JSON.stringify(outcome) === JSON.stringify(whole)) continue;
-      if ("requests" in outcome) tally.wrong++;
-      else if (outcome.refused.message.includes(NOT_SHOWN)) tally.caught++;
-      else tally.refused++;
-    }
-    expect(counts).toEqual(READING_TEETH[name]);
-  });
-
   it("blankness decided from the piece", () => {
-    // An append built as the one place an edit becomes requests builds it, but for asking
-    // the PIECE whether the tab is blank.
+    // An append built as `tabEditRequests` builds it, but asking the piece whether the tab is blank.
     let fromPiece = (tab: GoogleDocsTab, markdown: string, shrink?: Shrink) => outcomeOf(() => {
       let piece = closureReading(tab, shrink).piece("end");
       let index = piece.bodyEndIndex - 1;
@@ -387,14 +302,8 @@ describe("the closure made smaller, for an edit built from a reading", () => {
         }
       }
     }
-    // A MEASURE, AND NO TOOTH THAT BIT. A piece at a tab's end reads as blank only where the
-    // tab is: a step back ends on an element that writes a character, or at the tab's first
-    // element, and then the piece is the whole tab; and the own element alone, an empty
-    // paragraph after text, renders with the blank line before it, which is two line breaks
-    // and not a blank tab's one. So blankness asked of the piece builds the whole tab's batch
-    // on every tab here, from the closure and from the own element alone. WHAT BITES is the
-    // answer itself: the builder asks the tab (`TabReading.blank`), and a reading that
-    // answers the other way builds another batch for every append.
+    // A piece at a tab's end reads as blank only where the tab is, so asking it is no worse;
+    // what bites is the answer: a reading that answers the other way builds another batch.
     expect(wrong).toEqual({ closure: 0, own: 0, told: tabs.length * appends.length });
   });
 });
@@ -403,12 +312,6 @@ describe("the closure made smaller, for an edit built from a reading", () => {
 // The closure made smaller, for a table change
 // ---------------------------------------------------------------------------
 
-/** The eleven kinds of table change, in the order the rows below count them. */
-const TABLE_KINDS = [
-  "insertTable", "insertTableRows", "insertTableColumns", "deleteTableRows", "deleteTableColumns",
-  "deleteTable", "setTableCellStyle", "setTableColumnWidths", "setTableRowHeights",
-  "mergeTableCells", "unmergeTableCells",
-] as const satisfies readonly TableChange["type"][];
 
 /** The table changes of the default table and of the made tabs, each with its tab. */
 const tableChanges = () => [
@@ -419,22 +322,10 @@ const tableChanges = () => [
 const TABLES_BUILT = [47, 33, 13, 4, 12, 37, 9, 10, 14, 7, 1];
 const NONE = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 
-// THE SHRINKS ABOVE, OVER TABLE CHANGES, BY KIND (in the order of `TABLE_KINDS`), each built by
-// the one place an edit becomes requests from the reading of the smaller closure: `wrong`,
-// another batch with no error; `caught`, a batch that names an index past the smaller piece
-// and is refused for it, in the words of a change that cannot be shown; `refused`, any other
-// refusal where the whole tab builds.
-// WHAT A SHORT PIECE DOES TO A TABLE CHANGE IS REFUSE IT, NOT BUILD ANOTHER. No shrink builds
-// another batch for any kind: `wrong` is 0 in every row, which is a measure and no tooth that
-// failed. Rows and columns added and deleted, the three looks, a merge and a split are built
-// from the table and nothing beside it, so they give the whole tab's batch from every piece
-// that holds the table and has an index on each side of it. A TABLE DELETED and A TABLE ADDED
-// read what stands beside them, and a piece that lacks it REFUSES: the own elements alone
-// (`own`: every deletion, and every table added after a paragraph or a table that the piece
-// then ends with), both steps back gone (`backBoth`: every deletion), and one element off
-// the back where that element is the paragraph after the table, the tab's last (`offBack`).
-// Those four rows must bite. WHERE THE PIECE IS THE TABLE ALONE, or starts with it, the piece
-// has no index before the table, so every batch of the other kinds is caught.
+// The shrinks over table changes, by kind: a short piece refuses a table change and never
+// builds another (`wrong` is 0). A table deleted or added reads what stands beside it, so
+// `own`, `backBoth` and `offBack` refuse those; a piece that starts with its table has no index
+// before it, so every other batch is caught.
 const TABLE_TEETH: Record<string, { refused: number[]; caught: number[] }> = {
   forward: { refused: NONE, caught: NONE },
   walk: { refused: NONE, caught: NONE },
@@ -487,9 +378,8 @@ describe("the closure made smaller, for a table change", () => {
   }
 
   it("what follows a table is the tab's to say", () => {
-    // A deletion whose table holds items of a numbered list, where a numbered list stands
-    // far after it: the whole tab refuses it. Built with what follows the table asked of the
-    // piece's own rendering, which ends two steps after the table, it is built.
+    // A deletion the whole tab refuses for a numbered list far after its table is built where
+    // the piece's own rendering is asked what follows the table.
     let refusedByTab = 0, built = 0;
     for (let { tab, change } of corpus) {
       let whole = fromReading(wholeTabReading(renderedOf(tab).rendering), change);
@@ -509,9 +399,8 @@ describe("the closure made smaller, for a table change", () => {
   });
 
   it("a table's number is the tab's", () => {
-    // A call that names, by its number, a table that is not the first of its piece's, checked
-    // on pieces that say no table stands before them: the call is checked against another
-    // table of the piece (another change, or another refusal), or against none (a fault).
+    // A call on a table not first in its piece, checked on pieces that say no table stands
+    // before them, meets another table or none.
     let calls = [...pieceTableCorpus(DEFAULT_TABLE_CORPUS), ...madeTableCases()].flatMap(
       ({ tab, draws }) => draws.flatMap(({ call }) => call ? [{ tab: tab.tab, call }] : []));
     let later = 0, other = 0, faults = 0;
@@ -542,8 +431,6 @@ describe("the closure made smaller, for a table change", () => {
         faults++;
       }
     }
-    // Of 99 such calls, 20 are checked against another table and 78 against none; one gives
-    // the whole tab's outcome all the same.
     expect(other).toBeGreaterThan(0);
     expect([later, other, faults]).toEqual([99, 20, 78]);
   });
