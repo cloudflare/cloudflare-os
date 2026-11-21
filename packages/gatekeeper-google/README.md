@@ -673,7 +673,8 @@ merged cell exactly, the first version refuses a block where a cell other than t
 starts with a heading, a list item or a subtitle or holds a numbered list, where any cell holds a
 table, a footnote, a smart chip or an element the view does not show, or an empty paragraph beside
 others, or an empty top-left cell that is a heading or list item, and a table that holds
-suggestions.
+suggestions. A block where any cell holds a positioned image is refused as well, when the call is
+made and again at approval, since what Google does with the image's anchor then has not been seen.
 `unmergeTableCells()` splits a merged cell named by its top-left cell: its text stays there, and the
 cells it covered come back empty and editable. Google gives those cells the looks they kept while
 covered, which no read shows, so the change then sets each of them to the merged cell's look, the

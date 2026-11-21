@@ -4346,6 +4346,37 @@ describe("merging and splitting cells", () => {
       "smart chip or an element getContent() does not show, which merging cells does not support.");
   });
 
+  it("refuses to merge cells that anchor a positioned image, whose anchor no merge has kept", () => {
+    const anchored = (row: number, column: number, ...cells: CellSpec[]) => {
+      let tab = buildTab([para("Before"), { table: [cells, ["c\n", "d\n"]] }, para("After")]);
+      let paragraph = cellAt(tab, row, column).content?.[0]?.paragraph;
+      if (!paragraph) throw new Error("Expected a paragraph");
+      paragraph.positionedObjectIds = ["object"];
+      return tab;
+    };
+    const refused = (column: number) => `mergeTableCells: the cell at row 0, column ${column} ` +
+      "(counting from 0) holds a positioned image, whose anchor merging cells is not known to " +
+      "keep. Merge these cells in Google Docs.";
+    // An image anchored to an otherwise empty cell, to a cell with text, and to the top-left cell.
+    for (let [column, tab] of [
+      [1, anchored(0, 1, "Label\n", "\n")], [1, anchored(0, 1, "Label\n", "Caption\n")],
+      [0, anchored(0, 0, "\n", "Label\n")],
+    ] as const) {
+      expect(tableAt(read(tab), 0)).toContain("[Image]");
+      expect(thrownMessage(() => applyDocEdit(tab, merge(read(tab), 0, 0, 1, 2)))).toBe(refused(column));
+      // The model refuses it too, for a document that came to hold the image after the check.
+      let plain = structuredClone(tab);
+      for (let row of plain.body.content.find(element => element.table)?.table?.tableRows ?? []) {
+        for (let cell of row.tableCells ?? []) delete cell.content?.[0]?.paragraph?.positionedObjectIds;
+      }
+      let requests = tableChangeRequests(docTabToMarkdown(plain), merge(read(plain), 0, 0, 1, 2));
+      expect(thrownMessage(() => applyDocsRequests(tab, requests)))
+        .toContain("merging cells that anchor a positioned object");
+      // Cells beside the anchor still merge.
+      expect(tableAt(read(applyDocEdit(tab, merge(read(tab), 1, 0, 1, 2))), 0)).toContain("[Image]");
+    }
+  });
+
   it("refuses to merge into a top-left cell that is an empty heading or list item", () => {
     for (let empty of [heading(""), item("")]) {
       let tab = buildTab([para("Before"), { table: [

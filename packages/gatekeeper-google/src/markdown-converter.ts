@@ -182,6 +182,8 @@ export type TableCellMapping = MarkdownRange & {
   numbered: boolean;
   /** Whether the cell holds a footnote reference. */
   footnote: boolean;
+  /** Whether a paragraph of the cell anchors a positioned object, which reads as `[Image]`. */
+  positioned: boolean;
   /**
    * Whether the cell starts with anything but a paragraph of normal text outside a list: a
    * heading, a title, a subtitle, a list item, or no paragraph at all. A cell added beside it
@@ -1638,6 +1640,7 @@ function cellMapping(
     })),
     numbered: someCellParagraph(elements, lists, isItemOfNumberingList),
     footnote: someCellParagraph(elements, lists, holdsFootnote),
+    positioned: elements.some(element => !!element.paragraph?.positionedObjectIds?.length),
     // Google copies the style of a cell's first paragraph into a cell added beside it, and the
     // HTML does not say what that style is: a subtitle reads as a `<p>` in italics.
     styled: !first || !!first.bullet || first.paragraphStyle.namedStyleType !== "NORMAL_TEXT",

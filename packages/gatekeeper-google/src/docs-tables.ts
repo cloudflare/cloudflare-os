@@ -935,6 +935,11 @@ function checkMerge(render: DocTabSnapshot, table: number, change: MergeChange):
           `mergeTableCells: the cell at ${at} holds a table, a footnote, a smart chip or an ` +
           "element getContent() does not show, which merging cells does not support.");
       }
+      if (cell.positioned) {
+        throw new Error(
+          `mergeTableCells: the cell at ${at} holds a positioned image, whose anchor merging ` +
+          "cells is not known to keep. Merge these cells in Google Docs.");
+      }
       if (cell.lines > 1 && cell.emptyParagraph) {
         throw new Error(
           `mergeTableCells: the cell at ${at} holds an empty paragraph beside others, which ` +
