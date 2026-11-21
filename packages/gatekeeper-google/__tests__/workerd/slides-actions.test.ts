@@ -1526,6 +1526,25 @@ async function pageLength(provider: SlidesProvider, id: string): Promise<number>
   )))!.text()).length;
 }
 
+/** Five slides, four of which fit in one read, and a gatekeeper over them. */
+function fivePages() {
+  let ids = ["p1", "p2", "p3", "p4", "p5"];
+  let provider = new SlidesProvider(presentation(ids.map(id => paddedSlide(id, 1_900_000)))).install();
+  return { ids, provider, slides: gatekeeper() };
+}
+
+/** An edit of slide `id`'s title, as `paddedSlide` names it. */
+function titleEdit(id: string, find: string, replace: string): SlideTextEdit {
+  return { slideId: id, elementId: `${id}-title`, find, replace };
+}
+
+/** A collaborator's edit of slide `id`'s title, as `paddedSlide` names it. */
+function retitle(provider: SlidesProvider, id: string, to: string): void {
+  provider.edit(held => {
+    held.slides!.find(page => page.objectId === id)!.pageElements![0].shape!.text = text([to]);
+  });
+}
+
 describe("Google Slides pages past what one read holds", () => {
   /** What one read holds of whole pages together, as compact JSON. */
   const MAX_READ_PAGES_LENGTH = 8 * 1024 * 1024;
@@ -1558,6 +1577,59 @@ describe("Google Slides pages past what one read holds", () => {
     expect(provider.batches).toHaveLength(6);
     expect(changes.slice(0, 4).map(({ slideId, elementId }) => provider.text(slideId, elementId)))
       .toEqual(Array(4).fill("Slide big: the part in hand\n"));
+  });
+
+  it("reads the outline whatever the slides queued batches edit hold together", async () => {
+    let { ids, provider, slides } = fivePages();
+    expect(await pageLength(provider, "p1")).toBeGreaterThan(MAX_READ_PAGES_LENGTH / 5);
+    for (let id of ids) await slides.edit([titleEdit(id, "piece", "part")]);
+
+    let outline = await slides.call("getPresentation");
+
+    expect(outline.error).toBeUndefined();
+    let info = outline.value as PresentationInfo;
+    expect(info.slides.map(({ id, index, title }) => [id, index, title]))
+      .toEqual(ids.map((id, index) => [id, index, `Slide ${id}: the part in hand`]));
+    expect(info.queuedChangeConflict).toBeUndefined();
+  });
+
+  it("hides from the outline every change after the first that no longer applies, on any slide", async () => {
+    let { ids, provider, slides } = fivePages();
+    let queued = [];
+    for (let id of ids) queued.push(await slides.edit([titleEdit(id, "piece", "part")]));
+    // Slide 1 is read with the slides before slide 5, whose change no longer applies.
+    queued.push(await slides.edit([titleEdit("p1", "part", "share")]));
+    retitle(provider, "p5", "Slide p5: the PIECE in hand");
+
+    let info = (await slides.call("getPresentation")).value as PresentationInfo;
+
+    expect(info.slides.map(({ title }) => title)).toEqual([
+      ...ids.slice(0, 4).map(id => `Slide ${id}: the part in hand`), "Slide p5: the PIECE in hand",
+    ]);
+    let conflict = `Queued change ${queued[4].actionId} no longer applies, so it and the changes ` +
+      "queued after it are not shown: change 1 (editText): the text does not contain the text to find.";
+    expect(info.queuedChangeConflict).toBe(conflict);
+    expect((await slides.slides("p5"))[0].queuedChangeConflict).toBe(conflict);
+  });
+
+  it("names in the outline the first change of a stopped batch that no longer applies", async () => {
+    let { ids, provider, slides } = fivePages();
+    for (let id of ids.slice(0, 4)) await slides.edit([titleEdit(id, "piece", "part")]);
+    // Its slides are read apart: slide 1 with the first four, slide 5 after them.
+    let { actionId } = await slides.edit([titleEdit("p5", "piece", "part"), titleEdit("p1", "hand", "palm")]);
+    retitle(provider, "p5", "Slide p5: the PIECE in hand");
+    retitle(provider, "p1", "Slide p1: the piece in HAND");
+
+    let info = (await slides.call("getPresentation")).value as PresentationInfo;
+
+    let conflict = `Queued change ${actionId} no longer applies, so it and the changes queued after ` +
+      "it are not shown: change 1 (editText): the text does not contain the text to find.";
+    expect(info.queuedChangeConflict).toBe(conflict);
+    expect((await slides.slides("p1"))[0].queuedChangeConflict).toBe(conflict);
+    expect(info.slides.map(({ title }) => title)).toEqual([
+      "Slide p1: the part in HAND", ...ids.slice(1, 4).map(id => `Slide ${id}: the part in hand`),
+      "Slide p5: the PIECE in hand",
+    ]);
   });
 });
 

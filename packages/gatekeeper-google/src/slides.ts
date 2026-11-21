@@ -20,19 +20,22 @@ import { nativeFileUrl } from "./resources";
 import { batchKind, SLIDES_ACTIONS } from "./slides-actions";
 import {
   BlankPresentation, fetchedLength, GoogleSlidesApi, MAX_READ_PAGES_LENGTH, pagesTooLarge,
-  type PresentationReader, type ThumbnailSize,
+  type PresentationReader, type RestPresentation, type RestSlide, type ThumbnailSize,
 } from "./slides-api";
 import {
-  layoutNames, mastersOf, presentationInfo, slideIds, slideOf, themePagesOf, titleOf,
+  layoutNames, mastersOf, presentationInfo, slideIds, slideOf, summaryOf, themePagesOf, titleOf,
 } from "./slides-model";
 import type {
-  PresentationInfo, Slide, SlideThumbnail, SlideThumbnailSize,
+  PresentationInfo, Slide, SlideSummary, SlideThumbnail, SlideThumbnailSize,
 } from "./slides-read-types";
-import { designDeck, pageOf, slideIdOf, type DesignChange, type DesignStep } from "./slides-design";
+import {
+  conflictedChange, designDeck, pageOf, slideIdOf, type DesignChange, type DesignStep,
+} from "./slides-design";
 import { prepareChanges } from "./slides-design-input";
 import {
-  batchSlides, conflictReason, copiedFrom, createReplay, instantiatedPlaceholders, mintObjectId, movedOrder,
-  newSlidePlace, slidesToFetch, slidesToRead, type Deck, type QueuedChange, type SlideLabel,
+  batchSlides, conflictReason, copiedFrom, createReplay, instantiatedPlaceholders, isDesignBatch,
+  mintObjectId, movedOrder, newSlidePlace, slidesToFetch, slidesToRead, type Deck, type QueuedChange,
+  type SlideLabel,
   type SlidesAction, type SlidesActions, type ThemeLabel,
 } from "./slides-simulation";
 import { elementIdsOf } from "./slides-target";
@@ -341,25 +344,91 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
       }));
   }
 
+  /**
+   * `rest`, a summary read, as one fold of `changes` over the whole deck shows it: the deck of
+   * the slides no queued batch edits, the summaries of those it does, and the first change that
+   * no longer applies.
+   *
+   * A summary holds no tables or grouped shapes, so the slides queued batches edit are read
+   * whole, and every change is checked as approving it would check it. They are read in groups
+   * that each fit in what one read holds (see `getSlideGroups`), and the changes are folded over
+   * each group's pages alone, and over the summaries of the other slides apart: a change edits one
+   * page, so it comes out the same on that page whatever else the deck holds, does nothing to a
+   * slide the deck does not hold, and finds the order, masters and layouts as every other fold
+   * does while none has stopped. A queued copy is made where the slide it copies is held. So the
+   * read holds one group's pages at a time, and keeps of each only its slides' summaries.
+   *
+   * Only the stop is shared: the first change that no longer applies in any fold hides every
+   * later change from all of them, and of a batch, its earliest change that no longer applies is
+   * named, as one fold would. A group is folded through the stop found so far, so that it can
+   * find an earlier one; a group folded before the stop was found, whose slides a change from the
+   * stop on reached, is read and folded again, up to the stop.
+   */
+  async #summarized(rest: RestPresentation, changes: readonly QueuedChange[]) {
+    let order = slideIds(rest);
+    let layouts = layoutNames(rest);
+    let deckOf = (slides: ReadonlyMap<string, RestSlide>): Deck =>
+      ({ order, slides, ...mastersOf(rest), themePages: themePagesOf(rest) });
+    let whole = slidesToFetch(changes.flatMap(({ action }) => batchSlides(action)), changes);
+    let stop: { at: number; reason: string } | undefined;
+    let shown = () => stop?.at ?? changes.length;
+    let through = () => stop ? stop.at + 1 : changes.length;
+    // The deck of the first `count` changes folded over `slides`, and how many of them it shows.
+    let fold = (slides: ReadonlyMap<string, RestSlide>, count: number) => {
+      let { entity, stopped } = this.#replay.fold(
+        this.#presentationId, deckOf(slides), changes.slice(0, count));
+      if (!stopped) return { deck: entity!, end: count };
+      let at = changes.indexOf(stopped.record);
+      let { reason } = stopped;
+      let earlier = !stop || at < stop.at ||
+        at === stop.at && conflictedChange(reason) < conflictedChange(stop.reason);
+      if (earlier) stop = { at, reason };
+      return { deck: entity!, end: at };
+    };
+
+    let summaryPages = new Map((rest.slides ?? []).flatMap(slide =>
+      whole.has(slide.objectId!) ? [] : [[slide.objectId!, slide] as const]));
+    let outline = fold(summaryPages, through());
+    let groups: { ids: string[]; end: number; summaries: Map<string, SlideSummary> }[] = [];
+    let unread = [...whole];
+    let count = through;
+    while (unread.length > 0) {
+      await this.#api.getSlideGroups(this.#presentationId, unread, order, pages => {
+        let { deck, end } = fold(pages, count());
+        groups.push({
+          ids: [...pages.keys()],
+          end,
+          summaries: new Map([...deck.slides].flatMap(([id, page]) =>
+            outline.deck.slides.has(id) ? [] : [[id, summaryOf(page, 0, layouts)] as const])),
+        });
+      });
+      let stale = groups.filter(({ end, summaries }) =>
+        changes.slice(shown(), end).some(({ action }) =>
+          !isDesignBatch(action) || batchSlides(action).some(id => summaries.has(id))));
+      groups = groups.filter(group => !stale.includes(group));
+      unread = stale.flatMap(({ ids }) => ids);
+      count = shown;
+    }
+    let { deck } = outline.end === shown() ? outline : fold(summaryPages, shown());
+    return {
+      deck,
+      summaries: new Map(groups.flatMap(({ summaries }) => [...summaries])
+        .filter(([id]) => !deck.slides.has(id))),
+      conflict: stop && conflictReason(changes[stop.at], stop.reason),
+    };
+  }
+
   async getPresentation(): Promise<PresentationInfo> {
     return this.#read(
       () => this.#changes.snapshot(async changes => {
         let rest = await this.#api.getPresentation(this.#presentationId);
-        let order = slideIds(rest);
-        // A summary holds no tables or grouped shapes, so slides queued edits address are read in
-        // full, and every edit is checked as it would be when approved.
-        let edited = changes.flatMap(({ action }) => batchSlides(action));
-        let slides = new Map([
-          ...(rest.slides ?? []).map(slide => [slide.objectId!, slide] as const),
-          ...await this.#api.getSlides(this.#presentationId, slidesToFetch(edited, changes), order),
-        ]);
-        let { deck, conflict } = this.#replayed(
-          { order, slides, ...mastersOf(rest), themePages: themePagesOf(rest) }, changes);
+        let { deck, summaries, conflict } = await this.#summarized(rest, changes);
         return {
           // Less any master, and its layouts, a queued deletion leaves with no slide, as Google
           // removes them.
-          ...presentationInfo(
-            { ...rest, slides: deck.order.map(id => deck.slides.get(id)!) }, deck.themePages),
+          ...presentationInfo({
+            ...rest, slides: deck.order.map(id => deck.slides.get(id) ?? { objectId: id }),
+          }, deck.themePages, summaries),
           ...(conflict ? { queuedChangeConflict: conflict } : {}),
         };
       }),

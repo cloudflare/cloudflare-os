@@ -316,3 +316,47 @@ describe("GoogleSlidesApi.getSlides", () => {
       .toEqual(whole.map(id => [id, SLIDE_FIELDS]));
   });
 });
+
+describe("GoogleSlidesApi.getSlideGroups", () => {
+  const api = new GoogleSlidesApi(token);
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("hands over whole pages in groups that fit in one read, each as soon as the next would not", async () => {
+    // Four pages fit in 8 MiB together; a fifth passes it.
+    let pages = holdPages(id => pageOfLength(id, 1_800_000));
+    let wanted = ids(9);
+    let groups: string[][] = [];
+    let read = api.getSlideGroups("deck-1", [...wanted, "gone"], wanted, group => {
+      groups.push([...group.keys()]);
+    });
+    await pages.reaches(4);
+    for (let page of pages.asked.slice(0, 4)) page.answer();
+    await turns();
+    expect(groups).toEqual([]);
+    pages.asked[4].answer();
+    await turns();
+    expect(groups).toEqual([["s1", "s2", "s3", "s4"]]);
+
+    await pages.answerAll();
+    await read;
+
+    expect(groups).toEqual([["s1", "s2", "s3", "s4"], ["s5", "s6", "s7", "s8"], ["s9"]]);
+    expect(pages.asked.map(page => [page.id, page.fields])).toEqual(wanted.map(id => [id, SLIDE_FIELDS]));
+    expect(pages.most[SLIDE_FIELDS]).toBe(4);
+  });
+
+  it("fails the read with what the groups' taker throws", async () => {
+    let pages = holdPages(id => pageOfLength(id, 1_800_000));
+    let wanted = ids(6);
+    let failure = failureOf(api.getSlideGroups("deck-1", wanted, wanted, () => {
+      throw new Error("taken badly");
+    }));
+    await pages.reaches(4);
+    await pages.answerAll();
+
+    expect(await failure).toBe("taken badly");
+  });
+});

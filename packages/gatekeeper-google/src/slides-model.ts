@@ -311,8 +311,11 @@ function titlePrefix(elements: readonly RestTextElement[]): RestTextElement[] {
   return kept;
 }
 
-// Works on a summary read too, whose elements carry only placeholders and text.
-function summaryOf(slide: RestSlide, index: number, layouts: LayoutNames): SlideSummary {
+/**
+ * The summary of `slide`, at `index` in the deck, its layout named from `layouts`. Works on a
+ * summary read too, whose elements carry only placeholders and text.
+ */
+export function summaryOf(slide: RestSlide, index: number, layouts: LayoutNames): SlideSummary {
   if (!slide.objectId) throw new Error("Google Slides returned an invalid slide");
   let properties = slide.slideProperties;
   let layout = properties?.layoutObjectId && layouts.get(properties.layoutObjectId);
@@ -354,10 +357,11 @@ function layoutOf({ objectId, layoutProperties, pageProperties, pageElements }: 
 
 /**
  * Summarize a presentation read with `GoogleSlidesApi.getPresentation()`, its masters and layouts
- * taken from `themePages`.
+ * taken from `themePages`, and each slide in `summarized` as it holds it, at its place in `rest`.
  */
 export function presentationInfo(
   rest: RestPresentation, themePages: ReadonlyMap<string, RestThemePage> = themePagesOf(rest),
+  summarized: ReadonlyMap<string, SlideSummary> = new Map(),
 ): PresentationInfo {
   let layouts = layoutNames(rest);
   let pages = [...themePages.values()];
@@ -369,7 +373,10 @@ export function presentationInfo(
       width: points(emu(rest.pageSize?.width)), height: points(emu(rest.pageSize?.height)),
     },
     masters: pages.filter(page => page.pageType === "MASTER").map(page => masterOf(page)),
-    slides: (rest.slides ?? []).map((slide, index) => summaryOf(slide, index, layouts)),
+    slides: (rest.slides ?? []).map((slide, index) => {
+      let summary = slide.objectId === undefined ? undefined : summarized.get(slide.objectId);
+      return summary ? { ...summary, index } : summaryOf(slide, index, layouts);
+    }),
     layouts: pages.filter(page => page.pageType === "LAYOUT").flatMap(page => layoutOf(page)),
   };
 }

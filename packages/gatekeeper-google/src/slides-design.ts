@@ -145,6 +145,14 @@ export function designInPlace(
   });
 }
 
+/**
+ * The number of the change of a batch that `reason`, the message of a conflict `designInPlace`
+ * threw, names; 0 for any other reason.
+ */
+export function conflictedChange(reason: string): number {
+  return Number(/^change (\d+) \(/.exec(reason)?.[1] ?? 0);
+}
+
 // The page `pages` holds under `id`, to write: `held` itself when `own` has its ID, else a copy of
 // it, which takes its place in `pages`, and its ID a place in `own`.
 function writable<Page>(pages: Map<string, Page>, id: string, held: Page, own: Set<string>): Page {
