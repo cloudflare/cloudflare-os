@@ -65,8 +65,10 @@ export type ComposerProps = {
   /** The skills are still being read, and none are known yet: the add menu keeps their room. */
   commandsLoading?: boolean
   /**
-   * The skills are about to be wanted: a slash was typed or the + menu opened. For a composer
-   * whose commands are read only once someone looks for them, as a new chat's.
+   * The skills are about to be wanted: the composer was pointed at or written in, which is
+   * before the + menu is opened or a slash typed, so that they are there by then and the menu
+   * opens as it stays. For a composer whose commands are read only once someone is about to look
+   * for them, as a new chat's, rather than for everyone who only sees it.
    */
   onCommandsWanted?: () => void
   /**
@@ -293,6 +295,7 @@ export const Composer = ({ onSend, initialDraft, commands = [], commandsLoading,
         data-file-drag={isFileDragActive || undefined}
         className="relative overflow-clip rounded-[21px] bg-kumo-elevated ring-1 ring-kumo-line transition-shadow duration-100 hover:ring-kumo-focus/8 has-focus-visible:ring-kumo-focus/8 data-file-drag:ring-kumo-focus/8 motion-reduce:transition-none"
         {...dropHandlers}
+        onPointerEnter={onCommandsWanted}
         aria-busy={sending || undefined}
         onSubmit={(event) => {
           event.preventDefault()
@@ -409,6 +412,8 @@ export const Composer = ({ onSend, initialDraft, commands = [], commandsLoading,
               aria-activedescendant={picking ? `${pickerId}-${active}` : undefined}
               onChange={(event) => {
                 const field = event.currentTarget
+                // The first thing written in it.
+                if (text === '') onCommandsWanted?.()
                 readSlash(field)
                 // A link written out by hand is one once a space or a new line ends it; one
                 // pasted is told of as it is pasted.

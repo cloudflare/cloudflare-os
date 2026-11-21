@@ -83,7 +83,8 @@ export type NewChatPaneProps = {
 /**
  * The start of a conversation: sending the first message creates it, and it is then opened. It
  * can start with one of the commands of the workspace it starts in; where there is none yet, one
- * is made for it as the commands are first looked for, never before.
+ * is made for it as its composer is first pointed at or written in, so that its commands are
+ * read by the time they are looked for, and never for a page that is only seen.
  */
 export const NewChatPane = ({ header, sendingHeader = header, greeting, format, workspace, start, onStarted, startIn, listCommands, ensureWorkspace, initialText }: NewChatPaneProps) => {
   const model = useDefaultModel()
