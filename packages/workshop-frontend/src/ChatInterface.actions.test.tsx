@@ -364,6 +364,32 @@ describe('accepting a chat', () => {
     expect(accept().disabled).toBe(false)
   })
 
+  it('holds back a Retry that accepts the chat until every pending request is known', async () => {
+    const server = makeOverseer()
+    withChatApi(server, undefined, [
+      { id: 1, title: 'Chat', started: new Date(), lastActive: new Date() },
+    ])
+    const mergeChanges = vi.fn<Overseer['mergeChanges']>(async () => ({ outcome: 'merged' }))
+    Object.assign(server.overseer as object, { mergeChanges })
+    await renderChat(server.overseer, { selectedChatId: 1 })
+    await server.resolveSubscription()
+    const failed = entry(5, { chatId: 1, applyError: { message: 'Quota exceeded.', retryable: true } })
+    const retry = async () => {
+      const button = [...document.querySelectorAll('button')].find(b => b.textContent === 'Retry')
+      await act(async () => button!.click())
+    }
+    // An older page, with requests the accept would apply too, has not loaded.
+    await server.resolvePendingQuery({ entries: [failed], nextBeforeId: 5 })
+    await act(async () => flushFrames())
+    await openTray()
+    await retry()
+    expect(mergeChanges).not.toHaveBeenCalled()
+
+    await server.resolvePendingQuery({ entries: [] })
+    await retry()
+    expect(mergeChanges).toHaveBeenCalledWith(1, { through: 5 })
+  })
+
   it('accepts the held requests no chat made from the bar under the tray, outside any chat',
       async () => {
     const server = makeOverseer()

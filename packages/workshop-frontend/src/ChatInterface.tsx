@@ -4430,6 +4430,11 @@ function ChatInterface({
     readBlob: (oid) => overseer.readBlob(oid),
   };
   const handleAcceptChanges = async () => {
+    // The banner's button is disabled meanwhile; the tray's Retry gets here too.
+    if (acceptBlocked !== undefined) {
+      toasts.add({ title: acceptBlocked });
+      return;
+    }
     const chatId = selectedChatId;
     const through = acceptThrough(branchRequests);
     const reader = chatContent?.chatId === chatId ? chatContent : undefined;
