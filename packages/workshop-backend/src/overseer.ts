@@ -6176,17 +6176,27 @@ class OverseerImpl implements AgentHooks {
   // short, it has something to accept, and every pending action the accept would apply may be
   // applied automatically (#autoApprovable), which none that staging holds may. A creation, which
   // saving decides (see applyPendingAction), does not count, nor does what staging holds accepted
-  // until its resource is saved.
+  // until its resource is saved. Nor may the chat still propose a merge that left conflicts,
+  // resolved since or not: a user accepts those, whose client looks for what is left of them (see
+  // Overseer.mergeChanges()).
   #autoAcceptable(chatId: number): boolean {
     let meta = this.storage.chatMeta.get(chatId);
     let wait = this.#decisionWait(chatId);
     if (!meta || this.chatMode(meta) !== "auto" || wait?.pending || wait?.denied) return false;
     let branch = `chat:${chatId}`;
     let pending = this.#pendingOnBranch(branch);
-    return (pending.length > 0 || this.proposedChangeWorkpieceIds(chatId, meta).length > 0) &&
-        [...new Set(pending.map(record => record.gatekeeperId))].every(gatekeeperId =>
+    if (!(pending.length > 0 || this.proposedChangeWorkpieceIds(chatId, meta).length > 0) ||
+        ![...new Set(pending.map(record => record.gatekeeperId))].every(gatekeeperId =>
             this.#branchList(gatekeeperId, branch, false).every(r =>
-                this.#autoApprovable(r) || this.#awaitsSave(r)));
+                this.#autoApprovable(r) || this.#awaitsSave(r)))) {
+      return false;
+    }
+    let messages = [...this.storage.chats.list({prefix: chatKeyPrefix(chatId)})];
+    let statuses = chatChangeStatuses(messages);
+    return !messages.some(msg => msg.type === "changes" &&
+        statuses.get(msg.sequence) === undefined &&
+        [msg.mainlineMerge, ...msg.blueprintMerges ?? []].some(merge =>
+            (merge?.conflictPaths.length ?? 0) > 0));
   }
 
   // The chat context of the user `userId` names, on whose behalf an automatic approval is made

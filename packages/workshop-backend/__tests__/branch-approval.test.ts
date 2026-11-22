@@ -729,7 +729,8 @@ describe("chat modes", () => {
       const moved = async () => {
         const record = impl.storage.gadgets.get(10)!;
         impl.storage.gadgets.put({...record, commitId: await impl.gitCache.writeFilesAsCommit(
-            new Map([["b.txt", `${++moves}\n`]]), {parents: [], author: AUTHOR, message: "Moved",
+            new Map([["a.txt", "one\n"], ["b.txt", `${++moves}\n`]]),
+            {parents: [record.commitId!], author: AUTHOR, message: "Moved",
               timestamp: new Date(1)})} as never);
       };
       await proposeCode(impl, userId);
@@ -787,6 +788,19 @@ describe("chat modes", () => {
       await vi.waitFor(() => expect(states(impl, 1, 2)).toEqual(["approved", "approved"]));
       expect(impl.consumeCapturedActions(1)?.awaitDecision).toBe(false);
       expect(record(impl, 2)).toMatchObject({resolvedBy: USER, autoApproved: true});
+    });
+  });
+
+  it("leave the branch for a user while it proposes a merge that left conflicts", async () => {
+    const gatekeeper = legacyGatekeeper();
+    const {visit, userId} = await workspace(gatekeeper.facet);
+    await visit(async impl => {
+      await impl.submitAction(GK, 1, description(true), AGENT_A);
+      impl.addChatMessages(1, USER,
+          [{type: "changes", pins: [], mainlineMerge: {conflictPaths: ["G10/a.txt"], gadgets: []}}]);
+
+      await impl.autoAcceptBranch(1, userId);
+      expect(states(impl, 1)).toEqual(["pending"]);
     });
   });
 
