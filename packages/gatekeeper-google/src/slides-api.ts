@@ -13,13 +13,6 @@ const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
 // A slide is read on its own; a live slide of a title, a body and a table is about 30 KiB of
 // compact JSON with all its styles.
 const MAX_SLIDE_BYTES = 2 * 1024 * 1024;
-/** The most whole pages one read fetches at a time: each is held as text, then parsed, up to 2 MiB. */
-const MAX_PAGE_FETCHES = 4;
-/**
- * The most pages one read fetches at a time by label alone: the connections a Worker invocation
- * holds open at once, so a larger bound would only queue the rest in the runtime.
- */
-const MAX_LABEL_FETCHES = 6;
 const REQUEST_TIMEOUT_MS = 30_000;
 
 // A thumbnail response is a URL and two numbers.
@@ -369,75 +362,22 @@ export class GoogleSlidesApi {
     return layout;
   }
 
-  // `getSlide` of each of `ids` with `fields`, at most `limit` at a time, started in the order
-  // of `ids`. Once a request fails no other starts, and the read fails as soon as every request
-  // for an ID before the failed one has answered: of several failures it throws that of the ID
-  // earliest in `ids`, so the error a read reports does not depend on which answer came first,
-  // and a request for a later ID cannot change it. Those still running then finish unawaited,
-  // their answers dropped.
-  #getPages(
-    presentationId: string, ids: readonly string[], limit: number, fields: string,
-    keep: (page: RestSlide) => RestSlide = page => page,
-  ): Promise<RestSlide[]> {
-    return new Promise((resolve, reject) => {
-      let pages: RestSlide[] = [];
-      let answered: boolean[] = [];
-      let failures = new Map<number, unknown>();
-      let next = 0, settled = 0, done = false;
-      // Settles the read once the IDs answered from the first decide it.
-      let decide = () => {
-        while (settled < ids.length && answered[settled]) {
-          if (failures.has(settled)) {
-            done = true;
-            reject(failures.get(settled));
-            return;
-          }
-          settled++;
-        }
-        if (settled === ids.length) {
-          done = true;
-          resolve(pages);
-        }
-      };
-      let start = () => {
-        if (done || failures.size > 0 || next >= ids.length) return;
-        let index = next++;
-        this.getSlide(presentationId, ids[index], fields).then(
-          page => { pages[index] = keep(page); },
-          (error: unknown) => { failures.set(index, error); },
-        ).finally(() => {
-          answered[index] = true;
-          if (done) return;
-          decide();
-          start();
-        });
-      };
-      for (let i = 0; i < Math.min(limit, ids.length); i++) start();
-      decide();
-    });
-  }
-
   /**
    * Fetch the slides among `ids` that `order`, the deck's slide IDs, still has, in the order of
    * `ids`: a full page of each, but of each in `labelOnly` only what `slideLabel` keeps of what
-   * `LABEL_FIELDS` names.
+   * `LABEL_FIELDS` names, cut as it comes. Every request starts at once; a page's 2 MiB and the
+   * slides one read or change may name bound them. The read fails with the first failure to
+   * arrive; the requests still running then finish unawaited, their answers dropped.
    */
   async getSlides(
     presentationId: string, ids: Iterable<string>, order: readonly string[],
     labelOnly: ReadonlySet<string> = new Set(),
   ): Promise<Map<string, RestSlide>> {
     let wanted = [...ids].filter(id => order.includes(id));
-    // The whole pages come first and alone, so the two kinds are never in flight together: the
-    // most a read holds unparsed is four whole pages or six labels.
-    let pages = [
-      ...await this.#getPages(
-        presentationId, wanted.filter(id => !labelOnly.has(id)), MAX_PAGE_FETCHES, SLIDE_FIELDS),
-      ...await this.#getPages(
-        presentationId, wanted.filter(id => labelOnly.has(id)), MAX_LABEL_FETCHES, LABEL_FIELDS,
-        slideLabel),
-    ];
-    let byId = new Map(pages.map(page => [page.objectId!, page]));
-    return new Map(wanted.map(id => [id, byId.get(id)!]));
+    let slides = await Promise.all(wanted.map(id => labelOnly.has(id)
+      ? this.getSlide(presentationId, id, LABEL_FIELDS).then(slideLabel)
+      : this.getSlide(presentationId, id, SLIDE_FIELDS)));
+    return new Map(wanted.map((id, index) => [id, slides[index]]));
   }
 
   /** Render the latest version of a page as a PNG. Google counts this as an expensive read. */

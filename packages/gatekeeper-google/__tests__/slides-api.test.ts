@@ -10,8 +10,6 @@ type Asked = {
   id: string;
   fields: string | null;
   open: boolean;
-  /** Whole pages that were open when this request was made. */
-  wholeOpen: number;
   /** Answers with the page, or with `status` and no page. */
   answer(status?: number): void;
 };
@@ -30,7 +28,7 @@ function holdPages() {
     let id = decodeURIComponent(url.pathname.split("/").at(-1)!);
     let fields = url.searchParams.get("fields");
     asked.push({
-      id, fields, open: true, wholeOpen: open(SLIDE_FIELDS),
+      id, fields, open: true,
       answer(status = 200) {
         this.open = false;
         resolve(status === 200 ? Response.json({ objectId: id })
@@ -69,21 +67,21 @@ describe("GoogleSlidesApi.getSlides", () => {
     vi.unstubAllGlobals();
   });
 
-  it("starts no more than four page requests at a time", async () => {
+  it("starts every request at once, whole pages and labels together, in the order of the IDs", async () => {
     let pages = holdPages();
-    let wanted = ids(10);
-    let read = api.getSlides("deck-1", wanted, wanted);
+    let wanted = ids(30);
+    let whole = ["s3", "s8", "s12", "s17", "s24", "s30"];
+    let read = api.getSlides("deck-1", wanted, wanted, new Set(wanted.filter(id => !whole.includes(id))));
 
-    for (let answered = 0; answered < wanted.length; answered++) {
-      await pages.reaches(Math.min(wanted.length, 4 + answered));
-      await turns();
-      expect(pages.open(SLIDE_FIELDS)).toBe(Math.min(4, wanted.length - answered));
-      pages.asked[answered].answer();
-    }
+    await pages.reaches(30);
+    await turns();
+    expect(pages.asked).toHaveLength(30);
+    expect(pages.asked.map(page => [page.id, page.fields]))
+      .toEqual(wanted.map(id => [id, whole.includes(id) ? SLIDE_FIELDS : LABEL_FIELDS]));
+    expect(pages.most).toEqual({ [SLIDE_FIELDS]: 6, [LABEL_FIELDS]: 24 });
 
+    for (let page of pages.asked.toReversed()) page.answer();
     expect([...(await read).keys()]).toEqual(wanted);
-    expect(pages.asked.map(page => page.id)).toEqual(wanted);
-    expect(pages.most).toEqual({ [SLIDE_FIELDS]: 4, [LABEL_FIELDS]: 0 });
   });
 
   it("returns the slides in the order of the IDs, whatever order the answers come in", async () => {
@@ -91,11 +89,8 @@ describe("GoogleSlidesApi.getSlides", () => {
     let wanted = ["s3", "s1", "s2", "s5", "s4"];
     let read = api.getSlides("deck-1", wanted, ids(5), new Set(["s1", "s5"]));
 
-    // Each round's answers come newest first: the whole pages, then the labels.
-    await pages.reaches(3);
-    for (let page of pages.asked.slice(0, 3).toReversed()) page.answer();
     await pages.reaches(5);
-    for (let page of pages.asked.slice(3).toReversed()) page.answer();
+    for (let page of pages.asked.toReversed()) page.answer();
 
     let labelled = new Set(["s1", "s5"]);
     expect([...await read]).toEqual(wanted.map(id =>
@@ -152,7 +147,7 @@ describe("GoogleSlidesApi.getSlides", () => {
     expect(pages.asked).toHaveLength(2);
   });
 
-  it("fails with the earliest failed page's error when two fail, whichever answers first", async () => {
+  it("fails with the first failure to arrive when two fail", async () => {
     let pages = holdPages();
     let wanted = ids(4);
     let failure = failureOf(api.getSlides("deck-1", wanted, wanted));
@@ -165,116 +160,55 @@ describe("GoogleSlidesApi.getSlides", () => {
     pages.asked[3].answer();
     pages.asked[0].answer();
 
-    expect(await failure).toBe("Google Slides get slide failed [http=404]");
+    expect(await failure).toBe("Google Slides get slide failed [http=403]");
   });
 
-  it("starts no request after one fails, and fails once every earlier ID has answered", async () => {
+  it("fails at once on a failure, whatever is still running before or after it", async () => {
     let pages = holdPages();
     let wanted = ids(10);
     let settled = false;
     let failure = failureOf(api.getSlides("deck-1", wanted, wanted)).finally(() => { settled = true; });
-    await pages.reaches(4);
-    pages.asked[0].answer();
-    await pages.reaches(5);
+    await pages.reaches(10);
 
+    // s1 and s2 are still held, before it, and s4 to s10 after it.
     pages.asked[2].answer(404);
     await turns();
-    // The request for s2, before the failed one, could still fail first by the IDs' order.
-    expect(settled).toBe(false);
-    expect(pages.open(SLIDE_FIELDS)).toBe(3);
-
-    pages.asked[1].answer();
-    await turns();
-    // Those for s4 and s5 come after it and cannot change the error: the read fails while they run.
     expect(settled).toBe(true);
     expect(await failure).toBe("Google Slides get slide failed [http=404]");
-    expect(pages.open(SLIDE_FIELDS)).toBe(2);
+    expect(pages.open(SLIDE_FIELDS)).toBe(9);
 
-    // Their answers are dropped, and no other request starts.
-    pages.asked[3].answer();
-    pages.asked[4].answer(403);
-    await turns();
-    expect(pages.asked.map(page => page.id)).toEqual(wanted.slice(0, 5));
-  });
-
-  it("fails at once on the first ID's failure, whatever is still running", async () => {
-    let pages = holdPages();
-    let wanted = ids(6);
-    let settled = false;
-    let failure = failureOf(api.getSlides("deck-1", wanted, wanted)).finally(() => { settled = true; });
-    await pages.reaches(4);
-
-    pages.asked[0].answer(404);
-    await turns();
-    expect(settled).toBe(true);
-    expect(await failure).toBe("Google Slides get slide failed [http=404]");
-    expect(pages.open(SLIDE_FIELDS)).toBe(3);
-    await pages.answerAll();
-    expect(pages.asked).toHaveLength(4);
+    // Their answers, a failure among them, are dropped.
+    await pages.answerAll(page => page.id === "s1" ? 403 : 200);
+    expect(pages.asked).toHaveLength(10);
   });
 
   it("asks for label fields of the IDs it is told to, and the full page of the others", async () => {
     let pages = holdPages();
     let wanted = ids(4);
     let read = api.getSlides("deck-1", wanted, wanted, new Set(["s2", "s4", "s9"]));
-    await pages.reaches(2);
+    await pages.reaches(4);
     await pages.answerAll();
 
     expect([...(await read).keys()]).toEqual(wanted);
     expect(pages.asked.map(page => [page.id, page.fields])).toEqual([
-      ["s1", SLIDE_FIELDS], ["s3", SLIDE_FIELDS], ["s2", LABEL_FIELDS], ["s4", LABEL_FIELDS],
+      ["s1", SLIDE_FIELDS], ["s2", LABEL_FIELDS], ["s3", SLIDE_FIELDS], ["s4", LABEL_FIELDS],
     ]);
   });
 
-  it("starts up to six requests at a time when it asks only for labels", async () => {
-    let pages = holdPages();
-    let wanted = ids(30);
-    let read = api.getSlides("deck-1", wanted, wanted, new Set(wanted));
-
-    for (let answered = 0; answered < wanted.length; answered++) {
-      await pages.reaches(Math.min(wanted.length, 6 + answered));
+  it("fails with the first failure to arrive, whether that slide is read whole or by label", async () => {
+    // s2 fails with 403 and s5 with 404, s5 first; one of the two is read whole, the other by label.
+    for (let whole of ["s2", "s5"]) {
+      let pages = holdPages();
+      let wanted = ids(8);
+      let failure = failureOf(api.getSlides("deck-1", wanted, wanted, new Set(wanted.filter(id => id !== whole))));
+      await pages.reaches(8);
+      pages.asked[4].answer(404);
       await turns();
-      expect(pages.open(LABEL_FIELDS)).toBe(Math.min(6, wanted.length - answered));
-      pages.asked[answered].answer();
+      await pages.answerAll(page => page.id === "s2" ? 403 : 200);
+
+      expect(await failure).toBe("Google Slides get slide failed [http=404]");
+      expect(pages.asked.filter(page => page.fields === SLIDE_FIELDS).map(page => page.id)).toEqual([whole]);
+      vi.unstubAllGlobals();
     }
-
-    expect([...(await read).keys()]).toEqual(wanted);
-    expect(pages.most).toEqual({ [SLIDE_FIELDS]: 0, [LABEL_FIELDS]: 6 });
-  });
-
-  it("fetches a mixed read's whole pages four at a time, then its labels six at a time", async () => {
-    let pages = holdPages();
-    let wanted = ids(30);
-    let whole = ["s3", "s8", "s12", "s17", "s24", "s30"];
-    let read = api.getSlides("deck-1", wanted, wanted, new Set(wanted.filter(id => !whole.includes(id))));
-
-    for (let answered = 0; answered < wanted.length; answered++) {
-      // The whole pages, four open; once the last has answered, the labels, six open.
-      await pages.reaches(answered < 6 ? Math.min(6, 4 + answered) : Math.min(wanted.length, 6 + answered));
-      await turns();
-      pages.asked[answered].answer();
-    }
-
-    expect([...(await read).keys()]).toEqual(wanted);
-    expect(pages.asked.slice(0, 6).map(page => [page.id, page.fields]))
-      .toEqual(whole.map(id => [id, SLIDE_FIELDS]));
-    let labels = pages.asked.slice(6);
-    expect(labels.map(page => page.id)).toEqual(wanted.filter(id => !whole.includes(id)));
-    expect(labels.every(page => page.fields === LABEL_FIELDS && page.wholeOpen === 0)).toBe(true);
-    expect(pages.most).toEqual({ [SLIDE_FIELDS]: 4, [LABEL_FIELDS]: 6 });
-  });
-
-  it("asks for no label once a whole page fails, and reports the whole page's error", async () => {
-    let pages = holdPages();
-    let wanted = ids(12);
-    let whole = ["s2", "s5", "s9"];
-    let failure = failureOf(
-      api.getSlides("deck-1", wanted, wanted, new Set(wanted.filter(id => !whole.includes(id)))));
-    await pages.reaches(3);
-    await pages.answerAll(page => page.id === "s5" ? 404 : 200);
-
-    expect(await failure).toBe("Google Slides get slide failed [http=404]");
-    expect(pages.asked.map(page => [page.id, page.fields]))
-      .toEqual(whole.map(id => [id, SLIDE_FIELDS]));
   });
 });
