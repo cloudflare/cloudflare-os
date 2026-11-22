@@ -774,6 +774,23 @@ describe("chat modes", () => {
     });
   });
 
+  it("leave the branch for a user once an awaited action of the turn was denied", async () => {
+    const gatekeeper = legacyGatekeeper();
+    const {visit, userId} = await workspace(gatekeeper.facet);
+    await visit(async impl => {
+      startTurn(impl, userId);
+      await impl.submitAction(GK, 1, description(true), AGENT_A);
+      await impl.submitAction(GK, 2, description(false, true), AGENT_A);
+      impl.addChatMessages(1, {type: "agent", id: "model", name: "Model"} as never,
+          [{type: "action", actionId: record(impl, 2).id}]);
+      await impl.rejectPendingAction(record(impl, 2), USER);
+
+      await impl.autoAcceptBranch(1, userId);
+      expect(states(impl, 1, 2)).toEqual(["pending", "rejected"]);
+      expect(gatekeeper.applied).toEqual([]);
+    });
+  });
+
   it("leave an awaited action for a user when the chat leaves Auto before it applies", async () => {
     const gatekeeper = legacyGatekeeper();
     const {visit, userId} = await workspace(gatekeeper.facet);

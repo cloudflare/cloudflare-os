@@ -6168,15 +6168,15 @@ class OverseerImpl implements AgentHooks {
   }
 
   // Whether chat `chatId`'s branch may be accepted automatically (see autoAcceptBranch): its mode
-  // is Auto (chatMode), its agent waits on no decision, it has something to accept, and every
-  // pending action the accept would apply may be applied automatically (#autoApprovable), which
-  // none that staging holds may. A creation, which saving decides (see applyPendingAction), does
-  // not count, nor does what staging holds accepted until its resource is saved.
+  // is Auto (chatMode), its agent waits on no decision and had none denied, which cut its turn
+  // short, it has something to accept, and every pending action the accept would apply may be
+  // applied automatically (#autoApprovable), which none that staging holds may. A creation, which
+  // saving decides (see applyPendingAction), does not count, nor does what staging holds accepted
+  // until its resource is saved.
   #autoAcceptable(chatId: number): boolean {
     let meta = this.storage.chatMeta.get(chatId);
-    if (!meta || this.chatMode(meta) !== "auto" || this.#decisionWait(chatId)?.pending) {
-      return false;
-    }
+    let wait = this.#decisionWait(chatId);
+    if (!meta || this.chatMode(meta) !== "auto" || wait?.pending || wait?.denied) return false;
     let branch = `chat:${chatId}`;
     let pending = this.#pendingOnBranch(branch);
     return (pending.length > 0 || this.proposedChangeWorkpieceIds(chatId, meta).length > 0) &&
