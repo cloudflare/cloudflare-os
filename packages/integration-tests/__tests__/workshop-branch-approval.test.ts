@@ -2,9 +2,9 @@
 // agent turns. The fixture's writes are awaited actions (ActionDescription.awaitDecision), so the
 // agent's turn waits on each: approving one applies its chat's earlier actions on the connection
 // and the older staged ones, in ID order, through applyAction() for a gatekeeper that applies one
-// action at a time; rules apply it at once; and discarding the chat rejects it. A write outside any
-// chat is staged, and applies at once. The kernel's unit tests (branch-approval.test.ts) cover
-// accepts of actions nothing waits on, and staging while it holds.
+// action at a time; a chat in Auto applies an auto-approvable one at once; and discarding the chat
+// rejects it. A write outside any chat is staged, and applies at once. The kernel's unit tests
+// (branch-approval.test.ts) cover accepts of actions nothing waits on, and staging while it holds.
 
 import { afterAll, beforeAll, expect, it } from "vitest";
 import type { RpcStub } from "capnweb";
@@ -37,8 +37,6 @@ afterAll(async () => {
     network.uninstall();
   }
 });
-
-const SET_VALUE = { tag: "set-value", label: "Set value" };
 
 const executeCode = (code: string): ChatCompletionStep => ({
   toolCall: {
@@ -103,7 +101,7 @@ it.concurrent("a staged write applies at once, and approving an awaited write ap
   });
 });
 
-it.concurrent("a rule applies an awaited write at once, and the turn carries on", async () => {
+it.concurrent("a chat in Auto applies an auto-approvable awaited write at once, and the turn carries on", async () => {
   const model = models.script([
     executeCode("await env.TEST_AMBIENT.readValue()"), { text: "Read." },
     executeCode("await env.TEST_AMBIENT.writeValue(7, {autoApprovable: true})"),
@@ -113,10 +111,6 @@ it.concurrent("a rule applies an awaited write at once, and the turn carries on"
   const label = labelOf(agent);
   await agent.runTurn("Read the test value.");
   await withOwnerWorkspace(harness.url, agent.username, async overseer => {
-    const { gatekeeperId, session } = await stagingSession(overseer);
-    session[Symbol.dispose]();
-    await overseer.setAutoApprovedActionKind(gatekeeperId, SET_VALUE);
-
     await agent.runTurn("Set the test value to 7.");
     await waitFor("the write to apply", async () =>
       (await writes(overseer))[0]?.state === "approved" || null);

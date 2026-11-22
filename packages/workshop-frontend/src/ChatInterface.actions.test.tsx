@@ -368,10 +368,10 @@ describe('accepting a chat', () => {
   it("shows holding in the open chat's header, and turns it off there", async () => {
     const server = makeOverseer()
     withChatApi(server, undefined, [
-      { id: 1, title: 'Chat', started: new Date(), lastActive: new Date(), holding: true },
+      { id: 1, title: 'Chat', started: new Date(), lastActive: new Date(), mode: 'fork' },
     ])
-    const setChatHolding = vi.fn<Overseer['setChatHolding']>(async () => {})
-    Object.assign(server.overseer as object, { setChatHolding })
+    const setChatMode = vi.fn<Overseer['setChatMode']>(async () => {})
+    Object.assign(server.overseer as object, { setChatMode })
     await renderChat(server.overseer, { selectedChatId: 1 })
     await server.resolveSubscription()
 
@@ -379,7 +379,7 @@ describe('accepting a chat', () => {
     expect(toggle.textContent).toBe('Hold changes')
     expect(toggle.getAttribute('aria-pressed')).toBe('true')
     await act(async () => toggle.click())
-    expect(setChatHolding).toHaveBeenCalledExactlyOnceWith(1, false)
+    expect(setChatMode).toHaveBeenCalledExactlyOnceWith(1, 'auto')
   })
 
   it('reports the chats with changes waiting, for the Activity page', async () => {

@@ -1,40 +1,13 @@
-// Auto-approval: the rule that decides whether an action may be applied without a human, and the
-// drain core, which hands the pending actions a selector picks on a gatekeeper to the routine that
-// applies a list, with a per-gatekeeper single-flight guard so that work submitted during a drain
-// (the DO's input gate is open across the apply await) is drained too. Both the selector and the
-// apply are injected, keeping this constructible in tests.
+// Auto-approval's drain core, which hands the pending actions a selector picks on a gatekeeper to
+// the routine that applies a list, with a per-gatekeeper single-flight guard so that work
+// submitted during a drain (the DO's input gate is open across the apply await) is drained too.
+// Both the selector and the apply are injected, keeping this constructible in tests.
 
-import type { Collection, Singleton } from "@gadgets/typed-storage";
 import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api";
 import { createWorkshopLogger } from "./observability";
-import type {
-  ActionRecord, AutoApproveTagRecord, StoredActionDescription,
-} from "./storage-schema/overseer-storage.js";
+import type { ActionRecord } from "./storage-schema/overseer-storage.js";
 
 const logger = createWorkshopLogger("workshop.auto.approval");
-
-export interface AutoApprovalStorage {
-  autoApproveTags: Collection<AutoApproveTagRecord>;
-
-  /** The restricted-data latch (see makeOverseerStorage). While set, nothing auto-approves. */
-  containsRestrictedData: Singleton<boolean>;
-}
-
-/**
- * The single authority on whether an action may be applied without a human: the enabling rule if
- * the author marked the action `autoApprovable`, the user enabled a rule for its `actionKind` on
- * this gatekeeper, and the workspace has not latched restricted mode; else undefined. A stored
- * description may lack the verdict, which counts as no.
- */
-export function autoApprovalRule(
-    storage: AutoApprovalStorage, gatekeeperId: number, description: StoredActionDescription)
-    : AutoApproveTagRecord | undefined {
-  if (description.autoApprovable !== true) return undefined;
-  let tag = description.actionKind?.tag;
-  if (tag === undefined) return undefined;
-  if (storage.containsRestrictedData.get()) return undefined;
-  return storage.autoApproveTags.get(`${gatekeeperId}:${tag}`);
-}
 
 /**
  * A pending action to apply, and the user it is applied as. `eligible`, when present, says whether

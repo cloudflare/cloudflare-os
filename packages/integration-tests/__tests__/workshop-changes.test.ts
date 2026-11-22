@@ -163,7 +163,8 @@ it.concurrent("accepting agent changes makes the gadget, its code and its bindin
     { text: "Done." },
   ]);
   await using session = await openAgentSession(harness.url, {
-    modelId: SCRIPTED_MODEL_ID, userModel: model.userModel, ambientVendorIds: [TEST_VENDOR_ID],
+    modelId: SCRIPTED_MODEL_ID, mode: "review", userModel: model.userModel,
+    ambientVendorIds: [TEST_VENDOR_ID],
   });
   const { outcome, history } = await session.runTurn("Build an app bound to the test data.");
   expect(outcome).toEqual({ status: "completed" });
@@ -211,7 +212,8 @@ it.concurrent("one accept commits both gadgets a chat built, each with only its 
     { text: "Done." },
   ]);
   await using session = await openAgentSession(harness.url, {
-    modelId: SCRIPTED_MODEL_ID, userModel: model.userModel, ambientVendorIds: [TEST_VENDOR_ID],
+    modelId: SCRIPTED_MODEL_ID, mode: "review", userModel: model.userModel,
+    ambientVendorIds: [TEST_VENDOR_ID],
   });
   const { outcome, history } = await session.runTurn("Build two apps bound to the test data.");
   expect(outcome).toEqual({ status: "completed" });
@@ -448,7 +450,7 @@ it.concurrent("reverting agent steps drops their code, then the gadget and its n
     { text: "Done." },
   ]);
   await using session = await openAgentSession(harness.url, {
-    modelId: SCRIPTED_MODEL_ID, userModel: model.userModel,
+    modelId: SCRIPTED_MODEL_ID, mode: "review", userModel: model.userModel,
   });
   const { outcome, history } = await session.runTurn("Build an app.");
   expect(outcome).toEqual({ status: "completed" });

@@ -77,7 +77,9 @@ it.concurrent("a worktree stays private to its chat; merge, revert and delete ke
   ]);
   await api.addModel(model.userModel.profile, model.userModel.config);
 
-  const chatA = await ws.newChat("Make a worktree.", SCRIPTED_MODEL_ID);
+  // In Review, so that the worktree's changes wait for the user's accept.
+  const chatA = await ws.newChat(
+      "Make a worktree.", SCRIPTED_MODEL_ID, undefined, undefined, undefined, "review");
   await waitFor("three model requests", async () => model.requests.length === 3 ? true : null);
   await waitForIdleChat(ws, chatA);
 

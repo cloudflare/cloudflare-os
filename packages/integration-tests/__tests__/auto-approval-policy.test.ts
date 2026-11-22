@@ -3,8 +3,9 @@
 // A write outside any chat (a user's session on the connection) is staged, and applies at once
 // as the workspace owner, unless the restricted-data latch makes staging hold it. A chat's write
 // waits for the chat; one the agent waits on (every fixture write) applies as it is submitted only
-// when the author's `autoApprovable` verdict AND a user-enabled rule for its kind cover it. (The
-// web-fetch restriction has no client-reachable surface, so it is not asserted here.)
+// when the chat is in Auto and the author's `autoApprovable` verdict covers it and every earlier
+// pending write on the chat's branch. Rules have no effect. (The web-fetch restriction has no
+// client-reachable surface, so it is not asserted here.)
 //
 // The fixture gatekeeper's session drives this through the real ApprovalQueue funnel:
 // `writeValue()` submits an awaited `set-value` action with the given verdict, and `applyAction`
@@ -112,7 +113,6 @@ describe("auto-approval policy", () => {
   it.concurrent("applies a staged action at once, with no human involved", async () => {
     await withSession(async publicApi => {
       const ws = await newWorkspace(publicApi, "auto-happy");
-      await ws.overseer.setAutoApprovedActionKind(ws.gatekeeperId, SET_VALUE);
       await expect(ws.session.writeValue(1, { autoApprovable: true }))
           .resolves.toEqual(expect.any(Number));
 
@@ -159,7 +159,7 @@ describe("auto-approval policy", () => {
     });
   });
 
-  it.concurrent("removing an auto-approval rule returns eligible writes to manual approval",
+  it.concurrent("switching a chat to Review returns eligible writes to manual approval",
       async () => {
     const model = models.script([
       executeCode("await env.TEST_AMBIENT.readValue()"), { text: "Read." },
@@ -172,16 +172,13 @@ describe("auto-approval policy", () => {
     const label = accountLabel(agent.connectedAccount(TEST_VENDOR_ID));
     await agent.runTurn("Read the test value.");
     await withOwnerWorkspace(harness.url, agent.username, async overseer => {
-      const gatekeeperId = await enableRule(overseer);
-
       await agent.runTurn("Set the test value to 1.");
       await waitFor("the first write to be applied", async () =>
         (await actionState(label)).applyCount === 1 || null);
       const [first] = await chatWrites(overseer);
       expect(first).toMatchObject({ state: "approved", autoApproved: true });
 
-      await overseer.removeAutoApprovedActionKind(gatekeeperId, SET_VALUE.tag);
-      await expect(overseer.listAutoApprovedActionKinds()).resolves.toEqual([]);
+      await overseer.setChatMode(first.chatId!, "review");
 
       await agent.runTurn("Set the test value to 2.");
       const [, held] = await chatWrites(overseer);
@@ -197,17 +194,15 @@ describe("auto-approval policy", () => {
     });
   });
 
-  it.concurrent("enabling a rule applies the eligible writes already pending, and leaves manual ones",
+  it.concurrent("an eligible write waits behind a manual one, and enabling a rule applies neither",
       async () => {
     const model = models.script([
       executeCode(
-          "await env.TEST_AMBIENT.writeValue(1, {autoApprovable: true}), " +
-          "await env.TEST_AMBIENT.writeValue(2)"),
+          "await env.TEST_AMBIENT.writeValue(1), " +
+          "await env.TEST_AMBIENT.writeValue(2, {autoApprovable: true})"),
     ]);
     await using agent = await openAgent(model, "autopending");
     const label = accountLabel(agent.connectedAccount(TEST_VENDOR_ID));
-    // Eligible first: a rule applies an awaited write only with every earlier one on its chat's
-    // branch.
     await agent.runTurn("Set the test value to 1, then 2.");
     await withOwnerWorkspace(harness.url, agent.username, async overseer => {
       expect((await chatWrites(overseer)).map(write => write.state))
@@ -218,14 +213,11 @@ describe("auto-approval policy", () => {
       await overseer.setAutoApprovedActionKind((await chatWrites(overseer))[0].gatekeeperId!,
           SET_VALUE);
 
-      await waitFor("the eligible write to be approved", async () =>
-        (await chatWrites(overseer))[0]?.state === "approved" || null);
       await settle({ overseer } as Workspace);
-      const [applied, held] = await chatWrites(overseer);
-      expect(applied).toMatchObject({ state: "approved", autoApproved: true });
-      expect(held.state).toBe("pending");
+      expect((await chatWrites(overseer)).map(write => write.state))
+          .toEqual(["pending", "pending"]);
       await expect(actionState(label)).resolves.toEqual(
-          { pending: [{ id: 2, value: 2 }], value: 1, applyCount: 1 });
+          { pending: [{ id: 1, value: 1 }, { id: 2, value: 2 }], applyCount: 0 });
     });
   });
 });
@@ -244,15 +236,6 @@ const openAgent = (model: RoutedScriptedModel, usernamePrefix: string) =>
     modelId: SCRIPTED_MODEL_ID, userModel: model.userModel, ambientVendorIds: [TEST_VENDOR_ID],
     usernamePrefix,
   });
-
-// A rule for the fixture's writes on the ambient connection, which a first turn read through, so
-// that its ID is in the log.
-async function enableRule(overseer: RpcStub<Overseer>): Promise<number> {
-  const { entries } = await overseer.listActions({ filter: "observation" });
-  const gatekeeperId = entries[0].gatekeeperId!;
-  await overseer.setAutoApprovedActionKind(gatekeeperId, SET_VALUE);
-  return gatekeeperId;
-}
 
 async function chatWrites(overseer: RpcStub<Overseer>) {
   const { entries } = await overseer.listActions({ filter: "action" });

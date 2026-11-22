@@ -1344,14 +1344,13 @@ export default function GadgetEditor() {
     [id, navigate, selectedWorkpieceSummary?.chatId, workspaceView?.mode, agentChatId, workingChatId]
   )
 
-  // An agentless chat with holding on (see Overseer.setChatHolding()), with the gadget opened in
-  // it.
+  // An agentless chat in Fork (see ChatMode), with the gadget opened in it.
   const holdChanges = async (gadget: { title: string }) => {
     if (!overseerStub) return
     try {
       const chatId = await overseerStub.newChat(
-        `Holding the changes made in ${gadget.title} for review.`, null)
-      await overseerStub.setChatHolding(chatId, true)
+        `Holding the changes made in ${gadget.title} for review.`, null,
+        undefined, undefined, undefined, 'fork')
       navigateToChat(chatId)
     } catch {
       toasts.add({ title: 'Failed to hold changes', variant: 'error' })
@@ -2367,7 +2366,7 @@ export default function GadgetEditor() {
                 />
               )}
 
-              {/* Holding the gadget's changes runs it in a chat of its own with holding on, so its
+              {/* Holding the gadget's changes runs it in a chat of its own in Fork, so its
                   requests wait there for review. */}
               {!paneShowsActivity && selectedGadgetSummary &&
                 previewChatId === undefined && (

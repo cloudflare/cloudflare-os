@@ -2,7 +2,7 @@ import { Tooltip } from '@cloudflare/kumo'
 import { HandPalm } from '@phosphor-icons/react'
 
 /**
- * The open chat's holding toggle (see Overseer.setChatHolding()).
+ * The open chat's holding toggle, which puts it in Fork or Auto (see Overseer.setChatMode()).
  * Named "Hold changes" in both states, as a pressed toggle; the name shows beside the icon only
  * while holding is on, so the header says so at a glance.
  */

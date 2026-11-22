@@ -112,11 +112,12 @@ describe("the orphan rejection migration", () => {
 });
 
 describe("the staging hold migration", () => {
-  const migrate = (raw: ReturnType<typeof makeMockStorage>) => {
+  const migrate = (raw: ReturnType<typeof makeMockStorage>, proposing: number[] = []) => {
     let storage = makeOverseerStorage(raw);
     storage.version.put(9);
     migrateToHeldStaging({
       storage, ctx: {storage: raw}, logger: createWorkshopLogger("test.staging-hold-migration"),
+      proposedChangeWorkpieceIds: (chatId: number) => proposing.includes(chatId) ? [5] : [],
     } as OverseerMigrationHost);
     expect(storage.version.get()).toBe(10);
     return storage;
@@ -147,5 +148,20 @@ describe("the staging hold migration", () => {
     migrate(raw);
 
     expect([...storage.actions.list()]).toEqual(before);
+  });
+
+  it("puts a chat with changes pending in Review, and leaves the others in Auto", () => {
+    let raw = makeMockStorage();
+    let storage = makeOverseerStorage(raw);
+    for (let id of [1, 2, 3, 4]) {
+      storage.chatMeta.put({id, title: `Chat ${id}`, started: new Date(0), lastActive: new Date(id)});
+    }
+    storage.actions.put(pendingAction(1, {from: "agent", chatId: 1}));
+    storage.actions.put(pendingAction(2, {from: "user", chatId: 3}, "approved"));
+
+    migrate(raw, [2]);
+
+    expect([1, 2, 3, 4].map(id => storage.chatMeta.get(id)?.mode))
+        .toEqual(["review", "review", undefined, undefined]);
   });
 });

@@ -1,14 +1,16 @@
 // The branch approval model (plans/forking-reality.md):
 // accepting a chat applies what staging holds on its connections and then the chat's actions,
-// discarding or deleting it rejects them, auto-approval accepts a chat whose actions rules cover
-// all of, and an awaited action keeps a decision of its own; staged actions apply at once unless
-// staging holds them, and gadgets run on a chat's branch when the chat calls for it. The gatekeeper
-// facets are plain objects, as in apply-actions.test.ts; packages/integration-tests drives real
-// ones and real turns.
+// discarding or deleting it rejects them, a chat in Auto is accepted at the end of a turn when all
+// of it is auto-approvable, and an awaited action keeps a decision of its own; staged actions apply
+// at once unless staging holds them, and gadgets run on a chat's branch when the chat is forked or
+// an agent invoked them (plan part 2, "Chat modes"). The gatekeeper facets are plain objects, as in
+// apply-actions.test.ts; packages/integration-tests drives real ones and real turns.
 
 import { env, RpcStub } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ChatMode } from "@gadgets/workshop-shared/api";
+import { diffFiles } from "@gadgets/workshop-shared/code-change";
 import type { ApplyActionsResult, BranchView } from "@gadgets/workshop-shared/gatekeeper";
 import type { OverseerDurableObject } from "../src/overseer";
 import type { UserDurableObject } from "../src/user";
@@ -30,7 +32,7 @@ type Impl = OverseerDurableObject["impl"];
 
 const GK = 7;
 const USER = {type: "user" as const, id: "approver", name: "Approver"};
-const RULE_OWNER = {type: "user" as const, id: "rules", name: "Rule Owner"};
+const AUTHOR = {name: "Approver", email: "approver@example.com"};
 const STAGED: GatekeeperCaller = {from: "user"};
 const CHAT_A: GatekeeperCaller = {from: "user", chatId: 1};
 const CHAT_B: GatekeeperCaller = {from: "user", chatId: 2};
@@ -60,6 +62,7 @@ async function workspace(facet: object) {
   });
   return {
     visit,
+    userId: user.id.toString(),
     client: () => env.TEST_OVERSEER.get(stub.id).open(user.id.toString(), USER.id,
         new RpcStub(() => {})),
   };
@@ -126,8 +129,30 @@ async function upgradeWith(impl: Impl, arrange: () => Promise<unknown>) {
   migrateToHeldStaging(impl);
 }
 
-const enableRule = (impl: Impl) =>
-  impl.storage.autoApproveTags.put({gatekeeperId: GK, actionKind: EDITS, enabledBy: RULE_OWNER});
+const setMode = (impl: Impl, chatId: number, mode: ChatMode) =>
+  impl.storage.chatMeta.put({...impl.storage.chatMeta.get(chatId)!, mode});
+
+// Stands in for an agent turn in chat `chatId` that the user `userId` names started.
+const startTurn = (impl: Impl, userId: string, chatId = 1) => impl.storage.activeAgents.put(
+    {chatId, modelId: "model", initiatorUserId: userId, initiator: USER, callbackInitiated: false});
+
+const addGadget = (impl: Impl, id: number, commitId?: string) => impl.storage.gadgets.put({
+  type: "gadget", id, title: `G${id}`, created: new Date(0), bindingName: `G${id}`, bindings: {},
+  ...(commitId !== undefined ? {commitId} : {}),
+} as never);
+
+// Gadget 10, holding a file, and chat 1 proposing a change to it, as the user `userId` names.
+// Resolves to the gadget's head.
+async function proposeCode(impl: Impl, userId: string): Promise<string> {
+  const head = await impl.gitCache.writeFilesAsCommit(new Map([["a.txt", "one\n"]]),
+      {parents: [], author: AUTHOR, message: "Create", timestamp: new Date(0)});
+  addGadget(impl, 10, head);
+  const files = (text: string) => new Map([[10, new Map([["a.txt", text]])]]);
+  await impl.submitCodeChange(1, {generation: 0, revision: 0, clientId: "test", seq: 1,
+    pins: [{gadgetId: 10, baseCommit: head}], change: diffFiles(files("one\n"), files("two\n"))},
+  USER, userId);
+  return head;
+}
 
 describe("accepting a chat", () => {
   it("applies staging on its connection and then its own actions, in ID order, one at a time",
@@ -344,51 +369,35 @@ describe("approving one action", () => {
   });
 });
 
-describe("auto-approval", () => {
-  it("applies an awaited action at once when rules cover it and what it follows", async () => {
+describe("chat modes", () => {
+  it("accept a chat in Auto at the end of a turn, code included, for the turn's user",
+      async () => {
     const gatekeeper = legacyGatekeeper();
-    const {visit} = await workspace(gatekeeper.facet);
+    const {visit, userId} = await workspace(gatekeeper.facet);
     await visit(async impl => {
-      enableRule(impl);
+      const head = await proposeCode(impl, userId);
       await impl.submitAction(GK, 1, description(true), AGENT_A);
-      await impl.submitAction(GK, 2, description(true, true), AGENT_A);
-      await vi.waitFor(() => expect(states(impl, 1, 2)).toEqual(["approved", "approved"]));
-      expect(impl.consumeCapturedActions(1)?.awaitDecision).toBe(false);
-      expect(record(impl, 2)).toMatchObject({resolvedBy: RULE_OWNER, autoApproved: true});
-    });
-  });
-
-  it("leaves an awaited action for a user when an earlier one needs one", async () => {
-    const gatekeeper = legacyGatekeeper();
-    const {visit} = await workspace(gatekeeper.facet);
-    await visit(async impl => {
-      enableRule(impl);
-      await impl.submitAction(GK, 1, description(false), AGENT_A);
-      await impl.submitAction(GK, 2, description(true, true), AGENT_A);
-      expect(impl.consumeCapturedActions(1)?.awaitDecision).toBe(true);
-      expect(states(impl, 1, 2)).toEqual(["pending", "pending"]);
-      expect(gatekeeper.applied).toEqual([]);
-    });
-  });
-
-  it("accepts a chat whose actions rules cover, as the users who enabled them", async () => {
-    const gatekeeper = legacyGatekeeper();
-    const {visit} = await workspace(gatekeeper.facet);
-    await visit(async impl => {
-      await impl.submitAction(GK, 1, description(true), CHAT_A);
       await impl.submitAction(GK, 2, description(true), CHAT_A);
-      await impl.autoAcceptBranch(1);
-      expect(states(impl, 1, 2)).toEqual(["pending", "pending"]);  // no rule yet
-
-      enableRule(impl);
-      await impl.autoAcceptBranch(1);
+      await impl.autoAcceptBranch(1, userId);
       expect(states(impl, 1, 2)).toEqual(["approved", "approved"]);
-      expect(record(impl, 2)).toMatchObject({resolvedBy: RULE_OWNER, autoApproved: true});
+      expect(record(impl, 2)).toMatchObject({resolvedBy: USER, autoApproved: true});
+      expect(impl.storage.gadgets.get(10)).not.toMatchObject({commitId: head});
+      expect(impl.isForked(1, impl.storage.chatMeta.get(1)!)).toBe(false);
+    });
+  });
+
+  it("accept a chat in Auto that proposes only code", async () => {
+    const {visit, userId} = await workspace(legacyGatekeeper().facet);
+    await visit(async impl => {
+      const head = await proposeCode(impl, userId);
+      await impl.autoAcceptBranch(1, userId);
+      expect(impl.storage.gadgets.get(10)).not.toMatchObject({commitId: head});
+      expect(impl.proposedChangeWorkpieceIds(1, impl.storage.chatMeta.get(1)!)).toEqual([]);
     });
   });
 
   it.each([
-    ["one of its actions needs a user", async (impl: Impl) => {
+    ["one of its actions is not auto-approvable", async (impl: Impl) => {
       await impl.submitAction(GK, 3, description(false), CHAT_A);
     }],
     ["staging holds an action that failed on its connection",
@@ -398,50 +407,245 @@ describe("auto-approval", () => {
       await impl.drainAutoApprovals(GK);
       expect(record(impl, 3).applyError?.message).toMatch(/^Out of order\./);
     }],
-    ["holding is on in it", (impl: Impl) => {
-      impl.storage.chatMeta.put({...impl.storage.chatMeta.get(1)!, holding: true});
+    ["staging holds an action from before the upgrade", async (impl: Impl) => {
+      holdStaging(impl);
+      await impl.submitAction(GK, 3, description(true), STAGED);
+      impl.storage.actions.put({...record(impl, 3), heldForReview: true});
+      impl.storage.containsRestrictedData.put(false);
     }],
-    ["it proposes code changes", (impl: Impl) => {
-      vi.spyOn(impl, "proposedChangeWorkpieceIds").mockReturnValue([5]);
+    ["it is creating a resource", async (impl: Impl) => {
+      await impl.submitAction(GK, "create", description(true), AGENT_A);
     }],
-    ["the workspace has read restricted data", (impl: Impl) => {
-      impl.storage.containsRestrictedData.put(true);
-    }],
-  ])("accepts nothing when %s", async (_, arrange) => {
+    ["it is in Review", (impl: Impl) => setMode(impl, 1, "review")],
+    ["it is in Fork", (impl: Impl) => setMode(impl, 1, "fork")],
+    // Also once the turn is under way: the latch can set at any time.
+    ["the workspace has read restricted data", (impl: Impl) => holdStaging(impl)],
+  ])("accept nothing when %s", async (_, arrange) => {
     const gatekeeper = legacyGatekeeper();
-    const {visit} = await workspace(gatekeeper.facet);
+    const {visit, userId} = await workspace(gatekeeper.facet);
     await visit(async impl => {
-      enableRule(impl);
+      const head = await proposeCode(impl, userId);
       await impl.submitAction(GK, 1, description(true), CHAT_A);
       await impl.submitAction(GK, 2, description(true), CHAT_A);
       await arrange(impl, gatekeeper);
-      await impl.autoAcceptBranch(1);
+      await impl.autoAcceptBranch(1, userId);
       expect(states(impl, 1, 2)).toEqual(["pending", "pending"]);
+      expect(gatekeeper.applied).toEqual([]);
+      expect(impl.storage.gadgets.get(10)).toMatchObject({commitId: head});
+    });
+  });
+
+  it("accept what earlier turns left, at the end of the next that completes", async () => {
+    const gatekeeper = legacyGatekeeper();
+    const {visit, userId} = await workspace(gatekeeper.facet);
+    await visit(async impl => {
+      // A stopped turn ends with no accept.
+      await impl.submitAction(GK, 1, description(true), AGENT_A);
+      await impl.submitAction(GK, 2, description(true), AGENT_A);
+      await impl.autoAcceptBranch(1, userId);
+      expect(states(impl, 1, 2)).toEqual(["approved", "approved"]);
+    });
+  });
+
+  it("read the mode as the turn ends", async () => {
+    const gatekeeper = legacyGatekeeper();
+    const {visit, userId} = await workspace(gatekeeper.facet);
+    await visit(async impl => {
+      setMode(impl, 1, "review");
+      await impl.submitAction(GK, 1, description(true), AGENT_A);
+      setMode(impl, 1, "auto");
+      await impl.autoAcceptBranch(1, userId);
+      expect(states(impl, 1)).toEqual(["approved"]);
+      await impl.submitAction(GK, 2, description(true), AGENT_A);
+      setMode(impl, 1, "review");
+      await impl.autoAcceptBranch(1, userId);
+      expect(states(impl, 2)).toEqual(["pending"]);
+    });
+  });
+
+  it("apply nothing when mainline has moved, and leave only the code when it moves meanwhile",
+      async () => {
+    const parked = Promise.withResolvers<void>();
+    const applying = Promise.withResolvers<void>();
+    const applied: number[] = [];
+    const {visit, userId} = await workspace({
+      async applyAction(action: number) {
+        if (action === 2) {
+          applying.resolve();
+          await parked.promise;
+        }
+        applied.push(action);
+      },
+    });
+    await visit(async impl => {
+      let moves = 0;
+      const moved = async () => {
+        const record = impl.storage.gadgets.get(10)!;
+        impl.storage.gadgets.put({...record, commitId: await impl.gitCache.writeFilesAsCommit(
+            new Map([["b.txt", `${++moves}\n`]]), {parents: [], author: AUTHOR, message: "Moved",
+              timestamp: new Date(1)})} as never);
+      };
+      await proposeCode(impl, userId);
+      await impl.submitAction(GK, 1, description(true), CHAT_A);
+      await moved();
+      await impl.autoAcceptBranch(1, userId);
+      expect(states(impl, 1)).toEqual(["pending"]);
+      expect(applied).toEqual([]);
+
+      await impl.updateChatFromMainline(1, USER);
+      await impl.submitAction(GK, 2, description(true), CHAT_A);
+      const accept = impl.autoAcceptBranch(1, userId);
+      await applying.promise;
+      await moved();
+      parked.resolve();
+      await accept;
+      expect(states(impl, 1, 2)).toEqual(["approved", "approved"]);
+      expect(impl.isForked(1, impl.storage.chatMeta.get(1)!)).toBe(true);
+    });
+  });
+
+  it.each([
+    ["the chat leaves Auto", (impl: Impl) => setMode(impl, 1, "review")],
+    ["the workspace reads restricted data", (impl: Impl) => holdStaging(impl)],
+  ])("merge no code when %s while the last action applies", async (_, change) => {
+    const parked = Promise.withResolvers<void>();
+    const applying = Promise.withResolvers<void>();
+    const {visit, userId} = await workspace({
+      async applyAction() {
+        applying.resolve();
+        await parked.promise;
+      },
+    });
+    await visit(async impl => {
+      const head = await proposeCode(impl, userId);
+      await impl.submitAction(GK, 1, description(true), CHAT_A);
+      const accept = impl.autoAcceptBranch(1, userId);
+      await applying.promise;
+      change(impl);
+      parked.resolve();
+      await accept;
+      expect(states(impl, 1)).toEqual(["approved"]);
+      expect(impl.storage.gadgets.get(10)).toMatchObject({commitId: head});
+    });
+  });
+
+  it("apply an awaited action at once in Auto, for the turn's user, with what it follows",
+      async () => {
+    const gatekeeper = legacyGatekeeper();
+    const {visit, userId} = await workspace(gatekeeper.facet);
+    await visit(async impl => {
+      startTurn(impl, userId);
+      await impl.submitAction(GK, 1, description(true), AGENT_A);
+      await impl.submitAction(GK, 2, description(true, true), AGENT_A);
+      await vi.waitFor(() => expect(states(impl, 1, 2)).toEqual(["approved", "approved"]));
+      expect(impl.consumeCapturedActions(1)?.awaitDecision).toBe(false);
+      expect(record(impl, 2)).toMatchObject({resolvedBy: USER, autoApproved: true});
+    });
+  });
+
+  it.each([
+    ["behind an earlier action that is not auto-approvable", (impl: Impl) =>
+        impl.submitAction(GK, 1, description(false), AGENT_A)],
+    ["in Review", (impl: Impl) => setMode(impl, 1, "review")],
+    ["in Fork", (impl: Impl) => setMode(impl, 1, "fork")],
+    ["in restricted-data mode", (impl: Impl) => holdStaging(impl)],
+  ])("leave an awaited action for a user %s", async (_, arrange) => {
+    const gatekeeper = legacyGatekeeper();
+    const {visit, userId} = await workspace(gatekeeper.facet);
+    await visit(async impl => {
+      startTurn(impl, userId);
+      await arrange(impl);
+      await impl.submitAction(GK, 2, description(true, true), AGENT_A);
+      expect(impl.consumeCapturedActions(1)?.awaitDecision).toBe(true);
+      expect(record(impl, 2).state).toBe("pending");
       expect(gatekeeper.applied).toEqual([]);
     });
   });
 
-  it("applies the awaited action a turn waits on once a rule covers it", async () => {
+  it("are changed in a chat, Auto being stored as no mode", async () => {
+    const {client} = await workspace(legacyGatekeeper().facet);
+    using overseer = await client();
+    const mode = async () => (await overseer.listChats()).find(chat => chat.id === 1)?.mode;
+    await overseer.setChatMode(1, "fork");
+    expect(await mode()).toBe("fork");
+    await overseer.setChatMode(1, "auto");
+    expect(await mode()).toBeUndefined();
+    const chatId = await overseer.newChat("Hold it.", null, undefined, undefined, undefined, "fork");
+    expect((await overseer.listChats()).find(chat => chat.id === chatId)?.mode).toBe("fork");
+  });
+
+  it("refuse Auto in restricted-data mode, where a chat in Auto reads as Review", async () => {
+    const {visit, client} = await workspace(legacyGatekeeper().facet);
+    await visit(impl => holdStaging(impl));
+    using overseer = await client();
+    const refusal = (call: Promise<unknown>) => call.then(() => "", error => String(error));
+    expect(await refusal(overseer.setChatMode(1, "auto"))).toMatch("restricted data");
+    expect(await refusal(overseer.newChat("Go.", null, undefined, undefined, undefined, "auto")))
+        .toMatch("restricted data");
+    await overseer.setChatMode(1, "fork");
+    const chats = await overseer.listChats();
+    expect(chats.find(chat => chat.id === 1)?.mode).toBe("fork");
+    expect(chats.find(chat => chat.id === 2)?.mode).toBe("review");
+  });
+
+  it("leave rules without effect", async () => {
     const gatekeeper = legacyGatekeeper();
     const {visit, client} = await workspace(gatekeeper.facet);
     await visit(async impl => {
-      await impl.submitAction(GK, 1, description(true, true), AGENT_A);
-      expect(impl.consumeCapturedActions(1)?.awaitDecision).toBe(true);
-      impl.addChatMessages(1, {type: "agent", id: "model", name: "Model"},
-          [{type: "action", actionId: record(impl, 1).id}]);
+      setMode(impl, 1, "review");
+      await impl.submitAction(GK, 1, description(true), CHAT_A);
     });
     using overseer = await client();
     await overseer.setAutoApprovedActionKind(GK, EDITS);
-    await visit(impl => vi.waitFor(() => expect(states(impl, 1)).toEqual(["approved"])));
+    expect(await overseer.listAutoApprovedActionKinds())
+        .toEqual([{gatekeeperId: GK, actionKind: EDITS}]);
+    await visit(async impl => {
+      await impl.autoAcceptBranch(1, impl.ownerId!);
+      expect(states(impl, 1)).toEqual(["pending"]);
+      expect(gatekeeper.applied).toEqual([]);
+    });
+  });
+});
+
+describe("a forked chat", () => {
+  const branchGadgets = (impl: Impl) =>
+    impl.chatMetaForClient(impl.storage.chatMeta.get(1)!).branchGadgets;
+  const forked = (impl: Impl) => impl.isForked(1, impl.storage.chatMeta.get(1)!);
+
+  it("is one in Fork, with a pending action, or proposing a change, and runs every gadget on its branch",
+      async () => {
+    const {visit} = await workspace(legacyGatekeeper().facet);
+    await visit(async impl => {
+      addGadget(impl, 10);
+      addGadget(impl, 11);
+      expect([forked(impl), branchGadgets(impl)]).toEqual([false, undefined]);
+
+      setMode(impl, 1, "fork");
+      expect([forked(impl), branchGadgets(impl)]).toEqual([true, [10, 11]]);
+      setMode(impl, 1, "review");
+      expect(forked(impl)).toBe(false);
+
+      await impl.submitAction(GK, 1, description(), CHAT_A);
+      expect([forked(impl), branchGadgets(impl)]).toEqual([true, [10, 11]]);
+      await impl.discardBranch(1, 0, USER);
+      expect(forked(impl)).toBe(false);
+
+      // A chat proposing changes to one gadget holds every other's actions too.
+      vi.spyOn(impl, "proposedChangeWorkpieceIds").mockReturnValue([10]);
+      expect([forked(impl), branchGadgets(impl)]).toEqual([true, [10, 11]]);
+    });
   });
 
-  it("accepts idle chats once a rule is enabled", async () => {
-    const gatekeeper = legacyGatekeeper();
-    const {visit, client} = await workspace(gatekeeper.facet);
-    await visit(impl => impl.submitAction(GK, 1, description(true), CHAT_A));
-    using overseer = await client();
-    await overseer.setAutoApprovedActionKind(GK, EDITS);
-    await visit(impl => vi.waitFor(() => expect(states(impl, 1)).toEqual(["approved"])));
+  it("stays forked in Fork once accepted, so its gadgets stay on its branch", async () => {
+    const {visit} = await workspace(legacyGatekeeper().facet);
+    await visit(async impl => {
+      addGadget(impl, 10);
+      setMode(impl, 1, "fork");
+      await impl.submitAction(GK, 1, description(), CHAT_A);
+      await impl.acceptBranch(1, impl.branchSnapshot(1), USER);
+      expect(states(impl, 1)).toEqual(["approved"]);
+      expect([forked(impl), branchGadgets(impl)]).toEqual([true, [10]]);
+    });
   });
 });
 
@@ -698,20 +902,20 @@ describe("staging", () => {
 describe("staging pending from before it applied at once", () => {
   const HOOK: GatekeeperCaller = {from: "hook", gadgetId: 9};
 
-  it("is held, with what follows it, through rules and auto-accepts, until staging is accepted",
+  it("is held, with what follows it, through auto-accepts, until staging is accepted",
       async () => {
     const gatekeeper = legacyGatekeeper();
-    const {visit, client} = await workspace(gatekeeper.facet);
+    const {visit, client, userId} = await workspace(gatekeeper.facet);
     await visit(async impl => {
       await upgradeWith(impl, async () => {
         await impl.submitAction(GK, 1, description(true), STAGED);
         await impl.submitAction(GK, 2, description(true), HOOK);
       });
-      enableRule(impl);
       await impl.submitAction(GK, 3, description(true), STAGED);
       await impl.drainAutoApprovals(GK);
       await impl.submitAction(GK, 4, description(true), CHAT_A);
-      await impl.autoAcceptBranch(1);
+      await impl.autoAcceptBranch(1, userId);
+      startTurn(impl, userId, 2);
       await impl.submitAction(GK, 5, description(true, true), {from: "agent", chatId: 2});
       expect(impl.consumeCapturedActions(2)?.awaitDecision).toBe(true);
       expect(states(impl, 1, 2, 3, 4, 5)).toEqual(Array(5).fill("pending"));
@@ -825,13 +1029,10 @@ describe("staging during a chat's accept", () => {
 });
 
 describe("gadgets", () => {
-  const addGadget = (impl: Impl, id: number) => impl.storage.gadgets.put({
-    type: "gadget", id, title: `G${id}`, created: new Date(0), bindingName: `G${id}`, bindings: {},
-  } as never);
   const branchGadgets = (impl: Impl, chatId: number) =>
     impl.chatMetaForClient(impl.storage.chatMeta.get(chatId)!).branchGadgets;
 
-  it("run on a chat's branch while it has pending actions, holding, or an agent invoked them",
+  it("run on a chat's branch while it has pending actions or an agent invoked them",
       async () => {
     const {visit} = await workspace(legacyGatekeeper().facet);
     await visit(async impl => {
@@ -854,10 +1055,6 @@ describe("gadgets", () => {
       expect(meta).toMatchObject({pendingActions: 1, branchGadgets: [10, 11]});
       await impl.discardBranch(2, 0, USER);
       expect(branchGadgets(impl, 2)).toBeUndefined();
-
-      // So does holding.
-      impl.storage.chatMeta.put({...impl.storage.chatMeta.get(2)!, holding: true});
-      expect(branchGadgets(impl, 2)).toEqual([10, 11]);
     });
   });
 
@@ -927,11 +1124,11 @@ describe("gadgets", () => {
     expect(await run(AGENT_A)).toEqual([]);
   });
 
-  it("include a gadget created later, in the metadata of a chat that takes them all", async () => {
+  it("include a gadget created later, in the metadata of a forked chat", async () => {
     const {visit} = await workspace(legacyGatekeeper().facet);
     await visit(async impl => {
       addGadget(impl, 10);
-      impl.storage.chatMeta.put({...impl.storage.chatMeta.get(1)!, holding: true});
+      setMode(impl, 1, "fork");
       const sent: (number[] | undefined)[] = [];
       impl.storage.chatMeta.subscribe({
         add: () => {},
@@ -941,16 +1138,5 @@ describe("gadgets", () => {
       addGadget(impl, 11);
       await vi.waitFor(() => expect(sent.at(-1)).toEqual([10, 11]));
     });
-  });
-});
-
-describe("holding", () => {
-  it("is turned on and off in a chat", async () => {
-    const {client} = await workspace(legacyGatekeeper().facet);
-    using overseer = await client();
-    await overseer.setChatHolding(1, true);
-    expect((await overseer.listChats()).find(chat => chat.id === 1)?.holding).toBe(true);
-    await overseer.setChatHolding(1, false);
-    expect((await overseer.listChats()).find(chat => chat.id === 1)?.holding).toBeUndefined();
   });
 });

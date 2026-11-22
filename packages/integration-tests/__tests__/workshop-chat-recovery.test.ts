@@ -345,7 +345,9 @@ it.concurrent("discarding a compacted chat's changes keeps its summary", async (
   await api.addModel(model.userModel.profile, model.userModel.config);
   using ws = await api.newWorkspace();
 
-  const chatId = await ws.newChat("First question", SCRIPTED_MODEL_ID);
+  // In Review, so that the first turn's changes are left to discard.
+  const chatId = await ws.newChat(
+      "First question", SCRIPTED_MODEL_ID, undefined, undefined, undefined, "review");
   await waitFor("the first turn's requests", async () => model.requests.length === 3 || null);
   await waitForIdleChat(ws, chatId);
   await ws.sendChatMessage(chatId, "Second question.", SCRIPTED_MODEL_ID);

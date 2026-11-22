@@ -1,8 +1,8 @@
 import type { RpcPromise, RpcStub } from "capnweb";
 import type {
   ActionHistoryFilter, ActionHistoryPage, AiChatAuthorInfo, AiChatHistoryPage, AiChatMessage,
-  AiChatMetadata, AiChatStreamEvent, AiChatSubscriber, AiModelConfig, AuthenticatedApi, GadgetClient,
-  Overseer, PublicApi, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber,
+  AiChatMetadata, AiChatStreamEvent, AiChatSubscriber, AiModelConfig, AuthenticatedApi, ChatMode,
+  GadgetClient, Overseer, PublicApi, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber,
 } from "@gadgets/workshop-shared/api";
 import type { CodeChange } from "@gadgets/workshop-shared/code-change";
 import type { GatekeeperUiFrame } from "@gadgets/workshop-shared/gatekeeper";
@@ -29,6 +29,8 @@ export type AgentTurnOptions = {
 /** Configuration for one fresh local Workshop account and workspace. */
 export type AgentSessionOptions = {
   modelId: string;
+  /** The mode the session's chat is started in (see AiChatMetadata.mode); Auto when absent. */
+  mode?: ChatMode;
   userModel?: UserModel;
   ambientVendorIds?: readonly string[];
   usernamePrefix?: string;
@@ -444,6 +446,7 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
   readonly #workspaceId: string;
   readonly #openedAt = new Date(Date.now() - 1_000);
   readonly #modelId: string;
+  readonly #mode: ChatMode | undefined;
   #publicApi: RpcStub<PublicApi>;
   #authenticatedApi: RpcStub<AuthenticatedApi>;
   #workspace: RpcStub<Overseer>;
@@ -474,6 +477,7 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
     baseUrl: URL;
     workspaceId: string;
     modelId: string;
+    mode?: ChatMode;
     publicApi: RpcStub<PublicApi>;
     authenticatedApi: RpcStub<AuthenticatedApi>;
     workspace: RpcStub<Overseer>;
@@ -485,6 +489,7 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
     this.#baseUrl = options.baseUrl;
     this.#workspaceId = options.workspaceId;
     this.#modelId = options.modelId;
+    this.#mode = options.mode;
     this.#publicApi = options.publicApi;
     this.#authenticatedApi = options.authenticatedApi;
     this.#workspace = options.workspace;
@@ -755,7 +760,8 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
   }
 
   async #startChat(prompt: string, observer: TurnObserver): Promise<void> {
-    const creating = this.#workspace.newChat(prompt, this.#modelId);
+    const creating = this.#workspace.newChat(
+        prompt, this.#modelId, undefined, undefined, undefined, this.#mode);
     this.#pendingRpcs.add(creating);
     creating.then(chatId => {
       const status = observer.outcome?.status;
@@ -1103,6 +1109,7 @@ export async function openAgentSession(
       baseUrl,
       workspaceId,
       modelId: options.modelId,
+      mode: options.mode,
       publicApi,
       authenticatedApi,
       workspace,

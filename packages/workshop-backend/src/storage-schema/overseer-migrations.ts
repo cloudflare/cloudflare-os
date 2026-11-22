@@ -12,7 +12,7 @@
 // bump of OVERSEER_STORAGE_VERSION.
 
 import type {
-  AgentSpawnerConfig, CollaboratorRole, CommitIdentity, GadgetUpstream, WorkpieceId,
+  AgentSpawnerConfig, AiChatMetadata, CollaboratorRole, CommitIdentity, GadgetUpstream, WorkpieceId,
 } from "@gadgets/workshop-shared/api";
 import {
   chatKeyPrefix, STAGING_KEY, type AgentSpawnerBindingProps, type BindingRecord,
@@ -78,6 +78,9 @@ export interface OverseerMigrationHost {
    * every message it writes, before and after the migrations.
    */
   getChatTimestamp(): Date;
+
+  /** The workpieces a chat proposes changes to (see OverseerImpl.proposedChangeWorkpieceIds). */
+  proposedChangeWorkpieceIds(chatId: number, meta: AiChatMetadata): WorkpieceId[];
 }
 
 /**
@@ -469,12 +472,23 @@ export function migrateToRejectedOrphans(host: OverseerMigrationHost): void {
  * Version 9 -> 10: marks each staged action still pending ActionRecord.heldForReview. Before
  * staging applied actions at once, such an action was waiting for a user's review, so it is held
  * for one rather than applied, unreviewed, by the next apply on its connection.
+ *
+ * For the same reason, a chat with a pending action or a proposed change is put in Review (see
+ * AiChatMetadata.mode), so that its next turn, which would otherwise end by accepting it, does
+ * not apply or merge them unseen. Every other chat is left in Auto.
  */
 export function migrateToHeldStaging(host: OverseerMigrationHost): void {
   if (host.storage.version.get() !== 9) return;
   host.ctx.storage.transactionSync(() => {
     for (let record of Array.from(host.storage.actions.pendingByBranch.get(STAGING_KEY))) {
       if (record.type === "action") host.storage.actions.put({...record, heldForReview: true});
+    }
+    for (let meta of Array.from(host.storage.chatMeta.list())) {
+      let pending = [...host.storage.actions.pendingByBranch.get(`chat:${meta.id}`)]
+          .some(record => record.type === "action");
+      if (pending || host.proposedChangeWorkpieceIds(meta.id, meta).length > 0) {
+        host.storage.chatMeta.put({...meta, mode: "review"});
+      }
     }
     host.storage.version.put(10);
   });

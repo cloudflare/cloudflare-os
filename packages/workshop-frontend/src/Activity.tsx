@@ -715,7 +715,7 @@ function HistoryRow({
             <span className="text-kumo-subtle">{record.resourceTitle}</span>
             {resolvedBy && (
               <ResolverBadge profileId={resolvedBy.id}>
-                {autoApproved ? `Auto-approved (${resolvedBy.name}'s rule)` : `By ${resolvedBy.name}`}
+                {autoApproved ? `Auto-approved for ${resolvedBy.name}` : `By ${resolvedBy.name}`}
               </ResolverBadge>
             )}
             {resourceUrl && (

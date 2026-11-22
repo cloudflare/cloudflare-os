@@ -684,8 +684,8 @@ it("records each call into a workspace", async () => {
     ws, ownerName, id, title, chatId, gadgetId, connectionId, empty, head, attachmentChatId,
     draftChatId,
   } = populated;
-  // A share link and an auto-approval rule for the two listings below to show. No write is
-  // pending, so the rule applies nothing.
+  // A share link and an auto-approval rule for the two listings below to show. Rules have no
+  // effect.
   const link = await ws.createShareLink("workspace", LINK_NOTE);
   await ws.setAutoApprovedActionKind(connectionId, SET_VALUE);
   // A setting change, which the log keeps beside the access records.

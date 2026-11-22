@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
 import type { RpcStub } from "capnweb";
-import type { AiChatMessage, ConnectedAccountsSubscriber } from "@gadgets/workshop-shared/api";
+import type { AiChatMessage, ChatMode, ConnectedAccountsSubscriber } from "@gadgets/workshop-shared/api";
 import type { AccountDescription } from "@gadgets/workshop-shared/gatekeeper";
 import type { TestSession } from "../fixtures/gatekeeper-test/src/test-gatekeeper.js";
 import { loadAllChatHistory, openAgentSession } from "../src/agent-session.js";
@@ -63,9 +63,10 @@ const bindRequestedThing: ChatCompletionStep = {
 
 const actionState = (label: string) => testActionState(harness, label);
 
-const openSession = (model: RoutedScriptedModel, usernamePrefix: string) =>
+const openSession = (model: RoutedScriptedModel, usernamePrefix: string, mode?: ChatMode) =>
   openAgentSession(harness.url, {
     modelId: SCRIPTED_MODEL_ID,
+    mode,
     userModel: model.userModel,
     ambientVendorIds: [TEST_VENDOR_ID],
     usernamePrefix,
@@ -179,7 +180,8 @@ it.concurrent("an agent spawner request is granted, and the bindings the agent g
     describeDesk,
     { text: "Triaged." },
   ]);
-  await using session = await openSession(model, "spawnerrequest");
+  // In Review, so that the bindings wait for the user's accept.
+  await using session = await openSession(model, "spawnerrequest", "review");
 
   const first = await session.runTurn("Give a new desk gadget its own triage agent.");
   expect(first.outcome).toEqual({ status: "completed" });

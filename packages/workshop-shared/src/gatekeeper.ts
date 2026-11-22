@@ -2057,9 +2057,10 @@ export type ActionDescription = {
   awaitDecision?: boolean;
 
   /**
-   * Author's verdict that this specific action is safe to auto-apply without human review, IF the
-   * user has opted in to auto-approving this action's kind (see `actionKind`). Only the gatekeeper
-   * author knows whether a given edit is benign vs. destructive, so this gate is set per-action.
+   * Author's verdict that this specific action is safe to auto-apply without human review, in a
+   * chat whose user chose to have its changes accepted automatically (ChatMode "auto"). Only the
+   * gatekeeper author knows whether a given edit is benign vs. destructive, so this gate is set
+   * per-action.
    * `true` is the norm; the `write-gatekeeper` skill lists when an action must be `false`, and
    * prefers computing the verdict from the payload over a blanket `false`.
    *

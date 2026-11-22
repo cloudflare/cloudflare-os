@@ -52,6 +52,7 @@ async function workspace(facet: object) {
   });
   return {
     visit,
+    userId: user.id.toString(),
     client: () => env.TEST_OVERSEER.get(stub.id).open(user.id.toString(), USER.id,
         new RpcStub(() => {})),
   };
@@ -345,11 +346,11 @@ describe("staging", () => {
 });
 
 describe("a gatekeeper that applies one action at a time", () => {
-  it("stops auto-accepting at a rule withdrawn while an earlier action applies", async () => {
+  it("stops auto-accepting once the chat leaves Auto while an earlier action applies", async () => {
     const parked = Promise.withResolvers<void>();
     const applying = Promise.withResolvers<void>();
     const applied: number[] = [];
-    const {visit} = await workspace({
+    const {visit, userId} = await workspace({
       async applyAction(action: number) {
         if (applied.length === 0) {
           applying.resolve();
@@ -359,12 +360,11 @@ describe("a gatekeeper that applies one action at a time", () => {
       },
     });
     await visit(async impl => {
-      impl.storage.autoApproveTags.put({gatekeeperId: GK, actionKind: EDITS, enabledBy: USER});
       await impl.submitAction(GK, 1, description(true), CHAT_A);
       await impl.submitAction(GK, 2, description(true), CHAT_A);
-      const accept = impl.autoAcceptBranch(1);
+      const accept = impl.autoAcceptBranch(1, userId);
       await applying.promise;
-      impl.storage.autoApproveTags.delete(`${GK}:${EDITS.tag}`);
+      impl.storage.chatMeta.put({...impl.storage.chatMeta.get(1)!, mode: "review"});
       parked.resolve();
       await accept;
       expect(applied).toEqual([1]);

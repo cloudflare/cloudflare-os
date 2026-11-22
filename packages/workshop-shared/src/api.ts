@@ -2848,18 +2848,15 @@ export type AdminObserver = {
 
 /**
  * One auto-approval rule of a workspace, as AdminWorkspaceView.listAutoApprovals() lists it: a
- * member's opt-in for actions of `actionKind` on the connection. A rule alone applies nothing. An
- * action of that kind is applied without a manual approval only when its author also marked it
- * `autoApprovable` (ActionDescription.autoApprovable), and never once the workspace has read
- * restricted data (`containsRestrictedData`, which describe() reports): the rule then stays
- * stored, and listed here, while every action waits for a manual approval.
+ * member's opt-in for actions of `actionKind` on the connection. Rules have no effect: chat modes
+ * replaced them (see ChatMode), and nothing consults them, though they stay stored and listed.
  */
 export type AdminAutoApproval = {
   /** The connection the rule is on. */
   gatekeeperId: WorkpieceId;
   /** The kind of action the rule covers. An action matches by its kind's `tag`. */
   actionKind: ActionKind;
-  /** Who turned the rule on. The actions it applies are applied under their authority. */
+  /** Who turned the rule on. */
   enabledBy: AiChatAuthorInfo;
 };
 
@@ -2977,12 +2974,8 @@ export interface AdminWorkspaceView extends RpcTarget {
   listShareLinks(): Promise<ShareLinkInfo[]>;
 
   /** The auto-approval rules, each with its connection, its kind of action and who turned it on.
-   * A rule is a member's opt-in and applies nothing alone (see AdminAutoApproval): an action is
-   * applied without a manual approval only when its author also marked it `autoApprovable`, and
-   * never once the workspace has read restricted data (`containsRestrictedData`, which
-   * describe() reports), when every action waits whatever the rules say. listActions() shows
-   * each action's `description.autoApprovable` and `description.actionKind`, and `autoApproved`
-   * on one a rule applied. */
+   * Rules have no effect (see AdminAutoApproval). listActions() shows each action's
+   * `description.autoApprovable` and `autoApproved` on one applied automatically. */
   listAutoApprovals(): Promise<AdminAutoApproval[]>;
 
   /** The published blueprints, as Overseer.listBlueprints() lists them. Each `id` is "" and
@@ -4331,15 +4324,16 @@ export type ActionLogEntry = {
   description: ActionDescription;
   /**
    * Who resolved the action (approved or rejected it). Set when the action leaves "pending"; absent
-   * while still pending (or for legacy actions resolved before this was tracked). For an
-   * auto-approved action this is the user who enabled the rule -- auto-approvals run under their
-   * authority (see `autoApproved`).
+   * while still pending (or for legacy actions resolved before this was tracked). For an action
+   * applied automatically this is the user on whose behalf it was (see `autoApproved`).
    */
   resolvedBy?: AiChatAuthorInfo;
 
   /**
-   * True when the action was applied automatically by an auto-approval rule rather than by a human
-   * clicking Approve. Only ever set alongside state "approved". An action can also be rejected
+   * True when the action was applied automatically rather than by a human accepting it: by a chat
+   * in Auto (see ChatMode), on behalf of the user whose message started the agent's turn, or, for
+   * a turn an agent spawner started, the user whose model it ran; or, staged, on behalf of the
+   * workspace owner. Only ever set alongside state "approved". An action can also be rejected
    * automatically -- a staged action whose gatekeeper says it can never apply (see
    * Overseer.acceptStagedActions()) -- but that is recorded as a rejection by the workspace owner,
    * with its `applyError`, and never with this.
@@ -4813,35 +4807,25 @@ export interface Overseer extends RpcTarget {
   deleteHook(id: number): Promise<void>;
 
   /**
-   * Enable auto-approval of actions carrying the given `actionKind` (the
-   * ActionDescription.actionKind) on the gatekeeper identified by `gatekeeperId`. An action with
-   * that kind's tag whose author marked it `autoApprovable` then needs no manual approval: an agent
-   * turn that finished normally accepts its chat automatically when every action the accept would
-   * apply satisfies a rule and the chat proposes no code changes (see mergeChanges()), and an
-   * action the agent waits on (`ActionDescription.awaitDecision`) applies as it is submitted when
-   * it and the actions approving it applies do. Enabling a rule does the same at once for the
-   * idle chats with a pending action on the connection.
+   * Store an auto-approval rule for actions carrying the given `actionKind` (the
+   * ActionDescription.actionKind) on the gatekeeper identified by `gatekeeperId`.
    *
-   * Auto-approval rules are workspace-wide per gatekeeper: approving an action kind approves it
-   * no matter which gadget invokes it.
-   *
-   * Once the workspace has read restricted data (`WorkspaceMetadata.containsRestrictedData`), rules
-   * are stored but never fire: every action pends for manual approval.
+   * Rules have no effect: chat modes replaced them (see ChatMode), and nothing consults them. They
+   * are still stored and listed, until they are removed.
    */
   setAutoApprovedActionKind(gatekeeperId: WorkpieceId, actionKind: ActionKind): Promise<void>;
 
-  /**
-   * Remove the auto-approval rule for `tag` on the given gatekeeper; matching actions then
-   * require manual approval again.
-   */
+  /** Remove the auto-approval rule for `tag` on the given gatekeeper. Rules have no effect (see
+   * setAutoApprovedActionKind()). */
   removeAutoApprovedActionKind(gatekeeperId: WorkpieceId, tag: string): Promise<void>;
 
-  /** List the currently-enabled auto-approval rules. */
+  /** List the stored auto-approval rules, which have no effect (see setAutoApprovedActionKind()). */
   listAutoApprovedActionKinds(): Promise<Array<{ gatekeeperId: WorkpieceId; actionKind: ActionKind }>>;
 
   /**
    * List the auto-approvable action kinds offered by gatekeepers bound in this workspace. Each
-   * entry identifies its connection and reports whether a matching auto-approval rule is enabled.
+   * entry identifies its connection and reports whether a matching auto-approval rule is stored.
+   * Rules have no effect (see setAutoApprovedActionKind()).
    */
   listPreApprovableActions(): Promise<PreApprovableAction[]>;
 
@@ -4994,10 +4978,13 @@ export interface Overseer extends RpcTarget {
    * `formats` records where the message names one of the deployment's standard output formats, so
    * the transcript can draw it as a chip. Display only -- what the agent reads is the noun, which
    * is already in the text.
+   *
+   * `mode` is the chat's mode (see AiChatMetadata.mode), Auto when absent. Throws when asked for
+   * Auto in a workspace that has read restricted data (`WorkspaceMetadata.containsRestrictedData`).
    */
   newChat(initialMessage: string | SlashCommandRequest, modelId: string | null,
           capsules?: CapsuleSpecifier[], attachments?: ChatAttachmentHandle[],
-          formats?: MessageFormatRef[]): Promise<number>;
+          formats?: MessageFormatRef[], mode?: ChatMode): Promise<number>;
 
   /**
    * Send a message to the chat from this client. Sending a message causes the LLM to start
@@ -5057,13 +5044,15 @@ export interface Overseer extends RpcTarget {
   setChatTitle(chatId: number, title: string): Promise<void>;
 
   /**
-   * Turns holding on or off in a chat (see AiChatMetadata.holding). While it is on, every gadget
-   * opened in the chat runs on its branch, so the gadget's actions wait for the chat's changes to
-   * be accepted, and the chat is never accepted automatically. A chat with no agent (see newChat())
-   * serves just for this. Turned off, gadgets go back to running outside the chat once nothing else
-   * keeps them on its branch (see AiChatMetadata.branchGadgets).
+   * Changes a chat's mode (see AiChatMetadata.mode), taking effect at once, even while its agent
+   * runs: the end of a turn, and an action the agent waits on as it is submitted, read the mode
+   * then. Changing it never accepts or discards anything. A chat switched to Fork holds its
+   * gadgets' actions from then on; one switched away from Fork with nothing to accept sends its
+   * gadgets back to running outside the chat (see AiChatMetadata.branchGadgets). A chat with no
+   * agent (see newChat()) in Fork serves just to hold a gadget's actions. Throws when asked for
+   * Auto in a workspace that has read restricted data (`WorkspaceMetadata.containsRestrictedData`).
    */
-  setChatHolding(chatId: number, holding: boolean): Promise<void>;
+  setChatMode(chatId: number, mode: ChatMode): Promise<void>;
 
   /**
    * Indicates that the user has requested that the chat's proposed changes be merged into the
@@ -5407,6 +5396,22 @@ export interface Overseer extends RpcTarget {
   previewRevokeShareLink(linkId: string): Promise<AffectedCollaborator[]>;
 }
 
+/**
+ * How a chat's changes are held and accepted; see AiChatMetadata.mode. In every mode, the chat's
+ * gatekeeper actions and code changes wait on its branch for it to be accepted (see
+ * Overseer.mergeChanges()):
+ *
+ * - "auto": at the end of each agent turn that finishes normally, the chat is accepted
+ *   automatically, code included, when every pending action the accept would apply is the chat's
+ *   own and auto-approvable (ActionDescription.autoApprovable), and none is a creation. An action
+ *   the agent waits on (`awaitDecision`) applies as it is submitted when it, and every earlier
+ *   pending action on its connection that approving it would apply, is too.
+ * - "review": the chat is accepted only by a user.
+ * - "fork": as "review", and every gadget opened in the chat runs on its branch even while the
+ *   chat has nothing pending (see AiChatMetadata.branchGadgets), so gadget actions wait there too.
+ */
+export type ChatMode = "auto" | "review" | "fork";
+
 /** Metadata about one chat in a workspace. */
 export type AiChatMetadata = {
   id: number,
@@ -5488,17 +5493,21 @@ export type AiChatMetadata = {
   /**
    * The gadgets that run on the chat's branch when opened in the chat's context (see
    * GadgetClient.connectToGadget()): their reads see the chat's pending actions and their actions
-   * join them. Those are the gadgets the chat proposes changes to, those an agent turn in the chat
-   * has invoked until the turn ends, and, while the chat has pending actions or holding is on,
-   * every gadget. Any other runs as it does outside the chat. Absent when none. Derived server-side
-   * and delivered on metadata updates; never submitted by clients.
+   * join them. While the chat is forked, that is every gadget: the chat is forked when its mode is
+   * Fork, it has pending actions, or it proposes code or binding changes
+   * (`proposedChangeWorkpieces`, which are listed too). Otherwise it is those an agent turn in the
+   * chat has invoked, until the turn ends. Any other runs as it does outside the chat. Absent when
+   * none. Derived server-side and delivered on metadata updates; never submitted by clients.
    */
   branchGadgets?: WorkpieceId[];
 
   /**
-   * Present while holding is on in the chat (see Overseer.setChatHolding()).
+   * How the chat's changes are held and accepted; absent means "auto". Set by newChat() and
+   * Overseer.setChatMode(). In a workspace that has read restricted data
+   * (`WorkspaceMetadata.containsRestrictedData`), a chat in Auto is delivered, and treated, as in
+   * Review.
    */
-  holding?: true;
+  mode?: ChatMode;
 
   /**
    * Tokens the model reported for this conversation's last step, if known. Cleared when compaction

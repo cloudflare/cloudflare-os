@@ -64,9 +64,11 @@ async function newConnection(ws: RpcStub<Overseer>, accountId: number, resourceU
   return await connection.getId();
 }
 
+// In Review, so that what the agent proposes waits for the user's accept.
 const openSession = (model: RoutedScriptedModel, usernamePrefix: string) =>
   openAgentSession(harness.url, {
     modelId: SCRIPTED_MODEL_ID,
+    mode: "review",
     userModel: model.userModel,
     ambientVendorIds: [TEST_VENDOR_ID],
     usernamePrefix,

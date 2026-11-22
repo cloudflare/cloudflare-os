@@ -538,7 +538,7 @@ export type ActionRecord = {
   action: number | "create";
   description: StoredActionDescription;
   resolvedBy?: AiChatAuthorInfo;  // set when resolved (approved/rejected); absent while pending (or legacy)
-  autoApproved?: boolean;         // set when applied by an auto-approval rule rather than a human
+  autoApproved?: boolean;         // set when applied automatically rather than by a human
   applyError?: ApplyError;  // see ActionLogEntry.applyError
 
   /**
@@ -617,7 +617,8 @@ export type BoundHookRecord = {
   enabled: boolean;
 };
 
-/** A user opt-in to auto-approve actions carrying a given `actionKind` on a given gatekeeper */
+/** A user opt-in to auto-approve actions carrying a given `actionKind` on a given gatekeeper. It
+ * has no effect: chat modes replaced rules (see AiChatMetadata.mode). */
 export type AutoApproveTagRecord = {
   gatekeeperId: WorkpieceId;
   /**
@@ -625,10 +626,7 @@ export type AutoApproveTagRecord = {
    * the rule was enabled so the rule can be listed without showing the raw machine tag.
    */
   actionKind: ActionKind;
-  /**
-   * Who turned this rule on. Auto-approvals run under this user's authority, so each auto-applied
-   * action is attributed to them in the audit log.
-   */
+  /** Who turned this rule on. */
   enabledBy: AiChatAuthorInfo;
 };
 
@@ -1468,8 +1466,8 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // set in its `ObservationDescription`. While set, web fetches reach only the hosts in
       // `AdminConfig.restrictedWebFetchHosts` or a URL a user approves (where
       // `AdminConfig.restrictedWebFetchApprovals` allows it), and every action pends for manual
-      // approval (autoApprovalRule never fires); the approver checks the action text for restricted
-      // data. The key on disk predates the flag's rename.
+      // approval (a chat in Auto reads as Review; see OverseerImpl.chatMode); the approver checks
+      // the action text for restricted data. The key on disk predates the flag's rename.
       containsRestrictedData: singleton(false, {storageKey: "prohibitAllSharing"}),
 
       // True if any past observation was authorized that had the `ownerInvitesOnly` flag set in
@@ -1690,7 +1688,8 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
 
       // User-enabled rules to auto-approve actions carrying a given action kind on a given
       // gatekeeper. Presence of a record -> the rule is enabled. Keyed by
-      // `${gatekeeperId}:${actionKind.tag}`.
+      // `${gatekeeperId}:${actionKind.tag}`. Rules have no effect: chat modes replaced them (see
+      // AiChatMetadata.mode), and nothing consults them.
       autoApproveTags: collection<AutoApproveTagRecord>()({
         primaryKey: (r) => `${r.gatekeeperId}:${r.actionKind.tag}`,
       }),

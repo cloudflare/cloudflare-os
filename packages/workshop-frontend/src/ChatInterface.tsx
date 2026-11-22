@@ -4446,11 +4446,11 @@ function ChatInterface({
     }
     void handleMergeChanges({}, through);
   };
-  // Holding keeps the gadgets opened in a chat on its branch, so
-  // their requests wait for its changes to be accepted (see Overseer.setChatHolding()).
+  // Holding puts the chat in Fork, which keeps the gadgets opened in it on its branch, so
+  // their requests wait for its changes to be accepted (see Overseer.setChatMode()).
   const handleSetHolding = async (chatId: number, holding: boolean) => {
     try {
-      await overseer.setChatHolding(chatId, holding);
+      await overseer.setChatMode(chatId, holding ? "fork" : "auto");
     } catch (err) {
       console.error("Failed to change holding:", err);
       toasts.add({ title: "Failed to change holding", variant: "error" });
@@ -5867,7 +5867,7 @@ function ChatInterface({
                             Rename
                           </DropdownMenu.Item>
                           <DropdownMenu.CheckboxItem
-                            checked={chat.holding === true}
+                            checked={chat.mode === "fork"}
                             onCheckedChange={(holding) => { void handleSetHolding(chat.id, holding); }}
                             className="!h-auto rounded-md !px-2.5 !py-1.5 text-[12px] leading-4 tracking-[-0.2px] text-kumo-default transition-colors data-highlighted:bg-kumo-tint"
                           >
@@ -6078,7 +6078,7 @@ function ChatInterface({
                           sight while the chat is open. */}
                       {currentChatMetadata && (
                         <HoldingToggle
-                          holding={currentChatMetadata.holding === true}
+                          holding={currentChatMetadata.mode === "fork"}
                           onHoldingChange={(holding) => {
                             void handleSetHolding(currentChatMetadata.id, holding);
                           }}

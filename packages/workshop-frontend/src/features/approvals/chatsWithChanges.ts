@@ -11,7 +11,7 @@ export type ChatWithChanges = {
   requests: number
   /** Whether it proposes code changes (AiChatMetadata.proposedChangeWorkpieces). */
   codeChanges: boolean
-  /** Whether holding is on (AiChatMetadata.holding). */
+  /** Whether the chat is in Fork (AiChatMetadata.mode). */
   holding: boolean
   /** Whether its agent is stopped on a decision (AiChatMetadata.awaitingDecision). */
   awaitingDecision: boolean
@@ -28,7 +28,7 @@ export const chatsWithChanges = (chats: readonly AiChatMetadata[]): ChatWithChan
       title: chat.title,
       requests,
       codeChanges,
-      holding: chat.holding === true,
+      holding: chat.mode === 'fork',
       awaitingDecision: chat.awaitingDecision === true,
     }]
   })

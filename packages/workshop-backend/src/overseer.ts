@@ -110,12 +110,12 @@ import {
 import {
   MAX_VERIFICATION_PASSES, ObserverLedger, requireVerifier, sameObserverScope, type ObserverScope,
 } from "./observer-ledger";
-import { AutoApprovalDrainer, autoApprovalRule, type ApplyItem } from "./auto-approval";
+import { AutoApprovalDrainer, type ApplyItem } from "./auto-approval";
 import { collectSlashCommands, invokeSlashCommand } from "./slash-commands";
 import { createWorkshopLogger, obsContext } from "./observability";
 import { traceAgentTurn, traceToolApproval } from "./agent-tracing";
 import { isLoopLimitError, retryOnDoReset, shouldRetryAfterReset, wrapDoStubForTelemetry } from "./do-retry";
-import type { CreationApproval, GadgetExportFormat, MergeChangesOptions } from "@gadgets/workshop-shared/api";
+import type { ChatMode, CreationApproval, GadgetExportFormat, MergeChangesOptions } from "@gadgets/workshop-shared/api";
 import {
   assertChatAttachmentSize,
   decodeChatAttachmentText,
@@ -1956,12 +1956,11 @@ class OverseerImpl implements AgentHooks {
     this.storage.gadgets.subscribe({
       add: () => {
         this.markOutputsDirty();
-        // A new gadget runs on every branch that takes them all (see branchGadgetIds), which
+        // A new gadget runs on the branch of every forked chat (see branchGadgetIds), which
         // those chats' metadata must say. Subscribers run before the write, so after it.
         this.ctx.waitUntil(Promise.resolve().then(() => this.#rebroadcastChatMeta(
             [...this.storage.chatMeta.list()].flatMap(meta =>
-                meta.holding || this.#pendingOnBranch(`chat:${meta.id}`).length > 0
-                    ? [meta.id] : []))));
+                this.isForked(meta.id, meta) ? [meta.id] : []))));
       },
       update: () => this.markOutputsDirty(),
       remove: () => this.markOutputsDirty(),
@@ -3224,16 +3223,48 @@ class OverseerImpl implements AgentHooks {
     if (pending > 0) meta.pendingActions = pending;
     let gadgets = this.branchGadgetIds(stored.id, stored);
     if (gadgets.length > 0) meta.branchGadgets = gadgets;
+    let mode = this.chatMode(stored);
+    if (mode === "auto") {
+      delete meta.mode;
+    } else {
+      meta.mode = mode;
+    }
     return meta;
   }
 
-  // The gadgets a request in chat `chatId`'s context runs on the chat's branch (see #resolveGadgetChatId and AiChatMetadata.branchGadgets): those the chat
-  // proposes changes to, those an agent turn in it has invoked until the turn ends, and, while the
-  // chat has pending actions or holding is on, every one.
+  // Refuses Auto (see chatMode) while the workspace has latched restricted-data mode, in which
+  // every change must be reviewed.
+  assertChatModePermitted(mode: ChatMode | undefined): void {
+    if (mode === "auto" && this.storage.containsRestrictedData.get()) {
+      throw new Error("This workspace has read restricted data, so every change must be " +
+          "reviewed. Choose Review or Fork.");
+    }
+  }
+
+  // A chat's mode (see AiChatMetadata.mode), as it stands: Review in place of Auto while the
+  // workspace has latched restricted-data mode, which permits no Auto. The latch can set at any
+  // time, so it is applied here, where the mode is read, rather than to stored chats.
+  chatMode(meta: AiChatMetadata): ChatMode {
+    let mode = meta.mode ?? "auto";
+    return mode === "auto" && this.storage.containsRestrictedData.get() ? "review" : mode;
+  }
+
+  // Whether chat `chatId` is forked: its mode is Fork, its branch has a pending action, or it
+  // proposes a code or binding change. Every gadget in a forked chat runs on its branch (see
+  // branchGadgetIds), and a turn that leaves its chat forked leaves it to the user.
+  isForked(chatId: number, meta: AiChatMetadata): boolean {
+    return this.chatMode(meta) === "fork" || this.#pendingOnBranch(`chat:${chatId}`).length > 0 ||
+        this.proposedChangeWorkpieceIds(chatId, meta).length > 0;
+  }
+
+  // The gadgets a request in chat `chatId`'s context runs on the chat's branch (see
+  // #resolveGadgetChatId and AiChatMetadata.branchGadgets): every one, with the workpieces it
+  // proposes changes to, while the chat is forked (isForked), and those an agent turn in it has
+  // invoked, until the turn ends.
   branchGadgetIds(chatId: number, meta: AiChatMetadata): WorkpieceId[] {
-    let ids = new Set(this.proposedChangeWorkpieceIds(chatId, meta));
-    for (let id of this.#invokedGadgets.get(chatId) ?? []) ids.add(id);
-    if (meta.holding || this.#pendingOnBranch(`chat:${chatId}`).length > 0) {
+    let ids = new Set(this.#invokedGadgets.get(chatId));
+    if (this.isForked(chatId, meta)) {
+      for (let id of this.proposedChangeWorkpieceIds(chatId, meta)) ids.add(id);
       for (let record of this.storage.gadgets.list()) {
         if (record.type === "gadget") ids.add(record.id);
       }
@@ -4551,6 +4582,7 @@ class OverseerImpl implements AgentHooks {
     // One transaction, so that the chat exists only with its proposal: one message, which
     // declares the pin the chat is created with and records the proposal. No client holds
     // state for a chat that did not exist, so starting it re-rooted needs no generation bump.
+    // The chat is for the user to review the merge, so it is in Review.
     let chatId!: number;
     this.storage.transaction(() => {
       chatId = this.nextChatId();
@@ -4561,6 +4593,7 @@ class OverseerImpl implements AgentHooks {
         started: timestamp,
         lastActive: timestamp,
         chatToken: crypto.randomUUID(),
+        mode: "review",
         ...(pin !== undefined ? {codeBase: {pins: [pin], generation: 0, revision: 0}} : {}),
       });
       this.materializeChatChanges(chatId, undefined, {author, blueprintMerges: [merge]});
@@ -4674,20 +4707,26 @@ class OverseerImpl implements AgentHooks {
   // The body of Overseer.mergeChanges(), running under the chat's operation lock (callers
   // hold withChatLock). `clientUserId` feeds analytics only. The chat's pending actions apply
   // first, once the code is known to merge (see acceptBranch).
+  //
+  // With `auto`, an automatic accept (see autoAcceptBranch): the actions are approved
+  // automatically, and it runs as the last phase of the chat's turn, which still counts as active.
   async mergeChanges(chatId: number, userMeta: UserChatContext, clientUserId: string,
-                     creations?: Map<number, CreationChoice>, through?: number)
+                     creations?: Map<number, CreationChoice>, through?: number, auto = false)
       : Promise<MergeChangesResult> {
-    let meta = this.assertChatNotActive(chatId);
+    let assertNotActive = () =>
+        auto ? this.getChatMetaOrThrow(chatId) : this.assertChatNotActive(chatId);
+    let meta = assertNotActive();
     // What is pending now, up to what the user was shown, is what they accept, whatever is
     // submitted during the awaits below.
     let taken = this.branchSnapshot(chatId, through);
-    let applyActions = () => this.acceptBranch(chatId, taken, userMeta.profile, creations);
+    let applyActions = () =>
+        this.acceptBranch(chatId, taken, userMeta.profile, creations, auto);
 
     // Always merge *everything* the chat proposes: sweep live change rows into a "changes" message
     // first, then accept all proposed changes. Partial accepts are incoherent under the epoch
     // reset below -- an excluded remainder would be rooted in the discarded stream and
     // destroyed with it.
-    let result = this.materializeChatChanges(chatId, meta);
+    let result = this.materializeChatChanges(chatId, meta, {allowDuringTurn: auto});
     if (result) meta = result.meta;
 
     // Reap crash-orphaned provisional records first. (Reconciliation is best-effort, so an
@@ -4962,10 +5001,13 @@ class OverseerImpl implements AgentHooks {
         return {outcome: "stale"};
       }
     }
-    let freshMeta = this.assertChatNotActive(chatId);
+    let freshMeta = assertNotActive();
     if (this.nextChatSequencePeek(chatId) !== sequenceToken) {
       return {outcome: "stale"};
     }
+    // An automatic accept leaves the code to the user once the chat has left Auto meanwhile, as
+    // it does the actions (see #autoItems).
+    if (auto && this.chatMode(freshMeta) !== "auto") return {outcome: "stale"};
 
     // Rows accepted during the awaits above are acknowledged content the flatten didn't cover:
     // submitCodeChange() runs outside the chat lock, appends no message (so the sequence token
@@ -6023,18 +6065,20 @@ class OverseerImpl implements AgentHooks {
   // on, what staging holds there applies and then the chat's own actions (#branchList), one
   // connection at a time, in the order of the chat's earliest action on each. Where the chat is
   // creating the connection's resource, the creation applies first, as `creations` says. Each
-  // action is approved as `resolvedBy`, or, when that is null, automatically (see #autoItems).
+  // action is approved as `resolvedBy`, automatically when `auto` says so (see #autoItems).
   // Stops at the first action that fails to apply, which keeps the error
-  // (ActionRecord.applyError) and stays pending with everything after it, and returns false.
+  // (ActionRecord.applyError) and stays pending with everything after it, and returns false. An
+  // automatic accept also returns false once it has stopped before an action that may no longer
+  // be applied so: it has not accepted the branch.
   //
   // Refused before anything applies while the chat's agent waits on a decision: approving the
   // awaited action would resume its turn in the middle of the accept. Any failure other than an
   // action's propagates, a creation's included.
   //
   // With `chatId` null, accepts what staging holds the same way (see acceptStagedActions).
-  async acceptBranch(chatId: number | null, taken: Set<number>,
-                     resolvedBy: AiChatAuthorInfo | null,
-                     creations = new Map<number, CreationChoice>()): Promise<boolean> {
+  async acceptBranch(chatId: number | null, taken: Set<number>, resolvedBy: AiChatAuthorInfo,
+                     creations = new Map<number, CreationChoice>(), auto = false)
+      : Promise<boolean> {
     if (chatId !== null && this.#decisionWait(chatId)?.pending) {
       throw new Error("The agent is waiting for a decision. Make it before accepting the chat's " +
           "changes.");
@@ -6053,89 +6097,85 @@ class OverseerImpl implements AgentHooks {
       await this.#autoApprovalDrainer.settled(gatekeeperId);
       try {
         if (creation) {
-          await this.applyPendingAction(creation, resolvedBy!, false, creations.get(creation.id));
+          await this.applyPendingAction(creation, resolvedBy, false, creations.get(creation.id));
         }
-        await this.applyActionList(gatekeeperId, resolvedBy === null, adopted =>
-            resolvedBy ? list(gatekeeperId, adopted).map(record => ({record, resolvedBy}))
-                       : this.#autoItems(list(gatekeeperId, adopted)) ?? []);
+        await this.applyActionList(gatekeeperId, auto, adopted => auto
+            ? this.#autoItems(list(gatekeeperId, adopted), resolvedBy) ?? []
+            : list(gatekeeperId, adopted).map(record => ({record, resolvedBy})));
       } catch (error) {
         // An action that failed to apply records why (see applyActionList); then the accept
         // failed. Anything else did not get as far as an action.
         if (!list(gatekeeperId, false).some(record => record.applyError)) throw error;
         return false;
       }
+      if (auto && list(gatekeeperId, false).length > 0) return false;
     }
     return true;
   }
 
-  // Accepts chat `chatId`'s branch automatically (see acceptBranch), at the end of a turn or once
-  // a rule is enabled: only if the chat proposes no code or binding changes, which are never
-  // auto-approvable for now, holding is not on in it, its agent waits on no decision, and every
-  // pending action the accept would apply satisfies a rule, with none of them staged, since no
-  // rule releases what staging holds (see #autoItems). A creation never does. A failure leaves the
-  // actions pending, with the error on the one that failed.
-  async autoAcceptBranch(chatId: number): Promise<void> {
-    let branch = `chat:${chatId}`;
-    let connections = new Set<number>();
-    for (let record of this.#pendingOnBranch(branch)) {
-      if (record.action === "create") return;
-      connections.add(record.gatekeeperId);
-    }
+  // Accepts chat `chatId`'s branch automatically, code included, as the last phase of a turn that
+  // finished normally (see mergeChanges), when it may be (#autoAcceptable). It is accepted on
+  // behalf of the user `initiatorUserId` names: whose message started the turn, or, for a turn an
+  // agent spawner started, the user whose model it runs. A failure leaves the actions pending,
+  // with the error on the one that failed, and a stale merge leaves the code, so that either way
+  // the chat stays forked for the user.
+  async autoAcceptBranch(chatId: number, initiatorUserId: string): Promise<void> {
     // What staging applies at once in the meantime does not stand in the way.
-    for (let gatekeeperId of connections) await this.#autoApprovalDrainer.settled(gatekeeperId);
-    let meta = this.storage.chatMeta.get(chatId);
-    if (connections.size === 0 || !meta || meta.holding ||
-        this.proposedChangeWorkpieceIds(chatId, meta).length > 0 ||
-        this.#decisionWait(chatId)?.pending || [...connections].some(gatekeeperId =>
-            !this.#autoItems(this.#branchList(gatekeeperId, branch, false)))) {
-      return;
+    for (let record of this.#pendingOnBranch(`chat:${chatId}`)) {
+      await this.#autoApprovalDrainer.settled(record.gatekeeperId);
     }
+    if (!this.#autoAcceptable(chatId)) return;
     try {
-      await this.acceptBranch(chatId, this.branchSnapshot(chatId), null);
+      let userMeta = await this.#chatContextOf(initiatorUserId);
+      await this.withChatLock(chatId, async () => {
+        // Asked again, since the branch and the mode may have changed meanwhile, with no await
+        // before the accept takes its snapshot.
+        if (this.#autoAcceptable(chatId)) {
+          await this.mergeChanges(chatId, userMeta, initiatorUserId, undefined, undefined, true);
+        }
+      });
     } catch (error) {
       this.logger.error("auto-approval failed", {event: "auto.approval.failed", chatId, error});
     }
   }
 
-  // Once a rule is enabled on the connection, applies what it now covers in each idle chat with a
-  // pending action there, under the chat's operation lock, so that no manual accept or discard of
-  // it runs meanwhile: an awaited action, with what approving it applies (see #autoApply), which
-  // resumes the turn waiting on it, and otherwise the whole branch (see autoAcceptBranch).
-  async autoAcceptChatsOn(gatekeeperId: WorkpieceId): Promise<void> {
-    let chatIds = new Set<number>();
-    for (let record of this.storage.actions.pendingByGatekeeper.get(gatekeeperId)) {
-      if (record.caller.from !== "hook" && record.caller.chatId !== undefined) {
-        chatIds.add(record.caller.chatId);
-      }
+  // Whether chat `chatId`'s branch may be accepted automatically (see autoAcceptBranch): its mode
+  // is Auto (chatMode), its agent waits on no decision, it has something to accept, and every
+  // pending action the accept would apply may be applied automatically (#autoApprovable), which
+  // none that staging holds may. Nor may a creation, which needs an account chosen.
+  #autoAcceptable(chatId: number): boolean {
+    let meta = this.storage.chatMeta.get(chatId);
+    if (!meta || this.chatMode(meta) !== "auto" || this.#decisionWait(chatId)?.pending) {
+      return false;
     }
-    for (let chatId of chatIds) {
-      await this.withChatLock(chatId, async () => {
-        let awaited = [...this.storage.actions.pendingByBranch.get(`chat:${chatId}`)].filter(
-            (record): record is ActionRecord & {type: "action"} => record.type === "action" &&
-                record.gatekeeperId === gatekeeperId && record.caller.from === "agent" &&
-                record.description.awaitDecision === true);
-        for (let record of awaited) {
-          // One approved along with an earlier one is passed over.
-          if (this.storage.actions.get(record.id)?.state === "pending") {
-            await this.#autoApply(record);
-          }
-        }
-        if (!this.storage.chatMeta.get(chatId)?.activeAgent) await this.autoAcceptBranch(chatId);
-      });
-    }
+    let branch = `chat:${chatId}`;
+    let pending = this.#pendingOnBranch(branch);
+    if (pending.some(record => record.action === "create")) return false;
+    return (pending.length > 0 || this.proposedChangeWorkpieceIds(chatId, meta).length > 0) &&
+        [...new Set(pending.map(record => record.gatekeeperId))].every(gatekeeperId =>
+            this.#branchList(gatekeeperId, branch, false).every(r => this.#autoApprovable(r)));
   }
 
-  // Applies `record` and the actions approving it applies (#approvalList) automatically, if every
-  // one of them satisfies a rule (see #autoItems). A failure leaves them pending, with the error on
-  // the one that failed. One connection's run one at a time (#autoApplying), so that a second
-  // awaited action submitted while the first applies does not find the first claimed and stay
-  // pending, with no turn waiting on it.
-  #autoApply(record: ActionRecord & {type: "action"}): Promise<void> {
+  // The chat context of the user `userId` names, on whose behalf an automatic approval is made
+  // (see autoAcceptBranch).
+  #chatContextOf(userId: string): Promise<UserChatContext> {
+    let user = this.wrapUserDo(this.users.get(this.users.idFromString(userId)));
+    return retryOnDoReset(() => user.getChatContext(null), this.logger);
+  }
+
+  // Applies `record` and the actions approving it applies (#approvalList) automatically, on behalf
+  // of the user `userId` names (see autoAcceptBranch), if every one of them may be (see
+  // #autoItems). A failure leaves them pending, with the error on the one that failed. One
+  // connection's run one at a time (#autoApplying), so that a second awaited action submitted
+  // while the first applies does not find the first claimed and stay pending, with no turn
+  // waiting on it.
+  #autoApply(record: ActionRecord & {type: "action"}, userId: string): Promise<void> {
     let gatekeeperId = record.gatekeeperId;
     let run = (this.#autoApplying.get(gatekeeperId) ?? Promise.resolve()).then(async () => {
       try {
+        let {profile} = await this.#chatContextOf(userId);
         await this.applyActionList(gatekeeperId, true,
-            adopted => this.#autoItems(this.#approvalList(record, adopted)) ?? []);
+            adopted => this.#autoItems(this.#approvalList(record, adopted), profile) ?? []);
       } catch (error) {
         this.logger.error("auto-approval failed", {
           event: "auto.approval.failed", actionId: record.id, error,
@@ -6152,23 +6192,25 @@ class OverseerImpl implements AgentHooks {
   // Each connection's last automatic apply of an awaited action (see #autoApply), while one runs.
   #autoApplying = new Map<number, Promise<void>>();
 
-  // `records` as an automatic approval applies them: each as the user who enabled the rule it
-  // satisfies (autoApprovalRule), which is asked again before each call to the gatekeeper (see
-  // ApplyItem). Undefined unless every one satisfies a rule and none is staged.
-  #autoItems(records: (ActionRecord & {type: "action"})[]): ApplyItem[] | undefined {
-    let items: ApplyItem[] = [];
-    for (let record of records) {
-      // A staged action still pending is one staging holds, or one applying at once that the
-      // caller did not wait for; no rule releases either (see #stagedRun). Nor one in a chat
-      // with holding on, which may be turned on while earlier actions apply.
-      let chatId = record.caller.from !== "hook" ? record.caller.chatId : undefined;
-      let eligible = () => chatId !== undefined && !this.storage.chatMeta.get(chatId)?.holding &&
-          autoApprovalRule(this.storage, record.gatekeeperId, record.description) !== undefined;
-      let rule = autoApprovalRule(this.storage, record.gatekeeperId, record.description);
-      if (!rule || !eligible()) return undefined;
-      items.push({record, resolvedBy: rule.enabledBy, eligible});
-    }
-    return items;
+  // `records` as an automatic approval applies them, each on behalf of `resolvedBy`: undefined
+  // unless every one may be applied so (#autoApprovable). That is asked again before each call to
+  // the gatekeeper (see ApplyItem), since the chat's mode may change while earlier ones apply.
+  #autoItems(records: (ActionRecord & {type: "action"})[], resolvedBy: AiChatAuthorInfo)
+      : ApplyItem[] | undefined {
+    if (!records.every(record => this.#autoApprovable(record))) return undefined;
+    return records.map(record =>
+        ({record, resolvedBy, eligible: () => this.#autoApprovable(record)}));
+  }
+
+  // Whether `record` may be applied without a person: a chat's action that its author judged
+  // auto-approvable (a stored description without the verdict counts as no), in a chat whose mode
+  // is Auto (chatMode). A staged action may not: one still pending is one staging holds, or one
+  // applying at once that the caller did not wait for (see #stagedRun).
+  #autoApprovable(record: ActionRecord & {type: "action"}): boolean {
+    let chatId = record.caller.from !== "hook" ? record.caller.chatId : undefined;
+    let meta = chatId === undefined ? undefined : this.storage.chatMeta.get(chatId);
+    return meta !== undefined && record.description.autoApprovable === true &&
+        this.chatMode(meta) === "auto";
   }
 
   // Rejects chat `chatId`'s pending actions whose `action` message is at or after `revertFrom`,
@@ -6293,8 +6335,8 @@ class OverseerImpl implements AgentHooks {
   // `autoApproved` is required (not defaulted), like each action's `resolvedBy`, so that no apply
   // path can omit how the gate was cleared: this is the chokepoint where an action transitions to
   // "approved", so requiring them here guarantees the audit log always records the resolving user
-  // and whether it was applied automatically. For an auto-approval, `resolvedBy` is the user who
-  // enabled the rule.
+  // and whether it was applied automatically. For an automatic approval, `resolvedBy` is the user
+  // on whose behalf it was made (see autoAcceptBranch).
   async applyActionList(gatekeeperId: number, autoApproved: boolean,
                         select: (adopted: boolean) => ApplyItem[]): Promise<void> {
     let facet = await this.getGatekeeperFacet(gatekeeperId);
@@ -6463,7 +6505,7 @@ class OverseerImpl implements AgentHooks {
     if (record.caller.from === "agent" && record.description.awaitDecision) {
       this.resumeAgentAfterDecision(record.caller.chatId, id);
     }
-    // Also when a rule applies it: a user's "always approve" answers a pending request that way.
+    // Also when it applies automatically: that answers a pending request too.
     this.traceAgentActionApproval(record, "approved");
   }
 
@@ -6962,8 +7004,11 @@ class OverseerImpl implements AgentHooks {
       // One transaction: a failed audit write must not leave a policy flag latched without the
       // revocation below, nor an action ID spent.
       let actionId = this.storage.transaction(() => {
-        if (description.containsRestrictedData) {
+        if (description.containsRestrictedData && !this.storage.containsRestrictedData.get()) {
           this.storage.containsRestrictedData.put(true);
+          // A chat in Auto now reads as Review (see chatMode), which its metadata must say.
+          this.#rebroadcastChatMeta([...this.storage.chatMeta.list()].flatMap(meta =>
+              (meta.mode ?? "auto") === "auto" ? [meta.id] : []));
         }
         if (description.ownerInvitesOnly) {
           this.storage.ownerInvitesOnly.put(true);
@@ -7636,14 +7681,15 @@ class OverseerImpl implements AgentHooks {
       this.#lastSubmitted.set(gatekeeperId, Math.max(action, last));
     }
 
-    if (autoApprovalRule(this.storage, gatekeeperId, description) === undefined) {
+    if (!this.#autoApprovable(record)) {
       this.traceAgentActionApproval(record, "requested");
     }
 
     // A chat's action waits for its chat to be accepted (see acceptBranch), but an agent's turn
-    // cannot wait inside the branch for the real result of an awaited one. Rules apply that at
-    // once, with the actions approving it applies before it, when every one of them satisfies a
-    // rule; otherwise the turn waits for a user.
+    // cannot wait inside the branch for the real result of an awaited one. In a chat in Auto,
+    // that applies at once, with the actions approving it applies before it, when every one of
+    // them may be applied automatically (#autoApprovable), on behalf of the turn's user (see
+    // autoAcceptBranch); otherwise the turn waits for a user.
     //
     // A staged action, though, applies at once, unless staging holds (see #stagedRun). Both
     // applies are deferred because applying calls back into the gatekeeper facet still awaiting
@@ -7653,8 +7699,10 @@ class OverseerImpl implements AgentHooks {
     } else if (caller.from === "agent" && description.awaitDecision) {
       // As far as the kernel has seen; the apply asks again (see adoptsBranches).
       let adopted = gatekeeper.leftoversThrough !== undefined;
-      if (this.#autoItems(this.#branchList(gatekeeperId, branchOf(caller), adopted, actionId))) {
-        this.ctx.waitUntil(this.#autoApply(record));
+      let turn = this.storage.activeAgents.get(caller.chatId);
+      if (turn && this.#branchList(gatekeeperId, branchOf(caller), adopted, actionId)
+          .every(other => this.#autoApprovable(other))) {
+        this.ctx.waitUntil(this.#autoApply(record, turn.initiatorUserId));
       } else {
         this.#getOrCreateCapturedActions(caller.chatId).awaitDecision = true;
       }
@@ -8627,10 +8675,12 @@ class OverseerImpl implements AgentHooks {
     capsules?: CapsuleSpecifier[],
     attachments?: ChatAttachmentHandle[],
     formats?: MessageFormatRef[],
+    mode?: ChatMode,
   ): Promise<number> {
     if (typeof initialMessage !== "string" && (capsules?.length || attachments?.length)) {
       throw new Error("Slash commands cannot include resources or attachments.");
     }
+    this.assertChatModePermitted(mode);
     let canonicalAttachments = this.canonicalizeChatAttachmentRefs(attachments);
     let prepared = await this.#prepareChatMessage(
         initialMessage, (canonicalAttachments?.length ?? 0) > 0);
@@ -8651,6 +8701,7 @@ class OverseerImpl implements AgentHooks {
         lastActive: timestamp,
         chatToken: crypto.randomUUID(),
       };
+      if (mode !== undefined && mode !== "auto") meta.mode = mode;
       if (prepared.message !== undefined && userMeta.aiModel) {
         meta.activeAgent = userMeta.aiModel.profile;
       }
@@ -9273,11 +9324,11 @@ class OverseerImpl implements AgentHooks {
         // step's message is by construction lost, so nothing in the log backs it. Never throws,
         // so it can't mask an error propagating out of the turn.
         await this.reconcilePendingGadgets(chatId);
-        // A turn that finished normally ends by accepting its chat's branch when rules cover all
-        // of it, before the chat goes idle, so that no turn or message can start meanwhile and
-        // waitForAgent() returns only once it is done.
+        // A turn that finished normally ends by accepting its chat's branch when the chat is in
+        // Auto and all of it may be, before the chat goes idle, so that no turn or message can
+        // start meanwhile and waitForAgent() returns only once it is done.
         if (owns() && finished && !failure && !liveChat.cancelController.signal.aborted) {
-          await this.autoAcceptBranch(chatId);
+          await this.autoAcceptBranch(chatId, initiatorUserId);
         }
         if (owns()) {
           // Posted past the turn's last await, so a steer sent as the turn winds down still lands
@@ -11079,9 +11130,9 @@ class OverseerImpl implements AgentHooks {
   #publishAgentTurnNotification(chatId: number, initiator: AiChatAuthorInfo, initiatorUserId: string): void {
     let meta = this.storage.chatMeta.get(chatId);
     if (!meta) return;
-    // A turn that leaves its chat's actions pending also needs a decision: accepting the chat.
+    // A turn that leaves its chat forked also needs a decision: accepting the chat.
     let awaitingDecision = (this.#decisionWait(chatId)?.pending ?? false) ||
-        this.#pendingOnBranch(`chat:${chatId}`).length > 0;
+        this.isForked(chatId, meta);
     if (!awaitingDecision && initiator.type !== "user" && (meta.spawnerName === undefined ||
         this.storage.nextChatSequences.get(chatId)?.notificationParticipants === undefined)) return;
     // The outcome already exists in the timeline. Recovery reuses this position and event ID.
@@ -13861,8 +13912,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   // Applies what staging holds on the connection (drainAutoApprovals), first recording the calling
   // user as the initiator of each stopped turn waiting on an awaited action there
-  // (rememberDecisionInitiator): an apply that follows may decide one, a rule's included, and must
-  // resume that turn just as a manual approval does.
+  // (rememberDecisionInitiator): an apply that follows may decide one, and must resume that turn
+  // just as a manual approval does.
   async #drainAutoApprovalsAsClient(gatekeeperId: WorkpieceId): Promise<void> {
     let profile: AiChatAuthorInfo | undefined;
     // Legacy adoption scans chat history, so close the single KV cursor before adopting or awaiting.
@@ -13978,10 +14029,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     await this.impl.discardBranch(null, 0, await this.#getClientProfile());
   }
 
-  // Enable auto-approval of actions carrying `actionKind` on the given gatekeeper. Stores the
-  // opt-in rule (one of the two gates required to auto-apply -- the action's own `autoApprovable`
-  // verdict is the other) with the kind's display label, and immediately drains any pending
-  // actions that this newly unblocks. Auto-approval rules are workspace-wide per gatekeeper.
+  // Stores an auto-approval rule for `actionKind` on the given gatekeeper, with the kind's display
+  // label. Rules have no effect: chat modes replaced them, and nothing consults them.
   async setAutoApprovedActionKind(gatekeeperId: WorkpieceId, actionKind: ActionKind)
       : Promise<void> {
     let gatekeeper = this.impl.storage.gatekeepers.get(gatekeeperId);
@@ -13995,19 +14044,14 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       actionKind,
       enabledBy: profile,
     });
-    // Apply the currently-visible pending action(s) with this tag right away: accept each idle
-    // chat that acted on the connection, if rules now cover all of it.
-    this.impl.ctx.waitUntil(this.#drainAutoApprovalsAsClient(gatekeeperId).then(() =>
-        this.impl.autoAcceptChatsOn(gatekeeperId)));
   }
 
-  // Remove the auto-approval rule for `tag` on the given gatekeeper, so future matching actions
-  // require manual approval again.
+  // Remove the auto-approval rule for `tag` on the given gatekeeper.
   async removeAutoApprovedActionKind(gatekeeperId: WorkpieceId, tag: string): Promise<void> {
     this.impl.storage.autoApproveTags.delete(`${gatekeeperId}:${tag}`);
   }
 
-  // List the enabled auto-approval rules.
+  // List the stored auto-approval rules.
   async listAutoApprovedActionKinds()
       : Promise<Array<{ gatekeeperId: WorkpieceId; actionKind: ActionKind }>> {
     return [...this.impl.storage.autoApproveTags.list()].map(rule => ({
@@ -14418,11 +14462,11 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   async newChat(initialMessage: string | SlashCommandRequest, chosenModelId: string | null,
                 capsules?: CapsuleSpecifier[], attachments?: ChatAttachmentHandle[],
-                formats?: MessageFormatRef[]): Promise<number> {
+                formats?: MessageFormatRef[], mode?: ChatMode): Promise<number> {
     let userMeta = await retryOnDoReset(
         () => this.#clientUser.getChatContext(chosenModelId), this.impl.logger);
     return this.impl.newChat(this.#clientUser, userMeta, initialMessage, capsules, attachments,
-                             formats);
+                             formats, mode);
   }
 
   async sendChatMessage(
@@ -14453,12 +14497,13 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     this.impl.storage.chatMeta.put(meta);
   }
 
-  async setChatHolding(chatId: number, holding: boolean): Promise<void> {
+  async setChatMode(chatId: number, mode: ChatMode): Promise<void> {
+    this.impl.assertChatModePermitted(mode);
     let meta = this.impl.getChatMetaOrThrow(chatId);
-    if (holding) {
-      meta.holding = true;
+    if (mode === "auto") {
+      delete meta.mode;
     } else {
-      delete meta.holding;
+      meta.mode = mode;
     }
     this.impl.storage.chatMeta.put(meta);
   }
@@ -15107,7 +15152,8 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   }
   async viewChat(_chatId: number): Promise<RpcStub<{}>> { this.#deny(); }
   async newChat(_initialMessage: string | SlashCommandRequest, _modelId: string | null,
-                 _capsules?: CapsuleSpecifier[], _attachments?: ChatAttachmentHandle[]): Promise<number> {
+                 _capsules?: CapsuleSpecifier[], _attachments?: ChatAttachmentHandle[],
+                 _formats?: MessageFormatRef[], _mode?: ChatMode): Promise<number> {
     this.#deny();
   }
   async sendChatMessage(_chatId: number, _message: string | SlashCommandRequest,
@@ -15122,7 +15168,7 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   async readBlob(_oid: string): Promise<ReadableStream<Uint8Array>> { this.#deny(); }
   async getChatAttachmentContent(_chatId: number, _id: string): Promise<Uint8Array> { this.#deny(); }
   async setChatTitle(_chatId: number, _title: string): Promise<void> { this.#deny(); }
-  async setChatHolding(_chatId: number, _holding: boolean): Promise<void> { this.#deny(); }
+  async setChatMode(_chatId: number, _mode: ChatMode): Promise<void> { this.#deny(); }
   async mergeChanges(_chatId: number, _options?: MergeChangesOptions)
       : Promise<MergeChangesResult> {
     this.#deny();
@@ -15546,8 +15592,8 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
         () => this.#impl.shareLinkInfos(() => this.#ownerProfile()));
   }
 
-  // The stored rules as they are, whether or not any can apply now (see AdminAutoApproval). What
-  // each connection could auto-approve is not read: that would ask every bound connection.
+  // The stored rules as they are, which have no effect (see AdminAutoApproval). What each
+  // connection could auto-approve is not read: that would ask every bound connection.
   async listAutoApprovals(): Promise<AdminAutoApproval[]> {
     return this.#call("listAutoApprovals", {},
         () => [...this.#impl.storage.autoApproveTags.list()].map(
