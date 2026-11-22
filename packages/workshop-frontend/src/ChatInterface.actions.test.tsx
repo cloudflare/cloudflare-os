@@ -328,6 +328,23 @@ describe('accepting a chat', () => {
     expect(accept.disabled).toBe(awaitingDecision)
   })
 
+  it('holds back Accept changes until every pending request is known', async () => {
+    const server = makeOverseer()
+    withChatApi(server, undefined, [{
+      id: 1, title: 'Chat', started: new Date(), lastActive: new Date(),
+      proposedChangeWorkpieces: [1],
+    }])
+    await renderChat(server.overseer, { selectedChatId: 1 })
+    await server.resolveSubscription()
+    const accept = () => [...document.querySelectorAll('button')]
+      .find(b => b.textContent?.trim() === 'Accept changes') as HTMLButtonElement
+    // The accept would apply the chat's requests, and they have not loaded to be shown yet.
+    expect(accept().disabled).toBe(true)
+
+    await server.resolvePendingQuery({ entries: [{ ...entry(1), chatId: 1 } as ActionLogEntry] })
+    expect(accept().disabled).toBe(false)
+  })
+
   it('accepts the held requests no chat made from the bar under the tray, outside any chat',
       async () => {
     const server = makeOverseer()

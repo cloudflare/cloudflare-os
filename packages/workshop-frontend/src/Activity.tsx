@@ -255,7 +255,12 @@ export default function Activity({
         <div className="min-h-0 flex-1 overflow-auto">
           {staged.length > 0 && (
             <section aria-label="Held changes">
-              <StagedChangesBar overseer={overseer} count={staged.length} />
+              <StagedChangesBar
+                overseer={overseer}
+                count={staged.length}
+                blocked={pendingStatus === 'ready' ? undefined
+                  : pendingStatus === 'error' ? PENDING_ERROR_COPY : PENDING_CHECKING_COPY}
+              />
               {staged.map(record => (
                 <div key={record.id}>
                   {record.type === 'action' && record.applyError && (

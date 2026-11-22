@@ -4662,7 +4662,11 @@ function ChatInterface({
   // What the workspace is waiting on, grouped by the resource it touches, for the tray above the
   // composer: what accepting the open chat applies, or, outside any chat, what no chat's accept
   // covers. The open chat's action messages mark which ones this conversation asked for.
-  const { pending: workspacePending } = useActions(overseer);
+  const { status: workspacePendingStatus, pending: workspacePending } = useActions(overseer);
+  // An accept applies every request on its branch, so it waits until all of them are known and
+  // shown: a partial or failed load would apply requests the user was never shown.
+  const acceptBlocked = workspacePendingStatus === "ready" ? undefined
+    : workspacePendingStatus === "error" ? PENDING_ERROR_COPY : PENDING_CHECKING_COPY;
   const openChatRequestIds = useMemo(() => chatRequestIds(currentMessages), [currentMessages]);
   const trayPending = useMemo(
     () => chatBranchPending(workspacePending, selectedChatId),
@@ -4755,7 +4759,7 @@ function ChatInterface({
   // one that failed), and this bar under it accepts or discards them, as a chat's bar does the
   // chat's.
   const stagingBar = selectedChatId === null && trayPending.length > 0
-    ? <StagedChangesBar overseer={overseer} count={trayPending.length} />
+    ? <StagedChangesBar overseer={overseer} count={trayPending.length} blocked={acceptBlocked} />
     : null;
 
   // The gadget's own code draft, docked under the tray. Accepting always merges everything the
@@ -4800,11 +4804,11 @@ function ChatInterface({
             ? "Wait for pending changes to finish discarding."
             : awaitingDecision
               ? "Decide what the agent is waiting on first."
-              : branchRequests.length > 0
+              : acceptBlocked ?? (branchRequests.length > 0
                 ? "Apply the requests above, then keep any code changes as the gadget's current version."
-                : "Keep this draft and make it the gadget's current version."} asChild>
+                : "Keep this draft and make it the gadget's current version.")} asChild>
           <WorkshopButton
-            disabled={changesActionsDisabled || awaitingDecision}
+            disabled={changesActionsDisabled || awaitingDecision || acceptBlocked !== undefined}
             onClick={() => { void handleAcceptChanges(); }}
             tone="primary"
             className="!h-7 !cursor-pointer !rounded-md !border-transparent !shadow-none gap-1 text-[12px]"
@@ -7164,6 +7168,8 @@ function ChatInterface({
       {creationAccountModal}
       {acceptCreation && (
         <CreationAccountModal
+          // One dialog per creation: the next one of the same type must not inherit this one's state.
+          key={acceptCreation.entry.id}
           overseer={overseer}
           gatekeeperId={acceptCreation.entry.gatekeeperId}
           onChoose={approval => {

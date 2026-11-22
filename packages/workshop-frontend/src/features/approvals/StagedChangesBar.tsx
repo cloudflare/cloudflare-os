@@ -13,10 +13,12 @@ const requestCount = (count: number) => count === 1 ? '1 request' : `${count} re
  * one that failed (see Overseer.acceptStagedActions()). It is to staging what a chat's pending-changes bar is to the
  * chat, so the composer tray and the Activity page show the same one.
  */
-export const StagedChangesBar = ({ overseer, count }: {
+export const StagedChangesBar = ({ overseer, count, blocked }: {
   overseer: RpcStub<Overseer>
   /** How many requests staging holds, as the surface showing them counts them. */
   count: number
+  /** Why accepting must wait, when the requests it would apply are not all known and shown. */
+  blocked?: string
 }) => {
   const toasts = useKumoToastManager()
   const [busy, setBusy] = useState<'accept' | 'discard' | null>(null)
@@ -104,9 +106,9 @@ export const StagedChangesBar = ({ overseer, count }: {
           </div>
         </Popover.Content>
       </Popover>
-      <Tooltip content="Apply the requests made outside any chat." asChild>
+      <Tooltip content={blocked ?? "Apply the requests made outside any chat."} asChild>
         <WorkshopButton
-          disabled={busy !== null}
+          disabled={busy !== null || blocked !== undefined}
           onClick={() => { void accept() }}
           tone="primary"
           className="!h-7 !cursor-pointer !rounded-md !border-transparent !shadow-none gap-1 text-[12px]"
