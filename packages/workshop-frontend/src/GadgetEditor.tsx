@@ -211,7 +211,6 @@ function WorkpieceGlyph({ summary, className }: { summary: WorkpieceSummary; cla
 
 const ACTIVITY_TABS: { value: ActivityView; label: string }[] = [
   { value: 'review', label: 'Needs review' },
-  { value: 'auto', label: 'Auto-approval' },
   { value: 'history', label: 'History' },
 ]
 

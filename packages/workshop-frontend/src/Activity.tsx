@@ -1,18 +1,15 @@
 import { useMemo, useState, type ReactNode } from 'react'
-import { Switch, useKumoToastManager } from '@cloudflare/kumo'
+import { useKumoToastManager } from '@cloudflare/kumo'
 import { CaretRight, Check, Eye, Lightning, ShieldCheck } from '@phosphor-icons/react'
 import { RpcStub } from 'capnweb'
 import { ActionLogEntry, Overseer, actionChangeTime } from '@gadgets/workshop-shared/api'
-import { GatekeeperIcon } from './components/GatekeeperIcon'
 import { HookToggle, hookToggleFailureToast } from './components/HookToggle'
 import { WorkshopButton } from './components/WorkshopControls'
 import { useActions } from './useActions'
 import { useActionHistory } from './useActionHistory'
 import type { HistoryViewFilter } from './useActionHistory'
-import { useAutoApproval, autoApprovalKey, type AutoApprovalEntry } from './useAutoApproval'
 import { useAuthenticatedApi } from './AuthContext'
 import { useAvatar } from './useAvatar'
-import { useVendorBranding } from './useVendorBranding'
 import { useResolveAction } from './useResolveAction'
 import { safeExternalUrl } from './utils/safeExternalUrl'
 import { ReviewRequest } from './features/approvals/ReviewRequest'
@@ -23,15 +20,14 @@ import {
 } from './features/approvals/pendingChangeGroups'
 import type { ChatWithChanges } from './features/approvals/chatsWithChanges'
 
-export type ActivityView = 'review' | 'history' | 'auto'
+export type ActivityView = 'review' | 'history'
 
 const PANE_BAR = 'flex h-9 flex-shrink-0 items-center border-b border-kumo-line'
 
 interface ActivityProps {
   overseer: RpcStub<Overseer>
   // True once the workspace has read restricted data (WorkspaceMetadata.containsRestrictedData).
-  // Every request is then reviewed in full, and the rules are shown as suspended but stay
-  // revocable.
+  // Every request is then reviewed in full.
   restricted?: boolean
   view: ActivityView
   onViewChange: (view: ActivityView) => void
@@ -485,10 +481,6 @@ export default function Activity({
             {renderHistoryBody()}
           </>
         )
-      case 'auto':
-        return (
-          <AutoApprovalPanel overseer={overseer} restricted={restricted} />
-        )
     }
   }
 
@@ -498,144 +490,6 @@ export default function Activity({
 
       {creationAccountModal}
     </div>
-  )
-}
-
-function AutoApprovalPanel({
-  overseer,
-  restricted,
-}: {
-  overseer: RpcStub<Overseer>
-  restricted?: boolean
-}) {
-  const { entries, isLoading, loadError, pending, refresh, setEnabled } = useAutoApproval(overseer)
-  const { authenticatedApi } = useAuthenticatedApi()
-  const vendorBranding = useVendorBranding(authenticatedApi)
-
-  const groups = useMemo(() => {
-    const byConnection = new Map<
-      number,
-      { gatekeeperId: number; title: string; vendorId?: string; entries: AutoApprovalEntry[] }
-    >()
-    for (const entry of entries) {
-      const group = byConnection.get(entry.gatekeeperId)
-      if (group) group.entries.push(entry)
-      else {
-        byConnection.set(entry.gatekeeperId, {
-          gatekeeperId: entry.gatekeeperId,
-          title: entry.resourceTitle,
-          vendorId: entry.vendorId,
-          entries: [entry],
-        })
-      }
-    }
-    for (const group of byConnection.values()) {
-      group.title ||= 'Unavailable connection'
-      group.entries = group.entries.toSorted((a, b) =>
-        a.actionKind.label.localeCompare(b.actionKind.label))
-    }
-    return [...byConnection.values()].toSorted((a, b) => a.title.localeCompare(b.title))
-  }, [entries])
-
-  if (isLoading) {
-    return (
-      <div className="flex h-full items-center justify-center text-[13px] text-kumo-subtle">
-        Loading auto-approval…
-      </div>
-    )
-  }
-
-  if (entries.length === 0) {
-    return (
-      <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
-        <p className="m-0 text-[13px] font-medium leading-[18px] tracking-[-0.25px] text-kumo-default">
-          {loadError ? 'Could not load auto-approval' : 'Nothing can run automatically'}
-        </p>
-        <p className="mt-1 max-w-xs text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle">
-          {loadError
-            ? 'The current rules may be incomplete. Try loading them again.'
-            : 'Action types appear here once a connected resource offers one its author marked safe to apply without review.'}
-        </p>
-        {loadError && (
-          <WorkshopButton className="mt-4" onClick={() => void refresh()}>
-            Retry
-          </WorkshopButton>
-        )}
-      </div>
-    )
-  }
-
-  return (
-    <>
-      <div className={`${PANE_BAR} gap-3 px-5`}>
-        <p className="m-0 min-w-0 flex-1 truncate text-[12.5px] leading-[17px] tracking-[-0.2px] text-kumo-subtle">
-          {loadError && 'Some auto-approval options could not be loaded. '}
-          Chat modes have replaced these rules. They no longer have any effect.
-        </p>
-        {loadError && (
-          <button
-            type="button"
-            onClick={() => void refresh()}
-            className="cursor-pointer text-[12px] font-medium text-kumo-default hover:text-kumo-default-hover"
-          >
-            Retry
-          </button>
-        )}
-      </div>
-      <div className="min-h-0 flex-1 overflow-auto">
-        {groups.map(group => (
-          <section key={group.gatekeeperId}>
-            <div className="sticky top-0 flex items-center gap-2 border-b border-kumo-line bg-kumo-base/90 px-5 py-1.5 backdrop-blur-sm">
-              <GatekeeperIcon
-                vendorId={group.vendorId}
-                {...(group.vendorId ? vendorBranding.get(group.vendorId) : undefined)}
-                fallbackText={group.title}
-                size={12}
-                className="h-5 w-5 rounded-md [&>img]:p-px"
-              />
-              <h3 className="m-0 min-w-0 truncate text-[12px] font-medium leading-4 tracking-[-0.2px] text-kumo-subtle">
-                {group.title}
-              </h3>
-            </div>
-            {group.entries.map(entry => {
-              const key = autoApprovalKey(entry)
-              const busy = pending.has(key)
-              return (
-                <div
-                  key={key}
-                  className="flex w-full items-center gap-3 border-b border-kumo-line/60 px-5 py-2.5 text-left"
-                >
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[13px] leading-[18px] font-medium tracking-[-0.25px] text-kumo-default">
-                      {entry.actionKind.label}
-                    </span>
-                    <span className="mt-0.5 block text-[12px] leading-4 tracking-[-0.2px] text-kumo-inactive">
-                      {restricted
-                        // Rules don't apply while restricted; say so, but keep them revocable.
-                        ? "Won't apply: this workspace has read sensitive data, so actions always require manual approval."
-                        : entry.orphaned
-                          ? 'This connection no longer offers this action; the rule still applies.'
-                          : entry.enabled
-                            ? 'Applied without asking'
-                            : 'Waits for your approval'}
-                    </span>
-                  </span>
-                  <Switch
-                    size="sm"
-                    checked={entry.enabled}
-                    // A rule never fires while restricted, so enabling one is pointless; disabling
-                    // must stay possible.
-                    disabled={busy || (restricted === true && !entry.enabled)}
-                    aria-label={`${entry.enabled ? 'Disable' : 'Enable'} auto-approval for ${entry.actionKind.label}`}
-                    onCheckedChange={enabled => void setEnabled(entry, enabled)}
-                  />
-                </div>
-              )
-            })}
-          </section>
-        ))}
-      </div>
-    </>
   )
 }
 
