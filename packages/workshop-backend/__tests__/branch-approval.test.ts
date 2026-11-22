@@ -472,6 +472,22 @@ describe("an unsaved resource", () => {
     await impl.acceptBranch(2, taken, OTHER);
   }
 
+  it("restarts for a collaborator's session only once the save has applied what was accepted",
+      async () => {
+    const gatekeeper = creatable(legacyGatekeeper());
+    const {visit} = await workspace(gatekeeper.facet);
+    await visit(async impl => {
+      await acceptedFourWays(impl);
+      const applied: number[][] = [];
+      vi.spyOn(impl, "scheduleAccessRestart").mockImplementation(
+          async () => { applied.push([...gatekeeper.applied]); });
+      using _session = {[Symbol.dispose]: impl.joinSession({kind: "build", profileId: "bob"})};
+      await impl.applyPendingAction(creation(impl), SAVER, SAVE);
+      expect(applied).toEqual([[1, 2, 3]]);
+      expect(impl.gatekeeperUsable(GK)).toBe(false);
+    });
+  });
+
   it("applies on saving what was accepted, in ID order, each as its accepter, up to the rest",
       async () => {
     const gatekeeper = creatable(legacyGatekeeper());

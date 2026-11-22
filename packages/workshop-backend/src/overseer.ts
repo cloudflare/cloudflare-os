@@ -6043,19 +6043,23 @@ class OverseerImpl implements AgentHooks {
     this.ctx.facets.abort(`gatekeeper${id}`,
         new Error("Connection restarted because its resource was created."));
     // Minting skipped addGatekeeper's restart: collaborators had no real resource to be
-    // verified against until now (see createExternalResource).
-    if (this.#restartIfSessionsAffected("Gadget restarted because a resource was created.")) {
-      this.#gatekeepersPendingRestart.add(id);
+    // verified against until now (see createExternalResource). The connection is held back from
+    // them at once, but the restart follows the apply below, which it would cut short.
+    let restart = this.#hasCollaboratorSession();
+    if (restart) this.#gatekeepersPendingRestart.add(id);
+    try {
+      await this.applyActionList(id, adopted => {
+        let items: ApplyItem[] = [];
+        for (let record of this.#branchList(id, null, adopted)) {
+          if (!record.accepted || this.#deciding.has(record.id)) break;
+          items.push({record, resolvedBy: record.accepted.by,
+                      autoApproved: record.accepted.autoApproved});
+        }
+        return items;
+      });
+    } finally {
+      if (restart) this.scheduleAccessRestart("Gadget restarted because a resource was created.");
     }
-    await this.applyActionList(id, adopted => {
-      let items: ApplyItem[] = [];
-      for (let record of this.#branchList(id, null, adopted)) {
-        if (!record.accepted || this.#deciding.has(record.id)) break;
-        items.push({record, resolvedBy: record.accepted.by,
-                    autoApproved: record.accepted.autoApproved});
-      }
-      return items;
-    });
   }
 
   // The IDs of the pending actions accepting chat `chatId` would apply (see acceptBranch): the
