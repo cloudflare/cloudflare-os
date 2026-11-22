@@ -1084,6 +1084,8 @@ export function defineActions<Host, M extends Record<string, unknown>>(
         : Promise<ApplyActionsResult> => {
         const result: ApplyActionsResult = { applied: [] };
         const started = Date.now();
+        // Naming a record proves the Workshop holds it, whether or not the list gets as far.
+        for (const id of actions) journal.markSubmitted(id);
         // Past a batch that failed, its actions go one at a time up to here.
         let unbatchedUntil = 0;
         for (let i = 0; i < actions.length;) {

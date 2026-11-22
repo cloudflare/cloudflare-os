@@ -278,6 +278,23 @@ describe("applyList", () => {
     expect(staged.pending()).toEqual([]);
   });
 
+  it("confirms a record it names but stops before, which a lost reply then leaves", async () => {
+    const { journal, set } = activation(fakeKv(), { fail: () => new Error("try later") });
+    const reply = Promise.withResolvers<void>();
+    const a = await set.session({ submitAction: async () => {}, holdsAction: async () => true }, A);
+    const first = await a.submit("note", { text: "first" });
+    const late = await set.session(
+      { submitAction: () => reply.promise, holdsAction: async () => true }, A);
+    const waiting = late.submit("note", { text: "second" });
+    await vi.waitFor(() => expect(journal.get(first + 1)?.state).toBe("staged"));
+
+    expect(await set.applyList(A, [first, first + 1])).toMatchObject({ failed: { action: first } });
+    expect(journal.get(first + 1)?.state).toBe("pending");
+    reply.reject(new Error("reply lost"));
+    await waiting.catch(() => {});
+    expect(journal.get(first + 1)?.state).toBe("pending");
+  });
+
   it("stops at the first failure, retryable unless the record failed for good", async () => {
     let failures: Record<string, Error> = { second: new Error("try later") };
     const { set, host } = activation(fakeKv(), { fail: name => failures[name] });
