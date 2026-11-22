@@ -1742,10 +1742,12 @@ Part 1 has been deployed nowhere, so no stored state has `holding`, and nothing 
 1's code needs converting. Part 2 adds no storage version. It changes part 1's migrations, which
 run on main's data, to produce part 2's state directly:
 
-- A chat with a pending action or a proposed change gets `mode: "review"`. Its changes were
-  waiting for a person, and its next turn must not merge them unseen. This follows the ruling for
-  staged actions pending at upgrade, and goes in the same migration (`migrateToHeldStaging`).
-- Every other chat has no mode, which reads as Auto.
+- Every existing chat gets `mode: "review"`. Until the upgrade its user accepted its changes
+  themselves, so no turn in it, one the upgrade interrupted included, may accept them unseen:
+  less review than a user was used to is a bad surprise, and more is a small one until they
+  find the mode chooser. This follows the ruling for staged actions pending at upgrade, and goes
+  in the same migration (`migrateToHeldStaging`).
+- A chat created after the upgrade has no mode unless it is given one, which reads as Auto.
 
 `holding` is deleted from the stored chat type outright.
 
@@ -1836,7 +1838,7 @@ mode and otherwise behaves as now, in Auto.
     gadget's actions.
   - Restricted-data mode: choosing Auto is refused; a chat in Auto reads as Review and is not
     accepted, including when the latch sets mid-turn.
-  - The migration: a chat with changes pending on main's data becomes Review.
+  - The migration: every chat on main's data becomes Review.
   - Rules: enabling one applies nothing.
   - Notifications: a turn that ends forked by code changes alone raises `permissionRequested`; one
     that Auto accepted raises `taskCompleted`.
