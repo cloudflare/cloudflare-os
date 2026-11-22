@@ -1,6 +1,7 @@
 # Plan: Forking reality — branches of pending gatekeeper actions
 
-Status: proposal. Nothing here is implemented.
+Status: part 1 (everything up to "Part 2") is implemented. Part 2, at the end, is a proposal;
+nothing in it is implemented.
 
 ## Summary
 
@@ -1371,3 +1372,497 @@ No gatekeeper changes, so the branch-aware path is tested through fixtures and t
 - Wiring up `revertAction()`.
 - Batch rejection.
 - Changing any gatekeeper, in or out of this repository, including fixing what the audit found.
+
+# Part 2: Chat modes
+
+Status: proposal. Nothing here is implemented.
+
+## Summary
+
+Part 1 decides what is automatic from per-action-kind rules, and offers holding as a toggle. Part 2
+replaces both with one choice the user makes in the prompt box: the chat's **mode**.
+
+A chat is **forked** while its changes are being held for review. A forked chat holds every
+action, whether the agent or a user driving a gadget submitted it, shows the held changes above
+the prompt box with "Accept changes", and stays forked until it is accepted or discarded. A chat
+that is not forked applies gadget actions at once, through staging.
+
+| Mode | The chat forks | It is accepted |
+|---|---|---|
+| **Auto** (default) | when the agent makes any change | automatically at the end of a turn, if every change is auto-approvable; otherwise by the user |
+| **Review** | when the agent makes any change | by the user only |
+| **Fork** | at once, and again after every accept | by the user only |
+
+- **Auto-approvable** now means the gatekeeper author's verdict alone (`autoApprovable: true`).
+  Code changes count as auto-approvable. The user's per-kind rules are no longer consulted.
+- **Fork** replaces holding.
+- **A resource the agent creates is unsaved** until the user saves it to an account. It does not
+  stand in the way of accepting. Changes to it are accepted like any others, and the user sees
+  them as applied to a document that exists only in the workspace.
+- Part 2 touches the kernel's approval policy, the client API and the UI. The gatekeeper interface
+  gains one optional method, for unsaved resources, which the kit implements.
+
+## Decisions
+
+Settled:
+
+- The three modes and their meaning, as in the table.
+- Rules are moot but not removed. Removing their storage, API and settings UI is a later change.
+- The chooser sits on the prompt box's bottom line, left of the model chooser, and always shows
+  the mode's name.
+- A follow-up defaults to the mode of the previous message. A new chat defaults to the mode the
+  user last started a chat with, or Auto.
+- In Auto, an awaited action (`awaitDecision`) that is `autoApprovable: true` is applied without
+  asking. A prompt that needs input from the user still waits.
+- **The mode is a property of the chat, changed the moment the chooser changes**, even mid-turn.
+  It is not a parameter of each message. See "The mode".
+- **A chat is forked as a whole.** It is forked when its branch is non-empty or its mode is Fork,
+  where the branch includes proposed code and binding changes, and then every gadget in it runs on
+  its branch. Gadgets in one chat are never in different states. See "Forked".
+- **Binding changes go with the code**: auto-approvable, except where the user's input is needed.
+  See "Auto-approvable".
+- **Creating a resource needs no approval and no input.** Only saving it to an account does, and
+  that is separate from accepting. Accepting never waits on a creation, by hand or automatically.
+  See "Unsaved resources".
+- **Auto trusts the agent.** An agent in Auto could get around `autoApprovable: false` by writing
+  code that acts for it. Agents are expected not to be malicious, so this is accepted. See "What
+  Auto newly allows".
+- **Restricted-data mode does not permit Auto.** The chooser greys it out, and only Review and
+  Fork can be selected. See "Restricted-data mode".
+- **A chat started by an agent spawner runs in Auto.** An API for the gadget to choose is future
+  work. See "Chats nobody starts".
+- **No new migration.** Part 1 has been deployed nowhere, so its migrations are changed to produce
+  part 2's state straight from main's. See "Migration".
+- **The new-chat default is remembered in the browser, per user**, not on the server.
+- **The controls that enable a rule are removed from action cards**, though the rules themselves
+  stay.
+- **Accepted changes to an unsaved resource move to staging, which holds them** until the
+  resource is saved. The user is shown them as applied. Staging keeps ID order. See "Unsaved
+  resources", as for the three below.
+- **The gatekeeper interface gains an optional `stageActions(branch, actions)`**, which tells a
+  gatekeeper that has adopted branches that a prefix of a branch is now staged. Like
+  `applyActions()`, it names a complete range and never skips an action.
+- **Saving is its own step, offered once the creation is accepted.** "Accept changes" no longer
+  asks for an account, and `MergeChangesOptions.creations` goes.
+- **An accepted change to an unsaved resource leaves the chat's review UI**, which is the
+  requirement. It stays deniable from the action log, since hiding that would only add code.
+
+## The mode
+
+```ts
+/** How a chat's changes are held and accepted; see AiChatMetadata.mode. */
+export type ChatMode = "auto" | "review" | "fork";
+```
+
+- **Stored on the chat**, as `AiChatMetadata.mode`, replacing `holding`. Absent means `"auto"`.
+- **Set two ways.** `newChat()` takes it as a new optional last parameter.
+  `setChatMode(chatId, mode)` changes it afterwards and replaces `setChatHolding()`.
+  `sendChatMessage()` is unchanged.
+- **The chooser calls `setChatMode()` as soon as it changes.** The alternative, a
+  mode sent with each message, has three problems:
+  - Fork must take effect with no message: it exists for a user who wants a gadget's actions held,
+    perhaps in a chat with no agent.
+  - A message sent while the agent runs is a steer. It would be unclear whether its mode applies
+    to the running turn.
+  - The user could not change their mind mid-turn. With a chat property, switching Auto to Review
+    while the agent works stops the automatic accept without stopping the agent.
+
+  "Defaults to the mode of the previous message" then needs no mechanism: the chooser shows the
+  chat's mode.
+- **Read when it matters, not when the turn starts.** The end of a turn and the submission of an
+  awaited action each read the mode then.
+- **Changing it never accepts or discards anything.** Switching a forked chat to Auto leaves it
+  forked until the user accepts it or a later turn completes. Switching an empty Fork chat to Auto
+  or Review unforks it, and its gadgets return to mainline.
+- **Permissions.** As `setChatHolding()` today: `build` users only.
+
+## Forked
+
+One predicate, in the kernel:
+
+> A chat is forked when its mode is Fork, or its branch has a pending action, or it proposes a
+> code or binding change.
+
+- **It replaces rules 1, 2 and 4** of part 1's "Gadgets". A request for a gadget in a forked
+  chat's context runs on the chat's branch. Rule 3 stays: a gadget an agent turn invokes runs on
+  the branch until the turn ends, so that the first action it submits forks the chat instead of
+  landing in staging.
+- **What changes:** a chat that proposes code changes to gadget G, and nothing
+  else, today runs only G as its variant; a click in gadget H applies at once. Under the
+  definition, the chat holds H's actions too. The cost is part 1's: more restarts until gadget
+  facets fork. The gain is one rule the user can predict from what the prompt box shows.
+- **No new metadata.** `branchGadgets` already delivers the result. The UI shows the held-changes
+  bar when `mode === "fork"`, `pendingActions` or `proposedChangeWorkpieces` says so.
+- **Accept in Fork.** Accepting empties the branch and the mode keeps the chat forked. Nothing
+  restarts, because the gadgets stay on the branch.
+
+## Auto-approvable
+
+A branch is auto-approvable when all of these hold:
+
+- Every pending action on it has `autoApprovable: true`. A stored description without the verdict
+  counts as no, as today.
+- A creation does not count against it, and neither does the fact that an action's resource is
+  unsaved. Each action on an unsaved resource is judged by its own verdict, like any other. See
+  "Unsaved resources".
+- Accepting it would release nothing staging is holding on its connections (part 1's rule).
+
+Code and binding changes do not count against it. A binding edge the chat proposes gives a gadget
+access to a connection the agent could already use. Reviewing the grant while not reviewing the
+code that uses it would protect nothing. A binding that needs the user's input, such as a
+connection request, waits for it as it does today.
+
+`autoApprovalRule()` is replaced by this check. `autoApproveTags`, `setAutoApprovedActionKind()`
+and the rules tab stay, and nothing reads them. `autoAcceptChatsOn()`, which applied what a newly
+enabled rule covered, is deleted.
+
+### At the end of a turn
+
+`autoAcceptBranch()` keeps its place: the last phase of a turn that finished normally, before the
+chat goes idle. It now accepts when the mode is Auto and the branch is auto-approvable.
+
+- **Code merges too.** The accept is the same `acceptBranch()` the button calls: actions first,
+  then code. If mainline has already moved it returns `"stale"` before applying anything. If
+  mainline moves while the actions apply, they are applied and only the code is left, as in part
+  1. Either way the chat stays forked for the user.
+- **A stopped, failed or waiting turn accepts nothing**, as today. The chat stays forked, so the
+  user can discard. A later turn that completes accepts whatever the branch then holds, including
+  what earlier turns and the user's own gadget use left on it.
+- **All or nothing.** One action that is not auto-approvable leaves the whole branch for the user.
+- **Not after a denial**, as today.
+- **Attribution.** Each action is recorded as approved automatically (`autoApproved: true`), on
+  behalf of the user whose message started the turn. Today it is the user who enabled the rule.
+
+### Awaited actions
+
+Part 1's "Actions that cannot be simulated" stands, with the mode in place of rules. At submit, an
+awaited action is applied at once when:
+
+- the chat's mode is Auto;
+- it, and every earlier pending action on that connection's branch, is `autoApprovable: true`;
+- staging holds nothing on that connection.
+
+Otherwise the turn waits for the user, whose Approve applies that connection's branch up to the
+action, as now. In Review and Fork it always waits.
+
+What an awaited action applied mid-turn stays applied if the turn is then stopped.
+
+A connection request and a web-fetch request are not actions with a verdict. Each waits for the
+user in every mode. A creation waits for nobody (see "Unsaved resources").
+
+## Unsaved resources
+
+`createExternalResource` mints a connection of its own for the new resource, with a pending
+`"create"` action and the agent's later actions queued behind it. Part 1 treats that creation as
+something an accept must wait for: the user chooses an account in the accept dialog, and Auto
+never accepts a branch that holds one.
+
+Part 2 separates the two. The user's picture:
+
+- The agent has created a document. It exists in the workspace and is **unsaved**.
+- Changes to it are held, accepted and auto-accepted exactly as changes to anything else are. Once
+  accepted, they have happened, to a document that is not saved anywhere yet.
+- At some point the user **saves** it to one of their accounts. That is when they choose the
+  account, and where in it the resource goes.
+
+Underneath, nothing can be applied before the resource exists. So the kernel keeps the accepted
+actions and applies them when the resource is saved.
+
+### Accepting
+
+Accepting a chat **moves its actions on an unsaved connection into staging**, where they are held
+until the resource is saved. Staging is already "pending actions on no branch, which every session
+sees", so no new state is needed for what the user was told is applied.
+
+- **`acceptBranch()` moves instead of applying**, on each unsaved connection: the creation and the
+  branch's actions there. It calls no `applyActions()` for them. On every other connection it
+  applies as now.
+- **The kernel records the accept on each action**: who accepted it and whether that was
+  automatic. From then on the action's branch is staging, whatever its caller says. This is the
+  first case where an action's branch is not a function of its caller.
+- **It has left the chat.** It no longer counts in the chat's `pendingActions`, so the chat is no
+  longer forked by it and the held-changes bar does not list it.
+- **Staging holds for a new reason.** Part 1's staging holds in restricted-data mode, behind a
+  failure and for actions pending from before the upgrade. It now also holds everything on a
+  connection whose resource is unsaved.
+- **A gadget outside any fork** that acts on an unsaved resource submits to staging as always. The
+  action is recorded as accepted for the workspace owner, automatically, as it would have been
+  applied, and held with the rest. In restricted-data mode it waits for a user's accept first.
+- **Order is ID order**, as everywhere in staging. An action with a lower ID that is accepted
+  after a higher one was staged replays before it, though the chat previewed it after. If the two
+  conflict, the resource shifts at the moment of accept. What is shown after the accept is still
+  what gets saved, since simulation and save replay the same order. Keeping ID order means a
+  bound in `applyActions()` keeps meaning "every staged action up to this ID".
+- **These actions are not up for review.** What matters is that they no longer appear in the
+  chat's review UI: neither as the chat's own, nor in the staged actions a chat lists ahead of its
+  own. `WorkspaceMetadata.stagedActions`, `acceptStagedActions()` and `discardStagedActions()`
+  pass over an action already accepted too, since accepting one again means nothing and the bar
+  is for what awaits a decision.
+- **They can still be denied elsewhere.** `rejectAction()` treats one like any pending action, and
+  the action log offers Deny on it as it does on any. Nothing is added to prevent it.
+- **Before the creation is accepted** the resource belongs to the chat that created it. Discarding
+  the chat rejects the creation and removes the resource, as now.
+- **Auto.** The end of a turn accepts a branch whatever creations it holds. An
+  `autoApprovable: false` action on an unsaved resource still leaves the branch for the user: what
+  is automatic should not depend on whether a resource happens to be saved yet.
+- **Awaited actions.** An action that cannot be simulated cannot run against a resource that does
+  not exist. On an unsaved connection it waits until the resource is saved, in every mode. No
+  resource type that can be created is expected to submit one.
+
+### Limits set by today's gatekeepers
+
+Neither is addressed here, since no gatekeeper changes in this plan.
+
+- **A type that takes no change before it is created.** The Sheets gatekeeper refuses every
+  change to a spreadsheet not created yet. That is arguably a bug in it. Until it is fixed, an
+  action on an unsaved spreadsheet fails as it does today, with the gatekeeper's error, and the
+  resource has to be saved before it can be changed.
+- **The kit's cap on pending actions.** `ActionJournal` refuses a new action once 50 are
+  unresolved (`DEFAULT_MAX_PENDING`). Accepted actions on an unsaved resource stay unresolved, so
+  a resource left unsaved through enough edits reaches the cap, and further changes fail until it
+  is saved. The cap is arbitrary and is expected to be removed from the kit, which resolves this.
+
+### Telling the gatekeeper
+
+A gatekeeper that has not adopted branches simulates every pending action to every session, so
+the move changes nothing it can see. One that has adopted them isolates the chat's actions, and
+has to learn that they are now staged:
+
+```ts
+/**
+ * Optional. `actions`, pending on `branch`'s branch, are staged from now on: every session sees
+ * them, as it does any staged action (see `BranchView`), in ID order among the staged actions.
+ * They are applied later, by `applyActions()`, like any other.
+ *
+ * The list is complete, as `applyActions()`'s is: it names every action the Workshop holds
+ * pending on the branch and its ancestors with an ID up to the highest it names. A gatekeeper
+ * may therefore work from the view and that bound instead of from each action. An action is
+ * never passed over: one that is not to be staged was rejected first (`rejectAction()`).
+ *
+ * Naming an action confirms it, as in `applyActions()`. Calling again with the same actions
+ * changes nothing. Throwing tells the Workshop nothing was staged, and it will call again.
+ */
+stageActions?(branch: BranchView, actions: number[]): Promise<void>;
+```
+
+- **A prefix of the branch, never a selection.** Like an apply, a move takes the branch's actions
+  on the connection up to a bound and skips none. The accept's own bound
+  (`MergeChangesOptions.through`) gives it: later actions stay on the branch.
+- **General, though only unsaved resources use it here.** It is the "way to tell a gatekeeper that
+  an action has changed branch" that part 1 left out, and would also serve merging an accepted
+  chat into staging when the accepter may not release what staging holds.
+- **No change to the view contract.** Staged actions stay in ID order.
+- **The kit** rewrites the stored view of the records within the bound. Authors see nothing new.
+- **A gatekeeper that has adopted branches but lacks the method** keeps the actions private to
+  the chat. One that offers creation is expected to have it; the kit's harness checks.
+- **Failure and interruption.** The kernel durably records the move it intends, per connection:
+  the branch and the bound. Then it calls, and only once the call returns does it record the
+  actions as staged and clear the intent. If the call throws, the accept stops as it does for a
+  failed apply, with the actions still on the branch. While an intent is recorded, the kernel
+  calls again, with the same list, before anything else it does on that connection: starting a
+  session, applying, or another accept. The call is idempotent, so a gatekeeper that had already
+  rewritten its records when the kernel was interrupted is brought back into agreement. This is
+  the pattern of part 1's reconciliation mark.
+
+### Saving
+
+`approveAction(creationId, creation)` already applies a creation in the account the caller chose.
+It becomes "save":
+
+1. `applyCreation()` creates the resource and the connection switches to the real class, as now.
+2. What staging holds on the connection is applied, in ID order, through the routine that applies
+   any list, up to the first action no user has accepted yet. Each is recorded as approved by the
+   user who accepted it, with `autoApproved` as it was accepted. The creation is recorded as
+   approved by the user who saved.
+3. **A failure stops there**, with the error on the action that failed. From here the connection
+   is an ordinary one whose staging is held behind a failure, which part 1 already handles: the
+   action can be retried or denied, and the next apply on the connection takes it first. The UI
+   says the save did not finish.
+
+- **Offered once the creation is accepted**. Until then the creation is part of a
+  fork, and the user accepts first. This keeps one question per step: "accept these changes?",
+  then "where does this go?".
+- **`MergeChangesOptions.creations` goes**, with the refusal to accept while a creation has no
+  account, and the creation dialog in the accept flow.
+- **Removing the unsaved resource** discards it and everything accepted on it, through the
+  existing cleanup for a removed connection.
+- **Permissions.** As `approveAction()` today.
+
+### What the client sees
+
+- `ActionLogEntry` reports such an action as accepted: who accepted it and when, and that it
+  waits on its resource being saved.
+- A connection reports that its resource is unsaved, so the UI can list unsaved resources without
+  scanning the action log.
+
+### What Auto newly allows
+
+Today code is never merged without a person accepting it. In Auto, the default, it is. Combined
+with part 1's decision 5, that removes the last review between an agent and an
+`autoApprovable: false` action:
+
+1. The agent writes a gadget whose hook, alarm or button sends an email.
+2. The turn ends. Nothing pending is `autoApprovable: false`, so the code merges.
+3. The hook fires, or the user clicks. The action goes to staging and applies at once.
+
+This is accepted. `autoApprovable: false` guards against an agent's mistake, not against an agent
+working to get around it, and agents are expected not to be malicious. Auto means the user trusts
+the agent with what its code can reach. Review is the mode for a user who does not.
+
+### Restricted-data mode
+
+Once the workspace has latched restricted-data mode, every action must be reviewed, so Auto is not
+permitted.
+
+- **Unsaved resources.** The latch does not stop a user accepting changes to one, or saving it.
+- **Choosing it is refused.** `setChatMode()` and `newChat()` throw when asked for Auto. The
+  chooser shows Auto greyed out, with the reason, and offers only Review and Fork.
+- **A chat already in Auto reads as Review.** The latch can set at any time, including mid-turn,
+  so the kernel does not rewrite chats when it does. Instead a chat whose stored mode is Auto, or
+  absent, has the mode Review while the latch is set: in what the kernel decides, and in the
+  `mode` it delivers to clients. That covers spawned chats too.
+- **The new-chat default is not overwritten.** A composer whose remembered mode is Auto starts on
+  Review in such a workspace, and leaves the remembered value alone for other workspaces.
+
+## Chats nobody starts
+
+- **Spawned agents.** A chat an agent spawner creates has no chooser. It runs in Auto: its `autoApprovable: true` actions apply when its turn ends, and anything else
+  waits, with the existing notification. Today such a chat applies only what the user's rules
+  cover, so this widens what a spawned agent does unattended to every auto-approvable action. An
+  API for the gadget to choose its agents' mode is future work.
+- **Attribution** for a spawned turn is the user the spawner already resolves its model from.
+- **Blueprint updates** (`applyBlueprint()`) start a chat for the user to review a merge. It is
+  created in Review.
+- **"Hold changes" in the gadget view** becomes `newChat(message, null, …, "fork")`: one call
+  where there are two today.
+
+## Migration
+
+Part 1 has been deployed nowhere, so no stored state has `holding`, and nothing written by part
+1's code needs converting. Part 2 adds no storage version. It changes part 1's migrations, which
+run on main's data, to produce part 2's state directly:
+
+- A chat with a pending action or a proposed change gets `mode: "review"`. Its changes were
+  waiting for a person, and its next turn must not merge them unseen. This follows the ruling for
+  staged actions pending at upgrade, and goes in the same migration (`migrateToHeldStaging`).
+- Every other chat has no mode, which reads as Auto.
+
+`holding` is deleted from the stored chat type outright.
+
+## Client API (`workshop-shared/src/api.ts`)
+
+| Change | Purpose |
+|---|---|
+| `ChatMode` | the three modes |
+| `AiChatMetadata.mode?: ChatMode`, replacing `holding` | the chat's mode |
+| `newChat(…, mode?: ChatMode)` | a new chat's mode |
+| `setChatMode(chatId, mode)`, replacing `setChatHolding()` | changing it |
+| doc comments on `setAutoApprovedActionKind()` and the rule types | say the rules have no effect |
+| `MergeChangesOptions.creations` removed | accepting never saves |
+| `approveAction(creationId, creation)` also applies what staging holds there | saving a resource |
+| `ActionLogEntry`: accepted, waiting on its resource | an accepted action on an unsaved resource |
+| connection info: the resource is unsaved | listing unsaved resources |
+| `Gatekeeper.stageActions?()` (`gatekeeper.ts`) | moving a branch's actions to staging |
+
+`setChatMode()` is denied in `UseOverseerInterface`. `pnpm cf-os api new-chat` gains an optional
+mode and otherwise behaves as now, in Auto.
+
+## Workshop UI
+
+- **Mode chooser** (`ComposerModeSelector`, beside `ComposerModelSelector` in `ChatComposer`). A
+  dropdown on the prompt box's bottom line, left of the model chooser. The trigger always shows
+  the name: "Auto", "Review" or "Fork". Each menu item carries one line saying what it does.
+  - In an existing chat it shows the chat's mode and calls `setChatMode()` on change.
+  - In the new-chat composer it starts on the user's last choice and passes it to `newChat()`.
+  - It is shown with no agent selected too, since Fork is useful there.
+  - A user who may not change the mode sees it read-only.
+  - In a workspace in restricted-data mode, Auto is greyed out (see "Restricted-data mode").
+- **The new-chat default** is kept in `localStorage` under the user's ID, the way
+  `modelSelection.ts` keeps the model, and written when a chat is started. The model also has a
+  server copy that follows the user between browsers. Giving the mode one means new
+  `AuthenticatedApi` members for a small gain, so it is left out. "Hold changes" does not update
+  it.
+- **Held changes.** The bar above the prompt box shows whenever the chat is forked. In Fork with
+  nothing pending it says so, with "Accept changes" disabled.
+- **Unsaved resources.**
+  - "Accept changes" no longer opens the account dialog (`CreationAccountModal`).
+  - The creation's card in the transcript shows the resource as unsaved, with "Save to account"
+    once the chat's changes are accepted. That opens the same account and configurator dialog.
+  - The connection's entry wherever connections are listed carries the same state and button, so
+    a resource can be saved without finding the chat.
+  - Actions accepted on it leave the chat's held-changes list, and the staging bar does not
+    count them. The action log shows them as accepted, waiting on the resource, with its usual
+    Deny.
+  - A save that did not finish shows the failed action with Retry and Deny, as a failed accept
+    does.
+- **The holding toggle goes** (`HoldingToggle`).
+- **Rule controls.** "Always approve" on an action card and its confirmation dialog
+  are removed, since enabling a rule now does nothing. The rules tab stays until the later
+  cleanup, with a line saying modes have replaced it.
+- **Notifications.** A turn that ends with its chat forked is waiting on the user, so it raises
+  `permissionRequested`. Today the check (`#publishAgentTurnNotification()`) looks only at pending
+  decisions and pending actions, so a turn that leaves only code or binding changes reports
+  `taskCompleted`. That is a bug, fixed here by asking the forked predicate instead.
+
+## Sequencing
+
+1. **Kernel and API: modes.** `ChatMode`, `mode` on the chat, `newChat()`'s parameter,
+   `setChatMode()`, the change to part 1's migration, the forked predicate, the notification fix,
+   and the auto-approvable check in place of `autoApprovalRule()` at the end of a turn and for
+   awaited actions. The
+   frontend changes only as far as it must to compile: the holding toggle calls `setChatMode()`
+   with Fork or Auto.
+2. **Kernel and kit: unsaved resources.** Moving to staging at accept, staging holding an unsaved
+   connection, saving, `stageActions()` and its kit support, and the removal of
+   `MergeChangesOptions.creations`. The frontend again changes only as far as it must: the accept
+   flow loses its account dialog, and the creation's card saves.
+3. **UI: the mode chooser**, the new-chat default, the held-changes bar in Fork, unsaved
+   resources where connections are listed, and removing the holding toggle and the rule controls.
+
+## Testing
+
+- **Kernel unit tests:**
+  - Auto: a turn whose actions are all auto-approvable is accepted, code included; one that is not
+    leaves everything pending; a stopped turn accepts nothing and the next completed turn accepts
+    both turns' changes; a merge that is `"stale"` at the start applies nothing, and one
+    that goes stale while actions apply leaves only the code;
+    a branch built on held staging accepts nothing.
+  - Review and Fork: never accepted automatically.
+  - Fork: gadget actions join the branch with nothing pending; after an accept they still do.
+  - Awaited actions: applied at once in Auto when auto-approvable; waiting behind an earlier
+    action that is not; waiting in Review and Fork.
+  - The mode changed mid-turn decides the turn's end.
+  - The forked predicate for each cause, and that a chat with only code changes holds another
+    gadget's actions.
+  - Restricted-data mode: choosing Auto is refused; a chat in Auto reads as Review and is not
+    accepted, including when the latch sets mid-turn.
+  - The migration: a chat with changes pending on main's data becomes Review.
+  - Rules: enabling one applies nothing.
+  - Notifications: a turn that ends forked by code changes alone raises `permissionRequested`; one
+    that Auto accepted raises `taskCompleted`.
+  - Unsaved resources: an accept moves the creation and its actions to staging and applies the
+    rest; the chat is then not forked, and the staging count and discard pass them over; Auto
+    accepts a branch with a creation; a gadget's action on an unsaved resource is held as
+    accepted; saving applies in ID order with each action's own accepter, and stops before one
+    not yet accepted; a failure at save leaves the rest pending and deniable; removing the
+    resource rejects what was accepted; discarding the chat before accept removes the resource.
+- **Integration, with the branch-aware fixture:** a session in another chat sees an accepted
+  action on an unsaved resource and not an unaccepted one; `stageActions()` receives a complete
+  prefix when the accept is bounded by `through`; a throw leaves the actions on the branch; an
+  interruption after the gatekeeper's write is repaired by the repeated call before the next
+  session; a
+  lower-ID action accepted after a higher one replays in ID order, in simulation and at save.
+- **Kit, Node:** records within the bound become staged, visible to every view; a repeated call
+  changes nothing; `applyList` then takes them as staged actions.
+- **`pnpm cf-os api`:** `new-chat` in each mode, then `wait-for-agent` and the stored action
+  states and attribution.
+- **Frontend:** the chooser's label and default in a new chat and a follow-up; the bar in an empty
+  Fork chat; no rule controls on a card.
+- **Live, on the preview:** a building turn in Auto that merges on its own, and the same in
+  Review; an agent creating a document in Auto, a later turn editing it, then saving it.
+
+## Out of scope
+
+- Removing rule storage, `setAutoApprovedActionKind()` and the rules tab.
+- An API for a gadget to choose the mode of the agents it spawns.
+- A server copy of the new-chat default.
