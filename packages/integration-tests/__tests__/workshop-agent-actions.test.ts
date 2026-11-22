@@ -95,6 +95,25 @@ const decidedBy = (session: WorkshopAgentSession, state: ActionState) =>
 const agentSaid = (history: AiChatMessage[], text: string) => history.filter(message =>
   message.type === "message" && message.author.type === "agent" && message.message === text).length;
 
+it.concurrent("a mismatched connection URL returns an error without ending the turn", async () => {
+  const model = models.script([
+    { toolCall: { id: "bad-connection", name: "requestConnection", arguments: {
+      vendorId: TEST_VENDOR_ID, resourceTypeId: "thing",
+      resourceUrl: "https://gadgets-test.example/unrelated", reason: "Read a thing", bindingName: "OTHER",
+    } } },
+    { text: "I need a matching URL." },
+  ]);
+  await using session = await openSession(model, "agentbadconnection");
+  const { history } = await session.runTurn("Connect this resource.");
+  expect(history.filter(message => message.type === "connectionRequest")).toEqual([]);
+  expect(agentSaid(history, "I need a matching URL.")).toBe(1);
+  expect(model.requests).toHaveLength(2);
+  expect(model.requests[1]).toMatchObject({ messages: expect.arrayContaining([
+    expect.objectContaining({ role: "tool", tool_call_id: "bad-connection",
+      content: expect.stringContaining("does not match") }),
+  ]) });
+});
+
 it.concurrent("rejecting an action discards it and leaves the agent stopped", async () => {
   const model = models.script([writeValues(7), { text: "This must not run." }]);
   await using session = await openSession(model, "agentreject");

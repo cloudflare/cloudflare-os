@@ -91,6 +91,7 @@ export async function openFakeOverseer(
       ensureAmbientCapsules: async () => {},
       markOutputsDirty: () => {},
       trackUnreadReader: () => {},
+      syncDirectory: () => {},
       joinSession: () => () => {},
       joinPresence: () => () => {},
       joinOutputsFanout: () => () => {},

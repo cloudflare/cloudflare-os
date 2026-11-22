@@ -29,7 +29,7 @@ A blueprint does **not** capture:
 
 - The gadget's SQLite storage contents.
 - AI chat history, or the gadget's commit history. Its commit messages hold chat titles and its authors include collaborators, neither of which the publisher chose to share.
-- Live connections or credentials. Only the *shape* of each binding (its type, gatekeeper name, URL pattern, etc.) is recorded.
+- Live connections or credentials. Only the *shape* of each binding (its type, gatekeeper name, resource type ID or legacy URL pattern, etc.) is recorded.
 
 ## Binding Annotations
 
@@ -45,7 +45,7 @@ All named bindings are included in the blueprint. Annotations are configured in 
 
 Blueprints support three types of bindings, matching the three types of gatekeepers:
 
-1. **Gatekeeper** (`type: "gatekeeper"`) -- an external resource connection (e.g. Google Drive, a REST API). The blueprint records the gatekeeper adapter name and a URL pattern describing what kind of resource is expected. When instantiating, the user picks a connected account and configures a matching resource.
+1. **Gatekeeper** (`type: "gatekeeper"`) -- an external resource connection (e.g. Google Drive, a REST API). The blueprint records the gatekeeper adapter name and a `resourceTypeId` identifying the expected resource type within that vendor. An explicit ID is authoritative; a legacy record without one resolves only through an exact current URL pattern. When instantiating, the user picks a connected account and configures a matching resource. See [resource type identity](gatekeeper-resource-types.md).
 
 2. **AI Model** (`type: "aiModel"`) -- a language model binding, or a decision model binding when `modelKind: "decision"` (see `ModelKind`). The blueprint may suggest a specific provider/model. When instantiating, the user picks from their own configured models of the same kind.
 
@@ -210,7 +210,7 @@ Importing a version 2 archive stores the same release commit under a new bluepri
 
 ## Admin Features and Featured Blueprints
 
-Deployments can optionally configure a set of admins through the backend worker's `ADMINS` binding, an array of usernames or sign-in emails. Entries match regardless of the case of ASCII letters, since an identity provider may capitalize an email differently than it was typed. `ADMIN_AUDIT_RETENTION_MIN_DAYS` bounds how briefly those admins may choose to keep the admin audit log; see [admin-access.md](admin-access.md).
+Deployments can optionally configure a set of admins through the backend worker's `ADMINS` binding, an array of usernames or sign-in emails. Entries match regardless of the case of ASCII letters, since an identity provider may capitalize an email differently than it was typed. `ADMIN_WORKSPACE_ACCESS_MAX` and `ADMIN_AUDIT_RETENTION_MIN_DAYS` bound what those admins may choose for inspecting workspaces and users' accounts and for audit retention, and `ADMIN_WORKSPACE_WRITES` decides whether they may change a workspace at all; see [admin-access.md](admin-access.md).
 
 Admins get access to two extra RPCs:
 

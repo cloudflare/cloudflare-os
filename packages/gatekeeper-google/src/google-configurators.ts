@@ -6,17 +6,25 @@ import type { BigQueryDataset, BigQueryProject, BigQueryTable } from "./bigquery
 import { GoogleCalendarApi } from "./calendar-api";
 import { ChatApi, chatSpaceIdFromReference, isChatNoAccessError } from "./chat-api";
 import type { ChatSpaceInfo } from "./chat-types";
-import { GoogleAccessToken } from "./google-api";
+import { getGoogleVerifiedEmail, GmailApi, GoogleAccessToken } from "./google-api";
+import { CloudIdentityApi, CloudIdentityApiError, type CloudIdentityGroup } from "./cloud-identity-api";
+import {
+  GMAIL_GROUP_ADMISSION_HEADERS, gmailGroupCandidates, groupStanding, type GmailGroupIdentity,
+} from "./gmail-group-admission";
 import { AccessTokenProvider, AccessTokenRequest } from "./auth-retry";
 import {
   DriveApi, DriveApiDisabledError, FOLDER_MIME_TYPE, SHORTCUT_MIME_TYPE, isFileInvisible,
-  isListableFolderFile, isListableFolderNode, type DriveFile, type DriveFileList, type DriveScopeNode,
+  isListableFolderFile, isListableFolderNode, MY_DRIVE_ROOT, type DriveFile, type DriveFileList,
+  type DriveScopeNode,
 } from "./drive-api";
 import type {
   BigQueryConfiguratorRpc, BigQueryNode, BigQueryNodeKind, BigQueryNodePage,
 } from "./configurator/bigquery-configurator-types";
 import type { CalendarConfiguratorRpc } from "./configurator/calendar-configurator-types";
 import type { GmailConfiguratorRpc } from "./configurator/gmail-configurator-types";
+import type {
+  GoogleGroupConfiguratorAlias, GoogleGroupConfiguratorGroupCheck, GoogleGroupConfiguratorRpc,
+} from "./configurator/google-group-configurator-types";
 import type { ConfiguratorOption } from "./configurator/configurator-option";
 import {
   editorKind, OFFICE_KINDS, OfficeConversion, type OfficeConversionResult, type OfficeFileInspection,
@@ -30,10 +38,10 @@ import type { ChatThreadConfiguratorRpc } from "./configurator/chat-thread-confi
 import type {
   DriveConfiguratorRpc, DriveNode, DriveNodeAncestor, DriveNodePage, DriveWriteAccess,
 } from "./configurator/drive-configurator-types";
-import type { CreationLocationConfiguratorRpc } from "./configurator/creation-location-configurator-types";
+import type { CreationLocationConfiguratorRpc, CreationPurpose } from "./configurator/creation-location-configurator-types";
 import {
-  BIGQUERY_HOST, CREATED_FILES_GRANT, DRIVE_WRITES_GRANT, OFFICE_IMPORT_GRANT, parseResourceUrl,
-  SHARED_DRIVES_GRANT,
+  BIGQUERY_HOST, CREATED_FILES_GRANT, DRIVE_WRITES_GRANT, GMAIL_RESOURCE, GROUP_MAIL_GRANT, OFFICE_IMPORT_GRANT,
+  parseResourceUrl, SHARED_DRIVES_GRANT, type ResourceTarget,
 } from "./resources";
 
 /**
@@ -46,12 +54,17 @@ const googleTokenGetters = new WeakMap<object, ConfiguratorTokenGetter>();
 const grantChecks = new WeakMap<object, (grant: string) => Promise<boolean>>();
 /** Whether the deployment a Drive picker was opened on offers read and write Drive connections. */
 const writeOffers = new WeakMap<object, boolean>();
+/** What a creation location picker was opened for (see GatekeeperUser.startCreationConfigurator()). */
+const creationPurposes = new WeakMap<object, CreationPurpose>();
 const calendarConfiguratorCaches = new WeakMap<object, Promise<ConfiguratorOption[]>>();
+const groupConfiguratorCaches = new WeakMap<object, Promise<ConfiguratorOption[]>>();
 const bigQueryConfiguratorCaches = new WeakMap<object, Map<string, Promise<unknown>>>();
 const BIGQUERY_CONFIGURATOR_CACHE_MAX_ENTRIES = 200;
 const BIGQUERY_CONFIGURATOR_LIST_OPTIONS = { maxPages: 5, maxResults: 1000 };
 /** Nodes per picker page, within the hierarchy picker's limit of 200. */
 const BIGQUERY_PICKER_PAGE_SIZE = 100;
+/** How long the picker waits on a dry run, so a stalled one doesn't hold up browsing. */
+const BIGQUERY_PROBE_TIMEOUT_MS = 10_000;
 /** Must equal `ROOT_ID` in configurator/bigquery-configurator-ui.tsx. */
 const BIGQUERY_ROOT_ID = "bigquery";
 
@@ -174,6 +187,99 @@ function chatSpaceOption(space: ChatSpaceInfo, title = space.name): Configurator
 // RPC interface exposed by Gatekeeper to the resource selection/configuration iframe.
 @validateRpc()
 export class GmailConfiguratorUI extends RpcTarget implements GmailConfiguratorRpc {}
+
+/** How much of a group's newest mail a check reads, to tell a group Google vouches for from one it doesn't. */
+const GMAIL_GROUP_CHECK_MESSAGES = 5;
+
+// RPC interface exposed by Gatekeeper to the resource selection/configuration iframe.
+@validateRpc()
+export class GoogleGroupConfiguratorUI extends RpcTarget implements GoogleGroupConfiguratorRpc {
+  #holds: (grant: string) => Promise<boolean>;
+
+  constructor(getToken: () => Promise<GoogleAccessToken>, holds: (grant: string) => Promise<boolean>) {
+    super();
+    googleTokenGetters.set(this, getToken);
+    this.#holds = holds;
+  }
+
+  async canReadMail(): Promise<boolean> {
+    // The Gmail Mailbox grant's scopes read mail too.
+    return await this.#holds(GROUP_MAIL_GRANT) || await this.#holds(GMAIL_RESOURCE.urlPattern);
+  }
+
+  async listGroups(query: string): Promise<ConfiguratorOption[]> {
+    let options = groupConfiguratorCaches.get(this);
+    if (!options) {
+      options = this.#listGroups();
+      // Don't let a transient API error poison the cache permanently.
+      options.catch(() => groupConfiguratorCaches.delete(this));
+      groupConfiguratorCaches.set(this, options);
+    }
+    let resolved = await options;
+    return resolved.filter(option => optionMatches([option.title, option.subtitle, option.value], query));
+  }
+
+  /** Every group to offer. What it throws is shown in the dialog, so each message is written for it. */
+  async #listGroups(): Promise<ConfiguratorOption[]> {
+    let groups;
+    try {
+      groups = await new CloudIdentityApi(googleTokenProvider(this)).listGroupsOf(await this.#email());
+    } catch (error) {
+      if (!(error instanceof CloudIdentityApiError)) throw error;
+      // Google's own words when the API is off say where to turn it on.
+      if (error.status === 403 && error.reason === "SERVICE_DISABLED") throw new Error(error.message, { cause: error });
+      throw new Error(error.status === 403
+        ? "Google won't let this account look up its groups."
+        : "Couldn't load your groups from Google.", { cause: error });
+    }
+    return groups.map(group => group.displayName && group.displayName !== group.address
+      ? { value: group.address, title: group.displayName, subtitle: group.address }
+      : { value: group.address, title: group.address });
+  }
+
+  async checkGroup(
+      address: string, outsideSenders: boolean): Promise<GoogleGroupConfiguratorGroupCheck | GoogleGroupConfiguratorAlias> {
+    let identity = new CloudIdentityApi(googleTokenProvider(this));
+    let group = await identity.lookupGroup(address);
+    // A binding is to a group's main address, which is what it is pinned and matched by.
+    if (group.address !== address) return { aliasOf: group.address };
+    let [mail, membership] = await Promise.all([
+      this.#checkGroupMail({ ...group, outsideSenders }), this.#membership(identity, group),
+    ]);
+    return { mail, membership };
+  }
+
+  async #checkGroupMail(group: GmailGroupIdentity): Promise<GoogleGroupConfiguratorGroupCheck["mail"]> {
+    let gmail = new GmailApi("", googleTokenProvider(this));
+    let { messages } = await gmail.listMessages(GMAIL_GROUP_CHECK_MESSAGES, gmailGroupCandidates(group));
+    if (messages.length === 0) return "empty";
+    let newest = await Promise.all(messages.map(message =>
+      gmail.getMessageHeaders(message.id, GMAIL_GROUP_ADMISSION_HEADERS)));
+    return newest.some(message => groupStanding(group, message) === "own") ? "ready" : "unverified";
+  }
+
+  /**
+   * The account's own membership, looked up the way each member's account must to open a shared
+   * gadget: `hidden` when the group's "Who can view members" setting refuses the lookup.
+   */
+  async #membership(
+      identity: CloudIdentityApi, group: CloudIdentityGroup): Promise<GoogleGroupConfiguratorGroupCheck["membership"]> {
+    try {
+      let roles = await identity.directRoles(group.name, await this.#email());
+      if (!roles) return "none";
+      return roles.some(role => role === "MANAGER" || role === "OWNER") ? "manager" : "member";
+    } catch (error) {
+      if (error instanceof CloudIdentityApiError && error.status === 403) return "hidden";
+      throw error;
+    }
+  }
+
+  async #email(): Promise<string> {
+    let email = await getGoogleVerifiedEmail((await googleToken(this)).token);
+    if (!email) throw new Error("Google hasn't verified this account's email address.");
+    return email.toLowerCase();
+  }
+}
 
 // RPC interface exposed by Gatekeeper to the resource selection/configuration iframe.
 @validateRpc()
@@ -303,25 +409,25 @@ const bigQueryProjectCrumb = (projectId: string) =>
 const bigQueryDatasetCrumb = (projectId: string, datasetId: string) =>
   ({ id: bigQueryNodeId({ kind: "dataset", projectId, datasetId }), kind: "dataset" as const, title: datasetId });
 
-function bigQueryProjectNode(project: BigQueryProject, listed: boolean): BigQueryNode {
+function bigQueryProjectNode(project: BigQueryProject, runsQueries: boolean): BigQueryNode {
   return {
     id: bigQueryNodeId({ kind: "project", projectId: project.projectId }), kind: "project",
-    title: project.projectId, subtitle: project.friendlyName, listed,
+    title: project.projectId, subtitle: project.friendlyName, runsQueries,
   };
 }
 
-function bigQueryDatasetNode(dataset: BigQueryDataset, listed: boolean): BigQueryNode {
+function bigQueryDatasetNode(dataset: BigQueryDataset, runsQueries: boolean): BigQueryNode {
   return {
     id: bigQueryNodeId({ kind: "dataset", projectId: dataset.projectId, datasetId: dataset.datasetId }), kind: "dataset",
-    title: dataset.datasetId, subtitle: dataset.friendlyName ?? dataset.description, listed,
+    title: dataset.datasetId, subtitle: dataset.friendlyName ?? dataset.description, runsQueries,
     path: [bigQueryProjectCrumb(dataset.projectId)],
   };
 }
 
-function bigQueryTableNode(table: BigQueryTable, listed: boolean): BigQueryNode {
+function bigQueryTableNode(table: BigQueryTable, runsQueries: boolean): BigQueryNode {
   return {
     id: bigQueryNodeId({ kind: "table", projectId: table.projectId, datasetId: table.datasetId, tableId: table.tableId }),
-    kind: "table", title: table.tableId, subtitle: table.friendlyName ?? BIGQUERY_TABLE_KINDS[table.type], listed,
+    kind: "table", title: table.tableId, subtitle: table.friendlyName ?? BIGQUERY_TABLE_KINDS[table.type], runsQueries,
     view: BIGQUERY_VIEW_TYPES.has(table.type) || undefined,
     path: [bigQueryProjectCrumb(table.projectId), bigQueryDatasetCrumb(table.projectId, table.datasetId)],
   };
@@ -343,6 +449,26 @@ export class BigQueryConfiguratorUI extends RpcTarget implements BigQueryConfigu
       let api = await bigQueryApi(this);
       let projects = await api.listProjects(BIGQUERY_CONFIGURATOR_LIST_OPTIONS);
       return new Map(projects.map(project => [project.projectId, project]));
+    });
+  }
+
+  /**
+   * Whether this account may run query jobs in `projectId`, which BigQuery requires of every query.
+   * A project BigQuery lists is taken to allow them. The list can omit a project that does, so any
+   * other is asked with a dry-run job, which is free, and the answer kept in the picker's cache. A
+   * dry run that fails for any reason, or has no answer within BIGQUERY_PROBE_TIMEOUT_MS, answers
+   * no, as before the check, rather than failing or holding up the lookup. The deadline covers the
+   * whole dry run: its signal ends a request in flight, and the race gives up on a token still being
+   * refreshed.
+   */
+  async #runsQueries(projectId: string): Promise<boolean> {
+    if ((await this.#heldProjects()).has(projectId)) return true;
+    return cachedBigQuery(this, `runsQueries:${projectId}`, async () => {
+      let deadline = AbortSignal.timeout(BIGQUERY_PROBE_TIMEOUT_MS);
+      let { promise: late, resolve } = Promise.withResolvers<boolean>();
+      deadline.addEventListener("abort", () => resolve(false), { once: true });
+      let probe = (await bigQueryApi(this)).dryRun(projectId, "SELECT 1", { signal: deadline });
+      return Promise.race([probe.then(() => true, () => false), late]);
     });
   }
 
@@ -392,36 +518,37 @@ export class BigQueryConfiguratorUI extends RpcTarget implements BigQueryConfigu
       let ref = parseBigQueryNodeId(parentId);
       if (!ref || ref.kind === "table") throw new Error("Unknown BigQuery location.");
       let api = await bigQueryApi(this);
-      let listed = (await this.#heldProjects()).has(ref.projectId);
+      let runsQueries = await this.#runsQueries(ref.projectId);
       if (ref.kind === "project") {
         let datasets = await api.listDatasets(ref.projectId, BIGQUERY_CONFIGURATOR_LIST_OPTIONS);
-        return datasets.map(dataset => bigQueryDatasetNode(dataset, listed)).toSorted(byTitle);
+        return datasets.map(dataset => bigQueryDatasetNode(dataset, runsQueries)).toSorted(byTitle);
       }
       let tables = await api.listTables(ref.projectId, ref.datasetId!, BIGQUERY_CONFIGURATOR_LIST_OPTIONS);
-      return tables.map(table => bigQueryTableNode(table, listed)).toSorted(byTitle);
+      return tables.map(table => bigQueryTableNode(table, runsQueries)).toSorted(byTitle);
     });
   }
 
   /** The node `ref` names, asked of BigQuery, or null when this account cannot see it. */
   #node(ref: BigQueryNodeRef): Promise<BigQueryNode | null> {
     return cachedBigQuery(this, `node:${bigQueryNodeId(ref)}`, async () => {
+      // Asked outside the catch below, which takes a refusal for a node this account can't see: a
+      // failed project list is not one, and must fail the lookup so that it is asked again.
       let held = await this.#heldProjects();
-      let listed = held.has(ref.projectId);
       let api = await bigQueryApi(this);
       try {
         if (ref.kind === "project") {
           let project = held.get(ref.projectId);
-          if (project) return bigQueryProjectNode(project, true);
           // Listing a project's datasets needs no role in it: one that was shared a dataset sees that
           // dataset, and a project the account cannot see at all refuses.
-          await api.listDatasets(ref.projectId, { maxPages: 1, maxResults: 1 });
-          return bigQueryProjectNode({ projectId: ref.projectId }, false);
+          if (!project) await api.listDatasets(ref.projectId, { maxPages: 1, maxResults: 1 });
+          return bigQueryProjectNode(project ?? { projectId: ref.projectId }, await this.#runsQueries(ref.projectId));
         }
         if (ref.kind === "dataset") {
-          return bigQueryDatasetNode(await api.getDataset(ref.projectId, ref.datasetId!), listed);
+          let dataset = await api.getDataset(ref.projectId, ref.datasetId!);
+          return bigQueryDatasetNode(dataset, await this.#runsQueries(ref.projectId));
         }
         let { table } = await api.getTable(ref.projectId, ref.datasetId!, ref.tableId!);
-        return bigQueryTableNode(table, listed);
+        return bigQueryTableNode(table, await this.#runsQueries(ref.projectId));
       } catch (error) {
         if (isBigQueryNotVisible(error)) return null;
         throw error;
@@ -593,21 +720,27 @@ async function drivePath(drive: DriveApi, file: DriveFile): Promise<DriveNodeAnc
 }
 
 /**
- * The picker's id for the folder or file a pasted Drive, Docs, Sheets or Slides link names, read as
- * a resource URL is once the index a browser signed in to several accounts adds (`/u/1/`) is
- * dropped. Undefined for anything else, which is searched for by name.
+ * What a pasted Drive, Docs, Sheets or Slides link names, read as a resource URL is once the index
+ * a browser signed in to several accounts adds (`/u/1/`) is dropped, or undefined for anything else.
  */
-function linkedDriveNodeId(text: string): string | undefined {
+function linkedDriveTarget(text: string): ResourceTarget | undefined {
   let url = URL.parse(text.trim());
   if (!url) return undefined;
   url.pathname = url.pathname.replace(/\/u\/\d+\//, "/");
-  let target;
   try {
-    target = parseResourceUrl(url.href);
+    return parseResourceUrl(url.href);
   } catch {
     return undefined;
   }
-  switch (target.kind) {
+}
+
+/**
+ * The picker's id for the folder or file a pasted link names (see {@link linkedDriveTarget}).
+ * Undefined for anything else, which is searched for by name.
+ */
+function linkedDriveNodeId(text: string): string | undefined {
+  let target = linkedDriveTarget(text);
+  switch (target?.kind) {
     case "driveFolder": return `folder:${target.folderId}`;
     case "driveFile": return `file:${target.fileId}`;
     case "doc": return `doc:${target.documentId}`;
@@ -749,19 +882,43 @@ function underMyDriveTab(node: DriveNode): DriveNode {
   return top && top.id !== SHARED_DRIVES.id ? { ...node, path: [{ ...top, id: MY_DRIVE_TAB }, ...below] } : node;
 }
 
-/** The picker of the folder a new Doc, Sheet, Presentation or folder is created in. */
+/** The picker of the folder a new Doc, Sheet, Presentation or folder is created in, or a file is saved to. */
 @validateRpc()
 export class CreationLocationConfiguratorUI extends RpcTarget implements CreationLocationConfiguratorRpc {
-  /** As for {@link DriveConfiguratorUI}. */
-  constructor(getToken: () => Promise<GoogleAccessToken>, holds: (grant: string) => Promise<boolean>) {
+  /** As for {@link DriveConfiguratorUI}, and what the folder is picked for. */
+  constructor(
+    getToken: () => Promise<GoogleAccessToken>, holds: (grant: string) => Promise<boolean>,
+    purpose: CreationPurpose,
+  ) {
     super();
     googleTokenGetters.set(this, getToken);
     grantChecks.set(this, holds);
+    creationPurposes.set(this, purpose);
+  }
+
+  async purpose(): Promise<CreationPurpose> {
+    return creationPurposes.get(this)!;
   }
 
   async listFolders(parentId: string, query: string, cursor: string | null): Promise<DriveNodePage> {
     let page = await listDriveNodes(this, parentId, query, cursor, true);
     return { ...page, nodes: page.nodes.map(underMyDriveTab) };
+  }
+
+  async getFolder(id: string): Promise<DriveNode | null> {
+    let node = await driveNode(this, id);
+    return node?.kind === "folder" ? underMyDriveTab(node) : null;
+  }
+
+  async folderForUrl(url: string): Promise<string | null> {
+    let target = linkedDriveTarget(url);
+    if (target?.kind === "driveAccount") return MY_DRIVE_TAB;
+    if (target?.kind !== "driveFolder") return null;
+    // Drive's `root` alias, which resourceUrl() mints for My Drive, and getFolder() knows only by
+    // its real ID.
+    if (target.folderId === MY_DRIVE_ROOT) return MY_DRIVE_TAB;
+    let folder = await this.getFolder(`folder:${target.folderId}`);
+    return folder?.addable ? folder.id : null;
   }
 
   async hasCreationAccess(): Promise<boolean> {

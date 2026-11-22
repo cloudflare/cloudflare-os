@@ -65,7 +65,10 @@ orthogonal — an account can declare either, both, or neither.
   wire it into a gadget's binding list with `setGadgetBinding` when the gadget's persistent code
   needs it.
 - The UI is hosted at `/gatekeepers/$appId` (the gatekeeper's vendor id, e.g.
-  `/gatekeepers/context`) via `startAppUi({ isAdmin })`.
+  `/gatekeepers/context`) via `startAppUi({ isAdmin })`. Anything after that prefix is the app's
+  own path, so apps can be deep-linked: the Workshop owns the URL and syncs it with the iframe over
+  `GatekeeperAppNavigation` (`@gadgets/workshop-shared/gatekeeper-app`); the Context Library uses
+  `/collections/<id>` and `/collections/<id>/files/<path>`.
 
 ## Admin settings
 
@@ -87,21 +90,29 @@ them:
 - Admin operations are exposed as an `AdminApi` capability obtained via
   `AuthenticatedApi.getAdminApi()` (returns null for non-admins). The admin check
   (`isDeploymentAdmin()` in `src/auth/config.ts`) runs once when the capability is minted, so the
-  individual methods don't re-check.
-- Every `AdminApi` setter is recorded in the deployment-wide audit log (`AdminAuditDurableObject`,
-  `src/admin-audit.ts`) before it takes effect: each `AdminSettings` mutator takes a trailing
-  `AdminSettingActor` and writes through `#mutateAdminConfig()`, which records the diff before
-  storing it (the site logo and featured blueprints, which live outside `AdminConfig`, record
-  explicitly first). A change whose record cannot be written is refused. See
-  [docs/admin-access.md](../../docs/admin-access.md).
-- The audit log's minimum retention, `ADMIN_AUDIT_RETENTION_MIN_DAYS`, is an env var beside
-  `ADMINS`, parsed in `src/admin-access.ts`, so that a compromised admin session cannot shorten it.
-  An invalid value falls back to 90 days. Admins choose a retention at or above it;
-  `adminAccessPolicy()` holds the choice there wherever it is enforced.
+  individual methods don't re-check, except for inspection: `inspectWorkspace()`, `inspectUser()`,
+  the `openForAdmin()` of the Overseer and of the user object, and every `AdminWorkspaceView` and
+  `AdminUserView` call re-check `isDeploymentAdmin()` and the view's expiry, and record each call
+  before anything it read leaves the server (`src/admin-view.ts`).
+- Every `AdminApi` setter is recorded in the deployment-wide audit log before it takes effect: each
+  `AdminSettings` mutator takes a trailing `AdminSettingActor` and writes through
+  `#mutateAdminConfig()`, which records the diff before storing it (the site logo and featured
+  blueprints, which live outside `AdminConfig`, record explicitly first). A change whose record
+  cannot be written is refused.
+- The admin access bounds, `ADMIN_WORKSPACE_ACCESS_MAX` and `ADMIN_AUDIT_RETENTION_MIN_DAYS`, are
+  env vars beside `ADMINS`, parsed in `src/admin-access.ts`, so that a compromised admin session
+  cannot widen them. The cap fails closed (any value that is not a level is `off`), and an invalid
+  floor falls back to 90 days. Admins choose a level and a retention within them;
+  `adminAccessPolicy()` holds the choice inside them wherever it is enforced.
+- Admin investigation rests on the `AdminAuditDurableObject` (`src/admin-audit.ts`, the
+  deployment-wide audit log) and the `UserDirectoryDurableObject` (`src/user-directory.ts`), which
+  lists users and workspaces for admins as well as serving user search, fed lazily by user DOs and
+  Overseers. See [docs/admin-access.md](../../docs/admin-access.md).
 - `user.ts:#assertResourceEnabled()` is the single core chokepoint where disabled
   gatekeepers/resources are enforced before a capability is minted. Both mints call it:
   `getGatekeeperClassFor()` (gadget/agent code can't reach it directly) and
   `createResourceGatekeeper()` (reached only through the agent's `createExternalResource` tool).
+  `saveFile()` mints nothing but writes to the vendor directly, so it calls it too.
 - In AI Gateway mode the deployment's models are admin settings too (`AdminConfig.modelModes`,
   `addedModels`, `modelSettings`, `addedProviders`, `providerOrder`, `modelOrder`,
   `userModelsEnabled`). `GatewayModels` in

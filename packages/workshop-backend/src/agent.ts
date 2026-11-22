@@ -3,6 +3,8 @@ import { applyCodeChange, codeChangeSerializedSize, MAX_CODE_CHANGE_SIZE, replac
   validateCodeChangeContent, type FileContent, type CodeContent, type CodeChange,
   type FileChange } from '@gadgets/workshop-shared/code-change';
 import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
+import { snapshotChatEmbeds } from './chat-embeds';
+import type { ChatEmbeds } from '@gadgets/workshop-shared/api';
 import { canInlineChatAttachmentImage, decodeChatAttachmentText, isAllowedChatAttachmentImageMimeType } from './chat-attachment-validation';
 import { AgentCatalog, ObservationDescription } from '@gadgets/workshop-shared/gatekeeper';
 import { createWorkshopLogger, obsContext } from "./observability";
@@ -340,6 +342,9 @@ export function makeStoredAssistantMessage(message: AssistantMessage): StoredAss
  *   overseer.ts?
  */
 export interface AgentHooks {
+  /** In-process output-file pinning against the running turn; never exposed to the agent or UI. */
+  getWorktreeFileOid(chatId: number, id: WorkpieceId, path: string,
+      turn: WorktreeTurnAccess): Promise<string | undefined>;
   getChatAgentContext(chatId: number): AiChatAgentContext;
 
   /** Records the chat's AiChatAgentContext.workspacePrompt. */
@@ -470,15 +475,15 @@ export interface AgentHooks {
                blueprint?: {output?: BlueprintOutput}): {id: WorkpieceId, title: string};
 
   /**
-   * Create a new worktree workpiece rooted at the given commit id (a full oid, resolved against
-   * the workspace's local git knowledge -- never a remote lookup), provisional to and permanently
-   * private to the given chat. Performs the initial pull when the commit is known only from a
-   * gatekeeper. Like createGadget, the creation becomes durable via the step's "changes" message
+   * Create a new worktree workpiece, empty when commitId is omitted, otherwise rooted at the
+   * given commit id (a full oid, resolved against the workspace's local git knowledge -- never a
+   * remote lookup), provisional to and permanently private to the given chat. Performs the initial
+   * pull when the commit is known only from a gatekeeper. Like createGadget, the creation becomes durable via the step's "changes" message
    * (`createdWorktrees`); a step that dies before its barrier leaves an unstamped record that
    * reconciliation reaps. The new worktree is unpinned: it reads as its base commit until the
    * first modification pins it. Returns the base commit alongside the id.
    */
-  createWorktree(title: string, chatId: number, commitId: string)
+  createWorktree(title: string, chatId: number, commitId?: string)
       : Promise<{id: WorkpieceId, title: string, baseCommit: string}>;
 
   /**
@@ -738,6 +743,23 @@ Tools refer to Gadgets by their binding name in your env: the file tools (\`read
 
 # Live views in your answers
 
+Reference any worktree file with a Markdown link:
+\`[Download CSV](worktree://OUTPUTS/results.csv)\`. Clicking downloads the original file.
+To display an image inline instead, use Markdown:
+\`![Mandelbrot set](worktree://OUTPUTS/mandelbrot.png)\`.
+Use the actual worktree binding name and a relative path (percent-encode special characters).
+The host snapshots the current file when you emit either reference: later edits or deletion do
+not change the file in this reply. A later reply can reference the path for a new snapshot.
+No attachment tool, OID lookup or Gadget is needed. Use an existing suitable worktree, or
+create an empty one with \`createWorktree\` (omit \`commitId\`) for generated files. The upload
+worktree identified in attachment notes is for attachments; use a separate worktree for generated
+files and working notes. For container outputs, mount that worktree, write the file inside it,
+and wait for the command to return its
+files before referencing them. Ignored files and files outside mounts stay in the container.
+Do not put image bytes or base64 in your reply.
+The same URLs work in literal \`<img src="worktree://BINDING/path">\` tags in \`<inline-html>\`
+for custom layouts; construct the file references in the markup, not dynamically in a script.
+
 You can draw an interactive view inside your answer, with no tool call, by writing HTML between \`<inline-html>\` tags. The Workshop draws it in place, in a sandboxed frame, as you write it, and runs its module scripts as soon as its closing tag arrives, while the rest of your answer streams. Show a view when it beats prose: comparisons, choices between options, numbers over time, or a one-off demo or tool. A short answer or an explanation stays plain text.
 
 \`\`\`
@@ -773,7 +795,7 @@ Spending on food rose 18% in October, mostly eating out.
 
 Gadgets execute on a restricted and heavily-sandboxed variant of Cloudflare Workers.
 
-A Gadget is defined by two main files, client.js and server.js. Create them with writeFile if the Gadget doesn't have them yet. A new Gadget has no files unless it came from a blueprint.
+A Gadget is defined by two entry points, client.js and server.js. Create them with writeFile if the Gadget doesn't have them yet. A new Gadget has no files unless it came from a blueprint.
 
 server.js defines the Gadget's server-side logic, in the form of a Cloudflare Durable Object class. The class must be exported under the name \`Gadget\`. Unlike with normal Durable Objects on Cloudflare, there is no need to export a separate fetch handler; the Gadgets platform automatically takes care of routing requests to the Gadget. The Gadget has access to private storage via the regular Durable Objects KV and SQLite storage APIs. A simple server.js might look like:
 
@@ -787,11 +809,27 @@ export class Gadget extends DurableObject {
 }
 \`\`\`
 
-client.js is JavaScript that runs inside the browser to render a client-side user interface. This script runs inside a sandboxed iframe. It can display UI by manipulating the DOM. The client context is initialized with a special global variable called \`gadget\`, which is an RPC stub pointing at the gadget's Durable Object server. This RPC stub is implemented using Cap'n Web, an RPC system from Cloudflare that works similarly to Cloudflare Workers' built-in RPC system, but is able to be used in a browser. In short, methods invoked on the \`gadget\` stub will invoke the same-named method on the Durable Object class. A simple client.js might look like:
+client.js is JavaScript that runs inside the browser to render a client-side user interface. It runs as an ES module inside a sandboxed iframe, and can display UI by manipulating the DOM. client.js must have a default export with a \`main(gadget)\` method, which the Workshop calls once client.js has loaded. Its \`gadget\` argument is an RPC stub pointing at the gadget's Durable Object server. This RPC stub is implemented using Cap'n Web, an RPC system from Cloudflare that works similarly to Cloudflare Workers' built-in RPC system, but is able to be used in a browser. In short, methods invoked on the \`gadget\` stub will invoke the same-named method on the Durable Object class. A simple client.js might look like:
 
 \`\`\`
-let greeting = await gadget.greet("World");
-document.body.appendChild(document.createTextNode(greeting));
+export default {
+  async main(gadget) {
+    let greeting = await gadget.greet("World");
+    document.body.appendChild(document.createTextNode(greeting));
+  },
+};
+\`\`\`
+
+\`gadget\` is not a global variable: pass it to whatever code needs to call the server.
+
+\`main()\` also receives a second argument, \`host\`: \`main(gadget, host)\`, an RPC stub for whatever is running the UI:
+
+\`\`\`ts
+interface GadgetHost {
+  // Shows the user the chat of an agent spawned with an agent spawner's spawnAgent().
+  // chatToken comes from SpawnedAgent.getChatToken().
+  openAgentChat(chatToken: string): Promise<void>;
+}
 \`\`\`
 
 Note that there is no index.html. Instead, client.js must build the entire UI using JavaScript code.
@@ -804,11 +842,23 @@ Every Gadget's \`env\`, as well as your own \`executeCode\` env, always contains
 
 Note that the iframe sandbox on the client side prohibits modal popup boxes like alert() and confirm(), so do not use those.
 
+## Splitting code into multiple files
+
+client.js and server.js may import other .js files in the Gadget. Each file has a size limit, so split a large UI into several files.
+
+* A relative import names the exact file, extension included (\`./ui/list.js\`, not \`./ui/list\`), resolves against the importing file, and cannot reach outside the Gadget. Only .js files can be imported.
+* Client code cannot import server.js, \`cloudflare:\` modules, bare package names (npm) other than "capnweb", or URLs other than \`data:\` URLs.
+* Client code cannot use \`import()\`; import modules statically. Do not build URLs from \`import.meta.url\`.
+* Everything client.js reaches through imports is sent to anyone who can use the Gadget, including people who can use it but not edit it. Keep secrets and server-only logic in modules that only server.js imports.
+* Import problems in the UI are reported in the Gadget console.
+
 ## Server -> Client callbacks and subscriptions
 
 Note that Cap'n Web is a bidirectional object capability protocol, meaning, among other things, you can pass a function over RPC, in the params or results of another function. This actually passes the function "by reference": the receiving end actually receives an RPC stub, which can be used to call back over RPC to the original function. This, of course, causes the function to become async, even if the original was synchronous.
 
-Using functions this way is a great way to implement real-time updates. The client can "subscribe" to updates, passing a callback function to the server. The server can then call the function asynchronously whenever the state changes (perhaps due to activity of a different client). This technique should be used when implementing multiplayer collaboration.
+Using functions this way is a great way to implement real-time updates. The client can "subscribe" to updates, passing a callback function to the server. The server can then call the function asynchronously whenever the state changes.
+
+Use subscriptions for views of mutable server data, including single-user Gadgets: you may update that data with \`executeCode\` while the user is viewing it. A one-time read only displays the initial state. Subscribe with an initial snapshot, and notify subscribers after saving each mutation, so the view updates without a page reload. Closing and reopening a Gadget pane preserves its iframe and does not rerun client.js.
 
 When implementing such a subscription, it is important to call \`.dup()\` on the callback stub, in order to obtain a long-lived stub. Otherwise, the stub received as a parameter is implicitly disposed at the end of the function. You should also use \`onRpcBroken\` to monitor for client disconnects, like:
 
@@ -825,25 +875,42 @@ async subscribe(callback) {
 And on the client:
 
 \`\`\`
+import { RpcTarget } from "capnweb";
+
 class Callback extends RpcTarget {
+  constructor(gadget) {
+    super();
+    this.gadget = gadget;
+  }
+
   update(state) {
     // update the UI
   }
 
   [Symbol.dispose]() {
     // Connection lost. Resubscribe using new connection.
-    gadget.subscribe(this);
+    this.gadget.subscribe(this);
   }
 }
 
-gadget.subscribe(new Callback());
+export default {
+  main(gadget) {
+    gadget.subscribe(new Callback(gadget));
+  },
+};
 \`\`\`
 
-The top-level \`gadget\` stub survives backend reconnects, and calls made while its replacement is being acquired will wait. However, other capabilities passed over RPC in either direction are disposed on disconnect, and must be re-acquired.
+The \`gadget\` stub passed to \`main()\` survives backend reconnects, and calls made while its replacement is being acquired will wait. However, other capabilities passed over RPC in either direction are disposed on disconnect, and must be re-acquired.
 
-DO NOT import \`RpcTarget\` in client.js. It is already imported.
+In client code, import \`RpcTarget\` and \`RpcStub\` from "capnweb".
 
 If you need \`RpcTarget\` in server.js, you can import it from "cloudflare:workers".
+
+## Legacy client.js
+
+Older Gadgets may have a legacy client.js: one with no default export, whose top-level code builds the UI directly. The Workshop still runs these, as a single module with \`gadget\`, \`RpcTarget\` and \`RpcStub\` as global variables, and a browser-mode export waits for its top-level \`await\`. A legacy client.js cannot import anything, including another file of the Gadget or "capnweb": imports require the default export with \`main()\`.
+
+A small change to a legacy client.js can keep its style. To split one into files, or when rewriting much of it, convert it: move its top-level code into \`export default { async main(gadget) { ... } }\`, import \`RpcTarget\` and \`RpcStub\` from "capnweb", and pass \`gadget\` to the code that needs it. Do not add a default export without converting the rest, because the globals no longer exist once client.js has one. Write every new client.js with \`main()\`.
 
 ## Design Tips
 
@@ -856,15 +923,19 @@ If you need \`RpcTarget\` in server.js, you can import it from "cloudflare:worke
 
 Every Gadget UI can be exported to HTML or PDF using platform-owned controls outside the Gadget. Never add print or export UI to a Gadget and never call \`window.print()\`. Browser-mode PDF exports render using print media; HTML, PNG, and JPEG exports render using screen media. When asked to support or improve PDF export, use standard print CSS such as \`@media print\`, \`@page\`, and CSS fragmentation properties so the output remains readable.
 
-During a browser-mode export, client.js is initialized with another special global variable named \`gadgetExportFormatId\`. This variable is only defined during export; during normal interactive rendering, referencing it directly throws a \`ReferenceError\`. Guard access with \`typeof gadgetExportFormatId !== "undefined"\` or read \`globalThis.gadgetExportFormatId\`. Use \`gadgetExportFormatId\` when the Gadget supports multiple HTML, PDF, PNG, or JPEG export variants. Do not declare or import \`gadgetExportFormatId\` in client.js.
+During a browser-mode export, the Workshop defines a global variable named \`gadgetExportFormatId\`. This variable is only defined during export; during normal interactive rendering, referencing it directly throws a \`ReferenceError\`. Guard access with \`typeof gadgetExportFormatId !== "undefined"\` or read \`globalThis.gadgetExportFormatId\`. Use \`gadgetExportFormatId\` when the Gadget supports multiple HTML, PDF, PNG, or JPEG export variants. Do not declare or import \`gadgetExportFormatId\` in client code.
 
-The Workshop waits for client.js, including any top-level \`await\`, to finish before capturing a browser-mode export. Use top-level \`await\` when the initial UI must load data or otherwise complete asynchronous rendering before capture. For example:
+The Workshop waits for \`main()\` to finish, including the promise it returns, before capturing a browser-mode export. Make \`main()\` async and await what the initial UI needs when it must load data or otherwise complete asynchronous rendering before capture. For example:
 
 \`\`\`
-let report = await gadget.getReport();
-let exportFormat = globalThis.gadgetExportFormatId;
-document.body.className = exportFormat === "compact-pdf" ? "compact" : "interactive";
-document.body.append(renderReport(report));
+export default {
+  async main(gadget) {
+    let report = await gadget.getReport();
+    let exportFormat = globalThis.gadgetExportFormatId;
+    document.body.className = exportFormat === "compact-pdf" ? "compact" : "interactive";
+    document.body.append(renderReport(report));
+  },
+};
 \`\`\`
 
 To add, replace, or disable export formats, server.js may export a class named \`ExportHandler\`, which must extend \`WorkerEntrypoint\`. Its \`getExportFormats(gadget)\` method returns the complete list of formats, and its \`export(gadget, id)\` method returns a \`ReadableStream<Uint8Array>\` for formats whose mode is \`"server"\`. Read any needed Gadget state before \`export()\` returns; do not capture the borrowed \`gadget\` parameter in the returned stream. If \`getExportFormats(gadget)\` returns only browser-mode formats, do not implement \`export(gadget, id)\`. \`export\` is valid as a JavaScript class method name; write it directly as \`async export(gadget, id)\`, without quoting it or using a computed property. Browser mode supports \`text/html\`, \`application/pdf\`, \`image/png\`, and \`image/jpeg\`; server mode supports any media type. Each format must contain a unique non-empty \`id\`, a \`label\`, a \`mode\`, a \`contentType\`, and a \`fileExtension\` beginning with a dot. Each format may also contain an optional \`fileName\`, including its extension, such as \`"my-report.pdf"\`. When omitted, the downloaded file name defaults to the Gadget title plus \`fileExtension\`. Returning an empty list disables export. The Workshop supplies default HTML and PDF formats only when server.js does not export \`ExportHandler\` at all.
@@ -1043,6 +1114,7 @@ export function formatMissingBlueprintBindings(
     switch (binding.type) {
       case "gatekeeper":
         details = `external resource via the "${binding.gatekeeperName}" gatekeeper; ` +
+            (binding.resourceTypeId ? `resource type ID ${JSON.stringify(binding.resourceTypeId)}; ` : ``) +
             `resource URL pattern ${JSON.stringify(binding.typeUrlPattern)}` +
             (binding.resourceUrl
                 ? `; the blueprint author suggests ${JSON.stringify(binding.resourceUrl)}`
@@ -1263,7 +1335,7 @@ async function formatBlueprintProposal(
 }
 
 let READ_FILE_TOOL_DESCRIPTION = `
-Read the content of a file owned by a workpiece (a gadget or worktree) in your \`env\`. If a file changes after you read it, you will either be informed of the change or the outdated result will be replaced with a note telling you to re-read the file; otherwise there is no need to read a file again after you have already read it once. Uploaded files are also available in the chat's scratch worktree when the system prompt lists one; use it for plans and other working files too. Use byte-aware binding operations for binary files.
+Read the content of a file owned by a workpiece (a gadget or worktree) in your \`env\`. If a file changes after you read it, you will either be informed of the change or the outdated result will be replaced with a note telling you to re-read the file; otherwise there is no need to read a file again after you have already read it once. Uploaded files are available at the workspace paths shown in their attachment notes. Use byte-aware binding operations for binary files.
 
 A file of any size can be read, by window: for a large file, pass \`startLine\` and \`lineCount\` to read a window of it; the result then ends with a line giving the range shown and the \`startLine\` to continue from. Use \`grep\` to find the lines you need first. A single line too long to show whole is cut, with a note giving its length. A window whose lines contain binary data (a NUL byte) is an error naming those lines; invalid UTF-8 is shown as U+FFFD.
 `.trim();
@@ -1277,9 +1349,9 @@ By default the new gadget is empty. Pass \`blueprintId\` (discovered with the \`
 `.trim();
 
 let CREATE_WORKTREE_TOOL_DESCRIPTION = `
-Create a worktree: a file tree rooted at a git commit, which you can then read and edit with the regular file tools (\`readFile\`, \`writeFile\`, \`editFile\`, \`grep\`) by passing the \`bindingName\` you choose as their \`workpiece\` parameter. Unlike a gadget, a worktree has no runnable code of its own and is private to this conversation.
+Create a worktree: an empty file tree, or one rooted at a git commit, which you can then read and edit with the regular file tools (\`readFile\`, \`writeFile\`, \`editFile\`, \`grep\`) by passing the \`bindingName\` you choose as their \`workpiece\` parameter. Unlike a gadget, a worktree has no runnable code of its own and is private to this conversation.
 
-\`commitId\` is a full git commit id (40 hex digits; abbreviated ids are not accepted) already known to this workspace — typically one returned by a connection's API (e.g. a repository's branch or commit listing). Look the commit up through the connection first if you only know a branch or tag name.
+Omit \`commitId\` to start empty, for example for generated images, scripts, or other working files. Reuse a suitable existing worktree when available. Otherwise \`commitId\` is a full git commit id (40 hex digits; abbreviated ids are not accepted) already known to this workspace — typically one returned by a connection's API (e.g. a repository's branch or commit listing). Look the commit up through the connection first if you only know a branch or tag name.
 
 In \`executeCode\`, the worktree's env binding additionally offers a programmatic API — \`listFiles\`, \`grep\`, \`commit\` (write a git commit of the worktree's content), \`diff\`, and more; use \`describeBinding\` to see it.
 `.trim();
@@ -1387,11 +1459,11 @@ ${EXECUTE_CODE_SELF_PARAM}
 `.trim();
 
 let LIST_CONNECTABLE_RESOURCES_TOOL_DESCRIPTION = `
-List a gatekeeper vendor's separate Existing resources and New resources. Use an Existing resource's URL pattern with requestConnection to connect something already present; use a New resource's resourceUrlPattern with createExternalResource to create something. A vendor may offer either or both. The system prompt lists which vendors exist; call this to discover their resource types.
+List a gatekeeper vendor's separate Existing resources and New resources. Use an Existing resource's resourceTypeId with requestConnection to connect something already present; use a New resource's resourceTypeId with createExternalResource to create something. A vendor may offer either or both. The system prompt lists which vendors exist; call this to discover their resource types.
 `.trim();
 
 let REQUEST_CONNECTION_TOOL_DESCRIPTION = `
-Ask the user to connect a gatekeeper resource (e.g. a ClickHouse cluster, a GitHub repo). Pre-configure as much as you can: always pass vendorId, and pass resourceUrl when you can infer it (use listConnectableResources to learn the URL patterns). The request must resolve to a specific resource: if you pass a resourceUrl it must match one of the vendor's patterns, and if the vendor offers multiple resource types with no whole-instance option you MUST pass a matching resourceUrl. Otherwise the call is rejected with guidance and no card is shown — fix the request and try again. You also choose \`bindingName\`: the name the resource will have in your env once connected (you know why you want the resource, so pick a name that reflects its role). On success this shows the user an accept/deny card in the chat. It does NOT block: your turn ends after a successful call, and you will be resumed once the user accepts (the resource becomes available as \`env.<bindingName>\`, which you can describeBinding and use from executeCode; wire it into a Gadget with setGadgetBinding only if the Gadget's code needs it) or denies (your turn simply ends; wait for the user's next message).
+Ask the user to connect a gatekeeper resource (e.g. a ClickHouse cluster, a GitHub repo). Pre-configure as much as you can: pass vendorId and the resourceTypeId from listConnectableResources, plus resourceUrl when you can infer it to prefill the picker. The stable ID selects the type even if its URL pattern changes. When resourceTypeId is omitted, selection falls back to the supplied URL, a whole-instance option, or a sole type; an ambiguous request is rejected with guidance and no card is shown. Fix the request and try again. You also choose \`bindingName\`: the name the resource will have in your env once connected (you know why you want the resource, so pick a name that reflects its role). On success this shows the user an accept/deny card in the chat. It does NOT block: your turn ends after a successful call, and you will be resumed once the user accepts (the resource becomes available as \`env.<bindingName>\`, which you can describeBinding and use from executeCode; wire it into a Gadget with setGadgetBinding only if the Gadget's code needs it) or denies (your turn simply ends; wait for the user's next message).
 
 For a Gadget that needs AI agents of its own, rather than calling back into this chat through \`self\`, request an agent spawner: pass vendorId "${AGENT_SPAWNER_CONNECTION_ID}" and no resourceUrl. Once it is accepted, give the spawner's agents the bindings they need with setGadgetBinding on the spawner.
 `.trim();
@@ -1961,9 +2033,11 @@ async function runAgentPass(
 
   // Resolve a file tool's optional `workpiece` parameter -- the chat binding name of the target
   // workpiece -- to a workpiece id (or undefined, meaning the workspace's default gadget,
-  // resolved downstream by resolveWorkpieceRoot).
+  // resolved downstream by resolveWorkpieceRoot). Prompts write workpieces as `env.NAME`, so a
+  // model that copies that form is understood rather than refused.
   let resolveToolWorkpieceId = (workpiece?: string): WorkpieceId | undefined => {
     if (workpiece === undefined) return undefined;
+    workpiece = workpiece.replace(/^env\./, "");
     let entry = chatBindings.get(workpiece);
     if (!entry) {
       throw new Error(
@@ -3331,7 +3405,7 @@ async function runAgentPass(
     let standardFormats = await hooks.describeStandardFormats();
 
     // Build connectable-vendors section. We only list vendor names here; the agent fetches a
-    // vendor's resource URL patterns on demand via listConnectableResources.
+    // vendor's resource types on demand via listConnectableResources.
     let connectableVendors = await hooks.listConnectableVendors();
     let systemPromptConnections: string;
     if (connectableVendors.length == 0) {
@@ -3340,7 +3414,7 @@ async function runAgentPass(
       systemPromptConnections =
           `\n\nIf you need access to an external resource that isn't already a binding, you can ask ` +
           `the user to connect one with the requestConnection tool (pre-configure it as much as you ` +
-          `can; use listConnectableResources to learn a vendor's resource URL patterns first). The ` +
+          `can; use listConnectableResources to learn a vendor's resource type IDs first). The ` +
           `user accepts or denies in the chat. If they accept, you'll be resumed and the resource ` +
           `becomes available as a binding in your env; if they deny, your turn ends and you wait ` +
           `for the user's next message.\n` +
@@ -3936,11 +4010,12 @@ async function runAgentPass(
               "refer to it (their `workpiece` parameter). Must be a JavaScript identifier not " +
               "already in use; style: ALL_CAPS_WITH_UNDERSCORES.",
         }),
-        commitId: Type.String({
+        commitId: Type.Optional(Type.String({
           description:
-              "The git commit to root the worktree at: its full 40-hex SHA-1, exactly as " +
-              "returned by the API that provided it. Abbreviated ids are not accepted.",
-        }),
+              "Omit to create an empty worktree. Otherwise the git commit to root it at: its " +
+              "full 40-hex SHA-1, exactly as returned by the API that provided it. " +
+              "Abbreviated ids are not accepted.",
+        })),
       }),
       execute: async (toolCallId, {title, bindingName, commitId}) => {
         try {
@@ -4084,6 +4159,9 @@ async function runAgentPass(
           description: "Vendor id, as listed in the system prompt (e.g. 'github'), or " +
               `'${AGENT_SPAWNER_CONNECTION_ID}' for an agent spawner.`,
         }),
+        resourceTypeId: Type.Optional(Type.String({
+          description: "Stable type ID from listConnectableResources; selects the type independently of its URL pattern.",
+        })),
         resourceUrl: Type.Optional(Type.String({
           description:
               "The specific resource URL, if known (matching a pattern from " +
@@ -4145,8 +4223,8 @@ async function runAgentPass(
         vendorId: Type.String({
           description: "Vendor id, as listed in the system prompt (e.g. 'google').",
         }),
-        resourceUrlPattern: Type.String({
-          description: "urlPattern of a creatable resource type, from listConnectableResources.",
+        resourceTypeId: Type.String({
+          description: "Stable ID of a creatable resource type, from listConnectableResources.",
         }),
         title: Type.String({
           description: "Title of the new resource, e.g. the document's title.",
@@ -4213,6 +4291,15 @@ async function runAgentPass(
   // model request is allowed to start.
   let capturedActionsForStep: ReturnType<AgentHooks["consumeCapturedActions"]>;
 
+  let answerText = "";
+  let embeds: ChatEmbeds = {};
+  const snapshotEmbeds = (text: string, streaming: boolean) => snapshotChatEmbeds(
+      text, embeds, async (binding, path) => {
+        const entry = chatBindings.get(binding);
+        return entry?.type === "workpiece"
+            ? hooks.getWorktreeFileOid(chatId, entry.id, path, worktreeTurnAccess) : undefined;
+      }, streaming);
+
   // The awaited event sink driving both the client stream fan-out and the persistence barrier.
   let emit = async (event: AgentEvent): Promise<void> => {
     switch (event.type) {
@@ -4220,9 +4307,15 @@ async function runAgentPass(
         // Live streaming fan-out to connected clients.
         let ev = event.assistantMessageEvent;
         switch (ev.type) {
-          case "text_delta":
-            emitStreamEvent({type: "textDelta", delta: ev.delta});
+          case "text_delta": {
+            answerText += ev.delta;
+            // Only syntax that can complete a file reference can add a pin. Ordinary prose
+            // must not reparse the accumulated answer; the final pass also handles EOF.
+            const newEmbeds = /[)\]>\r\n]/.test(ev.delta)
+                ? await snapshotEmbeds(answerText, true) : undefined;
+            emitStreamEvent({type: "textDelta", delta: ev.delta, embeds: newEmbeds});
             break;
+          }
           case "thinking_delta":
             emitStreamEvent({type: "reasoningDelta", delta: ev.delta});
             break;
@@ -4260,6 +4353,15 @@ async function runAgentPass(
             }
             break;
         }
+        break;
+      }
+
+      case "message_end": {
+        const message = event.message;
+        if (message.role !== "assistant" || message.stopReason === "error" || message.stopReason === "aborted") break;
+        const finalEmbeds = await snapshotEmbeds(message.content.filter(block => block.type === "text")
+            .map(block => block.text).join(""), false);
+        if (finalEmbeds) emitStreamEvent({type: "textDelta", delta: "", embeds: finalEmbeds});
         break;
       }
 
@@ -4307,6 +4409,7 @@ async function runAgentPass(
             message: message.content.filter(block => block.type === "text")
                 .map(block => block.text).join(""),
           };
+          if (Object.keys(embeds).length) msg.embeds = embeds;
           let reasoning = message.content
               .flatMap(block =>
                   block.type === "thinking" && !block.redacted ? [block.thinking] : [])
@@ -4406,6 +4509,8 @@ async function runAgentPass(
         });
 
         // Reset per-step streaming state.
+        answerText = "";
+        embeds = {};
         toolCallNotes.clear();
         executeCodeStreamManager.clear();
         break;

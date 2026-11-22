@@ -17,6 +17,16 @@ Specifically:
   an exception. Alice can optionally resolve the problem by revoking Bob's access.
 - Bob's access is also re-checked every time he opens the gadget.
 
+**Exception: static snapshots.** These checks guard use of the gadget's live capabilities, not
+disclosure of its stored data through snapshots. A collaborator given a gadget to view only (a
+view grant) can open a static snapshot of it without verifying: a copy of its stored state, which
+may include data read through the owner's connections, served with no bindings, network or usable
+stored capabilities. While that grant remains valid, the collaborator may repeatedly refresh to
+obtain subsequently stored data, including data they could not read directly. A live grant opens
+only the live gadget, through verification, never its snapshot. This is a deliberate relaxation
+of the invariant below, not a missing check; the decision and its limits are recorded in
+[Sharing › Static snapshots](./sharing.md#static-snapshots).
+
 This document contains the original implementation plan for this mechanism, which was used to guide
 AI in implementing it. This doc may become outdated over time.
 
@@ -24,14 +34,17 @@ AI in implementing it. This doc may become outdated over time.
 
 ## 1. Introduction & high-level intent
 
-Gadgets enforce a core security invariant (see `overview.md` §"Security Model"):
+Gadgets enforce a core security invariant:
 
 > If a Gadget can read information that has restricted access, then any user who is not
-> able to read that information will also be prohibited from interacting with the Gadget,
-> to prevent data leaks.
+> able to read that information will also be prohibited from interacting with the Gadget's live
+> capabilities, to prevent data leaks. Data the Gadget has already stored is the exception: it is
+> disclosed through static snapshots to everyone given the Gadget to view only (see
+> [Sharing › Static snapshots](./sharing.md#static-snapshots)).
 
-The mechanism is a per-user, gatekeeper-mediated check — "this data may be shared, but only with
-people who *also* have access to it". (Maximally sensitive data gets an extra layer: an
+For verified live access, the mechanism is a per-user, gatekeeper-mediated check — "this data may
+be shared through live capabilities, but only with people who *also* have access to it". Static
+snapshots are exempt from this check. (Maximally sensitive data gets an extra layer: an
 observation marked **`containsRestrictedData`**
 (`ObservationDescription.containsRestrictedData` in `packages/workshop-shared/src/gatekeeper.ts`)
 puts the workspace into a restricted mode — web fetches reach only the hosts an admin trusts with
@@ -49,8 +62,9 @@ can add collaborators; see `sharing.md`, "`ownerInvitesOnly`".)
 
 The check works as follows:
 
-- **Observers.** Every non-owner who can see data the Gadget read is an *observer*. When a user
-  becomes an observer, each relevant gatekeeper is asked — via `Gatekeeper.addObserver()` — to
+- **Observers.** Non-owners admitted to verified live access are registered as *observers*;
+  view-only collaborators are not. When a user becomes an observer, each relevant gatekeeper is
+  asked — via `Gatekeeper.addObserver()` — to
   verify that this specific person is allowed to directly observe everything the Gadget has
   already read through that gatekeeper. The gatekeeper is the authority on its own resource's
   ACL, so the check runs inside the gatekeeper's trust domain.
@@ -105,7 +119,56 @@ The check works as follows:
   sharing graph (`computeEffectiveAccess`), and for a gadget, whether their access includes a
   gadget that reaches it -- never off whether they currently have it open. The one exception is
   §10's read-time check of reported subresources, which asks only collaborators holding a live
-  session; the others meet those requirements at their next admission.
+  session; the others meet those requirements at their next admission. (Static snapshots are
+  another exception: they show stored data to collaborators who were never verified. See
+  [Sharing › Static snapshots](./sharing.md#static-snapshots).)
+
+### Admin access: a deliberate exception
+
+A deployment admin (a user the backend's `ADMINS` variable lists) can inspect a workspace through
+`AdminApi.inspectWorkspace()` without being verified against its gatekeepers and without being
+seen by its members: `OverseerDurableObject.openForAdmin()` skips `authorizeCollaborator()` and
+observer verification by explicit policy, and the admin is never registered as an observer. So
+`excludeObservers` never names an admin, and no observation is blocked on an admin's account.
+
+The exception is bounded to metadata. The view never returns chat messages and attachments, file
+contents, commit messages, the arguments of queued agent calls, the descriptions and fields of
+actions, observations and hooks, or blueprint ids (see
+[What the metadata level withholds](admin-access.md#what-the-metadata-level-withholds) for each
+call). `ADMIN_WORKSPACE_ACCESS_MAX=off` turns inspection off whatever admins choose, and a value
+that is not a level counts as `off`. Titles, names, notes and blueprint descriptions stay visible,
+and can echo content.
+
+What a connection supplied is read only as the workspace stores it, and the connection is never
+asked. That includes a repository: a worktree can be a checkout through a connection, and the view
+reads any commit the workspace stores. So an admin never verified against that connection sees the
+repository's file names, commit ids, authors and times, and the paths that differ between two of
+its commits, as far as the workspace pulled them, from the workspace's copy. The view also shows
+each attachment's name, type, size and `oid` (a hash of its bytes, which `listChatAttachments()`
+returns), and which collaborators hold an observer record, with the id of the account each chose
+for each connection; the account itself is in the collaborator's own user account and is not read.
+
+The compensating controls are:
+
+- the admin list and the access cap are environment variables, out of reach of an admin session;
+- every inspection takes a reason, recorded with every call made through the view;
+- a view expires (15 minutes by default, an hour at most);
+- every call re-checks that the view is live and its admin still an admin;
+- every call is recorded, before anything it read leaves the server, in the deployment-wide audit
+  log (nothing is written to the workspace); a call whose record cannot be written fails,
+  returning nothing;
+- `ADMIN_AUDIT_RETENTION_MIN_DAYS` sets a floor on how long those records are kept.
+
+An admin write (`AdminApi.writeWorkspace()`, run by
+`OverseerDurableObject.applyAdminWrite()`) also runs without the admin being verified as an
+observer or registered with the workspace's gatekeepers. It does what its operation does for a
+member, and the workspace's members see only that effect, with nothing naming an admin. No write
+gives the admin access to anything in the workspace. Its compensating controls are its own:
+
+- `ADMIN_WORKSPACE_WRITES`, off by default and out of an admin session's reach;
+- the record written before the effect, in the deployment-wide audit log.
+
+[admin-access.md](admin-access.md) is the design record.
 
 ---
 
@@ -115,7 +178,7 @@ The check works as follows:
 |---|---|
 | Gatekeeper RPC API (the committed surface) | `packages/workshop-shared/src/gatekeeper.ts` |
 | Overseer DO, `open()` auth entry point | `packages/workshop-backend/src/overseer.ts` |
-| Authorization gate shared by `open()` and `receiveExternalMessage()` | `overseer.ts` `authorizeCollaborator()` |
+| Authorization gate shared by `open()` and resumed agent turns | `overseer.ts` `authorizeCollaborator()` |
 | Session restart when verification scope widens | `overseer.ts` (`#restartIfSessionsAffected`, `joinSession`, `scheduleAccessRestart`) |
 | Server `openWorkspace` path | `packages/workshop-backend/src/server.ts` |
 | Access resolution / permission graph | `packages/workshop-backend/src/sharing.ts` (`getEffectiveAccess`, `computeEffectiveAccess`) |
@@ -264,10 +327,10 @@ user.
 
 Role resolution plus verification is one shared gate, `OverseerImpl.authorizeCollaborator`, and
 every non-owner entry point that can surface workspace data runs it — `open()` interactively, and
-`receiveExternalMessage()` non-interactively (no configuration channel, so an unverified caller is
-told to open the workspace, which is where verification happens). An agent reply on the external
-path can surface anything the workspace already read, so it must not admit a collaborator with
-less verification than `open()` would demand.
+the resume of a non-owner's agent turn (`#resumeAgent`) non-interactively: it passes `requireBuild`
+and no configuration channel, so an unconfigured binding denies the initiator and ends the turn
+with an error rather than prompting. A resumed turn acts on everything the workspace already read,
+so it must not run with less verification than `open()` would demand.
 
 Add a private helper on `OverseerImpl`, roughly:
 
@@ -436,41 +499,24 @@ gadget-minted children alike:
   `getGadget()`) constructing the counted interface there are only microtask continuations, in
   which no incoming event can be delivered, so nothing can observe the count dip to zero across
   the handoff.
-- **`receiveExternalMessage`** holds a `build` lease for a non-owner caller from the moment
-  `authorizeCollaborator` admits them until the call completes, since it produces a reply from
-  workspace data without ever constructing a counted interface. The lease deliberately starts
-  only after authorization (verification itself is covered by `authorizeCollaborator`'s internal
-  lease): a caller who is turned away must never have counted, or a stranger racing an
-  `addGatekeeper()` would cause a needless workspace reset.
 - **Resumed person-initiated turns** re-run `authorizeCollaborator` with `requireBuild`
   for the original non-owner initiator before inference, and hold a `build` lease through the
   resumed turn. This applies after a DO reset and after a decision pause. Denial ends the turn
   with an error; a later approver cannot lend it their authority.
-- **Known gap — a freshly started external-message turn** outlives that RPC's lease because it
-  is fire-and-forget. Before its first reset or decision pause, a widening can therefore find
-  no session to sever, and its reply can egress to the persisted external response target under
-  stale verification. The resumed path above is covered, but the initial run still needs its
-  own per-turn `build` lease before `receiveExternalMessage` gets real callers. No extra durable
-  marker is needed for that resume check: the existing `ActiveAgentRecord` retains the original
-  initiator. Owner and UI-collaborator turns are not affected by this external-egress gap: the
-  owner is never an observer, and a UI collaborator reads replies through re-verified opens.
-
-  The same mechanism has a spawner variant: a `use` collaborator holding a bound spawner's
-  loopback can start a spawn during the window between a connection widening's restart being
-  scheduled and the reset landing (the widening blocks the newly reached connection, not the
-  vendorless spawner, which nobody is verified against). The spawn persists an
-  `ActiveAgentRecord` that the reset's storage sync commits. Its initiator is a gadget, so the
+- **Known gap — a spawn started while a restart is pending.** A `use` collaborator holding a
+  bound spawner's loopback can start a spawn during the window between a connection widening's
+  restart being scheduled and the reset landing (the widening blocks the newly reached
+  connection, not the vendorless spawner, which nobody is verified against). The spawn persists
+  an `ActiveAgentRecord` that the reset's storage sync commits. Its initiator is a gadget, so the
   person-initiated resume check above does not apply: it can complete with its creator's
   authority against the pre-widening scope. (A widening that exposes a *gadget* through a
-  spawner does block that spawner, and its queue refuses to spawn while blocked, so this variant
-  is limited to newly reached connections.)
-  Bounded, unlike the external-message case:
-  the resumed turn has no external egress, its output lands in workspace state, and every
-  `use`-role reader of that state re-verifies at their next open against the now-widened scope —
-  so the only unverified consumption is inside the restart's own delivery window, which the
-  design already tolerates for sessions the reset is about to sever. Closing this variant still
-  needs lifecycle authorization for gadget-authored turns; re-checking person-initiated resumes
-  alone does not cover it.
+  spawner does block that spawner, and its queue refuses to spawn while blocked, so this gap is
+  limited to newly reached connections.) It is bounded: the resumed turn has no external egress,
+  its output lands in workspace state, and every `use`-role reader of that state re-verifies at
+  their next open against the now-widened scope — so the only unverified consumption is inside
+  the restart's own delivery window, which the design already tolerates for sessions the reset
+  is about to sever. Closing this gap still needs lifecycle authorization for gadget-authored
+  turns; re-checking person-initiated resumes alone does not cover it.
 
 Five events trigger it:
 
@@ -886,7 +932,7 @@ its resource types.
 | **spotify** | Account / Playlist | **D**, kernel-checked (§10) | Every account and playlist read reports explicit `subresources: []`: personal, low-stakes, no corp-security concern. `verifyObserverAccess` allows every observer; `addObserver` stays a no-op. `getHistoricalSubresources` returns `[]`, since `addObserver` never restricted anyone. |
 | **homeassistant** | Instance / Area / Label / Device / Entity | **D**, kernel-checked (§10) | Every read reports explicit `subresources: []`: self-hosted personal, and the pasted long-lived token is all-or-nothing with no per-user/per-entity ACL oracle to check against. `verifyObserverAccess` allows every observer; `addObserver` stays a no-op. `getHistoricalSubresources` returns `[]`, since `addObserver` never restricted anyone. |
 | **github** | Repo / Issue / PR | **B**, kernel-checked (§10) | Issues/PRs inherit the repo ACL, so the repo is the atomic unit, and the policy is repository readability: no narrower permission some reads need (CI logs, Actions, checks) is checked, and passing doesn't mean GitHub shows every reader everything the binding's account read. Every read — each listing page, an empty result, a cache hit or a simulated one, CI, and every hook delivery — reports the repository by GitHub's numeric id as `repo/<repoId>`, the id the binding pinned on first use. Nothing is read until it is pinned, and requests are bound to it — REST addressed as `/repositories/<id>/...`, GraphQL checked against its `databaseId`, issue search and git fetches and pushes sent to the name the id has now, a search or fetch failed if it changed before GitHub answered — so a rename or transfer keeps the identity and a repository later created under an old name is never read in its place (a push, which GitHub has applied once it answers, is not checked again, so one racing both the rename and the reuse could land elsewhere). Caches filled while reads were addressed by name are discarded on upgrade. `verifyObserverAccess` allows every observer when the binding's owner finds the pinned repository public at `GET /repositories/<id>`: visibility is the repository's own, and every read uses the owner's token, so it has just worked; the answer is reused for up to 15 minutes, and an owner answer that says nothing (expired credentials, a rate limit, an outage) counts as not public. Otherwise it allows an observer whose own account GitHub answers for at `GET /repositories/<id>`, denying on 404 or a 403 that isn't a rate limit and failing on anything else; the observer's `UserAccount` reuses a grant for up to 15 minutes and a denial for up to 15 seconds, partitioned by its connection, so a reconnect asks afresh, and only while its credentials are live: a disconnected or confirmed-dead grant fails the check. `addObserver` still asks, on every open, uncached and with the observer's token alone, for reads made before they reported the repository: whether the observer can read the repository the binding's name names now, as releases that read by name asked, since what those read may have come from a repository that took the name, and the same check of the stored id once the binding has pinned one (it never pins, and without an id it has read nothing by it). |
-| **gitlab** | Project / Issue / MR | **B**, kernel-checked (§10) | Issues/MRs inherit the project ACL, so the project is the atomic unit, and the policy is effective membership of it (`members/all`, inherited and shared-group access included) at Reporter or above whatever its visibility, since a public project can hold confidential issues and internal notes. Every read — each listing page, an empty result, a cache hit or a simulated one — reports the project by GitLab's numeric id as `project/<projectId>`, the id the binding pinned on first use. CI data that needs more names the role: a job log, which a debug trace fills with CI/CD variables, reports `project/<projectId>/role/developer`; a test report reports that when read through a member confirmed below Maintainer who is not an administrator, else `project/<projectId>/role/maintainer`, since `artifacts:access: maintainer` reports reach only Maintainers, chosen with the role probe under one connection-generation fence as the report is fetched and kept for each of its pages. Nothing is read until the id is pinned, and requests are bound to it — REST addressed as `/projects/<id>/...`, git fetches and pushes sent to the path the id has (a push's read afresh, a fetch's from the project read cached for up to 30 seconds), a fetch failed if the path read afresh once GitLab answered differs from the one it was sent to — so a move keeps the identity and a project later created at an old path is never served in its place unless the path moves away and back between the path sent and that check. Caches filled while reads were addressed by path are discarded on upgrade. `verifyObserverAccess` allows an observer whose own membership of the project, by id, reaches the role an ID names (Reporter for none), denying on no row, a lower one, an unaccepted invitation, an expired one, or a 404/403, and failing on anything else; the observer's `UserAccount` reuses a grant for up to 15 minutes and a denial for up to 15 seconds, partitioned by its connection, and only while its credentials are live. Bindings minted since every read reported its project carry `reportsSubresources: true` props, and their `addObserver` and `removeObserver` are no-ops. On older bindings `addObserver` still asks, on every open, uncached and with the observer's token alone, for reads made before they reported the project: Reporter on the project the binding's path names, which those reads followed (resolved at the project's root, following a moved project's redirect, as GitHub's name check does), and on the stored id once the binding has pinned one (it never pins, and without an id it has read nothing by it), and for the CI data they marked, Developer or Maintainer the same way. Their history is not exported (`getHistoricalSubresources` is not implemented), so these checks remain. |
+| **gitlab** | Project / Issue / MR | **B**, kernel-checked (§10) | Issues/MRs inherit the project ACL, so the project is the atomic unit, and the policy is effective membership of it (`members/all`, inherited and shared-group access included) at Reporter or above whatever its visibility, since a public project can hold confidential issues and internal notes. Every read — each listing page, an empty result, a cache hit or a simulated one — reports the project by GitLab's numeric id as `project/<projectId>`, the id the binding pinned on first use. CI data names the jobs it came from instead, since GitLab decides per job who may read it and the reading account cannot see why, and each job ID's check includes the membership: a job log reports `project/<projectId>/jobTrace/<jobId>` (a debug trace fills it with CI/CD variables only Developers see), and a test report `project/<projectId>/jobArtifacts/<jobId>` for each job whose reports it holds (`artifacts:access` restricts them per job), taken from the summary's `build_ids`, and for the whole report from the pipeline's jobs with a `junit` report listed after it is read, retried attempts and same-project child pipelines included, the read refused if a listing is cut short (the project alone when no job's reports are held). `project/<projectId>/role/<developer\|maintainer>` IDs earlier releases reported read as `project/<projectId>`. Nothing is read until the id is pinned, and requests are bound to it — REST addressed as `/projects/<id>/...`, git fetches and pushes sent to the path the id has (a push's read afresh, a fetch's from the project read cached for up to 30 seconds), a fetch failed if the path read afresh once GitLab answered differs from the one it was sent to — so a move keeps the identity and a project later created at an old path is never served in its place unless the path moves away and back between the path sent and that check. Caches filled while reads were addressed by path are discarded on upgrade. `verifyObserverAccess` allows an observer whose own membership of the project, by id, reaches Reporter, denying on no row, a lower one, an unaccepted invitation, an expired one, or a 404/403, and failing on anything else; for a job's log it then needs their token's `/trace` of that job not to be refused (403), and for its artifacts GraphQL's `readJobArtifacts`, while an erased or deleted job allows. The observer's `UserAccount` reuses a grant for up to 15 minutes and a denial for up to 15 seconds, per ID, partitioned by its connection, and only while its credentials are live. Bindings minted since every read reported its project carry `reportsSubresources: true` props, and their `addObserver` and `removeObserver` are no-ops. On older bindings `addObserver` still asks, on every open, uncached and with the observer's token alone, for reads made before they reported the project: Reporter on the project the binding's path names, which those reads followed (resolved at the project's root, following a moved project's redirect, as GitHub's name check does), and on the stored id once the binding has pinned one (it never pins, and without an id it has read nothing by it); the CI data they marked needs nothing more. Their history is not exported (`getHistoricalSubresources` is not implemented), so these checks remain. |
 | **google** | Google Doc | **B**, kernel-checked (§10) | Every read reports the bound document as `docs/document/<documentId>`, one ID for every tab, since Google shares a document as a whole (a document whose creation is pending reports nothing). `verifyObserverAccess` allows an observer only if the Docs API opens the document for their own account, answered by their `UserAccount` under the same reuse rules as Calendar's availability checks below. Only the API refusing without giving a reason (403) or not holding the document for the account (404) counts as no access; any other refusal, such as a missing scope, a disabled API or rejected credentials, fails the check, as it does for `addObserver`. `addObserver` still checks the observer's access to the bound document, for reads made before they reported it. |
 | **google** | Google Spreadsheet | **B**, kernel-checked (§10) | As the Google Doc row, reporting `sheets/spreadsheet/<spreadsheetId>` and asking the Sheets API. Spreadsheet sharing applies to the whole file: protected ranges restrict edits and hidden sheets restrict nothing, so every worksheet shares the one ID. |
 | **google** | Google Slides Presentation | **B**, kernel-checked (§10) | As the Google Doc row, reporting `slides/presentation/<presentationId>` and asking the Slides API. Presentation sharing applies to the whole file, so every slide shares the one ID. |
@@ -894,6 +940,7 @@ its resource types.
 | **google** | Google Calendar (selected calendar) | **B**, kernel-checked (§10) | Every read reports what it returned from Google: metadata and every event listing, an empty one included, report `calendar/calendar/<calendarId>`. `verifyObserverAccess` allows an observer for a calendar only with `writer` or `owner` access to that calendar, since `reader` access hides private-event details, reused as for availability (next row); a lookup Google refuses for any reason but the calendar's absence fails the check. `addObserver` still requires that access to the bound calendar, for event reads made before reads reported subresources. Future: let the binding owner exclude private events so readers can collaborate. |
 | **google** | Google Calendar (availability) | **C**, kernel-checked (§10) | An availability check reports each calendar whose free/busy it read successfully, the bound one included, as a `calendar/freeBusy/<calendarId>` subresource (a failed lookup reports nothing); only an `allVisible` binding may check calendars other than its own. `verifyObserverAccess` allows an observer only if their own account can query every one's free/busy. Only Google's answer for a calendar is a verdict: any error, including Google refusing the query itself, fails the check. The observer's `UserAccount` reuses an allowed answer for up to 15 minutes and a denial for up to 15 seconds, counted from when it asked Google and only until its credentials are next installed, so a share revoked in Google can still admit the observer for up to 15 minutes and a new share is noticed within 15 seconds. `addObserver` still checks the calendars recorded before reads reported them. |
 | **google** | Gmail Mailbox | **A**, kernel-checked (§10) | Every read, hook firings included, reports the mailbox owner's account as a `gmail/user/<sub>` subresource: the stable Google account ID (`sub`) the binding pins on first use, not an address, which can change. `verifyObserverAccess` allows an observer only if their own account is that same Google account, answered by their `UserAccount` under the same reuse rules as Calendar's availability checks above. `addObserver` still always throws, for reads made before they reported it. (Future: allow observers who independently have access, e.g. mailing-list members — explicitly out of scope now.) |
+| **google** | Google Group | **B**, kernel-checked (§10) | Every read, hook firings included, reports the group as a `gmail/group/<groupId>` subresource: the group's Cloud Identity resource name (`groups/<groupId>`), which the binding pins on first use and no other group ever takes, not its address. `verifyObserverAccess` refuses any other ID and allows an observer only if their own Google account is a direct member of that group (`memberships:lookup` with the observer's token, for the address Google's userinfo verified for that token), answered by their `UserAccount` under the same reuse rules as Calendar's availability checks above, so a member who leaves can still be admitted for up to 15 minutes. Not being a member (404) or being refused the member list (403) counts as no access; a missing Google Groups grant, a disabled API, an unverified address or any other failure fails the check. New binding kind with no earlier reads: `addObserver` is a no-op for it. Accepted over-permissiveness: a member who joined after a message can read it through the gadget even when the group hides its history from newer members in Google Groups, as a Chat space binding shows a new member its history; the group's history setting is readable by admins alone. |
 | **google** | Google Chat Conversation / Thread | **B**, kernel-checked (§10) | Every read, hook firings included, reports the conversation it read as a `chat/space/<spaceId>` subresource, a thread, message, reaction or attachment included, since Google's access control stops at the space; a member listing or lookup reports the conversation's member list as `chat/spaceMembers/<spaceId>` instead, since a space can restrict its member list to managers. `verifyObserverAccess` allows an observer for a conversation only if their own account can open it (`spaces.get`), and for its member list only if their account can list it (`members.list`), answered by their `UserAccount` under the same reuse rules as Calendar's availability checks above. Only Chat refusing without giving a reason (403) or not holding the conversation for the account (404) counts as no access; any other refusal, such as a missing scope or a disabled API, fails the check, as it does for `addObserver`. Everything else the binding reads — including the other participant's name on a direct message — comes from Chat's own space-scoped responses. `addObserver` still checks that the observer can open the bound space and, for a conversation binding, list its members, for reads made before they reported subresources. |
 | **google** | Google Chat Account | **A**, kernel-checked (§10) | Every read, hook firings and nested capabilities included, reports only the connected account as `chat/user/<sub>`, its stable Google account ID. Conversation and member-list subresources are omitted because the owner restriction already prevents sharing with other Google accounts. `verifyObserverAccess` allows the account only to an observer whose own account is that same Google account. `addObserver` still always throws: the binding spans the owner's direct messages and every conversation they belong to, so there is no one a collaborator could be verified against. Bind a single conversation to share. |
 | **google** | BigQuery | **C**, kernel-checked (§10) | Every read reports each dataset whose data it revealed as a `subresources` ID, `bigquery/project/<projectId>/dataset/<datasetId>`: a query or dry run the datasets of its referenced tables, a dataset listing every dataset it lists (only the bound one on a dataset binding), a table listing or description its dataset; `getProject` reports `[]`. `verifyObserverAccess` allows an observer only if their own token can fetch every dataset's metadata with `datasets.get`, answered by their `UserAccount` under the same reuse rules as Calendar's availability checks above, so a revoked metadata grant can still admit the observer for up to 15 minutes. This metadata check does not establish permission to read table data; metadata-only roles can pass it. Dataset lookups run one at a time within each account's request. Only BigQuery's denial (403 `accessDenied`) or a missing dataset (404) counts as no access; any other refusal, such as a rate limit, a quota or a missing scope, fails the check, as it does for `addObserver`. Dataset granularity on every binding, table-scoped ones included (tables/columns later). `addObserver` keeps the tracker, which reads no longer feed, so it enforces only the datasets reads revealed before they reported them, asking BigQuery about each on every admission. |
@@ -943,9 +990,9 @@ This is why the broad bindings split the way they do:
 - **Fail criterion 2 → D (or A):** Home Assistant Instance — areas/devices/entities exist but the
   long-lived token is all-or-nothing and HA has no per-user ACL oracle, so there is nothing to
   verify an observer against. (Spotify is moot: ACL enforcement is off entirely under D.)
-- **Decomposition deliberately deferred → A:** Gmail Mailbox — could in principle decompose into
-  mailing lists the observer belongs to, but that is the out-of-scope "advanced" case, so it stays
-  fully private for now.
+- **Decomposition deliberately deferred → A:** Gmail Mailbox — stays fully private. The one
+  decomposition that exists is its own resource type, Google Group (B), bound by the owner to one
+  group's mail.
 - **Satisfies both but still A:** Google Chat Account — spaces have distinct ACLs and `spaces.get`
   is a serviceable oracle, so C is technically available. It stays A because the binding also
   reaches the owner's direct messages, where "can this collaborator open it too" has no useful

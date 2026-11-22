@@ -4,12 +4,13 @@ const DESCRIPTION =
   "An MCP endpoint you supply. Tools are discovered automatically, and writes need approval.";
 
 const HTTPS_RESOURCE: SupportedResource = {
+  id: "https-server",
   urlPattern: "https://*",
   title: "Any MCP server",
   description: DESCRIPTION,
 };
 
-const HTTP_RESOURCE: SupportedResource = { ...HTTPS_RESOURCE, urlPattern: "http://*" };
+const HTTP_RESOURCE: SupportedResource = { ...HTTPS_RESOURCE, id: "http-server", urlPattern: "http://*" };
 
 export function mcpResources(allowInsecure: boolean): SupportedResource[] {
   return allowInsecure ? [HTTPS_RESOURCE, HTTP_RESOURCE] : [HTTPS_RESOURCE];

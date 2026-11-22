@@ -25,7 +25,6 @@ import { GatekeeperConnectCallbackImpl, GatekeeperUserSelectionExchangeImpl, nor
 import { OverseerDurableObject, GatekeeperLoopback, CodeModeTailLoopback, AgentSpawnerGatekeeper, GatekeeperHookLoopback, GadgetTailLoopback, AgentSelfLoopback } from "./overseer";
 import { UserDirectoryDurableObject } from "./user-directory.js";
 import { AdminAuditDurableObject } from "./admin-audit.js";
-import { ExternalMessageGateway } from "./external-message-gateway";
 import { RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { recordAnalytics } from "./analytics";
 import { handleClientErrorRequest } from "./client-errors.js";
@@ -80,9 +79,6 @@ export { UserDurableObject, GatekeeperConnectCallbackImpl, GatekeeperUserSelecti
 export { OverseerDurableObject, GatekeeperLoopback, GatekeeperHookLoopback,
     CodeModeTailLoopback, AgentSpawnerGatekeeper, GadgetTailLoopback,
     AgentSelfLoopback };
-
-// Re-export service-binding entrypoint for external channel integrations.
-export { ExternalMessageGateway };
 
 // Declare optional environment variables here since they may be omitted from wrangler.jsonc.
 type Env = Cloudflare.Env & {
@@ -413,17 +409,17 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     return retryOnDoReset(() => this.#user.listGatekeeperVendors(filter));
   }
 
-  connectAccount(vendorId: string, resourceUrlPatterns?: string[]): Promise<ConnectFlowStart> {
-    return this.#user.connectAccount(vendorId, resourceUrlPatterns);
+  connectAccount(vendorId: string, resourceTypeIds?: string[]): Promise<ConnectFlowStart> {
+    return this.#user.connectAccount(vendorId, resourceTypeIds);
   }
 
   completeConnectHandoff(ticket: string, nonce: string): Promise<void> {
     return this.#user.completeConnectHandoff(ticket, nonce);
   }
 
-  ensureAccountResources(accountId: number, resourceUrlPatterns: string[])
+  ensureAccountResources(accountId: number, resourceTypeIds: string[])
       : Promise<ConnectFlowStart | null> {
-    return this.#user.ensureAccountResources(accountId, resourceUrlPatterns);
+    return this.#user.ensureAccountResources(accountId, resourceTypeIds);
   }
 
   listAddableGatekeepers(): Promise<GatekeeperVendorInfo[]> {
@@ -450,12 +446,17 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
 
   startResourceConfigurator(
       accountId: number,
-      resourceUrlPattern: string) {
-    return this.#user.startResourceConfigurator(accountId, resourceUrlPattern);
+      resourceTypeId: string) {
+    return this.#user.startResourceConfigurator(accountId, resourceTypeId);
   }
 
-  startCreationConfigurator(accountId: number, resourceUrlPattern: string) {
-    return this.#user.startCreationConfigurator(accountId, resourceUrlPattern);
+  startCreationConfigurator(accountId: number, resourceTypeId: string, purpose?: "create" | "save") {
+    return this.#user.startCreationConfigurator(accountId, resourceTypeId, purpose);
+  }
+
+  saveFile(accountId: number, resourceTypeId: string, destination: string, name: string,
+      contentType: string, file: ReadableStream<Uint8Array>) {
+    return this.#user.saveFile(accountId, resourceTypeId, destination, name, contentType, file);
   }
 
   async dismissSharedWorkspace(workspaceId: string): Promise<void> {

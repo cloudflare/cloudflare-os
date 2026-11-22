@@ -48,7 +48,7 @@ async function withWorkspace(fn: (workspace: Workspace) => Promise<void>): Promi
       },
       setWorkspaceLastActive: async () => {},
     };
-    impl.users = { idFromString: (id: string) => id, get: () => owner };
+    impl.users = { idFromString: (id: string) => id, idFromName: () => OWNER_USER_ID, get: () => owner };
     using notifyClosed = new NativeRpcStub<() => void>(() => {});
     using client = await instance.open(OWNER_USER_ID, OWNER.id, notifyClosed);
     await fn({ impl, client });

@@ -3,15 +3,15 @@ import { DotsThreeVertical } from '@phosphor-icons/react'
 import type { RpcStub } from 'capnweb'
 import type { AiChatMetadata, Overseer } from '@gadgets/workshop-shared/api'
 import { WorkshopIconButton } from '../../../components/WorkshopControls'
+import { ChatNotificationsMenu } from '../../notifications/ChatNotificationsMenu'
 import { UnreadBadge } from '../../notifications/UnreadBadge'
 import { unreadCountOf, useUnreadState } from '../../notifications/UnreadStateBridge'
 
 /**
  * What a run has left unread, and the control that sets it.
  *
- * A run is a thread you read, or mean to come back to, like any other. Rename and Delete are left
- * to the run's own sub-header, which has both: four items is more than a row this narrow should
- * hold.
+ * A run is a thread you can read, mark for later, or subscribe to, like any other. Rename and
+ * Delete are left to the run's own sub-header.
  *
  * Renders as a sibling of the row's button rather than inside it, since a control nested in a
  * button is neither valid nor reachable.
@@ -24,10 +24,12 @@ export const RunUnreadMenu = ({ workspaceId, run, overseer }: {
 }) => {
   const unread = useUnreadState()
   const count = unreadCountOf(unread, workspaceId, run.id)
+  const readState = unread?.chats?.find(item => item.workspaceId === workspaceId && item.chatId === run.id)
+  const notificationsEnabled = readState?.notificationsEnabled ?? !run.notificationsRequireParticipation
 
   return (
     <>
-      <UnreadBadge count={count} />
+      {notificationsEnabled && <UnreadBadge count={count} />}
       <DropdownMenu>
         <DropdownMenu.Trigger
           render={
@@ -58,6 +60,9 @@ export const RunUnreadMenu = ({ workspaceId, run, overseer }: {
           >
             Mark thread unread
           </DropdownMenu.Item>
+          <ChatNotificationsMenu overseer={overseer} chatId={run.id}
+            enabled={notificationsEnabled} override={readState?.notificationsEnabledOverride}
+            disabled={!unread?.chats} />
         </DropdownMenu.Content>
       </DropdownMenu>
     </>

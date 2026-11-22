@@ -20,6 +20,8 @@ import type { ModelHandle, ModelStreamOptions } from "./ai-models.js";
 const COMPACTION_BETA = "compact-2026-09-04";
 
 const COMPACTION_MODELS: Record<string, true> = {
+  "claude-fable-5-2": true,
+  "claude-mythos-5-2": true,
   "claude-fable-5-1": true,
   "claude-mythos-5-1": true,
   "claude-fable-5": true,

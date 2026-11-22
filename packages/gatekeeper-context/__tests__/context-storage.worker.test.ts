@@ -51,8 +51,8 @@ describe("context document storage", () => {
     const text = new TextEncoder().encode("# Title\n\nDescription");
     const binary = new Uint8Array([1, 2, 3]);
 
-    expect(artifactContextDocument("readme.md", text).body).toBe(text);
-    expect(artifactContextDocument("image.png", binary).body).toBe(binary);
+    expect(artifactContextDocument("readme.md", text, "text-hash").body).toBe(text);
+    expect(artifactContextDocument("image.png", binary, "binary-hash").body).toBe(binary);
   });
 
   it("truncates descriptions", () => {
@@ -62,6 +62,6 @@ describe("context document storage", () => {
 
   it("truncates descriptions derived from git documents", () => {
     const body = new TextEncoder().encode(`description: |\n  ${"x".repeat(20_000)}\nnext: true\n`);
-    expect(artifactContextDocument("context.yaml", body).description).toBe("x".repeat(16_000));
+    expect(artifactContextDocument("context.yaml", body, "yaml-hash").description).toBe("x".repeat(16_000));
   });
 });

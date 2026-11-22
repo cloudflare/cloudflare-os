@@ -12,7 +12,6 @@ import type {
 import { GatekeeperConnectCallbackImpl } from "../src/user.js";
 import { LoginConnectCallbackImpl } from "../src/auth/login-flow.js";
 import { OverseerDurableObject as RealOverseerDurableObject } from "../src/server.js";
-import { FakeChatResponseTarget } from "./response-target";
 import {DELIM_PKT, encodePktLine, FLUSH_PKT} from "@gadgets/gatekeeper-kit/git-transport";
 import {startGitPull} from "@gadgets/gatekeeper-kit/git-pull-transfer";
 import type {GitOid, GitPullHints, GitPullTransfer} from "@gadgets/workshop-shared/gatekeeper";
@@ -44,12 +43,6 @@ export class OverseerDurableObject extends RealOverseerDurableObject {
     super(ctx, env);
     restoreTargets.set(ctx, this);
   }
-
-  [restore](params: Parameters<RealOverseerDurableObject[typeof restore]>[0] |
-      {type: "test-response-target"; name: string}) {
-    if (params.type === "test-response-target") return new FakeChatResponseTarget(params.name);
-    return super[restore](params);
-  }
 }
 /**
  * The `self` object / spawnCallable() stub entrypoint, named explicitly for the same reason as the
@@ -68,6 +61,7 @@ export { GatekeeperHookLoopback } from "../src/server.js";
  * than covered by the `export *`.
  */
 export class TestConnectCallback extends GatekeeperConnectCallbackImpl {}
+export { GatekeeperConnectCallbackImpl } from "../src/user.js";
 /** The sign-in callback, reachable the same way. */
 export class TestLoginCallback extends LoginConnectCallbackImpl {}
 /**

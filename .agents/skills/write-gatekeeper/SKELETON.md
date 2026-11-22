@@ -61,9 +61,11 @@ import {
   ObservationDescription,
   VendorDescription,
   GatekeeperConnectCallback,
+  GatekeeperConnectOptions,
   AccountDescription,
   SupportedResource,
   ResourceConfiguratorFrame,
+  resourceTypeUrlPattern,
 } from '@gadgets/workshop-shared/gatekeeper';
 import { buildDescription } from "@gadgets/gatekeeper-kit/action-description";
 import {
@@ -119,6 +121,7 @@ const SELF_CLOSING_HTML = `<!DOCTYPE html>
 </html>`;
 
 const MY_RESOURCE: SupportedResource = {
+  id: "resource",
   urlPattern: "https://example.com/resources/:resourceId",
   title: "My Resource",
   description: "Access a specific resource.",
@@ -228,11 +231,11 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
   }
 
   // This skeleton has no independently grantable resources, so it ignores
-  // `options.resourceUrlPatterns` and stores an empty requested-resource list. Gatekeepers with
+  // `options.resourceTypeIds` and stores an empty requested-resource list. Gatekeepers with
   // grantable resources should follow gatekeeper-google.
   async connectAccount(
       callback: Fetcher<GatekeeperConnectCallback>,
-      _options?: {resourceUrlPatterns?: string[]}): Promise<{url: string}> {
+      _options?: GatekeeperConnectOptions): Promise<{url: string}> {
     let userObjectId = this.ctx.exports.UserAccount.newUniqueId();
     let nonce = generateNonce();
     await this.ctx.exports.UserAccount.get(userObjectId).setCallback(callback, nonce, []);
@@ -337,10 +340,8 @@ export class MyUserImpl extends WorkerEntrypoint<Env, MyUserImplProps>
     return [MY_RESOURCE];
   }
 
-  async startResourceConfigurator(resourceUrlPattern: string): Promise<ResourceConfiguratorFrame> {
-    if (resourceUrlPattern !== MY_RESOURCE.urlPattern) {
-      throw new Error(`Unsupported resource configurator type: ${resourceUrlPattern}`);
-    }
+  async startResourceConfigurator(resourceTypeId: string): Promise<ResourceConfiguratorFrame> {
+    resourceTypeUrlPattern([MY_RESOURCE], resourceTypeId);
     let id = this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId);
     let userAccount = this.ctx.exports.UserAccount.get(id);
     let ui = new MyConfiguratorUI(async () => {
@@ -379,7 +380,7 @@ export class MyUserImpl extends WorkerEntrypoint<Env, MyUserImplProps>
     await this.ctx.exports.UserAccount.get(id).revoke();
   }
 
-  async ensureResources(_resourceUrlPatterns: string[]): Promise<{url?: string}> {
+  async ensureResources(_resourceTypeIds: string[]): Promise<{url?: string}> {
     return {};
   }
 

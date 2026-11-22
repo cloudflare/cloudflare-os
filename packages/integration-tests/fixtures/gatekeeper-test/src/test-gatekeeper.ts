@@ -35,9 +35,6 @@ import type {
   HookInitiator, HookTargetMetadata, ObservationAuthorizer, ResourceDescription,
   ResourceConfiguratorFrame, SupportedResource, VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
-import type {
-  ChatGatewayRpcTarget, GadgetResponse, SubmitExternalMessageInput, SubmitExternalMessageResult,
-} from "@gadgets/workshop-shared/external-message-gateway";
 
 import type {ReplicableWorktree, WorktreeReplicator} from "@gadgets/workshop-shared/worktree-replica";
 
@@ -46,6 +43,7 @@ import type {ReplicableWorktree, WorktreeReplicator} from "@gadgets/workshop-sha
 const VENDOR_HOST = "gadgets-test.example";
 
 const SUPPORTED_RESOURCES: SupportedResource[] = [{
+  id: "thing",
   urlPattern: `https://${VENDOR_HOST}/things/*`,
   title: "Test Thing",
   description: "A resource that exists only so tests can bind something.",
@@ -54,6 +52,7 @@ const SUPPORTED_RESOURCES: SupportedResource[] = [{
   // configurator frame, which only the Workshop UI asks for.
   creationConfigurator: true,
   creationConfigurationDescription: "the URL of the test folder to create it in",
+  savableFrom: ["text/csv"],
 }];
 
 const TYPES_CODE = `
@@ -556,27 +555,6 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
     return this.ctx.storage.kv.get<number>(`credential:${label}`) ?? null;
   }
 
-  recordGadgetResponse(messageKey: string, response: GadgetResponse): void {
-    const key = `gadget-responses:${messageKey}`;
-    this.ctx.storage.kv.put(key, [...this.getGadgetResponses(messageKey), response]);
-  }
-
-  getGadgetResponses(messageKey: string): GadgetResponse[] {
-    return this.ctx.storage.kv.get<GadgetResponse[]>(`gadget-responses:${messageKey}`) ?? [];
-  }
-
-  /**
-   * Submits from here rather than returning the target: relayed back through the fetch handler,
-   * the stub ctx.restore() mints arrives non-persistent, and the Workshop stores it.
-   */
-  async submitExternalMessage(input: Omit<SubmitExternalMessageInput, "chatGatewayRpcTarget">)
-      : Promise<SubmitExternalMessageResult> {
-    using chatGatewayRpcTarget =
-        await this.ctx.restore<RpcStub<ChatGatewayRpcTarget>>({ messageKey: input.messageKey });
-    return await this.env.WORKSHOP_EXTERNAL_MESSAGES.submitExternalMessage(
-        { ...input, chatGatewayRpcTarget });
-  }
-
   /**
    * Fetches the worktree's head, as `git clone` would, and keeps its replicator for runCommand().
    */
@@ -605,10 +583,6 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
     const pack = await packBytes([blob, tree]);
     const result = await replicator.submit(queue, snapshot.tree, treeId, new Blob([pack]).stream());
     return result.tree === treeId ? `submitted ${path}` : `merged into ${result.tree}`;
-  }
-
-  [restore]({ messageKey }: { messageKey: string }): GadgetResponseRecorder {
-    return new GadgetResponseRecorder(this, messageKey);
   }
 }
 
@@ -646,18 +620,6 @@ async function packBytes(objects: {type: number; payload: Uint8Array}[]): Promis
   }
   const body = concat(parts);
   return concat([body, await sha1(body)]);
-}
-
-/** Records each delivery rather than the latest, since delivery is at-least-once. */
-@validateRpc()
-class GadgetResponseRecorder extends RpcTarget implements ChatGatewayRpcTarget {
-  constructor(private readonly owner: TestControl, private readonly messageKey: string) {
-    super();
-  }
-
-  async onGadgetResponse(response: GadgetResponse): Promise<void> {
-    this.owner.recordGadgetResponse(this.messageKey, response);
-  }
 }
 
 // ctx.exports is typed via the Cloudflare.GlobalProps declaration in env.d.ts, so loopback bindings
@@ -807,6 +769,14 @@ export class TestAccount
 
   startResourceConfigurator(_resourceUrlPattern: string): Promise<ResourceConfiguratorFrame> {
     throw new Error("The test gatekeeper has no resource configurator; bind a URL directly.");
+  }
+
+  /** Keeps nothing: the URL it returns reports what arrived. */
+  async saveFile(_resourceTypeId: string, destination: string, name: string, contentType: string,
+      file: ReadableStream<Uint8Array>): Promise<{ url: string }> {
+    const saved = new URLSearchParams(
+        { destination, name, contentType, content: await new Response(file).text() });
+    return { url: `https://${VENDOR_HOST}/things/saved?${saved}` };
   }
 
   async commitReconnect(stageId: string): Promise<void> {
@@ -1361,7 +1331,7 @@ function isNonEmptyString(value: unknown): value is string {
 }
 
 export default {
-  async fetch(req: Request, env: Cloudflare.Env, ctx: ExecutionContext): Promise<Response> {
+  async fetch(req: Request, _env: Cloudflare.Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
 
     // The page a finished connect flow ends on, carrying the handoff ticket to the Workshop.
@@ -1597,29 +1567,6 @@ export default {
       return new Response(null, { status: 204 });
     }
 
-    // Submit an external chat message through the Workshop's ExternalMessageGateway entrypoint,
-    // the way a chat-integration worker would, so tests can drive receiveExternalMessage().
-    // Body: {"callerEmail", "gadgetKey", "chatKey", "messageKey", "gadgetTitle", "prompt"}
-    // -> SubmitExternalMessageResult
-    if (url.pathname === "/control/submit-external-message" && req.method === "POST") {
-      const fields =
-          ["callerEmail", "gadgetKey", "chatKey", "messageKey", "gadgetTitle", "prompt"] as const;
-      const input = {} as Record<(typeof fields)[number], string>;
-      for (const field of fields) {
-        const value = (body as Record<string, unknown>)[field];
-        if (!isNonEmptyString(value)) return badRequest(`\`${field}\` must be a non-empty string`);
-        input[field] = value;
-      }
-      return Response.json(await control(ctx.exports).submitExternalMessage(input));
-    }
-
-    // Body: {"messageKey": "..."} -> {"responses": GadgetResponse[]}
-    if (url.pathname === "/control/gadget-responses" && req.method === "POST") {
-      const { messageKey } = body as Record<string, unknown>;
-      if (!isNonEmptyString(messageKey)) return badRequest("`messageKey` must be a non-empty string");
-      return Response.json({ responses: await control(ctx.exports).getGadgetResponses(messageKey) });
-    }
-
     // Fire a hook through the initiator its controller's enable() stored, as an event about the
     // binding at `resourceUrl` whose reads depended on `subresources` (see TestControl.fireHook()).
     // Body: {"key": "...", "value": number, "resourceUrl"?: "...", "subresources"?: string[]}
@@ -1666,17 +1613,6 @@ export default {
       const { key } = body as Record<string, unknown>;
       if (!isNonEmptyString(key)) return badRequest("`key` must be a non-empty string");
       return Response.json(await control(ctx.exports).getHookState(key));
-    }
-
-    // Map an external gadgetKey to the Overseer id the gateway targets -- the DO named
-    // "<source>:<gadgetKey>", where "test" is the `source` prop on WORKSHOP_EXTERNAL_MESSAGES --
-    // so a test can open the same workspace over the web API, which addresses by DO id string.
-    // Body: {"gadgetKey": "..."} -> {"gadgetId": "..."}
-    if (url.pathname === "/control/external-gadget-id" && req.method === "POST") {
-      const { gadgetKey } = body as Record<string, unknown>;
-      if (!isNonEmptyString(gadgetKey)) return badRequest("`gadgetKey` must be a non-empty string");
-      return Response.json(
-          { gadgetId: env.WORKSHOP_OVERSEER.idFromName(`test:${gadgetKey}`).toString() });
     }
 
     // Make this Worker issue a subrequest, so a test can prove that Worker-originated fetches really
