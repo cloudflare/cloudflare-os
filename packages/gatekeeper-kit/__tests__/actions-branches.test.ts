@@ -303,16 +303,24 @@ describe("applyList", () => {
     expect(host.applied).toEqual(["first"]);
   });
 
-  it("reports an unknown outcome as a failure only a rejection clears", async () => {
-    const { set } = activation(fakeKv(), {
-      fail: () => new ActionOutcomeUnknownError("timed out"),
+  it("reports an unknown outcome as a failure only a rejection clears, and never redispatches it",
+    async () => {
+      let attempts = 0;
+      const { set } = activation(fakeKv(), {
+        fail: () => {
+          attempts += 1;
+          return new ActionOutcomeUnknownError("timed out");
+        },
+      });
+      const { queue } = acceptingQueue();
+      const id = await (await set.session(queue, A)).submit("note", { text: "lost" });
+      const failed = { action: id, message: "timed out", retryable: false, outcomeUnknown: true };
+      expect(await set.applyList(A, [id])).toEqual({ applied: [], failed });
+      // Named again, as the Workshop's next apply on the connection names it: the same answer,
+      // without the handler, which might apply it twice.
+      expect(await set.applyList(A, [id])).toEqual({ applied: [], failed });
+      expect(attempts).toBe(1);
     });
-    const { queue } = acceptingQueue();
-    const id = await (await set.session(queue, A)).submit("note", { text: "lost" });
-    expect(await set.applyList(A, [id])).toEqual({
-      applied: [], failed: { action: id, message: "timed out", retryable: false },
-    });
-  });
 
   it("leaves out what it does not hold, and reports again what it already applied", async () => {
     const { set, host } = activation(fakeKv());
@@ -395,7 +403,10 @@ describe("applyList", () => {
 
       batchError = new ActionOutcomeUnknownError("the batch timed out");
       expect(await set.applyList(A, ids.slice(1))).toEqual({
-        applied: [], failed: { action: ids[1], message: "the batch timed out", retryable: false },
+        applied: [],
+        failed: {
+          action: ids[1], message: "the batch timed out", retryable: false, outcomeUnknown: true,
+        },
       });
       expect([journal.get(ids[1]!)?.state, journal.get(ids[2]!)?.state]).toEqual(["failed", "failed"]);
     });

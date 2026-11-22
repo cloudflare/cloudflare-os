@@ -5,7 +5,10 @@ import { ReviewRequest } from './ReviewRequest'
 import {
   blockedBy, canOfferAlwaysApprove, isAutoApproved, type AutoApprovalRules,
 } from './autoApprovalRules'
-import { describeGroupSize, isFromElsewhere, type PendingChange, type PendingChangeGroup } from './pendingChangeGroups'
+import {
+  OUTCOME_UNKNOWN_COPY, describeGroupSize, isFromElsewhere, type PendingChange,
+  type PendingChangeGroup,
+} from './pendingChangeGroups'
 
 /** What the tray can do with one request, once the user drills into it. */
 export interface PendingChangeActions {
@@ -166,7 +169,10 @@ export const PendingChangeGroupRow = ({
                       role="alert"
                       className="m-0 flex flex-wrap items-center gap-x-1.5 px-5 pt-2 text-[11.5px] leading-4 text-kumo-danger"
                     >
-                      <span className="min-w-0">Could not apply: {entry.applyError.message}</span>
+                      <span className="min-w-0">
+                        Could not apply: {entry.applyError.message}
+                        {entry.applyError.outcomeUnknown && ` ${OUTCOME_UNKNOWN_COPY}`}
+                      </span>
                       {entry.applyError.retryable && (
                         <button
                           type="button"

@@ -249,4 +249,18 @@ describe('PendingChangesTray approval', () => {
     expect(document.body.textContent).toContain('Could not apply: Gone.')
     expect(button('Retry')).toBeUndefined()
   })
+
+  it('says a request the provider may have applied anyway needs checking, and offers no Retry',
+    async () => {
+      const failed = {
+        ...request(1),
+        applyError: { message: 'Timed out.', retryable: false, outcomeUnknown: true as const },
+      }
+      await render({ groups: [group([failed])], actions: branch([]) })
+      await openGroup()
+      expect(document.querySelector('[role="alert"]')?.textContent).toBe(
+        'Could not apply: Timed out. It may have been applied anyway. Check the resource before ' +
+        'you deny it.')
+      expect(button('Retry')).toBeUndefined()
+    })
 })

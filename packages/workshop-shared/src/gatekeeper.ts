@@ -1509,6 +1509,13 @@ export type ApplyActionsResult = {
     message: string,
     /** False when applying again cannot succeed, so the action can only be rejected. */
     retryable: boolean,
+    /**
+     * True when the provider may have applied the action anyway: the attempt failed after it
+     * reached the provider, say a timeout. Comes with `retryable: false`. A later call naming the
+     * action must report the same failure without attempting it again, since that could apply it
+     * twice. The kernel leaves it pending, and what follows it waiting, until a user decides it.
+     */
+    outcomeUnknown?: true,
   };
 };
 

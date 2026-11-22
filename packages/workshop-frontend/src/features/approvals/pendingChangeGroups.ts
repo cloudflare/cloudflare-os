@@ -181,6 +181,14 @@ export function acceptThrough(shown: readonly ActionLogEntry[]): number {
   return shown.reduce((highest, log) => Math.max(highest, log.id), -1)
 }
 
+/**
+ * Said after a failed request's error when its provider may have applied it anyway
+ * (ActionLogEntry.applyError.outcomeUnknown): it is never retried, so denying it is what is left,
+ * and that is a call to make only once the user has looked.
+ */
+export const OUTCOME_UNKNOWN_COPY =
+  'It may have been applied anyway. Check the resource before you deny it.'
+
 /** Every pending request across `groups`, in the order a bulk resolve would take them. */
 export function pendingChangeEntries(groups: readonly PendingChangeGroup[]): PendingChange[] {
   return groups.flatMap(group => group.entries).toSorted((a, b) => a.id - b.id)

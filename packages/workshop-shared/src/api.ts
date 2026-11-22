@@ -4349,9 +4349,11 @@ export type ActionLogEntry = {
   /**
    * Why the last attempt to apply the action failed, as its gatekeeper reported it; cleared once
    * it applies. `retryable` is false when applying again cannot succeed, so the action can only be
-   * rejected. Also kept on an action rejected because its gatekeeper turned out not to hold it.
+   * rejected. `outcomeUnknown` says the provider may have applied it anyway, which only a person
+   * checking the provider can settle (see ApplyActionsResult.failed). Also kept on an action
+   * rejected because its gatekeeper turned out not to hold it.
    */
-  applyError?: {message: string, retryable: boolean};
+  applyError?: {message: string, retryable: boolean, outcomeUnknown?: true};
 
   /**
    * True for the creation queued by createExternalResource. Approving it requires one of the

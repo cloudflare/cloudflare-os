@@ -23,7 +23,7 @@ import type { ListOptions } from "@gadgets/typed-storage";
 import {
   actionLastChangedKey, branchOf, chatChangeClientKey, chatKey, chatKeyPrefix, connectionVendorId,
   makeOverseerStorage, STAGING_KEY,
-  type ActionRecord, type ActiveAgentRecord, type AgentSpawnerBindingProps,
+  type ActionRecord, type ActiveAgentRecord, type ApplyError, type AgentSpawnerBindingProps,
   type AiChatAgentContext, type BindingRecord,
   type BlueprintGadgetRecord, type BoundHookRecord, type ChatBindingEntry,
   type ChatChangeBoundaryRecord, type ChatChangeRecord, type ChatFanoutStart, type CompactionCheckpoint,
@@ -6413,6 +6413,7 @@ class OverseerImpl implements AgentHooks {
           this.#settlePending(id, {
             message: this.#withEarlierBranchHint(item.record, String(failed!.message)),
             retryable: failed!.retryable !== false,
+            ...(failed!.outcomeUnknown === true ? {outcomeUnknown: true} : {}),
           });
         } else if (i > reached) {
           // Not reached, so this call applied nothing more. Only a mark this call set is its own
@@ -6471,7 +6472,7 @@ class OverseerImpl implements AgentHooks {
   // are removed in the same durable step (nothing was transmitted, so nothing became proven). An
   // agent's turn finds the rejection when it resumes.
   recordRejection(id: number, resolvedBy: AiChatAuthorInfo | undefined,
-                  applyError?: {message: string, retryable: boolean}): void {
+                  applyError?: ApplyError): void {
     let record = this.storage.actions.get(id);
     if (record?.type !== "action" || record.state !== "pending") return;
     record.state = "rejected";
@@ -6492,7 +6493,7 @@ class OverseerImpl implements AgentHooks {
 
   // Leaves a pending action pending after an apply, clearing its reconciliation mark
   // (ActionRecord.applying), and records why it failed to apply, if it did.
-  #settlePending(id: number, applyError?: {message: string, retryable: boolean}): void {
+  #settlePending(id: number, applyError?: ApplyError): void {
     let record = this.storage.actions.get(id);
     if (record?.type !== "action" || record.state !== "pending") return;
     delete record.applying;
@@ -6572,14 +6573,16 @@ class OverseerImpl implements AgentHooks {
   // Applies a run of staged actions (see #stagedRun) automatically. One that fails to apply stays
   // pending with its error, except one its gatekeeper says can never apply: nobody watches this
   // apply, and denying it is all anybody could do, so it is rejected, as the workspace owner,
-  // along with whatever the gatekeeper says could not apply without it, and the rest go on.
+  // along with whatever the gatekeeper says could not apply without it, and the rest go on. Not
+  // one the provider may have applied anyway (`outcomeUnknown`): a person has to check, so it
+  // stays pending and holds what follows it until one decides it.
   async #applyStaged(gatekeeperId: number, select: () => ApplyItem[]): Promise<void> {
     for (;;) {
       try {
         return await this.applyActionList(gatekeeperId, true, select);
       } catch (error) {
-        let doomed = this.#branchList(gatekeeperId, null, true)
-            .find(record => record.applyError?.retryable === false);
+        let doomed = this.#branchList(gatekeeperId, null, true).find(record =>
+            record.applyError?.retryable === false && !record.applyError.outcomeUnknown);
         if (!doomed || !this.#owner) throw error;
         await this.rejectPendingAction(doomed, this.#owner);
       }

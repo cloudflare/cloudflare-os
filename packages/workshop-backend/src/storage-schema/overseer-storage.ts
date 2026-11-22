@@ -504,6 +504,9 @@ export type GatekeeperCaller = {
 export type StoredActionDescription =
     Omit<ActionDescription, "autoApprovable"> & {autoApprovable?: boolean};
 
+/** Why an action failed to apply (see ActionLogEntry.applyError). */
+export type ApplyError = {message: string, retryable: boolean, outcomeUnknown?: true};
+
 export type ActionRecord = {
   id: number,
   gatekeeperId: WorkpieceId;
@@ -536,7 +539,7 @@ export type ActionRecord = {
   description: StoredActionDescription;
   resolvedBy?: AiChatAuthorInfo;  // set when resolved (approved/rejected); absent while pending (or legacy)
   autoApproved?: boolean;         // set when applied by an auto-approval rule rather than a human
-  applyError?: {message: string, retryable: boolean};  // see ActionLogEntry.applyError
+  applyError?: ApplyError;  // see ActionLogEntry.applyError
 
   /**
    * The reconciliation mark: set on each action a Gatekeeper.applyActions() call names, before

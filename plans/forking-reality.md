@@ -79,10 +79,14 @@ To confirm. Each is argued in the section named.
    it mid-turn as they do today. See "Actions that cannot be simulated".
 5. **Staging applies everything at once**, including actions whose author set
    `autoApprovable: false`, actions a hook firing caused, and actions a `use` collaborator caused.
-   Restricted-data mode imposes holding. See "Staging".
+   Restricted-data mode imposes holding. See "Staging". *Confirmed:* `autoApprovable: false` means
+   an agent must never do it without a person's sign-off, but a gadget a person operates involves
+   no agent, and approving what you just clicked ("send email") again is needless friction. So such
+   a gadget's actions are never reviewed unless the person opted in by holding.
 6. **Accept applies actions first, then merges code, and is not atomic.** See "Accepting a branch".
 7. **A staged action that fails stays pending and holds what is behind it**, as on a branch,
-   except that one that can never apply is rejected automatically. See "Staging".
+   except that one that can never apply is rejected automatically, unless the provider may have
+   applied it anyway. See "Staging".
 8. **An agent invoking a gadget restarts it onto the chat's branch**, because a gadget has one
    facet. This adds restarts until gadget facets fork. See "Gadgets".
 9. **Accepting a chat applies what staging holds on the chat's connections first**, instead of
@@ -510,6 +514,11 @@ export type ApplyActionsResult = {
     message: string,
     /** False when applying again cannot succeed, so the action can only be denied. */
     retryable: boolean,
+    /**
+     * The provider may have applied it anyway (a timeout, say). Comes with `retryable: false`, and
+     * a later call naming it reports the same failure without attempting it again.
+     */
+    outcomeUnknown?: true,
   };
 };
 ```
@@ -656,9 +665,10 @@ retries, or denies the failed action and retries.
 order of first actions is kept, so that a connection's actions can go in one call. No gatekeeper
 depends on another's pending actions today.
 
-**Failures are recorded.** `ActionRecord` gains `applyError?: {message, retryable}`, cleared on
-success and delivered on `ActionLogEntry`. An accept that nobody is watching, such as
-auto-approval at the end of a turn, then still shows what went wrong. A staged action rejected
+**Failures are recorded.** `ActionRecord` gains
+`applyError?: {message, retryable, outcomeUnknown?}`, cleared on success and delivered on
+`ActionLogEntry`. An accept that nobody is watching, such as auto-approval at the end of a turn,
+then still shows what went wrong. A staged action rejected
 for failing keeps its error too. The UI shows later pending actions on the same
 connection and branch as waiting on the failed one.
 
@@ -752,7 +762,9 @@ is that **every chat is built on it.**
   anything applies on that connection. One the gatekeeper reports as not retryable is rejected
   automatically, along with whatever it reports could not apply without it: nobody is watching
   that apply, and nothing could be done with the action but deny it. The error is kept and a
-  notification raised (decision 7).
+  notification raised (decision 7). Not one whose outcome is unknown (`outcomeUnknown`): it may
+  have been applied, so it stays pending, holding what follows, until a user who has checked the
+  provider denies it. The gatekeeper never attempts it again.
 - **At upgrade.** Actions already pending with no chat were waiting for a user's review, so they
   are not applied unreviewed: a migration marks them, and staging holds each one, and what follows
   it on its connection, until a user decides it. Accepting staging applies them, and discarding it
@@ -801,17 +813,16 @@ mode, a `build` user reviewing the chat may release staging too. It also needs a
 gatekeeper that an action has changed branch, which this plan does not add. It belongs with the
 permission work below.
 
-What "apply at once" newly allows, to be confirmed (decision 5):
+What "apply at once" newly allows (decision 5, confirmed):
 
-- **`autoApprovable: false` actions.** The author's verdict gates rules for agents. For a staged
-  action it is not consulted: the code was accepted, and the user chose to run it.
+- **`autoApprovable: false` actions.** The author's verdict gates rules for agents: an agent must
+  never take such an action without a person's sign-off. For a staged action it is not consulted:
+  no agent is involved, the code was accepted, and the user chose to run it. Asking them to
+  approve what they just clicked would be needless friction. A user who wants review holds.
 - **Hook-driven actions.** The kernel cannot tell a gadget call caused by a user's click from one
   caused by a hook or an alarm; all are `{from: "gadget"}`.
 - **`use` collaborators.** Their use of a gadget today queues actions for a `build` user. They
   would now act through the connection directly.
-
-If any of these is too much, the alternative is to impose holding on `autoApprovable: false`
-actions.
 
 **A known gap this must leave room for.** The user driving a gadget may not have permission to
 perform its actions, in which case a user who does is supposed to approve them. That is not

@@ -19,7 +19,7 @@ import { safeExternalUrl } from './utils/safeExternalUrl'
 import { ReviewRequest } from './features/approvals/ReviewRequest'
 import { ActionFields, entryFields } from './components/ActionFields'
 import { StagedChangesBar } from './features/approvals/StagedChangesBar'
-import { chatBranchPending } from './features/approvals/pendingChangeGroups'
+import { OUTCOME_UNKNOWN_COPY, chatBranchPending } from './features/approvals/pendingChangeGroups'
 import type { ChatWithChanges } from './features/approvals/chatsWithChanges'
 
 export type ActivityView = 'review' | 'history' | 'auto'
@@ -266,6 +266,7 @@ export default function Activity({
                   {record.type === 'action' && record.applyError && (
                     <p role="alert" className="m-0 px-5 pt-2 text-[11.5px] leading-4 text-kumo-danger">
                       Could not apply: {record.applyError.message}
+                      {record.applyError.outcomeUnknown && ` ${OUTCOME_UNKNOWN_COPY}`}
                       {record.applyError.retryable && ' Accept the held changes to try again.'}
                     </p>
                   )}

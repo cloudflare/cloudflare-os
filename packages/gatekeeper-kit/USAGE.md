@@ -724,7 +724,8 @@ const tasks = replaySimulation(await api.listTasks(), this.actions.pending(), ap
   and deleting the rest through the `reject` hook, and no session reads or submits until the answer
   is in. With none, it resolves at once.
 - **`applyList()` applies the Workshop's list in order** through each record's own handler, stops at
-  the first failure, and reports it retryable unless the record failed terminally. Once it has
+  the first failure, and reports it retryable unless the record failed terminally, with
+  `outcomeUnknown` for an unknown outcome, which the Workshop then leaves for a user. Once it has
   applied something it returns after about 30 seconds, and the Workshop calls again with the rest.
   An optional `batch` hook on the set takes runs of consecutive actions of the kinds it names in one
   provider call, all or nothing; a batch that throws anything but `ActionOutcomeUnknownError` is

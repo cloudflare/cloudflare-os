@@ -436,6 +436,8 @@ export type BoundActionSet<M extends Record<string, unknown>> = {
    * `submitAction()` reply confirms it. Stops at the first action that fails and reports it:
    * `retryable` is false when the record failed terminally (`ActionApplyError`, an unknown
    * outcome, a replaced connection, a kind no longer declared), which only a rejection clears.
+   * `outcomeUnknown` marks the unknown outcome, which a later call reports again without
+   * dispatching it.
    *
    * An action already applied, by an earlier call whose result was lost, is reported applied
    * again, without a second provider call. One this journal does not hold is left out of the
@@ -1085,7 +1087,12 @@ export function defineActions<Host, M extends Record<string, unknown>>(
               continue;
             }
             if (outcome !== "retry") {
-              result.failed = { action: id, message: bounded(outcome.unknown), retryable: false };
+              result.failed = {
+                action: id,
+                message: bounded(outcome.unknown),
+                retryable: false,
+                outcomeUnknown: true,
+              };
               break;
             }
             unbatchedUntil = i + run.length;
@@ -1098,11 +1105,15 @@ export function defineActions<Host, M extends Record<string, unknown>>(
           try {
             await applyRecord(id, context);
           } catch (error) {
+            const record = journal.get(id);
             result.failed = {
               action: id,
               message: bounded(error instanceof Error ? error.message : String(error)),
-              // A terminal failure answers every later attempt the same way.
-              retryable: journal.get(id)?.state !== "failed",
+              // A terminal failure answers every later attempt the same way, an unknown outcome
+              // included: it is never dispatched again.
+              retryable: record?.state !== "failed",
+              ...(record?.state === "failed" && record.outcome === "unknown"
+                ? { outcomeUnknown: true as const } : {}),
             };
             break;
           }

@@ -622,6 +622,37 @@ describe("staging", () => {
     });
   });
 
+  it("holds a staged action the provider may have applied anyway, with what follows, for a user",
+      async () => {
+    const rejected: number[] = [];
+    const unknown =
+        {action: 1, message: "Timed out.", retryable: false, outcomeUnknown: true} as const;
+    const {visit} = await workspace({
+      // As the kit answers: the same failure each time it is named, never dispatched again.
+      async applyActions(_view: BranchView, actions: number[]): Promise<ApplyActionsResult> {
+        return actions[0] === 1 ? {applied: [], failed: unknown} : {applied: actions};
+      },
+      async rejectAction(action: number) { rejected.push(action); },
+    });
+    await visit(async impl => {
+      await impl.adoptsBranches(GK);
+      await impl.submitAction(GK, 1, description(), STAGED);
+      await impl.submitAction(GK, 2, description(), STAGED);
+      await impl.drainAutoApprovals(GK);
+      await impl.submitAction(GK, 3, description(), STAGED);
+      await impl.drainAutoApprovals(GK);
+      expect(states(impl, 1, 2, 3)).toEqual(["pending", "pending", "pending"]);
+      expect(rejected).toEqual([]);
+      expect(record(impl, 1).applyError)
+          .toEqual({message: "Timed out.", retryable: false, outcomeUnknown: true});
+
+      // Once a user denies it, what followed applies.
+      await impl.rejectPendingAction(record(impl, 1), USER);
+      await impl.drainAutoApprovals(GK);
+      expect(states(impl, 1, 2, 3)).toEqual(["rejected", "approved", "approved"]);
+    });
+  });
+
   it("is discarded newest first, leaving the chats' actions",
       async () => {
     const gatekeeper = legacyGatekeeper();
