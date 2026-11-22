@@ -338,15 +338,249 @@ describe("accepting a chat", () => {
     });
   });
 
-  it("is refused while a creation on the branch has no account chosen", async () => {
-    const gatekeeper = legacyGatekeeper();
+});
+
+describe("an unsaved resource", () => {
+  const OTHER = {type: "user" as const, id: "other", name: "Other"};
+  const SAVER = {type: "user" as const, id: "saver", name: "Saver"};
+  const RESOURCE = "https://example.com/created";
+  const SAVE = {creator: {} as never, configuration: null};
+
+  // A gatekeeper of either kind that can also create its resource, and stage a branch's actions.
+  function creatable<T extends {facet: object}>(gatekeeper: T) {
+    const staged: {branch: string | null, actions: number[]}[] = [];
+    const stage: {throws?: boolean} = {};
+    return {...gatekeeper, staged, stage, facet: {
+      ...gatekeeper.facet,
+      async applyCreation() { return {class: {}, resourceUrl: RESOURCE}; },
+      ...("applyActions" in gatekeeper.facet ? {
+        async stageActions(view: BranchView, actions: number[]) {
+          staged.push({branch: view.branch, actions});
+          if (stage.throws) {
+            delete stage.throws;
+            throw new Error("Lost.");
+          }
+        },
+      } : {}),
+    }};
+  }
+
+  const creation = (impl: Impl) => [...impl.storage.actions.list()].find(
+      (r): r is ActionRecord & {type: "action"} => r.type === "action" && r.action === "create")!;
+  const accepted = (impl: Impl, action: number) => record(impl, action).accepted;
+
+  it("is accepted with its changes, which move to staging, while the rest of the chat applies",
+      async () => {
+    const gatekeeper = creatable(legacyGatekeeper());
+    const {visit} = await workspace(gatekeeper.facet);
+    await visit(async impl => {
+      impl.storage.gatekeepers.put({id: 8, class: {} as never});
+      await impl.submitAction(GK, "create", description(), AGENT_A);
+      await impl.submitAction(GK, 1, description(), CHAT_A);
+      await impl.submitAction(8, 2, description(), CHAT_A);
+      await expect(impl.acceptBranch(1, impl.branchSnapshot(1), USER)).resolves.toBe(true);
+      expect(gatekeeper.applied).toEqual([2]);
+      expect(states(impl, 1)).toEqual(["pending"]);
+      expect(creation(impl)).toMatchObject(
+          {state: "pending", accepted: {by: USER, autoApproved: false}});
+      expect(accepted(impl, 1)).toMatchObject({by: USER, autoApproved: false});
+      // It has left the chat, which is no longer forked, and staging holds it for nobody.
+      expect(impl.isForked(1, impl.storage.chatMeta.get(1)!)).toBe(false);
+      expect(impl.chatMetaForClient(impl.storage.chatMeta.get(1)!).pendingActions).toBeUndefined();
+      expect(impl.stagedActionCount()).toBeUndefined();
+      await expect(impl.applyPendingAction(record(impl, 1), USER)).rejects.toThrow("isn't saved");
+    });
+  });
+
+  it("is passed over by staging's count, accept and discard", async () => {
+    const {visit} = await workspace(creatable(legacyGatekeeper()).facet);
+    await visit(async impl => {
+      await impl.submitAction(GK, "create", description(), AGENT_A);
+      await impl.submitAction(GK, 1, description(), CHAT_A);
+      await impl.acceptBranch(1, impl.branchSnapshot(1), USER);
+      holdStaging(impl);
+      await impl.submitAction(GK, 2, description(), STAGED);
+      expect(impl.stagedActionCount()).toBe(1);
+      expect([...impl.branchSnapshot(null)]).toEqual([record(impl, 2).id]);
+      await impl.discardBranch(null, 0, USER);
+      expect(states(impl, 1, 2)).toEqual(["pending", "rejected"]);
+      expect(creation(impl).state).toBe("pending");
+    });
+  });
+
+  it("is accepted with its chat in Auto, each action judged by its own verdict", async () => {
+    const {visit, userId} = await workspace(creatable(legacyGatekeeper()).facet);
+    await visit(async impl => {
+      await impl.submitAction(GK, "create", description(), AGENT_A);
+      await impl.submitAction(GK, 1, description(true), AGENT_A);
+      await impl.autoAcceptBranch(1, userId);
+      expect(accepted(impl, 1)).toMatchObject({by: USER, autoApproved: true});
+      expect(creation(impl).accepted).toMatchObject({by: USER, autoApproved: true});
+
+      await impl.submitAction(GK, 2, description(false), AGENT_A);
+      await impl.autoAcceptBranch(1, userId);
+      expect(accepted(impl, 2)).toBeUndefined();
+    });
+  });
+
+  it("keeps an awaited action waiting in Auto until it is saved", async () => {
+    const gatekeeper = creatable(legacyGatekeeper());
+    const {visit, userId} = await workspace(gatekeeper.facet);
+    await visit(async impl => {
+      startTurn(impl, userId);
+      await impl.submitAction(GK, "create", description(), AGENT_A);
+      await impl.submitAction(GK, 1, description(true, true), AGENT_A);
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(states(impl, 1)).toEqual(["pending"]);
+      expect(gatekeeper.applied).toEqual([]);
+    });
+  });
+
+  it("holds a gadget's action as accepted for the owner, or in restricted mode for a user",
+      async () => {
+    const gatekeeper = creatable(legacyGatekeeper());
+    const {visit} = await workspace(gatekeeper.facet);
+    await visit(async impl => {
+      await impl.submitAction(GK, "create", description(), AGENT_A);
+      await impl.submitAction(GK, 1, description(), STAGED);
+      await impl.drainAutoApprovals(GK);
+      expect(states(impl, 1)).toEqual(["pending"]);
+      expect(accepted(impl, 1)).toMatchObject({by: USER, autoApproved: true});
+      expect(gatekeeper.applied).toEqual([]);
+
+      holdStaging(impl);
+      await impl.submitAction(GK, 2, description(), STAGED);
+      await impl.drainAutoApprovals(GK);
+      expect(accepted(impl, 2)).toBeUndefined();
+      await impl.acceptBranch(null, impl.branchSnapshot(null), OTHER);
+      expect(accepted(impl, 2)).toMatchObject({by: OTHER, autoApproved: false});
+    });
+  });
+
+  // Staging, once saved: 1 accepted by USER, 2 a gadget's for the owner (USER), 3 by OTHER, and
+  // 4 nobody's yet, since staging held it in restricted-data mode.
+  async function acceptedFourWays(impl: Impl) {
+    await impl.submitAction(GK, "create", description(), AGENT_A);
+    await impl.submitAction(GK, 1, description(), CHAT_A);
+    await impl.submitAction(GK, 2, description(), STAGED);
+    await impl.drainAutoApprovals(GK);
+    await impl.submitAction(GK, 3, description(), CHAT_B);
+    await impl.acceptBranch(1, impl.branchSnapshot(1), USER);
+    const taken = impl.branchSnapshot(2);
+    holdStaging(impl);
+    await impl.submitAction(GK, 4, description(), STAGED);
+    await impl.acceptBranch(2, taken, OTHER);
+  }
+
+  it("applies on saving what was accepted, in ID order, each as its accepter, up to the rest",
+      async () => {
+    const gatekeeper = creatable(legacyGatekeeper());
+    const {visit} = await workspace(gatekeeper.facet);
+    await visit(async impl => {
+      await acceptedFourWays(impl);
+      await impl.applyPendingAction(creation(impl), SAVER, SAVE);
+      expect(creation(impl)).toMatchObject(
+          {state: "approved", resolvedBy: SAVER, autoApproved: false, resourceUrl: RESOURCE});
+      expect(gatekeeper.applied).toEqual([1, 2, 3]);
+      expect([1, 2, 3].map(action => record(impl, action))).toMatchObject([
+        {state: "approved", resolvedBy: USER, autoApproved: false},
+        {state: "approved", resolvedBy: USER, autoApproved: true},
+        {state: "approved", resolvedBy: OTHER, autoApproved: false},
+      ]);
+      expect(states(impl, 4)).toEqual(["pending"]);
+      expect(impl.stagedActionCount()).toBe(1);
+    });
+  });
+
+  it("stops saving at a failure, leaving that action and the rest pending and deniable",
+      async () => {
+    const gatekeeper = creatable(legacyGatekeeper());
+    const {visit} = await workspace(gatekeeper.facet);
+    await visit(async impl => {
+      await acceptedFourWays(impl);
+      gatekeeper.next.refuse = 2;
+      await expect(impl.applyPendingAction(creation(impl), SAVER, SAVE))
+          .rejects.toThrow("Out of order.");
+      expect(creation(impl).state).toBe("approved");
+      expect(states(impl, 1, 2, 3, 4)).toEqual(["approved", "pending", "pending", "pending"]);
+      expect(record(impl, 2).applyError).toMatchObject({message: "Out of order."});
+      // An ordinary connection now, whose staging is held behind the failure.
+      expect(impl.stagedActionCount()).toBe(3);
+      await impl.rejectPendingAction(record(impl, 3), USER);
+      expect(states(impl, 3)).toEqual(["rejected"]);
+    });
+  });
+
+  it("leaves to a user, once a save failed, what staging holds from an Auto chat", async () => {
+    const gatekeeper = creatable(legacyGatekeeper());
+    const {visit, userId} = await workspace(gatekeeper.facet);
+    await visit(async impl => {
+      await impl.submitAction(GK, "create", description(), AGENT_A);
+      await impl.submitAction(GK, 1, description(true), AGENT_A);
+      await impl.autoAcceptBranch(1, userId);
+      gatekeeper.next.refuse = 1;
+      await expect(impl.applyPendingAction(creation(impl), SAVER, SAVE)).rejects.toThrow();
+      delete gatekeeper.next.refuse;
+      await impl.submitAction(GK, 2, description(true), AGENT_A);
+      await impl.autoAcceptBranch(1, userId);
+      expect(states(impl, 1, 2)).toEqual(["pending", "pending"]);
+      expect(gatekeeper.applied).toEqual([]);
+    });
+  });
+
+  it("rejects what was accepted when it is removed", async () => {
+    const {visit} = await workspace(creatable(legacyGatekeeper()).facet);
+    await visit(async impl => {
+      await impl.submitAction(GK, "create", description(), AGENT_A);
+      await impl.submitAction(GK, 1, description(), CHAT_A);
+      await impl.acceptBranch(1, impl.branchSnapshot(1), USER);
+      await impl.rejectPendingAction(creation(impl), USER);
+      expect(creation(impl).state).toBe("rejected");
+      expect(states(impl, 1)).toEqual(["rejected"]);
+      expect(impl.storage.gatekeepers.get(GK)).toBeUndefined();
+    });
+  });
+
+  it("is removed with its chat's changes when they are discarded before an accept", async () => {
+    const {visit} = await workspace(creatable(legacyGatekeeper()).facet);
+    await visit(async impl => {
+      await impl.submitAction(GK, "create", description(), AGENT_A);
+      await impl.submitAction(GK, 1, description(), CHAT_A);
+      await impl.discardBranch(1, 0, USER);
+      expect([creation(impl).state, ...states(impl, 1)]).toEqual(["rejected", "rejected"]);
+      expect(impl.storage.gatekeepers.get(GK)).toBeUndefined();
+    });
+  });
+
+  it("tells a gatekeeper that has adopted branches what moved, until it has heard", async () => {
+    const gatekeeper = creatable(branchGatekeeper());
     const {visit} = await workspace(gatekeeper.facet);
     await visit(async impl => {
       await impl.submitAction(GK, "create", description(), AGENT_A);
       await impl.submitAction(GK, 1, description(), CHAT_A);
-      await expect(impl.acceptBranch(1, impl.branchSnapshot(1), USER))
-          .rejects.toThrow("Choose one of your accounts");
-      expect(gatekeeper.applied).toEqual([]);
+      await impl.submitAction(GK, 2, description(), CHAT_A);
+      gatekeeper.stage.throws = true;
+      await expect(impl.acceptBranch(1, impl.branchSnapshot(1, record(impl, 1).id), USER))
+          .rejects.toThrow("Lost.");
+      // Still on the branch, with the move recorded, so it is told again before anything else:
+      // here, a retried accept, which leaves the first accept's record as it was.
+      expect(impl.isForked(1, impl.storage.chatMeta.get(1)!)).toBe(true);
+      expect(record(impl, 1)).toMatchObject({moving: true, accepted: {by: USER}});
+      await expect(impl.acceptBranch(1, impl.branchSnapshot(1, record(impl, 1).id), OTHER))
+          .resolves.toBe(true);
+      expect(record(impl, 1).accepted).toMatchObject({by: USER});
+      expect(gatekeeper.staged).toEqual([
+        {branch: "chat:1", actions: [1]}, {branch: "chat:1", actions: [1]},
+      ]);
+      expect(record(impl, 1).moving).toBeUndefined();
+      expect(creation(impl).moving).toBeUndefined();
+      expect(impl.chatMetaForClient(impl.storage.chatMeta.get(1)!).pendingActions).toBe(1);
+      expect(gatekeeper.calls).toEqual([]);
+
+      // Saved, the moved action applies as a staged one.
+      await impl.applyPendingAction(creation(impl), SAVER, SAVE);
+      expect(gatekeeper.calls).toEqual([{branch: null, actions: [1]}]);
+      expect(states(impl, 1, 2)).toEqual(["approved", "pending"]);
     });
   });
 });
@@ -362,7 +596,7 @@ describe("approving one action", () => {
       await impl.submitAction(GK, 3, description(), CHAT_B);
       await impl.submitAction(GK, 4, description(), CHAT_A);
       await impl.submitAction(GK, 5, description(), STAGED);
-      await impl.applyPendingAction(record(impl, 4), USER, false);
+      await impl.applyPendingAction(record(impl, 4), USER);
       expect(gatekeeper.applied).toEqual([1, 2, 4]);
       expect(states(impl, 3, 5)).toEqual(["pending", "pending"]);
     });
@@ -412,9 +646,6 @@ describe("chat modes", () => {
       await impl.submitAction(GK, 3, description(true), STAGED);
       impl.storage.actions.put({...record(impl, 3), heldForReview: true});
       impl.storage.containsRestrictedData.put(false);
-    }],
-    ["it is creating a resource", async (impl: Impl) => {
-      await impl.submitAction(GK, "create", description(true), AGENT_A);
     }],
     ["it is in Review", (impl: Impl) => setMode(impl, 1, "review")],
     ["it is in Fork", (impl: Impl) => setMode(impl, 1, "fork")],

@@ -3972,7 +3972,9 @@ export type WorkspaceMetadata = {
    * How many gatekeeper actions with no chat are pending (see Overseer.mergeChanges()): those
    * staged by gadgets running outside any chat, hooks, and other sessions with no chat. They
    * normally apply as soon as they are submitted, so this is present only while they wait (see
-   * Overseer.acceptStagedActions()). Absent when none, and for a "use" collaborator.
+   * Overseer.acceptStagedActions()). Those accepted on a resource still unsaved, which wait for
+   * nobody's decision (see ActionLogEntry.accepted), are not counted. Absent when none, and for a
+   * "use" collaborator.
    */
   stagedActions?: number;
 
@@ -4350,11 +4352,23 @@ export type ActionLogEntry = {
   applyError?: {message: string, retryable: boolean, outcomeUnknown?: true};
 
   /**
-   * True for the creation queued by createExternalResource. Approving it requires one of the
-   * approver's accounts for the gatekeeper's vendor (see GatekeeperClient.getCreationSpec()), in
-   * which the resource is created.
+   * True for the creation queued by createExternalResource. While it is pending, its connection's
+   * resource is unsaved: it exists only in the workspace, and nothing applies to it. Approving it
+   * saves the resource, and requires one of the approver's accounts for the gatekeeper's vendor
+   * (see GatekeeperClient.getCreationSpec()), in which the resource is created (see
+   * Overseer.approveAction()).
    */
   creation?: true;
+
+  /**
+   * Present on a pending action accepted while its resource was unsaved (see `creation`): who
+   * accepted it, when, and whether that was automatic, as `resolvedBy` and `autoApproved` record
+   * an approval. It has left its chat, staging holds it, and it applies, as approved by `by`, when
+   * the resource is saved; until then nothing else accepts or discards it, though
+   * Overseer.rejectAction() still denies it. Once the resource is saved, it is held as any
+   * pending action with no chat is.
+   */
+  accepted?: {by: AiChatAuthorInfo, at: Date, autoApproved: boolean};
 } | {
   type: "observation";
   description: ObservationDescription;
@@ -4731,8 +4745,14 @@ export interface Overseer extends RpcTarget {
 
   /**
    * Approve an action that is currently in the "pending" state. The action will be performed on
-   * approval. Approving a creation (see ActionLogEntry.creation) requires `creation`: how the
-   * approver chose to make it.
+   * approval. Refused for any other action on a connection whose resource is unsaved.
+   *
+   * Approving a creation (see ActionLogEntry.creation) saves its resource, and requires
+   * `creation`: how the approver chose to make it. Once it is created, the actions accepted on it
+   * meanwhile (see ActionLogEntry.accepted) apply in ID order, up to the first pending action
+   * there that nobody has accepted, each as approved by the user who accepted it. The first that
+   * fails to apply throws, leaving it pending with its ActionLogEntry.applyError and those after it
+   * held behind it, as staged actions are (see acceptStagedActions()).
    *
    * Approving an action applies its chat's earlier actions on that connection first, together
    * with the pending actions with no chat there, since its gatekeeper simulated it on top of them
@@ -4763,14 +4783,17 @@ export interface Overseer extends RpcTarget {
    * read restricted data, behind one that was waiting for a user's review before they did, and
    * behind one that failed to apply. The first that fails to apply stops it with a "failed"
    * outcome, leaving that action pending with its ActionLogEntry.applyError and those after it on
-   * its connection pending; calling again retries it.
+   * its connection pending; calling again retries it. On a connection whose resource is unsaved,
+   * they are accepted instead, and held until it is saved (see ActionLogEntry.accepted); one
+   * accepted already is passed over.
    */
   acceptStagedActions(through?: number): Promise<{outcome: "applied" | "failed"}>;
 
   /**
    * Rejects the pending actions with no chat (see WorkspaceMetadata.stagedActions), newest first,
    * as rejectAction() rejects each one: what discarding a chat's changes does to its actions (see
-   * revertChanges()), for staging.
+   * revertChanges()), for staging. Passes over one accepted on a resource still unsaved (see
+   * ActionLogEntry.accepted).
    */
   discardStagedActions(): Promise<void>;
 
@@ -5094,9 +5117,11 @@ export interface Overseer extends RpcTarget {
    * Accepting a chat also applies its pending gatekeeper actions, and does so first: on each
    * connection the chat acted on, the pending actions with no chat there (which the chat's were
    * simulated on top of), and then the chat's own, one connection at a time, as they stood when the
-   * accept began, up to `options.through`. A pending creation among them needs
-   * `options.creations`; one that fails throws, as approveAction() does. The first other action
-   * that fails to apply stops the accept with a "failed" outcome, leaving the code unmerged and the
+   * accept began, up to `options.through`. On a connection whose resource is unsaved, they are
+   * accepted instead, the chat's creation of it included, and leave the chat: staging holds them
+   * until the resource is saved (see ActionLogEntry.accepted), or, if its gatekeeper fails to
+   * take them, stay and the accept throws. The first action that fails to apply stops the accept
+   * with a "failed" outcome, leaving the code unmerged and the
    * action pending with its ActionLogEntry.applyError; calling again retries it. The accept is not
    * atomic: what applied stays applied, and a "stale" outcome after the actions applied leaves only
    * the code for the retry. Refused while the agent waits on a decision. With no code to merge, it
@@ -5403,9 +5428,10 @@ export interface Overseer extends RpcTarget {
  *
  * - "auto": at the end of each agent turn that finishes normally, the chat is accepted
  *   automatically, code included, when every pending action the accept would apply is the chat's
- *   own and auto-approvable (ActionDescription.autoApprovable), and none is a creation. An action
- *   the agent waits on (`awaitDecision`) applies as it is submitted when it, and every earlier
- *   pending action on its connection that approving it would apply, is too.
+ *   own and auto-approvable (ActionDescription.autoApprovable). A creation does not count. An
+ *   action the agent waits on (`awaitDecision`) applies as it is submitted when it, and every
+ *   earlier pending action on its connection that approving it would apply, is too, unless its
+ *   resource is unsaved (see ActionLogEntry.creation).
  * - "review": the chat is accepted only by a user.
  * - "fork": as "review", and every gadget opened in the chat runs on its branch even while the
  *   chat has nothing pending (see AiChatMetadata.branchGadgets), so gadget actions wait there too.
@@ -5777,14 +5803,8 @@ export type MergeChangesResult = {
   outcome: "merged" | "stale" | "failed";
 };
 
-/** Choices Overseer.mergeChanges() needs from the user accepting the chat. */
+/** Choices Overseer.mergeChanges() takes from the user accepting the chat. */
 export type MergeChangesOptions = {
-  /**
-   * How to make each pending creation (see ActionLogEntry.creation) the accept applies, keyed by
-   * the creation's action ID. Required for every one.
-   */
-  creations?: Record<number, CreationApproval>;
-
   /**
    * The highest action ID the user was shown pending when they accepted, or -1 when they were
    * shown none: the accept applies no action with a higher ID. Action IDs only increase, so this
@@ -6735,8 +6755,8 @@ export type AiToolCall = {
 } | {
   /**
    * Create a new external resource of a creatable type (see `SupportedResource.creatable`). Its
-   * binding is usable at once: the gatekeeper simulates the resource until a user approves the
-   * creation action, choosing the account to create it in.
+   * binding is usable at once: the gatekeeper simulates the resource, which is unsaved, until a
+   * user saves it by approving the creation action, choosing the account to create it in.
    */
   toolName: "createExternalResource";
   input: {
@@ -7439,7 +7459,11 @@ export type PreApprovableAction = {
 export type GatekeeperCreationSpec = {
   type: "gatekeeper";
   vendorId: string;        // identifies the gatekeeper adapter (e.g. "google")
-  resourceUrl?: string;    // absent until a resource created by createExternalResource exists
+  /**
+   * Absent while a resource createExternalResource created is unsaved: its creation is pending
+   * (see ActionLogEntry.creation).
+   */
+  resourceUrl?: string;
   /** Stable vendor-scoped type ID, absent on records created before stable IDs. */
   resourceTypeId?: string;
   typeUrlPattern: string;  // Matching/prefill snapshot and exact-match fallback for legacy records.

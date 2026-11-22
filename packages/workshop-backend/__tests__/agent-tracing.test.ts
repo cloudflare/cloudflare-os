@@ -49,7 +49,7 @@ interface OverseerInternals {
   submitAction(gatekeeperId: number, action: number, description: ActionDescription,
                caller: { from: "agent", chatId: number } | { from: "user" }): Promise<unknown>;
   getGatekeeperFacet(): Promise<{ applyAction(): Promise<void> }>;
-  applyPendingAction(record: ActionRecord, author: AiChatAuthorInfo, autoApproved: boolean)
+  applyPendingAction(record: ActionRecord, author: AiChatAuthorInfo)
       : Promise<void>;
   proposedChangeWorkpieceIds(chatId: number, meta: AiChatMetadata): number[];
 }
@@ -441,7 +441,7 @@ describe("agent tracing", () => {
       expect(action(1)?.state).toBe("approved");
       let manual = action(2);
       if (manual === undefined) throw new Error("the agent's action was not queued");
-      await impl.applyPendingAction(manual, OWNER, false);
+      await impl.applyPendingAction(manual, OWNER);
     });
 
     let approvals: RecordedSpan[] = [];

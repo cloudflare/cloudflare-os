@@ -516,9 +516,10 @@ export type ActionRecord = {
   createdAt: Date;
 
   /**
-   * When the record last changed state: an action's approval/rejection or a failure to apply it,
-   * a hook's enable/disable toggle or deletion. Absent while nothing has happened since creation
-   * (and on legacy records from before it was tracked).
+   * When the record last changed state: an action's approval/rejection, a failure to apply it or
+   * its accept on an unsaved resource (see `accepted`), a hook's enable/disable toggle or
+   * deletion. Absent while nothing has happened since creation (and on legacy records from before
+   * it was tracked).
    */
   appliedAt?: Date;
 
@@ -556,6 +557,22 @@ export type ActionRecord = {
    * it is decided.
    */
   heldForReview?: true;
+
+  /**
+   * Set when a user accepted the action on a connection whose resource was unsaved, its creation
+   * pending (see OverseerImpl.acceptBranch): who accepted it, when, and whether automatically.
+   * From then on staging holds it, whatever its caller (see actionBranch), until the resource is
+   * saved, which applies it as approved by `by`.
+   */
+  accepted?: {by: AiChatAuthorInfo, at: Date, autoApproved: boolean};
+
+  /**
+   * The move mark: set with `accepted` on each of a branch's actions that an accept is moving to
+   * staging, before its gatekeeper is told (Gatekeeper.stageActions()), and cleared once that call
+   * has returned. Until then the action stays on its branch, and the gatekeeper is told again
+   * before anything else happens on the connection (see OverseerImpl.settleMoves).
+   */
+  moving?: true;
 } | {
   type: "observation";
 
@@ -1263,12 +1280,21 @@ export function observerContextOf(caller: GatekeeperCaller): ObserverContext | u
  * The branch `caller`'s actions join (see BranchView): its chat's, or null for a caller outside
  * any chat, whose actions are staged. Chat IDs are never reused, so a branch ID names one chat's
  * branch for good.
+ */
+export function branchOf(caller: GatekeeperCaller): BranchId | null {
+  return caller.from !== "hook" && caller.chatId !== undefined ? `chat:${caller.chatId}` : null;
+}
+
+/**
+ * The branch pending action `record` is on: its caller's (branchOf), or null, staging, once an
+ * accept on an unsaved resource has moved it there (see ActionRecord.accepted).
  *
  * The actions `pendingByBranch` index stores this mapping's result when each record is written,
  * so changing it requires reindexing the pending records.
  */
-export function branchOf(caller: GatekeeperCaller): BranchId | null {
-  return caller.from !== "hook" && caller.chatId !== undefined ? `chat:${caller.chatId}` : null;
+export function actionBranch(record: ActionRecord): BranchId | null {
+  return record.type === "action" && record.accepted && !record.moving
+      ? null : branchOf(record.caller);
 }
 
 /** The `pendingByBranch` key of the pending records on no branch: staging. */
@@ -1674,10 +1700,10 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
           },
 
           // Sparse index over just the pending records, keyed by the branch they are on (see
-          // branchOf), or STAGING_KEY for those on none, so that one chat's pending actions, or
-          // staging's, are one read in ID order.
+          // actionBranch), or STAGING_KEY for those on none, so that one chat's pending actions,
+          // or staging's, are one read in ID order.
           pendingByBranch(record: ActionRecord) {
-            return record.state === "pending" ? branchOf(record.caller) ?? STAGING_KEY : null;
+            return record.state === "pending" ? actionBranch(record) ?? STAGING_KEY : null;
           },
         }
       }),

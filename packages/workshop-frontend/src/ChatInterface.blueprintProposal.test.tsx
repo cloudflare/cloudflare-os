@@ -304,7 +304,7 @@ describe('accepting a proposal that the chat’s metadata does not announce', ()
     expect(text()).toContain('Pending changes')
     await click('Accept changes')
     // No request was shown, so the accept is bounded to none, not left unbounded.
-    expect(chat.mergeChanges).toHaveBeenCalledExactlyOnceWith(CHAT_ID, { creations: {}, through: -1 })
+    expect(chat.mergeChanges).toHaveBeenCalledExactlyOnceWith(CHAT_ID, { through: -1 })
   })
 
   it('stops offering them once the proposal is accepted', async () => {
@@ -356,7 +356,7 @@ describe('accepting changes with unresolved merge conflicts', () => {
     content = contentOf('const days = 7\n')
     await click('Accept changes')
     expect(text()).not.toContain('This draft still has merge conflicts')
-    expect(chat.mergeChanges).toHaveBeenCalledExactlyOnceWith(CHAT_ID, { creations: {}, through: -1 })
+    expect(chat.mergeChanges).toHaveBeenCalledExactlyOnceWith(CHAT_ID, { through: -1 })
   })
 
   // The merge is a commit, so its markers are in the chat's files without the chat's content
@@ -385,7 +385,7 @@ describe('accepting changes with unresolved merge conflicts', () => {
 
     await click('Accept changes')
     expect(text()).not.toContain('This draft still has merge conflicts')
-    expect(chat.mergeChanges).toHaveBeenCalledExactlyOnceWith(CHAT_ID, { creations: {}, through: -1 })
+    expect(chat.mergeChanges).toHaveBeenCalledExactlyOnceWith(CHAT_ID, { through: -1 })
   })
 
   it('accepts the markers when the user says to', async () => {
@@ -397,7 +397,7 @@ describe('accepting changes with unresolved merge conflicts', () => {
 
     await click('Accept changes')
     await click('Accept anyway')
-    expect(chat.mergeChanges).toHaveBeenCalledExactlyOnceWith(CHAT_ID, { creations: {}, through: -1 })
+    expect(chat.mergeChanges).toHaveBeenCalledExactlyOnceWith(CHAT_ID, { through: -1 })
     expect(text()).not.toContain('This draft still has merge conflicts')
   })
 
@@ -459,7 +459,7 @@ describe('accepting changes with unresolved merge conflicts', () => {
 
     unsent = false
     await click('Accept changes')
-    expect(chat.mergeChanges).toHaveBeenCalledExactlyOnceWith(CHAT_ID, { creations: {}, through: -1 })
+    expect(chat.mergeChanges).toHaveBeenCalledExactlyOnceWith(CHAT_ID, { through: -1 })
   })
 
   // Typing through an accept is ordinarily fine: the edits land after it. Only a chat with
@@ -476,7 +476,7 @@ describe('accepting changes with unresolved merge conflicts', () => {
     })
 
     await click('Accept changes')
-    expect(chat.mergeChanges).toHaveBeenCalledExactlyOnceWith(CHAT_ID, { creations: {}, through: -1 })
+    expect(chat.mergeChanges).toHaveBeenCalledExactlyOnceWith(CHAT_ID, { through: -1 })
   })
 
   // The check is the client's own, so a chat whose content has yet to load is not held up.
@@ -488,7 +488,7 @@ describe('accepting changes with unresolved merge conflicts', () => {
     })
 
     await click('Accept changes')
-    expect(chat.mergeChanges).toHaveBeenCalledExactlyOnceWith(CHAT_ID, { creations: {}, through: -1 })
+    expect(chat.mergeChanges).toHaveBeenCalledExactlyOnceWith(CHAT_ID, { through: -1 })
   })
 })
 

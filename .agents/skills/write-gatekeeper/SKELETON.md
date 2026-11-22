@@ -523,6 +523,12 @@ export class MyGatekeeperImpl extends DurableObject<Env, MyGatekeeperImplProps>
     return this.#actions.applyList(branch, actions, { gitCache: cache });
   }
 
+  // A branch's actions a user accepted on a resource not created yet: staged from now on, so
+  // every session sees them until the resource is saved and they apply.
+  stageActions(branch: BranchView, actions: number[]): Promise<void> {
+    return this.#actions.stageList(branch, actions);
+  }
+
   // The kit withdraws the action, rejects what could not apply without it, and says whether
   // sessions built on it must restart.
   rejectAction(actionId: number) {

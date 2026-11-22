@@ -124,7 +124,7 @@ describe("push authorization through the Overseer chokepoints", () => {
           sawPack = await collect(await cache.buildPack());
         },
       });
-      await impl.applyPendingAction(record, USER, false);
+      await impl.applyPendingAction(record, USER);
 
       expect(await decodePack(sawPack!)).toHaveLength(1);
       expect(impl.storage.actions.get(record.id)!.state).toBe("approved");
@@ -257,7 +257,7 @@ describe("push authorization through the Overseer chokepoints", () => {
       });
       let chatPush = Array.from(impl.storage.actions.list())
           .find((a: any) => a.type === "action" && a.action === 1) as any;
-      await impl.applyPendingAction(chatPush, USER, false);
+      await impl.applyPendingAction(chatPush, USER);
       expect(objects).toHaveLength(2);
       expect(impl.storage.gitObjectMetadata.get(heads[0])!.onRemote).toStrictEqual([GATEKEEPER]);
       expect(impl.storage.gitObjectMetadata.get(heads[1])!.onRemote).toStrictEqual([]);

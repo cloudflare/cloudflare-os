@@ -20,6 +20,8 @@ function subject(name: string): BranchHarnessSubject<Session> {
     startSession: async (queue, branch) =>
       await facet.startSession(queue as never, branch) as unknown as Session,
     applyActions: (branch, actions, cache) => facet.applyActions(branch, actions, cache),
+    stageActions: (branch, actions) => facet.stageActions(branch, actions),
+    offersCreation: true,
     submit: (session, marker) => session.write(marker),
     reads: (session, marker) => session.read(marker),
   };
@@ -29,6 +31,11 @@ describe("the branch harness", () => {
   for (const harnessCase of branchHarnessCases(subject("kit-built"))) {
     it(harnessCase.name, () => harnessCase.run());
   }
+
+  it("refuses a gatekeeper that offers creation without stageActions()", async () => {
+    const { stageActions: _, ...without } = subject("unstaged");
+    await expect(runBranchHarness(without)).rejects.toThrow(/must implement stageActions/);
+  });
 
   it("refuses a gatekeeper whose reads cross branches", async () => {
     await expect(runBranchHarness(subject("leaky"))).rejects.toThrow(

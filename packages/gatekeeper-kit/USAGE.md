@@ -688,7 +688,7 @@ Each chat has its own branch of pending actions, and a session sees only its own
 (`BranchView` in `workshop-shared/src/gatekeeper.ts`; the design is
 [`plans/forking-reality.md`](../../plans/forking-reality.md)). The kit carries all of it: an author
 never reads a `BranchView`, filters by branch, or handles a submission still waiting for its reply.
-A gatekeeper adopts branches as a whole, by doing three things together:
+A gatekeeper adopts branches as a whole, by doing these things together:
 
 ```ts
 // The facet: delegations. Pass `branch` straight through, without looking inside it.
@@ -698,6 +698,9 @@ async startSession(queue: RpcStub<ApprovalQueue>, branch?: BranchView) {
 }
 applyActions(branch: BranchView, actions: number[], cache: RpcStub<GitCache>) {
   return this.#actions.applyList(branch, actions, { gitCache: cache, generation });
+}
+stageActions(branch: BranchView, actions: number[]) {
+  return this.#actions.stageList(branch, actions);
 }
 rejectAction(id: number) {
   return this.#actions.rejectAction(id);
@@ -730,6 +733,11 @@ const tasks = replaySimulation(await api.listTasks(), this.actions.pending(), ap
   An optional `batch` hook on the set takes runs of consecutive actions of the kinds it names in one
   provider call, all or nothing; a batch that throws anything but `ActionOutcomeUnknownError` is
   applied again one action at a time.
+- **`stageList()` moves a branch's actions to staging** when the Workshop says they are staged
+  (`Gatekeeper.stageActions()`): a user accepted them on a resource not created yet, which nothing
+  can apply to until it is saved. It rewrites the records' stored view, so every session sees them
+  as staged actions and a later `applyList()` takes them as such; a repeated call changes nothing.
+  A gatekeeper that offers creation must delegate it, or accepted changes stay private to the chat.
 - **`rejectAction()` reports what a denial did**: the pending and failed actions that needed a
   reference only the denied one provided are rejected with it, and `restart` asks for a restart when
   a session was shown the action and something was built on it. `reject()` keeps its old behavior
@@ -751,6 +759,8 @@ and they apply when a list names them.
 Test the switch with the branch harness from `./testing` (Workers only): `branchHarnessCases()`
 drives the facet through branch isolation, a refused submission, one awaiting its reply, and an
 apply that outruns the reply, given a callback that submits a marker and one that reads it back.
+Given `stageActions`, or `offersCreation: true` for a gatekeeper that offers creation, which then
+fails without it, it also checks that staged actions are seen by every view.
 
 ## Observations
 

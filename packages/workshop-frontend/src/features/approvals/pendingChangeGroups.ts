@@ -133,23 +133,53 @@ export function pendingChangeGroups(
 }
 
 /**
+ * The connections among `pending`'s whose resource is unsaved: its creation is still pending
+ * (ActionLogEntry.creation).
+ */
+export function unsavedConnections(pending: readonly ActionLogEntry[]): Set<number> {
+  return new Set(pending.flatMap(log =>
+    log.type === 'action' && log.creation && log.gatekeeperId !== undefined
+      ? [log.gatekeeperId] : []))
+}
+
+/**
+ * Whether `log`, pending, was accepted on a resource that is still unsaved
+ * (ActionLogEntry.accepted), among `unsaved` (see unsavedConnections): it has left its chat, and
+ * waits for the resource to be saved, not for a decision.
+ */
+export function awaitsSave(log: ActionLogEntry, unsaved: ReadonlySet<number>): boolean {
+  return log.type === 'action' && log.accepted !== undefined &&
+    log.gatekeeperId !== undefined && unsaved.has(log.gatekeeperId)
+}
+
+/**
+ * The chat whose accept takes `log`: the chat it was made from, unless it was accepted on a
+ * resource while that was unsaved (ActionLogEntry.accepted), which moved it to staging.
+ */
+export function branchChatId(log: ActionLogEntry): number | undefined {
+  return log.type === 'action' && log.accepted !== undefined ? undefined : log.chatId
+}
+
+/**
  * The pending requests a tray shows, where accepting a chat applies its own requests and, ahead
  * of them, those no chat made on the same connections.
  *
  * In a chat (`chatId`), its own requests and the unchatted ones on a connection it has a request
  * on, since accepting it applies those too. Outside any chat, only the unchatted ones, which no
- * chat's accept covers.
+ * chat's accept covers. Never one accepted already on an unsaved resource (see awaitsSave).
  */
 export function chatBranchPending(
-  pending: readonly ActionLogEntry[],
+  all: readonly ActionLogEntry[],
   chatId: number | null,
 ): ActionLogEntry[] {
+  const unsaved = unsavedConnections(all)
+  const pending = all.filter(log => !awaitsSave(log, unsaved))
   const connections = new Set(pending.flatMap(log =>
-    chatId !== null && log.chatId === chatId && log.gatekeeperId !== undefined
+    chatId !== null && branchChatId(log) === chatId && log.gatekeeperId !== undefined
       ? [log.gatekeeperId] : []))
-  return pending.filter(log => log.chatId === undefined
+  return pending.filter(log => branchChatId(log) === undefined
     ? chatId === null || (log.gatekeeperId !== undefined && connections.has(log.gatekeeperId))
-    : log.chatId === chatId)
+    : branchChatId(log) === chatId)
 }
 
 /**
@@ -159,7 +189,7 @@ export function chatBranchPending(
  */
 export function canApproveAlone(log: ActionLogEntry): boolean {
   return (log.type === 'action' && log.description.awaitDecision === true) ||
-    log.chatId === undefined
+    branchChatId(log) === undefined
 }
 
 /**

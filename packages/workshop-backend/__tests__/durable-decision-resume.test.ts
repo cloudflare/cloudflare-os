@@ -879,7 +879,7 @@ describe("decision handoff using the existing execution row", () => {
     expect(requests()).toBe(1);
   });
 
-  it.each([false, true])("claims an awaited action inside the apply path (auto-approved: %s)", async auto => {
+  it("claims an awaited action inside the apply path", async () => {
     const s = await scenario("action"), requests = inference();
     await s.visit(async impl => {
       const gate = Promise.withResolvers<void>();
@@ -888,7 +888,7 @@ describe("decision handoff using the existing execution row", () => {
       fakeGatekeeper(impl, apply);
       const action = impl.storage.actions.get(7)!;
       if (action.type !== "action") throw new Error("Missing action");
-      await impl.applyPendingAction(action, USER, auto);
+      await impl.applyPendingAction(action, USER);
       expect(impl.storage.actions.get(7)?.state).toBe("approved");
       expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toEqual(MODEL.profile);
       expect([...impl.storage.chats.list()].at(-1)?.type).toBe("agentNudge");

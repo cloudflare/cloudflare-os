@@ -1,9 +1,9 @@
 /**
  * A gatekeeper that has adopted branches, built the way the kit tells an author to: a session
- * handle per session, `applyActions()` and `rejectAction()` delegated to the bound set, and reads
- * that overlay the handle's pending actions on what the provider holds. Its provider is a set of
- * markers in its own storage. A facet named `leaky-…` overlays every branch's pending actions
- * instead, the mistake the branch harness exists to catch.
+ * handle per session, `applyActions()`, `stageActions()` and `rejectAction()` delegated to the
+ * bound set, and reads that overlay the handle's pending actions on what the provider holds. Its
+ * provider is a set of markers in its own storage. A facet named `leaky-…` overlays every branch's
+ * pending actions instead, the mistake the branch harness exists to catch.
  */
 
 import { DurableObject, RpcTarget, type RpcStub } from "cloudflare:workers";
@@ -97,6 +97,10 @@ export class BranchGatekeeper extends DurableObject {
   applyActions(branch: BranchView, actions: number[], _cache: RpcStub<GitCache>)
     : Promise<ApplyActionsResult> {
     return this.#actions.applyList(branch, actions);
+  }
+
+  stageActions(branch: BranchView, actions: number[]): Promise<void> {
+    return this.#actions.stageList(branch, actions);
   }
 
   rejectAction(id: number) {

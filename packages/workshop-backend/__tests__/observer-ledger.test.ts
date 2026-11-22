@@ -1598,8 +1598,7 @@ describe("pending creation", () => {
         leave();
         let [creation] = impl.storage.actions.pendingByGatekeeper.get(gatekeeperId);
         await impl.applyPendingAction(creation,
-            { type: "user", id: "owner", name: "Owner" }, false,
-            { creator: {}, configuration: null });
+            { type: "user", id: "owner", name: "Owner" }, { creator: {}, configuration: null });
         expect(impl.storage.actions.get(creation.id).state).toBe("approved");
         expect([...impl.storage.gatekeepers.list()].map((record: GatekeeperRecord) => record.id))
             .toEqual([gatekeeperId]);

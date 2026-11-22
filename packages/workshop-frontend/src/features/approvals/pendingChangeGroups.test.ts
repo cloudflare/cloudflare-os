@@ -222,4 +222,20 @@ describe('chatBranchPending', () => {
   it('holds only the unchatted requests outside any chat', () => {
     expect(chatBranchPending(pending, null).map(log => log.id)).toEqual([2, 3])
   })
+
+  it('holds neither what was accepted on an unsaved resource, nor its creation', () => {
+    const by = { type: 'user' as const, id: 'u', name: 'U' }
+    const accepted = { by, at: new Date(0), autoApproved: false }
+    const unsaved = [
+      entry({ id: 5, chatId: 1, gatekeeperId: 3, creation: true, accepted }),
+      entry({ id: 6, chatId: 1, gatekeeperId: 3, accepted }),
+      entry({ id: 7, gatekeeperId: 3, accepted }),
+      entry({ id: 8, chatId: 1, gatekeeperId: 3 }),
+      entry({ id: 9, gatekeeperId: 3 }),
+    ]
+    expect(chatBranchPending(unsaved, 1).map(log => log.id)).toEqual([8, 9])
+    expect(chatBranchPending(unsaved, null).map(log => log.id)).toEqual([9])
+    // Saved, what is left is held in staging, as anything pending with no chat is.
+    expect(chatBranchPending(unsaved.slice(1), null).map(log => log.id)).toEqual([6, 7, 9])
+  })
 })

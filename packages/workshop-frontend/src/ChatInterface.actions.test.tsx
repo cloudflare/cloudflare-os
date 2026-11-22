@@ -293,7 +293,7 @@ describe('accepting a chat', () => {
       .find(b => b.textContent?.includes('Accept changes'))
     await act(async () => accept!.click())
     // Bounded by the highest request shown, which leaves out the other chat's later one.
-    expect(mergeChanges).toHaveBeenCalledWith(1, { creations: {}, through: 1 })
+    expect(mergeChanges).toHaveBeenCalledWith(1, { through: 1 })
   })
 
   it('keeps Approve on a request the agent is waiting on', async () => {

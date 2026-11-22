@@ -1051,7 +1051,7 @@ describe("subscriptions count as sessions", () => {
         description: { title: "Create", description: "Create", implementsRevert: false },
       };
       impl.storage.actions.put(record);
-      await impl.applyPendingAction(record, { type: "user", id: "owner", name: "Owner" }, false,
+      await impl.applyPendingAction(record, { type: "user", id: "owner", name: "Owner" },
           { creator: {}, configuration: null });
     };
     (client as any)[Symbol.dispose]();

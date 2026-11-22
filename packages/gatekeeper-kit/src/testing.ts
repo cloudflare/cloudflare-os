@@ -38,6 +38,17 @@ export type BranchHarnessSubject<Session> = {
   applyActions(branch: BranchView, actions: number[], cache: RpcStub<GitCache>):
     Promise<ApplyActionsResult>;
   /**
+   * The facet's `stageActions()`, if it has one.
+   * @param branch The view the actions were submitted under.
+   * @param actions The actions to stage.
+   */
+  stageActions?(branch: BranchView, actions: number[]): Promise<void>;
+  /**
+   * True for a gatekeeper that offers creating its resource (`Gatekeeper.applyCreation()`), which
+   * must then implement `stageActions()`: the harness fails without it.
+   */
+  offersCreation?: boolean;
+  /**
    * Submits, through `session`, exactly one action whose effect `reads` can find by `marker`.
    * Must reject when the queue refuses the submission.
    * @param session A session `startSession` returned.
@@ -144,10 +155,11 @@ class HarnessQueue extends RpcTarget implements ApprovalQueue {
 /**
  * The harness's cases, for a test to run one by one: two sessions on different branches each see
  * only their own pending action and each sees the other's once applied; a refused submission
- * leaves no trace; a submission awaiting its reply shows a concurrent read nothing; and one the
- * Workshop applies before replying ends applied, not pending. Each case uses branches of its own,
- * so they may share one facet, in order; they cannot share one with an unrelated test's pending
- * actions on the staging view.
+ * leaves no trace; a submission awaiting its reply shows a concurrent read nothing; one the
+ * Workshop applies before replying ends applied, not pending; and, for a gatekeeper with
+ * `stageActions()` or that offers creation, a branch's action staged is seen by every view, once,
+ * and applies as a staged action. Each case uses branches of its own, so they may share one facet,
+ * in order; they cannot share one with an unrelated test's pending actions on the staging view.
  * @param subject The gatekeeper under test.
  * @returns The cases, in the order to run them.
  */
@@ -301,6 +313,38 @@ export function branchHarnessCases<Session>(subject: BranchHarnessSubject<Sessio
         await expectReads(await open(view), later, true,
           "After a later action applied, the branch that applied the first one early");
       }),
+
+    ...subject.stageActions || subject.offersCreation ? [guarded(
+      "a branch's actions, once staged, are seen by every view and apply as staged actions",
+      async () => {
+        if (!subject.stageActions) {
+          throw new Error("A gatekeeper that offers creation must implement stageActions().");
+        }
+        const stage = (branchView: BranchView, actions: number[]) =>
+          subject.stageActions!(branchView, actions);
+        const [view, other] = [branch("staging"), branch("onlooker")];
+        const session = await open(view);
+        const [first, second] = [marker("first"), marker("second")];
+        const ids = [await submitOne(session, first), await submitOne(session, second)];
+        await expectReads(await open(other), second, false, "Before the move, another branch");
+
+        // Only the first: a move is a prefix of the branch, and the second stays on it.
+        await stage(view, ids.slice(0, 1));
+        await stage(view, ids.slice(0, 1));
+        await expectReads(await open(other), first, true, "Once it was staged, another branch");
+        await expectReads(await open({ branch: null }), first, true,
+          "Once it was staged, a session outside any chat");
+        await expectReads(await open(other), second, false,
+          "The action left on its branch, another branch");
+        await expectReads(await open(view), second, true, "Its own branch, after the move");
+
+        const staged = await apply({ branch: null }, ids.slice(0, 1));
+        if (staged.failed || !staged.applied.includes(ids[0]!)) {
+          throw new Error(`applyActions() did not apply staged action ${ids[0]}: `
+            + `${JSON.stringify(staged)}.`);
+        }
+        await expectApplied(view, ids[1]!);
+      })] : [],
   ];
 }
 

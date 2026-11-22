@@ -23,7 +23,9 @@ type ApplyPendingActionFn = (
 // The routine that applies a list, for a gatekeeper that applies one action at a time.
 function sequentially(applyFn: ApplyPendingActionFn): ApplyActionListFn {
   return async (_gatekeeperId, select) => {
-    for (let {record, resolvedBy} of select()) await applyFn(record, resolvedBy, true);
+    for (let {record, resolvedBy, autoApproved} of select()) {
+      await applyFn(record, resolvedBy, autoApproved);
+    }
   };
 }
 
@@ -32,7 +34,7 @@ function sequentially(applyFn: ApplyPendingActionFn): ApplyActionListFn {
 function everyPending(storage: ActionTestStorage) {
   return (gatekeeperId: number): ApplyItem[] =>
       [...storage.actions.pendingByGatekeeper.get(gatekeeperId)].flatMap(record =>
-          record.type === "action" ? [{record, resolvedBy: ENABLER}] : []);
+          record.type === "action" ? [{record, resolvedBy: ENABLER, autoApproved: true}] : []);
 }
 
 // An apply fn that resolves immediately, mirroring OverseerImpl.applyPendingAction's effect:

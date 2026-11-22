@@ -94,7 +94,6 @@ import {
   BlueprintMerge,
   BlueprintOutput,
   MessageFormatRef,
-  CreationApproval,
 } from "@gadgets/workshop-shared/api";
 import { composeEpochChanges, type CodeChange } from "@gadgets/workshop-shared/code-change";
 import type { ChatChangeRow, ChatContentReader } from "./features/code/otClient";
@@ -123,9 +122,8 @@ import { HoldingToggle } from "./features/approvals/HoldingToggle";
 import { chatsWithChanges, type ChatWithChanges } from "./features/approvals/chatsWithChanges";
 import {
   acceptThrough, canApproveAlone, chatBranchPending, chatRequestIds, pendingChangeEntries,
-  pendingChangeGroups, type PendingChange,
+  pendingChangeGroups, unsavedConnections, awaitsSave, branchChatId, type PendingChange,
 } from "./features/approvals/pendingChangeGroups";
-import { CreationAccountModal } from "./components/CreationAccountModal";
 import {
   canOfferAlwaysApprove, type AutoApprovalRules,
 } from "./features/approvals/autoApprovalRules";
@@ -2759,13 +2757,6 @@ function ChatInterface({
   // Chat whose accept came back "stale" (mainline advanced past its pins), awaiting the user's
   // decision in the update-from-mainline dialog.
   const [staleAcceptChatId, setStaleAcceptChatId] = useState<number | null>(null);
-  // The pending creation whose account an accept is asking for,
-  // and the choices already made for the others (see handleMergeChanges).
-  const [acceptCreation, setAcceptCreation] = useState<{
-    entry: PendingChange;
-    chosen: Record<number, CreationApproval>;
-    through: number;
-  } | null>(null);
   const [isUpdatingFromMainline, setIsUpdatingFromMainline] = useState(false);
   // The conflict markers that held up an accept of the selected chat's changes, awaiting the
   // user's decision in the unresolved-conflicts dialog, with the accept's bound, taken when the
@@ -4355,27 +4346,16 @@ function ChatInterface({
   // advanced past the chat's pins) is expected control flow that opens the update-from-mainline
   // dialog rather than an error.
   //
-  // The accept applies the chat's requests too, first, and each pending creation among them needs
-  // its account chosen beforehand: `creations` gathers those choices, one dialog at a time. A
-  // request that fails to apply stops it with nothing merged, and the tray shows which one and
-  // what is waiting on it.
+  // The accept applies the chat's requests too, first. A request that fails to apply stops it
+  // with nothing merged, and the tray shows which one and what is waiting on it. A resource the
+  // chat created is accepted unsaved, and its card in the transcript then offers saving it.
   //
   // `through` bounds the accept by what the tray showed when the user clicked, so that a request
   // arriving meanwhile, which they never saw, waits for the next accept.
-  const handleMergeChanges = async (
-    creations: Record<number, CreationApproval> = {},
-    through = acceptThrough(branchRequests),
-  ) => {
+  const handleMergeChanges = async (through = acceptThrough(branchRequests)) => {
     if (selectedChatId === null) return;
-    const unchosen = branchRequests.find(entry =>
-      entry.creation && entry.id <= through && !(entry.id in creations));
-    if (unchosen) {
-      setAcceptCreation({ entry: unchosen, chosen: creations, through });
-      return;
-    }
-
     try {
-      const result = await overseer.mergeChanges(selectedChatId, { creations, through });
+      const result = await overseer.mergeChanges(selectedChatId, { through });
       if (result.outcome === "stale") {
         setStaleAcceptChatId(selectedChatId);
         return;
@@ -4444,7 +4424,7 @@ function ChatInterface({
         return;
       }
     }
-    void handleMergeChanges({}, through);
+    void handleMergeChanges(through);
   };
   // Holding puts the chat in Fork, which keeps the gadgets opened in it on its branch, so
   // their requests wait for its changes to be accepted (see Overseer.setChatMode()).
@@ -4685,6 +4665,7 @@ function ChatInterface({
     () => chatBranchPending(workspacePending, selectedChatId),
     [workspacePending, selectedChatId],
   );
+  const unsavedResources = useMemo(() => unsavedConnections(workspacePending), [workspacePending]);
   const trayGroups = useMemo(
     () => pendingChangeGroups(trayPending, openChatRequestIds, !hasEarlierMessages),
     [trayPending, openChatRequestIds, hasEarlierMessages],
@@ -4745,7 +4726,7 @@ function ChatInterface({
     canApprove: canApproveAlone,
     // A chat's other requests apply only with its accept, which resumes at the failed one.
     onRetry: (entry: PendingChange) => {
-      if (entry.chatId === undefined || entry.description.awaitDecision) {
+      if (branchChatId(entry) === undefined || entry.description.awaitDecision) {
         void resolveAction(entry, "approve");
       } else {
         acceptChangesRef.current();
@@ -5430,10 +5411,13 @@ function ChatInterface({
     // A blocking (awaitDecision) pending action suspends the agent turn and blocks the composer, so
     // present it as a prominent callout with its details expanded by default.
     const isBlocking = isPending && log.description.awaitDecision === true;
+    // One accepted on a resource that is still unsaved waits for the resource to be saved, which
+    // its creation's card offers once that is accepted too.
+    const unsaved = isPending && awaitsSave(log, unsavedResources);
     // Every other pending request applies when its chat's changes are accepted, so it reads as
     // pending until then, and can only be denied on its own. The tray above the composer lists
     // them all, grouped by resource.
-    const awaitsAccept = isPending && !isBlocking;
+    const awaitsAccept = isPending && !isBlocking && !unsaved;
     // The blocking callout is never collapsed: its description is the thing the user has to read
     // in order to answer it, so hiding it behind a disclosure would just add a step before the
     // decision -- and leave Approve in the header of a card showing nothing. Everything else is
@@ -5446,7 +5430,9 @@ function ChatInterface({
         ? "Denied"
         : awaitsAccept
           ? "Applies when the changes are accepted"
-          : null;
+          : unsaved
+            ? log.creation ? "Unsaved" : "Applies when the resource is saved"
+            : null;
     const stateLabelCls = isRejected
       ? "text-kumo-danger"
       : "text-kumo-inactive";
@@ -5505,9 +5491,10 @@ function ChatInterface({
           disabled={isProc}
           describedBy={describedBy}
         />
-        {!awaitsAccept && (
+        {!awaitsAccept && (!unsaved || log.creation) && (
           <ResolveButton
             tone="approve"
+            label={unsaved ? "Save to account" : undefined}
             variant={isBlocking ? "filled" : "quiet"}
             onClick={() => void resolveAction(log, "approve")}
             disabled={isProc}
@@ -7144,7 +7131,7 @@ function ChatInterface({
           onAcceptAnyway={() => {
             const { through } = unresolvedConflicts;
             setUnresolvedConflicts(null);
-            void handleMergeChanges({}, through);
+            void handleMergeChanges(through);
           }}
         />
       )}
@@ -7180,20 +7167,6 @@ function ChatInterface({
       )}
 
       {creationAccountModal}
-      {acceptCreation && (
-        <CreationAccountModal
-          // One dialog per creation: the next one of the same type must not inherit this one's state.
-          key={acceptCreation.entry.id}
-          overseer={overseer}
-          gatekeeperId={acceptCreation.entry.gatekeeperId}
-          onChoose={approval => {
-            const chosen = { ...acceptCreation.chosen, [acceptCreation.entry.id]: approval };
-            setAcceptCreation(null);
-            void handleMergeChanges(chosen, acceptCreation.through);
-          }}
-          onCancel={() => setAcceptCreation(null)}
-        />
-      )}
 
       {/* Accept flow for an agent connection request: pre-seeds the gatekeeper modal and, on
           creation, finalizes the request so the agent resumes. */}

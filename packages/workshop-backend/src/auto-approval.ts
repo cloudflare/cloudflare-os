@@ -10,13 +10,16 @@ import type { ActionRecord } from "./storage-schema/overseer-storage.js";
 const logger = createWorkshopLogger("workshop.auto.approval");
 
 /**
- * A pending action to apply, and the user it is applied as. `eligible`, when present, says whether
- * it may still be applied so, and is asked again before each call to the gatekeeper: the apply
- * stops before the first action that may not.
+ * A pending action to apply, the user it is applied as, and whether that is automatic: required,
+ * not defaulted, so that no apply path can omit how the gate was cleared (see
+ * OverseerImpl.applyActionList). `eligible`, when present, says whether it may still be applied
+ * so, and is asked again before each call to the gatekeeper: the apply stops before the first
+ * action that may not.
  */
 export type ApplyItem = {
   record: ActionRecord & {type: "action"},
   resolvedBy: AiChatAuthorInfo,
+  autoApproved: boolean,
   eligible?: () => boolean,
 };
 

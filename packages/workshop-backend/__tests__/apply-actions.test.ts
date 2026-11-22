@@ -185,7 +185,7 @@ describe("finding out whether a gatekeeper has adopted branches", () => {
       // holdsAction() answers from what is pending on this connection.
       await expect(queue.holdsAction(2)).resolves.toBe(true);
       await expect(queue.holdsAction(9)).resolves.toBe(false);
-      await impl.applyPendingAction(record(impl, 2), USER, false);
+      await impl.applyPendingAction(record(impl, 2), USER);
       await expect(queue.holdsAction(2)).resolves.toBe(false);
     });
   });
@@ -207,7 +207,7 @@ describe("approving an action of a gatekeeper that has adopted branches", () => 
       await submit(impl, gatekeeper, 7, CHAT_A);   // after the target
       await submit(impl, gatekeeper, 8, CHAT_B);
 
-      await impl.applyPendingAction(target, USER, false);
+      await impl.applyPendingAction(target, USER);
 
       expect(gatekeeper.calls).toEqual([{branch: "chat:1", actions: [1, 2, 6, 4, 5]}]);
       expect(states(impl, 1, 2, 3, 4, 5, 6, 7, 8)).toEqual([
@@ -226,7 +226,7 @@ describe("approving an action of a gatekeeper that has adopted branches", () => 
       for (const action of [1, 2]) await submit(impl, gatekeeper, action, CHAT_A);
       const last = await submit(impl, gatekeeper, 3, CHAT_A);
       gatekeeper.next.limit = 1;
-      await impl.applyPendingAction(last, USER, false);
+      await impl.applyPendingAction(last, USER);
       expect(gatekeeper.calls.map(call => call.actions)).toEqual([[1, 2, 3], [2, 3], [3]]);
       expect(states(impl, 1, 2, 3)).toEqual(["approved", "approved", "approved"]);
     });
@@ -241,12 +241,12 @@ describe("approving an action of a gatekeeper that has adopted branches", () => 
       const last = await submit(impl, gatekeeper, 3, CHAT_A);
       gatekeeper.next.fail = {action: 2, message: "The value is locked.", retryable: true};
 
-      await expect(impl.applyPendingAction(last, USER, false)).rejects.toThrow("The value is locked.");
+      await expect(impl.applyPendingAction(last, USER)).rejects.toThrow("The value is locked.");
       expect(states(impl, 1, 2, 3)).toEqual(["approved", "pending", "pending"]);
       expect(record(impl, 2).applyError).toEqual({message: "The value is locked.", retryable: true});
       expect([record(impl, 2).applying, record(impl, 3).applying]).toEqual([undefined, undefined]);
 
-      await impl.applyPendingAction(record(impl, 3), USER, false);
+      await impl.applyPendingAction(record(impl, 3), USER);
       expect(gatekeeper.calls.at(-1)?.actions).toEqual([2, 3]);
       expect(states(impl, 2, 3)).toEqual(["approved", "approved"]);
       expect(record(impl, 2).applyError).toBeUndefined();
@@ -281,11 +281,11 @@ describe("approving an action of a gatekeeper that has adopted branches", () => 
       await submit(impl, gatekeeper, 1, CHAT_A);
       const last = await submit(impl, gatekeeper, 2, CHAT_A);
       gatekeeper.next.lose = true;
-      await expect(impl.applyPendingAction(last, USER, false)).rejects.toThrow("was lost");
+      await expect(impl.applyPendingAction(last, USER)).rejects.toThrow("was lost");
       expect(states(impl, 1, 2)).toEqual(["pending", "pending"]);
       expect([record(impl, 1).applying, record(impl, 2).applying]).toEqual([true, true]);
 
-      await impl.applyPendingAction(record(impl, 2), USER, false);
+      await impl.applyPendingAction(record(impl, 2), USER);
       expect(states(impl, 1, 2)).toEqual(["approved", "approved"]);
       expect(record(impl, 1).applyError).toBeUndefined();
     });
@@ -299,7 +299,7 @@ describe("approving an action of a gatekeeper that has adopted branches", () => 
       await submit(impl, gatekeeper, 1, CHAT_A);
       gatekeeper.held.delete(1);  // as if its submitAction() reply was lost
       const last = await submit(impl, gatekeeper, 2, CHAT_A);
-      await impl.applyPendingAction(last, USER, false);
+      await impl.applyPendingAction(last, USER);
       expect(states(impl, 1, 2)).toEqual(["rejected", "approved"]);
       expect(record(impl, 1).applyError?.retryable).toBe(false);
     });
@@ -313,14 +313,14 @@ describe("approving an action of a gatekeeper that has adopted branches", () => 
       await impl.adoptsBranches(GK);
       const chat = await submit(impl, gatekeeper, 1, CHAT_A);
       gatekeeper.next.lose = true;
-      await expect(impl.applyPendingAction(chat, USER, false)).rejects.toThrow("was lost");
+      await expect(impl.applyPendingAction(chat, USER)).rejects.toThrow("was lost");
       // Staging, applied first, now stops the next call before the chat's action.
       await submit(impl, gatekeeper, 2, STAGED);
       gatekeeper.next.fail = {action: 2, message: "Not yet.", retryable: true};
-      await expect(impl.applyPendingAction(record(impl, 1), USER, false)).rejects.toThrow("Not yet.");
+      await expect(impl.applyPendingAction(record(impl, 1), USER)).rejects.toThrow("Not yet.");
       expect(record(impl, 1).applying).toBe(true);
 
-      await impl.applyPendingAction(record(impl, 1), USER, false);
+      await impl.applyPendingAction(record(impl, 1), USER);
       expect(states(impl, 1, 2)).toEqual(["approved", "approved"]);
     });
   });

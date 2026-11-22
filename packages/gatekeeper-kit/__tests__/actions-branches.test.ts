@@ -412,6 +412,64 @@ describe("applyList", () => {
     });
 });
 
+describe("stageList", () => {
+  it("stages a branch's records within the bound, for every view, in ID order", async () => {
+    const { journal, set } = activation(fakeKv());
+    const { queue } = acceptingQueue();
+    const [a, b, staged] = await Promise.all([A, B, STAGED].map(view => set.session(queue, view)));
+    const a1 = await a.submit("note", { text: "a1" });
+    await staged.submit("note", { text: "s1" });
+    const a2 = await a.submit("note", { text: "a2" });
+    await set.submit(queue, "note", { text: "legacy" });
+    await b.submit("note", { text: "b1" });
+    const a3 = await a.submit("note", { text: "a3" });
+
+    await set.stageList(A, [a1, a2]);
+    expect(journal.get(a1)?.view).toEqual(STAGED);
+    expect(names(b.pending())).toEqual(["legacy", "a1", "s1", "a2", "b1"]);
+    expect(names(staged.pending())).toEqual(["legacy", "a1", "s1", "a2"]);
+    expect(names(a.pending())).toEqual(["legacy", "a1", "s1", "a2", "a3"]);
+    expect(journal.get(a3)?.view).toEqual(A);
+  });
+
+  it("changes nothing when called again, nor for records it does not hold or that are staged",
+      async () => {
+    const kv = fakeKv();
+    const { journal, set } = activation(kv);
+    const { queue } = acceptingQueue();
+    const [a, staged] = await Promise.all([A, STAGED].map(view => set.session(queue, view)));
+    const mine = await a.submit("note", { text: "mine" });
+    const theirs = await staged.submit("note", { text: "theirs" });
+    const legacy = await set.submit(queue, "note", { text: "legacy" });
+    await set.stageList(A, [mine]);
+    const before = kv.writes.length;
+    await set.stageList(A, [mine, theirs, legacy, 99]);
+    expect(kv.writes.length).toBe(before);
+    expect(journal.get(legacy)?.view).toBeUndefined();
+  });
+
+  it("confirms a record still waiting for its reply, which applyList then takes as staged",
+      async () => {
+    const { journal, set, host } = activation(fakeKv());
+    const release = Promise.withResolvers<void>();
+    const a = await set.session({
+      submitAction: () => release.promise, holdsAction: async () => true,
+    }, A);
+    const waiting = a.submit("note", { text: "unconfirmed" });
+    await vi.waitFor(() => expect(journal.get(1)?.state).toBe("staged"));
+
+    await set.stageList(A, [1]);
+    expect(journal.get(1)).toMatchObject({ state: "pending", view: STAGED });
+    const onlooker = await set.session(acceptingQueue().queue, B);
+    expect(names(onlooker.pending())).toEqual(["unconfirmed"]);
+    expect(await set.applyList(STAGED, [1])).toEqual({ applied: [1] });
+    expect(host.applied).toEqual(["unconfirmed"]);
+    release.resolve();
+    expect(await waiting).toBe(1);
+    expect(onlooker.pending()).toEqual([]);
+  });
+});
+
 describe("rejectAction", () => {
   it("rejects what could not apply without the action, across every branch for a staged one",
     async () => {

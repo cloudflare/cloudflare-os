@@ -1405,6 +1405,24 @@ export interface Gatekeeper<Session> extends DurableObject {
       : Promise<ApplyActionsResult>;
 
   /**
+   * Optional. `actions`, pending on `branch`'s branch, are staged from now on: every session sees
+   * them, as it does any staged action (see `BranchView`), in ID order among the staged actions.
+   * They are applied later, by `applyActions()`, like any other. The Workshop calls this only for
+   * a gatekeeper that implements `applyActions()`, when a user accepts a branch's changes to a
+   * resource that is not created yet (see `applyCreation()`); one that offers creation should
+   * implement it, or the accepted actions stay private to their branch.
+   *
+   * The list is complete, as `applyActions()`'s is: it names every action the Workshop holds
+   * pending on the branch and its ancestors with an ID up to the highest it names. A gatekeeper
+   * may therefore work from the view and that bound instead of from each action. An action is
+   * never passed over: one that is not to be staged was rejected first (`rejectAction()`).
+   *
+   * Naming an action confirms it, as in `applyActions()`. Calling again with the same actions
+   * changes nothing. Throwing tells the Workshop nothing was staged, and it will call again.
+   */
+  stageActions?(branch: BranchView, actions: number[]): Promise<void>;
+
+  /**
    * @deprecated Implement `applyActions()` instead. Called only for a gatekeeper that does not
    * implement it, once for each action.
    *

@@ -452,6 +452,17 @@ export type BoundActionSet<M extends Record<string, unknown>> = {
   applyList(branch: BranchView, actions: readonly number[], context?: ActionApplyContext):
     Promise<ApplyActionsResult>;
   /**
+   * Stages the actions the Workshop listed, pending on `branch`'s branch: what
+   * `Gatekeeper.stageActions()` delegates to, beside `applyList`. Each record this journal holds
+   * among them is restaged (`ActionJournal.restage()`), so that every view sees it, ahead of
+   * every branch's actions, and a later `applyList` takes it as a staged action; naming a record
+   * still waiting for its `submitAction()` reply confirms it. One it does not hold, or that is
+   * staged already, is passed over, so a repeated call changes nothing.
+   * @param branch The view the actions were submitted under.
+   * @param actions The actions to stage.
+   */
+  stageList(branch: BranchView, actions: readonly number[]): Promise<void>;
+  /**
    * Rejects an action and reports what that did: what `Gatekeeper.rejectAction()` delegates to
    * once the gatekeeper implements `applyActions()`. Unlike `reject`, it also rejects every
    * pending or failed action that needed a reference only this one was to provide, transitively,
@@ -1216,6 +1227,9 @@ export function defineActions<Host, M extends Record<string, unknown>>(
         // already carries the view it was submitted under.
         applyList: (_branch, actions, context) =>
           resolutionQueue.run(() => applyList(actions, context)),
+
+        stageList: (_branch, actions) =>
+          resolutionQueue.run(() => { for (const id of actions) journal.restage(id); }),
 
         rejectAction: id => resolutionQueue.run(() => rejectRecord(id, true)),
 

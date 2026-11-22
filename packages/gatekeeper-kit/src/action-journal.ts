@@ -338,6 +338,22 @@ export class ActionJournal<A> {
   }
 
   /**
+   * Restages a record submitted on a branch: it is staged from now on (`{ branch: null }`), so
+   * every view sees it, among the staged actions in ID order. A record still awaiting its
+   * `submitAction()` reply is confirmed. One with no view, already staged, or not in the pending
+   * tier is left as it is, so a repeated call changes nothing.
+   * @param id Action ID to restage.
+   */
+  restage(id: number): void {
+    const record = this.#placed(id) && this.#read(this.#pendingKey(id));
+    if (record?.view === undefined || record.view.branch === null) return;
+    const view = { branch: null };
+    this.#write(this.#pendingKey(id), record.state === "staged"
+      ? { ...record, state: "pending", view }
+      : { ...record, view });
+  }
+
+  /**
    * Removes a submission that never reached the overseer.
    * @param id Action ID to roll back.
    */

@@ -20,6 +20,7 @@ function makeOverseer(
       // The quarantine gate (see the dedicated pending-restart tests); no connection is blocked
       // in these fixtures.
       assertGatekeeperUsable: () => {},
+      settleMoves: async () => {},
       sessionWatchers: new SessionWatchers(),
       storage: {
         boundHooks: { get: () => hook && ({ ...hook, gatekeeperId: 1 }) },

@@ -255,6 +255,8 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
       startSession: async (queue, branch) =>
         await gatekeeper.startSession(queue, branch) as unknown as RpcStub<TestSessionTarget>,
       applyActions: (branch, actions, cache) => gatekeeper.applyActions!(branch, actions, cache),
+      stageActions: (branch, actions) => gatekeeper.stageActions!(branch, actions),
+      offersCreation: true,
       // The thing holds one value, so a marker is its value: a read sees it while it is the last
       // pending write visible, or, with none pending, what was last applied.
       submit: (session, marker) => session.writeValue(markerValue(marker)),
@@ -362,6 +364,30 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
     }
     this.ctx.storage.kv.put(`actions:${label}`, state);
     return { result, lose: this.ctx.storage.kv.delete(`lose-next-list:${label}`) };
+  }
+
+  /**
+   * One KitTestGatekeeper.stageActions() call for the thing at `resourceUrl`: records it, and
+   * says whether to throw before the kit's write (`fail`) or after it (`lose`).
+   */
+  stageList(resourceUrl: string, branch: string | null, actions: number[])
+      : { fail: boolean; lose: boolean } {
+    this.ctx.storage.kv.put(`stage-lists:${resourceUrl}`,
+        [...this.getStageLists(resourceUrl), { branch, actions }]);
+    return {
+      fail: this.ctx.storage.kv.delete(`fail-next-stage:${resourceUrl}`),
+      lose: this.ctx.storage.kv.delete(`lose-next-stage:${resourceUrl}`),
+    };
+  }
+
+  /** Each stageActions() call for the thing at `resourceUrl`: the branch and the actions named. */
+  getStageLists(resourceUrl: string): { branch: string | null; actions: number[] }[] {
+    return this.ctx.storage.kv.get(`stage-lists:${resourceUrl}`) ?? [];
+  }
+
+  /** One-shot: the next stageActions() for the thing at `resourceUrl` throws as `how` says. */
+  failNextStage(resourceUrl: string, how: "fail" | "lose"): void {
+    this.ctx.storage.kv.put(`${how}-next-stage:${resourceUrl}`, true);
   }
 
   /** Each applyActions() call for `label`: the view's branch and the actions it named. */
@@ -684,7 +710,7 @@ export class GatekeeperVendor extends WorkerEntrypoint<Cloudflare.Env> {
   }> {
     const resourceUrl = `https://${VENDOR_HOST}/things/${encodeURIComponent(title)}`;
     return {
-      class: this.ctx.exports.TestGatekeeper({
+      class: gatekeeperClassFor(this.ctx.exports, resourceUrl)({
         props: { label: `creation-${crypto.randomUUID()}`, resourceUrl, simulated: true },
       }),
       resource: SUPPORTED_RESOURCES[0],
@@ -737,14 +763,9 @@ export class TestAccount
     if (parsed.host !== VENDOR_HOST || !parsed.pathname.startsWith("/things/")) {
       throw new Error(`Not a test-gatekeeper resource URL: ${url}`);
     }
-    // A thing named `branches-...` is bound through the gatekeeper that can adopt branches, and
-    // one named `kit-...` through the one built on gatekeeper-kit's branch support.
-    const gatekeeper = parsed.pathname.startsWith("/things/branches-")
-      ? this.ctx.exports.BranchTestGatekeeper
-      : parsed.pathname.startsWith("/things/kit-")
-      ? this.ctx.exports.KitTestGatekeeper : this.ctx.exports.TestGatekeeper;
     return {
-      class: gatekeeper({ props: { label: this.ctx.props.label, resourceUrl: url } }),
+      class: gatekeeperClassFor(this.ctx.exports, url)(
+          { props: { label: this.ctx.props.label, resourceUrl: url } }),
       resource: SUPPORTED_RESOURCES[0],
     };
   }
@@ -1038,6 +1059,18 @@ class KitTestSessionTarget extends TestSessionTarget {
   }
 }
 
+/**
+ * The gatekeeper class a test thing at `url` is bound through, created through, and simulated by
+ * before that: one named `branches-...` through the gatekeeper that can adopt branches, one named
+ * `kit-...` through the one built on gatekeeper-kit's branch support, and any other through the
+ * plain one.
+ */
+function gatekeeperClassFor(exports: Cloudflare.Exports, url: string) {
+  const { pathname } = new URL(url);
+  return pathname.startsWith("/things/branches-") ? exports.BranchTestGatekeeper
+    : pathname.startsWith("/things/kit-") ? exports.KitTestGatekeeper : exports.TestGatekeeper;
+}
+
 /** Where a gatekeeper facet keeps its ApplyMode: its own storage, so the getter reads it in sync. */
 const APPLY_MODE_KEY = "apply-mode";
 
@@ -1198,7 +1231,10 @@ export class TestGatekeeper
     const { resourceUrl } = this.ctx.props;
     await control(this.ctx.exports).adoptActions(this.ctx.props.label, label);
     await control(this.ctx.exports).recordCreation(label, configuration);
-    return { class: this.ctx.exports.TestGatekeeper({ props: { label, resourceUrl } }), resourceUrl };
+    return {
+      class: gatekeeperClassFor(this.ctx.exports, resourceUrl)({ props: { label, resourceUrl } }),
+      resourceUrl,
+    };
   }
 
   async revertAction(_action: number): Promise<void> {
@@ -1269,6 +1305,15 @@ export class KitTestGatekeeper extends TestGatekeeper {
   async applyActions(branch: BranchView, actions: number[], cache: RpcStub<GitCache>)
       : Promise<ApplyActionsResult> {
     return this.#actions.applyList(branch, actions, { gitCache: cache });
+  }
+
+  /** Records each call, and fails before or after the kit's write as the test asked. */
+  async stageActions(branch: BranchView, actions: number[]): Promise<void> {
+    const { fail, lose } = await control(this.ctx.exports)
+        .stageList(this.ctx.props.resourceUrl, branch.branch, actions);
+    if (fail) throw new Error("The test gatekeeper failed to stage these actions.");
+    await this.#actions.stageList(branch, actions);
+    if (lose) throw new Error("The test gatekeeper lost this stage's result.");
   }
 
   /** The Workshop never calls it once applyActions() exists. */
@@ -1549,6 +1594,21 @@ export default {
       if (!isNonEmptyString(message)) return badRequest("`message` must be a non-empty string");
       if (typeof retryable !== "boolean") return badRequest("`retryable` must be a boolean");
       await control(ctx.exports).failListAt(label, { action, message, retryable });
+      return new Response(null, { status: 204 });
+    }
+    // The KitTestGatekeeper.stageActions() calls for the thing at `resourceUrl`, and a one-shot
+    // that makes the next one throw before ("fail") or after ("lose") the kit's write. Bodies:
+    // {"resourceUrl"} -> {"lists": [{"branch", "actions"}, ...]}; {"resourceUrl", "how"}.
+    if (url.pathname === "/control/stage-lists" && req.method === "POST") {
+      const { resourceUrl } = body as Record<string, unknown>;
+      if (!isNonEmptyString(resourceUrl)) return badRequest("`resourceUrl` must be a non-empty string");
+      return Response.json({ lists: await control(ctx.exports).getStageLists(resourceUrl) });
+    }
+    if (url.pathname === "/control/fail-next-stage" && req.method === "POST") {
+      const { resourceUrl, how } = body as Record<string, unknown>;
+      if (!isNonEmptyString(resourceUrl)) return badRequest("`resourceUrl` must be a non-empty string");
+      if (how !== "fail" && how !== "lose") return badRequest("`how` must be \"fail\" or \"lose\"");
+      await control(ctx.exports).failNextStage(resourceUrl, how);
       return new Response(null, { status: 204 });
     }
     if (url.pathname === "/control/lose-next-list" && req.method === "POST") {
