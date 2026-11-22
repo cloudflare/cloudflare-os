@@ -7,9 +7,11 @@ import {
   cacheModels,
   forgetModelSelection,
   getCachedModels,
+  getStoredChatMode,
   getStoredSelectedModel,
   NO_AGENT_OPTION_VALUE,
   persistSelectedModel,
+  storeChatMode,
   syncSelectedModel,
 } from './modelSelection'
 
@@ -252,12 +254,34 @@ describe('a browser shared between users', () => {
   it('forgets everything on sign-out', async () => {
     cacheModels('alice', MODELS)
     persistSelectedModel(api, 'alice', 'sonnet')
+    storeChatMode('alice', 'fork')
     await saved()
 
     forgetModelSelection()
 
     expect(localStorage.length).toBe(0)
     expect(getCachedModels('alice')).toEqual([])
+  })
+})
+
+describe('the new-chat mode', () => {
+  it('is Auto until the user starts a chat in another', () => {
+    expect(getStoredChatMode('alice')).toBe('auto')
+    storeChatMode('alice', 'review')
+    expect(getStoredChatMode('alice')).toBe('review')
+  })
+
+  it("is the user's own, and nobody's before the user is confirmed", () => {
+    storeChatMode('alice', 'fork')
+    expect(getStoredChatMode('bob')).toBe('auto')
+    expect(getStoredChatMode(undefined)).toBe('auto')
+    storeChatMode(undefined, 'review')
+    expect(getStoredChatMode('alice')).toBe('fork')
+  })
+
+  it('reads anything else stored there as Auto', () => {
+    localStorage.setItem('lastChatMode:alice', 'holding')
+    expect(getStoredChatMode('alice')).toBe('auto')
   })
 })
 

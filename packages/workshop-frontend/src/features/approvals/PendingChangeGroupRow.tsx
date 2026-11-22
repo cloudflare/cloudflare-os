@@ -1,10 +1,7 @@
-import { ArrowSquareOut, CaretRight, Lightning } from '@phosphor-icons/react'
+import { ArrowSquareOut, CaretRight } from '@phosphor-icons/react'
 import { GatekeeperIcon } from '../../components/GatekeeperIcon'
 import type { VendorBranding } from '../../useVendorBranding'
 import { ReviewRequest } from './ReviewRequest'
-import {
-  blockedBy, canOfferAlwaysApprove, isAutoApproved, type AutoApprovalRules,
-} from './autoApprovalRules'
 import {
   OUTCOME_UNKNOWN_COPY, describeGroupSize, isFromElsewhere, type PendingChange,
   type PendingChangeGroup,
@@ -15,10 +12,6 @@ export interface PendingChangeActions {
   processing: ReadonlySet<number>
   onApprove: (entry: PendingChange) => void
   onReject: (entry: PendingChange) => void
-  /** Enables a standing rule for the request's kind on its connection. */
-  onAlwaysApprove: (entry: PendingChange) => void
-  /** Opens the pane where a standing rule is turned off again. */
-  onManageRules: () => void
   /**
    * Whether a request is approved on its own. Most apply when their chat's changes are accepted.
    */
@@ -39,7 +32,7 @@ export const PendingChangeGroupRow = ({
   group,
   vendorId,
   branding,
-  rules,
+  restricted,
   expandedActionId,
   onToggleAction,
   open,
@@ -49,14 +42,13 @@ export const PendingChangeGroupRow = ({
   group: PendingChangeGroup
   vendorId?: string
   branding?: VendorBranding
-  rules: AutoApprovalRules
+  restricted: boolean
   expandedActionId: number | null
   onToggleAction: (actionId: number) => void
   open: boolean
   onToggle: () => void
   actions: PendingChangeActions
 }) => {
-  const autoApprovedCount = group.entries.filter(entry => isAutoApproved(entry, rules)).length
   // Nothing in this group is something the open chat asked for, so the row says so once rather
   // than every request inside it repeating the same sentence. This is also why the group sorts
   // below the ones this conversation did ask for.
@@ -94,16 +86,6 @@ export const PendingChangeGroupRow = ({
               <span className="truncate">Asked elsewhere</span>
             </span>
           )}
-          {autoApprovedCount > 0 && (
-            <span className="flex min-w-0 shrink items-center gap-1 text-[11.5px] leading-4 text-kumo-inactive">
-              <Lightning size={11} weight="fill" className="flex-shrink-0" aria-hidden="true" />
-              <span className="truncate">
-                {autoApprovedCount === group.entries.length
-                  ? 'Standing rule'
-                  : `${autoApprovedCount} on a standing rule`}
-              </span>
-            </span>
-          )}
           <CaretRight
             size={12}
             weight="bold"
@@ -123,18 +105,11 @@ export const PendingChangeGroupRow = ({
           <div className="max-h-[min(18rem,20vh)] overflow-y-auto">
             {group.hasCreation && (
               <p className="m-0 border-b border-kumo-line px-5 py-2 text-[11.5px] leading-4 text-kumo-inactive">
-                This resource does not exist yet. Approve its creation first — everything queued
-                behind it applies after, and discarding it discards them too.
+                This resource is new and unsaved. Once the changes are accepted, save it to an
+                account to apply them. Discarding its creation discards them too.
               </p>
             )}
             {group.entries.map(entry => {
-              const blocker = blockedBy(entry, group.entries, rules)
-              // A rule covers this one, so the kernel may apply it unasked, with the rest of its
-              // chat's (see Overseer.setAutoApprovedActionKind()). The controls stay, though: an
-              // automatic apply stops for good at one that fails, and a request nobody can decide
-              // here would be stranded with nothing saying why. One being applied right now
-              // refuses a second decision, whoever sends it.
-              const ruled = isAutoApproved(entry, rules)
               // An apply stops at the first request that fails, and what is queued behind it on
               // the connection waits for it to be retried or denied.
               const failedBefore =
@@ -148,20 +123,6 @@ export const PendingChangeGroupRow = ({
                     <p className="m-0 flex items-center gap-1.5 px-5 pt-2 text-[11.5px] leading-4 text-kumo-inactive">
                       <ArrowSquareOut size={11} aria-hidden="true" />
                       Asked elsewhere in this workspace
-                    </p>
-                  )}
-                  {ruled && (
-                    <p className="m-0 flex flex-wrap items-center gap-x-1.5 bg-kumo-tint/60 px-5 pt-2 text-[11.5px] leading-4 text-kumo-inactive">
-                      {blocker
-                        ? `Standing rule enabled, waiting on "${blocker.description.title}" above it.`
-                        : 'Standing rule enabled.'}
-                      <button
-                        type="button"
-                        onClick={actions.onManageRules}
-                        className="cursor-pointer text-kumo-default underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring"
-                      >
-                        Manage rule
-                      </button>
                     </p>
                   )}
                   {entry.applyError && (
@@ -192,7 +153,7 @@ export const PendingChangeGroupRow = ({
                   )}
                   <ReviewRequest
                     record={entry}
-                    restricted={rules.restricted}
+                    restricted={restricted}
                     showResource={false}
                     expanded={expandedActionId === entry.id}
                     processing={actions.processing.has(entry.id)}
@@ -200,9 +161,6 @@ export const PendingChangeGroupRow = ({
                     decide={{
                       onApprove: actions.canApprove(entry) ? () => actions.onApprove(entry) : undefined,
                       onReject: () => actions.onReject(entry),
-                      onAlwaysApprove: canOfferAlwaysApprove(entry, rules)
-                        ? () => actions.onAlwaysApprove(entry)
-                        : undefined,
                     }}
                   />
                 </div>

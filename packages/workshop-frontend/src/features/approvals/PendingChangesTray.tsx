@@ -3,7 +3,6 @@ import { Warning } from '@phosphor-icons/react'
 import type { VendorBranding } from '../../useVendorBranding'
 import { formatRelativeTime } from '../../utils/formatRelativeTime'
 import { PendingChangeGroupRow, type PendingChangeActions } from './PendingChangeGroupRow'
-import type { AutoApprovalRules } from './autoApprovalRules'
 import { countFromElsewhere, pendingChangeEntries, type PendingChangeGroup } from './pendingChangeGroups'
 
 /**
@@ -38,13 +37,14 @@ const barClass =
  */
 export const PendingChangesTray = ({
   groups,
-  rules,
+  restricted,
   vendorIdByGatekeeper,
   vendorBranding,
   actions,
 }: {
   groups: readonly PendingChangeGroup[]
-  rules: AutoApprovalRules
+  /** The workspace's restricted-data latch (WorkspaceMetadata.containsRestrictedData). */
+  restricted: boolean
   vendorIdByGatekeeper: ReadonlyMap<number, string>
   vendorBranding: ReadonlyMap<string, VendorBranding>
   actions: PendingChangeActions
@@ -84,7 +84,7 @@ export const PendingChangesTray = ({
           notice is useful. So this block gives way before the list does, and scrolls when it
           has given up all it can. */}
       <div className="min-h-0 shrink overflow-y-auto">
-      {rules.restricted && (
+      {restricted && (
         <p className="m-0 border-t border-kumo-line/70 px-3.5 py-1.5 text-[11.5px] leading-4 text-kumo-inactive">
           This workspace has read sensitive data, so every request is reviewed on its own.
         </p>
@@ -116,7 +116,7 @@ export const PendingChangesTray = ({
               group={group}
               vendorId={vendorId}
               branding={vendorId ? vendorBranding.get(vendorId) : undefined}
-              rules={rules}
+              restricted={restricted}
               expandedActionId={expandedActionId}
               onToggleAction={id => setExpandedActionId(current => current === id ? null : id)}
               // One group at a time: two expanded bodies would push the tray past any height the

@@ -15,9 +15,6 @@ vi.mock('./AuthContext', () => {
   const context = { authenticatedApi: { listGatekeeperVendors: async () => [] }, currentUser: null }
   return { useAuthenticatedApi: () => context, useOptionalAuthenticatedApi: () => context }
 })
-vi.mock('./useAlwaysApproveTag', () => ({
-  useAlwaysApproveTag: () => ({ alwaysApproveTag: async () => {}, isTagAutoApproved: () => false }),
-}))
 
 import { deferred, entry, makeOverseer } from './action-test-harness'
 import Activity from './Activity'
@@ -71,7 +68,16 @@ function workspace() {
   } as unknown as BoundHookInfo]
   const enableHook = vi.fn<(id: number) => Promise<void>>(async () => { server.enabled = true })
   const disableHook = vi.fn<(id: number) => Promise<void>>(async () => { server.enabled = false })
-  return { server, overseer: { listHooks, enableHook, disableHook, [Symbol.dispose]: () => {} } }
+  return {
+    server,
+    overseer: {
+      listHooks, enableHook, disableHook,
+      // The page lists the unsaved resources among its connections from the action log.
+      subscribeToActions: async () => ({ [Symbol.dispose]: () => {} }),
+      listActions: async () => ({ entries: [] }),
+      [Symbol.dispose]: () => {},
+    },
+  }
 }
 
 /** The hook's record in the action log, as a bindHook card or history row shows it. */

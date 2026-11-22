@@ -133,13 +133,15 @@ export function pendingChangeGroups(
 }
 
 /**
- * The connections among `pending`'s whose resource is unsaved: its creation is still pending
- * (ActionLogEntry.creation).
+ * The connections among `pending`'s whose resource is unsaved, each with its creation, which is
+ * still pending (ActionLogEntry.creation). Approving the creation saves the resource; it is
+ * offered once the creation is accepted (ActionLogEntry.accepted), and until then is the chat's
+ * to accept.
  */
-export function unsavedConnections(pending: readonly ActionLogEntry[]): Set<number> {
-  return new Set(pending.flatMap(log =>
+export function unsavedConnections(pending: readonly ActionLogEntry[]): Map<number, ActionLogEntry> {
+  return new Map(pending.flatMap(log =>
     log.type === 'action' && log.creation && log.gatekeeperId !== undefined
-      ? [log.gatekeeperId] : []))
+      ? [[log.gatekeeperId, log] as const] : []))
 }
 
 /**
@@ -147,7 +149,7 @@ export function unsavedConnections(pending: readonly ActionLogEntry[]): Set<numb
  * (ActionLogEntry.accepted), among `unsaved` (see unsavedConnections): it has left its chat, and
  * waits for the resource to be saved, not for a decision.
  */
-export function awaitsSave(log: ActionLogEntry, unsaved: ReadonlySet<number>): boolean {
+export function awaitsSave(log: ActionLogEntry, unsaved: ReadonlyMap<number, unknown>): boolean {
   return log.type === 'action' && log.accepted !== undefined &&
     log.gatekeeperId !== undefined && unsaved.has(log.gatekeeperId)
 }

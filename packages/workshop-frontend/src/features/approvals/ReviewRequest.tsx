@@ -6,7 +6,7 @@ import {
   IncompleteDescriptionNotice, isDescriptionIncomplete,
 } from '../../components/IncompleteDescriptionNotice'
 import { RestrictedApprovalNotice } from '../../components/RestrictedApprovalNotice'
-import { AlwaysApproveButton, ResolveButton } from '../../components/ResolveButton'
+import { ResolveButton } from '../../components/ResolveButton'
 import { safeExternalUrl } from '../../utils/safeExternalUrl'
 import { formatRelativeTime } from '../../utils/formatRelativeTime'
 
@@ -47,8 +47,9 @@ export function ReviewRequest({
   decide: {
     /** Absent where the request is not approved on its own, but with its chat's changes. */
     onApprove?: () => void
+    /** What Approve says, where it does something more particular, such as saving a resource. */
+    approveLabel?: string
     onReject: () => void
-    onAlwaysApprove?: () => void
   }
 }) {
   const resourceUrl = safeExternalUrl(record.resourceUrl)
@@ -111,12 +112,15 @@ export function ReviewRequest({
           </p>
         </div>
         <div className="ml-auto flex flex-shrink-0 items-center gap-0.5">
-          {decide.onAlwaysApprove && (
-            <AlwaysApproveButton onClick={decide.onAlwaysApprove} disabled={processing} />
-          )}
           <ResolveButton tone="deny" onClick={decide.onReject} disabled={processing} describedBy={describedBy} />
           {decide.onApprove && (
-            <ResolveButton tone="approve" onClick={decide.onApprove} disabled={processing} describedBy={describedBy} />
+            <ResolveButton
+              tone="approve"
+              label={decide.approveLabel}
+              onClick={decide.onApprove}
+              disabled={processing}
+              describedBy={describedBy}
+            />
           )}
         </div>
       </div>

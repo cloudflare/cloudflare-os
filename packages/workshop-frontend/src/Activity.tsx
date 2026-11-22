@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { Switch, useKumoToastManager } from '@cloudflare/kumo'
 import { CaretRight, Check, Eye, Lightning, ShieldCheck } from '@phosphor-icons/react'
 import { RpcStub } from 'capnweb'
@@ -10,7 +10,6 @@ import { useActions } from './useActions'
 import { useActionHistory } from './useActionHistory'
 import type { HistoryViewFilter } from './useActionHistory'
 import { useAutoApproval, autoApprovalKey, type AutoApprovalEntry } from './useAutoApproval'
-import type { AutoApprovalChannel } from './features/approvals/autoApprovalChannel'
 import { useAuthenticatedApi } from './AuthContext'
 import { useAvatar } from './useAvatar'
 import { useVendorBranding } from './useVendorBranding'
@@ -19,7 +18,9 @@ import { safeExternalUrl } from './utils/safeExternalUrl'
 import { ReviewRequest } from './features/approvals/ReviewRequest'
 import { ActionFields, entryFields } from './components/ActionFields'
 import { StagedChangesBar } from './features/approvals/StagedChangesBar'
-import { OUTCOME_UNKNOWN_COPY, chatBranchPending } from './features/approvals/pendingChangeGroups'
+import {
+  OUTCOME_UNKNOWN_COPY, awaitsSave, chatBranchPending, unsavedConnections,
+} from './features/approvals/pendingChangeGroups'
 import type { ChatWithChanges } from './features/approvals/chatsWithChanges'
 
 export type ActivityView = 'review' | 'history' | 'auto'
@@ -29,13 +30,11 @@ const PANE_BAR = 'flex h-9 flex-shrink-0 items-center border-b border-kumo-line'
 interface ActivityProps {
   overseer: RpcStub<Overseer>
   // True once the workspace has read restricted data (WorkspaceMetadata.containsRestrictedData).
-  // Latched actions are never auto-approved, so the always-approve affordance is hidden and
-  // existing rules are shown as suspended but stay revocable.
+  // Every request is then reviewed in full, and the rules are shown as suspended but stay
+  // revocable.
   restricted?: boolean
   view: ActivityView
   onViewChange: (view: ActivityView) => void
-  // Shared with the chat: a rule changed here has to reach the tray's own list.
-  autoApproval?: AutoApprovalChannel
   // A chat's requests are accepted with its changes, so the review tab lists each chat with
   // changes waiting, which opens in the chat panel, and what staging holds.
   chats: readonly ChatWithChanges[]
@@ -94,6 +93,10 @@ function activityStatus(
       : { label: 'Disabled', dotClass: 'bg-kumo-inactive', textClass: 'text-kumo-subtle' }
   }
   if (record.state === 'pending') {
+    // Accepted while its resource was unsaved, and waiting on the resource being saved.
+    if (record.accepted) {
+      return { label: 'Accepted', dotClass: 'bg-kumo-brand', textClass: 'text-kumo-strong' }
+    }
     return { label: 'Pending', dotClass: 'bg-kumo-brand', textClass: 'text-kumo-strong' }
   }
   if (record.state === 'rejected') {
@@ -154,7 +157,6 @@ export default function Activity({
   restricted,
   view,
   onViewChange,
-  autoApproval,
   chats,
   onOpenChat,
 }: ActivityProps) {
@@ -167,6 +169,7 @@ export default function Activity({
   const toasts = useKumoToastManager()
 
   const history = useActionHistory(overseer, historyFilter, view === 'history')
+  const unsavedResources = useMemo(() => unsavedConnections(pendingActions), [pendingActions])
 
   // Grouped by day in id order (newest first). A day label can repeat when resolution order
   // differs from creation order — accepted for a paged, creation-ordered log.
@@ -238,9 +241,20 @@ export default function Activity({
   // A chat's requests are accepted with its code, in the chat, so the review tab lists the chats
   // rather than their requests. What staging holds belongs to no chat, so it is reviewed here:
   // accepted or discarded as a whole, or denied one at a time.
+  //
+  // A resource an agent created stays unsaved after its chat is accepted, with the changes
+  // accepted on it, until someone saves it to an account. It has left the chat, so it is saved
+  // here, and what was accepted on it can still be denied.
   function renderReviewContent(): ReactNode {
     const staged = chatBranchPending(pendingActions, null)
-    const count = chats.length + (staged.length > 0 ? 1 : 0)
+    const unsaved = unsavedResources
+    const toSave = [...unsaved.values()].flatMap(creation => {
+      const accepted = pendingActions.filter(record =>
+        record.gatekeeperId === creation.gatekeeperId && record.id !== creation.id &&
+        awaitsSave(record, unsaved))
+      return awaitsSave(creation, unsaved) || accepted.length > 0 ? [{ creation, accepted }] : []
+    })
+    const count = chats.length + (staged.length > 0 ? 1 : 0) + toSave.length
     if (count === 0) {
       return renderNothingToReview(
         'Chats with changes to accept, and requests held outside any chat, show up here.')
@@ -278,6 +292,56 @@ export default function Activity({
                     onToggle={() => toggleExpanded(record.id)}
                     decide={{ onReject: () => void resolveAction(record, 'deny') }}
                   />
+                </div>
+              ))}
+            </section>
+          )}
+          {toSave.length > 0 && (
+            <section aria-label="Unsaved resources">
+              <h3 className="sticky top-0 m-0 border-b border-kumo-line bg-kumo-base/90 px-5 py-1 text-[11px] font-medium uppercase tracking-[0.06em] text-kumo-inactive backdrop-blur-sm">
+                Unsaved resources
+              </h3>
+              {toSave.map(({ creation, accepted }) => (
+                <div key={creation.id}>
+                  <p className="m-0 px-5 pt-2 text-[11.5px] leading-4 text-kumo-inactive">
+                    Exists only in this workspace. The changes accepted on it apply when you save
+                    it to an account.
+                  </p>
+                  <ReviewRequest
+                    record={creation}
+                    restricted={restricted}
+                    expanded={expandedActionId === creation.id}
+                    processing={processingActions.has(creation.id)}
+                    onToggle={() => toggleExpanded(creation.id)}
+                    decide={{
+                      onApprove: awaitsSave(creation, unsaved)
+                        ? () => void resolveAction(creation, 'approve')
+                        : undefined,
+                      approveLabel: 'Save to account',
+                      onReject: () => void resolveAction(creation, 'deny'),
+                    }}
+                  />
+                  {accepted.map(record => (
+                    <div key={record.id} className="pl-4">
+                      {record.type === 'action' && record.accepted && (
+                        <p className="m-0 px-5 pt-2 text-[11.5px] leading-4 text-kumo-inactive">
+                          {record.accepted.autoApproved
+                            ? `Accepted automatically for ${record.accepted.by.name}`
+                            : `Accepted by ${record.accepted.by.name}`}
+                          {' · applies when the resource is saved'}
+                        </p>
+                      )}
+                      <ReviewRequest
+                        record={record}
+                        restricted={restricted}
+                        showResource={false}
+                        expanded={expandedActionId === record.id}
+                        processing={processingActions.has(record.id)}
+                        onToggle={() => toggleExpanded(record.id)}
+                        decide={{ onReject: () => void resolveAction(record, 'deny') }}
+                      />
+                    </div>
+                  ))}
                 </div>
               ))}
             </section>
@@ -335,6 +399,7 @@ export default function Activity({
                     ? togglingHooks.has(record.hookId)
                     : false}
                   onToggleHook={handleToggleHook}
+                  awaitingSave={awaitsSave(record, unsavedResources)}
                 />
               ))}
             </section>
@@ -432,12 +497,7 @@ export default function Activity({
         )
       case 'auto':
         return (
-          <AutoApprovalPanel
-            overseer={overseer}
-            restricted={restricted}
-            reloadTrigger={autoApproval?.reloadTrigger}
-            onChanged={autoApproval?.changed}
-          />
+          <AutoApprovalPanel overseer={overseer} restricted={restricted} />
         )
     }
   }
@@ -454,40 +514,13 @@ export default function Activity({
 function AutoApprovalPanel({
   overseer,
   restricted,
-  reloadTrigger,
-  onChanged,
 }: {
   overseer: RpcStub<Overseer>
   restricted?: boolean
-  reloadTrigger?: number
-  /** Reports that a change made here has settled; see `AutoApprovalChannel`. */
-  onChanged?: () => void
 }) {
   const { entries, isLoading, loadError, pending, refresh, setEnabled } = useAutoApproval(overseer)
   const { authenticatedApi } = useAuthenticatedApi()
   const vendorBranding = useVendorBranding(authenticatedApi)
-
-  // No channel means no other surface to hear from, so the panel only ever reloads its own way.
-  const trigger = reloadTrigger ?? 0
-  const previousReloadTrigger = useRef(trigger)
-  // A change made here has already re-read the list on its way out, and its own end of the
-  // channel bumps the trigger for everyone else. Reacting to that bump would read the list a
-  // second time for no new answer.
-  //
-  // Counted rather than flagged, because several completions can land in one React batch. A
-  // flag would swallow the whole advance, so a change made on another surface alongside this
-  // panel's own would go unread: the rule it granted would stay invisible here, and so could not
-  // be revoked from this list, until something else happened to refresh it.
-  const changedHere = useRef(0)
-  useEffect(() => {
-    const advance = trigger - previousReloadTrigger.current
-    if (advance <= 0) return
-    previousReloadTrigger.current = trigger
-    const ours = Math.min(changedHere.current, advance)
-    changedHere.current -= ours
-    if (ours === advance) return
-    void refresh()
-  }, [trigger, refresh])
 
   const groups = useMemo(() => {
     const byConnection = new Map<
@@ -546,9 +579,8 @@ function AutoApprovalPanel({
     <>
       <div className={`${PANE_BAR} gap-3 px-5`}>
         <p className="m-0 min-w-0 flex-1 truncate text-[12.5px] leading-[17px] tracking-[-0.2px] text-kumo-subtle">
-          {loadError
-            ? 'Some auto-approval options could not be loaded.'
-            : 'Actions agents may take without asking. Everything else waits for your review.'}
+          {loadError && 'Some auto-approval options could not be loaded. '}
+          Chat modes have replaced these rules. They no longer have any effect.
         </p>
         {loadError && (
           <button
@@ -605,13 +637,7 @@ function AutoApprovalPanel({
                     // must stay possible.
                     disabled={busy || (restricted === true && !entry.enabled)}
                     aria-label={`${entry.enabled ? 'Disable' : 'Enable'} auto-approval for ${entry.actionKind.label}`}
-                    // Toggling here is the only way to turn a rule off, and the chat tray
-                    // labels its requests from this same list, so it has to be told.
-                    onCheckedChange={enabled =>
-                      void setEnabled(entry, enabled).finally(() => {
-                        changedHere.current += 1
-                        onChanged?.()
-                      })}
+                    onCheckedChange={enabled => void setEnabled(entry, enabled)}
                   />
                 </div>
               )
@@ -659,8 +685,11 @@ function HistoryRow({
   onToggle,
   togglingHook,
   onToggleHook,
+  awaitingSave,
 }: {
   record: ActionLogEntry
+  /** Accepted on a resource that is still unsaved (see awaitsSave). */
+  awaitingSave: boolean
   expanded: boolean
   onToggle: () => void
   togglingHook: boolean
@@ -669,6 +698,7 @@ function HistoryRow({
   const resourceUrl = safeExternalUrl(record.resourceUrl)
   const resolvedBy = record.type === 'action' ? record.resolvedBy : undefined
   const autoApproved = record.type === 'action' && record.autoApproved === true
+  const accepted = record.type === 'action' && record.state === 'pending' ? record.accepted : undefined
   const at = actionChangeTime(record)
   const status = activityStatus(record)
 
@@ -716,6 +746,14 @@ function HistoryRow({
             {resolvedBy && (
               <ResolverBadge profileId={resolvedBy.id}>
                 {autoApproved ? `Auto-approved for ${resolvedBy.name}` : `By ${resolvedBy.name}`}
+              </ResolverBadge>
+            )}
+            {accepted && (
+              <ResolverBadge profileId={accepted.by.id}>
+                {accepted.autoApproved
+                  ? `Accepted automatically for ${accepted.by.name}`
+                  : `Accepted by ${accepted.by.name}`}
+                {awaitingSave && ', waiting on the resource being saved'}
               </ResolverBadge>
             )}
             {resourceUrl && (

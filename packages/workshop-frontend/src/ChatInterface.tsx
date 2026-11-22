@@ -69,8 +69,10 @@ import styles from "./ChatInterface.module.css";
 import {
   cacheModels,
   getCachedModels,
+  getStoredChatMode,
   getStoredSelectedModel,
   persistSelectedModel,
+  storeChatMode,
   syncSelectedModel,
 } from "./modelSelection";
 import {
@@ -94,11 +96,11 @@ import {
   BlueprintMerge,
   BlueprintOutput,
   MessageFormatRef,
+  ChatMode,
 } from "@gadgets/workshop-shared/api";
 import { composeEpochChanges, type CodeChange } from "@gadgets/workshop-shared/code-change";
 import type { ChatChangeRow, ChatContentReader } from "./features/code/otClient";
 import { commitFileStore, type CommitFileReader } from "./features/code/commitFileStore";
-import { ActionKind } from "@gadgets/workshop-shared/gatekeeper";
 import {
   useSlashCommandChoice, type OverseerSource,
 } from "./components/chat/slash-command-catalog";
@@ -110,23 +112,19 @@ import { HookToggle, hookToggleFailureToast } from "./components/HookToggle";
 import { IncompleteDescriptionNotice, isDescriptionIncomplete } from "./components/IncompleteDescriptionNotice";
 import { ActionFields, entryFields } from "./components/ActionFields";
 import DeleteConfirmationDialog from "./components/DeleteConfirmationDialog";
-import AutoApproveConfirmDialog from "./components/AutoApproveConfirmDialog";
-import { AlwaysApproveButton, ResolveButton } from "./components/ResolveButton";
+import { ResolveButton } from "./components/ResolveButton";
 import { RestrictedApprovalNotice } from "./components/RestrictedApprovalNotice";
 import { PENDING_CHECKING_COPY, PENDING_ERROR_COPY } from "./Activity";
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from "./components/WorkshopControls";
 import { WebFetchRequestCard } from "./features/web-fetch/WebFetchRequestCard";
 import { PendingChangesTray } from "./features/approvals/PendingChangesTray";
 import { StagedChangesBar } from "./features/approvals/StagedChangesBar";
-import { HoldingToggle } from "./features/approvals/HoldingToggle";
 import { chatsWithChanges, type ChatWithChanges } from "./features/approvals/chatsWithChanges";
 import {
   acceptThrough, canApproveAlone, chatBranchPending, chatRequestIds, pendingChangeEntries,
-  pendingChangeGroups, unsavedConnections, awaitsSave, branchChatId, type PendingChange,
+  pendingChangeGroups, unsavedConnections, awaitsSave, branchChatId, OUTCOME_UNKNOWN_COPY,
+  type PendingChange,
 } from "./features/approvals/pendingChangeGroups";
-import {
-  canOfferAlwaysApprove, type AutoApprovalRules,
-} from "./features/approvals/autoApprovalRules";
 import { AgentListRow } from "./features/chat/agents/AgentListRow";
 import { AgentRunsPane } from "./features/chat/agents/AgentRunsPane";
 import { ChatListTabs, type ChatListTab } from "./features/chat/agents/ChatListTabs";
@@ -134,11 +132,8 @@ import {
   agentsNeedingAttention, deriveAgents, ownConversations,
 } from "./features/chat/agents/agentList";
 import { actionLogResumed, useActionEntries, useActions } from "./useActions";
-import { useAlwaysApproveTag } from "./useAlwaysApproveTag";
-import { useStandingRules } from "./features/approvals/useStandingRules";
+import { useConnectionVendors } from "./features/approvals/useConnectionVendors";
 import { useResolveAction } from "./useResolveAction";
-import type { ActivityView } from "./Activity";
-import type { AutoApprovalChannel } from "./features/approvals/autoApprovalChannel";
 import { safeExternalUrl } from "./utils/safeExternalUrl";
 import { useAuthenticatedApi } from "./AuthContext";
 import { useVendorBranding } from "./useVendorBranding";
@@ -2398,9 +2393,12 @@ function fallbackToStoredModelSelection(
 interface ChatInterfaceProps {
   workspaceId: string | undefined;
   overseer: RpcStub<Overseer>;
-  // True once the workspace has read restricted data (WorkspaceMetadata.containsRestrictedData).
-  // Latched actions are never auto-approved, so the always-approve affordance is hidden.
+  // True once the workspace has read restricted data (WorkspaceMetadata.containsRestrictedData),
+  // which does not permit a chat in Auto.
   restricted?: boolean;
+  // True for a collaborator who may not change a chat's mode (Overseer.setChatMode() refuses the
+  // "use" role), who is shown it read-only.
+  modeReadOnly?: boolean;
   selectedChatId: number | null;
   // The chat whose code the host's code view shows, when that isn't the selected chat: the
   // Workshop shows a spawned agent's chat over the chat the user works in, whose code it keeps
@@ -2438,12 +2436,6 @@ interface ChatInterfaceProps {
   onChatListChange?: (chats: readonly AiChatMetadata[]) => void;
   // Whether the code chat's agent is running; with no code chat, whether any chat's is.
   onAgentActiveChange?: (chatId: number | null, isActive: boolean) => void;
-  // Shared with the Activity pane, which is the other surface that changes these rules. Rules
-  // are not subscribable (listAutoApprovedActionKinds is a one-shot read), so without this a
-  // rule changed there would stay stale here until the chat remounts.
-  autoApproval?: AutoApprovalChannel;
-  // Opens the Activity pane, which is where a standing auto-approval rule is turned off again.
-  onViewActivity?: (view: ActivityView) => void;
   sidebarMode?: boolean;
   sidebarWidth?: number;
   onSidebarResize?: (width: number) => void;
@@ -2634,6 +2626,7 @@ function ChatInterface({
   workspaceId,
   overseer,
   restricted,
+  modeReadOnly,
   selectedChatId,
   codeChatId: codeChatIdProp,
   returnChatId,
@@ -2651,8 +2644,6 @@ function ChatInterface({
   onChatCountChange,
   onChatListChange,
   onAgentActiveChange,
-  autoApproval,
-  onViewActivity,
   sidebarMode,
   sidebarWidth = 280,
   onSidebarResize,
@@ -4155,6 +4146,42 @@ function ChatInterface({
 
   loadEarlierRef.current = () => { void handleShowEarlierMessages(); };
 
+  // The open chat's mode is the chat's, changed as soon as the chooser changes, even mid-turn
+  // (see Overseer.setChatMode()). The choice shows until the call settles, by which time the
+  // chat's metadata carries it; a refusal puts back what the chat says.
+  const [chatModeChange, setChatModeChange] = useState<{ chatId: number; mode: ChatMode } | null>(null);
+  const openChatMode: ChatMode =
+    (chatModeChange !== null && chatModeChange.chatId === selectedChatId ? chatModeChange.mode : undefined) ??
+    currentChatMetadata?.mode ?? "auto";
+  const handleChatModeChange = async (mode: ChatMode) => {
+    if (selectedChatId === null) return;
+    const change = { chatId: selectedChatId, mode };
+    setChatModeChange(change);
+    try {
+      await overseer.setChatMode(change.chatId, mode);
+    } catch (err) {
+      console.error("Failed to change the chat's mode:", err);
+      toasts.add({
+        title: "Failed to change the mode",
+        description: rpcFailureDescription(err),
+        variant: "error",
+      });
+    } finally {
+      setChatModeChange((current) => current === change ? null : current);
+    }
+  };
+
+  // A new chat starts in the mode the user last started one in. Restricted-data mode does not
+  // permit Auto, so a remembered Auto starts it in Review, and stays remembered for other
+  // workspaces: only a mode the user chose here is remembered when the chat starts.
+  const [newChatModeChoice, setNewChatModeChoice] = useState<ChatMode | null>(null);
+  const rememberedNewChatMode = newChatModeChoice ?? getStoredChatMode(userId);
+  const newChatMode: ChatMode =
+    restricted && rememberedNewChatMode === "auto" ? "review" : rememberedNewChatMode;
+  const rememberNewChatMode = () => {
+    if (newChatModeChoice === newChatMode) storeChatMode(userId, newChatMode);
+  };
+
   // Handle sending a message (always called from ChatComposer with explicit messageText)
   const handleSend = async (
     messageText?: string | SlashCommandRequest,
@@ -4173,7 +4200,8 @@ function ChatInterface({
       if (selectedChatId === null) {
         // Create a new chat (with optional capsules).
         const newChatId = await overseer.newChat(
-            message, model, capsules, attachments, formats);
+            message, model, capsules, attachments, formats, newChatMode);
+        rememberNewChatMode();
         onNavigateToChatRef.current(newChatId);
       } else {
         // Send message to existing chat.
@@ -4211,7 +4239,8 @@ function ChatInterface({
     const model = modelId !== undefined ? modelId : selectedModel;
     try {
       const newChatId = await overseer.newChat(
-          message, model, capsules, attachments, formats);
+          message, model, capsules, attachments, formats, newChatMode);
+      rememberNewChatMode();
       onNavigateToChatRef.current(newChatId);
     } catch (err) {
       if (!logRpcFailure("Failed to create new chat:", err, { reportSite: "chat.new" })) {
@@ -4426,16 +4455,6 @@ function ChatInterface({
     }
     void handleMergeChanges(through);
   };
-  // Holding puts the chat in Fork, which keeps the gadgets opened in it on its branch, so
-  // their requests wait for its changes to be accepted (see Overseer.setChatMode()).
-  const handleSetHolding = async (chatId: number, holding: boolean) => {
-    try {
-      await overseer.setChatMode(chatId, holding ? "fork" : "auto");
-    } catch (err) {
-      console.error("Failed to change holding:", err);
-      toasts.add({ title: "Failed to change holding", variant: "error" });
-    }
-  };
 
   // For the tray's Retry, which an accept performs.
   const acceptChangesRef = useRef(handleAcceptChanges);
@@ -4635,18 +4654,6 @@ function ChatInterface({
     }
   }, [overseer, selectedChatId, toasts]);
 
-  // Pending "always approve this type" confirmation, opened from a pending action card.
-  const [autoApproveConfirm, setAutoApproveConfirm] = useState<
-    { actionId: number; gatekeeperId: number; resourceTitle: string;
-      actionKind: ActionKind; actionLabel: string } | null
-  >(null);
-
-  // Enable auto-approval of an action tag on its connection (gated by the confirm dialog). The
-  // server applies the now-eligible pending action(s) via its drain, and the action state flips to
-  // "approved" through the actions subscription -- so we don't optimistically mutate it here.
-  const { alwaysApproveTag, isTagAutoApproved, forgetOptimisticTags } =
-    useAlwaysApproveTag(overseer, setProcessingActions, autoApproval?.changed);
-
   const { resolveAction, creationAccountModal } =
     useResolveAction(overseer, setProcessingActions, (actionId, state) => {
       if (applyOptimisticActionState(actionId, state)) forceUpdate();
@@ -4673,56 +4680,15 @@ function ChatInterface({
   // What the open chat's accept applies, for its banner.
   const branchRequests = selectedChatId !== null ? pendingChangeEntries(trayGroups) : [];
 
-  // The real rule list, not an inference from a request still being pending: a chat is accepted
-  // automatically only when rules cover everything it would apply, so a covered request can sit
-  // behind an uncovered one indefinitely.
-  const {
-    enabledRuleKeys,
-    vendorIdByGatekeeper,
-    refresh: refreshAutoApproval,
-  } = useStandingRules(overseer, trayGroups.length > 0);
-  const autoApproveReload = autoApproval?.reloadTrigger;
-  // Re-read whenever a change settles anywhere in this view. The refreshed list is authoritative,
-  // including about a rule someone has just turned off, so the optimistic overlay has nothing left
-  // to add and must stop outranking it -- unless the read was overtaken or failed, which set
-  // nothing: retiring the overlay against a list that never landed would read a just-enabled rule
-  // as off.
-  const rulesReadFor = useRef(autoApproveReload);
-  useEffect(() => {
-    if (autoApproveReload === rulesReadFor.current) return;
-    rulesReadFor.current = autoApproveReload;
-    void refreshAutoApproval().then(applied => {
-      if (applied) forgetOptimisticTags();
-    });
-  }, [autoApproveReload, refreshAutoApproval, forgetOptimisticTags]);
-
-  const autoApprovalRules: AutoApprovalRules = useMemo(() => ({
-    // A rule enabled in this session counts before the catalog is re-read, so the affordance
-    // disappears on the click rather than a round trip later.
-    isEnabled: (gatekeeperId, tag) =>
-      enabledRuleKeys.has(`${gatekeeperId}:${tag}`) || isTagAutoApproved(gatekeeperId, tag),
-    restricted: restricted === true,
-  }), [enabledRuleKeys, isTagAutoApproved, restricted]);
-
   // Vendor logos for the tray's group rows; a connection with no known vendor falls back to its
   // resource title's initial.
+  const vendorIdByGatekeeper = useConnectionVendors(overseer, trayGroups.length > 0);
   const vendorBranding = useVendorBranding(authenticatedApi);
 
   const trayActions = useMemo(() => ({
     processing: processingActions,
     onApprove: (entry: PendingChange) => void resolveAction(entry, "approve"),
     onReject: (entry: PendingChange) => void resolveAction(entry, "deny"),
-    onAlwaysApprove: (entry: PendingChange) => {
-      if (!entry.description.actionKind) return;
-      setAutoApproveConfirm({
-        actionId: entry.id,
-        gatekeeperId: entry.gatekeeperId,
-        resourceTitle: entry.resourceTitle,
-        actionKind: entry.description.actionKind,
-        actionLabel: entry.description.title,
-      });
-    },
-    onManageRules: () => onViewActivity?.("auto"),
     canApprove: canApproveAlone,
     // A chat's other requests apply only with its accept, which resumes at the failed one.
     onRetry: (entry: PendingChange) => {
@@ -4732,7 +4698,7 @@ function ChatInterface({
         acceptChangesRef.current();
       }
     },
-  }), [processingActions, resolveAction, onViewActivity]);
+  }), [processingActions, resolveAction]);
 
   // The queue belongs to the workspace, not to whichever conversation happens to be open, so it
   // docks above the new-chat composer as well as the in-chat one. Going back to the conversation
@@ -4741,7 +4707,7 @@ function ChatInterface({
   const workspaceTray = trayGroups.length === 0 ? null : (
     <PendingChangesTray
       groups={trayGroups}
-      rules={autoApprovalRules}
+      restricted={restricted === true}
       vendorIdByGatekeeper={vendorIdByGatekeeper}
       vendorBranding={vendorBranding}
       actions={trayActions}
@@ -4769,11 +4735,20 @@ function ChatInterface({
     // The kernel refuses an accept while the agent's turn is stopped on a decision, which would
     // resume the turn in the middle of the accept. Discarding rejects an awaited request too.
     const awaitingDecision = chat.awaitingDecision === true;
+    // A chat in Fork shows the bar from the start, so the user sees its changes are held before
+    // there are any.
+    const nothingHeld = !chatHasProposedChanges(chat) && !hasPendingBlueprintProposal &&
+      branchRequests.length === 0 && (chat.pendingActions ?? 0) === 0;
     return (
       <div className={`themed-surface-inset relative flex items-center gap-2 overflow-hidden border-b border-kumo-line bg-kumo-elevated px-3.5 py-2 ${isTop ? "rounded-t-[calc(1rem-1px)]" : ""}`}>
         <span className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-kumo-brand/40 to-transparent" aria-hidden="true" />
         <span className="min-w-0 flex-1 truncate text-[12px] font-medium leading-4 tracking-[-0.2px] text-kumo-default">
-          Pending changes
+          {nothingHeld ? "No pending changes" : "Pending changes"}
+          {nothingHeld && (
+            <span className="font-normal text-kumo-inactive">
+              {" · changes made here are held until you accept them"}
+            </span>
+          )}
           {branchRequests.length > 0 && (
             <span className="font-normal text-kumo-inactive">
               {branchRequests.length === 1
@@ -4784,7 +4759,7 @@ function ChatInterface({
         </span>
         <DiscardPendingChangesPopover
           open={discardChangesTarget?.chatId === chat.id}
-          disabled={changesActionsDisabled}
+          disabled={changesActionsDisabled || nothingHeld}
           isDiscarding={isDiscardingChanges}
           onOpenChange={(open) => {
             if (isDiscardingChanges) return;
@@ -4792,7 +4767,9 @@ function ChatInterface({
           }}
           onConfirm={handleDiscardPendingChanges}
         />
-        <Tooltip content={isAgentActive
+        <Tooltip content={nothingHeld
+          ? "Nothing to accept yet."
+          : isAgentActive
           ? "Wait for the agent to finish before accepting changes."
           : isDiscardingChanges
             ? "Wait for pending changes to finish discarding."
@@ -4802,7 +4779,8 @@ function ChatInterface({
                 ? "Apply the requests above, then keep any code changes as the gadget's current version."
                 : "Keep this draft and make it the gadget's current version.")} asChild>
           <WorkshopButton
-            disabled={changesActionsDisabled || awaitingDecision || acceptBlocked !== undefined}
+            disabled={nothingHeld || changesActionsDisabled || awaitingDecision ||
+              acceptBlocked !== undefined}
             onClick={() => { void handleAcceptChanges(); }}
             tone="primary"
             className="!h-7 !cursor-pointer !rounded-md !border-transparent !shadow-none gap-1 text-[12px]"
@@ -5414,10 +5392,14 @@ function ChatInterface({
     // One accepted on a resource that is still unsaved waits for the resource to be saved, which
     // its creation's card offers once that is accepted too.
     const unsaved = isPending && awaitsSave(log, unsavedResources);
+    // One accepted while its resource was unsaved, still pending once it is saved, is what a save
+    // that did not finish left: held in staging, where it is retried on its own.
+    const heldAfterSave = isPending && !unsaved && log.accepted !== undefined;
+    const saveError = heldAfterSave ? log.applyError : undefined;
     // Every other pending request applies when its chat's changes are accepted, so it reads as
     // pending until then, and can only be denied on its own. The tray above the composer lists
     // them all, grouped by resource.
-    const awaitsAccept = isPending && !isBlocking && !unsaved;
+    const awaitsAccept = isPending && !isBlocking && !unsaved && !heldAfterSave;
     // The blocking callout is never collapsed: its description is the thing the user has to read
     // in order to answer it, so hiding it behind a disclosure would just add a step before the
     // decision -- and leave Approve in the header of a card showing nothing. Everything else is
@@ -5432,27 +5414,12 @@ function ChatInterface({
           ? "Applies when the changes are accepted"
           : unsaved
             ? log.creation ? "Unsaved" : "Applies when the resource is saved"
-            : null;
-    const stateLabelCls = isRejected
+            : saveError
+              ? "Save did not finish"
+              : heldAfterSave ? "Accepted" : null;
+    const stateLabelCls = isRejected || saveError
       ? "text-kumo-danger"
       : "text-kumo-inactive";
-    // Auto-approval target: offer "Always approve this type" only when enabling a rule would
-    // actually apply this action. Same check the tray makes, against the same rule list -- a
-    // request a rule already covers can still be pending, queued behind a manual gate the drain
-    // stops at, and offering a rule that exists would do nothing.
-    const autoApproveTarget =
-      log.gatekeeperId !== undefined && log.description.actionKind !== undefined &&
-      canOfferAlwaysApprove(
-        { gatekeeperId: log.gatekeeperId, description: log.description }, autoApprovalRules)
-        ? {
-            actionId: msg.actionId,
-            gatekeeperId: log.gatekeeperId,
-            resourceTitle: log.resourceTitle,
-            actionKind: log.description.actionKind,
-            actionLabel: log.description.title,
-          }
-        : undefined;
-
     // While restricted the notices and the request follow the controls in DOM order, so the
     // approve/deny buttons name them as their description. Ids derive from the action id: this is
     // a render closure, not a component, so useId is unavailable, and one card renders per action.
@@ -5475,26 +5442,16 @@ function ChatInterface({
 
     const actionControls = isPending ? (
       <>
-        {autoApproveTarget && !awaitsAccept && (
-          <Tooltip content="Always approve this type of action on this connection, without future prompts." asChild>
-            <span className="flex">
-              <AlwaysApproveButton
-                onClick={() => setAutoApproveConfirm(autoApproveTarget)}
-                disabled={isProc}
-              />
-            </span>
-          </Tooltip>
-        )}
         <ResolveButton
           tone="deny"
           onClick={() => void resolveAction(log, "deny")}
           disabled={isProc}
           describedBy={describedBy}
         />
-        {!awaitsAccept && (!unsaved || log.creation) && (
+        {!awaitsAccept && (!unsaved || log.creation) && (!saveError || saveError.retryable) && (
           <ResolveButton
             tone="approve"
-            label={unsaved ? "Save to account" : undefined}
+            label={unsaved ? "Save to account" : saveError ? "Retry" : undefined}
             variant={isBlocking ? "filled" : "quiet"}
             onClick={() => void resolveAction(log, "approve")}
             disabled={isProc}
@@ -5606,6 +5563,12 @@ function ChatInterface({
             <div className="flex flex-shrink-0 items-center gap-1">{actionControls}</div>
           )}
         </div>
+        {saveError && (
+          <p role="alert" className="m-0 ml-8 text-[12px] leading-4 break-words text-kumo-danger">
+            Could not apply: {saveError.message}
+            {saveError.outcomeUnknown && ` ${OUTCOME_UNKNOWN_COPY}`}
+          </p>
+        )}
         {showDescription && (
           <div className="themed-surface-inset ml-8 mt-1 space-y-1.5 rounded-2xl border border-kumo-line/70 bg-kumo-elevated/45 p-3 text-[13px] leading-[19px] tracking-[-0.25px] text-kumo-subtle">
             {restrictedReview && <RestrictedApprovalNotice id={noticeId} />}
@@ -5853,13 +5816,6 @@ function ChatInterface({
                           >
                             Rename
                           </DropdownMenu.Item>
-                          <DropdownMenu.CheckboxItem
-                            checked={chat.mode === "fork"}
-                            onCheckedChange={(holding) => { void handleSetHolding(chat.id, holding); }}
-                            className="!h-auto rounded-md !px-2.5 !py-1.5 text-[12px] leading-4 tracking-[-0.2px] text-kumo-default transition-colors data-highlighted:bg-kumo-tint"
-                          >
-                            Hold gadget changes
-                          </DropdownMenu.CheckboxItem>
                           <DropdownMenu.Item
                             icon={<Trash className="size-3" />}
                             variant="danger"
@@ -5902,6 +5858,11 @@ function ChatInterface({
             selectedModel={selectedModel === null ? null : { id: selectedModel }}
             modelsLoading={modelsLoading}
             onModelChange={handleModelChange}
+            mode={{
+              mode: newChatMode,
+              restricted: restricted === true,
+              onModeChange: setNewChatModeChoice,
+            }}
             showThinkingTraces={showThinkingTraces}
             onToggleThinkingTraces={toggleShowThinkingTraces}
             minRows={2}
@@ -6061,16 +6022,6 @@ function ChatInterface({
                       >
                         <Pencil size={11} />
                       </WorkshopIconButton>
-                      {/* Holding is otherwise shown and set only in the chat list's menu, out of
-                          sight while the chat is open. */}
-                      {currentChatMetadata && (
-                        <HoldingToggle
-                          holding={currentChatMetadata.mode === "fork"}
-                          onHoldingChange={(holding) => {
-                            void handleSetHolding(currentChatMetadata.id, holding);
-                          }}
-                        />
-                      )}
                     </>
                   )}
 
@@ -7004,6 +6955,13 @@ function ChatInterface({
                     }}
                     modelsLoading={modelsLoading}
                     onModelChange={handleModelChange}
+                    mode={{
+                      mode: openChatMode,
+                      restricted: restricted === true,
+                      onModeChange: modeReadOnly
+                        ? undefined
+                        : (mode) => { void handleChatModeChange(mode); },
+                    }}
                     pendingConsoleLogCount={pendingConsoleLogCount}
                     consoleLogPreview={consoleLogPreview}
                     consoleLogSeverity={consoleLogSeverity}
@@ -7028,10 +6986,13 @@ function ChatInterface({
                       // carries a filled primary. The tray sits above, nearer the transcript the
                       // requests came from.
                       // The bar also accepts the chat's requests, so it shows while there are
-                      // any.
+                      // any, and whenever the chat is forked: in Fork, before there is anything
+                      // to accept.
                       const codeDraft = currentChatMetadata &&
                         (chatHasProposedChanges(currentChatMetadata) ||
-                          hasPendingBlueprintProposal || branchRequests.length > 0);
+                          hasPendingBlueprintProposal || branchRequests.length > 0 ||
+                          (currentChatMetadata.pendingActions ?? 0) > 0 ||
+                          openChatMode === "fork");
                       if (!workspaceTray && !codeDraft) return null;
 
                       return (
@@ -7146,25 +7107,6 @@ function ChatInterface({
         }}
         onConfirm={handleDeleteConfirm}
       />
-
-      {/* The workspace latched: the affordance is gone and confirming could only error. */}
-      {!restricted && autoApproveConfirm && (
-        <AutoApproveConfirmDialog
-          open
-          actionLabel={autoApproveConfirm.actionLabel}
-          resourceTitle={autoApproveConfirm.resourceTitle}
-          isProcessing={processingActions.has(autoApproveConfirm.actionId)}
-          onOpenChange={(open) => {
-            if (!open) setAutoApproveConfirm(null);
-          }}
-          onConfirm={async () => {
-            const { actionId, gatekeeperId, actionKind } = autoApproveConfirm;
-            if (await alwaysApproveTag(actionId, gatekeeperId, actionKind)) {
-              setAutoApproveConfirm(null);
-            }
-          }}
-        />
-      )}
 
       {creationAccountModal}
 

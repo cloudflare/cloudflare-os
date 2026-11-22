@@ -254,6 +254,25 @@ describe('Activity review', () => {
     expect(acceptStagedActions).toHaveBeenCalledExactlyOnceWith(3)
   })
 
+  it('offers saving an unsaved resource whose chat was accepted, and Deny on what was accepted on it', async () => {
+    const accepted = { by: { type: 'user', id: 'alice', name: 'Alice' }, at: new Date(0), autoApproved: false }
+    const { server } = await renderBranchReview([
+      entry(1, { gatekeeperId: 7, chatId: 4, creation: true, accepted }),
+      entry(2, { gatekeeperId: 7, chatId: 4, accepted }),
+      // Still the chat's, so neither saved nor listed here.
+      entry(3, { gatekeeperId: 8, chatId: 4, creation: true }),
+    ])
+    expect(document.body.textContent).toContain('2 with changes to review')
+    expect(document.body.textContent).toContain('Accepted by Alice · applies when the resource is saved')
+    // Neither is up for review in the held changes.
+    expect(document.body.textContent).not.toContain('Held changes')
+    expect(document.body.textContent).not.toContain('Action 3')
+    expect(labelled('Save to account')).toHaveLength(1)
+
+    await act(async () => labelled('Deny')[1].click())
+    expect(server.decisionCalls).toEqual(['reject:2'])
+  })
+
   it("has nothing to review with no chat changes and nothing held, whatever a chat's requests", async () => {
     const server = makeOverseer()
     await view.render(

@@ -54,6 +54,7 @@ import ComposerAddMenu from "./ComposerAddMenu";
 import { ComposerDictationButton } from "./ComposerDictationButton";
 import { ComposerDictationStrip } from "./ComposerDictationStrip";
 import { ComposerModelSelector, type SelectedModel } from "./ComposerModelSelector";
+import { ComposerModeSelector, type ComposerMode } from "./ComposerModeSelector";
 import { useComposerDraft } from "./draft/useComposerDraft";
 import { buildComposerSubmission } from "./composerSubmission";
 import {
@@ -91,6 +92,7 @@ export const ChatComposer = ({
   selectedModel,
   modelsLoading,
   onModelChange,
+  mode,
   pendingConsoleLogCount = 0,
   consoleLogPreview = "",
   consoleLogSeverity = "info",
@@ -133,6 +135,8 @@ export const ChatComposer = ({
   /** True until `models` and the model a new chat starts on have loaded. */
   modelsLoading?: boolean;
   onModelChange: (modelId: string | null) => void;
+  /** The chat's mode, or for a new chat the mode it starts in, shown beside the model. */
+  mode?: ComposerMode;
   pendingConsoleLogCount?: number;
   consoleLogPreview?: string;
   consoleLogSeverity?: "error" | "warn" | "info";
@@ -1022,8 +1026,10 @@ export const ChatComposer = ({
           />
         )}
 
-        {/* Footer row: add, voice typing, and options left; model and send right */}
-        <div className="flex items-center justify-between gap-1.5 px-3 pb-1.5">
+        {/* Footer row: add, voice typing, and options left; mode, model and send right. In the
+            narrowest pane the right side, which the model name gives way to first, cannot fit
+            beside the left with both Stop and Send showing, so it wraps to a line of its own. */}
+        <div className="flex flex-wrap items-center justify-between gap-1.5 px-3 pb-1.5">
           <div className="flex shrink-0 items-center gap-1.5">
             <ComposerAddMenu
               anchorRef={promptCardRef}
@@ -1091,7 +1097,8 @@ export const ChatComposer = ({
           </div>
 
           {/* Right actions */}
-          <div className="ml-auto flex min-w-0 flex-shrink items-center gap-1.5">
+          <div className="ml-auto flex min-w-0 flex-1 basis-[13rem] items-center justify-end gap-1.5">
+              {mode && <ComposerModeSelector {...mode} />}
               <ComposerModelSelector
                 models={models}
                 selectedModel={selectedModel}

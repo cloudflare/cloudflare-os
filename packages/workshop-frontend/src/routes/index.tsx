@@ -15,12 +15,15 @@ import {
   ChatAttachmentHandle,
   MessageFormatRef,
   SlashCommandRequest,
+  ChatMode,
 } from "@gadgets/workshop-shared/api";
 import {
   cacheModels,
   getCachedModels,
+  getStoredChatMode,
   getStoredSelectedModel,
   persistSelectedModel,
+  storeChatMode,
   syncSelectedModel,
 } from "../modelSelection";
 import { useDocumentTitle } from "../useDocumentTitle";
@@ -66,6 +69,10 @@ export function HomePageContent({ prompt }: HomeSearch) {
     () => getStoredSelectedModel(userId, models),
   );
   const [modelsLoading, setModelsLoading] = useState(models.length === 0);
+  // The mode the chat starts in: the one the user last started a chat in, until they choose
+  // another, which is remembered once the chat starts.
+  const [modeChoice, setModeChoice] = useState<ChatMode | null>(null);
+  const mode = modeChoice ?? getStoredChatMode(userId);
   // Bumped each time a task suggestion is picked; the composer re-seeds its text off the nonce.
   const [seed, setSeed] = useState<{ text: string; nonce: number } | null>(null);
 
@@ -135,9 +142,10 @@ export function HomePageContent({ prompt }: HomeSearch) {
         const overseer = provisionalOverseerRef.current!.stub;
         // Pipeline both independent calls in one batch, but settle both before releasing the stub.
         const [chat, {id}] = await Promise.all([
-          overseer.newChat(message, modelId, capsules, attachments, formats),
+          overseer.newChat(message, modelId, capsules, attachments, formats, mode),
           overseer.getMetadata(),
         ]);
+        if (modeChoice !== null) storeChatMode(userId, modeChoice);
         provisionalOverseerRef.current?.stub[Symbol.dispose]();
         provisionalOverseerRef.current = null;
         // Open the conversation we just started.
@@ -160,7 +168,7 @@ export function HomePageContent({ prompt }: HomeSearch) {
         throw err;
       }
     },
-    [ensureProvisionalGadget, navigate, toasts],
+    [ensureProvisionalGadget, navigate, toasts, mode, modeChoice, userId],
   );
 
   const getOverseer = useCallback((): RpcStub<Overseer> => {
@@ -216,6 +224,7 @@ export function HomePageContent({ prompt }: HomeSearch) {
           selectedModel={selectedModel === null ? null : { id: selectedModel }}
           modelsLoading={modelsLoading}
           onModelChange={handleModelChange}
+          mode={{ mode, restricted: false, onModeChange: setModeChoice }}
           newChat
           offerFormats
           autoFocus

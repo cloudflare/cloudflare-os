@@ -48,7 +48,6 @@ import GadgetUseView from './GadgetUseView'
 import Connections from './Connections'
 import Activity, { type ActivityView } from './Activity'
 import type { ChatWithChanges } from './features/approvals/chatsWithChanges'
-import { useAutoApprovalChannel } from './features/approvals/autoApprovalChannel'
 import { CountBadge } from './components/CountBadge'
 import ActivityNotifications from './ActivityNotifications'
 import WorkpiecePicker, {
@@ -674,7 +673,6 @@ export default function GadgetEditor() {
   const [uiReloadTrigger, setUiReloadTrigger] = useState(0)
   // Shared by the chat and the Activity rule list, which can each change a rule the other is
   // reading.
-  const autoApproval = useAutoApprovalChannel()
   // The selected chat's code-branch snapshot (see ChatCodeChanges in ChatInterface): its code
   // base and the current epoch's recorded changes, plumbed from the chat subscription into the
   // code view, which layers them over the per-pin commit-derived doc base.
@@ -2228,6 +2226,7 @@ export default function GadgetEditor() {
                   workspaceId={id}
                   overseer={overseer.stub}
                   restricted={metadata?.containsRestrictedData === true}
+                  modeReadOnly={isUseOnly}
                   selectedChatId={shownChatId}
                   codeChatId={paneChatId}
                   returnChatId={agentChatId !== null ? workingChatId : null}
@@ -2254,8 +2253,6 @@ export default function GadgetEditor() {
                   onChatCountChange={handleChatCountChange}
                   onChatListChange={handleChatListChange}
                   onAgentActiveChange={handleAgentActiveChange}
-                  autoApproval={autoApproval}
-                  onViewActivity={openActivity}
                   onAnyChatProposedChangesChange={setAnyChatProposedWorkpieces}
                   onChatsWithChangesChange={setChatsWithChanges}
                   onSelectedChatProposedChangesChange={setSelectedChatProposedWorkpieces}
@@ -2437,7 +2434,6 @@ export default function GadgetEditor() {
                   restricted={metadata?.containsRestrictedData === true}
                   view={activityView}
                   onViewChange={setActivityView}
-                  autoApproval={autoApproval}
                   chats={chatsWithChanges}
                   onOpenChat={chatId => {
                     navigateToChat(chatId)

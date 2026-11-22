@@ -2,12 +2,15 @@
 /* eslint-disable react/react-in-jsx-scope */
 
 import { act } from 'react'
-import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { createGatekeeperError, GATEKEEPER_ERROR_CODES, type BoundHookInfo, type GadgetClient } from '@gadgets/workshop-shared/api'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  createGatekeeperError, GATEKEEPER_ERROR_CODES, type ActionLogEntry, type BoundHookInfo, type GadgetClient,
+} from '@gadgets/workshop-shared/api'
 import type { GatekeeperModalProps } from './GatekeeperModal'
 
 const addToast = vi.hoisted(() => vi.fn<(options: unknown) => void>())
 const modal = vi.hoisted(() => ({ props: undefined as GatekeeperModalProps | undefined }))
+const creationModal = vi.hoisted(() => ({ gatekeeperId: undefined as number | undefined }))
 
 vi.mock('@cloudflare/kumo', async (importOriginal) => {
   const actual = await importOriginal() as typeof import('@cloudflare/kumo')
@@ -23,6 +26,13 @@ vi.mock('./AuthContext', () => {
 vi.mock('./GatekeeperModal', () => ({
   default: (props: GatekeeperModalProps) => {
     modal.props = props
+    return null
+  },
+}))
+
+vi.mock('./components/CreationAccountModal', () => ({
+  CreationAccountModal: (props: { gatekeeperId: number }) => {
+    creationModal.gatekeeperId = props.gatekeeperId
     return null
   },
 }))
@@ -47,7 +57,7 @@ const TITLE = 'Watch acme/widgets on GitHub'
 const refusal = "GitHub refused to add a webhook to acme/widgets: only the repository's admins can."
 
 /** A workspace with one hook on the gadget, which `listHooks()` reports as the server has it. */
-function workspace(enabled = false) {
+function workspace(enabled = false, pending: ActionLogEntry[] = []) {
   const server = { enabled }
   const listHooks = async () => [{
     id: 7,
@@ -59,7 +69,15 @@ function workspace(enabled = false) {
   } as unknown as BoundHookInfo]
   const enableHook = vi.fn<(id: number) => Promise<void>>(async () => { server.enabled = true })
   const disableHook = vi.fn<(id: number) => Promise<void>>(async () => { server.enabled = false })
-  return { server, overseer: { listHooks, enableHook, disableHook, [Symbol.dispose]: () => {} } }
+  return {
+    server,
+    overseer: {
+      listHooks, enableHook, disableHook,
+      subscribeToActions: async () => ({ [Symbol.dispose]: () => {} }),
+      listActions: async () => ({ entries: pending }),
+      [Symbol.dispose]: () => {},
+    },
+  }
 }
 
 async function renderConnections(
@@ -192,4 +210,40 @@ it.each([
 
   await renderConnections(overseer, { gadget: reconnected, chatId: 1 })
   expect(reconnected.bindWithSuggestedName).not.toHaveBeenCalled()
+})
+
+describe('a connection whose resource is unsaved', () => {
+  const by = { type: 'user' as const, id: 'alice', name: 'Alice' }
+  const creation = (accepted: boolean) => ({
+    type: 'action', id: 12, gatekeeperId: 5, chatId: 1, state: 'pending', creation: true,
+    resourceTitle: 'Trip notes', createdAt: new Date(0),
+    description: { title: 'Create Trip notes', description: '', implementsRevert: false },
+    ...(accepted ? { accepted: { by, at: new Date(0), autoApproved: false } } : {}),
+  }) as unknown as ActionLogEntry
+  const gadget = {
+    getId: async () => 3,
+    getTitle: async () => 'Triage',
+    listBindings: async () => [{ name: 'NOTES', target: 5, resourceTitle: 'Trip notes' }],
+  }
+
+  it('offers saving it to an account once the chat that created it is accepted', async () => {
+    const { overseer } = workspace(false, [creation(true)])
+    await renderConnections(overseer, { gadget })
+    await act(async () => {})
+
+    expect(document.body.textContent).toContain('Unsaved')
+    const save = [...document.querySelectorAll('button')]
+      .find(button => button.textContent === 'Save to account')
+    await act(async () => save!.click())
+    expect(creationModal.gatekeeperId).toBe(5)
+  })
+
+  it('only says so while the chat that created it is still to be accepted', async () => {
+    const { overseer } = workspace(false, [creation(false)])
+    await renderConnections(overseer, { gadget })
+    await act(async () => {})
+
+    expect(document.body.textContent).toContain('Unsaved')
+    expect(document.body.textContent).not.toContain('Save to account')
+  })
 })

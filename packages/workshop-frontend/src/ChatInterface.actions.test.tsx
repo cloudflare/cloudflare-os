@@ -35,16 +35,29 @@ vi.mock('@cloudflare/kumo', async (importOriginal) => {
   }
 })
 
-vi.mock('./AuthContext', () => {
-  const context = {
-    authenticatedApi: { listGatekeeperVendors: async () => [] },
-    currentUser: null,
-  }
-  return {
-    useAuthenticatedApi: () => context,
-    useOptionalAuthenticatedApi: () => null,
-  }
-})
+// A test of the remembered new-chat mode signs a user in; the rest run with nobody confirmed.
+const auth = vi.hoisted(() => ({
+  authenticatedApi: { listGatekeeperVendors: async () => [] },
+  currentUser: null as { id: string } | null,
+  isCurrentUserConfirmed: false,
+}))
+vi.mock('./AuthContext', () => ({
+  useAuthenticatedApi: () => auth,
+  useOptionalAuthenticatedApi: () => null,
+}))
+// The menu itself is tested beside it; here, what the chat shows in it and does with a choice.
+vi.mock('./features/chat/composer/ComposerModeSelector', () => ({
+  ComposerModeSelector: ({ mode, restricted, onModeChange }: {
+    mode: string, restricted: boolean, onModeChange?: (mode: string) => void
+  }) => (
+    <div data-testid="mode" data-mode={mode} data-restricted={String(restricted)}
+      data-readonly={String(onModeChange === undefined)}>
+      {onModeChange && ['auto', 'review', 'fork'].map(choice => (
+        <button key={choice} type="button" onClick={() => onModeChange(choice)}>{`Mode ${choice}`}</button>
+      ))}
+    </div>
+  ),
+}))
 vi.mock('./ThemeContext', async (importOriginal) => ({
   ...await importOriginal() as typeof import('./ThemeContext'),
   useTheme: () => ({ resolvedThemeMode: 'light' }),
@@ -77,9 +90,8 @@ function withChatApi(
     getChatHistory: async () => ({ messages: [] }),
     listChats: async () => chats,
     listModels: async () => [],
-    // Read by the pending-changes tray, which gates its auto-approval labels on real rules.
+    // Read by the pending-changes tray, for its connections' vendors.
     listPreApprovableActions: async () => [],
-    listAutoApprovedActionKinds: async () => [],
     onRpcBroken: () => {},
     subscribeToChat: (next: AiChatSubscriber) => {
       subscriber = next
@@ -102,7 +114,7 @@ function withChatApi(
 function renderChat(
   overseer: RpcStub<Overseer>,
   props: {
-    restricted?: boolean, selectedChatId?: number,
+    restricted?: boolean, selectedChatId?: number, modeReadOnly?: boolean,
     onChatsWithChangesChange?: (chats: readonly ChatWithChanges[]) => void,
   } = {},
 ) {
@@ -111,6 +123,7 @@ function renderChat(
       workspaceId="workspace"
       overseer={overseer}
       restricted={props.restricted}
+      modeReadOnly={props.modeReadOnly}
       onChatsWithChangesChange={props.onChatsWithChangesChange}
       selectedChatId={props.selectedChatId ?? null}
       onNavigateToChat={() => {}}
@@ -365,21 +378,19 @@ describe('accepting a chat', () => {
     expect(acceptStagedActions).toHaveBeenCalledExactlyOnceWith(1)
   })
 
-  it("shows holding in the open chat's header, and turns it off there", async () => {
+  it('shows the bar in a chat in Fork with nothing to accept, and offers no accept', async () => {
     const server = makeOverseer()
     withChatApi(server, undefined, [
       { id: 1, title: 'Chat', started: new Date(), lastActive: new Date(), mode: 'fork' },
     ])
-    const setChatMode = vi.fn<Overseer['setChatMode']>(async () => {})
-    Object.assign(server.overseer as object, { setChatMode })
     await renderChat(server.overseer, { selectedChatId: 1 })
     await server.resolveSubscription()
+    await server.resolvePendingQuery({ entries: [] })
 
-    const toggle = document.querySelector<HTMLButtonElement>('button[aria-pressed]')!
-    expect(toggle.textContent).toBe('Hold changes')
-    expect(toggle.getAttribute('aria-pressed')).toBe('true')
-    await act(async () => toggle.click())
-    expect(setChatMode).toHaveBeenCalledExactlyOnceWith(1, 'auto')
+    expect(document.body.textContent).toContain('No pending changes')
+    const accept = [...document.querySelectorAll('button')]
+      .find(b => b.textContent?.includes('Accept changes'))
+    expect(accept?.disabled).toBe(true)
   })
 
   it('reports the chats with changes waiting, for the Activity page', async () => {
@@ -410,6 +421,31 @@ describe('restricted approval', () => {
     expect(described).toContain(RESTRICTED_APPROVAL_COPY)
     expect(described).toContain('Regards, the workspace.')
     expect(described).toContain(INCOMPLETE_DESCRIPTION_COPY)
+  })
+
+  it("shows what a save that did not finish left, with its error, Retry and Deny", async () => {
+    const accepted = { by: { type: 'user', id: 'alice', name: 'Alice' }, at: new Date(0), autoApproved: false }
+    const message = 'The provider refused the change. '.repeat(8)
+    await renderPendingCard(entry(1, {
+      chatId: 1, accepted, applyError: { message, retryable: true },
+      description: { title: 'Add a paragraph', description: '', implementsRevert: false },
+    }))
+
+    expect(document.body.textContent).toContain('Save did not finish')
+    expect(document.body.textContent).not.toContain('Applies when the changes are accepted')
+    const alerts = [...document.querySelectorAll('[role="alert"]')].map(alert => alert.textContent)
+    expect(alerts).toContain(`Could not apply: ${message}`)
+    const labels = [...document.querySelectorAll('button')].map(b => b.textContent)
+    expect(labels).toContain('Retry')
+    expect(labels).toContain('Deny')
+  })
+
+  it('offers no rule controls on a card, auto-approvable or not', async () => {
+    await renderPendingCard(pendingLog({ autoApprovable: true, actionKind: { tag: 'send', label: 'Send' } }))
+    await openTray()
+
+    expect([...document.querySelectorAll('button')].some(b => b.textContent === 'Always approve'))
+      .toBe(false)
   })
 
   it('names only the restricted notice and request for a complete description', async () => {
@@ -532,6 +568,111 @@ async function sendFromComposer(text: string) {
   })
   return textarea
 }
+
+describe('the chat mode', () => {
+  const modeShown = () => document.querySelector<HTMLElement>('[data-testid="mode"]')!
+  const choose = async (mode: string) => {
+    const button = [...modeShown().querySelectorAll('button')].find(b => b.textContent === `Mode ${mode}`)
+    await act(async () => button!.click())
+  }
+  const signIn = () => {
+    auth.currentUser = { id: 'alice' }
+    auth.isCurrentUserConfirmed = true
+  }
+
+  beforeEach(() => {
+    addToast.mockClear()
+    localStorage.clear()
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.spyOn(console, 'debug').mockImplementation(() => {})
+  })
+  afterEach(() => {
+    auth.currentUser = null
+    auth.isCurrentUserConfirmed = false
+  })
+
+  it("shows a follow-up the chat's mode, Auto when it has none", async () => {
+    const server = makeOverseer()
+    withChatApi(server, undefined, [
+      { id: 1, title: 'Chat', started: new Date(), lastActive: new Date(), mode: 'review' },
+      { id: 2, title: 'Other', started: new Date(), lastActive: new Date() },
+    ])
+    await renderChat(server.overseer, { selectedChatId: 1 })
+    expect(modeShown().dataset.mode).toBe('review')
+
+    await renderChat(server.overseer, { selectedChatId: 2 })
+    expect(modeShown().dataset.mode).toBe('auto')
+  })
+
+  it("changes the chat's mode as soon as it is chosen, and puts it back if that fails", async () => {
+    const server = makeOverseer()
+    withChatApi(server, undefined, [{ id: 1, title: 'Chat', started: new Date(), lastActive: new Date() }])
+    const change = deferred<void>()
+    const setChatMode = vi.fn<Overseer['setChatMode']>(() => change.promise)
+    Object.assign(server.overseer as object, { setChatMode })
+    await renderChat(server.overseer, { selectedChatId: 1 })
+
+    await choose('fork')
+    expect(setChatMode).toHaveBeenCalledExactlyOnceWith(1, 'fork')
+    expect(modeShown().dataset.mode).toBe('fork')
+
+    await change.reject(new Error('Not permitted.'))
+    expect(modeShown().dataset.mode).toBe('auto')
+    expect(addToast).toHaveBeenCalledExactlyOnceWith(
+      { title: 'Failed to change the mode', description: 'Not permitted.', variant: 'error' })
+  })
+
+  it('is read-only for a user who may not change it', async () => {
+    const server = makeOverseer()
+    withChatApi(server, undefined, [{ id: 1, title: 'Chat', started: new Date(), lastActive: new Date() }])
+    await renderChat(server.overseer, { selectedChatId: 1, modeReadOnly: true })
+
+    expect(modeShown().dataset.readonly).toBe('true')
+  })
+
+  it('starts a new chat in the mode the user last started one in, and remembers a new choice', async () => {
+    signIn()
+    localStorage.setItem('lastChatMode:alice', 'fork')
+    const server = makeOverseer()
+    withChatApi(server)
+    const newChat = vi.fn<Overseer['newChat']>(async () => 4)
+    Object.assign(server.overseer as object, { newChat })
+    await renderChat(server.overseer)
+    expect(modeShown().dataset.mode).toBe('fork')
+
+    await sendFromComposer('Plan the trip')
+    expect(newChat.mock.calls[0][5]).toBe('fork')
+
+    await choose('review')
+    await sendFromComposer('Plan another')
+    expect(newChat.mock.calls[1][5]).toBe('review')
+    expect(localStorage.getItem('lastChatMode:alice')).toBe('review')
+  })
+
+  it('starts a new chat in Auto for a user who never chose', async () => {
+    const server = makeOverseer()
+    withChatApi(server)
+    await renderChat(server.overseer)
+
+    expect(modeShown().dataset.mode).toBe('auto')
+  })
+
+  it('starts in Review where restricted data rules out Auto, leaving the remembered Auto alone', async () => {
+    signIn()
+    localStorage.setItem('lastChatMode:alice', 'auto')
+    const server = makeOverseer()
+    withChatApi(server)
+    const newChat = vi.fn<Overseer['newChat']>(async () => 4)
+    Object.assign(server.overseer as object, { newChat })
+    await renderChat(server.overseer, { restricted: true })
+
+    expect(modeShown().dataset.mode).toBe('review')
+    expect(modeShown().dataset.restricted).toBe('true')
+    await sendFromComposer('Plan the trip')
+    expect(newChat.mock.calls[0][5]).toBe('review')
+    expect(localStorage.getItem('lastChatMode:alice')).toBe('auto')
+  })
+})
 
 describe('send and retry failures', () => {
   beforeEach(() => {

@@ -1,9 +1,10 @@
 import type { RpcStub } from "capnweb";
-import type { AiChatAuthorInfo, AuthenticatedApi } from "@gadgets/workshop-shared/api";
+import type { AiChatAuthorInfo, AuthenticatedApi, ChatMode } from "@gadgets/workshop-shared/api";
 import { logRpcFailure } from "./rpcErrors";
 
 // This browser's copy of the user's preferred model, which lets a picker start on it without
 // waiting on the server. The server's copy is the one that follows the user between browsers.
+// Also the mode the user last started a chat in, which has no server copy.
 //
 // Browser storage outlives a session, so each name below is stored under the ID of the user it
 // belongs to, and is read only for a user the server has confirmed: with no user, reads find
@@ -12,7 +13,8 @@ const SELECTED = "lastSelectedModel";
 // Set while the choice above has yet to be saved to the server, to a value naming the pick, so
 // that only the save of that very pick clears it.
 const UNSAVED = "lastSelectedModelUnsaved";
-const NAMES = [SELECTED, UNSAVED];
+const CHAT_MODE = "lastChatMode";
+const NAMES = [SELECTED, UNSAVED, CHAT_MODE];
 // What browsers stored, for whoever used them, before any of it was kept per user.
 const LEGACY_SYNCED = "lastSelectedModelSynced";
 const LEGACY_KEYS = [SELECTED, LEGACY_SYNCED, "cachedModels"];
@@ -207,6 +209,19 @@ export function persistSelectedModel(
   }, (err: unknown) => {
     logRpcFailure("Failed to save the preferred model:", err);
   });
+}
+
+const CHAT_MODES: readonly string[] = ["auto", "review", "fork"] satisfies ChatMode[];
+
+/** The mode a new chat of `userId`'s starts in: the one they last started a chat in, or Auto. */
+export function getStoredChatMode(userId: string | undefined): ChatMode {
+  const stored = read(CHAT_MODE, userId);
+  return stored !== null && CHAT_MODES.includes(stored) ? stored as ChatMode : "auto";
+}
+
+/** Remembers the mode `userId` started a chat in, for getStoredChatMode(). */
+export function storeChatMode(userId: string | undefined, mode: ChatMode): void {
+  write(CHAT_MODE, userId, mode);
 }
 
 export function toModelSelectValue(modelId: string | null): string {

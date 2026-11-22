@@ -63,14 +63,12 @@ async function render({
   restricted = false,
   maxHeight = '520px',
   width = 720,
-  autoApproved = false,
 }: {
   groups: PendingChangeGroup[]
   restricted?: boolean
   maxHeight?: string
   /** The chat pane's width; 280px is the narrowest GadgetEditor supports. */
   width?: number
-  autoApproved?: boolean
 }) {
   host = document.body.appendChild(document.createElement('div'))
   // The width the composer gives it, and a height that forces the tray to scroll rather than
@@ -81,15 +79,13 @@ async function render({
   await act(async () => root!.render(
     <PendingChangesTray
       groups={groups}
-      rules={{ isEnabled: () => autoApproved, restricted }}
+      restricted={restricted}
       vendorIdByGatekeeper={new Map()}
       vendorBranding={new Map()}
       actions={{
         processing: new Set<number>(),
         onApprove: () => {},
         onReject: () => {},
-        onAlwaysApprove: () => {},
-        onManageRules: () => {},
         canApprove: () => true,
         onRetry: () => {},
       }}
@@ -173,10 +169,10 @@ it('keeps a request in reach however many notices stand above it', async () => {
   expect(rows.some(row => (row.textContent ?? '').includes('Team calendar'))).toBe(true)
 })
 
-it('keeps the connection name readable when its badges fill the row', async () => {
-  // The badges are non-wrapping siblings of the title, so at the narrowest chat pane they took
-  // the whole row and left the name nothing. The name is what says which service is waiting;
-  // both badges are repeated inside the group.
+it('keeps the connection name readable when its badge fills the row', async () => {
+  // The badge is a non-wrapping sibling of the title, so at the narrowest chat pane it could take
+  // the whole row and leave the name nothing. The name is what says which service is waiting;
+  // the badge is repeated inside the group.
   previousViewport = { width: window.innerWidth, height: window.innerHeight }
   await page.viewport(900, 700)
   await render({
@@ -185,13 +181,12 @@ it('keeps the connection name readable when its badges fill the row', async () =
       request(2, 'Append another slide', [], { origin: 'elsewhere', autoApprovable: true }),
     ], 1, 'Road trip 2026')],
     width: 280,
-    autoApproved: true,
   })
 
   const title = [...host!.querySelectorAll('span')]
     .find(span => span.textContent === 'Road trip 2026')!
   expect(title.getBoundingClientRect().width).toBeGreaterThanOrEqual(56)
-  // The badges are there, just giving way: they are what shrinks, not the name.
+  // The badge is there, just giving way: it is what shrinks, not the name.
   expect(host!.textContent).toContain('Asked elsewhere')
 })
 

@@ -59,7 +59,6 @@ function group(entries: PendingChange[], over: Partial<PendingChangeGroup> = {})
 
 async function render(options: {
   groups: PendingChangeGroup[]
-  enabledTags?: string[]
   restricted?: boolean
   actions?: Partial<PendingChangeActions>
 }) {
@@ -68,8 +67,6 @@ async function render(options: {
     processing: new Set<number>(),
     onApprove: entry => calls.push(`approve:${entry.id}`),
     onReject: entry => calls.push(`reject:${entry.id}`),
-    onAlwaysApprove: entry => calls.push(`always:${entry.id}`),
-    onManageRules: () => calls.push('manage'),
     canApprove: () => true,
     onRetry: entry => calls.push(`retry:${entry.id}`),
     ...options.actions,
@@ -80,10 +77,7 @@ async function render(options: {
   await act(async () => root!.render(
     <PendingChangesTray
       groups={options.groups}
-      rules={{
-        isEnabled: (_gatekeeperId, tag) => (options.enabledTags ?? []).includes(tag),
-        restricted: options.restricted === true,
-      }}
+      restricted={options.restricted === true}
       vendorIdByGatekeeper={new Map()}
       vendorBranding={new Map()}
       actions={actions}
@@ -118,63 +112,15 @@ describe('PendingChangesTray', () => {
     await render({ groups: [group([request(1, { creation: true }), request(2)])] })
     await openGroup()
 
-    expect(document.body.textContent).toContain('Approve its creation first')
+    expect(document.body.textContent).toContain('This resource is new and unsaved')
   })
 
-  it('offers "Always approve" only where a rule would apply the request', async () => {
-    await render({ groups: [group([
-      request(1, { autoApprovable: true, title: 'Auto-approvable' }),
-      request(2, { autoApprovable: false, title: 'Manual only' }),
-    ])] })
+  it('offers no rule controls, since chat modes replaced the rules', async () => {
+    await render({ groups: [group([request(1, { autoApprovable: true })])] })
     await openGroup()
 
-    expect(buttons().filter(b => b.textContent === 'Always approve')).toHaveLength(1)
-  })
-
-  it('stops offering "Always approve" once a rule covers the kind', async () => {
-    await render({
-      groups: [group([request(1, { autoApprovable: true })])],
-      enabledTags: ['append'],
-    })
-    await openGroup()
-
-    // Still pending does not mean no rule: a chat is accepted automatically only when rules cover
-    // all of it, which leaves covered requests queued behind one they do not.
     expect(button('Always approve')).toBeUndefined()
-    expect(document.body.textContent).toContain('Standing rule enabled')
-  })
-
-  it('keeps a covered request decidable, since an automatic apply can give up on it', async () => {
-    // An automatic apply that fails stops there for good and leaves the request pending, so a
-    // row with no controls would leave it decidable nowhere in the chat.
-    const { calls } = await render({
-      groups: [group([request(1, { autoApprovable: true })])],
-      enabledTags: ['append'],
-    })
-    await openGroup()
-
-    await click(button('Approve'))
-    expect(calls).toEqual(['approve:1'])
-  })
-
-  it('names what is holding up an auto-approved request', async () => {
-    const gate = request(1, { autoApprovable: false, title: 'Needs a person' })
-    const covered = request(2, { autoApprovable: true })
-    await render({ groups: [group([gate, covered])], enabledTags: ['append'] })
-    await openGroup()
-
-    expect(document.body.textContent).toContain('waiting on "Needs a person" above it')
-  })
-
-  it('links to where a standing rule is turned off', async () => {
-    const { calls } = await render({
-      groups: [group([request(1, { autoApprovable: true })])],
-      enabledTags: ['append'],
-    })
-    await openGroup()
-    await click(button('Manage rule'))
-
-    expect(calls).toEqual(['manage'])
+    expect(document.body.textContent).not.toContain('Standing rule')
   })
 
   it('marks the requests this conversation did not ask for', async () => {
