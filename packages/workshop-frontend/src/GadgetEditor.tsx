@@ -3,7 +3,6 @@ import { useParams, useNavigate, useSearch, Link } from '@tanstack/react-router'
 import { DropdownMenu, useKumoToastManager } from '@cloudflare/kumo'
 import {
   ShareNetwork,
-  HandPalm,
   Pencil,
   Check,
   X,
@@ -1341,19 +1340,6 @@ export default function GadgetEditor() {
     [id, navigate, selectedWorkpieceSummary?.chatId, workspaceView?.mode, agentChatId, workingChatId]
   )
 
-  // An agentless chat in Fork (see ChatMode), with the gadget opened in it.
-  const holdChanges = async (gadget: { title: string }) => {
-    if (!overseerStub) return
-    try {
-      const chatId = await overseerStub.newChat(
-        `Holding the changes made in ${gadget.title} for review.`, null,
-        undefined, undefined, undefined, 'fork')
-      navigateToChat(chatId)
-    } catch {
-      toasts.add({ title: 'Failed to hold changes', variant: 'error' })
-    }
-  }
-
   // ── chats a gadget asks to show (GadgetHost.openAgentChat) ──────────────────
   // A gadget may navigate the user only while it is what the user sees: the pane is open on the
   // app tab, or the gadget is full screen. The gadget stays mounted behind the chat list, Activity
@@ -2369,19 +2355,6 @@ export default function GadgetEditor() {
                   chatId={previewChatId}
                   saveScope={gadgetSaveScope}
                 />
-              )}
-
-              {/* Holding the gadget's changes runs it in a chat of its own in Fork, so its
-                  requests wait there for review. */}
-              {!paneShowsActivity && selectedGadgetSummary &&
-                previewChatId === undefined && (
-                <WorkshopIconButton
-                  aria-label="Hold changes"
-                  title="Hold changes: open the gadget in a new chat that keeps its requests until you accept them"
-                  onClick={() => { void holdChanges(selectedGadgetSummary) }}
-                >
-                  <HandPalm size={16} />
-                </WorkshopIconButton>
               )}
 
               {/* A draft belongs to its chat until accepted, and only accepted gadgets can be shared. */}
