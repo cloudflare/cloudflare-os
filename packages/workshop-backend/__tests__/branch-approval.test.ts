@@ -774,6 +774,22 @@ describe("chat modes", () => {
     });
   });
 
+  it("leave an awaited action for a user when the chat leaves Auto before it applies", async () => {
+    const gatekeeper = legacyGatekeeper();
+    const {visit, userId} = await workspace(gatekeeper.facet);
+    await visit(async impl => {
+      startTurn(impl, userId);
+      const apply = vi.spyOn(impl, "applyActionList");
+      await impl.submitAction(GK, 2, description(true, true), AGENT_A);
+      setMode(impl, 1, "review");
+      await vi.waitFor(() => expect(apply).toHaveBeenCalled());
+      await apply.mock.results[0].value;
+      expect(impl.consumeCapturedActions(1)?.awaitDecision).toBe(true);
+      expect(record(impl, 2).state).toBe("pending");
+      expect(gatekeeper.applied).toEqual([]);
+    });
+  });
+
   it.each([
     ["behind an earlier action that is not auto-approvable", (impl: Impl) =>
         impl.submitAction(GK, 1, description(false), AGENT_A)],

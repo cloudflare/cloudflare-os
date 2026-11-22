@@ -6194,8 +6194,9 @@ class OverseerImpl implements AgentHooks {
 
   // Applies `record` and the actions approving it applies (#approvalList) automatically, on behalf
   // of the user `userId` names (see autoAcceptBranch), if every one of them may be (see
-  // #autoItems). A failure leaves them pending, with the error on the one that failed. One
-  // connection's run one at a time (#autoApplying), so that a second awaited action submitted
+  // #autoItems). A failure leaves them pending, with the error on the one that failed; if
+  // `record` is still pending then, and its step still runs, its turn waits for a user after all
+  // (see consumeCapturedActions). One connection's run one at a time (#autoApplying), so that a second awaited action submitted
   // while the first applies does not find the first claimed and stay pending, with no turn
   // waiting on it.
   #autoApply(record: ActionRecord & {type: "action"}, userId: string): Promise<void> {
@@ -6210,6 +6211,9 @@ class OverseerImpl implements AgentHooks {
           event: "auto.approval.failed", actionId: record.id, error,
         });
       }
+      let chatId = record.caller.from === "agent" ? record.caller.chatId : undefined;
+      let captured = chatId === undefined ? undefined : this.#capturedActions.get(chatId);
+      if (captured?.actions.includes(record.id)) captured.awaitDecision = true;
     });
     this.#autoApplying.set(gatekeeperId, run);
     void run.then(() => {
