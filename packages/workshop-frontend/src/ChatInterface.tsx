@@ -122,8 +122,8 @@ import { StagedChangesBar } from "./features/approvals/StagedChangesBar";
 import { HoldingToggle } from "./features/approvals/HoldingToggle";
 import { chatsWithChanges, type ChatWithChanges } from "./features/approvals/chatsWithChanges";
 import {
-  canApproveAlone, chatBranchPending, chatRequestIds, pendingChangeEntries, pendingChangeGroups,
-  type PendingChange,
+  acceptThrough, canApproveAlone, chatBranchPending, chatRequestIds, pendingChangeEntries,
+  pendingChangeGroups, type PendingChange,
 } from "./features/approvals/pendingChangeGroups";
 import { CreationAccountModal } from "./components/CreationAccountModal";
 import {
@@ -2764,11 +2764,16 @@ function ChatInterface({
   const [acceptCreation, setAcceptCreation] = useState<{
     entry: PendingChange;
     chosen: Record<number, CreationApproval>;
+    through: number;
   } | null>(null);
   const [isUpdatingFromMainline, setIsUpdatingFromMainline] = useState(false);
   // The conflict markers that held up an accept of the selected chat's changes, awaiting the
-  // user's decision in the unresolved-conflicts dialog.
-  const [unresolvedConflicts, setUnresolvedConflicts] = useState<UnresolvedConflict[] | null>(null);
+  // user's decision in the unresolved-conflicts dialog, with the accept's bound, taken when the
+  // user clicked (see handleMergeChanges).
+  const [unresolvedConflicts, setUnresolvedConflicts] = useState<{
+    conflicts: UnresolvedConflict[];
+    through: number;
+  } | null>(null);
 
   const [expandedToolCalls, setExpandedToolCalls] = useState<Set<string>>(
     new Set(),
@@ -4354,16 +4359,23 @@ function ChatInterface({
   // its account chosen beforehand: `creations` gathers those choices, one dialog at a time. A
   // request that fails to apply stops it with nothing merged, and the tray shows which one and
   // what is waiting on it.
-  const handleMergeChanges = async (creations: Record<number, CreationApproval> = {}) => {
+  //
+  // `through` bounds the accept by what the tray showed when the user clicked, so that a request
+  // arriving meanwhile, which they never saw, waits for the next accept.
+  const handleMergeChanges = async (
+    creations: Record<number, CreationApproval> = {},
+    through = acceptThrough(branchRequests),
+  ) => {
     if (selectedChatId === null) return;
-    const unchosen = branchRequests.find(entry => entry.creation && !(entry.id in creations));
+    const unchosen = branchRequests.find(entry =>
+      entry.creation && entry.id <= through && !(entry.id in creations));
     if (unchosen) {
-      setAcceptCreation({ entry: unchosen, chosen: creations });
+      setAcceptCreation({ entry: unchosen, chosen: creations, through });
       return;
     }
 
     try {
-      const result = await overseer.mergeChanges(selectedChatId, { creations });
+      const result = await overseer.mergeChanges(selectedChatId, { creations, through });
       if (result.outcome === "stale") {
         setStaleAcceptChatId(selectedChatId);
         return;
@@ -4400,6 +4412,7 @@ function ChatInterface({
   };
   const handleAcceptChanges = async () => {
     const chatId = selectedChatId;
+    const through = acceptThrough(branchRequests);
     const reader = chatContent?.chatId === chatId ? chatContent : undefined;
     const content = reader?.read();
     if (reader !== undefined && content !== undefined) {
@@ -4427,11 +4440,11 @@ function ChatInterface({
       }
       if (selectedChatIdRef.current !== chatId) return;
       if (unresolved.length > 0) {
-        setUnresolvedConflicts(unresolved);
+        setUnresolvedConflicts({ conflicts: unresolved, through });
         return;
       }
     }
-    void handleMergeChanges();
+    void handleMergeChanges({}, through);
   };
   // Holding keeps the gadgets opened in a chat on its branch, so
   // their requests wait for its changes to be accepted (see Overseer.setChatHolding()).
@@ -4759,7 +4772,7 @@ function ChatInterface({
   // one that failed), and this bar under it accepts or discards them, as a chat's bar does the
   // chat's.
   const stagingBar = selectedChatId === null && trayPending.length > 0
-    ? <StagedChangesBar overseer={overseer} count={trayPending.length} blocked={acceptBlocked} />
+    ? <StagedChangesBar overseer={overseer} requests={trayPending} blocked={acceptBlocked} />
     : null;
 
   // The gadget's own code draft, docked under the tray. Accepting always merges everything the
@@ -7126,11 +7139,12 @@ function ChatInterface({
 
       {unresolvedConflicts !== null && (
         <UnresolvedConflictsDialog
-          conflicts={unresolvedConflicts}
+          conflicts={unresolvedConflicts.conflicts}
           onCancel={() => setUnresolvedConflicts(null)}
           onAcceptAnyway={() => {
+            const { through } = unresolvedConflicts;
             setUnresolvedConflicts(null);
-            void handleMergeChanges();
+            void handleMergeChanges({}, through);
           }}
         />
       )}
@@ -7175,7 +7189,7 @@ function ChatInterface({
           onChoose={approval => {
             const chosen = { ...acceptCreation.chosen, [acceptCreation.entry.id]: approval };
             setAcceptCreation(null);
-            void handleMergeChanges(chosen);
+            void handleMergeChanges(chosen, acceptCreation.through);
           }}
           onCancel={() => setAcceptCreation(null)}
         />

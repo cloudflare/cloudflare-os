@@ -248,9 +248,10 @@ describe('Activity review', () => {
         chats={[]} onOpenChat={() => {}} />,
     )
     await server.resolveSubscription()
-    await server.resolvePendingQuery({ entries: [entry(1)] })
+    await server.resolvePendingQuery({ entries: [entry(1), entry(3), entry(5, { chatId: 4 })] })
     await act(async () => buttons().find(b => b.textContent?.includes('Accept changes'))!.click())
-    expect(acceptStagedActions).toHaveBeenCalledOnce()
+    // Bounded by the highest held request shown, so nothing that arrived since applies with it.
+    expect(acceptStagedActions).toHaveBeenCalledExactlyOnceWith(3)
   })
 
   it("has nothing to review with no chat changes and nothing held, whatever a chat's requests", async () => {

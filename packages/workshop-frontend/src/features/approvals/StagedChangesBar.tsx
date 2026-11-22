@@ -2,8 +2,9 @@ import { useState } from 'react'
 import { Popover, Tooltip, useKumoToastManager } from '@cloudflare/kumo'
 import { Check } from '@phosphor-icons/react'
 import type { RpcStub } from 'capnweb'
-import type { Overseer } from '@gadgets/workshop-shared/api'
+import type { ActionLogEntry, Overseer } from '@gadgets/workshop-shared/api'
 import { WorkshopButton } from '../../components/WorkshopControls'
+import { acceptThrough } from './pendingChangeGroups'
 
 const requestCount = (count: number) => count === 1 ? '1 request' : `${count} requests`
 
@@ -13,21 +14,22 @@ const requestCount = (count: number) => count === 1 ? '1 request' : `${count} re
  * one that failed (see Overseer.acceptStagedActions()). It is to staging what a chat's pending-changes bar is to the
  * chat, so the composer tray and the Activity page show the same one.
  */
-export const StagedChangesBar = ({ overseer, count, blocked }: {
+export const StagedChangesBar = ({ overseer, requests, blocked }: {
   overseer: RpcStub<Overseer>
-  /** How many requests staging holds, as the surface showing them counts them. */
-  count: number
+  /** The requests staging holds, as the surface shows them: accepting applies no others. */
+  requests: readonly ActionLogEntry[]
   /** Why accepting must wait, when the requests it would apply are not all known and shown. */
   blocked?: string
 }) => {
   const toasts = useKumoToastManager()
   const [busy, setBusy] = useState<'accept' | 'discard' | null>(null)
   const [confirmingDiscard, setConfirmingDiscard] = useState(false)
+  const count = requests.length
 
   const accept = async () => {
     setBusy('accept')
     try {
-      const { outcome } = await overseer.acceptStagedActions()
+      const { outcome } = await overseer.acceptStagedActions(acceptThrough(requests))
       toasts.add(outcome === 'applied'
         ? { title: 'Requests applied', variant: 'success' }
         : { title: 'A request could not be applied', description: 'Retry it or deny it.', variant: 'error' })

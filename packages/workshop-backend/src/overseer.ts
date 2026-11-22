@@ -4675,10 +4675,12 @@ class OverseerImpl implements AgentHooks {
   // hold withChatLock). `clientUserId` feeds analytics only. The chat's pending actions apply
   // first, once the code is known to merge (see acceptBranch).
   async mergeChanges(chatId: number, userMeta: UserChatContext, clientUserId: string,
-                     creations?: Map<number, CreationChoice>): Promise<MergeChangesResult> {
+                     creations?: Map<number, CreationChoice>, through?: number)
+      : Promise<MergeChangesResult> {
     let meta = this.assertChatNotActive(chatId);
-    // What is pending now is what the user accepts, whatever is submitted during the awaits below.
-    let taken = this.branchSnapshot(chatId);
+    // What is pending now, up to what the user was shown, is what they accept, whatever is
+    // submitted during the awaits below.
+    let taken = this.branchSnapshot(chatId, through);
     let applyActions = () => this.acceptBranch(chatId, taken, userMeta.profile, creations);
 
     // Always merge *everything* the chat proposes: sweep live change rows into a "changes" message
@@ -5997,12 +5999,19 @@ class OverseerImpl implements AgentHooks {
   // The IDs of the pending actions accepting chat `chatId` would apply (see acceptBranch): the
   // chat's own, and what staging holds on each connection the chat has one on.
   // With `chatId` null, those staging holds (see acceptStagedActions).
-  branchSnapshot(chatId: number | null): Set<number> {
+  //
+  // Only those with IDs up to `through`, the highest the user was shown (see
+  // MergeChangesOptions.through): IDs only increase, so the rest were submitted after the user
+  // looked. Cutting every group at one ID keeps each a prefix, as Gatekeeper.applyActions() needs.
+  branchSnapshot(chatId: number | null, through = Infinity): Set<number> {
     let branch = chatId === null ? null : `chat:${chatId}`;
     let taken = new Set<number>();
     for (let record of this.#pendingOnBranch(branch)) {
+      if (record.id > through) continue;
       taken.add(record.id);
-      for (let other of this.#branchList(record.gatekeeperId, branch, false)) taken.add(other.id);
+      for (let other of this.#branchList(record.gatekeeperId, branch, false)) {
+        if (other.id <= through) taken.add(other.id);
+      }
     }
     return taken;
   }
@@ -13956,9 +13965,9 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     // through denying several.
   }
 
-  async acceptStagedActions(): Promise<{outcome: "applied" | "failed"}> {
+  async acceptStagedActions(through?: number): Promise<{outcome: "applied" | "failed"}> {
     let profile = await this.#getClientProfile();
-    let taken = this.impl.branchSnapshot(null);
+    let taken = this.impl.branchSnapshot(null, through);
     return {outcome: await this.impl.acceptBranch(null, taken, profile) ? "applied" : "failed"};
   }
 
@@ -14467,7 +14476,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       }
     }
     return await this.impl.withChatLock(chatId, () => this.impl.mergeChanges(
-        chatId, userMeta, this.#clientUser.id.toString(), creations));
+        chatId, userMeta, this.#clientUser.id.toString(), creations, options?.through));
   }
 
   async revertChanges(chatId: number, revertFrom: number): Promise<void> {

@@ -257,7 +257,7 @@ export default function Activity({
             <section aria-label="Held changes">
               <StagedChangesBar
                 overseer={overseer}
-                count={staged.length}
+                requests={staged}
                 blocked={pendingStatus === 'ready' ? undefined
                   : pendingStatus === 'error' ? PENDING_ERROR_COPY : PENDING_CHECKING_COPY}
               />

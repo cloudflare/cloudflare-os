@@ -172,6 +172,15 @@ export function isFromElsewhere(group: PendingChangeGroup): boolean {
   return group.entries.every(entry => entry.origin === 'elsewhere')
 }
 
+/**
+ * What an accept of the requests `shown` passes as its bound (MergeChangesOptions.through): the
+ * highest ID among them, or -1 when none were shown, so that it applies nothing that arrived
+ * after the user looked.
+ */
+export function acceptThrough(shown: readonly ActionLogEntry[]): number {
+  return shown.reduce((highest, log) => Math.max(highest, log.id), -1)
+}
+
 /** Every pending request across `groups`, in the order a bulk resolve would take them. */
 export function pendingChangeEntries(groups: readonly PendingChangeGroup[]): PendingChange[] {
   return groups.flatMap(group => group.entries).toSorted((a, b) => a.id - b.id)

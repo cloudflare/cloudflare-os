@@ -292,7 +292,8 @@ describe('accepting a chat', () => {
     const accept = [...document.querySelectorAll('button')]
       .find(b => b.textContent?.includes('Accept changes'))
     await act(async () => accept!.click())
-    expect(mergeChanges).toHaveBeenCalledWith(1, { creations: {} })
+    // Bounded by the highest request shown, which leaves out the other chat's later one.
+    expect(mergeChanges).toHaveBeenCalledWith(1, { creations: {}, through: 1 })
   })
 
   it('keeps Approve on a request the agent is waiting on', async () => {
@@ -360,7 +361,8 @@ describe('accepting a chat', () => {
     const accept = [...document.querySelectorAll('button')]
       .find(b => b.textContent?.includes('Accept changes'))
     await act(async () => accept!.click())
-    expect(acceptStagedActions).toHaveBeenCalledOnce()
+    // Bounded by the highest held request shown, not by the chat's later one.
+    expect(acceptStagedActions).toHaveBeenCalledExactlyOnceWith(1)
   })
 
   it("shows holding in the open chat's header, and turns it off there", async () => {

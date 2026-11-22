@@ -4762,13 +4762,14 @@ export interface Overseer extends RpcTarget {
 
   /**
    * Applies the pending actions with no chat (see WorkspaceMetadata.stagedActions), one connection
-   * at a time, as they stood when the call began. Those normally apply as soon as they are
-   * submitted; they wait for this while the workspace has read restricted data, behind one that
-   * was waiting for a user's review before they did, and behind one that failed to apply. The first that fails to apply stops it with a "failed" outcome, leaving that
-   * action pending with its ActionLogEntry.applyError and those after it on its connection pending;
-   * calling again retries it.
+   * at a time, as they stood when the call began, up to `through` as in MergeChangesOptions.through.
+   * Those normally apply as soon as they are submitted; they wait for this while the workspace has
+   * read restricted data, behind one that was waiting for a user's review before they did, and
+   * behind one that failed to apply. The first that fails to apply stops it with a "failed"
+   * outcome, leaving that action pending with its ActionLogEntry.applyError and those after it on
+   * its connection pending; calling again retries it.
    */
-  acceptStagedActions(): Promise<{outcome: "applied" | "failed"}>;
+  acceptStagedActions(through?: number): Promise<{outcome: "applied" | "failed"}>;
 
   /**
    * Rejects the pending actions with no chat (see WorkspaceMetadata.stagedActions), newest first,
@@ -5102,13 +5103,14 @@ export interface Overseer extends RpcTarget {
    * Accepting a chat also applies its pending gatekeeper actions, and does so first: on each
    * connection the chat acted on, the pending actions with no chat there (which the chat's were
    * simulated on top of), and then the chat's own, one connection at a time, as they stood when the
-   * accept began. A pending creation among them needs `options.creations`; one that fails throws,
-   * as approveAction() does. The first other action that fails to apply stops the accept with a
-   * "failed" outcome, leaving the code unmerged and the action pending with its
-   * ActionLogEntry.applyError; calling again retries it. The accept is not atomic: what applied
-   * stays applied, and a "stale" outcome after the actions applied leaves only the code for the
-   * retry. Refused while the agent waits on a decision. With no code to merge, it applies the
-   * actions alone.
+   * accept began, up to `options.through`. A pending creation among them needs
+   * `options.creations`; one that fails throws, as approveAction() does. The first other action
+   * that fails to apply stops the accept with a "failed" outcome, leaving the code unmerged and the
+   * action pending with its ActionLogEntry.applyError; calling again retries it. The accept is not
+   * atomic: what applied stays applied, and a "stale" outcome after the actions applied leaves only
+   * the code for the retry. Refused while the agent waits on a decision. With no code to merge, it
+   * applies the actions alone. An action it leaves out for being past `options.through` stays
+   * pending, and the code merges without it, as it would without one submitted after the accept.
    */
   mergeChanges(chatId: number, options?: MergeChangesOptions): Promise<MergeChangesResult>;
 
@@ -5771,6 +5773,14 @@ export type MergeChangesOptions = {
    * the creation's action ID. Required for every one.
    */
   creations?: Record<number, CreationApproval>;
+
+  /**
+   * The highest action ID the user was shown pending when they accepted, or -1 when they were
+   * shown none: the accept applies no action with a higher ID. Action IDs only increase, so this
+   * leaves out whatever was submitted after the user looked, which stays pending for the next
+   * accept. Absent, the accept takes every pending action.
+   */
+  through?: number;
 };
 
 /**

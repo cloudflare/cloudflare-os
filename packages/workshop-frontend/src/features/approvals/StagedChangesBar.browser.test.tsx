@@ -5,9 +5,11 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { userEvent } from 'vitest/browser'
 import { Toasty, TooltipProvider } from '@cloudflare/kumo'
 import type { RpcStub } from 'capnweb'
-import type { Overseer } from '@gadgets/workshop-shared/api'
+import type { ActionLogEntry, Overseer } from '@gadgets/workshop-shared/api'
 import { StagedChangesBar } from './StagedChangesBar'
 import '../../styles.css'
+
+const requests = Array.from({ length: 12 }, (_, id) => ({ id }) as ActionLogEntry)
 
 const input = (action: () => Promise<unknown>) => act(async () => { await action() })
 
@@ -23,7 +25,7 @@ async function render(overseer: Partial<Overseer>, width: number) {
   root = createRoot(host)
   await act(async () => root!.render(
     <TooltipProvider><Toasty>
-      <StagedChangesBar overseer={overseer as RpcStub<Overseer>} count={12} />
+      <StagedChangesBar overseer={overseer as RpcStub<Overseer>} requests={requests} />
     </Toasty></TooltipProvider>,
   ))
 }

@@ -257,6 +257,62 @@ describe("accepting a chat", () => {
     });
   });
 
+  it("applies nothing past the highest action the user was shown, which waits for the next",
+      async () => {
+    const GK2 = 8;
+    const gatekeeper = legacyGatekeeper();
+    const {visit, client} = await workspace(gatekeeper.facet);
+    const through = await visit(async impl => {
+      holdStaging(impl);
+      impl.storage.gatekeepers.put({id: GK2, class: {} as never});
+      await impl.submitAction(GK, 1, description(), CHAT_A);
+      await impl.submitAction(GK, 2, description(), STAGED);
+      await impl.submitAction(GK2, 3, description(), STAGED);
+      const shown = impl.storage.nextActionId.get() - 1;
+      // Submitted after the user looked: staging on a connection the chat has acted on, the
+      // chat's own, and the chat's first on a connection where staging held one all along.
+      await impl.submitAction(GK, 4, description(), STAGED);
+      await impl.submitAction(GK, 5, description(), CHAT_A);
+      await impl.submitAction(GK2, 6, description(), CHAT_A);
+      return shown;
+    });
+    using overseer = await client();
+    // Shown nothing pending, the user accepts nothing.
+    expect(await overseer.mergeChanges(1, {through: -1})).toEqual({outcome: "merged"});
+    expect(await visit(() => gatekeeper.applied)).toEqual([]);
+
+    expect(await overseer.mergeChanges(1, {through})).toEqual({outcome: "merged"});
+    await visit(impl => {
+      expect(gatekeeper.applied).toEqual([1, 2]);
+      expect(states(impl, 4, 5)).toEqual(["pending", "pending"]);
+      expect([...impl.storage.actions.pendingByGatekeeper.get(GK2)]).toHaveLength(2);
+    });
+    // With no bound, as before, everything pending.
+    expect(await overseer.mergeChanges(1)).toEqual({outcome: "merged"});
+    expect(await visit(() => gatekeeper.applied)).toEqual([1, 2, 4, 5, 3, 6]);
+  });
+
+  it("cuts a list for a gatekeeper that has adopted branches at the same ID in every group",
+      async () => {
+    const gatekeeper = branchGatekeeper();
+    const {visit} = await workspace(gatekeeper.facet);
+    await visit(async impl => {
+      holdStaging(impl);
+      await impl.adoptsBranches(GK);
+      await impl.submitAction(GK, 1, description(), CHAT_A);
+      await impl.submitAction(GK, 2, description(), STAGED);
+      const through = record(impl, 2).id;
+      await impl.submitAction(GK, 3, description(), STAGED);
+      await impl.submitAction(GK, 4, description(), CHAT_A);
+      await impl.acceptBranch(1, impl.branchSnapshot(1, through), USER);
+      await impl.acceptBranch(1, impl.branchSnapshot(1), USER);
+      expect(gatekeeper.calls).toEqual([
+        {branch: "chat:1", actions: [2, 1]},
+        {branch: "chat:1", actions: [3, 4]},
+      ]);
+    });
+  });
+
   it("is refused while a creation on the branch has no account chosen", async () => {
     const gatekeeper = legacyGatekeeper();
     const {visit} = await workspace(gatekeeper.facet);
@@ -485,6 +541,28 @@ describe("staging", () => {
       expect(states(impl, 1, 2, 3)).toEqual(["approved", "pending", "approved"]);
       expect(record(impl, 3)).toMatchObject({resolvedBy: USER, autoApproved: false});
     });
+  });
+
+  it("is accepted up to the highest action the user was shown", async () => {
+    const gatekeeper = legacyGatekeeper();
+    const {visit, client} = await workspace(gatekeeper.facet);
+    const through = await visit(async impl => {
+      holdStaging(impl);
+      await impl.submitAction(GK, 1, description(), STAGED);
+      await impl.submitAction(GK, 2, description(), STAGED);
+      const shown = record(impl, 2).id;
+      await impl.submitAction(GK, 3, description(), STAGED);
+      return shown;
+    });
+    using overseer = await client();
+    expect(await overseer.acceptStagedActions(-1)).toEqual({outcome: "applied"});
+    expect(await overseer.acceptStagedActions(through)).toEqual({outcome: "applied"});
+    await visit(impl => {
+      expect(gatekeeper.applied).toEqual([1, 2]);
+      expect(states(impl, 3)).toEqual(["pending"]);
+    });
+    expect(await overseer.acceptStagedActions()).toEqual({outcome: "applied"});
+    expect(await visit(() => gatekeeper.applied)).toEqual([1, 2, 3]);
   });
 
   it("holds what follows a staged action that failed, and retries it at the next apply",
