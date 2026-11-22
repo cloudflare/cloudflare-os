@@ -4818,16 +4818,18 @@ function ChatInterface({
                   : acceptBlocked ?? (branchRequests.length > 0
                     ? "Apply the requests above, then keep any code changes as the gadget's current version."
                     : "Keep this draft and make it the gadget's current version.")} asChild>
-              <WorkshopButton
-                disabled={nothingHeld || changesActionsDisabled || awaitingDecision ||
-                  acceptBlocked !== undefined}
-                onClick={() => { void handleAcceptChanges(); }}
-                tone="primary"
-                className="!h-7 !cursor-pointer !rounded-md !border-transparent !shadow-none gap-1 text-[12px]"
-              >
-                <Check size={11} weight="bold" />
-                Accept changes
-              </WorkshopButton>
+              <span className="inline-flex flex-shrink-0 [&>button:disabled]:pointer-events-none">
+                <WorkshopButton
+                  disabled={nothingHeld || changesActionsDisabled || awaitingDecision ||
+                    acceptBlocked !== undefined}
+                  onClick={() => { void handleAcceptChanges(); }}
+                  tone="primary"
+                  className="!h-7 !cursor-pointer !rounded-md !border-transparent !shadow-none gap-1 text-[12px]"
+                >
+                  <Check size={11} weight="bold" />
+                  Accept changes
+                </WorkshopButton>
+              </span>
             </Tooltip>
           </>
         )}

@@ -102,15 +102,17 @@ export const StagedChangesBar = ({ overseer, requests, blocked }: {
         </Popover.Content>
       </Popover>
       <Tooltip content={blocked ?? "Apply the requests made outside any chat."} asChild>
-        <WorkshopButton
-          disabled={busy !== null || blocked !== undefined}
-          onClick={() => { void accept() }}
-          tone="primary"
-          className="!h-7 !cursor-pointer !rounded-md !border-transparent !shadow-none gap-1 text-[12px]"
-        >
-          <Check size={11} weight="bold" />
-          Accept changes
-        </WorkshopButton>
+        <span className="inline-flex flex-shrink-0 [&>button:disabled]:pointer-events-none">
+          <WorkshopButton
+            disabled={busy !== null || blocked !== undefined}
+            onClick={() => { void accept() }}
+            tone="primary"
+            className="!h-7 !cursor-pointer !rounded-md !border-transparent !shadow-none gap-1 text-[12px]"
+          >
+            <Check size={11} weight="bold" />
+            Accept changes
+          </WorkshopButton>
+        </span>
       </Tooltip>
     </div>
   )

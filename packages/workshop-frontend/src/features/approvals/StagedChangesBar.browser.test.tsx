@@ -19,13 +19,13 @@ afterEach(async () => {
   host?.remove()
 })
 
-async function render(overseer: Partial<Overseer>, width: number) {
+async function render(overseer: Partial<Overseer>, width: number, blocked?: string) {
   host = document.body.appendChild(document.createElement('div'))
   host.style.width = `${width}px`
   root = createRoot(host)
   await act(async () => root!.render(
     <TooltipProvider><Toasty>
-      <StagedChangesBar overseer={overseer as RpcStub<Overseer>} requests={requests} />
+      <StagedChangesBar overseer={overseer as RpcStub<Overseer>} requests={requests} blocked={blocked} />
     </Toasty></TooltipProvider>,
   ))
 }
@@ -66,4 +66,13 @@ it('leaves the held requests alone when the confirmation is cancelled', async ()
   await input(() => userEvent.click(button('Cancel')!))
   await vi.waitFor(() => expect(button('Discard changes')).toBeUndefined())
   expect(discardStagedActions).not.toHaveBeenCalled()
+})
+
+it('says why accepting is disabled when the pointer is over it', async () => {
+  await render({}, 480, 'Checking for requests…')
+  const accept = button('Accept changes')!
+  expect(accept.disabled).toBe(true)
+
+  await input(() => userEvent.hover(accept.parentElement!))
+  await expect.poll(() => document.body.textContent).toContain('Checking for requests…')
 })

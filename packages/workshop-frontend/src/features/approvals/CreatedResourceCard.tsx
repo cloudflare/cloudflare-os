@@ -97,7 +97,14 @@ export const CreatedResourceCard = ({
           )}
           {pending && (
             <div className="mt-2 flex items-center gap-1">
-              {accepted ? save : <Tooltip content="Accept changes first" asChild>{save}</Tooltip>}
+              {accepted ? save : (
+                // A disabled button gets no pointer events, so the wrapper is what is hovered.
+                <Tooltip content="Accept changes first" asChild>
+                  <span className="inline-flex flex-shrink-0 [&>button:disabled]:pointer-events-none">
+                    {save}
+                  </span>
+                </Tooltip>
+              )}
               <ResolveButton tone="deny" label="Discard" disabled={processing} onClick={onDeny} />
             </div>
           )}
