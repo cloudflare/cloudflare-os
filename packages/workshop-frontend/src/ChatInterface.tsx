@@ -97,6 +97,7 @@ import {
   BlueprintOutput,
   MessageFormatRef,
   ChatMode,
+  WorkpieceSummary,
 } from "@gadgets/workshop-shared/api";
 import { composeEpochChanges, type CodeChange } from "@gadgets/workshop-shared/code-change";
 import type { ChatChangeRow, ChatContentReader } from "./features/code/otClient";
@@ -118,12 +119,13 @@ import { PENDING_CHECKING_COPY, PENDING_ERROR_COPY } from "./Activity";
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from "./components/WorkshopControls";
 import { WebFetchRequestCard } from "./features/web-fetch/WebFetchRequestCard";
 import { PendingChangesTray } from "./features/approvals/PendingChangesTray";
+import { CreatedResourceCard, type CreatedResourceKind } from "./features/approvals/CreatedResourceCard";
 import { StagedChangesBar } from "./features/approvals/StagedChangesBar";
 import { chatsWithChanges, type ChatWithChanges } from "./features/approvals/chatsWithChanges";
 import {
   acceptThrough, canApproveAlone, chatBranchPending, chatRequestIds, pendingChangeEntries,
-  pendingChangeGroups, unsavedConnections, awaitsSave, branchChatId, OUTCOME_UNKNOWN_COPY,
-  type PendingChange,
+  pendingChangeGroups, unsavedConnections, awaitsSave, branchChatId, needsReview,
+  OUTCOME_UNKNOWN_COPY, type PendingChange,
 } from "./features/approvals/pendingChangeGroups";
 import { AgentListRow } from "./features/chat/agents/AgentListRow";
 import { AgentRunsPane } from "./features/chat/agents/AgentRunsPane";
@@ -137,6 +139,8 @@ import { useResolveAction } from "./useResolveAction";
 import { safeExternalUrl } from "./utils/safeExternalUrl";
 import { useAuthenticatedApi } from "./AuthContext";
 import { useVendorBranding } from "./useVendorBranding";
+import { useGatekeeperVendors } from "./useGatekeeperVendors";
+import { findResourceType } from "@gadgets/workshop-shared/gatekeeper";
 import OutOfCreditsModal from "./components/billing/OutOfCreditsModal";
 import { formatFullTimestamp } from "./utils/formatTimestamp";
 import { copyToClipboard } from "./clipboard";
@@ -2451,6 +2455,10 @@ interface ChatInterfaceProps {
   constrainChatWidth?: boolean;
   // Opens a workpiece the transcript offers (a created gadget's app, a created worktree's code).
   onOpenGadget: (workpieceId: WorkpieceId) => void;
+  // Opens a workpiece's code, for the pending changes listing what the chat changed.
+  onOpenWorkpieceCode: (workpieceId: WorkpieceId) => void;
+  // The workspace's workpiece by id, for surfaces that only know the id.
+  workpieceOf: (workpieceId: WorkpieceId) => WorkpieceSummary | undefined;
 
   // The output format a workpiece was built as, so a created-app card can name and draw it as the
   // Document (or whatever) it is rather than a generic app.
@@ -2653,6 +2661,8 @@ function ChatInterface({
   onSelectedChatProposedChangesChange,
   constrainChatWidth,
   onOpenGadget,
+  onOpenWorkpieceCode,
+  workpieceOf,
   outputOfWorkpiece,
 }: ChatInterfaceProps) {
   // Persistent cache that survives reconnects
@@ -4685,6 +4695,26 @@ function ChatInterface({
   const vendorIdByGatekeeper = useConnectionVendors(overseer, trayGroups.length > 0);
   const vendorBranding = useVendorBranding(authenticatedApi);
 
+  // What each resource this chat created is, from the call that created it, for its card.
+  const vendors = useGatekeeperVendors(authenticatedApi);
+  const createdResourceKinds = useMemo(() => {
+    const kinds = new Map<WorkpieceId, CreatedResourceKind>();
+    for (const msg of currentMessages) {
+      if (msg.type !== "message") continue;
+      for (const call of msg.toolCalls ?? []) {
+        if (call.toolName !== "createExternalResource" || !call.output) continue;
+        const vendor = vendors.find((candidate) => candidate.id === call.input.vendorId);
+        kinds.set(call.output.gatekeeperId, {
+          vendorId: call.input.vendorId,
+          vendorName: vendor?.description.displayName,
+          typeTitle: vendor && findResourceType(
+            vendor.supportedResources, call.input.resourceTypeId, call.input.resourceUrlPattern)?.title,
+        });
+      }
+    }
+    return kinds;
+  }, [currentMessages, vendors]);
+
   const trayActions = useMemo(() => ({
     processing: processingActions,
     onApprove: (entry: PendingChange) => void resolveAction(entry, "approve"),
@@ -4704,9 +4734,20 @@ function ChatInterface({
   // docks above the new-chat composer as well as the in-chat one. Going back to the conversation
   // list otherwise hid an outstanding queue, and a request from a hook or a scheduled task --
   // which belongs to no conversation at all -- reached that screen only through Activity.
-  const workspaceTray = trayGroups.length === 0 ? null : (
+  //
+  // In a chat it lists the chat's code changes too, a row per gadget or worktree. The chat's
+  // proposed workpieces also name a gatekeeper it changes a binding of, such as an agent
+  // spawner's, which has no code to open, so only known gadgets and worktrees get a row.
+  const trayCodeChanges = selectedChatId === null || currentChatMetadata?.id !== selectedChatId
+    ? []
+    : (currentChatMetadata.proposedChangeWorkpieces ?? []).flatMap((workpieceId) => {
+      const workpiece = workpieceOf(workpieceId);
+      return workpiece ? [{ workpieceId, title: workpiece.title, type: workpiece.type }] : [];
+    });
+  const workspaceTray = trayGroups.length === 0 && trayCodeChanges.length === 0 ? null : (
     <PendingChangesTray
       groups={trayGroups}
+      code={{ changes: trayCodeChanges, onOpen: onOpenWorkpieceCode }}
       restricted={restricted === true}
       vendorIdByGatekeeper={vendorIdByGatekeeper}
       vendorBranding={vendorBranding}
@@ -4739,6 +4780,12 @@ function ChatInterface({
     // there are any.
     const nothingHeld = !chatHasProposedChanges(chat) && !hasPendingBlueprintProposal &&
       branchRequests.length === 0 && (chat.pendingActions ?? 0) === 0;
+    // In Auto, the end of a turn accepts what the agent changed unless something needs the user,
+    // so while the turn runs the buttons wait until something does: a request its author did not
+    // judge auto-approvable, or one no chat made, which no automatic accept applies. A turn that
+    // stopped or failed accepts nothing, so once the agent is idle they are offered again.
+    const acceptsItself = openChatMode === "auto" && isAgentActive &&
+      !branchRequests.some((entry) => needsReview(entry) || branchChatId(entry) === undefined);
     return (
       <div className={`themed-surface-inset relative flex items-center gap-2 overflow-hidden border-b border-kumo-line bg-kumo-elevated px-3.5 py-2 ${isTop ? "rounded-t-[calc(1rem-1px)]" : ""}`}>
         <span className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-kumo-brand/40 to-transparent" aria-hidden="true" />
@@ -4749,46 +4796,48 @@ function ChatInterface({
               {" · changes made here are held until you accept them"}
             </span>
           )}
-          {branchRequests.length > 0 && (
+          {acceptsItself && !nothingHeld && (
             <span className="font-normal text-kumo-inactive">
-              {branchRequests.length === 1
-                ? " · 1 request to apply"
-                : ` · ${branchRequests.length} requests to apply`}
+              {" · accepted when the agent finishes"}
             </span>
           )}
         </span>
-        <DiscardPendingChangesPopover
-          open={discardChangesTarget?.chatId === chat.id}
-          disabled={changesActionsDisabled || nothingHeld}
-          isDiscarding={isDiscardingChanges}
-          onOpenChange={(open) => {
-            if (isDiscardingChanges) return;
-            setDiscardChangesTarget(open ? { chatId: chat.id } : null);
-          }}
-          onConfirm={handleDiscardPendingChanges}
-        />
-        <Tooltip content={nothingHeld
-          ? "Nothing to accept yet."
-          : isAgentActive
-          ? "Wait for the agent to finish before accepting changes."
-          : isDiscardingChanges
-            ? "Wait for pending changes to finish discarding."
-            : awaitingDecision
-              ? "Decide what the agent is waiting on first."
-              : acceptBlocked ?? (branchRequests.length > 0
-                ? "Apply the requests above, then keep any code changes as the gadget's current version."
-                : "Keep this draft and make it the gadget's current version.")} asChild>
-          <WorkshopButton
-            disabled={nothingHeld || changesActionsDisabled || awaitingDecision ||
-              acceptBlocked !== undefined}
-            onClick={() => { void handleAcceptChanges(); }}
-            tone="primary"
-            className="!h-7 !cursor-pointer !rounded-md !border-transparent !shadow-none gap-1 text-[12px]"
-          >
-            <Check size={11} weight="bold" />
-            Accept changes
-          </WorkshopButton>
-        </Tooltip>
+        {!acceptsItself && (
+          <>
+            <DiscardPendingChangesPopover
+              open={discardChangesTarget?.chatId === chat.id}
+              disabled={changesActionsDisabled || nothingHeld}
+              isDiscarding={isDiscardingChanges}
+              onOpenChange={(open) => {
+                if (isDiscardingChanges) return;
+                setDiscardChangesTarget(open ? { chatId: chat.id } : null);
+              }}
+              onConfirm={handleDiscardPendingChanges}
+            />
+            <Tooltip content={nothingHeld
+              ? "Nothing to accept yet."
+              : isAgentActive
+              ? "Wait for the agent to finish before accepting changes."
+              : isDiscardingChanges
+                ? "Wait for pending changes to finish discarding."
+                : awaitingDecision
+                  ? "Decide what the agent is waiting on first."
+                  : acceptBlocked ?? (branchRequests.length > 0
+                    ? "Apply the requests above, then keep any code changes as the gadget's current version."
+                    : "Keep this draft and make it the gadget's current version.")} asChild>
+              <WorkshopButton
+                disabled={nothingHeld || changesActionsDisabled || awaitingDecision ||
+                  acceptBlocked !== undefined}
+                onClick={() => { void handleAcceptChanges(); }}
+                tone="primary"
+                className="!h-7 !cursor-pointer !rounded-md !border-transparent !shadow-none gap-1 text-[12px]"
+              >
+                <Check size={11} weight="bold" />
+                Accept changes
+              </WorkshopButton>
+            </Tooltip>
+          </>
+        )}
       </div>
     );
   };
@@ -5272,6 +5321,21 @@ function ChatInterface({
     const isProc = processingActions.has(msg.actionId);
     const safeResourceUrl = safeExternalUrl(log.resourceUrl);
 
+    if (log.type === "action" && log.creation) {
+      const kind = log.gatekeeperId === undefined
+        ? undefined : createdResourceKinds.get(log.gatekeeperId);
+      return (
+        <CreatedResourceCard
+          creation={log}
+          kind={kind}
+          branding={kind && vendorBranding.get(kind.vendorId)}
+          processing={isProc}
+          onSave={() => void resolveAction(log, "approve")}
+          onDeny={() => void resolveAction(log, "deny")}
+        />
+      );
+    }
+
     if (log.type === "bindHook") {
       const isDeleted = log.hookId === undefined;
       const stateLabel = isDeleted
@@ -5390,7 +5454,7 @@ function ChatInterface({
     // present it as a prominent callout with its details expanded by default.
     const isBlocking = isPending && log.description.awaitDecision === true;
     // One accepted on a resource that is still unsaved waits for the resource to be saved, which
-    // its creation's card offers once that is accepted too.
+    // its creation's card (CreatedResourceCard) offers once that is accepted too.
     const unsaved = isPending && awaitsSave(log, unsavedResources);
     // One accepted while its resource was unsaved, still pending once it is saved, is what a save
     // that did not finish left: held in staging, where it is retried on its own.
@@ -5413,7 +5477,7 @@ function ChatInterface({
         : awaitsAccept
           ? "Applies when the changes are accepted"
           : unsaved
-            ? log.creation ? "Unsaved" : "Applies when the resource is saved"
+            ? "Applies when the resource is saved"
             : saveError
               ? "Save did not finish"
               : heldAfterSave ? "Accepted" : null;
@@ -5448,10 +5512,10 @@ function ChatInterface({
           disabled={isProc}
           describedBy={describedBy}
         />
-        {!awaitsAccept && (!unsaved || log.creation) && (!saveError || saveError.retryable) && (
+        {!awaitsAccept && !unsaved && (!saveError || saveError.retryable) && (
           <ResolveButton
             tone="approve"
-            label={unsaved ? "Save to account" : saveError ? "Retry" : undefined}
+            label={saveError ? "Retry" : undefined}
             variant={isBlocking ? "filled" : "quiet"}
             onClick={() => void resolveAction(log, "approve")}
             disabled={isProc}
@@ -6979,15 +7043,10 @@ function ChatInterface({
                       : undefined}
                     blockedReason={sendBlockedReason}
                     draftUpdateBanner={(() => {
-                      // Two unrelated things dock here, and both are "changes" in plain English:
-                      // the gadget's own code draft, and requests waiting on someone else's
-                      // service. They are kept apart by language ("Pending changes" against "N
-                      // requests waiting") and by weight -- only the local, reversible accept
-                      // carries a filled primary. The tray sits above, nearer the transcript the
-                      // requests came from.
-                      // The bar also accepts the chat's requests, so it shows while there are
-                      // any, and whenever the chat is forked: in Fork, before there is anything
-                      // to accept.
+                      // The tray lists what the chat changed, code and requests alike, nearer
+                      // the transcript they came from; the bar under it accepts or discards them
+                      // all. The bar shows while there is anything to accept, and whenever the
+                      // chat is forked: in Fork, before there is anything to accept.
                       const codeDraft = currentChatMetadata &&
                         (chatHasProposedChanges(currentChatMetadata) ||
                           hasPendingBlueprintProposal || branchRequests.length > 0 ||

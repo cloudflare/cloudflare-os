@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { Warning } from '@phosphor-icons/react'
+import { ArrowUpRight, Code, GitBranch, Warning } from '@phosphor-icons/react'
+import type { WorkpieceId } from '@gadgets/workshop-shared/api'
 import type { VendorBranding } from '../../useVendorBranding'
 import { formatRelativeTime } from '../../utils/formatRelativeTime'
 import { PendingChangeGroupRow, type PendingChangeActions } from './PendingChangeGroupRow'
@@ -16,6 +17,15 @@ import { countFromElsewhere, pendingChangeEntries, type PendingChangeGroup } fro
  */
 const JOURNAL_PRESSURE_THRESHOLD = 35
 
+/** A gadget or worktree the open chat proposes code changes to (AiChatMetadata.proposedChangeWorkpieces). */
+export interface PendingCodeChange {
+  workpieceId: WorkpieceId
+  title: string
+  type: 'gadget' | 'worktree'
+}
+
+const count = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`
+
 const barClass =
   'themed-surface-inset relative flex flex-col overflow-hidden border-b border-kumo-line bg-kumo-elevated'
 
@@ -31,18 +41,20 @@ const barClass =
  * accepted, from the code-draft bar that shares this slot; outside any chat, the held-changes bar
  * under it accepts the rest.
  *
- * In a chat it lists the chat's requests and the ones no chat made that accepting it applies
- * first; outside any chat, the ones no chat made. The group rows mark the ones this conversation
- * did not ask for.
+ * In a chat it lists the chat's code changes, one row per gadget or worktree, which open its code,
+ * then the chat's requests and the ones no chat made that accepting it applies first; outside any
+ * chat, the ones no chat made. The group rows mark the ones this conversation did not ask for.
  */
 export const PendingChangesTray = ({
   groups,
+  code,
   restricted,
   vendorIdByGatekeeper,
   vendorBranding,
   actions,
 }: {
   groups: readonly PendingChangeGroup[]
+  code?: { changes: readonly PendingCodeChange[], onOpen: (workpieceId: WorkpieceId) => void }
   /** The workspace's restricted-data latch (WorkspaceMetadata.containsRestrictedData). */
   restricted: boolean
   vendorIdByGatekeeper: ReadonlyMap<number, string>
@@ -52,7 +64,8 @@ export const PendingChangesTray = ({
   const [openGroupId, setOpenGroupId] = useState<number | null>(null)
   const [expandedActionId, setExpandedActionId] = useState<number | null>(null)
 
-  if (groups.length === 0) return null
+  const codeChanges = code?.changes ?? []
+  if (groups.length === 0 && codeChanges.length === 0) return null
 
   const all = pendingChangeEntries(groups)
   const oldest = all[0]
@@ -68,12 +81,14 @@ export const PendingChangesTray = ({
       <div className="flex flex-shrink-0 items-center gap-2 px-3.5 py-2">
         <span className="h-1.5 w-1.5 flex-shrink-0 rounded-full bg-kumo-brand" aria-hidden="true" />
         <span className="min-w-0 flex-1 truncate text-[12px] font-medium leading-4 tracking-[-0.2px] text-kumo-default">
-          {all.length === 1 ? '1 request waiting' : `${all.length} requests waiting`}
+          {[
+            codeChanges.length > 0 && count(codeChanges.length, 'code change'),
+            all.length > 0 && count(all.length, 'request'),
+          ].filter(Boolean).join(' and ')} waiting
           <span className="font-normal text-kumo-inactive">
             {elsewhere > 0 && (elsewhere === all.length
               ? ' · asked elsewhere in this workspace'
               : ` · ${elsewhere} from elsewhere`)}
-            {' · nothing applied yet'}
             {oldest && ` · oldest ${formatRelativeTime(oldest.createdAt)}`}
           </span>
         </span>
@@ -108,6 +123,34 @@ export const PendingChangesTray = ({
           only the list let each notice add to the total without limit. Within that cap the list
           keeps a floor, so however many notices stand there is always a request to act on. */}
       <div className="min-h-[5.5rem] flex-1 overflow-y-auto border-t border-kumo-line/70">
+        {codeChanges.map(change => {
+          const Icon = change.type === 'worktree' ? GitBranch : Code
+          return (
+            <div key={change.workpieceId} className="border-t border-kumo-line/70 first:border-t-0">
+              <button
+                type="button"
+                onClick={() => code?.onOpen(change.workpieceId)}
+                className="group flex w-full cursor-pointer items-center gap-2.5 px-3.5 py-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring"
+              >
+                <span className="grid h-6 w-6 flex-shrink-0 place-items-center rounded-md bg-kumo-tint text-kumo-subtle" aria-hidden="true">
+                  <Icon size={14} />
+                </span>
+                <span className="min-w-[4rem] flex-1 truncate text-[12.5px] font-medium leading-[17px] tracking-[-0.15px] text-kumo-default">
+                  {change.title}
+                </span>
+                <span className="flex-shrink-0 text-[11.5px] leading-4 text-kumo-inactive">
+                  Code changes
+                </span>
+                <ArrowUpRight
+                  size={12}
+                  weight="bold"
+                  aria-hidden="true"
+                  className="ml-auto flex-shrink-0 text-kumo-inactive group-hover:text-kumo-default"
+                />
+              </button>
+            </div>
+          )
+        })}
         {groups.map(group => {
           const vendorId = vendorIdByGatekeeper.get(group.gatekeeperId)
           return (

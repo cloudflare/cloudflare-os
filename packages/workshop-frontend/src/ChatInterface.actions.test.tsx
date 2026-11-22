@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
 import type {
   ActionLogEntry, AiChatMessage, AiChatMetadata, AiChatStreamEvent, AiChatSubscriber, Overseer,
+  WorkpieceSummary,
 } from '@gadgets/workshop-shared/api'
 
 vi.stubGlobal('ResizeObserver', class {
@@ -116,6 +117,8 @@ function renderChat(
   props: {
     restricted?: boolean, selectedChatId?: number, modeReadOnly?: boolean,
     onChatsWithChangesChange?: (chats: readonly ChatWithChanges[]) => void,
+    onOpenWorkpieceCode?: (workpieceId: number) => void,
+    workpieces?: WorkpieceSummary[],
   } = {},
 ) {
   return testRoot.render(
@@ -133,6 +136,8 @@ function renderChat(
       onConsumeConsoleLogs={() => ''}
       onDiscardConsoleLogs={() => {}}
       onOpenGadget={() => {}}
+      onOpenWorkpieceCode={props.onOpenWorkpieceCode ?? (() => {})}
+      workpieceOf={(id) => props.workpieces?.find(workpiece => workpiece.id === id)}
       outputOfWorkpiece={() => undefined}
     />,
   )
@@ -295,7 +300,8 @@ describe('accepting a chat', () => {
 
     // Another chat's request is not this chat's to accept, and appears nowhere here.
     expect(document.body.textContent).toContain('1 request waiting')
-    expect(document.body.textContent).toContain('Pending changes · 1 request to apply')
+    expect(document.body.textContent).toContain('Pending changes')
+    expect(document.body.textContent).not.toContain('request to apply')
     expect(document.body.textContent).toContain('Applies when the changes are accepted')
     const labels = [...document.querySelectorAll('button')].map(b => b.textContent?.trim())
     expect(labels).toContain('Deny')
@@ -407,6 +413,178 @@ describe('accepting a chat', () => {
     ])
   })
 });
+
+const agent = { type: 'agent', id: 'model', name: 'Model' } as const
+
+// Chat 1 selected in `mode`, its agent running or not, with `entries` pending.
+async function renderModeChat({ mode, running, entries, over = {} }: {
+  mode: AiChatMetadata['mode'], running: boolean, entries: ActionLogEntry[],
+  over?: Partial<AiChatMetadata>,
+}) {
+  const server = makeOverseer()
+  withChatApi(server, undefined, [{
+    id: 1, title: 'Chat', started: new Date(), lastActive: new Date(), mode,
+    pendingActions: entries.length, ...(running ? { activeAgent: agent } : {}), ...over,
+  }])
+  await renderChat(server.overseer, { selectedChatId: 1 })
+  await server.resolveSubscription()
+  await server.resolvePendingQuery({ entries })
+}
+
+const buttonLabels = () => [...document.querySelectorAll('button')].map(b => b.textContent?.trim())
+const reviewLabels = () => (document.body.textContent ?? '').split('Needs review').length - 1
+
+describe('the pending-changes bar by mode', () => {
+  const autoApprovable = () => pendingLog({ autoApprovable: true }) as ActionLogEntry
+
+  it('offers no accept mid-turn in Auto while everything pending is auto-approvable', async () => {
+    await renderModeChat({ mode: 'auto', running: true, entries: [autoApprovable()] })
+
+    expect(document.body.textContent).toContain('1 request waiting')
+    expect(document.body.textContent).toContain('accepted when the agent finishes')
+    expect(buttonLabels()).not.toContain('Accept changes')
+  })
+
+  it('offers no accept mid-turn in Auto for code changes alone', async () => {
+    await renderModeChat({
+      mode: 'auto', running: true, entries: [], over: { proposedChangeWorkpieces: [5] },
+    })
+    expect(buttonLabels()).not.toContain('Accept changes')
+  })
+
+  it('offers the accept mid-turn in Auto once a request needs review', async () => {
+    await renderModeChat({ mode: 'auto', running: true, entries: [autoApprovable(), entry(2, { chatId: 1 })] })
+    expect(buttonLabels()).toContain('Accept changes')
+  })
+
+  it('offers the accept in Auto once the turn has stopped with the chat forked', async () => {
+    await renderModeChat({ mode: 'auto', running: false, entries: [autoApprovable()] })
+    expect(buttonLabels()).toContain('Accept changes')
+    expect(document.body.textContent).not.toContain('accepted when the agent finishes')
+  })
+
+  it.each(['review', 'fork'] as const)('offers the accept mid-turn in %s', async (mode) => {
+    await renderModeChat({ mode, running: true, entries: [autoApprovable()] })
+    expect(buttonLabels()).toContain('Accept changes')
+  })
+})
+
+describe('requests that need review', () => {
+  it.each(['auto', 'review', 'fork'] as const)('are marked in %s, on the row and the request', async (mode) => {
+    await renderModeChat({
+      mode, running: false,
+      entries: [pendingLog({ autoApprovable: true }) as ActionLogEntry, entry(2, { chatId: 1 })],
+    })
+    // The connection's row says so while it is closed.
+    expect(reviewLabels()).toBe(1)
+    await openDisclosure('2 requests')
+    // Its row, and the one request of the two that is not auto-approvable.
+    expect(reviewLabels()).toBe(2)
+  })
+
+  it('are not a creation or a code change', async () => {
+    await renderModeChat({
+      mode: 'review', running: false,
+      entries: [
+        entry(1, { chatId: 1, creation: true }),
+        entry(2, { chatId: 1, description: { title: 'Edit', description: '', implementsRevert: false, autoApprovable: true } }),
+      ],
+      over: { proposedChangeWorkpieces: [5] },
+    })
+    await openDisclosure('2 requests')
+    expect(reviewLabels()).toBe(0)
+  })
+})
+
+describe('code changes in the pending list', () => {
+  it('lists each gadget and worktree the chat changes, each opening its code', async () => {
+    const server = makeOverseer()
+    withChatApi(server, undefined, [{
+      id: 1, title: 'Chat', started: new Date(), lastActive: new Date(),
+      // 7 is a gatekeeper whose binding the chat changes, which has no code to open.
+      proposedChangeWorkpieces: [5, 6, 7],
+    }])
+    const onOpenWorkpieceCode = vi.fn<(workpieceId: number) => void>()
+    await renderChat(server.overseer, {
+      selectedChatId: 1, onOpenWorkpieceCode,
+      workpieces: [
+        { id: 5, type: 'gadget', title: 'Todo app' },
+        { id: 6, type: 'worktree', title: 'Scratch', chatId: 1 },
+      ] as WorkpieceSummary[],
+    })
+    await server.resolveSubscription()
+    await server.resolvePendingQuery({ entries: [{ ...entry(1), chatId: 1 } as ActionLogEntry] })
+
+    expect(document.body.textContent).toContain('2 code changes and 1 request waiting')
+    const row = (title: string) => [...document.querySelectorAll('button')]
+      .find(b => b.textContent?.includes(title) && b.textContent.includes('Code changes'))
+    expect(row('Scratch')).toBeDefined()
+    await act(async () => row('Todo app')!.click())
+    expect(onOpenWorkpieceCode).toHaveBeenCalledExactlyOnceWith(5)
+  })
+})
+
+describe("a resource the agent created", () => {
+  const accepted = { by: { type: 'user', id: 'alice', name: 'Alice' }, at: new Date(0), autoApproved: false }
+  const creation = (over: Partial<Record<string, unknown>> = {}) => entry(1, {
+    chatId: 1, creation: true, resourceTitle: 'Trip plan',
+    description: { title: 'Create Google Doc: Trip plan', description: '', implementsRevert: false, autoApprovable: false },
+    ...over,
+  })
+
+  async function renderCreation(log: ActionLogEntry) {
+    // Read afresh for each test, under a session of its own.
+    auth.authenticatedApi = {
+      listGatekeeperVendors: async () => [{
+        id: 'google', description: { displayName: 'Google', url: '' },
+        supportedResources: [{ id: 'doc', title: 'Google Doc', urlPattern: 'https://docs.google.com/*' }],
+      }],
+    } as unknown as typeof auth.authenticatedApi
+    const server = makeOverseer()
+    const chat = withChatApi(server, undefined, [
+      { id: 1, title: 'Chat', started: new Date(), lastActive: new Date() },
+    ])
+    await renderChat(server.overseer, { selectedChatId: 1 })
+    await server.resolveSubscription()
+    await server.resolvePendingQuery({ entries: log.state === 'pending' ? [log] : [] })
+    chat.emitMessage({
+      chatId: 1, sequence: 0, timestamp: new Date(), author: agent, type: 'message', message: '',
+      toolCalls: [{
+        toolName: 'createExternalResource', id: 'call',
+        input: { vendorId: 'google', resourceTypeId: 'doc', title: 'Trip plan', bindingName: 'trip' },
+        output: { gatekeeperId: 1 },
+      }],
+    } as unknown as AiChatMessage)
+    chat.emitMessage({ ...actionMessage, sequence: 1, actionLog: log } as AiChatMessage)
+    await act(async () => {})
+  }
+
+  it('is unsaved, and can be saved once the chat is accepted', async () => {
+    await renderCreation(creation())
+
+    expect(document.body.textContent).toContain('Trip plan')
+    expect(document.body.textContent).toContain('Google Doc · Google')
+    expect(document.body.textContent).toContain("It can be saved once the chat's changes are accepted.")
+    expect(buttonLabels()).not.toContain('Save to account')
+  })
+
+  it('offers saving once accepted', async () => {
+    await renderCreation(creation({ accepted }))
+
+    expect(document.body.textContent).toContain('Exists only in this workspace until you save it')
+    expect(buttonLabels()).toContain('Save to account')
+  })
+
+  it('links to the resource once saved', async () => {
+    await renderCreation(creation({ state: 'approved', resourceUrl: 'https://docs.google.com/document/d/1' }))
+
+    expect(document.body.textContent).toContain('Saved')
+    expect(document.body.textContent).not.toContain('Unsaved')
+    const link = [...document.querySelectorAll('a')].find(a => a.textContent?.includes('Trip plan'))
+    expect(link?.getAttribute('href')).toBe('https://docs.google.com/document/d/1')
+    expect(buttonLabels()).not.toContain('Save to account')
+  })
+})
 
 describe('restricted approval', () => {
   it('shows the notice and the full request in the tray while restricted', async () => {

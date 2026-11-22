@@ -1620,12 +1620,13 @@ export default function GadgetEditor() {
       navigate, id])
 
   // ── workpiece picker handlers ───────────────────────────────────────────────────
-  const handleSelectWorkpiece = useCallback((workpieceId: WorkpieceId) => {
+  // Opens `tab`, by default the workpiece's app, or a worktree's code since that is all it has.
+  const openWorkpiece = useCallback((workpieceId: WorkpieceId, tab?: RightTab) => {
     if (isAgentActive) userPickedWorkpieceThisTurnRef.current = true
     const picked = workpieces.get(workpieceId)
     // Picking a workpiece is a deliberate move to its view, so the turn must not pull the tab
-    // back. A worktree has only Code.
-    handleTabSelect(picked?.type === 'worktree' ? 'code' : 'app')
+    // back.
+    handleTabSelect(tab ?? (picked?.type === 'worktree' ? 'code' : 'app'))
     setWorkspaceVisibility('open', workpieceId)
     const pendingChatId = picked?.chatId
     // A spawned agent's worktree opens its chat over the working chat, as navigateToChat does.
@@ -1645,6 +1646,12 @@ export default function GadgetEditor() {
       }),
     })
   }, [id, navigate, isAgentActive, setWorkspaceVisibility, workpieces, handleTabSelect])
+  const handleSelectWorkpiece = useCallback(
+    (workpieceId: WorkpieceId) => openWorkpiece(workpieceId), [openWorkpiece])
+  const handleOpenWorkpieceCode = useCallback(
+    (workpieceId: WorkpieceId) => openWorkpiece(workpieceId, 'code'), [openWorkpiece])
+  const workpieceOf = useCallback(
+    (workpieceId: WorkpieceId) => workpieces.get(workpieceId), [workpieces])
 
   const handleRenameWorkpiece = useCallback(async (workpieceId: WorkpieceId, title: string) => {
     if (!overseer) return
@@ -2257,6 +2264,8 @@ export default function GadgetEditor() {
                   onChatsWithChangesChange={setChatsWithChanges}
                   onSelectedChatProposedChangesChange={setSelectedChatProposedWorkpieces}
                   onOpenGadget={handleSelectWorkpiece}
+                  onOpenWorkpieceCode={handleOpenWorkpieceCode}
+                  workpieceOf={workpieceOf}
                   outputOfWorkpiece={outputOfWorkpiece}
                 />
               </div>

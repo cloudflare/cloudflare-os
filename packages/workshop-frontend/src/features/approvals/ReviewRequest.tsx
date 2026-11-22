@@ -1,4 +1,5 @@
 import { useId } from 'react'
+import { Badge } from '@cloudflare/kumo'
 import { CaretRight } from '@phosphor-icons/react'
 import type { ActionLogEntry } from '@gadgets/workshop-shared/api'
 import { ActionFields, entryFields, fieldCountLabel } from '../../components/ActionFields'
@@ -9,8 +10,9 @@ import { RestrictedApprovalNotice } from '../../components/RestrictedApprovalNot
 import { ResolveButton } from '../../components/ResolveButton'
 import { safeExternalUrl } from '../../utils/safeExternalUrl'
 import { formatRelativeTime } from '../../utils/formatRelativeTime'
+import { needsReview } from './pendingChangeGroups'
 
-const titleClass = 'm-0 truncate text-[13px] font-medium leading-[18px] tracking-[-0.25px] text-kumo-default'
+const titleClass = 'm-0 truncate text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-default'
 
 /**
  * One pending request, with everything its approver has to read and the decision itself.
@@ -63,6 +65,12 @@ export function ReviewRequest({
   const fieldsId = `${reviewId}-fields`
   const incompleteId = `${reviewId}-incomplete`
   const incomplete = isDescriptionIncomplete(record)
+  const flagged = needsReview(record)
+  const title = (
+    <h3 className={`${titleClass} ${flagged ? 'font-semibold' : 'font-medium'}`}>
+      {record.description.title}
+    </h3>
+  )
   const describedBy = restricted
     ? [
       noticeId,
@@ -75,23 +83,26 @@ export function ReviewRequest({
     <article className="border-b border-kumo-line px-5 py-3 transition-colors hover:bg-kumo-elevated/50">
       <div className="flex flex-wrap items-start gap-x-3 gap-y-1.5">
         <div className="min-w-[8rem] flex-1">
-          {restricted ? (
-            // Everything expanding would reveal is already shown, so there is no disclosure.
-            <h3 className={titleClass}>{record.description.title}</h3>
-          ) : (
-            <button
-              type="button"
-              onClick={onToggle}
-              aria-expanded={expanded}
-              className="flex max-w-full cursor-pointer items-center gap-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring"
-            >
-              <h3 className={titleClass}>{record.description.title}</h3>
-              <CaretRight
-                size={12}
-                className={`flex-shrink-0 text-kumo-inactive transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`}
-              />
-            </button>
-          )}
+          <div className="flex min-w-0 items-center gap-2">
+            {restricted ? (
+              // Everything expanding would reveal is already shown, so there is no disclosure.
+              title
+            ) : (
+              <button
+                type="button"
+                onClick={onToggle}
+                aria-expanded={expanded}
+                className="flex min-w-0 cursor-pointer items-center gap-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring"
+              >
+                {title}
+                <CaretRight
+                  size={12}
+                  className={`flex-shrink-0 text-kumo-inactive transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`}
+                />
+              </button>
+            )}
+            {flagged && <Badge variant="warning" className="flex-shrink-0">Needs review</Badge>}
+          </div>
           <p className="mt-0.5 truncate text-[11.5px] leading-4 tracking-[-0.1px] text-kumo-inactive">
             {showResource && (
               <>

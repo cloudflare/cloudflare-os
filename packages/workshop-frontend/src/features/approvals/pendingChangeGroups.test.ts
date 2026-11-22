@@ -6,6 +6,7 @@ import {
   countFromElsewhere,
   describeGroupSize,
   isFromElsewhere,
+  needsReview,
   pendingChangeEntries,
   pendingChangeGroups,
 } from './pendingChangeGroups'
@@ -237,5 +238,20 @@ describe('chatBranchPending', () => {
     expect(chatBranchPending(unsaved, null).map(log => log.id)).toEqual([9])
     // Saved, what is left is held in staging, as anything pending with no chat is.
     expect(chatBranchPending(unsaved.slice(1), null).map(log => log.id)).toEqual([6, 7, 9])
+  })
+})
+
+describe('needsReview', () => {
+  const verdict = (autoApprovable?: boolean) =>
+    ({ title: 'Write', description: '', implementsRevert: false, autoApprovable }) as never
+
+  it('holds for an action its author did not judge auto-approvable, or gave no verdict', () => {
+    expect(needsReview(entry({ id: 1, description: verdict(false) }))).toBe(true)
+    expect(needsReview(entry({ id: 1, description: verdict(undefined) }))).toBe(true)
+    expect(needsReview(entry({ id: 1, description: verdict(true) }))).toBe(false)
+  })
+
+  it('does not hold for a creation, which is saved rather than reviewed', () => {
+    expect(needsReview(entry({ id: 1, creation: true, description: verdict(false) }))).toBe(false)
   })
 })

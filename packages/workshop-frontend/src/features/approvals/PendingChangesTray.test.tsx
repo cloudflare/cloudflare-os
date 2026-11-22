@@ -99,7 +99,7 @@ describe('PendingChangesTray', () => {
     await render({ groups: [group([request(1), request(2)])] })
 
     expect(document.body.textContent).toContain('2 requests waiting')
-    expect(document.body.textContent).toContain('nothing applied yet')
+    expect(document.body.textContent).not.toContain('nothing applied yet')
   })
 
   it('says so while the workspace is restricted', async () => {

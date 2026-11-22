@@ -185,6 +185,15 @@ export function chatBranchPending(
 }
 
 /**
+ * Whether `log` is an action its gatekeeper's author did not judge safe to apply without a person
+ * looking (ActionDescription.autoApprovable), so the UI singles it out in every chat mode. A
+ * creation is not one: it waits to be saved, not reviewed.
+ */
+export function needsReview(log: ActionLogEntry): boolean {
+  return log.type === 'action' && !log.creation && log.description.autoApprovable !== true
+}
+
+/**
  * Whether the UI offers to approve `log` on its own: one the agent waits on (`awaitDecision`)
  * cannot wait for its chat's accept, and one no chat made is covered by no chat's accept. A chat's
  * other requests apply only when its changes are accepted.

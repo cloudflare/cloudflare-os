@@ -52,7 +52,7 @@ const setup = () => {
         onAgentActiveChange={activity}
         pendingConsoleLogCount={0} consoleLogPreview="" consoleLogSeverity="info"
         onConsumeConsoleLogs={() => ""} onDiscardConsoleLogs={() => {}}
-        onOpenGadget={() => {}} outputOfWorkpiece={() => undefined} />,
+        onOpenGadget={() => {}} onOpenWorkpieceCode={() => {}} workpieceOf={() => undefined} outputOfWorkpiece={() => undefined} />,
     ),
     metadata: (value: AiChatMetadata) => act(async () => { subscriber.metadata(value); }),
     deleted: (id: number) => act(async () => { subscriber.deleted(id); }),

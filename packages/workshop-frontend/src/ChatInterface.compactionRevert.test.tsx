@@ -136,7 +136,7 @@ async function openChat(
       consoleLogSeverity="info"
       onConsumeConsoleLogs={() => ''}
       onDiscardConsoleLogs={() => {}}
-      onOpenGadget={() => {}}
+      onOpenGadget={() => {}} onOpenWorkpieceCode={() => {}} workpieceOf={() => undefined}
       outputOfWorkpiece={() => undefined}
     />,
   )

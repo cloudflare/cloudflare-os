@@ -1,9 +1,10 @@
+import { Badge } from '@cloudflare/kumo'
 import { ArrowSquareOut, CaretRight } from '@phosphor-icons/react'
 import { GatekeeperIcon } from '../../components/GatekeeperIcon'
 import type { VendorBranding } from '../../useVendorBranding'
 import { ReviewRequest } from './ReviewRequest'
 import {
-  OUTCOME_UNKNOWN_COPY, describeGroupSize, isFromElsewhere, type PendingChange,
+  OUTCOME_UNKNOWN_COPY, describeGroupSize, isFromElsewhere, needsReview, type PendingChange,
   type PendingChangeGroup,
 } from './pendingChangeGroups'
 
@@ -53,6 +54,8 @@ export const PendingChangeGroupRow = ({
   // than every request inside it repeating the same sentence. This is also why the group sorts
   // below the ones this conversation did ask for.
   const allElsewhere = isFromElsewhere(group)
+  // Said on the row too, since its requests are hidden until it is opened.
+  const flagged = group.entries.some(needsReview)
 
   return (
     <div className="border-t border-kumo-line/70 first:border-t-0">
@@ -71,9 +74,10 @@ export const PendingChangeGroupRow = ({
             size={14}
             className="h-6 w-6 rounded-md"
           />
-          <span className="min-w-[4rem] flex-1 truncate text-[12.5px] font-medium leading-[17px] tracking-[-0.15px] text-kumo-default">
+          <span className={`min-w-[4rem] flex-1 truncate text-[12.5px] leading-[17px] tracking-[-0.15px] text-kumo-default ${flagged ? 'font-semibold' : 'font-medium'}`}>
             {group.title}
           </span>
+          {flagged && <Badge variant="warning" className="flex-shrink-0">Needs review</Badge>}
           <span className="flex-shrink-0 text-[11.5px] leading-4 text-kumo-inactive">
             {describeGroupSize(group)}
           </span>
