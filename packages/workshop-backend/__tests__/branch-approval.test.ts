@@ -919,6 +919,28 @@ describe("discarding a chat", () => {
     });
   });
 
+  it("is left as it was when a gatekeeper refuses the rejection, to be deleted again", async () => {
+    const refusal = {on: true};
+    const {visit, client} = await workspace({
+      async rejectAction() { if (refusal.on) throw new Error("Unavailable."); },
+    });
+    await visit(impl => impl.submitAction(GK, 1, description(), CHAT_A));
+    using overseer = await client();
+    // (Settled here: an RPC promise's rejection reaches vitest as unhandled through `rejects`.)
+    expect(await overseer.deleteChat(1).then(() => null, (error: Error) => error.message))
+        .toBe("Unavailable.");
+    await visit(impl => {
+      expect(impl.storage.chatMeta.get(1)).toBeDefined();
+      expect(states(impl, 1)).toEqual(["pending"]);
+    });
+    refusal.on = false;
+    await overseer.deleteChat(1);
+    await visit(impl => {
+      expect(impl.storage.chatMeta.get(1)).toBeUndefined();
+      expect(states(impl, 1)).toEqual(["rejected"]);
+    });
+  });
+
   it("refuses an action submitted to a deleted chat", async () => {
     const {visit} = await workspace(legacyGatekeeper().facet);
     await visit(async impl => {

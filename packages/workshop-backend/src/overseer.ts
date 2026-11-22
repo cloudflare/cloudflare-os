@@ -14673,6 +14673,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     this.impl.cancelAgent(chatId);
     await this.impl.waitForAgentIdle(chatId);
 
+    // Before anything is deleted: a gatekeeper refusing a rejection fails the deletion with the
+    // chat as it was, for the user to retry.
+    await this.impl.discardBranch(chatId, 0, discarding);
+
     // Delete the chat's workpiece registry footprint: provisional gadgets, all of its worktrees,
     // and provisional binding edges.
     await this.impl.removeChatWorkpieces(chatId);
@@ -14741,9 +14745,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     // Clean up all in-memory live state for this chat.
     this.impl.destroyLiveChat(chatId);
 
-    // Last, once no turn can start in the chat (see deliverAgentCallback), so that none submits
-    // an action the discard would miss. A gatekeeper refusing a rejection fails the deletion,
-    // which can be retried.
+    // Again last, once no turn can start in the chat (see deliverAgentCallback), for any action
+    // one submitted since the discard above.
     await this.impl.discardBranch(chatId, 0, discarding);
 
     this.impl.logger.info("deleted chat", {
