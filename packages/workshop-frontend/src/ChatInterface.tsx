@@ -125,7 +125,7 @@ import { chatsWithChanges, type ChatWithChanges } from "./features/approvals/cha
 import {
   acceptThrough, canApproveAlone, chatBranchPending, chatRequestIds, pendingChangeEntries,
   pendingChangeGroups, unsavedConnections, awaitsSave, branchChatId, needsReview,
-  OUTCOME_UNKNOWN_COPY, type PendingChange,
+  type PendingChange,
 } from "./features/approvals/pendingChangeGroups";
 import { AgentListRow } from "./features/chat/agents/AgentListRow";
 import { AgentRunsPane } from "./features/chat/agents/AgentRunsPane";
@@ -4791,11 +4791,6 @@ function ChatInterface({
         <span className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-kumo-brand/40 to-transparent" aria-hidden="true" />
         <span className="min-w-0 flex-1 truncate text-[12px] font-medium leading-4 tracking-[-0.2px] text-kumo-default">
           {nothingHeld ? "No pending changes" : "Pending changes"}
-          {nothingHeld && (
-            <span className="font-normal text-kumo-inactive">
-              {" · changes made here are held until you accept them"}
-            </span>
-          )}
           {acceptsItself && !nothingHeld && (
             <span className="font-normal text-kumo-inactive">
               {" · accepted when the agent finishes"}
@@ -4814,9 +4809,7 @@ function ChatInterface({
               }}
               onConfirm={handleDiscardPendingChanges}
             />
-            <Tooltip content={nothingHeld
-              ? "Nothing to accept yet."
-              : isAgentActive
+            <Tooltip content={isAgentActive
               ? "Wait for the agent to finish before accepting changes."
               : isDiscardingChanges
                 ? "Wait for pending changes to finish discarding."
@@ -5474,13 +5467,9 @@ function ChatInterface({
       ? "Approved"
       : isRejected
         ? "Denied"
-        : awaitsAccept
-          ? "Applies when the changes are accepted"
-          : unsaved
-            ? "Applies when the resource is saved"
-            : saveError
-              ? "Save did not finish"
-              : heldAfterSave ? "Accepted" : null;
+        : saveError
+          ? "Save did not finish"
+          : heldAfterSave ? "Accepted" : null;
     const stateLabelCls = isRejected || saveError
       ? "text-kumo-danger"
       : "text-kumo-inactive";
@@ -5630,7 +5619,6 @@ function ChatInterface({
         {saveError && (
           <p role="alert" className="m-0 ml-8 text-[12px] leading-4 break-words text-kumo-danger">
             Could not apply: {saveError.message}
-            {saveError.outcomeUnknown && ` ${OUTCOME_UNKNOWN_COPY}`}
           </p>
         )}
         {showDescription && (

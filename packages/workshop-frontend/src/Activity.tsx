@@ -19,7 +19,7 @@ import { ReviewRequest } from './features/approvals/ReviewRequest'
 import { ActionFields, entryFields } from './components/ActionFields'
 import { StagedChangesBar } from './features/approvals/StagedChangesBar'
 import {
-  OUTCOME_UNKNOWN_COPY, awaitsSave, chatBranchPending, unsavedConnections,
+  awaitsSave, chatBranchPending, unsavedConnections,
 } from './features/approvals/pendingChangeGroups'
 import type { ChatWithChanges } from './features/approvals/chatsWithChanges'
 
@@ -207,7 +207,7 @@ export default function Activity({
     setExpandedActionId(previous => (previous === id ? null : id))
   }
 
-  function renderNothingToReview(description: string): ReactNode {
+  function renderNothingToReview(): ReactNode {
     if (pendingStatus === 'checking') {
       return (
         <div className="flex flex-1 items-center justify-center text-[13px] text-kumo-subtle">
@@ -229,7 +229,6 @@ export default function Activity({
       <ActivityNotice
         icon={<Check size={17} weight="bold" />}
         title="Nothing to review"
-        description={description}
       >
         <WorkshopButton className="mt-4" onClick={() => onViewChange('history')}>
           View history
@@ -256,8 +255,7 @@ export default function Activity({
     })
     const count = chats.length + (staged.length > 0 ? 1 : 0) + toSave.length
     if (count === 0) {
-      return renderNothingToReview(
-        'Chats with changes to accept, and requests held outside any chat, show up here.')
+      return renderNothingToReview()
     }
     return (
       <>
@@ -280,8 +278,6 @@ export default function Activity({
                   {record.type === 'action' && record.applyError && (
                     <p role="alert" className="m-0 px-5 pt-2 text-[11.5px] leading-4 text-kumo-danger">
                       Could not apply: {record.applyError.message}
-                      {record.applyError.outcomeUnknown && ` ${OUTCOME_UNKNOWN_COPY}`}
-                      {record.applyError.retryable && ' Accept the held changes to try again.'}
                     </p>
                   )}
                   <ReviewRequest
@@ -303,10 +299,6 @@ export default function Activity({
               </h3>
               {toSave.map(({ creation, accepted }) => (
                 <div key={creation.id}>
-                  <p className="m-0 px-5 pt-2 text-[11.5px] leading-4 text-kumo-inactive">
-                    Exists only in this workspace. The changes accepted on it apply when you save
-                    it to an account.
-                  </p>
                   <ReviewRequest
                     record={creation}
                     restricted={restricted}
@@ -328,7 +320,6 @@ export default function Activity({
                           {record.accepted.autoApproved
                             ? `Accepted automatically for ${record.accepted.by.name}`
                             : `Accepted by ${record.accepted.by.name}`}
-                          {' · applies when the resource is saved'}
                         </p>
                       )}
                       <ReviewRequest
@@ -399,7 +390,6 @@ export default function Activity({
                     ? togglingHooks.has(record.hookId)
                     : false}
                   onToggleHook={handleToggleHook}
-                  awaitingSave={awaitsSave(record, unsavedResources)}
                 />
               ))}
             </section>
@@ -671,9 +661,6 @@ const ChatChangesRow = ({ chat, onOpen }: { chat: ChatWithChanges; onOpen: () =>
           {summary.charAt(0).toUpperCase() + summary.slice(1)}
         </span>
       </span>
-      <span className="flex-shrink-0 text-[12px] font-medium text-kumo-subtle group-hover:text-kumo-default">
-        Review
-      </span>
       <CaretRight size={12} className="flex-shrink-0 text-kumo-inactive" />
     </button>
   )
@@ -685,11 +672,8 @@ function HistoryRow({
   onToggle,
   togglingHook,
   onToggleHook,
-  awaitingSave,
 }: {
   record: ActionLogEntry
-  /** Accepted on a resource that is still unsaved (see awaitsSave). */
-  awaitingSave: boolean
   expanded: boolean
   onToggle: () => void
   togglingHook: boolean
@@ -753,7 +737,6 @@ function HistoryRow({
                 {accepted.autoApproved
                   ? `Accepted automatically for ${accepted.by.name}`
                   : `Accepted by ${accepted.by.name}`}
-                {awaitingSave && ', waiting on the resource being saved'}
               </ResolverBadge>
             )}
             {resourceUrl && (

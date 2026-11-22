@@ -50,7 +50,7 @@ it('discards what staging holds only once confirmed', async () => {
   await render({ discardStagedActions }, 480)
 
   await input(() => userEvent.click(button('Discard…')!))
-  expect(document.body.textContent).toContain('Deny the 12 requests made outside any chat.')
+  expect(document.body.textContent).toContain('Discard the held changes?')
   expect(discardStagedActions).not.toHaveBeenCalled()
 
   await input(() => userEvent.click(button('Discard changes')!))

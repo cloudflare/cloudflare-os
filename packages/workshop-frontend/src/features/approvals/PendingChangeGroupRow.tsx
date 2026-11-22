@@ -1,10 +1,10 @@
-import { Badge } from '@cloudflare/kumo'
+import { Badge, Tooltip } from '@cloudflare/kumo'
 import { ArrowSquareOut, CaretRight } from '@phosphor-icons/react'
 import { GatekeeperIcon } from '../../components/GatekeeperIcon'
 import type { VendorBranding } from '../../useVendorBranding'
 import { ReviewRequest } from './ReviewRequest'
 import {
-  OUTCOME_UNKNOWN_COPY, describeGroupSize, isFromElsewhere, needsReview, type PendingChange,
+  describeGroupSize, isFromElsewhere, needsReview, type PendingChange,
   type PendingChangeGroup,
 } from './pendingChangeGroups'
 
@@ -107,12 +107,6 @@ export const PendingChangeGroupRow = ({
               too — otherwise the footer with the group's own actions is sliced off. A single
               request can carry a whole JSON document. */}
           <div className="max-h-[min(18rem,20vh)] overflow-y-auto">
-            {group.hasCreation && (
-              <p className="m-0 border-b border-kumo-line px-5 py-2 text-[11.5px] leading-4 text-kumo-inactive">
-                This resource is new and unsaved. Once the changes are accepted, save it to an
-                account to apply them. Discarding its creation discards them too.
-              </p>
-            )}
             {group.entries.map(entry => {
               // An apply stops at the first request that fails, and what is queued behind it on
               // the connection waits for it to be retried or denied.
@@ -136,7 +130,6 @@ export const PendingChangeGroupRow = ({
                     >
                       <span className="min-w-0">
                         Could not apply: {entry.applyError.message}
-                        {entry.applyError.outcomeUnknown && ` ${OUTCOME_UNKNOWN_COPY}`}
                       </span>
                       {entry.applyError.retryable && (
                         <button
@@ -151,9 +144,13 @@ export const PendingChangeGroupRow = ({
                     </p>
                   )}
                   {failedBefore && (
-                    <p className="m-0 px-5 pt-2 text-[11.5px] leading-4 text-kumo-inactive">
-                      Waiting on "{failedBefore.description.title}" above it.
-                    </p>
+                    <div className="flex px-5 pt-2">
+                      <Tooltip content={`Waiting on "${failedBefore.description.title}" above it.`} asChild>
+                        <span className="inline-flex">
+                          <Badge variant="neutral">Blocked</Badge>
+                        </span>
+                      </Tooltip>
+                    </div>
                   )}
                   <ReviewRequest
                     record={entry}

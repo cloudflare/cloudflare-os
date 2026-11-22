@@ -1,4 +1,4 @@
-import { Badge } from '@cloudflare/kumo'
+import { Badge, Tooltip } from '@cloudflare/kumo'
 import { ArrowUpRight } from '@phosphor-icons/react'
 import type { ActionLogEntry } from '@gadgets/workshop-shared/api'
 import { GatekeeperIcon } from '../../components/GatekeeperIcon'
@@ -19,9 +19,9 @@ export interface CreatedResourceKind {
 /**
  * The transcript's card for a resource the agent created (ActionLogEntry.creation).
  *
- * Until it is saved the resource exists only in the workspace. Saving is offered once the
+ * Until it is saved the resource exists only in the workspace. Saving is enabled once the
  * creation is accepted with the rest of the chat's changes, which puts one question to the user
- * at a time; denying it discards the resource. Once saved, the card links to it.
+ * at a time; discarding it denies the creation. Once saved, the card links to it.
  */
 export const CreatedResourceCard = ({
   creation,
@@ -44,6 +44,11 @@ export const CreatedResourceCard = ({
   const resourceUrl = saved ? safeExternalUrl(creation.resourceUrl) : undefined
   const title = creation.resourceTitle || 'Untitled'
   const caption = [kind?.typeTitle, kind?.vendorName].filter(Boolean).join(' · ') || 'New resource'
+  const save = (
+    <WorkshopButton className="!h-7 text-[12px]" disabled={processing || !accepted} onClick={onSave}>
+      Save to account
+    </WorkshopButton>
+  )
 
   return (
     <div className="w-full max-w-[440px] overflow-hidden rounded-2xl border border-kumo-line bg-kumo-base">
@@ -82,14 +87,8 @@ export const CreatedResourceCard = ({
             {saved && <Badge variant="success" className="flex-shrink-0">Saved</Badge>}
           </div>
           <p className="m-0 mt-0.5 truncate text-[12px] text-kumo-subtle">{caption}</p>
-          {!saved && (
-            <p className="m-0 mt-1.5 text-[12px] leading-4 text-kumo-inactive">
-              {creation.state === 'rejected'
-                ? 'Discarded.'
-                : accepted
-                  ? 'Exists only in this workspace until you save it to an account.'
-                  : "Exists only in this workspace. It can be saved once the chat's changes are accepted."}
-            </p>
+          {creation.state === 'rejected' && (
+            <p className="m-0 mt-1.5 text-[12px] leading-4 text-kumo-inactive">Discarded.</p>
           )}
           {pending && creation.applyError && (
             <p role="alert" className="m-0 mt-1.5 text-[12px] leading-4 break-words text-kumo-danger">
@@ -98,12 +97,8 @@ export const CreatedResourceCard = ({
           )}
           {pending && (
             <div className="mt-2 flex items-center gap-1">
-              {accepted && (
-                <WorkshopButton className="!h-7 text-[12px]" disabled={processing} onClick={onSave}>
-                  Save to account
-                </WorkshopButton>
-              )}
-              <ResolveButton tone="deny" disabled={processing} onClick={onDeny} />
+              {accepted ? save : <Tooltip content="Accept changes first" asChild>{save}</Tooltip>}
+              <ResolveButton tone="deny" label="Discard" disabled={processing} onClick={onDeny} />
             </div>
           )}
         </div>

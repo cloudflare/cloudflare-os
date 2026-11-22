@@ -6,7 +6,6 @@ import type { ActionLogEntry, Overseer } from '@gadgets/workshop-shared/api'
 import { WorkshopButton } from '../../components/WorkshopControls'
 import { acceptThrough } from './pendingChangeGroups'
 
-const requestCount = (count: number) => count === 1 ? '1 request' : `${count} requests`
 
 /**
  * Accepts or discards what staging holds: the requests no chat made, which wait only while the
@@ -24,7 +23,6 @@ export const StagedChangesBar = ({ overseer, requests, blocked }: {
   const toasts = useKumoToastManager()
   const [busy, setBusy] = useState<'accept' | 'discard' | null>(null)
   const [confirmingDiscard, setConfirmingDiscard] = useState(false)
-  const count = requests.length
 
   const accept = async () => {
     setBusy('accept')
@@ -58,7 +56,6 @@ export const StagedChangesBar = ({ overseer, requests, blocked }: {
     <div className="themed-surface-inset relative flex items-center gap-2 overflow-hidden border-b border-kumo-line bg-kumo-elevated px-3.5 py-2">
       <span className="min-w-0 flex-1 truncate text-[12px] font-medium leading-4 tracking-[-0.2px] text-kumo-default">
         Held changes
-        <span className="font-normal text-kumo-inactive"> · {requestCount(count)} to apply</span>
       </span>
       <Popover open={confirmingDiscard} onOpenChange={open => { if (busy !== 'discard') setConfirmingDiscard(open) }}>
         <Popover.Trigger
@@ -83,10 +80,6 @@ export const StagedChangesBar = ({ overseer, requests, blocked }: {
             <Popover.Title className="text-[13px] font-medium leading-[18px] tracking-[-0.25px] text-kumo-default">
               Discard the held changes?
             </Popover.Title>
-            <p className="mt-0.5 text-[11.5px] leading-4 tracking-[-0.15px] text-kumo-subtle">
-              Deny the {requestCount(count)} made outside any chat. Denied requests can&apos;t be
-              restored.
-            </p>
           </div>
           <div className="flex items-center justify-end gap-0.5 border-t border-kumo-line px-2 py-1.5">
             <button

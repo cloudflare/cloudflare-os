@@ -282,6 +282,11 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
                 const isPending = gk.chatId !== undefined
                 const creation = unsaved.get(gk.target)
                 const canSave = creation?.type === 'action' && creation.accepted !== undefined
+                const unsavedPill = (
+                  <span className="flex-shrink-0 rounded-full bg-kumo-fill px-1.5 py-0.5 text-[10px] leading-none font-medium text-kumo-subtle">
+                    Unsaved
+                  </span>
+                )
 
                 return (
                   <div
@@ -357,18 +362,14 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
                                 </span>
                               </Tooltip>
                             )}
-                            {creation && (
+                            {creation && (canSave ? unsavedPill : (
                               <Tooltip
-                                content={canSave
-                                  ? 'Exists only in this workspace until you save it to an account'
-                                  : "Exists only in this workspace. Accept the chat's changes, then save it to an account"}
+                                content="Exists only in this workspace. Accept the chat's changes, then save it to an account"
                                 asChild
                               >
-                                <span className="flex-shrink-0 rounded-full bg-kumo-fill px-1.5 py-0.5 text-[10px] leading-none font-medium text-kumo-subtle">
-                                  Unsaved
-                                </span>
+                                {unsavedPill}
                               </Tooltip>
-                            )}
+                            ))}
                           </p>
                           <p className="mt-0.5 truncate text-[11px] leading-4 tracking-[-0.1px] text-kumo-inactive">
                             Referenced in code as: <span className="font-mono text-kumo-subtle">{gk.name}</span>

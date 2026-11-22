@@ -302,7 +302,6 @@ describe('accepting a chat', () => {
     expect(document.body.textContent).toContain('1 request waiting')
     expect(document.body.textContent).toContain('Pending changes')
     expect(document.body.textContent).not.toContain('request to apply')
-    expect(document.body.textContent).toContain('Applies when the changes are accepted')
     const labels = [...document.querySelectorAll('button')].map(b => b.textContent?.trim())
     expect(labels).toContain('Deny')
     expect(labels).not.toContain('Approve')
@@ -376,7 +375,7 @@ describe('accepting a chat', () => {
     await server.resolveSubscription()
     await server.resolvePendingQuery({ entries: [entry(1), { ...entry(2), chatId: 2 } as ActionLogEntry] })
 
-    expect(document.body.textContent).toContain('Held changes · 1 request to apply')
+    expect(document.body.textContent).toContain('Held changes')
     const accept = [...document.querySelectorAll('button')]
       .find(b => b.textContent?.includes('Accept changes'))
     await act(async () => accept!.click())
@@ -517,7 +516,7 @@ describe('code changes in the pending list', () => {
 
     expect(document.body.textContent).toContain('2 code changes and 1 request waiting')
     const row = (title: string) => [...document.querySelectorAll('button')]
-      .find(b => b.textContent?.includes(title) && b.textContent.includes('Code changes'))
+      .find(b => b.textContent?.trim() === title)
     expect(row('Scratch')).toBeDefined()
     await act(async () => row('Todo app')!.click())
     expect(onOpenWorkpieceCode).toHaveBeenCalledExactlyOnceWith(5)
@@ -559,20 +558,22 @@ describe("a resource the agent created", () => {
     await act(async () => {})
   }
 
+  const saveButton = () => [...document.querySelectorAll('button')]
+    .find(b => b.textContent?.trim() === 'Save to account')
+
   it('is unsaved, and can be saved once the chat is accepted', async () => {
     await renderCreation(creation())
 
     expect(document.body.textContent).toContain('Trip plan')
     expect(document.body.textContent).toContain('Google Doc · Google')
-    expect(document.body.textContent).toContain("It can be saved once the chat's changes are accepted.")
-    expect(buttonLabels()).not.toContain('Save to account')
+    expect(saveButton()?.disabled).toBe(true)
+    expect(buttonLabels()).toContain('Discard')
   })
 
   it('offers saving once accepted', async () => {
     await renderCreation(creation({ accepted }))
 
-    expect(document.body.textContent).toContain('Exists only in this workspace until you save it')
-    expect(buttonLabels()).toContain('Save to account')
+    expect(saveButton()?.disabled).toBe(false)
   })
 
   it('links to the resource once saved', async () => {
@@ -610,7 +611,6 @@ describe('restricted approval', () => {
     }))
 
     expect(document.body.textContent).toContain('Save did not finish')
-    expect(document.body.textContent).not.toContain('Applies when the changes are accepted')
     const alerts = [...document.querySelectorAll('[role="alert"]')].map(alert => alert.textContent)
     expect(alerts).toContain(`Could not apply: ${message}`)
     const labels = [...document.querySelectorAll('button')].map(b => b.textContent)

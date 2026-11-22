@@ -229,9 +229,9 @@ describe('Activity review', () => {
       entry(3, { chatId: 4 }),
     ])
     expect(document.body.textContent).toContain('2 with changes to review')
-    expect(document.body.textContent).toContain('Held changes · 2 requests to apply')
+    expect(document.body.textContent).toContain('Held changes')
     expect(document.querySelector('[role="alert"]')?.textContent)
-      .toBe('Could not apply: Quota exceeded. Accept the held changes to try again.')
+      .toBe('Could not apply: Quota exceeded.')
     expect(labelled('Deny')).toHaveLength(2)
     expect(labelled('Approve')).toHaveLength(0)
 
@@ -263,7 +263,7 @@ describe('Activity review', () => {
       entry(3, { gatekeeperId: 8, chatId: 4, creation: true }),
     ])
     expect(document.body.textContent).toContain('2 with changes to review')
-    expect(document.body.textContent).toContain('Accepted by Alice · applies when the resource is saved')
+    expect(document.body.textContent).toContain('Accepted by Alice')
     // Neither is up for review in the held changes.
     expect(document.body.textContent).not.toContain('Held changes')
     expect(document.body.textContent).not.toContain('Action 3')

@@ -138,9 +138,6 @@ export const PendingChangesTray = ({
                 <span className="min-w-[4rem] flex-1 truncate text-[12.5px] font-medium leading-[17px] tracking-[-0.15px] text-kumo-default">
                   {change.title}
                 </span>
-                <span className="flex-shrink-0 text-[11.5px] leading-4 text-kumo-inactive">
-                  Code changes
-                </span>
                 <ArrowUpRight
                   size={12}
                   weight="bold"

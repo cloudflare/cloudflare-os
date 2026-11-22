@@ -108,13 +108,6 @@ describe('PendingChangesTray', () => {
     expect(document.body.textContent).toContain('every request is reviewed on its own')
   })
 
-  it('explains a creation inside its group rather than silently refusing', async () => {
-    await render({ groups: [group([request(1, { creation: true }), request(2)])] })
-    await openGroup()
-
-    expect(document.body.textContent).toContain('This resource is new and unsaved')
-  })
-
   it('offers no rule controls, since chat modes replaced the rules', async () => {
     await render({ groups: [group([request(1, { autoApprovable: true })])] })
     await openGroup()
@@ -173,7 +166,7 @@ describe('PendingChangesTray approval', () => {
     expect(buttons().filter(b => b.textContent?.trim() === 'Approve')).toHaveLength(1)
   })
 
-  it('shows a request that failed to apply, with Retry, and what waits on it', async () => {
+  it('shows a request that failed to apply, with Retry, and marks what waits on it as blocked', async () => {
     const calls: string[] = []
     const failed = { ...request(1), applyError: { message: 'Quota exceeded.', retryable: true } }
     await render({
@@ -183,7 +176,7 @@ describe('PendingChangesTray approval', () => {
     await openGroup()
     expect(document.querySelector('[role="alert"]')?.textContent)
         .toContain('Could not apply: Quota exceeded.')
-    expect(document.body.textContent).toContain('Waiting on "Write 1" above it.')
+    expect(document.body.textContent).toContain('Blocked')
     await click(button('Retry'))
     expect(calls).toEqual(['retry:1'])
   })
@@ -196,7 +189,7 @@ describe('PendingChangesTray approval', () => {
     expect(button('Retry')).toBeUndefined()
   })
 
-  it('says a request the provider may have applied anyway needs checking, and offers no Retry',
+  it('offers no Retry for a request the provider may have applied anyway',
     async () => {
       const failed = {
         ...request(1),
@@ -204,9 +197,7 @@ describe('PendingChangesTray approval', () => {
       }
       await render({ groups: [group([failed])], actions: branch([]) })
       await openGroup()
-      expect(document.querySelector('[role="alert"]')?.textContent).toBe(
-        'Could not apply: Timed out. It may have been applied anyway. Check the resource before ' +
-        'you deny it.')
+      expect(document.querySelector('[role="alert"]')?.textContent).toBe('Could not apply: Timed out.')
       expect(button('Retry')).toBeUndefined()
     })
 })
