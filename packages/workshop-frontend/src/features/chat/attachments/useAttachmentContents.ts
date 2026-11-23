@@ -1,54 +1,93 @@
-import { useEffect, useRef } from "react";
-import type { AttachmentContentLoader } from "./attachmentFile";
+import { useEffect, useRef, useState } from "react";
+import type { AttachmentContents } from "./attachmentFile";
+
+type Read = {
+  bytes: Promise<Uint8Array>;
+  abort: AbortController;
+  /** Whether a card asked for it, which keeps it while the component is mounted. */
+  kept: boolean;
+  failed: boolean;
+};
 
 /**
- * Remembers each attachment's bytes as one promise, so a card's thumbnail and the viewer share a
- * single fetch and the viewer can read it with `use()`. A failed fetch stays remembered, or each
- * render of the failure would fetch again, until `forgetFailures` is called: when a person opens
- * the viewer, which is how they retry. Only the attachments in `liveIds` are remembered: a file
- * removed from the composer, or sent, gives its bytes back. `load` gets a signal that aborts when
- * the component goes, as leaving a chat does, so its unfinished fetches stop.
+ * Reads each attachment's bytes once, as one promise, so a card's thumbnail and the viewer share a
+ * single fetch and the viewer can read it with `use()`. A read a card asks for is kept while the
+ * component is mounted. One only the viewer asks for is kept while it holds it, as it holds the
+ * file it shows and each it is downloading, so moving on from a large file, or closing the
+ * viewer, stops its fetch and drops its bytes. A failed read stays remembered, or each render of
+ * the failure would read again, until `forgetFailures` is called: when a person opens the viewer,
+ * which is how they retry. Only the attachments in `liveIds` are kept: a file removed from the
+ * composer, or sent, gives its bytes back. `load` gets a signal that aborts when its read is
+ * dropped or the component goes, as leaving a chat does.
  */
 export const useAttachmentContents = (
   load: (id: string, signal: AbortSignal) => Promise<Uint8Array>,
   liveIds: readonly string[],
-) => {
+): AttachmentContents => {
   const loadRef = useRef(load);
   loadRef.current = load;
-  const contents = useRef(new Map<string, Promise<Uint8Array>>());
-  const failed = useRef(new Set<string>());
-  const abort = useRef(new AbortController());
+  const reads = useRef(new Map<string, Read>());
+  // By file, not by read: holding a file starts no read, and holds one started after.
+  const holds = useRef(new Map<string, number>());
+  const drop = (id: string, read: Read) => {
+    if (reads.current.get(id) !== read) return;
+    reads.current.delete(id);
+    read.abort.abort();
+  };
   useEffect(() => {
-    // A remount, as StrictMode makes, follows an abort.
-    if (abort.current.signal.aborted) abort.current = new AbortController();
-    const current = abort.current;
+    const current = reads.current;
     return () => {
-      current.abort();
-      contents.current.clear();
-      failed.current.clear();
+      for (const read of current.values()) read.abort.abort();
+      current.clear();
     };
   }, []);
-  for (const id of contents.current.keys()) {
-    if (!liveIds.includes(id)) {
-      contents.current.delete(id);
-      failed.current.delete(id);
-    }
+  for (const [id, read] of reads.current) {
+    if (!liveIds.includes(id)) drop(id, read);
   }
 
-  const content: AttachmentContentLoader = (id) => {
-    let cached = contents.current.get(id);
-    if (!cached) {
-      cached = loadRef.current(id, abort.current.signal);
-      contents.current.set(id, cached);
-      cached.catch(() => failed.current.add(id));
-    }
-    return cached;
-  };
-
-  const forgetFailures = () => {
-    for (const id of failed.current) contents.current.delete(id);
-    failed.current.clear();
-  };
-
-  return { content, forgetFailures };
+  // Stable, so the viewer's effects can depend on it; everything it reads is in refs.
+  const [contents] = useState<AttachmentContents>(() => {
+    const start = (id: string): Read => {
+      const started = reads.current.get(id);
+      if (started) return started;
+      const abort = new AbortController();
+      const read: Read = {
+        bytes: loadRef.current(id, abort.signal), abort, kept: false, failed: false,
+      };
+      read.bytes.catch(() => { read.failed = true; });
+      reads.current.set(id, read);
+      return read;
+    };
+    return {
+      content: (id) => {
+        const read = start(id);
+        read.kept = true;
+        return read.bytes;
+      },
+      read: (id) => start(id).bytes,
+      hold: (id) => {
+        holds.current.set(id, (holds.current.get(id) ?? 0) + 1);
+        let released = false;
+        return () => {
+          if (released) return;
+          released = true;
+          const left = holds.current.get(id)! - 1;
+          if (left > 0) holds.current.set(id, left);
+          else holds.current.delete(id);
+          // Once the work at hand is done, so a hold let go and taken straight back, as
+          // StrictMode does with an effect, keeps the read.
+          queueMicrotask(() => {
+            const read = reads.current.get(id);
+            if (read && !read.kept && !holds.current.has(id)) drop(id, read);
+          });
+        };
+      },
+      forgetFailures: () => {
+        for (const [id, read] of reads.current) {
+          if (read.failed) reads.current.delete(id);
+        }
+      },
+    };
+  });
+  return contents;
 };

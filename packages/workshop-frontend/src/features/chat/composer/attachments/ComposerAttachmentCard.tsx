@@ -2,7 +2,7 @@ import { WarningIcon, XIcon } from "@phosphor-icons/react";
 import { SkeletonLine, Tooltip } from "@cloudflare/kumo";
 import { AttachmentCardFace } from "../../attachments/AttachmentCardFace";
 import { attachmentKind } from "../../attachments/attachmentKind";
-import { previewFormat } from "../../attachments/previewFormat";
+import { MAX_PREVIEW_BYTES, previewFormat } from "../../attachments/previewFormat";
 import { useAttachmentThumbnail } from "../../attachments/useAttachmentThumbnail";
 import type { ComposerAttachment } from "./useComposerAttachments";
 
@@ -42,9 +42,10 @@ export const ComposerAttachmentCard = ({
   const kind = attachmentKind(attachment.mimeType, attachment.name);
   const failed = attachment.uploadState === "error";
   const uploading = attachment.uploadState === "uploading";
-  // An image is its own thumbnail (`previewUrl`).
+  // An image is its own thumbnail (`previewUrl`); a thumbnail of anything else reads it whole.
   const { ref, thumbnail, loading } = useAttachmentThumbnail<HTMLDivElement>(
-    attachment.previewUrl ? undefined : previewFormat(attachment.mimeType, attachment.name),
+    attachment.previewUrl || attachment.blob.size > MAX_PREVIEW_BYTES
+      ? undefined : previewFormat(attachment.mimeType, attachment.name),
     loadContent,
     attachment.mimeType,
   );

@@ -1,4 +1,4 @@
-import { Suspense, use, useEffect, useRef } from "react";
+import { Suspense, use, useEffect, useRef, useState } from "react";
 import { Dialog, Loader, Tooltip, useKumoToastManager } from "@cloudflare/kumo";
 import { CaretLeftIcon, CaretRightIcon, DownloadSimpleIcon, XIcon } from "@phosphor-icons/react";
 import { WorkshopButton, WorkshopIconButton } from "../../../components/WorkshopControls";
@@ -7,7 +7,7 @@ import { attachmentKind } from "./attachmentKind";
 import { ATTACHMENT_KIND_ICONS } from "./attachmentKindIcons";
 import { AttachmentPreviewBoundary } from "./AttachmentPreviewBoundary";
 import { ATTACHMENT_PREVIEWERS } from "./attachmentPreviewers";
-import type { AttachmentContentLoader, AttachmentFile } from "./attachmentFile";
+import type { AttachmentContentLoader, AttachmentContents, AttachmentFile } from "./attachmentFile";
 import { looksLikeText, MAX_PREVIEW_BYTES, previewFormat } from "./previewFormat";
 import { saveAttachment } from "./saveAttachment";
 
@@ -24,9 +24,10 @@ const describeAttachment = (attachment: AttachmentFile): string => {
   return size ? `${type} · ${size}` : type;
 };
 
-const NoPreview = ({ attachment, message, onDownload }: {
+const NoPreview = ({ attachment, message, downloading, onDownload }: {
   attachment: AttachmentFile;
   message: string;
+  downloading: boolean;
   onDownload: () => void;
 }) => {
   const KindIcon = ATTACHMENT_KIND_ICONS[attachmentKind(attachment.mimeType, attachment.name)];
@@ -42,8 +43,10 @@ const NoPreview = ({ attachment, message, onDownload }: {
           </div>
           <div className="text-[13px] leading-5 text-kumo-subtle">{message}</div>
         </div>
-        <WorkshopButton onClick={onDownload}>
-          <DownloadSimpleIcon size={14} className="mr-1.5" />
+        <WorkshopButton aria-busy={downloading} aria-disabled={downloading} onClick={onDownload}>
+          {downloading
+            ? <Loader size={14} className="mr-1.5" />
+            : <DownloadSimpleIcon size={14} className="mr-1.5" />}
           Download
         </WorkshopButton>
       </div>
@@ -51,9 +54,10 @@ const NoPreview = ({ attachment, message, onDownload }: {
   );
 };
 
-const AttachmentPreview = ({ attachment, loadContent, onDownload }: {
+const AttachmentPreview = ({ attachment, read, downloading, onDownload }: {
   attachment: AttachmentFile;
-  loadContent: AttachmentContentLoader;
+  read: AttachmentContentLoader;
+  downloading: boolean;
   onDownload: () => void;
 }) => {
   const known = previewFormat(attachment.mimeType, attachment.name);
@@ -62,19 +66,21 @@ const AttachmentPreview = ({ attachment, loadContent, onDownload }: {
       <NoPreview
         attachment={attachment}
         message="This file is too large to preview."
+        downloading={downloading}
         onDownload={onDownload}
       />
     );
   }
   const untyped = attachmentKind(attachment.mimeType, attachment.name) === "file";
   // A file with a type that has no previewer is never fetched just to say so.
-  const bytes = known || untyped ? use(loadContent(attachment.id)) : undefined;
+  const bytes = known || untyped ? use(read(attachment.id)) : undefined;
   const format = known ?? (bytes && looksLikeText(bytes) ? "text" : undefined);
   if (!bytes || !format) {
     return (
       <NoPreview
         attachment={attachment}
         message="There’s no preview for this kind of file."
+        downloading={downloading}
         onDownload={onDownload}
       />
     );
@@ -93,20 +99,23 @@ export const AttachmentViewer = ({
   attachments,
   openId,
   onOpenChange,
-  loadContent,
-  onRetry,
+  contents,
 }: {
   attachments: readonly AttachmentFile[];
   openId: string;
   /** The attachment to show next, or null to close. */
   onOpenChange: (id: string | null) => void;
-  loadContent: AttachmentContentLoader;
-  /** Forgets fetches that failed, so the download a person asks for fetches again. */
-  onRetry: () => void;
+  contents: AttachmentContents;
 }) => {
   const toasts = useKumoToastManager();
   const index = Math.max(0, attachments.findIndex((attachment) => attachment.id === openId));
   const attachment = attachments[index];
+  const shownId = attachment?.id;
+  // The file shown is read only while it is shown: closing the viewer, or moving on, stops a
+  // large file's fetch and drops its bytes, unless its card keeps them or a download holds them.
+  useEffect(() => (shownId === undefined ? undefined : contents.hold(shownId)), [contents, shownId]);
+  // The files being downloaded: pressing Download again does nothing until each is saved.
+  const [downloading, setDownloading] = useState<ReadonlySet<string>>(() => new Set());
 
   const navigationRef = useRef<HTMLDivElement>(null);
   /** The button to focus once the step is drawn, when the one used gets disabled by it. */
@@ -147,10 +156,17 @@ export const AttachmentViewer = ({
 
   if (!attachment) return null;
 
+  const isDownloading = downloading.has(attachment.id);
   const download = () => {
-    onRetry();
-    loadContent(attachment.id)
-      .then((bytes) => saveAttachment(bytes, attachment.name, attachment.mimeType))
+    const { id, name, mimeType } = attachment;
+    if (downloading.has(id)) return;
+    setDownloading((ids) => new Set(ids).add(id));
+    // Forgets a failed fetch, so the download a person asks for fetches again. The hold keeps the
+    // read until the file is saved, should the viewer close or move on first.
+    contents.forgetFailures();
+    const release = contents.hold(id);
+    contents.read(id)
+      .then((bytes) => saveAttachment(bytes, name, mimeType))
       // A failed save as well as a failed fetch.
       .catch((error: unknown) => {
         console.error("Failed to download chat attachment:", error);
@@ -159,6 +175,14 @@ export const AttachmentViewer = ({
             ? error.message
             : "Failed to download attachment",
           variant: "error",
+        });
+      })
+      .finally(() => {
+        release();
+        setDownloading((ids) => {
+          const rest = new Set(ids);
+          rest.delete(id);
+          return rest;
         });
       });
   };
@@ -205,8 +229,13 @@ export const AttachmentViewer = ({
             )}
             <div className="flex shrink-0 items-center gap-0.5">
               <Tooltip content="Download" side="bottom" asChild>
-                <WorkshopIconButton aria-label="Download" onClick={download}>
-                  <DownloadSimpleIcon size={16} />
+                <WorkshopIconButton
+                  aria-label="Download"
+                  aria-busy={isDownloading}
+                  aria-disabled={isDownloading}
+                  onClick={download}
+                >
+                  {isDownloading ? <Loader size={16} /> : <DownloadSimpleIcon size={16} />}
                 </WorkshopIconButton>
               </Tooltip>
               <Dialog.Close
@@ -223,7 +252,12 @@ export const AttachmentViewer = ({
             <AttachmentPreviewBoundary
               key={attachment.id}
               fallback={(message) => (
-                <NoPreview attachment={attachment} message={message} onDownload={download} />
+                <NoPreview
+                  attachment={attachment}
+                  message={message}
+                  downloading={isDownloading}
+                  onDownload={download}
+                />
               )}
             >
               <Suspense
@@ -235,7 +269,8 @@ export const AttachmentViewer = ({
               >
                 <AttachmentPreview
                   attachment={attachment}
-                  loadContent={loadContent}
+                  read={contents.read}
+                  downloading={isDownloading}
                   onDownload={download}
                 />
               </Suspense>

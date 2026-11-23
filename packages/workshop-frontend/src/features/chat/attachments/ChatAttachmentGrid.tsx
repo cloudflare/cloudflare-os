@@ -19,7 +19,7 @@ export const ChatAttachmentGrid = ({
   loadContent: (attachment: ChatAttachmentRef, signal: AbortSignal) => Promise<Uint8Array>;
 }) => {
   const [openId, setOpenId] = useState<string | null>(null);
-  const { content, forgetFailures } = useAttachmentContents(async (id, signal) => {
+  const contents = useAttachmentContents(async (id, signal) => {
     const attachment = attachments.find((candidate) => candidate.id === id);
     if (!attachment) throw new Error("The attachment is no longer part of this message.");
     return attachment.content ?? loadContent(attachment, signal);
@@ -36,9 +36,9 @@ export const ChatAttachmentGrid = ({
             <ChatAttachmentCard
               attachment={attachment}
               prominent={attachments.length === 1}
-              loadContent={() => content(attachment.id)}
+              loadContent={() => contents.content(attachment.id)}
               onOpen={() => {
-                forgetFailures();
+                contents.forgetFailures();
                 setOpenId(attachment.id);
               }}
             />
@@ -51,8 +51,7 @@ export const ChatAttachmentGrid = ({
             attachments={attachments}
             openId={openId}
             onOpenChange={setOpenId}
-            loadContent={content}
-            onRetry={forgetFailures}
+            contents={contents}
           />
         </Suspense>
       )}

@@ -272,3 +272,54 @@ it("aborts its fetches when it goes", async () => {
   root = undefined;
   expect(signal.aborted).toBe(true);
 });
+
+it("stops reading a file the viewer moves on from or closes on", async () => {
+  // Over 25 MB, so no card reads them for a thumbnail: only the viewer does, while it shows them.
+  const size = 40 * 1024 * 1024;
+  const loadContent = await mount(
+    [ref("a.png", "image/png", undefined, size), ref("b.png", "image/png", undefined, size)],
+    { "a.png": new Promise(() => {}), "b.png": new Promise(() => {}) },
+  );
+  await userEvent.click(page.getByRole("button", { name: "Preview a.png" }));
+  await expect.poll(() => loadContent.mock.calls.length).toBe(1);
+  const [, first] = loadContent.mock.calls[0];
+
+  await userEvent.keyboard("{ArrowRight}");
+  await expect.poll(() => loadContent.mock.calls.length).toBe(2);
+  await expect.poll(() => first.aborted).toBe(true);
+  const [, second] = loadContent.mock.calls[1];
+  expect(second.aborted).toBe(false);
+
+  await userEvent.keyboard("{Escape}");
+  await expect.poll(() => second.aborted).toBe(true);
+});
+
+it("saves a file once however often Download is pressed while it loads, and after closing", async () => {
+  let resolve!: (bytes: Uint8Array) => void;
+  const loadContent = await mount(
+    [ref("forecast.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      undefined, 80 * 1024 * 1024)],
+    { "forecast.xlsx": new Promise<Uint8Array>((settle) => { resolve = settle; }) },
+  );
+  const saves = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+  try {
+    await userEvent.click(page.getByRole("button", { name: "Preview forecast.xlsx" }));
+    const header = page.getByRole("button", { name: "Download" }).first();
+    const body = page.getByRole("button", { name: "Download" }).last();
+    await userEvent.click(body);
+    // Both say it is under way, and pressing either again saves nothing more.
+    await expect.element(header).toHaveAttribute("aria-busy", "true");
+    await expect.element(body).toHaveAttribute("aria-busy", "true");
+    await userEvent.click(header, { force: true });
+    await userEvent.click(body, { force: true });
+
+    // Closing the viewer leaves the download to finish.
+    await userEvent.keyboard("{Escape}");
+    expect(loadContent).toHaveBeenCalledOnce();
+    expect(loadContent.mock.calls[0][1].aborted).toBe(false);
+    resolve(encoder.encode("workbook"));
+    await expect.poll(() => saves.mock.calls.length).toBe(1);
+  } finally {
+    saves.mockRestore();
+  }
+});
