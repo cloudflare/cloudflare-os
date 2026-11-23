@@ -3,13 +3,12 @@
 // are written structurally because this repository does not depend on the Octokit types.
 //
 // The gate posts the one `risk-review` check run on each pull request head and merge group, as the
-// risk-review GitHub App. It is the only publisher: producer workflows (reviewer verdicts and rung
-// 1 proofs) run on `pull_request`, write one artifact each, and post nothing; the gate reads those
-// artifacts only from runs bound to the head (risk-review-contract.ts). It runs
-// only from `main`'s definition, through `workflow_run` and `issue_comment`; merge groups reach it
-// through the relay's `workflow_run`, and a merge group is accepted only when the merge queue lists
-// its commit. It reads every policy file from the base branch, so a pull request cannot rewrite its
-// own gate.
+// risk-review GitHub App. No producer workflow (a reviewer's verdict or a rung 1 proof) publishes
+// that check: each runs on `pull_request` and writes one artifact, which the gate reads only from
+// a run bound to the head (risk-review-contract.ts). The gate runs only from `main`'s definition,
+// through `workflow_run` and `issue_comment`; merge groups reach it through the relay's
+// `workflow_run`, and a merge group is accepted only when the merge queue lists its commit. It
+// reads every policy file from the base branch, so a pull request cannot rewrite its own gate.
 //
 // What it decides, per pull request (rules in risk-review-policy.ts):
 //
@@ -20,8 +19,8 @@
 //   switched on in `.github/automerge.json`.
 //   - Rung 1, proven: a proof holds, whatever the risk level. Dependabot's is the dependency proof
 //     with the preview smoke, on a pull request that holds only Dependabot's commits; a
-//     maintainer's is the test proof or the equivalence proof. No proof admits a change to text
-//     people or agents read.
+//     maintainer's is the test proof. Each proof applies only to a pull request whose every
+//     changed file it checks.
 //   - Rung 2, scored: a maintainer wrote it, it is low risk, both reviewers' verdicts (Bonk's and
 //     our Opus runner's) are full reviews with no P0 or P1 finding and no `NEEDS-A-PERSON`, their
 //     models come from different providers, and the lower score is at least the file's `threshold`.
@@ -88,9 +87,6 @@ export const MAX_DECISION_CHARS = 60_000;
 const MAX_SUMMARY_CHARS = 65_535;
 
 const PER_PAGE = 100;
-
-/** Rung 1 proofs of a maintainer's pull request. Dependabot's is `proof-deps` with the preview smoke. */
-const MAINTAINER_PROOFS = ["proof-equivalence", "proof-tests"] as const satisfies readonly ProducerName[];
 
 /** What the check run reports. */
 type Mode = "shadow" | "enforce";
@@ -391,11 +387,9 @@ export function decide(inputs: PullInputs, policy: Policy, now: Date): PullDecis
 
   const common: string[] = [...classification.neverAuto.map((reason) => `policy: ${reason}`), ...holds];
   if (blockers.length > 0) common.push(`changes requested by ${blockers.map((login) => `@${login}`).join(", ")}`);
-  // No proof judges text that people or agents read; such a change can only be AI-scored.
-  const provable = classification.readText.length === 0;
-  const proven = provable && (dependabotAuthor
+  const proven = dependabotAuthor
     ? holding(inputs.producers["proof-deps"]) && holding(inputs.producers["preview-smoke"])
-    : MAINTAINER_PROOFS.some((name) => holding(inputs.producers[name])));
+    : holding(inputs.producers["proof-tests"]);
   const rungs: { rung: Rung; failures: string[] }[] = [];
   if (proven) rungs.push({ rung: "proven", failures: policy.config.rungs.proven ? [] : ["the rung is off"] });
   if (maintainer) rungs.push({ rung: "scored", failures: scoredFailures(inputs, classification.band, policy.config) });
@@ -677,9 +671,9 @@ async function mergeBaseOf(github: GitHubClient, repo: RepoRef, base: string, he
  *
  * - `proof-deps` read the release-age policy in `pnpm-workspace.yaml` and the package names in
  *   `pnpm-lock.yaml` at the merge base of its base and the head.
- * - `proof-equivalence` and `proof-tests` built or ran the whole tree at that merge base, which no
- *   file list can bound: they hold only when made against the decision base and the head already
- *   contains it, so the merge base they built is the decision base and the head is what merges.
+ * - `proof-tests` ran the whole tree at that merge base, which no file list can bound: it holds
+ *   only when made against the decision base and the head already contains it, so the merge base
+ *   it ran is the decision base and the head is what merges.
  */
 async function staleProofError(github: GitHubClient, repo: RepoRef, { name, artifact, pull, decisionBase }: {
   name: ProducerName;
@@ -701,7 +695,6 @@ async function staleProofError(github: GitHubClient, repo: RepoRef, { name, arti
       }
       return undefined;
     }
-    case "proof-equivalence":
     case "proof-tests": {
       if (proofBase !== decisionBase) return `made against ${proofBase.slice(0, 7)}, not ${decisionBase.slice(0, 7)}`;
       return await mergeBaseOf(github, repo, decisionBase, pull.head.sha) === decisionBase

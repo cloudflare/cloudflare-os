@@ -26,12 +26,16 @@ data, has an author who is neither a maintainer nor Dependabot, carries a mainta
 after its last push, or has a standing change request. Otherwise one of two rungs can take it, each
 switched on in `automerge.json`:
 
-- **Rung 1, proven.** A proof holds, whatever the risk level. For Dependabot that is `proof-deps`
-  together with `preview-smoke`, on a pull request whose every commit is authored by
-  `dependabot[bot]`, committed by `web-flow` and verified by GitHub. For a maintainer it is
-  `proof-tests` or `proof-equivalence`. No proof admits a change to text that people or agents read
-  (any Markdown file, `docs/`, `plans/`, `.agents/`): it leaves the build byte-identical, so it can
-  only be AI-scored.
+- **Rung 1, proven.** A proof holds, whatever the risk level. A proof decides only a pull request
+  whose every changed file it checks:
+  - For Dependabot, `proof-deps` together with `preview-smoke`, on a pull request whose every
+    commit is authored by `dependabot[bot]`, committed by `web-flow` and verified by GitHub.
+    `proof-deps` checks `package.json` files, `pnpm-lock.yaml` and catalog version lines in
+    `pnpm-workspace.yaml`, and fails when any other file changes.
+  - For a maintainer, `proof-tests`, on a pull request that changes only test files vitest runs
+    (`*.test.*` and `*.spec.*`) in one package. It holds when those tests still kill every mutant
+    of the source they import that the base's version of them killed. It does not apply when any
+    other file changes: source, a helper, a fixture or a document.
 - **Rung 2, scored.** A maintainer wrote it, it is low risk, and both reviewers' verdicts are full
   reviews of this head with no P0 or P1 finding and no `NEEDS-A-PERSON`, name models from different
   providers, and give scores whose lower one is at least `threshold`. Medium and high risk never
@@ -56,9 +60,9 @@ failed. Dependabot pull requests get no deployed preview: their smoke runs in wo
 secrets, in Automerge head proofs. A rung 1 proof also counts only for the commit the pull request
 would land on (its base, or the queue's commit under it in a merge group): `proof-deps` only while
 the files it read at its base (`pnpm-workspace.yaml` and `pnpm-lock.yaml`) are the same readable
-blobs there, and `proof-equivalence` and `proof-tests` only when made against that commit with a
-head that contains it. A file with a recent escaped defect raises the risk level one step; that
-raise ignores lockfiles and Markdown, `docs/` and `plans/` outside `.agents/`.
+blobs there, and `proof-tests` only when made against that commit with a head that contains it. A
+file with a recent escaped defect raises the risk level one step; that raise ignores lockfiles and
+Markdown, `docs/` and `plans/` outside `.agents/`.
 
 These paths always need a person:
 

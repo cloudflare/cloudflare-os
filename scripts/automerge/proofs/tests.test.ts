@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import type { FileDiff } from "./diff.ts";
 import { asObject, parseJson, type JsonObject } from "../json.ts";
 import {
-  budgetMinutes, DEFAULT_BUDGET_MINUTES, editedSupportFiles, evaluateKills, killedMutants, narrowedConfig, OverBudget,
+  budgetMinutes, DEFAULT_BUDGET_MINUTES, evaluateKills, killedMutants, narrowedConfig, OverBudget,
   planScope, runBounded, selfImportPath, sourceGraph,
 } from "./tests.ts";
 
@@ -64,20 +64,35 @@ function assertProblems(problems: string[], expected: [importer: string, names: 
 }
 
 describe("proof-tests scope", () => {
-  it("takes tests in one package", () => {
-    assert.deepEqual(planScope([file("packages/error-reporting/src/index.test.ts"), file("packages/error-reporting/src/__tests__/fixtures/a.json")]), {
-      packageDir: "packages/error-reporting",
-      tests: ["packages/error-reporting/src/index.test.ts", "packages/error-reporting/src/__tests__/fixtures/a.json"],
-    });
+  it("takes runnable test files in one package", () => {
+    const tests = ["packages/error-reporting/src/index.test.ts", "packages/error-reporting/src/__tests__/envelope.spec.tsx"];
+    assert.deepEqual(planScope(tests.map(file)), { packageDir: "packages/error-reporting", tests });
   });
 
-  it("does not apply when a source file changes", () => {
-    assert.ok("outOfScope" in planScope([file("packages/error-reporting/src/index.test.ts"), file("packages/error-reporting/src/index.ts")]));
+  // The proof runs the changed test files and nothing else, so it cannot speak for any other file,
+  // whatever directory it sits in: source, a helper, a fixture, or text that people or agents read.
+  it("does not apply when anything but a runnable test file changes", () => {
+    const test = file("packages/error-reporting/src/index.test.ts");
+    for (const path of [
+      "packages/error-reporting/src/index.ts",
+      "packages/error-reporting/src/__tests__/helpers.ts",
+      "packages/error-reporting/src/__tests__/fixtures/a.json",
+      "packages/error-reporting/src/__tests__/README.md",
+      "packages/error-reporting/tests/docs/guide.md",
+      "packages/error-reporting/fixtures/AGENTS.md",
+      "packages/error-reporting/test/.agents/skills/x/SKILL.md",
+      "docs/testing.md",
+      "plans/tests/plan.md",
+    ]) {
+      assert.ok("outOfScope" in planScope([test, file(path)]), path);
+      assert.ok("outOfScope" in planScope([test, { ...file(path), status: "added" }]), `${path}, added`);
+    }
   });
 
   it("does not apply across packages or outside packages/", () => {
     assert.ok("outOfScope" in planScope([file("packages/a/x.test.ts"), file("packages/b/y.test.ts")]));
     assert.ok("outOfScope" in planScope([file("scripts/automerge/proofs/tests.test.ts")]));
+    assert.ok("outOfScope" in planScope([file(".agents/skills/write-gatekeeper/__tests__/a.test.ts")]));
   });
 
   // The test imports an index that defines identity() and re-exports double() from double.ts, so
@@ -257,12 +272,6 @@ describe("proof-tests scope", () => {
     const graph = sourceGraph([{ path: "packages/p/src/x.test.ts", text }], "packages/p", read, WORKSPACE);
     assert.deepEqual(graph.sources, ["packages/p/src/a.ts"]);
     assertProblems(graph.problems, [["packages/p/src/x.test.ts", "packages/p/src/[feature].ts"]]);
-  });
-
-  it("flags edited helpers and fixtures, which unchanged tests may import", () => {
-    assert.deepEqual(editedSupportFiles([
-      "packages/p/src/a.test.ts", "packages/p/__tests__/helpers.ts", "packages/p/test/fixtures/x.json",
-    ]), ["packages/p/__tests__/helpers.ts", "packages/p/test/fixtures/x.json"]);
   });
 });
 

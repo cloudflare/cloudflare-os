@@ -2,7 +2,9 @@
 
 // proof-tests: a test-only pull request whose tests kill at least the mutants the base tests did.
 //
-// Applies when every changed file is a test file (TEST_PATH) in one package. The proof mutates the
+// Applies when every changed file is a test file vitest runs (RUNNABLE_TEST) in one package: the
+// proof runs those files and nothing else, so it speaks for no other file. A pull request that
+// also changes source, a helper, a fixture or a document is not applicable. The proof mutates the
 // package source those tests reach through imports and re-exports (sourceGraph), with Stryker and
 // the package's own vitest config narrowed to the changed test files, once with the base version of
 // those files and once with the head version. Source is identical on both sides, so the two runs
@@ -10,10 +12,8 @@
 // killed at head: an edit that weakens a test without deleting a line kills fewer and fails.
 //
 // Scope follows a 2026-11-02 probe: Stryker 10.1.1's vitest runner worked on a workerd suite
-// (typed-storage) and a Node suite (error-reporting).
-// A pull request that changes anything but tests in one package is not applicable. Tests that only
-// a browser-mode, contract, eval or integration config runs get status `error`, and so does an
-// edit to an existing helper, fixture or setup file (editedSupportFiles).
+// (typed-storage) and a Node suite (error-reporting). Tests that only a browser-mode, contract,
+// eval or integration config runs get status `error`.
 //
 // The whole proof runs within a wall-clock budget, AUTOMERGE_MUTATION_BUDGET_MINUTES (default
 // DEFAULT_BUDGET_MINUTES). A heavy suite makes thousands of mutants and can run for most of an
@@ -38,7 +38,7 @@ import { fileAt, git, mergeBase } from "../git.ts";
 import { isMain } from "../main.ts";
 import { asArray, asObject, asString, isObject, parseJson, type Json, type JsonObject } from "../json.ts";
 
-/** Paths that hold tests, fixtures, helpers or setup rather than shipped code. */
+/** Paths that hold tests, fixtures, helpers or setup, which a mutation run does not mutate. */
 const TEST_PATH = /(^|\/)(__tests__|test|tests|fixtures|testdata)\/|\.(test|spec)\.[cm]?[jt]sx?$/;
 /** Test files vitest runs, as opposed to the helpers and fixtures beside them. */
 const RUNNABLE_TEST = /\.(test|spec)\.[cm]?[jt]sx?$/;
@@ -66,7 +66,6 @@ export function killedMutants(report: JsonObject): Set<string> {
   return killed;
 }
 
-/** Counts every mutant in a report. */
 function mutantCount(report: JsonObject): number {
   return Object.entries(asObject(report.files, "report files"))
     .reduce((sum, [file, entry]) => sum + asArray(asObject(entry, file).mutants, file).length, 0);
@@ -98,10 +97,10 @@ interface TestsPlan {
 /** Why the proof does not apply, or the package and the changed test files it covers. */
 type TestsScope = { outOfScope: string } | { packageDir: string; tests: string[] };
 
-/** Applies the scope rules to a diff. */
+/** The proof's scope: every changed file is a test file vitest runs, and all sit in one package. */
 export function planScope(files: FileDiff[]): TestsScope {
-  const others = files.filter((file) => !TEST_PATH.test(file.path));
-  if (others.length > 0) return { outOfScope: `changes files that are not tests: ${others.map((f) => f.path).slice(0, 5).join(", ")}` };
+  const others = files.filter((file) => !RUNNABLE_TEST.test(file.path));
+  if (others.length > 0) return { outOfScope: `changes files that are not test files vitest runs: ${others.map((f) => f.path).slice(0, 5).join(", ")}` };
   const packages = new Set(files.map((file) => PACKAGE.exec(file.path)?.[1] ?? ""));
   if (packages.size !== 1 || packages.has("")) return { outOfScope: "changes tests outside exactly one package" };
   return { packageDir: `packages/${[...packages][0]}`, tests: files.map((file) => file.path) };
@@ -440,16 +439,15 @@ async function installRunner(packageDir: string, deadline: number): Promise<Runn
 async function configFor(packageDir: string, tests: string[], deadline: number): Promise<string> {
   const configs = git(["ls-files", "--", `${packageDir}/vitest*.config.ts`]).split("\n")
     .filter((path) => path !== "" && !UNSUPPORTED_CONFIG.test(path));
-  const runnable = tests.filter((path) => RUNNABLE_TEST.test(path));
   const matches: string[] = [];
   for (const config of configs) {
     const listed = parseJson(await runBounded("pnpm",
       ["exec", "vitest", "list", "--filesOnly", "--json", "--config", relative(packageDir, config)], packageDir, deadline, true));
     const files = new Set(asArray(listed, "vitest list").map((entry) => relative(".", asString(asObject(entry, "entry").file, "file"))));
-    if (runnable.every((path) => files.has(path))) matches.push(config);
+    if (tests.every((path) => files.has(path))) matches.push(config);
   }
   if (matches.length !== 1) {
-    throw new Error(`expected one supported vitest config listing ${runnable.join(", ")}, found ${matches.length}`);
+    throw new Error(`expected one supported vitest config listing ${tests.join(", ")}, found ${matches.length}`);
   }
   return matches[0];
 }
@@ -477,7 +475,7 @@ async function runSide(
   plan: TestsPlan, runner: Runner, config: string, side: "base" | "head", tests: string[], deadline: number,
 ): Promise<JsonObject> {
   const pkg = plan.packageDir;
-  const include = tests.filter((path) => RUNNABLE_TEST.test(path)).map((path) => relative(pkg, path));
+  const include = tests.map((path) => relative(pkg, path));
   writeFileSync(join(pkg, VITEST_CONFIG), narrowedConfig(`./${relative(pkg, config)}`, include));
   writeFileSync(join(pkg, STRYKER_CONFIG), JSON.stringify({
     testRunner: "vitest",
@@ -515,18 +513,10 @@ async function prove(plan: TestsPlan, tests: string[], from: string, deadline: n
     else writeFileSync(path, text);
   }
   // New test files only: the base kills nothing, so there is no base run to make.
-  const baseReport = plan.baseTests.some((path) => RUNNABLE_TEST.test(path))
+  const baseReport = plan.baseTests.length > 0
     ? await runSide(plan, runner, config, "base", plan.baseTests, deadline)
     : { files: {} };
   return evaluateKills(baseReport, headReport, { ...details, config });
-}
-
-/**
- * The changed files, present at base, that vitest does not run itself. The proof runs only the
- * changed test files, so an edit to a helper or fixture that unchanged tests import would go unseen.
- */
-export function editedSupportFiles(baseTests: string[]): string[] {
-  return baseTests.filter((path) => !RUNNABLE_TEST.test(path));
 }
 
 async function main(): Promise<void> {
@@ -542,10 +532,6 @@ async function main(): Promise<void> {
     const baseTests = scope.tests.filter((path) => fileAt(from, path) !== undefined);
     const headTests = scope.tests.filter((path) => existsSync(path));
     const scoped = { package: scope.packageDir, tests: scope.tests, budget_minutes: minutes };
-    const support = editedSupportFiles(baseTests);
-    if (support.length > 0) {
-      return errored(`changes existing helpers, fixtures or setup that unchanged tests may use: ${support.slice(0, 5).join(", ")}`, scoped);
-    }
     try {
       // Stryker drives vitest directly, which runs none of the test task's codegen (docs/testing.md).
       // Built before the imports are followed, so generated modules resolve.

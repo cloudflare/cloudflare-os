@@ -146,12 +146,6 @@ const NEVER_AUTO_PATHS: (PathRule & { reason: string })[] = [
 ];
 
 /**
- * Text that people or agents read, which no rung 1 proof can judge: a skill or a doc it links
- * leaves the build byte-identical, so `proof-equivalence` would admit it with no reader.
- */
-const READ_TEXT = ["**/*.md", "docs/**", "plans/**", "**/.agents/**"];
-
-/**
  * Files an escape snapshot entry does not raise the risk level for: lockfiles and prose outside
  * `.agents/`, which nearly every pull request touches and which no reviewer judges by their past.
  */
@@ -283,8 +277,6 @@ interface Classification {
   bandReasons: string[];
   /** Why no AI may decide; empty when one may. */
   neverAuto: string[];
-  /** Changed files people or agents read, which bar every rung 1 proof. */
-  readText: string[];
 }
 
 /**
@@ -351,9 +343,7 @@ export function classifyChangeset({ files, listed, facts, escapes, now }: {
   if (facts.durableObjectRisks.length > 0) {
     neverAuto.push(`may drop Durable Object data (${facts.durableObjectRisks.join(", ")})`);
   }
-
-  const readText = files.filter((file) => pathsOf(file).some((path) => matchesAny(path, READ_TEXT))).map(describePath);
-  return { band, bandReasons, neverAuto, readText };
+  return { band, bandReasons, neverAuto };
 }
 
 /**

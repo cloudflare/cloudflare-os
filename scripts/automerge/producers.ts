@@ -26,7 +26,6 @@ export const PRODUCERS = {
   bonk: { kind: "verdict", workflow: ".github/workflows/bonk-pr.yml" },
   opus: { kind: "verdict", workflow: ".github/workflows/review-verdict.yml" },
   "proof-deps": { kind: "proof", workflow: BASE_PROOFS },
-  "proof-equivalence": { kind: "proof", workflow: HEAD_PROOFS },
   "proof-tests": { kind: "proof", workflow: HEAD_PROOFS },
   "preview-smoke": { kind: "proof", workflow: HEAD_PROOFS },
 } as const satisfies Record<string, Producer>;

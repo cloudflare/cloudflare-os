@@ -99,7 +99,7 @@ function entry(path: string): EscapeEntry {
 
 describe("classifyChangeset risk level", () => {
   it("rates a small docs change low", () => {
-    assert.deepEqual(classify([file("docs/a.md")]), { band: "low", bandReasons: [], neverAuto: [], readText: ["docs/a.md"] });
+    assert.deepEqual(classify([file("docs/a.md")]), { band: "low", bandReasons: [], neverAuto: [] });
   });
 
   it("rates more than 400 changed lines high", () => {

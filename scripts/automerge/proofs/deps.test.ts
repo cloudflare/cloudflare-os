@@ -14,8 +14,8 @@ import { parseDiff, type FileDiff, type Hunk } from "./diff.ts";
 // squash commit against its parent, the package.json files it touched at both commits, which of
 // the names it adds the base lockfile already had, the registry publish times of the versions it
 // adds, and the OSV querybatch response for every version it adds, removes, or moves an importer,
-// catalog or snapshot entry to or from. Recorded 2026-11-02, with the versions moved to or from
-// added 2026-11-06; OSV answers with what it knows on the recording day, not on the merge day.
+// catalog or snapshot entry to or from. OSV answers with what it knew on the recording days
+// (2026-11-02 and 2026-11-06), not on the merge day.
 // `<pr>.base.lock.yaml` and `<pr>.head.lock.yaml` are the pnpm-lock.yaml at both commits, cut to
 // the importer, catalog, package and snapshot entries that differ (every peer variant of a changed
 // snapshot kept); the entries they leave out are the same on both sides.
@@ -104,6 +104,15 @@ describe("proof-deps on recorded Dependabot pull requests", () => {
   it("fails when the pull request also edits source (#409 styles.css)", () => {
     const found = reasons(fixture("pr409"));
     assert.ok(found.some((r) => r.startsWith("packages/workshop-frontend/src/styles.css:")), found.join("\n"));
+  });
+
+  // The proof reads manifests, the lockfile and the workspace file, so it speaks for no other file.
+  it("fails when the pull request also changes any other file, a document or agent instructions included", () => {
+    const input = fixture("pr189");
+    for (const path of ["README.md", "docs/dependencies.md", "plans/upgrade.md", ".agents/skills/bump/SKILL.md", "packages/ui/package.json.md"]) {
+      const other: FileDiff = { path, status: "modified", binary: false, modeChanged: false, hunks: [] };
+      assertNames(reasons({ ...input, files: [...input.files, other] }), [path]);
+    }
   });
 
   it("fails when the lockfile gains a package name the base did not have (#788)", () => {
