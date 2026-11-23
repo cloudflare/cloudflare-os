@@ -1391,8 +1391,8 @@ that is not forked applies gadget actions at once, through staging.
 
 | Mode | The chat forks | It is accepted |
 |---|---|---|
-| **Auto** (default) | when the agent makes any change | automatically at the end of a turn, if every change is auto-approvable; otherwise by the user |
-| **Review** | when the agent makes any change | by the user only |
+| **Auto** | when the agent makes any change | automatically at the end of a turn, if every change is auto-approvable; otherwise by the user |
+| **Review** (default) | when the agent makes any change | by the user only |
 | **Fork** | at once, and again after every accept | by the user only |
 
 - **Auto-approvable** now means the gatekeeper author's verdict alone (`autoApprovable: true`).
@@ -1413,7 +1413,9 @@ Settled:
 - The chooser sits on the prompt box's bottom line, left of the model chooser, and always shows
   the mode's name.
 - A follow-up defaults to the mode of the previous message. A new chat defaults to the mode the
-  user last started a chat with, or Auto.
+  user last started a chat with, or Review. Auto was the first default, and was judged too
+  risky while gatekeepers' `autoApprovable` verdicts are unreviewed (see "What Auto newly
+  allows").
 - In Auto, an awaited action (`awaitDecision`) that is `autoApprovable: true` is applied without
   asking. A prompt that needs input from the user still waits.
 - **The mode is a property of the chat, changed the moment the chooser changes**, even mid-turn.
@@ -1457,9 +1459,9 @@ export type ChatMode = "auto" | "review" | "fork";
 ```
 
 - **Stored on the chat**, as `AiChatMetadata.mode`, replacing `holding`. Every chat has one.
-- **Nothing defaults to a mode.** Auto is the default for one thing, the user's preference: the
-  mode a user who has never chosen starts chats in, which the client keeps (`DEFAULT_CHAT_MODE`).
-  Everywhere else a mode is named for a reason of its own. A chat an agent spawner starts is in
+- **Nothing defaults to a mode**, except one thing: the user's preference. A user who has
+  never chosen starts chats in Review, which the client keeps (`DEFAULT_CHAT_MODE`). Everywhere
+  else a mode is named for a reason of its own. A chat an agent spawner starts is in
   Auto because nobody attends it, and a blueprint update's chat is in Review because it exists
   to be reviewed.
 - **Set two ways.** `newChat()` takes it as a required parameter, before its options, so every
@@ -1705,7 +1707,8 @@ It becomes "save":
 
 ### What Auto newly allows
 
-Today code is never merged without a person accepting it. In Auto, the default, it is. Combined
+Today code is never merged without a person accepting it. In Auto, which a user has to choose,
+it is. Combined
 with part 1's decision 5, that removes the last review between an agent and an
 `autoApprovable: false` action:
 
@@ -1726,8 +1729,8 @@ permitted.
 - **Choosing it is refused.** `setChatMode()` and `newChat()` throw when asked for Auto. The
   chooser shows Auto greyed out, with the reason, and offers only Review and Fork.
 - **A chat already in Auto reads as Review.** The latch can set at any time, including mid-turn,
-  so the kernel does not rewrite chats when it does. Instead a chat whose stored mode is Auto, or
-  absent, has the mode Review while the latch is set: in what the kernel decides, and in the
+  so the kernel does not rewrite chats when it does. Instead a chat whose stored mode is Auto
+  has the mode Review while the latch is set: in what the kernel decides, and in the
   `mode` it delivers to clients. That covers spawned chats too.
 - **The new-chat default is not overwritten.** A composer whose remembered mode is Auto starts on
   Review in such a workspace, and leaves the remembered value alone for other workspaces.

@@ -218,7 +218,7 @@ const CHAT_MODES: readonly string[] = ["auto", "review", "fork"] satisfies ChatM
  * and for nothing else: code that starts a chat asks newChatMode() for the user's mode, and names
  * a mode itself only for a reason of its own.
  */
-export const DEFAULT_CHAT_MODE: ChatMode = "auto";
+export const DEFAULT_CHAT_MODE: ChatMode = "review";
 
 /** The mode `userId` prefers: the one they last started a chat in, or DEFAULT_CHAT_MODE. */
 export function getStoredChatMode(userId: string | undefined): ChatMode {
