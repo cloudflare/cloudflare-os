@@ -114,4 +114,27 @@ describe("ResponseCache", () => {
     await cache.get("g", "k0", 60_000, async () => { reloaded = true; return 0; }, () => true);
     expect(reloaded).toBe(true);
   });
+
+  it("stays within its byte budget, keeping no answer too large for it and none that has expired", async () => {
+    const t = clock();
+    const cache = new ResponseCache<string>(t.now, 500, { maxBytes: 100, sizeOf: value => value.length });
+    const put = (key: string, value: string, ttlMs = 60_000) => cache.get("g", key, ttlMs, async () => value, () => true);
+    await put("a", "x".repeat(20));
+    await put("b", "x".repeat(20));
+    expect(cache.bytes).toBe(40);
+    // More than a quarter of the budget isn't kept at all.
+    await put("huge", "x".repeat(26));
+    expect(cache.bytes).toBe(40);
+    // The oldest goes to make room.
+    for (const key of ["c", "d", "e"]) await put(key, "x".repeat(20));
+    await put("f", "x".repeat(20));
+    expect(cache.bytes).toBe(100);
+    // Expired answers are dropped before the next insert, not only when the cache is full: "short"
+    // displaces the oldest (90 left), then expires, and is gone when "g" goes in.
+    await put("short", "x".repeat(10), 1_000);
+    expect(cache.bytes).toBe(90);
+    t.advance(2_000);
+    await put("g", "x".repeat(5));
+    expect(cache.bytes).toBe(85);
+  });
 });

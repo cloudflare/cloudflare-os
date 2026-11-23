@@ -30,7 +30,7 @@ describe("Site Manager consoles", () => {
     expect(unifi.calls.filter(call => call.url.includes("/v1/hosts"))).toHaveLength(2);
     const summary = cloudConsoleSummary(consoles.at(-1)!);
     expect(summary).toEqual({
-      id: HOME.hostId, name: "Dream Machine Pro", apps: { network: true, protect: true },
+      id: HOME.hostId, name: "Dream Machine Pro", apps: { network: true, protect: true }, appsKnown: true,
       permissions: { network: false, protect: true }, reachable: false, macs: ["70:a7:41:97:83:ed"],
     });
   });

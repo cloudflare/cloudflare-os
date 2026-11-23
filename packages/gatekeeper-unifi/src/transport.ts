@@ -65,7 +65,8 @@ export type UnifiRequest = {
 
 /** What a request returned. */
 export type UnifiResponse =
-  | { ok: true; status: number; json: unknown }
+  /** `size` is the body's length in characters, which the account's cache counts. */
+  | { ok: true; status: number; json: unknown; size: number }
   | { ok: true; status: number; bytes: ArrayBuffer; contentType: string }
   | { ok: false; failure: UnifiFailure };
 
@@ -180,7 +181,7 @@ export async function sendUnifiRequest(
       };
     }
     const text = await readTextCapped(response, MAX_BODY_BYTES);
-    return { ok: true, status: response.status, json: text.trim() === "" ? undefined : JSON.parse(text) };
+    return { ok: true, status: response.status, json: text.trim() === "" ? undefined : JSON.parse(text), size: text.length };
   } catch (error) {
     return {
       ok: false,

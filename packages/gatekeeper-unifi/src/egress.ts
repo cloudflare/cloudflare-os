@@ -79,23 +79,37 @@ export class TokenBucket {
   }
 }
 
-/** A cached answer and when it stops being fresh. */
-type Entry<V> = { value: V; expiresAt: number; group: string };
+/** A cached answer, when it stops being fresh, and what it counts against the byte budget. */
+type Entry<V> = { value: V; expiresAt: number; group: string; size: number };
 
 /**
  * A small in-memory cache of recent answers, grouped so a write can drop every answer from the
- * console it changed. Concurrent misses for one key share a single load.
+ * console it changed. Concurrent misses for one key share a single load. Bounded by entries and by
+ * bytes, since an answer can be megabytes and a Worker's isolate has little memory: an answer too
+ * large for a quarter of the budget isn't kept, and expired ones go before every insert.
  */
 export class ResponseCache<V> {
   readonly #entries = new Map<string, Entry<V>>();
   readonly #loads = new Map<string, Promise<V>>();
   readonly #now: () => number;
   readonly #maxEntries: number;
+  readonly #maxBytes: number;
+  readonly #sizeOf: (value: V) => number;
+  #bytes = 0;
   #generation = 0;
 
-  constructor(now: () => number = Date.now, maxEntries = 500) {
+  /**
+   * @param options.maxBytes The most the kept answers may add up to, by `sizeOf`.
+   * @param options.sizeOf What an answer counts against `maxBytes`.
+   */
+  constructor(
+    now: () => number = Date.now, maxEntries = 500,
+    options: { maxBytes?: number; sizeOf?: (value: V) => number } = {},
+  ) {
     this.#now = now;
     this.#maxEntries = maxEntries;
+    this.#maxBytes = options.maxBytes ?? Number.POSITIVE_INFINITY;
+    this.#sizeOf = options.sizeOf ?? (() => 0);
   }
 
   /**
@@ -115,7 +129,9 @@ export class ResponseCache<V> {
     const generation = this.#generation;
     const flight = load().then(value => {
       // A write that landed while this was loading may have changed the answer.
-      if (keep(value) && generation === this.#generation) this.#store(key, { value, group, expiresAt: this.#now() + ttlMs });
+      if (keep(value) && generation === this.#generation) {
+        this.#store(key, { value, group, expiresAt: this.#now() + ttlMs, size: this.#sizeOf(value) });
+      }
       return value;
     }).finally(() => {
       if (this.#loads.get(key) === flight) this.#loads.delete(key);
@@ -128,7 +144,7 @@ export class ResponseCache<V> {
   invalidate(group: string): void {
     this.#generation++;
     for (const [key, entry] of this.#entries) {
-      if (entry.group === group) this.#entries.delete(key);
+      if (entry.group === group) this.#delete(key);
     }
     this.#loads.clear();
   }
@@ -137,15 +153,32 @@ export class ResponseCache<V> {
   clear(): void {
     this.#generation++;
     this.#entries.clear();
+    this.#bytes = 0;
     this.#loads.clear();
   }
 
+  /** How much the kept answers add up to, by `sizeOf`. */
+  get bytes(): number {
+    return this.#bytes;
+  }
+
   #store(key: string, entry: Entry<V>): void {
-    if (this.#entries.size >= this.#maxEntries) {
-      const now = this.#now();
-      for (const [k, e] of this.#entries) if (e.expiresAt <= now) this.#entries.delete(k);
-      if (this.#entries.size >= this.#maxEntries) this.#entries.delete(this.#entries.keys().next().value!);
+    this.#delete(key);
+    if (entry.size > this.#maxBytes / 4) return;
+    const now = this.#now();
+    for (const [k, e] of this.#entries) if (e.expiresAt <= now) this.#delete(k);
+    // Then the oldest, until this one fits.
+    while (this.#entries.size > 0 && (this.#entries.size >= this.#maxEntries || this.#bytes + entry.size > this.#maxBytes)) {
+      this.#delete(this.#entries.keys().next().value!);
     }
     this.#entries.set(key, entry);
+    this.#bytes += entry.size;
+  }
+
+  #delete(key: string): void {
+    const entry = this.#entries.get(key);
+    if (!entry) return;
+    this.#entries.delete(key);
+    this.#bytes -= entry.size;
   }
 }

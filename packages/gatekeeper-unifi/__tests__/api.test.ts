@@ -128,7 +128,7 @@ describe("request bodies", () => {
 });
 
 /** An API whose console answers every request with `json`. */
-const receipt = (json: unknown) => new UnifiApi(async () => ({ ok: true, status: 201, json }), HOME.hostId);
+const receipt = (json: unknown) => new UnifiApi(async () => ({ ok: true, status: 201, json, size: 0 }), HOME.hostId);
 
 describe("creating vouchers", () => {
   const body = { count: 2, name: "Party", timeLimitMinutes: 240 };

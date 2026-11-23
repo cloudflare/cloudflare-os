@@ -123,6 +123,20 @@ describe("minting a gatekeeper for a resource URL", () => {
       .toEqual({ error: "This UniFi connection can't use UniFi Protect on that console." });
   });
 
+  it("doesn't offer or connect an owned cloud console's application it doesn't run", async () => {
+    // Owning a console grants every application, including ones it doesn't run.
+    const { unifi } = installFake();
+    const networkOnly = homeConsole();
+    networkOnly.protect = null;
+    unifi.cloud.get([...unifi.cloud.keys()][0]!)!.owned = [networkOnly];
+    const accountId = await connectCloud();
+    expect(await hooks().pick(accountId, UNIFI_RESOURCES.protect.id, "listConsoles", [""])).toEqual({ ok: [] });
+    expect(await hooks().pick(accountId, UNIFI_RESOURCES.site.id, "listConsoles", [""]))
+      .toMatchObject({ ok: [{ value: HOME.hostId }] });
+    expect(await hooks().user(accountId, "getGatekeeperClassFor", [`${BASE_URL}/${HOME.hostId}/protect`]))
+      .toEqual({ error: "That console doesn't run UniFi Protect." });
+  });
+
   it("refuses a URL that leaves an ID for the user to choose", async () => {
     installFake();
     const accountId = await connectCloud();

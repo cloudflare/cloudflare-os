@@ -60,9 +60,14 @@ export class UnifiUser extends WorkerEntrypoint<UnifiEnv, { accountId: string }>
       throw new Error("UniFi only lets a console's owner reach it through the cloud. Connect it directly instead.");
     }
     const app = resourceApp(resource.kind);
-    if (!target.permissions[app]) {
-      throw new Error(`This UniFi connection can't use UniFi ${app === "network" ? "Network" : "Protect"} on that console.`);
-    }
+    const appName = app === "network" ? "UniFi Network" : "UniFi Protect";
+    if (!target.permissions[app]) throw new Error(`This UniFi connection can't use ${appName} on that console.`);
+    // Owning a console grants every application, including ones it doesn't run. Where Site Manager
+    // didn't say which it runs, the console is asked.
+    const runs = target.appsKnown ? target.apps[app] : (await this.#account().request({
+      target: { kind: "app", app, consoleId: target.id }, method: "GET", path: app === "network" ? "/v1/info" : "/v1/meta/info",
+    })).ok;
+    if (!runs) throw new Error(`That console doesn't run ${appName}.`);
     return {
       class: this.ctx.exports.UnifiGatekeeper({ props: { accountId: this.ctx.props.accountId, resource } }),
       resource: UNIFI_RESOURCES[resource.kind],

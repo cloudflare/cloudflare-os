@@ -318,6 +318,14 @@ describe("a WiFi network", () => {
     expect(console.writes()).toHaveLength(1);
   });
 
+  it("shows a staged password to a binding that spells the network's ID in another case", async () => {
+    installFake();
+    const guest = binding(await connectCloud(), RESOURCES.wifi(HOME.guestWifiId.toUpperCase()));
+    await guest.call("update", { passphrase: "brand-new-pass", hidden: true });
+    expect(await guest.call("describe")).toMatchObject({ hidden: true });
+    expect(await guest.call("getPassphrase")).toBe("brand-new-pass");
+  });
+
   it("forgets a rejected change", async () => {
     const { console } = installFake();
     const guest = binding(await connectCloud(), RESOURCES.wifi(HOME.guestWifiId));

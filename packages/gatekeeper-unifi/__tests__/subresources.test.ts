@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parseRequirement, probeConfirms, probeFor, requirementId, type UnifiRequirement } from "../src/subresources";
 import type { UnifiResource } from "../src/resources";
-import { rawNvr } from "./fake-unifi";
+import { homeConsole, rawNvr } from "./fake-unifi";
 
 const CONSOLE = "70A7419783ED0000000006797F060000000006C719490000000062ABD4EA:1261206302";
 const SITE = "88f7af54-98f8-306a-a1c7-c9349722b1f6";
@@ -19,8 +19,7 @@ const NETWORK = `console/${encodeURIComponent(CONSOLE)}/app/network`;
 const PROTECT = `console/${encodeURIComponent(CONSOLE)}/app/protect`;
 
 /** A page of the voucher list as the Network API returns it. */
-const voucherPage = (vouchers: object[]) =>
-  ({ offset: 0, limit: 1, count: vouchers.length, totalCount: vouchers.length, data: vouchers.map(v => ({ id: SITE, ...v })) });
+const voucherPage = (vouchers: object[]) => ({ offset: 0, limit: 1, count: vouchers.length, totalCount: vouchers.length, data: vouchers });
 const nvr = (id: string) => rawNvr(id, "NVR", "70A7419783ED");
 
 describe("subresource IDs", () => {
@@ -79,25 +78,38 @@ describe("subresource IDs", () => {
   });
 
   it("passes a probe only when its answer shows what the requirement needs", () => {
-    // A voucher list must be one, and for codes, carry them.
-    const codes = { kind: "voucherCodes", siteId: SITE } as const;
-    expect(probeConfirms(codes, voucherPage([{ code: "1234567890" }]), "network")).toBe(true);
-    expect(probeConfirms(codes, voucherPage([{}]), "network")).toBe(false);
-    expect(probeConfirms(codes, voucherPage([]), "network")).toBe(false);
-    expect(probeConfirms({ kind: "vouchers", siteId: SITE }, voucherPage([]), "network")).toBe(true);
-    expect(() => probeConfirms({ kind: "vouchers", siteId: SITE }, undefined, "network")).toThrow();
+    const home = homeConsole();
+    const { wifi, vouchers } = home.network!.sites[0]!;
+    const guestWifi = wifi.find(w => w.id === WIFI)!;
+    const doorbell = home.protect!.cameras[0]!;
     // The NVR must be the one the binding read, not a replacement's at the same URL.
     expect(probeConfirms({ kind: "nvr", id: NVR }, nvr(NVR), "protect")).toBe(true);
     expect(probeConfirms({ kind: "nvr", id: NVR }, nvr(CAMERA), "protect")).toBe(false);
+    // An item answer must name the same item, in either case for a UUID.
+    expect(probeConfirms({ kind: "camera", id: doorbell.id as string }, doorbell, "protect")).toBe(true);
+    expect(probeConfirms({ kind: "camera", id: "66d025b30096e903e4000599" }, doorbell, "protect")).toBe(false);
+    expect(probeConfirms({ kind: "wifi", siteId: SITE, wifiNetworkId: WIFI.toUpperCase() }, guestWifi, "network")).toBe(true);
     // Settings that leave the password out don't show it can be read.
-    const wifi = (security: object) => ({ id: WIFI, name: "Guest", securityConfiguration: security });
     const password = { kind: "wifiPassword", siteId: SITE, wifiNetworkId: WIFI } as const;
-    expect(probeConfirms(password, wifi({ type: "WPA2_PERSONAL", passphrase: "secret-pass" }), "network")).toBe(true);
-    expect(probeConfirms(password, wifi({ type: "WPA2_PERSONAL" }), "network")).toBe(false);
-    expect(probeConfirms({ kind: "wifi", siteId: SITE, wifiNetworkId: WIFI }, wifi({ type: "WPA2_PERSONAL" }), "network")).toBe(true);
-    // The application's information must carry its version; an empty or unrelated answer proves nothing.
+    expect(probeConfirms(password, guestWifi, "network")).toBe(true);
+    const withoutPassword = { ...guestWifi, securityConfiguration: { type: "WPA2_PERSONAL" } };
+    expect(probeConfirms(password, withoutPassword, "network")).toBe(false);
+    // A voucher list must be one, and for codes, carry them.
+    const codes = { kind: "voucherCodes", siteId: SITE } as const;
+    expect(probeConfirms(codes, voucherPage(vouchers), "network")).toBe(true);
+    expect(probeConfirms(codes, voucherPage(vouchers.map(({ code: _code, ...rest }) => rest)), "network")).toBe(false);
+    expect(probeConfirms(codes, voucherPage([]), "network")).toBe(false);
+    expect(probeConfirms({ kind: "vouchers", siteId: SITE }, voucherPage([]), "network")).toBe(true);
+    // The application's information must carry its version.
     expect(probeConfirms({ kind: "app" }, { applicationVersion: "10.0.160" }, "network")).toBe(true);
-    expect(() => probeConfirms({ kind: "app" }, undefined, "network")).toThrow();
-    expect(() => probeConfirms({ kind: "app" }, { hello: "proxy" }, "protect")).toThrow();
+    // An empty or substituted answer, from a proxy say, proves nothing either way.
+    for (const requirement of [
+      { kind: "app" }, { kind: "camera", id: CAMERA }, { kind: "list", id: "cameras" }, { kind: "vouchers", siteId: SITE },
+      { kind: "snapshot", id: CAMERA }, { kind: "client", siteId: SITE, clientId: "c" },
+    ] as const) {
+      expect(() => probeConfirms(requirement, undefined, "protect"), requirement.kind).toThrow();
+      expect(() => probeConfirms(requirement, { hello: "proxy" }, "protect"), requirement.kind).toThrow();
+    }
+    expect(probeConfirms({ kind: "snapshot", id: CAMERA }, new Uint8Array([0xff, 0xd8, 0xff]).buffer, "protect")).toBe(true);
   });
 });

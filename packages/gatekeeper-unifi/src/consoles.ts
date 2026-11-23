@@ -25,6 +25,8 @@ export type ConsoleSummary = {
   name: string;
   /** Applications the console runs. */
   apps: { network: boolean; protect: boolean };
+  /** Whether `apps` is known; Site Manager can leave a console's applications out. */
+  appsKnown: boolean;
   /** Applications this connection's account may use there. */
   permissions: { network: boolean; protect: boolean };
   /** Whether requests to the console's applications can be made from this connection. */
@@ -78,7 +80,7 @@ export async function listSiteManagerConsoles(send: UnifiSend): Promise<SiteMana
 /** A cloud console as a picker or verifier sees it. Only owned consoles answer the connector. */
 export function cloudConsoleSummary(host: SiteManagerConsole): ConsoleSummary {
   return {
-    id: host.id, name: host.name, apps: host.apps, permissions: host.permissions,
+    id: host.id, name: host.name, apps: host.apps, appsKnown: host.appsKnown, permissions: host.permissions,
     reachable: host.owner, macs: host.macs,
   };
 }

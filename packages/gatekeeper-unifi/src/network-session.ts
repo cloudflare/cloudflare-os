@@ -255,7 +255,8 @@ export class WifiNetworkSession extends RpcTarget implements UnifiWifiNetwork {
     const { api, pending } = this.#ctx.shared;
     const raw = await api.getWifiRaw(this.#siteId, this.#wifiNetworkId);
     const network = simulateWifiInfo(parseWifiInfo(raw), this.#siteId, pending());
-    const passphrase = simulatePassphrase(wifiPassphrase(raw), this.#siteId, this.#wifiNetworkId, pending());
+    // Matched by the ID as UniFi spells it, which changes are staged under (see update()).
+    const passphrase = simulatePassphrase(wifiPassphrase(raw), this.#siteId, network.id, pending());
     await this.#ctx.observe("Read a UniFi WiFi password", `Read the password of WiFi network ${md(network.name)}.`,
       passphrase === null
         ? [{ kind: "wifi", siteId: this.#siteId, wifiNetworkId: this.#wifiNetworkId }]

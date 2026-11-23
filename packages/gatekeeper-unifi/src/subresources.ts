@@ -25,7 +25,12 @@
  */
 
 import { formatSubresourceId, parseSubresourceId, type SubresourceFragment } from "@gadgets/gatekeeper-kit/subresource-ids";
-import { asObject, parseNetworkInfo, parseNetworkPage, parseNvr, parseProtectInfo, wifiPassphrase } from "./parse";
+import { UnifiError } from "./errors";
+import {
+  parseCamera, parseClient, parseClientDetails, parseDevice, parseDeviceDetails, parseDeviceStatistics, parseLanNetwork,
+  parseLight, parseNetworkInfo, parseNetworkPage, parseNvr, parseProtectInfo, parseSensor, parseVoucher, parseWifiInfo,
+  parseWifiSummary, wifiPassphrase,
+} from "./parse";
 import { isValidId, resourceApp, type UnifiResource } from "./resources";
 import type { UnifiApp } from "./transport";
 
@@ -197,20 +202,52 @@ export function probeFor(
  * in: the application's information must carry the version a read returns; the NVR must be the one the binding read, not
  * one a console that has since replaced it at the same URL reports; and the WiFi settings must
  * include the password, and the voucher list a voucher's code, which UniFi may leave out for a role
- * that can't read them.
+ * that can't read them. Every answer must also parse as the read's would, an item answer naming
+ * the same item: an empty or substituted one, from a proxy say, proves nothing.
  * @throws UnifiError for an answer that isn't what the endpoint returns, which proves nothing.
  */
 export function probeConfirms(requirement: ProbedRequirement, body: unknown, app: UnifiApp): boolean {
+  const page = <T>(what: string, parse: (item: unknown) => T): T[] => parseNetworkPage(body, what).data.map(parse);
   switch (requirement.kind) {
     case "app": return (app === "network" ? parseNetworkInfo(body) : parseProtectInfo(body)).applicationVersion !== "";
+    case "list": protectList(body, requirement.id).forEach(listParser[requirement.id]); return true;
     case "nvr": return parseNvr(body).id === requirement.id;
-    case "wifiPassword": return (wifiPassphrase(body) ?? "") !== "";
-    case "vouchers": parseNetworkPage(body, "voucher list"); return true;
-    case "voucherCodes":
-      return parseNetworkPage(body, "voucher list").data.some(voucher => {
-        const code = asObject(voucher, "voucher").code;
-        return typeof code === "string" && code !== "";
-      });
-    default: return true;
+    case "camera": return parseCamera(body).id === requirement.id;
+    case "sensor": return parseSensor(body).id === requirement.id;
+    case "light": return parseLight(body).id === requirement.id;
+    case "snapshot": case "packageSnapshot":
+      // The transport passes only a JPEG as bytes; anything else is no image at all.
+      if (!(body instanceof ArrayBuffer) || body.byteLength === 0) throw unexpected("snapshot");
+      return true;
+    // A list answers by parsing as one, whatever it holds.
+    case "devices": page("device list", parseDevice); return true;
+    case "clients": page("client list", parseClient); return true;
+    case "networks": page("network list", parseLanNetwork); return true;
+    case "wifiNetworks": page("WiFi network list", parseWifiSummary); return true;
+    case "vouchers": page("voucher list", parseVoucher); return true;
+    case "voucherCodes": return page("voucher list", parseVoucher).some(voucher => (voucher.code ?? "") !== "");
+    case "wifi": return same(parseWifiInfo(body).id, requirement.wifiNetworkId);
+    case "wifiPassword": return same(parseWifiInfo(body).id, requirement.wifiNetworkId) && (wifiPassphrase(body) ?? "") !== "";
+    case "device": return same(parseDeviceDetails(body, []).id, requirement.deviceId);
+    case "deviceStatistics": parseDeviceStatistics(body); return true;
+    case "client": return same(parseClientDetails(body).id, requirement.clientId);
   }
+}
+
+/** Whether two IDs name the same item; UUIDs may be written in either case. */
+function same(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
+}
+
+const listParser: Record<"cameras" | "sensors" | "lights", (item: unknown) => unknown> = {
+  cameras: parseCamera, sensors: parseSensor, lights: parseLight,
+};
+
+function protectList(body: unknown, what: string): unknown[] {
+  if (!Array.isArray(body)) throw unexpected(`${what} list`);
+  return body;
+}
+
+function unexpected(what: string): UnifiError {
+  return new UnifiError({ kind: "protocol", message: `UniFi returned an unexpected ${what}.` });
 }

@@ -555,6 +555,8 @@ export type SiteManagerConsole = {
   owner: boolean;
   /** Which applications the console runs, as far as Site Manager knows. */
   apps: { network: boolean; protect: boolean };
+  /** Whether Site Manager listed the console's applications at all, so `apps` can be relied on. */
+  appsKnown: boolean;
   /** Whether this account's role grants each application. */
   permissions: { network: boolean; protect: boolean };
   /** The console's MAC addresses, which identify it across connection modes. */
@@ -597,6 +599,7 @@ export function parseSiteManagerHost(value: unknown): SiteManagerConsole {
     name: (reported && (optStr(reported, "name") ?? optStr(reported, "hostname"))) ?? `Console ${prefix}`,
     owner,
     apps: { network: apps.includes("network"), protect: apps.includes("protect") },
+    appsKnown: apps.length > 0,
     permissions: {
       network: owner || user.role === "owner" || grants("network"),
       protect: owner || user.role === "owner" || grants("protect"),

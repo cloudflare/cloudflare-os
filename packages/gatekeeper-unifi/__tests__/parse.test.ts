@@ -172,11 +172,17 @@ describe("Site Manager hosts", () => {
     reportedState: { name: "Home", controllers: [{ name: "network" }] },
   };
 
+  it("says when it doesn't know which applications a console runs", () => {
+    const unlisted = { ...host, userData: { ...host.userData, controllers: undefined }, reportedState: { name: "Home" } };
+    expect(parseSiteManagerHost(unlisted)).toMatchObject({ apps: { network: false, protect: false }, appsKnown: false });
+  });
+
   it("reads a console's name, apps, permissions, and MACs", () => {
     expect(parseSiteManagerHost(host)).toEqual({
       id: HOME.hostId, name: "Home", owner: false,
       // reportedState lists what is installed, which wins over what userData says is supported.
       apps: { network: true, protect: false },
+      appsKnown: true,
       permissions: { network: true, protect: false },
       macs: ["70:a7:41:97:83:ed"],
       email: "dan@example.com", fullName: "Dan",

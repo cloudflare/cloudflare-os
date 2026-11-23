@@ -49,11 +49,14 @@ class PickerLists {
     return (await loaded).filter(option => matches(option, query)).slice(0, MAX_OPTIONS);
   }
 
-  /** The consoles where this connection can use `app`. */
+  /**
+   * The consoles where this connection can use `app`: ones known to run it, and ones whose
+   * applications Site Manager didn't list, which minting a binding checks (`getGatekeeperClassFor`).
+   */
   consoles(query: string, app: "network" | "protect"): Promise<PickerOption[]> {
     return this.options(`consoles:${app}`, query, async () =>
       (await this.#source.listConsoles())
-        .filter(c => c.reachable && c.permissions[app])
+        .filter(c => c.reachable && c.permissions[app] && (c.apps[app] || !c.appsKnown))
         .map(c => ({ value: c.id, title: c.name, ...(c.apps.network && c.apps.protect && { subtitle: "Network and Protect" }) })));
   }
 

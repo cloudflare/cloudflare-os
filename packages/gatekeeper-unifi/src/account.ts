@@ -82,11 +82,15 @@ const CONNECTION_KEY = "connection";
 const CALLBACK_KEY = "callback";
 const CONSOLES_TTL_MS = 60_000;
 const GET_TTL_MS = 5_000;
+/** What the cached answers may add up to, in characters: well inside a Worker isolate's memory. */
+const CACHE_BYTES = 8 * 1024 * 1024;
 
 /** One UniFi connection. */
 export class UnifiAccount extends DurableObject<UnifiEnv> {
   readonly #buckets = new Map<string, TokenBucket>();
-  readonly #cache = new ResponseCache<UnifiResponse>();
+  readonly #cache = new ResponseCache<UnifiResponse>(Date.now, 500, {
+    maxBytes: CACHE_BYTES, sizeOf: response => (response.ok && "json" in response ? response.size : 0),
+  });
 
   // -------------------------------------------------------------------------
   // Connect and reconnect
@@ -233,7 +237,7 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
     const { identity } = connection;
     if (identity.mode === "direct") {
       return [{
-        id: identity.consoleId, name: identity.consoleName, apps: identity.apps,
+        id: identity.consoleId, name: identity.consoleName, apps: identity.apps, appsKnown: true,
         permissions: identity.apps, reachable: true, macs: identity.macs,
       }];
     }
@@ -322,7 +326,7 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
         if (requirement.kind === "site") return await this.#listsSite(consoleId, requirement.siteId, connection);
         const probe = await this.#send(
           { target: { kind: "app", app: target.app, consoleId }, method: "GET", ...probeFor(requirement, target.app) }, GET_TTL_MS, connection);
-        if (probe.ok) return probeConfirms(requirement, "json" in probe ? probe.json : undefined, target.app);
+        if (probe.ok) return probeConfirms(requirement, "json" in probe ? probe.json : probe.bytes, target.app);
         if (["auth", "forbidden", "notFound", "redirect"].includes(probe.failure.kind)) return false;
         throw new Error(probe.failure.message);
       })));
