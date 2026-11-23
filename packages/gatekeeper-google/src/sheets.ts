@@ -177,7 +177,7 @@ export class GoogleSheetsGatekeeperImpl
         snippet: `Google Spreadsheet: ${title} (read-only; not created yet)`,
         suggestedBindingName: "GOOGLE_SHEET",
         tsType: "GoogleSpreadsheetSession",
-        hasPreview: true,
+        hasGadgetUi: true,
       };
     }
     let spreadsheet = await this.#api.getSpreadsheet(props.spreadsheetId).catch(async (error: unknown) => {
@@ -190,7 +190,7 @@ export class GoogleSheetsGatekeeperImpl
       snippet: `Google Spreadsheet: ${spreadsheet.title}`,
       suggestedBindingName: "GOOGLE_SHEET",
       tsType: "GoogleSpreadsheetSession",
-      hasPreview: true,
+      hasGadgetUi: true,
     };
   }
 
@@ -198,7 +198,7 @@ export class GoogleSheetsGatekeeperImpl
     return getGoogleSheetsTypesCode();
   }
 
-  async getPreviewUi(): Promise<UiFile[]> {
+  async getGadgetUi(): Promise<UiFile[]> {
     return [{ path: "client.js", code: SHEETS_PREVIEW_CLIENT }, ...SHARED_PREVIEW_FILES];
   }
 

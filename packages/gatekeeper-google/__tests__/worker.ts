@@ -585,7 +585,7 @@ export class TestHooks extends DurableObject<Env> {
   /** The Slides gatekeeper's description of its resource, and the preview it offers of it. */
   async slidesPreview(facetName: string): Promise<{ description: ResourceDescription; files: UiFile[] }> {
     let gatekeeper = this.#slides(facetName);
-    return { description: await gatekeeper.describe(), files: await gatekeeper.getPreviewUi() };
+    return { description: await gatekeeper.describe(), files: await gatekeeper.getGadgetUi() };
   }
 
   /**
@@ -1076,7 +1076,7 @@ export class TestHooks extends DurableObject<Env> {
   /** The Sheets gatekeeper's description of its resource, and the preview it offers of it. */
   async sheetsPreview(facetName: string): Promise<{ description: ResourceDescription; files: UiFile[] }> {
     let gatekeeper = this.#sheets(facetName);
-    return { description: await gatekeeper.describe(), files: await gatekeeper.getPreviewUi() };
+    return { description: await gatekeeper.describe(), files: await gatekeeper.getGadgetUi() };
   }
 
   /** Applies a Sheets change. `entered` is called once the apply has run up to its first wait. */

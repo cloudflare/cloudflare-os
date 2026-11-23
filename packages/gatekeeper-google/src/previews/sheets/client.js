@@ -1,4 +1,4 @@
-// The Google Sheets preview (GoogleSheetsGatekeeperImpl.getPreviewUi()): gadget-format client code
+// The Google Sheets preview (GoogleSheetsGatekeeperImpl.getGadgetUi()): gadget-format client code
 // that runs in the gadget UI frame, whose page starts it with main(gadget), at the end of this
 // file. There `gadget` is a GoogleSpreadsheetSession rather than a gadget server.
 // The gatekeeper imports it as text through client.txt, a symlink to this file, and returns it

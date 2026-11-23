@@ -150,7 +150,7 @@ export class GoogleSlidesGatekeeperImpl
         snippet: `Google Slides presentation: ${title} (not created yet)`,
         suggestedBindingName: "GOOGLE_SLIDES",
         tsType: "GooglePresentationSession",
-        hasPreview: true,
+        hasGadgetUi: true,
       };
     }
     let title = await this.#api.getPresentationTitle(props.presentationId)
@@ -164,12 +164,12 @@ export class GoogleSlidesGatekeeperImpl
       snippet: `Google Slides presentation: ${title}`,
       suggestedBindingName: "GOOGLE_SLIDES",
       tsType: "GooglePresentationSession",
-      hasPreview: true,
+      hasGadgetUi: true,
     };
   }
 
   /** The files of the presentation preview: gadget-format client code that reads through a session. */
-  async getPreviewUi(): Promise<UiFile[]> {
+  async getGadgetUi(): Promise<UiFile[]> {
     return [
       { path: "client.js", code: SLIDES_PREVIEW_CLIENT },
       { path: "slide.js", code: SLIDES_PREVIEW_SLIDE },

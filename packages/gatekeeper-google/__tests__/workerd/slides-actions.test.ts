@@ -1462,7 +1462,7 @@ describe("Google Slides preview", () => {
 
     let { description, files } = await hooks().slidesPreview(`slides-${++facetCount}`);
 
-    expect(description).toMatchObject({ hasPreview: true });
+    expect(description).toMatchObject({ hasGadgetUi: true });
     expect(files.map(({ path }) => path)).toEqual(["client.js", "slide.js", "shapes.js", "ui/chrome.js"]);
     expect(files[0].code).toContain("gadget.readSlideDrawings(");
     expect(files[0].code).toContain("from './ui/chrome.js'");

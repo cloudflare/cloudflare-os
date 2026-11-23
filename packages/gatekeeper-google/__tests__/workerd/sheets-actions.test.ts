@@ -2483,7 +2483,7 @@ describe("Google Sheets preview reads", () => {
 
     let { description, files } = await hooks().sheetsPreview("sheets-preview");
 
-    expect(description).toMatchObject({ hasPreview: true });
+    expect(description).toMatchObject({ hasGadgetUi: true });
     expect(files.map(({ path }) => path)).toEqual(["client.js", "ui/chrome.js"]);
     expect(files[0].code).toContain("gadget.readDrawing(");
     expect(files[0].code).toContain("from './ui/chrome.js'");
