@@ -1363,6 +1363,10 @@ describe("gadgets", () => {
       expect(branchGadgets(impl, 1)).toEqual([11]);
       expect(impl.getGadgetFacet).toHaveBeenCalledWith(11, 1);
 
+      // So does its export of one.
+      await impl.startGatekeeperSession({type: "exports", id: 10}, AGENT_A);
+      expect(branchGadgets(impl, 1)).toEqual([10, 11]);
+
       // A pending action on the branch puts every gadget there; a staged one does not.
       await impl.submitAction(GK, 1, description(), STAGED);
       expect(branchGadgets(impl, 2)).toBeUndefined();

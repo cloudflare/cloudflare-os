@@ -3284,6 +3284,17 @@ class OverseerImpl implements AgentHooks {
   // The gadgets each chat's running agent turn has invoked (see branchGadgetIds), by chat ID.
   #invokedGadgets = new Map<number, Set<WorkpieceId>>();
 
+  // Records that chat `chatId`'s agent turn called gadget `gadgetId`, or exported it: either runs
+  // the gadget on the chat's branch, where it stays until the turn ends (see branchGadgetIds).
+  #gadgetInvoked(chatId: number, gadgetId: WorkpieceId): void {
+    this.#getOrCreateCapturedActions(chatId).accessedGadget = true;
+    let invoked = this.#invokedGadgets.get(chatId);
+    if (!invoked?.has(gadgetId)) {
+      this.#invokedGadgets.set(chatId, (invoked ?? new Set()).add(gadgetId));
+      this.#rebroadcastChatMeta([chatId]);
+    }
+  }
+
   // How many actions staging holds for a user's decision (see WorkspaceMetadata.stagedActions),
   // less those accepted already on a resource still unsaved (#awaitsSave): undefined when none.
   stagedActionCount(): number | undefined {
@@ -6967,16 +6978,7 @@ class OverseerImpl implements AgentHooks {
   startGatekeeperSession(target: BindingLoopbackTarget, caller: GatekeeperCaller): Promise<any> {
     switch (target.type) {
       case "gadget": {
-        if (caller.from === "agent") {
-          this.#getOrCreateCapturedActions(caller.chatId).accessedGadget = true;
-          // An agent turn's call runs the gadget on its chat's branch, and the gadget stays there
-          // until the turn ends (see branchGadgetIds).
-          let invoked = this.#invokedGadgets.get(caller.chatId);
-          if (!invoked?.has(target.id)) {
-            this.#invokedGadgets.set(caller.chatId, (invoked ?? new Set()).add(target.id));
-            this.#rebroadcastChatMeta([caller.chatId]);
-          }
-        }
+        if (caller.from === "agent") this.#gadgetInvoked(caller.chatId, target.id);
         let chatId = "chatId" in caller ? caller.chatId : undefined;
         return this.getGadgetFacet(target.id, chatId);
       }
@@ -7020,7 +7022,7 @@ class OverseerImpl implements AgentHooks {
           // to the workshop agent.
           throw new Error("Gadget exports are only available to the agent's executeCode.");
         }
-        this.#getOrCreateCapturedActions(caller.chatId).accessedGadget = true;
+        this.#gadgetInvoked(caller.chatId, target.id);
         return Promise.resolve(new GadgetExportsImpl(this, target.id, caller.chatId));
 
       case "git":
