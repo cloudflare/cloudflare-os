@@ -1,0 +1,135 @@
+{
+  "openapi": "3.0.3",
+  "info": { "title": "Fixture", "version": "1" },
+  "servers": [{ "url": "https://api.example.com" }],
+  "paths": {
+    "/repos/{owner}/{repo}/issues": {
+      "parameters": [
+        { "name": "owner", "in": "path", "required": true, "schema": { "type": "string" } },
+        { "name": "repo", "in": "path", "required": true, "schema": { "type": "string" } }
+      ],
+      "get": {
+        "operationId": "issues/list",
+        "summary": "List issues",
+        "tags": ["issues"],
+        "parameters": [
+          { "name": "state", "in": "query", "schema": { "type": "string", "enum": ["open", "closed"] } },
+          { "name": "labels", "in": "query", "schema": { "type": "array", "items": { "type": "string" } } },
+          { "name": "per_page", "in": "query", "schema": { "type": "integer" } },
+          { "name": "include[]", "in": "query", "schema": { "type": "string", "enum": ["user", "reactions"] } }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/issue" } } } }
+          }
+        }
+      },
+      "post": {
+        "operationId": "issues/create",
+        "summary": "Create an issue",
+        "tags": ["issues"],
+        "parameters": [
+          { "name": "X-Request-Id", "in": "header", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/issue" } } }
+        },
+        "responses": {
+          "201": { "description": "Created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/issue" } } } }
+        }
+      }
+    },
+    "/repos/{owner}/{repo}/issues/{issue_number}": {
+      "delete": {
+        "operationId": "issues/delete",
+        "tags": ["issues"],
+        "parameters": [
+          { "name": "owner", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "repo", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "issue_number", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": { "204": { "description": "No content" } }
+      }
+    },
+    "/repos/{owner}/{repo}/issues/{issue_number}/attachments": {
+      "post": {
+        "operationId": "issues/upload",
+        "tags": ["issues"],
+        "parameters": [
+          { "name": "owner", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "repo", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "issue_number", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "requestBody": {
+          "content": { "application/octet-stream": { "schema": { "type": "string", "format": "binary" } } }
+        },
+        "responses": { "201": { "description": "Created" } }
+      }
+    },
+    "/users/{username}": {
+      "get": {
+        "operationId": "users/get",
+        "tags": ["users"],
+        "parameters": [
+          { "name": "username", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/simple-user" } } } },
+          "409": { "description": "Conflict", "content": { "application/json": { "schema": { "$ref": "#/components/responses/Conflict/content/application~1json/schema" } } } }
+        }
+      }
+    },
+    "/users/{username}/avatar": {
+      "get": {
+        "operationId": "users/avatar",
+        "tags": ["users"],
+        "parameters": [
+          { "name": "username", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "OK", "content": { "image/png": { "schema": { "type": "string", "format": "binary" } } } }
+        }
+      }
+    }
+  },
+  "components": {
+    "responses": {
+      "Conflict": {
+        "description": "Conflict",
+        "content": { "application/json": { "schema": { "type": "object", "properties": { "message": { "type": "string" } } } } }
+      }
+    },
+    "schemas": {
+      "simple-user": {
+        "type": "object",
+        "required": ["id", "login"],
+        "properties": {
+          "id": { "type": "integer", "readOnly": true },
+          "login": { "type": "string", "description": "The user's handle." },
+          "name": { "type": "string", "nullable": true }
+        }
+      },
+      "reactions": {
+        "type": "object",
+        "required": ["+1", "-1"],
+        "properties": {
+          "+1": { "type": "integer" },
+          "-1": { "type": "integer" }
+        }
+      },
+      "issue": {
+        "type": "object",
+        "required": ["title"],
+        "properties": {
+          "number": { "type": "integer", "readOnly": true },
+          "title": { "type": "string" },
+          "labels": { "type": "array", "items": { "type": "string" } },
+          "user": { "$ref": "#/components/schemas/simple-user" },
+          "reactions": { "$ref": "#/components/schemas/reactions" }
+        }
+      }
+    }
+  }
+}

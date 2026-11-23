@@ -109,6 +109,52 @@ import {
 | `./git-objects` | Commit-id validation, raw commit-object parsing, and commit advertising (`advertiseCommits`, and `advertisePages` as a `PageHookCursor` hook). | A session returns commit ids (advertise them) or simulates reads of commits queued for push from their local bytes. |
 | `./git-diff` | Tree-to-tree diff over an injected `TreeDiffSource`, and `parseUnifiedPatch` for provider patches, both producing the unified-patch hunk shape agents see. | A pull/merge request's source branch has queued pushes and the provider cannot compute the diff yet, or a provider returns unified patches. |
 
+## Schema generation
+
+The `gatekeeper-openapi-schema` bin generates `./http` schemas from an OpenAPI 3.0, 3.1 or 3.2 document,
+JSON or YAML: Forge reads it, and [`forge/emit.ts`](forge/emit.ts) renders what Forge read. It writes one
+`index.d.ts`, with the models and an `Api` schema of the operations the client can call.
+Operations with a non-JSON body or 2xx
+response, with an object-valued query parameter, or with a parameter declared with `content` or a
+style other than its location's default, cannot be in a schema: they are listed at the top of the
+file, and one that `--operations` names fails the run. A model with `readOnly` fields also gets an
+`<Model>Input` type without them, which request bodies use. A query parameter named `name[]`, the
+bracket convention for arrays, takes an array even where the document declares a single value.
+
+```sh
+gatekeeper-openapi-schema <spec file or https URL> --out src/openapi \
+  [--sha256 <hex>] [--group-by tag] [--operations openapi-operations.jsonl] [--omit-header Accept]... \
+  [--writable id]... [--patch openapi-patch.json] [--scopes-extension x-scopes]
+```
+
+`--sha256` is the document's SHA-256, which a URL needs: a run fails when the document is not the
+one the hash names, so regenerating changes only what its author changed. `--operations` keeps only
+the operations a JSON Lines file lists, each line an object as `--list` prints one. Only a line's
+`operationId` chooses; the run fails for one the document lacks or a schema cannot hold, for a
+line whose `method` or `path` is no longer the document's, and for a file that lists none. `--group-by tag` writes one `.d.ts` and one `<Tag>Api` schema per first tag instead, where one
+schema of every operation is too large; an operation the document groups for Forge, with
+`x-forge-group-name`, is in that group. `--omit-header` drops a header parameter from every
+operation, for one the client sends itself through its `headers` or `fetch` option, such as a
+versioning `Accept` header. `--writable` clears `readOnly` from every property of a name, for a
+document that marks a field read-only although requests send it, such as an `id` that references
+must name. `--patch` applies a JSON Patch (RFC 6902) of `add`, `replace` and `remove` operations to
+the document first, to correct what it gets wrong; each operation needs a `reason` member saying
+why. Each operation's comment names the scopes its `security` declares, to read and not to act on: a
+description can list alternatives as if each were needed. `--scopes-extension` names an extension to
+read them from instead, for a document that keeps them in one. The output directory holds only
+generated files and is replaced on each run. Commit the
+output, so that a build needs neither the document nor Forge.
+
+To choose the operations, list the document's with `--list` in place of `--out`. It prints one
+JSON object per line, with an operation's `operationId`, `method`, `path`, first `tag` and
+`summary`, and writes no files. The lines you keep are the `--operations` file. An operation the
+document marks `x-forge-skip`, or whose `x-forge-aliases` are all marked so, is neither listed nor
+generated, as Forge does not read it; a `--patch` that removes the mark brings it back:
+
+```sh
+gatekeeper-openapi-schema <spec file or https URL> --list [--sha256 <hex>] | grep -i incident
+```
+
 ## Internal modules
 
 The package does not export `kv`, `positive-int`, `per-storage`, `action-journal`, or
