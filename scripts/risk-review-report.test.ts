@@ -140,27 +140,43 @@ describe("followUps", () => {
   });
 });
 
-describe("buildReport", () => {
-  const OTHER = "d".repeat(40);
-  const LATER = "e".repeat(40);
-  const checkRuns = (sha: string, page = 1) => `/repos/${REPOSITORY}/commits/${sha}/check-runs?check_name=risk-review&filter=all&per_page=100&page=${page}`;
-  const gateRun = (id: number, summary: string, extra: Record<string, Json> = {}) =>
-    ({ id, app: { slug: "risk-review" }, status: "completed", output: { summary }, ...extra });
-  const superseded = (id: number) => gateRun(id, "A later run decides this commit.", { conclusion: "cancelled" });
-  const report = (responses: Record<string, Json>) => {
-    const get: GitHubGet = async (path) => {
-      const response = responses[path];
-      if (response === undefined) throw new Error(`unexpected request ${path}`);
-      return response;
-    };
-    return buildReport(get, { repository: REPOSITORY, app: "risk-review", since: new Date("2026-11-01"), until: new Date("2026-11-04") });
+const OTHER = "d".repeat(40);
+const LATER = "e".repeat(40);
+
+function checkRuns(sha: string, page = 1): string {
+  return `/repos/${REPOSITORY}/commits/${sha}/check-runs?check_name=risk-review&filter=all&per_page=100&page=${page}`;
+}
+
+/** A check run the App posted. */
+function gateRun(id: number, summary: string, extra: Record<string, Json> = {}): Record<string, Json> {
+  return { id, app: { slug: "risk-review" }, status: "completed", output: { summary }, ...extra };
+}
+
+/** The check run of a gate run that a later one replaced. */
+function superseded(id: number): Record<string, Json> {
+  return gateRun(id, "A later run decides this commit.", { conclusion: "cancelled" });
+}
+
+/** The report over 2026-11-01 to 2026-11-04, built from canned API responses by path. */
+function report(responses: Record<string, Json>) {
+  const get: GitHubGet = async (path) => {
+    const response = responses[path];
+    if (response === undefined) throw new Error(`unexpected request ${path}`);
+    return response;
   };
-  const listing = (pulls: MergedPull[]): Record<string, Json> => ({
+  return buildReport(get, { repository: REPOSITORY, app: "risk-review", since: new Date("2026-11-01"), until: new Date("2026-11-04") });
+}
+
+/** The repository, the merged pull requests and an empty first page of reviews for each. */
+function listing(pulls: MergedPull[]): Record<string, Json> {
+  return {
     [`/repos/${REPOSITORY}`]: { default_branch: "main" },
     [`/repos/${REPOSITORY}/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=1`]: pulls.map((pull) => ({ ...pull })),
     ...Object.fromEntries(pulls.map(({ number }) => [`/repos/${REPOSITORY}/pulls/${number}/reviews?per_page=100&page=1`, []])),
-  });
+  };
+}
 
+describe("buildReport", () => {
   it("builds one row per pull request merged into the default branch in the window, reading every review page", async () => {
     const pulls = [
       merged(901, "2026-11-03T12:00:00Z"),

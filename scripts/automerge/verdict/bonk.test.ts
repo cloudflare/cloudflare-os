@@ -18,6 +18,15 @@ function inputs(overrides: Partial<BonkInputs>): BonkInputs {
 
 const CLEAN = "## Findings\n\nNone.\n\n## Summary\n\nNothing to fix.\nMERGE-CONFIDENCE: 9\n";
 
+/** Each path a step's script names under `$RUNNER_TEMP`, relative to it. */
+function runnerTempPaths(script: string): string[] {
+  return [...script.matchAll(/\$\{?RUNNER_TEMP\}?\/([\w./-]+)/g)].map((match) => match[1] ?? "");
+}
+
+function topDirectory(path: string): string {
+  return path.split("/", 1).join("");
+}
+
 describe("buildBonkVerdict", () => {
   it("is an error when Bonk's report file is missing, empty or not in the report format", () => {
     for (const report of [null, "", "LGTM!\n", "## Findings\n\nNone.\n\n## Summary\n\nFine.\n"]) {
@@ -84,12 +93,10 @@ describe("bonk-pr.yml", () => {
   // module the copy leaves out is missing only there.
   it("copies every module bonk.ts imports to where it runs it", () => {
     const scripts = stepsOf(workflow).flatMap(({ run }) => (typeof run === "string" ? [run] : []));
-    const inTemp = (script: string) => [...script.matchAll(/\$\{?RUNNER_TEMP\}?\/([\w./-]+)/g)].map((match) => match[1] ?? "");
-    const directory = (path: string) => path.split("/", 1).join("");
-    const started = new Set(scripts.flatMap(inTemp).filter((path) => path.endsWith(".ts")));
-    const directories = new Set([...started].map(directory));
+    const started = new Set(scripts.flatMap(runnerTempPaths).filter((path) => path.endsWith(".ts")));
+    const directories = new Set([...started].map(topDirectory));
     // The steps that fill the directory the started scripts sit in.
-    const copies = scripts.filter((script) => inTemp(script).some((path) => !path.endsWith(".ts") && directories.has(directory(path))));
+    const copies = scripts.filter((script) => runnerTempPaths(script).some((path) => !path.endsWith(".ts") && directories.has(topDirectory(path))));
     assert.ok(started.size > 0 && copies.length > 0, "steps copy the scripts, and later steps run them");
 
     const temp = mkdtempSync(join(tmpdir(), "automerge-judge-"));

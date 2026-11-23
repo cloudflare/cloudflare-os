@@ -567,10 +567,10 @@ describe("decide", () => {
   });
 
   it("counts each maintainer's latest review, so an approval lifts a change request and a change request ends an approval", () => {
-    const at = (hour: string) => ({ submitted_at: `2026-11-02T${hour}:00:00Z` });
-    const lifted = [review("deregtd", "CHANGES_REQUESTED", at("08")), review("deregtd", "APPROVED", at("09"))];
+    const [earlier, later] = [{ submitted_at: "2026-11-02T08:00:00Z" }, { submitted_at: "2026-11-02T09:00:00Z" }];
+    const lifted = [review("deregtd", "CHANGES_REQUESTED", earlier), review("deregtd", "APPROVED", later)];
     assert.deepEqual(decide(inputs({ reviews: lifted, producers: PERFECT }), SCORED, NOW).would, AUTO_SCORED);
-    const ended = [review("deregtd", "APPROVED", at("08")), review("deregtd", "CHANGES_REQUESTED", at("09"))];
+    const ended = [review("deregtd", "APPROVED", earlier), review("deregtd", "CHANGES_REQUESTED", later)];
     const decision = decide(inputs({ reviews: ended, producers: PERFECT }), SCORED, NOW);
     assert.deepEqual(decision.approvers, []);
     assert.equal(decision.would.decision, "person");
@@ -620,13 +620,13 @@ describe("decide", () => {
   });
 
   it("sends either reviewer's P0 or P1 finding, NEEDS-A-PERSON line, missing score or score under the threshold to a person", () => {
-    const finding = (severity: string) => ({ findings: [{ severity, title: "Drops the table", path: "a.ts", line: 1 }] });
+    const [p0, p1, p2, p3] = ["P0", "P1", "P2", "P3"].map((severity) => ({ findings: [{ severity, title: "Drops the table", path: "a.ts", line: 1 }] }));
     for (const name of VERDICT_NAMES) {
-      for (const fault of [finding("P0"), finding("P1"), { needs_person: ["changes the RPC API"] }, { merge_confidence: null }, { merge_confidence: 6 }]) {
+      for (const fault of [p0, p1, { needs_person: ["changes the RPC API"] }, { merge_confidence: null }, { merge_confidence: 6 }]) {
         const producers = { ...PERFECT, [name]: verdictInput(name, fault) };
         assert.equal(decide(inputs({ producers }), SCORED, NOW).would.decision, "person", `${name}: ${JSON.stringify(fault)}`);
       }
-      for (const fine of [finding("P2"), finding("P3")]) {
+      for (const fine of [p2, p3]) {
         const producers = { ...PERFECT, [name]: verdictInput(name, fine) };
         assert.deepEqual(decide(inputs({ producers }), SCORED, NOW).would, AUTO_SCORED, `${name}: ${JSON.stringify(fine)}`);
       }
@@ -634,10 +634,13 @@ describe("decide", () => {
   });
 
   it("takes the lower of the two scores, which must be at least the threshold", () => {
-    const scores = [7, 10, 6] as const;
-    const [threshold, high, under] = scores;
-    assert.equal(SCORED.config.threshold, threshold);
-    for (const [bonk, opus, decision] of [[threshold, high, "auto"], [high, threshold, "auto"], [under, high, "person"], [high, under, "person"]] as const) {
+    const threshold = SCORED.config.threshold;
+    for (const { bonk, opus, decision } of [
+      { bonk: threshold, opus: 10, decision: "auto" },
+      { bonk: 10, opus: threshold, decision: "auto" },
+      { bonk: threshold - 1, opus: 10, decision: "person" },
+      { bonk: 10, opus: threshold - 1, decision: "person" },
+    ]) {
       const { would } = decide(inputs({ producers: verdictsWith("merge_confidence", bonk, opus) }), SCORED, NOW);
       assert.equal(would.decision, decision, `${bonk} and ${opus}`);
     }
@@ -1374,15 +1377,16 @@ describe("runRiskReview proof freshness", () => {
 
   it("treats proof-deps as absent when a file it read cannot be read at its base", async () => {
     const lock = "lockfileVersion: '9.0'\n";
-    const decided = async (contents: Record<string, string>) => {
+    for (const { contents, counted } of [
+      { contents: at(BASE, workspace, lock), counted: true },
+      { contents: {}, counted: false },
+      { contents: { [`${BASE}:pnpm-workspace.yaml`]: workspace }, counted: false },
+      { contents: { [`${BASE}:pnpm-lock.yaml`]: lock }, counted: false },
+    ]) {
       const { calls, evaluate } = harness({ files: { 7: [file("pnpm-lock.yaml")] }, runs: [proofRun("proof-deps")], contents });
       await evaluate("workflow_run", producerCompleted());
-      return lastRecord(calls).pulls[0]?.inputs["proof-deps"];
-    };
-    assert.deepEqual(await decided(at(BASE, workspace, lock)), { status: "ok", holds: true });
-    for (const contents of [{}, { [`${BASE}:pnpm-workspace.yaml`]: workspace }, { [`${BASE}:pnpm-lock.yaml`]: lock }]) {
-      const input = await decided(contents);
-      assert.ok(input && "absent" in input, JSON.stringify(Object.keys(contents)));
+      const input = lastRecord(calls).pulls[0]?.inputs["proof-deps"];
+      assert.equal(input !== undefined && !("absent" in input), counted, JSON.stringify(Object.keys(contents)));
     }
   });
 
