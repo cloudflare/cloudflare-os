@@ -31,7 +31,11 @@ import { formatInstanceInstructions } from "./admin-config";
 import type { AiGatewayLogRoute } from "./ai-gateway";
 import type { SpawnCallableOptions } from "./agent-spawner-binding";
 import { traceRejectedToolCall, traceTool } from "./agent-tracing";
-import { AgentTurnError, completeText, httpStatusFromError, zeroUsage } from "./ai-invoke";
+import {
+  AgentTurnError, PromptBlockedError, completeText, httpStatusFromError, isBlockedPromptError,
+  zeroUsage,
+} from "./ai-invoke";
+import { blockedPromptSequences, unansweredInput } from "./blocked-prompts";
 import type { CachedRequest, ModelHandle } from "./ai-models";
 import { blobOid } from "./git-codec";
 import { assertNoNul } from "./git-cache";
@@ -2332,22 +2336,10 @@ async function runAgentPass(
     : 0), 0);
   const attachmentImageMaxEdge = attachmentImageCount > 20 ? 2000 : 8000;
 
-  // Messages a "prompt_blocked" error answered: the user's (or gadget's) messages since the
-  // agent last spoke, which AI Gateway Guardrails refused before they reached the model. Replaying
-  // them would get every later request blocked too, so they are left out of the conversation.
-  let blockedPrompts = new Set<number>();
-  {
-    let unanswered: number[] = [];
-    for (let msg of chatMessages) {
-      if (msg.type === "message") {
-        if (msg.author.type === "agent") unanswered = [];
-        else unanswered.push(msg.sequence);
-      } else if (msg.type === "error" && msg.code === "prompt_blocked") {
-        for (let sequence of unanswered) blockedPrompts.add(sequence);
-        unanswered = [];
-      }
-    }
-  }
+  // Input AI Gateway Guardrails blocked before it reached the model (see blocked-prompts.ts).
+  // Replaying it would get every later request blocked too, so its messages are dropped and its
+  // edits and uploads still apply to the files but aren't shown to the model as observations.
+  let blockedPrompts = blockedPromptSequences(chatMessages);
 
   for (let [msgIndex, msg] of chatMessages.entries()) {
     let modelMessageStart = modelMessages.length;
@@ -2862,7 +2854,8 @@ async function runAgentPass(
           // are still surfaced as observations below. A conversion boundary's change is not user
           // activity -- it re-records content from before the boundary, which the model already
           // saw (or wrote) -- so it applies without an observation.
-          let isUserActivity = msg.author.type === "user" && !msg.conversionBoundary;
+          let isUserActivity = msg.author.type === "user" && !msg.conversionBoundary &&
+              !blockedPrompts.has(msg.sequence);
           let diff: string | undefined;
           if (msg.change !== undefined) {
             await seedWorktreeBasesForChange(msg.change);
@@ -4291,6 +4284,9 @@ async function runAgentPass(
   // loop reports them as a final assistant message with stopReason "error"/"aborted".) Nothing
   // from a failed turn is persisted.
   let turnFailure: AssistantMessage | undefined;
+  // Whether this pass persisted a step. After one, a failed request's new input is the step's
+  // tool results rather than the user's, which a "prompt_blocked" error can't leave out.
+  let committedStep = false;
 
   // Set when the next provider request would cross the preferred compaction budget. The
   // turn_end barrier persists this step before the caller reloads durable history.
@@ -4514,6 +4510,7 @@ async function runAgentPass(
           pendingWorktreeCommits = [];
           let blueprintMerges = pendingBlueprintMerges;
           pendingBlueprintMerges = [];
+          committedStep = true;
           if (await hooks.commitAgentStep(chatId, author, msgs,
               {changes: stepChanges, createdGadgets, createdWorktrees, addedBindings,
                worktreeCommits, blueprintMerges, reRoots},
@@ -4715,7 +4712,16 @@ async function runAgentPass(
     // Other failures become an AgentTurnError carrying the failing request's HTTP status (when
     // it can be determined) for the overseer's triage; runAgent retries a transient one first.
     let message = turnFailure.errorMessage ?? "The model request failed.";
-    let error = new AgentTurnError(message, httpStatusFromError(message, handle.lastResponse));
+    let status = httpStatusFromError(message, handle.lastResponse);
+    // Guardrails blocking the user's new input: the overseer ends the turn with
+    // "prompt_blocked", and replay leaves that input out. Only for a request that went through
+    // an AI Gateway and carried input replay can drop: the pass's first request, with user input
+    // the agent hasn't answered.
+    if (handle.aiGatewayLogRoute !== undefined && isBlockedPromptError(message) &&
+        !committedStep && unansweredInput(chatMessages).length > 0) {
+      throw new PromptBlockedError(message, status);
+    }
+    let error = new AgentTurnError(message, status);
     if (isRetryableAssistantError(turnFailure)) return {type: "transientFailure", error};
     throw error;
   }

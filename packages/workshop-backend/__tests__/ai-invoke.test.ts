@@ -47,6 +47,8 @@ describe("isBlockedPromptError", () => {
   it("does not take other failures for one", () => {
     for (let message of [
       '424 {"success":false,"error":[{"code":2017,"message":"Response blocked"}]}',
+      // A provider's own error that happens to use 2016, outside AI Gateway's envelope.
+      '400 {"error":{"code":2016,"message":"Invalid model parameters"}}',
       "400 prompt is 2016 tokens too long",
       '429 {"error":{"code":20160}}',
       "Connection error.",

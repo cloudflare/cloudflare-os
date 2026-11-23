@@ -45,14 +45,21 @@ export function httpStatusFromError(errorMessage: string, response: ModelHandle[
 }
 
 /**
- * Whether a failed request was AI Gateway Guardrails blocking the prompt (error code 2016), for
- * example as a prompt injection. The prompt never reached the model, and every request that
- * still carries it is blocked the same way, so the turn's new messages must be left out of the
- * conversation rather than retried (see the "prompt_blocked" error code).
+ * Whether a failed request's error text is AI Gateway's own error envelope (`"success": false`)
+ * carrying Guardrails' prompt-block code, 2016. Only meaningful for a request that went through
+ * an AI Gateway: a provider reached directly may use 2016 for something else.
  */
 export function isBlockedPromptError(errorMessage: string): boolean {
-  return /"code"\s*:\s*2016\b/.test(errorMessage);
+  return /"success"\s*:\s*false/.test(errorMessage) && /"code"\s*:\s*2016\b/.test(errorMessage);
 }
+
+/**
+ * A turn's first model request, sent through an AI Gateway, that Guardrails blocked (e.g. as a
+ * prompt injection) while it carried new user input. That input never reached the model, and
+ * every request that still carries it is blocked the same way, so the overseer ends the turn with
+ * a "prompt_blocked" error and replay leaves the input out (see blocked-prompts.ts).
+ */
+export class PromptBlockedError extends AgentTurnError {}
 
 /**
  * Run a single non-streaming-style completion against a ModelHandle and return the response

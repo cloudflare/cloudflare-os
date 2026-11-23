@@ -6073,11 +6073,17 @@ export type AiChatMessageBody = {
    * the "connect Cloudflare / add credits" modal instead of a generic error + retry; "stopped"
    * marks a run the user stopped, which is not a failure). "resume_exhausted" marks a turn that
    * exhausted its resume attempts before saving a step; `retryAgent()` tells the agent so.
-   * "prompt_blocked" marks a turn whose new messages AI Gateway Guardrails blocked (e.g. as a
-   * prompt injection): replay leaves those messages out, so the chat continues with the next
-   * one, and there is nothing to retry.
+   * "prompt_blocked" marks a turn whose new input AI Gateway Guardrails blocked (e.g. as a
+   * prompt injection): replay leaves that input out, so the chat continues with the next
+   * message, and there is nothing to retry.
    */
   code?: string;
+  /**
+   * For "prompt_blocked": the first sequence the blocked request did not carry. The user input
+   * before it is left out of the conversation; steers logged after it, which the request never
+   * read, are kept.
+   */
+  blockedBefore?: number;
 } | {
   /**
    * Indicates that a call was delivered to the agent: a method was called on its `self` object

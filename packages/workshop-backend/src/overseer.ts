@@ -47,7 +47,7 @@ import {
   getModel,
   UserGatewayRouting,
 } from "./ai-models";
-import { AgentTurnError, completeText, isBlockedPromptError } from "./ai-invoke";
+import { AgentTurnError, PromptBlockedError, completeText } from "./ai-invoke";
 import {
   AiGatewayLogRetryableError,
   getAiGatewayConfig,
@@ -8538,7 +8538,9 @@ class OverseerImpl implements AgentHooks {
         durationMs: Date.now() - startedAt,
       });
 
-      failure = apiError && isBlockedPromptError(apiError.message)
+      // Only the turn's own request reports a block (see PromptBlockedError), never `/compact`'s
+      // summary request, which adds no input for replay to leave out.
+      failure = err instanceof PromptBlockedError
         ? {message: "Your message was blocked by a safety filter and left out of the " +
                     "conversation. Send a new message to continue.", code: "prompt_blocked"}
         : {message: errorMessage};
@@ -9902,6 +9904,11 @@ class OverseerImpl implements AgentHooks {
       return;
     }
 
+    // A blocked prompt covers the input logged so far, not the steers logged next: the blocked
+    // request never read them, so replay keeps them (see blocked-prompts.ts).
+    let blockedBefore = code === "prompt_blocked"
+        ? this.storage.nextChatSequences.get(chatId)?.nextSequence ?? 0 : undefined;
+
     // An error ends the turn early. Log the steers it never read first, so the error stays the
     // chat's last message, and a Retry reads them.
     if (meta.queuedSteers) this.#logQueuedSteers(meta, true);
@@ -9915,6 +9922,7 @@ class OverseerImpl implements AgentHooks {
       type: "error",
       message,
       ...(code ? { code } : {}),
+      ...(blockedBefore !== undefined ? { blockedBefore } : {}),
     });
   }
 
