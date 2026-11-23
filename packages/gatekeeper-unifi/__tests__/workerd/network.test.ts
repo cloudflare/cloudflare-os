@@ -41,7 +41,8 @@ describe("every read is authorized before it returns", () => {
       [ofSite("devices"), ap, item("deviceStatistics", HOME.apId)]],
     ["device.listClients", { via: [["getDevice", HOME.apId]], call: "listClients" }, [ofSite("clients"), ofSite("devices"), ap]],
     ["wifi.describe", { via: [["getWifiNetwork", HOME.guestWifiId]], call: "describe" }, [guestWifi]],
-    ["wifi.getPassphrase", { via: [["getWifiNetwork", HOME.guestWifiId]], call: "getPassphrase" }, [guestWifi], true],
+    ["wifi.getPassphrase", { via: [["getWifiNetwork", HOME.guestWifiId]], call: "getPassphrase" },
+      [guestWifi, item("wifiPassword", HOME.guestWifiId)], true],
     ["hotspot.listGuests", { via: [["getHotspot"]], call: "listGuests" }, [ofSite("clients")]],
     ["hotspot.getGuest", { via: [["getHotspot"]], call: "getGuest", args: [HOME.guestId] }, [item("client", HOME.guestId)]],
     ["hotspot.listVouchers", { via: [["getHotspot"]], call: "listVouchers" }, [ofSite("vouchers")], true],
@@ -69,7 +70,10 @@ describe("every read is authorized before it returns", () => {
     expect((await site.queue()).observations).toEqual([{
       title: "Read a UniFi WiFi password",
       description: "Read the password of WiFi network \\[Guest\\]\\(https://evil\\.example\\) \\# Free.",
-      subresources: [`console/${encodeURIComponent(HOME.hostId)}/app/network/site/${HOME.siteId}/wifi/${HOME.guestWifiId}`],
+      subresources: [
+        `console/${encodeURIComponent(HOME.hostId)}/app/network/site/${HOME.siteId}/wifi/${HOME.guestWifiId}`,
+        `console/${encodeURIComponent(HOME.hostId)}/app/network/site/${HOME.siteId}/wifiPassword/${HOME.guestWifiId}`,
+      ],
       // A password that works, which the Workshop then keeps from leaving the workspace.
       containsRestrictedData: true,
     }]);
@@ -157,6 +161,21 @@ describe("a device", () => {
     expect(description.autoApprovable).toBe(false);
     const kinds = (await hooks().autoApprovable(gateway.name, gateway.props)) as { ok: { tag: string }[] };
     expect(kinds.ok.map(k => k.tag).toSorted()).toEqual(["unifi.powerCyclePort", "unifi.restartDevice"]);
+  });
+
+  it("doesn't send a restart that was waiting its turn when the connection was removed", async () => {
+    const { console } = installFake();
+    const accountId = await connectCloud();
+    const target = { kind: "app" as const, app: "network" as const, consoleId: HOME.hostId };
+    // Use up the console's request budget, so the next request has to wait for a token.
+    await Promise.all(Array.from({ length: 10 }, (_, i) =>
+      account(accountId).request({ target, method: "GET", path: "/v1/sites", query: { offset: String(i) } })));
+    const waiting = account(accountId).request({
+      target, method: "POST", path: `/v1/sites/${HOME.siteId}/devices/${HOME.apId}/actions`, body: { action: "RESTART" },
+    });
+    await account(accountId).revoke();
+    expect(await waiting).toMatchObject({ ok: false, failure: { kind: "auth" } });
+    expect(console.writes()).toEqual([]);
   });
 
   it("reports an unknown outcome, never a retry, when the console stops answering mid-restart", async () => {
@@ -341,8 +360,25 @@ describe("the guest hotspot", () => {
     await hotspot.apply(lastSubmitted(await hotspot.queue()).actionId);
     const listed = await hotspot.call<{ note: string }[]>("listVouchers");
     expect(listed.some(v => v.note === "Party")).toBe(false);
-    const [voucher] = await hotspot.call<{ code: string | null; note: string }[]>("getVoucherBatch", batch);
+    const [voucher] = await hotspot.call<{ id: string; code: string | null; note: string }[]>("getVoucherBatch", batch);
     expect(voucher).toMatchObject({ note: "Party", code: expect.any(String) });
+    expect(console.calls.at(-1)?.query.filter).toBe(`id.in(${voucher!.id})`);
+
+    // Deleting it finds it the same way, and once it's gone the batch no longer shows its code.
+    await hotspot.call("deleteVoucher", voucher!.id);
+    await hotspot.apply(lastSubmitted(await hotspot.queue()).actionId);
+    expect(await hotspot.call("getVoucherBatch", batch)).toEqual([]);
+  });
+
+  it("asks for the whole voucher list when a console refuses the id filter", async () => {
+    const { console } = installFake();
+    const hotspot = binding(await connectCloud(), RESOURCES.hotspot);
+    const refuseFilter = console.handle.bind(console);
+    console.handle = (app, method, path, query, body) => query.filter?.startsWith("id.in(")
+      ? new Response(JSON.stringify({ message: "bad filter" }), { status: 400, headers: { "Content-Type": "application/json" } })
+      : refuseFilter(app, method, path, query, body);
+    await hotspot.call("deleteVoucher", HOME.voucherId);
+    expect(lastSubmitted(await hotspot.queue()).description.title).toBe("Delete guest WiFi voucher “Book club”");
   });
 
   it("deletes a voucher, hiding it until approved, and treats one already gone as done", async () => {

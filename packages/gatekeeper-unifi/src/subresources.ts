@@ -9,26 +9,29 @@
  * are `/site/<siteId>`; its devices, clients, LAN networks, WiFi network list and voucher codes are
  * `/devices/<siteId>`, `/clients/<siteId>`, `/networks/<siteId>`, `/wifiNetworks/<siteId>` and
  * `/vouchers/<siteId>`; one WiFi network's settings, password included, are
- * `/site/<siteId>/wifi/<wifiNetworkId>`, and one device's details, its statistics and one client's
- * details `/site/<siteId>/device/<id>`, `/site/<siteId>/deviceStatistics/<id>` and
- * `/site/<siteId>/client/<id>`, since a route can be allowed apart from the list it's under. In Protect, the NVR and its alarm are `/nvr/<id>`, each
+ * `/site/<siteId>/wifi/<wifiNetworkId>`, and its password `/site/<siteId>/wifiPassword/<id>`, which
+ * a key passes only if the settings it reads include the password; one device's details, its
+ * statistics and one client's details are `/site/<siteId>/device/<id>`,
+ * `/site/<siteId>/deviceStatistics/<id>` and `/site/<siteId>/client/<id>`, since a route can be
+ * allowed apart from the list it's under. In Protect, the NVR and its alarm are `/nvr/<id>`, each
  * device `/camera/<id>`, `/sensor/<id>` or `/light/<id>`, a camera's images `/snapshot/<id>` and
- * `/packageSnapshot/<id>` (its package camera), which can be allowed apart from its details, and the
- * application alone, for a listing that found nothing, has no suffix.
+ * `/packageSnapshot/<id>` (its package camera), which can be allowed apart from its details, and a
+ * list of them `/list/<cameras|sensors|lights>`, reported by every listing, an empty one included:
+ * a key can be allowed to open each device and refused the list, or the other way round.
  *
  * Pure: imported by the Node tests.
  */
 
 import { formatSubresourceId, parseSubresourceId, type SubresourceFragment } from "@gadgets/gatekeeper-kit/subresource-ids";
+import { asObject, parseNetworkPage, parseNvr, wifiPassphrase } from "./parse";
 import { isValidId, resourceApp, type UnifiResource } from "./resources";
-import type { UnifiApp } from "./transport";
 
 /**
  * One thing a read depends on, within the bound console's application. A Protect requirement names
  * a device, a Network one a site (and, for a WiFi network's settings, the network).
  */
 export type UnifiRequirement =
-  | { kind: "app" }
+  | { kind: "list"; id: "cameras" | "sensors" | "lights" }
   | { kind: "nvr"; id: string }
   | { kind: "camera"; id: string }
   | { kind: "sensor"; id: string }
@@ -42,6 +45,7 @@ export type UnifiRequirement =
   | { kind: "wifiNetworks"; siteId: string }
   | { kind: "vouchers"; siteId: string }
   | { kind: "wifi"; siteId: string; wifiNetworkId: string }
+  | { kind: "wifiPassword"; siteId: string; wifiNetworkId: string }
   | { kind: "device"; siteId: string; deviceId: string }
   | { kind: "deviceStatistics"; siteId: string; deviceId: string }
   | { kind: "client"; siteId: string; clientId: string };
@@ -49,9 +53,8 @@ export type UnifiRequirement =
 /** The parts of a Network site that UniFi serves from separate endpoints. */
 const SITE_DATA = ["site", "devices", "clients", "networks", "wifiNetworks", "vouchers"] as const;
 const PROTECT_ITEMS = ["nvr", "camera", "sensor", "light", "snapshot", "packageSnapshot"] as const;
+const PROTECT_LISTS = ["cameras", "sensors", "lights"] as const;
 
-/** What a Protect listing that found nothing requires: the application. */
-export const APP: UnifiRequirement = { kind: "app" };
 
 /** The subresource ID of `requirement` on the bound console's application. */
 export function requirementId(resource: UnifiResource, requirement: UnifiRequirement): string {
@@ -92,17 +95,18 @@ function decode(id: string): UnifiRequirement | null {
   if (consoleFragment?.name !== "console" || app?.name !== "app") return null;
   if (!rest.every(f => isValidId(f.id))) return null;
   const [first, second] = rest;
-  if (!first) return APP;
+  if (!first) return null;
   if (second) {
     if (rest.length !== 2 || first.name !== "site") return null;
     switch (second.name) {
-      case "wifi": return { kind: "wifi", siteId: first.id, wifiNetworkId: second.id };
+      case "wifi": case "wifiPassword": return { kind: second.name, siteId: first.id, wifiNetworkId: second.id };
       case "device": case "deviceStatistics": return { kind: second.name, siteId: first.id, deviceId: second.id };
       case "client": return { kind: "client", siteId: first.id, clientId: second.id };
       default: return null;
     }
   }
   const name = first.name;
+  if (name === "list") return isOneOf(first.id, PROTECT_LISTS) ? { kind: "list", id: first.id } : null;
   if (isOneOf(name, PROTECT_ITEMS)) return { kind: name, id: first.id };
   if (isOneOf(name, SITE_DATA)) return { kind: name, siteId: first.id };
   return null;
@@ -111,7 +115,7 @@ function decode(id: string): UnifiRequirement | null {
 /** The ID of the one item within a site a requirement names, if it names one. */
 function siteItem(requirement: UnifiRequirement): string | null {
   switch (requirement.kind) {
-    case "wifi": return requirement.wifiNetworkId;
+    case "wifi": case "wifiPassword": return requirement.wifiNetworkId;
     case "device": case "deviceStatistics": return requirement.deviceId;
     case "client": return requirement.clientId;
     default: return null;
@@ -131,10 +135,11 @@ function reports(resource: UnifiResource, requirement: UnifiRequirement): boolea
       return inSite && (requirement.kind === "devices" || requirement.kind === "clients" ||
         (requirement.kind === "device" || requirement.kind === "deviceStatistics") && requirement.deviceId === resource.deviceId);
     case "wifi":
-      return requirement.kind === "wifi" && inSite && requirement.wifiNetworkId === resource.wifiNetworkId;
+      return (requirement.kind === "wifi" || requirement.kind === "wifiPassword") && inSite &&
+        requirement.wifiNetworkId === resource.wifiNetworkId;
     case "hotspot":
       return inSite && (requirement.kind === "clients" || requirement.kind === "client" || requirement.kind === "vouchers");
-    case "protect": return requirement.kind === "app" || isOneOf(requirement.kind, PROTECT_ITEMS);
+    case "protect": return requirement.kind === "list" || isOneOf(requirement.kind, PROTECT_ITEMS);
     case "camera":
       return (requirement.kind === "camera" || requirement.kind === "snapshot" || requirement.kind === "packageSnapshot") &&
         requirement.id === resource.cameraId;
@@ -145,17 +150,14 @@ function reports(resource: UnifiResource, requirement: UnifiRequirement): boolea
 
 /**
  * The request that shows whether a key may read what `requirement` covers: the endpoint a read of
- * it calls, so whatever a role is refused there is refused here. A site's details come from the
- * site list, which shows a key only its own sites, so that probe also needs the site in the answer
- * (`listsSite`).
+ * it calls, so whatever a role is refused there is refused here. A successful answer must also
+ * satisfy `probeConfirms`.
  */
-export function probeFor(app: UnifiApp, requirement: UnifiRequirement): {
-  path: string; query?: Record<string, string>; accept?: "jpeg"; listsSite?: string;
-} {
+export function probeFor(requirement: UnifiRequirement): { path: string; query?: Record<string, string>; accept?: "jpeg" } {
   const at = encodeURIComponent;
   const first = { limit: "1" };
   switch (requirement.kind) {
-    case "app": return { path: app === "network" ? "/v1/info" : "/v1/meta/info" };
+    case "list": return { path: `/v1/${requirement.id}` };
     case "nvr": return { path: "/v1/nvrs" };
     case "camera": return { path: `/v1/cameras/${at(requirement.id)}` };
     case "sensor": return { path: `/v1/sensors/${at(requirement.id)}` };
@@ -164,16 +166,32 @@ export function probeFor(app: UnifiApp, requirement: UnifiRequirement): {
       return { path: `/v1/cameras/${at(requirement.id)}/snapshot`, query: { highQuality: "false" }, accept: "jpeg" };
     case "packageSnapshot":
       return { path: `/v1/cameras/${at(requirement.id)}/snapshot`, query: { highQuality: "false", channel: "package" }, accept: "jpeg" };
-    case "site": return { path: "/v1/sites", query: { limit: "200" }, listsSite: requirement.siteId };
+    case "site": return { path: "/v1/sites", query: { limit: "200" } };
     case "devices": return { path: `/v1/sites/${at(requirement.siteId)}/devices`, query: first };
     case "clients": return { path: `/v1/sites/${at(requirement.siteId)}/clients`, query: first };
     case "networks": return { path: `/v1/sites/${at(requirement.siteId)}/networks`, query: first };
     case "wifiNetworks": return { path: `/v1/sites/${at(requirement.siteId)}/wifi/broadcasts`, query: first };
     case "vouchers": return { path: `/v1/sites/${at(requirement.siteId)}/hotspot/vouchers`, query: first };
-    case "wifi": return { path: `/v1/sites/${at(requirement.siteId)}/wifi/broadcasts/${at(requirement.wifiNetworkId)}` };
+    case "wifi": case "wifiPassword":
+      return { path: `/v1/sites/${at(requirement.siteId)}/wifi/broadcasts/${at(requirement.wifiNetworkId)}` };
     case "device": return { path: `/v1/sites/${at(requirement.siteId)}/devices/${at(requirement.deviceId)}` };
     case "deviceStatistics":
       return { path: `/v1/sites/${at(requirement.siteId)}/devices/${at(requirement.deviceId)}/statistics/latest` };
     case "client": return { path: `/v1/sites/${at(requirement.siteId)}/clients/${at(requirement.clientId)}` };
+  }
+}
+
+/**
+ * Whether a successful probe's answer shows what the requirement needs, beyond the key being let
+ * in: the site list shows a key only its own sites, so the site must be in it; the NVR must be the
+ * one the binding read, not one a console that has since replaced it at the same URL reports; and
+ * the WiFi settings must include the password, which UniFi may leave out for a role that can't read it.
+ */
+export function probeConfirms(requirement: UnifiRequirement, body: unknown): boolean {
+  switch (requirement.kind) {
+    case "site": return parseNetworkPage(body, "site list").data.some(site => asObject(site, "site").id === requirement.siteId);
+    case "nvr": return parseNvr(body).id === requirement.id;
+    case "wifiPassword": return (wifiPassphrase(body) ?? "") !== "";
+    default: return true;
   }
 }

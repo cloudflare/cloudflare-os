@@ -204,6 +204,26 @@ export class UnifiApi {
     return vouchers.toSorted((a, b) => b.createdAt.valueOf() - a.createdAt.valueOf());
   }
 
+  /**
+   * The vouchers with these IDs that still exist, however many others the site has, through the
+   * voucher list's documented `id` filter. A console that refuses the filter is asked for the whole
+   * list instead, and one that ignores it is filtered here.
+   */
+  async findVouchers(siteId: string, ids: readonly string[]): Promise<UnifiVoucher[]> {
+    if (ids.length === 0) return [];
+    for (const voucherId of ids) id(voucherId, "voucher");
+    const path = `/v1/sites/${id(siteId, "site")}/hotspot/vouchers`;
+    let found: unknown[];
+    try {
+      found = await this.#list("network", path, "voucher list", { filter: `id.in(${ids.join(",")})` });
+    } catch (error) {
+      if (!(error instanceof UnifiError && error.kind === "badRequest")) throw error;
+      found = await this.#list("network", path, "voucher list");
+    }
+    const wanted = new Set(ids);
+    return found.map(parseVoucher).filter(voucher => wanted.has(voucher.id));
+  }
+
   /** Creates hotspot vouchers, returning those UniFi created. */
   async createVouchers(siteId: string, body: VoucherBody): Promise<UnifiVoucher[]> {
     const created = asObject(await this.#json("network", "POST",

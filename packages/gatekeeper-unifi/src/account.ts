@@ -24,7 +24,7 @@ import { wifiPutBody } from "./actions";
 import { UnifiApi } from "./api";
 import type { ConnectInput, ConnectPageMode } from "./connect-form";
 import {
-  cloudConsoleSummary, jsonOf, listSiteManagerConsoles, probeDirectConsole, sameConsole,
+  cloudConsoleSummary, listSiteManagerConsoles, probeDirectConsole, sameConsole,
   type ConsoleSummary, type ObserveTarget, type UnifiSend,
 } from "./consoles";
 import { UnifiError, type UnifiFailure } from "./errors";
@@ -35,8 +35,7 @@ import {
 import { logger, VENDOR_ID, type UnifiEnv } from "./env";
 import { sendUnifiRequest, type UnifiApp, type UnifiCredentials, type UnifiRequest, type UnifiResponse } from "./transport";
 import type { UnifiWifiNetworkChanges } from "./network-types";
-import { probeFor, type UnifiRequirement } from "./subresources";
-import { asObject, parseNetworkPage } from "./parse";
+import { probeConfirms, probeFor, type UnifiRequirement } from "./subresources";
 
 /** Who a connection belongs to, recorded when it connects. */
 export type UnifiIdentity =
@@ -156,8 +155,15 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
       kv.put(CONNECTION_KEY, connection);
       clearCredentialExpiryLatch(kv);
       markConnectAttempted(kv);
-      const handoff = await callback.complete(
-        this.ctx.exports.UnifiUser({ props: { accountId: this.ctx.id.toString() } }));
+      let handoff: ConnectHandoff;
+      try {
+        handoff = await callback.complete(this.ctx.exports.UnifiUser({ props: { accountId: this.ctx.id.toString() } }));
+      } catch (error) {
+        // Nothing in the Workshop records this account yet, so nothing would ever remove the key:
+        // drop it, keep the attempt marked, and let the alarm collect the rest.
+        kv.delete(CONNECTION_KEY);
+        throw error;
+      }
       await this.ctx.storage.deleteAlarm();
       logger.info("connected", { event: "connect.completed", mode: connection.credentials.mode });
       return { kind: "done", handoff };
@@ -296,13 +302,9 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
     for (let start = 0; start < requirements.length; start += 6) {
       answers.push(...await Promise.all(requirements.slice(start, start + 6).map(async requirement => {
         if (consoleId === null) return false;
-        const { listsSite, ...request } = probeFor(target.app, requirement);
         const probe = await this.#send(
-          { target: { kind: "app", app: target.app, consoleId }, method: "GET", ...request }, GET_TTL_MS, connection);
-        if (probe.ok) {
-          return listsSite === undefined ||
-            parseNetworkPage(jsonOf(probe), "site list").data.some(site => asObject(site, "site").id === listsSite);
-        }
+          { target: { kind: "app", app: target.app, consoleId }, method: "GET", ...probeFor(requirement) }, GET_TTL_MS, connection);
+        if (probe.ok) return probeConfirms(requirement, "json" in probe ? probe.json : undefined);
         if (["auth", "forbidden", "notFound", "redirect"].includes(probe.failure.kind)) return false;
         throw new Error(probe.failure.message);
       })));
@@ -395,6 +397,11 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
         kind: "rateLimited", retryAfterMs: wait,
         message: `The UniFi console is getting too many requests; retry in ${Math.ceil(wait / 1000)} seconds.`,
       });
+    }
+    // The connection may have been removed or reconnected while this waited its turn, and UniFi
+    // doesn't revoke a key: it must not go out under credentials that are no longer this connection's.
+    if (!sameCredentials(credentials, this.#connection()?.credentials)) {
+      return failure({ kind: "auth", message: "This UniFi connection was removed or reconnected. Try again." });
     }
     const response = await sendUnifiRequest(credentials, request);
     if (response.ok) return response;

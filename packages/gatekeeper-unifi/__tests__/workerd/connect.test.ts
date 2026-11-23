@@ -154,6 +154,19 @@ describe("submitting the form", () => {
   });
 });
 
+describe("a connect the Workshop couldn't finish", () => {
+  it("leaves no key behind, since nothing would ever remove it", async () => {
+    installFake();
+    const { accountId, path } = await startConnect();
+    await hooks().failComplete(accountId);
+    // The failure propagates, which the Worker answers with a 500.
+    const response = await postForm(path, { mode: "cloud", cloudApiKey: CLOUD_KEY }).catch(() => null);
+    expect(response?.status).not.toBe(200);
+    expect(await account(accountId).identity()).toBeNull();
+    expect(await runDurableObjectAlarm(account(accountId))).toBe(true);
+  });
+});
+
 describe("reconnecting", () => {
   it("stages a new key from the same account until the Workshop commits it", async () => {
     const { unifi } = installFake();

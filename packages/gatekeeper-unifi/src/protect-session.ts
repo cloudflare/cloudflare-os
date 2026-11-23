@@ -46,7 +46,7 @@ export class ProtectSession extends RpcTarget implements UnifiProtect {
     const pending = this.#ctx.shared.pending();
     const cameras = (await this.#ctx.shared.api.listCameras()).map(camera => simulateCamera(camera, pending));
     await this.#ctx.observe("List UniFi cameras", `Listed ${count(cameras.length, "camera")} in UniFi Protect.`,
-      cameras.map(camera => ({ kind: "camera", id: camera.id })));
+      [{ kind: "list", id: "cameras" }, ...cameras.map(camera => ({ kind: "camera" as const, id: camera.id }))]);
     return cameras;
   }
 
@@ -57,7 +57,7 @@ export class ProtectSession extends RpcTarget implements UnifiProtect {
   async listSensors(): Promise<UnifiSensorInfo[]> {
     const sensors = await this.#ctx.shared.api.listSensors();
     await this.#ctx.observe("List UniFi sensors", `Listed ${count(sensors.length, "sensor")} and their readings in UniFi Protect.`,
-      sensors.map(sensor => ({ kind: "sensor", id: sensor.id })));
+      [{ kind: "list", id: "sensors" }, ...sensors.map(sensor => ({ kind: "sensor" as const, id: sensor.id }))]);
     return sensors;
   }
 
@@ -69,7 +69,7 @@ export class ProtectSession extends RpcTarget implements UnifiProtect {
     const pending = this.#ctx.shared.pending();
     const lights = (await this.#ctx.shared.api.listLights()).map(light => simulateLight(light, pending));
     await this.#ctx.observe("List UniFi floodlights", `Listed ${count(lights.length, "floodlight")} in UniFi Protect.`,
-      lights.map(light => ({ kind: "light", id: light.id })));
+      [{ kind: "list", id: "lights" }, ...lights.map(light => ({ kind: "light" as const, id: light.id }))]);
     return lights;
   }
 
@@ -118,21 +118,21 @@ export class CameraSession extends RpcTarget implements UnifiCamera {
   async setName(name: string): Promise<void> {
     const trimmed = name.trim();
     if (trimmed === "" || trimmed.length > 64) throw badRequest("A camera name must be 1 to 64 characters.");
-    const camera = await this.#camera();
-    await this.#ctx.submit("cameraSettings", { cameraId: this.#cameraId, cameraName: camera.name, change: { name: trimmed } });
+    const { live } = await this.#current();
+    await this.#ctx.submit("cameraSettings", { cameraId: this.#cameraId, cameraName: live.name, change: { name: trimmed } });
   }
 
   async setStatusLight(on: boolean): Promise<void> {
-    const camera = await this.#camera();
+    const { live, camera } = await this.#current();
     if (camera.statusLight === null) throw badRequest(`${camera.name} has no status light.`);
-    await this.#ctx.submit("cameraSettings", { cameraId: this.#cameraId, cameraName: camera.name, change: { statusLight: on } });
+    await this.#ctx.submit("cameraSettings", { cameraId: this.#cameraId, cameraName: live.name, change: { statusLight: on } });
   }
 
   async setMicVolume(volume: number): Promise<void> {
     requireInteger(volume, "The microphone volume", 1, 100);
-    const camera = await this.#camera();
+    const { live, camera } = await this.#current();
     if (!camera.hasMicrophone) throw badRequest(`${camera.name} has no microphone.`);
-    await this.#ctx.submit("cameraMicVolume", { cameraId: this.#cameraId, cameraName: camera.name, volume });
+    await this.#ctx.submit("cameraMicVolume", { cameraId: this.#cameraId, cameraName: live.name, volume });
   }
 
   async setDoorbellMessage(message: UnifiDoorbellMessage, options?: { until?: Date }): Promise<void> {
@@ -149,32 +149,42 @@ export class CameraSession extends RpcTarget implements UnifiCamera {
     if (until !== undefined && (Number.isNaN(until.valueOf()) || until.valueOf() <= this.#ctx.shared.now())) {
       throw badRequest("`until` must be in the future.");
     }
-    const camera = await this.#camera();
+    const { live } = await this.#current();
     await this.#ctx.submit("doorbellMessage", {
-      cameraId: this.#cameraId, cameraName: camera.name,
+      cameraId: this.#cameraId, cameraName: live.name,
       change: { doorbellMessage: message, until: until === undefined ? null : until.valueOf() },
     });
   }
 
   async goToPreset(slot: number): Promise<void> {
     requireInteger(slot, "The preset slot", -1, 99);
-    const camera = await this.#camera();
-    await this.#ctx.submit("cameraPtz", { cameraId: this.#cameraId, cameraName: camera.name, command: { goToPreset: slot } });
+    const { live } = await this.#current();
+    await this.#ctx.submit("cameraPtz", { cameraId: this.#cameraId, cameraName: live.name, command: { goToPreset: slot } });
   }
 
   async startPatrol(slot: number): Promise<void> {
     requireInteger(slot, "The patrol slot", 0, 4);
-    const camera = await this.#camera();
-    await this.#ctx.submit("cameraPtz", { cameraId: this.#cameraId, cameraName: camera.name, command: { startPatrol: slot } });
+    const { live } = await this.#current();
+    await this.#ctx.submit("cameraPtz", { cameraId: this.#cameraId, cameraName: live.name, command: { startPatrol: slot } });
   }
 
   async stopPatrol(): Promise<void> {
-    const camera = await this.#camera();
-    await this.#ctx.submit("cameraPtz", { cameraId: this.#cameraId, cameraName: camera.name, command: { stopPatrol: true } });
+    const { live } = await this.#current();
+    await this.#ctx.submit("cameraPtz", { cameraId: this.#cameraId, cameraName: live.name, command: { stopPatrol: true } });
   }
 
   async #camera(): Promise<UnifiCameraInfo> {
-    return simulateCamera(await this.#ctx.shared.api.getCamera(this.#cameraId), this.#ctx.shared.pending());
+    return (await this.#current()).camera;
+  }
+
+  /**
+   * The camera as UniFi has it now (`live`), which approvals name it by: each pending change applies
+   * on its own, so a rename queued earlier may never happen. And as pending changes would leave it
+   * (`camera`), which reads and checks use.
+   */
+  async #current(): Promise<{ live: UnifiCameraInfo; camera: UnifiCameraInfo }> {
+    const live = await this.#ctx.shared.api.getCamera(this.#cameraId);
+    return { live, camera: simulateCamera(live, this.#ctx.shared.pending()) };
   }
 }
 

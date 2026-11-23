@@ -370,7 +370,10 @@ export class FakeConsole {
       }
     }
 
-    if (method === "GET" && rest === "/hotspot/vouchers") return page(site.vouchers);
+    if (method === "GET" && rest === "/hotspot/vouchers") {
+      const ids = this.honorsFilters ? /^id\.in\(([^)]*)\)$/.exec(query.filter ?? "")?.[1]?.split(",") : undefined;
+      return page(ids ? site.vouchers.filter(v => ids.includes(v.id as string)) : site.vouchers);
+    }
     if (method === "POST" && rest === "/hotspot/vouchers") {
       const request = body as Raw;
       if (typeof request.name !== "string" || typeof request.timeLimitMinutes !== "number") {

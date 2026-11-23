@@ -93,7 +93,8 @@ Every read is recorded as an observation. Every change waits for approval:
 Changes to WiFi and guest access are never auto-approvable because they change who can use the
 network, and a doorbell message isn't because it's shown to whoever comes to the door. A device
 the device list doesn't classify can't be restarted, since it can't be told apart from the
-gateway. Approvals name what they change ("Restart “Living Room AP”"). Action history is visible to
+gateway. Approvals name what they change ("Restart “Living Room AP”"), as UniFi names it now rather than as
+an earlier pending rename would, with its UniFi ID alongside. Action history is visible to
 everyone the workspace is shared with, which is fine for names, but an approval never shows a WiFi
 password or voucher code that still works: a new password is described as changing.
 
@@ -115,14 +116,17 @@ All IDs start `console/<consoleId>/app/<network|protect>`. Then:
 
 - Network: `/site/<siteId>` for the site's details; `/devices/<siteId>`, `/clients/<siteId>`,
   `/networks/<siteId>`, `/wifiNetworks/<siteId>` and `/vouchers/<siteId>` for those lists;
-  `/site/<siteId>/wifi/<wifiNetworkId>` for one WiFi network's settings, password included; and
+  `/site/<siteId>/wifi/<wifiNetworkId>` for one WiFi network's settings, and
+  `/site/<siteId>/wifiPassword/<wifiNetworkId>` for its password, which a collaborator passes only
+  if the settings their key reads include it; and
   `/site/<siteId>/device/<id>`, `/site/<siteId>/deviceStatistics/<id>` and
   `/site/<siteId>/client/<id>` for one device's details or statistics or one client's details,
   since a route can be allowed apart from the list it's under.
-- Protect: `/nvr/<id>` for the alarm, and `/camera/<id>`, `/sensor/<id>` or `/light/<id>` for each
-  device a read showed. A snapshot also reports `/snapshot/<id>` (or `/packageSnapshot/<id>`),
+- Protect: `/nvr/<id>` for the alarm, which a collaborator passes only if their key reads the same
+  NVR, and `/camera/<id>`, `/sensor/<id>` or `/light/<id>` for each device a read showed, with
+  `/list/<cameras|sensors|lights>` for the list it came from. A snapshot also reports `/snapshot/<id>` (or `/packageSnapshot/<id>`),
   since a camera's images can be allowed apart from its details, for example by a Cloudflare
-  Access policy on the snapshot path. A listing that found none reports the application alone.
+  Access policy on the snapshot path. A listing that found nothing still reports its list.
 
 Checks:
 

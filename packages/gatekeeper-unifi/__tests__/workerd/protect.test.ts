@@ -23,9 +23,10 @@ describe("every read is authorized before it returns", () => {
   // What each read reports: every Protect device it disclosed, or else the application.
   const reads: [string, Step, string[]][] = [
     ["describe", { call: "describe" }, [`${PROTECT}/nvr/${HOME.nvrId}`]],
-    ["listCameras", { call: "listCameras" }, [`${PROTECT}/camera/${HOME.doorbellId}`, `${PROTECT}/camera/${HOME.ptzId}`]],
-    ["listSensors", { call: "listSensors" }, [`${PROTECT}/sensor/${HOME.sensorId}`]],
-    ["listLights", { call: "listLights" }, [`${PROTECT}/light/${HOME.lightId}`]],
+    ["listCameras", { call: "listCameras" },
+      [`${PROTECT}/list/cameras`, `${PROTECT}/camera/${HOME.doorbellId}`, `${PROTECT}/camera/${HOME.ptzId}`]],
+    ["listSensors", { call: "listSensors" }, [`${PROTECT}/list/sensors`, `${PROTECT}/sensor/${HOME.sensorId}`]],
+    ["listLights", { call: "listLights" }, [`${PROTECT}/list/lights`, `${PROTECT}/light/${HOME.lightId}`]],
     ["camera.describe", { via: [["getCamera", HOME.doorbellId]], call: "describe" }, [`${PROTECT}/camera/${HOME.doorbellId}`]],
     ["camera.getSnapshot", { via: [["getCamera", HOME.doorbellId]], call: "getSnapshot" },
       [`${PROTECT}/camera/${HOME.doorbellId}`, `${PROTECT}/snapshot/${HOME.doorbellId}`]],
@@ -133,6 +134,17 @@ describe("a camera", () => {
     const driveway = binding(await connectCloud(), RESOURCES.camera(HOME.ptzId));
     expect(await driveway.failure("setStatusLight", false)).toBe("Driveway has no status light.");
     expect((await driveway.queue()).submitted).toEqual([]);
+  });
+
+  it("names a camera in approvals as UniFi has it, not as an earlier pending rename would", async () => {
+    // Each change applies on its own, so the rename may be declined while this one is approved.
+    installFake();
+    const doorbell = binding(await connectCloud(), RESOURCES.camera(HOME.doorbellId));
+    await doorbell.call("setName", "Porch");
+    await doorbell.call("setStatusLight", false);
+    const { description } = lastSubmitted(await doorbell.queue());
+    expect(description.title).toBe("Turn off the status light on “Front Door”");
+    expect(JSON.stringify(description.fields)).toContain(HOME.doorbellId);
   });
 
   it("shows a doorbell message until the doorbell's default timeout, not forever", async () => {

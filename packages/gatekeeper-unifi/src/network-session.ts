@@ -11,7 +11,6 @@ import { RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import { UnifiError } from "./errors";
 import type { VoucherRequest } from "./actions";
-import { MAX_LIST_ITEMS } from "./api";
 import { parseWifiInfo, PERSONAL_SECURITY_TYPES, wifiPassphrase } from "./parse";
 import {
   isPlaceholderVoucherId, simulateClientDetails, simulateClients, simulatePassphrase, simulateVouchers,
@@ -258,7 +257,11 @@ export class WifiNetworkSession extends RpcTarget implements UnifiWifiNetwork {
     const network = simulateWifiInfo(parseWifiInfo(raw), this.#siteId, pending());
     const passphrase = simulatePassphrase(wifiPassphrase(raw), this.#siteId, this.#wifiNetworkId, pending());
     await this.#ctx.observe("Read a UniFi WiFi password", `Read the password of WiFi network ${md(network.name)}.`,
-      [{ kind: "wifi", siteId: this.#siteId, wifiNetworkId: this.#wifiNetworkId }], { restricted: passphrase !== null });
+      passphrase === null
+        ? [{ kind: "wifi", siteId: this.#siteId, wifiNetworkId: this.#wifiNetworkId }]
+        : [{ kind: "wifi", siteId: this.#siteId, wifiNetworkId: this.#wifiNetworkId },
+          { kind: "wifiPassword", siteId: this.#siteId, wifiNetworkId: this.#wifiNetworkId }],
+      { restricted: passphrase !== null });
     return passphrase;
   }
 
@@ -280,7 +283,8 @@ export class WifiNetworkSession extends RpcTarget implements UnifiWifiNetwork {
         throw badRequest("Only a WPA2 or WPA3 Personal network has a password to change.");
       }
     }
-    const current = simulateWifiInfo(parseWifiInfo(raw), this.#siteId, this.#ctx.shared.pending());
+    // Named as UniFi has it now: a rename queued earlier applies on its own, and may not happen.
+    const current = parseWifiInfo(raw);
     await this.#ctx.submit("updateWifi", {
       siteId: this.#siteId, wifiNetworkId: this.#wifiNetworkId, networkName: current.name,
       changes: {
@@ -371,18 +375,11 @@ export class HotspotSession extends RpcTarget implements UnifiHotspot {
     if (queued.length > 0) {
       vouchers = simulateVouchers([], this.#siteId, queued);
     } else {
-      const created = voucherBatch(batchId) ?? [];
-      // The list stops at 1,000 in no promised order, so a voucher missing from a full one may
-      // just be past its end: it's shown as created. Missing from a shorter list, it was deleted.
-      const listed = created.length > 0 ? await api.listVouchers(this.#siteId) : [];
-      const complete = listed.length < MAX_LIST_ITEMS;
-      const current = created.flatMap(voucher => {
-        const live = listed.find(v => v.id === voucher.id);
-        return live ? [live] : complete ? [] : [voucher];
-      });
-      const ids = new Set(current.map(voucher => voucher.id));
+      const ids = voucherBatch(batchId) ?? [];
+      // Looked up afresh by ID: listVouchers() stops at 1,000 in no promised order.
+      const current = await api.findVouchers(this.#siteId, ids);
       // Simulation hides pending deletions; it would add other batches' placeholders, which are dropped.
-      vouchers = simulateVouchers(current, this.#siteId, pending()).filter(voucher => ids.has(voucher.id));
+      vouchers = simulateVouchers(current, this.#siteId, pending()).filter(voucher => ids.includes(voucher.id));
     }
     await this.#ctx.observe("Read a batch of UniFi hotspot vouchers",
       `Read ${count(vouchers.length, "voucher")} created together for the guest hotspot of UniFi site ${md(await this.#label.get())}.`,
@@ -395,8 +392,9 @@ export class HotspotSession extends RpcTarget implements UnifiHotspot {
       throw badRequest("That voucher hasn't been created yet, so it can't be deleted.");
     }
     requireId(voucherId, "voucher");
+    // By ID, so a voucher listVouchers() doesn't reach can still be deleted.
     const vouchers = simulateVouchers(
-      await this.#ctx.shared.api.listVouchers(this.#siteId), this.#siteId, this.#ctx.shared.pending());
+      await this.#ctx.shared.api.findVouchers(this.#siteId, [voucherId]), this.#siteId, this.#ctx.shared.pending());
     const voucher = vouchers.find(v => v.id === voucherId);
     if (!voucher) throw new UnifiError({ kind: "notFound", message: "There's no voucher with that ID." });
     await this.#ctx.submit("deleteVoucher",

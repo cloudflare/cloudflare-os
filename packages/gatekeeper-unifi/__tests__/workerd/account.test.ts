@@ -204,6 +204,17 @@ describe("checking collaborators", () => {
     expect(await verify(binding(owner, { kind: "camera", consoleId, cameraId: HOME.doorbellId }), sam)).toEqual(DENIED);
   });
 
+  it("checks a Protect listing's list apart from the devices it shows, which can be allowed separately", async () => {
+    const { unifi } = installFake();
+    const { owner, sam, consoleId } = await ownerAndSamDirect(unifi);
+    unifi.direct.get(CONSOLE_URL)!.refused = new Map([[SAM_KEY, ["/v1/cameras"]]]);
+    const protect = binding(owner, { kind: "protect", consoleId });
+    const app = appSubresource(protect.props.resource);
+    expect(await verify(protect, sam, [`${app}/camera/${HOME.doorbellId}`])).toEqual(ALLOWED);
+    expect(await verify(protect, sam, [`${app}/list/cameras`, `${app}/camera/${HOME.doorbellId}`])).toEqual(DENIED);
+    expect(await verify(protect, sam, [`${app}/list/sensors`])).toEqual(ALLOWED);
+  });
+
   it("checks a camera's images apart from its details, which can be allowed separately", async () => {
     const { unifi } = installFake();
     const { owner, sam, consoleId } = await ownerAndSamDirect(unifi);

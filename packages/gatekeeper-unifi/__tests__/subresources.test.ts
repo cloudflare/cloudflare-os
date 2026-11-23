@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { parseRequirement, probeFor, requirementId, type UnifiRequirement } from "../src/subresources";
+import { parseRequirement, probeConfirms, probeFor, requirementId, type UnifiRequirement } from "../src/subresources";
 import type { UnifiResource } from "../src/resources";
+import { rawNvr } from "./fake-unifi";
 
 const CONSOLE = "70A7419783ED0000000006797F060000000006C719490000000062ABD4EA:1261206302";
 const SITE = "88f7af54-98f8-306a-a1c7-c9349722b1f6";
@@ -17,6 +18,11 @@ const camera: UnifiResource = { kind: "camera", consoleId: CONSOLE, cameraId: CA
 const NETWORK = `console/${encodeURIComponent(CONSOLE)}/app/network`;
 const PROTECT = `console/${encodeURIComponent(CONSOLE)}/app/protect`;
 
+/** A site list as the Network API returns it. */
+const sites = (ids: string[]) =>
+  ({ offset: 0, limit: 200, count: ids.length, totalCount: ids.length, data: ids.map(id => ({ id, name: "S", internalReference: "s" })) });
+const nvr = (id: string) => rawNvr(id, "NVR", "70A7419783ED");
+
 describe("subresource IDs", () => {
   it.each<[UnifiResource, UnifiRequirement, string]>([
     [site, { kind: "site", siteId: SITE }, `${NETWORK}/site/${SITE}`],
@@ -27,7 +33,8 @@ describe("subresource IDs", () => {
     [device, { kind: "deviceStatistics", siteId: SITE, deviceId: "d" }, `${NETWORK}/site/${SITE}/deviceStatistics/d`],
     [hotspot, { kind: "client", siteId: SITE, clientId: "c" }, `${NETWORK}/site/${SITE}/client/c`],
     [hotspot, { kind: "vouchers", siteId: SITE }, `${NETWORK}/vouchers/${SITE}`],
-    [protect, { kind: "app" }, PROTECT],
+    [protect, { kind: "list", id: "cameras" }, `${PROTECT}/list/cameras`],
+    [site, { kind: "wifiPassword", siteId: SITE, wifiNetworkId: WIFI }, `${NETWORK}/site/${SITE}/wifiPassword/${WIFI}`],
     [protect, { kind: "nvr", id: NVR }, `${PROTECT}/nvr/${NVR}`],
     [protect, { kind: "camera", id: CAMERA }, `${PROTECT}/camera/${CAMERA}`],
     [camera, { kind: "camera", id: CAMERA }, `${PROTECT}/camera/${CAMERA}`],
@@ -50,20 +57,37 @@ describe("subresource IDs", () => {
     ["the NVR, from a camera binding", camera, `${PROTECT}/nvr/${NVR}`],
     ["a non-canonical spelling", site, `console/${CONSOLE}/app/network/site/${SITE}`],
     ["an unknown kind", protect, `${PROTECT}/doorlock/${CAMERA}`],
+    ["an unknown list", protect, `${PROTECT}/list/doorlocks`],
+    ["the Protect application alone", protect, PROTECT],
     ["the global requirement", site, "global"],
   ])("refuses %s", (_name, resource, id) => {
     expect(() => parseRequirement(resource, id)).toThrow(/isn't a subresource this UniFi binding reports/);
   });
 
   it("checks each requirement at the endpoint its read calls", () => {
-    expect(probeFor("protect", { kind: "camera", id: CAMERA })).toEqual({ path: `/v1/cameras/${CAMERA}` });
-    expect(probeFor("protect", { kind: "nvr", id: NVR })).toEqual({ path: "/v1/nvrs" });
-    expect(probeFor("network", { kind: "clients", siteId: SITE })).toEqual({ path: `/v1/sites/${SITE}/clients`, query: { limit: "1" } });
-    expect(probeFor("network", { kind: "deviceStatistics", siteId: SITE, deviceId: "d" }))
+    expect(probeFor({ kind: "camera", id: CAMERA })).toEqual({ path: `/v1/cameras/${CAMERA}` });
+    expect(probeFor({ kind: "nvr", id: NVR })).toEqual({ path: "/v1/nvrs" });
+    expect(probeFor({ kind: "clients", siteId: SITE })).toEqual({ path: `/v1/sites/${SITE}/clients`, query: { limit: "1" } });
+    expect(probeFor({ kind: "deviceStatistics", siteId: SITE, deviceId: "d" }))
       .toEqual({ path: `/v1/sites/${SITE}/devices/d/statistics/latest` });
-    expect(probeFor("network", { kind: "wifi", siteId: SITE, wifiNetworkId: WIFI }))
+    expect(probeFor({ kind: "wifi", siteId: SITE, wifiNetworkId: WIFI }))
       .toEqual({ path: `/v1/sites/${SITE}/wifi/broadcasts/${WIFI}` });
-    // The site list shows a key only its own sites, so the site has to be in the answer.
-    expect(probeFor("network", { kind: "site", siteId: SITE })).toEqual({ path: "/v1/sites", query: { limit: "200" }, listsSite: SITE });
+    expect(probeFor({ kind: "site", siteId: SITE })).toEqual({ path: "/v1/sites", query: { limit: "200" } });
+    expect(probeFor({ kind: "list", id: "cameras" })).toEqual({ path: "/v1/cameras" });
+  });
+
+  it("passes a probe only when its answer shows what the requirement needs", () => {
+    // The site list shows a key only its own sites.
+    expect(probeConfirms({ kind: "site", siteId: SITE }, sites([SITE]))).toBe(true);
+    expect(probeConfirms({ kind: "site", siteId: SITE }, sites([OTHER_SITE]))).toBe(false);
+    // The NVR must be the one the binding read, not a replacement's at the same URL.
+    expect(probeConfirms({ kind: "nvr", id: NVR }, nvr(NVR))).toBe(true);
+    expect(probeConfirms({ kind: "nvr", id: NVR }, nvr(CAMERA))).toBe(false);
+    // Settings that leave the password out don't show it can be read.
+    const wifi = (security: object) => ({ id: WIFI, name: "Guest", securityConfiguration: security });
+    const password = { kind: "wifiPassword", siteId: SITE, wifiNetworkId: WIFI } as const;
+    expect(probeConfirms(password, wifi({ type: "WPA2_PERSONAL", passphrase: "secret-pass" }))).toBe(true);
+    expect(probeConfirms(password, wifi({ type: "WPA2_PERSONAL" }))).toBe(false);
+    expect(probeConfirms({ kind: "wifi", siteId: SITE, wifiNetworkId: WIFI }, wifi({ type: "WPA2_PERSONAL" }))).toBe(true);
   });
 });

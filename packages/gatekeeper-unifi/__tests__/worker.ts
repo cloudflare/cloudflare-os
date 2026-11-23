@@ -29,6 +29,9 @@ export class UnifiVerifier extends ProductionVerifier {}
 /** What the test-side connect callback has been told, per account. */
 const callbackLog = new Map<string, { completed: number; describedAs: AccountDescription[]; expired: number; stages: string[] }>();
 
+/** Accounts whose connect callback fails `complete()`, as a Workshop that couldn't stage it would. */
+export const failingCompletes = new Set<string>();
+
 function logFor(accountId: string) {
   let log = callbackLog.get(accountId);
   if (!log) callbackLog.set(accountId, log = { completed: 0, describedAs: [], expired: 0, stages: [] });
@@ -41,6 +44,7 @@ function logFor(accountId: string) {
  */
 export class TestCallback extends WorkerEntrypoint<Cloudflare.Env, { accountId: string }> {
   async complete(account: Fetcher<GatekeeperUser>): Promise<ConnectHandoff> {
+    if (failingCompletes.has(this.ctx.props.accountId)) throw new Error("The Workshop couldn't stage the connection.");
     const log = logFor(this.ctx.props.accountId);
     // The Workshop describes the account while staging the connection.
     log.describedAs.push(await account.describe());
@@ -150,6 +154,11 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
   async accountCall(accountId: string, method: "commitReconnect" | "listConsoles" | "canObserve", args: unknown[]): Promise<Outcome> {
     const account = this.env.UNIFI_ACCOUNT.get(this.env.UNIFI_ACCOUNT.idFromString(accountId));
     return await outcome(() => (account as unknown as Record<string, (...a: unknown[]) => Promise<Returned>>)[method]!(...args));
+  }
+
+  /** Makes the test callback for `accountId` fail `complete()`. */
+  failComplete(accountId: string): void {
+    failingCompletes.add(accountId);
   }
 
   /** What the test callback for `accountId` has been told. */
