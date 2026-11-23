@@ -30,7 +30,7 @@ export const StagedChangesBar = ({ overseer, requests, blocked }: {
       const { outcome } = await overseer.acceptStagedActions(acceptThrough(requests))
       toasts.add(outcome === 'applied'
         ? { title: 'Requests applied', variant: 'success' }
-        : { title: 'A request could not be applied', description: 'Retry it or deny it.', variant: 'error' })
+        : { title: 'A request could not be applied', variant: 'error' })
     } catch (err) {
       console.error('Failed to apply requests:', err)
       toasts.add({ title: 'Failed to apply requests', variant: 'error' })

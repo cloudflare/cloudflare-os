@@ -699,6 +699,17 @@ describe('restricted approval', () => {
     expect(approveDescribedBy()).toBeNull()
   })
 
+  it('says why a blocking request failed, and offers no Approve once it cannot be retried',
+    async () => {
+      const applyError = { message: 'Timed out.', retryable: false, outcomeUnknown: true as const }
+      await renderPendingCard({ ...pendingLog({ awaitDecision: true }), applyError } as ActionLogEntry)
+
+      const card = document.querySelector('[class*="border-kumo-brand/40"]')!
+      expect(card.querySelector('[role="alert"]')?.textContent).toBe(
+        'Could not apply: Timed out. It may have been applied anyway. Check the resource before you deny it.')
+      expect([...card.querySelectorAll('button')].map(button => button.textContent)).toEqual(['Deny'])
+    })
+
   it('summarises a tray request, and names nothing, when not restricted', async () => {
     await renderPendingCard(pendingLog())
     await openTray()

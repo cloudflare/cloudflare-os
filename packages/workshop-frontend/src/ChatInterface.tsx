@@ -5461,6 +5461,8 @@ function ChatInterface({
     // that did not finish left: held in staging, where it is retried on its own.
     const heldAfterSave = isPending && !unsaved && log.accepted !== undefined;
     const saveError = heldAfterSave ? log.applyError : undefined;
+    // What stands between the request and an approval that applies it on its own.
+    const failure = isBlocking ? log.applyError : saveError;
     // Every other pending request applies when its chat's changes are accepted, so it reads as
     // pending until then, and can only be denied on its own. The tray above the composer lists
     // them all, grouped by resource.
@@ -5509,10 +5511,10 @@ function ChatInterface({
           disabled={isProc}
           describedBy={describedBy}
         />
-        {!awaitsAccept && !unsaved && (!saveError || saveError.retryable) && (
+        {!awaitsAccept && !unsaved && (!failure || failure.retryable) && (
           <ResolveButton
             tone="approve"
-            label={saveError ? "Retry" : undefined}
+            label={failure ? "Retry" : undefined}
             variant={isBlocking ? "filled" : "quiet"}
             onClick={() => void resolveAction(log, "approve")}
             disabled={isProc}
@@ -5574,6 +5576,12 @@ function ChatInterface({
                   </div>
                 )}
                 {incomplete && <IncompleteDescriptionNotice id={incompleteId} className="mt-2" />}
+                {failure && (
+                  <p role="alert" className="m-0 mt-2 text-[12px] leading-4 break-words text-kumo-danger">
+                    Could not apply: {failure.message}
+                    {failure.outcomeUnknown && ` ${OUTCOME_UNKNOWN_COPY}`}
+                  </p>
+                )}
               </div>
               <div className="ml-3 flex flex-shrink-0 items-center gap-1 self-center">
                 {actionControls}
