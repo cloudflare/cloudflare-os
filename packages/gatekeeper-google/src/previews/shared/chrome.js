@@ -65,6 +65,19 @@ styleSheet.textContent = `
     border-radius: 50%; background: var(--mark-ink); box-shadow: 0 0 0 3px var(--mark); }
   [data-touched="removed"]::after { background: var(--gone-ink); box-shadow: 0 0 0 3px var(--gone); }
   [data-touched="changed"]::after { background: var(--edit-ink); box-shadow: 0 0 0 3px var(--edit); }
+  /* Which copy is shown: one control of equal parts, and a thumb that slides to the one pressed. */
+  .views { position: relative; display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; flex: none;
+    padding: 2px; border-radius: 999px; background: var(--chip); }
+  .views > i { position: absolute; top: 2px; bottom: 2px; left: 2px; width: calc((100% - 4px) / var(--parts));
+    border-radius: 999px; background: var(--page); box-shadow: 0 1px 2px rgb(0 0 0 / .22);
+    transform: translateX(calc(var(--on, 0) * 100%)); transition: transform .2s ease-out; }
+  .views button { position: relative; padding: 2px 10px; border: 0; border-radius: 999px; background: none;
+    color: var(--dim); font-size: 11px; line-height: 1.6; white-space: nowrap; transition: color .15s; }
+  .views button:hover, .views button[aria-pressed="true"] { color: var(--ink); }
+  /* Among the buttons that float over the desk it is a sheet as they are, and its thumb a tint on it. */
+  #bar .views { background: var(--page); box-shadow: var(--float); animation: arrive .2s ease-out; }
+  #bar .views > i { background: color-mix(in srgb, var(--link) 16%, transparent); box-shadow: none; }
+  #bar .views button { padding: 3px 11px; font-size: 12px; line-height: 1.5; }
   .nav button { display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0;
     border-radius: 50%; background: none; color: var(--dim); transition: background .12s, color .12s, opacity .12s; }
   .nav button:hover { background: var(--chip); color: var(--ink); }
@@ -268,6 +281,34 @@ export function touch(element, kinds) {
   if (kind) element.dataset.touched = kind;
   else delete element.dataset.touched;
   return HOLDS[kind];
+}
+
+/**
+ * A control of several parts, one of them pressed: `options` are each `[name, label, hint]`, and
+ * `pick(name)` is called with the one clicked. press() says which is pressed.
+ */
+export function segmented(label, options, pick) {
+  const group = make('div', 'views');
+  group.setAttribute('role', 'group');
+  group.setAttribute('aria-label', label);
+  group.style.setProperty('--parts', options.length);
+  group.append(make('i'));
+  for (const [name, text, hint] of options) {
+    const button = group.appendChild(make('button', '', text));
+    button.dataset.view = name;
+    if (hint) button.title = hint;
+    button.addEventListener('click', () => pick(name));
+  }
+  return group;
+}
+
+/** Presses the part of a segmented() control that `name` names. */
+export function press(group, name) {
+  [...group.querySelectorAll('button')].forEach((button, at) => {
+    const on = button.dataset.view === name;
+    button.setAttribute('aria-pressed', String(on));
+    if (on) group.style.setProperty('--on', at);
+  });
 }
 
 // ---------------------------------------------------------------------------------------------

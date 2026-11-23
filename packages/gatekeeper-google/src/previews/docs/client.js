@@ -13,7 +13,8 @@
 
 import {
   addControl, dataUrl, flash, foldArrow, ghostLines, leaveOutline, lineIcon, loadOnRefresh, make, motion, outline,
-  outlineList, page, partNavigator, setOutline, setStops, showError, showPage, showStale, status, touch,
+  outlineList, page, partNavigator, press, segmented, setOutline, setStops, showError, showPage, showStale, status,
+  touch,
 } from './ui/chrome.js';
 import { drawer, headingLevel, newList, showPicture } from './draw.js';
 import { paginate } from './pages.js';
@@ -37,14 +38,8 @@ styleSheet.textContent = `
     --gone-ink: #a50e0e; --chip: #f1f3f4; --shine: #e8eaed; }
   .sheet.ghosted { box-sizing: border-box; padding: 72pt; }
 
-  /* Which copy of the document is shown: one control of three parts, beside the navigator. */
-  .views { display: flex; flex: none; padding: 2px; border-radius: 999px; background: var(--page);
-    box-shadow: var(--float); animation: arrive .2s ease-out; }
-  .views button { padding: 3px 11px; border: 0; border-radius: 999px; background: none; color: var(--dim);
-    font-size: 12px; line-height: 1.5; white-space: nowrap; transition: background .15s, color .15s; }
-  .views button:hover { color: var(--ink); }
-  .views button[aria-pressed="true"] { background: color-mix(in srgb, var(--link) 16%, transparent); color: var(--ink); }
-  @media (max-width: 560px) { #nav > span { display: none; } #nav { padding-left: 3px; } .views button { padding: 3px 8px; } }
+  @media (max-width: 560px) { #nav > span { display: none; } #nav { padding-left: 3px; }
+    #bar .views button { padding: 3px 8px; } }
   /* A page the page navigator steps to stops clear of the controls at the head of the frame. */
   .sheet { scroll-margin-top: ${HEAD}px; }
 
@@ -473,7 +468,7 @@ function render(arriving, place = readingPlace()) {
   const { items, keys, fresh, draw } = compose();
   // A tab with nothing pending has one copy.
   views.hidden = !tab.changed;
-  for (const button of views.children) button.setAttribute('aria-pressed', String(view === button.dataset.view));
+  press(views, view);
   showPage();
   // The sheets are measured as they are filled, so they are filled at their own size.
   sheets.style.transform = '';
@@ -503,20 +498,12 @@ function render(arriving, place = readingPlace()) {
   }
 }
 
-const views = make('div', 'views');
-views.hidden = true;
-views.setAttribute('role', 'group');
-views.setAttribute('aria-label', 'Which copy of the document to show');
-for (const [name, label, hint] of [
+const views = segmented('Which copy of the document to show', [
   ['after', 'With changes', 'The document as it will be, on its pages'],
   ['inline', 'Inline', 'Every change marked where it is made'],
   ['before', 'As saved', 'The document as Google has it, on its pages'],
-]) {
-  const button = views.appendChild(make('button', '', label));
-  button.dataset.view = name;
-  button.title = hint;
-  button.addEventListener('click', () => showView(name));
-}
+], name => showView(name));
+views.hidden = true;
 addControl(views);
 
 function showView(name) {
