@@ -66,6 +66,16 @@ function attemptStartedAgo(instance: ContextCollectionDurableObject, ms: number)
 // Lets a background sync against the in-memory fake, which does no I/O, run to completion.
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
 
+// Collects the fields of each warning that a sync is emptying a collection that held documents.
+function watchEmptiedWarnings() {
+  let warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  return {
+    calls: () => warn.mock.calls.map(([fields]) => fields as { event?: string })
+      .filter(fields => fields.event === "context.collection.git.branch.empty"),
+    restore: () => warn.mockRestore(),
+  };
+}
+
 const skill = "---\nname: deploys\ndescription: How to deploy.\n---\n# Deploys\n";
 
 describe("git-backed collection sync", () => {
@@ -93,9 +103,16 @@ describe("git-backed collection sync", () => {
     let fake = new FakeGitRepo();
     let stub = await createGitCollection(fake);
     let commit = await fake.push("main", { "a.md": "# A", "skills/deploys/SKILL.md": skill });
-    fake.branches.delete("main");
     await stub.syncArtifactSource();
-    expect((await stub.getMetadata()).documentCount).toBe(0);
+    fake.branches.delete("main");
+    let warnings = watchEmptiedWarnings();
+    try {
+      await stub.syncArtifactSource();
+      expect((await stub.getMetadata()).documentCount).toBe(0);
+      expect(warnings.calls()).toEqual([expect.objectContaining({ branch: "main", commit, documentCount: 2 })]);
+    } finally {
+      warnings.restore();
+    }
 
     fake.resetBranch("main", commit);
     await stub.syncArtifactSource();
@@ -104,6 +121,27 @@ describe("git-backed collection sync", () => {
       .toEqual(["a.md", "skills/deploys/SKILL.md"]);
     expect((await stub.getMetadata()).documentCount).toBe(2);
     expect((await stub.listAgentSkills()).map(entry => entry.skillName)).toEqual(["deploys"]);
+  });
+
+  it("warns when switching to a branch that has no commits empties the collection", async () => {
+    let fake = new FakeGitRepo();
+    let stub = await createGitCollection(fake);
+    let warnings = watchEmptiedWarnings();
+    try {
+      // A collection with nothing in it has nothing to lose.
+      await stub.syncArtifactSource();
+      expect(warnings.calls()).toEqual([]);
+
+      await fake.push("main", { "a.md": "# A" });
+      await stub.syncArtifactSource();
+      await stub.updateMetadata({ branch: "missing" });
+      await stub.syncArtifactSource();
+
+      expect((await stub.getMetadata()).documentCount).toBe(0);
+      expect(warnings.calls()).toEqual([expect.objectContaining({ branch: "missing", documentCount: 1 })]);
+    } finally {
+      warnings.restore();
+    }
   });
 
   it("works out hashes for documents stored before they were kept", async () => {
