@@ -1725,6 +1725,8 @@ export async function runAgent(
     }
     if (outcome.type === "rejectedFileImages") {
       hooks.emitChatStreamEvent(chatId, {type: "streamReset"});
+      abortSignal.throwIfAborted();
+      continue; // An explicit /compact must retry its projection too.
     }
     if (outcome.type === "compacted") hooks.commitChatCompaction(chatId, outcome.checkpoint);
     if (outcome.type === "finished") return outcome.lastRequest;
@@ -2493,6 +2495,16 @@ async function runAgentPass(
   const maxFileImageBytes = Math.max(0, MAX_FILE_IMAGE_CONTEXT_BYTES - attachmentImageBytes);
   const replayFileImages = new Set<AiToolCall>();
   const sentFileImages = new Set<string>();
+  const recoverFileImages = (error: unknown, oids: ReadonlySet<string>): boolean => {
+    if (!(error instanceof AgentTurnError) || oids.size === 0 ||
+        !isImageDecodeError(error.message, error.statusCode)) return false;
+    // The provider may not name the bad part. Conservatively omit these observations, never
+    // blacklist or change files: a later explicit read can show healthy pixels again.
+    hooks.rejectChatFileImages(chatId, oids);
+    if (progress.retriedWithoutFileImages) return false;
+    progress.retriedWithoutFileImages = true;
+    return true;
+  };
   let fileImageCount = 0, fileImageBytes = 0;
   let stepImageCount = 0, stepImageBytes = 0;
   for (let index = chatMessages.length - 1; index >= 0; --index) {
@@ -4742,6 +4754,11 @@ async function runAgentPass(
         // Compaction triggers below the limit, so the turn's own prompt still fits and a failed
         // summary must not fail the turn. Cancellation and an explicit `/compact` do surface.
         abortSignal.throwIfAborted();
+        const summarizedImages = new Set(chatMessages.flatMap(msg =>
+          msg.type !== "message" || msg.sequence >= compactedTo ? [] :
+            (msg.toolCalls ?? []).flatMap(call => call.toolName === "readFile" &&
+              call.image && replayFileImages.has(call) ? [call.image.oid] : [])));
+        if (recoverFileImages(error, summarizedImages)) return {type: "rejectedFileImages"};
         if (compactionTurn) throw error;
         logger.warn("compaction failed; running the turn without it", {
           event: "agent.compaction.failed", chatId, error,
@@ -4859,15 +4876,8 @@ async function runAgentPass(
     // it can be determined) for the overseer's triage; runAgent retries a transient one first.
     let message = turnFailure.errorMessage ?? "The model request failed.";
     let error = new AgentTurnError(message, httpStatusFromError(message, handle.lastResponse));
-    if (sentFileImages.size > 0 && isImageDecodeError(message, error.statusCode)) {
-      // Completed tool steps are already durable. Retry their projection, never their effects,
-      // and persist the omission so this blob cannot poison later turns or DO restarts.
-      hooks.rejectChatFileImages(chatId, sentFileImages);
-      if (!progress.retriedWithoutFileImages) {
-        progress.retriedWithoutFileImages = true;
-        return {type: "rejectedFileImages"};
-      }
-    }
+    // Completed steps are durable: reload their projection without re-executing effects.
+    if (recoverFileImages(error, sentFileImages)) return {type: "rejectedFileImages"};
     if (isRetryableAssistantError(turnFailure)) return {type: "transientFailure", error};
     throw error;
   }

@@ -1,3 +1,4 @@
+import { z } from "zod";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import { canInlineChatAttachmentImage } from "./chat-attachment-validation";
 import type { BlobReader } from "./git-chunked-blob";
@@ -17,10 +18,24 @@ export const ELIDED_FILE_IMAGE = "Older image pixels omitted from model history.
 /** Pixels omitted after a provider rejected image data; the original file is unchanged. */
 export const REJECTED_FILE_IMAGE = "Image pixels omitted because the provider could not decode an image in this request. Convert or replace the file before reading it again.";
 
+// Gemini's SDK can report a nested JSON error without an HTTP-status prefix.
+const NestedImageError = z.object({error: z.object({
+  code: z.union([z.literal(400), z.literal(422)]), message: z.string(),
+})});
+
 /** Only definite image-data errors merit removing pixels; never hide other request failures. */
 export function isImageDecodeError(message: string, status: number | undefined): boolean {
+  // Responses can fail within an HTTP 200 SSE stream; its explicit error code is authoritative.
+  if (/^(?:Error Code )?image_parse_error:/.test(message)) return true;
+  try {
+    const nested = NestedImageError.safeParse(JSON.parse(message));
+    if (nested.success) {
+      status = nested.data.error.code;
+      message = nested.data.error.message;
+    }
+  } catch { /* Other adapters use plain error text. */ }
   return (status === 400 || status === 422) &&
-    /invalid image (?:data|content|format)\b|(?:could not|cannot|unable to|failed to) (?:decode|process) (?:the |an? )?image|image[^\n]{0,160}(?:could not be decoded|cannot be decoded|is corrupt)/i.test(message);
+    /invalid image (?:data|content|format)\b|(?:could not|cannot|unable to|failed to) (?:decode|process) (?:the |an? )?(?:input )?image|image[^\n]{0,160}(?:could not be decoded|cannot be decoded|is corrupt)/i.test(message);
 }
 
 /** Recognize supported images without loading or encoding the payload. */

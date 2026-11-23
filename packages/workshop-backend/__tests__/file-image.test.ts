@@ -6,6 +6,8 @@ import {createFauxCore, fauxAssistantMessage, fauxText, fauxToolCall,
 import type {OverseerDurableObject} from "../src/overseer";
 import type {UserDurableObject} from "../src/user";
 import {runAgent} from "../src/agent";
+import {getModel} from "../src/ai-models";
+import type {AiModelConfig} from "@gadgets/workshop-shared/api";
 import {ELIDED_FILE_IMAGE, REJECTED_FILE_IMAGE, isImageDecodeError, readFileImage} from "../src/file-image";
 
 declare module "cloudflare:workers" { interface ProvidedEnv {
@@ -254,8 +256,88 @@ describe("images read from a worktree", () => {
     expect(calls.filter(call => call.toolName === "readFile").every(call => call.image?.rejected)).toBe(true);
   }));
 
+  it.each(["openai", "google"] as const)("recovers through the real %s provider adapter", provider => inKernel(crypto.randomUUID(), async impl => {
+    const bytes = PNG.slice(0, 33);
+    const {chatId} = await setup(impl, bytes);
+    const config: AiModelConfig = {provider, model: provider === "openai" ? "gpt-6.1-sol" : "gemini-2.5-flash", apiToken: "fixture"};
+    const handle = getModel({} as Cloudflare.Env, config, USER);
+    const realStream = handle.stream;
+    const faux = createFauxCore({models: [{id: "fixture"}]});
+    faux.setResponses([
+      fauxAssistantMessage([read()], {stopReason: "toolUse"}), fauxAssistantMessage(fauxText("Recovered")),
+    ]);
+    const requests: Message[][] = [];
+    let body = "", providerError = "";
+    handle.stream = (model, context, options) => {
+      requests.push(structuredClone(context.messages));
+      if (requests.length !== 2) return faux.stream(model, context, options);
+      const response = realStream(model, context, {...options, maxRetries: 0, fetch: async (input, init) => {
+        body = await new Request(input, init).text();
+        return provider === "openai"
+          ? new Response([
+            {type: "response.created", response: {id: "resp_fixture", status: "in_progress", output: []}},
+            {type: "response.failed", response: {id: "resp_fixture", status: "failed", output: [],
+              error: {code: "image_parse_error", message: "Could not process image"}}},
+          ].map(event => `data: ${JSON.stringify(event)}\n\n`).join(""), {headers: {"content-type": "text/event-stream"}})
+          : Response.json({error: {code: 400, message: "Unable to process input image", status: "INVALID_ARGUMENT"}}, {status: 400});
+      }});
+      void response.result().then(message => { providerError = message.errorMessage ?? ""; });
+      return response;
+    };
+    await runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER, config);
+    expect(body).toContain(bytes.toBase64());
+    expect(providerError).toContain(provider === "openai" ? "image_parse_error" : "Unable to process input image");
+    if (provider === "openai") expect(handle.lastResponse?.status).toBe(200);
+    expect(requests).toHaveLength(3);
+    expect(results(requests[2])[0].content).toEqual([{type: "text", text: REJECTED_FILE_IMAGE}]);
+    impl.addChatMessages(chatId, USER, [{type: "message", message: "Continue"}]);
+    const replay = await turn(impl, chatId, []);
+    expect(results(replay.requests[0])[0].content).toEqual([{type: "text", text: REJECTED_FILE_IMAGE}]);
+  }));
+
+  it("reruns explicit native /compact without rejected pixels through the real Anthropic adapter", () => inKernel(crypto.randomUUID(), async impl => {
+    const bytes = PNG.slice(0, 33);
+    const {chatId} = await setup(impl, bytes);
+    await turn(impl, chatId, [[read()]]);
+    impl.addChatMessages(chatId, USER, [{type: "message", message: "Continue"}]);
+    await turn(impl, chatId, []);
+    impl.addChatMessages(chatId, USER, [{type: "slashCommand", request: {id: {builtin: true, commandId: "compact"}, args: ""}}]);
+    const config: AiModelConfig = {provider: "anthropic", model: "claude-sonnet-5-5", apiToken: "fixture"};
+    const handle = getModel({} as Cloudflare.Env, config, USER);
+    const realStream = handle.stream;
+    const bodies: string[] = [];
+    handle.stream = (model, context, options) => realStream(model, context, {...options, maxRetries: 0, fetch: async (input, init) => {
+      bodies.push(await new Request(input, init).text());
+      if (bodies.length === 1) return Response.json({type: "error", error: {
+        type: "invalid_request_error", message: "Could not process image",
+      }}, {status: 400});
+      const events = [
+        {type: "message_start", message: {id: "msg_fixture", type: "message", role: "assistant", model: config.model,
+          content: [], stop_reason: null, usage: {input_tokens: 0, output_tokens: 0}}},
+        {type: "content_block_start", index: 0, content_block: {type: "compaction", content: "Image content omitted.", signature: "fixture"}},
+        {type: "content_block_stop", index: 0},
+        {type: "message_delta", delta: {stop_reason: "compaction"}, usage: {input_tokens: 0, output_tokens: 1}},
+        {type: "message_stop"},
+      ];
+      return new Response(events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""), {
+        headers: {"content-type": "text/event-stream"},
+      });
+    }});
+    await runAgent(impl, handle, chatId, AUTHOR, new AbortController().signal, USER, config);
+    expect(bodies).toHaveLength(2);
+    expect(bodies[0]).toContain(bytes.toBase64());
+    expect(bodies[0]).toContain('"compaction"');
+    expect(bodies[1]).not.toContain(bytes.toBase64());
+    expect(bodies[1]).toContain(REJECTED_FILE_IMAGE);
+    expect(impl.loadChatHistory(chatId).checkpoint?.summary).toBe("Image content omitted.");
+  }));
+
   it.each([
-    ["400 invalid image data", 400, true], ["422 Unable to decode the image", 422, true],
+    ["400 invalid image data", 400, true],
+    ["image_parse_error: Could not process image", 200, true],
+    ["Error Code image_parse_error: Could not process image", 200, true],
+    [JSON.stringify({error: {code: 400, message: "Unable to process input image"}}), undefined, true],
+    [JSON.stringify({error: {code: 503, message: "Unable to process input image"}}), undefined, false], ["422 Unable to decode the image", 422, true],
     ["400 image limit exceeded", 400, false], ["400 invalid image dimensions", 400, false],
     ["503 Could not process image", 503, false], ["Could not process image", undefined, false],
   ] as const)("recognizes only definite decode errors: %s", (message, status, expected) => {
