@@ -25,14 +25,17 @@ import { GadgetUseTitle } from './GadgetUseTitle'
 // Gadget/Code/Connections controls, workspace activity, and every editor-only control. The
 // overseer and gadget passed in here are the restricted capabilities returned by openWorkspace() for
 // "use" sessions; calling anything outside getMetadata()/subscribeToMetadata()/subscribeToPresence()/
-// subscribeToWorkpieces()/getGadget() (and, on the gadget, UI connection and export methods)
-// would throw.
+// subscribeToWorkpieces()/getGadget()/reportGadgetErrors() (and, on the gadget, UI connection and
+// export methods) would throw.
 //
 // When the workspace has more than one gadget, a simple picker in the top bar switches between
 // them (selection is owned by the parent, in the URL's `?w=` search param). Pending gadgets are
 // never listed: the restricted overseer's workpiece subscription withholds them.
 type Props = {
   overseer: RpcStub<Overseer>
+  // Where the gadget view reports its uncaught errors: the workspace once it has opened, null
+  // until then, which holds them back (see GadgetUI).
+  errorsTo: RpcStub<Overseer> | null
   // Null while the selected gadget is being admitted, or while the workspace has no gadgets.
   gadget: RpcStub<GadgetClient> | RpcStub<GadgetSnapshotClient> | null
   // Set while `gadget` is a static snapshot (see Overseer.getGadgetSnapshot) rather than the live
@@ -60,6 +63,7 @@ const TOPBAR_H = 56
 
 export default function GadgetUseView({
   overseer,
+  errorsTo,
   gadget,
   snapshot,
   selectedGadgetId,
@@ -157,12 +161,14 @@ export default function GadgetUseView({
               Try again
             </WorkshopButton>
           </div>
-        ) : gadget ? (
+        ) : gadget && selectedGadgetId !== null ? (
           <>
             <GadgetUI
               // A refreshed snapshot is a new copy, running the gadget's code as of the refresh.
               key={snapshot ? `${selectedGadgetId}@${snapshot.refreshedAt.getTime()}` : selectedGadgetId}
               gadget={gadget}
+              overseer={errorsTo}
+              gadgetId={selectedGadgetId}
               renderMode={snapshot ? 'snapshot' : undefined}
               height="100%"
               isVisible={true}

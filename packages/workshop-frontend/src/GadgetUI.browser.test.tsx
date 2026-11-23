@@ -41,7 +41,7 @@ const run = async (bundle: UiBundle, onIframeEscape?: () => void, renderMode?: '
   const onConsoleLog = (log: ConsoleLogEvent) => logs.push(log.message.join(' '))
   await act(async () => {
     root.render(
-      <GadgetUI gadget={gadget} height="100px" renderMode={renderMode} onConsoleLog={onConsoleLog} onIframeEscape={onIframeEscape} />,
+      <GadgetUI gadget={gadget} overseer={null} gadgetId={1} height="100px" renderMode={renderMode} onConsoleLog={onConsoleLog} onIframeEscape={onIframeEscape} />,
     )
   })
   return logs
