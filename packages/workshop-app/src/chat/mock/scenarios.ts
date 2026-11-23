@@ -100,6 +100,12 @@ const failedEdit = call(
 )
 const search = call('grep', { workpiece: 'DASHBOARD', pattern: 'limit:', path: 'src' }, { output: 'src/worker.ts:18:    maxResults: 50,\n' })
 
+const toolRunReply = agent({
+  text:
+    'The chart now covers **12 weeks** (148 tickets). One edit to `src/worker.ts` failed because the ' +
+    'limit is named `maxResults` there; I left it alone since 50 per page is enough.',
+})
+
 const toolRun: Scenario = {
   id: 'tool-run',
   title: 'Jira dashboard',
@@ -125,11 +131,9 @@ const toolRun: Scenario = {
     { message: agent({ toolCalls: [failedEdit] }), delay: 300 },
     streamTool(search),
     { message: agent({ toolCalls: [search] }), delay: 300 },
-    say(agent({
-      text:
-        'The chart now covers **12 weeks** (148 tickets). One edit to `src/worker.ts` failed because the ' +
-        'limit is named `maxResults` there; I left it alone since 50 per page is enough.',
-    })),
+    // Written slowly, a few words at a time, for long enough that the status saying so can be seen.
+    streamText(toolRunReply.message, 240),
+    { message: toolRunReply, delay: 300 },
   ),
 }
 

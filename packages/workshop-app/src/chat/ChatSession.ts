@@ -18,6 +18,7 @@ import { ChatCode, NotSent } from './code/ChatCode'
 import type { StreamRow } from './code/changeStream'
 import { epochCode } from './code/epochCode'
 import { proposedChanges, type ProposedChanges } from './proposedChanges'
+import { COMPACTING, THINKING, toolStatus, WRITING } from './statusWords'
 import { liveToolLabel, liveToolSections, toolIcon } from './toolCalls'
 import { uploadAttachments } from './uploadAttachments'
 import { ActionUpdates, ChatSubscriber, type ChatEvents } from './ChatSubscriber'
@@ -68,7 +69,7 @@ export type ChatSnapshot =
        */
       items: ChatItem[]
       /**
-       * What the assistant is doing right now, in a few words: "Thinking…", "Running code…".
+       * What the assistant is doing right now, in a few words and no jargon: "Floating ideas", "Running code" (`statusWords.ts`).
        * Undefined while it is not working, and until the chat's metadata arrives.
        */
       activity: string | undefined
@@ -972,10 +973,10 @@ export class ChatSession {
   }
 
   #activity() {
-    if (this.#compacting) return 'Compacting the conversation…'
+    if (this.#compacting) return COMPACTING
     const call = this.#calls.at(-1)
-    if (call) return liveToolLabel(call.toolName, call.target, call.noun)
-    return this.#streaming === '' ? 'Thinking…' : 'Writing…'
+    if (call) return toolStatus(call.toolName, call.noun)
+    return this.#streaming === '' ? THINKING : WRITING
   }
 
   #reset() {

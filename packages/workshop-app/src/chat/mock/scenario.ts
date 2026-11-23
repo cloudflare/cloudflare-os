@@ -381,8 +381,9 @@ const chunks = (text: string, words = 3): string[] => {
   return result
 }
 
-export const streamText = (text: string): ScriptStep[] =>
-  chunks(text).map((delta) => ({ stream: { type: 'textDelta', delta }, delay: CHUNK_DELAY }))
+/** Streams text, a few words at a time; `delay` is the wait between pieces, for a reply to be seen coming. */
+export const streamText = (text: string, delay = CHUNK_DELAY): ScriptStep[] =>
+  chunks(text).map((delta) => ({ stream: { type: 'textDelta', delta }, delay }))
 
 export const streamReasoning = (text: string): ScriptStep[] =>
   chunks(text).map((delta) => ({ stream: { type: 'reasoningDelta', delta }, delay: CHUNK_DELAY }))

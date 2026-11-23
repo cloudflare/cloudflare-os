@@ -322,7 +322,7 @@ describe('ChatSession', () => {
 
       chats.resolve([chat(0, 'Chat', 1, agentAuthor)])
       await flush()
-      expect(ready(session)).toMatchObject({ title: 'Chat', activity: 'Thinking…' })
+      expect(ready(session)).toMatchObject({ title: 'Chat', activity: 'Floating ideas' })
     })
 
     it('keeps a live metadata update over the listed metadata that arrives after it', async () => {
@@ -336,7 +336,7 @@ describe('ChatSession', () => {
       chats.resolve([chat(0, 'Old title', 1)])
       await flush()
 
-      expect(ready(session)).toMatchObject({ title: 'Renamed', activity: 'Thinking…' })
+      expect(ready(session)).toMatchObject({ title: 'Renamed', activity: 'Floating ideas' })
     })
 
     it('reports what the chat has used as its metadata says, the same object while it has not changed', async () => {
@@ -395,7 +395,7 @@ describe('ChatSession', () => {
       const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1, agentAuthor)]))
       const session = await started(fake)
 
-      expect(ready(session).activity).toBe('Thinking…')
+      expect(ready(session).activity).toBe('Floating ideas')
     })
 
     it('notifies subscribers when the snapshot changes, and not after they unsubscribe', async () => {
@@ -519,11 +519,11 @@ describe('ChatSession', () => {
       const session = await started(fake)
 
       fake.server().metadata(chat(0, 'Chat', 2, agentAuthor))
-      expect(ready(session)).toMatchObject({ activity: 'Thinking…', work: [] })
+      expect(ready(session)).toMatchObject({ activity: 'Floating ideas', work: [] })
 
       fake.server().stream(0, { type: 'textDelta', delta: 'Hel' })
       fake.server().stream(0, { type: 'textDelta', delta: 'lo' })
-      expect(ready(session)).toMatchObject({ activity: 'Writing…', work: [{ type: 'writing', text: 'Hello' }] })
+      expect(ready(session)).toMatchObject({ activity: 'Typing', work: [{ type: 'writing', text: 'Hello' }] })
 
       fake.server().message(agentMessage(1, 'Hello there'))
       expect(ready(session)).toMatchObject({ work: [], items: [{ kind: 'assistant', text: 'Hello there' }] })
@@ -745,23 +745,23 @@ describe('ChatSession', () => {
 
     it('shows reasoning as it is written', async () => {
       const { session, stream } = await working()
-      expect(ready(session)).toMatchObject({ activity: 'Thinking…', work: [] })
+      expect(ready(session)).toMatchObject({ activity: 'Floating ideas', work: [] })
 
       stream({ type: 'reasoningDelta', delta: 'The window is ' }, { type: 'reasoningDelta', delta: 'a constant.' })
 
-      expect(ready(session)).toMatchObject({ activity: 'Thinking…', work: [{ type: 'thinking', text: 'The window is a constant.' }] })
+      expect(ready(session)).toMatchObject({ activity: 'Floating ideas', work: [{ type: 'thinking', text: 'The window is a constant.' }] })
     })
 
     it('says what a call is doing while it is written: what it is, its file, its content so far, and when its input is complete', async () => {
       const { session, stream } = await working()
 
       stream({ type: 'toolCallStarted', toolCallId: 'w', toolName: 'writeFile' })
-      expect(ready(session)).toMatchObject({ activity: 'Writing file…', work: [{ label: 'Writing file…', running: true }] })
+      expect(ready(session)).toMatchObject({ activity: 'Making changes', work: [{ label: 'Writing file…', running: true }] })
 
       stream({ type: 'toolCallTarget', toolCallId: 'w', file })
       stream({ type: 'editPreviewStart', toolCallId: 'w', file }, { type: 'editPreviewDelta', toolCallId: 'w', delta: 'export ' }, { type: 'editPreviewDelta', toolCallId: 'w', delta: 'default {}' })
       expect(ready(session)).toMatchObject({
-        activity: 'Writing worker.ts…',
+        activity: 'Making changes',
         work: [{ key: 'w', label: 'Writing worker.ts…', sections: [{ label: 'Content', text: 'export default {}' }] }],
       })
 
@@ -794,7 +794,7 @@ describe('ChatSession', () => {
       stream({ type: 'textDelta', delta: 'Now the worker.' }, { type: 'toolCallStarted', toolCallId: 'e', toolName: 'editFile' }, { type: 'toolCallTarget', toolCallId: 'e', file })
 
       const after = ready(session)
-      expect(after).toMatchObject({ activity: 'Editing worker.ts…', work: [{ key: 'read' }, { type: 'writing', text: 'Now the worker.' }, { key: 'e', running: true }] })
+      expect(after).toMatchObject({ activity: 'Making changes', work: [{ key: 'read' }, { type: 'writing', text: 'Now the worker.' }, { key: 'e', running: true }] })
       expect(after.work[0]).toBe(before.work[0])
       expect(after.items).toBe(before.items)
     })
@@ -816,7 +816,7 @@ describe('ChatSession', () => {
       server.message(withCalls(1, [read], 'Check it.'))
 
       const snapshot = ready(session)
-      expect(snapshot.activity).toBe('Thinking…')
+      expect(snapshot.activity).toBe('Floating ideas')
       expect(snapshot.work).toEqual([expect.objectContaining({ key: live.key, label: 'Read chart.tsx', reasoning: 'Check it.' })])
       expect(snapshot.work[0]).not.toHaveProperty('running')
     })
@@ -825,10 +825,10 @@ describe('ChatSession', () => {
       const { session, stream } = await working()
 
       stream({ type: 'compacting' })
-      expect(ready(session).activity).toBe('Compacting the conversation…')
+      expect(ready(session).activity).toBe('Tidying up')
 
       stream({ type: 'compacted' })
-      expect(ready(session).activity).toBe('Thinking…')
+      expect(ready(session).activity).toBe('Floating ideas')
     })
 
     it('discards all of a step that will be tried again: its text, reasoning and calls', async () => {
@@ -844,7 +844,7 @@ describe('ChatSession', () => {
 
       stream({ type: 'streamReset' })
 
-      expect(ready(session).activity).toBe('Thinking…')
+      expect(ready(session).activity).toBe('Floating ideas')
       expect(ready(session).work).toEqual([expect.objectContaining({ key: 'read', label: 'Read chart.tsx' })])
     })
 
@@ -855,7 +855,7 @@ describe('ChatSession', () => {
       server.streamGeneration(1)
       streamStep()
       server.streamGeneration(2)
-      expect(ready(session)).toMatchObject({ work: [], activity: 'Thinking…' })
+      expect(ready(session)).toMatchObject({ work: [], activity: 'Floating ideas' })
 
       streamStep()
       server.metadata(chat(0, 'Chat', 2))
@@ -878,7 +878,7 @@ describe('ChatSession', () => {
         { type: 'toolCallStarted', toolCallId: 'make', toolName: 'createGadget' },
         { type: 'toolCallOutputFormat', toolCallId: 'make', output: { id: 'document', noun: 'Document', plural: 'Documents', icon: 'fileText' } },
       )
-      expect(ready(session)).toMatchObject({ activity: 'Creating Document…', work: [{ label: 'Creating Document…' }] })
+      expect(ready(session)).toMatchObject({ activity: 'Creating your document', work: [{ label: 'Creating Document…' }] })
 
       server.message(withCalls(1, [{ toolCallId: 'make', toolName: 'createGadget', input: { title: 'Review', bindingName: 'REVIEW' }, output: { gadgetId: 4 } }]))
 

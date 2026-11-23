@@ -14,6 +14,7 @@ import { ChatLayout } from '@/layouts/ChatLayout'
 import { StartLayout } from '@/layouts/StartLayout'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import type { DraftConnection } from './startConversation'
+import { THINKING } from './statusWords'
 import { handOverFirstMessage, type FirstMessage } from './firstMessage'
 import { startWithFormat, type StartFormat } from './startWithFormat'
 import { ComposerModelPicker } from './ComposerModelPicker'
@@ -177,7 +178,7 @@ export const NewChatPane = ({ header, sendingHeader = header, greeting, format, 
       {/* In the conversation's own list, so it is where the conversation this becomes will be. */}
       <MessageList messages={[]}>
         {pending && <UserMessage {...shownOf(pending)} />}
-        <AssistantPresence working={Boolean(pending)} status="Thinking…" />
+        <AssistantPresence working={Boolean(pending)} status={THINKING} />
       </MessageList>
       {greeting === undefined && linkForm}
     </ChatLayout>
