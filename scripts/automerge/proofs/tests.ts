@@ -2,18 +2,19 @@
 
 // proof-tests: a test-only pull request whose tests kill at least the mutants the base tests did.
 //
-// Applies when every changed file is a test file (TEST_PATH) in one package. The proof mutates the
+// Applies when every changed file is a test file vitest runs (RUNNABLE_TEST) in one package: the
+// proof runs those files and nothing else, so it speaks for no other file. A pull request that
+// also changes source, a helper, a fixture or a document is not applicable. The proof mutates the
 // package source those tests reach through imports and re-exports (sourceGraph), with Stryker and
 // the package's own vitest config narrowed to the changed test files, once with the base version of
 // those files and once with the head version. Source is identical on both sides, so the two runs
-// make the same mutants. It holds when every mutant the base tests killed (or timed out) is still
-// killed at head: an edit that weakens a test without deleting a line kills fewer and fails.
+// must make the same mutants. It holds when every mutant the base tests killed (or timed out) is
+// still killed at head: an edit that weakens a test without deleting a line kills fewer and fails.
+// Test files that are all new have no base run, and hold when the head run makes mutants.
 //
 // Scope follows a 2026-11-02 probe: Stryker 10.1.1's vitest runner worked on a workerd suite
-// (typed-storage) and a Node suite (error-reporting).
-// A pull request that changes anything but tests in one package is not applicable. Tests that only
-// a browser-mode, contract, eval or integration config runs get status `error`, and so does an
-// edit to an existing helper, fixture or setup file (editedSupportFiles).
+// (typed-storage) and a Node suite (error-reporting). Tests that only a browser-mode, contract,
+// eval or integration config runs get status `error`.
 //
 // The whole proof runs within a wall-clock budget, AUTOMERGE_MUTATION_BUDGET_MINUTES (default
 // DEFAULT_BUDGET_MINUTES). A heavy suite makes thousands of mutants and can run for most of an
@@ -38,7 +39,7 @@ import { fileAt, git, mergeBase } from "../git.ts";
 import { isMain } from "../main.ts";
 import { asArray, asObject, asString, isObject, parseJson, type Json, type JsonObject } from "../json.ts";
 
-/** Paths that hold tests, fixtures, helpers or setup rather than shipped code. */
+/** Paths that hold tests, fixtures, helpers or setup, which a mutation run does not mutate. */
 const TEST_PATH = /(^|\/)(__tests__|test|tests|fixtures|testdata)\/|\.(test|spec)\.[cm]?[jt]sx?$/;
 /** Test files vitest runs, as opposed to the helpers and fixtures beside them. */
 const RUNNABLE_TEST = /\.(test|spec)\.[cm]?[jt]sx?$/;
@@ -49,39 +50,55 @@ const STRYKER_CONFIG = "stryker.automerge.json";
 const VITEST_CONFIG = "vitest.automerge.config.ts";
 const reportPath = (side: "base" | "head") => `reports/automerge-mutation-${side}.json`;
 
-/** The mutants a Stryker JSON report says the tests killed, keyed by place and replacement. */
-export function killedMutants(report: JsonObject): Set<string> {
-  const killed = new Set<string>();
+/** A line and column in a Stryker report, which keys a mutant only if both are numbers. */
+function position(point: Json | undefined, what: string): string {
+  const { line, column } = asObject(point, what);
+  if (typeof line !== "number" || typeof column !== "number") throw new Error(`${what} has no line and column`);
+  return `${line}:${column}`;
+}
+
+/** Each mutant in a Stryker JSON report, keyed by place and replacement: whether the tests killed it. */
+function readMutants(report: JsonObject): Map<string, boolean> {
+  const mutants = new Map<string, boolean>();
   for (const [file, entry] of Object.entries(asObject(report.files, "report files"))) {
     for (const mutant of asArray(asObject(entry, file).mutants, `${file} mutants`)) {
       const m = asObject(mutant, "mutant");
-      if (!KILLED.has(asString(m.status, "mutant status"))) continue;
       const { start, end } = asObject(m.location, "mutant location");
-      const s = asObject(start, "start");
-      const e = asObject(end, "end");
-      killed.add(`${file}:${String(s.line)}:${String(s.column)}-${String(e.line)}:${String(e.column)} ` +
-        `${asString(m.mutatorName, "mutator")} -> ${String(m.replacement ?? "")}`);
+      const replacement = m.replacement === undefined ? "" : asString(m.replacement, "mutant replacement");
+      const key = `${file}:${position(start, "mutant start")}-${position(end, "mutant end")} ${asString(m.mutatorName, "mutator")} -> ${replacement}`;
+      mutants.set(key, KILLED.has(asString(m.status, "mutant status")) || mutants.get(key) === true);
     }
   }
-  return killed;
+  return mutants;
 }
 
-/** Counts every mutant in a report. */
-function mutantCount(report: JsonObject): number {
-  return Object.entries(asObject(report.files, "report files"))
-    .reduce((sum, [file, entry]) => sum + asArray(asObject(entry, file).mutants, file).length, 0);
+/** The keys of the mutants the tests killed. */
+function killed(mutants: Map<string, boolean>): string[] {
+  return [...mutants].filter(([, wasKilled]) => wasKilled).map(([key]) => key);
 }
 
-/** Holds when the head tests kill every mutant the base tests killed. */
-export function evaluateKills(base: JsonObject, head: JsonObject, scope: JsonObject): Outcome {
-  const before = killedMutants(base);
-  const after = killedMutants(head);
-  const lost = [...before].filter((key) => !after.has(key));
+/** The mutants a Stryker JSON report says the tests killed. */
+export function killedMutants(report: JsonObject): Set<string> {
+  return new Set(killed(readMutants(report)));
+}
+
+/**
+ * Holds when the head tests kill every mutant the base tests killed, out of the same mutants.
+ * `base` is undefined when every changed test file is new, so no base run was made.
+ */
+export function evaluateKills(base: JsonObject | undefined, head: JsonObject, scope: JsonObject): Outcome {
+  const after = readMutants(head);
+  const before = base === undefined ? new Map<string, boolean>() : readMutants(base);
+  const lost = killed(before).filter((key) => after.get(key) !== true);
   const reasons = lost.length > 0 ? [`${lost.length} mutant(s) the base tests killed survive at head`] : [];
-  if (mutantCount(head) === 0) reasons.push("the mutation run made no mutants");
+  if (after.size === 0) {
+    reasons.push("the mutation run made no mutants");
+  } else if (base !== undefined && (before.size !== after.size || [...before.keys()].some((key) => !after.has(key)))) {
+    reasons.push(`the base run made ${before.size} mutants and the head run ${after.size}, not the same ones`);
+  }
   return decide(reasons, {
     ...scope,
-    mutants: mutantCount(head), killed_base: before.size, killed_head: after.size, lost: lost.slice(0, 50),
+    mutants: after.size, killed_base: killed(before).length, killed_head: killed(after).length, lost: lost.slice(0, 50),
   });
 }
 
@@ -98,10 +115,14 @@ interface TestsPlan {
 /** Why the proof does not apply, or the package and the changed test files it covers. */
 type TestsScope = { outOfScope: string } | { packageDir: string; tests: string[] };
 
-/** Applies the scope rules to a diff. */
+/**
+ * The proof's scope: every changed file is a test file vitest runs, all sit in one package, and at
+ * least one is still there at head, so there are tests to run.
+ */
 export function planScope(files: FileDiff[]): TestsScope {
-  const others = files.filter((file) => !TEST_PATH.test(file.path));
-  if (others.length > 0) return { outOfScope: `changes files that are not tests: ${others.map((f) => f.path).slice(0, 5).join(", ")}` };
+  const others = files.filter((file) => !RUNNABLE_TEST.test(file.path));
+  if (others.length > 0) return { outOfScope: `changes files that are not test files vitest runs: ${others.map((f) => f.path).slice(0, 5).join(", ")}` };
+  if (files.every((file) => file.status === "deleted")) return { outOfScope: "deletes every test file it changes" };
   const packages = new Set(files.map((file) => PACKAGE.exec(file.path)?.[1] ?? ""));
   if (packages.size !== 1 || packages.has("")) return { outOfScope: "changes tests outside exactly one package" };
   return { packageDir: `packages/${[...packages][0]}`, tests: files.map((file) => file.path) };
@@ -440,16 +461,15 @@ async function installRunner(packageDir: string, deadline: number): Promise<Runn
 async function configFor(packageDir: string, tests: string[], deadline: number): Promise<string> {
   const configs = git(["ls-files", "--", `${packageDir}/vitest*.config.ts`]).split("\n")
     .filter((path) => path !== "" && !UNSUPPORTED_CONFIG.test(path));
-  const runnable = tests.filter((path) => RUNNABLE_TEST.test(path));
   const matches: string[] = [];
   for (const config of configs) {
     const listed = parseJson(await runBounded("pnpm",
       ["exec", "vitest", "list", "--filesOnly", "--json", "--config", relative(packageDir, config)], packageDir, deadline, true));
     const files = new Set(asArray(listed, "vitest list").map((entry) => relative(".", asString(asObject(entry, "entry").file, "file"))));
-    if (runnable.every((path) => files.has(path))) matches.push(config);
+    if (tests.every((path) => files.has(path))) matches.push(config);
   }
   if (matches.length !== 1) {
-    throw new Error(`expected one supported vitest config listing ${runnable.join(", ")}, found ${matches.length}`);
+    throw new Error(`expected one supported vitest config listing ${tests.join(", ")}, found ${matches.length}`);
   }
   return matches[0];
 }
@@ -477,7 +497,7 @@ async function runSide(
   plan: TestsPlan, runner: Runner, config: string, side: "base" | "head", tests: string[], deadline: number,
 ): Promise<JsonObject> {
   const pkg = plan.packageDir;
-  const include = tests.filter((path) => RUNNABLE_TEST.test(path)).map((path) => relative(pkg, path));
+  const include = tests.map((path) => relative(pkg, path));
   writeFileSync(join(pkg, VITEST_CONFIG), narrowedConfig(`./${relative(pkg, config)}`, include));
   writeFileSync(join(pkg, STRYKER_CONFIG), JSON.stringify({
     testRunner: "vitest",
@@ -514,19 +534,10 @@ async function prove(plan: TestsPlan, tests: string[], from: string, deadline: n
     if (text === undefined) rmSync(path, { force: true });
     else writeFileSync(path, text);
   }
-  // New test files only: the base kills nothing, so there is no base run to make.
-  const baseReport = plan.baseTests.some((path) => RUNNABLE_TEST.test(path))
+  const baseReport = plan.baseTests.length > 0
     ? await runSide(plan, runner, config, "base", plan.baseTests, deadline)
-    : { files: {} };
+    : undefined;
   return evaluateKills(baseReport, headReport, { ...details, config });
-}
-
-/**
- * The changed files, present at base, that vitest does not run itself. The proof runs only the
- * changed test files, so an edit to a helper or fixture that unchanged tests import would go unseen.
- */
-export function editedSupportFiles(baseTests: string[]): string[] {
-  return baseTests.filter((path) => !RUNNABLE_TEST.test(path));
 }
 
 async function main(): Promise<void> {
@@ -542,10 +553,6 @@ async function main(): Promise<void> {
     const baseTests = scope.tests.filter((path) => fileAt(from, path) !== undefined);
     const headTests = scope.tests.filter((path) => existsSync(path));
     const scoped = { package: scope.packageDir, tests: scope.tests, budget_minutes: minutes };
-    const support = editedSupportFiles(baseTests);
-    if (support.length > 0) {
-      return errored(`changes existing helpers, fixtures or setup that unchanged tests may use: ${support.slice(0, 5).join(", ")}`, scoped);
-    }
     try {
       // Stryker drives vitest directly, which runs none of the test task's codegen (docs/testing.md).
       // Built before the imports are followed, so generated modules resolve.

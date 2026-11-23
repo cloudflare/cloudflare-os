@@ -1,14 +1,28 @@
 // The one way judge code runs git. Callers name commits by SHA, so a result does not depend on
 // what is checked out.
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 
-/** The largest single read: a pull request's whole diff, or every path in a tree. */
+/** The largest single read: a pull request's whole diff, every path in a tree, or all its blobs. */
 const MAX_OUTPUT_BYTES = 1024 * 1024 * 1024;
 
 /** Runs git in `cwd` and returns its stdout; throws when git fails. */
 export function git(args: string[], cwd = process.cwd()): string {
   return execFileSync("git", args, { cwd, encoding: "utf8", maxBuffer: MAX_OUTPUT_BYTES });
+}
+
+/** Runs git in `cwd` with `input` on its stdin and returns its stdout as bytes, which blobs need. */
+export function gitWithInput(args: string[], input: string, cwd = process.cwd()): Buffer {
+  return execFileSync("git", args, { cwd, input, maxBuffer: MAX_OUTPUT_BYTES });
+}
+
+/**
+ * Runs git in `cwd` and returns its stdout, or undefined when git exits with an error: for a
+ * question git answers by its exit status.
+ */
+export function tryGit(args: string[], cwd = process.cwd()): string | undefined {
+  const result = spawnSync("git", args, { cwd, encoding: "utf8", maxBuffer: MAX_OUTPUT_BYTES });
+  return result.status === 0 ? result.stdout : undefined;
 }
 
 /** The merge base of two commits. */

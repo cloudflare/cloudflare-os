@@ -26,24 +26,36 @@ data, has an author who is neither a maintainer nor Dependabot, carries a mainta
 after its last push, or has a standing change request. Otherwise one of two rungs can take it, each
 switched on in `automerge.json`:
 
-- **Rung 1, proven.** A proof holds, whatever the risk level. For Dependabot that is `proof-deps`
-  together with `preview-smoke`, on a pull request whose every commit is authored by
-  `dependabot[bot]`, committed by `web-flow` and verified by GitHub. For a maintainer it is
-  `proof-tests` or `proof-equivalence`. No proof admits a change to text that people or agents read
-  (any Markdown file, `docs/`, `plans/`, `.agents/`): it leaves the build byte-identical, so it can
-  only be AI-scored.
+- **Rung 1, proven.** A proof holds, whatever the risk level. A proof decides only a pull request
+  whose every changed file it checks:
+  - For Dependabot, `proof-deps` together with `preview-smoke`, on a pull request whose every
+    commit is authored by `dependabot[bot]`, committed by `web-flow` and verified by GitHub.
+    `proof-deps` checks `package.json` files, `pnpm-lock.yaml` and catalog version lines in
+    `pnpm-workspace.yaml`, and fails when any other file changes.
+  - For a maintainer, `proof-tests`, on a pull request that changes only test files vitest runs
+    (`*.test.*` and `*.spec.*`) in one package. It holds when those tests still kill every mutant
+    of the source they import that the base's version of them killed. Test files that are all new
+    have no base version to compare with, and hold when the mutation run with them completes. It
+    does not apply when any other file changes (source, a helper, a fixture or a document) or
+    when the pull request only deletes test files.
 - **Rung 2, scored.** A maintainer wrote it, it is low risk, and both reviewers' verdicts are full
   reviews of this head with no P0 or P1 finding and no `NEEDS-A-PERSON`, name models from different
   providers, and give scores whose lower one is at least `threshold`. Medium and high risk never
   qualify.
 
+![Where the last 89 merged pull requests would go under these rules](../../docs/images/risk-review-rungs.svg)
+
 It runs only from `main`'s definition, through `workflow_run` (when a producer workflow, CI or
 the review relay finishes) and `issue_comment`, and never checks out or runs pull request code.
 [`risk-review-trigger.yml`](risk-review-trigger.yml) only relays pull request, review and merge
 group events to it; the gate decides a merge group only when the merge queue lists its commit.
-Producer workflows (reviewer verdicts and rung 1 proofs) upload JSON artifacts and
-post nothing. The two verdicts are Bonk's (`bonk-pr.yml`, run "Bonk PR Review", artifact
-`automerge-verdict-bonk`) and our Opus runner's (`review-verdict.yml`, `automerge-verdict-opus`);
+
+![How the gate decides a pull request: producers upload artifacts, the gate reads the bound ones and posts the check](../../docs/images/risk-review-flow.svg)
+
+Producer workflows (reviewer verdicts and rung 1 proofs) upload JSON artifacts, and none publishes
+`risk-review`; Bonk also posts its review on the pull request. The two verdicts are Bonk's
+(`bonk-pr.yml`, run "Bonk PR Review", artifact `automerge-verdict-bonk`) and our Opus runner's
+(`review-verdict.yml`, `automerge-verdict-opus`);
 the proofs come from `automerge-proofs.yml`, which runs no pull request code, and
 `automerge-head-proofs.yml`, which builds and runs it and holds no secret. The gate
 accepts an artifact only from a successful `pull_request` run of the expected workflow file on the
@@ -56,9 +68,9 @@ failed. Dependabot pull requests get no deployed preview: their smoke runs in wo
 secrets, in Automerge head proofs. A rung 1 proof also counts only for the commit the pull request
 would land on (its base, or the queue's commit under it in a merge group): `proof-deps` only while
 the files it read at its base (`pnpm-workspace.yaml` and `pnpm-lock.yaml`) are the same readable
-blobs there, and `proof-equivalence` and `proof-tests` only when made against that commit with a
-head that contains it. A file with a recent escaped defect raises the risk level one step; that
-raise ignores lockfiles and Markdown, `docs/` and `plans/` outside `.agents/`.
+blobs there, and `proof-tests` only when made against that commit with a head that contains it. A
+file with a recent escaped defect raises the risk level one step; that raise ignores lockfiles and
+Markdown, `docs/` and `plans/` outside `.agents/`.
 
 These paths always need a person:
 
@@ -74,11 +86,13 @@ These paths always need a person:
 - any Wrangler config other than the generated `wrangler.jsonc`: `wrangler.json`, `wrangler.toml`,
   `.wrangler/`.
 
-The one exception is `.agents/skills/` at the repository root. Edits there are scored like code,
-because both reviewers read the base commit's copy of every instruction path
+The one exception is a skill's own files under `.agents/skills/` at the repository root: they are
+not on this list. They are still instruction paths, so they rate at least medium risk, and no rung
+takes a change to one today: rung 2 takes only low risk, and no rung 1 proof checks them. A symlink
+there is on the list, and so is an instruction file or directory of its own inside a skill. Both
+reviewers read the base commit's copy of every instruction path
 ([`scripts/automerge/instructions.ts`](../../scripts/automerge/instructions.ts) holds the one list
-both use), so a skill edit cannot steer its own review. A symlink there still needs a person, and
-so does an instruction file or directory of its own inside a skill.
+the reviewers and the gate use), so a pull request's edit to one cannot steer its own review.
 
 A change that may drop Durable Object data always needs a person. The gate reads it from the
 parsed `wrangler.jsonc`, the file Wrangler and the release manifest deploy from, and treats its
@@ -152,9 +166,6 @@ key from the app.
 - The different-providers rule reads the provider from each verdict's `model`
   (`cloudflare-ai-gateway/<provider>/<model>`). It cannot tell that two providers serve one model
   family, so the choice of `BONK_MODEL` still needs that care.
-- `.agents/skills/write-gatekeeper/SKILL.md` is a culprit file of escapes fixed on 2026-10-08,
-  2026-11-02 and 2026-11-06, so the escape raise rates edits to it high risk until those fall out
-  of the 90-day window (2027-02-04), and rung 2 takes none of them before then.
 - The producer binding rests on what GitHub records about a run (its head commit and branch, and
   when it was created) and on the pull requests' base histories. It is not a signed record of which
   workflow file ran. Artifact attestations (`actions/attest-build-provenance`, binding each result

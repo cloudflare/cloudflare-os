@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
-import { PRODUCERS, type Producer, type ProducerName } from "./automerge/producers.ts";
+import { PRODUCERS, isProducerName, type Producer, type ProducerName } from "./automerge/producers.ts";
 import {
   bindingError,
   modelProvider,
@@ -13,7 +13,7 @@ import {
   type Artifact,
   type WorkflowRun,
 } from "./risk-review-contract.ts";
-import { BASE, HEAD, MODELS, verdictJson, zip } from "./risk-review-fixtures/artifacts.ts";
+import { BASE, HEAD, MODELS, proofJson, verdictJson, zip } from "./risk-review-fixtures/artifacts.ts";
 
 const OTHER = "c".repeat(40);
 
@@ -42,9 +42,19 @@ describe("parseProducerArtifact", () => {
   });
 
   it("accepts a proof with holds", () => {
-    const proof = JSON.stringify({ schema: 1, kind: "proof", name: "proof-deps", head_sha: HEAD, base_sha: BASE, status: "ok", holds: true, details: {} });
-    const input = parseProducerArtifact(proof, { name: "proof-deps", headSha: HEAD, baseSha: BASE });
+    const input = parseProducerArtifact(proofJson("proof-deps", true), { name: "proof-deps", headSha: HEAD, baseSha: BASE });
     assert.ok("artifact" in input && input.artifact.kind === "proof" && input.artifact.holds);
+  });
+
+  it("treats every producer's artifact made for another head or base as absent", () => {
+    for (const name of Object.keys(PRODUCERS).filter(isProducerName)) {
+      const json = (overrides: Record<string, string>) =>
+        PRODUCERS[name].kind === "verdict" ? verdictJson({ name, ...overrides }) : proofJson(name, true, overrides);
+      const bound = { name, headSha: HEAD, baseSha: BASE };
+      assert.ok("artifact" in parseProducerArtifact(json({}), bound), name);
+      assert.ok("absent" in parseProducerArtifact(json({ head_sha: OTHER }), bound), `${name}: another head`);
+      assert.ok("absent" in parseProducerArtifact(json({ base_sha: OTHER }), bound), `${name}: another base`);
+    }
   });
 
   // Every one of these must count as absent, which sends the pull request to a person.
@@ -54,8 +64,6 @@ describe("parseProducerArtifact", () => {
     ["another schema", verdictJson({ schema: 2 })],
     ["another kind", verdictJson({ kind: "proof" })],
     ["another producer's name", verdictJson({ name: "opus" })],
-    ["another head", verdictJson({ head_sha: OTHER })],
-    ["another base", verdictJson({ base_sha: OTHER })],
     ["a short head", verdictJson({ head_sha: "abc" })],
     ["an unknown status", verdictJson({ status: "pass" })],
     ["a score above 10", verdictJson({ merge_confidence: 11 })],
@@ -77,7 +85,7 @@ describe("parseProducerArtifact", () => {
   }
 
   it("treats a proof without holds as absent", () => {
-    const proof = JSON.stringify({ schema: 1, kind: "proof", name: "proof-tests", head_sha: HEAD, base_sha: BASE, status: "ok", details: {} });
+    const proof = proofJson("proof-tests", true, { holds: undefined });
     assert.ok("absent" in parseProducerArtifact(proof, { name: "proof-tests", headSha: HEAD, baseSha: BASE }));
   });
 });
@@ -134,7 +142,11 @@ describe("bindingError", () => {
   });
 
   it("rejects an unfinished or unsuccessful latest attempt", () => {
-    assert.ok(bindingError({ ...recorded, status: "in_progress", conclusion: null }, binding));
+    // Each of the two checks stands alone: a run that has not completed binds under no conclusion.
+    for (const status of ["queued", "in_progress"]) {
+      assert.ok(bindingError({ ...recorded, status, conclusion: null }, binding), status);
+      assert.ok(bindingError({ ...recorded, status, conclusion: "success" }, binding), `${status}, concluded`);
+    }
     for (const conclusion of ["failure", "cancelled", "timed_out", "skipped"]) {
       assert.ok(bindingError({ ...recorded, conclusion }, binding), conclusion);
     }
@@ -209,9 +221,10 @@ describe("readArtifactFile", () => {
     assert.deepEqual(readArtifactFile(zip({ "automerge-verdict-bonk.json": "{}" }, 0), "automerge-verdict-bonk.json"), { text: "{}" });
   });
 
-  it("rejects another file, several files, and bytes that are not an archive", () => {
+  it("rejects another file, several files, a file over the size limit, and bytes that are not an archive", () => {
     assert.ok("absent" in readArtifactFile(zip({ "verdict.json": "{}" }), "automerge-verdict-bonk.json"));
     assert.ok("absent" in readArtifactFile(zip({ "automerge-verdict-bonk.json": "{}", "extra.json": "{}" }), "automerge-verdict-bonk.json"));
+    assert.ok("absent" in readArtifactFile(zip({ "automerge-verdict-bonk.json": " ".repeat(1_048_577) }, 0), "automerge-verdict-bonk.json"));
     assert.ok("absent" in readArtifactFile(new Uint8Array(Buffer.from("not a zip")), "automerge-verdict-bonk.json"));
   });
 });

@@ -99,7 +99,7 @@ function entry(path: string): EscapeEntry {
 
 describe("classifyChangeset risk level", () => {
   it("rates a small docs change low", () => {
-    assert.deepEqual(classify([file("docs/a.md")]), { band: "low", bandReasons: [], neverAuto: [], readText: ["docs/a.md"] });
+    assert.deepEqual(classify([file("docs/a.md")]), { band: "low", bandReasons: [], neverAuto: [] });
   });
 
   it("rates more than 400 changed lines high", () => {
@@ -266,6 +266,14 @@ describe("isCatalogVersionBump", () => {
     assert.equal(isCatalogVersionBump(base, base.replace("zod: ^4.6.7", "zed: ^4.6.7")), false);
     assert.equal(isCatalogVersionBump(base, base.replace("'@types/node': 26.1.0", "'@types/node': 26.2.0")), false);
     assert.equal(isCatalogVersionBump("minimumReleaseAge: 1440\n", "minimumReleaseAge: 1\n"), false);
+  });
+
+  it("ends the catalog at the next top-level key, however YAML lets it be written", () => {
+    for (const key of ["overrides:", "'overrides':", '"overrides":', "overrides :"]) {
+      const workspace = `catalog:\n  zod: ^4.6.7\n${key}\n  lodash: 4.17.20\n`;
+      assert.equal(isCatalogVersionBump(workspace, workspace.replace("4.17.20", "4.17.21")), false, key);
+      assert.equal(isCatalogVersionBump(workspace, workspace.replace("^4.6.7", "^4.7.0")), true, key);
+    }
   });
 });
 

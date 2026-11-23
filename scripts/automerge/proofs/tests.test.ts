@@ -5,9 +5,9 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import { pathToFileURL } from "node:url";
 import type { FileDiff } from "./diff.ts";
-import { asObject, parseJson, type JsonObject } from "../json.ts";
+import { asArray, asObject, parseJson, type JsonObject } from "../json.ts";
 import {
-  budgetMinutes, DEFAULT_BUDGET_MINUTES, editedSupportFiles, evaluateKills, killedMutants, narrowedConfig, OverBudget,
+  budgetMinutes, DEFAULT_BUDGET_MINUTES, evaluateKills, killedMutants, narrowedConfig, OverBudget,
   planScope, runBounded, selfImportPath, sourceGraph,
 } from "./tests.ts";
 
@@ -21,6 +21,11 @@ const report = (name: string): JsonObject =>
   asObject(parseJson(readFileSync(new URL(`./testdata/tests/error-reporting-${name}.json`, import.meta.url), "utf8")), name);
 
 const file = (path: string): FileDiff => ({ path, status: "modified", binary: false, modeChanged: false, hunks: [] });
+
+/** A Stryker report of one mutant. */
+function reportOf(mutant: JsonObject): JsonObject {
+  return { files: { "src/a.ts": { mutants: [mutant] } } };
+}
 
 describe("proof-tests verdict", () => {
   it("fails the weakened assertions: three mutants the base killed survive", () => {
@@ -45,10 +50,49 @@ describe("proof-tests verdict", () => {
     assert.equal(killed.size, 213);
   });
 
+  // A mutant is told from the next by where it is and what it puts there.
+  it("throws on a report that does not say where a mutant is or what it replaces", () => {
+    const mutant = { mutatorName: "ConditionalExpression", replacement: "true", status: "Killed" };
+    const place = { start: { line: 1, column: 1 }, end: { line: 1, column: 5 } };
+    assert.equal(killedMutants(reportOf({ ...mutant, location: place })).size, 1);
+    const unplaced: JsonObject[] = [
+      mutant,
+      { ...mutant, location: { start: {}, end: {} } },
+      { ...mutant, location: { ...place, end: { line: "1", column: 5 } } },
+      { ...mutant, location: place, replacement: 7 },
+    ];
+    for (const entry of unplaced) {
+      assert.throws(() => killedMutants(reportOf(entry)), JSON.stringify(entry));
+    }
+  });
+
   it("fails a run that made no mutants", () => {
-    const outcome = evaluateKills({ files: {} }, { files: {} }, {});
-    assert.equal(outcome.status, "ok");
-    assert.equal(outcome.holds, false);
+    for (const base of [{ files: {} }, undefined]) {
+      const outcome = evaluateKills(base, { files: {} }, {});
+      assert.deepEqual([outcome.status, outcome.holds], ["ok", false]);
+    }
+  });
+
+  // Source is the same on both sides, so a base run with other mutants did not mutate what the
+  // head run did, and its kills say nothing about the head's.
+  it("fails when the base run and the head run did not make the same mutants", () => {
+    assert.equal(evaluateKills({ files: {} }, report("green-head"), {}).holds, false);
+    // The head run with a mutant no test killed found somewhere else, and with one more.
+    const head = report("green-head");
+    const files = asObject(head.files, "files");
+    const [path] = Object.keys(files);
+    const entry = asObject(files[path], path);
+    const mutants = asArray(entry.mutants, "mutants");
+    const survivor = mutants.findIndex((mutant) => asObject(mutant, "mutant").status === "Survived");
+    const elsewhere = { ...asObject(mutants[survivor], "mutant"), location: { start: { line: 9999, column: 1 }, end: { line: 9999, column: 2 } } };
+    for (const other of [mutants.with(survivor, elsewhere), [...mutants, elsewhere]]) {
+      const run = { ...head, files: { ...files, [path]: { ...entry, mutants: other } } };
+      assert.equal(evaluateKills(report("green-base"), run, {}).holds, false, `${other.length} mutants`);
+    }
+  });
+
+  it("holds for new test files, which have no base run to compare with", () => {
+    assert.equal(evaluateKills(undefined, report("green-head"), {}).holds, true);
   });
 });
 
@@ -64,20 +108,44 @@ function assertProblems(problems: string[], expected: [importer: string, names: 
 }
 
 describe("proof-tests scope", () => {
-  it("takes tests in one package", () => {
-    assert.deepEqual(planScope([file("packages/error-reporting/src/index.test.ts"), file("packages/error-reporting/src/__tests__/fixtures/a.json")]), {
-      packageDir: "packages/error-reporting",
-      tests: ["packages/error-reporting/src/index.test.ts", "packages/error-reporting/src/__tests__/fixtures/a.json"],
-    });
+  it("takes runnable test files in one package", () => {
+    const tests = ["packages/error-reporting/src/index.test.ts", "packages/error-reporting/src/__tests__/envelope.spec.tsx"];
+    assert.deepEqual(planScope(tests.map(file)), { packageDir: "packages/error-reporting", tests });
   });
 
-  it("does not apply when a source file changes", () => {
-    assert.ok("outOfScope" in planScope([file("packages/error-reporting/src/index.test.ts"), file("packages/error-reporting/src/index.ts")]));
+  // The proof runs the changed test files and nothing else, so it cannot speak for any other file,
+  // whatever directory it sits in: source, a helper, a fixture, or text that people or agents read.
+  it("does not apply when anything but a runnable test file changes", () => {
+    const test = file("packages/error-reporting/src/index.test.ts");
+    for (const path of [
+      "packages/error-reporting/src/index.ts",
+      "packages/error-reporting/src/__tests__/helpers.ts",
+      "packages/error-reporting/src/__tests__/fixtures/a.json",
+      "packages/error-reporting/src/__tests__/README.md",
+      "packages/error-reporting/tests/docs/guide.md",
+      "packages/error-reporting/fixtures/AGENTS.md",
+      "packages/error-reporting/test/.agents/skills/x/SKILL.md",
+      "docs/testing.md",
+      "plans/tests/plan.md",
+    ]) {
+      assert.ok("outOfScope" in planScope([test, file(path)]), path);
+      assert.ok("outOfScope" in planScope([test, { ...file(path), status: "added" }]), `${path}, added`);
+    }
   });
 
   it("does not apply across packages or outside packages/", () => {
     assert.ok("outOfScope" in planScope([file("packages/a/x.test.ts"), file("packages/b/y.test.ts")]));
     assert.ok("outOfScope" in planScope([file("scripts/automerge/proofs/tests.test.ts")]));
+    assert.ok("outOfScope" in planScope([file(".agents/skills/write-gatekeeper/__tests__/a.test.ts")]));
+  });
+
+  // With no test file left at head there is nothing to run, and every vitest config would list
+  // all of none of them.
+  it("does not apply when every changed test file is deleted", () => {
+    const kept = file("packages/error-reporting/src/index.test.ts");
+    const deleted: FileDiff = { ...file("packages/error-reporting/src/old.test.ts"), status: "deleted" };
+    assert.ok("outOfScope" in planScope([deleted]));
+    assert.ok(!("outOfScope" in planScope([kept, deleted])));
   });
 
   // The test imports an index that defines identity() and re-exports double() from double.ts, so
@@ -257,12 +325,6 @@ describe("proof-tests scope", () => {
     const graph = sourceGraph([{ path: "packages/p/src/x.test.ts", text }], "packages/p", read, WORKSPACE);
     assert.deepEqual(graph.sources, ["packages/p/src/a.ts"]);
     assertProblems(graph.problems, [["packages/p/src/x.test.ts", "packages/p/src/[feature].ts"]]);
-  });
-
-  it("flags edited helpers and fixtures, which unchanged tests may import", () => {
-    assert.deepEqual(editedSupportFiles([
-      "packages/p/src/a.test.ts", "packages/p/__tests__/helpers.ts", "packages/p/test/fixtures/x.json",
-    ]), ["packages/p/__tests__/helpers.ts", "packages/p/test/fixtures/x.json"]);
   });
 });
 

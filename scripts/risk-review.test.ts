@@ -4,8 +4,8 @@ import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
 import { assertNames } from "./automerge/assert-names.ts";
-import { PRODUCERS } from "./automerge/producers.ts";
-import type { Artifact, WorkflowRun } from "./risk-review-contract.ts";
+import { PRODUCERS, artifactName } from "./automerge/producers.ts";
+import { VERDICT_NAMES, type Artifact, type WorkflowRun } from "./risk-review-contract.ts";
 import { BASE, HEAD, MODELS, proofJson, verdictJson, zip } from "./risk-review-fixtures/artifacts.ts";
 import { dig, jobsOf, parseWorkflow, stepsOf, texts } from "./risk-review-fixtures/workflow.ts";
 import {
@@ -460,8 +460,8 @@ function verdictsWith(key: "merge_confidence" | "model", bonk: Json, opus: Json)
   return { bonk: verdictInput("bonk", { [key]: bonk }), opus: verdictInput("opus", { [key]: opus }) };
 }
 
-function proofInput(name: "proof-deps" | "proof-equivalence" | "proof-tests" | "preview-smoke", holds = true) {
-  return { artifact: { ...JSON.parse(proofJson(name, holds)), name } };
+function proofInput(name: "proof-deps" | "proof-tests" | "preview-smoke", holds = true, overrides: Record<string, Json> = {}) {
+  return { artifact: { ...JSON.parse(proofJson(name, holds, overrides)), name } };
 }
 
 const DEPENDABOT_PROVEN = { "proof-deps": proofInput("proof-deps"), "preview-smoke": proofInput("preview-smoke") };
@@ -532,6 +532,13 @@ describe("decide", () => {
     assert.equal(decide({ ...held, reviews: [] }, SCORED, NOW).would.decision, "auto");
   });
 
+  it("holds for a maintainer's comment on the pull request after the last push", () => {
+    const comments: Comment[] = [{ user: { login: "deregtd", type: "User" }, created_at: "2026-11-02T11:00:00Z" }];
+    const decision = decide(inputs({ comments, producers: PERFECT }), SCORED, NOW);
+    assert.equal(decision.holds.length, 1);
+    assert.equal(decision.would.decision, "person");
+  });
+
   it("does not hold for the author, a non-maintainer, a bot, an approval, or a comment before the push", () => {
     const comments: Comment[] = [
       { user: { login: "kentonv", type: "User" }, created_at: "2026-11-02T11:00:00Z" },
@@ -548,12 +555,39 @@ describe("decide", () => {
     assert.equal(decide(inputs({ lastPush: undefined, producers: PERFECT }), SCORED, NOW).would.decision, "person");
   });
 
+  // Requested before the last push, so it is no hold: only the standing request stops the merge.
   it("sends a standing change request to a person, whatever the rungs take", () => {
-    const blocked = inputs({ files: SOURCE, reviews: [review("deregtd", "CHANGES_REQUESTED")], producers: { ...PERFECT, "proof-tests": proofInput("proof-tests") } });
+    const earlier = { submitted_at: "2026-11-02T09:00:00Z" };
+    const blocked = inputs({ files: SOURCE, reviews: [review("deregtd", "CHANGES_REQUESTED", earlier)], producers: { ...PERFECT, "proof-tests": proofInput("proof-tests") } });
     const decision = decide(blocked, BOTH, NOW);
     assert.equal(decision.would.decision, "person");
     assert.deepEqual(decision.blockers, ["deregtd"]);
+    assert.deepEqual(decision.holds, []);
     assert.equal(decide({ ...blocked, reviews: [] }, BOTH, NOW).would.decision, "auto");
+  });
+
+  it("counts each maintainer's latest review, so an approval lifts a change request and a change request ends an approval", () => {
+    const [earlier, later] = [{ submitted_at: "2026-11-02T08:00:00Z" }, { submitted_at: "2026-11-02T09:00:00Z" }];
+    const lifted = [review("deregtd", "CHANGES_REQUESTED", earlier), review("deregtd", "APPROVED", later)];
+    assert.deepEqual(decide(inputs({ reviews: lifted, producers: PERFECT }), SCORED, NOW).would, AUTO_SCORED);
+    const ended = [review("deregtd", "APPROVED", earlier), review("deregtd", "CHANGES_REQUESTED", later)];
+    const decision = decide(inputs({ reviews: ended, producers: PERFECT }), SCORED, NOW);
+    assert.deepEqual(decision.approvers, []);
+    assert.equal(decision.would.decision, "person");
+  });
+
+  it("sends a pull request that lists fewer files than it changed to a person", () => {
+    const decision = decide(inputs({ pull: pullRequest({ changed_files: 2 }), producers: PERFECT }), SCORED, NOW);
+    assert.equal(decision.would.decision, "person");
+    assert.notDeepEqual(decision.never_auto, []);
+  });
+
+  it("takes an author for a maintainer only as a user, and for Dependabot only as a bot", () => {
+    const producers = { ...PERFECT, "proof-tests": proofInput("proof-tests") };
+    const bot = pullRequest({ user: { login: "kentonv", type: "Bot" } });
+    assert.equal(decide(inputs({ files: SOURCE, pull: bot, producers }), BOTH, NOW).would.decision, "person");
+    const user = pullRequest({ user: { login: "dependabot[bot]", type: "User" } });
+    assert.equal(decide(inputs({ files: [file("packages/ui/package.json")], pull: user, producers: DEPENDABOT_PROVEN }), PROVEN, NOW).would.decision, "person");
   });
 
   it("reads maintainers from the list only, case-insensitively, and from nowhere when it is missing", () => {
@@ -569,43 +603,56 @@ describe("decide", () => {
     assert.equal(decide(inputs({ producers: PERFECT }), nobody, NOW).would.decision, "person");
   });
 
-  it("counts a missing, failed or malformed verdict as absent", () => {
-    for (const producers of [
-      {},
-      { bonk: PERFECT.bonk },
-      { ...PERFECT, opus: { absent: "malformed merge_confidence" } },
-      { ...PERFECT, opus: verdictInput("opus", { status: "error", merge_confidence: null }) },
-    ]) {
-      assert.equal(decide(inputs({ producers }), SCORED, NOW).would.decision, "person", JSON.stringify(producers));
+  it("counts either reviewer's missing, failed or malformed verdict as absent", () => {
+    assert.equal(decide(inputs({ producers: {} }), SCORED, NOW).would.decision, "person");
+    for (const name of VERDICT_NAMES) {
+      const alone = Object.fromEntries(VERDICT_NAMES.filter((other) => other !== name).map((other) => [other, PERFECT[other]]));
+      for (const producers of [
+        alone,
+        { ...PERFECT, [name]: { absent: "malformed merge_confidence" } },
+        // A verdict that reports a failure does not count, whatever score it carries.
+        { ...PERFECT, [name]: verdictInput(name, { status: "error" }) },
+        { ...PERFECT, [name]: verdictInput(name, { status: "not_applicable" }) },
+      ]) {
+        assert.equal(decide(inputs({ producers }), SCORED, NOW).would.decision, "person", `${name}: ${JSON.stringify(producers)}`);
+      }
     }
   });
 
-  it("sends a P0 or P1 finding, a NEEDS-A-PERSON line, a missing score or a score under the threshold to a person", () => {
-    for (const bonk of [
-      { findings: [{ severity: "P0", title: "Drops the table", path: "a.ts", line: 1 }] },
-      { findings: [{ severity: "P1", title: "Missing await", path: "a.ts", line: 1 }] },
-      { needs_person: ["changes the RPC API"] },
-      { merge_confidence: null },
-      { merge_confidence: 6 },
-    ]) {
-      assert.equal(decide(inputs({ producers: { ...PERFECT, bonk: verdictInput("bonk", bonk) } }), SCORED, NOW).would.decision, "person", JSON.stringify(bonk));
+  it("sends either reviewer's P0 or P1 finding, NEEDS-A-PERSON line, missing score or score under the threshold to a person", () => {
+    const [p0, p1, p2, p3] = ["P0", "P1", "P2", "P3"].map((severity) => ({ findings: [{ severity, title: "Drops the table", path: "a.ts", line: 1 }] }));
+    for (const name of VERDICT_NAMES) {
+      for (const fault of [p0, p1, { needs_person: ["changes the RPC API"] }, { merge_confidence: null }, { merge_confidence: 6 }]) {
+        const producers = { ...PERFECT, [name]: verdictInput(name, fault) };
+        assert.equal(decide(inputs({ producers }), SCORED, NOW).would.decision, "person", `${name}: ${JSON.stringify(fault)}`);
+      }
+      for (const fine of [p2, p3]) {
+        const producers = { ...PERFECT, [name]: verdictInput(name, fine) };
+        assert.deepEqual(decide(inputs({ producers }), SCORED, NOW).would, AUTO_SCORED, `${name}: ${JSON.stringify(fine)}`);
+      }
     }
   });
 
   it("takes the lower of the two scores, which must be at least the threshold", () => {
-    const scores = [7, 10, 6] as const;
-    const [threshold, high, under] = scores;
-    assert.equal(SCORED.config.threshold, threshold);
-    for (const [bonk, opus, decision] of [[threshold, high, "auto"], [high, threshold, "auto"], [under, high, "person"], [high, under, "person"]] as const) {
+    const threshold = SCORED.config.threshold;
+    for (const { bonk, opus, decision } of [
+      { bonk: threshold, opus: 10, decision: "auto" },
+      { bonk: 10, opus: threshold, decision: "auto" },
+      { bonk: threshold - 1, opus: 10, decision: "person" },
+      { bonk: 10, opus: threshold - 1, decision: "person" },
+    ]) {
       const { would } = decide(inputs({ producers: verdictsWith("merge_confidence", bonk, opus) }), SCORED, NOW);
       assert.equal(would.decision, decision, `${bonk} and ${opus}`);
     }
   });
 
-  it("sends a diff-only re-review to a person", () => {
-    const bonk = verdictInput("bonk", { round: 3, review_from_sha: "c".repeat(40) });
-    assert.equal(decide(inputs({ producers: { ...PERFECT, bonk } }), SCORED, NOW).would.decision, "person");
-    assert.deepEqual(decide(inputs({ producers: { ...PERFECT, bonk: verdictInput("bonk", { round: 3 }) } }), SCORED, NOW).would, AUTO_SCORED);
+  it("sends either reviewer's diff-only re-review to a person", () => {
+    for (const name of VERDICT_NAMES) {
+      const diffOnly = { ...PERFECT, [name]: verdictInput(name, { round: 3, review_from_sha: "c".repeat(40) }) };
+      assert.equal(decide(inputs({ producers: diffOnly }), SCORED, NOW).would.decision, "person", name);
+      const full = { ...PERFECT, [name]: verdictInput(name, { round: 3 }) };
+      assert.deepEqual(decide(inputs({ producers: full }), SCORED, NOW).would, AUTO_SCORED, name);
+    }
   });
 
   // Bonk's model is a repository variable no pull request reviews, so nothing else keeps the two
@@ -637,15 +684,23 @@ describe("decide", () => {
     }
   });
 
-  it("proves a maintainer's change through the test proof or the equivalence proof, when it holds", () => {
-    for (const name of ["proof-tests", "proof-equivalence"] as const) {
-      assert.deepEqual(decide(inputs({ files: SOURCE, producers: { [name]: proofInput(name) } }), PROVEN, NOW).would, AUTO_PROVEN, name);
-      for (const producers of [{ [name]: proofInput(name, false) }, { [name]: { absent: "concluded failure" } }]) {
-        assert.equal(decide(inputs({ files: SOURCE, producers }), PROVEN, NOW).would.decision, "person", JSON.stringify(producers));
-      }
+  it("proves a maintainer's change only through the test proof, when it holds", () => {
+    assert.deepEqual(decide(inputs({ files: SOURCE, producers: { "proof-tests": proofInput("proof-tests") } }), PROVEN, NOW).would, AUTO_PROVEN);
+    for (const producers of [
+      {},
+      { "proof-tests": proofInput("proof-tests", false) },
+      { "proof-tests": { absent: "concluded failure" } },
+      // A proof that reports a failure does not hold, whatever it says of itself.
+      { "proof-tests": proofInput("proof-tests", true, { status: "error" }) },
+      { "proof-tests": proofInput("proof-tests", true, { status: "not_applicable" }) },
+      // The dependency proof and the preview smoke are Dependabot's, and prove nothing for a maintainer.
+      DEPENDABOT_PROVEN,
+      { ...DEPENDABOT_PROVEN, "proof-tests": proofInput("proof-tests", false) },
+    ]) {
+      assert.equal(decide(inputs({ files: SOURCE, producers }), PROVEN, NOW).would.decision, "person", JSON.stringify(producers));
+      // Rung 2 is still open to it.
+      assert.deepEqual(decide(inputs({ files: SOURCE, producers: { ...producers, ...PERFECT } }), BOTH, NOW).would, AUTO_SCORED, JSON.stringify(producers));
     }
-    // The dependency proof and the preview smoke are Dependabot's, and prove nothing for a maintainer.
-    assert.equal(decide(inputs({ files: SOURCE, producers: DEPENDABOT_PROVEN }), PROVEN, NOW).would.decision, "person");
   });
 
   it("proves a Dependabot pull request only when its dependency proof and preview smoke both hold, whatever its risk level", () => {
@@ -657,12 +712,18 @@ describe("decide", () => {
       { "preview-smoke": proofInput("preview-smoke") },
       { ...DEPENDABOT_PROVEN, "proof-deps": proofInput("proof-deps", false) },
       { ...DEPENDABOT_PROVEN, "preview-smoke": proofInput("preview-smoke", false) },
+      { ...DEPENDABOT_PROVEN, "proof-deps": proofInput("proof-deps", true, { status: "error" }) },
+      { ...DEPENDABOT_PROVEN, "preview-smoke": proofInput("preview-smoke", true, { status: "error" }) },
       // Dependabot never qualifies through a maintainer's proof or through AI verdicts.
-      { "proof-tests": proofInput("proof-tests"), "proof-equivalence": proofInput("proof-equivalence") },
+      { "proof-tests": proofInput("proof-tests") },
       PERFECT,
     ]) {
-      assert.equal(decide(inputs({ pull, files, producers }), BOTH, NOW).would.decision, "person", JSON.stringify(Object.keys(producers)));
+      const { would } = decide(inputs({ pull, files, producers }), BOTH, NOW);
+      assert.equal(would.decision, "person", JSON.stringify(Object.keys(producers)));
+      assert.notDeepEqual(would.reasons, [], "the record says why");
     }
+    // Its proofs hold, but rung 1 is off: rung 2 is no second way in for Dependabot.
+    assert.equal(decide(inputs({ pull, files: SOURCE, producers: { ...DEPENDABOT_PROVEN, ...PERFECT } }), SCORED, NOW).would.decision, "person");
     const large = decide(inputs({ pull, files: [file("pnpm-lock.yaml", { additions: 400, deletions: 300 })], producers: DEPENDABOT_PROVEN }), PROVEN, NOW);
     assert.equal(large.band, "high");
     assert.deepEqual(large.would, AUTO_PROVEN);
@@ -721,15 +782,6 @@ describe("decide", () => {
         assert.equal(lastRecord(calls).pulls[0]?.would.decision, decision, `${count} commits`);
       }
     });
-  });
-
-  it("never proves a change to text people or agents read, which can only be AI-scored", () => {
-    const equivalence = { "proof-equivalence": proofInput("proof-equivalence") };
-    assert.deepEqual(decide(inputs({ files: SOURCE, producers: equivalence }), PROVEN, NOW).would, AUTO_PROVEN);
-    for (const path of ["README.md", "packages/gatekeeper-kit/USAGE.md", "docs/observers.md", "plans/kernel-observer-tracking.md", ".agents/skills/write-gatekeeper/SKILL.md"]) {
-      assert.equal(decide(inputs({ files: [file(path)], producers: equivalence }), PROVEN, NOW).would.decision, "person", path);
-    }
-    assert.deepEqual(decide(inputs({ files: [file("docs/observers.md")], producers: { ...PERFECT, ...equivalence } }), BOTH, NOW).would, AUTO_SCORED);
   });
 
   it("requires a human assignee's approval on a pull request an agent opened", () => {
@@ -953,12 +1005,20 @@ describe("runRiskReview producer binding", () => {
     assert.equal(lastRecord(calls).pulls[0]?.would.decision, "auto");
   });
 
-  it("lets a newer failed attempt beat an older success", async () => {
-    const failed = { run: run(PRODUCERS.bonk.workflow, { created_at: "2026-11-02T10:30:00Z", run_started_at: "2026-11-02T10:30:00Z", conclusion: "failure" }), artifacts: {} };
-    const { calls, evaluate } = harness({ ...open, runs: [...verdicts(), failed] });
-    await evaluate("workflow_run", producerCompleted());
-    assert.ok(bonkAbsent(calls));
-    assert.equal(lastRecord(calls).pulls[0]?.would.decision, "person");
+  it("lets either reviewer's newer failed or unfinished attempt beat an older success, whatever it uploaded", async () => {
+    for (const name of VERDICT_NAMES) {
+      for (const state of [{ conclusion: "failure" }, { status: "in_progress", conclusion: null }]) {
+        const newer = {
+          run: run(PRODUCERS[name].workflow, { created_at: "2026-11-02T10:30:00Z", run_started_at: "2026-11-02T10:30:00Z", ...state }),
+          artifacts: { [artifactName(name)]: verdictJson({ name, merge_confidence: 10 }) },
+        };
+        const { calls, evaluate } = harness({ ...open, runs: [...verdicts(), newer] });
+        await evaluate("workflow_run", producerCompleted());
+        const pull = lastRecord(calls).pulls[0];
+        assert.ok(pull?.inputs[name] && "absent" in pull.inputs[name], `${name}: ${JSON.stringify(state)}`);
+        assert.equal(pull.would.decision, "person");
+      }
+    }
   });
 
   it("ignores a run of the same commit from another branch, whose pull request targets a replaced workflow", async () => {
@@ -1023,25 +1083,30 @@ describe("runRiskReview producer binding", () => {
     const { calls, evaluate } = harness({ ...open, runs: late, timeline });
     await evaluate("workflow_run", producerCompleted());
     assert.ok(bonkAbsent(calls));
+    const unknownPush = harness({ ...open, runs: late, timeline, lastPush: undefined });
+    await unknownPush.evaluate("workflow_run", producerCompleted());
+    assert.ok(bonkAbsent(unknownPush.calls));
     const fresh = verdicts().map((entry) => ({ ...entry, run: { ...entry.run, created_at: "2026-11-02T10:51:00Z", run_started_at: "2026-11-02T10:51:00Z" } }));
     const pushedAfter = harness({ ...open, runs: fresh, timeline, lastPush: "2026-11-02T10:50:00Z" });
     await pushedAfter.evaluate("workflow_run", producerCompleted());
     assert.equal(bonkScore(pushedAfter.calls), 8);
   });
 
-  it("rejects a verdict from a fork, or one made for another head or base", async () => {
-    for (const runs of [
-      verdicts().map((entry) => entry.run.path === PRODUCERS.bonk.workflow
-        ? { ...entry, run: { ...entry.run, head_repository: { full_name: "someone/cloudflare-os" } } }
-        : entry),
-      verdicts({ bonk: { head_sha: "c".repeat(40) } }),
-      verdicts({ bonk: { base_sha: "c".repeat(40) } }),
-    ]) {
-      const { calls, evaluate } = harness({ ...open, runs });
-      await evaluate("workflow_run", producerCompleted());
-      const record = lastRecord(calls);
-      assert.ok(record.pulls[0]?.inputs.bonk && "absent" in record.pulls[0].inputs.bonk);
-      assert.equal(record.pulls[0]?.would.decision, "person");
+  it("rejects either reviewer's verdict from a fork, or one made for another head or base", async () => {
+    for (const name of VERDICT_NAMES) {
+      for (const runs of [
+        verdicts().map((entry) => entry.run.path === PRODUCERS[name].workflow
+          ? { ...entry, run: { ...entry.run, head_repository: { full_name: "someone/cloudflare-os" } } }
+          : entry),
+        verdicts({ [name]: { head_sha: "c".repeat(40) } }),
+        verdicts({ [name]: { base_sha: "c".repeat(40) } }),
+      ]) {
+        const { calls, evaluate } = harness({ ...open, runs });
+        await evaluate("workflow_run", producerCompleted());
+        const pull = lastRecord(calls).pulls[0];
+        assert.ok(pull?.inputs[name] && "absent" in pull.inputs[name], name);
+        assert.equal(pull.would.decision, "person");
+      }
     }
   });
 });
@@ -1199,6 +1264,20 @@ describe("runRiskReview content rules", () => {
   });
 });
 
+describe("runRiskReview maintainer holds", () => {
+  // Other apps add check suites to a head long after its push, so only the first one dates it.
+  it("dates the last push by the head's first check suite", async () => {
+    const scored = { policy: { config: configJson("shadow", true, ["scored"]) }, runs: verdicts() };
+    const comment = { user: { login: "deregtd", type: "User" }, created_at: "2026-11-02T10:10:00Z" };
+    const after = harness({ ...scored, comments: { 7: [comment] } });
+    await after.evaluate("workflow_run", producerCompleted());
+    assert.equal(lastRecord(after.calls).pulls[0]?.holds.length, 1);
+    const before = harness({ ...scored, comments: { 7: [{ ...comment, created_at: "2026-11-02T09:50:00Z" }] } });
+    await before.evaluate("workflow_run", producerCompleted());
+    assert.equal(lastRecord(before.calls).pulls[0]?.would.decision, "auto");
+  });
+});
+
 describe("runRiskReview failure", () => {
   it("keeps the published check when the step summary cannot be written", async () => {
     const { calls, evaluate } = harness({ reviewDecision: { 7: "APPROVED" }, summaryFails: true });
@@ -1229,7 +1308,7 @@ describe("runRiskReview failure", () => {
   });
 });
 
-type RungOneProof = "proof-deps" | "proof-equivalence" | "proof-tests";
+type RungOneProof = "proof-deps" | "proof-tests";
 
 /** A run of the proof's workflow on the test head, with a holding proof made against `BASE`. */
 function proofRun(name: RungOneProof, pullNumber = 7): ProducerRun {
@@ -1296,6 +1375,21 @@ describe("runRiskReview proof freshness", () => {
     }
   });
 
+  it("treats proof-deps as absent when a file it read cannot be read at its base", async () => {
+    const lock = "lockfileVersion: '9.0'\n";
+    for (const { contents, counted } of [
+      { contents: at(BASE, workspace, lock), counted: true },
+      { contents: {}, counted: false },
+      { contents: { [`${BASE}:pnpm-workspace.yaml`]: workspace }, counted: false },
+      { contents: { [`${BASE}:pnpm-lock.yaml`]: lock }, counted: false },
+    ]) {
+      const { calls, evaluate } = harness({ files: { 7: [file("pnpm-lock.yaml")] }, runs: [proofRun("proof-deps")], contents });
+      await evaluate("workflow_run", producerCompleted());
+      const input = lastRecord(calls).pulls[0]?.inputs["proof-deps"];
+      assert.equal(input !== undefined && !("absent" in input), counted, JSON.stringify(Object.keys(contents)));
+    }
+  });
+
   it("treats a proof whose commits GitHub cannot compare as absent, and still decides", async () => {
     const { calls, evaluate } = harness({ files: { 7: [file("pnpm-lock.yaml")] }, runs: [proofRun("proof-deps")], uncomparable: true, reviewDecision: { 7: "APPROVED" } });
     await evaluate("workflow_run", producerCompleted());
@@ -1304,23 +1398,19 @@ describe("runRiskReview proof freshness", () => {
     assert.equal(calls.updates.at(-1)?.conclusion, "success");
   });
 
-  it("counts proof-equivalence and proof-tests only when made against the commit the pull request lands on", async () => {
-    for (const name of ["proof-equivalence", "proof-tests"] as const) {
-      const { calls, evaluate } = harness({ runs: [proofRun(name)] });
-      await evaluate("workflow_run", producerCompleted());
-      assert.deepEqual(lastRecord(calls).pulls[0]?.inputs[name], { status: "ok", holds: true }, name);
-      const inQueue = await queuedInput(name, [file("docs/automerge.md")], {});
-      assert.ok(inQueue && "absent" in inQueue, `${name}: ${JSON.stringify(inQueue)}`);
-    }
+  it("counts proof-tests only when made against the commit the pull request lands on", async () => {
+    const { calls, evaluate } = harness({ runs: [proofRun("proof-tests")] });
+    await evaluate("workflow_run", producerCompleted());
+    assert.deepEqual(lastRecord(calls).pulls[0]?.inputs["proof-tests"], { status: "ok", holds: true });
+    const inQueue = await queuedInput("proof-tests", [file("docs/automerge.md")], {});
+    assert.ok(inQueue && "absent" in inQueue, JSON.stringify(inQueue));
   });
 
-  it("counts proof-equivalence and proof-tests only when the head contains its base", async () => {
-    for (const name of ["proof-equivalence", "proof-tests"] as const) {
-      const { calls, evaluate } = harness({ runs: [proofRun(name)], mergeBases: { [`${BASE}...${HEAD}`]: "e".repeat(40) } });
-      await evaluate("workflow_run", producerCompleted());
-      const input = lastRecord(calls).pulls[0]?.inputs[name];
-      assert.ok(input && "absent" in input, `${name}: ${JSON.stringify(input)}`);
-    }
+  it("counts proof-tests only when the head contains its base", async () => {
+    const { calls, evaluate } = harness({ runs: [proofRun("proof-tests")], mergeBases: { [`${BASE}...${HEAD}`]: "e".repeat(40) } });
+    await evaluate("workflow_run", producerCompleted());
+    const input = lastRecord(calls).pulls[0]?.inputs["proof-tests"];
+    assert.ok(input && "absent" in input, JSON.stringify(input));
   });
 });
 
@@ -1557,7 +1647,7 @@ describe("risk-review workflows", () => {
   });
 
   it("gives the workflow that builds and runs the head no secret, environment or write permission", () => {
-    const paths = (["proof-equivalence", "proof-tests", "preview-smoke"] as const).map((name) => PRODUCERS[name].workflow);
+    const paths = (["proof-tests", "preview-smoke"] as const).map((name) => PRODUCERS[name].workflow);
     for (const path of new Set(paths)) {
       const workflow = parseWorkflow(read(path));
       assert.deepEqual(secretsIn(workflow), [], path);

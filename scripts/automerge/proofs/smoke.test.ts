@@ -5,7 +5,7 @@ import { describe, it } from "node:test";
 import { evaluateSmoke, get, isReadyLine, startServer, type Answer } from "./smoke.ts";
 
 const ORIGIN = "http://localhost:8799";
-const html: Answer = { status: 200, contentType: "text/html; charset=utf-8", body: "<!doctype html>" };
+const html: Answer = { status: 200, contentType: "text/html; charset=utf-8", body: '<!DOCTYPE html>\n<html lang="en">\n</html>\n' };
 // What the local server's /api/version answered on 2026-11-03.
 const version: Answer = { status: 200, contentType: "application/json", body: '{"version":"118f3e9a-eb13-46b1-aee7-7f14bd326b9e"}' };
 
@@ -21,14 +21,19 @@ describe("preview-smoke", () => {
     assert.deepEqual([outcome.status, outcome.holds, outcome.details.version_status], ["ok", false, 500]);
   });
 
-  it("fails when /api/version answers without a version", () => {
-    const outcome = evaluateSmoke(ORIGIN, html, { ...version, body: '{"ok":true}' });
-    assert.deepEqual([outcome.status, outcome.holds, outcome.details.backend_version], ["ok", false, ""]);
+  it("fails when /api/version answers without a version, or with one that is not a non-blank string", () => {
+    for (const body of ['{"ok":true}', '{"version":null}', '{"version":""}', '{"version":"  "}', '{"version":7}', '{"version":{"id":"x"}}', '"118f3e9a"', "[]"]) {
+      const outcome = evaluateSmoke(ORIGIN, html, { ...version, body });
+      assert.deepEqual([outcome.status, outcome.holds, outcome.details.backend_version], ["ok", false, ""], body);
+    }
   });
 
-  it("fails when / is not the frontend, a redirect included", () => {
+  it("fails when / is not the frontend's document, a redirect included", () => {
     assert.equal(evaluateSmoke(ORIGIN, { ...html, contentType: "application/json" }, version).holds, false);
     assert.equal(evaluateSmoke(ORIGIN, { status: 302, contentType: "", body: "" }, version).holds, false);
+    for (const body of ["", "Internal error", '{"error":"no assets"}']) {
+      assert.equal(evaluateSmoke(ORIGIN, { ...html, body }, version).holds, false, body);
+    }
   });
 });
 

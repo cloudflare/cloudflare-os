@@ -102,7 +102,7 @@ const PATH_FLOORS: (PathRule & { band: Band; reason: string })[] = [
   },
 ];
 
-/** Skills, which coding agents read; edits here are AI-scored. */
+/** Skills, which coding agents read. A skill's own files are not on the always-a-person list. */
 const SKILLS_DIR = ".agents/skills/";
 
 /** Whether a path is under `.agents/skills/`, where a symlink needs a person. */
@@ -111,10 +111,12 @@ export function isSkillPath(filename: string): boolean {
 }
 
 /**
- * Whether a person must review a change to this path because AI reviewers follow it: every
- * instruction path but a skill's own files. Skills are scored like code: the reviewers read the
- * base version of every instruction file, so a skill edit cannot steer its own review. A symlink
- * there can, and so can an instruction file or directory of its own inside a skill.
+ * Whether a change to this path is on the always-a-person list because AI reviewers follow it:
+ * every instruction path but a skill's own files, and an instruction file or directory of its own
+ * inside a skill. A skill's own files keep the medium floor of every instruction path, so rung 2,
+ * which takes only low risk, takes none; leaving them off the list keeps that a matter of risk
+ * level. The reviewers read the base version of every instruction path, so a skill edit cannot
+ * steer its own review; a symlink there can, and `skillSymlinks` sends it to a person.
  */
 function isReviewerInstruction(path: string): boolean {
   return isInstructionPath(isSkillPath(path) ? path.slice(SKILLS_DIR.length) : path);
@@ -144,12 +146,6 @@ const NEVER_AUTO_PATHS: (PathRule & { reason: string })[] = [
     globs: ["**/wrangler.json", "**/wrangler.toml", "**/.wrangler/**"],
   },
 ];
-
-/**
- * Text that people or agents read, which no rung 1 proof can judge: a skill or a doc it links
- * leaves the build byte-identical, so `proof-equivalence` would admit it with no reader.
- */
-const READ_TEXT = ["**/*.md", "docs/**", "plans/**", "**/.agents/**"];
 
 /**
  * Files an escape snapshot entry does not raise the risk level for: lockfiles and prose outside
@@ -283,8 +279,6 @@ interface Classification {
   bandReasons: string[];
   /** Why no AI may decide; empty when one may. */
   neverAuto: string[];
-  /** Changed files people or agents read, which bar every rung 1 proof. */
-  readText: string[];
 }
 
 /**
@@ -351,15 +345,14 @@ export function classifyChangeset({ files, listed, facts, escapes, now }: {
   if (facts.durableObjectRisks.length > 0) {
     neverAuto.push(`may drop Durable Object data (${facts.durableObjectRisks.join(", ")})`);
   }
-
-  const readText = files.filter((file) => pathsOf(file).some((path) => matchesAny(path, READ_TEXT))).map(describePath);
-  return { band, bandReasons, neverAuto, readText };
+  return { band, bandReasons, neverAuto };
 }
 
 /**
  * Whether `head` differs from `base` only in the values of existing catalog entries: the same
  * lines outside `catalog:`/`catalogs:`, and inside them the same keys in the same order. A new or
- * removed entry is a new dependency, not a version bump.
+ * removed entry is a new dependency, not a version bump. Any other line that starts at column 0,
+ * a comment aside, is another top-level key, however YAML lets it be quoted, and ends the catalog.
  */
 export function isCatalogVersionBump(base: string, head: string): boolean {
   const before = base.split("\n");
@@ -369,8 +362,7 @@ export function isCatalogVersionBump(base: string, head: string): boolean {
   for (const [index, line] of before.entries()) {
     const other = after[index];
     if (other === undefined) return false;
-    const topLevel = /^([A-Za-z][\w-]*):/.exec(line);
-    if (topLevel) inCatalog = topLevel[1] === "catalog" || topLevel[1] === "catalogs";
+    if (/^[^\s#]/.test(line)) inCatalog = /^catalogs?:\s*(#.*)?$/.test(line);
     if (line === other) continue;
     if (!inCatalog) return false;
     const entry = catalogEntry(line);
