@@ -26,6 +26,8 @@ import type { UnifiCameraInfo, UnifiLightInfo, UnifiSensorInfo } from "./protect
 /** The most items a list returns, matching the agent-facing documentation. */
 export const MAX_LIST_ITEMS = 1000;
 const PAGE_SIZE = 200;
+/** The most vouchers read looking for some by ID when a console doesn't apply the `id` filter. */
+const MAX_VOUCHER_SCAN = 10_000;
 
 /** Guest access limits as the Network API names them. */
 export type GuestLimitsBody = {
@@ -206,22 +208,43 @@ export class UnifiApi {
 
   /**
    * The vouchers with these IDs that still exist, however many others the site has, through the
-   * voucher list's documented `id` filter. A console that refuses the filter is asked for the whole
-   * list instead, and one that ignores it is filtered here.
+   * voucher list's documented `id` filter. A console that refuses or ignores the filter is read
+   * page by page until all of them turn up or the list ends; one missing then is gone.
+   * @throws UnifiError when that would take more than `MAX_VOUCHER_SCAN` vouchers, rather than
+   * calling the rest gone.
    */
   async findVouchers(siteId: string, ids: readonly string[]): Promise<UnifiVoucher[]> {
     if (ids.length === 0) return [];
     for (const voucherId of ids) id(voucherId, "voucher");
     const path = `/v1/sites/${id(siteId, "site")}/hotspot/vouchers`;
-    let found: unknown[];
+    const wanted = new Set(ids);
+    const isWanted = (raw: unknown) => wanted.has(String(asObject(raw, "voucher").id));
     try {
-      found = await this.#list("network", path, "voucher list", { filter: `id.in(${ids.join(",")})` });
+      const filtered = parseNetworkPage(await this.#json("network", "GET", path, undefined,
+        { filter: `id.in(${ids.join(",")})`, offset: "0", limit: String(PAGE_SIZE) }), "voucher list");
+      // A console that applied the filter answered with these vouchers alone.
+      if (filtered.totalCount <= ids.length && filtered.data.every(isWanted)) return filtered.data.map(parseVoucher);
     } catch (error) {
       if (!(error instanceof UnifiError && error.kind === "badRequest")) throw error;
-      found = await this.#list("network", path, "voucher list");
     }
-    const wanted = new Set(ids);
-    return found.map(parseVoucher).filter(voucher => wanted.has(voucher.id));
+    const found = new Map<string, UnifiVoucher>();
+    for (let offset = 0; ; offset += PAGE_SIZE) {
+      if (offset >= MAX_VOUCHER_SCAN) {
+        throw new UnifiError({
+          kind: "protocol",
+          message: `This console doesn't apply UniFi's voucher filter, and its site has more than ${MAX_VOUCHER_SCAN} ` +
+            "vouchers, so these couldn't all be looked for.",
+        });
+      }
+      const page = parseNetworkPage(await this.#json("network", "GET", path, undefined,
+        { offset: String(offset), limit: String(PAGE_SIZE) }), "voucher list");
+      for (const raw of page.data.filter(isWanted)) {
+        const voucher = parseVoucher(raw);
+        found.set(voucher.id, voucher);
+      }
+      if (found.size === wanted.size || page.data.length < PAGE_SIZE || offset + page.data.length >= page.totalCount) break;
+    }
+    return [...found.values()];
   }
 
   /** Creates hotspot vouchers, returning those UniFi created. */

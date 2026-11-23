@@ -6,7 +6,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { APPLY_OUTCOME_UNKNOWN_MESSAGE } from "@gadgets/gatekeeper-kit/actions";
-import { account, binding, connectCloud, connectDirect, CONSOLE_URL, hooks, installFake, LOCAL_KEY, RESOURCES } from "./helpers.js";
+import {
+  account, binding, CLOUD_KEY, connectCloud, connectDirect, CONSOLE_URL, holdRequestsWith, hooks, installFake, LOCAL_KEY,
+  reconnectCloud, RESOURCES,
+} from "./helpers.js";
+
+const NEW_CLOUD_KEY = "replacement-cloud-key-0123456789ab";
 import { HOME, rawVoucher } from "../fake-unifi.js";
 import type { Step } from "../worker.js";
 
@@ -15,9 +20,11 @@ afterEach(() => {
 });
 
 /** A binding to the guest WiFi network through a direct connection. */
-async function guestWifiOf(accountId: string) {
+async function guestWifiOf(accountId: string, spell = (id: string) => id) {
   const identity = await account(accountId).identity() as { consoleId: string };
-  return binding(accountId, { kind: "wifi", consoleId: identity.consoleId, siteId: HOME.siteId, wifiNetworkId: HOME.guestWifiId });
+  return binding(accountId, {
+    kind: "wifi", consoleId: identity.consoleId, siteId: spell(HOME.siteId), wifiNetworkId: spell(HOME.guestWifiId),
+  });
 }
 
 function lastSubmitted(queue: { submitted: { actionId: number; description: ActionDescription }[] }) {
@@ -270,7 +277,8 @@ describe("a WiFi network", () => {
     const SECOND_KEY = "second-local-key-0123456789abcdef";
     unifi.direct.get(CONSOLE_URL)!.keys.add(SECOND_KEY);
     const mine = await guestWifiOf(await connectDirect());
-    const theirs = await guestWifiOf(await connectDirect({ localApiKey: SECOND_KEY }));
+    // Their IDs spelled in uppercase, which names the same network.
+    const theirs = await guestWifiOf(await connectDirect({ localApiKey: SECOND_KEY }), (id: string) => id.toUpperCase());
     await mine.call("update", { passphrase: "brand-new-pass" });
     await theirs.call("update", { hidden: true });
     // Hold my write until their read has gone out, or a moment has passed: without the shared lane
@@ -288,6 +296,24 @@ describe("a WiFi network", () => {
     expect(puts).toHaveLength(2);
     expect(puts[1]!.body).toMatchObject({ securityConfiguration: { passphrase: "brand-new-pass" } });
     expect(puts[1]!.body).toMatchObject({ hideName: true });
+  });
+
+  it("doesn't write settings one key read with another that a reconnect put in its place", async () => {
+    const { unifi, console } = installFake();
+    const accountId = await connectCloud();
+    const guest = binding(accountId, RESOURCES.wifi(HOME.guestWifiId));
+    await guest.call("update", { hidden: true });
+    const { actionId } = lastSubmitted(await guest.queue());
+    const release = holdRequestsWith(unifi, CLOUD_KEY);
+    const applying = guest.applyOutcome(actionId);
+    unifi.addCloudKey(NEW_CLOUD_KEY, { ...unifi.cloud.get(CLOUD_KEY)! });
+    await reconnectCloud(accountId, NEW_CLOUD_KEY);
+    release();
+    expect(await applying).toMatchObject({ error: expect.stringMatching(/reconnected/) });
+    expect(console.writes()).toEqual([]);
+    // Still pending, so it can be applied again, reading afresh with the new key.
+    await guest.apply(actionId);
+    expect(console.writes()).toHaveLength(1);
   });
 
   it("forgets a rejected change", async () => {
@@ -410,6 +436,21 @@ describe("the guest hotspot", () => {
     await hotspot.call("deleteVoucher", voucher!.id);
     await hotspot.apply(lastSubmitted(await hotspot.queue()).actionId);
     expect(await hotspot.call("getVoucherBatch", batch)).toEqual([]);
+  });
+
+  it("reads every page to find a batch when a console ignores the id filter", async () => {
+    // Its first 1,000 vouchers are older ones, so stopping there would call the new one gone.
+    const { console } = installFake();
+    const older = Array.from({ length: 1000 }, (_, i) =>
+      rawVoucher(`5f0ee1aa-0000-4000-9000-${String(i).padStart(12, "0")}`, "Old", String(2_000_000_000 + i), "2026-01-01T00:00:00Z"));
+    console.network!.sites[0]!.vouchers.push(...older);
+    const hotspot = binding(await connectCloud(), RESOURCES.hotspot);
+    const batch = await hotspot.call<string>("createVouchers", { note: "Party", durationMinutes: 240 });
+    await hotspot.apply(lastSubmitted(await hotspot.queue()).actionId);
+    console.honorsFilters = false;
+    const [voucher] = await hotspot.call<{ id: string; code: string | null; note: string }[]>("getVoucherBatch", batch);
+    expect(voucher).toMatchObject({ note: "Party", code: expect.any(String) });
+    await hotspot.call("deleteVoucher", voucher!.id);
   });
 
   it("asks for the whole voucher list when a console refuses the id filter", async () => {

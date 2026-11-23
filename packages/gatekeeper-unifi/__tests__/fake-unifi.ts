@@ -290,7 +290,8 @@ export class FakeConsole {
 
     const siteMatch = /^\/v1\/sites\/([^/]+)(\/.*)$/.exec(path);
     if (!siteMatch) return notFound();
-    const site = network.sites.find(s => s.site.id === siteMatch[1]);
+    // UUIDs, which a console reads in either case.
+    const site = network.sites.find(s => (s.site.id as string).toLowerCase() === siteMatch[1]!.toLowerCase());
     if (!site) return notFound();
     const rest = siteMatch[2]!;
     let m: RegExpExecArray | null;
@@ -359,7 +360,7 @@ export class FakeConsole {
     if (method === "GET" && rest === "/networks") return page(site.networks);
     if (method === "GET" && rest === "/wifi/broadcasts") return page(site.wifi.map(wifiOverview));
     if ((m = /^\/wifi\/broadcasts\/([^/]+)$/.exec(rest))) {
-      const index = site.wifi.findIndex(w => w.id === m![1]);
+      const index = site.wifi.findIndex(w => (w.id as string).toLowerCase() === m![1]!.toLowerCase());
       if (index === -1) return notFound();
       if (method === "GET") return json(200, site.wifi[index]);
       if (method === "PUT") {

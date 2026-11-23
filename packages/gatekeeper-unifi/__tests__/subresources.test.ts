@@ -80,16 +80,20 @@ describe("subresource IDs", () => {
 
   it("passes a probe only when its answer shows what the requirement needs", () => {
     // The site list shows a key only its own sites.
-    expect(probeConfirms({ kind: "site", siteId: SITE }, sites([SITE]))).toBe(true);
-    expect(probeConfirms({ kind: "site", siteId: SITE }, sites([OTHER_SITE]))).toBe(false);
+    expect(probeConfirms({ kind: "site", siteId: SITE }, sites([SITE]), "network")).toBe(true);
+    expect(probeConfirms({ kind: "site", siteId: SITE }, sites([OTHER_SITE]), "network")).toBe(false);
     // The NVR must be the one the binding read, not a replacement's at the same URL.
-    expect(probeConfirms({ kind: "nvr", id: NVR }, nvr(NVR))).toBe(true);
-    expect(probeConfirms({ kind: "nvr", id: NVR }, nvr(CAMERA))).toBe(false);
+    expect(probeConfirms({ kind: "nvr", id: NVR }, nvr(NVR), "protect")).toBe(true);
+    expect(probeConfirms({ kind: "nvr", id: NVR }, nvr(CAMERA), "protect")).toBe(false);
     // Settings that leave the password out don't show it can be read.
     const wifi = (security: object) => ({ id: WIFI, name: "Guest", securityConfiguration: security });
     const password = { kind: "wifiPassword", siteId: SITE, wifiNetworkId: WIFI } as const;
-    expect(probeConfirms(password, wifi({ type: "WPA2_PERSONAL", passphrase: "secret-pass" }))).toBe(true);
-    expect(probeConfirms(password, wifi({ type: "WPA2_PERSONAL" }))).toBe(false);
-    expect(probeConfirms({ kind: "wifi", siteId: SITE, wifiNetworkId: WIFI }, wifi({ type: "WPA2_PERSONAL" }))).toBe(true);
+    expect(probeConfirms(password, wifi({ type: "WPA2_PERSONAL", passphrase: "secret-pass" }), "network")).toBe(true);
+    expect(probeConfirms(password, wifi({ type: "WPA2_PERSONAL" }), "network")).toBe(false);
+    expect(probeConfirms({ kind: "wifi", siteId: SITE, wifiNetworkId: WIFI }, wifi({ type: "WPA2_PERSONAL" }), "network")).toBe(true);
+    // The application's information must carry its version; an empty or unrelated answer proves nothing.
+    expect(probeConfirms({ kind: "app" }, { applicationVersion: "10.0.160" }, "network")).toBe(true);
+    expect(() => probeConfirms({ kind: "app" }, undefined, "network")).toThrow();
+    expect(() => probeConfirms({ kind: "app" }, { hello: "proxy" }, "protect")).toThrow();
   });
 });

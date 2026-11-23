@@ -307,7 +307,7 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
         if (consoleId === null) return false;
         const probe = await this.#send(
           { target: { kind: "app", app: target.app, consoleId }, method: "GET", ...probeFor(requirement, target.app) }, GET_TTL_MS, connection);
-        if (probe.ok) return probeConfirms(requirement, "json" in probe ? probe.json : undefined);
+        if (probe.ok) return probeConfirms(requirement, "json" in probe ? probe.json : undefined, target.app);
         if (["auth", "forbidden", "notFound", "redirect"].includes(probe.failure.kind)) return false;
         throw new Error(probe.failure.message);
       })));
@@ -344,16 +344,22 @@ export class UnifiAccount extends DurableObject<UnifiEnv> {
     consoleId: string, siteId: string, wifiNetworkId: string, changes: UnifiWifiNetworkChanges,
   ): Promise<UnifiFailure | null> {
     // Queued in the network's lane, which every connection in the deployment shares (wifi-lane.ts).
+    // The IDs are UUIDs, whose hex digits may be written in either case: lowercase names one lane.
     const lanes = this.ctx.exports.UnifiWifiLane;
-    const lane = lanes.get(lanes.idFromName(JSON.stringify([siteId, wifiNetworkId])));
+    const lane = lanes.get(lanes.idFromName(JSON.stringify([siteId.toLowerCase(), wifiNetworkId.toLowerCase()])));
     return await lane.write(this.ctx.id.toString(), consoleId, siteId, wifiNetworkId, changes);
   }
 
-  /** `updateWifi`'s read, merge and write, run when the network's lane reaches it. */
+  /**
+   * `updateWifi`'s read, merge and write, run when the network's lane reaches it. Both go out with
+   * the credentials stored when it starts: settings one key read must not be written with another,
+   * so a reconnect in between refuses the write, and a retry reads afresh with the new key.
+   */
   async writeWifi(
     consoleId: string, siteId: string, wifiNetworkId: string, changes: UnifiWifiNetworkChanges,
   ): Promise<UnifiFailure | null> {
-    const api = new UnifiApi(request => this.#send(request, null), consoleId);
+    const connection = this.#connection();
+    const api = new UnifiApi(request => this.#send(request, null, connection), consoleId);
     try {
       const raw = await api.getWifiRaw(siteId, wifiNetworkId);
       await api.putWifi(siteId, wifiNetworkId, wifiPutBody(raw, changes));

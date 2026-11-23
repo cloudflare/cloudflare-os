@@ -24,7 +24,7 @@
  */
 
 import { formatSubresourceId, parseSubresourceId, type SubresourceFragment } from "@gadgets/gatekeeper-kit/subresource-ids";
-import { asObject, parseNetworkPage, parseNvr, wifiPassphrase } from "./parse";
+import { asObject, parseNetworkInfo, parseNetworkPage, parseNvr, parseProtectInfo, wifiPassphrase } from "./parse";
 import { isValidId, resourceApp, type UnifiResource } from "./resources";
 import type { UnifiApp } from "./transport";
 
@@ -189,12 +189,15 @@ export function probeFor(
 
 /**
  * Whether a successful probe's answer shows what the requirement needs, beyond the key being let
- * in: the site list shows a key only its own sites, so the site must be in it; the NVR must be the
- * one the binding read, not one a console that has since replaced it at the same URL reports; and
- * the WiFi settings must include the password, which UniFi may leave out for a role that can't read it.
+ * in: the application's information must carry the version a read returns; the site list shows a
+ * key only its own sites, so the site must be in it; the NVR must be the one the binding read, not
+ * one a console that has since replaced it at the same URL reports; and the WiFi settings must
+ * include the password, which UniFi may leave out for a role that can't read it.
+ * @throws UnifiError for an answer that isn't what the endpoint returns, which proves nothing.
  */
-export function probeConfirms(requirement: UnifiRequirement, body: unknown): boolean {
+export function probeConfirms(requirement: UnifiRequirement, body: unknown, app: UnifiApp): boolean {
   switch (requirement.kind) {
+    case "app": return (app === "network" ? parseNetworkInfo(body) : parseProtectInfo(body)).applicationVersion !== "";
     case "site": return parseNetworkPage(body, "site list").data.some(site => asObject(site, "site").id === requirement.siteId);
     case "nvr": return parseNvr(body).id === requirement.id;
     case "wifiPassword": return (wifiPassphrase(body) ?? "") !== "";
