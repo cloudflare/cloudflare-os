@@ -45,18 +45,23 @@ export function planRound(headSha: string, reviewed: ReviewedHead[], canReviewSi
 
 /**
  * One authenticated GitHub REST read. A failure names the request and the HTTP status and nothing
- * GitHub sent: it becomes a verdict's `details.reason` and a line of the job log, both public.
+ * GitHub sent: it becomes a verdict's `details.reason` and a line of the job log, both public. A
+ * failed fetch or body read is not kept as a cause, which Node prints: undici's holds bytes of a
+ * malformed answer.
  */
 export async function githubJson(path: string, token: string): Promise<Json> {
+  const unanswered = (): never => {
+    throw new Error(`GitHub API GET ${path} failed without a complete answer`);
+  };
   const response = await fetch(`https://api.github.com/${path}`, {
     headers: {
       Accept: "application/vnd.github+json",
       Authorization: `Bearer ${token}`,
       "User-Agent": "cloudflare-os-review-verdict",
     },
-  });
+  }).catch(unanswered);
   if (!response.ok) throw new Error(`GitHub API GET ${path} failed with ${response.status}`);
-  return parseJson(await response.text(), `GitHub's answer to GET ${path}`);
+  return parseJson(await response.text().catch(unanswered), `GitHub's answer to GET ${path}`);
 }
 
 const PER_PAGE = 100;

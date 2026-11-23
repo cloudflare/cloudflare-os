@@ -41,6 +41,7 @@ describe("preview-smoke", () => {
       evaluateSmoke(ORIGIN, html, { ...version, body: '{"version":"sk-live"}' }),
       evaluateSmoke(ORIGIN, { ...html, contentType: "sk-live" }, { ...version, body: "sk-live" }),
       evaluateSmoke(ORIGIN, { ...html, body: "sk-live" }, { status: 500, contentType: "sk-live", body: "sk-live" }),
+      evaluateSmoke(ORIGIN, { status: 500, contentType: "sk-live", body: "sk-live" }, version),
     ]) {
       assert.ok(!JSON.stringify(outcome).includes("sk-live"), JSON.stringify(outcome));
     }

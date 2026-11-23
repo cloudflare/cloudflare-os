@@ -632,34 +632,21 @@ function isNotFound(error: Error): boolean {
 class GateFailure extends Error {}
 
 /**
- * The frames of `error`'s stack, which say where it was thrown and hold nothing a server sent. V8
- * prints the message above them, so the stack is cut exactly after it; when what is left is not
- * all frames (the message changed after the stack was made), none is kept.
- */
-function framesOf(error: Error): string {
-  const stack = error.stack ?? "";
-  const heading = /^\w+(?:: )?/.exec(stack)?.[0] ?? "";
-  if (!stack.startsWith(error.message, heading.length)) return "";
-  const frames = stack.slice(heading.length + error.message.length);
-  return /^(?:\n {4}at .*)*$/.test(frames) ? frames : "";
-}
-
-/**
- * What the gate was `doing` when `error` was thrown, with the HTTP status if the error has one and
- * its class if not, above the frames it was thrown from. The error itself is dropped rather than
- * kept as a cause: the check run and this run's log are public, actions/github-script prints a
- * rejection whole, and a failed request's error holds the response body (as its message), the
- * response headers and the URL that answered, which for an artifact download is a signed one. A
- * failure already in the gate's words is kept, so the innermost `doing` is the one reported.
+ * What the gate was `doing` when `error` was thrown, with the HTTP status if a server answered and
+ * the error's class if not: Octokit gives a request that got no response the status 500. The error
+ * is dropped, stack included, rather than kept as a cause: the check run and this run's log are
+ * public, actions/github-script prints a rejection whole, and a failed request's error holds the
+ * response body (as its message, which heads its stack), the response headers and the URL that
+ * answered, which for an artifact download is a signed one. The action has by then logged the
+ * request's method, path, status and GitHub request id itself. A failure already in the gate's
+ * words is kept, so the innermost `doing` is the one reported.
  */
 function gateFailure(doing: string, error: Error | undefined): GateFailure {
   if (error instanceof GateFailure) return error;
-  const status = error !== undefined && "status" in error && typeof error.status === "number" ? `HTTP ${error.status}` : undefined;
-  const kind = error !== undefined && /^\w+$/.test(error.name) ? error.name : "an error";
-  const failure = new GateFailure(`${doing}: ${status ?? kind}`);
-  const frames = error === undefined ? "" : framesOf(error);
-  if (frames !== "") failure.stack = `${failure.name}: ${failure.message}${frames}`;
-  return failure;
+  if (error === undefined) return new GateFailure(`${doing}: an error`);
+  const answered = "response" in error && error.response !== undefined;
+  const status = answered && "status" in error && typeof error.status === "number" ? `HTTP ${error.status}` : undefined;
+  return new GateFailure(`${doing}: ${status ?? error.name}`);
 }
 
 /** Runs `work`; its failure, if any, is a {@link gateFailure} that names `doing`. */

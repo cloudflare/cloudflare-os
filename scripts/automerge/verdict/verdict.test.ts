@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
+import { inspect } from "node:util";
 
 import { dig, jobsOf, parseWorkflow, stepsOf } from "../../risk-review-fixtures/workflow.ts";
 import type { Json } from "../json.ts";
@@ -102,6 +103,11 @@ describe("fetchReviewedHeads", () => {
   });
 });
 
+/** A failed fetch as undici throws it for a malformed answer: the cause holds bytes of the answer. */
+function malformed(): Error {
+  return new TypeError("fetch failed", { cause: Object.assign(new Error("Parse Error"), { code: "HPE_INVALID_HEADER_TOKEN", data: "sk-live" }) });
+}
+
 describe("githubJson", () => {
   // The message becomes a verdict's `details.reason` and a line of the job log.
   it("fails with the request and the HTTP status, and nothing GitHub sent", async (t) => {
@@ -111,6 +117,16 @@ describe("githubJson", () => {
       const message = await githubJson("repos/cloudflare/cloudflare-os/pulls/7", "token").then(() => "", (error: Error) => error.message);
       assert.ok(message.includes("repos/cloudflare/cloudflare-os/pulls/7") && message.includes(said), message);
       assert.ok(!message.includes("sk-live"), message);
+    }
+  });
+
+  // Node prints an uncaught error with its cause.
+  it("fails with the request and nothing GitHub sent when the answer does not arrive whole", async (t) => {
+    const cutShort = new Response(new ReadableStream({ start: controller => controller.error(malformed()) }));
+    for (const answer of [() => Promise.reject(malformed()), () => Promise.resolve(cutShort)]) {
+      t.mock.method(globalThis, "fetch", answer);
+      const printed = await githubJson("repos/cloudflare/cloudflare-os/pulls/7", "token").then(() => "", (error: Error) => inspect(error));
+      assert.ok(printed.includes("repos/cloudflare/cloudflare-os/pulls/7") && !printed.includes("sk-live"), printed);
     }
   });
 });

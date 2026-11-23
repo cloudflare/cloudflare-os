@@ -163,14 +163,9 @@ function requestError(status: number): Error {
   });
 }
 
-/**
- * A failed request whose message changed after its stack's text was made, which V8 does when the
- * stack is first read. The message no longer says where the body ends in the stack.
- */
-function reworded(): Error {
-  const error = requestError(502);
-  assert.ok(error.stack?.includes(UPSTREAM.body));
-  return Object.assign(error, { message: "Server" });
+/** A request no server answered, as Octokit throws it: the status 500 and no response. */
+function unanswered(): Error {
+  return Object.assign(new Error("getaddrinfo ENOTFOUND api.github.com"), { name: "HttpError", status: 500 });
 }
 
 /** A refused GraphQL request as Octokit throws it: GitHub's own words, with the response headers. */
@@ -1404,15 +1399,10 @@ describe("runRiskReview failure", () => {
     }
   });
 
-  // The stack's frames are the only way to find a bug in the gate from a public log.
-  it("rejects with the frames of what was thrown, and drops them when it cannot cut the message off exactly", async () => {
-    const failing: GitHubCall[] = ["pulls.listFiles"];
-    const logged = await loggedRejection(harness({ failing }).evaluate("workflow_run", producerCompleted()));
-    assert.match(logged, /\n {4}at requestError \(/);
-    assertNothingUpstream(logged);
-
-    const shortened = await loggedRejection(harness({ failing, failWith: reworded }).evaluate("workflow_run", producerCompleted()));
-    assert.doesNotMatch(shortened, /authenticate|at requestError/);
+  it("reports no HTTP status for a request that no server answered", async () => {
+    const { calls, evaluate } = harness({ failing: ["pulls.listFiles"], failWith: unanswered });
+    const logged = await loggedRejection(evaluate("workflow_run", producerCompleted()));
+    for (const text of [logged, calls.updates[0].summary]) assert.doesNotMatch(text, /HTTP \d/);
   });
 });
 
