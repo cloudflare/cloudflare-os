@@ -251,20 +251,17 @@ it("hands a client the preview its connection's gatekeeper supplies, built from 
   using gatekeeper = await ws.newGatekeeper(account.id, "https://gadgets-test.example/things/preview");
   if (!gatekeeper) throw new Error("Failed to create the test connection");
 
-  expect(await gatekeeper.describe()).toMatchObject({ hasPreview: true });
+  expect(await gatekeeper.describe()).toMatchObject({ hasGadgetUi: true });
   // Built as a gadget's UI is: the import rewritten, and only what client.js reaches included.
-  expect(await gatekeeper.getPreviewUi()).toEqual({ modules: [
+  expect(await gatekeeper.getUiBundle()).toEqual({ modules: [
     { path: "client.js", code: `import { text } from "${uiModuleKey("ui/text.js")}";\n` +
       `export default { main() { document.body.textContent = text; } };\n` },
     { path: "ui/text.js", code: `export const text = "test preview";\n` },
   ] });
 
-  // An action names the item it changes, and the client asks for that item's preview by the name.
+  // An action names the item it changes, for the client to open from the connection's session.
   using session = await gatekeeper.openSession() as RpcStub<TestSession>;
   await session.writeValue(7, { previewOf: "part" });
   const { entries: [write] } = await ws.listActions({ filter: "pending" });
   expect(write.description).toMatchObject({ previewOf: { id: "part", title: "Item part" } });
-  expect(await gatekeeper.getPreviewUi("part")).toEqual({ modules: [
-    { path: "client.js", code: `export default { main() { document.body.textContent = "part"; } };\n` },
-  ] });
 });

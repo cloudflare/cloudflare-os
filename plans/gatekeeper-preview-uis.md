@@ -26,8 +26,8 @@ The parts:
   its holder that something changed.
 - **Auto-open**: the Workshop opens the preview when work on a previewable connection starts.
 
-What a gatekeeper does to have a preview: set `hasPreview`, return client code from
-`getPreviewUi()`, and give its session a `getPendingChanges()` plus whatever other reads its
+What a gatekeeper does to have a preview: set `hasGadgetUi`, return client code from
+`getGadgetUi()`, and give its session a `getPendingChanges()` plus whatever other reads its
 client needs to draw the resource faithfully. Nothing else changes for it.
 
 ## Locked decisions
@@ -53,8 +53,18 @@ client needs to draw the resource faithfully. Nothing else changes for it.
   and what they would edit. No bundler, no minifying and no TypeScript build stands between the
   files a gatekeeper keeps and the files it returns. Several previews of one gatekeeper can share
   modules; each returns the ones it uses.
+- **The gatekeeper answers the gadget view calls; no gadget is created.** `GatekeeperClient` has
+  the two calls `GadgetUI` makes, which `WorkpieceClient` declares for a gadget and a gatekeeper
+  alike: `getUiBundle()` builds the files `Gatekeeper.getGadgetUi()` returns, and `connectToGadget()` opens the connection's session, which
+  stands where a gadget's server would. That session's caller is a gadget whose ID is the
+  connection's own workpiece ID. Workpiece IDs come from one counter, so it names no real gadget,
+  and only real gadgets are walked for who reaches a gadget's reads (`gadgetsReaching()`): a
+  preview's reads are recorded against the connection and checked against "build" collaborators
+  only. A session from `openSession()` reads for the workspace, which every gadget's "use"
+  collaborators are checked against too (`docs/observers.md` §10), so a preview drawn from one
+  could lock such a collaborator out of an unrelated gadget on the same connection.
 - **The preview holds a session and nothing more.** The frame's `gadget` stub is what
-  `GatekeeperClient.openSession()` returns, or for a preview of one item what that session's
+  `GatekeeperClient.connectToGadget()` returns, or for a preview of one item what that session's
   `openPreview()` returns. The preview can therefore do only what a gadget bound to the resource
   could, every read it makes is authorized and logged as an observation, and any action it
   submitted would go through the approval queue like any other. No new trust is introduced.
@@ -70,7 +80,7 @@ client needs to draw the resource faithfully. Nothing else changes for it.
   session method, so a gadget can do what the preview does. Its shape is a convention every
   gatekeeper follows (section 2).
 - **A gatekeeper declares its preview; the Workshop never names a vendor.**
-  `ResourceDescription.hasPreview` plus the optional `Gatekeeper.getPreviewUi()` follow
+  `ResourceDescription.hasGadgetUi` plus the optional `Gatekeeper.getGadgetUi()` follow
   `hasSlashCommands` / `getSlashCommandProvider()`.
 - **No Preview buttons.** The preview opens by itself when work on a connection starts. One
   control per connection reopens a preview that was closed.
@@ -89,11 +99,11 @@ client needs to draw the resource faithfully. Nothing else changes for it.
   `ApprovalQueue` (`submitAction`, `authorizeObservation`, `bindHook`; no way for a gatekeeper to
   resolve an action).
 - `packages/workshop-shared/src/api.ts`: `GatekeeperClient` (`describe`, `openSession`,
-  `getPreviewUi`), `UiBundle`, `ActionLogEntry`.
+  `getUiBundle`, `connectToGadget`), `UiBundle`, `ActionLogEntry`.
 - `packages/workshop-backend/src/ui-bundle.ts`: `buildUiBundle`, which follows `client.js`'s
   relative imports, rewrites them and enforces the UI import rules.
 - `packages/workshop-backend/src/overseer.ts`: the gatekeeper client class builds the bundle from
-  what the gatekeeper's `getPreviewUi()` returns; `actionRecordToLog` withholds the gatekeeper's own action number
+  what the gatekeeper's `getGadgetUi()` returns; `actionRecordToLog` withholds the gatekeeper's own action number
   (`record.action`) from clients.
 - `packages/workshop-frontend/src/useActions.ts`: `useActions`, `useActionEntries` (the live
   action log on the client).
@@ -107,27 +117,30 @@ client needs to draw the resource faithfully. Nothing else changes for it.
 ```ts
 // gatekeeper.ts
 type ResourceDescription = {
-  /** Indicates that getPreviewUi() is available. */
-  hasPreview?: true;
+  /** Indicates that getGadgetUi() is available and draws the connection as a whole. */
+  hasGadgetUi?: true;
 }
 
 type UiFile = { path: string; code: string };  // as written; client.js is the entry
 
 interface Gatekeeper<Session> {
-  getPreviewUi?(): Promise<UiFile[]>;
+  getGadgetUi?(): Promise<UiFile[]>;
 }
 
-// api.ts
-interface GatekeeperClient<Session> {
-  getPreviewUi(): Promise<UiBundle>;
+// api.ts: moved up from GadgetClient to the base it shares with GatekeeperClient
+interface WorkpieceClient {
+  getUiBundle(chatId?: number): Promise<UiBundle | null>;
+  connectToGadget(chatId?: number): Promise<RpcStub<any>>;
 }
 ```
 
-The kernel adds one method and no storage: it asks the gatekeeper for the files and runs
-`buildUiBundle` over them, so a preview's imports are followed and checked exactly as a gadget's
-are, and `gatekeeper.ts` needs no UI type. A caller checks `describe().hasPreview` before calling
-`getPreviewUi()`; calling it on a gatekeeper without one fails, as does a preview with no
-`client.js` or with an import the rules refuse.
+The kernel adds the two calls and no storage: for `getUiBundle()` it asks the gatekeeper for the
+files and runs `buildUiBundle` over them, so a preview's imports are followed and checked exactly
+as a gadget's are, and `gatekeeper.ts` needs no UI type; for `connectToGadget()` it opens the
+connection's session as `openSession()` does, under the connection's own ID as a gadget's. Both
+refuse a `chatId`. A caller checks `describe().hasGadgetUi` before calling `getUiBundle()`;
+calling it on a gatekeeper with no UI fails, as does a preview with no `client.js` or with an
+import the rules refuse.
 
 `describe()` may reach the provider. The flag is not stored on the connection record. If cheap
 lookup is needed, denormalize it at connection creation as `hasSlashCommands` is; existing
@@ -136,7 +149,7 @@ connections would then lack it until re-described.
 ### 1a. A preview of one item of a resource (workshop-shared + workshop-backend)
 
 A connection to a folder reaches many files, and a log entry names only the connection. So an
-action may name the item it changes, and the preview is asked for by that name:
+action may name the item it changes, and the item's session is opened by that name:
 
 ```ts
 // gatekeeper.ts
@@ -146,42 +159,34 @@ type ActionDescription = {
   /** The one item of the resource this action changes, when the gatekeeper can draw it by itself. */
   previewOf?: PreviewItem;
 }
-
-interface Gatekeeper<Session> {
-  getPreviewUi?(previewOf?: string): Promise<UiFile[]>;
-}
-
-// api.ts
-interface GatekeeperClient<Session> {
-  getPreviewUi(previewOf?: string): Promise<UiBundle>;
-}
 ```
 
 - `id` is the gatekeeper's own name for the item and opaque to the Workshop, which hands it back.
   It is not one of `ObservationDescription.subresources`: those are enforced and never shown,
   this is shown and enforces nothing. `title` and `url` are for the pane's heading and link, as
   `describe()`'s are for a whole resource.
-- The kernel adds no storage and no code beyond passing the argument on: an action's description
-  is already stored whole and sent to clients whole. `gatekeeper-kit` carries the field from a
+- The kernel adds no storage and no code: an action's description is already stored whole and
+  sent to clients whole. `gatekeeper-kit` carries the field from a
   definition's `describe()` to the queue.
-- `getPreviewUi(previewOf)` returns code only. What the item holds is read by that code through a
-  session, where the gatekeeper checks access as for any read.
+- `getGadgetUi()` is not told the item: a connection has one set of files, which draws whichever
+  item's session it is handed. What the item holds is read by that code through the session,
+  where the gatekeeper checks access as for any read.
 - Nor is it one of the action's `fields`, which are what an approver reads and which a gatekeeper
   words for a person. `previewOf` is read by the Workshop to decide what to draw, and has to mean
   the same thing in every action that touches the item.
-- A preview is therefore offered in two ways, and the Workshop looks for both: `hasPreview` on
+- A preview is therefore offered in two ways, and the Workshop looks for both: `hasGadgetUi` on
   `describe()` offers one of the whole resource, and an action that names an item offers one of
-  that item. A connection can do either, both or neither, and the second needs no `hasPreview`.
+  that item. A connection can do either, both or neither, and the second needs no `hasGadgetUi`.
 - The session an item's preview draws from is not in the kernel's types. The Workshop calls
   `openPreview(id)` on the connection's session and hands the frame what it returns. That is a
-  convention between a gatekeeper and the Workshop (in the write-gatekeeper skill), checked by
+  convention between a gatekeeper and the Workshop (on `PreviewItem.id` and in the
+  write-gatekeeper skill), checked by
   no interface: `Session` is opaque to the kernel, and a typed method there would put a preview's
   shape into it. A gatekeeper that names items and has no `openPreview()` gets a pane that fails
   to load, which a test of its preview catches.
 - On actions only. A read that names an item would open a preview for everything an agent skims,
-  and a preview's own reads are recorded against the workspace, not a chat.
-- Tested by the integration test above: an action carries `previewOf` to a client, and the client
-  gets that item's code by its ID.
+  and a preview's own reads are recorded against the connection, not a chat.
+- Tested by the integration test above: an action carries `previewOf` to a client.
 
 ### 2. The pending-changes read (each gatekeeper's session)
 
@@ -212,7 +217,7 @@ type PendingChange = { id: number; stale?: true; type: string; /* ...that method
 
 ### 3. A preview client (each gatekeeper)
 
-Gadget-format client code the gatekeeper returns from `getPreviewUi()`, as source files. How it
+Gadget-format client code the gatekeeper returns from `getGadgetUi()`, as source files. How it
 draws its resource is the gatekeeper's business; what every preview keeps to is:
 
 - It reads only through the session: once on load, and again on each `refresh` message from its
@@ -240,11 +245,11 @@ that to its session, where a gadget can use them too.
 
 ### 4. The Workshop pane (workshop-frontend, `features/connection-preview/`)
 
-None of this names a vendor or a resource type; it works from `hasPreview`, the action log and
+None of this names a vendor or a resource type; it works from `hasGadgetUi`, the action log and
 the connection's ID.
 
-- `ConnectionPreviewPane`: builds a `GadgetUiSource` from the connection
-  (`getUiBundle: () => client.getPreviewUi()`, `connectToGadget: () => client.openSession()`),
+- `ConnectionPreviewPane`: hands `GadgetUI` the connection's `GatekeeperClient` as its source, as
+  a gadget's client is handed to it (for one item, a source that opens the item's session),
   relays a debounced refresh when an `action` entry arrives for the connection, and draws the
   "changes waiting" card. Observation entries are ignored: the preview's own reads are logged on
   its connection and would refresh it forever. In a restricted workspace the card points to the
@@ -265,9 +270,12 @@ the connection's ID.
 
 ## Verification of the framework
 
-- Integration: a client reads `hasPreview` and `getPreviewUi()` from the test gatekeeper through
+- Integration: a client reads `hasGadgetUi` and `getUiBundle()` from the test gatekeeper through
   `GatekeeperClient`. The test preview is two files and one it never imports: the import arrives
-  rewritten and the unused file does not arrive.
+  rewritten and the unused file does not arrive. A read through `connectToGadget()` of what a
+  "use" collaborator's account cannot read leaves them able to open their gadget on the same
+  connection, where the same read through `openSession()` locks them out
+  (`observer-tracking.test.ts`).
 - Frontend: the pane in real Chromium against a fake session (the frame is opaque-origin, so the
   test asserts the session's call log), and unit tests for the auto-open and pending-preview
   rules. No test of the pane uses a real gatekeeper's client.
@@ -371,7 +379,7 @@ provisional ID `addTab()` returns. It only reads.
 ## Pull requests
 
 1. **The framework's kernel half.** `Let a gatekeeper supply code that draws its resource`:
-   `hasPreview`, `getPreviewUi()`, the overseer building the bundle, and the integration test. This plan
+   `hasGadgetUi`, `getGadgetUi()`, the gadget view calls on `GatekeeperClient`, and the integration tests. This plan
    rides with it.
 2. **The Workshop pane and the first preview, stacked on the first.** Google Docs' session
    reads, its client, and the pane with auto-open, one commit each.
@@ -398,7 +406,7 @@ provisional ID `addTab()` returns. It only reads.
   precedent for a non-persistent callback; lost when the gatekeeper is evicted) or a hook through
   `bindHook()` (persistent stub, user approval, one logged read per delivery). Open: whether a
   content-free "something changed" signal counts as an observation.
-- **Store `hasPreview` on the connection record**, to drop the `describe()` call.
+- **Store `hasGadgetUi` on the connection record**, to drop the `describe()` call.
 - **Type-checking preview clients** without a build, by JSDoc and `checkJs`. A build step is
   ruled out by forking (see the locked decisions).
 - **A kit helper for `getPendingChanges()`.** Worth extracting over `SimulationView` once a

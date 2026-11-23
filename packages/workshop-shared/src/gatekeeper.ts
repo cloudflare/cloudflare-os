@@ -338,8 +338,11 @@ export type ResourceDescription = {
   /** Indicates that getSlashCommandProvider() is available. */
   hasSlashCommands?: true;
 
-  /** Indicates that getPreviewUi() is available. */
-  hasPreview?: true;
+  /**
+   * Indicates that the connection can be drawn as a whole: getGadgetUi() is available, and its
+   * code draws this resource from a session of it.
+   */
+  hasGadgetUi?: true;
 
   /**
    * Some resources implement the ability for the client to subscribe to events. The application
@@ -1290,27 +1293,27 @@ export interface Gatekeeper<Session> extends DurableObject {
   getSlashCommandProvider?(): Promise<SlashCommandProvider>;
 
   /**
-   * Returns client-side code that draws this resource for a person, for describe().hasPreview:
-   * its files as a gadget's file tree holds its UI. `client.js` is the entry, and the import rules
-   * of a gadget's UI apply. Its default export's `main()` starts it, as `UiBundle.modules` says: a
-   * `client.js` with no default export, a gadget's legacy form, is refused, and one whose default
-   * export has no `main()` never starts.
+   * Returns client-side code that draws this connection for a person, as a gadget's UI draws a
+   * gadget: its files as a gadget's file tree holds its UI. `client.js` is the entry, and the
+   * import rules of a gadget's UI apply. Its default export's `main()` starts it, as
+   * `UiBundle.modules` says: a `client.js` with no default export, a gadget's legacy form, is
+   * refused, and one whose default export has no `main()` never starts.
    *
-   * It runs as a gadget's UI does, with a session from `startSession()` in place of the gadget's
-   * server, as `main()`'s first argument. It therefore holds no more than a gadget bound to this
-   * resource would, and its reads and actions go through the approval queue like any other.
+   * The connection is drawn as a gadget: a session from `startSession()` stands where a gadget's
+   * server would, as `main()`'s first argument. The code therefore holds no more than a gadget
+   * bound to this resource would, and its reads and actions go through the approval queue like any
+   * other. The Workshop records those reads against the connection's own workpiece, not against
+   * any gadget that binds it.
    *
-   * With `previewOf`, the ID of an `ActionDescription.previewOf`, returns the code that draws
-   * that item instead, and throws for an ID that names nothing it can draw. That code runs with
-   * what the session's `openPreview(previewOf)` returns in place of the session: a method such a
-   * session has by convention with the Workshop, which no type here names.
+   * describe().hasGadgetUi says the code draws the resource as a whole. A gatekeeper whose actions
+   * name the item they change (`ActionDescription.previewOf`) returns code that draws such an
+   * item, and leaves `hasGadgetUi` unset when that is all its code draws.
    *
-   * Returns code only. The Workshop calls this with no session, so nothing here is an observation,
-   * and `previewOf` is whatever a client sent. Neither the code nor the choice of it may therefore
-   * depend on anything read from the provider: what the resource holds is read by the code,
-   * through its session.
+   * Returns code only. The Workshop calls this with no session, so nothing here is an observation.
+   * The code may therefore not depend on anything read from the provider: what the resource holds
+   * is read by the code, through its session.
    */
-  getPreviewUi?(previewOf?: string): Promise<UiFile[]>;
+  getGadgetUi?(): Promise<UiFile[]>;
 
   /**
    * Stream a self-contained Git pack containing the requested objects and related objects
@@ -1855,8 +1858,12 @@ export type ActionKind = {
  */
 export type PreviewItem = {
   /**
-   * The gatekeeper's own name for the item, opaque to everyone else and handed back to
-   * `Gatekeeper.getPreviewUi()`.
+   * The gatekeeper's own name for the item, opaque to everyone else and handed back only to
+   * `openPreview(id)` on a session of the connection. That returns a session of the item alone,
+   * which the connection's code (`Gatekeeper.getGadgetUi()`) is run with in place of the
+   * connection's own. `openPreview()` is a convention between the Workshop and a session whose
+   * actions name items, which no type here names. The ID it is given is whatever a client sent:
+   * it throws for one that names nothing the code can draw.
    */
   id: string;
 

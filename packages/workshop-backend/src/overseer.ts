@@ -15410,18 +15410,33 @@ class GatekeeperClientImpl<Session extends RpcCompatible<Session>>
         this.joinedAs);
   }
 
-  async getPreviewUi(previewOf?: string): Promise<UiBundle> {
-    // getPreviewUi is optional on Gatekeeper; a caller is offered a preview first, by
-    // describe().hasPreview or by an action's previewOf.
+  // A connection has no per-chat version, so it is drawn mainline-only.
+  #deny(): never {
+    throw new Error("A connection has no per-chat version to draw.");
+  }
+
+  async getUiBundle(chatId?: number): Promise<UiBundle> {
+    if (chatId !== undefined) this.#deny();
+    // getGadgetUi is optional on Gatekeeper; a caller is offered a preview first, by
+    // describe().hasGadgetUi or by an action's previewOf.
     this.impl.assertGatekeeperUsable(this.id);
     let files = await (this.facet as Fetcher<Gatekeeper<Session> &
-        Required<Pick<Gatekeeper<Session>, "getPreviewUi">>>).getPreviewUi(previewOf);
+        Required<Pick<Gatekeeper<Session>, "getGadgetUi">>>).getGadgetUi();
     let bundle = buildUiBundle(new Map(files.map(({path, code}) => [path, code])));
     // A preview is new code, which nothing obliges to run as a legacy UI does.
     if (!bundle || !("modules" in bundle)) {
       throw new Error("This gatekeeper's preview has no client.js with a default export.");
     }
     return bundle;
+  }
+
+  // The session stands where a gadget's server would, so it reads as a gadget whose ID is the
+  // connection's own. Workpiece IDs come from one counter, so that names no real gadget, and its
+  // reads reach "build" collaborators only (see OverseerImpl.gadgetsReaching).
+  async connectToGadget(chatId?: number): Promise<RpcStub<Session>> {
+    if (chatId !== undefined) this.#deny();
+    return this.impl.openGatekeeperSession(this.id, this.facet,
+        {from: "gadget", gadgetId: this.id}, undefined, this.joinedAs);
   }
 
   async getCreationSpec(): Promise<GatekeeperCreationSpec> {

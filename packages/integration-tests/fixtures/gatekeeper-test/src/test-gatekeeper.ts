@@ -913,15 +913,11 @@ export class TestGatekeeper
       snippet: `The test resource ${name}.`,
       suggestedBindingName: "TEST_THING",
       tsType: "TestThing",
-      hasPreview: true,
+      hasGadgetUi: true,
     };
   }
 
-  async getPreviewUi(previewOf?: string): Promise<{ path: string; code: string }[]> {
-    if (previewOf !== undefined) {
-      return [{ path: "client.js", code: `export default { main() { ` +
-        `document.body.textContent = ${JSON.stringify(previewOf)}; } };\n` }];
-    }
+  async getGadgetUi(): Promise<{ path: string; code: string }[]> {
     return [
       { path: "client.js", code: `import { text } from "./ui/text.js";\n` +
         `export default { main() { document.body.textContent = text; } };\n` },

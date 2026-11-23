@@ -7645,7 +7645,7 @@ export type BlueprintBindingAssignment = {
 /**
  * Common base interface for per-workpiece capabilities. Each workpiece type has its own
  * subinterface (GadgetClient, GatekeeperClient<T>) for type-specific operations; this base holds
- * the shared identity/lifecycle surface.
+ * the shared identity/lifecycle surface and the two calls that draw a workpiece in a UI frame.
  */
 export interface WorkpieceClient extends RpcTarget {
   /** Get the workpiece's ID, unique among all workpieces in the workspace (of any type). */
@@ -7675,6 +7675,45 @@ export interface WorkpieceClient extends RpcTarget {
    * one gadget (GadgetClient.unbind()).
    */
   remove(): Promise<void>;
+
+  /**
+   * Get the workpiece's UI code, to be run inside an iframe sandbox.
+   *
+   * For a gadget, this is its deployed UI code. Returns null if the gadget has no deployed UI
+   * code (e.g. if it's new, or if it's just an AI agent with no code). Throws, naming the file
+   * and line, when the UI's imports break the rules for UI code.
+   *
+   * For a gatekeeper, this is the code its gatekeeper supplies to draw the connection
+   * (`Gatekeeper.getGadgetUi()`), bundled under the same rules; `chatId` must be omitted. Throws
+   * where a gadget would return null: a caller is offered the code first, by `describe()`
+   * reporting `hasGadgetUi` or by an action's `description.previewOf`.
+   */
+  getUiBundle(chatId?: number): Promise<UiBundle | null>;
+
+  /**
+   * Open an RPC connection to the workpiece, for its UI code (getUiBundle()) to call.
+   *
+   * For a gadget, this connects to the gadget's server side, which holds its data, to call it.
+   * The server side is the gadget's Durable Object facet, and the calls are to its own methods.
+   * The frontend may pass this stub into the gadget's iframe sandbox, so that the gadget UI can
+   * communicate with its server side. It can also permit the coding agent to make direct calls.
+   *
+   * The methods are the gadget's own code, so this API does not list them: the gadget's README.md
+   * and server.js say what they are, readable through Overseer.listTree() and
+   * Overseer.readFilesAtCommit() at its head commit (GadgetSummary.commitId).
+   *
+   * If `chatId` is specified, then the gadget will include changes currently proposed in the given
+   * chat.
+   *
+   * For a gatekeeper, this is a session to the connection, which stands where a gadget's server
+   * would; `chatId` must be omitted. Its UI code is handed that session, or, for an item an action
+   * names, what the session's `openPreview(id)` returns (see `PreviewItem.id`). What the session
+   * reads is recorded against the connection's own workpiece ID, as a gadget's reads are against
+   * the gadget's. No gadget has that ID, so those reads are checked against "build" collaborators
+   * only.
+   */
+  // @ts-ignore - TODO: Fix type instantiation issue
+  connectToGadget(chatId?: number): Promise<RpcStub<any>>;
 }
 
 /** Describes a file export format supported by a Gadget. */
@@ -7704,31 +7743,6 @@ export type GadgetExportFormat = {
  * sharing, actions, blueprint listing) stay on Overseer; this covers the per-gadget surface.
  */
 export interface GadgetClient extends WorkpieceClient {
-  /**
-   * Get the gadget's deployed UI code, to be run inside an iframe sandbox.
-   *
-   * Returns null if the gadget has no deployed UI code (e.g. if it's new, or if it's just an AI
-   * agent with no code). Throws, naming the file and line, when the UI's imports break the rules
-   * for UI code.
-   */
-  getUiBundle(chatId?: number): Promise<UiBundle | null>;
-
-  /**
-   * Open an RPC connection to the gadget's server side, which holds its data, to call it.
-   * The server side is the gadget's Durable Object facet, and the calls are to its own methods.
-   * The frontend may pass this stub into the gadget's iframe sandbox, so that the gadget UI can
-   * communicate with its server side. It can also permit the coding agent to make direct calls.
-   *
-   * The methods are the gadget's own code, so this API does not list them: the gadget's README.md
-   * and server.js say what they are, readable through Overseer.listTree() and
-   * Overseer.readFilesAtCommit() at its head commit (GadgetSummary.commitId).
-   *
-   * If `chatId` is specified, then the gadget will include changes currently proposed in the given
-   * chat.
-   */
-  // @ts-ignore - TODO: Fix type instantiation issue
-  connectToGadget(chatId?: number): Promise<RpcStub<any>>;
-
   /**
    * Lists the Gadget's supported file export formats. If `chatId` is specified,
    * the formats are read from the code currently proposed in that chat.
@@ -7879,18 +7893,6 @@ export interface GatekeeperClient<Session extends RpcCompatible<Session>> extend
    * to the resource directly.
    */
   openSession(): Promise<RpcStub<Session>>;
-
-  /**
-   * Get the code that draws this resource: the files its gatekeeper supplies, bundled as a
-   * gadget's UI files are, to run as one with a session from `openSession()` as its `gadget`.
-   * Only available if `describe()` reports `hasPreview`.
-   *
-   * With the ID of an action's `description.previewOf`, get the code that draws the item that
-   * action changes instead, whatever `hasPreview` says. Its `gadget` is what
-   * `openPreview(previewOf)` returns on a session from `openSession()`, not that session: see
-   * `Gatekeeper.getPreviewUi()`.
-   */
-  getPreviewUi(previewOf?: string): Promise<UiBundle>;
 
   /** Get the creation spec describing how this gatekeeper was originally created. */
   getCreationSpec(): Promise<GatekeeperCreationSpec>;
