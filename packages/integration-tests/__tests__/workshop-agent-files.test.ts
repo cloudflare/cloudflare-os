@@ -1,29 +1,11 @@
-import { z } from "zod";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { openAgentSession } from "../src/agent-session.js";
 import { startTestGatekeeperHarness, type Harness } from "../src/harness.js";
 import {
   scriptedChatCompletions, SCRIPTED_MODEL_CONFIG, SCRIPTED_MODEL_ID,
-  SCRIPTED_MODEL_PROFILE,
+  SCRIPTED_MODEL_PROFILE, toolResultText,
 } from "../src/mock-model.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
-
-// What the model sees of each tool result: the `tool` message that answers the call in the
-// request that follows it.
-const TOOL_MESSAGES = z.object({
-  messages: z.array(z.object({
-    role: z.string(),
-    content: z.string().nullish(),
-    tool_call_id: z.string().optional(),
-  })),
-});
-
-function toolResultText(request: unknown, toolCallId: string): string {
-  const message = TOOL_MESSAGES.parse(request).messages
-      .find(entry => entry.role === "tool" && entry.tool_call_id === toolCallId);
-  if (message?.content == null) throw new Error(`No tool result for ${toolCallId}`);
-  return message.content;
-}
 
 const NOTES = Array.from({ length: 12 }, (_, i) =>
   i === 3 || i === 8 ? `line ${i + 1} has the needle` : `line ${i + 1}`).join("\n") + "\n";
