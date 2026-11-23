@@ -13,6 +13,7 @@ import { SystemRow, type SystemRowProps } from '@/blocks/SystemRow'
 import { UserMessage } from '@/blocks/UserMessage'
 import type { ActionResult } from '@/blocks/usePending'
 import { useDevMode } from '@/hooks/useDevMode'
+import { useLiveWorkOpen } from '@/hooks/useLiveWorkOpen'
 import type { ActionItem, AssistantItem, ChatAttachment, ChatItem, ConnectionItem, NoticeItem, OutputItem, UserItem } from './chatItems'
 import { useOpenKeys, type DisclosureStore } from './DisclosureStore'
 
@@ -77,6 +78,9 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
   const toggle = () => disclosure.toggle(item.key)
   const joins = { above: joinsAbove, below: joinsBelow }
   const devMode = useDevMode()
+  // With thinking always shown, how a reply came about is open unless it was put away, as the one that
+  // is alone starts out open in `WorkLog`.
+  const [alwaysShowThinking] = useLiveWorkOpen()
   // In developer mode, what else a message's more menu copies.
   const developerCopies = devMode ? { id: String(item.id), json: () => handlers.rawMessage(item.id) } : undefined
 
@@ -124,7 +128,7 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
             }),
           }}
           thinking={item.trace.length > 0
-            ? { open: open.has(thinkingKey), onToggle: () => disclosure.toggle(thinkingKey), content: thinkingOf({ steps: item.trace, openSteps: open, onToggleStep: disclosure.toggle }) }
+            ? { open: open.has(thinkingKey) !== alwaysShowThinking, onToggle: () => disclosure.toggle(thinkingKey), content: thinkingOf({ steps: item.trace, openSteps: open, onToggleStep: disclosure.toggle }) }
             : undefined}
         />
       )

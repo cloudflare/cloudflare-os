@@ -8,12 +8,15 @@ import { usePreferenceSettings } from './usePreferenceSettings'
  * to forget all of it, as it is all kept in this browser.
  */
 export const PreferenceSettings = () => {
-  const { theme, motion, autoOpenOutputs, developerMode } = usePreferenceSettings()
+  const { theme, motion, autoOpenOutputs, alwaysShowThinking, developerMode } = usePreferenceSettings()
   return (
     <>
       <SettingsGroup title="Appearance">
         <SettingDefinitionRow setting={theme} />
         <SettingDefinitionRow setting={motion} />
+      </SettingsGroup>
+      <SettingsGroup title="Chat">
+        <SettingDefinitionRow setting={alwaysShowThinking} />
       </SettingsGroup>
       <SettingsGroup title="Side pane">
         <SettingDefinitionRow setting={autoOpenOutputs} />

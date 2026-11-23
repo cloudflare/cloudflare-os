@@ -9,6 +9,7 @@ import { SettingPresets } from '@/blocks/SettingPresets'
 import { SettingsMenu } from '@/blocks/SettingsMenu'
 import { SettingsSidebar } from '@/blocks/SettingsSidebar'
 import { ModelDialog, type ModelDialogProps } from '@/settings/ModelDialog'
+import { PreferenceSettings } from '@/settings/PreferenceSettings'
 import type { ModelSource } from '@/settings/modelForm'
 import { settingsNavGroups } from '@/settings/settingsSections'
 import { useReport } from './previewState'
@@ -75,6 +76,9 @@ export const SettingsPreview = () => {
 
   return (
     <>
+      <Section title="PreferenceSettings: the Preferences part as it is, kept in this browser (so what is changed here is changed for the app, such as Always show thinking, which the assistant’s status turns on and off too)">
+        <div className="flex w-full max-w-2xl flex-col gap-6"><PreferenceSettings /></div>
+      </Section>
       <Section title="TextField: a line, with a label over it, one that cannot be kept, disabled, and several lines">
         <div className="grid w-full max-w-3xl grid-cols-2 items-end gap-4">
           <TextField aria-label="A line of text" placeholder="A line of text" value={text} onValueChange={setText} />

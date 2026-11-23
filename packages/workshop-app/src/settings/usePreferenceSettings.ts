@@ -1,6 +1,7 @@
 import { useReducer } from 'react'
-import { CodeIcon, DesktopIcon, MoonIcon, PaletteIcon, SidebarSimpleIcon, SparkleIcon, SunIcon } from '@phosphor-icons/react'
+import { BrainIcon, CodeIcon, DesktopIcon, MoonIcon, PaletteIcon, SidebarSimpleIcon, SparkleIcon, SunIcon } from '@phosphor-icons/react'
 import { useDevMode } from '@/hooks/useDevMode'
+import { useLiveWorkOpen } from '@/hooks/useLiveWorkOpen'
 import { type MotionLevel, useMotionLevel } from '@gadgets/ui'
 import { readTheme, writeTheme, type Theme } from '@/prefs/appearance'
 import { writeDevMode } from '@/prefs/devMode'
@@ -15,6 +16,7 @@ export const usePreferenceSettings = () => {
   const [, changed] = useReducer((count: number) => count + 1, 0)
   const motion = useMotionLevel()
   const devMode = useDevMode()
+  const [liveWorkOpen, writeLiveWorkOpen] = useLiveWorkOpen()
   const theme = readTheme()
   const opensNewOutputs = readLayoutPrefs().opensNewOutputs !== false
 
@@ -59,6 +61,18 @@ export const usePreferenceSettings = () => {
       changed()
     },
   }
+  // The same thing a click on the assistant while it works turns on and off, so it is kept in the one place
+  // (`prefs/liveWork`), which is heard of by whoever reads it.
+  const alwaysShowThinking: ToggleSetting = {
+    kind: 'toggle',
+    section: 'preferences',
+    title: 'Always show thinking',
+    description: 'Show what the assistant is doing while it works, and how each reply came about, without having to open it. Clicking the assistant while it works turns this on or off too. Saved in this browser.',
+    keywords: ['thinking', 'reasoning', 'steps', 'work', 'tools', 'history', 'trace', 'expand'],
+    icon: BrainIcon,
+    checked: liveWorkOpen,
+    set: writeLiveWorkOpen,
+  }
   const developerMode: ToggleSetting = {
     kind: 'toggle',
     section: 'preferences',
@@ -69,5 +83,5 @@ export const usePreferenceSettings = () => {
     checked: devMode,
     set: writeDevMode,
   }
-  return { theme: themeSetting, motion: motionSetting, autoOpenOutputs, developerMode }
+  return { theme: themeSetting, motion: motionSetting, autoOpenOutputs, alwaysShowThinking, developerMode }
 }

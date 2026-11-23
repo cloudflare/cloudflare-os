@@ -888,6 +888,16 @@ length is saved or discarded by hand (`SettingText`), as Enter is a new line the
 Inspecting a workspace or a user's account (`inspectWorkspace`, `inspectUser`) has no page, as
 main has none. The gallery draws every part over a fake capability (`gallery/adminPreview.ts`).
 
+### Always show thinking
+
+Preferences' Always show thinking, under Chat (`prefs/liveWork.ts`, kept on this device and read by
+`useLiveWorkOpen`; defined once in `usePreferenceSettings`, so ⌘K flips it too), is the same thing a click on
+the assistant's mascot while it works turns on and off, so there is one place it is kept and neither can
+disagree with the other. On, the steps are shown while the assistant works, and how a reply came about is
+open above each reply, without the brain button: a reply's trace is open when it is on and has not been
+put away, or off and has been opened (`ChatItemView`, as a step that is alone starts open in `WorkLog`).
+Developer mode turns it on once, when it is switched on (`writeDevMode`).
+
 ### Developer mode
 
 Preferences' Developer mode, under Advanced (`prefs/devMode.ts`, kept on this device and read by `useDevMode`; defined
