@@ -219,6 +219,7 @@ Each gatekeeper package contains instructions for how to set it up:
 * [PagerDuty API](packages/gatekeeper-pagerduty/README.md)
 * [X API](packages/gatekeeper-x/README.md)
 * [ZoomInfo API](packages/gatekeeper-zoominfo/README.md)
+* [Deployment admin](packages/gatekeeper-admin/README.md) (no setup)
 
 ## Developing
 

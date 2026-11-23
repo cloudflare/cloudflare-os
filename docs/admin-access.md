@@ -51,6 +51,8 @@ checks on every call (see [Writes](#writes)).
 Each record's `via` (`AdminVia`) comes from the session's User-Agent: `"cli"` when the `/api`
 upgrade names `cf-os api` (`cf-os-api/<version>`), `"api"` for any other client, the Workshop's
 admin panel included. A client can send any User-Agent, so it labels records and grants nothing.
+The third value, `"gatekeeper"`, is no client's claim: the Workshop sets it on the capability it
+opens for the admin gatekeeper (see [Through an agent](#through-an-agent)).
 Each capability mints a random `sessionId`, so every record made through one `getAdminApi()` call,
 settings and inspections alike, shares its `via` and `sessionId` and can be read as one session.
 
@@ -467,6 +469,48 @@ appended keeps its record and runs nothing (see [Run](#run)). A write cut short 
 midway) leaves its record and may have changed the workspace in part: a restart aborts the
 workspace about 100 ms after it answers, and an operation can throw partway.
 
+## Through an agent
+
+A deployment admin can give the agents of a workspace this API, through the admin gatekeeper
+(`packages/gatekeeper-admin`, vendor `admin`, connection "Deployment admin"). It is an ordinary
+gatekeeper: an admin connects it under Connectors and adds its connection to the workspaces that
+need it, and an admin can turn it off for the deployment like any connector. Its
+[README](../packages/gatekeeper-admin/README.md) describes the Worker; this section is the
+Workshop's side.
+
+**The grant.** `UserDurableObject.connectAccount()` hands the gatekeeper one thing no other vendor
+gets: `GatekeeperConnectOptions.adminApi`, an `AdminApiGrant` (`AdminApiGrantImpl` in `user.ts`),
+only when the vendor is the one bound as `GATEKEEPER_ADMIN` and the connecting user is a
+deployment admin. The gatekeeper stores it in the account. It is a persistent stub whose props
+name that user and nothing else:
+
+- `isAdmin()` says whether the user is a deployment admin now.
+- `open()` returns an `AdminApiImpl` for that user, labelled `via: "gatekeeper"`, or refuses
+  `notAdmin`. The capability checks what a session's own does (see [Entry points](#entry-points)).
+
+So the account holds a standing capability, valid for as long as its user is a deployment admin
+and until the account is removed. Every call through it is made as the admin who connected the
+account, whichever workspace or collaborator's agent makes it. The Workshop does not restrict
+which methods the gatekeeper may call: the gatekeeper serves its agents the reads alone
+(`ADMIN_AGENT_KINDS`), and its Worker is trusted as the backend's own configuration is. The
+release build reserves the `admin` install slug for it.
+
+**Who is offered it.** `GatekeeperVendor.getSupportedResources()` is told whether the user it is
+asked for is a deployment admin (`isAdmin`), and the gatekeeper returns no resource for anyone
+else, which hides it from them as any vendor with no resource is hidden.
+
+**Who sees what it read.** Nothing here is specific to this gatekeeper. Its reads set the
+restricted-data latch and report one subresource, so the workspace's actions wait for a person,
+its web fetches are restricted, and a collaborator opens it only with an account of their own that
+passes the gatekeeper's observer check: one whose user is a deployment admin now (see
+[observers](observers.md)).
+
+**What the audit log holds.** View opens and view calls, of a workspace and of a user's account,
+carry `via: "gatekeeper"` and the connecting admin. They do not say which workspace or chat the
+call came from. Listings of users and workspaces, settings and the audit log itself leave no audit
+record, as for any admin: their only trace is the observation in the activity of the workspace
+that called.
+
 ## Access levels and their bounds
 
 ### The levels
@@ -811,6 +855,9 @@ Unit suites, in `packages/workshop-backend/__tests__/`:
   id, an open at `"off"` recorded with the id as the admin gave it, the terms the account is
   handed, and the session id it shares with `inspectWorkspace()`.
 - `cli-admins-only.test.ts`: the `via` a session's User-Agent gives its records.
+- `admin-api-grant.test.ts`: the grant a deployment admin's connect flow hands the admin
+  gatekeeper and no other vendor, what it answers for a user who is no admin, and the `isAdmin`
+  hint on every `getSupportedResources()` call.
 - `admin-view.test.ts`: `adminViewCall()`, the call discipline both views share: the order of its
   checks, its read of the setting, the read and the record before the answer; each call recorded
   with no retention; a call refused and recorded while the setting or the cap is off or not a
