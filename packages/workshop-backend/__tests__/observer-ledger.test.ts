@@ -14,7 +14,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { env } from "cloudflare:workers";
 import { abortAllDurableObjects, runInDurableObject } from "cloudflare:test";
-import type { CollaboratorAccess, CollaboratorGrant } from "@gadgets/workshop-shared/api";
+import {
+  ACCESS_CONFIRMATION_ERROR_CODES, createAccessConfirmationError, getAccessConfirmationErrorCode,
+  type CollaboratorAccess, type CollaboratorGrant,
+} from "@gadgets/workshop-shared/api";
 import type {
   ObservationAuthorizer, ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
@@ -1513,6 +1516,43 @@ describe("additive admission", () => {
     await expect(impl.authorizeObservation(unrecorded,
         observation({ excludeObservers: [record.observerId] }), { from: "user" }))
         .rejects.toThrow(/not permitted to see/);
+  }));
+});
+
+describe("unconfirmed access", () => {
+  const { cancelled, notAsked, disconnected } = ACCESS_CONFIRMATION_ERROR_CODES;
+
+  it.each([
+    { answer: "cancels", rejection: () => createAccessConfirmationError(cancelled), code: cancelled },
+    { answer: "chooses not to ask", rejection: () => createAccessConfirmationError(notAsked),
+      code: notAsked },
+    // What a client whose connection was lost while it asked fails with.
+    { answer: "fails without a code", rejection: () => new Error("RPC session was shut down"),
+      code: disconnected },
+  ])("refuses a gadget admission whose client $answer with a code naming the workspace and gadget",
+      ({ rejection, code }) => withWorld(async world => {
+    let { impl } = world;
+    seedConnection(impl);
+    seedGadget(impl, GADGET, { C: CONN });
+    world.roles.set("carol", "use");
+
+    let refusal = await impl.ensureObserver("carol", world.clientUser("carol"), { gadgetId: GADGET },
+        { configure: async () => { throw rejection(); } }).catch((err: unknown) => err);
+    expect(getAccessConfirmationErrorCode(refusal)).toBe(code);
+    expect(refusal).toMatchObject({ workspaceId: impl.ctx.id.toString(), gadgetId: GADGET });
+  }));
+
+  it("refuses a workspace admission with no way to ask as not asked, naming no gadget", () =>
+      withWorld(async world => {
+    let { impl } = world;
+    seedConnection(impl);
+    world.roles.set("carol", "build");
+
+    let refusal = await impl.ensureObserver("carol", world.clientUser("carol"), "workspace")
+        .catch((err: unknown) => err);
+    expect(getAccessConfirmationErrorCode(refusal)).toBe(notAsked);
+    expect(refusal).toMatchObject({ workspaceId: impl.ctx.id.toString() });
+    expect(refusal).not.toHaveProperty("gadgetId");
   }));
 });
 

@@ -37,7 +37,7 @@ async function withWorkspace(fn: (workspace: Workspace) => Promise<void>): Promi
     let impl = (instance as unknown as { impl: any }).impl;
     impl.ownerId = OWNER_USER_ID;
     impl.ensureAmbientCapsules = async () => {};
-    impl.markOutputsDirty = () => {};
+    impl.markListingDirty = () => {};
     impl.startAgent = () => {};
     let owner = {
       id: OWNER_USER_ID,

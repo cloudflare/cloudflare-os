@@ -150,9 +150,9 @@ Blueprint data is stored in three places, with one-way propagation: Gadget DO ->
 
 1. **Gadget DO** (`blueprints` collection) -- the authoritative source. Stores `BlueprintGadgetRecord` including full metadata, the gadget commit that was last exported, the list of `releases` (each one's version, release commit and the gadget commit it was taken from), and a `dirty` flag for tracking propagation failures. The release commits and their trees live in the workspace's git object store.
 
-2. **User DO** (`blueprints` collection) -- a denormalized copy for efficient listing. Stores `BlueprintUserRecord` with metadata and a reference to the source gadget. This allows a user to audit and manage their blueprints even if the source gadget has been deleted.
+2. **User DO** (`blueprints` collection) -- a denormalized copy for efficient listing. Stores `BlueprintUserRecord` with metadata and a reference to the source gadget. This allows a user to audit and manage their blueprints even if the source gadget has been deleted. The workspace also pushes each record's `unpublishedChanges` there, with the rest of its listing (`syncWorkspaceListing`), as its gadget's head or bindings change and as it is released, and on the owner's every open. The User DO serves the whole records to their owner (`listOwnBlueprints()` and the live `subscribeToOwnBlueprints()` feed), not to gadgets following the blueprint.
 
-3. **Workers KV** (`BLUEPRINTS` namespace) -- the public-facing lookup store. Stores `BlueprintKvRecord` keyed by blueprint hex ID. This is what `PublicApi.getBlueprint()` reads from.
+3. **Workers KV** (`BLUEPRINTS` namespace) -- the public-facing lookup store. Stores `BlueprintKvRecord` keyed by blueprint hex ID. Both `PublicApi.getBlueprint()` and `applyBlueprint()` read the published record here, not from the publisher's User DO, whose copy is written first.
 
 Blueprint **code content** is stored separately in an **R2 bucket** (`BLUEPRINT_CONTENT`), in one of two forms (`blueprintContentKey`):
 
@@ -249,9 +249,9 @@ Blueprints are managed through the Blueprints menu in the gadget editor header, 
 
 - **Creating** a new blueprint from the gadget's current committed code, with a title, optional description, and optional screenshot.
 - **Describing** the required connections with optional per-binding helper text and suggested values.
-- **Listing** existing blueprints with their title, description, version, and code version date. A blueprint is marked **Unpublished changes** when the gadget's committed files differ from the ones it last published (`BlueprintGadgetSummary.unpublishedChanges`).
+- **Listing** existing blueprints with their title, description, version, and code version date. `BlueprintGadgetSummary.unpublishedChanges` says what the gadget has that the blueprint has not released: `code` when its committed files differ from the ones it last published, and `bindings` when `collectBindingMetadata` would now describe its bindings differently from the published `metadata.bindings` (compared as canonical JSON, so key order does not count): a binding renamed, rebound, added or removed, or given a new title, note or suggestion. Bindings that cannot be collected (one with no creation spec) count as no binding changes and are logged at warn level, so they never hold up the code flag. The Blueprint modal marks the first **Unpublished changes** and the second alone **Unpublished binding changes**.
 - **Editing** a blueprint's title, description, screenshot, and connection guidance through the same form used to create a blueprint.
-- **Updating** a blueprint to the gadget's current code. This publishes a new release and increments the version, unless there is nothing new to release.
+- **Updating** a blueprint to the gadget's current code. This publishes a new release and increments the version, unless there is nothing new to release. It also republishes the bindings, which `updateBlueprint` with `updateBindings` (what saving an edit sends) does alone, without a new release.
 - **Copying** the blueprint's share link to the clipboard.
 - **Deleting** a blueprint (with confirmation).
 - **Retrying** a failed publish when the dirty flag is set.

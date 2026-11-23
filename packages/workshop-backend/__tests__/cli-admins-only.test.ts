@@ -4,8 +4,8 @@
 
 import { createExecutionContext } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { newWebSocketRpcSession, type RpcStub } from "capnweb";
-import type { PublicApi } from "@gadgets/workshop-shared/api";
+import { newWebSocketRpcSession, RpcTarget, type RpcStub } from "capnweb";
+import type { PublicApi, UserPreferences, UserPreferencesSubscriber } from "@gadgets/workshop-shared/api";
 import { describe, expect, it, vi } from "vitest";
 import type { AdminSettingActor } from "../src/admin-access.js";
 import type { UserDurableObject } from "../src/user.js";
@@ -191,4 +191,28 @@ describe("the label on an admin's changes", () => {
       }]);
     });
   }
+});
+
+it("releases an account feed callback when its WebSocket client disposes the lease", async () => {
+  class Preferences extends RpcTarget implements UserPreferencesSubscriber {
+    received: UserPreferences[] = [];
+    released = false;
+    async updated(preferences: UserPreferences) { this.received.push(preferences); }
+    [Symbol.dispose]() { this.released = true; }
+  }
+
+  const token = await account(unique("user"));
+  using api = await connect(deployment([]), BROWSER);
+  using session = api.authenticate(token);
+  const closed = new Preferences(), live = new Preferences();
+  const lease = await session.subscribeToPreferences(closed);
+  using _live = await session.subscribeToPreferences(live);
+  await session.updatePreferences({theme: "first"});
+  await vi.waitFor(() => expect(closed.received).toEqual([{}, {theme: "first"}]));
+
+  lease[Symbol.dispose]();
+  await vi.waitFor(() => expect(closed.released).toBe(true));
+  await session.updatePreferences({theme: "second"});
+  await vi.waitFor(() => expect(live.received).toEqual([{}, {theme: "first"}, {theme: "second"}]));
+  expect(closed.received).toEqual([{}, {theme: "first"}]);
 });

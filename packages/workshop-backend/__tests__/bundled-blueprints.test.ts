@@ -98,7 +98,7 @@ async function instantiate(blueprintId: string, metadata: BlueprintMetadata)
     };
     impl.ownerId = "owner-user-do";
     impl.users = { idFromString: (id: string) => id, get: () => owner };
-    impl.markOutputsDirty = () => {};  // would sync the new gadget's format to the owner
+    impl.markListingDirty = () => {};  // would sync the new gadget's format to the owner
 
     await instance.initializeFromBlueprint(blueprintId, metadata, metadata.output);
     let [gadget, ...others] = [...impl.storage.gadgets.list()];

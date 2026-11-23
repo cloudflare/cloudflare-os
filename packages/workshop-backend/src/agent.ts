@@ -346,6 +346,13 @@ function formatUserFocus(focus: StampedMessageFocus, envName: string | undefined
 }
 
 /**
+ * A model step's usage as the agent loop hands it to AgentHooks.commitAgentStep: pi's report for
+ * the step, and the prompt budget the turn sized its context against (getModelTokenLimits'
+ * `inputBudget`), which the chat's AiChatMetadata.contextUsage records beside it.
+ */
+export type StepUsage = {reported: Usage; inputBudget: number};
+
+/**
  * Snapshots a completed step's AssistantMessage for persistence. See StoredAssistantMessage for
  * why this copies everything and subtracts rather than picking fields. (Exported for tests.)
  */
@@ -419,10 +426,11 @@ export interface AgentHooks {
    * caller in overseer.ts). The rows' `changeApplied` broadcasts supersede the tool calls'
    * streamed edit previews.
    *
-   * The accounting parameters match the overseer's addChatMessages. `usage` is pi's report for
-   * the step: it sets the chat's token counts, and its catalog-priced `cost.total` is the cost
-   * fallback. When both `aiGatewayLogId` and `aiGatewayLogRoute` are present, the authoritative
-   * cost is fetched asynchronously from the AI Gateway log; otherwise the estimate is applied.
+   * The accounting parameters match the overseer's addChatMessages. `usage` is the step's: pi's
+   * report sets the chat's token counts, beside the budget, and its catalog-priced `cost.total`
+   * is the cost fallback. When both `aiGatewayLogId` and `aiGatewayLogRoute` are present, the
+   * authoritative cost is fetched asynchronously from the AI Gateway log; otherwise the estimate
+   * is applied.
    */
   commitAgentStep(chatId: number, author: AiChatAuthorInfo,
       msgs: AiChatMessageBodyWithModelData[],
@@ -435,7 +443,7 @@ export interface AgentHooks {
         blueprintMerges: BlueprintMerge[],
         reRoots?: {worktreeId: WorkpieceId, baseCommit: string}[],
       },
-      usage?: Usage, aiGatewayLogId?: string,
+      usage?: StepUsage, aiGatewayLogId?: string,
       aiGatewayLogRoute?: AiGatewayLogRoute): Promise<boolean>;
 
   /**
@@ -4666,7 +4674,8 @@ async function runAgentPass(
           if (await hooks.commitAgentStep(chatId, author, msgs,
               {changes: stepChanges, createdGadgets, createdWorktrees, addedBindings,
                worktreeCommits, blueprintMerges, reRoots},
-              message.usage, handle.lastResponse?.aiGatewayLogId, handle.aiGatewayLogRoute)) {
+              {reported: message.usage, inputBudget},
+              handle.lastResponse?.aiGatewayLogId, handle.aiGatewayLogRoute)) {
             ++nextChangeId;
           }
         });

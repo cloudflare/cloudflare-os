@@ -13,6 +13,7 @@
 import { AdminSettingChange, AiModelProvider, AmbientGatekeeperMode, BlueprintBinding, BlueprintMetadata, BlueprintOutput, DEFAULT_BANNER_COLOR, GatewayModel, GatewayModelCapabilities, GatewayModelMode, GatewayModelSettings, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, OutputFormatOffer, REASONING_LEVELS, SUGGESTED_MODELS, isAdminWorkspaceAccess, isAmbientGatekeeperMode, isBannerColor, isGatewayModelMode, isOutputIcon, isReasoningLevel } from "@gadgets/workshop-shared/api";
 import { SupportedResource, getResourceTypeId } from "@gadgets/workshop-shared/gatekeeper";
 import { adminSettingChange } from "./admin-access.js";
+import { canonicalJson } from "./canonical-json.js";
 import { sanitizeBlueprintOutput } from "./blueprint-archive.js";
 import { DEFAULT_ADMIN_CONFIG, type AdminConfig, type FormatCuration } from "./storage-schema/admin-settings-storage.js";
 import { ADMIN_CONFIG_KEY, BlueprintKvEnv, readBlueprintKvRecord } from "./storage-schema/blueprints-kv.js";
@@ -645,13 +646,6 @@ export function effectiveAdminConfig(
 export function changesModelSettings(current: AdminConfig, next: AdminConfig): boolean {
   return ADMIN_CONFIG_SEED_FIELDS.some(
       field => canonicalJson(current[field]) !== canonicalJson(next[field]));
-}
-
-function canonicalJson(value: unknown): string {
-  return JSON.stringify(value, (_key, v: unknown) =>
-      v && typeof v === "object" && !Array.isArray(v)
-          ? Object.fromEntries(Object.entries(v).toSorted(([a], [b]) => a < b ? -1 : a > b ? 1 : 0))
-          : v);
 }
 
 export function parseAdminConfig(raw: string | null, seed: AdminConfigSeed = {}): AdminConfig {

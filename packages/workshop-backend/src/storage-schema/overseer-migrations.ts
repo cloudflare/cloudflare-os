@@ -29,7 +29,7 @@ import type { UserDurableObject } from "../user";
  * new workspace is born at (so it has nothing to migrate). The migrations themselves name
  * their versions literally, since each one's source and target are fixed for good.
  */
-export const OVERSEER_STORAGE_VERSION = 7;
+export const OVERSEER_STORAGE_VERSION = 8;
 
 /**
  * The most chat messages that migrateToBlueprintUpstreams() reads, over all of a workspace's
@@ -426,5 +426,26 @@ export function migrateToFrozenGadgetGrants(host: OverseerMigrationHost): void {
   });
   host.logger.info("froze grants of every gadget", {
     event: "storage.migration.gadget-grants.completed",
+  });
+}
+
+/**
+ * Version 7 -> 8: backfill the indexes that answer for one chat what it has and what it waits
+ * on (chats' artifactsByChat and pendingRequestsByChat, actions' connectionsByChat), and the
+ * chatMeta byListing index, which Overseer.listChats() pages. Like migrateToActionIndexes, the
+ * rebuilds and the stamp are one transaction, so a crash mid-rebuild retries whole, and nothing
+ * can update a record before its indexes exist.
+ */
+export function migrateToChatIndexes(host: OverseerMigrationHost): void {
+  if (host.storage.version.get() !== 7) return;
+  host.ctx.storage.transactionSync(() => {
+    host.storage.chats.artifactsByChat.rebuild();
+    host.storage.chats.pendingRequestsByChat.rebuild();
+    host.storage.actions.connectionsByChat.rebuild();
+    host.storage.chatMeta.byListing.rebuild();
+    host.storage.version.put(8);
+  });
+  host.logger.info("backfilled the chat indexes", {
+    event: "storage.migration.chat-indexes.completed",
   });
 }

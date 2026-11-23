@@ -25,6 +25,7 @@ import {
 import type { AdminConfig } from "./storage-schema/admin-settings-storage.js";
 import { isDeploymentAdmin } from "./auth/config.js";
 import { createWorkshopLogger } from "./observability";
+import { canonicalJson } from "./canonical-json.js";
 
 const logger = createWorkshopLogger("workshop.admin.access");
 
@@ -275,24 +276,6 @@ export function redactAdminAuditArgs(args: Record<string, string | number | unde
         ? cutAdminAuditText(value, MAX_ADMIN_AUDIT_ARG_LENGTH) : value;
   }
   return kept;
-}
-
-// Canonical JSON: object keys sorted at every level, written out as text. Building a sorted copy
-// by assignment instead would turn a "__proto__" key into a prototype change and drop it.
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) {
-    return `[${value.map(item => item === undefined ? "null" : canonicalJson(item)).join(",")}]`;
-  }
-  if (value !== null && typeof value === "object") {
-    let entries: string[] = [];
-    for (let key of Object.keys(value).toSorted()) {
-      let item = (value as Record<string, unknown>)[key];
-      if (item === undefined) continue;
-      entries.push(`${JSON.stringify(key)}:${canonicalJson(item)}`);
-    }
-    return `{${entries.join(",")}}`;
-  }
-  return JSON.stringify(value);
 }
 
 /** A value as an AdminSettingChange records it: a string as itself, anything else as JSON with

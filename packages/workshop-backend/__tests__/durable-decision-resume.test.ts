@@ -502,19 +502,20 @@ describe("decision handoff using the existing execution row", () => {
     expect(requests()).toBe(0);
   });
 
-  it("recovers a final response with steers it never read by answering them", async () => {
+  it("recovers a final response with steers it never read by answering them, replies kept", async () => {
     const requests = inference(), s = await scenario("connection", true);
     await s.visit(impl => {
       decide(impl, "connection");
       impl.addChatMessages(CHAT, MODEL.profile, [{type: "message", message: "Already done."}]);
       impl.storage.chatMeta.put({...impl.storage.chatMeta.get(CHAT)!,
-        queuedSteers: [{text: "Make it dark.", author: USER}]});
+        queuedSteers: [{text: "Make it dark.", author: USER, replyToSequence: 0}]});
     });
     await reset(s.stub);
     await s.visit(async impl => {
       await impl.waitForAllAgentsToComplete();
       const [steer, answer] = [...impl.storage.chats.list()].slice(-2);
-      expect(steer).toEqual(expect.objectContaining({type: "message", author: USER, message: "Make it dark."}));
+      expect(steer).toEqual(expect.objectContaining(
+          {type: "message", author: USER, message: "Make it dark.", replyToSequence: 0}));
       expect(steer).not.toHaveProperty("steered");
       expect(answer).toEqual(expect.objectContaining({type: "message", message: "Done."}));
       expect(impl.storage.chatMeta.get(CHAT)?.queuedSteers).toBeUndefined();
