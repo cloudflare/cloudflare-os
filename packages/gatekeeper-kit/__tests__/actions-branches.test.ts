@@ -631,6 +631,24 @@ describe("a submission an earlier activation never saw answered", () => {
     expect(names(next.pending())).toEqual(["held", "unanswered"]);
   });
 
+  it("fails one the Workshop holds whose provider was rejected before it was settled", async () => {
+    const kv = fakeKv();
+    const earlier = activation(kv);
+    const a = await earlier.set.session(acceptingQueue().queue, A);
+    const maker = await a.submit("create", { ref: "~m", name: "maker" });
+    const edit = new ActionJournal<TaggedAction<Actions>>(kv, { namespace: "things" })
+      .allocate({ kind: "rename", payload: { target: "~m", name: "edit" } }, undefined, A);
+    // The cascade passes over a record that is not confirmed.
+    expect((await earlier.set.rejectAction(maker)).rejected).toEqual([]);
+
+    const { journal, set } = activation(kv);
+    const session = await set.session(acceptingQueue(() => true).queue, A);
+    expect(session.pending()).toEqual([]);
+    expect(journal.get(edit)?.state).toBe("failed");
+    expect((await set.applyList(A, [edit])).failed)
+      .toMatchObject({ action: edit, message: expect.stringContaining("~m"), retryable: false });
+  });
+
   it("asks again about a submission left unconfirmed while an earlier one was being settled",
     async () => {
       const { set } = activation(fakeKv());

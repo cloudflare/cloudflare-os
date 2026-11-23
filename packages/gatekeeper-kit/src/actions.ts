@@ -79,6 +79,12 @@ export function stageAction<A>(
   return stage(journal, queue, action, description, { fence });
 }
 
+// Fails a submitted action that depends on `ref`, which nothing can still resolve.
+function markStranded<A>(journal: ActionJournal<A>, id: number, ref: string): void {
+  journal.markFailed(id, `This action needed ${ref}, whose providing action did not complete.`,
+    { undispatched: true });
+}
+
 // `unmet` names a provisional reference nothing can still resolve. Asked inside the lane, so it
 // cannot race the provider's own staging, it refuses the action before allocating; asked again once
 // submitted, it fails one whose provider was decided while it was staged, out of the cascade's sight.
@@ -131,10 +137,7 @@ function stage<A>(
     }
     journal.markSubmitted(id);
     const stranded = unmet?.();
-    if (stranded !== undefined) {
-      journal.markFailed(id, `This action needed ${stranded}, whose providing action did not `
-        + "complete.", { undispatched: true });
-    }
+    if (stranded !== undefined) markStranded(journal, id, stranded);
     return id;
   });
 }
@@ -977,6 +980,18 @@ export function defineActions<Host, M extends Record<string, unknown>>(
         return { restart, rejected };
       };
 
+      // A provisional reference `action` depends on that nothing can still resolve: one no
+      // pending action its view can see provides.
+      const unmetOf = (action: TaggedAction<M>, view?: BranchView): string | undefined => {
+        const unbound = (definitionFor(action)?.dependsOn?.(action.payload) ?? [])
+          .filter(ref => options.isResolvedReference?.(host, ref) !== true);
+        if (unbound.length === 0) return undefined;
+        const visible = view ? journal.listPendingIn(view) : journal.listPendingAcrossBranches();
+        const live = new Set(visible.flatMap(({ action: pending }) =>
+          definitionFor(pending)?.provides?.(pending.payload) ?? []));
+        return unbound.find(ref => !live.has(ref));
+      };
+
       // Settles the submissions an earlier activation left unconfirmed (`listUnconfirmed`), once
       // per activation, through the first session's queue; see `BoundActionSet.session`. Run as a
       // resolution, so no apply or rejection naming one interleaves with its answer.
@@ -992,8 +1007,14 @@ export function defineActions<Host, M extends Record<string, unknown>>(
           for (const [i, id] of unconfirmed.entries()) {
             const record = journal.get(id);
             if (record?.state !== "staged") continue;
-            if (held[i]) journal.markSubmitted(id);
-            else await withdraw(id, record);
+            if (!held[i]) {
+              await withdraw(id, record);
+              continue;
+            }
+            journal.markSubmitted(id);
+            // Its provider may have been rejected meanwhile, in a cascade that passed it over.
+            const stranded = unmetOf(record.action, record.view);
+            if (stranded !== undefined) markStranded(journal, id, stranded);
           }
           if (unconfirmed.length > 0) {
             attributed.info("settled submissions an earlier activation left unconfirmed", {
@@ -1203,15 +1224,7 @@ export function defineActions<Host, M extends Record<string, unknown>>(
           ...(holds ? { holds } : {}),
           // Only a provider this action's view can see counts: a reference minted on another
           // branch resolves here only once it is bound.
-          unmet: () => {
-            const unbound = (definition.dependsOn?.(staged) ?? [])
-              .filter(ref => options.isResolvedReference?.(host, ref) !== true);
-            if (unbound.length === 0) return undefined;
-            const visible = view ? journal.listPendingIn(view) : journal.listPendingAcrossBranches();
-            const live = new Set(visible.flatMap(({ action: pending }) =>
-              definitionFor(pending)?.provides?.(pending.payload) ?? []));
-            return unbound.find(ref => !live.has(ref));
-          },
+          unmet: () => unmetOf(action, view),
         });
       };
 
