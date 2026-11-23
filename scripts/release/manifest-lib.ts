@@ -301,6 +301,7 @@ const ARTIFACTS_CUT_ALLOWED = new Set(["gatekeeper-context"]);
 const NO_DEFAULT_CRED_INPUTS = new Set([
   "gatekeeper-context",       // no third-party service; uses its own storage
   "gatekeeper-homeassistant", // users connect their own Home Assistant URL + token in-app
+  "gatekeeper-admin",         // no third-party service; the Workshop hands it its credential
   "gatekeeper-scheduler",     // auto-provisioned; no third-party OAuth app
   "gatekeeper-websearch",     // auto-provisioned; searches through the account's own AI Gateway
   "gatekeeper-mcp",           // MCP OAuth uses dynamic client registration, not a static app
@@ -311,10 +312,13 @@ const NO_DEFAULT_CRED_INPUTS = new Set([
 // instances don't have. The bundle still ships in the release so the entry stays auditable.
 const NOT_INSTALLABLE = new Set(["gatekeeper-email"]);
 
-// Ambient gatekeepers the deploy service installs on every fresh core deploy, server-side with
-// no user interaction. Members must take no inputs of any kind (enforced below): a preinstall
-// has nobody to ask.
-const PREINSTALL = new Set(["gatekeeper-context", "gatekeeper-scheduler", "gatekeeper-websearch"]);
+// Gatekeepers the deploy service installs on every fresh core deploy, server-side with no user
+// interaction: the ambient ones, and gatekeeper-admin, which every deployment's admins are
+// offered. Members must take no inputs of any kind (enforced below): a preinstall has nobody to
+// ask.
+const PREINSTALL = new Set([
+  "gatekeeper-context", "gatekeeper-admin", "gatekeeper-scheduler", "gatekeeper-websearch",
+]);
 
 // Gatekeepers that may be installed at most once per instance; the deploy service enforces this
 // at install time. Two independent reasons to be here:
@@ -332,13 +336,14 @@ const PREINSTALL = new Set(["gatekeeper-context", "gatekeeper-scheduler", "gatek
 //
 // Reason 2 turns on inputs, not on the vendor: google/github/slack take per-install
 // CLIENT_ID/CLIENT_SECRET, so two installs can front two different OAuth apps and must stay
-// multi-install. Independent of PREINSTALL in principle; the ambient three coincide with it today
-// only because every ambient gatekeeper we ship is also preinstalled.
+// multi-install. Independent of PREINSTALL in principle: the reason-1 members are all
+// preinstalled, while a preinstalled gatekeeper need not be ambient (gatekeeper-admin).
 const SINGLETON = new Set([
   "gatekeeper-context",       // (1) ambient ContextLibrary
   "gatekeeper-scheduler",     // (1) ambient ScheduleSession
   "gatekeeper-websearch",     // (1) ambient WebSearchSession
   "gatekeeper-homeassistant", // (2) no inputs; users connect their own URL + token in-app
+  "gatekeeper-admin",         // (2) no inputs; a deployment admin connects it in-app
   "gatekeeper-mcp",           // (2) no inputs; users paste their own endpoints in-app
   "gatekeeper-mcp-portal",    // (2) no inputs; the one portal comes from the deployment's vars
 ]);
