@@ -608,6 +608,27 @@ describe("a submission an earlier activation never saw answered", () => {
     expect(session.pending()).toEqual([]);
   });
 
+  it("keeps a submission whose call failed when the Workshop holds it", async () => {
+    const { journal, set } = activation(fakeKv());
+    const failing = (holds: () => Promise<boolean>): ActionSessionQueue => ({
+      submitAction: async () => { throw new Error("Reply lost."); },
+      holdsAction: holds as ActionSessionQueue["holdsAction"],
+    });
+    const held = await set.session(failing(async () => true), A);
+    const id = await held.submit("note", { text: "held" });
+    expect(journal.get(id)?.state).toBe("pending");
+
+    // One the Workshop does not hold is rolled back, and one it gives no answer on stays
+    // unconfirmed for the next activation to settle.
+    const refused = await set.session(failing(async () => false), A);
+    await expect(refused.submit("note", { text: "refused" })).rejects.toThrow("Reply lost.");
+    const silent = await set.session(failing(async () => { throw new Error("Down."); }), A);
+    await expect(silent.submit("note", { text: "unanswered" })).rejects.toThrow("Reply lost.");
+    expect(names(held.pending())).toEqual(["held"]);
+    expect(journal.listUnconfirmed().map(other => journal.get(other)?.action.payload))
+      .toEqual([{ text: "unanswered" }]);
+  });
+
   it("lets no session read or submit until the answer is in, and asks once for all of them",
     async () => {
       const kv = fakeKv();

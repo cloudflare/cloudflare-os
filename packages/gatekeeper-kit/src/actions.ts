@@ -87,11 +87,13 @@ function stage<A>(
   queue: ActionSubmitter,
   action: A,
   description: ActionDescription,
-  { fence, unmet, view }: {
+  { fence, unmet, view, holds }: {
     fence?: ActionFence;
     unmet?: () => string | undefined;
     /** The view a session handle submits under, stored with the record. */
     view?: BranchView;
+    /** Asks the Workshop whether it holds a submission, for one whose call failed. */
+    holds?: (id: number) => Promise<boolean>;
   },
 ): Promise<number> {
   // Snapshotted before the lane yields, as `submit` does before `describe`.
@@ -114,8 +116,14 @@ function stage<A>(
       // Rolled back only while still staged: an auto-approval can resolve the action mid-flight,
       // and a record that left "staged" proves the overseer received it -- only the reply was lost.
       if (journal.get(id)?.state === "staged") {
-        journal.rollbackSubmission(id);
-        throw error;
+        // A session's submission may have been recorded with only its reply lost, and one the
+        // Workshop holds is never dropped (see `ApprovalQueue.submitAction()`, rule 4). With no
+        // answer either, the record stays unconfirmed, as a crash would leave it.
+        const held = holds ? await holds(id).catch(() => { throw error; }) : false;
+        if (!held) {
+          journal.rollbackSubmission(id);
+          throw error;
+        }
       }
     } finally {
       inFlight.delete(id);
@@ -1143,6 +1151,7 @@ export function defineActions<Host, M extends Record<string, unknown>>(
         payload: M[K],
         { fence }: { fence?: ActionFence } = {},
         view?: BranchView,
+        holds?: (id: number) => Promise<boolean>,
       ): Promise<number> => {
         const definition = byName.get(String(kind));
         if (definition === undefined) throw new Error(`Unknown action kind "${String(kind)}".`);
@@ -1188,6 +1197,7 @@ export function defineActions<Host, M extends Record<string, unknown>>(
         }, {
           ...(pinned ? { fence: pinned } : {}),
           ...(view ? { view } : {}),
+          ...(holds ? { holds } : {}),
           // Only a provider this action's view can see counts: a reference minted on another
           // branch resolves here only once it is bound.
           unmet: () => {
@@ -1218,7 +1228,8 @@ export function defineActions<Host, M extends Record<string, unknown>>(
           const handle: ActionSession<M> = {
             view,
             submit: (kind, payload, submitOptions) =>
-              submitThrough(queue, kind, payload, submitOptions, view),
+              submitThrough(queue, kind, payload, submitOptions, view,
+                async id => await queue.holdsAction(id)),
             pending: () => journal.listPendingIn(view),
             undecided: () => journal.listUndecidedIn(view),
           };
