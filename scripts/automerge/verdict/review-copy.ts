@@ -6,26 +6,11 @@ import { appendFileSync, lstatSync, mkdirSync, readdirSync, rmSync, writeFileSyn
 import { dirname, join, resolve } from "node:path";
 
 import { git } from "../git.ts";
+import { isInstructionPath } from "../instructions.ts";
 
-/**
- * File names an agent reads as instructions, matched at any depth and in any case. opencode 1.18.33
- * attaches the nearest AGENTS.md, CLAUDE.md or CONTEXT.md to every file its read tool returns, even
- * with project config disabled (measured 2026-11-02), so a nested one is as live as the root one.
- */
-const INSTRUCTION_FILES = new Set(["agents.md", "claude.md", "context.md", "review.md", "contributing.md",
-  "opencode.json", "opencode.jsonc"]);
-/** Directories an agent loads skills, agents, tools, plugins or config from, matched at any depth. */
-const INSTRUCTION_DIRS = new Set([".agents", ".opencode", ".claude"]);
 const REGULAR_FILE_MODES = new Set(["100644", "100755"]);
 // The largest single read: the whole tree's blobs, which is about 40 MiB at main today.
 const MAX_TREE_BYTES = 1024 * 1024 * 1024;
-
-/** Whether the review copy takes this repository path from the base commit rather than the head. */
-export function isInstructionPath(path: string): boolean {
-  const segments = path.toLowerCase().split("/");
-  return INSTRUCTION_FILES.has(segments[segments.length - 1]) ||
-    segments.slice(0, -1).some(segment => INSTRUCTION_DIRS.has(segment));
-}
 
 interface TreeEntry {
   mode: string;

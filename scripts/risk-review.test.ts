@@ -499,6 +499,17 @@ describe("decide", () => {
   });
 
   it("never lets an AI decide on a Worker config change that may drop Durable Object data", () => {
+  // The reviewers read the base's copy of each of these, so the pull request's version first
+  // steers a review after it merges.
+  it("never lets an AI decide on a file a reviewer reads as instructions, wherever it sits", () => {
+    assert.deepEqual(decide(inputs({ files: [file("docs/observers.md", { status: "added" })], producers: PERFECT }), SCORED, NOW).would, AUTO_SCORED);
+    for (const path of ["docs/CONTEXT.md", ".claude/settings.json", "CONTRIBUTING.md", "docs/review.md", "docs/Agents.MD"]) {
+      const decision = decide(inputs({ files: [file(path, { status: "added" })], producers: PERFECT }), SCORED, NOW);
+      assert.equal(decision.would.decision, "person", path);
+      assert.notDeepEqual(decision.never_auto, [], path);
+    }
+  });
+
     const risky = inputs({
       files: [file("packages/gatekeeper-x/wrangler.jsonc")],
       facts: { workspaceCatalogOnly: true, newDependencies: [], durableObjectRisks: ["packages/gatekeeper-x/wrangler.jsonc: reuses the tag v1"], skillSymlinks: [] },

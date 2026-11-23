@@ -71,7 +71,7 @@
 
     <rect x="40" y="414" width="12" height="12" rx="2" fill="#94A3B8"/>
     <text x="60" y="425" font-weight="600">Always a person</text>
-    <text x="250" y="425">CI, the gate, auth, release, AGENTS.md, REVIEW.md</text>
+    <text x="250" y="425">CI, the gate, auth, release, reviewer instructions</text>
     <text x="840" y="425" text-anchor="end">19</text>
     <text x="920" y="425" text-anchor="end">21%</text>
   </g>

@@ -57,10 +57,28 @@ secrets, in Automerge head proofs. A rung 1 proof also counts only for the commi
 would land on (its base, or the queue's commit under it in a merge group): `proof-deps` only while
 the files it read at its base (`pnpm-workspace.yaml` and `pnpm-lock.yaml`) are the same readable
 blobs there, and `proof-equivalence` and `proof-tests` only when made against that commit with a
-head that contains it. Edits under `.agents/skills/` are scored like code; a symlink there, and
-every other instruction file (`REVIEW.md`, any `AGENTS.md`, the rest of `.agents/`), always needs a
-person. A file with a recent escaped defect raises the risk level one step; that raise ignores
-lockfiles and Markdown, `docs/` and `plans/` outside `.agents/`.
+head that contains it. A file with a recent escaped defect raises the risk level one step; that
+raise ignores lockfiles and Markdown, `docs/` and `plans/` outside `.agents/`.
+
+These paths always need a person:
+
+- everything under `.github/`;
+- gate and judge code: `scripts/risk-review*`, `scripts/automerge/`, `scripts/contribution-policy*`;
+- every file an AI reviewer reads as instructions: any `AGENTS.md`, `CLAUDE.md`, `CONTEXT.md`,
+  `REVIEW.md`, `CONTRIBUTING.md`, `opencode.json` or `opencode.jsonc`, and any file under a
+  `.agents/`, `.opencode/` or `.claude/` directory, at any depth and in any letter case;
+- auth config: `packages/workshop-backend/src/auth/`;
+- supply-chain policy: any `.npmrc`, `.pnpmfile.cjs` or `.pnpmfile.mjs`, and `pnpm-workspace.yaml`
+  beyond a catalog version bump;
+- the release pipeline: `scripts/release/`;
+- any Wrangler config other than the generated `wrangler.jsonc`: `wrangler.json`, `wrangler.toml`,
+  `.wrangler/`.
+
+The one exception is `.agents/skills/` at the repository root. Edits there are scored like code,
+because both reviewers read the base commit's copy of every instruction path
+([`scripts/automerge/instructions.ts`](../../scripts/automerge/instructions.ts) holds the one list
+both use), so a skill edit cannot steer its own review. A symlink there still needs a person, and
+so does an instruction file or directory of its own inside a skill.
 
 A change that may drop Durable Object data always needs a person. The gate reads it from the
 parsed `wrangler.jsonc`, the file Wrangler and the release manifest deploy from, and treats its

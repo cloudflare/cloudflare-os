@@ -73,6 +73,9 @@ describe("pathFloor", () => {
       "packages/x/CLAUDE.md",
       "packages/x/.agents/skills/a.md",
     ]) {
+      "docs/CONTEXT.md",
+      ".claude/settings.json",
+      "CONTRIBUTING.md",
       assert.equal(pathFloor(path), "medium", path);
     }
   });
@@ -206,6 +209,14 @@ describe("classifyChangeset NEVER_AUTO", () => {
       "opencode.jsonc",
       ".opencode/plugins/x.ts",
       "packages/workshop-backend/src/auth/config.ts",
+      "CONTRIBUTING.md",
+      "docs/CONTEXT.md",
+      "packages/x/REVIEW.md",
+      ".claude/commands/fix.md",
+      "packages/x/.claude/settings.json",
+      "docs/Agents.MD",
+      ".agents/skills/x/.claude/settings.json",
+      ".agents/skills/x/CONTEXT.md",
       ".npmrc",
       ".pnpmfile.cjs",
       "packages/x/.pnpmfile.mjs",

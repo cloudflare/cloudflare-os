@@ -9,6 +9,7 @@
 import { matchesGlob } from "node:path/posix";
 import { isDeepStrictEqual } from "node:util";
 
+import { isInstructionPath } from "./automerge/instructions.ts";
 import { maybeJson, maybeObject, type Json, type JsonObject } from "./automerge/json.ts";
 
 /** A risk level, lowest first. */
@@ -35,12 +36,19 @@ export interface ChangedFile {
   deletions: number;
 }
 
+/** The paths a rule covers: any that match `globs` or satisfy `paths`, and none that match `except`. */
+interface PathRule {
+  globs: readonly string[];
+  paths?: (path: string) => boolean;
+  except?: readonly string[];
+}
+
 /**
  * Paths that set a minimum risk level, highest first. High is the kernel, this gate and the rest of
  * CI and release, the supply-chain policy, and the security chokepoints REVIEW.md names outside the
  * kernel.
  */
-const PATH_FLOORS: { band: Band; reason: string; globs: string[] }[] = [
+const PATH_FLOORS: (PathRule & { band: Band; reason: string })[] = [
   {
     band: "high",
     reason: "touches a designated sensitive path",
@@ -89,19 +97,28 @@ const PATH_FLOORS: { band: Band; reason: string; globs: string[] }[] = [
       "pnpm-lock.yaml",
       "**/cloudflare.config.ts",
       "**/wrangler.jsonc",
-      "REVIEW.md",
-      "**/AGENTS.md",
-      "**/CLAUDE.md",
-      "**/.agents/**",
-      "**/opencode.json",
-      "**/opencode.jsonc",
-      "**/.opencode/**",
     ],
+    paths: isInstructionPath,
   },
 ];
 
 /** Skills, which coding agents read; edits here are AI-scored. */
-const SKILLS = ".agents/skills/**";
+const SKILLS_DIR = ".agents/skills/";
+
+/** Whether a path is under `.agents/skills/`, where a symlink needs a person. */
+export function isSkillPath(filename: string): boolean {
+  return filename.startsWith(SKILLS_DIR);
+}
+
+/**
+ * Whether a person must review a change to this path because AI reviewers follow it: every
+ * instruction path but a skill's own files. Skills are scored like code: the reviewers read the
+ * base version of every instruction file, so a skill edit cannot steer its own review. A symlink
+ * there can, and so can an instruction file or directory of its own inside a skill.
+ */
+function isReviewerInstruction(path: string): boolean {
+  return isInstructionPath(isSkillPath(path) ? path.slice(SKILLS_DIR.length) : path);
+}
 
 /**
  * Paths no AI may decide on, always a person: this gate and everything it reads or trusts (so a
@@ -109,30 +126,13 @@ const SKILLS = ".agents/skills/**";
  * instructions AI reviewers follow, auth config, the supply-chain policy and release. Each entry
  * names its reason for the decision record.
  */
-const NEVER_AUTO_PATHS: { reason: string; globs: string[]; except?: string[] }[] = [
+const NEVER_AUTO_PATHS: (PathRule & { reason: string })[] = [
   { reason: "CI, repository policy or a producer workflow", globs: [".github/**"] },
   {
     reason: "gate or judge code",
     globs: ["scripts/risk-review*", "scripts/risk-review*/**", "scripts/automerge/**", "scripts/contribution-policy*"],
   },
-  {
-    reason: "instructions an AI reviewer follows",
-    globs: [
-      "REVIEW.md",
-      "**/AGENTS.md",
-      "**/CLAUDE.md",
-      "**/opencode.json",
-      "**/opencode.jsonc",
-      "**/.opencode/**",
-    ],
-  },
-  {
-    reason: "agent skills and settings outside .agents/skills/",
-    globs: ["**/.agents/**"],
-    // Skills are scored like code: the reviewers read the base version of every instruction file,
-    // so a skill edit cannot steer its own review. A symlink there can.
-    except: [SKILLS],
-  },
+  { reason: "instructions an AI reviewer follows", globs: [], paths: isReviewerInstruction },
   { reason: "auth config", globs: ["packages/workshop-backend/src/auth/**"] },
   { reason: "supply-chain policy", globs: ["**/.npmrc", "**/.pnpmfile.cjs", "**/.pnpmfile.mjs"] },
   { reason: "release pipeline", globs: ["scripts/release/**"] },
@@ -206,13 +206,8 @@ function matchesAny(filename: string, globs: readonly string[]): boolean {
   return globs.some((glob) => matchesPath(filename, glob));
 }
 
-function matchesRule(filename: string, { globs, except = [] }: { globs: readonly string[]; except?: readonly string[] }): boolean {
-  return matchesAny(filename, globs) && !matchesAny(filename, except);
-}
-
-/** Whether a path is under `.agents/skills/`, where a symlink needs a person. */
-export function isSkillPath(filename: string): boolean {
-  return matchesPath(filename, SKILLS);
+function matchesRule(filename: string, { globs, paths, except = [] }: PathRule): boolean {
+  return (matchesAny(filename, globs) || paths?.(filename) === true) && !matchesAny(filename, except);
 }
 
 /** Both paths of a changed file: a rename away from a path counts as changing it. */
@@ -238,7 +233,7 @@ function raiseOne(band: Band): Band {
  * @param filename Repository-relative path.
  */
 export function pathFloor(filename: string): Band {
-  return PATH_FLOORS.find(({ globs }) => matchesAny(filename, globs))?.band ?? "low";
+  return PATH_FLOORS.find((rule) => matchesRule(filename, rule))?.band ?? "low";
 }
 
 function fileFloor(file: ChangedFile): Band {
