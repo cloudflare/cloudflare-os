@@ -82,6 +82,9 @@ minimumReleaseAgeExclude:
   - capnweb-validate
   - workerd
   - "@cloudflare/workerd-*"
+  # Cloudflare's own, like the ones above: gatekeeper-kit generates its schemas with it.
+  - "@cloudflare/forge"
+  - "@cloudflare/forge-*"
 
 allowBuilds:
   '@google/genai': true
