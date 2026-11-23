@@ -7,6 +7,7 @@ import {createFauxCore, fauxAssistantMessage, fauxText, fauxToolCall, type Trans
 import {buildPackStream, concatBytes, decodePackStream, encodeGitTree, gitObjectOid, parseGitTree,
   type PackableObject} from "../src/git-codec";
 import {runAgent} from "../src/agent";
+import {MAX_WHOLE_TEXT_BYTES} from "../src/git-cache";
 import {byteStream} from "./git-cache-fixtures";
 import {deflateSync} from "node:zlib";
 import type {GitPullTransfer} from "@gadgets/workshop-shared/gatekeeper";
@@ -521,6 +522,30 @@ describe("worktree commands", () => {
     expect(await treeFiles(impl, result.tree)).toMatchObject({"a.txt": text});
     expect(output).toContain("merged with concurrent edits, with conflicts in: a.txt");
     expect(output).toContain("in REPO");
+  }));
+
+  // Taking one side whole, as for a binary file, would drop the other's edit of a text file.
+  it("refuses to merge a text file too large to merge, keeping the worktree's edit", () => withCommands(async (impl, id) => {
+    const rows = "a row\n".repeat(Math.ceil((MAX_WHOLE_TEXT_BYTES + 1) / 6));
+    let refused!: string, kept!: string;
+    runCode(impl, id, {
+      command: async (repo, replicator, queue) => {
+        // Too large to write as text, so written as bytes, as an upload is.
+        await repo.writeBytes("big.csv", enc(rows));
+        const snapshot = await replicator.snapshot(queue);
+        await repo.writeBytes("big.csv", enc(`${rows}workspace\n`));
+        const command = await commandResult(impl, snapshot.tree, {"big.csv": `command\n${rows}`});
+        refused = await replicator.submit(queue, snapshot.tree, command.tree, command.pack())
+          .then(() => "", (error: Error) => error.message);
+        const end = rows.length;
+        kept = await new Response(await repo.readBytes("big.csv", {offset: end, length: 10})).text();
+        return "ran";
+      },
+    });
+    await turn(impl, [[execute("command")]]);
+    expect(refused).toMatch("can't be merged with the worktree's concurrent edits to big.csv: " +
+      "it is too large to merge as text");
+    expect(kept).toBe("workspace\n");
   }));
 
   it("builds a submission on an earlier one's tree, even while that one is still merging", () => withCommands(async (impl, id) => {

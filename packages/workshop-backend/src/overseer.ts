@@ -34,7 +34,9 @@ import {
 } from "./storage-schema/overseer-storage";
 import type { UserAiModelRecord, WorkspaceOutputEntry } from "./storage-schema/user-storage";
 import { filesEqual, threeWayMerge, type MergeResult } from "./three-way-merge";
-import { GitCacheImpl, WorkspaceGitCache, assertNoNul, commitIdentityForAuthor } from "./git-cache";
+import {
+  GitCacheImpl, WorkspaceGitCache, assertNoNul, commitIdentityForAuthor, type WholeTextReadOptions,
+} from "./git-cache";
 import { blobByteStream, type BlobReader } from "./git-chunked-blob";
 import {
   OVERSEER_STORAGE_VERSION, migrateToActionIndexes, migrateToBlueprintUpstreams,
@@ -2796,8 +2798,9 @@ class OverseerImpl implements AgentHooks {
   // AgentHooks implementation: lazily read one file of a commit's tree (see
   // WorkspaceGitCache.readFileAtCommitIfExists) -- the base resolver behind worktree reads and
   // the way unpinned gadget reads are served too.
-  readFileAtCommit(commit: string, path: string): Promise<string | undefined> {
-    return this.gitCache.readFileAtCommitIfExists(commit, path);
+  readFileAtCommit(commit: string, path: string, options?: WholeTextReadOptions)
+      : Promise<string | undefined> {
+    return this.gitCache.readFileAtCommitIfExists(commit, path, options);
   }
 
   // AgentHooks implementation: one file of a commit's tree, opened for reading in pieces, with
@@ -3109,6 +3112,11 @@ class OverseerImpl implements AgentHooks {
       return content;
     }
   }
+
+  // The base reader for new edits, an agent step's or a submission's, rather than the replay of
+  // saved ones: a first edit of a file too large to hold as text is refused before it is read.
+  #readNewEditBase: BaseTextReader = (commit, path) =>
+      this.readFileAtCommit(commit, path, { limited: true });
 
   // The async half of getCurrentChatContent's live-row worktree seeding: like
   // seedWorktreeEditBases, but additionally records every looked-up base into `seeds`
@@ -3764,8 +3772,9 @@ class OverseerImpl implements AgentHooks {
           for (let [key, entries] of Object.entries(change)) {
             if (worktreeBases.has(Number(key))) worktreeEntries[Number(key)] = entries;
           }
-          probe = await this.#prefetchWorktreeSeeds(
-              probe, worktreeEntries, worktreeBases, worktreeSeeds);
+          // New edits, so a first one of a file too large to hold as text is refused.
+          probe = await this.#prefetchWorktreeSeeds(probe, worktreeEntries, worktreeBases,
+              worktreeSeeds, this.#readNewEditBase);
           probe = applyCodeChange(probe, worktreeEntries);
         }
       }
@@ -4005,7 +4014,7 @@ class OverseerImpl implements AgentHooks {
       let worktreeSeeds = new Map<string, string | null>();
       if (worktreeBases.size > 0) {
         await this.#prefetchWorktreeSeeds(content, submission.change, worktreeBases,
-                                          worktreeSeeds);
+                                          worktreeSeeds, this.#readNewEditBase);
         // Enforce the write side of the tree-entry modes on the submission's worktree `set`s
         // and `remove`s, the same check the agent's writeFile tool makes: a path the current
         // content doesn't hold still has its base entry live, and writing over -- or deleting --

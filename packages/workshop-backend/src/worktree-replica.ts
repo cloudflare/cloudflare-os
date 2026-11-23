@@ -24,7 +24,8 @@ import type {
 } from "@gadgets/workshop-shared/worktree-replica";
 import type { WorktreeTurnAccess } from "./agent";
 import {
-  commitIdentityForAuthor, TreeShapeError, UnreadableContentError, type FileEntry,
+  commitIdentityForAuthor, TextTooLargeError, TreeShapeError, UnreadableContentError,
+  type FileEntry,
 } from "./git-cache";
 import {
   encodeGitTree, isReservedTreeEntryName, parseGitTree, validateGitOid, type GitTreeEntry,
@@ -215,12 +216,19 @@ export class WorktreeReplicas {
     }
   }
 
-  // A file's text, undefined if absent, or null if it is not readable as text.
+  // A file's text, undefined if absent, or null if it is not readable as text. A text file too
+  // large to merge refuses the submission, before anything changes, rather than counting as
+  // binary, which would take the command's version whole and drop the worktree's edits.
   async #readText(entry: DiffEntry | undefined, path: string): Promise<string | undefined | null> {
     if (entry === undefined) return undefined;
     try {
       return await this.host.gitCache.readTextBlob(entry.oid, entry.referencedBy, path);
     } catch (error) {
+      if (error instanceof TextTooLargeError) {
+        throw new Error(`The command's result can't be merged with the worktree's concurrent ` +
+            `edits to ${path}: it is too large to merge as text. Take a new snapshot and run ` +
+            "the command again.", { cause: error });
+      }
       if (error instanceof UnreadableContentError) return null;
       throw error;
     }
