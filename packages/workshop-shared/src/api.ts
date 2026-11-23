@@ -7706,10 +7706,10 @@ export interface WorkpieceClient extends RpcTarget {
    * chat.
    *
    * For a gatekeeper, this is a session to the connection, which stands where a gadget's server
-   * would; `chatId` must be omitted. Its UI code is handed that session, or, for an item an action
-   * names, what the session's `openPreview(id)` returns (see `PreviewItem.id`). What the session
-   * reads is recorded against the connection's own workpiece ID, as a gadget's reads are against
-   * the gadget's. No gadget has that ID, so those reads are checked against "build" collaborators
+   * would; `chatId` must be omitted. Its UI code is handed that session, and draws an item an
+   * action names when its host sends it there (see `PreviewItem.id`). What the session reads is
+   * recorded against the connection's own workpiece ID, as a gadget's reads are against the
+   * gadget's. No gadget has that ID, so those reads are checked against "build" collaborators
    * only.
    */
   // @ts-ignore - TODO: Fix type instantiation issue

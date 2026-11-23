@@ -1858,12 +1858,12 @@ export type ActionKind = {
  */
 export type PreviewItem = {
   /**
-   * The gatekeeper's own name for the item, opaque to everyone else and handed back only to
-   * `openPreview(id)` on a session of the connection. That returns a session of the item alone,
-   * which the connection's code (`Gatekeeper.getGadgetUi()`) is run with in place of the
-   * connection's own. `openPreview()` is a convention between the Workshop and a session whose
-   * actions name items, which no type here names. The ID it is given is whatever a client sent:
-   * it throws for one that names nothing the code can draw.
+   * The gatekeeper's own name for the item, opaque to everyone else and handed back only to the
+   * connection's code (`Gatekeeper.getGadgetUi()`), as the anchor its host sends it to
+   * (`GadgetHost.onNavigate()`): the code draws the item the anchor names, through the
+   * connection's session. The anchor it is sent is whatever a client gave, so it only chooses
+   * what to draw, and the code resolves none that names nothing it can draw. An ID longer than
+   * `MAX_FOCUS_ANCHOR_LENGTH` is still drawn, but the code cannot report it as its focus.
    */
   id: string;
 
