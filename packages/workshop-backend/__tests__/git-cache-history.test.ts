@@ -64,6 +64,27 @@ async function writeFixtureHistory(store: WorkspaceGitCache): Promise<void> {
   expect(second).toBe(SECOND_COMMIT_OID);
 }
 
+/**
+ * A store with a writer of empty-tree commits, each dated a second after the one before, so that
+ * a log lists them newest first: the reverse of the order they were written in.
+ */
+function makeHistory() {
+  let store = makeStore().store;
+  let seconds = 100;
+  let commit = (message: string, parents: string[]) =>
+      store.writeFilesAsCommit(new Map(), {
+        parents, author: ALICE, message, timestamp: new Date(seconds++ * 1000),
+      });
+  return { store, commit };
+}
+
+/** Commits that no store made by `makeHistory()` holds. */
+const MISSING = COMMIT_1;
+const ALSO_MISSING = COMMIT_3;
+
+/** What a local history read throws for a commit the store does not hold. */
+const notHeld = (oid: string) => `The commit ${oid} is not in the workspace's git store.`;
+
 describe("local history", () => {
   it("writes commits byte-identical to real git", async () => {
     // writeFixtureHistory asserts the known-good oids, including a nested tree (lib/util.js), a
@@ -173,6 +194,60 @@ describe("local history", () => {
       await commit("left", [shared], 300), await commit("right", [shared], 50),
     ], 400);
     expect(await messages(skewed)).toEqual(["merge", "left", "shared", "root", "right"]);
+  });
+
+  it("ends a line of readCommitLog at a parent that is not stored, with stopAtMissing",
+      async () => {
+    // The shape of a worktree's checkout: a commit pulled without the history behind it.
+    let { store, commit } = makeHistory();
+    let oldest = await commit("oldest stored", [MISSING]);
+    let tip = await commit("tip", [oldest]);
+
+    let log = store.readCommitLog(tip, { stopAtMissing: true });
+    expect(log.map(entry => entry.oid)).toEqual([tip, oldest]);
+    // The commit that ends the line still names the parent the walk did not follow.
+    expect(log[1].parents).toEqual([MISSING]);
+    expect(() => store.readCommitLog(tip)).toThrow(notHeld(MISSING));
+    expect(() => store.readCommitLog(tip, { stopAtMissing: false })).toThrow(notHeld(MISSING));
+  });
+
+  it("lists the stored line of a merge whose other parents are not stored, with stopAtMissing",
+      async () => {
+    let { store, commit } = makeHistory();
+    let root = await commit("root", []);
+    let line = await commit("line", [root]);
+    for (let parents of [[line, MISSING], [MISSING, line], [MISSING, line, ALSO_MISSING]]) {
+      let merge = await commit("merge", parents);
+      let log = store.readCommitLog(merge, { stopAtMissing: true });
+      expect(log.map(entry => entry.oid)).toEqual([merge, line, root]);
+      expect(log[0].parents).toEqual(parents);
+      expect(() => store.readCommitLog(merge)).toThrow(/is not in the workspace's git store/);
+    }
+  });
+
+  it("bounds readCommitLog by depth with stopAtMissing too, and still requires its tip",
+      async () => {
+    let { store, commit } = makeHistory();
+    let oldest = await commit("oldest stored", [MISSING]);
+    let middle = await commit("middle", [oldest]);
+    let tip = await commit("tip", [middle]);
+    let oids = (depth: number) =>
+        store.readCommitLog(tip, { depth, stopAtMissing: true }).map(entry => entry.oid);
+    expect(oids(1)).toEqual([tip]);
+    expect(oids(2)).toEqual([tip, middle]);
+    expect(oids(10)).toEqual([tip, middle, oldest]);
+
+    // A tip that is not stored throws, with the option or without.
+    for (let options of [{}, { stopAtMissing: true }]) {
+      expect(() => store.readCommitLog(MISSING, options)).toThrow(notHeld(MISSING));
+    }
+    // A parent that is stored but is not a commit is not missing: it throws, as without the
+    // option. (The empty tree is always held.)
+    let odd = await commit("odd", [EMPTY_TREE]);
+    for (let options of [{}, { stopAtMissing: true }]) {
+      expect(() => store.readCommitLog(odd, options))
+          .toThrow(`git object ${EMPTY_TREE} is a tree, but a commit was expected`);
+    }
   });
 
   it("writes and round-trips an empty-tree commit", async () => {

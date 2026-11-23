@@ -3,10 +3,10 @@
 // rewire parts without leaving a dangling reference (which Office answers with a repair prompt).
 // Part names are ZIP entry names: no leading slash, case as written.
 
-import { escapeAttribute, parsePart, relationshipsPartName, resolvePartName, XML_DECLARATION } from "./ooxml";
-import { decodeText } from "./text";
-import { attribute, childElements } from "./xml";
-import { openZip, type ZipLimits } from "./zip";
+import { escapeAttribute, parsePart, relationshipsPartName, resolvePartName, XML_DECLARATION } from "@gadgets/office-content/ooxml";
+import { decodeText } from "@gadgets/office-content/text";
+import { attribute, childElements } from "@gadgets/office-content/xml";
+import { openZip, type ZipLimits } from "@gadgets/office-content/zip";
 import { writeZip } from "./zip-write";
 
 /** One relationship, with its target as written (relative to the source part, or external). */

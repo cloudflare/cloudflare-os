@@ -15,7 +15,7 @@
 // they can't see or what lies outside the binding, before calling the hook. An event reaches only
 // hooks on the account its signed incident link names: object IDs are not known to be unique
 // across accounts, so a bare ID re-read in another account could pair this event's text with
-// someone else's incident.
+// someone else's incident. Disconnecting drops the connection's hooks (`forgetHooks`).
 
 import { DurableObject, RpcTarget, WorkerEntrypoint, type RpcStub } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
@@ -83,6 +83,16 @@ type StoredEvent = {
 
 /** The deployment's one driver; each event carries the account it is from (see `watches`). */
 const driver = (exports: Cloudflare.Exports) => exports.PagerDutyHookDriver.getByName("webhook");
+
+/** Set when a disconnected connection's hooks are dropped, so that enabling one later is refused. */
+const forgottenKey = (userObjectId: string) => `forgotten:${userObjectId}`;
+
+const DISCONNECTED = "This PagerDuty account has been disconnected.";
+
+/** Drop the hooks of connection `userObjectId`, which is disconnecting (see `UserAccount.revoke()`). */
+export async function forgetHooks(exports: Cloudflare.Exports, userObjectId: string): Promise<void> {
+  await driver(exports).forgetAccount(userObjectId);
+}
 
 /** The kinds `options` asks for, by default all. */
 export function watchedKinds(options: PagerDutySubscribeOptions | undefined): PagerDutyEventKind[] {
@@ -173,8 +183,13 @@ export class PagerDutyHookDeliveryImpl extends RpcTarget implements PagerDutyHoo
 
 // ── Controller ──────────────────────────────────────────────────────
 
-/** What the driver filters a hook's events by: cheap checks that spare firings, which the facet repeats. */
-type Registration = { tenant: Tenant; events: PagerDutyEventKind[]; incidentId?: string; serviceId?: string };
+/**
+ * What the driver filters a hook's events by: cheap checks that spare firings, which the facet
+ * repeats; and the connection it was bound through, whose disconnecting drops it.
+ */
+type Registration = {
+  userObjectId: string; tenant: Tenant; events: PagerDutyEventKind[]; incidentId?: string; serviceId?: string;
+};
 
 type Capabilities = HookCapabilities<PagerDutyEventHookTarget, StoredEvent>;
 
@@ -203,7 +218,8 @@ export class PagerDutyHookController extends WorkerEntrypoint<Env, PagerDutyHook
 
 /**
  * The deployment's one driver (see `driver`). Its storage is the registry's: `reg:`/`caps:` per
- * enabled hook, and the delivery queue's `msg:` rows and `queue:` indexes.
+ * enabled hook, and the delivery queue's `msg:` rows and `queue:` indexes; and `forgotten:` per
+ * disconnected connection.
  */
 export class PagerDutyHookDriver extends DurableObject<Env> {
   #hooks = new HookRegistry<PagerDutyEventHookTarget, StoredEvent, Registration>(this.ctx.storage.kv, () => {
@@ -211,12 +227,23 @@ export class PagerDutyHookDriver extends DurableObject<Env> {
   });
 
   async register(key: string, registration: Registration, capabilities: Capabilities): Promise<void> {
+    // Disconnected before or while it was being enabled: a hook can be approved long after binding.
+    if (this.ctx.storage.kv.get(forgottenKey(registration.userObjectId)) !== undefined) throw new Error(DISCONNECTED);
     // Both of the hook's records, or neither.
     this.ctx.storage.transactionSync(() => this.#hooks.set(key, registration, capabilities));
   }
 
   async unregister(key: string): Promise<void> {
     this.#hooks.remove(key);
+    await this.#reschedule();
+  }
+
+  /** Drop every hook of connection `userObjectId`, and refuse any it enables from now on. */
+  async forgetAccount(userObjectId: string): Promise<void> {
+    this.ctx.storage.kv.put(forgottenKey(userObjectId), Date.now());
+    for (const [key, registration] of this.#hooks.entries()) {
+      if (registration.userObjectId === userObjectId) this.#hooks.remove(key);
+    }
     await this.#reschedule();
   }
 

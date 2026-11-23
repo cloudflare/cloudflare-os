@@ -8,25 +8,6 @@
     "experimental",
     "allow_irrevocable_stub_storage"
   ],
-  "services": [
-    {
-      "binding": "WORKSHOP_EXTERNAL_MESSAGES",
-      "service": "workshop-backend",
-      "entrypoint": "ExternalMessageGateway",
-      "props": {
-        "source": "test"
-      }
-    }
-  ],
-  "durable_objects": {
-    "bindings": [
-      {
-        "name": "WORKSHOP_OVERSEER",
-        "class_name": "OverseerDurableObject",
-        "script_name": "workshop-backend"
-      }
-    ]
-  },
   "migrations": [
     {
       "tag": "v0",

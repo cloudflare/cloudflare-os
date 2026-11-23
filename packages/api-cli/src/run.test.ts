@@ -454,7 +454,7 @@ test("search reads a command's option names and the callback methods it may be a
   assert.equal(rankOf(asking, "notice", / lock$/), 0);
   // As a doc's words: 2, under the 3 of a command named by the word.
   assert.equal(searchCommands(realTable, "configure observers")[0].command, "cf-os api open-workspace <id>");
-  assert.equal(rankOf(realTable, "observer", /^cf-os api open-workspace <id>$/), 2);
+  assert.equal(rankOf(realTable, "observer", /^cf-os api open-workspace <id>$/), 4);
 });
 
 test("search finds the commands for agents' everyday tasks in the API's own words", () => {
@@ -499,9 +499,11 @@ test("search finds the commands for agents' everyday tasks in the API's own word
     ...["redeem share link", "redeem a share link", "open workspace with share key", "join workspace from link",
       "join a shared workspace", "open a workspace shared with me", "configure observers"]
       .map((task): [string, RegExp, number] => [task, openWorkspace, 1]),
-    ["observer verification", openWorkspace, 3],
+    ["observer verification", openWorkspace, 4],
     ["choose accounts to observe a shared workspace", openWorkspace, 3],
     ["share key", openWorkspace, 3],
+    // An admin's write to a workspace.
+    ["write to a workspace", / write-workspace </, 1],
   ];
   for (const [task, wanted, top] of cases) {
     const rank = rankOf(realTable, task, wanted);
@@ -558,6 +560,20 @@ test("search finds the commands for gadget-worded tasks, by what the API says of
   }
   assert.equal(searchCommands(realTable, "create a skill")[0]!.command,
     "cf-os api get-gatekeeper-app context ui create-context-skill <collectionId> <path> <doc>");
+});
+
+test("search lists a method several capabilities inherit once among the others, its best copy where it ranks", () => {
+  // GadgetClient and GadgetSnapshotClient both have connect-to-gadget, get-export-formats and export.
+  const gadget = / get-gadget <id> (connect-to-gadget|get-export-formats|export <id>)$/;
+  const snapshot = / get-gadget-snapshot <id> (connect-to-gadget|get-export-formats|export <id>)$/;
+  const top = searchCommands(realTable, "export gadget data").map((match) => match.command);
+  assert.match(top[0], / get-gadget <id> connect-to-gadget$/);
+  assert.equal(top.filter((command) => gadget.test(command)).length, 3, top.join("\n"));
+  assert.ok(!top.some((command) => snapshot.test(command)), top.join("\n"));
+  // The repeats still come later, in the order of their best copies.
+  const all = searchCommands(realTable, "export gadget data", Infinity).map((match) => match.command);
+  assert.deepEqual(all.filter((command) => snapshot.test(command)).map((command) => command.replace(" get-gadget-snapshot ", " get-gadget ")),
+    all.filter((command) => gadget.test(command)));
 });
 
 test("search finds create-account for making a user, and signing in as one, which are no generated command", () => {
@@ -699,7 +715,7 @@ test("an --answer read from stdin shares the one stdin with the arguments", asyn
   const stdin = { ...noFiles, readStdin: async () => new TextEncoder().encode("[]") };
   const invocation = parseInvocation(realTable, ["open-workspace", "g", "get-metadata", "--answer", "ObserverConfigCallback.configure=-"]);
   assert.deepEqual((await decodeCalls(realTable, invocation, stdin)).answers.get("ObserverConfigCallback.configure"), []);
-  const both = parseInvocation(realTable, ["connect-account", "google", "--resource-url-patterns", "-", "--answer", "ObserverConfigCallback.configure=-"]);
+  const both = parseInvocation(realTable, ["connect-account", "google", "--resource-type-ids", "-", "--answer", "ObserverConfigCallback.configure=-"]);
   await assert.rejects(decodeCalls(realTable, both, stdin), (error: Error) =>
     error instanceof UsageError && error.message === "Only one argument can read stdin (-).");
 });
@@ -772,11 +788,25 @@ test("an unknown command or option says which was meant: a near name, or where t
   real(["list-chats"], /list-chats is on Overseer: `cf-os api open-workspace <id> list-chats`/);
   real(["open-workspace", "g", "list-actions", "--option", "{}"], /Did you mean --options\?/);
   real(["list-workspace"], /Did you mean list-workspaces\?/);
-  // A name cut short wins over a typo that changes its verb: get-chat is two edits from new-chat.
-  real(["get-chat"], /Did you mean get-chat-[a-z-]+, on Overseer: `cf-os api open-workspace <id> get-chat-/);
+  // A name cut short wins over a typo that changes its verb: get-gatekeeper is two edits from
+  // new-gatekeeper.
+  real(["get-gatekeeper"], /Did you mean get-gatekeeper-app\? /);
   // A short name a typo starts with is no run-on: list-chtas is list-chats, not a bare `list`.
   real(["open-workspace", "g", "list-chtas"], /^Overseer has no command "list-chtas"\. Did you mean list-chats\? /);
   real(["list-worksapces"], /Did you mean list-workspaces\? /);
+});
+
+test("an admin's view of a workspace has seventeen commands, and none reads content", () => {
+  assert.deepEqual(Object.keys(realTable.nodes.AdminWorkspaceView.commands).toSorted(), [
+    "describe", "get-chat-state", "get-commit-log", "get-diagnostics", "list-actions", "list-auto-approvals",
+    "list-blueprints", "list-changed-paths", "list-chat-attachments", "list-chats", "list-files",
+    "list-files-at-commit", "list-gatekeepers", "list-observer-requirements", "list-observers",
+    "list-pending-changes", "list-share-links",
+  ]);
+  for (const name of ["get-chat", "read-chat-attachment", "read-file", "read-file-at-commit", "read-pending-file"]) {
+    assert.throws(() => parseInvocation(realTable, ["get-admin-api", "inspect-workspace", "w", "why", name]),
+      (error: Error) => error instanceof UsageError && error.message.startsWith(`AdminWorkspaceView has no command "${name}"`));
+  }
 });
 
 test("the root help says what `--` does, and that an option after it is a value", () => {

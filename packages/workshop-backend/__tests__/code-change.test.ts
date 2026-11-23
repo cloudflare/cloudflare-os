@@ -732,19 +732,19 @@ describe("validateCodeChangeContent", () => {
   it("rejects boundaries that split a surrogate pair", () => {
     // Delete just the high half of the 😀.
     expect(() => validateCodeChangeContent({ 1: [["f.txt", { edit: [[1], 2] }]] }, CONTENT))
-        .toThrow(/splits a surrogate pair/);
+        .toThrow(/half of a character/);
     // Replace starting mid-pair.
     expect(() => validateCodeChangeContent({ 1: [["f.txt", { edit: [1, [1, "y"], 1] }]] }, CONTENT))
-        .toThrow(/splits a surrogate pair/);
+        .toThrow(/half of a character/);
   });
 
   it("rejects lone surrogates in inserted and set text", () => {
     expect(() => validateCodeChangeContent(
         { 1: [["f.txt", { edit: [[0, "\ud83d"], 3] }]] }, CONTENT))
-        .toThrow(/lone surrogate/);
+        .toThrow(/half of a character/);
     expect(() => validateCodeChangeContent(
         { 1: [["g.txt", { set: "ok\udc00" }]] }, CONTENT))
-        .toThrow(/lone surrogate/);
+        .toThrow(/half of a character/);
     // A well-formed pair in an insert passes.
     validateCodeChangeContent({ 1: [["f.txt", { edit: [[0, "😀"], 3] }]] }, CONTENT);
   });

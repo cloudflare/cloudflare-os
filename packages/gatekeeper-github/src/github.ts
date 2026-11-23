@@ -24,6 +24,7 @@ import {
   type ResourceDescription,
   type SupportedResource,
   type VendorDescription,
+  resourceTypeUrlPattern,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
   ActionDescriptionBuilder, buildDescription, codeSpan, sanitizeTitle, type RenderedDescription,
@@ -257,6 +258,12 @@ type CachedIssueSearchResult = {
 };
 
 type GitHubDiscussionCommentEntry = Extract<GitHubDiscussionEntry, { kind: "comment" }>;
+
+/**
+ * A review as a cached page of `GET /pulls/{n}/reviews` holds it: without its diff comments,
+ * which are attached on every read (see `#getDiscussionReviewPage`).
+ */
+type CachedDiscussionReview = Omit<Extract<GitHubDiscussionEntry, { kind: "review" }>, "diffComments">;
 
 type StoredCommentCacheState = {
   depth: number;
@@ -690,18 +697,21 @@ const OAUTH_SCOPES = ["repo", "read:user", "user:email"];
 const AUTH_SCOPES = ["read:user", "user:email"];
 
 const REPO_RESOURCE: SupportedResource = {
+  id: "repository",
   urlPattern: "https://github.com/:owner/:repo",
   title: "GitHub Repository",
   description: "Read and manage issues, pull requests, reviews, and discussions in a GitHub repository.",
 };
 
 const ISSUE_RESOURCE: SupportedResource = {
+  id: "issue",
   urlPattern: "https://github.com/:owner/:repo/issues/:number",
   title: "GitHub Issue",
   description: "Read and manage a specific GitHub issue.",
 };
 
 const PULL_REQUEST_RESOURCE: SupportedResource = {
+  id: "pull-request",
   urlPattern: "https://github.com/:owner/:repo/pull/:number",
   title: "GitHub Pull Request",
   description: "Read and manage a specific GitHub pull request and its review threads.",
@@ -1813,6 +1823,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   async startResourceConfigurator(
     resourceUrlPattern: string,
   ): Promise<ResourceConfiguratorFrame> {
+    resourceUrlPattern = resourceTypeUrlPattern(await this.getSupportedResources(), resourceUrlPattern);
     const read = accountReader(this.ctx.exports, this.ctx.props.userObjectId);
 
     if (resourceUrlPattern === REPO_RESOURCE.urlPattern) {
@@ -2713,8 +2724,15 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     return this.#pendingActionsCache;
   }
 
-  #markActionPending(action: GitHubAction): void {
-    const record = this.#requireActionRecord(action.approvalId);
+  /**
+   * Promotes a staged action to pending, unless it has already left `staged`: the overseer can
+   * apply or reject it before `submitAction()` replies, and promoting the retired record would
+   * revive it as a simulated pending action and unbind its provisional ID. `record` is updated in
+   * place, so a caller holding it writes back the new state.
+   */
+  #markActionPending(record: StoredActionRecord | undefined): void {
+    if (record?.state !== "staged") return;
+    const action = record.action;
     record.state = "pending";
     this.#putActionRecord(action.approvalId, record);
     this.#pendingActionsCache = undefined;
@@ -2723,6 +2741,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
         kind: action.type === "createIssue" ? "issue" : "pull",
       });
     }
+    this.#clearCaches();
   }
 
   #markActionApproved(action: GitHubAction, revertInfo?: GitHubRevertInfo): void {
@@ -3626,8 +3645,14 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
   }
 
   async #getDiscussionReviewPage(realId: string, page: number): Promise<GitHubDiscussionEntry[]> {
-    const cacheKey = this.#cacheKey("discussion-reviews", realId, `p${page}`);
-    return await this.#loadCachedWithEtag<GitHubDiscussionEntry[]>(cacheKey, ENTITY_CACHE_TTL_MS, async etag => {
+    // The page is cached without the reviews' diff comments, which are attached below from the
+    // review-comment store, synced first (as `readDiffThreads()` does). The page's etag only
+    // changes when the reviews do, so diff comments cached along with it went stale: a page
+    // first built while the store was empty or behind kept serving no (or old) diff comments
+    // until another review was posted, and the store itself was only ever refreshed by
+    // `readDiffThreads()`. (v2: v1 pages held their diff comments.)
+    const cacheKey = this.#cacheKey("discussion-reviews-v2", realId, `p${page}`);
+    const reviews = await this.#loadCachedWithEtag<CachedDiscussionReview[]>(cacheKey, ENTITY_CACHE_TTL_MS, async etag => {
       const raw = await this.#withApi(api =>
         api.listPullRequestReviewsConditional(
           this.ctx.props.owner,
@@ -3642,24 +3667,10 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
         return raw;
       }
 
-      const commentsByReviewId = new Map<number, GitHubPullRequestReviewCommentResponse[]>();
-      for (const comment of await this.#materializeAllPullReviewComments(realId)) {
-        const reviewId = comment.pull_request_review_id;
-        if (!reviewId) {
-          continue;
-        }
-
-        const comments = commentsByReviewId.get(reviewId);
-        if (comments) {
-          comments.push(comment);
-        } else {
-          commentsByReviewId.set(reviewId, [comment]);
-        }
-      }
-
-      const normalized = await Promise.all(raw.data.map(async review => {
-        const reviewComments = commentsByReviewId.get(review.id) ?? [];
-        return {
+      return {
+        status: 200,
+        headers: raw.headers,
+        data: raw.data.map(review => ({
           kind: "review" as const,
           id: String(review.id),
           author: actorFromUser(review.user),
@@ -3668,16 +3679,33 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
           updatedAt: parseDate(review.submitted_at),
           url: review.html_url,
           decision: reviewDecisionFromState(review.state),
-          diffComments: reviewComments.map(submittedDiffCommentFromResponse),
-        };
-      }));
-
-      return {
-        status: 200,
-        headers: raw.headers,
-        data: normalized,
+        })),
       };
     });
+    if (reviews.length === 0) {
+      return [];
+    }
+
+    await this.#syncPullReviewComments(realId);
+    const commentsByReviewId = new Map<string, GitHubPullRequestReviewCommentResponse[]>();
+    for (const comment of await this.#materializeAllPullReviewComments(realId)) {
+      const reviewId = comment.pull_request_review_id;
+      if (!reviewId) {
+        continue;
+      }
+
+      const comments = commentsByReviewId.get(String(reviewId));
+      if (comments) {
+        comments.push(comment);
+      } else {
+        commentsByReviewId.set(String(reviewId), [comment]);
+      }
+    }
+
+    return reviews.map(review => ({
+      ...review,
+      diffComments: (commentsByReviewId.get(review.id) ?? []).map(submittedDiffCommentFromResponse),
+    }));
   }
 
   async #getDiscussion(kind: EntityKind, logicalId: string, pageSize: number): Promise<Cursor<GitHubDiscussionEntry>> {
@@ -4064,13 +4092,16 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
         ...autoApprovalOf(action),
       });
     } catch (error) {
+      // Rolled back only while still staged: a record that left "staged" was applied, rejected or
+      // is held for a retry, which proves the overseer received it and only the reply was lost.
+      const state = this.#getActionRecord(action.approvalId)?.state;
+      if (state !== undefined && state !== "staged") return;
       this.ctx.storage.kv.delete(this.#actionRecordKey(action.approvalId));
       this.#pendingActionsCache = undefined;
       throw error;
     }
 
-    this.#markActionPending(action);
-    this.#clearCaches();
+    this.#markActionPending(this.#getLiveActionRecord(action.approvalId));
   }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<GitHubRepoSession | GitHubIssue | GitHubPullRequest> {
@@ -4347,6 +4378,9 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     }
 
     const action = record.action;
+    // An apply proves the overseer holds the action, even if its submit's reply is yet to arrive
+    // or is lost: pending, it is kept for a retry should this apply fail.
+    this.#markActionPending(record);
     switch (action.type) {
       case "createIssue": {
         const response = await this.#withApi(api => api.createIssue(action.owner, action.repo, {

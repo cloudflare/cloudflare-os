@@ -132,15 +132,6 @@ describe("excludeObservers against the observer's forward reach", () => {
     expect(impl.storage.observers.get(CAROL)).toBeDefined();
   }));
 
-  it("a legacy all-gadget use collaborator blocks once any gadget binds the connection",
-      () => withImpl({ role: "use", gadgetIds: "all" }, async (impl, removals) => {
-    seedGadget(impl, 101);
-    seedGadget(impl, 102, true);
-
-    await expect(observe(impl)).rejects.toThrow(/not permitted to see/);
-    expect(removals).toEqual([]);
-  }));
-
   it("a build collaborator blocks even when no gadget binds the connection",
       () => withImpl({ role: "build" }, async (impl, removals) => {
     await expect(observe(impl)).rejects.toThrow(/not permitted to see/);
@@ -175,7 +166,7 @@ describe("excludeObservers against the observer's forward reach", () => {
     seedGadget(impl, 100);
     impl.storage.observers.put(
         { profileId: "dave", observerId: "obs-dave", accountChoices: { [GATEKEEPER_ID]: 11 } });
-    let sharing = fakeSharing({ [CAROL]: GADGET_100, dave: { role: "use", gadgetIds: "all" } });
+    let sharing = fakeSharing({ [CAROL]: GADGET_100, dave: GADGET_100 });
     impl.getSharingManager = async () => sharing;
 
     await impl.authorizeObservation(

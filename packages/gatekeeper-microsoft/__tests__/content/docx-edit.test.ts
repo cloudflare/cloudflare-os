@@ -1,15 +1,15 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { docxToMarkdown } from "../../src/content/docx";
+import { docxToMarkdown } from "@gadgets/office-content/docx";
 import { DocumentEditError, editDocx, type DocumentEdit } from "../../src/content/docx-edit";
 import { docxFeatures, markdownToDocx } from "../../src/content/docx-write";
-import { parsePart } from "../../src/content/ooxml";
+import { parsePart } from "@gadgets/office-content/ooxml";
 import { OpcPackage } from "../../src/content/pptx-package";
-import { attribute, childElements, descendants, firstChild } from "../../src/content/xml";
-import { openZip } from "../../src/content/zip";
+import { attribute, childElements, descendants, firstChild } from "@gadgets/office-content/xml";
+import { openZip } from "@gadgets/office-content/zip";
 import { writeZip } from "../../src/content/zip-write";
 import { validateDocx } from "./docx-validate";
-import { buildDocx, paragraph, run } from "./test-fixtures";
+import { buildDocx, paragraph, run } from "@gadgets/office-content/test-fixtures";
 
 const fixture = (name: string) => new Uint8Array(readFileSync(new URL(`../fixtures/${name}`, import.meta.url).pathname));
 const REPORT = fixture("python-docx-report.docx");

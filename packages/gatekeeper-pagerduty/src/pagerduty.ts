@@ -77,7 +77,7 @@ import {
   type PagerDutyGatekeeperImplProps,
 } from "./pagerduty-env";
 import { PagerDutyConfiguratorUI } from "./pagerduty-configurator";
-import { handleWebhook } from "./pagerduty-hooks";
+import { forgetHooks, handleWebhook } from "./pagerduty-hooks";
 import type { WireUser } from "./pagerduty-normalize";
 import { parseResourceUrl, sameTenant } from "./pagerduty-urls";
 import { obsContext } from "./observability";
@@ -399,6 +399,7 @@ export class UserAccount extends DurableObject<Env> {
       // `oauthClient()` refused to exchange the code without a client ID.
       identity = await fetchUser(grant.accessToken, await verifyIdToken(tokens.idToken, this.env.CLIENT_ID!));
     } catch (error) {
+      logger.error("could not verify who authorized a PagerDuty connection", { event: "pagerduty.oauth.identity.failed", error });
       throw new Error("Could not read which PagerDuty user authorized this connection. Please try again.",
         { cause: error });
     }
@@ -553,12 +554,18 @@ export class UserAccount extends DurableObject<Env> {
   }
 
   /**
-   * Disconnects. PagerDuty documents no token revocation, so the grant is forgotten here and lapses
-   * at PagerDuty: the access token within a day, the refresh token after 30 days unused. A user
-   * can revoke it sooner from their PagerDuty profile.
+   * Disconnects, dropping the connection's hooks. That drop is best effort: should it fail, nothing
+   * retries it, and the hooks stay registered with the driver, their firings failing without a grant.
+   * PagerDuty documents no token revocation, so the grant is forgotten here and lapses at
+   * PagerDuty: the access token within a day, the refresh token after 30 days unused. A user can
+   * revoke it sooner from their PagerDuty profile.
    */
   async revoke(): Promise<void> {
+    // Before any await, so no credential read or OAuth completion gets in; the driver needs only the ID.
     this.#creds.clear();
+    await forgetHooks(this.ctx.exports, this.ctx.id.toString()).catch((error: unknown) => {
+      logger.warn("failed to drop the hooks of a disconnected connection", { event: "pagerduty.hooks.forget.failed", error });
+    });
     await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.deleteAll();
   }

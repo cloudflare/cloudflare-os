@@ -1,10 +1,10 @@
 // What rewriting a deck from Markdown would lose: everything the Markdown writer can't produce, so an
 // agent asked to rewrite a deck wholesale can say what will go, or edit in place instead.
 
-import { parsePart } from "./ooxml";
+import { parsePart } from "@gadgets/office-content/ooxml";
 import { relKind } from "./pptx-deck";
 import { OpcPackage } from "./pptx-package";
-import { attribute, childAt, descendants, textContent } from "./xml";
+import { attribute, childAt, descendants, textContent } from "@gadgets/office-content/xml";
 
 /** Layout types the Markdown writer makes slides from; a slide on any other loses its arrangement. */
 const WRITTEN_LAYOUTS = new Set(["title", "obj", "tx", "titleOnly", "blank"]);

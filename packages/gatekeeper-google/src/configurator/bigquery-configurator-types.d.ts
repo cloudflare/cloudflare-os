@@ -3,8 +3,8 @@ export type { ConfiguratorOption };
 
 /**
  * The chosen node, by its {@link BigQueryNode.id}, or null when nothing is chosen; and the project
- * query jobs run in when the node's project is not one this account holds a role in (see
- * {@link BigQueryNode.listed}), else null.
+ * query jobs run in when they cannot run in the node's project (see {@link BigQueryNode.runsQueries}),
+ * else null.
  */
 export type BigQueryConfiguratorValues = { target?: string | null; queryProject?: string | null };
 
@@ -25,11 +25,11 @@ export type BigQueryNode = {
   /** Set on a table that is a view or materialized view. */
   view?: true;
   /**
-   * Whether the node's project is one BigQuery lists for this account: the projects it holds a role
-   * in, where it can usually run query jobs. A dataset shared from another project is reached by
-   * ID instead, and a connection to it names a listed project to run its queries in.
+   * Whether query jobs can run in the node's project: one BigQuery lists for this account, as one it
+   * holds a role in, or one that accepts a dry-run job from it. A project that only shared a dataset
+   * with it does not, so a connection to that names another project to run its queries in.
    */
-  listed: boolean;
+  runsQueries: boolean;
   /** The node's ancestors below the root, outermost first, for a node looked up or found by search. */
   path?: BigQueryCrumb[];
 };

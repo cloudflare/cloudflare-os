@@ -33,18 +33,23 @@ Workshop's browser tests need Chromium installed once with
 `pnpm --filter @gadgets/workshop-frontend exec playwright install chromium` (CI adds
 `--with-deps` for the system libraries). Run them separately with
 `pnpm --filter @gadgets/workshop-frontend test:run:browser`. The `workshop-evals` unit tests run
-views in that Chromium too, through Playwright, so they need the same install.
+views in that Chromium too, through Playwright, so they need the same install. So does `gatekeeper-kit`'s
+connect-form test (`connect-form-browser.test.ts`), which submits the pasted-key form from a real
+page, because what a browser sends as `Origin` depends on the page's `Referrer-Policy`.
 
 ## Watchdog policy
 
-Shared test tasks use `scripts/with-timeout.ts`: 60 seconds without output and 600 seconds total.
+Shared test tasks use `scripts/with-timeout.ts`: 60 seconds without output and 900 seconds (15 minutes) total.
+The total allowance supports healthy runs on slower machines, including cloud containers, without
+requiring a special invocation. Idle detection remains unchanged; a hung command that continues
+printing output can take five minutes longer to terminate than with the previous ten-minute cap.
+
 Import-heavy backend unit tests use a 120-second idle allowance, and the `workshop-evals` unit tests
 a 240-second one: `evals/chat-views.test.ts` reports only when it ends, and took 114 seconds on
 CI on 2026-11-09. These process-level watchdogs are separate from Vitest's per-test limits and
 Linux Container execution deadlines. Google test projects allow 15 seconds per test.
 
-For a slow container or CI runner, explicitly override both bounds rather than changing local
-defaults:
+For a run that needs more time than these defaults, explicitly override the relevant bounds:
 
 ```sh
 TESTS_WITH_TIMEOUT_IDLE_SECONDS=1800 TESTS_WITH_TIMEOUT_MAX_SECONDS=1800 pnpm test
@@ -83,9 +88,8 @@ pool from appearing to pass under Node. On a Mac, prevent idle sleep for the dur
 - AI Gateway mode needs `CF_AI_GATEWAY`, `CF_AI_GATEWAY_ACCOUNT_ID`, `CF_AI_GATEWAY_PROVIDERS`
   (`cloudflare` for `@cf/*` models) and a transport: `--use-workers-ai-binding`, which needs a
   Wrangler login (set `CLOUDFLARE_ACCOUNT_ID` if it has several accounts), or
-  `CF_AI_GATEWAY_API_TOKEN` with `CF_AI_GATEWAY_USE_BINDING=false`. `google` always needs the token.
-  Listing models and changing admin model settings send nothing to the gateway, so placeholder
-  values are enough for them.
+  `CF_AI_GATEWAY_API_TOKEN` with `CF_AI_GATEWAY_USE_BINDING=false`. Listing models and changing
+  admin model settings send nothing to the gateway, so placeholder values are enough for them.
 - workshop-backend's `test:run` runs Vitest twice, unit then integration, so a file argument only
   reaches the integration run. For one unit file, run the script's two build steps, then
   `pnpm exec vitest run <file>` in `packages/workshop-backend`.

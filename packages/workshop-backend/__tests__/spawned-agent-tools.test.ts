@@ -37,6 +37,7 @@ async function withImpl(fn: (impl: any) => Promise<void>): Promise<void> {
     impl.ownerId = OWNER_USER_ID;
     impl.users = {
       idFromString: (id: string) => id,
+      idFromName: () => OWNER_USER_ID,
       get: () => ({ getChatContext: async () => ({ profile: OWNER }) }),
     };
     // The turn is driven by hand below, not by the spawn.
@@ -152,6 +153,31 @@ describe("spawned agent tools", () => {
         .flatMap(msg => msg.type === "changes" && msg.change ? Object.keys(msg.change) : []));
     expect(touched).toEqual(new Set([`${worktreeId}`]));
     expect(impl.getChatAgentContext(chatId).spawnerConfig).toBeDefined();
+  }));
+
+  it("creates an empty worktree without a commit and replays it without recreating it", () => withImpl(async impl => {
+    let chatId = await spawnChat(impl, {displayName: "Spawner", modelId: "m", env: {}});
+    await runScriptedTurn(impl, chatId, [
+      fauxAssistantMessage([fauxToolCall("createWorktree", {title: "Output", bindingName: "OUTPUT"})],
+          {stopReason: "toolUse"}),
+      fauxAssistantMessage([fauxToolCall("writeFile", {workpiece: "OUTPUT", filename: "result.txt", content: "done"})],
+          {stopReason: "toolUse"}),
+      fauxAssistantMessage(fauxText("Done.")),
+    ]);
+    expect(toolCalls(impl, chatId).map(call => call.error)).toEqual([undefined, undefined]);
+    let trees = [...impl.storage.gadgets.list()];
+    expect(trees).toHaveLength(1);
+    expect(await impl.gitCache.listCommitTreePaths(trees[0].baseCommit)).toEqual([]);
+    impl.addChatMessages(chatId, OWNER, [{type: "message", message: "Read the output"}]);
+    await runScriptedTurn(impl, chatId, [
+      fauxAssistantMessage([fauxToolCall("readFile", {workpiece: "OUTPUT", filename: "result.txt"})],
+          {stopReason: "toolUse"}),
+      fauxAssistantMessage(fauxText("Done.")),
+    ]);
+    expect([...impl.storage.gadgets.list()]).toEqual(trees);
+    let read = toolCalls(impl, chatId).at(-1)!;
+    expect(read.toolName).toBe("readFile");
+    expect(read.error).toBeUndefined();
   }));
 
   it("greps a worktree before its first modification pins it, and after",

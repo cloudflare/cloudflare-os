@@ -211,6 +211,8 @@ export type GitLabJobResponse = {
   duration?: number | null;
   web_url: string;
   pipeline: GitLabPipelineBasicResponse;
+  /** The job's artifacts by type: `archive` for `artifacts:paths`, `junit` for a test report, and so on. */
+  artifacts?: Array<{ file_type: string }>;
   commit?: { id: string } | null;
   runner?: { description?: string | null; name?: string | null } | null;
   /** Trigger jobs only: the pipeline it started, null until it has. */
@@ -239,7 +241,8 @@ export type GitLabCommitStatusResponse = {
 /** `GET /projects/:id/pipelines/:pipeline_id/test_report_summary`. */
 export type GitLabTestReportSummaryResponse = {
   total: { count: number; failed: number; skipped: number; error: number };
-  test_suites: Array<{ name: string; total_count: number; failed_count: number; error_count: number }>;
+  /** `build_ids`: the jobs whose reports the summary holds, child pipelines' in the project included. */
+  test_suites: Array<{ name: string; total_count: number; failed_count: number; error_count: number; build_ids: number[] }>;
 };
 
 /** `GET /projects/:id/pipelines/:pipeline_id/test_report`. */
@@ -465,6 +468,8 @@ type RequestOptions = {
   timeoutMs?: number;
   headers?: Record<string, string | undefined>;
   okStatuses?: number[];
+  /** The API's root path; REST's `/api/v4` unless given. */
+  root?: "/api/graphql";
 };
 
 export type RequestResult<T> = {
@@ -695,7 +700,7 @@ async function send(
   options: RequestOptions & { accept?: string },
   credentials?: GitLabCredentialSource,
 ): Promise<Response> {
-  const url = new URL(`/api/v4${path}`, instance.apiOrigin);
+  const url = new URL(`${options.root ?? "/api/v4"}${path}`, instance.apiOrigin);
   appendQuery(url, options.query);
 
   const headers = new Headers({ "User-Agent": USER_AGENT, ...instance.headers });
@@ -1443,26 +1448,30 @@ export class GitLabApi {
       `/projects/${encodeProjectPath(projectPath)}/events`, { action: "pushed" }, page, perPage);
   }
 
-  /** One page of a pipeline's jobs (not trigger jobs), newest first, latest attempts only. */
-  async listPipelineJobs(projectPath: string, pipelineId: number, page: number, perPage: number):
-      Promise<GitLabPage<GitLabJobResponse>> {
-    return await this.#getPage<GitLabJobResponse>(
-      `/projects/${encodeProjectPath(projectPath)}/pipelines/${pipelineId}/jobs`, {}, page, perPage);
+  /**
+   * One page of a pipeline's jobs (not trigger jobs), newest first, latest attempts only unless
+   * `includeRetried`.
+   */
+  async listPipelineJobs(projectPath: string, pipelineId: number, page: number, perPage: number,
+                         options: { includeRetried?: true } = {}): Promise<GitLabPage<GitLabJobResponse>> {
+    return await this.#getPage<GitLabJobResponse>(`/projects/${encodeProjectPath(projectPath)}/pipelines/${pipelineId}/jobs`,
+      { include_retried: options.includeRetried }, page, perPage);
   }
 
   /**
-   * One page of a pipeline's trigger jobs, latest attempts only. GitLab 19.2 renamed the route from
-   * `bridges` to `trigger_jobs` and deprecated the old name; the caller picks by version
-   * (`supportsTriggerJobsRoute`).
+   * One page of a pipeline's trigger jobs, latest attempts only unless `includeRetried`. GitLab 19.2
+   * renamed the route from `bridges` to `trigger_jobs` and deprecated the old name; the caller picks
+   * by version (`supportsTriggerJobsRoute`).
    */
   async listPipelineTriggerJobs(projectPath: string, pipelineId: number, options: {
     route: "trigger_jobs" | "bridges";
     page: number;
     perPage: number;
+    includeRetried?: true;
   }): Promise<GitLabPage<GitLabJobResponse>> {
     return await this.#getPage<GitLabJobResponse>(
       `/projects/${encodeProjectPath(projectPath)}/pipelines/${pipelineId}/${options.route}`,
-      {}, options.page, options.perPage);
+      { include_retried: options.includeRetried }, options.page, options.perPage);
   }
 
   /**
@@ -1514,6 +1523,31 @@ export class GitLabApi {
   async getPipelineTestReport(projectPath: string, pipelineId: number): Promise<GitLabTestReportResponse> {
     return await this.#get<GitLabTestReportResponse>(
       `/projects/${encodeProjectPath(projectPath)}/pipelines/${pipelineId}/test_report`);
+  }
+
+  /**
+   * Whether this account may read job `jobId`'s artifacts, test reports included: GitLab's
+   * `read_job_artifacts`, which applies the job's `artifacts:access` and which REST does not
+   * report, so it is asked through GraphQL. `null` when there is nothing left to read: the job is
+   * erased or gone, or not in the project this account sees by `projectId`.
+   */
+  async jobArtifactsReadable(projectId: number, jobId: number): Promise<boolean | null> {
+    type Answer = {
+      data?: { projects?: { nodes: Array<{ job: { erasedAt: string | null; userPermissions: { readJobArtifacts: boolean } } | null }> } };
+      errors?: Array<{ message?: string }>;
+    };
+    const { data } = await this.#request<Answer>("POST", "", {
+      root: "/api/graphql",
+      body: {
+        query: "query($project: [ID!], $job: JobID!) { projects(ids: $project) { nodes { " +
+          "job(id: $job) { erasedAt userPermissions { readJobArtifacts } } } } }",
+        variables: { project: [`gid://gitlab/Project/${projectId}`], job: `gid://gitlab/Ci::Build/${jobId}` },
+      },
+    });
+    // GitLab's error text is a response body, kept out of errors that are logged and shown.
+    if (data.errors?.length || !data.data?.projects) throw new GitLabApiError(502, "GitLab GraphQL failed.");
+    const job = data.data.projects.nodes[0]?.job;
+    return job == null || job.erasedAt !== null ? null : job.userPermissions.readJobArtifacts;
   }
 
   // -- git smart-HTTP

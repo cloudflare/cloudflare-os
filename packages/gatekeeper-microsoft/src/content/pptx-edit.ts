@@ -4,7 +4,7 @@
 // animations, images or design.
 
 import { parseMarkdown, textWithLinks } from "./markdown-parse";
-import { escapeText, parsePart, withRelationshipsNs } from "./ooxml";
+import { escapeText, parsePart, withRelationshipsNs } from "@gadgets/office-content/ooxml";
 import { imageOf, items, paragraphs, fitScale, type ImageItem } from "./pptx-content";
 import { Deck, type Box } from "./pptx-deck";
 import { placeholderHandles, placeholderKind, slidePlaceholders } from "./pptx-describe";
@@ -13,7 +13,7 @@ import { PackageError } from "./pptx-package";
 import { PartWriter, autofit, notesParagraphs, notesXml, pictureShape, runTemplate, titleScale } from "./pptx-render";
 import { insertMarkdownSlides } from "./pptx-write";
 import { applySplices, elementText, isElement, parseRaw, rawChild, rawDescendants, RawXmlError, type RawElement, type Splice } from "./raw-xml";
-import { descendants, XmlError, type XmlElement } from "./xml";
+import { descendants, XmlError, type XmlElement } from "@gadgets/office-content/xml";
 
 export { pptxFeatures } from "./pptx-features";
 export { describePptx, type SlideInfo, type SlidePlaceholder } from "./pptx-describe";

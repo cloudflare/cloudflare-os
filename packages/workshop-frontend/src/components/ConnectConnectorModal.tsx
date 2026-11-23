@@ -5,6 +5,7 @@ import {
   AccountDescription,
   SupportedResource,
   VendorDescription,
+  getResourceTypeId, getGrantedResourceTypeIds,
 } from '@gadgets/workshop-shared/gatekeeper'
 import { WorkshopButton, WorkshopIconButton } from './WorkshopControls'
 
@@ -21,19 +22,20 @@ interface ConnectConnectorModalProps {
   onOpenChange: (open: boolean) => void
   connecting?: boolean
   onCancelConnect?: () => void
-  // Connect mode: invoked with the `urlPattern`s of the grantable resources the user chose to
+  // Connect mode: invoked with the type IDs of the grantable resources the user chose to
   // enable. `undefined` means "enable everything" (no toggle was deselected), matching the
   // gatekeeper's default behavior.
-  onConfirm?: (resourceUrlPatterns?: string[]) => void
+  onConfirm?: (resourceTypeIds?: string[]) => void
   accountDescription?: AccountDescription
   credentialsValid?: boolean
   disconnecting?: boolean
   onDisconnect?: () => void
+  grantedResourceTypeIds?: string[]
   grantedResourceUrlPatterns?: string[]
-  // Manage mode: invoked to expand the grant to include the given resource `urlPattern`s.
-  onEnsureResources?: (resourceUrlPatterns: string[]) => void
-  // Resource `urlPattern`s currently being granted (shows a busy state on the relevant toggle).
-  ensuringResourceUrlPatterns?: string[]
+  // Manage mode: invoked to expand the grant to include the given resource type IDs.
+  onEnsureResources?: (resourceTypeIds: string[]) => void
+  // Resource type IDs currently being granted (shows a busy state on the relevant toggle).
+  ensuringResourceTypeIds?: string[]
 }
 
 export default function ConnectConnectorModal({
@@ -52,10 +54,13 @@ export default function ConnectConnectorModal({
   credentialsValid = true,
   disconnecting = false,
   onDisconnect,
+  grantedResourceTypeIds,
   grantedResourceUrlPatterns,
   onEnsureResources,
-  ensuringResourceUrlPatterns = [],
+  ensuringResourceTypeIds = [],
 }: ConnectConnectorModalProps) {
+  const granted = getGrantedResourceTypeIds(
+    { grantedResourceTypeIds, grantedResourceUrlPatterns }, supportedResources)
   const isManage = mode === 'manage'
 
   // Resource types the user can individually enable/disable at connect time. Resources without
@@ -66,11 +71,11 @@ export default function ConnectConnectorModal({
     [supportedResources],
   )
   const granular = grantableResources.length > 0
-  const grantableKey = grantableResources.map((r) => r.urlPattern).join(',')
+  const grantableKey = grantableResources.map(getResourceTypeId).join(',')
 
-  const isGranted = (urlPattern: string) =>
-    grantedResourceUrlPatterns === undefined ||
-    grantedResourceUrlPatterns.includes(urlPattern)
+  const isGranted = (resourceTypeId: string) =>
+    granted === undefined ||
+    granted.includes(resourceTypeId)
 
   const [confirmingDisconnect, setConfirmingDisconnect] = useState(false)
   const [selected, setSelected] = useState<Set<string>>(new Set())
@@ -80,52 +85,52 @@ export default function ConnectConnectorModal({
     setConfirmingDisconnect(false)
   }, [open])
 
-  const grantedKey = (grantedResourceUrlPatterns ?? []).join(',')
+  const grantedKey = (granted ?? []).join(',')
   useEffect(() => {
     if (!open) return
     if (isManage) {
       setSelected(
         new Set(
           grantableResources
-            .map((r) => r.urlPattern)
+            .map(getResourceTypeId)
             .filter((p) => isGranted(p)),
         ),
       )
     } else {
-      setSelected(new Set(grantableResources.map((r) => r.urlPattern)))
+      setSelected(new Set(grantableResources.map(getResourceTypeId)))
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, isManage, grantableKey, grantedKey])
 
   const noneSelected = granular && selected.size === 0
 
-  const pendingPatterns = isManage
+  const pendingTypeIds = isManage
     ? [...selected].filter((p) => !isGranted(p))
     : []
-  const hasPending = pendingPatterns.length > 0
+  const hasPending = pendingTypeIds.length > 0
 
-  function toggleResource(urlPattern: string, checked: boolean) {
+  function toggleResource(resourceTypeId: string, checked: boolean) {
     setSelected((prev) => {
       const next = new Set(prev)
-      if (checked) next.add(urlPattern)
-      else next.delete(urlPattern)
+      if (checked) next.add(resourceTypeId)
+      else next.delete(resourceTypeId)
       return next
     })
   }
 
   function handleAddResources() {
-    if (hasPending) onEnsureResources?.(pendingPatterns)
+    if (hasPending) onEnsureResources?.(pendingTypeIds)
   }
 
   function discardPending() {
     setSelected(
       new Set(
-        grantableResources.map((r) => r.urlPattern).filter((p) => isGranted(p)),
+        grantableResources.map(getResourceTypeId).filter((p) => isGranted(p)),
       ),
     )
   }
 
-  const ensuringBusy = ensuringResourceUrlPatterns.length > 0
+  const ensuringBusy = ensuringResourceTypeIds.length > 0
 
   function handleConfirm() {
     if (!onConfirm) return
@@ -258,17 +263,17 @@ export default function ConnectConnectorModal({
               <ul className="space-y-2">
                 {supportedResources.map((resource) => {
                   const grantable = Boolean(resource.grantable)
-                  const granted = isManage && grantable && isGranted(resource.urlPattern)
-                  const ensuring = ensuringResourceUrlPatterns.includes(
-                    resource.urlPattern,
+                  const granted = isManage && grantable && isGranted(getResourceTypeId(resource))
+                  const ensuring = ensuringResourceTypeIds.includes(
+                    getResourceTypeId(resource),
                   )
                   const checked =
                     grantable &&
-                    (selected.has(resource.urlPattern) || ensuring)
+                    (selected.has(getResourceTypeId(resource)) || ensuring)
                   const disabled = isManage && (granted || ensuring)
                   return (
                     <li
-                      key={resource.urlPattern}
+                      key={getResourceTypeId(resource)}
                       className="flex items-center gap-3 rounded-lg border border-kumo-line bg-kumo-base px-3 py-2.5"
                     >
                       {resourceIcon(resource)}
@@ -292,7 +297,7 @@ export default function ConnectConnectorModal({
                           checked={checked}
                           disabled={disabled}
                           onCheckedChange={(next) =>
-                            toggleResource(resource.urlPattern, next)
+                            toggleResource(getResourceTypeId(resource), next)
                           }
                         />
                       )}
@@ -346,7 +351,7 @@ export default function ConnectConnectorModal({
             </p>
           ) : isManage && hasPending ? (
             <p className="m-0 min-w-0 flex-1 text-[12px] leading-4 font-normal tracking-[-0.2px] text-kumo-subtle">
-              {pendingPatterns.length} resource{pendingPatterns.length === 1 ? '' : 's'} to add
+              {pendingTypeIds.length} resource{pendingTypeIds.length === 1 ? '' : 's'} to add
             </p>
           ) : !isManage && granular && noneSelected ? (
             <p className="m-0 min-w-0 flex-1 text-[12px] leading-4 font-normal tracking-[-0.2px] text-kumo-subtle">

@@ -10,6 +10,7 @@ import { createMimeMessage } from "mimetext/browser";
 import PostalMime, { addressParser } from "postal-mime";
 import type {Attachment as PostalAttachment} from "postal-mime";
 import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
+import { reportGoogleRequestFailure, safeProviderCode } from "./google-response";
 
 /**
  * Internal type for parsed message info with raw label IDs (not yet resolved
@@ -151,7 +152,8 @@ export async function exchangeAuthCode(
 }
 
 export type RefreshFailure =
-  | { ok: false; reason: "revoked" }
+  /** Google's `invalid_grant`. `subtype` is its `error_subtype`, such as `invalid_rapt`, when it sends one. */
+  | { ok: false; reason: "revoked"; subtype?: string }
   | { ok: false; reason: "policyBlocked"; detail: string };
 
 export type AccessTokenResult = { ok: true; token: GoogleAccessToken } | RefreshFailure;
@@ -179,9 +181,12 @@ export async function getAccessToken(
     let isJson = contentType && contentType.startsWith("application/json");
 
     if (isJson) {
-      let body = await response.json<{error?: string, error_description?: string}>();
+      let body = await response.json<{
+        error?: string, error_description?: string, error_subtype?: unknown,
+      }>();
       if (body.error === "invalid_grant") {
-        return { ok: false, reason: "revoked" };
+        let subtype = safeProviderCode(body.error_subtype);
+        return { ok: false, reason: "revoked", ...(subtype !== undefined ? { subtype } : {}) };
       }
       if (body.error === "admin_policy_enforced") {
         return { ok: false, reason: "policyBlocked",
@@ -255,6 +260,13 @@ export async function getGoogleAccountDescription(accessToken: string)
  * verified (`email_verified`). Returns null otherwise, so the Workshop never keys an account by an
  * unverified address.
  */
+/** Google's userinfo endpoint refused the token. */
+export class GoogleUserInfoError extends Error {
+  constructor(readonly status: number, statusText: string) {
+    super(`Failed to fetch user info: ${status} ${statusText}`);
+  }
+}
+
 export async function getGoogleVerifiedEmail(accessToken: string): Promise<string | null> {
   const response = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
     method: 'GET',
@@ -266,7 +278,7 @@ export async function getGoogleVerifiedEmail(accessToken: string): Promise<strin
 
   if (!response.ok) {
     response.body?.cancel();
-    throw new Error(`Failed to fetch user info: ${response.status} ${response.statusText}`);
+    throw new GoogleUserInfoError(response.status, response.statusText);
   }
 
   let data: any = await response.json();
@@ -404,6 +416,10 @@ export const MAX_GMAIL_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 export const MAX_GMAIL_FORWARD_SOURCE_BYTES = 25 * 1024 * 1024;
 /** Gmail's per-call limit on message IDs for `users.messages.batchModify`. */
 export const GMAIL_BATCH_MODIFY_MAX_IDS = 1000;
+// How long Gmail is given to begin its answer to a streamed attachment read.
+const GMAIL_ATTACHMENT_OPEN_TIMEOUT_MS = 60_000;
+// The base64 characters of 64 KiB of an inline attachment, less a byte so that they are whole quartets.
+const GMAIL_INLINE_ATTACHMENT_STEP_CHARS = Math.floor(64 * 1024 / 3) * 4;
 const MAX_GMAIL_MESSAGE_HEADERS = 256;
 const MAX_GMAIL_MESSAGE_HEADER_BYTES = 128 * 1024;
 
@@ -466,6 +482,184 @@ function base64UrlToBase64(data: string): string {
 export function decodeBase64UrlToBytes(data: string): Uint8Array {
   const binary = atob(base64UrlToBase64(data));
   return Uint8Array.from(binary, c => c.charCodeAt(0));
+}
+
+// The value of each base64 character, in the URL-safe alphabet and the standard one; -1 for the rest.
+const BASE64_SEXTETS = new Int8Array(256).fill(-1);
+for (const last of ["-_", "+/"]) {
+  const alphabet = `ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789${last}`;
+  for (let i = 0; i < 64; i++) BASE64_SEXTETS[alphabet.charCodeAt(i)] = i;
+}
+// What a JSON number, `true`, `false` or `null` is written with.
+const JSON_SCALAR_RE = /[-+.0-9A-Za-z]/;
+
+/**
+ * Decodes the `data` string of a Gmail `attachments.get` JSON answer as it arrives: the
+ * attachment's bytes, of which there must be exactly `size`. Nothing of `json` is read before the
+ * result is, each of its chunks is decoded as it comes and kept no longer, and cancelling the
+ * result cancels `json`.
+ *
+ * The answer is one object whose members are strings, numbers, `true`, `false` or `null`, around
+ * `data` in any order. `data` is base64 in either alphabet, padded or not, and any of its characters may be written
+ * as a JSON escape, as `=` is by some serializers. Any other answer errors the stream, with no
+ * text of the answer in the error. So does a count of bytes that is not `size`: as soon as there
+ * are more, and at the string's end when there are fewer.
+ */
+export function gmailAttachmentBytes(
+    json: ReadableStream<Uint8Array>, size: number): ReadableStream<Uint8Array> {
+  const reader = json.getReader();
+  const invalid = () => new Error("Gmail returned an invalid attachment response.");
+  const mismatch = () => new Error("Attachment content no longer matches the authorized snapshot.");
+  let state: "open" | "member" | "key" | "colon" | "value" | "string" | "scalar" | "data" |
+    "after" | "end" = "open";
+  let escaped = false;
+  // How much of `data` the member's key has matched so far; -1 once it is some other key.
+  let matched = 0;
+  let found = false;
+  // Where in an escape `data` stands: 0 outside one, 1 after its `\`, 2 to 5 at the hex digits
+  // of `\uXXXX`, whose value so far is `unit`.
+  let escapeAt = 0;
+  let unit = 0;
+  // The bits of the string not yet written out as a byte, and how many of them there are.
+  let pending = 0;
+  let bits = 0;
+  let padding = 0;
+  let total = 0;
+  const decode = (chunk: Uint8Array): Uint8Array => {
+    const bytes = new Uint8Array(Math.ceil(chunk.byteLength * 3 / 4) + 1);
+    let length = 0;
+    for (let i = 0; i < chunk.byteLength; i++) {
+      const byte = chunk[i];
+      if (state === "data") {
+        // The character this byte is, or the one that the escape it ends stands for.
+        let char = byte;
+        if (escapeAt === 1) {
+          // `\/` and `\uXXXX` are the escapes that can stand for a base64 character.
+          if (byte === 0x75) {
+            escapeAt = 2;
+            unit = 0;
+            continue;
+          }
+          if (byte !== 0x2f) throw invalid();
+          escapeAt = 0;
+        } else if (escapeAt > 1) {
+          const digit = parseInt(String.fromCharCode(byte), 16);
+          if (Number.isNaN(digit)) throw invalid();
+          unit = unit << 4 | digit;
+          if (escapeAt++ < 5) continue;
+          escapeAt = 0;
+          char = unit;
+        } else if (byte === 0x5c) {
+          escapeAt = 1;
+          continue;
+        } else if (byte === 0x22) {
+          if (bits === 6) throw invalid();
+          if (total + length !== size) throw mismatch();
+          state = "after";
+          continue;
+        }
+        // A character past the table has no sextet, and is refused as the rest are.
+        const sextet = BASE64_SEXTETS[char];
+        if (sextet >= 0 && padding === 0) {
+          pending = (pending << 6 | sextet) & 0xfff;
+          bits += 6;
+          if (bits >= 8) {
+            bits -= 8;
+            bytes[length++] = pending >> bits;
+          }
+        } else if (char === 0x3d && bits !== 6 && padding < bits / 2) {
+          // `=`, as many as the last quartet is short of: 4 bits are left after two characters.
+          padding++;
+        } else {
+          throw invalid();
+        }
+        continue;
+      }
+      const blank = byte === 0x20 || byte === 0x0a || byte === 0x0d || byte === 0x09;
+      switch (state) {
+        case "open":
+          if (byte === 0x7b) state = "member";
+          else if (!blank) throw invalid();
+          break;
+        case "member":
+          if (byte === 0x22) {
+            state = "key";
+            matched = 0;
+          } else if (byte === 0x7d) state = "end";
+          else if (!blank) throw invalid();
+          break;
+        case "key":
+        case "string":
+          if (escaped) escaped = false;
+          else if (byte === 0x5c) {
+            escaped = true;
+            matched = -1;
+          } else if (byte === 0x22) state = state === "key" ? "colon" : "after";
+          else if (state === "key") {
+            matched = matched >= 0 && byte === "data".charCodeAt(matched) ? matched + 1 : -1;
+          }
+          break;
+        case "colon":
+          if (byte === 0x3a) state = "value";
+          else if (!blank) throw invalid();
+          break;
+        case "value":
+          if (blank) break;
+          if (matched === 4) {
+            if (byte !== 0x22 || found) throw invalid();
+            found = true;
+            state = "data";
+          } else if (byte === 0x22) state = "string";
+          else if (JSON_SCALAR_RE.test(String.fromCharCode(byte))) state = "scalar";
+          else throw invalid();
+          break;
+        case "scalar":
+        case "after":
+          if (state === "scalar" && JSON_SCALAR_RE.test(String.fromCharCode(byte))) break;
+          if (byte === 0x2c) state = "member";
+          else if (byte === 0x7d) state = "end";
+          else if (blank) state = "after";
+          else throw invalid();
+          break;
+        case "end":
+          if (!blank) throw invalid();
+      }
+    }
+    total += length;
+    if (total > size) throw mismatch();
+    return bytes.subarray(0, length);
+  };
+  let cancelled = false;
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        while (true) {
+          const chunk = await reader.read();
+          // Cancelling ends a read in progress the way the answer's own end does.
+          if (cancelled) return;
+          if (chunk.done) {
+            if (state !== "end") throw invalid();
+            if (!found) throw new Error("Attachment content is no longer available.");
+            controller.close();
+            return;
+          }
+          const bytes = decode(chunk.value);
+          if (bytes.byteLength > 0) {
+            controller.enqueue(bytes);
+            return;
+          }
+        }
+      } catch (error) {
+        // An answer that broke or was refused is let go, and the stream errors with the same.
+        reader.cancel(error).catch(() => {});
+        throw error;
+      }
+    },
+    cancel: reason => {
+      cancelled = true;
+      return reader.cancel(reason);
+    },
+  }, {highWaterMark: 0});
 }
 
 class UnsafeMimeReconstructionError extends Error {}
@@ -1747,29 +1941,64 @@ async function readErrorText(response: Response, maxBytes = 4096): Promise<strin
   return new TextDecoder().decode(bytes);
 }
 
-/** A status-only provider error that is safe to use for retry decisions and server logs. */
+// Google's reasons for a request it limited rather than refused, on a 403 or a 429. The limit is
+// the user's, or for `dailyLimitExceeded` the Google Cloud project's.
+const GMAIL_RATE_LIMIT_REASONS: ReadonlySet<string> = new Set([
+  "rateLimitExceeded", "userRateLimitExceeded", "dailyLimitExceeded", "RATE_LIMIT_EXCEEDED",
+]);
+
+// Google's reasons for a token that lacks the scope a request needs.
+const GMAIL_SCOPE_REASONS: ReadonlySet<string> = new Set([
+  "insufficientPermissions", "ACCESS_TOKEN_SCOPE_INSUFFICIENT",
+]);
+
+/** What the caller can do about a failure Google gave one of these reasons for, if anything. */
+function gmailFailureRemedy(status: number, reasons: readonly string[]): string {
+  if (status === 429 || reasons.some(reason => GMAIL_RATE_LIMIT_REASONS.has(reason))) {
+    // A 429 and `rateLimitExceeded` are a per-minute quota or a daily limit alike, so no wait is
+    // promised, and the limit can be the project's, so it is not said to be this account's.
+    return " Gmail is limiting requests. Try again later, with fewer or smaller requests: " +
+      "a short-term limit lifts within a minute or so, but a daily limit, such as the one on sending mail, can take hours.";
+  }
+  if (reasons.some(reason => GMAIL_SCOPE_REASONS.has(reason))) {
+    return " The Google connection lacks a permission this needs: reconnect the Google account and allow the access it asks for.";
+  }
+  return "";
+}
+
+/**
+ * A provider error carrying Google's status and reason codes, never its prose, so it is safe to
+ * use for retry decisions and server logs.
+ */
 export class GmailApiError extends Error {
-  constructor(public readonly status: number, operation: string) {
-    super(`Gmail API ${operation} failed [http=${status}]`);
+  constructor(
+    public readonly status: number,
+    operation: string,
+    /** Google's reason codes for the failure, such as `rateLimitExceeded`; empty when it gave none. */
+    public readonly reasons: readonly string[] = [],
+  ) {
+    super(
+      `Gmail API ${operation} failed [http=${status}${reasons.length > 0 ? ` reason=${reasons.join(",")}` : ""}]` +
+      gmailFailureRemedy(status, reasons));
   }
 }
 
 async function gmailApiFailure(operation: string, response: Response): Promise<never> {
-  // Gmail error prose can reflect query and header values. Keep thrown errors safe to log.
-  try {
-    await response.body?.cancel();
-  } catch {
-    // Cancellation is best-effort; the HTTP status remains authoritative.
-  }
-  throw new GmailApiError(response.status, operation);
+  // Gmail error prose can reflect query and header values, so only Google's reason codes are kept:
+  // they tell a rate limit from a missing permission, which the status alone does not.
+  // A 404 is an answer callers expect and handle (a message, draft or label that is gone), so it
+  // is logged as information, not as a warning.
+  let { providerReasons } = await reportGoogleRequestFailure(
+      response, "Gmail", operation, response.status === 404 ? "info" : "warn");
+  throw new GmailApiError(response.status, operation, providerReasons);
 }
 
-function headerValue(
+export function headerValue(
     headers: Array<{name: string; value: string}> | undefined, name: string): string | undefined {
   return headers?.find(header => header.name.toLowerCase() === name.toLowerCase())?.value;
 }
 
-function parseAddressHeader(value: string | undefined): EmailAddress[] {
+export function parseAddressHeader(value: string | undefined): EmailAddress[] {
   return value ? postalAddressListToEmailAddresses(parseAddressList(value)) : [];
 }
 
@@ -2564,6 +2793,30 @@ export class GmailApi {
     return await response.json() as GmailMessageFull;
   }
 
+  /** Fetch only the named headers, every instance in message order, and the labels. */
+  async getMessageHeaders(messageId: string, names: readonly string[]): Promise<GmailMessageFull> {
+    validateGmailId(messageId, "message ID");
+    const url = new URL(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}`);
+    url.searchParams.set("format", "metadata");
+    for (const name of names) url.searchParams.append("metadataHeaders", name);
+    const response = await this.authedFetch(url.toString());
+    if (!response.ok) await gmailApiFailure("messages.get", response);
+    return await response.json() as GmailMessageFull;
+  }
+
+  /** Every message in a thread with only the named headers, as {@link getMessageHeaders} fetches one. */
+  async getThreadHeaders(threadId: string, names: readonly string[]): Promise<GmailMessageFull[]> {
+    validateGmailId(threadId, "thread ID");
+    const url = new URL(`https://gmail.googleapis.com/gmail/v1/users/me/threads/${threadId}`);
+    url.searchParams.set("format", "metadata");
+    for (const name of names) url.searchParams.append("metadataHeaders", name);
+    const response = await this.authedFetch(url.toString());
+    if (!response.ok) await gmailApiFailure("threads.get", response);
+    const thread = await response.json() as {id?: string; messages?: GmailMessageFull[]};
+    if (thread.id !== threadId) throw new Error("Gmail returned a different thread.");
+    return thread.messages ?? [];
+  }
+
   /** Fetch the MIME tree while leaving detached attachment data lazy. */
   async getMessageFull(messageId: string): Promise<GmailMessageFull> {
     validateGmailId(messageId, "message ID");
@@ -2593,6 +2846,66 @@ export class GmailApi {
       throw new Error("Attachment content no longer matches the authorized snapshot.");
     }
     return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  }
+
+  /**
+   * The attachment's bytes as a stream, read from Gmail as it is read: this resolves once Gmail
+   * has begun its answer, with nothing of the body read, and cancelling the stream stops the
+   * download. Unlike {@link getAttachmentContent} it has no size limit and does not look at
+   * `info.readable`; the bytes must still number `info.size`, or the stream errors.
+   *
+   * Only the wait for the answer to begin is timed, the wait for a token to ask with included.
+   * Its body is read at the caller's pace, for as long as an attachment of any size takes, so
+   * the caller times a body that stalls.
+   */
+  async openAttachmentContent(snapshot: GmailAttachmentSnapshot): Promise<ReadableStream<Uint8Array>> {
+    if (snapshot.attachmentId) {
+      validateGmailId(snapshot.messageId, "message ID");
+      validateGmailId(snapshot.attachmentId, "attachment ID");
+      const begin = new AbortController();
+      const opening = this.authedFetch(
+        `https://gmail.googleapis.com/gmail/v1/users/me/messages/${snapshot.messageId}/attachments/${snapshot.attachmentId}?fields=data`,
+        {signal: begin.signal});
+      let timer!: ReturnType<typeof setTimeout>;
+      // The signal ends a request that was made. The wait for a token to make it with heeds no
+      // signal, so the open itself is given up when the time is out, and an answer that comes
+      // after all is let go: its body may have failed with the signal already, which nothing
+      // is left to hear of.
+      const late = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          const reason = new DOMException("Gmail did not answer in time.", "TimeoutError");
+          begin.abort(reason);
+          void opening.then(answer => answer.body?.cancel(reason)).catch(() => undefined);
+          reject(reason);
+        }, GMAIL_ATTACHMENT_OPEN_TIMEOUT_MS);
+      });
+      let response: Response;
+      try {
+        response = await Promise.race([opening, late]);
+      } finally {
+        clearTimeout(timer);
+      }
+      if (!response.ok) await gmailApiFailure("attachments.get", response);
+      return gmailAttachmentBytes(
+        response.body ?? new ReadableStream({start: controller => controller.close()}),
+        snapshot.info.size);
+    }
+    const encoded = snapshot.inlineData;
+    if (encoded === undefined) throw new Error("Attachment content is no longer available.");
+    if (base64UrlDecodedByteLength(encoded) !== snapshot.info.size) {
+      throw new Error("Attachment content no longer matches the authorized snapshot.");
+    }
+    let offset = 0;
+    return new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (offset < encoded.length) {
+          controller.enqueue(decodeBase64UrlToBytes(
+            encoded.slice(offset, offset + GMAIL_INLINE_ATTACHMENT_STEP_CHARS)));
+          offset += GMAIL_INLINE_ATTACHMENT_STEP_CHARS;
+        }
+        if (offset >= encoded.length) controller.close();
+      },
+    }, {highWaterMark: 0});
   }
 
   /** Decode body alternatives, fetching detached text parts within the attachment safety limit. */

@@ -2,7 +2,11 @@ import { createFileRoute } from '@tanstack/react-router'
 import GadgetEditor from '../GadgetEditor'
 
 type GadgetSearch = {
+  // The chat the user works in: never a spawned agent's chat.
   chat?: number
+  // A spawned agent's chat, shown over `chat`. The gadget pane goes on following `chat`, since
+  // nothing done in a gadget belongs to the agent.
+  agent?: number
   // Selected workpiece (gadget) ID. Workpiece IDs start at 0, so parsing must not treat 0 as
   // absent.
   w?: number
@@ -26,6 +30,7 @@ export const Route = createFileRoute('/workspace/$id')({
     chat: typeof search.chat === 'number' ? search.chat
       : typeof search.chat === 'string' ? Number(search.chat) || undefined
       : undefined,
+    agent: parseIntParam(search.agent),
     w: parseIntParam(search.w),
     showChat: search.showChat === true || undefined,
   }),

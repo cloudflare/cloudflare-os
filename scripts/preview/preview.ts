@@ -9,12 +9,13 @@
 //   node scripts/preview/preview.ts sweep           tear down every abandoned preview
 //   ... --dry-run                                    print the plan, touch no network
 //
-// Deployment runs in three tiers, because each tier's service bindings must name the previews the
+// Deployment runs in four tiers, because each tier's service bindings must name the previews the
 // tier before it produced:
 //
-//   1. the 16 gatekeepers  (concurrently; nothing binds to anything)
-//   2. workshop-backend    (binds every gatekeeper preview via GatekeeperVendor)
-//   3. router              (binds the backend preview and every gatekeeper preview, and owns the
+//   1. pdf-renderer        (binds nothing, and is reached only over a gatekeeper's binding)
+//   2. the gatekeepers     (concurrently; each binds tier 1 previews alone, and most bind nothing)
+//   3. workshop-backend    (binds every gatekeeper preview via GatekeeperVendor)
+//   4. router              (binds the backend preview and every gatekeeper preview, and owns the
 //                           public origin: it serves the frontend and proxies /api and
 //                           /gatekeeper/<short>)
 //
@@ -43,8 +44,11 @@ import {
   ROOT,
   STAGING_CONFIG_NAME,
   backendSecrets,
+  bindInternalPreviews,
   generatePreviewConfigs,
+  previewDeletionOrder,
   previewPullRequestNumber,
+  previewTier,
   previewUrlFor,
   resolveGatekeeperSecrets,
   resolvePreviewName,
@@ -381,7 +385,7 @@ async function uploadPreviewSecrets(
   if (result.status !== 0 && isMissingWorkerError(`${result.stdout}\n${result.stderr}`)) {
     await deployBaselineWorker(pkg, wranglerCommand);
     // The baseline is briefly live without these, but it is only reachable through the *baseline*
-    // router — which is deployed after it, in tier 3, on the same first run.
+    // router — which is deployed after it, in tier 4, on the same first run.
     const baseline = await uploadSecrets(pkg, wranglerCommand, secrets, { previews: false });
     if (baseline.status !== 0) {
       throw new Error(`wrangler secret bulk failed for baseline worker ${pkg.name} with exit ` +
@@ -461,7 +465,7 @@ async function deletePreview(
 /**
  * Delete one preview from every worker that carries it.
  *
- * Dependents first — the router, then the backend, then the rest concurrently — so nothing is left
+ * Dependents first — the tiers in reverse, each one's workers concurrently — so nothing is left
  * bound to a preview that no longer exists.
  */
 async function deletePreviewFrom(
@@ -478,11 +482,9 @@ async function deletePreviewFrom(
     }
   };
 
-  const named = (name: string) => workers.filter((pkg) => pkg.name === name);
-  for (const pkg of [...named("router"), ...named("workshop-backend")]) await attempt(pkg);
-  await mapWithConcurrency(
-      workers.filter((pkg) => !["router", "workshop-backend"].includes(pkg.name)),
-      GATEKEEPER_CONCURRENCY, attempt);
+  for (const group of previewDeletionOrder(workers)) {
+    await mapWithConcurrency(group, GATEKEEPER_CONCURRENCY, attempt);
+  }
 
   for (const failure of failures.slice(1)) {
     console.error(`Additional failure deleting ${previewName}: ${describe(failure)}`);
@@ -570,6 +572,7 @@ function writePreviewComment(
 }
 
 function tiers(packages: readonly DeployablePackage[]): {
+  internal: DeployablePackage[];
   gatekeepers: DeployablePackage[];
   backend: DeployablePackage;
   router: DeployablePackage;
@@ -580,6 +583,7 @@ function tiers(packages: readonly DeployablePackage[]): {
     return pkg;
   };
   return {
+    internal: packages.filter((pkg) => previewTier(pkg.name) === "internal"),
     gatekeepers: packages.filter((pkg) => isGatekeeperPackage(pkg.name))
         .toSorted((a, b) => a.name.localeCompare(b.name)),
     backend: byName("workshop-backend"),
@@ -595,21 +599,23 @@ async function deploy({ dryRun }: { dryRun: boolean }): Promise<void> {
   const secrets = backendSecrets();
   const oauthApps = resolveGatekeeperSecrets();
   const { previewName, workersDevHost, baseUrl, packages } = generatePreviewConfigs();
-  const { gatekeepers, backend, router } = tiers(packages);
+  const { internal, gatekeepers, backend, router } = tiers(packages);
 
   if (dryRun) {
     console.log(`\ndry-run plan for preview "${previewName}" at ${baseUrl}:`);
-    console.log(`  tier 1 (${gatekeepers.length} gatekeepers, concurrently):`);
+    console.log(`  tier 1: ${internal.map((pkg) => pkg.name).join(", ")} ` +
+        "(no hostname; reached over the bindings of the tiers below)");
+    console.log(`  tier 2 (${gatekeepers.length} gatekeepers, concurrently):`);
     for (const pkg of gatekeepers) {
       const oauth = oauthApps.get(pkg.name);
       console.log(`    ${pkg.name} ` +
           `(no hostname; served at ${baseUrl}/gatekeeper/${gatekeeperShortName(pkg.name)})` +
           (oauth ? `, holding the ${Object.keys(oauth).join(", ")} secrets` : ""));
     }
-    console.log(`  tier 2: ${backend.name} (no hostname; served at ` +
-        `${baseUrl}/api), bound to the tier 1 previews, holding the ` +
+    console.log(`  tier 3: ${backend.name} (no hostname; served at ` +
+        `${baseUrl}/api), bound to the tier 2 previews, holding the ` +
         `${Object.keys(secrets).join(", ")} secrets`);
-    console.log(`  tier 3: ${router.name} -> ${baseUrl}, ` +
+    console.log(`  tier 4: ${router.name} -> ${baseUrl}, ` +
         "bound to every preview above");
     return;
   }
@@ -617,6 +623,18 @@ async function deploy({ dryRun }: { dryRun: boolean }): Promise<void> {
   const wrangler = preparePreviewWrangler();
   try {
     await waitForAll([wrangler.ready, buildWorkspace()]);
+
+    const internalIds = Object.fromEntries(await mapWithConcurrency(internal,
+        GATEKEEPER_CONCURRENCY, async (pkg) => {
+          const preview = await deployPreview(pkg, previewName, wrangler.command);
+          assertNoPreviewUrl(pkg, preview.url);
+          return [pkg.name, preview.id];
+        }));
+    for (const pkg of gatekeepers) {
+      // Most gatekeepers bind no worker, and one that does binds internal workers alone, which
+      // buildPreviewConfigs holds it to.
+      writePreviewConfig(pkg.dir, bindInternalPreviews(pkg.name, readConfig(pkg.dir), internalIds));
+    }
 
     // Keyed by worker name, because that is what a service binding names.
     const gatekeeperPreviews = await mapWithConcurrency(gatekeepers, GATEKEEPER_CONCURRENCY,
@@ -659,11 +677,11 @@ async function remove({ dryRun }: { dryRun: boolean }): Promise<void> {
   // Regenerate rather than assume: `delete` runs in its own CI job with a fresh checkout, and
   // wrangler needs a config to know which worker and account the preview belongs to.
   const { packages } = generatePreviewConfigs({ previewName });
-  const { gatekeepers, backend, router } = tiers(packages);
+  const { internal, gatekeepers, backend, router } = tiers(packages);
 
   if (dryRun) {
     console.log(`\ndry-run: would delete preview "${previewName}" for ` +
-        [router, backend, ...gatekeepers].map((pkg) => pkg.name).join(", "));
+        [router, backend, ...gatekeepers, ...internal].map((pkg) => pkg.name).join(", "));
     return;
   }
 
