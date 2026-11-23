@@ -81,6 +81,13 @@ type InitArgs<O extends Operation, Scope extends string> =
 type OperationAt<Ops extends Operation, P> = Extract<Ops, { readonly path: P }>;
 
 /**
+ * The operation of schema `S` at method `M` and path `P`, to name what it sends or returns.
+ * @example `OperationOf<Api, "get", "/users/{id}">["response"]` is the user that call resolves to.
+ */
+export type OperationOf<S extends Schema, M extends keyof S, P extends `/${string}`> =
+  S[M] extends readonly (infer Ops extends Operation)[] ? OperationAt<Ops, P> : never;
+
+/**
  * `P`, or `never` when it is a union. A call names one operation: over several, an argument only
  * some of them need would no longer be required.
  */

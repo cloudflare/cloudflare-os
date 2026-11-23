@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type Client, createOpenAPIClient, type ScopedClient, scopeTo } from "../src/http";
+import { type Client, createOpenAPIClient, type OperationOf, type ScopedClient, scopeTo } from "../src/http";
 import { HttpError } from "../src/http-errors";
 
 type User = { id: string; name: string };
@@ -274,6 +274,12 @@ async function typeChecks(api: ReturnType<typeof createOpenAPIClient<Api>>, id: 
   const me: { me: true } = await api.get("/users/me");
   const users: User[] = await api.get("/users");
   void [user, me, users];
+
+  // An operation is named by its method and path, as a call names it.
+  const named: OperationOf<Api, "get", "/users/{id}">["response"] = user;
+  // @ts-expect-error no operation is at a path the schema lacks
+  const missing: OperationOf<Api, "get", "/nowhere">["response"] = user;
+  void [named, missing];
 
   // @ts-expect-error the path object is required when the path has placeholders
   await api.get("/users/{id}");
