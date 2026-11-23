@@ -234,7 +234,7 @@ class GatekeeperAppHostImpl extends RpcTarget implements GatekeeperAppNavigation
     // Vite's frontend and backend use separate ports. Normalize only that configured backend
     // through the local proxy; production remains strictly same-origin.
     if (import.meta.env.DEV && !target.username && !target.password &&
-        target.origin === `http://${getBackendHost()}`) {
+        target.origin === new URL(`http://${getBackendHost()}`).origin) {
       target = new URL(target.pathname + target.search + target.hash, window.location.origin)
     }
     if (target.origin !== window.location.origin
@@ -262,7 +262,10 @@ class GatekeeperAppHostImpl extends RpcTarget implements GatekeeperAppNavigation
       const filename = downloadFilename(disposition)
       const blob = await response.blob()
       controller.signal.throwIfAborted()
-      saveBlobToFile(blob, makeExportFilename('download', '', filename))
+      const safeName = makeExportFilename('download', '', filename)
+      // An entirely non-Latin stem can sanitize to only the extension. Keep that extension
+      // meaningful to the OS, rather than saving a hidden file which Chromium renames.
+      saveBlobToFile(blob, safeName.startsWith('.') ? `download${safeName}` : safeName)
     } finally {
       // Abort even rejected headers: an unread streaming body must not outlive its slot.
       controller.abort()

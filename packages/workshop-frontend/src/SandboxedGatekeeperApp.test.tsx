@@ -174,6 +174,7 @@ describe("SandboxedGatekeeperApp navigation", () => {
     await act(async () => root?.unmount());
     container?.remove();
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     picker.props = null;
     picker.real = false;
   });
@@ -375,7 +376,8 @@ describe("SandboxedGatekeeperApp navigation", () => {
     expect(saveBlob).not.toHaveBeenCalled();
   });
 
-  it("routes configured development-backend downloads through the authenticated frontend proxy", async () => {
+  it.each(["localhost:8787", "LOCALHOST:8787"])("routes canonical development-backend downloads through the authenticated proxy: %s", async backendHost => {
+    vi.stubEnv("VITE_BACKEND_HOST", backendHost);
     await mountApp();
     const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("config", {
       headers: {"Content-Disposition": "attachment; filename*=UTF-8''Cloudflare%20OS.cfosoperator"},
@@ -394,7 +396,8 @@ describe("SandboxedGatekeeperApp navigation", () => {
     ['attachment ; filename = "setup.cfosoperator"', 'setup.cfosoperator'],
     ['attachment; filename="a; filename=wrong.cfosoperator"', 'a-filename-wrong.cfosoperator'],
     ['attachment; other="; filename=wrong"; filename=setup.cfosoperator', 'setup.cfosoperator'],
-    ['attachment; filename="../../local-file"', '..-..-local-file'],
+    ['attachment; filename="../../local-file"', 'download..-..-local-file'],
+    ["attachment; filename*=UTF-8''%E6%9D%B1%E4%BA%AC.cfosoperator", 'download.cfosoperator'],
   ])("uses a safe response filename with no ticket fallback: %s", async (disposition, filename) => {
     await mountApp();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("config", {headers: {'Content-Disposition': disposition}}));
