@@ -197,7 +197,8 @@ export function needsReview(log: ActionLogEntry): boolean {
  * Whether the UI offers to approve `log` on its own: one the agent waits on (`awaitDecision`)
  * cannot wait for its chat's accept, and one no chat made is covered by no chat's accept. A chat's
  * other requests apply only when its changes are accepted. Never a change to a resource among
- * `unsaved` (see unsavedConnections), which can apply only once the resource is saved.
+ * `unsaved` (see unsavedConnections), which can apply only once the resource is saved, nor one
+ * that failed in a way no retry can fix (ActionLogEntry.applyError).
  */
 export function canApproveAlone(
   log: ActionLogEntry,
@@ -205,6 +206,7 @@ export function canApproveAlone(
 ): boolean {
   if (log.type !== 'action') return branchChatId(log) === undefined
   if (!log.creation && log.gatekeeperId !== undefined && unsaved.has(log.gatekeeperId)) return false
+  if (log.applyError?.retryable === false) return false
   return log.description.awaitDecision === true || branchChatId(log) === undefined
 }
 

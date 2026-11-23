@@ -8,7 +8,9 @@ import { IncompleteDescriptionNotice, isDescriptionIncomplete } from './componen
 import { ActionFields, entryFields, fieldCountLabel } from './components/ActionFields'
 import { ResolveButton } from './components/ResolveButton'
 import { RestrictedApprovalNotice } from './components/RestrictedApprovalNotice'
-import { canApproveAlone, unsavedConnections } from './features/approvals/pendingChangeGroups'
+import {
+  canApproveAlone, OUTCOME_UNKNOWN_COPY, unsavedConnections,
+} from './features/approvals/pendingChangeGroups'
 import {
   PENDING_CHECKING_COPY,
   PENDING_ERROR_COPY,
@@ -154,6 +156,12 @@ export default function ActivityNotifications({
                       )}
                     </div>
                   </div>
+                  {action.type === 'action' && action.applyError && (
+                    <p role="alert" className="m-0 mt-1.5 text-[11.5px] leading-4 text-kumo-danger">
+                      Could not apply: {action.applyError.message}
+                      {action.applyError.outcomeUnknown && ` ${OUTCOME_UNKNOWN_COPY}`}
+                    </p>
+                  )}
                   {fields.length > 0 && restricted && (
                     // Outside the preview button, which may hold only phrasing content.
                     <div id={fieldsId}>

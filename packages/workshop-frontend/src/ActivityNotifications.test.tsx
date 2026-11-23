@@ -167,6 +167,26 @@ describe('ActivityNotifications approval', () => {
         .filter(button => button.textContent === 'Deny')).toHaveLength(3)
   })
 
+  it('says why a request failed, and offers no Approve once it cannot be retried', async () => {
+    const server = makeOverseer()
+    await view.render(<ActivityNotifications overseer={server.overseer} onViewActivity={() => {}} />)
+    await server.resolveSubscription()
+    const description = {
+      title: 'Awaited', description: '', implementsRevert: false, autoApprovable: true,
+      awaitDecision: true,
+    }
+    await server.resolvePendingQuery({
+      entries: [entry(1, {
+        chatId: 4, description,
+        applyError: { message: 'Timed out.', retryable: false, outcomeUnknown: true },
+      })],
+    })
+    flushFrames()
+    expect(approvableTitles()).toEqual([])
+    expect(document.querySelector('[role="alert"]')?.textContent).toBe(
+      'Could not apply: Timed out. It may have been applied anyway. Check the resource before you deny it.')
+  })
+
   it('offers no Approve for a change to an unsaved resource, only for saving it', async () => {
     const server = makeOverseer()
     await view.render(<ActivityNotifications overseer={server.overseer} onViewActivity={() => {}} />)

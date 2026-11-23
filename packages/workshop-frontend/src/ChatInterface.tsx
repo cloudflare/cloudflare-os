@@ -4403,7 +4403,7 @@ function ChatInterface({
       if (result.outcome === "failed") {
         toasts.add({
           title: "A request could not be applied",
-          description: "The chat's code changes were not accepted. Retry the request or deny it.",
+          description: "The chat's code changes were not accepted.",
           variant: "error",
         });
         return;
