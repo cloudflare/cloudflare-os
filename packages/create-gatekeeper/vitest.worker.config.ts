@@ -30,6 +30,7 @@ export default defineConfig({
           ACME_GATEKEEPER: { className: "AcmeGatekeeperImpl", useSQLite: true },
           ACME_HOOK_DRIVER: { className: "AcmeHookDriver", useSQLite: true },
           TEST_HOOKS: { className: "TestHooks", useSQLite: true },
+          TEST_HOST: { className: "TestHost", useSQLite: true },
         },
         bindings: {
           // An `https` one, which a gatekeeper that adds its own webhooks needs.

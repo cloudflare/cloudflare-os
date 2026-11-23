@@ -222,6 +222,23 @@ function addOpenApi(files: Map<string, ScaffoldFile>, { document, url, copy, gen
   });
 }
 
+/**
+ * `text` with `line` added among the lines `among` matches: after the last of them, or with
+ * `sorted`, before the first that sorts after it, as a list kept in alphabetical order wants.
+ * @returns `text` itself when it already has the line, or undefined when no line matches.
+ */
+export function withLine(text: string, among: RegExp, line: string, sorted = false): string | undefined {
+  const lines = text.split("\n");
+  if (lines.includes(line)) return text;
+  const last = lines.findLastIndex(existing => among.test(existing));
+  if (last < 0) return undefined;
+  const next = sorted
+    ? lines.findIndex(existing => among.test(existing) && existing.localeCompare(line, "en", { sensitivity: "base" }) > 0)
+    : -1;
+  lines.splice(next < 0 ? last + 1 : next, 0, line);
+  return lines.join("\n");
+}
+
 /** Where a stop comes in review order: the `FIRST_STOPS` in turn, then the rest. */
 const rank = ({ id }: { id: string }): number => (FIRST_STOPS.indexOf(id) + 1) || FIRST_STOPS.length + 1;
 

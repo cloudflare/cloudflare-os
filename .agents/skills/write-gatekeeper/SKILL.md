@@ -90,7 +90,7 @@ Also confirm the JSDoc follows [Documenting the API](#documenting-the-api-typesd
 
 ### Step 4: Implement
 
-Start the package with `pnpm create-gatekeeper <name> --auth <oauth|api-key> [--hooks <app|subscription>] --display "<Provider Name>"`, adding `--openapi <description.json> --operations <ids>` when the provider publishes an OpenAPI description, so that the package starts with its typed schema generated (the kit's [README](../../../packages/gatekeeper-kit/README.md#schema-generation) documents the generator). It writes a gatekeeper that builds, built on `gatekeeper-kit`, for an invented provider, and marks each answer only the provider's documentation or your design can give with `STOP(<id>)`; the package's tests fail until no mark is left. [SKELETON.md](SKELETON.md) lists what it writes, what it leaves, and how its hooks work. Replace the invented session API, resource types and subresource model with the ones the operator approved in Step 3 first; the rest follows from them.
+Start the package with `pnpm create-gatekeeper <name> --auth <oauth|api-key> [--hooks <app|subscription>] --display "<Provider Name>"`, adding `--openapi <description.json> --operations <ids>` when the provider publishes an OpenAPI description, so that the package starts with its typed schema generated (the kit's [README](../../../packages/gatekeeper-kit/README.md#schema-generation) documents the generator). It writes a gatekeeper that builds, built on `gatekeeper-kit`, for an invented provider, and marks each answer only the provider's documentation or your design can give with `STOP(<id>)`; the package's Node tests fail until no mark is left, while its workerd suite, one read against a fake of the invented provider, passes as written. [SKELETON.md](SKELETON.md) lists what it writes, what it leaves, and how its hooks work. Replace the invented session API, resource types and subresource model with the ones the operator approved in Step 3 first; the rest follows from them.
 
 Package structure, as the command writes it:
 ```
@@ -112,12 +112,13 @@ packages/gatekeeper-<name>/
 │   ├── <name>-hook-driver.ts    # With --hooks: webhook route, driver, controller
 │   ├── types.d.ts               # Session/Hook types (compile-time)
 │   └── types.txt -> types.d.ts  # Symlink (runtime, for getTypeScriptTypes())
-├── __tests__/
+├── __tests__/                   # Node tests; workerd/ holds the test worker, the provider's fake and a reads test
 ├── action-table.json            # The committed action table
 ├── cloudflare.config.ts         # wrangler.jsonc is generated from it
 ├── deploy-inputs.json
 ├── package.json
-└── tsconfig.json
+├── tsconfig.json
+└── vitest.worker.config.ts      # The workerd suite; vitest.config.ts is the Node one
 ```
 
 #### Authorizing observations

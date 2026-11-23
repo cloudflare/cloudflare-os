@@ -125,7 +125,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   }> {
     const parsed = parseResourceUrl(url);
     if (!parsed) {
-      throw new Error(`Not an Acme Service link this gatekeeper can bind: expected ${WEB_ORIGIN}/items/<id>.`);
+      throw new Error(`This gatekeeper binds Acme Service item links: expected ${WEB_ORIGIN}/items/<id>.`);
     }
     const props: AcmeGatekeeperImplProps = { userObjectId: this.ctx.props.userObjectId, itemId: parsed.itemId };
     return { class: this.ctx.exports.AcmeGatekeeperImpl({ props }), resource: ITEM_RESOURCE };

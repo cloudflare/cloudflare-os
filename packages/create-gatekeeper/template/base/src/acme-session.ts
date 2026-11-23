@@ -67,7 +67,7 @@ export class AcmeItemImpl extends RpcTarget implements AcmeItem {
     const wire = await this.#host.read(api => api.get("/items/{id}", { path: { id: this.#itemId } }));
     // Authorized after the read and before anything is returned, with every dependency named.
     await authorizeRead(this.#queue, {
-      title: "Read an Acme Service item",
+      title: "Read the Acme Service item",
       description: `Read item ${this.#itemId}.`,
       subresources: [itemSubresourceId(this.#itemId)],
     });

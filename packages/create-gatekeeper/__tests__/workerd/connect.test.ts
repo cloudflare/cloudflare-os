@@ -7,10 +7,10 @@
 import { SELF, env, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { generateNonce } from "@gadgets/gatekeeper-kit/connect-nonce";
+import { seedCredentials, unwrap } from "@gadgets/gatekeeper-kit/test-support";
 import { identityOf } from "#gatekeeper/acme-credentials";
 import { ALL_RESOURCES } from "#gatekeeper/acme-resources";
 import { itemUrl, parseResourceUrl } from "#gatekeeper/acme-urls";
-import type { Outcome } from "./worker";
 
 const BASE_URL = "https://gadgets.test/gatekeeper/acme";
 const ORIGIN = "https://gadgets.test";
@@ -44,11 +44,6 @@ const testEnv = env as any;
 const hooks = () => testEnv.TEST_HOOKS.get(testEnv.TEST_HOOKS.idFromName("hooks"));
 const account = (id: string) => testEnv.USER_ACCOUNT.get(testEnv.USER_ACCOUNT.idFromString(id));
 
-function unwrap<T>(outcome: Outcome<T>): T {
-  if ("error" in outcome) throw new Error(outcome.error);
-  return outcome.ok;
-}
-
 /** A first connect's link, as `GatekeeperVendor.connectAccount` returns it. */
 async function connectLink(): Promise<{ id: string; url: string }> {
   const id = testEnv.USER_ACCOUNT.newUniqueId().toString();
@@ -61,7 +56,7 @@ async function connectLink(): Promise<{ id: string; url: string }> {
 async function connected(who: User, key: string): Promise<string> {
   const id = testEnv.USER_ACCOUNT.newUniqueId().toString();
   await runInDurableObject(account(id), async (_instance: unknown, state: DurableObjectState) => {
-    state.storage.kv.put("credentials", { accessToken: key });
+    seedCredentials(state.storage.kv, { accessToken: key });
     state.storage.kv.put("identity", { userId: who.id, name: who.name, email: who.email, fetchedAt: Date.now() });
   });
   await hooks().installCallback(id, generateNonce());

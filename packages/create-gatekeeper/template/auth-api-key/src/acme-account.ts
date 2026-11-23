@@ -48,7 +48,7 @@ const accessTtl = (allowed: boolean): number => allowed ? ACCESS_ALLOWED_TTL_MS 
 const PROBE_CONCURRENCY = 6;
 
 /** The stored grant: the key, which is sent as the access token. */
-type Grant = { accessToken: string };
+export type Grant = { accessToken: string };
 
 /** What a connect attempt carries from the connect link to the form's submission. */
 type ConnectAttempt = {
@@ -71,9 +71,11 @@ type CallbackResult =
   | { refused: { title: string; detail: string } };
 
 // STOP(identity): How the provider says whose key this is. `userId` is what the connection and
-// every binding are pinned to, so make it name the user AND the tenant (organization, workspace)
-// the key acts in, where a user can belong to several. A key that belongs to an organization or a
-// service account rather than a person still needs a stable ID to pin the connection to.
+// every binding are pinned to, so where a key acts in one tenant (organization, workspace) of the
+// several a user can belong to, make it name the user AND the tenant. A key that spans the user's
+// tenants names the user only, and each binding pins its tenant instead. A key that belongs to an
+// organization or a service account rather than a person still needs a stable ID to pin the
+// connection to.
 /** Reads the user a key belongs to. */
 async function fetchUser(accessToken: string): Promise<Identity> {
   return identityOf(await createApi(accessToken).get("/me"));
@@ -215,7 +217,7 @@ export class UserAccount extends DurableObject<Env> {
   async acceptKey(formNonce: string, key: string): Promise<CallbackResult | null> {
     const kv = this.ctx.storage.kv;
     if (peekOAuth(kv, formNonce, Date.now()) === null) return null;
-    if (key === "" || key.length > MAX_KEY_LENGTH) return { retry: "That isn't an Acme Service API key." };
+    if (key === "" || key.length > MAX_KEY_LENGTH) return { retry: "That isn't a valid Acme Service API key." };
     const grant: Grant = { accessToken: key };
     let identity: Identity;
     try {
@@ -226,7 +228,7 @@ export class UserAccount extends DurableObject<Env> {
         return peekOAuth(kv, formNonce, Date.now()) === null
           ? null : { retry: "Acme Service refused that key. Check it and paste it again." };
       }
-      logger.error("could not read whose key an Acme Service connection was given", { event: "acme.connect.identity.failed", error });
+      logger.error("could not read whose key the Acme Service connection was given", { event: "acme.connect.identity.failed", error });
       throw new Error("Could not read which Acme Service user the key belongs to. Please try again.", { cause: error });
     }
 

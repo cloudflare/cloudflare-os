@@ -47,7 +47,7 @@ const accessTtl = (allowed: boolean): number => allowed ? ACCESS_ALLOWED_TTL_MS 
 const PROBE_CONCURRENCY = 6;
 
 /** The stored grant. The refresh token is never sent across the account boundary. */
-type Grant = { accessToken: string; refreshToken?: string; expiresAt?: number; scopes: string[] };
+export type Grant = { accessToken: string; refreshToken?: string; expiresAt?: number; scopes: string[] };
 
 /** What a connect attempt carries from the authorize redirect to the callback. */
 type ConnectAttempt = {
@@ -68,7 +68,7 @@ type CallbackResult = { handoff: ConnectHandoff } | { refused: { title: string; 
 
 const NOT_CONFIGURED_HTML = errorPageHtml(
   "Acme Service gatekeeper not configured",
-  "Configure an Acme Service OAuth client ID and secret for this gatekeeper.");
+  "Configure this gatekeeper's Acme Service OAuth client ID and secret.");
 
 function toGrant(tokens: OAuthTokens): Grant {
   return {
@@ -82,8 +82,9 @@ function toGrant(tokens: OAuthTokens): Grant {
 
 // STOP(identity): How the provider says which user a grant belongs to. Prefer a signed ID token
 // where the provider issues one; otherwise its "current user" endpoint. `userId` is what the
-// connection and every binding are pinned to, so make it name the user AND the tenant
-// (organization, workspace) the grant acts in, where a user can belong to several.
+// connection and every binding are pinned to, so where a grant acts in one tenant (organization,
+// workspace) of the several a user can belong to, make it name the user AND the tenant. A grant
+// that spans the user's tenants names the user only, and each binding pins its tenant instead.
 /** Reads the user a grant belongs to. */
 async function fetchUser(accessToken: string): Promise<Identity> {
   return identityOf(await createApi(accessToken).get("/me"));
@@ -280,7 +281,7 @@ export class UserAccount extends DurableObject<Env> {
     try {
       identity = await fetchUser(grant.accessToken);
     } catch (error) {
-      logger.error("could not read who authorized an Acme Service connection", { event: "acme.oauth.identity.failed", error });
+      logger.error("could not read who authorized the Acme Service connection", { event: "acme.oauth.identity.failed", error });
       throw new Error("Could not read which Acme Service user authorized this connection. Please try again.",
         { cause: error });
     }

@@ -15,7 +15,8 @@ import type { Api as Described } from "./openapi";
 // the script's `--sha256` for a URL) and running `pnpm generate:openapi`. Where the provider has
 // an invented call's own method and path, such as `GET /me`, delete the invented one first: a call
 // cannot tell two operations of one path apart. Then delete this file and import `Api` from
-// "./openapi".
+// "./openapi", and name each wire type in acme-api.ts from it:
+// `OperationOf<Api, "get", "/me">["response"]`, from the kit's http module.
 /** The operations the scaffold's own calls use. */
 type Invented = {
   get: [

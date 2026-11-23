@@ -6,6 +6,7 @@
 
 import { SELF, env, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { seedCredentials } from "@gadgets/gatekeeper-kit/test-support";
 import type { AcmeHookDriver } from "#gatekeeper/acme-hook-driver";
 
 const BASE_URL = "https://gadgets.test/gatekeeper/acme";
@@ -69,7 +70,7 @@ const accountOf = (id: string) => testEnv.USER_ACCOUNT.get(testEnv.USER_ACCOUNT.
 async function connected(key = "key-alice"): Promise<string> {
   const id = testEnv.USER_ACCOUNT.newUniqueId().toString();
   await runInDurableObject(accountOf(id), async (_instance: unknown, state: DurableObjectState) => {
-    state.storage.kv.put("credentials", { accessToken: key });
+    seedCredentials(state.storage.kv, { accessToken: key });
     state.storage.kv.put("identity", { userId: "u-alice", name: "Alice", fetchedAt: Date.now() });
   });
   return id;

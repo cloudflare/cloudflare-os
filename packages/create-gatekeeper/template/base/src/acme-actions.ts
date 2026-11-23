@@ -39,7 +39,7 @@ export const definitions: { [K in keyof AcmeActions]: ActionDefinition<AcmeActio
     autoApprovable: true,
     delivery: "continue-with-simulation",
     describe: payload => ({
-      title: sanitizeTitle("Rename an Acme Service item"),
+      title: sanitizeTitle("Rename the Acme Service item"),
       ...buildDescription(`Renames item ${payload.itemId}.`).verbatim("New title", payload.title).finish(),
       implementsRevert: false,
     }),
