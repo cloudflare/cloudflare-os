@@ -48,7 +48,7 @@ export function itemSubresourceId(itemId: string): string {
 export function parseSubresource(id: string): { itemId: string } {
   const { namespace, fragments: [item, ...rest] } = parseSubresourceId(id);
   if (namespace !== undefined || rest.length > 0 || item?.name !== "item" || !ITEM_ID.test(item.id)) {
-    throw new Error("Not an Acme Service subresource ID.");
+    throw new Error("Unknown Acme Service subresource ID.");
   }
   return { itemId: item.id };
 }

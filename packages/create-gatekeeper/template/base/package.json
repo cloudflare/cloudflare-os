@@ -7,7 +7,8 @@
     "dev": "echo \"run 'pnpm dev-server' in the root directory instead\" >&2 && exit 1",
     "deploy": "vp run --no-cache build:configurator && wrangler deploy",
     "clean": "rm -rf dist src/generated",
-    "test:run": "vitest run"
+    "test:workerd": "vp run -F @gadgets/acme-gatekeeper build:configurator && vitest run -c vitest.worker.config.ts",
+    "test:run": "pnpm test:workerd && vitest run"
   },
   "dependencies": {
     "@gadgets/configurator-ui": "workspace:*",
@@ -18,6 +19,7 @@
     "capnweb-validate": "catalog:"
   },
   "devDependencies": {
+    "@cloudflare/vitest-plugin": "catalog:",
     "@cloudflare/workers-types": "catalog:",
     "@gadgets/scripts": "workspace:*",
     "typescript": "catalog:",

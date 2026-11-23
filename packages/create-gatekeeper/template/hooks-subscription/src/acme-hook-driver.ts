@@ -118,7 +118,7 @@ export class AcmeHookDriver extends DurableObject<Env> {
   /** Webhook additions and removals, one at a time, so that each sees what the last did. */
   #changes = new SerialTaskQueue();
   #hooks = new HookRegistry<AcmeEventHookTarget, StoredEvent, Registration>(this.ctx.storage.kv, () => {
-    logger.warn("dropped an Acme Service event after repeated delivery failures", { event: "hooks.delivery.dropped" });
+    logger.warn("dropped an event after repeated delivery failures", { event: "hooks.delivery.dropped" });
   });
 
   async register(key: string, registration: Registration, capabilities: Capabilities): Promise<void> {
@@ -173,10 +173,11 @@ export class AcmeHookDriver extends DurableObject<Env> {
   }
 
   /**
-   * Verify one delivery and queue its event for each hook that watches for it.
+   * Verify one delivery, by its request's headers and body, and queue its event for each hook
+   * that watches for it.
    * @returns The HTTP status to answer the provider with.
    */
-  async ingest(signature: string, delivered: ReadableStream<Uint8Array>): Promise<number> {
+  async ingest(headers: Headers, delivered: ReadableStream<Uint8Array>): Promise<number> {
     const kv = this.ctx.storage.kv;
     const secret = kv.get<string>("secret");
     if (!secret || kv.get("revoked")) {
@@ -190,8 +191,8 @@ export class AcmeHookDriver extends DurableObject<Env> {
       if (error instanceof ResponseTooLargeError) return 413;
       throw error;
     }
-    if (!await signed(secret, signature, body)) return 401;
-    const event = parseDelivery(body);
+    if (!await signed(secret, headers.get(SIGNATURE_HEADER) ?? "", body)) return 401;
+    const event = parseDelivery(body, headers);
     if (event === null) return 400;
     // No longer this driver's webhook: every hook on the item has been disabled.
     if (!event || !kv.get(webhookKey(event.itemId))) return 204;
@@ -231,10 +232,10 @@ export class AcmeHookDriver extends DurableObject<Env> {
         if (found) return;
         // Its record stays until the new one replaces it, so a failure here is found again.
         await this.#addWebhook(itemId);
-        logger.info("added again an Acme Service webhook that was gone", { event: "hooks.webhook.restored" });
+        logger.info("added again a webhook that was gone", { event: "hooks.webhook.restored" });
       }).catch((error: unknown) => {
         // Tried again at the next check.
-        logger.warn("failed to check an Acme Service webhook", { event: "hooks.webhook.check.failed", error });
+        logger.warn("failed to check a webhook", { event: "hooks.webhook.check.failed", error });
       });
     }
   }
@@ -290,11 +291,11 @@ export class AcmeHookDriver extends DurableObject<Env> {
       await this.#api(api => api.delete("/items/{id}/webhooks/{webhook}", { path: { id: itemId, webhook: id } }), { replayable: true });
     } catch (error) {
       if (retryable(error)) {
-        logger.warn("failed to delete an Acme Service webhook, which is tried again", { event: "hooks.webhook.delete.failed", error });
+        logger.warn("failed to delete a webhook, which is tried again", { event: "hooks.webhook.delete.failed", error });
         return;
       }
       if (!(error instanceof HttpError && error.status === 404)) {
-        logger.error("left an Acme Service webhook the connection can't delete", { event: "hooks.webhook.delete.abandoned", error });
+        logger.error("left a webhook the connection can't delete", { event: "hooks.webhook.delete.abandoned", error });
       }
     }
     // Only if still this one: a webhook added since, for a later hook, is another's to delete.
@@ -349,11 +350,10 @@ export async function handleWebhook(request: Request, path: string, env: Env, ex
   } catch {
     return new Response("Not Found", { status: 404 });
   }
-  const signature = request.headers.get(SIGNATURE_HEADER);
-  if (!signature || !request.body) return new Response("Unauthorized", { status: 401 });
+  if (!request.headers.get(SIGNATURE_HEADER) || !request.body) return new Response("Unauthorized", { status: 401 });
   // An early refusal, sparing the driver; it enforces the cap itself as it reads.
   if (Number(request.headers.get("Content-Length")) > MAX_DELIVERY_BYTES) {
     return new Response("Payload Too Large", { status: 413 });
   }
-  return new Response(null, { status: await exports.AcmeHookDriver.get(id).ingest(signature, request.body) });
+  return new Response(null, { status: await exports.AcmeHookDriver.get(id).ingest(request.headers, request.body) });
 }

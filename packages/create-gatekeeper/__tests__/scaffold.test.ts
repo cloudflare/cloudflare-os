@@ -6,8 +6,9 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { stripVTControlCharacters } from "node:util";
 import { describe, expect, it } from "vitest";
-import { AUTH_KINDS, namesFor, resolveBlocks, scaffold, stops, type OpenApiOptions } from "../src/scaffold.ts";
+import { AUTH_KINDS, namesFor, resolveBlocks, scaffold, stops, withLine, type OpenApiOptions } from "../src/scaffold.ts";
 
 const pkg = join(import.meta.dirname, "..");
 const repo = join(pkg, "..", "..");
@@ -22,9 +23,11 @@ const GENERATED = { operations: '{"operationId":"users/get"}\n', schema: new Map
 const tool = (name: string, entry: string) => join(pkg, "node_modules", name, entry);
 
 function run(cwd: string, command: string, ...args: string[]) {
-  const result = spawnSync(command, args, { cwd, encoding: "utf8" });
+  // Ended here if it hangs, as a pool waiting on a crashed workerd does: a test's timeout cannot.
+  const result = spawnSync(command, args, { cwd, encoding: "utf8", timeout: 120_000 });
   expect(result.status, `${command} ${args.join(" ")}\n${result.stdout}\n${result.stderr}`).toBe(0);
-  return result.stdout;
+  // A task runner has its children colour what they print.
+  return stripVTControlCharacters(result.stdout);
 }
 
 describe("namesFor", () => {
@@ -76,6 +79,14 @@ describe("scaffold", () => {
     expect(ids.slice(0, 3)).toEqual(["session-api", "resources", "subresources"]);
   });
 
+  // What an operator and a reader see is invented too, and the generated test looks there.
+  it("marks the README, the logo and an OAuth app's setup steps", () => {
+    const marked = (auth: "oauth" | "api-key") => stops(scaffold({ name: "acme", auth }))
+      .filter(({ path }) => !/\.tsx?$/.test(path)).map(({ path, id }) => `${path} ${id}`).toSorted();
+    expect(marked("api-key")).toEqual(["README.md readme", "src/acme-logo.svg logo"]);
+    expect(marked("oauth")).toEqual(["README.md readme", "deploy-inputs.json deploy-inputs", "src/acme-logo.svg logo"]);
+  });
+
   // A page that sends no referrer posts its forms with `Origin: null`, which the submission's
   // cross-site check refuses: the form would never submit.
   it("serves the key form so that its submission names its origin", () => {
@@ -96,6 +107,22 @@ describe("scaffold", () => {
     expect(ask).toBeGreaterThan(check);
     expect(claim).toBeGreaterThan(ask);
     expect(text).toContain('if ("retry" in result) return keyFormResponse(env, path[0], formNonce, result.retry);');
+  });
+});
+
+describe("withLine", () => {
+  const listed = /^\* \[/;
+  const list = "# List\n* [Alpha]\n* [Gamma]\n\nMore.";
+
+  it("adds a line after the last of its kind, or with sorted, where the alphabet puts it", () => {
+    expect(withLine(list, listed, "* [beta]")).toBe("# List\n* [Alpha]\n* [Gamma]\n* [beta]\n\nMore.");
+    expect(withLine(list, listed, "* [beta]", true)).toBe("# List\n* [Alpha]\n* [beta]\n* [Gamma]\n\nMore.");
+    expect(withLine(list, listed, "* [Zeta]", true)).toBe("# List\n* [Alpha]\n* [Gamma]\n* [Zeta]\n\nMore.");
+  });
+
+  it("adds a line once, and none where there is no line of its kind", () => {
+    expect(withLine(list, listed, "* [Gamma]", true)).toBe(list);
+    expect(withLine("# List", listed, "* [beta]")).toBeUndefined();
   });
 });
 
@@ -229,6 +256,8 @@ describe.each(VARIANTS)("scaffold with --auth $auth, hooks $hooks, openapi $open
   it("renames the template's provider everywhere", () => {
     for (const [path, file] of files) {
       expect(`${path}\n${"text" in file ? file.text : file.symlink}`).not.toMatch(/acme|\/\/ #(if|else|endif)/i);
+      // No article comes before the name, since which one depends on the name: "an Home Assistant".
+      expect("text" in file ? file.text : "").not.toMatch(/\b(a|an) Home Assistant/i);
     }
     expect([...files.keys()]).toContain("src/homeassistant.ts");
   });
@@ -242,15 +271,18 @@ describe.each(VARIANTS)("scaffold with --auth $auth, hooks $hooks, openapi $open
     expect(text.includes("/items/{id}/webhooks")).toBe(hooks === "subscription");
     expect(text.includes("WEBHOOK_SECRET")).toBe(hooks === "app");
     expect(text.includes("WEBHOOK_ORIGIN")).toBe(hooks === "subscription");
+    // Either driver hands a delivery's headers on, for a provider that says the event's type there.
+    expect(/parseDelivery\(body, (request\.)?headers\)/.test(text)).toBe(hooks !== undefined);
   });
 
   it("marks what is left to decide", () => {
     expect(stops(files).map(({ id }) => id)).toEqual(expect.arrayContaining(["session-api", "resources", "subresources", "actions"]));
   });
 
-  // Runs wrangler and the compiler over a generated package, which takes some seconds. The package
-  // is laid out beside symlinks to the packages it names by path, as it would be in `packages/`.
-  it("generates a package that compiles", { timeout: 180_000 }, () => {
+  // Runs wrangler, the compiler and the package's own workerd suite over a generated package,
+  // which takes some seconds. The package is laid out beside symlinks to the packages it names by
+  // path, as it would be in `packages/`.
+  it("generates a package that compiles, and whose workerd suite passes", { timeout: 180_000 }, () => {
     const root = mkdtempSync(join(tmpdir(), "create-gatekeeper-"));
     try {
       const dir = join(root, "packages", "gatekeeper-homeassistant2");
@@ -312,6 +344,18 @@ describe.each(VARIANTS)("scaffold with --auth $auth, hooks $hooks, openapi $open
       // As generated, the configurator's copy of the link grammar agrees with the server's, and the
       // committed action table with the definitions.
       run(dir, process.execPath, tool("vitest", "vitest.mjs"), "run", "__tests__/configurator-url.test.ts", "__tests__/action-table.test.ts");
+      // Its gate fails as written, and names a mark in each kind of file it reads.
+      const gate = spawnSync(process.execPath, [tool("vitest", "vitest.mjs"), "run", "__tests__/scaffold-stops.test.ts"],
+        { cwd: dir, encoding: "utf8", timeout: 120_000 });
+      expect(gate.status).toBe(1);
+      const marked = ["src/homeassistant-session.ts:", "src/homeassistant-logo.svg:", "README.md:", ...(auth === "oauth" ? ["deploy-inputs.json:"] : [])];
+      for (const file of marked) expect(stripVTControlCharacters(gate.stdout + gate.stderr)).toContain(`"${file}`);
+
+      // The configurator frame, which a build makes and the Worker's main module imports.
+      mkdirSync(join(dir, "src", "generated"));
+      writeFileSync(join(dir, "src", "generated", "homeassistant-configurator-ui.txt"), "<!DOCTYPE html>");
+      expect(run(dir, process.execPath, tool("vitest", "vitest.mjs"), "run", "-c", "vitest.worker.config.ts"))
+        .toMatch(/Tests {2}2 passed \(2\)/);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

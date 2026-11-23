@@ -27,7 +27,7 @@ to choose from. `--operations` also takes a file of those lines, which an id wit
 `packages/gatekeeper-<name>`, adds it to the gatekeeper list in `README.md` and, for OAuth, to the
 credential map in `scripts/run-dev-server.ts` (with hooks, also to that script's passed-through
 variables and to the `restore` list in `scripts/generate-worker-types.ts`), and runs `pnpm install` and, for the new package alone, `pnpm types:generate`. It also writes the stand-in bundle the release manifest's test needs. The
-package builds, lints and bundles as written, but its own tests fail by design (below), and the
+package builds, lints and bundles as written, but its own Node tests fail by design (below), and the
 release manifest's test fails until its golden file is updated
 (`UPDATE_GOLDEN=1 node --test scripts/release/manifest-lib.test.ts`). A pasted-key gatekeeper takes
 no deploy inputs, so that test also asks for it to be added to `SINGLETON` in
@@ -87,10 +87,47 @@ are marked, and a provider with organizations or workspaces needs the tenant in 
 | `src/<name>-hook-driver.ts` (`--hooks`) | webhook route, hook driver and controller | `webhook-source`; `webhook-tenant` (`app`); `webhook-subscription`, `webhook-upkeep` (`subscription`) |
 | `src/<name>.ts` | HTTP entrypoint, vendor, account entrypoint, verifier | `vendor-description` |
 | `src/configurator/` | the resource configurator frame | `configurator` |
+| `README.md`, `deploy-inputs.json` (OAuth), `src/<name>-logo.svg` | what a reader, a deploying operator and the Workshop show of it | `readme`, `deploy-inputs`, `logo` |
 
 Still by hand afterwards: the gatekeeper's row in `docs/observers.md`, its README, its
-`deploy-inputs.json` setup steps, and tests against a fake of the provider (`gatekeeper-pagerduty`'s
-`__tests__/workerd/` is the model).
+`deploy-inputs.json` setup steps, and the rest of its tests (below).
+
+## Tests
+
+`pnpm --filter @gadgets/<name>-gatekeeper test:run` builds the configurator frame, which the
+Worker imports, then runs two vitest projects: the Durable Objects in workerd
+(`vitest.worker.config.ts`, `__tests__/workerd/*.test.ts`), then pure logic in Node
+(`__tests__/*.test.ts`). The Node project fails until no `STOP` is left; `test:workerd` runs the
+other alone, frame included.
+
+The workerd project passes as written. It is the start of the gatekeeper's tests against a fake of
+the provider, and holds only what is the gatekeeper's own:
+
+| File | Holds |
+|---|---|
+| `vitest.worker.config.ts` | the test Worker's Durable Objects and its environment: add the bindings the suites need (an OAuth client, a webhook secret) |
+| `__tests__/env.d.ts` | the types of the bindings only the test Worker has |
+| `__tests__/workerd/worker.ts` | the test Worker: the gatekeeper's entrypoints and `TestHost` |
+| `__tests__/workerd/fake-<name>.ts` | the provider, faked at `fetch`, and an account connected to it |
+| `__tests__/workerd/reads.test.ts` | one read through a session: what it returns, reports and asks the provider, and that it returns nothing when refused |
+
+The rest is `@gadgets/gatekeeper-kit/test-support`. `GatekeeperTestHost`, which `TestHost` extends,
+instantiates the gatekeeper as a facet, as the overseer does, and runs a scenario there:
+`run(facet, props, steps)` opens a session and makes each `[method, ...args]` call on what the one
+before returned, `queueLog(facet)` is what the session's approval queue was asked, and
+`applyAction()` / `rejectAction()` decide a staged action. Each returns an `Outcome`, since a
+rejection that crosses RPC is reported as unhandled even where a test expects it: read it with
+`unwrap()` or `failure()`. `seedCredentials(kv, grant)` stores a grant as a finished connect flow
+does, so no test writes the `CredentialCoordinator`'s records itself.
+
+Grow the fake with the provider's real endpoints as each `STOP` is resolved, and keep it stateful,
+so that a change an applied action makes shows in the reads that follow. Add to `TestHost` what
+only code inside the Worker can do: mint a verifier for `verifyObserverAccess()`, or stand in for
+the overseer's hook initiator. `gatekeeper-pagerduty`'s `__tests__/workerd/` shows both, and suites
+for reads, actions, observers and hooks. One trap it documents: under the capnweb-validate vite
+plugin a `@validateRpc()` `WorkerEntrypoint` is not registered in `ctx.exports`, so the test Worker
+exports an undecorated subclass of each one it must reach (`class TestVerifier extends
+<Name>Verifier {}`).
 
 Do not run the command to try it out in a checkout you will commit from: a package with a
 `wrangler.jsonc` is deployable, so the release manifest and the deploy wizard pick it up.

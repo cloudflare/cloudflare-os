@@ -31,7 +31,7 @@ export default {
 
   resourceUrl({ values }) {
     const canonical = canonicalItemUrl(values.itemUrl);
-    if (!canonical) throw new Error("Enter the link to an Acme Service item.");
+    if (!canonical) throw new Error("Enter the link to your Acme Service item.");
     return canonical;
   },
 
@@ -41,7 +41,7 @@ export default {
       <Field
         label="Item"
         description={invalid
-          ? "That isn't a link to an Acme Service item."
+          ? "That isn't a link to any Acme Service item."
           : "Paste the link to an item. The binding reaches that item and nothing else."}>
         <TextInput
           name="itemUrl"

@@ -66,7 +66,7 @@ export class AcmeHookController extends WorkerEntrypoint<Env, AcmeHookProps>
  */
 export class AcmeHookDriver extends DurableObject<Env> {
   #hooks = new HookRegistry<AcmeEventHookTarget, StoredEvent, Registration>(this.ctx.storage.kv, () => {
-    logger.warn("dropped an Acme Service event after repeated delivery failures", { event: "hooks.delivery.dropped" });
+    logger.warn("dropped an event after repeated delivery failures", { event: "hooks.delivery.dropped" });
   });
 
   async register(key: string, registration: Registration, capabilities: Capabilities): Promise<void> {
@@ -93,7 +93,10 @@ export class AcmeHookDriver extends DurableObject<Env> {
   // STOP(webhook-tenant): The webhook reports every account that installed the app. Where object
   // IDs are not unique across the provider's accounts, keep the account an event names (from the
   // signed payload) in `StoredEvent`, and the connection's in `Registration`, and match on both:
-  // a bare ID re-read in another account could pair this event with someone else's object.
+  // a bare ID re-read in another account could pair this event with someone else's object. Where
+  // the payload names its account only by an ID of the app's own, such as an installation's, look
+  // that ID up as the user when a hook is subscribed, which may take a second deployment variable
+  // to say which app is this one, and keep it in `Registration` to match on.
   /** Queue `event` once for each enabled hook that may watch it. */
   async ingest(event: StoredEvent): Promise<void> {
     const now = Date.now();
@@ -132,7 +135,7 @@ export async function handleWebhook(request: Request, path: string, env: Env, ex
     throw error;
   }
   if (!await signed(secret, signature, body)) return new Response("Unauthorized", { status: 401 });
-  const event = parseDelivery(body);
+  const event = parseDelivery(body, request.headers);
   if (event === null) return new Response("Bad Request", { status: 400 });
   if (event) await driver(exports).ingest(event);
   return new Response(null, { status: 204 });

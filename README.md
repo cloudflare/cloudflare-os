@@ -205,18 +205,18 @@ Many Gatekeepers require configuration in order to be able to connect to third-p
 
 Each gatekeeper package contains instructions for how to set it up:
 
-* [GitHub API](packages/gatekeeper-github/README.md)
-* [Google API](packages/gatekeeper-google/README.md)
 * [Cloudflare API](packages/gatekeeper-cloudflare/README.md)
-* [Supabase API](packages/gatekeeper-supabase/README.md)
-* [Notion API](packages/gatekeeper-notion/README.md)
 * [Confluence API](packages/gatekeeper-confluence/README.md)
 * [Email Workers](packages/gatekeeper-email/README.md)
+* [GitHub API](packages/gatekeeper-github/README.md)
+* [Google API](packages/gatekeeper-google/README.md)
 * [Home Assistant](packages/gatekeeper-homeassistant/README.md)
+* [Microsoft 365](packages/gatekeeper-microsoft/README.md)
+* [Notion API](packages/gatekeeper-notion/README.md)
+* [PagerDuty API](packages/gatekeeper-pagerduty/README.md)
 * [Slack API](packages/gatekeeper-slack/README.md)
 * [Spotify](packages/gatekeeper-spotify/README.md)
-* [Microsoft 365](packages/gatekeeper-microsoft/README.md)
-* [PagerDuty API](packages/gatekeeper-pagerduty/README.md)
+* [Supabase API](packages/gatekeeper-supabase/README.md)
 * [X API](packages/gatekeeper-x/README.md)
 * [ZoomInfo API](packages/gatekeeper-zoominfo/README.md)
 

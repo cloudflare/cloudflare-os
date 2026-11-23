@@ -5,7 +5,7 @@
     "label": "OAuth Client ID",
     "help": "An OAuth app registered with Acme Service.",
     "setupSteps": [
-      "Register an OAuth app with Acme Service.",
+      "STOP(deploy-inputs): Register an OAuth app with Acme Service, in the provider's own steps and names.",
       "Add the Redirect URL below.",
       "Copy the Client ID and Client Secret here."
     ],

@@ -92,7 +92,7 @@ export class AcmeHookDeliveryImpl extends RpcTarget implements AcmeHookDelivery 
     }
     // A hook delivery is a read: authorized, with every dependency named, before the hook is called.
     await authorizeRead(approvalQueue, {
-      title: "Received an Acme Service item event",
+      title: "Received an event for the Acme Service item",
       description: `Received item ${this.#scope.itemId}'s ${event.kind} event with the item.`,
       // The binding's ID for the item, as its reads report: the provider may spell its own another way.
       subresources: [itemSubresourceId(this.#scope.itemId)],
@@ -127,13 +127,15 @@ export async function signed(secret: string, header: string, body: Uint8Array): 
 
 // STOP(webhook-payload): The provider's delivery format, and which of its event types a hook can
 // watch. Take only identifiers from it: what a hook is given is re-read as the hook's owner.
+// Where the provider says an event's type, id or time in a header rather than the body, read it
+// from `headers`, and trust it only as far as the signature covers it.
 /**
  * The event a verified delivery reports, or undefined for one no hook is given: of a type none
  * watches, unreadable, or older than the queue remembers, which only a replay delivers, as the
  * event's own id dedupes only that long. Null for a body that is not JSON, which the provider is
  * told: a webhook set up with another content type would otherwise seem to work.
  */
-export function parseDelivery(body: Uint8Array): StoredEvent | undefined | null {
+export function parseDelivery(body: Uint8Array, _headers: Headers): StoredEvent | undefined | null {
   let payload: { id?: unknown; type?: unknown; occurred_at?: unknown; item?: { id?: unknown } } | null;
   try {
     payload = JSON.parse(new TextDecoder().decode(body));
@@ -143,13 +145,13 @@ export function parseDelivery(body: Uint8Array): StoredEvent | undefined | null 
   const { id, type, occurred_at, item } = payload ?? {};
   if (type !== "item.updated") return undefined;
   if (typeof id !== "string" || typeof occurred_at !== "string" || typeof item?.id !== "string" || !ITEM_ID.test(item.id)) {
-    logger.warn("ignored an Acme Service event it could not read", { event: "hooks.delivery.unreadable" });
+    logger.warn("ignored an event it could not read", { event: "hooks.delivery.unreadable" });
     return undefined;
   }
   const at = Date.parse(occurred_at);
   if (Number.isNaN(at)) {
     // Nothing would stop its replay once its dedupe row is forgotten.
-    logger.warn("ignored an Acme Service event with no usable timestamp", { event: "hooks.delivery.untimed" });
+    logger.warn("ignored an event with no usable timestamp", { event: "hooks.delivery.untimed" });
     return undefined;
   }
   return at < Date.now() - DELIVERED_RETENTION_MS ? undefined : { id, kind: "updated", occurredAt: occurred_at, itemId: item.id };

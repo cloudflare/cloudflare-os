@@ -3,7 +3,9 @@
 // the Workshop's connect callback and reach the account's entrypoint.
 
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
+import { GatekeeperTestHost, outcome, type Outcome } from "@gadgets/gatekeeper-kit/test-support";
 import { GatekeeperUserImpl } from "#gatekeeper/acme";
+import type { AcmeGatekeeperImplProps } from "#gatekeeper/acme-resources";
 
 export { default } from "#gatekeeper/acme";
 export * from "#gatekeeper/acme";
@@ -27,8 +29,12 @@ export class TestCallback extends WorkerEntrypoint<unknown, UserProps> {
   }
 }
 
-/** A forwarded call's result as plain data: an expected rejection crossing RPC also reports as unhandled. */
-export type Outcome<T> = { ok: T } | { error: string };
+/** The generated suite's own host, so that the kit's is run with a staged action too. */
+export class TestHost extends GatekeeperTestHost<AcmeGatekeeperImplProps> {
+  protected gatekeeperClass(props: AcmeGatekeeperImplProps) {
+    return (this.ctx.exports as any).AcmeGatekeeperImpl({ props });
+  }
+}
 
 export class TestHooks extends DurableObject {
   /** Gives the account a Workshop callback and an initiation nonce, as `connectAccount` does. */
@@ -40,10 +46,6 @@ export class TestHooks extends DurableObject {
 
   /** Calls `method` on the account entrypoint for `userObjectId`. */
   async user(userObjectId: string, method: string, ...args: unknown[]): Promise<Outcome<unknown>> {
-    try {
-      return { ok: await (this.ctx.exports as any).TestUser({ props: { userObjectId } })[method](...args) };
-    } catch (error) {
-      return { error: error instanceof Error ? error.message : String(error) };
-    }
+    return await outcome(() => (this.ctx.exports as any).TestUser({ props: { userObjectId } })[method](...args));
   }
 }

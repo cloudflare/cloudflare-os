@@ -13,6 +13,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import {
   AUTH_KINDS, OPENAPI_OPERATIONS, OPENAPI_URL, namesFor, openApiDocument, openApiUrlRefusal, scaffold, stops,
+  withLine,
   type Names, type OpenApiOptions, type ScaffoldOptions,
 } from "../src/scaffold.ts";
 
@@ -55,15 +56,11 @@ function fail(message: string): never {
   process.exit(1);
 }
 
-/** Inserts `line` after the last line of `path` that `after` matches. */
-function insertAfterLast(path: string, after: RegExp, line: string): void {
-  const lines = readFileSync(path, "utf8").split("\n");
-  // Already there, from a run that was interrupted.
-  if (lines.includes(line)) return;
-  const index = lines.findLastIndex(existing => after.test(existing));
-  if (index < 0) fail(`${relative(ROOT, path)} no longer has a line matching ${after}; register the gatekeeper there by hand.`);
-  lines.splice(index + 1, 0, line);
-  writeFileSync(path, lines.join("\n"));
+/** Inserts `line` among the lines of `path` that `among` matches; see `withLine`. Safe to repeat. */
+function insertLine(path: string, among: RegExp, line: string, sorted = false): void {
+  const text = withLine(readFileSync(path, "utf8"), among, line, sorted);
+  if (text === undefined) fail(`${relative(ROOT, path)} no longer has a line matching ${among}; register the gatekeeper there by hand.`);
+  writeFileSync(path, text);
 }
 
 /** Replaces the one match of `pattern` in `path`. */
@@ -80,16 +77,16 @@ function register(names: Names, auth: ScaffoldOptions["auth"], hooks: ScaffoldOp
   const fixture = join(ROOT, "scripts", "release", "testdata", "fixture-bundles", `gatekeeper-${names.name}`);
   mkdirSync(fixture, { recursive: true });
   writeFileSync(join(fixture, `${names.name}.js`), `export default {}; // fixture bundle for gatekeeper-${names.name}\n`);
-  insertAfterLast(join(ROOT, "README.md"), /^\* \[.*\]\(packages\/gatekeeper-[a-z0-9-]+\/README\.md\)$/,
-    `* [${names.display}](packages/gatekeeper-${names.name}/README.md)`);
+  insertLine(join(ROOT, "README.md"), /^\* \[.*\]\(packages\/gatekeeper-[a-z0-9-]+\/README\.md\)$/,
+    `* [${names.display}](packages/gatekeeper-${names.name}/README.md)`, true);
   if (auth === "oauth") {
-    insertAfterLast(join(ROOT, "scripts", "run-dev-server.ts"), /^  "gatekeeper-[a-z0-9-]+": \{ id: "[A-Z0-9_]+", secret: "[A-Z0-9_]+" \},$/,
+    insertLine(join(ROOT, "scripts", "run-dev-server.ts"), /^  "gatekeeper-[a-z0-9-]+": \{ id: "[A-Z0-9_]+", secret: "[A-Z0-9_]+" \},$/,
       `  "gatekeeper-${names.name}": { id: "${names.constant}_CLIENT_ID", secret: "${names.constant}_CLIENT_SECRET" },`);
   }
   if (hooks) {
     // The dev server passes through, from the shell or `.dev.vars`, the secret an app's webhook
     // signs with, or the origin of the tunnel a gatekeeper's own webhooks deliver to.
-    insertAfterLast(join(ROOT, "scripts", "run-dev-server.ts"), /^  "gatekeeper-[a-z0-9-]+": \[.*\],$/,
+    insertLine(join(ROOT, "scripts", "run-dev-server.ts"), /^  "gatekeeper-[a-z0-9-]+": \[.*\],$/,
       `  "gatekeeper-${names.name}": ["${names.constant}_WEBHOOK_${hooks === "app" ? "SECRET" : "ORIGIN"}"],`);
     // Wrangler's generated types lack `restore`, which a hook's delivery stub is made with.
     replaceOnce(join(ROOT, "scripts", "generate-worker-types.ts"), /"\]\.includes\(basename\(pkgDir\)\)/,
@@ -317,9 +314,14 @@ does with the provider is invented until they are made. Take them in this order,
 operator's approval of the session API, resource types and subresource model (the first three)
 before going on, as the write-gatekeeper skill's Step 3 requires:`);
 for (const { path, id } of left) console.log(`  ${id.padEnd(22)} ${path}`);
-console.log(`\nThe package's tests fail until none is left and no invented value remains. Then, by hand:
+console.log(`\nThe package's Node tests fail until none is left and no invented value remains. Its workerd
+suite passes as written, a read and a refused one against a fake of the invented provider: keep it
+passing as the fake becomes the provider's, ` + (values.out === undefined ? `with
+  pnpm --filter @gadgets/${names.name}-gatekeeper test:workerd` : `once it is a package of the workspace: --out
+registered and installed nothing, so "pnpm --filter" selects no package, and exits 0 having run none.`) + `
+Then, by hand:
   - add the gatekeeper's row to the table in docs/observers.md
-  - write its README, and its tests against a fake of the provider
+  - write its README, and the rest of its tests
   - update the release manifest's golden file:
       UPDATE_GOLDEN=1 node --test scripts/release/manifest-lib.test.ts` + (values.auth === "api-key" ? `
   - it takes no deploy inputs, so a second install would be identical: add it to SINGLETON in

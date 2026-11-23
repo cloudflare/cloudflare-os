@@ -1,4 +1,4 @@
-// The per-binding gatekeeper Durable Object: one instance per binding of an Acme Service
+// The per-binding gatekeeper Durable Object: one instance per binding of one Acme Service
 // connection. It owns the binding's action journal, pins the user the connection belongs to, and
 // mints the capabilities gadgets hold (acme-session.ts). Every request to the provider runs
 // through the account's credential source.
