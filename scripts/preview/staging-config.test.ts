@@ -315,16 +315,15 @@ test("the AI gateway is optional as a group, but not half-configured", () => {
 });
 
 test("a preview that cannot use the binding transport needs the gateway token", () => {
-  // Both mirror an AiGatewayConfig throw: opting out of the binding leaves only HTTPS, and the
-  // google SDK cannot take the binding's fetch. Each is a deploy failure rather than a chat one.
+  // Mirrors the AiGatewayConfig throw: opting out of the binding leaves HTTPS.
   assert.throws(
       () => resolveAiGateway({ gateway: "g", accountId: "a", useBinding: "false" }),
       /CF_AI_GATEWAY_API_TOKEN must be set when CF_AI_GATEWAY_USE_BINDING is false/);
-  assert.throws(
-      () => resolveAiGateway({ gateway: "g", accountId: "a", providers: "cloudflare,google" }),
-      /CF_AI_GATEWAY_API_TOKEN must be set when the google provider is enabled/);
-
-  // With the token, both are configurations rather than errors.
+  assert.deepEqual(
+      resolveAiGateway({ gateway: "g", accountId: "a", providers: "cloudflare,google" }),
+      { CF_AI_GATEWAY: "g", CF_AI_GATEWAY_ACCOUNT_ID: "a",
+        CF_AI_GATEWAY_PROVIDERS: "cloudflare,google" });
+  // With the token, opting out of the binding is valid.
   assert.deepEqual(
       resolveAiGateway({ gateway: "g", accountId: "a", apiToken: "t", useBinding: "false" }),
       { CF_AI_GATEWAY: "g", CF_AI_GATEWAY_ACCOUNT_ID: "a", CF_AI_GATEWAY_API_TOKEN: "t",

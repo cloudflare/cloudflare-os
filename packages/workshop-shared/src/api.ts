@@ -3617,13 +3617,6 @@ export type AdminGatewayProvider = {
    * AdminApi.setGatewayProviderEnabled). Absent while the provider is off.
    */
   enabledBy?: 'environment' | 'admin';
-
-  /**
-   * Whether the provider's requests need CF_AI_GATEWAY_API_TOKEN on a deployment that has none,
-   * so that they fail until it is set. It says nothing of the provider keys the gateway holds,
-   * which the Workshop can't see (see AdminApi.testGatewayProvider).
-   */
-  needsApiToken: boolean;
 };
 
 /**
@@ -3911,21 +3904,6 @@ export type SuggestedModelId<P extends AiModelProvider = AiModelProvider> =
 export function modelKind(provider: string, model: string): ModelKind {
   return SUGGESTED_MODELS[provider as AiModelProvider]?.[model]?.kind ?? "language";
 }
-
-/**
- * Providers whose pi API adapter refuses a custom fetch, so their inference cannot ride the
- * Workers AI binding and needs CF_AI_GATEWAY_API_TOKEN over HTTPS. pi's Google adapter throws
- * "Custom fetch is not supported by the Google Generative AI adapter" whenever the fetch it is
- * given is not globalThis.fetch, and the client it builds on offers no hook to route around that:
- * @google/genai's `GoogleGenAI` takes only `httpOptions`, whose knobs are
- * baseUrl/apiVersion/headers/timeout/extraBody/retryOptions.
- * https://github.com/earendil-works/pi/blob/v0.84.2/packages/ai/src/api/google-generative-ai.ts#L80
- *
- * pi's Vertex adapter throws the same way, so a google-vertex provider would belong here too; it
- * is absent only because this deployment has no such provider.
- * https://github.com/earendil-works/pi/blob/v0.84.2/packages/ai/src/api/google-vertex.ts#L98
- */
-export const HTTPS_ONLY_PROVIDERS: ReadonlySet<string> = new Set<AiModelProvider>(["google"]);
 
 /**
  * Metadata about a workspace (one Overseer DO and everything in it). Includes everything needed
@@ -6150,7 +6128,8 @@ export type AiChatMessageBody = {
   /**
    * Optional machine-readable code so the client can react specially (e.g. "usage_limit" opens
    * the "connect Cloudflare / add credits" modal instead of a generic error + retry; "stopped"
-   * marks a run the user stopped, which is not a failure).
+   * marks a run the user stopped, which is not a failure). "resume_exhausted" marks a turn that
+   * exhausted its resume attempts before saving a step; `retryAgent()` tells the agent so.
    */
   code?: string;
 } | {
@@ -6175,13 +6154,18 @@ export type AiChatMessageBody = {
   bindingName?: string;
 } | {
   /**
-   * A model-visible control note for an approved-decision handoff, explicit Retry, or Stop.
-   * It also ends the preceding decision segment for recovery. Not rendered in the chat UI:
-   * the decision cards and turn controls already show these transitions to the user.
+   * A control record for an approved-decision handoff, explicit Retry, or Stop. It ends the
+   * preceding decision segment for recovery. Not rendered in the chat UI: the decision cards and
+   * turn controls already show these transitions to the user.
    * Older logs used this variant to nudge an agent whose callbacks were still unresolved.
    */
   type: "agentNudge";
-  text: string;
+  /**
+   * The note the model reads, as a user message. Absent when the record only marks the segment
+   * boundary, as for Stop and for a Retry with nothing to tell the agent, which then reruns on
+   * the same history.
+   */
+  text?: string;
 } | {
   /**
    * The agent requested that the user connect a gatekeeper (e.g. "I need ClickHouse cluster X").

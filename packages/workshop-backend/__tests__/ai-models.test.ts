@@ -125,11 +125,7 @@ describe("getModel AI Gateway routing", () => {
     });
   }, 15000);
 
-  it("routes Google through the gateway's google-ai-studio passthrough", () => {
-    // The @google/genai SDK sends its API key as `x-goog-api-key`, which AI Gateway forwards to
-    // the provider verbatim (taking precedence over the gateway's stored keys), so the documented
-    // stored-key flow passes the gateway token as the SDK API key. The adapter rejects injected
-    // fetch, so only the descriptor is asserted here; the header behavior is the SDK's.
+  it("routes Google through the gateway's google-ai-studio passthrough", async () => {
     const handle = getModel(env(), {
       provider: "google",
       model: "gemini-2.5-flash",
@@ -145,7 +141,31 @@ describe("getModel AI Gateway routing", () => {
       accountId: "gateway-account-id",
       apiToken: "gateway-token",
     });
-  });
+
+    // Exercise the default globalThis.fetch fallback (no options.fetch) and
+    // verify `this` stays bound to globalThis for workerd compatibility.
+    const receivers: unknown[] = [];
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(
+        function (this: unknown, input, init) {
+          receivers.push(this);
+          return fetchStub(input, init);
+        });
+    try {
+      const stream = await handle.stream(handle.model, {
+        messages: [{ role: "user", content: "hello", timestamp: 0 }],
+      }, { maxRetries: 0 });
+      expect((await stream.result()).stopReason).toBe("error");
+    } finally {
+      spy.mockRestore();
+    }
+    expect(receivers).toEqual([globalThis]);
+    const request = capturedRequests[0]!;
+    expect(urlWithoutQuery(request.url)).toBe(
+        "https://gateway.ai.cloudflare.com/v1/gateway-account-id/platform-gateway/" +
+        "google-ai-studio/v1beta/models/gemini-2.5-flash:streamGenerateContent");
+    expect(request.headers.get("cf-aig-authorization")).toBe("Bearer gateway-token");
+    expect(request.headers.get("x-goog-api-key")).toBeNull();
+  }, 15000);
 
   it("preserves gadget automation metadata", async () => {
     const handle = getModel(env(), ANTHROPIC_CONFIG, GADGET_INITIATOR, {
@@ -225,6 +245,21 @@ describe("getModel AI Gateway routing", () => {
     expect(request.headers.get("cf-aig-authorization")).toBe("Bearer user-token");
     expect(request.headers.get("x-api-key")).toBeNull();
     expect(request.headers.get("authorization")).toBeNull();
+
+    capturedRequests.length = 0;
+    const googleHandle = getModel(env(), {
+      provider: "google",
+      model: "gemini-2.5-flash",
+      apiToken: "ignored-in-user-gateway-mode",
+    }, INITIATOR, {
+      userGateway: { accountId: "user-account-id", apiKey: "user-token" },
+    });
+    const googleRequest = await captureRequest(googleHandle);
+    expect(urlWithoutQuery(googleRequest.url)).toBe(
+        "https://gateway.ai.cloudflare.com/v1/user-account-id/default/" +
+        "google-ai-studio/v1beta/models/gemini-2.5-flash:streamGenerateContent");
+    expect(googleRequest.headers.get("cf-aig-authorization")).toBe("Bearer user-token");
+    expect(googleRequest.headers.get("x-goog-api-key")).toBeNull();
   }, 15000);
 
   it("routes Workers AI through the platform gateway like every other provider", async () => {
@@ -397,8 +432,7 @@ describe("getModel AI Gateway binding transport", () => {
   } as unknown as Ai;
 
   // Binding transport selects by default: binding present, no API token (in-account gateways;
-  // CF_AI_GATEWAY_USE_BINDING=false is the cross-account opt-out). google must not be an
-  // enabled provider in this mode (its transport still needs the token).
+  // CF_AI_GATEWAY_USE_BINDING=false is the cross-account opt-out).
   function bindingEnv(overrides: Partial<Cloudflare.Env> = {}): Cloudflare.Env {
     return env({
       CF_AI_GATEWAY_API_TOKEN: undefined,
@@ -490,10 +524,7 @@ describe("getModel AI Gateway binding transport", () => {
         .toBe("Bearer cloudflare-gateway-binding");
   }, 15000);
 
-  it("keeps Google on HTTPS with the token while other providers use the binding", async () => {
-    // Hybrid mode: binding and token both present. pi's Google adapter rejects a custom fetch,
-    // so Google inference rides HTTPS with the gateway token -- but same-account log reads
-    // still use the binding.
+  it("routes Google through the binding when both binding and token are present", async () => {
     const hybridEnv = env({
       CF_AI_GATEWAY_PROVIDERS: "anthropic,openai,google,cloudflare",
       WORKERS_AI: fakeBinding,
@@ -505,33 +536,44 @@ describe("getModel AI Gateway binding transport", () => {
       apiToken: "ignored-in-gateway-mode",
     }, INITIATOR);
     expect(googleHandle.model.baseUrl).toBe(
-        "https://gateway.ai.cloudflare.com/v1/gateway-account-id/platform-gateway/" +
+        "https://workers-binding.ai/ai-gateway/gateways/platform-gateway/" +
         "google-ai-studio/v1beta");
     expect(googleHandle.aiGatewayLogRoute).toEqual({ gateway: "platform-gateway" });
 
-    const anthropicHandle = getModel(hybridEnv, ANTHROPIC_CONFIG, INITIATOR);
-    const entry = await captureEntry(anthropicHandle);
-    expect(urlWithoutQuery(entry.url)).toBe(
-        "https://workers-binding.ai/ai-gateway/gateways/platform-gateway/anthropic/v1/messages");
-    // The binding arm carries the sentinel, never the real gateway token.
-    expect(entry.headers["cf-aig-authorization"]).toBe("Bearer cloudflare-gateway-binding");
+    const googleEntry = await captureEntry(googleHandle);
+    expect(urlWithoutQuery(googleEntry.url)).toBe(
+        "https://workers-binding.ai/ai-gateway/gateways/platform-gateway/" +
+        "google-ai-studio/v1beta/models/gemini-2.5-flash:streamGenerateContent");
+    expect(googleEntry.headers["cf-aig-authorization"])
+        .toBe("Bearer cloudflare-gateway-binding");
+    expect(googleEntry.headers["x-goog-api-key"]).toBeUndefined();
   }, 15000);
 
-  it("requires the token when google is an enabled provider", () => {
-    expect(() => getModel(
+  it("allows google as an enabled provider without a token when binding is present", () => {
+    const handle = getModel(
         bindingEnv({ CF_AI_GATEWAY_PROVIDERS: "anthropic,google" }),
-        ANTHROPIC_CONFIG, INITIATOR)).toThrow(
-        "enabling the google provider requires CF_AI_GATEWAY_API_TOKEN");
+        ANTHROPIC_CONFIG, INITIATOR);
+    expect(handle.model.baseUrl).toBe(
+        "https://workers-binding.ai/ai-gateway/gateways/platform-gateway/anthropic");
   });
 
-  it("rejects a stored google config when the deployment has no token", () => {
-    expect(() => getModel(bindingEnv(), {
+  it("routes a stored google config through the binding when the deployment has no token", async () => {
+    const googleHandle = getModel(bindingEnv(), {
       provider: "google",
       model: "gemini-2.5-flash",
       apiToken: "ignored-in-gateway-mode",
-    }, INITIATOR)).toThrow(
-        'Provider "google" cannot use the Workers AI binding transport');
-  });
+    }, INITIATOR);
+    expect(googleHandle.model.baseUrl).toBe(
+        "https://workers-binding.ai/ai-gateway/gateways/platform-gateway/" +
+        "google-ai-studio/v1beta");
+    const entry = await captureEntry(googleHandle);
+    expect(urlWithoutQuery(entry.url)).toBe(
+        "https://workers-binding.ai/ai-gateway/gateways/platform-gateway/" +
+        "google-ai-studio/v1beta/models/gemini-2.5-flash:streamGenerateContent");
+    expect(entry.headers["cf-aig-authorization"])
+        .toBe("Bearer cloudflare-gateway-binding");
+    expect(entry.headers["x-goog-api-key"]).toBeUndefined();
+  }, 15000);
 
 });
 

@@ -46,8 +46,8 @@ declare global {
       CF_AI_GATEWAY?: string;            // Gateway name (enables gateway mode)
       CF_AI_GATEWAY_PROVIDERS?: string;   // Comma-separated list: "anthropic,openai,google,cloudflare"
       CF_AI_GATEWAY_ACCOUNT_ID?: string;  // Gateway owner account ID (required with CF_AI_GATEWAY)
-      CF_AI_GATEWAY_API_TOKEN?: string;   // Run + Read token; optional when the binding transport
-                                          // applies (still required for google)
+      // Run + Read token; optional when the WORKERS_AI binding carries traffic.
+      CF_AI_GATEWAY_API_TOKEN?: string;
       CF_AI_GATEWAY_USE_BINDING?: string;
       // Note: outside gateway mode, Workers AI (provider "cloudflare") is BYOK like every other
       // provider -- the account ID and API token live in the user's model config, not in env.

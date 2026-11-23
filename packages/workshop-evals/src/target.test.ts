@@ -126,13 +126,10 @@ describe("assertModelAccess", () => {
     expect(() => assertModelAccess(direct, cloudflare)).not.toThrow();
   });
 
-  it("requires the Gateway token for HTTPS-only providers on the binding transport", () => {
-    expect(() => assertModelAccess(binding, google)).toThrow("requires CF_AI_GATEWAY_API_TOKEN");
+  it("allows gateway access for any provider over binding or HTTPS", () => {
+    expect(() => assertModelAccess(binding, google)).not.toThrow();
     expect(() => assertModelAccess(bindingWithToken, google)).not.toThrow();
     expect(() => assertModelAccess(https, google)).not.toThrow();
-  });
-
-  it("lets cloudflare models ride the binding without a token", () => {
     expect(() => assertModelAccess(binding, cloudflare)).not.toThrow();
   });
 });

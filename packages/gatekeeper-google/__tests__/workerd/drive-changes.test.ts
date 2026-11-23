@@ -13,6 +13,7 @@ import { DRIVE_DOCS_KINDS, DRIVE_SHEETS_KINDS, DRIVE_SLIDES_KINDS } from "../dri
 const DOC_MIME = "application/vnd.google-apps.document";
 const SHEET_MIME = "application/vnd.google-apps.spreadsheet";
 const FOLDER_MIME = "application/vnd.google-apps.folder";
+const SHORTCUT_MIME = "application/vnd.google-apps.shortcut";
 
 const ROOT = "folder-root";
 const MY_ROOT = "my-root";
@@ -63,6 +64,9 @@ const MOVE_SINGLE_FILE =
   "both the folder the file is in and the folder it goes to, or an all-of-Drive binding, with " +
   "read and write access.";
 const OUTSIDE = "The requested file is outside this Drive binding.";
+const THROUGH_SHORTCUT =
+  "This folder was opened through a shortcut, so its files can be read here but not changed, " +
+  "commented on, shared, listed for who they are shared with, or moved.";
 const ACCESS_NAME =
   "That does not name access. Pass the id of an entry listAccess() returned, or a grantee: " +
   "{ type: \"user\", emailAddress }, { type: \"group\", emailAddress }, " +
@@ -155,6 +159,8 @@ type FakeFile = {
   name: string; mimeType: string; modifiedTime: string; parents: string[]; driveId?: string;
   trashed: boolean; canListChildren: boolean; canComment: boolean; canShare: boolean;
   canAddChildren: boolean; canMoveItemWithinDrive: boolean;
+  /** Set on a shortcut: the file or folder it points to. */
+  shortcutTargetId?: string;
 };
 
 /** Access given on one file itself. Anyone's carries no ID of its own: its form decides it. */
@@ -369,6 +375,7 @@ class DriveProvider {
       id, name: held.name || id, mimeType: held.mimeType, modifiedTime: held.modifiedTime,
       ...(held.parents.length ? { parents: held.parents } : {}),
       ...(held.driveId ? { driveId: held.driveId } : {}),
+      ...(held.shortcutTargetId ? { shortcutDetails: { targetId: held.shortcutTargetId } } : {}),
       trashed: held.trashed,
       capabilities: {
         canListChildren: held.canListChildren, canComment: held.canComment,
@@ -410,6 +417,15 @@ class DriveProvider {
       return Response.json({
         user: { permissionId, ...(this.about.omitAddress ? {} : { emailAddress }) },
       });
+    }
+    // A folder binding's lookup of a shortcut to a file that is not its child: the folder's
+    // untrashed shortcuts.
+    let query = url.searchParams.get("q") ?? "";
+    if (call === "GET /drive/v3/files" && query.includes(SHORTCUT_MIME)) {
+      let parent = /'([^']+)' in parents/.exec(query)?.[1];
+      let files = [...this.files].filter(([, held]) => held.mimeType === SHORTCUT_MIME &&
+        !held.trashed && parent !== undefined && held.parents.includes(parent));
+      return Response.json({ files: files.map(([id, held]) => this.#fileJson(id, held)) });
     }
     let match = /^\/drive\/v3\/files\/([^/]+)(?:\/(permissions|comments)(?:\/([^/]+))?)?$/
       .exec(url.pathname);
@@ -1781,6 +1797,51 @@ describe("moves", () => {
     expect(provider.writes).toEqual([]);
   });
 
+  it("reads through a folder's shortcuts, writes nothing through them, and stops at a trashed one", async () => {
+    provider.files.set("far-doc", file(DOC_MIME, ["elsewhere"]));
+    provider.files.set("far-folder", file(FOLDER_MIME, ["elsewhere"]));
+    provider.files.set("deep-doc", file(DOC_MIME, ["far-folder"]));
+    provider.files.set("to-doc", file(SHORTCUT_MIME, [ROOT], { shortcutTargetId: "far-doc" }));
+    provider.files.set("to-folder", file(SHORTCUT_MIME, [ROOT], { shortcutTargetId: "far-folder" }));
+    let drive = binding(FOLDER);
+
+    expect((await drive.call("getEntry", "far-doc")).value).toMatchObject({ id: "far-doc" });
+    expect((await drive.callIn(["far-folder"], "getEntry", "deep-doc")).value)
+      .toMatchObject({ id: "deep-doc" });
+    // Writes refuse there, so it says it is read-only, although the binding is not.
+    expect((await drive.call("getScope")).value).toMatchObject({ access: "write" });
+    expect((await drive.callIn(["far-folder"], "getScope")).value)
+      .toMatchObject({ folderId: "far-folder", access: "read" });
+
+    let refused = [
+      [await drive.call("comment", "far-doc", "Hi"), OUTSIDE],
+      [await drive.call("listAccess", "far-doc"), OUTSIDE],
+      [await drive.call("move", "far-doc", "inner"), OUTSIDE],
+      [await drive.callIn(["far-folder"], "comment", "deep-doc", "Hi"), THROUGH_SHORTCUT],
+      [await drive.callIn(["far-folder"], "listAccess", "far-folder"), THROUGH_SHORTCUT],
+      [await drive.callIn(["far-folder"], "listAccess", "deep-doc"), THROUGH_SHORTCUT],
+      [await drive.callIn(["far-folder"], "move", "deep-doc", "far-folder"), THROUGH_SHORTCUT],
+    ] as const;
+    for (let [outcome, message] of refused) {
+      expect(outcome.error).toBe(message);
+      expect(outcome.actionId).toBeUndefined();
+    }
+    // Said in place of asking for write access, which would not make the folder writable.
+    let readOnly = binding(FOLDER, null);
+    for (let [method, ...args] of [
+      ["comment", "deep-doc", "Hi"], ["listAccess", "deep-doc"], ["move", "deep-doc", "far-folder"],
+    ] as const) {
+      expect((await readOnly.callIn(["far-folder"], method, ...args)).error).toBe(THROUGH_SHORTCUT);
+    }
+
+    provider.files.get("to-doc")!.trashed = true;
+    provider.files.get("to-folder")!.trashed = true;
+    expect((await drive.call("getEntry", "far-doc")).error).toBe(OUTSIDE);
+    expect((await drive.callIn(["far-folder"], "getEntry", "deep-doc")).error).toBe(OUTSIDE);
+    expect(await drive.waiting()).toEqual([]);
+    expect(provider.writes).toEqual([]);
+  });
+
   it("moves any file to any folder of its drive on an account binding, and to no other drive", async () => {
     let drive = binding();
 
@@ -2121,7 +2182,8 @@ describe("a deployment that keeps Drive read-only", () => {
       [FOLDER, {
         url: FOLDER_URL,
         title: "folder-root",
-        snippet: `Read-only: list and search direct children, navigate child folders, ${reads}, ` +
+        snippet: "Read-only: list and search direct children, navigate child folders, follow shortcuts " +
+          `among them to files and folders elsewhere in Drive for reading, ${reads}, ` +
           "and read comments on direct children in Drive folder \"folder-root\"",
         suggestedBindingName: "GOOGLE_DRIVE_FOLDER",
         tsType: "GoogleDriveFolderReadSession",

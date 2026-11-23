@@ -46,8 +46,7 @@ CF_AI_GATEWAY_PROVIDERS=anthropic,openai,google
 
 # Required whenever CF_AI_GATEWAY is set:
 CF_AI_GATEWAY_ACCOUNT_ID=...
-# Required unless the WORKERS_AI binding carries gateway traffic (see below); always required
-# for the google provider:
+# Required unless the WORKERS_AI binding carries gateway traffic (see below):
 CF_AI_GATEWAY_API_TOKEN=...
 ```
 
@@ -62,10 +61,7 @@ webFetch tool's document-to-Markdown conversion runs on, so unbinding it opts ou
 the gateway transport. Without the binding transport, set
 `CF_AI_GATEWAY_API_TOKEN` — a token with AI Gateway Run and Read permissions so Gadgets can
 execute models and report their costs (over HTTPS the Gateway may live in the Worker's own
-account or a different one). The token stays required for the `google` provider regardless of the
-binding (the model SDK adapter refuses the binding's fetch — note the platform config above enables
-it, so the platform server itself still needs the token). Every provider, Workers AI included,
-routes through the same Gateway.
+account or a different one). Every provider, Workers AI included, routes through the same Gateway.
 
 Which models the Gateway offers is managed on the **Models** tab of `/admin`, not in the
 environment. `CF_AI_GATEWAY_PROVIDERS` names the providers that are always on, and an admin can
