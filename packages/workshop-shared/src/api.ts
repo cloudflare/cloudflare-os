@@ -1348,9 +1348,9 @@ export interface AuthenticatedApi extends RpcTarget {
    * the caller is not one. The access check happens here, once, for every AdminApi method but
    * inspection: AdminApi.inspectWorkspace(), AdminApi.inspectUser() and each call on the view
    * either mints check again (see AdminWorkspaceView and AdminUserView). Every audit record the
-   * capability makes is labelled with an AdminVia derived from the client's User-Agent.
-   * (Authentication config — sign-in providers, password login — is intentionally not managed
-   * here; it stays env-var driven.)
+   * capability makes is labelled with an AdminVia derived from the client's User-Agent ("api" or
+   * "cli"; "gatekeeper" is never derived from a client). (Authentication config — sign-in
+   * providers, password login — is intentionally not managed here; it stays env-var driven.)
    *
    * @nullWhen the caller is not a deployment admin; amIAdmin() says whether it is
    */
@@ -1742,10 +1742,12 @@ export type DeploymentUpdateStatus = {
 /**
  * How an admin's calls reach the deployment, as their audit records say: "cli" when the session's
  * User-Agent is the cf-os CLI's, "api" for any other client of the API (the Workshop's admin panel
- * among them). The User-Agent is the client's own claim, so this is an unverified label that
- * grants nothing.
+ * among them), and "gatekeeper" for a call made through the admin gatekeeper, on the Admin API
+ * the Workshop opens for it as that admin. "api" and "cli" come from the User-Agent, the client's
+ * own claim: unverified labels that grant nothing. "gatekeeper" is no client's claim: only the
+ * Workshop sets it, and no session, header or argument can.
  */
-export type AdminVia = "api" | "cli";
+export type AdminVia = "api" | "cli" | "gatekeeper";
 
 /** How many records one page of an admin listing (AdminApi.listUsers(), listWorkspaces(),
  * listAdminAudit()) holds when the caller gives no `limit`. */

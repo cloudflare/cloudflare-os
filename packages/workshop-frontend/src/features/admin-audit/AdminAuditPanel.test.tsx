@@ -839,6 +839,17 @@ describe('AdminAuditPanel', () => {
       expect(detail(await expand(1), 'Access')).toBe('Off · refused: Access off')
     })
 
+    it('names a call made through the admin gatekeeper', async () => {
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockResolvedValue(testPage([
+        accessRecord({ via: 'gatekeeper' }), userRecord({ via: 'gatekeeper' }),
+      ]))
+      await render(settingsWith(), admin)
+
+      expect(detail(await expand(0), 'Via')).toBe('Admin gatekeeper')
+      expect(detail(await expand(1), 'Via')).toBe('Admin gatekeeper')
+    })
+
     it('shows a write: its kind, its workspace’s owner, and in its details the workspace, reason, arguments and how it came', async () => {
       const admin = fakeAdmin()
       admin.listAdminAudit.mockResolvedValue(testPage([
