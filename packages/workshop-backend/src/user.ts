@@ -17,7 +17,7 @@ import {
 import { chatKey, chatKeyPrefix } from "./storage-schema/overseer-storage.js";
 import { recordAnalytics } from "./analytics";
 import { createWorkshopLogger } from "./observability";
-import { withTimeout } from "./do-retry";
+import { askVendor } from "./gatekeeper-discovery";
 import { getGatewayModels, type GatewayModels } from "./ai-gateway.js";
 import { utcDayKey, nextUtcMidnightIso, DailyQuotaResult } from "./ai-gateway-billing/limits/config.js";
 import { isCloudflareLimitsEnabled } from "./ai-gateway-billing/config.js";
@@ -273,9 +273,6 @@ function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
   return result === 0;
 }
 
-// How long listGatekeeperVendors waits on one gatekeeper before listing it as unavailable.
-const GATEKEEPER_VENDOR_LOAD_TIMEOUT_MS = 10_000;
-
 function unavailableGatekeeperVendorInfo(id: string): GatekeeperVendorInfo {
   return {
     id,
@@ -296,7 +293,7 @@ async function checkGatekeeperVendorFilter(
     filter: GatekeeperVendorFilter): Promise<boolean> {
   try {
     if (filter.resourceUrl) {
-      let resources = await vendor.getSupportedResources();
+      let resources = await askVendor("filter", vendorId, () => vendor.getSupportedResources());
       let matched = false;
       for (let resource of resources) {
         if (typeof resource.urlPattern !== "string") {
@@ -2110,10 +2107,10 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         try {
           // Bounded, so that one gatekeeper that never answers lists as unavailable rather than
           // holding up the whole list (and, through it, every agent turn's system prompt).
-          let [description, supportedResources] = await withTimeout(Promise.all([
+          let [description, supportedResources] = await askVendor("list", id, () => Promise.all([
             vendor.describe(),
             vendor.getSupportedResources(options),
-          ]), GATEKEEPER_VENDOR_LOAD_TIMEOUT_MS, "Gatekeeper vendor load timed out.");
+          ]));
           let enabledResources =
               filterEnabledResources(config, id, supportedResources)
                   .filter(resource => resource.connectable !== false || resource.creatable);
@@ -2197,13 +2194,14 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   // Resolve every bound vendor that auto-provisions an account (VendorDescription.autoProvisionsAccount),
-  // describing them in parallel and dropping any whose describe() fails. Shared discovery step for both
-  // listing and auto-provisioning ambient gatekeepers; callers apply their own admin-mode filter.
+  // describing them in parallel and dropping any whose describe() fails or outlasts its bound.
+  // Shared discovery step for both listing and auto-provisioning ambient gatekeepers; callers apply
+  // their own admin-mode filter.
   async #ambientVendors():
       Promise<Array<{vendorId: string, vendor: Service<GatekeeperVendor>, description: VendorDescription}>> {
     let described = await Promise.all([...this.vendors].map(async ([vendorId, vendor]) => {
       try {
-        let description = await vendor.describe();
+        let description = await askVendor("ambient", vendorId, () => vendor.describe());
         return description.autoProvisionsAccount ? {vendorId, vendor, description} : null;
       } catch (err) {
         logger.warn("failed to describe vendor", {
@@ -2527,7 +2525,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       try {
         let vendorDescriptionPromise = vendorDescriptions.get(record.vendorId);
         if (!vendorDescriptionPromise) {
-          vendorDescriptionPromise = vendor.describe().catch(err => {
+          vendorDescriptionPromise = askVendor(
+              "connections", record.vendorId, () => vendor.describe()).catch(err => {
             vendorDescriptions.delete(record.vendorId);
             throw err;
           });
@@ -2544,11 +2543,13 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
       let supportedResources: SupportedResource[] = [];
       try {
-        supportedResources = await record.account.getSupportedResources();
+        supportedResources = await askVendor(
+            "connections", record.vendorId, () => record.account.getSupportedResources());
         supportedResources =
             filterEnabledResources(config, record.vendorId, supportedResources,
               config.disabledResources[record.vendorId]?.length
-                ? await vendor.getSupportedResources({ userId: subscriberUserId })
+                ? await askVendor("connections", record.vendorId,
+                    () => vendor.getSupportedResources({ userId: subscriberUserId }))
                 : supportedResources);
       } catch (err) {
         supportedResources = [];

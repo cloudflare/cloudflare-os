@@ -4,6 +4,7 @@ import { DurableObject } from 'cloudflare:workers';
 import { RpcTarget, type RpcStub } from 'capnweb';
 import { validateRpc } from 'capnweb-validate';
 import { createWorkshopLogger } from "./observability";
+import { askVendor } from "./gatekeeper-discovery.js";
 import { sanitizeBlueprintOutput } from './blueprint-archive.js';
 import { ADMIN_CONFIG_KEY, FEATURED_BLUEPRINTS_KEY, isReservedBlueprintKey, parseBlueprintKvRecord, readBlueprintKvRecord, serializeFeaturedBlueprints } from './storage-schema/blueprints-kv.js';
 import { MAX_AGENT_HINT, MAX_ALLOWED_MODELS, adminConfigSeed, assertPermutation, changesModelSettings, defaultOutputFormatId, diffAdminConfig, effectiveAdminConfig, isAllowedModelName, isUpdateCheckInterval, isUpdateHours, listPromotedFormats, parseRestrictedWebFetchHosts, reorderFormats, sanitizeAddedModel, sanitizeModelSettings, sanitizeOutputOverrides, serializeAdminConfig, isResourceDisabled, unresolvedResourceRestrictions } from './admin-config.js';
@@ -1229,10 +1230,10 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
     for (let [id, vendor] of this.vendors) {
       promises.push((async () => {
         try {
-          let [description, supportedResources] = await Promise.all([
+          let [description, supportedResources] = await askVendor("admin", id, () => Promise.all([
             vendor.describe(),
             vendor.getSupportedResources({ userId: adminUserId }),
-          ]);
+          ]));
           if (description.autoProvisionsAccount) {
             // Auto-provisioning ("ambient") gatekeeper: a three-state mode, no resources to toggle.
             let mode = ambientGatekeeperMode(config, id);
