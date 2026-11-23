@@ -992,6 +992,17 @@ export function defineActions<Host, M extends Record<string, unknown>>(
         return unbound.find(ref => !live.has(ref));
       };
 
+      // Confirms a record the Workshop named, or said it holds, that was still waiting for its
+      // submission's reply. Its provider may have been rejected meanwhile, in a cascade that
+      // passed it over, so its dependencies are checked as `stage` checks them.
+      const confirm = (id: number): void => {
+        const record = journal.get(id);
+        if (record?.state !== "staged") return;
+        journal.markSubmitted(id);
+        const stranded = unmetOf(record.action, record.view);
+        if (stranded !== undefined) markStranded(journal, id, stranded);
+      };
+
       // Settles the submissions an earlier activation left unconfirmed (`listUnconfirmed`), once
       // per activation, through the first session's queue; see `BoundActionSet.session`. Run as a
       // resolution, so no apply or rejection naming one interleaves with its answer.
@@ -1007,14 +1018,8 @@ export function defineActions<Host, M extends Record<string, unknown>>(
           for (const [i, id] of unconfirmed.entries()) {
             const record = journal.get(id);
             if (record?.state !== "staged") continue;
-            if (!held[i]) {
-              await withdraw(id, record);
-              continue;
-            }
-            journal.markSubmitted(id);
-            // Its provider may have been rejected meanwhile, in a cascade that passed it over.
-            const stranded = unmetOf(record.action, record.view);
-            if (stranded !== undefined) markStranded(journal, id, stranded);
+            if (held[i]) confirm(id);
+            else await withdraw(id, record);
           }
           if (unconfirmed.length > 0) {
             attributed.info("settled submissions an earlier activation left unconfirmed", {
@@ -1117,7 +1122,7 @@ export function defineActions<Host, M extends Record<string, unknown>>(
         const result: ApplyActionsResult = { applied: [] };
         const started = Date.now();
         // Naming a record proves the Workshop holds it, whether or not the list gets as far.
-        for (const id of actions) journal.markSubmitted(id);
+        for (const id of actions) confirm(id);
         // Past a batch that failed, its actions go one at a time up to here.
         let unbatchedUntil = 0;
         for (let i = 0; i < actions.length;) {
@@ -1268,7 +1273,7 @@ export function defineActions<Host, M extends Record<string, unknown>>(
         stageList: (_branch, actions) =>
           resolutionQueue.run(() => {
             // Naming a record confirms it, one with no view to change included.
-            for (const id of actions) { journal.markSubmitted(id); journal.restage(id); }
+            for (const id of actions) { confirm(id); journal.restage(id); }
           }),
 
         rejectAction: id => resolutionQueue.run(() => rejectRecord(id, true)),

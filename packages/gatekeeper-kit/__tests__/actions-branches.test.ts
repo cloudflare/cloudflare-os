@@ -649,6 +649,25 @@ describe("a submission an earlier activation never saw answered", () => {
       .toMatchObject({ action: edit, message: expect.stringContaining("~m"), retryable: false });
   });
 
+  it("fails it alike when an apply or a move to staging is what confirms it", async () => {
+    for (const name of ["applyList", "stageList"] as const) {
+      const kv = fakeKv();
+      const { journal, set } = activation(kv);
+      const a = await set.session(acceptingQueue().queue, A);
+      const maker = await a.submit("create", { ref: "~m", name: "maker" });
+      const edit = new ActionJournal<TaggedAction<Actions>>(kv, { namespace: "things" })
+        .allocate({ kind: "rename", payload: { target: "~m", name: "edit" } }, undefined, A);
+      await set.rejectAction(maker);
+
+      // No session has opened since, so this is what first confirms the edit.
+      if (name === "stageList") await set.stageList(A, [edit]);
+      expect((await set.applyList(A, [edit])).failed)
+        .toMatchObject({ action: edit, retryable: false });
+      expect(journal.get(edit)?.state).toBe("failed");
+      expect(a.pending()).toEqual([]);
+    }
+  });
+
   it("asks again about a submission left unconfirmed while an earlier one was being settled",
     async () => {
       const { set } = activation(fakeKv());
