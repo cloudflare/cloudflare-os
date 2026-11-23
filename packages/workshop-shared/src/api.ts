@@ -369,7 +369,9 @@ export const RECENT_THREADS_LIMIT = 100;
  *   RECENT_THREADS_LIMIT whose latest messages are newest; updates come for any tracked chat, so
  *   the subscriber keeps those it lists. Tracked chats are those the user has opened, taken part
  *   in or set a preference for (see docs/user-unread-state.md), so an agent's run nobody opened is
- *   not among them.
+ *   not among them, except that when a builder is first admitted to a shared workspace, cursor
+ *   heads are seeded for its existing chats, runs they never opened included, so those appear in
+ *   the snapshot.
  * - `{workspaceId}`: the chats in one workspace, read or unread (e.g. for that workspace's chat
  *   list).
  */
@@ -448,6 +450,7 @@ export type WaitingAsk =
 
 /** A chat waiting on the user, as `WorkspaceSummary.waitingChats` lists it. */
 export type WorkspaceWaitingChat = {
+  /** The chat's id within the workspace (as `AiChatMetadata.id`). */
   chatId: number;
 
   /** The chat's title. */
@@ -470,6 +473,7 @@ export type WorkspaceWaitingChat = {
 
   /** If it is an agent's run, the spawner that started it (as `AiChatMetadata` names it). */
   spawnerId?: WorkpieceId;
+  /** The spawner's name when the run started (as `AiChatMetadata.spawnerName`). */
   spawnerName?: string;
 };
 
@@ -525,7 +529,8 @@ export const MAX_PREFERENCES_SIZE = 256 * 1024;
  * browser or device (see `AuthenticatedApi.subscribeToPreferences()`): each entry a string under a
  * key, both the app's. The server keeps them as given, within MAX_PREFERENCES_SIZE; what they
  * mean, and any bounds of their own, are the app's, which reads each defensively, since another
- * version of the app may have written it.
+ * version of the app may have written it. The key `__proto__` is not supported: Cap'n Web drops
+ * it when encoding objects.
  */
 export type UserPreferences = Record<string, string>;
 
@@ -790,6 +795,8 @@ export type AccessConfirmationErrorCode =
 
 /** What an open is refused with when the user's access to what it reads was not confirmed. */
 export type AccessConfirmationError = Error & {
+  /** Why it was refused (see ACCESS_CONFIRMATION_ERROR_CODES), as getAccessConfirmationErrorCode()
+   * reads it. */
   code: AccessConfirmationErrorCode;
   /** The workspace being opened. The overseer always sets it; a client's `configure()` rejection
    * need not. */
@@ -5466,8 +5473,9 @@ export interface Overseer extends RpcTarget {
 
   /**
    * Get the metadata of the file with id `id` (see ChatAttachmentRef.id) sent in chat `chatId`,
-   * without its bytes: what a link to it needs before its message is loaded. Undefined if the
-   * chat has no such file. Not available in use-only sessions.
+   * without its bytes: what a link to it needs before its message is loaded. Throws if `id` is
+   * malformed; undefined if a well-formed `id` names no file the chat has. Not available in
+   * use-only sessions.
    */
   getChatAttachment(chatId: number, id: string): Promise<ChatAttachmentInfo | undefined>;
 
@@ -6345,9 +6353,9 @@ export type AiChatMessageBody = {
    * The sequence of the earlier message in this chat that this one replies to, as its sender
    * gave it (see `Overseer.sendChatMessage()`); `Overseer.getChatMessage()` reads that
    * message. Display only: the agent reads `message` and is not shown the message replied to, so
-   * a sender that wants the agent to know what it answers says so in the text (the Workshop app
-   * opens a reply with a Markdown quote of it). Absent when the message replies to none, and on
-   * every message sent before replies were recorded, whatever its text quotes.
+   * a sender that wants the agent to know what it answers says so in the text (a client might,
+   * for example, open a reply with a Markdown quote of it). Absent when the message replies to
+   * none, and on every message sent before replies were recorded, whatever its text quotes.
    */
   replyToSequence?: number;
 
@@ -6845,14 +6853,18 @@ export type ChatAttachmentRef = {
 
 /**
  * One thing a chat has, as Overseer.listChatArtifacts() lists it: a gadget or worktree it
- * created, or a file sent in it, with when the message that records it was written.
+ * created through its changes (its "changes" messages' createdGadgets and createdWorktrees; the
+ * scratch worktree that holds its attachments is not listed), or a file sent in it, with when the
+ * message that records it was written.
  */
 export type ChatArtifact = {
+  /** A gadget or worktree the chat created. */
   type: "workpiece";
 
   /** The sequence of the "changes" message that recorded the creation (see createdGadgets). */
   sequence: number;
 
+  /** When the "changes" message that recorded the creation was written (its timestamp). */
   timestamp: Date;
 
   /**
@@ -6861,8 +6873,10 @@ export type ChatArtifact = {
    */
   workpiece: WorkpieceSummary;
 } | {
+  /** A file sent in the chat. */
   type: "attachment";
 
+  /** When the message the file is attached to was sent (its timestamp). */
   timestamp: Date;
 
   /** The file, whose `sequence` is its message's. */
@@ -6882,6 +6896,7 @@ export type ChatConnectionUse = {
 
   /** What it connects to, as the connection was titled when it was made. */
   resourceTitle?: string;
+  /** The URL of what it connects to, from the connection's record; absent when it has none. */
   resourceUrl?: string;
 };
 

@@ -12608,35 +12608,35 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
         throw createOpenWorkspaceError(OPEN_WORKSPACE_ERROR_CODES.workspaceAccessDenied);
       }
       access = effectiveAccess;
-      let role = access.role;
 
       // Fire-and-forget a call to the collaborator's user DO so the gadget appears on
       // (or is refreshed on) their home page.
       let gadgetId = this.impl.ctx.id.toString();
-      // Initial admission skips earlier alerts. Carry the timeline boundaries in this existing
-      // callback so the User DO can initialize under its thread mutex without another RPC.
-      // Enrollment is best-effort: events racing this first registration are not guaranteed;
-      // subsequent arrivals fan out normally once the User DO has recorded the listing.
-      let notificationBaselines = role === "build" ? [...this.impl.storage.chatMeta.list()]
-        .filter(meta => {
-          let participants = this.impl.storage.nextChatSequences.get(meta.id)?.notificationParticipants;
-          return participants === undefined || participants.includes(profileId);
-        })
-        .map(meta => ({
-        chatId: meta.id, notifiedThroughSequence: this.impl.nextChatSequencePeek(meta.id) - 1,
-        head: this.impl.chatHead(meta.id),
-        headUpdatedAt: meta.lastActive,
-        hasParticipated: this.impl.chatParticipationDefault(meta.id),
-        readThroughVisibleSequence: this.impl.storage.nextChatSequences.get(meta.id)?.visibleThroughSequence ?? 0,
-      })) : [];
       void (async () => {
         try {
           const ownerProfile = await owner.whoami();
-          // Access may have been revoked (or the workspace deleted) during the await; re-check in
-          // the same synchronous step as the reads so a later title never reaches a non-member.
+          // Access may have been revoked or changed (or the workspace deleted) during the await;
+          // re-check in the same synchronous step as the reads so a later title never reaches a
+          // non-member, and the starting points follow the role recorded.
           let sharing = await this.impl.getSharingManager();
           let current = sharing.getEffectiveAccess(profileId);
           if (!current || !this.impl.ownerId || this.impl.storage.deleting.get()) return;
+          // Initial admission skips earlier alerts. Carry the timeline boundaries in this existing
+          // callback so the User DO can initialize under its thread mutex without another RPC.
+          // Enrollment is best-effort: events racing this first registration are not guaranteed;
+          // subsequent arrivals fan out normally once the User DO has recorded the listing.
+          let notificationBaselines = current.role === "build" ? [...this.impl.storage.chatMeta.list()]
+            .filter(meta => {
+              let participants = this.impl.storage.nextChatSequences.get(meta.id)?.notificationParticipants;
+              return participants === undefined || participants.includes(profileId);
+            })
+            .map(meta => ({
+            chatId: meta.id, notifiedThroughSequence: this.impl.nextChatSequencePeek(meta.id) - 1,
+            head: this.impl.chatHead(meta.id),
+            headUpdatedAt: meta.lastActive,
+            hasParticipated: this.impl.chatParticipationDefault(meta.id),
+            readThroughVisibleSequence: this.impl.storage.nextChatSequences.get(meta.id)?.visibleThroughSequence ?? 0,
+          })) : [];
           await clientUser.recordSharedWorkspaceOpen(gadgetId, this.impl.storage.title.get(), ownerProfile,
               current.role, notificationBaselines, this.impl.storage.titleRev.get());
         } catch (err) {
@@ -15480,7 +15480,8 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
   // index of the messages that record what a chat has (see listChatArtifacts()). Each entry names
   // the fields its type declares, since a stored reference also holds its path in the chat's
   // scratch worktree, and can hold bytes. A view writes nothing, so a chat the index does not yet
-  // hold whole (see OverseerImpl.indexChatArtifacts()) is read through instead.
+  // hold whole (see OverseerImpl.indexChatArtifacts()) is read through instead: in full on every
+  // call until the workspace itself indexes it, which is accepted for admin use.
   async listChatAttachments(chatId: number): Promise<ChatAttachmentInfo[]> {
     return this.#call("listChatAttachments", {chatId}, () => {
       let {chats} = this.#impl.storage;

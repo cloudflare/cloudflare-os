@@ -44,9 +44,11 @@ started it (usually the browser session) stays open.
 
 A run is a chat an agent spawner started (`isAgentRun`). It records its spawner (`spawnerId`),
 which is its agent, and the gadget whose code started it (`spawnedByGadgetId`); a gadget's hook
-firing cannot be told from its UI, so no run names a hook. `listChats()` pages by kind and by
-spawner off the chatMeta `byListing` index, and
-`listAgentSpawners()` lists each spawner with every gadget bound to it.
+firing cannot be told from its UI, so no run names a hook. A legacy run may carry only its
+spawner's name (`spawnerName`), and a run not started by a gadget has no gadget id.
+`listChats()` pages by kind and by spawner off the chatMeta `byListing` index, and
+`listAgentSpawners()` lists each spawner with every gadget bound to it, leaving out bindings
+still provisional to any chat but the one asked about.
 
 ## Auto-provisioned gatekeepers
 

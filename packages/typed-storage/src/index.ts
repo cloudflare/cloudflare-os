@@ -148,8 +148,9 @@ export interface Collection<T extends object, PrimaryKey = string> {
   /**
    * List the primary keys `list()` would visit, in the same order, without reading the records.
    * Each key is in its stored string form (see `keyString()`), which `get()` and `delete()`
-   * accept. Lets a caller buffer a page of keys cheaply when its loop body would invalidate an
-   * open cursor (e.g. deleting records that non-unique indexes cover).
+   * accept; for a collection with numeric primary keys they do so at runtime, but the key needs a
+   * cast to type-check. Lets a caller buffer a page of keys cheaply when its loop body would
+   * invalidate an open cursor (e.g. deleting records that non-unique indexes cover).
    */
   listKeys(options?: ListOptions<PrimaryKey>): Iterable<string>;
   delete(key: PrimaryKey): boolean;

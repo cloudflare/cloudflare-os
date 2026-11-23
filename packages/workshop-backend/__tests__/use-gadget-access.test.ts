@@ -356,4 +356,47 @@ describe("recording a shared open", () => {
 
     expect(record).not.toHaveBeenCalled();
   });
+
+  // Opens as `from`, then changes the collaborator's role to `to` while the owner's profile is
+  // fetched, and returns what the open recorded: the role and the notification starting points.
+  async function recordAcrossRoleChange(from: "use" | "build", to: "use" | "build") {
+    let release = Promise.withResolvers<void>();
+    let asked = Promise.withResolvers<void>();
+    let record = vi.fn(async (..._args: unknown[]) => {});
+    let access: CollaboratorAccess = from === "use" ? { role: "use", gadgetIds: [] } : { role: "build" };
+    let meta = { id: 1, title: "Chat", started: new Date(1), lastActive: new Date(1) };
+    using _client = await openFakeOverseer({
+      chatMeta: { list: () => [meta] },
+      nextChatSequences: { get: () => ({ visibleThroughSequence: 3 }) },
+    }, { role: from, access, userId: VIEWER_USER, impl: {
+      authorizeCollaborator: async () => access,
+      getSharingManager: async () => ({ getEffectiveAccess: () => access }),
+      nextChatSequencePeek: () => 4,
+      chatHead: () => undefined,
+      chatParticipationDefault: () => true,
+      users: { idFromString: (id: string) => id, get: () => ({
+        whoami: async () => { asked.resolve(); await release.promise; return { type: "user", id: OWNER, name: "Owner" }; },
+        recordSharedWorkspaceOpen: record,
+      }) },
+    } }) as unknown as Disposable;
+    await asked.promise;
+
+    access = to === "use" ? { role: "use", gadgetIds: [] } : { role: "build" };
+    release.resolve();
+    await vi.waitFor(() => expect(record).toHaveBeenCalledOnce());
+    let [, , , role, baselines] = record.mock.calls[0];
+    return { role, baselines };
+  }
+
+  it("takes the starting points for a role raised to build while the owner's profile is fetched",
+      async () => {
+    expect(await recordAcrossRoleChange("use", "build")).toEqual({ role: "build", baselines: [
+      expect.objectContaining({ chatId: 1, notifiedThroughSequence: 3, readThroughVisibleSequence: 3 }),
+    ] });
+  });
+
+  it("takes no starting points for a role narrowed to use while the owner's profile is fetched",
+      async () => {
+    expect(await recordAcrossRoleChange("build", "use")).toEqual({ role: "use", baselines: [] });
+  });
 });
