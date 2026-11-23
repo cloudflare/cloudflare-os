@@ -111,7 +111,7 @@ ironclad's generation counter in the internal repo), which is how sequencing bug
 | Shared-base precedent (symbol hooks, undecorated bases) | `packages/mcp-shared/src/user.ts:30-38`, `src/facet.ts`, `src/account.ts`, `src/http.ts` |
 | Facet instantiation via `ctx.facets`, props-complete classes | `packages/workshop-backend/src/overseer.ts` (`addGatekeeper`), `user.ts:1666-1691` (policy chokepoint) |
 | Build-time RPC validation | `capnweb-validate` (`wrangler.jsonc` build command in every gatekeeper; vite plugin in workerd test configs) |
-| workerd test harness + facet access from tests | `packages/gatekeeper-cloudflare/vitest.worker.config.ts`, its `__tests__/` `TestHooks` DO |
+| workerd test harness + facet access from tests | `packages/gatekeeper-cloudflare/vitest.worker.config.ts`, its `__tests__/` `TestHooks` DO; since shipped as `./test-support` (`GatekeeperTestHost`, `seedCredentials`), which `create-gatekeeper`'s generated suite is built on |
 | `ctx.exports` typing | generated `worker-configuration.d.ts` `Cloudflare.GlobalProps` (e.g. `packages/gatekeeper-supabase/worker-configuration.d.ts:6-12`, `packages/gatekeeper-mcp/src/env.d.ts`) |
 | Cursor implementations to generalize | `packages/gatekeeper-github/src/github.ts:809-929` |
 | Existing simulation shapes (design inputs) | `packages/gatekeeper-homeassistant/src/simulation.ts`, `packages/gatekeeper-confluence/src/confluence-actions.ts`, `packages/gatekeeper-notion/src/notion-actions.ts` |

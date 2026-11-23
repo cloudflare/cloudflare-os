@@ -9,6 +9,7 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { SignJWT, base64url, type JWK } from "jose";
 import { vi } from "vitest";
+import { seedCredentials } from "@gadgets/gatekeeper-kit/test-support";
 import { identityOf } from "../../src/pagerduty-credentials";
 import { SCOPES, apiOrigin, type Region } from "../../src/pagerduty-env";
 import type {
@@ -399,7 +400,7 @@ export async function seedAccount(pd: FakePagerDuty, who: FakeUser = ALICE): Pro
   const grant = pd.grant(who.id);
   const accountId = env.USER_ACCOUNT.newUniqueId();
   await runInDurableObject(env.USER_ACCOUNT.get(accountId), async (_instance, state) => {
-    state.storage.kv.put("credentials", {
+    seedCredentials(state.storage.kv, {
       accessToken: grant.access_token, refreshToken: grant.refresh_token, expiresAt: Date.now() + 3_600_000, scopes: [...SCOPES],
     });
     const { account } = who;

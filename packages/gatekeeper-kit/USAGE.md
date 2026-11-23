@@ -571,6 +571,23 @@ Persisted RPC stubs, `RpcTarget` behavior, and `crypto.subtle.timingSafeEqual` n
 Those suites live under [`__tests__/workerd/`](__tests__/workerd/) and load
 `@gadgets/scripts/assert-workerd`, so a failed Workers pool cannot pass silently in Node.
 
+### Test a gatekeeper through `./test-support`
+
+A gatekeeper's own workerd suite starts from a connected account and reaches its gatekeeper as the
+overseer does. `./test-support` holds what is the same in each:
+
+- `seedCredentials(kv, grant)` stores a grant as a finished connect flow does. The coordinator's
+  records are its own layout: a test that writes them by key breaks when the layout moves.
+- `GatekeeperTestHost` is the Durable Object a test worker subclasses, naming its gatekeeper's class.
+  It instantiates the gatekeeper as a facet and runs a scenario there, since neither a facet's stub
+  nor a session's can be handed to a test: `run()` for calls on a session, `queueLog()` for what the
+  session's `RecordingQueue` was asked, `refuseObservations()` to have it refuse a read, as a user
+  may, and `applyAction()` and `rejectAction()` to decide what it staged.
+- Each returns an `Outcome`, read with `unwrap()` or `failure()`: a rejection that crosses RPC is
+  reported as unhandled even where the test expects it.
+
+`pnpm create-gatekeeper` writes a suite on these; no deployed Worker imports the module.
+
 ## Caching
 
 Give each `KvTtlCache` a `name`, which gives it its own keys and generation.
