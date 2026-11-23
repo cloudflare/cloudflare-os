@@ -18,11 +18,29 @@ recorded as null so later viewers cannot silently fill an old reply with a newer
 
 Markdown renders the saved blob without an iframe. SVGs use originless data URLs, as attachment
 previews do, so opening one separately does not run its scripts in the Workshop's origin.
-HTML views receive only a narrow Cap'n Web image reader limited to their message's saved
+HTML views receive only a narrow Cap'n Web file reader limited to their message's saved
 references. Their object URLs are created inside the opaque-origin frame and released when
-images change or leave the document. The host parses literal HTML image tags, not code that
+images change or leave the document. The host parses literal references, not code that
 constructs new file references dynamically. No path polling, change subscription, or file
 refresh exists; an old reply stays fixed even when the worktree changes or the DO resets.
+
+A view's code can also read a data file pinned the same way. The agent writes the data with
+`executeCode` into a worktree, and in its next answer the view's script names the file as a
+literal string and reads it, so the data never passes through the answer:
+
+```html
+<inline-html>
+<title>Sales by region</title>
+<div id="regions"></div>
+<script type="module">
+  const totals = await embeds.json("worktree://DATA/sales.json");
+  const list = document.getElementById("regions");
+  for (const [region, total] of Object.entries(totals)) {
+    list.appendChild(document.createElement("p")).textContent = `${region}: $${total}`;
+  }
+</script>
+</inline-html>
+```
 
 The agent can draw a live view inside its answer. It writes HTML, CSS and JS between
 `<inline-html>` tags in the answer text, with no tool call. The Workshop runs each block in a
@@ -75,14 +93,38 @@ Acceptance criteria:
   Nothing reaches the kernel until the viewer clicks Send. Send uses the composer's send path,
   exactly as if the viewer had typed the message, and waits whenever the composer waits.
 - A block with no content shows an error and runs nothing.
+- A view's script that names `"worktree://BINDING/path"` as a literal string reads that file, as
+  it was when the answer was written, with `embeds.json`, `embeds.text` or `embeds.bytes`. It
+  reads no other file: not one its code builds, not one another view or the prose names.
 
 ## Locked decisions
 
-- **A view has no `env`.** It cannot reach the chat's gadgets or connections. File images have
-  only the narrow read capability described above. The agent reads other data
-  with `executeCode` and writes the values into the view's code. Giving a view the chat's `env` was
-  built and deferred on 2026-10-28 (#930 holds that design). Views use the frontend, a parser in
-  `workshop-shared` that the frontend and the evals use, and the agent instructions. Image paths are snapshotted by the host parser; bytes use the existing blob RPC.
+- **A view has no `env`.** It cannot reach the chat's gadgets or connections. It reads only the
+  files its message pinned and it names literally: images in `<img src>`, and data files in
+  string literals in its scripts. The agent reads other data with `executeCode` and writes it into
+  a worktree file, or, for a few values, into the view's code. Giving a view the chat's `env` was
+  built and deferred on 2026-10-28 (#930 holds that design), and built again as saved env (#1098)
+  and shelved on 2026-11-16 (see "Data files, not env"). Views use the frontend, a parser in
+  `workshop-shared` that the frontend and the evals use, and the agent instructions. File paths
+  are snapshotted by the host parser; bytes use the existing blob RPC.
+- **Data files, not env.** Kenton's review of #1098 on 2026-11-16 asked for this in place of
+  saved env: "What if inline HTML could reference files from a worktree? The agent could write
+  data into the scratch worktree (same one used for attachments). This avoids any file-size
+  issues, allows referencing images or other media, and generally seems less scary than
+  providing access to env. The content can be locked to what existed in the worktree at the time
+  the inline-html was embedded [...] I'd have a much easier time approving read-only access to
+  worktree contents." He wanted a runtime mechanism for auditing and revoking capabilities that
+  flow between facets before views hold any. On #1136 he wrote that data files for
+  `<inline-html>` would be a good fit for the pinned-file references, and asked to name them
+  "embeds", as #1136 merged them (`ChatEmbeds`). So data files reuse #1136's pins: the same
+  `worktree://` URLs, the same `snapshotChatEmbeds` pass, the same `AiChatMessageBody.embeds`
+  record and the same `readBlob`, with one reader in the frame.
+- **A data file is named by a string literal in a script.** The host pins what it can find in
+  the text before the view's code runs, so the reference must be literal. A string literal in the
+  view's own script is where a model writes it, `embeds.json("worktree://DATA/sales.json")`, so
+  the host pins every complete `"…"`, `'…'` or `` `…` `` literal that is a `worktree://` URL in a
+  `<script>` of the block. A literal with `${` in it, or code that joins strings, is not one, so
+  it is never pinned, and the reader refuses it.
 - **No chat gateway text.** A chat gateway gets the agent's answer as stored, tags and all.
   Nothing calls the gateway yet, and its removal is planned, so a note in place of each view was
   built, then dropped on review on 2026-11-06. That gateway path does not use the parser;
@@ -183,6 +225,7 @@ text parse alike, but for the last line while the answer streams (below).
 |---|---|---|
 | `agent.send` | A message shown under the block | Only the viewer's click on Send calls the kernel, through `sendChatMessage`, as the viewer's own message. |
 | Gadgets, connections, the agent's `env` | Nothing | Deferred (see "Future work"). |
+| `embeds.json`, `embeds.text`, `embeds.bytes`, `<img src>` | The files the view names literally, as its message pinned them | The host's `readFile` refuses any other source (see "Data files"). Bytes come through the existing `readBlob`. |
 | Popups, other frames, the network | Nothing but WebRTC | `sandbox="allow-scripts"`, CSP `connect-src 'none'`, and the Workshop's `frame-src srcdoc:`. WebRTC is the exception (see "Known edge cases"). |
 
 Gadget UI frames keep `allow-popups` and `allow-popups-to-escape-sandbox`. So agent-written
@@ -222,10 +265,11 @@ restricted data. This plan does not change gadget frames.
   an open block's view becomes the closed block's. A client that joined mid-answer, or lost deltas
   while it reconnected, has other streamed text, so its stored message mounts its views fresh.
 - **Frame interfaces.** The host exports `UiBlockHost` to the frame. It has
-  `requestMessage(message)`, `resize(height)` and `reportError(message)`. The frame exports
-  `UiBlockFrame`, with `setTheme(theme)`, `write(html)` and `close()`. Both are typed and
-  documented in `features/chat/uiBlockFrame.ts`, beside the bootstrap. The frontend has no
-  capnweb-validate transform, so the host checks its own arguments.
+  `requestMessage(message)`, `resize(height)`, `reportError(message)`,
+  `reportImageError(message)` and `readFile(source)`. The frame exports `UiBlockFrame`, with
+  `setTheme(theme)`, `write(html)`, `retryImages()` and `close()`. Both are typed and documented
+  in `features/chat/uiBlockFrame.ts`, beside the bootstrap. The frontend has no capnweb-validate
+  transform, so the host checks its own arguments.
 - **Connection.** The Workshop checks the handshake as `GadgetUI` does: the message must come from
   the view's own frame window, with origin `"null"`.
 - **Shell.** A frame loads a shell: the sandbox head, the frame's style in the theme of that
@@ -308,6 +352,65 @@ restricted data. This plan does not change gadget frames.
   running. No automatic error reporting captures block errors, since blocks are agent-written
   code.
 
+### Data files
+
+- **Naming.** `scriptFileUrls(html)`, a new export of `workshop-shared/src/inline-html-blocks.ts`
+  beside `markdownFileUrls`, returns each complete string literal in `html` that is a
+  `worktree://` URL with no `${`: a quote (`"`, `'` or a backtick), `worktree://`, characters other
+  than that quote, a backslash, whitespace or `<`, then the same quote. Both ends call it on a
+  script's raw text, which HTML never decodes, so they agree.
+  - **Kernel.** `snapshotChatEmbeds` (`workshop-backend/src/chat-embeds.ts`) already runs one
+    `HTMLRewriter` over each block for `<img src>`. It gains an `on("script", {text})` handler
+    that gathers each script's text and adds `scriptFileUrls(text)` to the same `sources` set. The
+    validation, the resolve against the running turn's worktree state and the null for a missing
+    file are #1136's, unchanged.
+  - **Frontend.** `UiBlockCard`'s per-view list, today `img[src]` in the parsed block and its
+    nested templates, adds `scriptFileUrls` of each `<script>`'s `textContent` in the same parse.
+- **Streaming.** The kernel pins during streaming on a delta that holds `)`, `]`, `>`, `\r` or
+  `\n` (`agent.ts`, `text_delta`). A script's string literal gets its pin with the delta that ends
+  its line, and at the latest with the delta that carries the closing tag line, before the
+  frontend sees the block close. Module scripts run only at the close, so a module script's read
+  finds its pin. A classic script that reads before the close may find none and gets "File
+  unavailable"; the instructions ask for module scripts. An unfinished literal has no closing
+  quote, so nothing pins a half-written path. The final pass at `message_end` drops pins the
+  stored text no longer holds, as for images.
+- **One reader, one limit.** `UiBlockHost.readImage(source)` becomes `readFile(source)`, and
+  `UiBlockHostOptions.readImage` becomes `readFile`. It keeps `readImage`'s rule: the source must
+  be in the view's list, and pinned in its message (`readSnapshotFile`). The bootstrap's image
+  loader calls `readFile` in place of `readImage`. No second method and no second limit.
+- **The frame's `embeds`.** The bootstrap defines `globalThis.embeds`, a frozen object with
+  `json(source)`, `text(source)` and `bytes(source)`, which call `host.readFile(source)` and read
+  its stream with `new Response(stream).json()`, `.text()` or `.arrayBuffer()` into a
+  `Uint8Array`. A read's failure rejects its promise, so it reaches the view's code, and as an
+  unhandled rejection, the view's error line.
+- **Producing the file.** The agent calls `createWorktree` with no `commitId`, or uses a
+  worktree it has, and writes with `env.NAME.writeFile(path, text)` or `writeBytes` in
+  `executeCode`. The binding's `appendChange` goes through `appendAgentEdit` into the turn's
+  `sessionContent` (`agent.ts`, `worktreeTurnAccess`), the overlay that `getWorktreeFileOid`
+  reads first (`overseer.ts`). An overlay text file is written as a blob at pin time
+  (`gitCache.writeBlob`), so a file written in step N pins in step N+1's answer though its change
+  is not yet accepted. In the same step, the answer's pins are final at `message_end`, before any
+  of the step's tool calls run, so a view written in the response that writes its file pins the
+  path as it was before: null for a new file, the old version for a rewritten one. The
+  instructions say to write the file first and draw the view in the next response.
+- **Sizes.** `writeFile` text counts toward the step's change buffer, `MAX_CODE_CHANGE_SIZE`
+  (8,000,000), and `writeBytes` has no limit and stores as it streams. `readBlob` streams the
+  blob (`blobByteStream`), and the frame receives the stream over the Cap'n Web port, as images
+  do. No new cap: a file a view reads costs the viewer's tab, as an image does, and Kenton's point
+  was that files avoid the size limits saved env needed. A large `embeds.json` parses on the
+  frame's main thread [INFERENCE: about 100 ms for 8 MB, not measured]; `bytes()` lets code
+  read a big file in parts of its own choosing.
+- **Kernel lines.** `chat-embeds.ts` (the script handler, about 6 lines) and the Live views
+  section in `agent.ts`. No new RPC, no schema change, no change to `AiChatMessageBody.embeds`,
+  `readBlob`, `getWorktreeFileOid` or the step barrier.
+- **Who can read.** As for #1136's images. `readBlob` serves an owner and build collaborators
+  (`OverseerClientInterface`) and is denied to a use-role collaborator (`UseOverseerInterface`),
+  whose view's read rejects. Data the agent read with `executeCode` was observed then, under the
+  chat's audience, and a file read adds no observation, as writing values into the view's code
+  adds none. A reconnect fails a read in flight, and the view's code sees the rejection; Run reads
+  again (`retryImages` retries only images). A DO reset keeps the pinned OID, and `readBlob`
+  reads the blob the pin wrote.
+
 ### Agent instructions
 
 - The guidance on when to create a Gadget is main's: a request for an app gets a Gadget. A
@@ -317,15 +420,54 @@ restricted data. This plan does not change gadget frames.
   indent, outside code fences, that the view's markup draws as the agent writes it and its module
   scripts run as soon as its block closes, so any style comes first, then the markup, and the
   script last, that the `<title>` is not shown and the view sits in the answer with no border or
-  padding around it, module scripts, that a view has no `env` and no network so the agent reads
-  data with `executeCode` first and writes the values in, that the code runs again on each mount
-  and for each viewer, `agent.send` in the user's words, the Kumo colour tokens, the height rules,
-  and that a view keeps no state. The example writes its data into its script and builds its bars
-  with `createElement` and `textContent`, since models copy the example more than they follow the
-  rules.
+  padding around it, module scripts, that a view has no `env` and no network, that the code runs
+  again on each mount and for each viewer, `agent.send` in the user's words, the Kumo colour
+  tokens, the height rules, and that a view keeps no state. The example writes its data into its
+  script and builds its bars with `createElement` and `textContent`, since models copy the
+  example more than they follow the rules.
+- Data files change two sentences and one bullet, in the saved env arm's shape ("Views of data
+  from code", measured 2026-11-05):
+  - The `<img>` sentence ends "write file references literally in the markup or a script, never
+    build them in code" in place of "construct the file references in the markup, not dynamically
+    in a script".
+  - The module-script bullet says scripts see "the globals `agent` and `embeds`".
+  - The `env` bullet becomes: "A view has no `env` and no network. To show data from Gadgets,
+    connections or the web, read it with `executeCode`. Write a few values into the view's code.
+    For more, write the data to a file in a worktree from `executeCode`, as in
+    `await env.DATA.writeFile("sales.json", JSON.stringify(rows))`, then in your next response
+    read it in the view with `await embeds.json("worktree://DATA/sales.json")`, so the data never
+    passes through your answer: never retype it into the view's code. Name the file as a literal
+    string; the view reads it as it was when you wrote the answer, and the view in the same
+    response as the write would read it as it was before. `embeds.text()` reads CSV or text, and
+    `embeds.bytes()` any file. No `fetch()`, and no remote scripts, styles, fonts or images. Draw
+    charts with inline SVG or the DOM."
 
 ## Rejected alternatives
 
+- **Saved env (#1098).** `env.NAME = value` in `executeCode` saved data for the chat, and
+  `<inline-html env="A,B">` gave a view saved data, Gadgets and connections. Shelved on review on
+  2026-11-16 (see "Data files, not env"). Measured 2026-11-05 (81 ladder view turns per arm): 73
+  passed against 76 for `embedView`, 1.6 steps against 1.1, and on Gadget data 24.9 s for a whole
+  turn against 15.3 s on gpt-6-luna. Data files keep its data path and drop its capabilities.
+- **`embedView` (#914 v2, #950).** It passed 98% on 2026-10-29 and ends the turn with the view,
+  but reads a function's source back with `Function.prototype.toString`, which Kenton refused on
+  #950.
+- **The view and its save in one response, the turn ending once the save lands (env-one).**
+  Probed 2026-11-10: gpt-6-luna and claude-haiku-5-5 wrote both in one response in 0 of 3 data
+  turns each, Kimi K3 in 2 of 3. Data files pin at `message_end`, before the step's tools run, so
+  the same rule, save first and draw next, holds.
+- **An attribute on the tag, `<inline-html files="worktree://…">`.** Main's tag line is
+  `<inline-html>` alone; an attribute adds grammar to the parser, makes the frontend and the
+  kernel agree on it, and repeats each URL that the code then names again.
+- **A dedicated element, `<link rel="data" href>` or `<script type="application/json" src>`.**
+  `HTMLRewriter` could select it as it selects `<img>`, but the view's code would still have to
+  find the element and pass its URL to the reader, and the bootstrap would have to load it before
+  module scripts run. A model writes the literal it reads.
+- **Any `worktree://` text in the block.** It would pin URLs in comments and prose inside the
+  view, and attributes would need their character references decoded to match the browser, as
+  `<img src>` does. Literals in scripts are raw text in HTML on both ends.
+- **A sibling `readData` method beside `readImage`.** Two readers with one limit is a parallel
+  path; one `readFile` serves both.
 - **Raw HTML in Markdown.** It would run agent-written code in the Workshop document, with the
   Workshop's authority.
 - **A tool call that shows HTML.** Each view would cost a model round trip, and the view could not
@@ -373,11 +515,15 @@ restricted data. This plan does not change gadget frames.
 
 ## Commits
 
-Three commits, so reviewers can read the kernel lines alone:
+Data files take four commits, so reviewers can read the kernel lines alone:
 
 1. **This plan.**
-2. **Shared and kernel.** The block parser in `workshop-shared`, and the agent instructions.
-3. **Frontend.** The block card, its frame and host, and drawing blocks in answers as they stream.
+2. **Shared and kernel.** `scriptFileUrls` in `workshop-shared`, the script handler in
+   `snapshotChatEmbeds`, and the Live views section.
+3. **Frontend.** `readImage` becomes `readFile`, the frame's `embeds`, and the view's list of
+   literal files.
+4. **Evals.** The eval host reads a view's pinned files through the session's `readBlob`, and
+   the view benchmark's arms (see "Benchmark").
 
 ## Verification
 
@@ -408,11 +554,55 @@ Three commits, so reviewers can read the kernel lines alone:
   the viewer's message. The view's markup draws while its block streams, its module script runs
   once, at the block's close, and the stored answer does not reload it. Screenshots in light and
   dark, and after a theme change, show the view with no box around it.
+- Data files, each test red before its change:
+  - `chat-embeds.test.ts`: a `"…"`, `'…'` and `` `…` `` literal in a block's script is pinned;
+    one with `${`, a joined string, a literal in an event handler attribute, in a comment outside
+    a script or in prose is not; an unfinished literal while streaming pins nothing; a file
+    written by `executeCode` in an earlier step of the turn pins its overlay version; a view in
+    the same step as its write pins the path as it was.
+  - `inline-html-blocks.test.ts`: `scriptFileUrls` cases, the same strings as the kernel's.
+  - `UiBlockCard.test.tsx`: the host's `readFile` serves a literal in the view's script that its
+    message pinned, and refuses one pinned only in the prose or another view, one not pinned, and
+    one not named.
+  - `uiBlockFrame.browser.test.tsx`: `embeds.json`, `embeds.text` and `embeds.bytes` return the
+    file's content in the real frame; a refused read rejects and shows the view's error; images
+    still load through `readFile`.
+  - `view-host.test.ts`: the eval host gives a view its pinned file and refuses others.
+  - A browser run on the dev server with a real model (gpt-6-luna): the agent writes a JSON file
+    with `executeCode` into a new worktree, then draws a view of it; the view still shows the
+    first data after the agent rewrites the file and draws a second view of the new data.
+
+### Benchmark
+
+- **Arms.** "Inline + data files" (this design) against "Inline + embedView" (#950) and "Inline +
+  saved env" (`explore/view-bench-env` at `ab21069d4`), on the view benchmark's tasks: L1 to L5,
+  D1 and D2, and the changed-view tasks. gpt-6-luna, claude-haiku-5-5 and Kimi K3, 3 trials each,
+  the third run's scale (81 ladder view turns per arm).
+- **Measures.** Passed checks, retry errors, first view, whole turn and cost per view, the ones
+  Kenton asked for, ranked as `rerank-cost-time-2026-11-10.md` ranks them.
+- **Fairness.** The two older arms live on a base a month older than main, and the provider's
+  models and latency drift between days. So all arms run on one day, back to back, through the
+  same gateway, and a control runs on both bases: "Inline" (no data access; the agent writes the
+  values into the view), on `ab21069d4` and on this branch. Inline is the control because it is the
+  one arm both bases ship, and every other arm is Inline plus one change, so the gap between the
+  two Inline runs measures what the bases and the day do to all arms, and each arm is read against
+  the Inline run on its own base. Porting `embedView` and saved env onto main would test a
+  rebuilt arm, not the measured one, for kernel code that is not going to land.
+- **Harness.** The benchmark's tasks and checks (`bench-views.eval.ts`, `evals/views.ts`) and
+  its arm switch (`BENCH_VARIANT`, `view-variants.ts`) come from `explore/view-bench-env` onto a
+  benchmark branch from this branch, which is never merged; the data-files arm is this branch's
+  prompt, and Inline is main's prompt with the data-files sentences left out.
+- **Spend and order.** Luna, Haiku and Kimi only. One trial of one task per model first; if the
+  AI Gateway still returns 402 (as on 2026-11-11), stop and report. Then the full run.
 
 ## Known edge cases
 
-- **Old messages.** A block's code, literal data and host-pinned image OIDs stay fixed in its
-  message. Editing or deleting an image's original worktree path cannot change an old reply.
+- **Old messages.** A block's code, literal data and host-pinned file OIDs stay fixed in its
+  message. Editing or deleting a file's original worktree path cannot change an old reply.
+- **A view in the same response as its write.** It reads the file as it was before the write:
+  missing, or the old version (see "Producing the file").
+- **A read during a reconnect.** It rejects, and the view's code decides what to show; Run reads
+  again. Images retry on their own.
 - **A running agent.** Send while the agent runs steers that turn, as a typed message does.
 - **An answer that is never stored.** A stopped or failed model request stores nothing, so its
   views go away with its text. A retried request runs its views again.
