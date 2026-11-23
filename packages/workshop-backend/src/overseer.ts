@@ -8347,6 +8347,22 @@ class OverseerImpl implements AgentHooks {
     };
   }
 
+  rejectChatFileImages(chatId: number, oids: ReadonlySet<string>): void {
+    this.ctx.storage.transactionSync(() => {
+      for (const msg of this.storage.chats.list({prefix: chatKeyPrefix(chatId)})) {
+        if (msg.type !== "message") continue;
+        let changed = false;
+        for (const call of msg.toolCalls ?? []) {
+          if (call.toolName === "readFile" && call.image && oids.has(call.image.oid) && !call.image.rejected) {
+            call.image.rejected = true;
+            changed = true;
+          }
+        }
+        if (changed) this.storage.chats.put(msg);
+      }
+    });
+  }
+
   // Publishes a checkpoint: stores it and points the chat at it. `runAgent` produces the checkpoint,
   // for both automatic compaction and `/compact`, so there is one path here rather than two.
   //

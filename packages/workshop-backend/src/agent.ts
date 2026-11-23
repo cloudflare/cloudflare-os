@@ -52,7 +52,8 @@ import { formatGrep, type GrepScan } from "./grep";
 import type { BlobReader } from "./git-chunked-blob";
 import { readFileWindow, type LineSource } from "./line-window";
 import {
-  ELIDED_FILE_IMAGE, MAX_FILE_IMAGE_CONTEXT_BYTES, MAX_FILE_IMAGE_CONTEXT_COUNT, readFileImage,
+  ELIDED_FILE_IMAGE, REJECTED_FILE_IMAGE, fileImageMimeType, isImageDecodeError,
+  MAX_FILE_IMAGE_CONTEXT_BYTES, MAX_FILE_IMAGE_CONTEXT_COUNT, readFileImage,
 } from "./file-image";
 
 const logger = createWorkshopLogger("workshop.agent");
@@ -233,12 +234,14 @@ export type ChatHistory = {
 type AgentPassOutcome =
   | {type: "finished"; lastRequest?: CachedRequest}
   | {type: "reloadForCompaction"}
+  | {type: "rejectedFileImages"}
   | {type: "compacted"; checkpoint: CompactionCheckpoint}
   | {type: "transientFailure"; error: AgentTurnError};
 
 type AgentProgress = {
   executionId: string;
   barrierSequence: number;
+  retriedWithoutFileImages: boolean;
 };
 
 /**
@@ -443,6 +446,9 @@ export interface AgentHooks {
    * pass can compact or persist steps.
    */
   loadChatHistory(chatId: number): ChatHistory;
+
+  /** Omit rejected file-image pixels on future replay, preserving the original immutable files. */
+  rejectChatFileImages(chatId: number, oids: ReadonlySet<string>): void;
 
   /** Publish a compaction checkpoint: later history loads start from it. */
   commitChatCompaction(chatId: number, checkpoint: CompactionCheckpoint): void;
@@ -1703,6 +1709,7 @@ export async function runAgent(
   const progress: AgentProgress = {
     executionId: crypto.randomUUID(),
     barrierSequence: 0,
+    retriedWithoutFileImages: false,
   };
   let retries = 0;
   while (true) {
@@ -1715,6 +1722,9 @@ export async function runAgent(
       // it streamed was only provisional; clients drop it so the retry doesn't append to it.
       hooks.emitChatStreamEvent(chatId, {type: "streamReset"});
       await scheduler.wait(1000 * retries);
+    }
+    if (outcome.type === "rejectedFileImages") {
+      hooks.emitChatStreamEvent(chatId, {type: "streamReset"});
     }
     if (outcome.type === "compacted") hooks.commitChatCompaction(chatId, outcome.checkpoint);
     if (outcome.type === "finished") return outcome.lastRequest;
@@ -2396,28 +2406,100 @@ async function runAgentPass(
 
   // Count across the whole replay, not just the latest upload batch. PDFs also count on some
   // providers; conservatively include candidate parts even if their headers later rule them out.
-  const attachmentImageCount = chatMessages.reduce((count, msg) => count + (msg.type === "message"
+  const attachmentCandidateCount = chatMessages.reduce((count, msg) => count + (msg.type === "message"
     ? msg.attachments?.filter(attachment => isAllowedChatAttachmentImageMimeType(attachment.mimeType) ||
         (attachment.mimeType === PDF_MIME_TYPE && modelApiSupportsPdfAttachments(handle.model.api))).length ?? 0
     : 0), 0);
-  const attachmentImageMaxEdge = attachmentImageCount > 20 ? 2000 : 8000;
-  // Reserve capacity for the actual attachments, not a fixed amount of guessed headroom. Keep
-  // image metadata only while selecting replay results, so old pixels are never loaded.
-  const attachmentImageBytes = chatMessages.reduce((bytes, msg) => bytes + (msg.type === "message"
-    ? msg.attachments?.reduce((sum, attachment) => sum +
-        (isAllowedChatAttachmentImageMimeType(attachment.mimeType) ||
-         (attachment.mimeType === PDF_MIME_TYPE && modelApiSupportsPdfAttachments(handle.model.api))
-          ? attachment.size : 0), 0) ?? 0 : 0), 0);
+  const attachmentImageMaxEdge = attachmentCandidateCount > 20 ? 2000 : 8000;
+  // Prepare attachments once using the same inline decisions as replay. Workspace-only files
+  // consume no model-image capacity; the map retains references to the final parts, not raw bytes.
+  const attachmentParts = new Map<StoredChatMessage, (TextContent | ImageContent)[]>();
+  let attachmentImageCount = 0, attachmentImageBytes = 0;
+  for (const msg of chatMessages) {
+    if (msg.type !== "message" || (msg.author.type !== "user" && msg.author.type !== "gadget") ||
+        !msg.attachments?.length) continue;
+    const parts = await Promise.all(msg.attachments.map(
+      async (attachment): Promise<(TextContent | ImageContent)[]> => {
+        let filename = attachment.name ? ` (${attachment.name})` : "";
+        let workspaceLocation = attachment.workspacePath && agentContext.scratch
+            ? `; workspace file env.${agentContext.scratch.bindingName}/` +
+              attachment.workspacePath
+            : "";
+        let data: Uint8Array;
+        try {
+          data = await hooks.getChatAttachmentData(chatId, attachment.id);
+        } catch (error) {
+          // A missing legacy payload must not make the entire conversation unusable.
+          // Keep the reference visible, retry on later replay, and never invent bytes.
+          logger.warn("chat attachment unavailable during replay", {
+            event: "chat.attachment.replay.unavailable", chatId, sequence: msg.sequence, error,
+          });
+          return [{type: "text", text: `\n\n[Attached file${filename}${workspaceLocation}; ` +
+            "original contents are currently unavailable.]"}];
+        }
+        let text = decodeChatAttachmentText(attachment.mimeType, data);
+        if (canInlineChatAttachmentImage(attachment.mimeType, data, attachmentImageMaxEdge)) {
+          return [{type: "text", text: `\n\n[Attached image${filename}${workspaceLocation}]`}, {
+            type: "image",
+            data: data.toBase64(),
+            mimeType: attachment.mimeType,
+          }];
+        } else if (text !== undefined && text.length <= MAX_TOOL_RESULT_CHARS) {
+          return [{
+            type: "text",
+            text: `\n\n[Attached text file${filename}${workspaceLocation}]\n` +
+                text,
+          }];
+        } else if (text !== undefined) {
+          // Inlined, it would be resent on every turn, and could alone exceed the model's
+          // window, which compaction cannot fix.
+          return [{
+            type: "text",
+            text: `\n\n[Attached text file${filename}${workspaceLocation}; ${data.byteLength} ` +
+                "bytes, too large to inline. " + (workspaceLocation
+                    ? "Use readFile with startLine and lineCount, or grep, to read the " +
+                      "workspace file.]"
+                    : "It is not in the workspace yet, so its contents are unavailable.]"),
+          }];
+        } else if (attachment.mimeType === PDF_MIME_TYPE &&
+                   modelApiSupportsPdfAttachments(handle.model.api)) {
+          // pi has no file/document content part, so a PDF rides an ImageContent part;
+          // the model handle rewrites it into the provider's native document block just
+          // before the request goes out (see chat-attachment-pdf.ts). The text part
+          // carries the filename, which the disguised part cannot.
+          return [
+            {type: "text", text: `\n\n[Attached PDF file${filename}${workspaceLocation}]`},
+            {type: "image", data: data.toBase64(), mimeType: attachment.mimeType},
+          ];
+        } else {
+          // Model input support does not restrict workspace files. Never decode binary
+          // uploads lossily or send unsupported formats to a provider as image parts.
+          return [{
+            type: "text",
+            text: `\n\n[Attached file${filename} (${attachment.mimeType})${workspaceLocation}; ` +
+                `binary contents are not inlined. Use byte-aware tools to inspect the workspace file.]`,
+          }];
+        }
+      }));
+    const prepared = parts.flat();
+    attachmentParts.set(msg, prepared);
+    for (const part of prepared) {
+      if (part.type !== "image") continue;
+      ++attachmentImageCount;
+      attachmentImageBytes += part.data.length * 3 / 4 - (part.data.endsWith("==") ? 2 : part.data.endsWith("=") ? 1 : 0);
+    }
+  }
   const maxFileImages = Math.min(MAX_FILE_IMAGE_CONTEXT_COUNT, Math.max(0, 20 - attachmentImageCount));
   const maxFileImageBytes = Math.max(0, MAX_FILE_IMAGE_CONTEXT_BYTES - attachmentImageBytes);
   const replayFileImages = new Set<AiToolCall>();
+  const sentFileImages = new Set<string>();
   let fileImageCount = 0, fileImageBytes = 0;
   let stepImageCount = 0, stepImageBytes = 0;
   for (let index = chatMessages.length - 1; index >= 0; --index) {
     const msg = chatMessages[index];
     if (msg.type !== "message" || sawRevertedContent(index)) continue;
     for (const call of (msg.toolCalls ?? []).toReversed()) {
-      if (call.toolName !== "readFile" || !call.image || call.error) continue;
+      if (call.toolName !== "readFile" || !call.image || call.image.rejected || call.error) continue;
       if (fileImageCount >= maxFileImages || fileImageBytes + call.image.byteLength > maxFileImageBytes) continue;
       replayFileImages.add(call);
       ++fileImageCount;
@@ -2491,70 +2573,7 @@ async function runAgentPass(
             if (msg.attachments?.length) {
               let parts: (TextContent | ImageContent)[] = [];
               if (content) parts.push({type: "text", text: content});
-              let attachmentParts = await Promise.all(msg.attachments.map(
-                  async (attachment): Promise<(TextContent | ImageContent)[]> => {
-                let filename = attachment.name ? ` (${attachment.name})` : "";
-                let workspaceLocation = attachment.workspacePath && agentContext.scratch
-                    ? `; workspace file env.${agentContext.scratch.bindingName}/` +
-                      attachment.workspacePath
-                    : "";
-                let data: Uint8Array;
-                try {
-                  data = await hooks.getChatAttachmentData(chatId, attachment.id);
-                } catch (error) {
-                  // A missing legacy payload must not make the entire conversation unusable.
-                  // Keep the reference visible, retry on later replay, and never invent bytes.
-                  logger.warn("chat attachment unavailable during replay", {
-                    event: "chat.attachment.replay.unavailable", chatId, sequence: msg.sequence, error,
-                  });
-                  return [{type: "text", text: `\n\n[Attached file${filename}${workspaceLocation}; ` +
-                    "original contents are currently unavailable.]"}];
-                }
-                let text = decodeChatAttachmentText(attachment.mimeType, data);
-                if (canInlineChatAttachmentImage(attachment.mimeType, data, attachmentImageMaxEdge)) {
-                  return [{type: "text", text: `\n\n[Attached image${filename}${workspaceLocation}]`}, {
-                    type: "image",
-                    data: data.toBase64(),
-                    mimeType: attachment.mimeType,
-                  }];
-                } else if (text !== undefined && text.length <= MAX_TOOL_RESULT_CHARS) {
-                  return [{
-                    type: "text",
-                    text: `\n\n[Attached text file${filename}${workspaceLocation}]\n` +
-                        text,
-                  }];
-                } else if (text !== undefined) {
-                  // Inlined, it would be resent on every turn, and could alone exceed the model's
-                  // window, which compaction cannot fix.
-                  return [{
-                    type: "text",
-                    text: `\n\n[Attached text file${filename}${workspaceLocation}; ${data.byteLength} ` +
-                        "bytes, too large to inline. " + (workspaceLocation
-                            ? "Use readFile with startLine and lineCount, or grep, to read the " +
-                              "workspace file.]"
-                            : "It is not in the workspace yet, so its contents are unavailable.]"),
-                  }];
-                } else if (attachment.mimeType === PDF_MIME_TYPE &&
-                           modelApiSupportsPdfAttachments(handle.model.api)) {
-                  // pi has no file/document content part, so a PDF rides an ImageContent part;
-                  // the model handle rewrites it into the provider's native document block just
-                  // before the request goes out (see chat-attachment-pdf.ts). The text part
-                  // carries the filename, which the disguised part cannot.
-                  return [
-                    {type: "text", text: `\n\n[Attached PDF file${filename}${workspaceLocation}]`},
-                    {type: "image", data: data.toBase64(), mimeType: attachment.mimeType},
-                  ];
-                } else {
-                  // Model input support does not restrict workspace files. Never decode binary
-                  // uploads lossily or send unsupported formats to a provider as image parts.
-                  return [{
-                    type: "text",
-                    text: `\n\n[Attached file${filename} (${attachment.mimeType})${workspaceLocation}; ` +
-                        `binary contents are not inlined. Use byte-aware tools to inspect the workspace file.]`,
-                  }];
-                }
-              }));
-              parts.push(...attachmentParts.flat());
+              parts.push(...attachmentParts.get(msg)!);
               let block = focusBlock(msg.focus);
               if (block) parts.push({type: "text", text: block});
               modelMessage = { role: "user", content: parts, timestamp: msgTimestamp };
@@ -2612,7 +2631,9 @@ async function runAgentPass(
                   if (toolCall.image && !sawRevertedContent(msgIndex)) {
                     const image = replayFileImages.has(toolCall)
                       ? readFileImage(await hooks.openBlob(toolCall.image.oid)) : undefined;
-                    toolOutput = image ? {text: "Image file.", image} : {text: ELIDED_FILE_IMAGE};
+                    if (image) sentFileImages.add(toolCall.image.oid);
+                    toolOutput = image ? {text: "Image file.", image} :
+                        {text: toolCall.image.rejected ? REJECTED_FILE_IMAGE : ELIDED_FILE_IMAGE};
                     const {workpieceId} = hooks.resolveWorkpieceRoot(
                       resolveToolWorkpieceId(toolCall.input.workpiece));
                     markFileRead(workpieceId, toolCall.input.filename, toolCall.observedOid);
@@ -3615,8 +3636,8 @@ async function runAgentPass(
             throw new Error("File does not exist.");
           }
           if (file.source.kind === "blob") {
-            const image = readFileImage(file.source.reader);
-            if (image) {
+            const mimeType = fileImageMimeType(file.source.reader);
+            if (mimeType) {
               if (startLine !== undefined || lineCount !== undefined) {
                 throw new Error("Image files do not have line windows. Omit startLine and lineCount.");
               }
@@ -3630,6 +3651,8 @@ async function runAgentPass(
               const stored = sessionContent.get(resolved.workpieceId)?.get(filename);
               const oid = file.oid ?? (stored && typeof stored !== "string" ? stored.oid : undefined);
               if (oid === undefined) throw new Error("Image file has no immutable blob.");
+              const image = readFileImage(file.source.reader, mimeType)!;
+              sentFileImages.add(oid);
               ++stepImageCount;
               stepImageBytes += byteLength;
               ++fileImageCount;
@@ -4836,6 +4859,15 @@ async function runAgentPass(
     // it can be determined) for the overseer's triage; runAgent retries a transient one first.
     let message = turnFailure.errorMessage ?? "The model request failed.";
     let error = new AgentTurnError(message, httpStatusFromError(message, handle.lastResponse));
+    if (sentFileImages.size > 0 && isImageDecodeError(message, error.statusCode)) {
+      // Completed tool steps are already durable. Retry their projection, never their effects,
+      // and persist the omission so this blob cannot poison later turns or DO restarts.
+      hooks.rejectChatFileImages(chatId, sentFileImages);
+      if (!progress.retriedWithoutFileImages) {
+        progress.retriedWithoutFileImages = true;
+        return {type: "rejectedFileImages"};
+      }
+    }
     if (isRetryableAssistantError(turnFailure)) return {type: "transientFailure", error};
     throw error;
   }

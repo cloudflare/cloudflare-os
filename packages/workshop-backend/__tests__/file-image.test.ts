@@ -2,11 +2,11 @@ import {describe, expect, it, vi} from "vitest";
 import {env} from "cloudflare:workers";
 import {abortAllDurableObjects, runInDurableObject} from "cloudflare:test";
 import {createFauxCore, fauxAssistantMessage, fauxText, fauxToolCall,
-  type Message} from "@earendil-works/pi-ai";
+  type AssistantMessage, type Message} from "@earendil-works/pi-ai";
 import type {OverseerDurableObject} from "../src/overseer";
 import type {UserDurableObject} from "../src/user";
 import {runAgent} from "../src/agent";
-import {ELIDED_FILE_IMAGE, readFileImage} from "../src/file-image";
+import {ELIDED_FILE_IMAGE, REJECTED_FILE_IMAGE, isImageDecodeError, readFileImage} from "../src/file-image";
 
 declare module "cloudflare:workers" { interface ProvidedEnv {
   TEST_OVERSEER: DurableObjectNamespace<OverseerDurableObject>;
@@ -16,15 +16,18 @@ type Impl = OverseerDurableObject["impl"];
 const AUTHOR = {type: "agent" as const, id: "test", name: "Test"};
 const USER = {type: "user" as const, id: "test-user", name: "Test"};
 // A genuine 1x1 PNG, also used to verify the exact bytes sent to the provider.
-const PNG = Uint8Array.fromBase64("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQAAAABJRU5ErkJggg==");
+const PNG = Uint8Array.fromBase64("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==");
 async function inKernel<T>(name: string, test: (impl: Impl) => Promise<T>): Promise<T> {
   return runInDurableObject(env.TEST_OVERSEER.getByName(name), instance => test(instance.impl));
 }
 async function turn(impl: Impl, chatId: number, steps: ReturnType<typeof fauxToolCall>[][]) {
+  return scriptedTurn(impl, chatId, [...steps.map(calls => fauxAssistantMessage(calls, {stopReason: "toolUse"})),
+    fauxAssistantMessage(fauxText("Done"))]);
+}
+async function scriptedTurn(impl: Impl, chatId: number, responses: AssistantMessage[]) {
   const faux = createFauxCore({models: [{id: "faux-model", contextWindow: 8_000_000}]});
   const requests: Message[][] = [];
-  faux.setResponses([...steps.map(calls => fauxAssistantMessage(calls, {stopReason: "toolUse"})),
-    fauxAssistantMessage(fauxText("Done"))]);
+  faux.setResponses(responses);
   await runAgent(impl, {model: faux.getModel(), stream: (model, context, options) => {
     requests.push(structuredClone(context.messages));
     return faux.stream(model, context, options);
@@ -150,6 +153,114 @@ describe("images read from a worktree", () => {
     expect(results(requests.at(-1)!).filter(result => !result.isError)).toHaveLength(3);
     expect(results(requests.at(-1)!).at(-1)).toMatchObject({isError: true});
   }));
+
+  it("does not reserve image bytes for workspace-only attachments", () => inKernel(crypto.randomUUID(), async impl => {
+    const {chatId} = await setup(impl);
+    const oversized = new Uint8Array(4 * 1024 * 1024);
+    oversized.set(PNG);
+    new DataView(oversized.buffer).setUint32(16, 8192);
+    const blob = impl.gitCache.writeBlob(oversized);
+    for (let index = 0; index < 4; ++index) {
+      await impl.sendChatMessage(env.TEST_USER.getByName(crypto.randomUUID()), {profile: USER}, chatId, "Attached", {
+        attachments: [{oid: blob.oid, mimeType: "image/png", name: `${index}.png`}],
+      });
+    }
+    const {requests} = await turn(impl, chatId, [[read()]]);
+    expect(results(requests.at(-1)!)[0].isError).toBe(false);
+    expect(requests.at(-1)!.flatMap(message => Array.isArray(message.content)
+      ? message.content.filter(part => part.type === "image") : [])).toHaveLength(1);
+  }));
+
+  it("rejects a step's excess image reads before loading their payloads", () => inKernel(crypto.randomUUID(), async impl => {
+    const bytes = new Uint8Array(4 * 1024 * 1024);
+    bytes.set(PNG);
+    const {chatId} = await setup(impl, bytes);
+    const open = impl.openFileAtCommit.bind(impl);
+    const bodyReads: number[] = [];
+    vi.spyOn(impl, "openFileAtCommit").mockImplementation(async (...args) => {
+      const file = await open(...args);
+      if (file) {
+        const read = file.reader.read.bind(file.reader);
+        vi.spyOn(file.reader, "read").mockImplementation((offset, length) => {
+          if (length > 12) bodyReads.push(length);
+          return read(offset, length);
+        });
+      }
+      return file;
+    });
+    const {requests} = await turn(impl, chatId, [[read(), read(), read(), read(), read()]]);
+    expect(results(requests.at(-1)!).filter(result => !result.isError)).toHaveLength(3);
+    expect(bodyReads).toEqual([bytes.length, bytes.length, bytes.length]);
+  }));
+
+  it("reads RIFF-like UTF-8 as text", () => inKernel(crypto.randomUUID(), async impl => {
+    const {chatId} = await setup(impl, new TextEncoder().encode("RIFF....WEBP is the container header."));
+    const {requests} = await turn(impl, chatId, [[read()]]);
+    expect(results(requests.at(-1)!)[0]).toMatchObject({isError: false,
+      content: [{type: "text", text: expect.stringContaining("RIFF....WEBP is the container header.")}]});
+  }));
+
+  it("recovers from a provider decode error without replaying effects or poisoning later turns", async () => {
+    const name = crypto.randomUUID();
+    let chatId: number;
+    await inKernel(name, async impl => {
+      ({chatId} = await setup(impl, PNG.slice(0, 33))); // Valid IHDR, no pixel data.
+      const {requests} = await scriptedTurn(impl, chatId, [
+        fauxAssistantMessage([read(), fauxToolCall("writeFile", {
+          workpiece: "IMAGES", filename: "note.txt", content: "Saved exactly once",
+        })], {stopReason: "toolUse"}),
+        fauxAssistantMessage([], {stopReason: "error", errorMessage: "400 Could not process image"}),
+        fauxAssistantMessage(fauxText("Please convert the image.")),
+      ]);
+      expect(results(requests[1])[0].content.some(part => part.type === "image")).toBe(true);
+      expect(results(requests[2])[0].content).toEqual([{type: "text", text: REJECTED_FILE_IMAGE}]);
+      const calls = [...impl.storage.chats.list()].flatMap(message => message.type === "message" ? message.toolCalls ?? [] : []);
+      expect(calls.filter(call => call.toolName === "writeFile")).toHaveLength(1);
+      expect(calls.find(call => call.toolName === "readFile")).toHaveProperty("image.rejected", true);
+      impl.addChatMessages(chatId, USER, [{type: "message", message: "Continue"}]);
+      await impl.ctx.storage.sync();
+    });
+    await abortAllDurableObjects();
+    await inKernel(name, async impl => {
+      const open = vi.spyOn(impl, "openBlob");
+      const {requests} = await turn(impl, chatId, []);
+      expect(results(requests[0])[0].content).toEqual([{type: "text", text: REJECTED_FILE_IMAGE}]);
+      expect(open).not.toHaveBeenCalled();
+    });
+  });
+
+  it.each(["400 Invalid request", "503 Could not process image"])("does not discard pixels for unrelated or transient failures: %s", message =>
+    inKernel(crypto.randomUUID(), async impl => {
+      const {chatId} = await setup(impl);
+      const run = scriptedTurn(impl, chatId, [
+        fauxAssistantMessage([read()], {stopReason: "toolUse"}),
+        fauxAssistantMessage([], {stopReason: "error", errorMessage: message}),
+        fauxAssistantMessage(fauxText("Recovered")),
+      ]);
+      if (message.startsWith("400")) await expect(run).rejects.toThrow(message);
+      else await run;
+      const calls = [...impl.storage.chats.list()].flatMap(message => message.type === "message" ? message.toolCalls ?? [] : []);
+      expect(calls.find(call => call.toolName === "readFile")).not.toHaveProperty("image.rejected");
+    }));
+
+  it("limits decode-error recovery to one retry and persists the final omission", () => inKernel(crypto.randomUUID(), async impl => {
+    const {chatId} = await setup(impl);
+    const failure = () => fauxAssistantMessage([], {stopReason: "error", errorMessage: "400 invalid image data"});
+    await expect(scriptedTurn(impl, chatId, [
+      fauxAssistantMessage([read()], {stopReason: "toolUse"}), failure(),
+      fauxAssistantMessage([read()], {stopReason: "toolUse"}), failure(),
+    ])).rejects.toThrow("invalid image data");
+    const calls = [...impl.storage.chats.list()].flatMap(message => message.type === "message" ? message.toolCalls ?? [] : []);
+    expect(calls.filter(call => call.toolName === "readFile").every(call => call.image?.rejected)).toBe(true);
+  }));
+
+  it.each([
+    ["400 invalid image data", 400, true], ["422 Unable to decode the image", 422, true],
+    ["400 image limit exceeded", 400, false], ["400 invalid image dimensions", 400, false],
+    ["503 Could not process image", 503, false], ["Could not process image", undefined, false],
+  ] as const)("recognizes only definite decode errors: %s", (message, status, expected) => {
+    expect(isImageDecodeError(message, status)).toBe(expected);
+  });
 
   it("does not read a large image body before rejecting its size", () => inKernel(crypto.randomUUID(), async impl => {
     const bytes = new Uint8Array(5 * 1024 * 1024);

@@ -6380,8 +6380,9 @@ export type AiToolCall = {
   /**
    * An image read's immutable blob and byte size, allowing model replay to select recent images
    * before loading pixels. Originals stay in the worktree; no image bytes ride the chat record.
+   * `rejected` persists the omission after a provider's image-decode failure, so later turns recover.
    */
-  image?: { oid: string; byteLength: number };
+  image?: { oid: string; byteLength: number; rejected?: boolean };
 
   /**
    * No longer written; honored when read. Before reads were stamped with the blob's oid
