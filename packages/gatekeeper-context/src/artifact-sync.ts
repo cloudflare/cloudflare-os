@@ -110,9 +110,15 @@ async function readArtifactRepoDocumentsWithContext(
   // which would read as an emptied branch and delete every document.
   let [tip] = await repo.log({ ref: branch, limit: 1 });
   if (!tip) {
-    return currentCommit === ""
-      ? { commit: "", changed: false }
-      : { commit: "", changed: true, files: new Map() };
+    if (currentCommit === "") return { commit: "", changed: false };
+    if (currentCommit !== undefined) {
+      // This deletes every document, so a lookup that wrongly finds no commits shows in the logs.
+      logger.warn("git-based context collection branch has no commits; emptying the collection", {
+        event: "context.collection.git.branch.empty",
+        commit: currentCommit,
+      });
+    }
+    return { commit: "", changed: true, files: new Map() };
   }
   if (tip.hash === currentCommit) return { commit: tip.hash, changed: false };
 

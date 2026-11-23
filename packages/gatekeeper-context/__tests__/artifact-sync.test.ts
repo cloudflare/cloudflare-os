@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   gitBlobHash, readArtifactRepoDocuments, type ArtifactContextDocument, type ArtifactRepoReadResult,
 } from "../src/artifact-sync.js";
@@ -42,12 +42,25 @@ describe("reading a git-backed collection's repo", () => {
     expect(fake.disposed).toBe(1);
   });
 
-  it("empties the collection once when the branch has no commits", async () => {
+  it("empties the collection once when the branch has no commits, and says so", async () => {
     let fake = new FakeGitRepo();
+    let warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let emptied = () => warn.mock.calls.filter(
+      ([fields]) => (fields as { event?: string }).event === "context.collection.git.branch.empty");
 
-    expect((await read(fake, "old-commit")).result)
-      .toEqual({ commit: "", changed: true, files: new Map() });
-    expect((await read(fake, "")).result).toEqual({ commit: "", changed: false });
+    try {
+      expect((await read(fake, "old-commit")).result)
+        .toEqual({ commit: "", changed: true, files: new Map() });
+      expect(emptied()).toHaveLength(1);
+      expect(emptied()[0][0]).toMatchObject({ commit: "old-commit", repoName: "repo", branch: "main" });
+
+      expect((await read(fake, "")).result).toEqual({ commit: "", changed: false });
+      // A collection that has never synced has nothing to lose.
+      await read(fake, undefined);
+      expect(emptied()).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("stages every file in the tree, except submodules", async () => {
