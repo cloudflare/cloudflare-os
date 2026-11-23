@@ -13,13 +13,15 @@
 //     minor or patch move (0.x moves count as breaking when the minor changes).
 //   - The lockfile names no package that the base did not, and touches no section beyond
 //     importers, catalogs, packages and snapshots. Every package version present at both base and
-//     head keeps its integrity and resolution, read from the whole lockfile on each side, and
+//     head keeps its integrity and resolution, read from the whole lockfile on each side; every
+//     version the head adds resolves from the default registry by a sha512 integrity; and
 //     neither side has a line the reader cannot take as pnpm writes it (readLockfile).
 //   - Every version the lockfile adds was published at least `minimumReleaseAge` (read from the
 //     base pnpm-workspace.yaml) before now, by the registry's `time` map.
 //   - OSV lists no advisory for any version the lockfile adds or removes, or that an importer,
-//     catalog or snapshot entry now depends on or stopped depending on (advisoryTargets). An
-//     advisory on the old version is a security fix, and those go to a person.
+//     catalog or snapshot entry now depends on or stopped depending on, as its version or as a
+//     peer in that version's suffix (advisoryTargets). An advisory on the old version is a
+//     security fix, and those go to a person.
 //
 // The preview smoke is its own artifact (`preview-smoke`, from the `preview-smoke` job in
 // automerge-head-proofs.yml, which builds and runs the workers locally); the gate needs both.
@@ -135,8 +137,10 @@ interface LockfileView {
   /** Each importer and catalog dependency, keyed by where it is declared. */
   pins: Map<string, Pin>;
   /**
-   * The versions each `snapshots:` entry depends on, keyed by `<name@version>/<group>/<dependency>`.
-   * One package version can have several snapshots (one per peer set), so each key holds a set.
+   * Locks that can hold several versions, keyed by where they are declared. A `snapshots:` entry's
+   * dependency, `snapshots/<name@version>/<group>/<dependency>`: one package version can have
+   * several snapshots, one per peer set. And the peers in a version string's suffix,
+   * `<where> peer <name>`, for an importer's version and for a snapshot's dependency.
    */
   edges: Map<string, Set<string>>;
   /** Lines the rules cannot read as pnpm writes them: comments, odd keys, duplicates. */
@@ -159,6 +163,12 @@ function unquote(value: string): string {
  */
 export function readLockfile(text: string): LockfileView {
   const view: LockfileView = { resolutions: new Map(), pins: new Map(), edges: new Map(), problems: [] };
+  const lock = (where: string, pin: Pin) => {
+    view.edges.set(where, (view.edges.get(where) ?? new Set()).add(lockedVersion(pin)));
+  };
+  const lockPeers = (where: string, version: string) => {
+    for (const peer of peerPins(version)) lock(`${where} peer ${peer.name}`, peer);
+  };
   let section = "";
   const path: string[] = [];
   let entry = "";
@@ -194,9 +204,10 @@ export function readLockfile(text: string): LockfileView {
         const match = NESTED_KEY.exec(line);
         if (match && indent === 4) path[0] = match[3];
         else if (match && indent === 6 && (path[0] === "dependencies" || path[0] === "optionalDependencies")) {
-          const where = `${entry}/${path[0]}/${match[3]}`;
-          const pin = { name: match[3], specifier: "", version: unquote(match[4] ?? "") };
-          view.edges.set(where, (view.edges.get(where) ?? new Set()).add(lockedVersion(pin)));
+          const where = `snapshots/${entry}/${path[0]}/${match[3]}`;
+          const version = unquote(match[4] ?? "");
+          lock(where, { name: match[3], specifier: "", version });
+          lockPeers(where, version);
         }
       }
       return;
@@ -216,7 +227,10 @@ export function readLockfile(text: string): LockfileView {
     const where = `${section}/${path.join("/")}`;
     const pin = view.pins.get(where) ?? { name: path[fieldDepth - 1], specifier: "", version: "" };
     if (match[3] === "specifier") pin.specifier = unquote(match[4] ?? "");
-    if (match[3] === "version") pin.version = unquote(match[4] ?? "");
+    if (match[3] === "version") {
+      pin.version = unquote(match[4] ?? "");
+      lockPeers(where, pin.version);
+    }
     view.pins.set(where, pin);
   });
   return view;
@@ -245,15 +259,23 @@ function normalResolution(key: string, resolution: string): string {
   return resolution.replace(`, tarball: ${tarball}}`, "}");
 }
 
+/** A resolution that names nothing but a sha512 hash, which pnpm fetches from the default registry. */
+const REGISTRY_RESOLUTION = /^\{integrity: sha512-[A-Za-z0-9+/]+=*\}$/;
+
 /**
- * Every package version at both base and head whose resolution or integrity is not the same, and
- * every line of either lockfile the reading could not take as pnpm writes it.
+ * Every package version at both base and head whose resolution or integrity is not the same, every
+ * version new at head that does not resolve from the default registry by its hash, and every line
+ * of either lockfile the reading could not take as pnpm writes it.
  */
-function retainedPackageReasons(base: LockfileView, head: LockfileView): string[] {
+function resolutionReasons(base: LockfileView, head: LockfileView): string[] {
   const reasons = [...base.problems.map((problem) => `base ${problem}`), ...head.problems.map((problem) => `head ${problem}`)];
   for (const [key, after] of head.resolutions) {
     const before = base.resolutions.get(key);
-    if (before !== undefined && normalResolution(key, before) !== normalResolution(key, after)) {
+    if (before === undefined) {
+      if (!REGISTRY_RESOLUTION.test(normalResolution(key, after))) {
+        reasons.push(`pnpm-lock.yaml: ${key} does not resolve from the default registry by a sha512 integrity`);
+      }
+    } else if (normalResolution(key, before) !== normalResolution(key, after)) {
       reasons.push(`pnpm-lock.yaml: ${key} keeps its version but its resolution changed`);
     }
   }
@@ -270,12 +292,30 @@ interface PinMoves {
 const NOT_REGISTRY = "not a registry version: ";
 
 /**
- * What a pin locks, compared by `name@version`: a version string's peer suffix can change while the
- * package version stays the same. A non-registry version compares as written.
+ * What a pin locks, compared by `name@version`: the peer suffix of its version string is read
+ * apart (peerPins). A non-registry version compares as written.
  */
 function lockedVersion(pin: Pin): string {
   const version = pinnedVersion(pin);
   return version === undefined ? `${NOT_REGISTRY}${pin.version}` : versionKey(version);
+}
+
+const PEER = /\(((?:@[^/@()]+\/)?[^@()]+)@([^()]+)/g;
+
+/**
+ * The peers in a version string's suffix: pnpm appends `(name@version)` for each peer a package
+ * was installed with, and a peer's own peers nest inside its group. A suffix that holds anything
+ * else is one more pin, under no name and locked to the suffix as written, so that a change to it
+ * fails as a non-registry version.
+ */
+function peerPins(version: string): Pin[] {
+  const at = version.indexOf("(");
+  if (at === -1) return [];
+  const suffix = version.slice(at);
+  const peers = [...suffix.matchAll(PEER)].map((match) => ({ name: match[1], specifier: "", version: match[2] }));
+  const closed = suffix.split("(").length === suffix.split(")").length;
+  const readable = closed && suffix.replaceAll(PEER, "").replaceAll(")", "") === "";
+  return readable ? peers : [...peers, { name: "", specifier: "", version: suffix }];
 }
 
 /** Whether two versions are on one release line: the same major, and for 0.x the same minor. */
@@ -341,7 +381,7 @@ function pinMoves(base: LockfileView, head: LockfileView): PinMoves {
     const after = head.edges.get(where) ?? new Set<string>();
     const removed = [...before].filter((value) => !after.has(value));
     const added = [...after].filter((value) => !before.has(value));
-    if (removed.length > 0 || added.length > 0) move(`snapshots/${where}`, removed, added);
+    if (removed.length > 0 || added.length > 0) move(where, removed, added);
   }
   for (const key of head.resolutions.keys()) {
     if (base.resolutions.has(key)) continue;
@@ -459,7 +499,7 @@ export function evaluateDeps(input: DepsInput): Outcome {
   for (const { path, base, head } of input.manifests) reasons.push(...manifestReasons(path, base, head));
   const baseLock = input.lockfiles.base;
   const headLock = input.lockfiles.head;
-  reasons.push(...retainedPackageReasons(baseLock, headLock));
+  reasons.push(...resolutionReasons(baseLock, headLock));
   const moves = pinMoves(baseLock, headLock);
   reasons.push(...moves.reasons);
 

@@ -40,8 +40,9 @@ export function evaluateSmoke(url: string, root: Answer, version: Answer): Outco
   let backend = "";
   if (version.status === 200) {
     const body = parseJson(version.body);
-    if (isObject(body) && "version" in body) backend = String(body.version);
-    else reasons.push("GET /api/version answered 200 without a version field");
+    const reported = isObject(body) ? body.version : undefined;
+    if (typeof reported === "string" && reported !== "") backend = reported;
+    else reasons.push("GET /api/version answered 200 without a version");
   } else {
     reasons.push(`GET /api/version answered ${version.status}`);
   }

@@ -21,9 +21,11 @@ describe("preview-smoke", () => {
     assert.deepEqual([outcome.status, outcome.holds, outcome.details.version_status], ["ok", false, 500]);
   });
 
-  it("fails when /api/version answers without a version", () => {
-    const outcome = evaluateSmoke(ORIGIN, html, { ...version, body: '{"ok":true}' });
-    assert.deepEqual([outcome.status, outcome.holds, outcome.details.backend_version], ["ok", false, ""]);
+  it("fails when /api/version answers without a version, or with one that is not a non-empty string", () => {
+    for (const body of ['{"ok":true}', '{"version":null}', '{"version":""}', '{"version":7}', '{"version":{"id":"x"}}', '"118f3e9a"', "[]"]) {
+      const outcome = evaluateSmoke(ORIGIN, html, { ...version, body });
+      assert.deepEqual([outcome.status, outcome.holds, outcome.details.backend_version], ["ok", false, ""], body);
+    }
   });
 
   it("fails when / is not the frontend, a redirect included", () => {

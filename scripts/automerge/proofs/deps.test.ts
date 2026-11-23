@@ -165,7 +165,7 @@ function withLockHunk(input: DepsInput, hunk: Hunk): FileDiff[] {
 /** The key and resolution lines of a `packages:` entry, as a diff hunk shows them. */
 const keyAndResolution = (text: string) => text.split("\n").slice(0, 2);
 
-describe("lockfile rule: a version at both sides keeps what it resolves to", () => {
+describe("lockfile rule: what a version resolves to", () => {
   // From recorded entries: terser@5.49.2 as #189's head locked it sits in #622's lockfile, and the
   // head re-quotes its key and gives it terser@5.49.0's integrity.
   const kept = packageEntry(recorded("pr189.head.lock.yaml"), "terser@5.49.2");
@@ -214,6 +214,29 @@ describe("lockfile rule: a version at both sides keeps what it resolves to", () 
       "resolution: {integrity: sha512-c3RZBmx0TqxTKAPT4PWyTgVwPcDVW+KrFmf4mKCnwWBe6OIc0vWn+wMhnaARarJz/2kvsx87tMGmNRBsCn7pUA==, tarball: https://evil.example/kumo-2.9.2.tgz}");
     assert.notEqual(moved, head);
     assertNames(reasons({ ...input, lockfiles: { ...input.lockfiles, head: readLockfile(moved) } }), ["@cloudflare/kumo@2.9.2"]);
+  });
+
+  // A version the head adds has no base resolution to compare with, so it must itself be a
+  // registry tarball pinned by its hash.
+  it("fails an added version that does not resolve from the default registry by integrity", () => {
+    const input = fixture("pr622");
+    const head = recorded("pr622.head.lock.yaml");
+    const key = "@cloudflare/workers-types@5.20260924.1";
+    const resolution = /'@cloudflare\/workers-types@5\.20260924\.1':\n {4}resolution: (\{integrity: [^,}]+\})/.exec(head)?.[1] ?? "";
+    assert.notEqual(resolution, "");
+    const withResolution = (written: string) => ({ ...input, lockfiles: { ...input.lockfiles, head: readLockfile(head.replace(resolution, written)) } });
+    const registry = "https://registry.npmjs.org/@cloudflare/workers-types/-/workers-types-5.20260924.1.tgz";
+    assert.deepEqual(reasons(withResolution(resolution.replace("}", `, tarball: ${registry}}`))), []);
+    for (const written of [
+      "{tarball: https://evil.example/workers-types-5.20260924.1.tgz}",
+      resolution.replace("}", ", tarball: https://evil.example/workers-types-5.20260924.1.tgz}"),
+      "{commit: 0123456789abcdef0123456789abcdef01234567, repo: https://example.com/types.git, type: git}",
+      "{directory: ../types, type: directory}",
+      "{integrity: ''}",
+      "{}",
+    ]) {
+      assertNames(reasons(withResolution(written)), [key]);
+    }
   });
 });
 
@@ -292,6 +315,53 @@ describe("OSV rule: versions an importer, catalog or snapshot entry moves betwee
     const found = reasons({ ...input, lockfiles: { ...input.lockfiles, head: readLockfile(git) } });
     assert.ok(found.some((r) => r.includes("importers/packages/mcp-shared/dependencies/@modelcontextprotocol/client") &&
       r.includes("git+https://example.com/client.git")), found.join("\n"));
+  });
+
+  // A version string's peer suffix names versions too. #686's importer with zod as its peer: the
+  // package version stays, and the peer moves to a version the lockfile already had.
+  describe("in a peer suffix", () => {
+    const input = fixture("pr686");
+    const importer = "packages/mcp-shared/dependencies/@modelcontextprotocol/client";
+    const pinned = "        version: 2.0.0\n";
+    const edge = "      '@modelcontextprotocol/core': 2.0.0\n";
+    assert.ok(base.includes(pinned) && base.includes(edge));
+    const moved = (line: string, from: string, to: string): DepsInput => ({
+      ...input,
+      manifests: [],
+      files: [{ path: "pnpm-lock.yaml", status: "modified", binary: false, modeChanged: false, hunks: [] }],
+      lockfiles: {
+        base: readLockfile(base.replace(line, line.replace("2.0.0\n", `2.0.0${from}\n`))),
+        head: readLockfile(base.replace(line, line.replace("2.0.0\n", `2.0.0${to}\n`))),
+      },
+    });
+
+    it("checks an importer's peer, nested or not, against OSV on both sides", () => {
+      for (const [from, to] of [["(zod@4.6.7)", "(zod@4.6.5)"], ["(jose@6.2.12)(vite@7.3.6(zod@4.6.7))", "(jose@6.2.12)(vite@7.3.6(zod@4.6.5))"]]) {
+        const peer = moved(pinned, from, to);
+        assert.ok(advisoryIds(peer, "zod@4.6.5")?.includes("GHSA-mrhx-c7xc-m3w5"), to);
+        assert.ok(reasons(peer).some((r) => r.startsWith("zod@4.6.7:")), reasons(peer).join("\n"));
+        assert.deepEqual(evaluateDeps(peer).details.moved_to, ["zod@4.6.5"]);
+      }
+    });
+
+    it("checks a snapshot dependency's peer against OSV", () => {
+      assert.ok(advisoryIds(moved(edge, "(zod@4.6.7)", "(zod@4.6.5)"), "zod@4.6.5")?.includes("GHSA-mrhx-c7xc-m3w5"));
+    });
+
+    it("fails a peer moved across a major version", () => {
+      assert.ok(reasons(moved(pinned, "(zod@3.25.76)", "(zod@4.6.5)")).some((r) => r.includes(importer) && r.includes("zod@4.6.5")));
+    });
+
+    it("fails a changed suffix it cannot read as peers", () => {
+      for (const [from, to] of [["(patch_hash=abc)", "(patch_hash=def)"], ["", "(zod@4.6.5"], ["(zod@4.6.5)", "(zod@4.6.5)x"]]) {
+        assert.ok(reasons(moved(pinned, from, to)).some((r) => r.includes(importer)), `${from} -> ${to}`);
+      }
+    });
+
+    it("takes an unchanged suffix as it is", () => {
+      const same = moved(pinned, "(patch_hash=abc)(zod@4.6.5)", "(patch_hash=abc)(zod@4.6.5)");
+      assert.deepEqual(evaluateDeps(same).details.moved_to, []);
+    });
   });
 });
 
