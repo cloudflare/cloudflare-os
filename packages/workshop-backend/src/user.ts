@@ -1,7 +1,7 @@
 import { RpcStub } from "capnweb";
 import type { ChatReadState, ChatTimelineHead, UnreadStateScope, UnreadStateSubscriber, UserUnreadState, UnreadThread, UserUnreadSummary, WorkspaceUnreadSummary } from "@gadgets/workshop-shared/api";
 import { ADMIN_ACCESS_ERROR_CODES, createAdminAccessError, type AdminUserView } from "@gadgets/workshop-shared/api";
-import { WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, NotificationMute, UserNotification, type DeviceSessionHandoffStart, type WebPushSubscription } from '@gadgets/workshop-shared/api';
+import { WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, GatekeeperVendorListOptions, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, NotificationMute, UserNotification, type DeviceSessionHandoffStart, type WebPushSubscription } from '@gadgets/workshop-shared/api';
 import { ActionDescription, Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame, GatekeeperUserSelection, GatekeeperUserSelectionExchange, RedeemedGatekeeperUserSelection, getResourceTypeId, findResourceType } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
@@ -272,6 +272,16 @@ function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
 
   return result === 0;
 }
+
+// How long the user object serves a gatekeeper's discovery answer, and its failure to answer.
+const DISCOVERY_ANSWER_TTL_MS = 60_000;
+const DISCOVERY_FAILURE_TTL_MS = 30_000;
+
+/** What listGatekeeperVendors asks of each gatekeeper. */
+type VendorDiscovery = { description: VendorDescription, supportedResources: SupportedResource[] };
+
+/** One gatekeeper's discovery, in flight (`expires` is Infinity) or settled. */
+type DiscoveryEntry = { expires: number, failed: boolean, answer: Promise<VendorDiscovery> };
 
 function unavailableGatekeeperVendorInfo(id: string): GatekeeperVendorInfo {
   return {
@@ -2082,12 +2092,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return result;
   }
 
-  async listGatekeeperVendors(filter: GatekeeperVendorFilter = {})
+  async listGatekeeperVendors(filter: GatekeeperVendorListOptions = {})
       : Promise<GatekeeperVendorInfo[]> {
-    let options = {
-      userId: this.storage.profile.get().id
-    };
-
     // Admin-disabled resources/gatekeepers are filtered out here, which also covers the agent (the
     // Overseer's connectable-vendor/resource list is sourced from this method).
     let config = await readAdminConfig(this.env);
@@ -2105,12 +2111,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         }
 
         try {
-          // Bounded, so that one gatekeeper that never answers lists as unavailable rather than
-          // holding up the whole list (and, through it, every agent turn's system prompt).
-          let [description, supportedResources] = await askVendor("list", id, () => Promise.all([
-            vendor.describe(),
-            vendor.getSupportedResources(options),
-          ]));
+          let {description, supportedResources} =
+              await this.#discover(id, vendor, filter.retryUnavailable === true);
           let enabledResources =
               filterEnabledResources(config, id, supportedResources)
                   .filter(resource => resource.connectable !== false || resource.creatable);
@@ -2131,6 +2133,42 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
     return (await Promise.all(promises)).filter(value => value !== null);
   }
+
+  // A bound gatekeeper's description and the resource types it offers this user, asked through
+  // askVendor, so that one that never answers fails within its bound rather than holding up the
+  // list (and, through it, every agent turn's system prompt). Concurrent callers share each
+  // question. An answer is served for DISCOVERY_ANSWER_TTL_MS and a failure for
+  // DISCOVERY_FAILURE_TTL_MS, both from when it settled, so a gatekeeper that does not answer
+  // costs one bounded wait per failure lifetime rather than one per list; `retryFailure` asks
+  // again at once instead of serving a failure.
+  #discover(vendorId: string, vendor: Service<GatekeeperVendor>, retryFailure: boolean)
+      : Promise<VendorDiscovery> {
+    let cached = this.#discovery.get(vendorId);
+    if (cached && cached.expires > Date.now() && !(retryFailure && cached.failed)) {
+      return cached.answer;
+    }
+    let userId = this.storage.profile.get().id;
+    let entry: DiscoveryEntry = {
+      expires: Infinity,
+      failed: false,
+      answer: askVendor("list", vendorId, async () => {
+        let [description, supportedResources] = await Promise.all([
+          vendor.describe(), vendor.getSupportedResources({ userId }),
+        ]);
+        return {description, supportedResources};
+      }),
+    };
+    this.#discovery.set(vendorId, entry);
+    entry.answer.then(() => {
+      entry.expires = Date.now() + DISCOVERY_ANSWER_TTL_MS;
+    }, () => {
+      entry.failed = true;
+      entry.expires = Date.now() + DISCOVERY_FAILURE_TTL_MS;
+    });
+    return entry.answer;
+  }
+
+  #discovery = new Map<string, DiscoveryEntry>();
 
   async connectAccount(vendorId: string, resourceTypeIds?: string[]): Promise<ConnectFlowStart> {
     let vendor = this.vendors.get(vendorId);

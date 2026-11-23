@@ -12,6 +12,7 @@ import { askVendor, DISCOVERY_TIMEOUT_MS } from "../src/gatekeeper-discovery";
 import { UserDurableObject } from "../src/user";
 import { AdminSettings } from "../src/admin-settings";
 import type { AdminConfig } from "../src/storage-schema/admin-settings-storage";
+import type { OverseerDurableObject } from "../src/overseer";
 import type { FakeGatekeeperAccount } from "./test-worker";
 
 const { recorded } = vi.hoisted(() => ({ recorded: [] as SubserviceCallInput[] }));
@@ -23,6 +24,7 @@ vi.mock(import("@gadgets/observability/metrics"), async original => ({
 declare module "cloudflare:workers" {
   interface ProvidedEnv {
     TEST_USER: DurableObjectNamespace<UserDurableObject>;
+    TEST_OVERSEER: DurableObjectNamespace<OverseerDurableObject>;
   }
 }
 
@@ -207,5 +209,138 @@ describe("discovery fan-outs with a gatekeeper that never answers", () => {
     const settings = await inAdmin(admin => withinBound(admin.getSettings("admin")));
     expect(settings.resourceVendors.map(vendor => vendor.vendorId)).toEqual(["example"]);
     expect(recorded).toContainEqual(expect.objectContaining(timedOut("admin")));
+  });
+});
+
+describe("the user object's discovery cache", () => {
+  // A gatekeeper whose answers a test controls, counting the times it was asked.
+  function controlled() {
+    let asked = 0;
+    let answer: () => Promise<SupportedResource[]> = async () => [RESOURCE];
+    return {
+      vendor: {
+        describe: async () => DESCRIPTION,
+        getSupportedResources: () => { asked++; return answer(); },
+      },
+      asked: () => asked,
+      answerWith(next: () => Promise<SupportedResource[]>) { answer = next; },
+    };
+  }
+
+  // One user object kept across the calls a test makes, as a live one is.
+  async function inOneUser(vendor: object, run: (user: UserDurableObject) => Promise<void>) {
+    const { inUser } = deployment({ example: vendor });
+    await inUser(run);
+  }
+
+  const unavailable = [{ id: "example", unavailable: true }];
+  const listed = [{ id: "example", supportedResources: [RESOURCE] }];
+
+  it("shares one question among concurrent lists", async () => {
+    const gatekeeper = controlled();
+    const asked = Promise.withResolvers<SupportedResource[]>();
+    gatekeeper.answerWith(() => asked.promise);
+    await inOneUser(gatekeeper.vendor, async user => {
+      const lists = [user.listGatekeeperVendors(), user.listGatekeeperVendors()];
+      asked.resolve([RESOURCE]);
+      for (const list of await Promise.all(lists)) expect(list).toMatchObject(listed);
+      expect(gatekeeper.asked()).toBe(1);
+    });
+  });
+
+  it("serves an answer for 60 seconds from its arrival", async () => {
+    const gatekeeper = controlled();
+    await inOneUser(gatekeeper.vendor, async user => {
+      await user.listGatekeeperVendors();
+      await vi.advanceTimersByTimeAsync(59_999);
+      expect(await user.listGatekeeperVendors()).toMatchObject(listed);
+      expect(gatekeeper.asked()).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await user.listGatekeeperVendors();
+      expect(gatekeeper.asked()).toBe(2);
+    });
+  });
+
+  it("serves a failure for 30 seconds, then asks again", async () => {
+    const gatekeeper = controlled();
+    gatekeeper.answerWith(async () => { throw new Error("directory throttled"); });
+    await inOneUser(gatekeeper.vendor, async user => {
+      expect(await user.listGatekeeperVendors()).toMatchObject(unavailable);
+      gatekeeper.answerWith(async () => [RESOURCE]);
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(await user.listGatekeeperVendors()).toMatchObject(unavailable);
+      expect(gatekeeper.asked()).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await user.listGatekeeperVendors()).toMatchObject(listed);
+      expect(gatekeeper.asked()).toBe(2);
+    });
+  });
+
+  it("serves a timeout for 30 seconds from when the bound passed", async () => {
+    const gatekeeper = controlled();
+    gatekeeper.answerWith(never);
+    await inOneUser(gatekeeper.vendor, async user => {
+      expect(await withinBound(user.listGatekeeperVendors())).toMatchObject(unavailable);
+      gatekeeper.answerWith(async () => [RESOURCE]);
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(await user.listGatekeeperVendors()).toMatchObject(unavailable);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await user.listGatekeeperVendors()).toMatchObject(listed);
+      expect(gatekeeper.asked()).toBe(2);
+    });
+  });
+
+  it("asks again at once for a failure when told to retry, but not for an answer", async () => {
+    const gatekeeper = controlled();
+    gatekeeper.answerWith(async () => { throw new Error("directory throttled"); });
+    await inOneUser(gatekeeper.vendor, async user => {
+      await user.listGatekeeperVendors();
+      gatekeeper.answerWith(async () => [RESOURCE]);
+      expect(await user.listGatekeeperVendors({ retryUnavailable: true })).toMatchObject(listed);
+      expect(await user.listGatekeeperVendors({ retryUnavailable: true })).toMatchObject(listed);
+      expect(gatekeeper.asked()).toBe(2);
+    });
+  });
+});
+
+describe("the workspace's vendor list cache", () => {
+  async function inWorkspace(
+      list: () => Promise<unknown[]>, run: (impl: { listConnectableVendors(): Promise<unknown> }) => Promise<void>) {
+    const stub = env.TEST_OVERSEER.getByName(`gatekeeper-discovery-${++counter}`);
+    await runInDurableObject(stub, async instance => {
+      const impl = (instance as unknown as { impl: any }).impl;
+      impl.ownerId = "owner";
+      impl.users = { idFromString: (id: string) => id, get: () => ({ listGatekeeperVendors: list }) };
+      await run(impl);
+    });
+  }
+
+  it("keeps a list for 60 seconds", async () => {
+    const list = vi.fn(async () => [{ id: "example", description: DESCRIPTION, supportedResources: [] }]);
+    await inWorkspace(list, async impl => {
+      await impl.listConnectableVendors();
+      await vi.advanceTimersByTimeAsync(59_999);
+      await impl.listConnectableVendors();
+      expect(list).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await impl.listConnectableVendors();
+      expect(list).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("keeps a list naming an unavailable gatekeeper for only 10 seconds from its arrival", async () => {
+    const list = vi.fn(async () => [
+      { id: "example", description: DESCRIPTION, supportedResources: [] },
+      { id: "stalled", description: DESCRIPTION, supportedResources: [], unavailable: true },
+    ]);
+    await inWorkspace(list, async impl => {
+      await impl.listConnectableVendors();
+      await vi.advanceTimersByTimeAsync(9_999);
+      await impl.listConnectableVendors();
+      expect(list).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await impl.listConnectableVendors();
+      expect(list).toHaveBeenCalledTimes(2);
+    });
   });
 });

@@ -1,5 +1,5 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
-import type { ChatTimelineHead, GadgetSnapshotClient } from "@gadgets/workshop-shared/api";
+import type { ChatTimelineHead, GadgetSnapshotClient, GatekeeperVendorInfo } from "@gadgets/workshop-shared/api";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, CollaboratorAccess, CollaboratorGrant, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, ChatMessageOptions, MessageFocus, MAX_FOCUS_ANCHOR_LENGTH, MAX_FOCUS_LABEL_LENGTH, MAX_FOCUS_CONTEXT_LENGTH, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, createGatekeeperError, GATEKEEPER_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
 import {
@@ -13,7 +13,7 @@ import {
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
   requireTextFiles, type FileContent, type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
-import { type AgentCatalog, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, matchesResourceUrlPattern, HookController, HookDescription, ActionKind, GitCache, GitPullHints, type GitPullTransfer, type GitShallowInfo, getResourceTypeId } from "@gadgets/workshop-shared/gatekeeper";
+import { type AgentCatalog, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, resolveRequestedResource, matchesResourceUrlPattern, HookController, HookDescription, ActionKind, GitCache, GitPullHints, type GitPullTransfer, type GitShallowInfo, getResourceTypeId } from "@gadgets/workshop-shared/gatekeeper";
 import {
   DurableObject, WorkerEntrypoint, RpcStub as NativeRpcStub,
   RpcTarget as NativeRpcTarget, restore,
@@ -10510,12 +10510,15 @@ class OverseerImpl implements AgentHooks {
 
   // Short-TTL cache for the gatekeeper vendor list. The list is derived from static
   // GATEKEEPER_* bindings, so it barely changes, but the connection hooks below (and the agent's
-  // system prompt) call it on every turn — caching avoids hammering the user DO each time.
+  // system prompt) call it on every turn — caching avoids hammering the user DO each time. A list
+  // naming a gatekeeper as unavailable is kept only #VENDORS_UNAVAILABLE_TTL_MS from its arrival,
+  // so that the gatekeeper's recovery reaches the agent sooner.
   #vendorsCache: {
     expires: number;
-    promise: Promise<{id: string, description: VendorDescription, supportedResources: SupportedResource[]}[]>;
+    promise: Promise<GatekeeperVendorInfo[]>;
   } | null = null;
   static readonly #VENDORS_CACHE_TTL_MS = 60_000;
+  static readonly #VENDORS_UNAVAILABLE_TTL_MS = 10_000;
 
   #listGatekeeperVendorsCached() {
     let now = Date.now();
@@ -10524,11 +10527,16 @@ class OverseerImpl implements AgentHooks {
     }
     let promise = retryOnDoReset(
         () => this.#ownerUserStub().listGatekeeperVendors(), this.logger);
-    // Don't cache failures: drop the entry so the next call retries.
-    promise.catch(() => {
-      if (this.#vendorsCache?.promise === promise) this.#vendorsCache = null;
+    let entry = { expires: now + OverseerImpl.#VENDORS_CACHE_TTL_MS, promise };
+    promise.then(vendors => {
+      if (vendors.some(vendor => vendor.unavailable)) {
+        entry.expires = Math.min(entry.expires, Date.now() + OverseerImpl.#VENDORS_UNAVAILABLE_TTL_MS);
+      }
+    }, () => {
+      // Don't cache failures: drop the entry so the next call retries.
+      if (this.#vendorsCache === entry) this.#vendorsCache = null;
     });
-    this.#vendorsCache = { expires: now + OverseerImpl.#VENDORS_CACHE_TTL_MS, promise };
+    this.#vendorsCache = entry;
     return promise;
   }
 
