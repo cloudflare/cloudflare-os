@@ -1184,14 +1184,42 @@ describe("turns interrupted together twice without progress", () => {
     expect(model.requests()).toBe(2);
   });
 
-  it("Stop ends the turn that has started as it ends any running turn, then the next starts", async () => {
+  it.each(["stopped", "deleted"] as const)(
+      "starts the next turn at once when the turn at the front is %s during its model lookup", async how => {
+    const model = heldInference(), s = await interrupted([2, 2, 2]);
+    await s.visit(async impl => {
+      await vi.waitFor(() => expect(model.held()).toBe(1));
+      // The second turn's model lookup stays unanswered, and no Stop reaches it.
+      const lookup = Promise.withResolvers<void>();
+      modelLookup(impl, vi.fn()
+          .mockImplementationOnce(async () => { await lookup.promise; return {profile: USER, aiModel: MODEL}; })
+          .mockResolvedValue({profile: USER, aiModel: MODEL}));
+      model.release();
+      await vi.waitFor(() => expect(resumes(impl)).toEqual({2: 3, 3: 2}));
+      if (how === "stopped") impl.cancelAgent(2);
+      else { impl.storage.chatMeta.delete(2); impl.destroyLiveChat(2); }
+      await vi.waitFor(() => expect(model.requests()).toBe(2));
+      expect(resumes(impl)).toEqual({3: 3});
+      expect(busy(impl)).toEqual(how === "stopped" ? [2, 3] : [3]);
+      lookup.resolve();
+      model.release();
+      await impl.waitForAllAgentsToComplete();
+      expect(busy(impl)).toEqual([]);
+      expect(ended(impl)).toEqual(["1:message", "3:message"]);
+    });
+    expect(model.requests()).toBe(2);
+  });
+
+  it("Stop on the turn at the front starts the next at once, and ends it as any running turn", async () => {
     const model = heldInference(), s = await interrupted([2, 2]);
     await s.visit(async impl => {
       await vi.waitFor(() => expect(model.held()).toBe(1));
       impl.cancelAgent(1);
-      expect(busy(impl)).toEqual([1, 2]);
-      model.release();  // The stub ignores the abort signal; the stopped turn discards the reply.
+      // The stub ignores the abort signal, so the stopped turn's request stays unanswered.
       await vi.waitFor(() => expect(model.requests()).toBe(2));
+      expect(busy(impl)).toEqual([1, 2]);
+      model.release();  // The stopped turn discards the reply.
+      await vi.waitFor(() => expect(busy(impl)).toEqual([2]));
       expect([...impl.storage.chats.list()]).toContainEqual(
           expect.objectContaining({chatId: 1, type: "error", code: "stopped"}));
       model.release();
@@ -1217,25 +1245,30 @@ describe("turns interrupted together twice without progress", () => {
 
   it("restarts the turn behind one whose resume fails", async () => {
     const model = heldInference(), s = await interrupted([2, 2]);
-    // The failed resume's rejection is left unhandled, which fails a run. Take that one here.
-    const unhandled = Promise.withResolvers<unknown>();
+    // The failed resume's rejection is left unhandled, which fails a run. Take that one here,
+    // and leave every other one to the runner.
+    const failure = new Error("Injected teardown failure");
+    const unhandled = Promise.withResolvers<void>();
     const reporters = process.listeners("unhandledRejection");
+    const report = (reason: unknown, promise: Promise<unknown>) => {
+      if (reason === failure) unhandled.resolve();
+      else for (const reporter of reporters) reporter(reason, promise);
+    };
     process.removeAllListeners("unhandledRejection");
-    process.on("unhandledRejection", unhandled.resolve);
+    process.on("unhandledRejection", report);
     try {
       await s.visit(async impl => {
         await vi.waitFor(() => expect(model.held()).toBe(1));
-        const failure = new Error("Injected teardown failure");
         vi.spyOn(impl, "reconcilePendingGadgets").mockRejectedValueOnce(failure);
         model.release();
         await vi.waitFor(() => expect(model.requests()).toBe(2));
-        expect(await unhandled.promise).toBe(failure);
+        await unhandled.promise;
         model.release();
         await vi.waitFor(() => expect(busy(impl)).not.toContain(2));
         expect(ended(impl)).toEqual(["1:message", "2:message"]);
       });
     } finally {
-      process.removeAllListeners("unhandledRejection");
+      process.off("unhandledRejection", report);
       for (const reporter of reporters) process.on("unhandledRejection", reporter);
     }
   });

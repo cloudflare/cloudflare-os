@@ -1017,7 +1017,7 @@ class OverseerImpl implements AgentHooks {
   #resumeErrors = new Map<number, unknown>();
 
   // The line of turns that restart one at a time (see #resumeInterruptedAgents). It settles when
-  // the #resumeAgent of the last turn in it has, which is when the next to join starts.
+  // the last turn in it has ended or been stopped, which is when the next to join starts.
   #resumeLine = Promise.resolve();
 
   // Ambient connections whose getAgentCatalog() answered null, which the contract makes permanent
@@ -2028,10 +2028,17 @@ class OverseerImpl implements AgentHooks {
       let signal = liveChat.cancelController.signal;
       let release = () => this.#unregisterRunningAgent(record.chatId);
       signal.addEventListener("abort", release);
-      // The next turn starts whether this one resolves or rejects, and a rejection stays unhandled.
+      // The next turn starts once this one has settled, resolved or rejected (a rejection stays
+      // unhandled), or once its signal is aborted: a stopped turn unwinds in its own time, and
+      // may be in an await that Stop does not reach.
       this.#resumeLine = this.#resumeLine.then(() => new Promise<void>(next => {
         signal.removeEventListener("abort", release);
-        this.#resumeAgent(record, liveChat).finally(next);
+        let done = () => {
+          signal.removeEventListener("abort", done);
+          next();
+        };
+        signal.addEventListener("abort", done);
+        this.#resumeAgent(record, liveChat).finally(done);
       }));
     }
 
