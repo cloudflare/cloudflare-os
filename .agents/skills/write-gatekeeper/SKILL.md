@@ -210,7 +210,7 @@ Study the `ApprovalQueue` API in `gatekeeper.ts` for details.
 
 The kit's [Branches guide](../../../packages/gatekeeper-kit/USAGE.md#branches-one-view-per-session) has the details, and its `./testing` harness checks the result (see [Reviewing a gatekeeper](#reviewing-a-gatekeeper)).
 
-If a provider truly cannot use the kit's journal, the gatekeeper must keep the submission contract in `ApprovalQueue.submitAction()`'s documentation itself: store the action before submitting it, in a state nothing reads; make it visible only once `submitAction()` returns or the Workshop names it (an `applyActions()` list, a `rejectAction()`, `holdsAction()` answering yes); delete it, and what was created for it, if `submitAction()` throws first; and after a restart, keep a record whose reply was never seen unread until `holdsAction()` settles it. Most hand-rolled stores have got this wrong.
+If a provider truly cannot use the kit's journal, the gatekeeper must keep the submission contract in `ApprovalQueue.submitAction()`'s documentation itself: store the action before submitting it, in a state nothing reads; make it visible only once `submitAction()` returns or the Workshop names it (an `applyActions()` list, a `rejectAction()`, `holdsAction()` answering yes); if `submitAction()` throws first, ask `holdsAction()`, and delete the action, and what was created for it, only when the Workshop does not hold it; and keep a record whose reply was never seen, after a restart or when that question got no answer, unread until `holdsAction()` settles it. Most hand-rolled stores have got this wrong.
 
 #### Action kinds and auto-approval
 

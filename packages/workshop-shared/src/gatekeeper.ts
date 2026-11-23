@@ -1702,14 +1702,16 @@ export interface ApprovalQueue extends ObservationAuthorizer {
    * 2. It becomes visible when this call returns, or when the Workshop shows it holds it: a
    *    `rejectAction()` naming it, an `applyActions()` whose list names it, or `holdsAction()`
    *    answering yes.
-   * 3. If this call throws, the action was not accepted: nothing was recorded. Delete the record,
-   *    and whatever was created for it, unless rule 2 already made it visible. The Workshop will
-   *    not call `rejectAction()` for it.
-   * 4. An unconfirmed record found when the facet starts stays unread until it is settled: its
-   *    submission died with the previous activation, but the Workshop may have recorded it. Ask
-   *    `holdsAction()` through the next session's queue, and let that session neither read nor
-   *    submit until the answer is in. Make the record visible if the Workshop holds the action,
-   *    and delete it if not. If the Workshop names it first, rule 2 settles it.
+   * 3. If this call throws, the Workshop may still have recorded the action and lost only the
+   *    reply. Unless rule 2 already made the record visible, ask `holdsAction()`. If the Workshop
+   *    does not hold the action, it was not accepted: delete the record, and whatever was created
+   *    for it. The Workshop will not call `rejectAction()` for it. With no answer, leave the
+   *    record unread for rule 4.
+   * 4. An unconfirmed record found when the facet starts, or left by rule 3, stays unread until
+   *    it is settled: its caller saw the submission fail, but the Workshop may have recorded it.
+   *    Ask `holdsAction()` through the next session's queue, and let that session neither read
+   *    nor submit until the answer is in. Make the record visible if the Workshop holds the
+   *    action, and delete it if not. If the Workshop names it first, rule 2 settles it.
    *
    * A connection's action IDs must be unique and increase in the order this method is called
    * (see `BranchView`).

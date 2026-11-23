@@ -338,15 +338,17 @@ So the record must be durable before the call, but inert. The contract, to be wr
 2. **It becomes visible when `submitAction()` returns, or when the kernel shows it holds it:** a
    `rejectAction()` naming it, an `applyActions()` whose list names it, or `holdsAction()`
    answering yes.
-3. **If `submitAction()` throws, the action was not accepted.** Delete the record, and whatever
-   was created for it, unless rule 2 already made it visible. The kernel will not call
-   `rejectAction()`.
-4. **An unconfirmed record found when the facet starts stays unread until it is settled.** Its
-   submission died with the previous activation and its caller saw it fail, but the kernel may
-   have recorded it. The gatekeeper asks as soon as it has a queue to ask through, which is the
-   next session to start (`ApprovalQueue.holdsAction()`), and that session neither reads nor
-   submits until the answer is in. The record becomes visible if the kernel holds the action,
-   and is deleted if it does not. If the kernel names it first, rule 2 settles it.
+3. **If `submitAction()` throws, the kernel may still have recorded the action** and lost only
+   the reply. Unless rule 2 already made the record visible, the gatekeeper asks `holdsAction()`.
+   If the kernel does not hold the action, it was not accepted: delete the record, and whatever
+   was created for it. The kernel will not call `rejectAction()`. With no answer, the record
+   stays unread for rule 4.
+4. **An unconfirmed record found when the facet starts, or left by rule 3, stays unread until it
+   is settled.** Its caller saw the submission fail, but the kernel may have recorded it. The
+   gatekeeper asks as soon as it has a queue to ask through, which is the next session to start
+   (`ApprovalQueue.holdsAction()`), and that session neither reads nor submits until the answer
+   is in. The record becomes visible if the kernel holds the action, and is deleted if it does
+   not. If the kernel names it first, rule 2 settles it.
 
 ```ts
 export interface ApprovalQueue extends ObservationAuthorizer {
@@ -602,8 +604,8 @@ applies it and reports it.
 
 One case is settled wrongly: an action the gatekeeper dropped although the kernel recorded it,
 whose first apply call then loses its result, is recorded as applied. The gatekeeper drops such
-an action only when `submitAction()` threw after the kernel's write, or when `holdsAction()` was
-answered just before it. Either way it takes two independent faults on one action.
+an action only when `holdsAction()` was answered just before the kernel's write. It takes two
+independent faults on one action.
 
 **What batching buys.** A gatekeeper may coalesce: several Docs edits into one `batchUpdate`,
 label changes into one `batchModify`, several refs into one receive-pack. The early-return rule
