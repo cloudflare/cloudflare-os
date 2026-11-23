@@ -307,9 +307,10 @@ describe("the effect of a write", () => {
     expect(messagesOf(ws).slice(0, 3)).toMatchObject([
       { author: BOB, type: "message", message: "Also add a streak counter.", steered: true },
       { author: OWNER, type: "message", message: "And make it dark.", steered: true },
-      { author: AGENT, type: "agentNudge",
-        text: "The user stopped this turn. Wait for a new request." },
+      { author: AGENT, type: "agentNudge" },
     ]);
+    // Stop's boundary tells the model nothing.
+    expect(messagesOf(ws)[2]).not.toHaveProperty("text");
   }));
 });
 

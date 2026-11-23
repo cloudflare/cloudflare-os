@@ -2483,7 +2483,7 @@ export class GoogleDriveGatekeeperImpl
       // Validated here too, so a hand-built resource URL fails at connect rather than minting a
       // presentable binding whose every call then refuses.
       let folder = await readFolderRoot(scope.folderId, id => api.getFile(id));
-      let reads = "list and search direct children, navigate child folders, read native Google Docs, Sheets and Slides, read PDFs' text with readPdf() and any other file's bytes with readFile()";
+      let reads = "list and search direct children, navigate child folders, follow shortcuts among them to files and folders elsewhere in Drive for reading, read native Google Docs, Sheets and Slides, read PDFs' text with readPdf() and any other file's bytes with readFile()";
       return {
         // The natural browser URL, not the internal `_resource` selector the grant is keyed on.
         url: `https://drive.google.com/drive/folders/${encodeURIComponent(scope.folderId)}`,
@@ -2735,6 +2735,14 @@ const LISTING_TAKES_WRITES = "Seeing who a file is shared with takes what changi
 const MOVE_NEEDS_A_FOLDER =
   "Moving takes a folder or all-of-Drive connection: the single-file connection named below " +
   "cannot move a file.";
+
+/**
+ * Said of a write in a folder opened through a shortcut, which reads follow and writes do not: the
+ * folder is not in the connected one.
+ */
+const THROUGH_SHORTCUT =
+  "This folder was opened through a shortcut, so its files can be read here but not changed, " +
+  "commented on, shared, listed for who they are shared with, or moved.";
 
 /** The Drive session methods that open a native file. */
 type NativeOpener = "openGoogleDoc" | "openGoogleSheet" | "openGoogleSlides";
@@ -3084,6 +3092,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
   }
 
   async listAccess(fileId: string): Promise<DriveAccess[]> {
+    this.#refuseThroughShortcut();
     // A listing is a read, and each refusal speaks of changes, so it is said what the two share.
     let refused = await this.#writes.writeRefusal();
     if (refused !== undefined) throw new Error(`${LISTING_TAKES_WRITES} ${refused}`);
@@ -3140,6 +3149,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
   async move(fileId: string, folderId: string): Promise<void> {
     // Said before the write refusal, whose URL on a read-only file binding could not move either.
     if (this.#scope.kind === "file") throw new Error(MOVE_SINGLE_FILE);
+    this.#refuseThroughShortcut();
     let refused = await this.#writes.writeRefusal();
     if (refused !== undefined) {
       // Only an all-of-Drive binding's read-only refusal names a connection that cannot move.
@@ -3172,13 +3182,24 @@ export class GoogleDriveSessionImpl extends RpcTarget
   }
 
   /**
-   * Refuses a write this binding may not make, with the reason `writeRefusal()` gives: the
-   * deployment keeps Google Drive read-only, the binding is read-only, or its account does not
-   * allow changes.
+   * Refuses a write this binding may not make: one in a folder opened through a shortcut, or one
+   * `writeRefusal()` refuses because the deployment keeps Google Drive read-only, the binding is
+   * read-only, or its account does not allow changes.
    */
   async #requireWritable(): Promise<void> {
+    this.#refuseThroughShortcut();
     let refused = await this.#writes.writeRefusal();
     if (refused !== undefined) throw new Error(refused);
+  }
+
+  /**
+   * Refuses a write, or a listing of who has access, in a folder opened through a shortcut, before
+   * any refusal that asks for more access, which could not make it writable. A
+   * write's proof at approval, along the saved path alone, would refuse it anyway; a listing
+   * proves the positioned folder as a sharing target and would not.
+   */
+  #refuseThroughShortcut(): void {
+    if (this.#location?.shortcuts) throw new Error(THROUGH_SHORTCUT);
   }
 
   /**

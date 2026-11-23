@@ -135,7 +135,7 @@ function renderChat(
       consoleLogSeverity="info"
       onConsumeConsoleLogs={() => ''}
       onDiscardConsoleLogs={() => {}}
-      onOpenGadget={() => {}}
+      onOpenGadget={() => {}} onOpenFocus={() => {}}
       onOpenWorkpieceCode={props.onOpenWorkpieceCode ?? (() => {})}
       workpieceOf={(id) => props.workpieces?.find(workpiece => workpiece.id === id)}
       outputOfWorkpiece={() => undefined}
@@ -856,11 +856,11 @@ describe('the chat mode', () => {
     expect(modeShown().dataset.mode).toBe('fork')
 
     await sendFromComposer('Plan the trip')
-    expect(newChat.mock.calls[0][5]).toBe('fork')
+    expect(newChat.mock.calls[0][3]).toBe('fork')
 
     await choose('review')
     await sendFromComposer('Plan another')
-    expect(newChat.mock.calls[1][5]).toBe('review')
+    expect(newChat.mock.calls[1][3]).toBe('review')
     expect(localStorage.getItem('lastChatMode:alice')).toBe('review')
   })
 
@@ -884,7 +884,7 @@ describe('the chat mode', () => {
     expect(modeShown().dataset.mode).toBe('review')
     expect(modeShown().dataset.restricted).toBe('true')
     await sendFromComposer('Plan the trip')
-    expect(newChat.mock.calls[0][5]).toBe('review')
+    expect(newChat.mock.calls[0][3]).toBe('review')
     expect(localStorage.getItem('lastChatMode:alice')).toBe('auto')
   })
 })

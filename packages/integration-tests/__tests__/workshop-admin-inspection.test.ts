@@ -208,7 +208,7 @@ async function populatedWorkspace(stack: DisposableStack, prefix: string): Promi
 
   const oid = await ws.uploadBlob(new TextEncoder().encode(ATTACHMENT));
   const attachmentChatId = await ws.newChat(
-      "With attachment", null, undefined, [{ oid, mimeType: "text/plain", name: "a.txt" }]);
+      "With attachment", null, { attachments: [{ oid, mimeType: "text/plain", name: "a.txt" }] });
   const sent = (await ws.getChatHistory(attachmentChatId)).messages
       .find(message => message.type === "message");
   if (sent?.type !== "message" || !sent.attachments?.length) {

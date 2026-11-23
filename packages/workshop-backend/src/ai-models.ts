@@ -570,6 +570,20 @@ function makeHandle(args: HandleArgs): ModelHandle {
             ? { "cf-aig-metadata": JSON.stringify(args.gatewayMetadata) }
             : {}),
       };
+      const baseFetch = options.fetch ?? args.fetch;
+      let fetch = baseFetch;
+      if (args.model.api === "google-generative-ai" &&
+          headers["x-goog-api-key"] === null) {
+        // @google/genai appends `x-goog-api-key` after `httpOptions.headers`,
+        // so a null header entry cannot suppress it like Anthropic/OpenAI SDKs.
+        fetch = (input, init) => {
+          const stripped = new Headers(
+              init?.headers ?? (input instanceof Request ? input.headers : undefined));
+          stripped.delete("x-goog-api-key");
+          const nextInit = { ...init, headers: stripped };
+          return baseFetch ? baseFetch(input, nextInit) : globalThis.fetch(input, nextInit);
+        };
+      }
       const transcript = normalizeContext(
           {...context, messages: context.messages.map(wellFormedToolCalls)});
       const merged: SimpleStreamOptions = {
@@ -587,8 +601,8 @@ function makeHandle(args: HandleArgs): ModelHandle {
                 ? (anthropicCompat?.supportsMidConvoEffort === true
                     ? { effort: "low" } : { thinkingEnabled: false })
                 : {}),
-        ...(args.fetch !== undefined ? { fetch: args.fetch } : {}),
         ...options,
+        ...(fetch !== undefined ? { fetch } : {}),
         ...(args.apiKey !== undefined ? { apiKey: args.apiKey } : {}),
         ...(Object.keys(headers).length > 0 ? { headers } : {}),
         // Session affinity: pi only sends it when caching isn't "none" (fine for us).
@@ -829,14 +843,14 @@ function getModelViaUserGateway(
   }
   return makeHandle({
     model,
-    // The Google SDK requires an API key and sends it as `x-goog-api-key`, which the gateway
-    // forwards verbatim unless it recognizes the token as gateway auth -- same stored-key flow
-    // as the platform path (see getModelViaGateway).
-    ...(config.provider === "google" ? { apiKey: userGateway.apiKey } : {}),
+    // pi's Google adapter checks for a non-empty apiKey before dispatch;
+    // `"x-goog-api-key": null` strips the header @google/genai derives from it.
+    ...(config.provider === "google" ? { apiKey: "unused" } : {}),
     headers: {
       "cf-aig-authorization": `Bearer ${userGateway.apiKey}`,
       Authorization: null,
       "x-api-key": null,
+      "x-goog-api-key": null,
       ...autoRouterHeaders(config, sessionAffinity),
     },
     gatewayMetadata: metadata,
@@ -902,28 +916,23 @@ function getModelViaGateway(
   options: ModelRoutingOptions,
 ): ModelHandle {
   const metadata = buildMetadata(initiator, options.metadata);
-  const binding = gwConfig.bindingFor(config.provider);
-  // No binding means either the provider can't ride one or the deployment has none; the second
-  // case already required a token in the constructor, so this only fires for the first
-  if (!binding && !gwConfig.apiToken) {
-    throw new Error(`Provider "${config.provider}" cannot use the Workers AI binding transport, ` +
-        "and no CF_AI_GATEWAY_API_TOKEN is configured for the HTTPS one.");
-  }
+  const binding = gwConfig.binding;
   const gatewayAuthHeaders: ProviderHeaders = {
-    // pi's API impls explicitly recognize cf-aig-authorization and skip SDK auth; the null
-    // values suppress the SDKs' own auth headers so the gateway's server-managed provider keys
-    // apply.
+    // pi's API impls recognize cf-aig-authorization and skip SDK auth; the
+    // null values suppress the SDKs' own auth headers so the gateway's
+    // server-managed provider keys apply.
     "cf-aig-authorization":
         `Bearer ${binding ? CLOUDFLARE_GATEWAY_BINDING_AUTH_SENTINEL : gwConfig.apiToken}`,
     Authorization: null,
     "x-api-key": null,
+    "x-goog-api-key": null,
     ...autoRouterHeaders(config, options.sessionAffinity),
   };
   const gatewayBase =
       `https://gateway.ai.cloudflare.com/v1/${gwConfig.accountId}`;
-  // Cost-log reads are same-account, so the binding arm applies whenever the binding transport
-  // is active (gwConfig.binding is unset when CF_AI_GATEWAY_USE_BINDING=false opts out) --
-  // even for Google inference, which itself rides HTTPS (see AiGatewayConfig.bindingFor).
+  // Cost-log reads are same-account, so the binding arm applies whenever the
+  // binding transport is active (gwConfig.binding is unset when
+  // CF_AI_GATEWAY_USE_BINDING=false opts out).
   const logRoute = (gateway: string): AiGatewayLogRoute => gwConfig.binding
       ? { gateway }
       : { gateway, accountId: gwConfig.accountId, apiToken: gwConfig.apiToken! };
@@ -943,13 +952,10 @@ function getModelViaGateway(
 
   return makeHandle({
     model,
-    // The google API impl requires an apiKey (it doesn't recognize header-owned auth), and the
-    // @google/genai SDK sends it as `x-goog-api-key` on every request -- which AI Gateway treats
-    // as a provider key and forwards to Google verbatim, bypassing the gateway's server-managed
-    // keys (credential precedence gives a request-supplied provider key top priority). The
-    // documented stored-key flow for this SDK is to pass the *gateway token* as the SDK API key:
-    // the gateway recognizes its own token there and applies the stored Google key instead.
-    ...(config.provider === "google" ? { apiKey: gwConfig.apiToken } : {}),
+    // pi's Google adapter checks for a non-empty apiKey before dispatch;
+    // `"x-goog-api-key": null` in gatewayAuthHeaders strips the header
+    // @google/genai derives from it before the request reaches AI Gateway.
+    ...(config.provider === "google" ? { apiKey: "unused" } : {}),
     headers: gatewayAuthHeaders,
     ...(binding ? { fetch: bindingFetch(binding) } : {}),
     gatewayMetadata: metadata,
@@ -1147,7 +1153,7 @@ export function getDecisionModel(env: Cloudflare.Env, config: AiModelConfig,
   // pi requires a key, which goes unsent.
   const piInput = async (init?: RequestInit) =>
       (await new Response(init?.body).json<{ input: Record<string, unknown> }>()).input;
-  const binding = gwConfig.bindingFor(config.provider);
+  const binding = gwConfig.binding;
   if (binding) {
     // The gateway's passthrough refuses /run even with the binding's identity, so binding
     // requests take the binding's own run(), which reaches the same gateway.

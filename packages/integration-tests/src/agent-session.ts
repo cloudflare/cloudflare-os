@@ -761,7 +761,7 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
 
   async #startChat(prompt: string, observer: TurnObserver): Promise<void> {
     const creating = this.#workspace.newChat(
-        prompt, this.#modelId, undefined, undefined, undefined, this.#mode);
+        prompt, this.#modelId, undefined, this.#mode);
     this.#pendingRpcs.add(creating);
     creating.then(chatId => {
       const status = observer.outcome?.status;

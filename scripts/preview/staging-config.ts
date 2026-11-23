@@ -602,13 +602,13 @@ export function resolveAccess({
  * account is required, because `AiGatewayConfig` (ai-gateway.ts) throws without it. That throw
  * would otherwise land in a chat rather than in this deploy.
  *
- * The Run + Read token is not required with it. Every preview backend binds Workers AI (see
- * {@link applyBackend}), and the binding is the gateway transport whenever it is present: those
- * requests are pre-authenticated in-account, so neither inference nor a cost-log read needs a
- * token. Two configurations still do, and each is the deploy-time mirror of a constructor throw:
- * CF_AI_GATEWAY_USE_BINDING=false, which marks the gateway as living in a *different* account and
- * so forces the HTTPS transport, and the google provider, whose pi adapter refuses the binding's
- * fetch.
+ * The Run + Read token is not required with it. Every preview backend binds
+ * Workers AI (see {@link applyBackend}), and the binding is the gateway
+ * transport whenever it is present: those requests are pre-authenticated
+ * in-account, so neither inference nor a cost-log read needs a token. The one
+ * configuration that still does, and is the deploy-time mirror of a
+ * constructor throw, is `CF_AI_GATEWAY_USE_BINDING=false`, which marks the
+ * gateway as living in a different account and so forces the HTTPS transport.
  *
  * The environment is read in the parameter defaults rather than the body so that
  * env-passthrough.test.js, whose discovery is textual, can see every name.
@@ -652,17 +652,13 @@ export function resolveAiGateway({
     throw new Error(`CF_AI_GATEWAY_USE_BINDING must be "true" or "false", not ` +
         `"${rawUseBinding}": the backend reads any other value as unset.`);
   }
-  // The two AiGatewayConfig throws the Workers AI binding does not cover. Raised here so a
-  // half-configured preview fails its deploy rather than its first chat.
+  // The AiGatewayConfig throw the Workers AI binding does not cover. Raised
+  // here so a half-configured preview fails its deploy rather than its first
+  // chat.
   if (!apiToken && useBinding === "false") {
     throw new Error("CF_AI_GATEWAY_API_TOKEN must be set when CF_AI_GATEWAY_USE_BINDING is " +
         "false: opting out of the binding leaves the HTTPS transport, which needs a Run + Read " +
         "token. Drop the opt-out unless the gateway is in another account.");
-  }
-  if (!apiToken && providers?.split(",").some(p => p.trim() === "google")) {
-    throw new Error("CF_AI_GATEWAY_API_TOKEN must be set when the google provider is enabled: " +
-        "pi's Google adapter refuses a custom fetch, so Google inference cannot ride the Workers " +
-        "AI binding.");
   }
   return {
     CF_AI_GATEWAY: gateway,

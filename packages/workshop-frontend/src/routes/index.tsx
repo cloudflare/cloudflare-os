@@ -11,9 +11,7 @@ import { RpcStub } from "capnweb";
 import {
   Overseer,
   AiChatAuthorInfo,
-  CapsuleSpecifier,
-  ChatAttachmentHandle,
-  MessageFormatRef,
+  ChatMessageOptions,
   SlashCommandRequest,
   ChatMode,
 } from "@gadgets/workshop-shared/api";
@@ -133,16 +131,14 @@ export function HomePageContent({ prompt }: HomeSearch) {
     async (
       message: string | SlashCommandRequest,
       modelId: string | null,
-      capsules?: CapsuleSpecifier[],
-      attachments?: ChatAttachmentHandle[],
-      formats?: MessageFormatRef[],
+      options: ChatMessageOptions,
     ) => {
       try {
         ensureProvisionalGadget();
         const overseer = provisionalOverseerRef.current!.stub;
         // Pipeline both independent calls in one batch, but settle both before releasing the stub.
         const [chat, {id}] = await Promise.all([
-          overseer.newChat(message, modelId, capsules, attachments, formats, mode),
+          overseer.newChat(message, modelId, options, mode),
           overseer.getMetadata(),
         ]);
         if (modeChoice !== null) storeChatMode(userId, modeChoice);
@@ -154,7 +150,7 @@ export function HomePageContent({ prompt }: HomeSearch) {
         const transient = logRpcFailure("Failed to create gadget:", err,
             { reportSite: "workspace.create" });
         // A retry reuses the provisional gadget while the draft contains gadget-scoped references.
-        if (!attachments?.length && !capsules?.length) {
+        if (!options.attachments?.length && !options.capsules?.length) {
           provisionalOverseerRef.current?.stub[Symbol.dispose]();
           provisionalOverseerRef.current = null;
         }

@@ -1,6 +1,6 @@
 import {
   AdminGatewayProvider, AdminModel, AiChatAuthorInfo, AiModelConfig, AiModelProvider,
-  AutoRouterPool, GatewayModel, GatewayModelMode, HTTPS_ONLY_PROVIDERS, ModelKind, ReasoningLevel,
+  AutoRouterPool, GatewayModel, GatewayModelMode, ModelKind, ReasoningLevel,
   SUGGESTED_MODELS, modelKind,
 } from "@gadgets/workshop-shared/api";
 import { readAdminConfig } from "./admin-config.js";
@@ -131,24 +131,6 @@ export class AiGatewayConfig {
     this.providers = new Set(
       (env.CF_AI_GATEWAY_PROVIDERS || "").split(",").map(s => s.trim()).filter(s => s !== "")
     );
-    const httpsOnly = [...this.providers].filter(p => HTTPS_ONLY_PROVIDERS.has(p));
-    if (httpsOnly.length > 0 && !this.apiToken) {
-      const names = httpsOnly.join(", ");
-      throw new Error(
-          `${names} inference cannot ride the Workers AI binding transport, so enabling the ` +
-          `${names} provider${httpsOnly.length > 1 ? "s" : ""} requires ` +
-          "CF_AI_GATEWAY_API_TOKEN.");
-    }
-  }
-
-  /**
-   * Transport for a provider's gateway inference: the Workers AI binding when present, except for
-   * the providers in {@link HTTPS_ONLY_PROVIDERS}, which ride HTTPS with the token (the
-   * constructor guarantees a token whenever the environment enables one of them; one that an
-   * admin enabled without a token is refused per request, in getModelViaGateway).
-   */
-  bindingFor(provider: string): Ai | undefined {
-    return HTTPS_ONLY_PROVIDERS.has(provider) ? undefined : this.binding;
   }
 
   /**
@@ -288,9 +270,6 @@ export class GatewayModels {
           provider,
           ...(this.providers.has(provider) &&
               { enabledBy: this.gateway.providers.has(provider) ? "environment" : "admin" }),
-          // What getModelViaGateway refuses a request for. Only an admin can enable a provider
-          // in that state: the environment enabling one keeps `gateway` from being built.
-          needsApiToken: !this.gateway.bindingFor(provider) && !this.gateway.apiToken,
         }));
   }
 

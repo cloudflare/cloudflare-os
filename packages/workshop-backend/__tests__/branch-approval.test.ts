@@ -864,7 +864,7 @@ describe("chat modes", () => {
     expect(await mode()).toBe("fork");
     await overseer.setChatMode(1, "auto");
     expect(await mode()).toBeUndefined();
-    const chatId = await overseer.newChat("Hold it.", null, undefined, undefined, undefined, "fork");
+    const chatId = await overseer.newChat("Hold it.", null, undefined, "fork");
     expect((await overseer.listChats()).find(chat => chat.id === chatId)?.mode).toBe("fork");
   });
 
@@ -874,7 +874,7 @@ describe("chat modes", () => {
     using overseer = await client();
     const refusal = (call: Promise<unknown>) => call.then(() => "", error => String(error));
     expect(await refusal(overseer.setChatMode(1, "auto"))).toMatch("restricted data");
-    expect(await refusal(overseer.newChat("Go.", null, undefined, undefined, undefined, "auto")))
+    expect(await refusal(overseer.newChat("Go.", null, undefined, "auto")))
         .toMatch("restricted data");
     await overseer.setChatMode(1, "fork");
     const chats = await overseer.listChats();

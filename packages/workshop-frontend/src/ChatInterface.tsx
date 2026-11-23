@@ -90,8 +90,9 @@ import {
   AiToolCall,
   SlashCommandId,
   SlashCommandRequest,
-  ChatAttachmentHandle,
   ChatCodeBase,
+  ChatMessageOptions,
+  MessageFocus,
   WorkpieceId,
   BlueprintMerge,
   BlueprintOutput,
@@ -148,6 +149,8 @@ import { copyToClipboard } from "./clipboard";
 import { isImeComposing } from "./keyboardEvent";
 import { ChatAttachmentGrid } from "./features/chat/attachments/ChatAttachmentGrid";
 import { ChatComposer } from "./features/chat/composer/ChatComposer";
+import { FocusChip } from "./features/gadget-focus/FocusChip";
+import { focusForChat, type PaneFocus, type TitledFocus } from "./features/gadget-focus/paneFocus";
 import { composerDraftStorageKey } from "./features/chat/composer/draft/composerDraft";
 import {
   findUnresolvedConflicts, listConflictedFiles, type UnresolvedConflict,
@@ -1189,6 +1192,18 @@ function FormatMention({ format }: { format: MessageFormatRef }) {
       <Icon size={13} className={styles.formatMentionIcon} />
       {format.noun}
     </span>
+  );
+}
+
+// What a sent message told the agent the user was focused on, under its bubble.
+function MessageFocusChip({ focus, onOpenFocus }: {
+  focus: TitledFocus;
+  onOpenFocus: (focus: MessageFocus) => void;
+}) {
+  return (
+    <div className="mt-1 flex max-w-[min(680px,78%)] justify-end">
+      <FocusChip focus={focus} onOpen={() => onOpenFocus(focus)} />
+    </div>
   );
 }
 
@@ -2460,6 +2475,10 @@ interface ChatInterfaceProps {
   onOpenWorkpieceCode: (workpieceId: WorkpieceId) => void;
   // The workspace's workpiece by id, for surfaces that only know the id.
   workpieceOf: (workpieceId: WorkpieceId) => WorkpieceSummary | undefined;
+  // What the workspace pane is showing, which the composers offer to send as the message's focus.
+  paneFocus?: PaneFocus;
+  // Opens a sent message's focus: its gadget and, if it has one, the spot within it.
+  onOpenFocus: (focus: MessageFocus) => void;
 
   // The output format a workpiece was built as, so a created-app card can name and draw it as the
   // Document (or whatever) it is rather than a generic app.
@@ -2665,6 +2684,8 @@ function ChatInterface({
   onOpenWorkpieceCode,
   workpieceOf,
   outputOfWorkpiece,
+  paneFocus,
+  onOpenFocus,
 }: ChatInterfaceProps) {
   // Persistent cache that survives reconnects
   const toasts = useKumoToastManager();
@@ -4197,12 +4218,10 @@ function ChatInterface({
   const handleSend = async (
     messageText?: string | SlashCommandRequest,
     modelId?: string | null,
-    capsules?: CapsuleSpecifier[],
-    attachments?: ChatAttachmentHandle[],
-    formats?: MessageFormatRef[],
+    options?: ChatMessageOptions,
   ) => {
     const message = typeof messageText === "string" ? messageText.trim() : messageText ?? "";
-    if (!message && (!attachments || attachments.length === 0)) return;
+    if (!message && !options?.attachments?.length) return;
 
     // Use provided modelId or fall back to selectedModel
     const model = modelId !== undefined ? modelId : selectedModel;
@@ -4210,20 +4229,12 @@ function ChatInterface({
     try {
       if (selectedChatId === null) {
         // Create a new chat (with optional capsules).
-        const newChatId = await overseer.newChat(
-            message, model, capsules, attachments, formats, newChatMode);
+        const newChatId = await overseer.newChat(message, model, options, newChatMode);
         rememberNewChatMode();
         onNavigateToChatRef.current(newChatId);
       } else {
         // Send message to existing chat.
-        await overseer.sendChatMessage(
-          selectedChatId,
-          message,
-          model,
-          capsules || undefined,
-          attachments || undefined,
-          formats,
-        );
+        await overseer.sendChatMessage(selectedChatId, message, model, options);
       }
     } catch (err) {
       if (!logRpcFailure("Failed to send message:", err, { reportSite: "chat.send" })) {
@@ -4241,16 +4252,13 @@ function ChatInterface({
   const handleNewChatSend = async (
     messageText?: string | SlashCommandRequest,
     modelId?: string | null,
-    capsules?: CapsuleSpecifier[],
-    attachments?: ChatAttachmentHandle[],
-    formats?: MessageFormatRef[],
+    options?: ChatMessageOptions,
   ) => {
     const message = typeof messageText === "string" ? messageText.trim() : messageText ?? "";
-    if (!message && (!attachments || attachments.length === 0)) return;
+    if (!message && !options?.attachments?.length) return;
     const model = modelId !== undefined ? modelId : selectedModel;
     try {
-      const newChatId = await overseer.newChat(
-          message, model, capsules, attachments, formats, newChatMode);
+      const newChatId = await overseer.newChat(message, model, options, newChatMode);
       rememberNewChatMode();
       onNavigateToChatRef.current(newChatId);
     } catch (err) {
@@ -5922,6 +5930,7 @@ function ChatInterface({
             }
             getOverseer={getOverseer}
             onSend={handleNewChatSend}
+            focusOffer={focusForChat(paneFocus, null)}
             isAgentActive={false}
             models={availableModels}
             selectedModel={selectedModel === null ? null : { id: selectedModel }}
@@ -6461,6 +6470,9 @@ function ChatInterface({
                                   )}
                                 </div>
                               )}
+                              {msg.focus && (
+                                <MessageFocusChip focus={msg.focus} onOpenFocus={onOpenFocus} />
+                              )}
                               {endsUserGroup && (
                                 <div className="mt-0.5 flex items-center justify-end gap-2 pr-1 text-[11px] leading-4 text-kumo-inactive opacity-100 transition-opacity duration-150 ease-out sm:opacity-0 sm:group-hover/message:opacity-100 sm:group-focus-within/message:opacity-100">
                                   {/* hideOwnUserName implies currentUser is non-null (see memo). */}
@@ -6989,6 +7001,9 @@ function ChatInterface({
                           <div className={`${userBubbleClassName} opacity-60`}>
                             <MarkdownMessage message={steer.text} preserveLineBreaks />
                           </div>
+                          {steer.focus && (
+                            <MessageFocusChip focus={steer.focus} onOpenFocus={onOpenFocus} />
+                          )}
                           {next?.author.id !== steer.author.id && (
                             <div className="mt-1 flex items-center justify-end gap-2 pr-1 text-[11px] leading-4 text-kumo-inactive">
                               {!(hideOwnUserName && steer.author.id === currentUser?.id) && (
@@ -7016,6 +7031,7 @@ function ChatInterface({
                     }
                     getOverseer={getOverseer}
                     onSend={handleSend}
+                    focusOffer={focusForChat(paneFocus, selectedChatId)}
                     isAgentActive={isAgentActive}
                     models={availableModels}
                     selectedModel={selectedModel === null ? null : {

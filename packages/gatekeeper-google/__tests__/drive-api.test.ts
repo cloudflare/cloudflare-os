@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   COMMENT_WRITE_MAX_MS, DRIVE_FILE_ITEM_FIELDS, DriveApi, DriveApiDisabledError,
-  DriveApiRequestError, FOLDER_MIME_TYPE, MAX_COMMENT_BYTES, MAX_QUERY_PARENTS, MY_DRIVE_ROOT,
+  DriveApiRequestError, FOLDER_MIME_TYPE, MAX_COMMENT_BYTES, SHORTCUT_MIME_TYPE, MAX_QUERY_PARENTS, MY_DRIVE_ROOT,
   buildDriveQuery, conversionError, driveWriteFailure, escapeDriveQueryLiteral, isDriveCommentId,
   isDriveFileId, isDrivePermissionId, isFileInvisible, isInsufficientScope, lacksFileContentAccess,
   type DriveConversionSource, type DriveGivableRole,
@@ -687,7 +687,7 @@ describe("bulk access verification", () => {
 });
 
 /** The one mask a scope proof and an observer check read a file through. */
-const SCOPE_MASK = "id,mimeType,parents,driveId,trashed," +
+const SCOPE_MASK = "id,mimeType,parents,driveId,trashed,shortcutDetails(targetId)," +
   "capabilities(canListChildren,canComment,canShare,canAddChildren,canMoveItemWithinDrive," +
   "canEdit)";
 
@@ -1209,6 +1209,50 @@ describe("makeNativeCopy", () => {
     let calls = stubFetch([copied()]);
     await api().makeNativeCopy(source({ parents: undefined, modifiedTime: undefined }), "Budget", SHEET);
     expect(JSON.parse(calls[0].body!).appProperties).toEqual({ gadgetsConvertedFrom: "src-1" });
+  });
+});
+
+describe("shortcut lookup", () => {
+  const shortcutJson = (id: string, targetId: string) => ({
+    id, mimeType: SHORTCUT_MIME_TYPE, parents: ["f"], driveId: "drive-1", trashed: false,
+    shortcutDetails: { targetId },
+  });
+
+  // Drive's query language has no term for a shortcut's target, so the folder's shortcuts are
+  // listed and matched here.
+  it("pages through the folder's live shortcuts, in its corpus, for one to the target", async () => {
+    let calls = stubFetch([
+      jsonResponse({ files: [shortcutJson("s1", "other")], nextPageToken: "next" }),
+      jsonResponse({ files: [shortcutJson("s2", "t")] }),
+    ]);
+
+    await expect(api().findShortcut("f", "t", { kind: "drive", driveId: "drive-1" }))
+      .resolves.toEqual({
+        id: "s2", mimeType: SHORTCUT_MIME_TYPE, parents: ["f"], driveId: "drive-1", trashed: false,
+        shortcutTargetId: "t",
+      });
+    let params = calls[0].url.searchParams;
+    expect(params.get("q")).toBe(
+      `trashed = false and mimeType = '${SHORTCUT_MIME_TYPE}' and 'f' in parents`);
+    expect(params.get("q")).not.toContain("shortcutDetails");
+    expect(params.get("corpora")).toBe("drive");
+    expect(params.get("driveId")).toBe("drive-1");
+    expect(calls[1].url.searchParams.get("pageToken")).toBe("next");
+  });
+
+  it("answers none when no shortcut in the folder points to the target", async () => {
+    stubFetch([jsonResponse({ files: [shortcutJson("s1", "other")] })]);
+    await expect(api().findShortcut("f", "t", { kind: "user" })).resolves.toBeUndefined();
+  });
+
+  it("parses a shortcut's target on a scope node", async () => {
+    stubFetch([batchResponse([{ status: 200, body: JSON.stringify({
+      id: "s", mimeType: SHORTCUT_MIME_TYPE, parents: ["f"], trashed: false,
+      shortcutDetails: { targetId: "t" },
+    }) }])]);
+    await expect(api().getScopeNodes(["s"])).resolves.toEqual([
+      expect.objectContaining({ id: "s", shortcutTargetId: "t" }),
+    ]);
   });
 });
 

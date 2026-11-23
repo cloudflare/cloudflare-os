@@ -162,7 +162,7 @@ it.concurrent("a read-only Drive connection refuses to comment, and a read and w
 
   // In Review, so that the comment waits for the user's accept.
   const chatId = await ws.newChat(
-      "Comment on the file.", SCRIPTED_MODEL_ID, undefined, undefined, undefined, "review");
+      "Comment on the file.", SCRIPTED_MODEL_ID, undefined, "review");
   await waitFor("the comment turn", async () => model.requests.length === 3 || null);
   await waitForIdleChat(ws, chatId);
   expect(model.remainingSteps()).toBe(0);

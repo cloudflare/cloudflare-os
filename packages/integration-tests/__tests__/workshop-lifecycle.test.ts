@@ -112,7 +112,7 @@ it.concurrent("Git blob uploads are reusable, workspace-local, and downloadable 
   const oid = await ws.uploadBlob(content);
   expect(await ws.uploadBlob(content)).toBe(oid);
   const sent = {oid, mimeType: "text/plain", name: "a.txt"};
-  const chatA = await ws.newChat("With attachment", null, undefined, [sent]);
+  const chatA = await ws.newChat("With attachment", null, {attachments: [sent]});
   const chatB = await ws.newChat("Without attachment", null);
   const message = (await ws.getChatHistory(chatA)).messages.find(m => m.type === "message");
   if (message?.type !== "message" || !message.attachments?.length) throw new Error("Missing attachment");
@@ -121,9 +121,9 @@ it.concurrent("Git blob uploads are reusable, workspace-local, and downloadable 
   expect(new TextDecoder().decode(await ws.getChatAttachmentContent(chatA, attachmentId))).toBe("only chat A");
   await expect(ws.getChatAttachmentContent(chatB, attachmentId)).rejects.toThrow("Chat attachment not found.");
 
-  await ws.sendChatMessage(chatB, "Reuse uploaded bytes", null, undefined, [sent]);
+  await ws.sendChatMessage(chatB, "Reuse uploaded bytes", null, {attachments: [sent]});
   using otherWorkspace = await authenticated.newWorkspace();
-  await expect(otherWorkspace.newChat("Unknown blob", null, undefined, [sent]))
+  await expect(otherWorkspace.newChat("Unknown blob", null, {attachments: [sent]}))
     .rejects.toThrow("Unknown Git blob.");
   await otherWorkspace.deleteSelf();
 

@@ -175,7 +175,7 @@ async function renderProposalChat(options: {
       consoleLogSeverity="info"
       onConsumeConsoleLogs={() => ''}
       onDiscardConsoleLogs={() => {}}
-      onOpenGadget={() => {}} onOpenWorkpieceCode={() => {}} workpieceOf={() => undefined}
+      onOpenGadget={() => {}} onOpenFocus={() => {}} onOpenWorkpieceCode={() => {}} workpieceOf={() => undefined}
       outputOfWorkpiece={() => undefined}
     />,
   )
