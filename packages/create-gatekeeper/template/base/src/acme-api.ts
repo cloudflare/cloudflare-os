@@ -15,6 +15,11 @@ export type WireUser = { id: string; name: string; email?: string; avatar_url?: 
 /** An item as the API returns one. */
 export type WireItem = { id: string; title: string; updated_at: string };
 
+// #if hooks-subscription
+/** A webhook as the API returns one. */
+export type WireWebhook = { id: string };
+
+// #endif
 /** A typed client for the operations the gatekeeper uses. */
 export type Rest = Client<Api>;
 

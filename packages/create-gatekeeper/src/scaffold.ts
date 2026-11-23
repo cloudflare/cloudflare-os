@@ -12,10 +12,17 @@ const TEMPLATE = join(import.meta.dirname, "..", "template");
 export const AUTH_KINDS = ["oauth", "api-key"] as const;
 
 /**
- * The optional parts a template block can name: `openapi` is a package that has the provider's
- * OpenAPI description.
+ * Where a gatekeeper's events come from: `app`, one webhook for the deployment, set up by hand or
+ * in the provider's OAuth app; or `subscription`, webhooks the gatekeeper adds itself through the
+ * provider's API, for each connection.
  */
-const FEATURES = ["hooks", "openapi", "openapi-copy"];
+export const HOOK_KINDS = ["app", "subscription"] as const;
+
+/**
+ * The optional parts a template block can name: `hooks` is a package with either kind of hooks,
+ * `openapi` one that has the provider's OpenAPI description, and `openapi-copy` one that keeps it.
+ */
+const FEATURES = ["hooks", ...HOOK_KINDS.map(kind => `hooks-${kind}`), "openapi", "openapi-copy"];
 
 /** The name of a package's copy of the description `text`, for what it is: JSON, or else YAML. */
 export const openApiDocument = (text: string): string => `openapi.${text.trimStart().startsWith("{") ? "json" : "yaml"}`;
@@ -65,8 +72,8 @@ export type ScaffoldOptions = {
   /** The provider's name as users read it. Defaults to `name` with its words capitalized. */
   display?: string;
   auth: (typeof AUTH_KINDS)[number];
-  /** Whether the gatekeeper pushes events to gadgets, from a webhook the provider delivers to. */
-  hooks?: boolean;
+  /** Whether the gatekeeper pushes events to gadgets, and where from. */
+  hooks?: (typeof HOOK_KINDS)[number];
   /** The provider's OpenAPI description, to call its API through a schema generated from it. */
   openapi?: OpenApiOptions;
 };
@@ -157,11 +164,13 @@ export function scaffold(options: ScaffoldOptions): Map<string, ScaffoldFile> {
   const { openapi } = options;
   // The entrypoint would be `src/openapi.ts`, which `./openapi` finds before the generated schema.
   if (openapi && names.name === "openapi") throw new Error('"openapi" names the generated schema\'s directory: use another name.');
-  const features = new Set([
-    ...(options.hooks ? ["hooks"] : []), ...(openapi ? ["openapi"] : []), ...(openapi?.copy ? ["openapi-copy"] : []),
-  ]);
+  const { hooks } = options;
+  if (hooks !== undefined && !HOOK_KINDS.includes(hooks)) throw new Error(`Unknown --hooks "${hooks}": use ${HOOK_KINDS.join(" or ")}.`);
+  // The shared hooks module, then the driver of the kind asked for.
+  const hookLayers = hooks ? ["hooks", `hooks-${hooks}`] : [];
+  const features = new Set([...hookLayers, ...(openapi ? ["openapi"] : []), ...(openapi?.copy ? ["openapi-copy"] : [])]);
   // A package whose schema is generated calls through it: that layer replaces the invented schema.
-  const layers = ["base", `auth-${options.auth}`, ...(options.hooks ? ["hooks"] : []), ...(openapi?.generated ? ["openapi-schema"] : [])];
+  const layers = ["base", `auth-${options.auth}`, ...hookLayers, ...(openapi?.generated ? ["openapi-schema"] : [])];
   for (const layer of layers) {
     const root = join(TEMPLATE, layer);
     for (const path of walk(root)) {

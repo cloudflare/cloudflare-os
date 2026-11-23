@@ -18,9 +18,8 @@ import { createApi } from "./acme-api";
 import { accountSource, accountStub, type AcmeVerifierApi, type Identity } from "./acme-credentials";
 import type { Env } from "./acme-env";
 // #if hooks
-import {
-  HOOKS_NOT_CONFIGURED, AcmeHookDeliveryImpl, hookDescription, hooksConfigured, type AcmeHookDelivery, type HookScope,
-} from "./acme-hooks";
+import { hooksConfigured } from "./acme-hook-driver";
+import { HOOKS_NOT_CONFIGURED, AcmeHookDeliveryImpl, hookDescription, type AcmeHookDelivery, type HookScope } from "./acme-hooks";
 // #endif
 import { itemSubresourceId, type AcmeGatekeeperImplProps } from "./acme-resources";
 import { AcmeItemImpl, type SessionHost } from "./acme-session";

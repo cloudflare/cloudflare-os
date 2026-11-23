@@ -12,8 +12,8 @@ import { ALL_RESOURCES } from "#gatekeeper/acme-resources";
 import { itemUrl, parseResourceUrl } from "#gatekeeper/acme-urls";
 import type { Outcome } from "./worker";
 
-const BASE_URL = "http://localhost:8787/gatekeeper/acme";
-const ORIGIN = "http://localhost:8787";
+const BASE_URL = "https://gadgets.test/gatekeeper/acme";
+const ORIGIN = "https://gadgets.test";
 
 type User = { id: string; name: string; email: string };
 const ALICE: User = { id: "u-alice", name: "Alice", email: "alice@acme.test" };

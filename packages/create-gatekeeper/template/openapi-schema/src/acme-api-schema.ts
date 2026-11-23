@@ -3,6 +3,9 @@
 
 import type { Operation, Schema } from "@gadgets/gatekeeper-kit/http";
 import type { WireItem, WireUser } from "./acme-api";
+// #if hooks-subscription
+import type { WireWebhook } from "./acme-api";
+// #endif
 import type { Api as Described } from "./openapi";
 
 // STOP(api): `Invented` is what the scaffold's own calls use, and no call of the provider's. The
@@ -18,8 +21,16 @@ type Invented = {
   get: [
     { path: "/me"; response: WireUser },
     { path: "/items/{id}"; response: WireItem },
+    // #if hooks-subscription
+    { path: "/items/{id}/webhooks/{webhook}"; response: WireWebhook },
+    // #endif
   ];
   patch: [{ path: "/items/{id}"; body: { title: string }; response: WireItem }];
+  // #if hooks-subscription
+  /** The webhooks the hook driver adds and deletes. */
+  post: [{ path: "/items/{id}/webhooks"; body: { url: string; secret: string }; response: WireWebhook }];
+  delete: [{ path: "/items/{id}/webhooks/{webhook}"; response: undefined }];
+  // #endif
 };
 
 /** The operations of method `M` in schema `S`. */
