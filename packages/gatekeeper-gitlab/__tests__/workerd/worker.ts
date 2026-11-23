@@ -83,8 +83,8 @@ type TestExports = {
     ensureResources(patterns: string[]): Promise<{ url?: string }>;
   };
   TestVerifier(options: { props: UserProps }): {
-    hasProjectAccess(projectId: number, minAccessLevel?: number): Promise<boolean>;
-    hasProjectPathAccess(projectPath: string, minAccessLevel?: number): Promise<boolean>;
+    hasProjectAccess(projectId: number): Promise<boolean>;
+    hasProjectPathAccess(projectPath: string): Promise<boolean>;
     checkSubresourceAccess(subresources: string[]): Promise<boolean[]>;
   };
   TestCallback(options: { props: UserProps }): Fetcher<GatekeeperConnectCallback>;
@@ -197,6 +197,12 @@ export class RecordingQueue extends RpcTarget {
   refuseNext = 0;
   /** The ordinals (1-based) of the observations to refuse, as the Workshop refusing their audience would. */
   readonly refuseObservations = new Set<number>();
+  /**
+   * Run, once, on the next submission before it replies -- as the overseer's auto-approval drain
+   * may apply an action, or a user discard it, while `submitAction()` is still awaited -- and
+   * whether the reply is then lost.
+   */
+  beforeNextReply?: { resolve: (actionId: number) => Promise<unknown>; loseReply: boolean };
   #observationsAsked = 0;
   async submitAction(actionId: number, description: ActionDescription): Promise<void> {
     if (this.refuseNext > 0) {
@@ -204,6 +210,13 @@ export class RecordingQueue extends RpcTarget {
       throw new Error("The approval queue refused the action.");
     }
     this.submitted.push({ actionId, description });
+    const before = this.beforeNextReply;
+    this.beforeNextReply = undefined;
+    if (before) {
+      // The drain keeps a failed apply for a retry rather than failing the submission.
+      await before.resolve(actionId).catch(() => {});
+      if (before.loseReply) throw new Error("Network connection lost.");
+    }
   }
   async authorizeObservation(description: { title: string; excludeObservers?: string[]; subresources?: string[] }):
       Promise<void> {
@@ -447,6 +460,20 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     return queue;
   }
 
+  /**
+   * Make the facet's queue apply or reject its next submission before replying, then reply or
+   * lose the reply.
+   */
+  async resolveNextSubmit(facetName: string, props: GatekeeperProps, how: "apply" | "reject", loseReply: boolean):
+      Promise<void> {
+    this.#queue(facetName).beforeNextReply = {
+      resolve: actionId => how === "apply"
+        ? this.#gatekeeper(facetName, props).applyAction(actionId, new NullGitCache())
+        : this.#gatekeeper(facetName, props).rejectAction(actionId),
+      loseReply,
+    };
+  }
+
   /** Make the facet's queue refuse its next submission. */
   async refuseNextSubmit(facetName: string): Promise<void> {
     this.#queue(facetName).refuseNext += 1;
@@ -570,11 +597,11 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
   }
 
   /** The verifier's membership check, by the project's id (a number) or its path (a string). */
-  async hasProjectAccess(userObjectId: string, project: number | string, minAccessLevel?: number): Promise<Outcome<boolean>> {
+  async hasProjectAccess(userObjectId: string, project: number | string): Promise<Outcome<boolean>> {
     const verifier = (this.ctx.exports as unknown as TestExports).TestVerifier({ props: { userObjectId } });
     return await outcome(() => typeof project === "number"
-      ? verifier.hasProjectAccess(project, minAccessLevel)
-      : verifier.hasProjectPathAccess(project, minAccessLevel));
+      ? verifier.hasProjectAccess(project)
+      : verifier.hasProjectPathAccess(project));
   }
 
   async checkSubresourceAccess(userObjectId: string, subresources: string[]): Promise<Outcome<boolean[]>> {

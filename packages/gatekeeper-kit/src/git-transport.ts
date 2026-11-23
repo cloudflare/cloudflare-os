@@ -13,11 +13,13 @@
 //
 // Two locked transport decisions (plans/worktrees.md) shape every request this module composes:
 //
-// - **No `have`s, ever.** A `have` asserts full reachability, but the consumer may hold a commit
-//   from a filtered or shallow pull, so possession alone does not imply full reachability --
-//   advertising one would make upload-pack exclude exactly the omitted objects a later
-//   exact-object fault explicitly `want`s. Every fetch sends an empty have list and an immediate
-//   `done` (the same noop negotiation stance git itself takes for partial-clone lazy fetches).
+// - **No `have`s from the workspace's cache.** A `have` asserts full reachability, but the cache
+//   may hold a commit from a filtered or shallow pull, so possession alone does not imply full
+//   reachability -- advertising one would make upload-pack exclude exactly the omitted objects a
+//   later exact-object fault explicitly `want`s. Cache fills send an empty have list and an
+//   immediate `done` (the same noop negotiation stance git itself takes for partial-clone lazy
+//   fetches). `GitPullHints.haves` exists for the workspace serving native Git in a container,
+//   whose `have`s are that client's own claims; negotiation still ends in one round.
 // - **At most one `filter` line per fetch.** upload-pack accepts a single filter-spec (a second
 //   `filter` line is not merged; GitHub rejects the request outright), so combining hints is
 //   spelled in the filter-spec grammar or not at all -- see `filterSpecForHints()`.
@@ -30,7 +32,7 @@
 // This module deliberately has no runtime imports beyond other Node-safe kit leaves (in particular
 // no `cloudflare:workers`), so its logic runs under the kit's Node vitest project.
 
-import type { GitOid, GitPullHints, GitPullStatus } from "@gadgets/workshop-shared/gatekeeper";
+import type { GitOid, GitPullHints, GitPullStatus, GitShallowInfo } from "@gadgets/workshop-shared/gatekeeper";
 import { readBytesCapped, ResponseTooLargeError } from "./response-body";
 
 /** The `agent` capability sent with every request, mirroring the REST layer's User-Agent. */
@@ -211,28 +213,34 @@ export function filterSpecForHints(hints: GitPullHints): string | undefined {
 
 /**
  * Compose the protocol v2 `fetch` command request body for the given objects and hints: a `want`
- * per oid, shallow bounds from `commitHistory` (`deepen`/`deepen-since`; harmless alongside
- * non-commit wants, verified), at most one `filter` line (see `filterSpecForHints`), `ofs-delta`
- * (the overseer's pack decoder resolves both delta forms), and an immediate `done` with no
- * `have`s ever (the transport locked decision -- see the module doc).
+ * per oid, the requester's `shallow` commits, shallow bounds from `commitHistory`
+ * (`deepen`/`deepen-since`/`deepen-relative`; harmless alongside non-commit wants, verified), at
+ * most one `filter` line (see `filterSpecForHints`), `ofs-delta` (the overseer's pack decoder
+ * resolves both delta forms), the hints' `haves` (none for cache fills -- see the module doc),
+ * and an immediate `done`.
  */
 export function buildGitFetchRequest(oids: GitOid[], hints: GitPullHints): Uint8Array {
   let wants = [...new Set(oids)];
   if (wants.length === 0) throw new Error("git fetch requested no objects");
-  for (let oid of wants) {
+  let shallow = [...new Set(hints.shallow ?? [])];
+  let haves = [...new Set(hints.haves ?? [])];
+  for (let oid of [...wants, ...shallow, ...haves]) {
     if (!OID_PATTERN.test(oid)) throw new Error(`invalid git oid: ${JSON.stringify(oid)}`);
   }
 
   let args = wants.map(oid => `want ${oid}`);
   args.push("ofs-delta", "no-progress");
+  args.push(...shallow.map(oid => `shallow ${oid}`));
   let history = hints.commitHistory;
-  if (history.kind === "depth") {
+  if (history.kind === "depth" || history.kind === "relative") {
     args.push(`deepen ${Math.max(1, Math.floor(history.depth))}`);
+    if (history.kind === "relative") args.push("deepen-relative");
   } else if (history.kind === "since") {
     args.push(`deepen-since ${Math.max(0, Math.floor(history.since.getTime() / 1000))}`);
   } // kind "full": no shallow bound.
   let filter = filterSpecForHints(hints);
   if (filter !== undefined) args.push(`filter ${filter}`);
+  args.push(...haves.map(oid => `have ${oid}`));
   args.push("done");
 
   let pieces = [
@@ -260,12 +268,12 @@ const BAND_ERROR = 3;
 /**
  * Strip a v2 fetch response's protocol framing, yielding the raw pack bytes: skip the sections
  * preceding `packfile` (`acknowledgments`/`shallow-info`/`wanted-refs` -- their content is
- * not part of PACK; native consumers record their requested shallow boundary themselves),
- * then demultiplex the packfile section's sideband (band 1 = pack data, band 2 = progress,
- * discarded, band 3 = fatal server error). An `ERR` pkt or band-3 message fails the stream with
- * the server's message; optional `maxBytes` bounds the raw body; a response
- * that ends without a flush-pkt, or without ever reaching a packfile section, is an error --
- * a truncated pack must never look like a short success.
+ * not part of PACK; see `openGitFetchResponse()` for the shallow-info), then demultiplex the
+ * packfile section's sideband (band 1 = pack data, band 2 = progress, discarded, band 3 = fatal
+ * server error). An `ERR` pkt or band-3 message fails the stream with the server's message;
+ * optional `maxBytes` bounds the raw body; a response that ends without a flush-pkt, or without
+ * ever reaching a packfile section, is an error -- a truncated pack must never look like a short
+ * success.
  * `onTerminal` records completion, cancellation, or failure in the producer before signaling
  * it through the stream, whose exceptions Workers RPC may replace with a generic disconnect.
  */
@@ -274,20 +282,44 @@ export function demuxGitFetchResponse(
   maxBytes = Infinity,
   onTerminal?: (status: GitPullStatus) => void,
 ): ReadableStream<Uint8Array> {
+  return openGitFetchResponse(body, maxBytes, onTerminal).pack;
+}
+
+/**
+ * Like `demuxGitFetchResponse()`, and also reads the response's `shallow-info` section.
+ * `shallowInfo()` reads the response up to the start of the pack, if `pack` hasn't already,
+ * without consuming any pack data; it rejects if the response fails before then.
+ */
+export function openGitFetchResponse(
+  body: ReadableStream<Uint8Array>,
+  maxBytes = Infinity,
+  onTerminal?: (status: GitPullStatus) => void,
+): { pack: ReadableStream<Uint8Array>; shallowInfo(): Promise<GitShallowInfo> } {
   let reader = body.getReader();
-  let iterator = demuxPackData(reader, maxBytes);
-  return new ReadableStream({
+  let info: GitShallowInfo = {shallow: [], unshallow: []};
+  let iterator = demuxPackData(reader, maxBytes, info);
+  let fail = (error: unknown) => {
+    onTerminal?.({state: "failed", message: error instanceof Error ? error.message : String(error)});
+  };
+  // The first item is always the marker for the start of the packfile section.
+  let preamble: Promise<void> | undefined;
+  let shallowInfo = () => preamble ??= iterator.next().then(() => {}, error => {
+    fail(error);
+    throw error;
+  });
+  let pack = new ReadableStream<Uint8Array>({
     async pull(controller) {
+      await shallowInfo();
       try {
         let next = await iterator.next();
         if (next.done) {
           onTerminal?.({state: "complete"});
           controller.close();
         } else {
-          controller.enqueue(next.value);
+          controller.enqueue(next.value!);
         }
       } catch (error) {
-        onTerminal?.({state: "failed", message: error instanceof Error ? error.message : String(error)});
+        fail(error);
         throw error;
       }
     },
@@ -298,12 +330,16 @@ export function demuxGitFetchResponse(
       await iterator.return(undefined);
     },
   }, {highWaterMark: 0});
+  return {pack, shallowInfo: () => shallowInfo().then(() => info)};
 }
 
+// Yields null once, on reaching the packfile section, having recorded `info` by then; then
+// the pack's bytes.
 async function* demuxPackData(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   maxBytes: number,
-): AsyncGenerator<Uint8Array, void, unknown> {
+  info: GitShallowInfo,
+): AsyncGenerator<Uint8Array | null, void, unknown> {
   try {
     let parser = new PktLineParser();
     let received = 0;
@@ -334,7 +370,13 @@ async function* demuxPackData(
           if (line.startsWith("ERR ")) {
             throw new Error(`git fetch failed: ${line.slice(4)}`);
           }
-          if (line === "packfile") inPackfile = true;
+          // Only the shallow-info section has lines of these forms.
+          let shallow = /^(shallow|unshallow) ([0-9a-f]{40})$/.exec(line);
+          if (shallow) info[shallow[1] as "shallow" | "unshallow"].push(shallow[2]);
+          if (line === "packfile") {
+            inPackfile = true;
+            yield null;
+          }
           // Anything else is an earlier section's header or content line; skip it.
           continue;
         }
@@ -371,6 +413,16 @@ export async function pullGitPack(
   hints: GitPullHints,
   onTerminal?: (status: GitPullStatus) => void,
 ): Promise<ReadableStream<Uint8Array>> {
+  return (await openGitPull(fetchUploadPack, oids, hints, onTerminal)).pack;
+}
+
+/** Like `pullGitPack()`, and also reads the response's shallow-info (see `openGitFetchResponse()`). */
+export async function openGitPull(
+  fetchUploadPack: (requestBody: Uint8Array) => Promise<Response>,
+  oids: GitOid[],
+  hints: GitPullHints,
+  onTerminal?: (status: GitPullStatus) => void,
+): Promise<ReturnType<typeof openGitFetchResponse>> {
   let response = await fetchUploadPack(buildGitFetchRequest(oids, hints));
   if (!response.ok) {
     // The caller's transport normally throws its own richer error first (e.g. GitHubApi's
@@ -381,7 +433,7 @@ export async function pullGitPack(
   if (response.body === null) {
     throw new Error("git fetch failed: response had no body");
   }
-  return demuxGitFetchResponse(response.body, Infinity, onTerminal);
+  return openGitFetchResponse(response.body, Infinity, onTerminal);
 }
 
 // =======================================================================================

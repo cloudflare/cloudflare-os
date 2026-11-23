@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Switch, useKumoToastManager } from '@cloudflare/kumo'
 import { CaretRight, Check, Eye, Lightning, ShieldCheck } from '@phosphor-icons/react'
 import { RpcStub } from 'capnweb'
@@ -6,22 +6,21 @@ import { ActionLogEntry, Overseer, actionChangeTime } from '@gadgets/workshop-sh
 import { ActionKind } from '@gadgets/workshop-shared/gatekeeper'
 import { GatekeeperIcon } from './components/GatekeeperIcon'
 import { HookToggle, hookToggleFailureToast } from './components/HookToggle'
-import { AlwaysApproveButton, ResolveButton } from './components/ResolveButton'
 import { WorkshopButton } from './components/WorkshopControls'
 import { useActions } from './useActions'
 import { useActionHistory } from './useActionHistory'
 import type { HistoryViewFilter } from './useActionHistory'
 import { useAutoApproval, autoApprovalKey, type AutoApprovalEntry } from './useAutoApproval'
+import type { AutoApprovalChannel } from './features/approvals/autoApprovalChannel'
 import { useAlwaysApproveTag } from './useAlwaysApproveTag'
 import { useAuthenticatedApi } from './AuthContext'
 import { useAvatar } from './useAvatar'
 import { useVendorBranding } from './useVendorBranding'
 import { useResolveAction } from './useResolveAction'
 import { safeExternalUrl } from './utils/safeExternalUrl'
+import { ReviewRequest } from './features/approvals/ReviewRequest'
 import AutoApproveConfirmDialog from './components/AutoApproveConfirmDialog'
-import { IncompleteDescriptionNotice, isDescriptionIncomplete } from './components/IncompleteDescriptionNotice'
-import { ActionFields, entryFields, fieldCountLabel } from './components/ActionFields'
-import { RestrictedApprovalNotice } from './components/RestrictedApprovalNotice'
+import { ActionFields, entryFields } from './components/ActionFields'
 
 export type ActivityView = 'review' | 'history' | 'auto'
 
@@ -35,10 +34,8 @@ interface ActivityProps {
   restricted?: boolean
   view: ActivityView
   onViewChange: (view: ActivityView) => void
-  onAutoApproveChange?: () => void
-  // Bumped when a rule is enabled from somewhere else (a pending row in chat), so the rule list
-  // reflects it without being reopened.
-  autoApproveReloadTrigger?: number
+  // Shared with the chat: a rule changed here has to reach the tray's own list.
+  autoApproval?: AutoApprovalChannel
 }
 
 /** Pending-status copy while the pending set is still being gathered (also in the popover). */
@@ -64,15 +61,6 @@ function formatFullDate(date: Date): string {
     hour: 'numeric',
     minute: '2-digit',
   })
-}
-
-export function formatRelativeTime(date: Date): string {
-  const minutes = Math.floor(Math.max(0, Date.now() - new Date(date).getTime()) / 60_000)
-  if (minutes < 1) return 'just now'
-  if (minutes < 60) return `${minutes}m ago`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}h ago`
-  return `${Math.floor(hours / 24)}d ago`
 }
 
 function startOfDay(date: Date): number {
@@ -162,8 +150,7 @@ export default function Activity({
   restricted,
   view,
   onViewChange,
-  onAutoApproveChange,
-  autoApproveReloadTrigger,
+  autoApproval,
 }: ActivityProps) {
   const { status: pendingStatus, pending: pendingActions } = useActions(overseer)
   const [historyFilter, setHistoryFilter] = useState<HistoryViewFilter>('all')
@@ -215,7 +202,7 @@ export default function Activity({
   }
 
   const { alwaysApproveTag, isTagAutoApproved } =
-    useAlwaysApproveTag(overseer, setProcessingActions, onAutoApproveChange)
+    useAlwaysApproveTag(overseer, setProcessingActions, autoApproval?.changed)
 
   const toggleExpanded = (id: number) => {
     setExpandedActionId(previous => (previous === id ? null : id))
@@ -255,14 +242,15 @@ export default function Activity({
                   expanded={expandedActionId === record.id}
                   processing={processingActions.has(record.id)}
                   onToggle={() => toggleExpanded(record.id)}
-                  onApprove={() => void resolveAction(record, 'approve')}
-                  onReject={() => void resolveAction(record, 'deny')}
-                  onAlwaysApprove={
-                    autoApproveTarget &&
-                    !isTagAutoApproved(autoApproveTarget.gatekeeperId, autoApproveTarget.actionKind.tag)
-                      ? () => setConfirmAutoApprove(autoApproveTarget)
-                      : undefined
-                  }
+                  decide={{
+                    onApprove: () => void resolveAction(record, 'approve'),
+                    onReject: () => void resolveAction(record, 'deny'),
+                    onAlwaysApprove:
+                      autoApproveTarget &&
+                      !isTagAutoApproved(autoApproveTarget.gatekeeperId, autoApproveTarget.actionKind.tag)
+                        ? () => setConfirmAutoApprove(autoApproveTarget)
+                        : undefined,
+                  }}
                 />
               )
             })}
@@ -439,7 +427,8 @@ export default function Activity({
           <AutoApprovalPanel
             overseer={overseer}
             restricted={restricted}
-            reloadTrigger={autoApproveReloadTrigger}
+            reloadTrigger={autoApproval?.reloadTrigger}
+            onChanged={autoApproval?.changed}
           />
         )
     }
@@ -474,21 +463,39 @@ function AutoApprovalPanel({
   overseer,
   restricted,
   reloadTrigger,
+  onChanged,
 }: {
   overseer: RpcStub<Overseer>
   restricted?: boolean
   reloadTrigger?: number
+  /** Reports that a change made here has settled; see `AutoApprovalChannel`. */
+  onChanged?: () => void
 }) {
   const { entries, isLoading, loadError, pending, refresh, setEnabled } = useAutoApproval(overseer)
   const { authenticatedApi } = useAuthenticatedApi()
   const vendorBranding = useVendorBranding(authenticatedApi)
 
-  const previousReloadTrigger = useRef(reloadTrigger)
+  // No channel means no other surface to hear from, so the panel only ever reloads its own way.
+  const trigger = reloadTrigger ?? 0
+  const previousReloadTrigger = useRef(trigger)
+  // A change made here has already re-read the list on its way out, and its own end of the
+  // channel bumps the trigger for everyone else. Reacting to that bump would read the list a
+  // second time for no new answer.
+  //
+  // Counted rather than flagged, because several completions can land in one React batch. A
+  // flag would swallow the whole advance, so a change made on another surface alongside this
+  // panel's own would go unread: the rule it granted would stay invisible here, and so could not
+  // be revoked from this list, until something else happened to refresh it.
+  const changedHere = useRef(0)
   useEffect(() => {
-    if (reloadTrigger === previousReloadTrigger.current) return
-    previousReloadTrigger.current = reloadTrigger
+    const advance = trigger - previousReloadTrigger.current
+    if (advance <= 0) return
+    previousReloadTrigger.current = trigger
+    const ours = Math.min(changedHere.current, advance)
+    changedHere.current -= ours
+    if (ours === advance) return
     void refresh()
-  }, [reloadTrigger, refresh])
+  }, [trigger, refresh])
 
   const groups = useMemo(() => {
     const byConnection = new Map<
@@ -606,7 +613,13 @@ function AutoApprovalPanel({
                     // must stay possible.
                     disabled={busy || (restricted === true && !entry.enabled)}
                     aria-label={`${entry.enabled ? 'Disable' : 'Enable'} auto-approval for ${entry.actionKind.label}`}
-                    onCheckedChange={enabled => void setEnabled(entry, enabled)}
+                    // Toggling here is the only way to turn a rule off, and the chat tray
+                    // labels its requests from this same list, so it has to be told.
+                    onCheckedChange={enabled =>
+                      void setEnabled(entry, enabled).finally(() => {
+                        changedHere.current += 1
+                        onChanged?.()
+                      })}
                   />
                 </div>
               )
@@ -615,116 +628,6 @@ function AutoApprovalPanel({
         ))}
       </div>
     </>
-  )
-}
-
-const titleClass = 'm-0 truncate text-[13px] font-medium leading-[18px] tracking-[-0.25px] text-kumo-default'
-
-function ReviewRequest({
-  record,
-  restricted,
-  expanded,
-  processing,
-  onToggle,
-  onApprove,
-  onReject,
-  onAlwaysApprove,
-}: {
-  record: ActionLogEntry
-  // While restricted the approver is the leak check, so the request is shown in full with a
-  // notice saying so.
-  restricted?: boolean
-  expanded: boolean
-  processing: boolean
-  onToggle: () => void
-  onApprove: () => void
-  onReject: () => void
-  onAlwaysApprove?: () => void
-}) {
-  const resourceUrl = safeExternalUrl(record.resourceUrl)
-  const fields = entryFields(record)
-  // The notices and the request follow the controls in DOM order, so while restricted the
-  // approve/deny buttons name them as their description and a screen reader hears the review
-  // text on focus.
-  const reviewId = useId()
-  const noticeId = `${reviewId}-notice`
-  const requestId = `${reviewId}-request`
-  const fieldsId = `${reviewId}-fields`
-  const incompleteId = `${reviewId}-incomplete`
-  const incomplete = isDescriptionIncomplete(record)
-  const describedBy = restricted
-    ? [
-      noticeId,
-      ...(record.description.description ? [requestId] : []),
-      ...(fields.length > 0 ? [fieldsId] : []),
-      ...(incomplete ? [incompleteId] : []),
-    ].join(' ')
-    : undefined
-  return (
-    <article className="border-b border-kumo-line px-5 py-3 transition-colors hover:bg-kumo-elevated/50">
-      <div className="flex flex-wrap items-start gap-x-3 gap-y-1.5">
-        <div className="min-w-[8rem] flex-1">
-          {restricted ? (
-            // Everything expanding would reveal is already shown, so there is no disclosure.
-            <h3 className={titleClass}>{record.description.title}</h3>
-          ) : (
-            <button
-              type="button"
-              onClick={onToggle}
-              aria-expanded={expanded}
-              className="flex max-w-full cursor-pointer items-center gap-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring"
-            >
-              <h3 className={titleClass}>{record.description.title}</h3>
-              <CaretRight
-                size={12}
-                className={`flex-shrink-0 text-kumo-inactive transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`}
-              />
-            </button>
-          )}
-          <p className="mt-0.5 truncate text-[11.5px] leading-4 tracking-[-0.1px] text-kumo-inactive">
-            {resourceUrl ? (
-              <a
-                href={resourceUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="hover:text-kumo-default hover:underline"
-              >
-                {record.resourceTitle}
-              </a>
-            ) : record.resourceTitle}
-            <span className="px-1">·</span>
-            {formatRelativeTime(record.createdAt)}
-          </p>
-        </div>
-        <div className="ml-auto flex flex-shrink-0 items-center gap-0.5">
-          {onAlwaysApprove && (
-            <AlwaysApproveButton onClick={onAlwaysApprove} disabled={processing} />
-          )}
-          <ResolveButton tone="deny" onClick={onReject} disabled={processing} describedBy={describedBy} />
-          <ResolveButton tone="approve" onClick={onApprove} disabled={processing} describedBy={describedBy} />
-        </div>
-      </div>
-
-      {restricted && <RestrictedApprovalNotice id={noticeId} className="mt-2 max-w-2xl" />}
-
-      {record.description.description && (
-        <p id={requestId} className={`mt-1.5 max-w-2xl whitespace-pre-wrap text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle ${restricted || expanded ? '' : 'line-clamp-2'}`}>
-          {record.description.description}
-        </p>
-      )}
-
-      {fields.length > 0 && (restricted || expanded ? (
-        <div id={fieldsId}>
-          <ActionFields fields={fields} uncapped={restricted} className="mt-2 max-w-2xl" />
-        </div>
-      ) : (
-        <p className="m-0 mt-1 text-[11.5px] leading-4 tracking-[-0.1px] text-kumo-inactive">
-          {fieldCountLabel(fields.length)}
-        </p>
-      ))}
-
-      {incomplete && <IncompleteDescriptionNotice id={incompleteId} className="mt-2 max-w-2xl" />}
-    </article>
   )
 }
 

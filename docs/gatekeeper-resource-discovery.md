@@ -9,7 +9,9 @@ Gatekeepers advertise one list of resource **types** through
   Defaults to **false** when omitted.
 
 These are resource-type advertisements, not inventories of individual instances or grants of
-access. Admin policy is keyed by the type's stable `urlPattern` and applies to both flows.
+access. Admin policy is keyed by the type's vendor-scoped `id`, with exact URL patterns retained
+for legacy types and restrictions, and applies to both flows. See
+[resource type identity](gatekeeper-resource-types.md) for compatibility rules.
 
 A document service can mark the same type `creatable: true` and leave `connectable` at its default.
 A per-chat execution environment uses `connectable: false, creatable: true` to offer creation
@@ -27,9 +29,19 @@ Account consent, grant management, and observer verification still include creat
 
 ## Creation
 
-`creationConfigurator`, when needed, belongs on the resource type alongside `creatable`. Its
-account UI, approval, simulation, and `applyCreation()` behavior are unchanged. Creating something
-still needs approval and a chosen account; advertising creation creates or connects nothing.
+`creationConfigurator`, when needed, belongs on the resource type alongside `creatable`.
+Discovery leaves its account UI, approval, simulation, and `applyCreation()` behavior as they
+were, apart from opening on a suggested configuration (below). Creating something still needs
+approval and a chosen account; advertising creation creates or connects nothing.
+
+A type whose configurator takes a suggestion also sets `creationConfigurationDescription`, saying
+what its configuration is (Google: "the URL of the Google Drive folder to create it in"), and
+`listConnectableResources` prints it beside the type. The agent can then suggest one with
+`createExternalResource`'s `configuration`: the same vendor-defined URL the configurator returns,
+which can carry several settings. It is kept on the connection's `GatekeeperCreationSpec`, and the
+approver's configurator opens on it as the connect configurator does on a requested resource URL
+(its `initialValuesFromResourceUrl`). It grants nothing: the approver keeps or changes it, and the
+gatekeeper checks whatever they choose.
 
 Workshop filters resource types through deployment policy and checks the advertised creation type
 and policy before minting its simulated gatekeeper. Existing-resource pickers and connection

@@ -111,6 +111,9 @@ updates:
           - "typescript"
           - "vite-plus"
           - "vitest"
+          # vite-plus pins an exact vitest and takes `@vitest/browser-playwright` as an exact peer
+          # of that version, so the provider can only move in the same pull request as both.
+          - "@vitest/*"
           - "esbuild"
           - "terser"
           - "vite-plugin-*"

@@ -3,9 +3,9 @@
 
 import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { newMessagePortRpcSession, RpcStub, RpcTarget } from 'capnweb'
+import { newMessagePortRpcSession, RpcPromise, RpcStub, RpcTarget } from 'capnweb'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { GadgetClient, UiBundle } from '@gadgets/workshop-shared/api'
+import type { ConsoleLogEvent, GadgetClient, UiBundle } from '@gadgets/workshop-shared/api'
 
 const testGlobal = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 const previousActEnvironment = testGlobal.IS_REACT_ACT_ENVIRONMENT
@@ -19,7 +19,10 @@ afterAll(() => {
 })
 
 vi.mock('@cloudflare/kumo', () => ({
-  Banner: () => null,
+  Banner: Object.assign(
+    ({ description }: { description: ReactNode }) => description,
+    { Action: () => null },
+  ),
   Loader: () => null,
   Text: ({ children }: { children: ReactNode }) => children,
 }))
@@ -30,6 +33,15 @@ interface TestGadget {
   read(): string
   child(): TestChild
   subscribe(callback: RpcStub<TestSubscriber>): TestSubscription
+}
+
+// The main object of the frame's session, as the runtime sees it.
+interface TestFrameRoot {
+  gadget: TestGadget
+  host: { openAgentChat(chatToken: unknown): Promise<void> }
+  reportConsole(level: ConsoleLogEvent['level'], message: string[],
+                at?: { url?: string; line?: number; column?: number }): void
+  escape(): void
 }
 
 interface TestChild {
@@ -100,6 +112,16 @@ class TestGadgetTarget extends RpcTarget implements TestGadget {
   }
 }
 
+class TestGadgetClientTarget extends RpcTarget {
+  constructor(private value: string) {
+    super()
+  }
+
+  connectToGadget() {
+    return new TestGadgetTarget(this.value)
+  }
+}
+
 class TestCallbacks extends RpcTarget implements TestSubscriber {
   closed = false
 
@@ -118,12 +140,14 @@ class TestCallbacks extends RpcTarget implements TestSubscriber {
 
 function fakeGadget(
   value: string,
-  bundleCode: string,
+  bundle: string | UiBundle,
   connectToGadget = vi.fn<() => Promise<RpcStub<TestGadget>>>(
     async () => new RpcStub(new TestGadgetTarget(value)) as unknown as RpcStub<TestGadget>,
   ),
 ) {
-  const getUiBundle = vi.fn<() => Promise<UiBundle | null>>(async () => ({ jsCode: bundleCode }))
+  const getUiBundle = vi.fn<() => Promise<UiBundle | null>>(
+    async () => typeof bundle === 'string' ? { jsCode: bundle } : bundle,
+  )
   return {
     connectToGadget,
     getUiBundle,
@@ -150,10 +174,28 @@ function dispatchIframeHandshake(iframe: HTMLIFrameElement, port: MessagePort) {
   }))
 }
 
+// The iframe page's import map, from module key to data: URL.
+function importMapOf(iframe: HTMLIFrameElement | null): Record<string, string> {
+  const json = iframe?.srcdoc.match(/<script type="importmap">(.*?)<\/script>/)?.[1]
+  if (!json) return {}
+  const { imports }: { imports: Record<string, string> } = JSON.parse(json)
+  return imports
+}
+
+// The source of every gadget module the page of the iframe in `container` maps, decoded from its
+// data: URLs.
+function loadedCode(container: HTMLElement): string {
+  const { capnweb: _, ...imports } = importMapOf(container.querySelector('iframe'))
+  return Object.values(imports).map(url => {
+    const binary = atob(url.slice(url.indexOf(',') + 1))
+    return new TextDecoder().decode(Uint8Array.from(binary, c => c.charCodeAt(0)))
+  }).join('\n')
+}
+
 describe('GadgetUI RPC recovery', () => {
   let container: HTMLDivElement
   let root: Root
-  const childSessions: RpcStub<TestGadget>[] = []
+  const childSessions: RpcStub<TestFrameRoot>[] = []
 
   beforeEach(() => {
     container = document.createElement('div')
@@ -168,12 +210,14 @@ describe('GadgetUI RPC recovery', () => {
     container.remove()
   })
 
+  // Connects as the frame's runtime does, returning the gadget it reaches through the session's
+  // main object.
   function connectIframe(iframe: HTMLIFrameElement) {
     const { port1, port2 } = new MessageChannel()
-    const child = newMessagePortRpcSession<TestGadget>(port1)
-    childSessions.push(child)
+    const root = newMessagePortRpcSession<TestFrameRoot>(port1)
+    childSessions.push(root)
     dispatchIframeHandshake(iframe, port2)
-    return child
+    return root.gadget
   }
 
   it('lays out gadget UI against the device-width viewport', async () => {
@@ -340,6 +384,59 @@ describe('GadgetUI RPC recovery', () => {
     await vi.waitFor(() => expect(disposed).toHaveBeenCalledOnce())
   })
 
+  it('keeps the iframe for as long as the replacement gadget client is unresolved', async () => {
+    const first = fakeGadget('first', 'document.body.textContent = "first"')
+    await act(async () => {
+      root.render(<GadgetUI gadget={first.stub} height="100px" />)
+    })
+    await vi.waitFor(() => expect(container.querySelector('iframe')).not.toBeNull())
+    const iframe = container.querySelector('iframe')!
+    const child = connectIframe(iframe)
+    await expect(child.read()).resolves.toBe('first')
+
+    // As during an outage: a client pipelined on a connection that has not been made yet.
+    const connection = deferred<RpcStub<GadgetClient>>()
+    const pending = new RpcPromise<GadgetClient>(connection.promise)
+    vi.useFakeTimers()
+    await act(async () => {
+      root.render(<GadgetUI gadget={pending} height="100px" />)
+    })
+    const read = child.read()
+    await act(async () => vi.advanceTimersByTimeAsync(60_000))
+    vi.useRealTimers()
+    expect(container.querySelector('iframe')).toBe(iframe)
+
+    connection.resolve(
+      new RpcStub(new TestGadgetClientTarget('restored')) as unknown as RpcStub<GadgetClient>,
+    )
+    await expect(read).resolves.toBe('restored')
+    expect(container.querySelector('iframe')).toBe(iframe)
+  })
+
+  it('connects a replacement gadget client after a handshake on a failed one', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const failed = fakeGadget(
+      'failed',
+      'document.body.textContent = "bundle"',
+      vi.fn(async () => { throw new Error('workspace failed to reopen') }),
+    )
+    await act(async () => {
+      root.render(<GadgetUI gadget={failed.stub} height="100px" />)
+    })
+    await vi.waitFor(() => expect(container.querySelector('iframe')).not.toBeNull())
+    dispatchIframeHandshake(container.querySelector('iframe')!, new MessageChannel().port2)
+    await vi.waitFor(() => expect(container.querySelector('iframe')).toBeNull())
+    consoleError.mockRestore()
+
+    const replacement = fakeGadget('replacement', 'unused')
+    await act(async () => {
+      root.render(<GadgetUI gadget={replacement.stub} height="100px" />)
+    })
+    const child = connectIframe(container.querySelector('iframe')!)
+    await expect(child.read()).resolves.toBe('replacement')
+    expect(replacement.getUiBundle).not.toHaveBeenCalled()
+  })
+
   it('ignores a superseded replacement connection', async () => {
     const first = fakeGadget('first', 'document.body.textContent = "first"')
     await act(async () => {
@@ -386,7 +483,7 @@ describe('GadgetUI RPC recovery', () => {
       root.render(<GadgetUI gadget={replacement.stub} height="100px" />)
     })
     await vi.waitFor(() => {
-      expect(container.querySelector('iframe')?.srcdoc).toContain('replacement')
+      expect(loadedCode(container)).toContain('replacement')
     })
 
     await act(async () => {
@@ -394,8 +491,23 @@ describe('GadgetUI RPC recovery', () => {
       await oldBundle.promise
     })
 
-    expect(container.querySelector('iframe')?.srcdoc).toContain('replacement')
-    expect(container.querySelector('iframe')?.srcdoc).not.toContain('stale')
+    expect(loadedCode(container)).toContain('replacement')
+    expect(loadedCode(container)).not.toContain('stale')
+  })
+
+  it('retries a failed bundle load on the replacement gadget client', async () => {
+    const first = fakeGadget('first', 'unused')
+    first.getUiBundle.mockRejectedValue(new Error('RPC session was disconnected'))
+    await act(async () => {
+      root.render(<GadgetUI gadget={first.stub} height="100px" />)
+    })
+    await vi.waitFor(() => expect(container.textContent).toContain('RPC session was disconnected'))
+
+    const replacement = fakeGadget('replacement', 'document.body.textContent = "recovered"')
+    await act(async () => {
+      root.render(<GadgetUI gadget={replacement.stub} height="100px" />)
+    })
+    await vi.waitFor(() => expect(loadedCode(container)).toContain('recovered'))
   })
 
   it('ignores an old bundle while its replacement is hidden', async () => {
@@ -425,9 +537,9 @@ describe('GadgetUI RPC recovery', () => {
     })
     await vi.waitFor(() => {
       expect(replacement.getUiBundle).toHaveBeenCalledOnce()
-      expect(container.querySelector('iframe')?.srcdoc).toContain('replacement')
+      expect(loadedCode(container)).toContain('replacement')
     })
-    expect(container.querySelector('iframe')?.srcdoc).not.toContain('stale')
+    expect(loadedCode(container)).not.toContain('stale')
   })
 
   it('disposes a connection that resolves after the gadget client is replaced', async () => {
@@ -585,7 +697,203 @@ describe('GadgetUI no-UI placeholder reporting', () => {
       reload.resolve({ jsCode: 'document.body.textContent = "ui v2"' })
       await reload.promise
     })
-    await vi.waitFor(() => expect(container.querySelector('iframe')?.srcdoc).toContain('v2'))
+    await vi.waitFor(() => expect(loadedCode(container)).toContain('v2'))
     expect(onNoUiChange).not.toHaveBeenCalled()
+  })
+})
+
+describe('GadgetUI bundle errors and modules', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => {
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+  })
+
+  afterEach(async () => {
+    await act(async () => root.unmount())
+    container.remove()
+  })
+
+  // Renders a gadget serving `bundle`, returning the console the UI reports to.
+  const renderBundle = async (bundle: UiBundle) => {
+    const onConsoleLog = vi.fn<(log: ConsoleLogEvent) => void>()
+    const gadget = fakeGadget('unused', bundle)
+    await act(async () => {
+      root.render(<GadgetUI gadget={gadget.stub} height="100px" onConsoleLog={onConsoleLog} />)
+    })
+    return onConsoleLog
+  }
+
+  it('shows a failed load in place of the frame, reports it, and reloads on the next code change', async () => {
+    const missingImport = 'client.js:1: "./missing.js" resolves to missing.js, which does not exist'
+    const onConsoleLog = vi.fn<(log: ConsoleLogEvent) => void>()
+    const gadget = fakeGadget('unused', 'document.body.textContent = "v1"')
+    const render = (reloadTrigger: number) => root.render(
+      <GadgetUI gadget={gadget.stub} height="100px" reloadTrigger={reloadTrigger} onConsoleLog={onConsoleLog} />,
+    )
+    await act(async () => render(0))
+    await vi.waitFor(() => expect(loadedCode(container)).toContain('v1'))
+
+    gadget.getUiBundle.mockRejectedValueOnce(new Error(missingImport))
+    await act(async () => render(1))
+    await vi.waitFor(() => expect(container.textContent).toContain(missingImport))
+    expect(container.querySelector('iframe')).toBeNull()
+    expect(onConsoleLog).toHaveBeenCalledWith(
+      expect.objectContaining({ level: 'error', message: [missingImport] }),
+    )
+
+    gadget.getUiBundle.mockResolvedValueOnce({ jsCode: 'document.body.textContent = "v2"' })
+    await act(async () => render(2))
+    await vi.waitFor(() => expect(loadedCode(container)).toContain('v2'))
+  })
+
+  // Browsers other than Chrome may name a module by its data: URL rather than its sourceURL.
+  it('names the file of an error reported by data: URL', async () => {
+    const onConsoleLog = await renderBundle({ modules: [
+      { path: 'client.js', code: 'import "gadget:ui/list.js"' },
+      { path: 'ui/list.js', code: 'setTimeout(() => {\n  throw new Error("boom")\n})' },
+    ] })
+    await vi.waitFor(() => expect(container.querySelector('iframe')).not.toBeNull())
+    const iframe = container.querySelector('iframe')!
+
+    // As the frame's runtime reports it.
+    const { port1, port2 } = new MessageChannel()
+    using frame = newMessagePortRpcSession<TestFrameRoot>(port1)
+    dispatchIframeHandshake(iframe, port2)
+    await frame.reportConsole('error', ['Uncaught', 'Error: boom'],
+        { url: importMapOf(iframe)['gadget:ui/list.js'], line: 2, column: 9 })
+
+    expect(onConsoleLog).toHaveBeenCalledWith(
+      expect.objectContaining({ level: 'error', message: ['Uncaught', 'Error: boom', 'at ui/list.js:2:9'] }),
+    )
+  })
+
+  it('loads a module whose path contains </script>', async () => {
+    await renderBundle({ modules: [
+      { path: 'client.js', code: 'import "gadget:</script>.js"' },
+      { path: '</script>.js', code: 'document.body.textContent = "escaped"' },
+    ] })
+
+    await vi.waitFor(() => expect(loadedCode(container)).toContain('"escaped"'))
+  })
+})
+
+describe('GadgetUI host', () => {
+  let container: HTMLDivElement
+  let root: Root
+  const childSessions: RpcStub<TestFrameRoot>[] = []
+
+  beforeEach(() => {
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+  })
+
+  afterEach(async () => {
+    for (const session of childSessions.splice(0)) session[Symbol.dispose]()
+    await act(async () => root.unmount())
+    container.remove()
+  })
+
+  // Renders the gadget and connects to it as the frame's runtime does, returning the host.
+  async function renderHost(
+      onOpenAgentChat?: (chatToken: string, signal: AbortSignal) => Promise<void>) {
+    const gadget = fakeGadget('value', 'document.body.textContent = "ui"')
+    await act(async () => {
+      root.render(<GadgetUI gadget={gadget.stub} height="100px"
+        onOpenAgentChat={onOpenAgentChat} />)
+    })
+    await vi.waitFor(() => expect(container.querySelector('iframe')).not.toBeNull())
+    const { port1, port2 } = new MessageChannel()
+    const frameRoot = newMessagePortRpcSession<TestFrameRoot>(port1)
+    childSessions.push(frameRoot)
+    dispatchIframeHandshake(container.querySelector('iframe')!, port2)
+    await expect(frameRoot.gadget.read()).resolves.toBe('value')
+    return frameRoot.host
+  }
+
+  it('hands openAgentChat() to the page with the token', async () => {
+    const onOpenAgentChat = vi.fn<(chatToken: string, signal: AbortSignal) => Promise<void>>(async () => {})
+    const host = await renderHost(onOpenAgentChat)
+
+    await host.openAgentChat('tok-a')
+    expect(onOpenAgentChat).toHaveBeenCalledWith('tok-a', expect.any(AbortSignal))
+  })
+
+  it('refuses a token that is not a string, and does nothing without a handler', async () => {
+    const onOpenAgentChat = vi.fn<(chatToken: string, signal: AbortSignal) => Promise<void>>(async () => {})
+    const host = await renderHost(onOpenAgentChat)
+    await expect(host.openAgentChat(7)).rejects.toThrow('chatToken must be a string.')
+    expect(onOpenAgentChat).not.toHaveBeenCalled()
+
+    await act(async () => root.unmount())
+    root = createRoot(container)
+    const unhandled = await renderHost()
+    await expect(unhandled.openAgentChat('tok-a')).resolves.toBeUndefined()
+  })
+
+  it("aborts a request still in progress once the frame's session ends", async () => {
+    let signal!: AbortSignal
+    const opened = deferred<void>()
+    const host = await renderHost(async (_chatToken, requestSignal) => {
+      signal = requestSignal
+      await opened.promise
+    })
+    void host.openAgentChat('tok-a').catch(() => {})
+    await vi.waitFor(() => expect(signal).toBeDefined())
+    expect(signal.aborted).toBe(false)
+
+    await act(async () => root.unmount())
+    expect(signal.aborted).toBe(true)
+    opened.resolve()
+    root = createRoot(container)
+  })
+
+  it('aborts a request still in progress once the frame disposes its session', async () => {
+    let signal!: AbortSignal
+    const opened = deferred<void>()
+    const host = await renderHost(async (_chatToken, requestSignal) => {
+      signal = requestSignal
+      await opened.promise
+    })
+    void host.openAgentChat('tok-a').catch(() => {})
+    await vi.waitFor(() => expect(signal).toBeDefined())
+
+    childSessions.pop()![Symbol.dispose]()
+    await vi.waitFor(() => expect(signal.aborted).toBe(true))
+    opened.resolve()
+  })
+
+  it('aborts a request still in progress once a reload replaces its frame', async () => {
+    let signal!: AbortSignal
+    const opened = deferred<void>()
+    const onOpenAgentChat = async (_chatToken: string, requestSignal: AbortSignal) => {
+      signal = requestSignal
+      await opened.promise
+    }
+    const gadget = fakeGadget('value', 'document.body.textContent = "ui"')
+    const render = (reloadTrigger: number) => root.render(
+      <GadgetUI gadget={gadget.stub} height="100px" reloadTrigger={reloadTrigger}
+        onOpenAgentChat={onOpenAgentChat} />,
+    )
+    await act(async () => render(0))
+    await vi.waitFor(() => expect(container.querySelector('iframe')).not.toBeNull())
+    const iframe = container.querySelector('iframe')!
+    const { port1, port2 } = new MessageChannel()
+    const frameRoot = newMessagePortRpcSession<TestFrameRoot>(port1)
+    childSessions.push(frameRoot)
+    dispatchIframeHandshake(iframe, port2)
+    await expect(frameRoot.gadget.read()).resolves.toBe('value')
+    void frameRoot.host.openAgentChat('tok-a').catch(() => {})
+    await vi.waitFor(() => expect(signal).toBeDefined())
+
+    // No new frame has connected yet, so only the replacement itself can end the request.
+    await act(async () => render(1))
+    await vi.waitFor(() => expect(container.querySelector('iframe')).not.toBe(iframe))
+    expect(signal.aborted).toBe(true)
+    opened.resolve()
   })
 })

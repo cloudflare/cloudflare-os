@@ -28,7 +28,6 @@ import {
   type GatekeeperCreationSpec, type PermissionEdge, type WorkpieceId,
 } from "@gadgets/workshop-shared/api";
 import type { CodeChange } from "@gadgets/workshop-shared/code-change";
-import type { ChatGatewayRpcTarget } from "@gadgets/workshop-shared/external-message-gateway";
 import type {
   ActionDescription, ActionKind, Gatekeeper, GitObjectType, GitOid, HookController,
   HookDescription, ObservationDescription,
@@ -54,6 +53,14 @@ export type GatekeeperRecord = {
 
   /** Records how this gatekeeper was originally created, enabling blueprint metadata derivation. */
   creationSpec?: GatekeeperCreationSpec;
+
+  /**
+   * Who created the connection: the member whose session made it, or the initiator of the agent
+   * turn that created its resource. Absent on an ambient capsule, which no person creates, and on
+   * a record whose creator was not recorded: one written before creators were recorded, or a
+   * resource created in a turn that has no record.
+   */
+  createdBy?: AiChatAuthorInfo;
 
   /**
    * Present on agent spawners only: the bindings given to each agent the spawner starts, keyed
@@ -271,14 +278,8 @@ export type WorktreeRecord = {
   chatId: number;
 
   /**
-   * The gatekeeper (connection) the base commit was known from at creation time, when there was
-   * one -- purely informational (pull routing uses the per-oid `gitObjectMetadata` sources, not
-   * this). Absent for a worktree created from a purely local commit (e.g. gadget history).
-   */
-  sourceGatekeeperId?: WorkpieceId;
-
-  /**
-   * The commit the worktree was created at. Immutable.
+   * The commit the worktree was created at. Immutable. (Unrelated to a chat pin's
+   * `baseCommit`; see `pinBase`.)
    */
   baseCommit: string;
 
@@ -293,10 +294,14 @@ export type WorktreeRecord = {
    * The accepted commit (initially baseCommit): the worktree's content as of the chat's last
    * accept, and the worktree analog of a gadget's head. An unpinned worktree reads as this
    * commit's tree; the epoch's first modification -- a write, or a commit() -- pins the worktree
-   * in the chat at exactly this commit (so a chat pin, when present, always has
-   * `baseCommit === pinBase`), and the epoch's OT rows compose on it. Advanced only by epoch
-   * resets, to the accept's auto-commit of the dirty overlay (never by explicit commits --
-   * moving it mid-epoch would double-apply the still-live rows on replay). Published as
+   * in the chat at exactly this commit, and the epoch's OT rows compose on it. An agent step can
+   * then re-root the pin at a hidden commit holding the step's result (see
+   * WorktreeTurnAccess.reRoot in agent.ts), after which later rows compose on that commit
+   * instead. Either way the chat pin's `mergedCommit` is this commit, the one the chat's changes
+   * are reviewed against; its `baseCommit` (not this record's `baseCommit`, the creation commit)
+   * equals it until a re-root. Advanced only by epoch resets, to the accept's auto-commit of the
+   * chat's content, which parents on this commit (never by explicit commits or re-roots --
+   * either would accept the chat's changes without review). Published as
    * WorktreeSummary.pinBase: the commit the UI reads an unpinned worktree from, and the base a
    * client's pin declaration must name.
    */
@@ -653,6 +658,13 @@ export type StoredChatMessage =
       visibleThroughSequence?: number;
     };
 
+/** Human messages and slash commands count as participation; automated activity does not. */
+export function isChatParticipation(message: StoredChatMessage): boolean {
+  return message.author.type === "user" &&
+    (message.type === "slashCommand" ||
+      (message.type === "message" && message.generatedBySlashCommandSequence === undefined));
+}
+
 /** Additional per-chat-thread info needed by the AI agent but not by the client. */
 export type AiChatAgentContext = {
   /** Chat ID, corresponds to `chatMeta`. */
@@ -870,7 +882,7 @@ export type ActiveAgentRecord = {
   initiator: AiChatAuthorInfo;
   /** Whether this turn was initiated by a gadget callback (vs. a chat message). */
   callbackInitiated: boolean;
-  /** Model-lookup attempts since the last successful preparation, bounded across DO resets. */
+  /** Resume attempts since the turn last persisted a step, bounded across DO resets. */
   resumeAttempts?: number;
 };
 
@@ -916,43 +928,6 @@ type PendingAgentCallRecord = {
   argsSummary: string;        // depth-limited summary string (see summarizeArgs)
   initiatorUserId: string;    // hex durable object ID of user DO
   initiatorModelId: string | null;  // null when the spawner has no model (see spawnAgent)
-};
-
-/**
- * External message gateways pass a response target when submitting a prompt. While the agent turn is
- * in progress, `waiting` records persist that target across DO eviction/restart; once response
- * text is known, `ready` records retry delivery until acknowledged; `delivered` records are
- * retained briefly so retries of the same external message remain idempotent.
- */
-export type ExternalMessageRecord = {
-  /** Namespaced external message key used to dedupe retries of the same submission. */
-  idempotencyKey: string;
-  chatId: number;
-  /**
-   * Chat log sequence number of the external prompt. The target sends the latest agent/error
-   * response after this sequence, stopping before the next user message.
-   */
-  promptSequence: number;
-  createdAt: number;
-} & (
-  | {
-      status: "waiting";
-      chatGatewayRpcTarget: NativeRpcStub<ChatGatewayRpcTarget>;
-    }
-  | {
-      status: "ready";
-      chatGatewayRpcTarget: NativeRpcStub<ChatGatewayRpcTarget>;
-      responseText: string;
-    }
-  | {
-      status: "delivered";
-      deliveredAt: number;
-    }
-);
-
-export type ExternalChatRecord = {
-  externalChatKey: string;
-  chatId: number;
 };
 
 type ChatAttachmentContentRecord = {
@@ -1157,6 +1132,16 @@ export type ShareLinkRecord = {
    * migrateToFrozenGadgetGrants() in overseer-migrations.ts). No such link is created anymore.
    */
   gadgetIds?: WorkpieceId[];
+
+  /** Set on a "use" link that grants only a view of its gadget (see CollaboratorGrant). */
+  mode?: "view";
+
+  /**
+   * Set on its creator's default link for what it grants (see Overseer.createShareLink). Each
+   * creator has at most one non-revoked default link per grant; links created before default
+   * links existed have none.
+   */
+  default?: true;
 
   /**
    * Soft-revocation flag. Revoking a link sets this rather than deleting the record, so that the
@@ -1412,10 +1397,6 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // `defaultGadgetId` can be cached in memory after it is first read.
       defaultGadgetId: <WorkpieceId | undefined>undefined,
 
-      // External-message Gadgets claim ownership before registering in the owner's UserDO. If that
-      // registration fails, this keeps the owner-table write retryable.
-      ownerRegistrationPending: false,
-
       codeVersion: 0,
       totalCost: 0,
 
@@ -1451,6 +1432,19 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // project-specific part of the agent's system prompt, so nobody without that prompt can
       // probe a shared prompt cache for it (see runAgentPass).
       promptCacheSalt: <string | undefined>undefined,
+
+      // When the workspace was initialised; unset for one initialised before this was recorded,
+      // until the directory feed backfills it from the owner's record (OverseerImpl.syncDirectory).
+      createdAt: <Date | undefined>undefined,
+
+      // The revision of the title the deployment directory is sent, bumped with every title
+      // write and at initialisation. Time-based (at least the epoch ms of the bump), so a
+      // workspace reinitialised under the same id outranks what its earlier life reported.
+      titleRev: 0,
+
+      // The highest titleRev the directory has acknowledged; -1 until it acknowledges one, and
+      // again once the workspace leaves the directory (OverseerImpl.removeFromDirectory).
+      directoryRev: -1,
     },
 
     collections: {
@@ -1467,8 +1461,8 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
         role: CollaboratorRole | null;
       }>()({primaryKey: "userId"}),
       // Chats whose changes (new visible messages, new notifications, renames, deletion) haven't yet
-      // reached every user who tracks unread state for this workspace (the owner and build
-      // collaborators). Written in the same transaction as the change itself, so the update isn't
+      // reached enrolled owners/build collaborators, or a one-off approval recipient.
+      // Written in the same transaction as the change itself, so the update isn't
       // lost if the DO restarts; the alarm retries it. There's at most one row per chat: later
       // changes merge into it. The row is deleted once every recipient has accepted the update (or
       // been skipped for lacking access). See docs/user-unread-state.md.
@@ -1481,7 +1475,8 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
         retryOnly?: true;
         /**
          * Recipients whose last attempt failed, each with the earliest change they still haven't
-         * received. Only written after a failure; a fully successful delivery deletes the row.
+         * received, or newly enrolled users awaiting their initial snapshot. A fully successful
+         * delivery deletes the row.
          */
         failedRecipients?: (ChatFanoutStart & {userId: string})[];
       }>()({primaryKey: "chatId"}),
@@ -1565,6 +1560,13 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
             return record.bindingName ?? null;
           }
         }
+      }),
+
+      // Facets holding static gadget snapshots (see Overseer.getGadgetSnapshot), recorded before
+      // each is cloned. A snapshot lives no longer than the instance that made it, whose sessions
+      // are its only users, so the next instance deletes every one still recorded.
+      gadgetSnapshots: collection<{facetName: string; gadgetId: WorkpieceId}>()({
+        primaryKey: "facetName",
       }),
 
       gatekeepers: collection<GatekeeperRecord>()({
@@ -1663,29 +1665,6 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
         primaryKey: "chatId"
       }),
 
-      gadgetResponseDeliveries: collection<ExternalMessageRecord>()({
-        primaryKey: "idempotencyKey",
-        uniqueIndexes: {
-          undeliveredByChatId(record: ExternalMessageRecord) {
-            return record.status === "delivered" ? null : record.chatId;
-          },
-        },
-        nonUniqueIndexes: {
-          // Retry delivery by listing only ready records, not the whole idempotency history.
-          readyByIdempotencyKey(record: ExternalMessageRecord) {
-            return record.status === "ready" ? record.idempotencyKey : null;
-          },
-          // Sweep expired delivered records by age without scanning pending/ready records.
-          deliveredByDeliveredAt(record: ExternalMessageRecord) {
-            return record.status === "delivered" ? record.deliveredAt : null;
-          },
-        },
-      }),
-
-      externalChats: collection<ExternalChatRecord>()({
-        primaryKey: "externalChatKey",
-      }),
-
       chats: collection<StoredChatMessage>()({
         primaryKey: (msg: StoredChatMessage) => chatKey(msg.chatId, msg.sequence),
         uniqueIndexes: {
@@ -1724,6 +1703,12 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       nextChatSequences: collection<{
         chatId: number;
         nextSequence: number;
+        /**
+         * Users permanently enrolled for updates after opening, creating, participating in, or
+         * setting a preference for this chat. Profile IDs, resolved to User DOs at dispatch.
+         * Initialized empty for new chats; absent on legacy chats, which retain workspace fanout.
+         */
+        notificationParticipants?: string[];
         /**
          * Number of visible messages written to the chat since unread tracking began; older history
          * isn't counted. Equal to the `visibleThroughSequence` of the chat's latest record.
@@ -1828,6 +1813,10 @@ export type ChatFanoutStart = {
   firstMessageSequence?: number;
   /** The `visibleThroughSequence` of the earliest new visible message in the pending update, if any. */
   firstVisibleSequence?: number;
+  /** Human authors whose private participation latch must be set before this batch is ACKed. User DO IDs. */
+  participatingUsers?: string[];
+  /** First enrollment skips earlier alerts while retaining the chat's numbered unread history. */
+  notificationBaseline?: number;
 };
 
 /** The Overseer's typed storage. See makeOverseerStorage. */

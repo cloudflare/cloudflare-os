@@ -16,9 +16,15 @@ export type SlackUser = {
   displayName?: string;
   /** The user's real name, if available. */
   realName?: string;
+  /** URL of the user's profile picture (up to 192×192 pixels), if available. */
+  avatarUrl?: string;
   /** Whether Slack identifies this as a bot or built-in system user; false does not guarantee a
    *  human. */
   isBot: boolean;
+  /** Whether the user belongs to a different Slack organization than the connected account, e.g.
+   *  someone in a Slack Connect channel. Colleagues in other workspaces of the same Enterprise org
+   *  and guests of the connected workspace are not external. Absent when unknown. */
+  isExternal?: boolean;
 };
 
 /** An emoji reaction on a message. `name` is the emoji short name (without colons), e.g. "thumbsup". */

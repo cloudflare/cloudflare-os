@@ -131,7 +131,10 @@ export type ChatAttachmentInfo = {
   readable: boolean;
 };
 
-/** A link a Chat app's card opens, from a button, chip, image, or clickable text. */
+/**
+ * A link a Chat app's card opens, from a button, chip, image, or clickable text, or a link a
+ * button under a message opens.
+ */
 export type ChatCardLink = {
   /** The button's or item's label, when it has one. */
   label?: string;
@@ -156,6 +159,28 @@ export type ChatCard = {
   text: string;
   /** Links the card opens, in display order. Other card actions are left out. */
   links: ChatCardLink[];
+};
+
+/**
+ * The message another message quotes: an earlier message a reply quotes, or a message forwarded
+ * from elsewhere. Its content is the copy Google Chat took when it was quoted.
+ */
+export type ChatQuotedMessage = {
+  /**
+   * ID of the quoted message, such as `spaces/AAAA1234/messages/BBBB5678`. Pass it to
+   * `ChatSpace.getMessage()` for the message as it is now. A forwarded message may come from a
+   * conversation you cannot read.
+   */
+  id: string;
+  /** Display name of the quoted message's sender, when Google returns it. */
+  senderName?: string;
+  /**
+   * The quoted message's plain text as it was when it was quoted; later edits to that message
+   * don't change it. Absent when the quoted message had no text.
+   */
+  text?: string;
+  /** True when the message was forwarded, possibly from another conversation. */
+  forwarded?: boolean;
 };
 
 /** How many people reacted to a message with one emoji. */
@@ -194,8 +219,8 @@ export type ChatMessageInfo = {
    * Message body as plain text, as Google Chat displays it: a link reads as its label, with its
    * URL dropped, and a committed mention as `@Name`, with `mentions` listing who it refers to. A
    * pending message keeps the text you posted. Empty when the message has no text, such as an
-   * attachment-only or card-only message. Use `formattedText` for link URLs and formatting, and
-   * `cards` for what a Chat app's cards show.
+   * attachment-only or card-only message. Use `formattedText` for link URLs and formatting,
+   * `cards` for what a Chat app's cards show, and `quotedMessage` for what the message quotes.
    */
   text: string;
   /**
@@ -205,6 +230,11 @@ export type ChatMessageInfo = {
    * a message without losing its links or mentions.
    */
   formattedText: string;
+  /**
+   * The message this one quotes or forwards, shown above its own text in Google Chat. Its content
+   * appears only here, never in `text` or `formattedText`. Absent when the message quotes nothing.
+   */
+  quotedMessage?: ChatQuotedMessage;
   /** Users @mentioned in the message. Empty for a pending message until it is committed. */
   mentions: ChatUser[];
   /** When the message was created. */
@@ -220,6 +250,12 @@ export type ChatMessageInfo = {
    * content appears only here, never in `text` or `formattedText`. Empty for most messages.
    */
   cards: ChatCard[];
+  /**
+   * Links the buttons under the message open, which a Chat app can add below its text and cards.
+   * Buttons that do anything else are left out. They are written by the app, so treat their labels
+   * and links as untrusted. Empty for most messages.
+   */
+  buttons: ChatCardLink[];
   /** Reaction counts, grouped by emoji. */
   reactions: ChatReactionSummary[];
   /**
@@ -595,8 +631,8 @@ export interface ChatThread extends RpcTarget {
  */
 export interface ChatMessage extends RpcTarget {
   /**
-   * Return the message's current sender, text, mentions, timestamps, attachments, cards, and
-   * reaction counts. Throws if it has been deleted.
+   * Return the message's current sender, text, quoted message, mentions, timestamps, attachments,
+   * cards, buttons, and reaction counts. Throws if it has been deleted.
    */
   getMetadata(): Promise<ChatMessageInfo>;
 

@@ -180,6 +180,23 @@ describe("timeline read/unread experience", () => {
     expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 3);
   });
 
+  it.each([0, 2])("navigates to unread history when first-open enrollment arrives after history (oldest: %s)", async oldest => {
+    visibleBottom = 350;
+    await render(<View oldest={oldest} />);
+    await update({workspaces: [], chats: [], unreadChatCount: 0, unreadMessageCount: 0});
+    await settle();
+    expect(markChatRead).not.toHaveBeenCalled();
+    await updateChat(snapshot());
+    expect(navigate).toHaveBeenCalledWith(true);
+    await settle();
+    expect(loadEarlier).toHaveBeenCalledTimes(oldest > 0 ? 1 : 0);
+    expect(markChatRead).toHaveBeenCalledTimes(oldest > 0 ? 0 : 1);
+    await render(<View />);
+    await settle();
+    expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 2);
+    expect(container.querySelector("[data-unread-divider]")).not.toBeNull();
+  });
+
   it("shows unread activity for a live reply while scrolled away from the tail", async () => {
     await render(); await update(snapshot(1, 2)); await settle();
     await render(<View latestSequence={3} sequences={[0, 1, 2, 3]} />);
@@ -190,6 +207,58 @@ describe("timeline read/unread experience", () => {
     expect(container.textContent).toContain("Unread activity");
     await settle();
     expect(markChatRead).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true].flatMap(enabled => [false, true].map(beforeEntry => ({enabled, beforeEntry}))))(
+      "waits for delayed catch-up after a preference (enabled: $enabled, before entry: $beforeEntry)", async ({enabled, beforeEntry}) => {
+    visibleBottom = 350;
+    await render(<p>Conversation list</p>);
+    await update({workspaces: [], unreadChatCount: 0, unreadMessageCount: 0, chats: []});
+    const preference: UserUnreadState = {workspaces: [], unreadChatCount: 0, unreadMessageCount: 0,
+      chats: [{workspaceId: "workspace", chatId: 1, readThroughSequence: -1, unreadMessageCount: 0,
+        notificationsEnabled: enabled, notificationsEnabledOverride: enabled, readStatePending: true}]};
+    if (beforeEntry) await updateChat(preference);
+    await render(<View oldest={2} />);
+    if (!beforeEntry) await updateChat(preference);
+    await settle();
+    expect(markChatRead).not.toHaveBeenCalled();
+    expect(loadEarlier).not.toHaveBeenCalled();
+    await updateChat(snapshot());
+    await settle();
+    expect(loadEarlier).toHaveBeenCalledOnce();
+    expect(navigate).toHaveBeenCalledWith(true);
+    expect(markChatRead).not.toHaveBeenCalled();
+    await render(<View />);
+    await settle();
+    expect(container.querySelector("[data-unread-divider]")).not.toBeNull();
+    expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 2);
+  });
+
+  it.each([0, 2])("waits for first-open catch-up after an approval was marked all read (oldest loaded: %s)", async oldest => {
+    visibleBottom = 350;
+    await render(<p>Conversation list</p>);
+    const approval: UserUnreadState = {workspaces: [], unreadChatCount: 0, unreadMessageCount: 0,
+      chats: [{workspaceId: "workspace", chatId: 1, readThroughSequence: -1, unreadMessageCount: 1,
+        notificationsEnabled: false, readStatePending: true}]};
+    await update(approval);
+    // Mark all read consumes only the approval's locally known head. Later unattended messages
+    // have not reached this User DO when the user opens the tail page.
+    await update({...approval, chats: [{...approval.chats[0], readThroughSequence: 0, unreadMessageCount: 0}]});
+    await render(<View oldest={oldest} />);
+    await settle();
+    expect(markChatRead).not.toHaveBeenCalled();
+    expect(loadEarlier).not.toHaveBeenCalled();
+    const caughtUp = snapshot(2, 0);
+    await updateChat({...caughtUp, unreadChatCount: 0, unreadMessageCount: 0,
+      chats: [{...caughtUp.chats[0], notificationsEnabled: false}]});
+    await settle();
+    expect(loadEarlier).toHaveBeenCalledTimes(oldest > 0 ? 1 : 0);
+    expect(navigate).toHaveBeenCalledWith(true);
+    expect(markChatRead).toHaveBeenCalledTimes(oldest > 0 ? 0 : 1);
+    await render(<View />);
+    await settle();
+    expect(container.querySelector("[data-unread-divider]")?.closest<HTMLElement>("[data-read-start]")?.dataset.readStart).toBe("1");
+    expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 2);
   });
 
   it("keeps a New divider for messages received while the tab was hidden", async () => {
@@ -398,6 +467,40 @@ describe("timeline read/unread experience", () => {
     expect(container.querySelector("[data-unread-divider]")?.closest<HTMLElement>("[data-read-start]")?.dataset.readStart).toBe("1");
     expect(container.textContent).toContain("automatic reading paused");
     expect(navigate).not.toHaveBeenCalledWith(true);
+  });
+
+  it("keeps a muted chat's catch-up divider while notifications are toggled", async () => {
+    const state = (enabled: boolean, readThrough = -1) => {
+      const value = snapshot(1, readThrough);
+      return {...value, unreadChatCount: 0, unreadMessageCount: 0,
+        chats: value.chats.map(chat => ({...chat, notificationsEnabled: enabled}))};
+    };
+    await render(); await update(state(false)); await settle();
+    expect(container.querySelector('[role="separator"]')?.textContent).toContain("New");
+    expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 0);
+    await updateChat(state(false, 0));
+    await updateChat(state(true, 0));
+    await updateChat(state(false, 0));
+    expect(container.querySelector("[data-unread-divider]")?.closest<HTMLElement>("[data-read-start]")?.dataset.readStart).toBe("0");
+    visibleBottom = 350;
+    await act(async () => container.querySelector("[data-viewport]")!.dispatchEvent(new Event("scroll")));
+    await settle();
+    expect(markChatRead).toHaveBeenLastCalledWith(1, 2);
+  });
+
+  it("allows marking a muted chat unread without clearing the selected divider", async () => {
+    const state = (readThrough: number) => {
+      const value = snapshot(1, readThrough);
+      return {...value, unreadChatCount: 0, unreadMessageCount: 0,
+        chats: value.chats.map(chat => ({...chat, notificationsEnabled: false}))};
+    };
+    await render(); await update(state(2)); await settle();
+    await markUnreadFrom(1);
+    expect(markChatUnread).toHaveBeenCalledExactlyOnceWith(1, 1);
+    await updateChat(state(0));
+    expect(container.querySelector("[data-unread-divider]")?.closest<HTMLElement>("[data-read-start]")?.dataset.readStart).toBe("1");
+    expect(container.textContent).toContain("automatic reading paused");
+    expect(markChatRead).not.toHaveBeenCalled();
   });
 
   it.each(["before read", "before arrival", "after arrival"])("resumes after a remote read clears a no-op unread selection (ACK: %s)", async ackAt => {

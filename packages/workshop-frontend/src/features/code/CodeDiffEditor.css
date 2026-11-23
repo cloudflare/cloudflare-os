@@ -2,8 +2,8 @@
  * Diff view styling (see CodeDiffEditor.tsx and diff/diffRenderer.ts). The editors are
  * CodeMirror 6; the shared code theme (codeTheme.ts) provides the base chrome, and
  * these rules add the diff layer: changed-line tints, the 3px change-bar gutter, char-level
- * highlights, deletion zones (block widgets plus their gutter columns), and the hatched blank
- * zones that keep the split layout aligned.
+ * highlights, deletion zones (block widgets plus their gutter columns), the hatched blank
+ * zones that keep the split layout aligned, and the overview strip beside the scrollbar.
  */
 
 :where(.gadgets-diff-surface) {
@@ -126,19 +126,14 @@
 
 /* ---- deletion zones ---- */
 
-.gadgets-diff-surface .gadgets-deleted-code-zone {
+.gadgets-diff-surface .gadgets-deleted-code-row {
+  min-height: 20px;
+  padding: 0 16px 0 12px;
   background: var(--gd-del-bg);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   font-size: 13px;
   line-height: 20px;
   color: var(--gd-fg);
-  white-space: pre;
-  overflow: hidden;
-}
-
-.gadgets-diff-surface .gadgets-deleted-code-row {
-  height: 20px;
-  padding: 0 16px 0 12px;
 }
 
 /* The deleted lines' original numbers, rendered into the line-number gutter. */
@@ -148,19 +143,6 @@
   user-select: none;
   font-variant-numeric: tabular-nums;
   font-size: 12px;
-}
-
-.gadgets-diff-surface .gadgets-deleted-num-row {
-  height: 20px;
-}
-
-/* The change-bar gutter's rows for a deletion zone. */
-.gadgets-diff-surface .gadgets-deleted-bar-zone .gadgets-deleted-num-row {
-  background: var(--gd-del-bar);
-}
-
-.gadgets-diff-surface .gadgets-deleted-bar-zone .gadgets-replacement-num-row {
-  background: var(--gd-mod-bar);
 }
 
 /* The truncation row: "..." in the gutter, an expand button in the content. */
@@ -174,7 +156,6 @@
 .gadgets-diff-surface button.gadgets-deleted-omitted-row {
   display: block;
   width: 100%;
-  height: 20px;
   border: 0;
   padding: 0 12px;
   background: var(--gd-omitted-bg);
@@ -184,4 +165,43 @@
 
 .gadgets-diff-surface button.gadgets-deleted-omitted-row:hover {
   background: var(--gd-omitted-hover-bg);
+}
+
+/* ---- overview strip (diff/diffOverview.ts) ---- */
+
+/* The marks reuse the change-bar colors above so the two read as one code. */
+
+/*
+ * Beside the vertical scrollbar; the plugin sets `right` and `bottom` to clear the scrollbars
+ * and any bottom panel (Find).
+ * It starts below the layout toggle and -N +N pill that float over the editor's top-right
+ * corner, which would otherwise cover the marks for the top of the file.
+ */
+.gadgets-diff-surface .gadgets-diff-overview {
+  position: absolute;
+  top: 48px;
+  width: 10px;
+  z-index: 1;
+  background: var(--color-kumo-base);
+  box-shadow: inset 1px 0 0 var(--color-kumo-line);
+  cursor: pointer;
+}
+
+.gadgets-diff-surface .gadgets-diff-overview-mark {
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  border-radius: 1px;
+}
+
+.gadgets-diff-surface .gadgets-diff-overview-add {
+  background: var(--gd-add-bar);
+}
+
+.gadgets-diff-surface .gadgets-diff-overview-modified {
+  background: var(--gd-mod-bar);
+}
+
+.gadgets-diff-surface .gadgets-diff-overview-delete {
+  background: var(--gd-del-bar);
 }

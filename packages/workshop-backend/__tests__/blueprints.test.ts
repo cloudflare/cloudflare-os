@@ -103,7 +103,7 @@ async function withWorkspace(fn: (workspace: Workspace) => Promise<void>): Promi
       deleteBlueprint: async () => {},
       setWorkspaceLastActive: async () => {},
     };
-    impl.users = { idFromString: (id: string) => id, get: () => owner };
+    impl.users = { idFromString: (id: string) => id, idFromName: () => OWNER_USER_ID, get: () => owner };
     // Disposed with the session: the session holds a duplicate of the stub until then.
     using notifyClosed = new NativeRpcStub<() => void>(() => {});
     using client = await instance.open(OWNER_USER_ID, OWNER.id, notifyClosed);
@@ -1201,6 +1201,7 @@ describe("applying a blueprint to a gadget", () => {
       let meta = impl.chatMetaForClient(impl.storage.chatMeta.get(chatId));
       expect(meta).toMatchObject({
         title: "Update from blueprint: Alice's", proposedChangeWorkpieces: [before.id],
+        chatToken: expect.stringMatching(/^[0-9a-f-]{36}$/),
       });
       expect(meta.activeAgent).toBeUndefined();
       expect([...impl.storage.chats.list({ prefix: `${keyString(chatId)}.` })])

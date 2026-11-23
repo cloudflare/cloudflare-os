@@ -2,10 +2,10 @@
 // placeholders under stable names it can pass back to `setText`, its other text and tables, its
 // pictures, and its speaker notes, all as Markdown.
 
-import { PLAIN, escapeLineStarts, joinLines, renderInlines, renderTable, safeLinkTarget, type Inline, type TextStyle } from "./markdown";
-import { parsePart } from "./ooxml";
+import { PLAIN, escapeLineStarts, joinLines, renderInlines, renderTable, safeLinkTarget, type Inline, type TextStyle } from "@gadgets/office-content/markdown";
+import { parsePart } from "@gadgets/office-content/ooxml";
 import { Deck, relKind } from "./pptx-deck";
-import { attribute, childAt, childElements, firstChild, firstDescendant, textContent, type XmlElement } from "./xml";
+import { attribute, childAt, childElements, firstChild, firstDescendant, textContent, type XmlElement } from "@gadgets/office-content/xml";
 
 /** One slide, as `describePptx` reports it. */
 export interface SlideInfo {

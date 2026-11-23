@@ -1,17 +1,23 @@
 import { abortAllDurableObjects, env } from "cloudflare:test";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { googleDocActionTab } from "../../src/google";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ActionField } from "@gadgets/workshop-shared/gatekeeper";
+import { googleDocActionTab } from "../../src/doc-actions";
 import { MARKDOWN_RENDERING_VERSION } from "../../src/markdown-converter";
 import { officeFileError } from "../../src/office-conversion";
+import { DRIVE_WRITES_GRANT, GOOGLE_DRIVE_RESOURCE } from "../../src/resources";
 import type { GoogleDocsTab } from "../../src/docs-api";
+import type { GoogleDocSession } from "../../src/docs-types";
 import { buildTab } from "../doc-fixture";
+import { DriveFiles, DOC_MIME as DRIVE_DOC_MIME, FOLDER_MIME } from "../drive-files";
+import { serveFakes, type ProviderFake } from "../slides-provider";
+import { GoogleDocEditSessionImpl } from "../../src/docs";
 
 /** Every write coordinate names the tab it applies to; tab bodies index independently. */
 type DocCoordinate = { tabId?: string };
 
 type BatchRequest = {
   createNamedRange?: { name: string; range: DocCoordinate };
-  deleteNamedRange?: { namedRangeId: string };
+  deleteNamedRange?: { namedRangeId: string; tabsCriteria?: { tabIds: string[] } };
   insertText?: { location: DocCoordinate & { index: number }; text: string };
   deleteContentRange?: { range: DocCoordinate & { startIndex: number; endIndex: number } };
   updateParagraphStyle?: {
@@ -31,6 +37,32 @@ type BatchRequest = {
     textStyle?: { link?: { url: string } };
     fields?: string;
   };
+  insertComment?: { content: string; range: DocCoordinate & { startIndex: number; endIndex: number } };
+  addCommentReply?: {
+    commentId?: string;
+    suggestionId?: string;
+    post: { content?: string; commentAction?: "RESOLVE" | "REOPEN" };
+  };
+  addDocumentTab?: { tabProperties: { title?: string; parentTabId?: string; index?: number } };
+};
+
+/** One post of a comment thread, as Docs returns it. */
+type ModelPost = {
+  postId: string;
+  content: string;
+  author: { displayName: string; me: boolean };
+  createTime: string;
+  commentAction?: "RESOLVE" | "REOPEN";
+};
+
+/** One comment thread, as Docs returns it: `anchorId` only when it is attached to text. */
+type ModelThread = {
+  commentId: string;
+  anchorId?: string;
+  plainTextQuote?: string;
+  status: "OPEN" | "RESOLVED";
+  headPost: ModelPost;
+  replies: ModelPost[];
 };
 
 type ModelListItem = { id: string; preset: string };
@@ -90,13 +122,19 @@ const OFFICE_REFUSAL =
 
 /**
  * A batch either carries the edit and its marker, or deletes a marker on its own; or a create; or
- * a read, whose answer is fixed when it arrives, so holding it delivers what was then current.
+ * a read, whose answer is fixed when it arrives, so holding it delivers what was then current;
+ * Drive's batched read of the scope a binding proves an edit's file in.
+ * `applied` holds a content batch after Google has applied it, before it answers.
  */
-type RequestKind = "content" | "cleanup" | "create" | "read";
+type RequestKind = "content" | "cleanup" | "create" | "read" | "applied" | "scope";
 
 class DocsModel {
+  /** The document this model is, which a fake serving several answers by. */
+  documentId = "doc-1";
   cleanupFailures = 0;
   ambiguousContentResponses = 0;
+  /** How many content batches to fail before Google applies them, as a dropped connection can. */
+  unsentContentRequests = 0;
   contentBatches = 0;
   maxMarkerCount = 0;
   /** Google withholds `revisionId` from a caller without edit access. */
@@ -121,8 +159,11 @@ class DocsModel {
   driveModifiedTime = "2026-01-02T03:04:05Z";
   /** What Drive answers with instead of that time, if anything. */
   driveFailure: { status: number; reason?: string } | "malformed" | null = null;
-  /** The file's type as Drive reports it, when it reports one. */
-  driveMimeType: string | undefined;
+  /**
+   * The file's type as Drive reports it, when it reports one: a Drive binding opens the file only
+   * as the type it is, so a run through Drive has Drive report it.
+   */
+  driveMimeType: string | undefined = run.drive ? DOC_MIME : undefined;
   /** Whether Google refuses every content edit as it refuses one to an Office file. */
   refusesEdits = false;
   readonly deletedMarkerIds: string[] = [];
@@ -132,6 +173,21 @@ class DocsModel {
   readonly markerTabIds: string[] = [];
   /** Every tab in preorder; the first is the one a single-tab document has. */
   readonly tabs: ModelTab[] = [{ id: MAIN_TAB, title: "Main", text: "", links: [] }];
+  /** The Doc's comment threads, in the order Docs lists them. */
+  readonly threads: ModelThread[] = [];
+  /** Suggestions made in Suggesting mode, with the notes posted on them. */
+  readonly suggestions: { suggestionId: string; summaryText: string; notes: string[] }[] = [];
+  /** Whether Drive says the account may comment; a viewer is also refused the threads read. */
+  canComment = true;
+  /** Whether Drive says the account may edit the Doc, which a Drive binding's edits are held to. */
+  canEdit = true;
+  /** Comment threads reads, and comment writes (comments, replies, suggestions, notes). */
+  threadReads = 0;
+  commentWrites = 0;
+  /** How many comment writes to apply and then answer with no response. */
+  lostCommentResponses = 0;
+  #nextPostId = 1;
+  #nextTabId = 1;
   #revision = 1;
   #nextMarkerId = 1;
   #nextListId = 1;
@@ -248,6 +304,11 @@ class DocsModel {
   async fetch(input: string | URL | Request, init?: RequestInit): Promise<Response> {
     let url = new URL(input instanceof Request ? input.url : input.toString());
     this.fetches++;
+    if (url.hostname === "www.googleapis.com" && url.pathname.startsWith("/batch/")) {
+      this.driveFetches++;
+      await this.#hold("scope");
+      return this.#scopeNodes();
+    }
     if (url.hostname === "www.googleapis.com") {
       this.driveFetches++;
       if (this.driveFailure === "malformed") {
@@ -279,6 +340,10 @@ class DocsModel {
       }
       return Response.json({ documentId: "doc-1" });
     }
+    if (!url.pathname.endsWith(":batchUpdate") &&
+        url.searchParams.get("commentsViewMode") === "COMMENTS_VIEW_MODE_INCLUDED") {
+      return this.#threadsRead(url);
+    }
     if (!url.pathname.endsWith(":batchUpdate")) {
       let fields = url.searchParams.get("fields");
       if (fields === null) {
@@ -295,8 +360,12 @@ class DocsModel {
 
     let body = JSON.parse(String(init?.body)) as {
       requests: BatchRequest[];
-      writeControl?: { requiredRevisionId?: string };
+      writeControl?: { requiredRevisionId?: string; writeMode?: "SUGGEST" };
     };
+    let first = body.requests[0];
+    if (first?.insertComment || first?.addCommentReply || body.writeControl?.writeMode === "SUGGEST") {
+      return this.#commentWrite(body);
+    }
     let isDelete = body.requests.length === 1 && !!body.requests[0].deleteNamedRange;
     await this.#hold(isDelete ? "cleanup" : "content");
     if (!isDelete && this.refusesEdits) {
@@ -304,13 +373,34 @@ class DocsModel {
         error: { code: 400, status: "FAILED_PRECONDITION", message: OFFICE_REFUSAL },
       }, { status: 400 });
     }
+    if (!isDelete && this.unsentContentRequests > 0) {
+      this.unsentContentRequests--;
+      throw new Error("connection dropped before the request reached Google");
+    }
     if (isDelete && this.cleanupFailures > 0) {
       this.cleanupFailures--;
       throw new Error("cleanup failed");
     }
+    // Once there are several tabs, Google finds a named range only in the tabs a deletion names.
+    let deletion = isDelete ? body.requests[0].deleteNamedRange! : undefined;
+    let markerTab = deletion && this.markers.get(deletion.namedRangeId)?.tabId;
+    if (deletion && markerTab && this.tabs.length > 1 &&
+        !deletion.tabsCriteria?.tabIds.includes(markerTab)) {
+      return Response.json({ error: { code: 400, status: "INVALID_ARGUMENT",
+        message: `Invalid requests[0].deleteNamedRange: No named range with ID: ${deletion.namedRangeId}` } },
+        { status: 400 });
+    }
     if (body.writeControl?.requiredRevisionId &&
         body.writeControl.requiredRevisionId !== `revision-${this.#revision}`) {
       return Response.json({ error: { code: 400, message: "revision mismatch" } }, { status: 400 });
+    }
+    // Google checks a batch whole before it applies any of it.
+    for (let { addDocumentTab } of body.requests) {
+      let refusal = addDocumentTab && this.#addTabRefusal(addDocumentTab.tabProperties);
+      if (refusal) {
+        return Response.json(
+          { error: { code: 400, status: "INVALID_ARGUMENT", message: refusal } }, { status: 400 });
+      }
     }
 
     let replies: unknown[] = [];
@@ -320,6 +410,11 @@ class DocsModel {
         this.markers.delete(request.deleteNamedRange.namedRangeId);
         this.deletedMarkerIds.push(request.deleteNamedRange.namedRangeId);
         replies.push({});
+        continue;
+      }
+      if (request.addDocumentTab) {
+        hasContent = true;
+        replies.push({ addDocumentTab: { tabProperties: this.#addTab(request.addDocumentTab.tabProperties) } });
         continue;
       }
 
@@ -376,6 +471,7 @@ class DocsModel {
     if (hasContent) this.contentBatches++;
     this.#revision++;
     this.#recordMarkerCount();
+    if (hasContent) await this.#hold("applied");
 
     if (hasContent && this.ambiguousContentResponses > 0) {
       this.ambiguousContentResponses--;
@@ -383,6 +479,166 @@ class DocsModel {
     }
     return Response.json({
       replies,
+      writeControl: { requiredRevisionId: `revision-${this.#revision}` },
+    });
+  }
+
+  /** Why Google would refuse to add a tab placed so, if it would. */
+  #addTabRefusal({ parentTabId, index }: { parentTabId?: string; index?: number }): string | undefined {
+    if (parentTabId !== undefined && !this.tabs.some(tab => tab.id === parentTabId)) {
+      return `A parent tab with ID "${parentTabId}" does not exist.`;
+    }
+    let children = this.tabs.filter(tab => tab.parentId === parentTabId).length;
+    if (index !== undefined && index > children) {
+      return "Index must be less than or equal to the number of tabs within the specified parent tab.";
+    }
+  }
+
+  /** Adds an empty tab as `addDocumentTab` does, returning its properties as Google replies. */
+  #addTab({ title, parentTabId, index }: { title?: string; parentTabId?: string; index?: number }) {
+    let siblings = this.tabs.filter(tab => tab.parentId === parentTabId);
+    let at = index ?? siblings.length;
+    let tab: ModelTab = {
+      id: `t.added-${this.#nextTabId++}`, title: title || `Tab ${this.tabs.length + 1}`,
+      ...parentTabId === undefined ? {} : { parentId: parentTabId }, text: "", links: [],
+    };
+    // Siblings keep the order of this list, so the tab goes before the one it displaces.
+    if (at < siblings.length) this.tabs.splice(this.tabs.indexOf(siblings[at]), 0, tab);
+    else this.tabs.push(tab);
+    return {
+      tabId: tab.id, title: tab.title, index: at,
+      ...parentTabId === undefined ? {} : { parentTabId },
+    };
+  }
+
+  /** A comment made in the editor or through Drive, by someone else unless `me`. */
+  addThread(content: string, { quote, resolved = false, me = false, author = "Ada Lovelace" }: {
+    quote?: string; resolved?: boolean; me?: boolean; author?: string;
+  } = {}): ModelThread {
+    let id = `doco.t${this.#nextPostId++}`;
+    let thread: ModelThread = {
+      commentId: id,
+      ...quote === undefined ? {} : { anchorId: `kix.${id}`, plainTextQuote: quote },
+      status: resolved ? "RESOLVED" : "OPEN",
+      headPost: this.#post(content, me, id, author),
+      replies: [],
+    };
+    this.threads.push(thread);
+    return thread;
+  }
+
+  thread(commentId: string): ModelThread {
+    let thread = this.threads.find(candidate => candidate.commentId === commentId);
+    if (!thread) throw new Error(`No comment ${commentId}`);
+    return thread;
+  }
+
+  #post(content: string, me: boolean, postId?: string, author = "Me"): ModelPost {
+    return {
+      postId: postId ?? `doco.p${this.#nextPostId++}`, content: content.trim(),
+      author: { displayName: me ? "Me" : author, me }, createTime: new Date().toISOString(),
+    };
+  }
+
+  /** Drive's batch answer for the Doc's scope node: whether the account may comment on it. */
+  #scopeNodes(): Response {
+    let boundary = "batch_boundary";
+    let body = {
+      id: "doc-1", mimeType: "application/vnd.google-apps.document", trashed: false,
+      capabilities: { canComment: this.canComment, canEdit: this.canEdit },
+    };
+    let text = [
+      `--${boundary}`, "Content-Type: application/http", "Content-ID: <response-item-0>", "",
+      "HTTP/1.1 200 OK", "Content-Type: application/json", "", JSON.stringify(body), "",
+      `--${boundary}--`, "",
+    ].join("\r\n");
+    return new Response(text, { headers: { "Content-Type": `multipart/mixed; boundary=${boundary}` } });
+  }
+
+  /** `documents.get` with comments included, as Google answers it. */
+  #threadsRead(url: URL): Response {
+    if (url.searchParams.get("suggestionsViewMode") !== "SUGGESTIONS_INLINE") {
+      return Response.json({ error: { code: 400, status: "INVALID_ARGUMENT",
+        message: "Comments may only be explicitly included if inline suggestions are also explicitly requested." } },
+        { status: 400 });
+    }
+    if (!this.canComment) {
+      return Response.json({ error: { code: 403, status: "PERMISSION_DENIED",
+        message: "You do not have permission to access the document suggestions." } }, { status: 403 });
+    }
+    let fields = url.searchParams.get("fields");
+    if (fields?.startsWith("documentId,comments(")) {
+      this.threadReads++;
+      return Response.json({ documentId: "doc-1", ...this.threads.length ? { comments: this.threads } : {} });
+    }
+    this.documentFetches++;
+    return Response.json({
+      ...this.#document(),
+      ...this.threads.length ? { comments: this.threads } : {},
+      suggestions: this.suggestions.map(({ suggestionId, summaryText, notes }) => ({
+        suggestionId, summaryText,
+        headPost: { content: "", author: { me: true }, createTime: new Date().toISOString() },
+        replies: notes.map(content => ({ content, author: { me: true }, createTime: new Date().toISOString() })),
+      })),
+    });
+  }
+
+  /** A batch of comment writes, or one suggestion, as Docs applies it. */
+  #commentWrite(body: {
+    requests: BatchRequest[]; writeControl?: { requiredRevisionId?: string; writeMode?: "SUGGEST" };
+  }): Response {
+    let refuse = (code: number, status: string, message: string) =>
+      Response.json({ error: { code, status, message } }, { status: code });
+    if (body.writeControl?.requiredRevisionId &&
+        body.writeControl.requiredRevisionId !== `revision-${this.#revision}`) {
+      return refuse(400, "INVALID_ARGUMENT", "The required revision ID does not match the latest revision.");
+    }
+    let replies: unknown[] = [];
+    let suggestionResponses: unknown[] = [];
+    if (body.writeControl?.writeMode === "SUGGEST") {
+      let [{ deleteContentRange }, insert] = body.requests;
+      let { startIndex, endIndex, tabId } = deleteContentRange!.range;
+      let old = this.#tab(tabId!).text.slice(startIndex - 1, endIndex - 1);
+      let id = `suggest.s${this.suggestions.length + 1}`;
+      this.suggestions.push({
+        suggestionId: id, notes: [],
+        summaryText: insert?.insertText ? `Replace: “${old}” with “${insert.insertText.text}”` : `Delete: “${old}”`,
+      });
+      suggestionResponses.push({ createdSuggestionIds: [id] });
+    }
+    for (let request of body.requests) {
+      if (request.insertComment) {
+        let { content, range } = request.insertComment;
+        let quote = this.#tab(range.tabId!).text.slice(range.startIndex - 1, range.endIndex - 1);
+        let thread = this.addThread(content, { quote, me: true });
+        replies.push({ insertComment: { commentThread: { commentId: thread.commentId } } });
+      } else if (request.addCommentReply?.suggestionId) {
+        let suggestion = this.suggestions.find(
+          candidate => candidate.suggestionId === request.addCommentReply!.suggestionId);
+        if (!suggestion) return refuse(404, "NOT_FOUND", "No such suggestion.");
+        suggestion.notes.push(request.addCommentReply.post.content ?? "");
+        replies.push({});
+      } else if (request.addCommentReply) {
+        let { commentId, post } = request.addCommentReply;
+        let thread = this.threads.find(candidate => candidate.commentId === commentId);
+        if (!thread) return refuse(404, "NOT_FOUND", `Comment with ID ${commentId} does not exist.`);
+        if (!thread.anchorId) return refuse(400, "INVALID_ARGUMENT", "An error occurred while saving comments.");
+        let made = this.#post(post.content ?? "", true);
+        let action = post.commentAction ?? (thread.status === "RESOLVED" ? "REOPEN" : undefined);
+        if (action) made.commentAction = action;
+        thread.status = action === "RESOLVE" ? "RESOLVED" : "OPEN";
+        thread.replies.push(made);
+        replies.push({ addCommentReply: { post: made } });
+      }
+    }
+    this.commentWrites++;
+    this.#revision++;
+    if (this.lostCommentResponses > 0) {
+      this.lostCommentResponses--;
+      throw new Error("comment response lost");
+    }
+    return Response.json({
+      documentId: "doc-1", replies, suggestionResponses, commentUpdateState: "ALL_SAVED",
       writeControl: { requiredRevisionId: `revision-${this.#revision}` },
     });
   }
@@ -688,7 +944,7 @@ class DocsModel {
 
   #document() {
     return {
-      documentId: "doc-1",
+      documentId: this.documentId,
       title: "Test document",
       ...this.editable ? { revisionId: `revision-${this.#revision}` } : {},
       tabs: this.tabs.filter(tab => tab.parentId === undefined)
@@ -697,8 +953,142 @@ class DocsModel {
   }
 }
 
-function hooks() {
+/**
+ * How a suite reaches doc-1: bound directly, or opened from a read and write Drive file binding,
+ * whose facets the hooks tell apart by their `drive:` prefix. Through Drive, every card names the
+ * file first, every kind's label says it covers each Doc the binding reaches, a fresh session
+ * opens the file before anything else, and the read that prepares an edit is authorized; `hooks()`
+ * checks each and takes it off what it reports, so the suite's assertions hold for both runs.
+ * What is left to differ is a parameter of the run.
+ */
+type Run = {
+  name: string;
+  drive: boolean;
+  /** The refusal of an approval while edit `earlier` waits before edit `later`. */
+  outOfOrder(earlier: number, later: number): string;
+  /**
+   * Checks what approving an applied edit again answers: a Doc's own store has forgotten it, and a
+   * Drive binding's journal remembers it was applied and settles (brief §3.9).
+   */
+  appliedAgain(answer: string | null): void;
+  /**
+   * What approving an edit that could not be applied answers after the first time: a Doc's own
+   * store keeps the reason it recorded, and the journal the error the approval failed with.
+   */
+  unapplied(reason: string): string;
+};
+
+const STANDALONE: Run = {
+  name: "bound directly",
+  drive: false,
+  outOfOrder: (earlier, later) =>
+    `Google Doc edits must be approved in order. Approve earlier edit ${earlier} before edit ${later}.`,
+  appliedAgain: answer => expect(answer).toMatch(/Unknown pending/),
+  unapplied: reason => `Pending Google Doc edit could not be applied: ${reason}`,
+};
+
+const THROUGH_DRIVE: Run = {
+  name: "opened from a read and write Drive binding",
+  drive: true,
+  outOfOrder: () => "Changes to one file apply in the order they were queued. Approve or reject " +
+    "the earlier change to this file first.",
+  appliedAgain: answer => expect(answer).toBeNull(),
+  unapplied: reason => reason,
+};
+
+/**
+ * The runs of a block that asserts what the engine does. A block runs bound directly alone when it
+ * is about what only a Doc's own binding has: metadata dated by the revisions it observed, edits
+ * stored in its own store under an earlier rendering or before tabs, creating a Doc, an Office
+ * file connected as a Doc, its comments, and its stored layout. Within a block that runs twice, a
+ * test that reads or writes the bound Doc's storage, or counts the fetches of its stored snapshot,
+ * runs bound directly alone, and says why where that is not the reason.
+ */
+const RUNS = [STANDALONE, THROUGH_DRIVE];
+
+/** The run the current test is in. */
+let run: Run = STANDALONE;
+
+const DOC_MIME = "application/vnd.google-apps.document";
+const DRIVE_GRANTED = [GOOGLE_DRIVE_RESOURCE.urlPattern, DRIVE_WRITES_GRANT];
+const DRIVE_LABEL = ", in any Doc this connection reaches";
+const DRIVE_OPEN = "Check current metadata for Drive file doc-1 and open it as a Google Doc.";
+const DRIVE_PREPARE = /^Read tab .* to change it\.$/;
+
+/** Runs the tests of the enclosing describe block in `current`. */
+function inRun(current: Run): void {
+  beforeEach(async () => {
+    run = current;
+    if (current.drive) await rawHooks().setDriveGrants(DRIVE_GRANTED);
+  });
+  afterEach(async () => {
+    if (current.drive) {
+      await rawHooks().setDriveGrants([]);
+      // Ended, so the facets of a second run do not add to what one activation of the hooks holds.
+      for (let facet of driveFacets) await rawHooks().restartDrive(facet);
+      driveFacets.clear();
+    }
+    run = STANDALONE;
+  });
+}
+
+function rawHooks() {
   return env.TEST_HOOKS.getByName("hooks");
+}
+
+/** The facets a test in a run through Drive reached. */
+const driveFacets = new Set<string>();
+
+/** The Doc hooks that name a facet first. */
+const FACET_HOOKS = new Set([
+  "submitAppend", "submitReplace", "submitEdit", "callsDuringTableRead", "readMetadata",
+  "readContent", "listTabs", "applyAction", "rejectAction", "callDoc", "describe",
+  "docAutoApprovable",
+]);
+
+/** `fields` without the two a Drive binding's card names the file by, which it checks. */
+function withoutFileFields(fields: ActionField[]): ActionField[] {
+  if (fields.length === 0) return fields;
+  let [file, name, ...rest] = fields;
+  expect([file, name]).toMatchObject([
+    { label: "File", value: "doc-1" }, { label: "File name", value: "Test document" },
+  ]);
+  return rest;
+}
+
+function hooks() {
+  let stub = rawHooks();
+  if (!run.drive) return stub;
+  return new Proxy(stub, {
+    get(target, property) {
+      let value = Reflect.get(target, property);
+      if (property === "lastActionFields") {
+        return Promise.resolve(target.lastActionFields).then(withoutFileFields);
+      }
+      if (property === "lastActionVerdict") {
+        return Promise.resolve(target.lastActionVerdict).then(verdict => {
+          let { actionKind } = verdict;
+          if (!actionKind) return verdict;
+          expect(actionKind.label.endsWith(DRIVE_LABEL)).toBe(true);
+          return { ...verdict, actionKind: { ...actionKind, label: actionKind.label.slice(0, -DRIVE_LABEL.length) } };
+        });
+      }
+      if (property === "lastObservations") {
+        return Promise.resolve(target.lastObservations).then(observations =>
+          observations.filter(observed => observed !== DRIVE_OPEN && !DRIVE_PREPARE.test(observed)));
+      }
+      if (typeof property === "string" && FACET_HOOKS.has(property)) {
+        // Called on the stub itself: an RPC method's own `call` would be a remote property.
+        return (facet: string, ...args: unknown[]) => {
+          driveFacets.add(`drive:${facet}`);
+          // A plain promise, so a rejection the test handles is not reported again unhandled.
+          return Promise.resolve((target as unknown as Record<string, (...all: unknown[]) => unknown>)[
+            property](`drive:${facet}`, ...args));
+        };
+      }
+      return value;
+    },
+  }) as typeof stub;
 }
 
 function markdownField(label: string, value: string) {
@@ -711,11 +1101,18 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("Google Doc auto-approval", () => {
+const ADD_DOCUMENT_TAB = { tag: "addDocumentTab", label: "New document tabs" };
+
+describe.each(RUNS)("Google Doc auto-approval, $name", r => {
+  inRun(r);
+
   const EDIT_DOCUMENT = { tag: "editDocument", label: "Document edits" };
 
-  it("reports document edits as the one auto-approvable kind", async () => {
-    expect(await hooks().docAutoApprovable("verdict-kinds")).toEqual([EDIT_DOCUMENT]);
+  // A Drive binding's catalog is its own (drive-editors.test.ts).
+  it.skipIf(r.drive)("reports document edits, new tabs and Doc comments as its auto-approvable kinds", async () => {
+    expect(await hooks().docAutoApprovable("verdict-kinds")).toEqual([
+      EDIT_DOCUMENT, ADD_DOCUMENT_TAB, { tag: "docComments", label: "Google Doc comments" },
+    ]);
   });
 
   it("lets appending and replacing text be auto-approved as document edits", async () => {
@@ -732,7 +1129,9 @@ describe("Google Doc auto-approval", () => {
   });
 });
 
-describe("Google Doc tables", () => {
+describe.each(RUNS)("Google Doc tables, $name", r => {
+  inRun(r);
+
   it("returns table cells with their row structure", async () => {
     let docs = new DocsModel();
     docs.setTable(MAIN_TAB, "Before", [["Owner", "Status"], ["Alice", "Ready"]], "After");
@@ -835,7 +1234,9 @@ describe("Google Doc tables", () => {
   });
 });
 
-describe("Google Doc structured elements", () => {
+describe.each(RUNS)("Google Doc structured elements, $name", r => {
+  inRun(r);
+
   it("rejects a rich-link URL edit before requesting approval", async () => {
     let docs = new DocsModel();
     docs.setBody(MAIN_TAB, buildTab([{ runs: [
@@ -881,7 +1282,9 @@ describe("Google Doc structured elements", () => {
   });
 });
 
-describe("Google Doc list edits", () => {
+describe.each(RUNS)("Google Doc list edits, $name", r => {
+  inRun(r);
+
   it("prepends an item to the existing numbered list", async () => {
     let docs = new DocsModel();
     docs.setNumberedList(MAIN_TAB, ["Existing"]);
@@ -1083,7 +1486,9 @@ describe("Google Doc list edits", () => {
   });
 });
 
-describe("Google Doc write receipts", () => {
+describe.each(RUNS)("Google Doc write receipts, $name", r => {
+  inRun(r);
+
   it("applies content once and immediately deletes its exact marker", async () => {
     let docs = new DocsModel();
     docs.install();
@@ -1095,7 +1500,7 @@ describe("Google Doc write receipts", () => {
     expect(docs.contentBatches).toBe(1);
     expect(docs.deletedMarkerIds).toEqual(["marker-1"]);
     expect(docs.markers.size).toBe(0);
-    expect(await hooks().applyAction("normal", actionId)).toMatch(/Unknown pending/);
+    run.appliedAgain(await hooks().applyAction("normal", actionId));
   });
 
   it("replays a queued edit after applying an escaped parenthesized link", async () => {
@@ -1406,7 +1811,7 @@ describe("Google Doc write receipts", () => {
     );
   });
 
-  it("drops an append stored under an earlier Markdown version", async () => {
+  it.skipIf(r.drive)("drops an append stored under an earlier Markdown version", async () => {
     let docs = new DocsModel();
     docs.setText(MAIN_TAB, "base");
     docs.install();
@@ -1426,7 +1831,7 @@ describe("Google Doc write receipts", () => {
     expect(await hooks().readContent(facet)).toBe("base\n");
   });
 
-  it("stores one copy of an append payload", async () => {
+  it.skipIf(r.drive)("stores one copy of an append payload", async () => {
     let docs = new DocsModel();
     docs.install();
     let facet = "append-storage";
@@ -1441,7 +1846,7 @@ describe("Google Doc write receipts", () => {
     await hooks().rejectAction(facet, actionId);
   });
 
-  it("rejects an oversized UTF-8 append before reading the document", async () => {
+  it.skipIf(r.drive)("rejects an oversized UTF-8 append before reading the document", async () => {
     let docs = new DocsModel();
     docs.install();
 
@@ -1452,7 +1857,7 @@ describe("Google Doc write receipts", () => {
     expect(await hooks().lastActionDescription).toBe("");
   });
 
-  it("rejects an oversized aggregate replacement before reading the document", async () => {
+  it.skipIf(r.drive)("rejects an oversized aggregate replacement before reading the document", async () => {
     let docs = new DocsModel();
     docs.install();
 
@@ -1463,7 +1868,7 @@ describe("Google Doc write receipts", () => {
     expect(await hooks().lastActionDescription).toBe("");
   });
 
-  it("rejects complex Markdown before reading the document", async () => {
+  it.skipIf(r.drive)("rejects complex Markdown before reading the document", async () => {
     let docs = new DocsModel();
     docs.install();
 
@@ -1565,10 +1970,11 @@ describe("Google Doc write receipts", () => {
 
     expect(docs.contentBatches).toBe(1);
     expect(docs.markers.size).toBe(0);
-    expect(await hooks().applyAction("ambiguous", actionId)).toMatch(/Unknown pending/);
+    run.appliedAgain(await hooks().applyAction("ambiguous", actionId));
   });
 
-  it("cleans a retained receipt after restart before the next write", async () => {
+  // Restarts every object, the Drive binding's receipt included (drive-editors.test.ts).
+  it.skipIf(r.drive)("cleans a retained receipt after restart before the next write", async () => {
     let docs = new DocsModel();
     docs.cleanupFailures = 1;
     docs.install();
@@ -1636,7 +2042,9 @@ describe("Google Doc write receipts", () => {
 
   // The overseer marks a record approved only after applyAction() returns, so a second approval of
   // one action can arrive while the first is mid-write. It must not reach the provider at all.
-  it("holds a second approval of one action behind the first", async () => {
+  // Not run through Drive: a Docs request held by a promise the test releases hangs a Drive
+  // binding's apply in this harness, though a timer's does not (see the Drive block's run).
+  it.skipIf(r.drive)("holds a second approval of one action behind the first", async () => {
     let docs = new DocsModel();
     docs.install();
     let actionId = await hooks().submitAppend("concurrent", "first");
@@ -1649,7 +2057,7 @@ describe("Google Doc write receipts", () => {
     write.release();
 
     expect(await first).toBeNull();
-    expect(await second).toMatch(/Unknown pending/);
+    run.appliedAgain(await second);
     expect(docs.contentBatches).toBe(1);
     expect(docs.text().match(/first/g)).toHaveLength(1);
     expect(docs.markers.size).toBe(0);
@@ -1657,7 +2065,9 @@ describe("Google Doc write receipts", () => {
 
   // Between the handoff and the marker cleanup the edit is committed and its action is gone, so
   // nothing is left to overlay the snapshot the submission cached: it must not be served.
-  it("stops serving the pre-write snapshot once the write is committed", async () => {
+  // Not run through Drive: a Docs request held by a promise the test releases hangs a Drive
+  // binding's apply in this harness, though a timer's does not (see the Drive block's run).
+  it.skipIf(r.drive)("stops serving the pre-write snapshot once the write is committed", async () => {
     let docs = new DocsModel();
     docs.install();
     let actionId = await hooks().submitAppend("cleanup-read", "first");
@@ -1674,7 +2084,9 @@ describe("Google Doc write receipts", () => {
 
   // A read that asked Google before the write landed gets the old document back after the handoff
   // removed the edit from the queue: replayed over, it would show the approved edit missing.
-  it("refetches a read that Google answered before a write landed", async () => {
+  // Not run through Drive: a Docs request held by a promise the test releases hangs a Drive
+  // binding's apply in this harness, though a timer's does not (see the Drive block's run).
+  it.skipIf(r.drive)("refetches a read that Google answered before a write landed", async () => {
     let docs = new DocsModel();
     docs.install();
     let actionId = await hooks().submitAppend("stale-read", "first");
@@ -1823,7 +2235,9 @@ function nestedDocs(): DocsModel {
   return docs;
 }
 
-describe("Google Doc tab isolation", () => {
+describe.each(RUNS)("Google Doc tab isolation, $name", r => {
+  inRun(r);
+
   it("lists the tab tree and appends only to the tab it names", async () => {
     let docs = nestedDocs();
 
@@ -1845,6 +2259,20 @@ describe("Google Doc tab isolation", () => {
     expect(docs.text("metrics")).toContain("added");
     expect(docs.text(MAIN_TAB)).toBe("shared");
     expect(docs.text("details")).toBe("shared");
+  });
+
+  it("removes each marker from its tab, so the next edit applies too", async () => {
+    let docs = nestedDocs();
+    let first = await hooks().submitAppend("tabs-cleanup", "one", "metrics");
+    let second = await hooks().submitAppend("tabs-cleanup", "two", MAIN_TAB);
+
+    expect(await hooks().applyAction("tabs-cleanup", first)).toBeNull();
+    expect(docs.markers.size).toBe(0);
+    expect(await hooks().applyAction("tabs-cleanup", second)).toBeNull();
+    expect(docs.markers.size).toBe(0);
+    expect(docs.deletedMarkerIds).toHaveLength(2);
+    expect(docs.text("metrics")).toBe("shared\none");
+    expect(docs.text(MAIN_TAB)).toBe("shared\ntwo");
   });
 
   it("replaces identical text in the selected tab only", async () => {
@@ -1919,9 +2347,9 @@ describe("Google Doc tab isolation", () => {
 
     // Approving it again must not report success for a write that never happened, and must not
     // decay into "unknown action" either — rejecting is the way out.
-    let repeated = "Pending Google Doc edit could not be applied: " +
+    let repeated = run.unapplied(
       'appendText: no tab with ID "metrics" exists in this document. ' +
-      "Call listTabs() to refresh the tab list.";
+      "Call listTabs() to refresh the tab list.");
     expect(await hooks().applyAction("tabs-deleted", actionId)).toBe(repeated);
     expect(await hooks().applyAction("tabs-deleted", actionId)).toBe(repeated);
 
@@ -2039,6 +2467,388 @@ describe("Google Doc edits stored before tab support", () => {
   });
 });
 
+/** Queues `addTab(title, options)` on `facet`, returning its provisional ID and action. */
+async function addTab(facet: string, title: string, options?: { parentTabId?: string; index?: number }) {
+  let call = await hooks().callDoc(facet, "addTab", options ? [title, options] : [title]);
+  if (call.error !== undefined) throw new Error(call.error);
+  return { tabId: call.value as string, actionId: call.actionId!, action: call.action! };
+}
+
+describe("adding a Google Doc tab", () => {
+  it("queues an empty tab that edits fill before it is added, and applies them in order", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "Intro");
+    docs.install();
+
+    let added = await addTab("add-tab", "Notes");
+    expect(added.tabId).toMatch(/^pending-tab-[0-9a-f-]{36}$/);
+    expect(added.action).toMatchObject({
+      title: "Add tab to Google Doc",
+      description: "Add a new, empty tab at the top level, after the tabs already there.",
+      fields: [{ label: "Title", kind: "inline", value: "Notes" }],
+      actionKind: ADD_DOCUMENT_TAB,
+      autoApprovable: true,
+      implementsRevert: false,
+    });
+    expect(await hooks().listTabs("add-tab")).toEqual([
+      { id: MAIN_TAB, title: "Main", index: 0, nestingLevel: 0 },
+      { id: added.tabId, title: "Notes", index: 1, nestingLevel: 0 },
+    ]);
+    expect(await hooks().readContent("add-tab", added.tabId)).toBe("\n");
+    let appendId = await hooks().submitAppend("add-tab", "Hello", added.tabId);
+    // The approval names the tab by its title: its provisional ID names nothing the user can find.
+    expect(await hooks().lastActionDescription)
+      .toBe('Append content to the end of tab "Notes" (new tab).');
+    expect(await hooks().readContent("add-tab", added.tabId)).toBe("Hello\n");
+    // The document now has two tabs, so a tab must be named.
+    await expect(Promise.resolve(hooks().readContent("add-tab")))
+      .rejects.toThrow("tabId is required for documents with multiple tabs");
+    expect(await hooks().applyAction("add-tab", appendId))
+      .toMatch(`Approve earlier edit ${added.actionId}`);
+    expect(docs.contentBatches).toBe(0);
+
+    expect(await hooks().applyAction("add-tab", added.actionId)).toBeNull();
+    let made = docs.tabs[1];
+    expect(made).toMatchObject({ title: "Notes", text: "" });
+    expect(docs.markerTabIds).toEqual([MAIN_TAB]);
+    expect(docs.markers.size).toBe(0);
+    expect(await hooks().applyAction("add-tab", appendId)).toBeNull();
+    expect(docs.text(made.id)).toBe("Hello");
+    expect(docs.markerTabIds).toEqual([MAIN_TAB, made.id]);
+
+    expect((await hooks().listTabs("add-tab")).map(tab => tab.id)).toEqual([MAIN_TAB, made.id]);
+    // The ID the agent was given keeps reaching the tab.
+    expect(await hooks().readContent("add-tab", added.tabId)).toBe("Hello\n");
+    let laterId = await hooks().submitAppend("add-tab", "More", added.tabId);
+    expect(await hooks().applyAction("add-tab", laterId)).toBeNull();
+    expect(docs.text(made.id)).toBe("Hello\nMore");
+  });
+
+  it("finds a new tab by the ID the simulation lists when its add applied after the replay", async () => {
+    let docs = new DocsModel();
+    docs.install();
+    let added = await addTab("add-tab-alias-gap", "Notes");
+    expect((await hooks().listTabs("add-tab-alias-gap")).map(tab => tab.id))
+      .toEqual([MAIN_TAB, added.tabId]);
+    // The state a handoff leaves between a replay and the read that uses it: Google's ID recorded
+    // for the provisional one, while the replay still lists the tab under the provisional one.
+    await hooks().applyStorage("add-tab-alias-gap", [
+      { kind: "put", key: "docAddedTabs", value: { [added.tabId]: "t.google" } },
+    ]);
+
+    expect(await hooks().readContent("add-tab-alias-gap", added.tabId)).toBe("\n");
+    let child = await addTab("add-tab-alias-gap", "Child", { parentTabId: added.tabId });
+    expect(child.action.description).toBe(
+      'Add a new, empty tab under tab "Notes" (new tab), after the tabs already there.');
+  });
+
+  it("reads a new tab's queued edits while the replay lists it beside the tab Google made", async () => {
+    let docs = new DocsModel();
+    docs.install();
+    let added = await addTab("add-tab-alias-both", "Notes");
+    await hooks().submitAppend("add-tab-alias-both", "Hello", added.tabId);
+    // The add has landed, its reply not yet in: the replay lists Google's tab and the provisional
+    // one carrying the queued edit. Then the handoff records Google's ID before the read looks.
+    docs.addTab("t.google", "Notes", undefined as unknown as string);
+    docs.externalEdit();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 60_000);
+    expect((await hooks().listTabs("add-tab-alias-both")).map(tab => tab.id))
+      .toEqual([MAIN_TAB, "t.google", added.tabId]);
+    await hooks().applyStorage("add-tab-alias-both", [
+      { kind: "put", key: "docAddedTabs", value: { [added.tabId]: "t.google" } },
+    ]);
+
+    expect(await hooks().readContent("add-tab-alias-both", added.tabId)).toBe("Hello\n");
+  });
+
+  it("places a tab at an index and nests one under a tab still waiting", async () => {
+    let docs = new DocsModel();
+    docs.addTab("tab-2", "Second", undefined as unknown as string);
+    docs.install();
+
+    let first = await addTab("add-tab-place", "First", { index: 0 });
+    expect(first.action.description).toBe(
+      "Add a new, empty tab at the top level, at position 1 of 3.");
+    let child = await addTab("add-tab-place", "Child", { parentTabId: first.tabId });
+    expect(child.action.description).toBe(
+      'Add a new, empty tab under tab "First" (new tab), after the tabs already there.');
+    expect(await hooks().listTabs("add-tab-place")).toEqual([
+      { id: first.tabId, title: "First", index: 0, nestingLevel: 0 },
+      { id: child.tabId, title: "Child", parentTabId: first.tabId, index: 0, nestingLevel: 1 },
+      { id: MAIN_TAB, title: "Main", index: 1, nestingLevel: 0 },
+      { id: "tab-2", title: "Second", index: 2, nestingLevel: 0 },
+    ]);
+
+    expect(await hooks().applyAction("add-tab-place", first.actionId)).toBeNull();
+    expect(await hooks().applyAction("add-tab-place", child.actionId)).toBeNull();
+    let [made, , , madeChild] = docs.tabs;
+    expect(made).toMatchObject({ title: "First" });
+    expect(madeChild).toMatchObject({ title: "Child", parentId: made.id });
+    // The child's marker went in its parent, which by then existed.
+    expect(docs.markerTabIds).toEqual([MAIN_TAB, made.id]);
+    expect(await hooks().listTabs("add-tab-place")).toEqual([
+      { id: made.id, title: "First", index: 0, nestingLevel: 0 },
+      { id: madeChild.id, title: "Child", parentTabId: made.id, index: 0, nestingLevel: 1 },
+      { id: MAIN_TAB, title: "Main", index: 1, nestingLevel: 0 },
+      { id: "tab-2", title: "Second", index: 2, nestingLevel: 0 },
+    ]);
+  });
+
+  it.each([
+    ["an empty title", [""], "addTab: title must not be empty."],
+    ["a title Google would cut", ["x".repeat(51)], "at most 50 characters"],
+    ["an unknown parent", ["X", { parentTabId: "nope" }], 'no tab with ID "nope" exists'],
+    ["an index past the last tab", ["X", { index: 2 }], "from 0 to 1, the number of tabs at the top level"],
+  ] as const)("refuses %s before queuing anything", async (_case, args, message) => {
+    let docs = new DocsModel();
+    docs.install();
+
+    let call = await hooks().callDoc("add-tab-refused", "addTab", [...args]);
+    expect(call.error).toContain(message);
+    expect(call.actionId).toBeUndefined();
+  });
+
+  it("drops the edits queued for a tab whose add is rejected", async () => {
+    let docs = new DocsModel();
+    docs.install();
+    let added = await addTab("add-tab-reject", "Notes");
+    let appendId = await hooks().submitAppend("add-tab-reject", "Hello", added.tabId);
+
+    expect(await hooks().rejectAction("add-tab-reject", added.actionId)).toEqual({ restart: true });
+    expect((await hooks().listTabs("add-tab-reject")).map(tab => tab.id)).toEqual([MAIN_TAB]);
+    expect(await hooks().applyAction("add-tab-reject", appendId))
+      .toContain(`no tab with ID "${added.tabId}" exists`);
+    expect(docs.tabs).toHaveLength(1);
+    expect(docs.contentBatches).toBe(0);
+  });
+
+  it("refuses an add whose reply was lost, leaving the tab it made in the document", async () => {
+    let docs = new DocsModel();
+    docs.ambiguousContentResponses = 1;
+    docs.install();
+    let added = await addTab("add-tab-lost", "Notes");
+    let appendId = await hooks().submitAppend("add-tab-lost", "Hello", added.tabId);
+
+    expect(await hooks().applyAction("add-tab-lost", added.actionId)).toMatch(/content response lost/);
+    let made = docs.tabs[1];
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 60_000);
+    // Read meanwhile, the add still shows as pending, beside the tab Google made: only an approval
+    // can tell its reply was lost, rather than still to come.
+    expect((await hooks().listTabs("add-tab-lost")).map(tab => tab.id))
+      .toEqual([MAIN_TAB, made.id, added.tabId]);
+    expect(await hooks().readContent("add-tab-lost", added.tabId)).toBe("Hello\n");
+
+    expect(await hooks().applyAction("add-tab-lost", added.actionId))
+      .toContain('Google Docs added the tab "Notes", but its reply was lost');
+    expect(await hooks().applyAction("add-tab-lost", appendId))
+      .toContain(`no tab with ID "${added.tabId}" exists`);
+    expect(docs.tabs).toHaveLength(2);
+    expect(docs.contentBatches).toBe(1);
+    expect(docs.text(made.id)).toBe("");
+  });
+
+  it("keeps an add, and the edits for its tab, that a read sees landing before its reply", async () => {
+    let docs = new DocsModel();
+    docs.install();
+    let added = await addTab("add-tab-in-flight", "Notes");
+    let appendId = await hooks().submitAppend("add-tab-in-flight", "Hello", added.tabId);
+
+    let held = docs.hold("applied");
+    let approval = Promise.resolve(hooks().applyAction("add-tab-in-flight", added.actionId));
+    await held.reached;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 60_000);
+    // The marker is in the document while the approval still awaits Google's reply.
+    expect((await hooks().listTabs("add-tab-in-flight")).map(tab => tab.id))
+      .toContain(added.tabId);
+    held.release();
+
+    expect(await approval).toBeNull();
+    expect(await hooks().applyAction("add-tab-in-flight", appendId)).toBeNull();
+    expect(docs.text(docs.tabs[1].id)).toBe("Hello");
+  });
+
+  it("refuses a lost add whose tab was replaced by a collaborator's with its title", async () => {
+    let docs = new DocsModel();
+    docs.ambiguousContentResponses = 1;
+    docs.install();
+    let added = await addTab("add-tab-replaced", "Notes");
+    let appendId = await hooks().submitAppend("add-tab-replaced", "Hello", added.tabId);
+
+    expect(await hooks().applyAction("add-tab-replaced", added.actionId))
+      .toMatch(/content response lost/);
+    // The marker stays in the first tab while the tab the add made is replaced.
+    docs.removeTab(docs.tabs[1].id);
+    docs.addTab("t.collaborator", "Notes", undefined as unknown as string, "Theirs");
+    expect(docs.markers.size).toBe(1);
+
+    expect(await hooks().applyAction("add-tab-replaced", added.actionId))
+      .toContain("its reply was lost, and nothing else tells which tab it is");
+    expect(await hooks().applyAction("add-tab-replaced", appendId))
+      .toContain(`no tab with ID "${added.tabId}" exists`);
+    expect(docs.text("t.collaborator")).toBe("Theirs");
+  });
+
+  it("refuses to adopt a collaborator's tab bearing the title of one renamed since", async () => {
+    let docs = new DocsModel();
+    docs.ambiguousContentResponses = 1;
+    docs.install();
+    let added = await addTab("add-tab-renamed", "Notes");
+    let appendId = await hooks().submitAppend("add-tab-renamed", "Hello", added.tabId);
+
+    expect(await hooks().applyAction("add-tab-renamed", added.actionId))
+      .toMatch(/content response lost/);
+    docs.tabs[1].title = "Renamed";
+    docs.addTab("t.collaborator", "Notes", undefined as unknown as string);
+    docs.externalEdit();
+
+    expect(await hooks().applyAction("add-tab-renamed", added.actionId))
+      .toContain("its reply was lost, and nothing else tells which tab it is");
+    expect(await hooks().applyAction("add-tab-renamed", appendId))
+      .toContain(`no tab with ID "${added.tabId}" exists`);
+    expect(docs.text("t.collaborator")).toBe("");
+  });
+
+  it("refuses a lost add whose marker's tab was deleted, rather than guess or add another",
+    async () => {
+      let docs = new DocsModel();
+      docs.addTab("tab-2", "Second", undefined as unknown as string);
+      docs.ambiguousContentResponses = 1;
+      docs.install();
+      let added = await addTab("add-tab-host-gone", "Notes");
+      let appendId = await hooks().submitAppend("add-tab-host-gone", "Hello", added.tabId);
+
+      expect(await hooks().applyAction("add-tab-host-gone", added.actionId))
+        .toMatch(/content response lost/);
+      // The marker went in the first tab, which a collaborator now deletes.
+      expect(docs.markerTabIds).toEqual([MAIN_TAB]);
+      docs.removeTab(MAIN_TAB);
+
+      expect(await hooks().applyAction("add-tab-host-gone", added.actionId))
+        .toContain("no marker of it is left, and a tab has appeared in the document since");
+      expect(docs.tabs.filter(tab => tab.title === "Notes")).toHaveLength(1);
+      expect(docs.contentBatches).toBe(1);
+      expect(await hooks().applyAction("add-tab-host-gone", appendId))
+        .toContain(`no tab with ID "${added.tabId}" exists`);
+      expect(docs.text(docs.tabs.find(tab => tab.title === "Notes")!.id)).toBe("");
+    });
+
+  it("refuses a lost add whose tab was moved under another parent, rather than add another",
+    async () => {
+      let docs = new DocsModel();
+      docs.addTab("tab-2", "Second", undefined as unknown as string);
+      docs.ambiguousContentResponses = 1;
+      docs.install();
+      let added = await addTab("add-tab-moved", "Notes");
+
+      expect(await hooks().applyAction("add-tab-moved", added.actionId))
+        .toMatch(/content response lost/);
+      // A collaborator moves the new tab under "Second", then deletes the tab holding the marker.
+      docs.tabs.find(tab => tab.title === "Notes")!.parentId = "tab-2";
+      docs.removeTab(MAIN_TAB);
+
+      expect(await hooks().applyAction("add-tab-moved", added.actionId))
+        .toContain("no marker of it is left, and a tab has appeared in the document since");
+      expect(docs.tabs.filter(tab => tab.title === "Notes")).toHaveLength(1);
+      expect(docs.contentBatches).toBe(1);
+    });
+
+  it("refuses to adopt a collaborator's tab after a send that never reached Google", async () => {
+    let docs = new DocsModel();
+    docs.unsentContentRequests = 1;
+    docs.setText(MAIN_TAB, "Intro");
+    docs.install();
+    let added = await addTab("add-tab-unsent", "Notes");
+    let appendId = await hooks().submitAppend("add-tab-unsent", "Hello", added.tabId);
+
+    expect(await hooks().applyAction("add-tab-unsent", added.actionId))
+      .toMatch(/connection dropped/);
+    expect(docs.tabs).toHaveLength(1);
+    docs.addTab("t.collaborator", "Notes", undefined as unknown as string, "Theirs");
+    docs.externalEdit();
+
+    expect(await hooks().applyAction("add-tab-unsent", added.actionId))
+      .toContain("whether it was added is unknown");
+    expect(await hooks().applyAction("add-tab-unsent", appendId))
+      .toContain(`no tab with ID "${added.tabId}" exists`);
+    expect(docs.text("t.collaborator")).toBe("Theirs");
+    expect(docs.tabs).toHaveLength(2);
+  });
+
+  it("sends an add again after a send that never reached Google, when no tab appeared", async () => {
+    let docs = new DocsModel();
+    docs.unsentContentRequests = 1;
+    docs.install();
+    let added = await addTab("add-tab-resend", "Notes");
+
+    expect(await hooks().applyAction("add-tab-resend", added.actionId))
+      .toMatch(/connection dropped/);
+    expect(await hooks().applyAction("add-tab-resend", added.actionId)).toBeNull();
+    expect(docs.tabs.map(tab => tab.title)).toEqual(["Main", "Notes"]);
+  });
+
+  // Denying always withdraws (#857): no refusal on this path may leave an action that cannot be
+  // denied, or hold back the edits queued behind it for other tabs.
+  it.each([
+    ["an ambiguous adoption", (docs: DocsModel): (() => void) | undefined => {
+      docs.ambiguousContentResponses = 1;
+      return () => docs.addTab("t.collaborator", "Notes", undefined as unknown as string);
+    }],
+    ["a send with no known outcome and no marker left", (docs: DocsModel): (() => void) | undefined => {
+      docs.unsentContentRequests = 1;
+      return () => docs.addTab("t.collaborator", "Notes", undefined as unknown as string);
+    }],
+    ["a lost reply that is denied instead of retried", (docs: DocsModel): (() => void) | undefined => {
+      docs.ambiguousContentResponses = 1;
+      return undefined;
+    }],
+  ] as const)("withdraws an add, and the edits for its tab, on deny after %s", async (_case, arrange) => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "Intro");
+    let interfere = arrange(docs);
+    docs.install();
+    let facet = `add-tab-deny-${_case.replace(/\W+/g, "-")}`;
+    let added = await addTab(facet, "Notes");
+    let appendToNew = await hooks().submitAppend(facet, "Hello", added.tabId);
+    let appendToMain = await hooks().submitAppend(facet, "Still applies", MAIN_TAB);
+
+    expect(await hooks().applyAction(facet, added.actionId)).not.toBeNull();
+    if (interfere) {
+      interfere();
+      docs.externalEdit();
+      expect(await hooks().applyAction(facet, added.actionId)).not.toBeNull();
+    }
+
+    await expect(Promise.resolve(hooks().rejectAction(facet, added.actionId))).resolves.not.toThrow();
+    expect(await hooks().applyAction(facet, appendToNew))
+      .toContain(`no tab with ID "${added.tabId}" exists`);
+    await expect(Promise.resolve(hooks().rejectAction(facet, appendToNew))).resolves.not.toThrow();
+    expect(await hooks().applyAction(facet, appendToMain)).toBeNull();
+    expect(docs.text(MAIN_TAB)).toContain("Still applies");
+    // Nothing is left pending to block a later approval.
+    expect(await hooks().applyAction(facet, added.actionId)).toMatch(/Unknown pending/);
+  });
+
+  it("sends a refused add again rather than adopt a tab with its title", async () => {
+    let docs = new DocsModel();
+    docs.refusesEdits = true;
+    docs.install();
+    let added = await addTab("add-tab-refused-send", "Notes");
+
+    expect(await hooks().applyAction("add-tab-refused-send", added.actionId)).not.toBeNull();
+    docs.refusesEdits = false;
+    docs.addTab("t.collaborator", "Notes", undefined as unknown as string);
+    docs.externalEdit();
+
+    expect(await hooks().applyAction("add-tab-refused-send", added.actionId)).toBeNull();
+    expect(docs.tabs.map(tab => tab.title)).toEqual(["Main", "Notes", "Notes"]);
+    expect((await hooks().listTabs("add-tab-refused-send")).map(tab => tab.id))
+      .toEqual([MAIN_TAB, "t.collaborator", docs.tabs[2].id]);
+  });
+});
+
 const DOC_PATTERN = "https://docs.google.com/document/d/:docId/*";
 const CREATED_DOC_URL = "https://docs.google.com/document/d/doc-1/edit";
 
@@ -2098,6 +2908,29 @@ describe("creating a Google Doc", () => {
     expect(await hooks().applyAction("create-doc-late-edit", actionId)).toBeNull();
     expect(docs.text()).toBe("late");
     expect(docs.markerTabIds).toEqual([MAIN_TAB]);
+  });
+
+  it("keeps a tab queued against the blank document, and the edits queued for it", async () => {
+    let docs = new DocsModel();
+    docs.install();
+    await hooks().createResource("create-doc-tab", DOC_PATTERN, "Plan");
+    let added = await addTab("create-doc-tab", "Notes", { parentTabId: "t.0" });
+    let appendId = await hooks().submitAppend("create-doc-tab", "Hello", added.tabId);
+    expect((await hooks().listTabs("create-doc-tab")).map(tab => tab.id))
+      .toEqual(["t.0", added.tabId]);
+
+    expect(await hooks().applyCreation("create-doc-tab")).toEqual({ resourceUrl: CREATED_DOC_URL });
+    await hooks().adoptCreated("create-doc-tab");
+
+    // Nested under "t.0", the tab replays only if its parent was moved onto the created tab.
+    expect(await hooks().listTabs("create-doc-tab")).toEqual([
+      { id: MAIN_TAB, title: "Main", index: 0, nestingLevel: 0 },
+      { id: added.tabId, title: "Notes", parentTabId: MAIN_TAB, index: 0, nestingLevel: 1 },
+    ]);
+    expect(await hooks().applyAction("create-doc-tab", added.actionId)).toBeNull();
+    expect(await hooks().applyAction("create-doc-tab", appendId)).toBeNull();
+    expect(docs.tabs[1]).toMatchObject({ title: "Notes", parentId: MAIN_TAB });
+    expect(docs.text(docs.tabs[1].id)).toBe("Hello");
   });
 
   it("binds the same document when an approval is retried after a lost success", async () => {
@@ -2269,5 +3102,726 @@ describe("a Google Doc that is an Office file", () => {
 
     expect(await hooks().applyAction("office-edit-native", actionId))
       .toBe("Google Docs batch update document failed [http=400]");
+  });
+});
+
+describe("Google Doc comments", () => {
+  const DOC_COMMENTS = { tag: "docComments", label: "Google Doc comments" };
+  const TEXT = "The launch is in May. Costs are final.";
+  const call = (facet: string, method: string, ...args: unknown[]) =>
+    hooks().callDoc(facet, method as keyof GoogleDocSession, args);
+
+  function model(text = TEXT): DocsModel {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, text);
+    docs.install();
+    return docs;
+  }
+
+  it("queues a comment on quoted text, lists it pending, and posts it attached there", async () => {
+    let docs = model();
+    let queued = await call("comment-flow", "comment", "Should this be June?",
+      { quote: "The launch is in May." });
+    expect(queued.error).toBeUndefined();
+    expect(queued.value).toMatchObject({
+      id: `pending:${queued.actionId}`, text: "Should this be June?",
+      quotedText: "The launch is in May.", resolved: false, replies: [], pending: true,
+    });
+    expect(queued.action).toMatchObject({
+      title: "Comment on a Google Doc", actionKind: DOC_COMMENTS, autoApprovable: true,
+    });
+    expect(queued.action!.fields).toEqual([
+      { label: "Comment", kind: "text", value: "Should this be June?" },
+      { label: "Quoted text", kind: "text", value: "The launch is in May." },
+      { label: "File", kind: "inline", value: "doc-1" },
+      { label: "File name", kind: "inline", value: "Test document" },
+      { label: "Tab", kind: "inline", value: MAIN_TAB },
+    ]);
+    expect(queued.reports).toEqual([
+      { title: "Read Google Doc content", subresources: ["docs/document/doc-1"] },
+    ]);
+
+    let listed = await call("comment-flow", "listComments");
+    expect(listed.value).toEqual([expect.objectContaining({ id: `pending:${queued.actionId}` })]);
+    expect(listed.reports).toEqual([
+      { title: "List Google Doc comments", subresources: ["docs/document/doc-1"] },
+    ]);
+
+    expect(await hooks().applyAction("comment-flow", queued.actionId!)).toBeNull();
+    expect(docs.threads).toEqual([expect.objectContaining({
+      anchorId: expect.any(String), plainTextQuote: "The launch is in May.",
+      headPost: expect.objectContaining({ content: "Should this be June?" }),
+    })]);
+    expect((await call("comment-flow", "listComments")).value).toEqual([expect.objectContaining({
+      id: docs.threads[0].commentId, text: "Should this be June?",
+      quotedText: "The launch is in May.", author: { displayName: "Me", me: true },
+    })]);
+    // Approving it again posts nothing more.
+    expect(await hooks().applyAction("comment-flow", queued.actionId!)).toBeNull();
+    expect(docs.commentWrites).toBe(1);
+  });
+
+  it("replies to, resolves and reopens someone else's comment, each from queue to apply", async () => {
+    let docs = model();
+    let theirs = docs.addThread("Is this date right?", { quote: "May" });
+
+    let reply = await call("comment-answers", "reply", theirs.commentId, "Yes, it is.");
+    expect(reply.value).toMatchObject({ id: `pending:${reply.actionId}`, text: "Yes, it is.", pending: true });
+    expect(reply.action).toMatchObject({ title: "Reply to a Google Doc comment", actionKind: DOC_COMMENTS });
+    expect(reply.action!.description).toContain("Reply to a comment on Google Doc `doc-1`");
+    expect(reply.action!.fields).toEqual(expect.arrayContaining([
+      { label: "Comment author", kind: "inline", value: "Ada Lovelace" },
+      { label: "Comment text", kind: "text", value: "Is this date right?" },
+    ]));
+    let listed = (await call("comment-answers", "listComments")).value as { replies: unknown[] }[];
+    expect(listed[0].replies).toEqual([expect.objectContaining({ id: `pending:${reply.actionId}` })]);
+    expect(await hooks().applyAction("comment-answers", reply.actionId!)).toBeNull();
+    expect(theirs.replies.map(post => post.content)).toEqual(["Yes, it is."]);
+
+    let resolve = await call("comment-answers", "resolve", theirs.commentId, "Done.");
+    expect(resolve.action).toMatchObject({ title: "Resolve a Google Doc comment" });
+    expect(await hooks().applyAction("comment-answers", resolve.actionId!)).toBeNull();
+    expect(theirs.status).toBe("RESOLVED");
+    expect(theirs.replies.at(-1)).toMatchObject({ content: "Done.", commentAction: "RESOLVE" });
+    expect((await call("comment-answers", "resolve", theirs.commentId)).error)
+      .toBe("That comment is already resolved.");
+
+    // A reply to a resolved comment reopens it, and its card says so.
+    let reopen = await call("comment-answers", "reply", theirs.commentId, "One more thing.");
+    expect(reopen.value).toMatchObject({ action: "reopen" });
+    expect(reopen.action!.description).toContain("This reopens the resolved comment.");
+    expect(await hooks().applyAction("comment-answers", reopen.actionId!)).toBeNull();
+    expect(theirs.status).toBe("OPEN");
+    expect(theirs.replies.at(-1)).toMatchObject({ content: "One more thing.", commentAction: "REOPEN" });
+  });
+
+  it("suggests an edit with a note, as one suggestion with the note on its thread", async () => {
+    let docs = model();
+    let queued = await call("comment-suggest", "suggestEdit", "May", "June", { note: "It moved." });
+    expect(queued.value).toMatchObject({
+      id: `pending:${queued.actionId}`, tabId: MAIN_TAB, oldText: "May", newText: "June",
+      note: "It moved.", pending: true,
+    });
+    expect(queued.action).toMatchObject({ title: "Suggest an edit in a Google Doc", actionKind: DOC_COMMENTS });
+    expect(await hooks().applyAction("comment-suggest", queued.actionId!)).toBeNull();
+    expect(docs.suggestions).toEqual([
+      { suggestionId: "suggest.s1", summaryText: "Replace: “May” with “June”", notes: ["It moved."] },
+    ]);
+    expect(docs.text()).toBe(TEXT);
+  });
+
+  it("refuses an answer to a comment attached to no text, naming the Drive connection last", async () => {
+    let docs = model();
+    let drive = docs.addThread("Whole-file remark");
+    let refusal = "That comment is attached to no text in the Doc (it was made in Google Drive, " +
+      "or on the whole file), and Google Docs takes replies only to comments attached to text. " +
+      "A Google Drive connection to the file with read and write access can answer it. Request " +
+      "one with this resource URL: https://drive.google.com/file/d/doc-1/view?access=write";
+    expect((await call("comment-unanchored", "reply", drive.commentId, "Noted.")).error).toBe(refusal);
+    expect((await call("comment-unanchored", "resolve", drive.commentId)).error).toBe(refusal);
+    // It is still listed, with no quote.
+    let listed = (await call("comment-unanchored", "listComments")).value as { quotedText?: string }[];
+    expect(listed).toEqual([expect.objectContaining({ id: drive.commentId, text: "Whole-file remark" })]);
+    expect(listed[0]).not.toHaveProperty("quotedText");
+    expect(docs.commentWrites).toBe(0);
+  });
+
+  it("holds a reply and a resolve's words to the Docs limit of 2048 bytes", async () => {
+    let docs = model();
+    let theirs = docs.addThread("Date?", { quote: "May" });
+    let refusal = "The reply is 2050 bytes of UTF-8; Google Docs allows at most 2048.";
+    expect((await call("comment-limit", "reply", theirs.commentId, "é".repeat(1025))).error).toBe(refusal);
+    expect((await call("comment-limit", "resolve", theirs.commentId, "é".repeat(1025))).error).toBe(refusal);
+    expect((await call("comment-limit", "reply", theirs.commentId, "é".repeat(1024))).error).toBeUndefined();
+  });
+
+  it("refuses a viewer every comment read and write, in its own words", async () => {
+    let docs = model();
+    docs.canComment = false;
+    let viewOnly = "The connected account can only view this Google Doc, and Google shows a " +
+      "Doc's comments only to accounts that can comment on it, so they can be neither read nor " +
+      "written here.";
+    expect((await call("comment-viewer", "listComments")).error).toBe(viewOnly);
+    expect((await call("comment-viewer", "comment", "Hm.", { quote: "May" })).error).toBe(viewOnly);
+    expect((await call("comment-viewer", "suggestEdit", "May", "June")).error).toBe(viewOnly);
+    expect(docs.commentWrites).toBe(0);
+  });
+
+  it("matches a quote against the saved Doc, refusing text only a pending edit has", async () => {
+    let docs = model();
+    let edit = await hooks().submitReplace("comment-pending-quote", "May", "June");
+    let result = await call("comment-pending-quote", "comment", "Sure?", { quote: "June" });
+    expect(result.error).toBe("That text is only in an edit waiting for approval, and a comment " +
+      "or suggestion is placed on the Doc as Google has saved it. Quote text the Doc has now, or " +
+      "try again once the edit is approved.");
+    expect(result.actionId).toBeUndefined();
+    expect(await hooks().applyAction("comment-pending-quote", edit)).toBeNull();
+    expect((await call("comment-pending-quote", "comment", "Sure?", { quote: "June" })).error)
+      .toBeUndefined();
+    expect(docs.text()).toContain("June");
+  });
+
+  it("requires a tab for a quote in a Doc with several tabs, as the binding's edits do", async () => {
+    let docs = model();
+    docs.addTab("tab-2", "Notes", MAIN_TAB, "May notes");
+    expect((await call("comment-tabs", "comment", "Hm.", { quote: "May notes" })).error).toBe(
+      "comment: tabId is required for documents with multiple tabs. Call listTabs() to choose a tab.");
+    expect((await call("comment-tabs", "suggestEdit", "May", "June")).error).toBe(
+      "suggestEdit: tabId is required for documents with multiple tabs. Call listTabs() to choose a tab.");
+    let queued = await call("comment-tabs", "comment", "Hm.", { quote: "May notes", tabId: "tab-2" });
+    expect(queued.value).toMatchObject({ quotedText: "May notes" });
+  });
+
+  it("routes interleaved edit and comment IDs, unique and rising, while edits keep their order", async () => {
+    let docs = model();
+    let first = await hooks().submitAppend("comment-ids", "One.");
+    let comment = (await call("comment-ids", "comment", "Hm.", { quote: "Costs are final." })).actionId!;
+    let second = await hooks().submitAppend("comment-ids", "Two.");
+    let reply = docs.addThread("Date?", { quote: "May" });
+    let answer = (await call("comment-ids", "reply", reply.commentId, "Yes.")).actionId!;
+    expect([first, comment, second, answer]).toEqual([1, 2, 3, 4]);
+
+    // An edit still waits for the edit before it; a comment waits for nothing.
+    expect(await hooks().applyAction("comment-ids", second)).toMatch(/must be approved in order/);
+    expect(await hooks().applyAction("comment-ids", answer)).toBeNull();
+    expect(await hooks().applyAction("comment-ids", first)).toBeNull();
+    expect(await hooks().applyAction("comment-ids", second)).toBeNull();
+    expect(docs.text()).toBe(`${TEXT}\nOne.\nTwo.`);
+    // Rejecting a comment restarts nothing; an unknown ID is refused as before.
+    expect(await hooks().rejectAction("comment-ids", comment)).toBeUndefined();
+    expect(docs.threads.map(thread => thread.headPost.content)).toEqual(["Date?"]);
+    expect(await hooks().applyAction("comment-ids", 99)).toBe("Unknown pending Google Doc action: 99");
+  });
+
+  it("finds a reply whose answer was lost, and does not send it again", async () => {
+    let docs = model();
+    let theirs = docs.addThread("Date?", { quote: "May" });
+    let id = (await call("comment-lost", "reply", theirs.commentId, "Yes.")).actionId!;
+    docs.lostCommentResponses = 1;
+    expect(await hooks().applyAction("comment-lost", id)).toMatch(/did not confirm whether this was posted/);
+    expect(await hooks().applyAction("comment-lost", id)).toBeNull();
+    expect(theirs.replies.map(post => post.content)).toEqual(["Yes."]);
+    expect(docs.commentWrites).toBe(1);
+  });
+
+  it("clears a comment write on deny from every state", async () => {
+    let docs = model();
+    let theirs = docs.addThread("Date?", { quote: "May" });
+    // Undecided.
+    let undecided = (await call("comment-deny", "comment", "Hm.", { quote: "May" })).actionId!;
+    expect(await hooks().rejectAction("comment-deny", undecided)).toBeUndefined();
+    // Failed for good: the comment it answers was edited after it was queued.
+    let stale = (await call("comment-deny", "reply", theirs.commentId, "Yes.")).actionId!;
+    theirs.headPost.content = "Date? (edited)";
+    expect(await hooks().applyAction("comment-deny", stale)).toBe(
+      "That comment was edited after this was queued. Queue it again to answer the comment as it is now.");
+    expect(await hooks().rejectAction("comment-deny", stale)).toBeUndefined();
+    // Left with an unknown outcome: its answer was lost and its thread then deleted.
+    theirs.headPost.content = "Date?";
+    let unknown = (await call("comment-deny", "reply", theirs.commentId, "Yes.")).actionId!;
+    docs.lostCommentResponses = 1;
+    expect(await hooks().applyAction("comment-deny", unknown)).toMatch(/did not confirm/);
+    docs.threads.splice(0);
+    expect(await hooks().applyAction("comment-deny", unknown)).toMatch(/can't be checked/);
+    expect(await hooks().rejectAction("comment-deny", unknown)).toBeUndefined();
+    expect((await call("comment-deny", "listComments")).value).toEqual([]);
+    for (let id of [undecided, stale, unknown]) {
+      expect(await hooks().applyAction("comment-deny", id)).toBe(`Unknown pending Google Doc action: ${id}`);
+    }
+  });
+
+  it("lists no comments and takes none on a Doc not created yet, and both once it is", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, TEXT);
+    docs.install();
+    await hooks().createResource("comment-create", DOC_PATTERN, "Plan");
+    expect((await call("comment-create", "getMetadata")).value).toMatchObject({ id: "", title: "Plan" });
+    expect((await call("comment-create", "listComments")).value).toEqual([]);
+    expect((await call("comment-create", "comment", "Hm.", { quote: "May" })).error).toBe(
+      "This Google Doc is not created yet, so it has no text to comment on. Comment once it is created.");
+    expect(docs.fetches).toBe(0);
+    expect(await hooks().applyCreation("comment-create")).toEqual({ resourceUrl: CREATED_DOC_URL });
+    await hooks().adoptCreated("comment-create");
+    expect((await call("comment-create", "getMetadata")).value).toMatchObject({ id: "doc-1" });
+    let queued = await call("comment-create", "comment", "Hm.", { quote: "May" });
+    expect(await hooks().applyAction("comment-create", queued.actionId!)).toBeNull();
+    expect(docs.threads).toHaveLength(1);
+  });
+});
+
+// What a bound Doc stores, by its literal keys, so that moving its code cannot move its storage.
+describe("Google Doc stored layout", () => {
+  /** The value under `key`, as the synchronous KV and the asynchronous API each read it. */
+  const stored = async (facet: string, key: string): Promise<{ kv?: unknown; async?: unknown }> => {
+    let { kv, async } = await hooks().storedValue(facet, "doc", key);
+    return {
+      ...kv === undefined ? {} : { kv: JSON.parse(kv) },
+      ...async === undefined ? {} : { async: JSON.parse(async) },
+    };
+  };
+
+  it("keeps its edits, counter, snapshot, receipt and revision under the keys it has always used", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "base");
+    docs.cleanupFailures = 1;
+    docs.install();
+    let facet = "stored-layout-doc";
+
+    let first = await hooks().submitAppend(facet, "first");
+    await hooks().readMetadata(facet);
+    expect(await hooks().storedKeys(facet, "doc")).toEqual([
+      "docMetadataRevision", "docSnapshot", "pending:action:1", "pending:nextActionId",
+    ]);
+    expect((await stored(facet, "pending:nextActionId")).kv).toBe(2);
+    expect((await stored(facet, "pending:action:1")).kv).toEqual({
+      type: "appendText", tabId: MAIN_TAB, submittedAt: expect.any(Number),
+      markdownVersion: MARKDOWN_RENDERING_VERSION, baseRevisionId: expect.any(String),
+      writeId: expect.any(String), markdown: "first",
+      // Display only: what the card names the tab by, as the card is built from the record.
+      display: { tab: `"Main" (${MAIN_TAB})` },
+    });
+    expect((await stored(facet, "docMetadataRevision")).kv)
+      .toEqual({ revisionId: expect.any(String), observedAt: expect.any(Number) });
+
+    // The marker's cleanup fails, so the write's receipt stays for the next write to settle.
+    expect(await hooks().applyAction(facet, first)).toBeNull();
+    expect(await hooks().storedKeys(facet, "doc")).toEqual([
+      "docMetadataRevision", "docWriteReceipt", "pending:nextActionId",
+    ]);
+    expect((await stored(facet, "docWriteReceipt")).kv)
+      .toEqual({ actionId: first, markerId: expect.any(String) });
+
+    // A rejection drops the snapshot: the next read fetches the document again.
+    let second = await hooks().submitAppend(facet, "second");
+    let third = await hooks().submitAppend(facet, "third");
+    expect(await hooks().rejectAction(facet, third)).toBeUndefined();
+    expect(await hooks().storedKeys(facet, "doc")).toEqual([
+      "docMetadataRevision", "docWriteReceipt", `pending:action:${second}`, "pending:nextActionId",
+    ]);
+
+    // A comment write is numbered by the edits' counter, under a prefix of its own.
+    let comment = await hooks().callDoc(facet, "comment", ["Why?", { quote: "base" }]);
+    expect(comment.actionId).toBe(4);
+    expect((await stored(facet, "pending:nextActionId")).kv).toBe(5);
+    expect((await stored(facet, "docComments:action:4")).kv).toMatchObject({
+      v: 2, state: "pending", action: { kind: "createComment" },
+    });
+  });
+
+  it("reads and applies every stored edit shape, seeded before the Doc first starts", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "base");
+    docs.install();
+    let facet = "stored-layout-legacy";
+    let row = (id: number, value: Record<string, unknown>) =>
+      ({ kind: "put" as const, key: `pending:action:${id}`, value });
+    await hooks().writeStored(facet, "doc", [
+      // Stored before tabs and Markdown versions: neither its tab nor its rendering is known.
+      row(1, { type: "appendText", submittedAt: 0, baseRevisionId: "revision-1", markdown: "one" }),
+      row(2, {
+        type: "appendText", tabId: MAIN_TAB, submittedAt: 0,
+        markdownVersion: MARKDOWN_RENDERING_VERSION, markdown: "two",
+        invalidatedReason: "Dropped earlier.",
+      }),
+      // Stored before write IDs: apply gives it one before it writes.
+      row(3, {
+        type: "appendText", tabId: MAIN_TAB, submittedAt: 0,
+        markdownVersion: MARKDOWN_RENDERING_VERSION, markdown: "three",
+      }),
+      row(4, {
+        type: "appendText", documentId: "doc-1", tabId: MAIN_TAB, submittedAt: 0,
+        markdownVersion: MARKDOWN_RENDERING_VERSION, writeId: "write-4", markdown: "four",
+      }),
+      // A field this code does not know is carried and ignored.
+      row(5, {
+        type: "replaceText", tabId: MAIN_TAB, submittedAt: 0,
+        markdownVersion: MARKDOWN_RENDERING_VERSION, writeId: "write-5",
+        oldMarkdown: "base", newMarkdown: "BASE", displayTab: "Main",
+      }),
+      { kind: "put", key: "pending:nextActionId", value: 6 },
+    ], "kv");
+    await hooks().restartFacet(facet);
+
+    expect(await hooks().readContent(facet)).toBe("BASE\n\nthree\n\nfour\n");
+    // The read records why the first can no longer be replayed, in its own record.
+    let first = (await stored(facet, "pending:action:1")).kv as Record<string, unknown>;
+    expect(first.invalidatedReason).toContain("queued under an earlier Markdown format");
+    expect(first).toMatchObject({ type: "appendText", markdown: "one" });
+
+    expect(await hooks().applyAction(facet, 1)).toContain("queued under an earlier Markdown format");
+    expect(await hooks().applyAction(facet, 2)).toBe("Dropped earlier.");
+    for (let id of [3, 4, 5]) expect(await hooks().applyAction(facet, id)).toBeNull();
+    expect(docs.text()).toBe("BASE\nthree\nfour");
+    expect(docs.contentBatches).toBe(3);
+    expect(await hooks().rejectAction(facet, 1)).toBeUndefined();
+    expect(await hooks().rejectAction(facet, 2)).toBeUndefined();
+
+    expect(await hooks().submitAppend(facet, "six")).toBe(6);
+  });
+
+  it("keeps a created document's first tab until the real class takes over", async () => {
+    new DocsModel().install();
+    let facet = "stored-layout-created";
+    await hooks().createResource(facet, DOC_PATTERN, "Plan");
+    expect(await hooks().applyCreation(facet)).toEqual({ resourceUrl: CREATED_DOC_URL });
+    expect((await stored(facet, "createdDocTab")).kv).toBe(MAIN_TAB);
+
+    await hooks().adoptCreated(facet);
+    expect(await hooks().readContent(facet)).toBe("\n");
+    expect(await hooks().storedKeys(facet, "doc")).not.toContain("createdDocTab");
+  });
+
+  it("reads through the synchronous KV what the asynchronous API wrote, and the reverse", async () => {
+    new DocsModel().install();
+    let facet = "stored-layout-apis";
+    let value = { formatVersion: 1, fetchedAt: 7 };
+    await hooks().writeStored(facet, "doc", [{ kind: "put", key: "docSnapshot", value }], "async");
+    expect(await stored(facet, "docSnapshot")).toEqual({ kv: value, async: value });
+    await hooks().writeStored(
+      facet, "doc", [{ kind: "put", key: "docSnapshotCheck", value: { fetchedAt: 7, checkedAt: 0 } }],
+      "kv");
+    expect((await stored(facet, "docSnapshotCheck")).async).toEqual({ fetchedAt: 7, checkedAt: 0 });
+  });
+});
+
+/** A Docs API serving `models`, each answering for its own document, for a fake beside Drive's. */
+function docsProvider(...models: DocsModel[]): ProviderFake {
+  return {
+    async handle(request) {
+      let url = new URL(request.url);
+      if (url.hostname !== "docs.googleapis.com") return undefined;
+      let id = /^\/v1\/documents\/([^/:]+)/.exec(url.pathname)?.[1];
+      let model = models.find(candidate => candidate.documentId === id) ?? models[0];
+      let body = request.method === "GET" || request.method === "HEAD" ? undefined : await request.text();
+      return model.fetch(request.url, { method: request.method, body, headers: request.headers });
+    },
+  };
+}
+
+/** How many times `text` occurs in `content`. */
+function occurrences(content: string, text: string): number {
+  return content.split(text).length - 1;
+}
+
+describe("Google Doc edits through a read and write Drive binding", () => {
+  inRun(THROUGH_DRIVE);
+
+  type Binding = { scope: { kind: "account" } | { kind: "folder"; folderId: string } |
+    { kind: "file"; fileId: string }; access?: "write"; deployment?: "read" };
+  const DRIVE_DOC: Binding = { scope: { kind: "file", fileId: "doc-1" }, access: "write" };
+  const READ_ONLY_DEPLOYMENT: Binding = { ...DRIVE_DOC, deployment: "read" };
+  const ROOT = "folder-root";
+  const FOLDER: Binding = { scope: { kind: "folder", folderId: ROOT }, access: "write" };
+  const ACCOUNT: Binding = { scope: { kind: "account" }, access: "write" };
+  const RECEIPT = "driveDocs:receipt:doc-1";
+  const OUT_OF_SCOPE = "That file is no longer in this connection's scope.";
+  const DEPLOYMENT_READ_ONLY =
+    "This deployment keeps Google Drive read-only, so no Google Drive connection can make " +
+    "changes, and none can be connected with read and write access. Only the deployment's " +
+    "administrator can change that.";
+
+  /** A document reading `text`, which the model answers Drive's requests for too. */
+  function draft(text = "Draft"): DocsModel {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, text);
+    docs.install();
+    return docs;
+  }
+
+  /** The stored record of action `id` of the Drive facet `facet`. */
+  async function record(facet: string, id: number) {
+    let stored = await rawHooks().driveStored(`drive:${facet}`, DRIVE_DOC, `drive:action:${id}`);
+    return stored === null ? null : JSON.parse(stored) as {
+      state: string; error?: string;
+      action: { kind: string; payload: { change: { writeId: string } } };
+    };
+  }
+
+  // The write has landed and the action set has retired the record, so nothing replays the
+  // append; its marker is still in the document. Reads are made from inside the marker's deletion
+  // and inside the read of the new revision that follows it, as an overlapping read would land.
+  it("reads an appended text once while its approval completes", async () => {
+    let docs = draft();
+    let facet = "drive-read-in-window";
+    let appended = await hooks().submitAppend(facet, "Appended");
+    let replaced = await hooks().submitReplace(facet, "Draft", "Final");
+
+    let model = globalThis.fetch;
+    let inside = false;
+    let cleaning = false;
+    let reads: { during: string; read: string; retired?: boolean; markers: number }[] = [];
+    let readDuring = async (during: string, retired?: boolean) => {
+      inside = true;
+      try {
+        let read = await hooks().readContent(facet);
+        reads.push({ during, read, retired, markers: docs.markers.size });
+      } finally {
+        inside = false;
+      }
+    };
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      let request = new Request(input, init);
+      let url = new URL(request.url);
+      if (!inside && url.hostname === "docs.googleapis.com") {
+        if (url.pathname.endsWith(":batchUpdate") &&
+            (await request.clone().text()).includes("deleteNamedRange")) {
+          cleaning = true;
+          await readDuring("cleanup", await record(facet, appended) === null);
+        } else if (cleaning && request.method === "GET" && !url.searchParams.has("fields")) {
+          cleaning = false;
+          await readDuring("refresh");
+        }
+      }
+      return model(input, init);
+    });
+
+    expect(await hooks().applyAction(facet, appended)).toBeNull();
+    // The record goes before the marker does; each read shows the append once and the
+    // replacement still queued.
+    expect(reads.map(({ during, retired, markers }) => ({ during, retired, markers }))).toEqual([
+      { during: "cleanup", retired: true, markers: 1 },
+      { during: "refresh", retired: undefined, markers: 0 },
+    ]);
+    for (let { read } of reads) {
+      expect(occurrences(read, "Appended")).toBe(1);
+      expect(read).toContain("Final");
+    }
+    expect((await record(facet, replaced))?.state).toBe("pending");
+    expect(await hooks().applyAction(facet, replaced)).toBeNull();
+    expect(occurrences(docs.text(), "Appended")).toBe(1);
+    expect(docs.text()).toContain("Final");
+  });
+
+  it("settles from its receipt an edit whose approval ended before its record was retired", async () => {
+    let docs = draft();
+    let facet = "drive-receipt-crash";
+    let id = await hooks().submitAppend(facet, "Once");
+    let { writeId } = (await record(facet, id))!.action.payload.change;
+    // The write landed with its marker and its receipt was recorded; the activation ended there.
+    docs.setText(MAIN_TAB, "Draft\nOnce");
+    docs.addMarker(`gadgets-write-${writeId}`, "marker-landed");
+    await rawHooks().writeDriveStored(
+      `drive:${facet}`, DRIVE_DOC, RECEIPT, JSON.stringify({ actionId: id, markerId: "marker-landed" }));
+    await rawHooks().restartDrive(`drive:${facet}`);
+
+    expect(await hooks().applyAction(facet, id)).toBeNull();
+    // Nothing written again, and its marker deleted only once the record was retired.
+    expect(docs.contentBatches).toBe(0);
+    expect(docs.deletedMarkerIds).toEqual(["marker-landed"]);
+    expect(await record(facet, id)).toBeNull();
+    expect(await rawHooks().driveStored(`drive:${facet}`, DRIVE_DOC, RECEIPT)).toBeNull();
+    expect(docs.text()).toBe("Draft\nOnce");
+  });
+
+  it("keeps a receipt whose marker cleanup failed for the next edit to settle", async () => {
+    let docs = draft();
+    docs.cleanupFailures = 1;
+    let facet = "drive-receipt-cleanup";
+    let first = await hooks().submitAppend(facet, "first");
+    // Queued before the first applies, so no session starts while no edit of the Doc waits.
+    let second = await hooks().submitAppend(facet, "second");
+    expect(await hooks().applyAction(facet, first)).toBeNull();
+    expect(JSON.parse((await rawHooks().driveStored(`drive:${facet}`, DRIVE_DOC, RECEIPT))!))
+      .toMatchObject({ actionId: first });
+    expect(docs.markers.size).toBe(1);
+
+    expect(await hooks().applyAction(facet, second)).toBeNull();
+    expect(docs.markers.size).toBe(0);
+    expect(docs.maxMarkerCount).toBe(1);
+    expect(await rawHooks().driveStored(`drive:${facet}`, DRIVE_DOC, RECEIPT)).toBeNull();
+    expect(docs.text()).toContain("first");
+    expect(docs.text()).toContain("second");
+  });
+
+  // A receipt left behind names a marker whose deletion failed: the next edit of the Doc deletes it.
+  it("keeps a receipt across sessions with no edit of its Doc, for the next edit to settle", async () => {
+    draft();
+    let facet = "drive-receipt-sweep";
+    let receipt = JSON.stringify({ actionId: 999, markerId: "marker-old" });
+    await rawHooks().writeDriveStored(`drive:${facet}`, DRIVE_DOC, RECEIPT, receipt);
+    await hooks().readContent(facet);
+    await hooks().readContent(facet);
+    expect(await rawHooks().driveStored(`drive:${facet}`, DRIVE_DOC, RECEIPT)).toBe(receipt);
+
+    let id = await hooks().submitAppend(facet, "next");
+    expect(await hooks().applyAction(facet, id)).toBeNull();
+    expect(await rawHooks().driveStored(`drive:${facet}`, DRIVE_DOC, RECEIPT)).toBeNull();
+  });
+
+  // The engine's run holds the write with a promise the test releases, which hangs a Drive binding's
+  // apply in this harness; a timer slows it here instead, with the second approval sent meanwhile.
+  it("holds a second approval of one edit behind the first, the write slowed", async () => {
+    let docs = draft();
+    let facet = "drive-overlap";
+    let id = await hooks().submitAppend(facet, "first");
+    let model = globalThis.fetch;
+    let write: "unsent" | "sending" | "sent" = "unsent";
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (new URL(new Request(input, init).url).pathname.endsWith(":batchUpdate") && write === "unsent") {
+        write = "sending";
+        await scheduler.wait(100);
+        let response = await model(input, init);
+        write = "sent";
+        return response;
+      }
+      return model(input, init);
+    });
+    let first = hooks().applyAction(facet, id);
+    let settled = false;
+    void first.then(() => { settled = true; });
+    await vi.waitUntil(() => write !== "unsent" || settled, { interval: 1, timeout: 5000 });
+    // An approval that failed before writing says why, rather than timing out.
+    if (write === "unsent") expect(await first).toBeNull();
+    let second = hooks().applyAction(facet, id);
+    // The second approval is sent while the first's write is in flight.
+    expect(write).toBe("sending");
+
+    expect(await first).toBeNull();
+    expect(await second).toBeNull();
+    expect(docs.contentBatches).toBe(1);
+    expect(docs.text().match(/first/g)).toHaveLength(1);
+    expect(docs.markers.size).toBe(0);
+  });
+
+  // The first edit's check of the file is slowed: the second, sent behind it, still takes its turn
+  // after it, and is prepared with the first queued.
+  it("queues edits in the order they were sent, the first's proof slowed", async () => {
+    draft();
+    let facet = "drive-doc-order";
+    let model = globalThis.fetch;
+    let proofs = 0;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (new URL(new Request(input, init).url).pathname.startsWith("/batch/") && proofs++ === 0) {
+        await scheduler.wait(50);
+      }
+      return model(input, init);
+    });
+    let { outcomes, submitted } = await rawHooks().callDriveNativeTwice(
+      `drive:${facet}`, DRIVE_DOC, "openGoogleDoc", "doc-1",
+      ["appendText", "one"], ["appendText", "two"]);
+
+    expect(outcomes).toEqual([{}, {}]);
+    expect(proofs).toBe(2);
+    expect(submitted.map(({ actionId }) => actionId)).toEqual([1, 2]);
+    let read = await hooks().readContent(facet);
+    expect(read.indexOf("one")).toBeGreaterThan(-1);
+    expect(read.indexOf("two")).toBeGreaterThan(read.indexOf("one"));
+  });
+
+  it("refuses every write of a Doc that left the folder before any Docs request", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "Draft");
+    let drive = new DriveFiles({
+      [ROOT]: { name: "Reports", mimeType: FOLDER_MIME, parents: ["my-root"] },
+      "doc-1": { name: "Test document", mimeType: DRIVE_DOC_MIME, parents: [ROOT] },
+    });
+    serveFakes([drive, docsProvider(docs)]);
+    let facet = `drive:drive-doc-left-folder`;
+    let args: Record<string, unknown[]> = {
+      replaceText: ["Draft", "Final"],
+      appendText: ["More"],
+    };
+    let reads = new Set(["constructor", "getMetadata", "listTabs", "getContent"]);
+    let writes = Object.getOwnPropertyNames(GoogleDocEditSessionImpl.prototype)
+      .filter(name => !reads.has(name));
+    expect(writes.toSorted()).toEqual(Object.keys(args).toSorted());
+
+    for (let method of writes) {
+      let refused = await rawHooks().callDriveNativeAfter(
+        facet, FOLDER, "openGoogleDoc", "doc-1", method, args[method], [],
+        async () => { drive.files.get("doc-1")!.parents = ["elsewhere"]; });
+      drive.files.get("doc-1")!.parents = [ROOT];
+      expect(refused.error, method).toBe(OUT_OF_SCOPE);
+      expect(refused.actionId, method).toBeUndefined();
+      expect(docs.fetches, method).toBe(0);
+    }
+
+    // One queued before the file left fails for good at approval, with nothing sent.
+    let queued = await rawHooks().callDriveNative(
+      facet, FOLDER, "openGoogleDoc", "doc-1", "appendText", ["More"]);
+    expect(queued.error).toBeUndefined();
+    let fetched = docs.fetches;
+    drive.files.get("doc-1")!.parents = ["elsewhere"];
+    expect(await rawHooks().applyDrive(facet, FOLDER, queued.actionId!)).toBe(OUT_OF_SCOPE);
+    expect(await rawHooks().applyDrive(facet, FOLDER, queued.actionId!)).toBe(OUT_OF_SCOPE);
+    expect(docs.fetches).toBe(fetched);
+    expect(docs.contentBatches).toBe(0);
+  });
+
+  it("opens a Doc with no comment method: the binding's own comment writes reach it", async () => {
+    draft();
+    for (let [method, args] of [
+      ["listComments", []], ["comment", ["Hi", { quote: "Draft" }]],
+      ["suggestEdit", ["Draft", "Final"]], ["reply", ["c1", "Hi"]], ["resolve", ["c1"]],
+    ] as const) {
+      let called = await rawHooks().callDriveNative(
+        "drive:drive-doc-comments", DRIVE_DOC, "openGoogleDoc", "doc-1", method, [...args]);
+      expect(called.error, method).toMatch(`does not implement the method "${method}"`);
+    }
+  });
+
+  it("holds an edit through Drive to 100 KiB, where the Doc's own binding takes more", async () => {
+    draft();
+    let big = "x".repeat(60_000);
+    await expect(hooks().submitAppend("drive-doc-big", big)).rejects.toThrow(
+      /^This change is too large to queue \(\d+ bytes, limit 102400\)\. Split it up\.$/);
+    expect(await rawHooks().submitAppend("standalone-doc-big", big)).toBeTypeOf("number");
+  });
+
+  it("keeps a deployment's read-only setting: no editable Doc, no kind, and a queued edit waits", async () => {
+    let docs = draft();
+    let facet = "drive-doc-read-only-deployment";
+    let id = await hooks().submitAppend(facet, "More");
+    await rawHooks().restartDrive(`drive:${facet}`);
+
+    let opened = await rawHooks().callDriveNative(
+      `drive:${facet}`, READ_ONLY_DEPLOYMENT, "openGoogleDoc", "doc-1", "appendText", ["Again"]);
+    expect(opened.error).toMatch('does not implement the method "appendText"');
+    expect(await rawHooks().driveAutoApprovable(`drive:${facet}`, READ_ONLY_DEPLOYMENT)).toEqual([]);
+    expect(await rawHooks().applyDrive(`drive:${facet}`, READ_ONLY_DEPLOYMENT, id))
+      .toBe(DEPLOYMENT_READ_ONLY);
+    expect(docs.contentBatches).toBe(0);
+
+    await rawHooks().restartDrive(`drive:${facet}`);
+    expect(await hooks().applyAction(facet, id)).toBeNull();
+    expect(docs.text()).toContain("More");
+  });
+
+  it("keeps two Docs' edits, order and receipts apart on one binding", async () => {
+    let one = new DocsModel();
+    one.setText(MAIN_TAB, "One");
+    one.cleanupFailures = 1;
+    let two = new DocsModel();
+    two.documentId = "doc-2";
+    two.setText(MAIN_TAB, "Two");
+    let drive = new DriveFiles({
+      "doc-1": { name: "First", mimeType: DRIVE_DOC_MIME, parents: ["my-root"] },
+      "doc-2": { name: "Second", mimeType: DRIVE_DOC_MIME, parents: ["my-root"] },
+    });
+    serveFakes([drive, docsProvider(one, two)]);
+    let facet = "drive:drive-two-docs";
+    let queue = async (fileId: string, text: string) => (await rawHooks().callDriveNative(
+      facet, ACCOUNT, "openGoogleDoc", fileId, "appendText", [text])).actionId!;
+    let read = async (fileId: string) => (await rawHooks().callDriveNative(
+      facet, ACCOUNT, "openGoogleDoc", fileId, "getContent", [])).value as string;
+    let a1 = await queue("doc-1", "A1");
+    let b1 = await queue("doc-2", "B1");
+    let a2 = await queue("doc-1", "A2");
+    expect([a1, b1, a2]).toEqual([1, 2, 3]);
+    expect(await read("doc-2")).not.toContain("A1");
+    expect(await read("doc-1")).not.toContain("B1");
+
+    expect(await rawHooks().applyDrive(facet, ACCOUNT, a2)).toBe(THROUGH_DRIVE.outOfOrder(a1, a2));
+    // The other Doc's earlier edit holds nothing back.
+    expect(await rawHooks().applyDrive(facet, ACCOUNT, b1)).toBeNull();
+    expect([one.contentBatches, two.contentBatches]).toEqual([0, 1]);
+    expect(await rawHooks().applyDrive(facet, ACCOUNT, a1)).toBeNull();
+    // The first Doc's marker cleanup failed: its receipt stays, and only its.
+    expect(await rawHooks().driveStoredKeys(facet, ACCOUNT, "driveDocs:receipt:"))
+      .toEqual(["driveDocs:receipt:doc-1"]);
+    expect(await rawHooks().applyDrive(facet, ACCOUNT, a2)).toBeNull();
+    expect(await rawHooks().driveStoredKeys(facet, ACCOUNT, "driveDocs:receipt:")).toEqual([]);
+    expect(one.text()).toContain("A2");
+    expect(two.text()).toContain("B1");
   });
 });

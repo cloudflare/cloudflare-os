@@ -38,7 +38,7 @@ beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   vi.clearAllMocks();
   getUnreadThreads.mockReset().mockImplementation(async () =>
-    (mock.unread?.chats ?? []).filter(chat => chat.unreadMessageCount > 0)
+    (mock.unread?.chats ?? []).filter(chat => chat.unreadMessageCount > 0 && chat.notificationsEnabled !== false)
       .map(chat => ({...chats.find(item => item.workspaceId === chat.workspaceId && item.chatId === chat.chatId)!, ...chat})));
   vi.stubGlobal("scrollTo", vi.fn<() => void>());
   mock.unread = { state: { workspaces: [], unreadChatCount: 1, unreadMessageCount: 1, chats: [] },
@@ -78,6 +78,20 @@ it("shows message counts in the summary and each thread, not just unread-thread 
   expect(container.querySelector('a[href="/unread"]')?.textContent).toBe("Unread threads7");
   expect(container.querySelector('ul [aria-label="4 unread messages"]')).not.toBeNull();
   expect(container.querySelector('ul [aria-label="3 unread messages"]')).not.toBeNull();
+});
+
+it("removes muted unread chats from the inbox and restores them on unmute", async () => {
+  mock.unread = {...mock.unread!, state: {workspaces: [], unreadChatCount: 0, unreadMessageCount: 0, chats: []},
+    chats: [{...chats[0], notificationsEnabled: false}]};
+  await render();
+  expect(container.querySelector('a[href="/unread"]')?.textContent).toBe("Unread threads");
+  expect(container.querySelector('ul a')).toBeNull();
+  expect(container.querySelector('[aria-label="1 unread message"]')).toBeNull();
+  mock.unread = {...mock.unread!, state: {...mock.unread!.state!, unreadChatCount: 1, unreadMessageCount: 1},
+    chats: [{...chats[0], notificationsEnabled: true}]};
+  await act(async () => mock.listeners.forEach(listener => listener()));
+  expect(container.querySelector('ul a')?.textContent).toContain("Unread elsewhere");
+  expect(container.querySelector('ul [aria-label="1 unread message"]')).not.toBeNull();
 });
 
 it("lists previews of only unread threads and opens the exact conversation", async () => {

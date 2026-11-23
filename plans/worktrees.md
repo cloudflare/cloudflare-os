@@ -40,8 +40,9 @@ The current pull contract is `Gatekeeper.gitPull(oids, options): Promise<GitPull
 in `packages/workshop-shared/src/gatekeeper.ts`. Providers return a one-shot raw PACK stream
 plus terminal status; the overseer owns bounded cache ingestion and requested-object checks.
 This kernel-facing method is not exposed to gadgets: the kernel routes pulls using recorded
-provenance, while the transport checks oid syntax, not advertisement history. A native
-container consumer requires separate kernel bootstrap support and enforces its own limits.
+provenance, while the transport checks oid syntax, not advertisement history. Native Git in a
+container goes through the kernel instead (`WorktreeReplicator.gitPull()`, see
+`docs/worktree-replicas.md`), which asks providers for what it doesn't store.
 
 ## Locked decisions
 
@@ -547,7 +548,7 @@ container consumer requires separate kernel bootstrap support and enforces its o
 
 - **Unified workpiece table**: `GadgetRecord` generalizes to a `WorkpieceRecord`
   with a `type` discriminator (`"gadget"` | `"worktree"`); worktree rows add
-  `{chatId, sourceGatekeeperId?, baseCommit, headCommit, pinBase}` and omit
+  `{chatId, baseCommit, headCommit, pinBase}` and omit
   gadget-only fields (`output`, `bindings`).
   - `id` from the shared workpiece counter (`allocateWorkpieceId`) — facet names and
     `CodeChange` keys can never collide with gadgets/gatekeepers.

@@ -9,9 +9,7 @@ import {
 } from "@gadgets/integration-tests/harness";
 import { NetworkInterceptor } from "@gadgets/integration-tests/network-interceptor";
 import { connect, signUp } from "@gadgets/integration-tests/rpc-client";
-import {
-  HTTPS_ONLY_PROVIDERS, type AiModelProvider, type GatewayModelSettings,
-} from "@gadgets/workshop-shared/api";
+import type { AiModelProvider, GatewayModelSettings } from "@gadgets/workshop-shared/api";
 import type { ContextApi } from "../../gatekeeper-context/src/context-types.js";
 import type { EvalModel } from "./config.js";
 import type { EvalSkill } from "./task.js";
@@ -128,25 +126,15 @@ export function resolveModelAccess(
 }
 
 /**
- * Reject a model the configured access cannot serve, mirroring the backend's AiGatewayConfig
- * constructor and getModelViaGateway checks so a misconfigured matrix fails before inference.
+ * Reject a model the configured access cannot serve, so a misconfigured matrix
+ * fails before inference.
  */
 export function assertModelAccess(access: LocalModelAccess, model: EvalModel): void {
-  if (access.kind === "direct") {
-    if (model.provider !== "cloudflare") {
-      throw new Error(
-        `Direct Workers AI credentials only run cloudflare models, not ${model.provider} ` +
-        `(${model.model}). Configure an AI Gateway that serves it, or set WORKSHOP_EVAL_MODELS ` +
-        "to a Workers AI model; those results are not comparable to published baselines.",
-      );
-    }
-    return;
-  }
-  if (access.transport === "binding" && HTTPS_ONLY_PROVIDERS.has(model.provider) &&
-      access.apiToken === undefined) {
+  if (access.kind === "direct" && model.provider !== "cloudflare") {
     throw new Error(
-      `${model.provider} inference cannot ride the Workers AI binding transport, so running a ` +
-      `${model.provider} model requires CF_AI_GATEWAY_API_TOKEN.`,
+      `Direct Workers AI credentials only run cloudflare models, not ${model.provider} ` +
+      `(${model.model}). Configure an AI Gateway that serves it, or set WORKSHOP_EVAL_MODELS ` +
+      "to a Workers AI model; those results are not comparable to published baselines.",
     );
   }
 }
@@ -173,20 +161,15 @@ function allowsModelEgress(
     access: LocalModelAccess, model: EvalModel, url: URL, method: string): boolean {
   const account = encodeURIComponent(access.accountId);
   if (access.kind === "gateway") {
+    // Inference and cost-log reads ride the binding unless HTTPS was chosen.
+    if (access.transport !== "https") return false;
     const gateway = encodeURIComponent(access.gateway);
     if (method === "POST") {
-      // Inference rides HTTPS when the binding is opted out, or for providers whose adapter
-      // cannot ride the binding at all (the backend's AiGatewayConfig.bindingFor).
       const route = GATEWAY_ROUTES[model.provider];
-      const ridesHttps =
-          access.transport === "https" || HTTPS_ONLY_PROVIDERS.has(model.provider);
-      return route !== undefined && ridesHttps &&
+      return route !== undefined &&
         url.origin === "https://gateway.ai.cloudflare.com" &&
         url.pathname.startsWith(`/v1/${account}/${gateway}/${route}/`);
     }
-    // Cost-log reads are same-account, so the backend reads them through the binding whenever
-    // the binding transport is active, even for HTTPS-only inference providers.
-    if (access.transport !== "https") return false;
     const logPrefix =
         `/client/v4/accounts/${account}/ai-gateway/gateways/${gateway}/logs/`;
     const logId = url.pathname.slice(logPrefix.length);

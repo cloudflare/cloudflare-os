@@ -26,6 +26,8 @@
 // Both concerns share a single attempt counter, so the worst case is a predictable `retries + 2`
 // requests: `retries` transient attempts plus one each for the 401 refresh and the 403 reload.
 
+import { GOOGLE_API_SOURCE, googleService, recordCall } from "./call-metrics";
+
 /**
  * Options for requesting an access token.
  *
@@ -60,6 +62,8 @@ export type FetchWithAuthRetryOptions = {
    * is still just a read (Drive's batch `files.get` envelope).
    */
   idempotent?: boolean;
+  /** What the request does, a literal, for the metrics. The HTTP method unless given. */
+  operation?: string;
 };
 
 const BASE_DELAY_MS = 500;
@@ -88,6 +92,30 @@ function backoffDelayMs(attempt: number, retryAfter: string | null): number {
   return Math.random() * capped;
 }
 
+// Counts one request: `answer` is the status it was answered with, or why it threw. Nothing here
+// may throw, since a metric cannot fail the request it counts.
+function recordAttempt(
+  url: string, operation: string, startedAt: number, answer: number | "timeout" | "network",
+): void {
+  try {
+    let call = {
+      source: GOOGLE_API_SOURCE, service: googleService(url), operation,
+      durationMs: Date.now() - startedAt,
+    };
+    if (typeof answer !== "number") {
+      recordCall({ ...call, outcome: "error", reason: answer });
+    } else if (answer < 400) {
+      recordCall({ ...call, outcome: "success", httpStatus: answer });
+    } else if (answer === 429) {
+      recordCall({ ...call, outcome: "refused", reason: "rate", httpStatus: answer });
+    } else {
+      recordCall({ ...call, outcome: "error", reason: "http", httpStatus: answer });
+    }
+  } catch {
+    // The request goes uncounted.
+  }
+}
+
 /**
  * Perform an authenticated fetch, injecting a Bearer token and applying both retry concerns
  * described at the top of this file. The `Authorization` header is set from the (possibly
@@ -103,6 +131,7 @@ export async function fetchWithAuthRetry(
   let method = (init.method ?? "GET").toUpperCase();
   let retries = opts.retries ?? 3;
   let idempotent = method === "GET" || opts.idempotent === true;
+  let operation = opts.operation ?? method;
   // A request can only be replayed if its body can be sent again. A string or byte-array body
   // (what the call sites use today) re-serializes fine; a stream is consumed by the first
   // attempt, so retrying it would send an empty or errored body. Nothing to replay is likewise
@@ -120,7 +149,8 @@ export async function fetchWithAuthRetry(
     // A fresh timeout signal per attempt so a retry gets the full budget, combined with any
     // caller-supplied signal.
     let signals: AbortSignal[] = [];
-    if (opts.timeoutMs !== undefined) signals.push(AbortSignal.timeout(opts.timeoutMs));
+    let timeout = opts.timeoutMs === undefined ? undefined : AbortSignal.timeout(opts.timeoutMs);
+    if (timeout) signals.push(timeout);
     if (init.signal) signals.push(init.signal);
     let signal = signals.length > 0 ? AbortSignal.any(signals) : undefined;
 
@@ -128,6 +158,9 @@ export async function fetchWithAuthRetry(
     headers.set("Authorization", `Bearer ${token}`);
 
     let response: Response;
+    // An attempt begun once its caller's signal has aborted is never sent.
+    let unsent = init.signal?.aborted === true;
+    let startedAt = Date.now();
     try {
       response = await fetch(url, {
         ...init,
@@ -135,6 +168,15 @@ export async function fetchWithAuthRetry(
         ...(signal ? { signal } : {}),
       });
     } catch (error) {
+      // A request its caller gave up is not one the service failed, and is not counted. A caller
+      // that times its own wait for an answer aborts with a `TimeoutError`, though, and that is
+      // the service not answering, unless the wait ran out before this attempt was sent. Only the
+      // reason's name is read.
+      let waitedOut = init.signal?.reason?.name === "TimeoutError";
+      if (!unsent && (!init.signal?.aborted || waitedOut)) {
+        recordAttempt(
+          url, operation, startedAt, timeout?.aborted || waitedOut ? "timeout" : "network");
+      }
       // Network error or timeout: ambiguous, so retry only when the request is safe to replay,
       // and never once the caller's own signal has aborted it.
       if (replayable && idempotent && attempt < retries - 1 && !init.signal?.aborted) {
@@ -144,6 +186,8 @@ export async function fetchWithAuthRetry(
       }
       throw error;
     }
+    // Every answer is counted, one that is then retried with another token included.
+    recordAttempt(url, operation, startedAt, response.status);
 
     if (response.status === 401 && !refreshed && replayable) {
       // Deliberately does not touch `attempt`: the refresh is one-shot, so it can add at most one

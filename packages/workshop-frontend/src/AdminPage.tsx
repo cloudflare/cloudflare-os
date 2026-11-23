@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, type ChangeEvent } from 'react'
 import { RpcStub } from 'capnweb'
 import { useNavigate, useSearch } from '@tanstack/react-router'
 import { Switch, Textarea, Input, Button, Tabs, Loader, useKumoToastManager } from '@cloudflare/kumo'
-import { Hexagon, MagnifyingGlass, ShieldWarning, UserPlus } from '@phosphor-icons/react'
+import { Eye, Hexagon, MagnifyingGlass, ShieldWarning, UserPlus } from '@phosphor-icons/react'
 import { useAuthenticatedApi } from './AuthContext'
 import { AdminApi, AdminFormat, AdminResourceVendor, AdminSettingsView, AmbientGatekeeperMode, DeploymentUpdateStatus, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_ANNOUNCEMENT_LENGTH, MAX_SITE_NAME_LENGTH, DEFAULT_SITE_NAME, BannerColor, BANNER_COLORS, DEFAULT_BANNER_COLOR } from '@gadgets/workshop-shared/api'
 import { applyAccentColor, DEFAULT_ACCENT_COLOR } from './theme'
@@ -94,6 +94,10 @@ export default function AdminPage() {
   const [userSearchEnabled, setUserSearchEnabled] = useState(false)
   const [savingUserSearch, setSavingUserSearch] = useState(false)
 
+  // Whether gadgets may be shared to view only, as static snapshots.
+  const [snapshotSharingEnabled, setSnapshotSharingEnabled] = useState(true)
+  const [savingSnapshotSharing, setSavingSnapshotSharing] = useState(false)
+
   // Gatekeeper resource config, and the set of resource keys ("vendorId\u0000urlPattern") busy toggling.
   const [resourceVendors, setResourceVendors] = useState<AdminResourceVendor[]>([])
   const [resourceBusy, setResourceBusy] = useState<Set<string>>(new Set())
@@ -105,8 +109,8 @@ export default function AdminPage() {
   // saved only once that later one has applied.
   const [reloadUpdateStatus] = useState(() => latestReads<DeploymentUpdateStatus | null>(setUpdateStatus))
 
-  // The audit retention, null while the backend is older than the admin audit log and has no Audit
-  // tab.
+  // The admin access level and audit retention, null while the backend is older than the admin
+  // audit log and has no Audit tab.
   const [auditSettings, setAuditSettings] = useState<AuditSettings | null>(null)
   // Only the latest re-read applies (see latestReads).
   const [reloadAuditSettings] = useState(() =>
@@ -141,6 +145,7 @@ export default function AdminPage() {
   const applySettings = (view: Awaited<ReturnType<RpcStub<AdminApi>['getSettings']>>) => {
     setSignupsEnabled(view.signupsEnabled)
     setUserSearchEnabled(view.userSearchEnabled)
+    setSnapshotSharingEnabled(view.snapshotSharingEnabled)
     setSavedSiteName(view.siteName)
     setSiteNameDraft(view.siteName)
     setSiteLogoUrl(view.siteLogo?.url ?? null)
@@ -215,7 +220,7 @@ export default function AdminPage() {
     return () => { applyAccentColor(savedAccent) }
   }, [accentDraft, savedAccent])
 
-  // Re-fetch just the gatekeeper/resource state (used to revert an optimistic toggle on error).
+  // Re-fetch policy: one toggle can affect other resource rows or remove a legacy restriction.
   // Leaves the General-tab drafts untouched.
   const reloadResources = async () => {
     if (!admin) return
@@ -232,11 +237,17 @@ export default function AdminPage() {
       prev.map((v) =>
         v.vendorId !== vendorId || v.autoProvisions
           ? v
-          : { ...v, resources: v.resources.map((r) => (r.urlPattern === urlPattern ? { ...r, enabled } : r)) }
+          : { ...v, resources: v.resources.map((r) => ((r.resourceTypeId ?? r.urlPattern) === urlPattern ? { ...r, enabled } : r)) }
       )
     )
     try {
       await admin.api.setResourceEnabled(vendorId, urlPattern, enabled)
+      await reloadResources().catch(() => {
+        toasts.add({
+          title: 'Change saved, but resource settings could not be refreshed. Reload this page.',
+          variant: 'error',
+        })
+      })
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Update failed'
       toasts.add({ title: message, variant: 'error' })
@@ -371,6 +382,21 @@ export default function AdminPage() {
       toasts.add({ title: message, variant: 'error' })
     } finally {
       setSavingUserSearch(false)
+    }
+  }
+
+  const handleSnapshotSharingToggle = async (enabled: boolean) => {
+    if (!admin) return
+    setSavingSnapshotSharing(true)
+    setSnapshotSharingEnabled(enabled) // optimistic
+    try {
+      await admin.api.setSnapshotSharingEnabled(enabled)
+    } catch (err) {
+      setSnapshotSharingEnabled(!enabled) // revert
+      const message = err instanceof Error ? err.message : 'Update failed'
+      toasts.add({ title: message, variant: 'error' })
+    } finally {
+      setSavingSnapshotSharing(false)
     }
   }
 
@@ -510,7 +536,7 @@ export default function AdminPage() {
           )
       )}
 
-      {/* Admin audit log and its retention */}
+      {/* Admin audit log, inspection access and retention */}
       {activeTab === 'audit' && auditSettings !== null && (
         <AdminAuditPanel
           admin={admin.api}
@@ -584,6 +610,29 @@ export default function AdminPage() {
                 checked={userSearchEnabled}
                 disabled={savingUserSearch}
                 onCheckedChange={handleUserSearchToggle}
+              />
+            </div>
+          </div>
+
+          <div className="bg-kumo-elevated border border-kumo-line rounded-xl p-6">
+            <div className="flex items-center gap-4">
+              <div className="w-9 h-9 rounded-lg flex-shrink-0 flex items-center justify-center bg-kumo-tint">
+                <Eye size={18} className="text-kumo-subtle" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h2 className="text-lg font-semibold text-kumo-strong">Allow view-only gadget sharing</h2>
+                <p className="text-sm text-kumo-subtle mt-0.5">
+                  Let people share a read-only snapshot of a gadget, which shows the gadget&rsquo;s
+                  saved data to recipients without checking their access to its connections. When
+                  off, gadgets can only be shared for full use, and existing view-only shares stop
+                  opening until this is turned back on.
+                </p>
+              </div>
+              <Switch
+                aria-label="Allow view-only gadget sharing"
+                checked={snapshotSharingEnabled}
+                disabled={savingSnapshotSharing}
+                onCheckedChange={handleSnapshotSharingToggle}
               />
             </div>
           </div>
@@ -1068,18 +1117,18 @@ export default function AdminPage() {
                 {vendor.enabled ? (
                   <div className="space-y-1">
                     {vendor.resources.map((resource) => {
-                      const key = resourceKey(vendor.vendorId, resource.urlPattern)
+                      const key = resourceKey(vendor.vendorId, (resource.resourceTypeId ?? resource.urlPattern))
                       return (
                         <div
-                          key={resource.urlPattern}
+                          key={(resource.resourceTypeId ?? resource.urlPattern)}
                           role="button"
                           tabIndex={0}
-                          onClick={() => !resourceBusy.has(key) && handleResourceToggle(vendor.vendorId, resource.urlPattern, !resource.enabled)}
+                          onClick={() => !resourceBusy.has(key) && handleResourceToggle(vendor.vendorId, (resource.resourceTypeId ?? resource.urlPattern), !resource.enabled)}
                           onKeyDown={(e) => {
                             if (e.currentTarget !== e.target) return
                             if (e.key === 'Enter' || e.key === ' ') {
                               e.preventDefault()
-                              if (!resourceBusy.has(key)) handleResourceToggle(vendor.vendorId, resource.urlPattern, !resource.enabled)
+                              if (!resourceBusy.has(key)) handleResourceToggle(vendor.vendorId, (resource.resourceTypeId ?? resource.urlPattern), !resource.enabled)
                             }
                           }}
                           className="flex cursor-pointer items-center gap-4 px-3 py-2.5 rounded-lg hover:bg-kumo-tint transition-colors"
@@ -1095,7 +1144,7 @@ export default function AdminPage() {
                               checked={resource.enabled}
                               disabled={resourceBusy.has(key)}
                               onCheckedChange={(enabled) =>
-                                handleResourceToggle(vendor.vendorId, resource.urlPattern, enabled)
+                                handleResourceToggle(vendor.vendorId, (resource.resourceTypeId ?? resource.urlPattern), enabled)
                               }
                             />
                           </span>

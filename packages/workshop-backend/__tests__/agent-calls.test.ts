@@ -570,6 +570,24 @@ describe("durable agent calls", () => {
     expect([...impl.storage.chatMeta.list()]).toEqual([]);
   }));
 
+  it("records which spawner started a chat, apart from others sharing its name",
+      () => freshImpl(async impl => {
+    impl.ownerId = OWNER_USER_ID;
+    fakeUsers(impl);
+    impl.startAgent = () => {};
+    for (let binding of [await spawnerBinding(impl), await spawnerBinding(impl)]) {
+      await binding.spawnCallable("Drafts", SPAWNER_TYPES);
+    }
+
+    let spawners = [...impl.storage.gatekeepers.list()]
+        .filter(record => record.creationSpec?.type === "agentSpawner")
+        .map(record => record.id);
+    let chats = [...impl.storage.chatMeta.list()];
+    expect(new Set(spawners).size).toBe(2);
+    expect(chats.map(meta => meta.spawnerName)).toEqual(["Spawner", "Spawner"]);
+    expect(chats.map(meta => meta.spawnerId)).toEqual(spawners);
+  }));
+
   // The stub spawnCallable() returns is an AgentSelfLoopback, whose every method is a Proxy trap
   // that forwards to deliverAgentCallback. The test pool's RPC emulation resolves methods on the
   // class prototype only, so calls through the stub can't be exercised here; these tests deliver
@@ -621,6 +639,66 @@ describe("durable agent calls", () => {
 
     expect(callbackNames(impl)).toEqual([["composeEmail", "composeEmail_ARGS"]]);
     expect(impl.storage.chatMeta.get(meta.id).activeAgent).toBeUndefined();
+  }));
+
+  // The SpawnedAgent spawnAgent() returns is a persistent stub, restored through the overseer's
+  // [restore]() to a SpawnedAgentImpl. Its getAgent() is the AgentSelfLoopback above, so calls
+  // through it can't be made here either; workshop-callable-agents.test.ts makes them.
+  it("spawnAgent() creates the chat spawnCallable() does and returns a storable handle to it",
+      () => freshImpl(async impl => {
+    impl.ownerId = OWNER_USER_ID;
+    fakeUsers(impl);
+    impl.startAgent = () => { throw new Error("must not start"); };
+    let binding = await spawnerBinding(impl);
+
+    using spawned = await binding.spawnAgent("Drafts", SPAWNER_TYPES);
+    let [meta] = [...impl.storage.chatMeta.list()];
+    expect(meta).toMatchObject({ title: "Drafts", spawnerName: "Spawner" });
+    expect(impl.storage.chatContext.get(meta.id)).toEqual({
+      chatId: meta.id, spawnerConfig: SPAWNER_CONFIG, spawnerTypes: SPAWNER_TYPES, bindings: {},
+    });
+    expect([...impl.storage.chats.list()]).toEqual([]);
+
+    expect(meta.chatToken).toMatch(/^[0-9a-f-]{36}$/);
+    expect(await spawned.getChatToken()).toBe(meta.chatToken);
+    using agent = await spawned.getAgent();
+    expect(agent).toBeDefined();
+
+    // Stored and read back, the handle restores to the same chat.
+    await impl.ctx.storage.put("spawned", spawned);
+    using restored = await impl.ctx.storage.get("spawned");
+    expect(await restored.getChatToken()).toBe(meta.chatToken);
+  }));
+
+  it("each spawned chat gets its own token", () => freshImpl(async impl => {
+    impl.ownerId = OWNER_USER_ID;
+    fakeUsers(impl);
+    let binding = await spawnerBinding(impl);
+
+    using first = await binding.spawnAgent("One", SPAWNER_TYPES);
+    using second = await binding.spawnAgent("Two", SPAWNER_TYPES);
+    let tokens = [...impl.storage.chatMeta.list()].map(meta => meta.chatToken);
+    expect(new Set(tokens).size).toBe(2);
+    expect([await first.getChatToken(), await second.getChatToken()]).toEqual(tokens);
+  }));
+
+  // Called directly: restoring a stored stub that [restore]() refuses rejects the call, but the
+  // test pool also reports the refusal as an unhandled rejection.
+  it("a SpawnedAgent stops restoring once its chat is deleted", () => freshImpl(async impl => {
+    impl.ownerId = OWNER_USER_ID;
+    fakeUsers(impl);
+    let binding = await spawnerBinding(impl);
+
+    using _spawned = await binding.spawnAgent("Drafts", SPAWNER_TYPES);
+    let [meta] = [...impl.storage.chatMeta.list()];
+    let params = {
+      type: "spawnedAgent", chatId: meta.id, initiatorUserId: OWNER_USER_ID, initiatorModelId: "m",
+    };
+    expect(impl.restore(params).getChatToken()).toBe(meta.chatToken);
+
+    impl.storage.chatMeta.delete(meta.id);
+    impl.storage.chatContext.delete(meta.id);
+    expect(() => impl.restore(params)).toThrow(/chat has been deleted/);
   }));
 
   it("calls recorded before a restart are delivered when the DO is next constructed", async () => {

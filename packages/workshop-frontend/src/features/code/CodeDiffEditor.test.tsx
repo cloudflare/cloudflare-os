@@ -118,7 +118,7 @@ describe('CodeDiffEditor', () => {
     const session = new FakeSession('hello\nthere')
     await mount(session, 'hello\nworld')
     expect(container.querySelector('.cm-content')?.textContent).toContain('there')
-    expect(container.querySelector('.gadgets-deleted-code-zone')?.textContent).toBe('world')
+    expect(container.querySelector('.gadgets-deleted-code-row')?.textContent).toBe('world')
     expect(container.textContent).toContain('-1')
     expect(container.textContent).toContain('+1')
   })
@@ -138,7 +138,7 @@ describe('CodeDiffEditor', () => {
     expect(session.getText()).toBe('hello\nthere')
     expect(container.textContent).toContain('-1')
     expect(container.textContent).toContain('+1')
-    expect(container.querySelector('.gadgets-deleted-code-zone')?.textContent).toBe('world')
+    expect(container.querySelector('.gadgets-deleted-code-row')?.textContent).toBe('world')
     expect(container.querySelector('.gadgets-diff-line-add')).not.toBeNull()
 
     // And again: the scheduler must keep working across repeated frames.
@@ -157,7 +157,7 @@ describe('CodeDiffEditor', () => {
     })
     await flushFrames()
     expect(container.querySelector('.cm-content')?.textContent).toContain('world')
-    expect(container.querySelector('.gadgets-deleted-code-zone')).toBeNull()
+    expect(container.querySelector('.gadgets-deleted-code-row')).toBeNull()
     expect(container.textContent).toContain('Unchanged')
   })
 
@@ -166,7 +166,7 @@ describe('CodeDiffEditor', () => {
     await mount(session, null)
     expect(container.textContent).toContain('Added')
     expect(container.textContent).toContain('+2')
-    expect(container.querySelector('.gadgets-deleted-code-zone')).toBeNull()
+    expect(container.querySelector('.gadgets-deleted-code-row')).toBeNull()
   })
 
   it('shows a whole-file deletion zone after a remote remove', async () => {
@@ -177,8 +177,8 @@ describe('CodeDiffEditor', () => {
     })
     await flushFrames()
     expect(container.textContent).toContain('Deleted')
-    expect(container.querySelector('.gadgets-deleted-code-zone')?.textContent)
-      .toBe('helloworld')
+    expect([...container.querySelectorAll('.gadgets-deleted-code-row')].map(row => row.textContent))
+      .toEqual(['hello', 'world'])
   })
 
   it('renders the select-a-file placeholder without a filename', async () => {

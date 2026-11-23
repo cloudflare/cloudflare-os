@@ -74,7 +74,7 @@ type SlackApiEnvelope = {
 type RawUser = {
   id: string;
   team_id?: string;
-  enterprise_user?: { teams?: string[] };
+  enterprise_user?: { enterprise_id?: string; teams?: string[] };
   name?: string;
   real_name?: string;
   is_bot?: boolean;
@@ -364,6 +364,7 @@ export class SlackApi {
   #userCache = new Map<string, SlackUser>();
   // Empty string records a failed workspace-host lookup.
   #host?: string;
+  #homeOrganization?: Promise<string | undefined>;
 
   constructor(getToken: () => Promise<string>, options: SlackApiOptions = {}) {
     this.#getToken = getToken;
@@ -566,13 +567,25 @@ export class SlackApi {
 
   // ── Users ─────────────────────────────────────────────────────────
 
+  // Users are external relative to the Enterprise org when there is one, so members of its other
+  // workspaces count as colleagues. A failed lookup leaves isExternal unset and is retried.
+  #getHomeOrganization(): Promise<string | undefined> {
+    return this.#homeOrganization ??= this.#call<SlackApiEnvelope & {
+      team_id?: string; enterprise_id?: string;
+    }>("auth.test", {}).then(auth => auth.enterprise_id || auth.team_id, () => {
+      this.#homeOrganization = undefined;
+      return undefined;
+    });
+  }
+
   async getUser(userId: string): Promise<SlackUser> {
     let cached = this.#userCache.get(userId);
     if (cached) return cached;
+    let homeOrganization = this.#getHomeOrganization();
     let data = await this.#call<SlackApiEnvelope & { user?: RawUser }>(
         "users.info", { user: userId });
     if (!data.user) throw new Error(`Slack user not found: ${userId}`);
-    let user = toUser(data.user);
+    let user = toUser(data.user, await homeOrganization);
     this.#userCache.set(userId, user);
     return user;
   }
@@ -619,11 +632,14 @@ export class SlackApi {
   }
 
   async listUsers(cursor: string | undefined, limit: number): Promise<SlackPage<SlackUser>> {
+    let teamId = await this.workspaceTeamId();
+    let homeOrganizationPromise = this.#getHomeOrganization();
     let data = await this.#call<SlackApiEnvelope & { members?: RawUser[] }>(
-        "users.list", { cursor, limit, team_id: await this.workspaceTeamId() });
+        "users.list", { cursor, limit, team_id: teamId });
+    let homeOrganization = await homeOrganizationPromise;
     let items = (data.members ?? [])
         .filter(member => !member.deleted)
-        .map(toUser);
+        .map(member => toUser(member, homeOrganization));
     for (let user of items) this.#userCache.set(user.id, user);
     return { items, nextCursor: nextCursor(data) };
   }
@@ -819,13 +835,16 @@ function isSystemOrBot(raw: Pick<RawUser, "id" | "is_bot">): boolean {
   return (raw.is_bot ?? false) || SLACK_SYSTEM_USER_IDS.has(raw.id);
 }
 
-function toUser(raw: RawUser): SlackUser {
+function toUser(raw: RawUser, homeOrganization: string | undefined): SlackUser {
+  let organization = raw.enterprise_user?.enterprise_id || raw.team_id;
   return {
     id: raw.id,
     username: raw.name ?? raw.id,
     displayName: raw.profile?.display_name || undefined,
     realName: raw.real_name || raw.profile?.real_name || undefined,
+    avatarUrl: raw.profile?.image_192 || raw.profile?.image_72 || raw.profile?.image_48 || undefined,
     isBot: isSystemOrBot(raw),
+    isExternal: organization && homeOrganization ? organization !== homeOrganization : undefined,
   };
 }
 
