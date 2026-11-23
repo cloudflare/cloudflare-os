@@ -70,7 +70,7 @@ async function subscribedWorkspace(api: RpcStub<AuthenticatedApi>, accountId: nu
   using hooked = await ws.createGadget("Hooked", undefined, "HOOKED");
   // Bound before the chat opens: a permanent edge seeds a new chat's env under its name.
   await hooked.bind("GITHUB", await connection.getId());
-  const chatId = await ws.newChat("Build the triage hook.", SCRIPTED_MODEL_ID);
+  const chatId = await ws.newChat("Build the triage hook.", SCRIPTED_MODEL_ID, "auto");
   await waitFor("the build turn", async () => model.requests.length === 2 || null);
   await waitForIdleChat(ws, chatId);
   expect((await ws.mergeChanges(chatId)).outcome).toBe("merged");

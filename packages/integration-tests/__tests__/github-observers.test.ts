@@ -151,7 +151,7 @@ it.concurrent("a chat's read admits only collaborators whose own GitHub token ca
   const { ws, workspaceId, connectionId, repo, model } = state;
 
   // The agent reads the repository through the chat's binding.
-  const chatId = await ws.newChat("Read the repository.", SCRIPTED_MODEL_ID);
+  const chatId = await ws.newChat("Read the repository.", SCRIPTED_MODEL_ID, "auto");
   await waitFor("the read turn", async () => model.requests.length === 2 || null);
   await waitForIdleChat(ws, chatId);
   expect(model.remainingSteps()).toBe(0);
@@ -214,7 +214,7 @@ it.concurrent("a chat's read is refused only while a collaborator who can't read
   // Bob loses access on GitHub while his session is open. The agent's read is refused: the
   // kernel checked the repository it reported against him with his own token.
   github.setVisibleTo(repo.name, bob.token, false);
-  const chatId = await ws.newChat("Read the repository.", SCRIPTED_MODEL_ID);
+  const chatId = await ws.newChat("Read the repository.", SCRIPTED_MODEL_ID, "auto");
   await waitFor("the refused read turn", async () => model.requests.length === 2 || null);
   await waitForIdleChat(ws, chatId);
   expectToolResult(model, 1, "refused", READ_REFUSED);

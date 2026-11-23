@@ -31,7 +31,7 @@ const WORKING_CHAT = 2;
 const AGENT_CHAT = 5;
 const agent = {type: "agent" as const, id: "model", name: "Test agent"};
 const chat = (id: number, over: Partial<AiChatMetadata> = {}): AiChatMetadata => ({
-  id, title: `Chat ${id}`, started: new Date(0), lastActive: new Date(0), ...over,
+  id, title: `Chat ${id}`, mode: "auto", started: new Date(0), lastActive: new Date(0), ...over,
 });
 // Fixed, distinct times, since the list comes back most recently active first.
 const CHATS = [

@@ -78,7 +78,7 @@ it("connects, reads and writes, but refuses hooks and never touches webhooks", a
   expect(github.comments).toEqual([`${repo.name}#42: Looking into it.`]);
 
   // A hook, asked for as an agent would, is refused with the reason.
-  const chatId = await ws.newChat("Build the triage gadget.", SCRIPTED_MODEL_ID);
+  const chatId = await ws.newChat("Build the triage gadget.", SCRIPTED_MODEL_ID, "auto");
   await waitFor("the build turn", async () => model.requests.length === 2 || null);
   await waitForIdleChat(ws, chatId);
   expect((await ws.mergeChanges(chatId)).outcome).toBe("merged");

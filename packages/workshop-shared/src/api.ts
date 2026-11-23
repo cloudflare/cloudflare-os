@@ -5033,11 +5033,12 @@ export interface Overseer extends RpcTarget {
    * (useful when using chat to talk between humans). Returns the new chat's id without waiting
    * for the agent's turn; `waitForAgent()` waits for it to end.
    *
-   * `mode` is the chat's mode (see AiChatMetadata.mode), Auto when absent. Throws when asked for
-   * Auto in a workspace that has read restricted data (`WorkspaceMetadata.containsRestrictedData`).
+   * `mode` is the chat's mode (see AiChatMetadata.mode). It has no default: which mode a chat
+   * starts in is its user's preference, which only the caller knows. Throws when asked for Auto
+   * in a workspace that has read restricted data (`WorkspaceMetadata.containsRestrictedData`).
    */
-  newChat(initialMessage: string | SlashCommandRequest, modelId: string | null,
-          options?: ChatMessageOptions, mode?: ChatMode): Promise<number>;
+  newChat(initialMessage: string | SlashCommandRequest, modelId: string | null, mode: ChatMode,
+          options?: ChatMessageOptions): Promise<number>;
 
   /**
    * Send a message to the chat from this client. Sending a message causes the LLM to start
@@ -5557,12 +5558,12 @@ export type AiChatMetadata = {
   branchGadgets?: WorkpieceId[];
 
   /**
-   * How the chat's changes are held and accepted; absent means "auto". Set by newChat() and
-   * Overseer.setChatMode(). In a workspace that has read restricted data
-   * (`WorkspaceMetadata.containsRestrictedData`), a chat in Auto is delivered, and treated, as in
-   * Review.
+   * How the chat's changes are held and accepted. Set by newChat() and Overseer.setChatMode();
+   * a chat an agent spawner starts is in Auto, since nobody attends it. In a workspace that has
+   * read restricted data (`WorkspaceMetadata.containsRestrictedData`), a chat in Auto is
+   * delivered, and treated, as in Review.
    */
-  mode?: ChatMode;
+  mode: ChatMode;
 
   /**
    * Tokens the model reported for this conversation's last step, if known. Cleared when compaction

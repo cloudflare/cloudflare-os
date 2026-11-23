@@ -378,7 +378,7 @@ it("mainline binding names steer clear of another chat's pending binding", async
   const mainlineTargetId =
       await newConnection(ws, account.id, "https://gadgets-test.example/things/mainline-name");
 
-  const chatB = await ws.newChat("Reserve TEST_THING", null);
+  const chatB = await ws.newChat("Reserve TEST_THING", null, "auto");
   await app.bind("TEST_THING", draftTargetId, chatB);
   expect(await app.listBindings()).not.toContainEqual(expect.objectContaining({ name: "TEST_THING" }));
   expect(await app.listBindings(chatB)).toContainEqual(

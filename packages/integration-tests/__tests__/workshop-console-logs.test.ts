@@ -77,7 +77,7 @@ async function withLoggingGadget<T>(fn: (owner: Owner) => Promise<T>): Promise<T
         summary.commitId !== after ? summary.commitId : null;
   });
   const empty = await headOf();
-  const seed = await ws.newChat("Seed", null);
+  const seed = await ws.newChat("Seed", null, "auto");
   await ws.submitCodeChange(seed, {
     generation: 0, revision: 0, clientId: "seed", seq: 1, pins: [{ gadgetId, baseCommit: empty }],
     change: diffFiles(files(gadgetId), files(gadgetId, MAINLINE)),
@@ -95,7 +95,7 @@ async function greet(gadget: RpcStub<GadgetClient>, name: string, chatId?: numbe
 it.concurrent("gadget console logs reach subscribers, labelled with their draft or mainline",
     async () => {
   await withLoggingGadget(async ({ ws, gadget, gadgetId, head }) => {
-    const draft = await ws.newChat("Draft", null);
+    const draft = await ws.newChat("Draft", null, "auto");
     await ws.submitCodeChange(draft, {
       generation: 0, revision: 0, clientId: "draft", seq: 1, pins: [{ gadgetId, baseCommit: head }],
       change: diffFiles(files(gadgetId, MAINLINE), files(gadgetId, server("draft", "warn"))),

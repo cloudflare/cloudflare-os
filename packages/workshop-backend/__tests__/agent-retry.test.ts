@@ -53,7 +53,7 @@ function seedChat(impl: OverseerInternals): void {
     bindings: {},
   });
   impl.storage.chatMeta.put(
-      { id: CHAT_ID, title: "Chat", started: new Date(0), lastActive: new Date(0) });
+      { id: CHAT_ID, title: "Chat", mode: "auto", started: new Date(0), lastActive: new Date(0) });
   impl.storage.chats.put({
     chatId: CHAT_ID, sequence: impl.nextChatSequence(CHAT_ID), timestamp: new Date(0),
     author: OWNER, type: "message", message: "Hi",

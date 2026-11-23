@@ -27,7 +27,7 @@ type Impl = OverseerDurableObject["impl"];
 async function inKernel<T>(test: (impl: Impl) => Promise<T>): Promise<T> {
   return await runInDurableObject(env.TEST_OVERSEER.getByName(crypto.randomUUID()), async instance => {
     const impl = instance.impl, timestamp = impl.getChatTimestamp();
-    impl.storage.chatMeta.put({id: 1, title: "Validation", started: timestamp, lastActive: timestamp});
+    impl.storage.chatMeta.put({id: 1, title: "Validation", mode: "auto", started: timestamp, lastActive: timestamp});
     impl.addChatMessages(1, USER, [{type: "message", message: "Create an app."}]);
     impl.getInstanceInstructions = async () => "";
     impl.describeStandardFormats = async () => [];

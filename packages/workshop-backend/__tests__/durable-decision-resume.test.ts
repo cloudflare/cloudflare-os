@@ -120,7 +120,7 @@ async function scenario(kind: Kind | null = "connection", active = false, initia
   });
   await visit(impl => {
     const timestamp = impl.getChatTimestamp();
-    impl.storage.chatMeta.put({id: CHAT, title: "Resume", started: timestamp, lastActive: timestamp,
+    impl.storage.chatMeta.put({id: CHAT, title: "Resume", mode: "auto", started: timestamp, lastActive: timestamp,
       ...(active ? {activeAgent: MODEL.profile} : {})});
     impl.storage.chatContext.put({chatId: CHAT, bindings: {}, alwaysAvailableCapsuleIds: []});
     if (!kind) return;  // A new chat.

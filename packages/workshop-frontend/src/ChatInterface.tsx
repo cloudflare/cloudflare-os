@@ -69,7 +69,7 @@ import styles from "./ChatInterface.module.css";
 import {
   cacheModels,
   getCachedModels,
-  getStoredChatMode,
+  newChatMode,
   getStoredSelectedModel,
   persistSelectedModel,
   storeChatMode,
@@ -4184,7 +4184,8 @@ function ChatInterface({
   const [chatModeChange, setChatModeChange] = useState<{ chatId: number; mode: ChatMode } | null>(null);
   const openChatMode: ChatMode =
     (chatModeChange !== null && chatModeChange.chatId === selectedChatId ? chatModeChange.mode : undefined) ??
-    currentChatMetadata?.mode ?? "auto";
+    // Until the chat's metadata arrives, nothing is shown as accepting itself.
+    currentChatMetadata?.mode ?? "review";
   const handleChatModeChange = async (mode: ChatMode) => {
     if (selectedChatId === null) return;
     const change = { chatId: selectedChatId, mode };
@@ -4207,11 +4208,9 @@ function ChatInterface({
   // permit Auto, so a remembered Auto starts it in Review, and stays remembered for other
   // workspaces: only a mode the user chose here is remembered when the chat starts.
   const [newChatModeChoice, setNewChatModeChoice] = useState<ChatMode | null>(null);
-  const rememberedNewChatMode = newChatModeChoice ?? getStoredChatMode(userId);
-  const newChatMode: ChatMode =
-    restricted && rememberedNewChatMode === "auto" ? "review" : rememberedNewChatMode;
+  const startMode = newChatMode(userId, restricted === true, newChatModeChoice);
   const rememberNewChatMode = () => {
-    if (newChatModeChoice === newChatMode) storeChatMode(userId, newChatMode);
+    if (newChatModeChoice === startMode) storeChatMode(userId, startMode);
   };
 
   // Handle sending a message (always called from ChatComposer with explicit messageText)
@@ -4229,7 +4228,7 @@ function ChatInterface({
     try {
       if (selectedChatId === null) {
         // Create a new chat (with optional capsules).
-        const newChatId = await overseer.newChat(message, model, options, newChatMode);
+        const newChatId = await overseer.newChat(message, model, startMode, options);
         rememberNewChatMode();
         onNavigateToChatRef.current(newChatId);
       } else {
@@ -4258,7 +4257,7 @@ function ChatInterface({
     if (!message && !options?.attachments?.length) return;
     const model = modelId !== undefined ? modelId : selectedModel;
     try {
-      const newChatId = await overseer.newChat(message, model, options, newChatMode);
+      const newChatId = await overseer.newChat(message, model, startMode, options);
       rememberNewChatMode();
       onNavigateToChatRef.current(newChatId);
     } catch (err) {
@@ -5937,7 +5936,7 @@ function ChatInterface({
             modelsLoading={modelsLoading}
             onModelChange={handleModelChange}
             mode={{
-              mode: newChatMode,
+              mode: startMode,
               restricted: restricted === true,
               onModeChange: setNewChatModeChoice,
             }}

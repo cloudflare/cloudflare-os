@@ -87,7 +87,7 @@ it("synchronizes real timeline cursors across WebSocket sessions without leaking
     first.state && second.state && summary.state ? true : null,
   );
 
-  const chatId = await workspace.newChat("First persisted item", null);
+  const chatId = await workspace.newChat("First persisted item", null, "auto");
   const ownFirst = await waitFor("a caught-up sender consuming their own message", async () =>
     (await owner.getWorkspaceUnreadState(workspaceId)).find(chat => chat.chatId === chatId) ?? null);
   expect(ownFirst.unreadMessageCount).toBe(0);
@@ -224,7 +224,7 @@ it("synchronizes real timeline cursors across WebSocket sessions without leaking
       ? true
       : null,
   );
-  const other = await workspace.newChat("Another thread", null);
+  const other = await workspace.newChat("Another thread", null, "auto");
   expect((await builder.getWorkspaceUnreadState(workspaceId)).some(chat => chat.chatId === other)).toBe(false);
   using _otherView = await _builderWorkspace.viewChat(other);
   await waitFor("another enrolled thread", async () =>

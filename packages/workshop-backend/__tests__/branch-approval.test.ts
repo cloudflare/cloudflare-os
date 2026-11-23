@@ -56,7 +56,8 @@ async function workspace(facet: object) {
     impl.ownerId = user.id.toString();
     impl.storage.gatekeepers.put({id: GK, class: {} as never});
     for (const [id, title] of [[1, "Mine"], [2, "Theirs"]] as const) {
-      impl.storage.chatMeta.put({id, title, started: new Date(0), lastActive: new Date(id)});
+      impl.storage.chatMeta.put(
+          {id, title, started: new Date(0), lastActive: new Date(id), mode: "auto"});
     }
     vi.spyOn(impl, "getGatekeeperFacet").mockResolvedValue(facet as never);
   });
@@ -856,15 +857,15 @@ describe("chat modes", () => {
     });
   });
 
-  it("are changed in a chat, Auto being stored as no mode", async () => {
+  it("are changed in a chat, and set when one starts", async () => {
     const {client} = await workspace(legacyGatekeeper().facet);
     using overseer = await client();
     const mode = async () => (await overseer.listChats()).find(chat => chat.id === 1)?.mode;
     await overseer.setChatMode(1, "fork");
     expect(await mode()).toBe("fork");
     await overseer.setChatMode(1, "auto");
-    expect(await mode()).toBeUndefined();
-    const chatId = await overseer.newChat("Hold it.", null, undefined, "fork");
+    expect(await mode()).toBe("auto");
+    const chatId = await overseer.newChat("Hold it.", null, "fork");
     expect((await overseer.listChats()).find(chat => chat.id === chatId)?.mode).toBe("fork");
   });
 
@@ -874,7 +875,7 @@ describe("chat modes", () => {
     using overseer = await client();
     const refusal = (call: Promise<unknown>) => call.then(() => "", error => String(error));
     expect(await refusal(overseer.setChatMode(1, "auto"))).toMatch("restricted data");
-    expect(await refusal(overseer.newChat("Go.", null, undefined, "auto")))
+    expect(await refusal(overseer.newChat("Go.", null, "auto")))
         .toMatch("restricted data");
     await overseer.setChatMode(1, "fork");
     const chats = await overseer.listChats();

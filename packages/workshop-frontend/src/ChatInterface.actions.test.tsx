@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 /* eslint-disable react/react-in-jsx-scope */
 
+import { DEFAULT_CHAT_MODE } from './modelSelection'
 import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
@@ -215,7 +216,7 @@ function pendingLog(over: Partial<Record<string, unknown>> = {}) {
 async function renderPendingCard(log: ActionLogEntry, props: { restricted?: boolean } = {}) {
   const server = makeOverseer()
   const chat = withChatApi(server, undefined, [
-    { id: 1, title: 'Chat', started: new Date(), lastActive: new Date() },
+    { id: 1, title: 'Chat', mode: 'auto', started: new Date(), lastActive: new Date() },
   ])
   await renderChat(server.overseer, { ...props, selectedChatId: 1 })
   await server.resolveSubscription()
@@ -269,7 +270,7 @@ describe('the pending queue', () => {
     // does the conversation list's, where no chat's accept covers it.
     const server = makeOverseer()
     withChatApi(server, undefined, [
-      { id: 1, title: 'Chat', started: new Date(), lastActive: new Date() },
+      { id: 1, title: 'Chat', mode: 'auto', started: new Date(), lastActive: new Date() },
     ])
     await renderChat(server.overseer, { selectedChatId: 1 })
     await server.resolveSubscription()
@@ -288,7 +289,7 @@ describe('accepting a chat', () => {
       async () => {
     const server = makeOverseer()
     const chat = withChatApi(server, undefined, [
-      { id: 1, title: 'Chat', started: new Date(), lastActive: new Date() },
+      { id: 1, title: 'Chat', mode: 'auto', started: new Date(), lastActive: new Date() },
     ])
     const mergeChanges = vi.fn<Overseer['mergeChanges']>(async () => ({ outcome: 'merged' }))
     Object.assign(server.overseer as object, { mergeChanges })
@@ -317,7 +318,7 @@ describe('accepting a chat', () => {
   it('keeps Approve on a request the agent is waiting on', async () => {
     const server = makeOverseer()
     const chat = withChatApi(server, undefined, [
-      { id: 1, title: 'Chat', started: new Date(), lastActive: new Date() },
+      { id: 1, title: 'Chat', mode: 'auto', started: new Date(), lastActive: new Date() },
     ])
     await renderChat(server.overseer, { selectedChatId: 1 })
     await server.resolveSubscription()
@@ -332,7 +333,7 @@ describe('accepting a chat', () => {
       async (awaitingDecision) => {
     const server = makeOverseer()
     const chat = withChatApi(server, undefined, [{
-      id: 1, title: 'Chat', started: new Date(), lastActive: new Date(),
+      id: 1, title: 'Chat', mode: 'auto', started: new Date(), lastActive: new Date(),
       ...(awaitingDecision ? { awaitingDecision: true as const } : {}),
     }])
     await renderChat(server.overseer, { selectedChatId: 1 })
@@ -350,7 +351,7 @@ describe('accepting a chat', () => {
   it('holds back Accept changes until every pending request is known', async () => {
     const server = makeOverseer()
     withChatApi(server, undefined, [{
-      id: 1, title: 'Chat', started: new Date(), lastActive: new Date(),
+      id: 1, title: 'Chat', mode: 'auto', started: new Date(), lastActive: new Date(),
       proposedChangeWorkpieces: [1],
     }])
     await renderChat(server.overseer, { selectedChatId: 1 })
@@ -367,7 +368,7 @@ describe('accepting a chat', () => {
   it('holds back a Retry that accepts the chat until every pending request is known', async () => {
     const server = makeOverseer()
     withChatApi(server, undefined, [
-      { id: 1, title: 'Chat', started: new Date(), lastActive: new Date() },
+      { id: 1, title: 'Chat', mode: 'auto', started: new Date(), lastActive: new Date() },
     ])
     const mergeChanges = vi.fn<Overseer['mergeChanges']>(async () => ({ outcome: 'merged' }))
     Object.assign(server.overseer as object, { mergeChanges })
@@ -427,8 +428,8 @@ describe('accepting a chat', () => {
   it('reports the chats with changes waiting, for the Activity page', async () => {
     const server = makeOverseer()
     withChatApi(server, undefined, [
-      { id: 1, title: 'Busy', started: new Date(), lastActive: new Date(), pendingActions: 1 },
-      { id: 2, title: 'Idle', started: new Date(), lastActive: new Date() },
+      { id: 1, title: 'Busy', mode: 'auto', started: new Date(), lastActive: new Date(), pendingActions: 1 },
+      { id: 2, title: 'Idle', mode: 'auto', started: new Date(), lastActive: new Date() },
     ])
     const reported = vi.fn<(chats: readonly ChatWithChanges[]) => void>()
     await renderChat(server.overseer, { onChatsWithChangesChange: reported })
@@ -525,7 +526,7 @@ describe('code changes in the pending list', () => {
   it('lists each gadget and worktree the chat changes, each opening its code', async () => {
     const server = makeOverseer()
     withChatApi(server, undefined, [{
-      id: 1, title: 'Chat', started: new Date(), lastActive: new Date(),
+      id: 1, title: 'Chat', mode: 'auto', started: new Date(), lastActive: new Date(),
       // 7 is a gatekeeper whose binding the chat changes, which has no code to open.
       proposedChangeWorkpieces: [5, 6, 7],
     }])
@@ -567,7 +568,7 @@ describe("a resource the agent created", () => {
     } as unknown as typeof auth.authenticatedApi
     const server = makeOverseer()
     const chat = withChatApi(server, undefined, [
-      { id: 1, title: 'Chat', started: new Date(), lastActive: new Date() },
+      { id: 1, title: 'Chat', mode: 'auto', started: new Date(), lastActive: new Date() },
     ])
     await renderChat(server.overseer, { selectedChatId: 1 })
     await server.resolveSubscription()
@@ -768,7 +769,7 @@ describe('action fields', () => {
 // The server's refusal for a chat whose model an administrator disabled.
 const disabledModel = 'The "Kimi K3" model is disabled on this deployment by an administrator.'
 
-const openChat = { id: 1, title: 'Chat', started: new Date(), lastActive: new Date() }
+const openChat = { id: 1, title: 'Chat', mode: 'auto' as const, started: new Date(), lastActive: new Date() }
 
 // Types into the composer on screen and submits it with Enter.
 async function sendFromComposer(text: string) {
@@ -810,7 +811,7 @@ describe('the chat mode', () => {
     const server = makeOverseer()
     withChatApi(server, undefined, [
       { id: 1, title: 'Chat', started: new Date(), lastActive: new Date(), mode: 'review' },
-      { id: 2, title: 'Other', started: new Date(), lastActive: new Date() },
+      { id: 2, title: 'Other', mode: 'auto', started: new Date(), lastActive: new Date() },
     ])
     await renderChat(server.overseer, { selectedChatId: 1 })
     expect(modeShown().dataset.mode).toBe('review')
@@ -821,7 +822,7 @@ describe('the chat mode', () => {
 
   it("changes the chat's mode as soon as it is chosen, and puts it back if that fails", async () => {
     const server = makeOverseer()
-    withChatApi(server, undefined, [{ id: 1, title: 'Chat', started: new Date(), lastActive: new Date() }])
+    withChatApi(server, undefined, [{ id: 1, title: 'Chat', mode: 'auto', started: new Date(), lastActive: new Date() }])
     const change = deferred<void>()
     const setChatMode = vi.fn<Overseer['setChatMode']>(() => change.promise)
     Object.assign(server.overseer as object, { setChatMode })
@@ -839,7 +840,7 @@ describe('the chat mode', () => {
 
   it('is read-only for a user who may not change it', async () => {
     const server = makeOverseer()
-    withChatApi(server, undefined, [{ id: 1, title: 'Chat', started: new Date(), lastActive: new Date() }])
+    withChatApi(server, undefined, [{ id: 1, title: 'Chat', mode: 'auto', started: new Date(), lastActive: new Date() }])
     await renderChat(server.overseer, { selectedChatId: 1, modeReadOnly: true })
 
     expect(modeShown().dataset.readonly).toBe('true')
@@ -856,20 +857,20 @@ describe('the chat mode', () => {
     expect(modeShown().dataset.mode).toBe('fork')
 
     await sendFromComposer('Plan the trip')
-    expect(newChat.mock.calls[0][3]).toBe('fork')
+    expect(newChat.mock.calls[0][2]).toBe('fork')
 
     await choose('review')
     await sendFromComposer('Plan another')
-    expect(newChat.mock.calls[1][3]).toBe('review')
+    expect(newChat.mock.calls[1][2]).toBe('review')
     expect(localStorage.getItem('lastChatMode:alice')).toBe('review')
   })
 
-  it('starts a new chat in Auto for a user who never chose', async () => {
+  it('starts a new chat in the default mode for a user who never chose', async () => {
     const server = makeOverseer()
     withChatApi(server)
     await renderChat(server.overseer)
 
-    expect(modeShown().dataset.mode).toBe('auto')
+    expect(modeShown().dataset.mode).toBe(DEFAULT_CHAT_MODE)
   })
 
   it('starts in Review where restricted data rules out Auto, leaving the remembered Auto alone', async () => {
@@ -884,7 +885,7 @@ describe('the chat mode', () => {
     expect(modeShown().dataset.mode).toBe('review')
     expect(modeShown().dataset.restricted).toBe('true')
     await sendFromComposer('Plan the trip')
-    expect(newChat.mock.calls[0][3]).toBe('review')
+    expect(newChat.mock.calls[0][2]).toBe('review')
     expect(localStorage.getItem('lastChatMode:alice')).toBe('auto')
   })
 })

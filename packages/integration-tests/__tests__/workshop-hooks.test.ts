@@ -96,7 +96,7 @@ async function armHooks(prefix: string, names: string[], binding: Binding = "wat
   const ws = stack.use(await api.newWorkspace());
   const { id: workspaceId } = await ws.getMetadata();
 
-  const chatId = await ws.newChat("Build a hooked gadget.", SCRIPTED_MODEL_ID);
+  const chatId = await ws.newChat("Build a hooked gadget.", SCRIPTED_MODEL_ID, "auto");
   await waitFor("the build turn", async () => model.requests.length === 2 || null);
   await waitForIdleChat(ws, chatId);
   expect((await ws.mergeChanges(chatId)).outcome).toBe("merged");

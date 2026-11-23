@@ -46,7 +46,8 @@ async function workspace(facet: object) {
     impl.ownerId = user.id.toString();
     impl.storage.gatekeepers.put({id: GK, class: {} as never});
     for (const id of [1, 2]) {
-      impl.storage.chatMeta.put({id, title: `Chat ${id}`, started: new Date(0), lastActive: new Date(id)});
+      impl.storage.chatMeta.put({
+          id, title: `Chat ${id}`, started: new Date(0), lastActive: new Date(id), mode: "auto"});
     }
     vi.spyOn(impl, "getGatekeeperFacet").mockResolvedValue(facet as never);
   });

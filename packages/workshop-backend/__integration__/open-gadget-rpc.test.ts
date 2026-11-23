@@ -211,7 +211,7 @@ describe("workspace session across a user-DO-only reset", () => {
     using workspace = await authenticated.newWorkspace();
 
     // Model id null: commits the message without starting an agent — the pure chat-start path.
-    expect(await workspace.newChat("before the reset", null)).toEqual(expect.any(Number));
+    expect(await workspace.newChat("before the reset", null, "auto")).toEqual(expect.any(Number));
 
     const userStub = exports.UserDurableObject.get(
       exports.UserDurableObject.idFromName(account.username));
@@ -222,7 +222,7 @@ describe("workspace session across a user-DO-only reset", () => {
 
     // Every operation below crosses into the user DO through the SAME retained workspace
     // capability. Each minting a fresh stub is what restarts the object and recovers.
-    expect(await workspace.newChat("after the reset", null)).toEqual(expect.any(Number));
+    expect(await workspace.newChat("after the reset", null, "auto")).toEqual(expect.any(Number));
     expect(await workspace.listModels()).toBeInstanceOf(Array);
     // createGadget resolves the binding name via getChatContext, and hands back a nested
     // GadgetClient capability that must also be born with the fresh-stub design.

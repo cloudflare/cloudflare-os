@@ -213,10 +213,29 @@ export function persistSelectedModel(
 
 const CHAT_MODES: readonly string[] = ["auto", "review", "fork"] satisfies ChatMode[];
 
-/** The mode a new chat of `userId`'s starts in: the one they last started a chat in, or Auto. */
+/**
+ * The mode a user who has never chosen one starts chats in. It is a default for that preference
+ * and for nothing else: code that starts a chat asks newChatMode() for the user's mode, and names
+ * a mode itself only for a reason of its own.
+ */
+export const DEFAULT_CHAT_MODE: ChatMode = "auto";
+
+/** The mode `userId` prefers: the one they last started a chat in, or DEFAULT_CHAT_MODE. */
 export function getStoredChatMode(userId: string | undefined): ChatMode {
   const stored = read(CHAT_MODE, userId);
-  return stored !== null && CHAT_MODES.includes(stored) ? stored as ChatMode : "auto";
+  return stored !== null && CHAT_MODES.includes(stored) ? stored as ChatMode : DEFAULT_CHAT_MODE;
+}
+
+/**
+ * The mode a new chat of `userId`'s starts in: `choice`, when they made one for this chat, or
+ * else their preference. A workspace that has read restricted data permits no Auto, so there
+ * Auto starts the chat in Review.
+ */
+export function newChatMode(
+  userId: string | undefined, restricted: boolean, choice?: ChatMode | null,
+): ChatMode {
+  const mode = choice ?? getStoredChatMode(userId);
+  return restricted && mode === "auto" ? "review" : mode;
 }
 
 /** Remembers the mode `userId` started a chat in, for getStoredChatMode(). */

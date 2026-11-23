@@ -341,7 +341,7 @@ async function installServer(ws: Workspace, gadgetId: WorkpieceId, server: strin
   if (summary?.type !== "gadget" || summary.commitId === undefined) {
     throw new Error("The new gadget has no committed head");
   }
-  const chatId = await ws.overseer.newChat("Implement the server", null);
+  const chatId = await ws.overseer.newChat("Implement the server", null, "auto");
   await ws.overseer.submitCodeChange(chatId, {
     generation: 0, revision: 0, clientId: "observer-subresources", seq: 1,
     pins: [{ gadgetId, baseCommit: summary.commitId }],

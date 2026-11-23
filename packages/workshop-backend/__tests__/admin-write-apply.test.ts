@@ -133,7 +133,7 @@ function seed(ws: Workspace): void {
   impl.storage.title.put("Quarterly plan");
 
   impl.storage.chatMeta.put(
-      { id: CHAT_ID, title: "Plans", started: new Date(0), lastActive: new Date(0) });
+      { id: CHAT_ID, title: "Plans", mode: "auto", started: new Date(0), lastActive: new Date(0) });
 }
 
 // A write as AdminApiImpl.writeWorkspace() hands one over: made by ADMIN.

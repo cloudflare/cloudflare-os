@@ -1036,7 +1036,7 @@ async function propose(
 }
 
 function addChat(impl: any, id: number): void {
-  impl.storage.chatMeta.put({ id, title: "Chat", started: new Date(0), lastActive: new Date(0) });
+  impl.storage.chatMeta.put({ id, title: "Chat", mode: "auto", started: new Date(0), lastActive: new Date(0) });
 }
 
 /** A chat in which the owner has asked the agent for something. */

@@ -59,7 +59,7 @@ async function commitFiles(impl: any, files: Record<string, string>, parents: st
 async function setup(impl: any, files: Record<string, string> = BASE)
     : Promise<{ id: number, base: string }> {
   impl.storage.chatMeta.put(
-      { id: CHAT, title: "Chat", started: new Date(0), lastActive: new Date(0) });
+      { id: CHAT, title: "Chat", mode: "auto", started: new Date(0), lastActive: new Date(0) });
   let base = await commitFiles(impl, files);
   let { id } = await impl.createWorktree("Repo", CHAT, base);
   await impl.commitAgentStep(CHAT, AGENT, [], {

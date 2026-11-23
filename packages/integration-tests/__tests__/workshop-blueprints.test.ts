@@ -123,7 +123,7 @@ const userPrompt = (content: string) =>
 async function commitText(ws: RpcStub<Overseer>, workpieces: WorkpieceRecorder,
                           gadgetId: WorkpieceId, head: string, path: string,
                           before: string | undefined, after: string): Promise<string> {
-  const chatId = await ws.newChat("Edit", null);
+  const chatId = await ws.newChat("Edit", null, "auto");
   await ws.submitCodeChange(chatId, {
     generation: 0, revision: 0, clientId: "edit", seq: 1,
     pins: [{ gadgetId, baseCommit: head }], change: edit(gadgetId, path, before, after),
@@ -203,7 +203,7 @@ async function commitCode(ws: RpcStub<Overseer>, gadgetId: WorkpieceId, code: Co
     : Promise<string> {
   const content = (of: Code): CodeContent => new Map([[gadgetId, new Map(Object.entries(of))]]);
   const { commitId: head } = await gadgetNow(ws, gadgetId);
-  const chatId = await ws.newChat("Edit", null);
+  const chatId = await ws.newChat("Edit", null, "auto");
   await ws.submitCodeChange(chatId, {
     generation: 0, revision: 0, clientId: "edit", seq: 1, pins: [{ gadgetId, baseCommit: head }],
     change: diffFiles(content(await codeAt(ws, head)), content(code)),
@@ -630,7 +630,7 @@ it.concurrent("a gadget switches to a blueprint built on an earlier release of t
   using bobWs = await bobApi.newWorkspaceFromBlueprint(alices.blueprintId, {});
   const bobGadget = await defaultGadget(bobWs);
   const { commitId: bobsStart } = await gadgetNow(bobWs, bobGadget);
-  const bobsChat = await bobWs.newChat("Add my file", null);
+  const bobsChat = await bobWs.newChat("Add my file", null, "auto");
   await bobWs.setChatTitle(bobsChat, "Bob's file");
   await bobWs.submitCodeChange(bobsChat, {
     generation: 0, revision: 0, clientId: "bob", seq: 1,

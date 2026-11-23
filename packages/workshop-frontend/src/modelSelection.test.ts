@@ -7,7 +7,9 @@ import {
   cacheModels,
   forgetModelSelection,
   getCachedModels,
+  DEFAULT_CHAT_MODE,
   getStoredChatMode,
+  newChatMode,
   getStoredSelectedModel,
   NO_AGENT_OPTION_VALUE,
   persistSelectedModel,
@@ -265,23 +267,39 @@ describe('a browser shared between users', () => {
 })
 
 describe('the new-chat mode', () => {
-  it('is Auto until the user starts a chat in another', () => {
-    expect(getStoredChatMode('alice')).toBe('auto')
+  it('is the default until the user starts a chat in another', () => {
+    expect(getStoredChatMode('alice')).toBe(DEFAULT_CHAT_MODE)
     storeChatMode('alice', 'review')
     expect(getStoredChatMode('alice')).toBe('review')
+    storeChatMode('alice', 'auto')
+    expect(getStoredChatMode('alice')).toBe('auto')
   })
 
   it("is the user's own, and nobody's before the user is confirmed", () => {
     storeChatMode('alice', 'fork')
-    expect(getStoredChatMode('bob')).toBe('auto')
-    expect(getStoredChatMode(undefined)).toBe('auto')
+    expect(getStoredChatMode('bob')).toBe(DEFAULT_CHAT_MODE)
+    expect(getStoredChatMode(undefined)).toBe(DEFAULT_CHAT_MODE)
     storeChatMode(undefined, 'review')
     expect(getStoredChatMode('alice')).toBe('fork')
   })
 
-  it('reads anything else stored there as Auto', () => {
+  it('reads anything else stored there as the default', () => {
     localStorage.setItem('lastChatMode:alice', 'holding')
-    expect(getStoredChatMode('alice')).toBe('auto')
+    expect(getStoredChatMode('alice')).toBe(DEFAULT_CHAT_MODE)
+  })
+
+  it("starts a chat in the user's choice for it, else in the mode they prefer", () => {
+    storeChatMode('alice', 'fork')
+    expect(newChatMode('alice', false)).toBe('fork')
+    expect(newChatMode('alice', false, 'review')).toBe('review')
+    expect(newChatMode('bob', false)).toBe(DEFAULT_CHAT_MODE)
+  })
+
+  it('starts a chat in Review where restricted data rules out Auto', () => {
+    storeChatMode('alice', 'auto')
+    expect(newChatMode('alice', true)).toBe('review')
+    expect(newChatMode('alice', true, 'auto')).toBe('review')
+    expect(newChatMode('alice', true, 'fork')).toBe('fork')
   })
 })
 

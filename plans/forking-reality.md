@@ -848,7 +848,7 @@ caution, turns holding on in a chat (`AiChatMetadata.holding`).
 
 - While it is on, every gadget opened in that chat runs on the chat's branch, whatever else is
   true of the chat. Its actions wait for that chat to be accepted.
-- Any chat will do, including one with no agent (`newChat(message, null)`), for a user who only
+- Any chat will do, including one with no agent (`newChat(message, null, mode)`), for a user who only
   wants somewhere to hold changes. The gadget view offers this directly: "Hold changes" creates
   such a chat, turns holding on, and opens the gadget in it.
 - Turning it off sends the gadget back to mainline once the chat's branch is empty. Until then
@@ -1456,8 +1456,14 @@ Settled:
 export type ChatMode = "auto" | "review" | "fork";
 ```
 
-- **Stored on the chat**, as `AiChatMetadata.mode`, replacing `holding`. Absent means `"auto"`.
-- **Set two ways.** `newChat()` takes it as a new optional last parameter.
+- **Stored on the chat**, as `AiChatMetadata.mode`, replacing `holding`. Every chat has one.
+- **Nothing defaults to a mode.** Auto is the default for one thing, the user's preference: the
+  mode a user who has never chosen starts chats in, which the client keeps (`DEFAULT_CHAT_MODE`).
+  Everywhere else a mode is named for a reason of its own. A chat an agent spawner starts is in
+  Auto because nobody attends it, and a blueprint update's chat is in Review because it exists
+  to be reviewed.
+- **Set two ways.** `newChat()` takes it as a required parameter, before its options, so every
+  caller says which mode it means: the client passes the user's preference.
   `setChatMode(chatId, mode)` changes it afterwards and replaces `setChatHolding()`.
   `sendChatMessage()` is unchanged.
 - **The chooser calls `setChatMode()` as soon as it changes.** The alternative, a
@@ -1735,7 +1741,7 @@ permitted.
 - **Attribution** for a spawned turn is the user the spawner already resolves its model from.
 - **Blueprint updates** (`applyBlueprint()`) start a chat for the user to review a merge. It is
   created in Review.
-- **"Hold changes" in the gadget view** becomes `newChat(message, null, …, "fork")`: one call
+- **"Hold changes" in the gadget view** becomes `newChat(message, null, "fork")`: one call
   where there are two today.
 
 ## Migration
@@ -1749,7 +1755,7 @@ run on main's data, to produce part 2's state directly:
   less review than a user was used to is a bad surprise, and more is a small one until they
   find the mode chooser. This follows the ruling for staged actions pending at upgrade, and goes
   in the same migration (`migrateToHeldStaging`).
-- A chat created after the upgrade has no mode unless it is given one, which reads as Auto.
+- A chat created after the upgrade is in the mode its creator names.
 
 `holding` is deleted from the stored chat type outright.
 
@@ -1758,8 +1764,8 @@ run on main's data, to produce part 2's state directly:
 | Change | Purpose |
 |---|---|
 | `ChatMode` | the three modes |
-| `AiChatMetadata.mode?: ChatMode`, replacing `holding` | the chat's mode |
-| `newChat(…, mode?: ChatMode)` | a new chat's mode |
+| `AiChatMetadata.mode: ChatMode`, replacing `holding` | the chat's mode |
+| `newChat(message, modelId, mode, options?)` | a new chat's mode |
 | `setChatMode(chatId, mode)`, replacing `setChatHolding()` | changing it |
 | doc comments on `setAutoApprovedActionKind()` and the rule types | say the rules have no effect |
 | `MergeChangesOptions.creations` removed | accepting never saves |

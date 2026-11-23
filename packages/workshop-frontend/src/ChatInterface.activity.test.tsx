@@ -25,7 +25,7 @@ afterEach(() => { testRoot.cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(
 
 const agent = {type: "agent" as const, id: "model", name: "Test agent"};
 const chat = (id: number, over: Partial<AiChatMetadata> = {}): AiChatMetadata => ({
-  id, title: `Chat ${id}`, started: new Date(), lastActive: new Date(), ...over,
+  id, title: `Chat ${id}`, mode: "auto", started: new Date(), lastActive: new Date(), ...over,
 });
 
 const setup = () => {

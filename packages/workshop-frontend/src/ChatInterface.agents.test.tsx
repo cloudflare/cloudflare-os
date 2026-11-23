@@ -53,7 +53,7 @@ const MODEL = {name: "Model"} as AiChatAuthorInfo;
 
 const chat = (over: Partial<AiChatMetadata> & {id: number}): AiChatMetadata => ({
   title: `Chat ${over.id}`,
-  started: new Date(),
+  mode: "auto", started: new Date(),
   lastActive: new Date(),
   ...over,
 });

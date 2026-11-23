@@ -19,7 +19,7 @@ afterEach(() => { testRoot.cleanup(); vi.restoreAllMocks(); });
 const NOW = new Date("2026-11-12T17:00:00Z");
 
 const run = (id: number, over: Partial<AiChatMetadata> = {}): AiChatMetadata => ({
-  id, title: `Run ${id}`, spawnerName: "Invoice watcher", started: NOW, lastActive: NOW, ...over,
+  id, title: `Run ${id}`, spawnerName: "Invoice watcher", mode: "auto", started: NOW, lastActive: NOW, ...over,
 });
 
 const request = (id: number) => entry(id, {

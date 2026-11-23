@@ -3,7 +3,7 @@ import type { AiChatMetadata } from '@gadgets/workshop-shared/api'
 import { chatsWithChanges } from './chatsWithChanges'
 
 const chat = (id: number, over: Partial<AiChatMetadata> = {}): AiChatMetadata =>
-  ({ id, title: `Chat ${id}`, started: new Date(), lastActive: new Date(), ...over })
+  ({ id, title: `Chat ${id}`, mode: 'auto', started: new Date(), lastActive: new Date(), ...over })
 
 describe('chatsWithChanges', () => {
   it('lists the chats with requests or code changes waiting, and only those', () => {

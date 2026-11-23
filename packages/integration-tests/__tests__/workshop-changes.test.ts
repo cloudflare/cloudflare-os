@@ -142,7 +142,7 @@ async function seedGadget({ ws, workpieces }: Client, path: string, text: string
   using gadget = ws.createGadget("App", undefined, "APP");
   const gadgetId = await gadget.getId();
   const empty = await headOf(workpieces, gadgetId);
-  const chatId = await ws.newChat("Seed", null);
+  const chatId = await ws.newChat("Seed", null, "auto");
   await ws.submitCodeChange(chatId, {
     generation: 0, revision: 0, clientId: "seed", seq: 1,
     pins: [{ gadgetId, baseCommit: empty }], change: edit(gadgetId, path, undefined, text),
@@ -244,7 +244,7 @@ it.concurrent("one accept commits both gadgets a chat built, each with only its 
   });
 
   await reopen(session.username, async ({ ws, workpieces }) => {
-    const editA = await ws.newChat("Edit A", null);
+    const editA = await ws.newChat("Edit A", null, "auto");
     await ws.submitCodeChange(editA, {
       generation: 0, revision: 0, clientId: "editor", seq: 1,
       pins: [{ gadgetId: a, baseCommit: headA }],
@@ -279,8 +279,8 @@ it.concurrent.for([
     const { ws, workpieces } = client;
     const { gadgetId, head } = await seedGadget(client, "client.js", row.base);
     using gadget = await ws.getGadget(gadgetId);
-    const chatA = await ws.newChat("A", null);
-    const chatB = await ws.newChat("B", null);
+    const chatA = await ws.newChat("A", null, "auto");
+    const chatB = await ws.newChat("B", null, "auto");
     const pins = [{ gadgetId, baseCommit: head }];
     await ws.submitCodeChange(chatA, {
       generation: 0, revision: 0, clientId: "a", seq: 1, pins,
@@ -364,7 +364,7 @@ it.concurrent("two simultaneous chat merges choose one complete version", async 
     const texts = ["from chat A\n", "from chat B\n"];
     const chatIds = [];
     for (const [i, text] of texts.entries()) {
-      const chatId = await ws.newChat(`Chat ${i}`, null);
+      const chatId = await ws.newChat(`Chat ${i}`, null, "auto");
       await ws.submitCodeChange(chatId, {
         generation: 0, revision: 0, clientId: `editor-${i}`, seq: 1,
         pins: [{ gadgetId, baseCommit: head }], change: edit(gadgetId, "app.txt", base, text),
@@ -417,7 +417,7 @@ it.concurrent("a second session follows renames, drafts, merges and reverts", as
         expect(chat.proposedChangeWorkpieces).toEqual([gadgetId]);
       };
 
-      const merged = await writer.ws.newChat("Merge this draft", null);
+      const merged = await writer.ws.newChat("Merge this draft", null, "auto");
       const chatTitle = "Renamed shared chat";
       await writer.ws.setChatTitle(merged, chatTitle);
       await readerChat(merged, chat => chat.title === chatTitle);
@@ -431,7 +431,7 @@ it.concurrent("a second session follows renames, drafts, merges and reverts", as
       ].map(commit => ({ ...commit, author, timestamp: expect.any(Date) }));
       expect(await reader.ws.getCommitLog(mergedHead)).toEqual(log);
 
-      const reverted = await writer.ws.newChat("Revert this draft", null);
+      const reverted = await writer.ws.newChat("Revert this draft", null, "auto");
       await propose(reverted, mergedHead, "merged\n", "merged\nreverted\n");
       await writer.ws.revertChanges(reverted, 0);
       await readerChat(reverted, chat => chat.proposedChangeWorkpieces === undefined);
@@ -470,7 +470,7 @@ it.concurrent("reverting agent steps drops their code, then the gadget and its n
     expect(await proposed()).toEqual([gadgetId]);
     expect(workpieces.summaries.get(gadgetId)).toMatchObject({ chatId: chatA });
     expect(await gadget.getUiBundle(chatA)).toBeNull();
-    const chatB = await ws.newChat("Another take", null);
+    const chatB = await ws.newChat("Another take", null, "auto");
     await expect(ws.createGadget("App", chatB, "APP"))
         .rejects.toThrow('The gadget name "APP" is claimed by a gadget still pending in another chat');
 
@@ -496,11 +496,11 @@ it.concurrent("deleting a chat drops its provisional gadget, binding claim and a
     using app = await ws.createGadget("App", undefined, "APP");
     const upload = {oid: await ws.uploadBlob(new TextEncoder().encode("chat A notes")),
       mimeType: "text/plain", name: "notes.txt"};
-    const chatA = await ws.newChat("A", null, {attachments: [upload]});
+    const chatA = await ws.newChat("A", null, "auto", {attachments: [upload]});
     const message = (await ws.getChatHistory(chatA)).messages.find(m => m.type === "message");
     if (message?.type !== "message" || !message.attachments?.length) throw new Error("Missing attachment");
     const attachmentId = message.attachments[0].id;
-    const chatB = await ws.newChat("B", null);
+    const chatB = await ws.newChat("B", null, "auto");
     using draft = await ws.createGadget("Draft", chatA, "DRAFT");
     const draftId = await draft.getId();
     await app.bind("DATA", dataId, chatA);
@@ -533,7 +533,7 @@ it.concurrent("two editors of one chat draft converge, and retries are idempoten
       await owner.ws.addCollaborator(name, "workspace");
       return api.openWorkspace(id);
     }, async collaborator => {
-      const chatId = await owner.ws.newChat("Let's edit together", null);
+      const chatId = await owner.ws.newChat("Let's edit together", null, "auto");
       const pins = [{ gadgetId, baseCommit: head }];
       const ownerEdit = {
         generation: 0, revision: 0, clientId: "owner", seq: 1, pins,
@@ -579,7 +579,7 @@ it.concurrent("an edit rooted before a merge is carried into the new generation"
   await withOwner(async client => {
     const { ws, workpieces } = client;
     const { gadgetId, head } = await seedGadget(client, "app.txt", "one\n");
-    const chatId = await ws.newChat("Edit", null);
+    const chatId = await ws.newChat("Edit", null, "auto");
     await ws.submitCodeChange(chatId, {
       generation: 0, revision: 0, clientId: "editor", seq: 1, pins: [{ gadgetId, baseCommit: head }],
       change: edit(gadgetId, "app.txt", "one\n", "one\nfirst\n"),
@@ -602,7 +602,7 @@ it.concurrent.for(["revert", "discard"] as const)(
   await withOwner(async client => {
     const { ws } = client;
     const { gadgetId, head } = await seedGadget(client, "app.txt", "one\n");
-    const chatId = await ws.newChat("Edit", null);
+    const chatId = await ws.newChat("Edit", null, "auto");
     await ws.submitCodeChange(chatId, {
       generation: 0, revision: 0, clientId: "first", seq: 1, pins: [{ gadgetId, baseCommit: head }],
       change: edit(gadgetId, "app.txt", "one\n", "one\nfirst\n"),
@@ -648,7 +648,7 @@ it.concurrent("draft and mainline code run separately across merge and revert", 
       return versions;
     };
 
-    const chatId = await ws.newChat("Edit", null);
+    const chatId = await ws.newChat("Edit", null, "auto");
     await ws.submitCodeChange(chatId, {
       generation: 0, revision: 0, clientId: "editor", seq: 1, pins: [{ gadgetId, baseCommit: head }],
       change: edit(gadgetId, "server.js", server("v1"), server("v2")),
@@ -676,7 +676,7 @@ it.concurrent("a server.js that imports a module of its own runs", async () => {
     const { ws } = client;
     const { gadgetId, head } = await seedGadget(client, "lib/util.js",
         `export const version = () => "util";\n`);
-    const chatId = await ws.newChat("Split", null);
+    const chatId = await ws.newChat("Split", null, "auto");
     await ws.submitCodeChange(chatId, {
       generation: 0, revision: 0, clientId: "editor", seq: 1, pins: [{ gadgetId, baseCommit: head }],
       change: edit(gadgetId, "server.js", undefined, `import { DurableObject } from "cloudflare:workers";\n` +
@@ -722,7 +722,7 @@ it.concurrent("gadget state survives code changes and restart but is not copied 
     expect(await gadgetState(ws, gadgetId, undefined, facet => facet.put("k", "v1-data")))
         .toEqual({ version: "v1", k: "v1-data" });
 
-    const v2Chat = await ws.newChat("V2", null);
+    const v2Chat = await ws.newChat("V2", null, "auto");
     await ws.submitCodeChange(v2Chat, {
       generation: 0, revision: 0, clientId: "editor", seq: 1, pins: [{ gadgetId, baseCommit: head }],
       change: edit(gadgetId, "server.js", stateServer("v1"), stateServer("v2")),
@@ -731,7 +731,7 @@ it.concurrent("gadget state survives code changes and restart but is not copied 
     const v2Head = await headOf(workpieces, gadgetId, head);
     expect(await gadgetState(ws, gadgetId)).toEqual(v2State);
 
-    const v3Chat = await ws.newChat("V3", null);
+    const v3Chat = await ws.newChat("V3", null, "auto");
     await ws.submitCodeChange(v3Chat, {
       generation: 0, revision: 0, clientId: "editor", seq: 1, pins: [{ gadgetId, baseCommit: v2Head }],
       change: edit(gadgetId, "server.js", stateServer("v2"), stateServer("v3")),

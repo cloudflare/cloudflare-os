@@ -108,7 +108,7 @@ const changes = (
 const chatMetadata = (over: Partial<AiChatMetadata> = {}): AiChatMetadata => ({
   id: CHAT_ID,
   title: 'Update from blueprint: Trip planner',
-  started: new Date(1700000000000),
+  mode: 'auto', started: new Date(1700000000000),
   lastActive: new Date(1700000000000),
   ...over,
 })

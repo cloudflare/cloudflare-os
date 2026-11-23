@@ -205,7 +205,7 @@ function startTurn(responses: (() => Response)[], {
       }),
     };
     impl.storage.chatMeta.put({
-      id: CHAT_ID, title: "Chat", started: new Date(0), lastActive: new Date(0),
+      id: CHAT_ID, title: "Chat", mode: "auto", started: new Date(0), lastActive: new Date(0),
       activeAgent: MODEL,
       ...(spawned ? {spawnerName: "Spawner"} : {}),
     });
@@ -407,7 +407,7 @@ describe("agent tracing", () => {
         },
       });
       impl.storage.chatMeta.put({
-        id: CHAT_ID, title: "Chat", started: new Date(0), lastActive: new Date(0),
+        id: CHAT_ID, title: "Chat", mode: "auto", started: new Date(0), lastActive: new Date(0),
       });
       impl.storage.activeAgents.put({
         chatId: CHAT_ID, initiatorUserId: OWNER_USER_ID, modelId: MODEL.id, initiator: OWNER,

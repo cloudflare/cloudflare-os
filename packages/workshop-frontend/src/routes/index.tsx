@@ -18,7 +18,7 @@ import {
 import {
   cacheModels,
   getCachedModels,
-  getStoredChatMode,
+  newChatMode,
   getStoredSelectedModel,
   persistSelectedModel,
   storeChatMode,
@@ -70,7 +70,8 @@ export function HomePageContent({ prompt }: HomeSearch) {
   // The mode the chat starts in: the one the user last started a chat in, until they choose
   // another, which is remembered once the chat starts.
   const [modeChoice, setModeChoice] = useState<ChatMode | null>(null);
-  const mode = modeChoice ?? getStoredChatMode(userId);
+  // The chat starts in a workspace made for it, which has read no restricted data.
+  const mode = newChatMode(userId, false, modeChoice);
   // Bumped each time a task suggestion is picked; the composer re-seeds its text off the nonce.
   const [seed, setSeed] = useState<{ text: string; nonce: number } | null>(null);
 
@@ -138,7 +139,7 @@ export function HomePageContent({ prompt }: HomeSearch) {
         const overseer = provisionalOverseerRef.current!.stub;
         // Pipeline both independent calls in one batch, but settle both before releasing the stub.
         const [chat, {id}] = await Promise.all([
-          overseer.newChat(message, modelId, options, mode),
+          overseer.newChat(message, modelId, mode, options),
           overseer.getMetadata(),
         ]);
         if (modeChoice !== null) storeChatMode(userId, modeChoice);

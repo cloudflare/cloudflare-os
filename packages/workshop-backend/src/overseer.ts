@@ -3234,18 +3234,13 @@ class OverseerImpl implements AgentHooks {
     if (pending > 0) meta.pendingActions = pending;
     let gadgets = this.branchGadgetIds(stored.id, stored);
     if (gadgets.length > 0) meta.branchGadgets = gadgets;
-    let mode = this.chatMode(stored);
-    if (mode === "auto") {
-      delete meta.mode;
-    } else {
-      meta.mode = mode;
-    }
+    meta.mode = this.chatMode(stored);
     return meta;
   }
 
   // Refuses Auto (see chatMode) while the workspace has latched restricted-data mode, in which
   // every change must be reviewed.
-  assertChatModePermitted(mode: ChatMode | undefined): void {
+  assertChatModePermitted(mode: ChatMode): void {
     if (mode === "auto" && this.storage.containsRestrictedData.get()) {
       throw new Error("This workspace has read restricted data, so every change must be " +
           "reviewed. Choose Review or Fork.");
@@ -3256,8 +3251,8 @@ class OverseerImpl implements AgentHooks {
   // workspace has latched restricted-data mode, which permits no Auto. The latch can set at any
   // time, so it is applied here, where the mode is read, rather than to stored chats.
   chatMode(meta: AiChatMetadata): ChatMode {
-    let mode = meta.mode ?? "auto";
-    return mode === "auto" && this.storage.containsRestrictedData.get() ? "review" : mode;
+    let restricted = this.storage.containsRestrictedData.get();
+    return meta.mode === "auto" && restricted ? "review" : meta.mode;
   }
 
   // Whether chat `chatId` is forked: its mode is Fork, its branch has a pending action, or it
@@ -7188,7 +7183,7 @@ class OverseerImpl implements AgentHooks {
           this.storage.containsRestrictedData.put(true);
           // A chat in Auto now reads as Review (see chatMode), which its metadata must say.
           this.#rebroadcastChatMeta([...this.storage.chatMeta.list()].flatMap(meta =>
-              (meta.mode ?? "auto") === "auto" ? [meta.id] : []));
+              meta.mode === "auto" ? [meta.id] : []));
         }
         if (description.ownerInvitesOnly) {
           this.storage.ownerInvitesOnly.put(true);
@@ -8886,8 +8881,8 @@ class OverseerImpl implements AgentHooks {
     clientUser: DurableObjectStub<UserDurableObject>,
     userMeta: UserChatContext,
     initialMessage: string | SlashCommandRequest,
+    mode: ChatMode,
     {capsules, attachments, formats, focus}: ChatMessageOptions = {},
-    mode?: ChatMode,
   ): Promise<number> {
     if (typeof initialMessage !== "string" && (capsules?.length || attachments?.length || focus)) {
       throw new Error("Slash commands cannot include resources, attachments or a focus.");
@@ -8912,8 +8907,8 @@ class OverseerImpl implements AgentHooks {
         started: timestamp,
         lastActive: timestamp,
         chatToken: crypto.randomUUID(),
+        mode,
       };
-      if (mode !== undefined && mode !== "auto") meta.mode = mode;
       if (prepared.message !== undefined && userMeta.aiModel) {
         meta.activeAgent = userMeta.aiModel.profile;
       }
@@ -14686,10 +14681,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async newChat(initialMessage: string | SlashCommandRequest, chosenModelId: string | null,
-                options?: ChatMessageOptions, mode?: ChatMode): Promise<number> {
+                mode: ChatMode, options?: ChatMessageOptions): Promise<number> {
     let userMeta = await retryOnDoReset(
         () => this.#clientUser.getChatContext(chosenModelId), this.impl.logger);
-    return this.impl.newChat(this.#clientUser, userMeta, initialMessage, options, mode);
+    return this.impl.newChat(this.#clientUser, userMeta, initialMessage, mode, options);
   }
 
   async sendChatMessage(
@@ -14720,11 +14715,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   async setChatMode(chatId: number, mode: ChatMode): Promise<void> {
     this.impl.assertChatModePermitted(mode);
     let meta = this.impl.getChatMetaOrThrow(chatId);
-    if (mode === "auto") {
-      delete meta.mode;
-    } else {
-      meta.mode = mode;
-    }
+    meta.mode = mode;
     this.impl.storage.chatMeta.put(meta);
   }
 
@@ -15381,7 +15372,7 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   }
   async viewChat(_chatId: number): Promise<RpcStub<{}>> { this.#deny(); }
   async newChat(_initialMessage: string | SlashCommandRequest, _modelId: string | null,
-                _options?: ChatMessageOptions, _mode?: ChatMode): Promise<number> {
+                _mode: ChatMode, _options?: ChatMessageOptions): Promise<number> {
     this.#deny();
   }
   async sendChatMessage(_chatId: number, _message: string | SlashCommandRequest,
@@ -16790,6 +16781,8 @@ class AgentSpawnerQueueImpl extends ApprovalQueueImpl implements AgentSpawnerQue
       chatToken: crypto.randomUUID(),
       spawnerName: config.displayName,
       spawnerId: this.gatekeeperId,
+      // Nobody attends a spawned agent's chat, so nobody would accept its changes.
+      mode: "auto",
     };
     this.impl.storage.chatMeta.put(meta);
 

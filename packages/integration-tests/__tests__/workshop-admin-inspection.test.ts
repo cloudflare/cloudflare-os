@@ -186,7 +186,7 @@ async function populatedWorkspace(stack: DisposableStack, prefix: string): Promi
   stack.use(connection);
   const session = stack.use(await connection.openSession() as RpcStub<TestSession>);
   expect(await session.readValue()).toBe(42);
-  const chatId = await ws.newChat("hello", null);
+  const chatId = await ws.newChat("hello", null, "auto");
   await ws.sendChatMessage(chatId, CHAT_MESSAGE, null);
 
   const workpieces = new WorkpieceRecorder();
@@ -196,7 +196,7 @@ async function populatedWorkspace(stack: DisposableStack, prefix: string): Promi
   const gadget = stack.use(ws.createGadget("Notes", undefined, "NOTES"));
   const gadgetId = await gadget.getId();
   const empty = await headOf(workpieces, gadgetId);
-  const seedChatId = await ws.newChat("Seed", null);
+  const seedChatId = await ws.newChat("Seed", null, "auto");
   await ws.submitCodeChange(seedChatId, {
     generation: 0, revision: 0, clientId: "seed", seq: 1,
     pins: [{ gadgetId, baseCommit: empty }],
@@ -208,7 +208,7 @@ async function populatedWorkspace(stack: DisposableStack, prefix: string): Promi
 
   const oid = await ws.uploadBlob(new TextEncoder().encode(ATTACHMENT));
   const attachmentChatId = await ws.newChat(
-      "With attachment", null, { attachments: [{ oid, mimeType: "text/plain", name: "a.txt" }] });
+      "With attachment", null, "auto", { attachments: [{ oid, mimeType: "text/plain", name: "a.txt" }] });
   const sent = (await ws.getChatHistory(attachmentChatId)).messages
       .find(message => message.type === "message");
   if (sent?.type !== "message" || !sent.attachments?.length) {
@@ -219,7 +219,7 @@ async function populatedWorkspace(stack: DisposableStack, prefix: string): Promi
   expect(sent.attachments[0]).toHaveProperty("workspacePath");
   const attachmentId = sent.attachments[0]!.id;
 
-  const draftChatId = await ws.newChat("Draft", null);
+  const draftChatId = await ws.newChat("Draft", null, "auto");
   await ws.submitCodeChange(draftChatId, {
     generation: 0, revision: 0, clientId: "draft", seq: 1,
     pins: [{ gadgetId, baseCommit: head }],

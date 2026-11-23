@@ -49,7 +49,7 @@ it("reports collaborator presence and removes it when the capability closes", as
   using collaborator = await signUp(collaboratorPublic, collaboratorName);
   using workspace = await owner.newWorkspace();
   const { id: workspaceId } = await workspace.getMetadata();
-  await workspace.newChat("Make this workspace visible without an agent", null);
+  await workspace.newChat("Make this workspace visible without an agent", null, "auto");
   await workspace.addCollaborator(collaboratorName, "workspace");
 
   const collaboratorWorkspace = await collaborator.openWorkspace(workspaceId);

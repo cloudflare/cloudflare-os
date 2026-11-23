@@ -62,7 +62,7 @@ async function withAuthenticated<T>(
 
 async function activate(workspace: RpcStub<Overseer>): Promise<string> {
   const { id } = await workspace.getMetadata();
-  await workspace.newChat("Make this workspace visible without an agent", null);
+  await workspace.newChat("Make this workspace visible without an agent", null, "auto");
   return id;
 }
 
@@ -430,7 +430,7 @@ it.concurrent("losing a build path falls back to the owner's direct gadget grant
     using gadget = workspace.createGadget("App", undefined, "APP");
     gadgetId = await gadget.getId();
     const empty = await headOf(workpieces, gadgetId);
-    const seed = await workspace.newChat("Seed", null);
+    const seed = await workspace.newChat("Seed", null, "auto");
     await workspace.submitCodeChange(seed, {
       generation: 0,
       revision: 0,
@@ -473,7 +473,7 @@ it.concurrent("losing a build path falls back to the owner's direct gadget grant
   using freshWorkspace = await freshCarol.openWorkspace(workspaceId);
   expect(await freshWorkspace.getMetadata()).toMatchObject({ role: "use" });
   await expect(freshWorkspace.setTitle("x")).rejects.toThrow(USE_ONLY);
-  await expect(freshWorkspace.newChat("hi", null)).rejects.toThrow(USE_ONLY);
+  await expect(freshWorkspace.newChat("hi", null, "auto")).rejects.toThrow(USE_ONLY);
   using freshGadget = await freshWorkspace.getGadget(gadgetId);
   expect(await freshGadget.getUiBundle()).toEqual(ownerBundle);
 });

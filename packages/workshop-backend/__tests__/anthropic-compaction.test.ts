@@ -262,7 +262,7 @@ describe("Anthropic compaction in a chat", () => {
       bindings: {},
     });
     impl.storage.chatMeta.put(
-        { id: CHAT_ID, title: "Chat", started: new Date(0), lastActive: new Date(0) });
+        { id: CHAT_ID, title: "Chat", mode: "auto", started: new Date(0), lastActive: new Date(0) });
     post(impl, OWNER, "Plan a recipe app.");
     post(impl, AGENT, "Recipe, Ingredient and Step.");
     post(impl, OWNER, "Add tags.");

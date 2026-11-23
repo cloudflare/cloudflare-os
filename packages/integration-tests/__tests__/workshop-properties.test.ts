@@ -403,7 +403,7 @@ it.concurrent("attachment ids resolve to their bytes in exactly the chat that ho
       const picked = [...new Set(picks.map(p => p % files.length))];
       const sent = picked.map(f => ({ oid: oids[f]!, mimeType: files[f]!.mimeType, name: files[f]!.name }));
       if (chatId === undefined) {
-        chatId = await ws.newChat(text, null, {attachments: sent});
+        chatId = await ws.newChat(text, null, "auto", {attachments: sent});
         expect(live.has(chatId)).toBe(false);
         live.set(chatId, []);
       } else {
@@ -450,7 +450,7 @@ it.concurrent("attachment ids resolve to their bytes in exactly the chat that ho
     // Each live id is also tried in one other live chat, and each deleted chat's ids in that chat
     // and every live one.
     const chatIds = [...live.keys()];
-    const fresh = await ws.newChat("Starting over", null);
+    const fresh = await ws.newChat("Starting over", null, "auto");
     for (const [id, chatId] of owner) {
       await expect(ws.getChatAttachmentContent(fresh, id)).rejects.toThrow("Chat attachment not found.");
       const other = chatIds.find(c => c !== chatId);
@@ -541,7 +541,7 @@ it.concurrent("stale and resent edits converge, and accepting commits the conver
     const gadget = stack.use(ws.createGadget("App", undefined, "APP"));
     const gadgetId = await gadget.getId();
     const empty = await headOf(workpieces, gadgetId);
-    const seedChat = await ws.newChat("Seed", null);
+    const seedChat = await ws.newChat("Seed", null, "auto");
     await ws.submitCodeChange(seedChat, {
       generation: 0, revision: 0, clientId: "seed", seq: 1,
       pins: [{ gadgetId, baseCommit: empty }], change: diffFiles(files(gadgetId), files(gadgetId, seed)),
@@ -549,7 +549,7 @@ it.concurrent("stale and resent edits converge, and accepting commits the conver
     expect(await ws.mergeChanges(seedChat)).toEqual({ outcome: "merged" });
     const head = await headOf(workpieces, gadgetId, empty);
 
-    const chatId = await ws.newChat("Edit together", null);
+    const chatId = await ws.newChat("Edit together", null, "auto");
     const pins = [{ gadgetId, baseCommit: head }];
     // The changes broadcast to this chat, in arrival order, which must number them 1..n.
     const stream = async (count: number) => {

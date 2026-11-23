@@ -79,7 +79,7 @@ const message = (sequence: number, body: AiChatMessageBody): AiChatMessage => ({
 const metadata = (generation: number): AiChatMetadata => ({
   id: CHAT_ID,
   title: 'Chat',
-  started: new Date(1700000000000),
+  mode: 'auto', started: new Date(1700000000000),
   lastActive: new Date(1700000000000),
   compactedTo: 10,
   codeBase: { pins: [], generation, revision: 0 },

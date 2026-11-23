@@ -2025,12 +2025,15 @@ describe('ShareModal', () => {
 
       it('starts the chat on an agent even when the user last chose none', async () => {
         localStorage.setItem(`lastSelectedModel:${CURRENT_USER.id}`, NO_AGENT_OPTION_VALUE)
+        // The chat starts in the mode the user prefers, as one they start themselves does.
+        localStorage.setItem(`lastChatMode:${CURRENT_USER.id}`, 'review')
         const newChat = vi.fn<Overseer['newChat']>(async () => 4)
         const rendered = await openSnapshotPage(fakeOverseer({
           collaborators: [VIEWER], listModels: async () => [SONNET], newChat,
         }))
         await click(button(rendered, 'Ask agent to fix'))
-        expect(newChat).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('"Itinerary"'), 'sonnet')
+        expect(newChat).toHaveBeenCalledExactlyOnceWith(
+          expect.stringContaining('"Itinerary"'), 'sonnet', 'review')
       })
 
       it('says so, starting no chat, when no model is available', async () => {

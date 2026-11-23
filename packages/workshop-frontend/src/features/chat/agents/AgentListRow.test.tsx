@@ -27,7 +27,7 @@ const run = (id: number, over: Partial<AiChatMetadata> = {}): AiChatMetadata => 
   id,
   title: `Run ${id}`,
   spawnerName: "Invoice watcher",
-  started: NOW,
+  mode: "auto", started: NOW,
   lastActive: NOW,
   ...over,
 });

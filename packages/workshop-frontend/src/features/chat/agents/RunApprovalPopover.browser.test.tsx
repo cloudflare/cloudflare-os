@@ -17,7 +17,7 @@ const NOW = new Date();
 const RUN_TITLE = "INV-2291 · email ap@acme.com";
 
 const run: AiChatMetadata = {
-  id: 1, title: RUN_TITLE, spawnerName: "Invoice watcher", started: NOW, lastActive: NOW,
+  id: 1, title: RUN_TITLE, spawnerName: "Invoice watcher", mode: "auto", started: NOW, lastActive: NOW,
 };
 
 const BODY = [

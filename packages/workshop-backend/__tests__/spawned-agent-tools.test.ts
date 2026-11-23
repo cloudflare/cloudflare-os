@@ -276,7 +276,7 @@ describe("spawned agent tools", () => {
 
   it("still offers regular chats the full tool set", () => withImpl(async impl => {
     impl.storage.chatMeta.put(
-        { id: 1, title: "Chat", started: new Date(0), lastActive: new Date(0) });
+        { id: 1, title: "Chat", mode: "auto", started: new Date(0), lastActive: new Date(0) });
     impl.storage.chats.put({
       chatId: 1, sequence: impl.nextChatSequence(1), timestamp: new Date(0), author: OWNER,
       type: "message", message: "Hi",

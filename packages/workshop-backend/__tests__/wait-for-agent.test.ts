@@ -77,7 +77,7 @@ async function isPending(promise: Promise<unknown>): Promise<boolean> {
 describe("waitForAgent", () => {
   it("returns at once on an idle chat: null before the agent has written, then its latest message",
       () => withWorkspace(async ({ impl, client }) => {
-    let chatId = await client.newChat("Hello, humans only", null);
+    let chatId = await client.newChat("Hello, humans only", null, "auto");
     expect(await client.waitForAgent(chatId)).toBeNull();
 
     impl.storage.chatMeta.put({ ...impl.storage.chatMeta.get(chatId), activeAgent: AGENT });
@@ -92,7 +92,7 @@ describe("waitForAgent", () => {
 
   it("waits for the turn newChat started, and returns its reply", () =>
       withWorkspace(async ({ impl, client }) => {
-    let chatId = await client.newChat("What is 17 times 23?", "some-model");
+    let chatId = await client.newChat("What is 17 times 23?", "some-model", "auto");
     let waiting = client.waitForAgent(chatId);
     expect(await isPending(waiting)).toBe(true);
 
@@ -102,7 +102,7 @@ describe("waitForAgent", () => {
 
   it("waits for the turn of a sendChatMessage() pipelined before it", () =>
       withWorkspace(async ({ impl, client }) => {
-    let chatId = await client.newChat("Hello", null);
+    let chatId = await client.newChat("Hello", null, "auto");
     let sent = client.sendChatMessage(chatId, "What is 17 times 23?", "some-model");
     let waiting = client.waitForAgent(chatId);
     await sent;
@@ -115,7 +115,7 @@ describe("waitForAgent", () => {
 
   it("waits through a turn that hands straight on to the next", () =>
       withWorkspace(async ({ impl, client }) => {
-    let chatId = await client.newChat("Start", "some-model");
+    let chatId = await client.newChat("Start", "some-model", "auto");
     let waiting = client.waitForAgent(chatId);
     expect(await isPending(waiting)).toBe(true);
 
@@ -133,7 +133,7 @@ describe("waitForAgent", () => {
 
   it("waits through the turn that takes the calls made to the agent while it ran", () =>
       withWorkspace(async ({ impl, client }) => {
-    let chatId = await client.newChat("Start", "some-model");
+    let chatId = await client.newChat("Start", "some-model", "auto");
     let waiting = client.waitForAgent(chatId);
     expect(await isPending(waiting)).toBe(true);
     await impl.deliverAgentCallback(chatId, "composeEmail", [], OWNER_USER_ID, "some-model");
@@ -153,7 +153,7 @@ describe("waitForAgent", () => {
 
   it("returns the agent's latest message, not the note Stop logs under it", () =>
       withWorkspace(async ({ impl, client }) => {
-    let chatId = await client.newChat("Start", "some-model");
+    let chatId = await client.newChat("Start", "some-model", "auto");
     impl.storage.chats.put({
       chatId, sequence: impl.nextChatSequence(chatId), timestamp: impl.getChatTimestamp(),
       author: AGENT, type: "message", message: "Halfway there.",
@@ -168,7 +168,7 @@ describe("waitForAgent", () => {
 
   it("returns the agent's reply, not the changes its last step recorded after it", () =>
       withWorkspace(async ({ impl, client }) => {
-    let chatId = await client.newChat("Start", "some-model");
+    let chatId = await client.newChat("Start", "some-model", "auto");
     endTurn(impl, chatId, "Done.");
     impl.storage.chats.put({
       chatId, sequence: impl.nextChatSequence(chatId), timestamp: impl.getChatTimestamp(),
@@ -179,7 +179,7 @@ describe("waitForAgent", () => {
 
   it("returns the web fetch request a turn paused on, not the tool call before it", () =>
       withWorkspace(async ({ impl, client }) => {
-    let chatId = await client.newChat("Start", "some-model");
+    let chatId = await client.newChat("Start", "some-model", "auto");
     endTurn(impl, chatId, "");
     impl.storage.chats.put({
       chatId, sequence: impl.nextChatSequence(chatId), timestamp: impl.getChatTimestamp(),
@@ -196,7 +196,7 @@ describe("waitForAgent", () => {
       withWorkspace(async ({ client }) => {
     await expect(client.waitForAgent(42)).rejects.toThrow("No such chatId: 42");
 
-    let chatId = await client.newChat("Start", "some-model");
+    let chatId = await client.newChat("Start", "some-model", "auto");
     let waiting = client.waitForAgent(chatId);
     expect(await isPending(waiting)).toBe(true);
     await client.deleteChat(chatId);

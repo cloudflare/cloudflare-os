@@ -68,7 +68,7 @@ it("passes a worktree from code mode to a gatekeeper, which fetches its commits 
     {text: "Done."},
   ]);
   await api.addModel(model.userModel.profile, model.userModel.config);
-  const chatId = await ws.newChat("Mount the worktree and fetch its commits.", SCRIPTED_MODEL_ID);
+  const chatId = await ws.newChat("Mount the worktree and fetch its commits.", SCRIPTED_MODEL_ID, "auto");
   await waitFor("the model's final request", async () => model.requests.length === 7 || null);
   await waitForIdleChat(ws, chatId);
   const history = await loadAllChatHistory(before => ws.getChatHistory(chatId, before));

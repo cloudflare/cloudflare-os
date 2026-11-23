@@ -42,7 +42,7 @@ async function withImpl(fn: (impl: Impl) => Promise<void>): Promise<void> {
     let impl = instanceWithImpl.impl;
     impl.storage.title.put("My Workspace");
     impl.storage.chatMeta.put(
-        { id: CHAT_ID, title: "Chat", started: new Date(0), lastActive: new Date(0) });
+        { id: CHAT_ID, title: "Chat", mode: "auto", started: new Date(0), lastActive: new Date(0) });
     // Never instantiated: these tests only route to and describe the gatekeeper.
     const unusedClass = {} as unknown as GatekeeperRecord["class"];
     impl.storage.gatekeepers.put({ id: 5, resourceTitle: "DB", class: unusedClass });

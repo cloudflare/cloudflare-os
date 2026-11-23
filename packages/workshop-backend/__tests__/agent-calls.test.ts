@@ -51,7 +51,7 @@ function seedChat(impl: any): void {
   impl.storage.version.put(OVERSEER_STORAGE_VERSION);
   impl.ownerId = OWNER_USER_ID;
   impl.storage.chatMeta.put(
-      { id: CHAT_ID, title: "Callable agent", started: new Date(0), lastActive: new Date(0) });
+      { id: CHAT_ID, title: "Callable agent", mode: "auto", started: new Date(0), lastActive: new Date(0) });
 }
 
 // Replaces the user DO namespace with a fake that resolves the owner's profile and, when asked

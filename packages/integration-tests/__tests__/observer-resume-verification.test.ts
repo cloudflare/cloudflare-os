@@ -74,7 +74,7 @@ it("a collaborator's resumed turn ends with an error when a new connection needs
   // Bob's agent asks for a connection, which pauses his turn on the owner's decision.
   const chatId = await (async () => {
     using bobWs = await bobApi.openWorkspace(workspaceId);
-    const id = await bobWs.newChat("Read the thing.", SCRIPTED_MODEL_ID);
+    const id = await bobWs.newChat("Read the thing.", SCRIPTED_MODEL_ID, "auto");
     await waitForIdleChat(bobWs, id);
     return id;
   })();

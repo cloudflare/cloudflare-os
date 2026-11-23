@@ -245,7 +245,7 @@ describe("the blueprint-upstream backfill via the Overseer constructor", () => {
 
   function putChat(impl: any, id: number): void {
     impl.storage.chatMeta.put(
-        { id, title: "Chat", started: new Date(0), lastActive: new Date(id) });
+        { id, title: "Chat", mode: "auto", started: new Date(0), lastActive: new Date(id) });
   }
 
   // The agent's message for a step in which it called createGadget, as the log records it. A

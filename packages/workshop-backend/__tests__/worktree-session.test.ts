@@ -50,7 +50,7 @@ async function withImpl(fn: (impl: any) => Promise<void>): Promise<void> {
 
 function addChat(impl: any, id: number): void {
   impl.storage.chatMeta.put(
-      { id, title: "Chat", started: new Date(0), lastActive: new Date(id) });
+      { id, title: "Chat", mode: "auto", started: new Date(0), lastActive: new Date(id) });
 }
 
 // Loads the real-git fixture repo (all five entry modes) fully locally, so nothing pulls.

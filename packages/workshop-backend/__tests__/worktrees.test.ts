@@ -91,7 +91,7 @@ function chatSubscriber() {
 function addChat(impl: any, id: number): void {
   // lastActive varies by id: chatMeta.byLastActive is a unique index.
   impl.storage.chatMeta.put(
-      { id, title: "Chat", started: new Date(0), lastActive: new Date(id) });
+      { id, title: "Chat", mode: "auto", started: new Date(0), lastActive: new Date(id) });
 }
 
 async function commitFiles(

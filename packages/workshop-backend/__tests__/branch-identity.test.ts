@@ -153,7 +153,7 @@ describe("the staging hold migration", () => {
     let raw = makeMockStorage();
     let storage = makeOverseerStorage(raw);
     for (let id of [1, 2]) {
-      storage.chatMeta.put({id, title: `Chat ${id}`, started: new Date(0), lastActive: new Date(id)});
+      storage.chatMeta.put({id, title: `Chat ${id}`, mode: "auto", started: new Date(0), lastActive: new Date(id)});
     }
     storage.actions.put(pendingAction(1, {from: "agent", chatId: 1}));
 

@@ -197,7 +197,7 @@ describe("push authorization through the Overseer chokepoints", () => {
   // action would apply at once as, so it stays pending.) Returns their heads.
   async function queueBranchPushes(impl: any): Promise<string[]> {
     for (let id of [1, 2]) {
-      impl.storage.chatMeta.put({ id, title: `Chat ${id}`, started: new Date(0), lastActive: new Date(id) });
+      impl.storage.chatMeta.put({ id, title: `Chat ${id}`, mode: "auto", started: new Date(0), lastActive: new Date(id) });
     }
     let { base } = await seedPushableHistory(impl);
     let tree = await impl.gitCache.putFromGatekeeper(GATEKEEPER, "tree", new Uint8Array(0));

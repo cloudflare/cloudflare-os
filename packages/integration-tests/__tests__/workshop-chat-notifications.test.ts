@@ -75,7 +75,7 @@ it.each([false, true].flatMap(spawned => [false, true].map(enabled => ({ spawned
     expect(await api.getWorkspaceUnreadState(workspaceId)).toEqual([]);
     start = () => callable.run();
   } else {
-    chatId = await ws.newChat("Permission probe", null);
+    chatId = await ws.newChat("Permission probe", null, "auto");
     start = () => ws.sendChatMessage(chatId, "Ask for a test write.", SCRIPTED_MODEL_ID);
   }
   const defaultEnabled = !spawned;

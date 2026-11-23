@@ -311,7 +311,7 @@ describe("restarting sessions when verification scope widens", () => {
     seedVendorlessGatekeeper(impl, 1);
     seedGadget(impl, 100);
     impl.storage.chatMeta.put(
-        { id: 1, title: "Chat", started: new Date(0), lastActive: new Date(0) });
+        { id: 1, title: "Chat", mode: "auto", started: new Date(0), lastActive: new Date(0) });
 
     impl.bindWorkpiece(100, "MODEL", 1, 1);
     await impl.commitAgentStep(1, AGENT, [{ type: "message", message: "bound a model" }], {
@@ -593,7 +593,7 @@ describe("hooks widen the scope of the gadget they wake", () => {
     seedPendingGadget(impl, 100, 1);
     seedHook(impl, { gadgetId: 100 });
     impl.storage.chatMeta.put(
-        { id: 1, title: "Chat", started: new Date(0), lastActive: new Date(0) });
+        { id: 1, title: "Chat", mode: "auto", started: new Date(0), lastActive: new Date(0) });
 
     impl.enableHookRecord(impl.storage.boundHooks.get(5));
     expect(restarts).toEqual([]);
@@ -856,7 +856,7 @@ describe("agent spawner envs widen the binding gadget's scope", () => {
     joinSession(impl, 100);
     seedGatekeeper(impl, 1);
     impl.storage.chatMeta.put(
-        { id: 1, title: "Chat", started: new Date(0), lastActive: new Date(0) });
+        { id: 1, title: "Chat", mode: "auto", started: new Date(0), lastActive: new Date(0) });
 
     // Proposed: no agent the spawner starts gets the binding yet.
     impl.addGadgetBinding(2, "DB", 1, 1);
@@ -974,7 +974,7 @@ describe("agent spawner envs widen the binding gadget's scope", () => {
     seedGadget(impl, 100);
     seedSpawner(impl, 2, { DESK: 100 });
     impl.storage.chatMeta.put(
-        { id: 1, title: "Chat", started: new Date(0), lastActive: new Date(0) });
+        { id: 1, title: "Chat", mode: "auto", started: new Date(0), lastActive: new Date(0) });
     let spawner = impl.storage.gatekeepers.get(2);
     spawner.bindings.AGAIN = { target: 100, pending: { chatId: 1 } };
     impl.storage.gatekeepers.put(spawner);
@@ -1202,7 +1202,7 @@ describe("connections blocked pending restart", () => {
     let added = await impl.addGatekeeper({} as any, CONNECTION_SPEC);
     let id = await added.getId();
     impl.storage.chatMeta.put(
-        { id: 1, title: "Chat", started: new Date(0), lastActive: new Date(0) });
+        { id: 1, title: "Chat", mode: "auto", started: new Date(0), lastActive: new Date(0) });
 
     // The id is client-supplied: without the gate this would read the connection and mint an
     // observation on behalf of a session the reset is about to sever.
@@ -1265,7 +1265,7 @@ describe("connections blocked pending restart", () => {
         usable.class, { type: "ambient", vendorId: "v2" });
     let blockedId = await added.getId();
     impl.storage.chatMeta.put(
-        { id: 1, title: "Chat", started: new Date(0), lastActive: new Date(0) });
+        { id: 1, title: "Chat", mode: "auto", started: new Date(0), lastActive: new Date(0) });
 
     let prepare = (): Promise<SeedBindingInfo[]> => impl.prepareChatBindings(1, []);
     let failed = await prepare();
@@ -1302,7 +1302,7 @@ describe("ambient catalogs", () => {
     }
     for (let chatId of [1, 2]) {
       impl.storage.chatMeta.put(
-          { id: chatId, title: "Chat", started: new Date(0), lastActive: new Date(chatId) });
+          { id: chatId, title: "Chat", mode: "auto", started: new Date(0), lastActive: new Date(chatId) });
     }
 
     await impl.prepareChatBindings(1, []);
@@ -1333,7 +1333,7 @@ describe("ambient resources a chat gains", () => {
     addAmbient(1);
     for (let chatId of [1, 2]) {
       impl.storage.chatMeta.put(
-          { id: chatId, title: "Chat", started: new Date(0), lastActive: new Date(chatId) });
+          { id: chatId, title: "Chat", mode: "auto", started: new Date(0), lastActive: new Date(chatId) });
     }
     impl.storage.chatContext.put({
       chatId: 2, spawnerConfig: { displayName: "Spawner", modelId: "m", env: {} }, bindings: {},
@@ -1482,7 +1482,7 @@ async function replayOwnerSteps(steps: Step[], from = 0): Promise<void> {
     for (let id of GADGETS) seedGadget(impl, id);
     for (let id of CHATS) {
       impl.storage.chatMeta.put(
-          { id, title: "Chat", started: new Date(0), lastActive: new Date(id) });
+          { id, title: "Chat", mode: "auto", started: new Date(0), lastActive: new Date(id) });
     }
     using notifyClosed = new NativeRpcStub<() => void>(() => {});
     // (The interface open() returns is disposable, which the Overseer type does not say.)

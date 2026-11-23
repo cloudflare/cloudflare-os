@@ -205,7 +205,7 @@ function withResourceImpl(fn: (impl: any) => Promise<void>): Promise<void> {
     impl.traceAgentActionApproval = () => {};
     // An action is refused for a chat that no longer exists (see submitAction).
     let now = new Date();
-    impl.storage.chatMeta.put({id: CHAT_ID, title: "Chat", started: now, lastActive: now});
+    impl.storage.chatMeta.put({id: CHAT_ID, title: "Chat", mode: "auto", started: now, lastActive: now});
     impl.storage.activeAgents.put({
       chatId: OTHER_CHAT_ID, initiatorUserId: COLLABORATOR_USER_ID, modelId: "some-model",
       initiator: COLLABORATOR, callbackInitiated: false,

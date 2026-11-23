@@ -29,7 +29,10 @@ export type AgentTurnOptions = {
 /** Configuration for one fresh local Workshop account and workspace. */
 export type AgentSessionOptions = {
   modelId: string;
-  /** The mode the session's chat is started in (see AiChatMetadata.mode); Auto when absent. */
+  /**
+   * The mode the session's chat is started in (see AiChatMetadata.mode). Auto when absent: a
+   * scripted session has nobody to accept its changes, and most tests want them applied.
+   */
   mode?: ChatMode;
   userModel?: UserModel;
   ambientVendorIds?: readonly string[];
@@ -446,7 +449,7 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
   readonly #workspaceId: string;
   readonly #openedAt = new Date(Date.now() - 1_000);
   readonly #modelId: string;
-  readonly #mode: ChatMode | undefined;
+  readonly #mode: ChatMode;
   #publicApi: RpcStub<PublicApi>;
   #authenticatedApi: RpcStub<AuthenticatedApi>;
   #workspace: RpcStub<Overseer>;
@@ -489,7 +492,7 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
     this.#baseUrl = options.baseUrl;
     this.#workspaceId = options.workspaceId;
     this.#modelId = options.modelId;
-    this.#mode = options.mode;
+    this.#mode = options.mode ?? "auto";
     this.#publicApi = options.publicApi;
     this.#authenticatedApi = options.authenticatedApi;
     this.#workspace = options.workspace;
@@ -761,7 +764,7 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
 
   async #startChat(prompt: string, observer: TurnObserver): Promise<void> {
     const creating = this.#workspace.newChat(
-        prompt, this.#modelId, undefined, this.#mode);
+        prompt, this.#modelId, this.#mode);
     this.#pendingRpcs.add(creating);
     creating.then(chatId => {
       const status = observer.outcome?.status;

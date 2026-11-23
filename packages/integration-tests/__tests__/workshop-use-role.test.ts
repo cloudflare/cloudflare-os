@@ -130,7 +130,7 @@ const DENIED_OVERSEER: Record<Exclude<keyof Overseer, keyof RpcTarget | UseSurfa
   },
   viewChat: ws => ws.viewChat(1),
   listSlashCommands: ws => ws.listSlashCommands(),
-  newChat: ws => ws.newChat("Hello", null),
+  newChat: ws => ws.newChat("Hello", null, "auto"),
   sendChatMessage: ws => ws.sendChatMessage(1, "Hello", null),
   uploadBlob: ws => ws.uploadBlob(new Uint8Array()),
   getChatAttachmentContent: ws => ws.getChatAttachmentContent(1, "attachment"),
@@ -200,14 +200,14 @@ it("a use collaborator reaches only the mainline gadget UI", async () => {
   using gadget = ws.createGadget("App", undefined, "APP");
   const gadgetId = await gadget.getId();
   const empty = await headOf(workpieces, gadgetId);
-  const seed = await ws.newChat("Seed", null);
+  const seed = await ws.newChat("Seed", null, "auto");
   await ws.submitCodeChange(seed, {
     generation: 0, revision: 0, clientId: "seed", seq: 1, pins: [{ gadgetId, baseCommit: empty }],
     change: diffFiles(ui(gadgetId), ui(gadgetId, MAINLINE_UI)),
   });
   expect(await ws.mergeChanges(seed)).toEqual({ outcome: "merged" });
   const mainline = await headOf(workpieces, gadgetId, empty);
-  const draft = await ws.newChat("Draft", null);
+  const draft = await ws.newChat("Draft", null, "auto");
   await ws.submitCodeChange(draft, {
     generation: 0, revision: 0, clientId: "draft", seq: 1,
     pins: [{ gadgetId, baseCommit: mainline }],
@@ -265,7 +265,7 @@ it("a use collaborator's UI bundle carries only what client.js reaches", async (
     new Map([[gadgetId, new Map(Object.entries(files))]]);
   const merge = async (baseCommit: string, before: Record<string, string>,
                        after: Record<string, string>) => {
-    const chatId = await ws.newChat("Edit", null);
+    const chatId = await ws.newChat("Edit", null, "auto");
     await ws.submitCodeChange(chatId, {
       generation: 0, revision: 0, clientId: "editor", seq: 1, pins: [{ gadgetId, baseCommit }],
       change: diffFiles(tree(before), tree(after)),
