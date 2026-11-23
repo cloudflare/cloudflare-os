@@ -24,16 +24,29 @@ function isJudgePath(path: string): boolean {
   return fromScripts.startsWith("risk-review") || fromScripts.startsWith("automerge/");
 }
 
+/** Whitespace and comments, which may sit between any two tokens of an import. */
+const GAP = String.raw`(?:\s|/\*[\s\S]*?\*/|//[^\n]*)*`;
+
+/**
+ * What may come between `import` or `export` and `from`: comments, a quoted name (`"a" as b`,
+ * `a as "b"`), and anything else but a quote or a semicolon, so that a side-effect import is never
+ * read as the start of a later statement's clause.
+ */
+const CLAUSE = String.raw`(?:/\*[\s\S]*?\*/|//[^\n]*|["'][^"']*["']${GAP}as\b|\bas${GAP}["'][^"']*["']|[^'";/]|/(?![*/]))*?`;
+
+const STATIC_IMPORT = new RegExp(String.raw`(?<![\w$."'\`])(?:import|export)\b${GAP}(?:${CLAUSE}\bfrom${GAP})?["']([^"']+)["']`, "g");
+const DYNAMIC_IMPORT = new RegExp(String.raw`\bimport${GAP}\(([^)]*)\)`, "g");
+
 /**
  * Every module specifier in `source`: static imports, side-effect imports and re-exports, wherever
  * they sit on a line, and dynamic `import()`.
  */
 function specifiers(source: string): { specifier: string | undefined; statement: string }[] {
   const found: { specifier: string | undefined; statement: string }[] = [];
-  for (const match of source.matchAll(/(?<![\w$."'`])(?:import|export)\b\s*(?:[^'";]*?\bfrom\s*)?["']([^"']+)["']/g)) {
+  for (const match of source.matchAll(STATIC_IMPORT)) {
     found.push({ specifier: match[1], statement: match[0].trim() });
   }
-  for (const match of source.matchAll(/\bimport\s*\(\s*([^)]*)\)/g)) {
+  for (const match of source.matchAll(DYNAMIC_IMPORT)) {
     const literal = /^["']([^"']+)["']$/.exec(match[1]?.trim() ?? "");
     found.push({ specifier: literal?.[1], statement: match[0] });
   }
@@ -89,7 +102,15 @@ describe("judge code imports", () => {
       'const first = 1; import "zod";',
       'export * from "zod";',
       'export { z } from "zod";',
+      'import { "z" as z } from "zod";',
+      'export { "a" as b } from "zod";',
+      'export { a as "b" } from "zod";',
       'await import("zod");',
+      'await import/* c */("zod");',
+      'import /* c */ "zod";',
+      'import { z } from /* c */ "zod";',
+      'import { z /* ; */ } from "zod";',
+      'import { z } // "c"\nfrom "zod";',
       'const name = "zod";\nawait import(name);',
       'import { x } from "../packages/workshop-backend/src/user.ts";',
       'import { x } from "./vp/concurrency.ts";',
@@ -99,6 +120,7 @@ describe("judge code imports", () => {
     for (const source of [
       'import { readFileSync } from "node:fs";\nimport { x } from "./risk-review-policy.ts";',
       'import "node:fs";\nexport * from "./automerge/json.ts";\nawait import("./risk-review-fixtures/artifacts.ts");',
+      'import /* a builtin */ { "readFileSync" as read } from "node:fs";',
       'export const from = "zod";\nconst reimport = { import: "zod" };',
     ]) {
       assert.equal(importProblem(source, from), undefined, source);
