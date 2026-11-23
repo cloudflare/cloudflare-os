@@ -161,6 +161,10 @@ describe("listChats", () => {
     expect(ids(await client.listChats({ spawnerId: 11 }))).toEqual([4]);
     expect(await client.listChats({ spawnerId: 12 })).toEqual([]);
     await expect(client.listChats({ limit: 0 })).rejects.toThrow(/positive integer/);
+    // A negative key would sort past every real one, outside the exclusive bound.
+    await expect(client.listChats({ beforeId: -1 })).rejects.toThrow(TypeError);
+    await expect(client.listChats({ kind: "runs", beforeId: 1.5 })).rejects.toThrow(TypeError);
+    expect(await client.listChats({ beforeId: 0 })).toEqual([]);
 
     let use = await openFakeOverseer(storage, { role: "use" });
     await expect(use.listChats({ kind: "runs" })).rejects.toThrow(/Unauthorized/);

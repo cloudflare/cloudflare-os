@@ -330,3 +330,30 @@ describe("what a use session lists", () => {
     expect(parts()).toEqual([["outputs", "summary", "title"]]);
   }));
 });
+
+describe("recording a shared open", () => {
+  it("records nothing once the collaborator is removed while the owner's profile is fetched",
+      async () => {
+    let release = Promise.withResolvers<void>();
+    let asked = Promise.withResolvers<void>();
+    let record = vi.fn(async () => {});
+    let access: CollaboratorAccess | undefined = { role: "use", gadgetIds: [] };
+    let storage = {};
+    using _client = await openFakeOverseer(storage, { role: "use", access, impl: {
+      getSharingManager: async () => ({ getEffectiveAccess: () => access }),
+      users: { idFromString: (id: string) => id, get: () => ({
+        whoami: async () => { asked.resolve(); await release.promise; return { type: "user", id: OWNER, name: "Owner" }; },
+        recordSharedWorkspaceOpen: record,
+      }) },
+    } }) as unknown as Disposable;
+    await asked.promise;
+
+    // Removed, then the workspace renamed, before whoami() resolves.
+    access = undefined;
+    Object.assign(storage, { title: { get: () => "Renamed" }, titleRev: { get: () => 1 } });
+    release.resolve();
+    await scheduler.wait(10);
+
+    expect(record).not.toHaveBeenCalled();
+  });
+});
