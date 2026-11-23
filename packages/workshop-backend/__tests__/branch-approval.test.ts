@@ -1454,6 +1454,31 @@ describe("gadgets", () => {
     });
   });
 
+  it("restart everywhere on a denial of an action from before its gatekeeper adopted branches",
+      async () => {
+    const facet: Record<string, unknown> = {
+      async applyAction() {},
+      async rejectAction() { return {restart: true}; },
+    };
+    const {visit} = await workspace(facet);
+    await visit(async impl => {
+      addGadget(impl, 10);
+      addGadget(impl, 11);
+      await impl.submitAction(GK, 1, description(), CHAT_A);
+      facet.applyActions = async (_view: BranchView, actions: number[]) => ({applied: actions});
+      expect(await impl.adoptsBranches(GK)).toBe(true);
+      // Gadget 10 runs on chat 2's branch, and 11 outside any chat.
+      await impl.submitAction(GK, 2, description(), CHAT_B);
+      await impl.getGadgetFacetFetcher(10, 2);
+      await impl.getGadgetFacetFetcher(11);
+      const abort = vi.spyOn(impl.ctx.facets, "abort");
+
+      await impl.rejectPendingAction(record(impl, 1), USER);
+      expect(abort.mock.calls.map(([name]) => name).toSorted())
+          .toEqual([impl.gadgetFacetName(10), impl.gadgetFacetName(11)]);
+    });
+  });
+
   it("tell a chat's agent of a denial its simulated work was built on", async () => {
     const restart = {value: true};
     const run = async (caller: GatekeeperCaller) => {

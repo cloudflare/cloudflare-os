@@ -6292,6 +6292,12 @@ export type AiChatMessageBody = {
 
   /** The action's title (see ActionDescription.title), as the agent is told it. */
   title: string;
+
+  /**
+   * Set when the action had failed to apply with an unknown outcome (see
+   * ActionLogEntry.applyError): its provider may have applied it anyway, which the agent is told.
+   */
+  outcomeUnknown?: true;
 } | {
   /**
    * The agent requested that the user connect a gatekeeper (e.g. "I need ClickHouse cluster X").

@@ -3054,8 +3054,11 @@ async function runAgentPass(
       case "actionDenied":
         modelMessages.push(...makeReplayObservation(
             msg.sequence,
-            `The user denied a pending change in this conversation, "${msg.title}". It will not ` +
-                `be applied, and reads no longer reflect it.`,
+            `The user denied a pending change in this conversation, "${msg.title}". ` +
+                (msg.outcomeUnknown
+                  ? `An earlier attempt to apply it may have taken effect anyway, so check the ` +
+                    `resource before making the change again.`
+                  : `It will not be applied, and reads no longer reflect it.`),
             handle.model, msgTimestamp));
         break;
 

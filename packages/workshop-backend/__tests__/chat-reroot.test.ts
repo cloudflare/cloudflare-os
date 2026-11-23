@@ -529,6 +529,20 @@ describe("what the agent is told of a denial", () => {
           `be applied, and reads no longer reflect it.`,
     ]);
   }));
+
+  it("says a denied action may have taken effect when its outcome was unknown", () =>
+      withImpl(async impl => {
+    impl.storage.chatMeta.put(
+        { id: CHAT, title: "Chat", started: new Date(0), lastActive: new Date(0) });
+    putMessage(impl, {
+      type: "actionDenied", actionId: 3, title: "Send the email", outcomeUnknown: true,
+    });
+    expect(await observations(impl)).toEqual([
+      `The user denied a pending change in this conversation, "Send the email". An earlier ` +
+          `attempt to apply it may have taken effect anyway, so check the resource before ` +
+          `making the change again.`,
+    ]);
+  }));
 });
 
 // What the agent is shown of the user's changes at the start of its next turn: the results of

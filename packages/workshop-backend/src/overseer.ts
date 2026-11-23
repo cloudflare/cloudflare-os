@@ -3262,7 +3262,13 @@ class OverseerImpl implements AgentHooks {
   // proposes a code or binding change. Every gadget in a forked chat runs on its branch (see
   // branchGadgetIds), and a turn that leaves its chat forked leaves it to the user.
   isForked(chatId: number, meta: AiChatMetadata): boolean {
-    return this.chatMode(meta) === "fork" || this.#pendingOnBranch(`chat:${chatId}`).length > 0 ||
+    return this.chatMode(meta) === "fork" || this.#hasChanges(chatId, meta);
+  }
+
+  // Whether chat `chatId` has anything for a user to accept: a pending action on its branch, or a
+  // code or binding change it proposes.
+  #hasChanges(chatId: number, meta: AiChatMetadata): boolean {
+    return this.#pendingOnBranch(`chat:${chatId}`).length > 0 ||
         this.proposedChangeWorkpieceIds(chatId, meta).length > 0;
   }
 
@@ -6333,8 +6339,11 @@ class OverseerImpl implements AgentHooks {
     if (result?.restart === true) {
       // As it stands now, since an accept may have moved it meanwhile. One whose move to staging
       // is unfinished may be staged at the gatekeeper already.
+      // One from before its gatekeeper adopted branches is in every view too (see pushVisibleTo).
       let current = this.storage.actions.get(action.id) ?? action;
-      let branch = current.type === "action" && current.moving ? null : actionBranch(current);
+      let through = this.storage.gatekeepers.get(action.gatekeeperId)?.leftoversThrough ?? -1;
+      let branch = (current.type === "action" && current.moving) || action.id <= through
+          ? null : actionBranch(current);
       for (let [gadgetId, chatId] of this.#runningChatIds) {
         if (branch === null || (chatId !== null && branch === `chat:${chatId}`)) {
           this.ctx.facets.abort(this.gadgetFacetName(gadgetId), new Error(
@@ -11284,9 +11293,9 @@ class OverseerImpl implements AgentHooks {
   #publishAgentTurnNotification(chatId: number, initiator: AiChatAuthorInfo, initiatorUserId: string): void {
     let meta = this.storage.chatMeta.get(chatId);
     if (!meta) return;
-    // A turn that leaves its chat forked also needs a decision: accepting the chat.
+    // A turn that leaves its chat changes also needs a decision: accepting the chat.
     let awaitingDecision = (this.#decisionWait(chatId)?.pending ?? false) ||
-        this.isForked(chatId, meta);
+        this.#hasChanges(chatId, meta);
     if (!awaitingDecision && initiator.type !== "user" && (meta.spawnerName === undefined ||
         this.storage.nextChatSequences.get(chatId)?.notificationParticipants === undefined)) return;
     // The outcome already exists in the timeline. Recovery reuses this position and event ID.
@@ -14170,7 +14179,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     let chatId = action.caller.from !== "hook" ? action.caller.chatId : undefined;
     if (builtOn && chatId !== undefined) {
       this.impl.addChatMessages(chatId, profile, [
-        {type: "actionDenied", actionId: action.id, title: action.description.title},
+        {
+          type: "actionDenied", actionId: action.id, title: action.description.title,
+          ...(action.applyError?.outcomeUnknown ? {outcomeUnknown: true as const} : {}),
+        },
       ]);
     }
 

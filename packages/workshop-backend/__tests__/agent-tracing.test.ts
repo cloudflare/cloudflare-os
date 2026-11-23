@@ -535,6 +535,21 @@ describe("turn notifications", () => {
     expect(turn.notifications).toEqual([notification(turn, "permissionRequested")]);
   });
 
+  it("reports completion of a turn that leaves a chat in Fork nothing to accept", async () => {
+    let turn = startTurn([reply]);
+    await turn.requested;
+    await inOverseer(turn.workspace, impl => {
+      impl.storage.chatMeta.put({
+        id: CHAT_ID, title: "Chat", started: new Date(0), lastActive: new Date(0),
+        activeAgent: MODEL, mode: "fork",
+      });
+    });
+    turn.release();
+
+    await turn.session;
+    expect(turn.notifications).toEqual([notification(turn, "taskCompleted")]);
+  });
+
   it("reports completion of a turn whose changes its chat in Auto accepted", async () => {
     let turn = startTurn([reply]);
     await turn.requested;
