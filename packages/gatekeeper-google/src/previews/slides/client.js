@@ -11,7 +11,8 @@
 
 import {
   dataUrl, flash, fontReader, leaveOutline, lineIcon, loadOnRefresh, make, motion, outline, outlineList, page,
-  partNavigator, setOutline, setStops, showError, showLoading, showPage, showStale, status, SYSTEM_FONT,
+  partNavigator, press, segmented, setOutline, setStops, showError, showLoading, showPage, showStale, status,
+  SYSTEM_FONT,
 } from './ui/chrome.js';
 import { boxOf, drawSlide, LINE_HEIGHT } from './slide.js';
 
@@ -54,14 +55,8 @@ styleSheet.textContent = `
   .tag.added { background: var(--mark); color: var(--mark-ink); }
   .tag.changed { background: var(--edit); color: var(--edit-ink); }
   .tag.gone { background: var(--gone); color: var(--gone-ink); }
-  /* The slide as it will be, or as it is saved: one control of two halves. */
-  .views { display: flex; flex: none; margin-left: auto; padding: 2px; border-radius: 999px;
-    background: var(--chip); }
-  .views button { padding: 2px 10px; border: 0; border-radius: 999px; background: none;
-    color: var(--dim); font-size: 11px; line-height: 1.6; transition: background .15s, color .15s, box-shadow .15s; }
-  .views button:hover { color: var(--ink); }
-  .views button[aria-pressed="true"] { background: var(--page); color: var(--ink);
-    box-shadow: 0 1px 2px rgb(0 0 0 / .22); }
+  /* The slide as it will be, or as it is saved. */
+  .card .views { margin-left: auto; }
 
   /* A slide lies on the desk as a page does, and keeps its own colors on either desk. */
   .frame { position: relative; aspect-ratio: var(--ratio); --ring: var(--mark-ink); --halo: var(--mark); }
@@ -85,9 +80,10 @@ styleSheet.textContent = `
     box-shadow: 0 0 0 1px rgb(255 255 255 / .75), 0 0 0 4px color-mix(in srgb, currentColor 16%, transparent);
     transition: left .2s ease-out, top .2s ease-out, width .2s ease-out, height .2s ease-out, box-shadow .2s ease-out;
     animation: arrive .3s ease-out .1s backwards; }
-  .spot.gone { border-style: dashed; border-color: var(--lost); color: var(--lost);
+  .spot { --glow: var(--spot); }
+  .spot.gone { border-style: dashed; border-color: var(--lost); color: var(--lost); --glow: var(--lost);
     background: color-mix(in srgb, currentColor 6%, transparent); }
-  .spot.edit { border-color: var(--edited); color: var(--edited); }
+  .spot.edit { border-color: var(--edited); color: var(--edited); --glow: var(--edited); }
   .spot.off { visibility: hidden; }
   .spot > i, .change > i { display: grid; flex: none; place-items: center; box-sizing: border-box;
     min-width: 15px; height: 15px; padding: 0 4px; border-radius: 999px; color: #fff; font-size: 9.5px;
@@ -140,7 +136,7 @@ styleSheet.textContent = `
   /* The filmstrip: every slide in order, small, with what is to happen to it. */
   #outline .film { display: flex; align-items: flex-start; gap: 8px; box-sizing: border-box;
     width: 100%; margin: 0 0 2px; padding: 6px 6px 6px 0; border: 0; border-radius: 8px;
-    background: none; color: var(--dim); text-align: left; scroll-margin: 46px 0 8px;
+    background: none; color: var(--dim); text-align: left; scroll-margin: 8px 0;
     transition: background .12s; }
   #outline .film:hover { background: var(--chip); }
   .film:focus-visible { outline-offset: -2px; }
@@ -475,22 +471,15 @@ function showViews(card) {
     return;
   }
   if (!card.views?.isConnected) {
-    card.views = card.header.appendChild(make('div', 'views'));
-    card.views.setAttribute('role', 'group');
-    card.views.setAttribute('aria-label', 'Which slide to show');
-    for (const [view, label] of [['after', 'With changes'], ['before', 'As saved']]) {
-      const button = card.views.appendChild(make('button', '', label));
-      button.dataset.view = view;
-      button.addEventListener('click', () => {
-        if (card.view === view) return;
-        card.view = view;
-        showViews(card);
-        paint(card, true);
-        showPictures();
-      });
-    }
+    card.views = card.header.appendChild(segmented('Which slide to show', [['after', 'With changes'], ['before', 'As saved']], view => {
+      if (card.view === view) return;
+      card.view = view;
+      showViews(card);
+      paint(card, true);
+      showPictures();
+    }));
   }
-  for (const button of card.views.children) button.setAttribute('aria-pressed', String(card.view === button.dataset.view));
+  press(card.views, card.view);
 }
 
 // Where the element `id` shows on `stage`, in the slide's points: `frame`, its box, reaching as far
@@ -671,7 +660,7 @@ function markSlide() {
   else pager.show(nodes, on, '–', total, `Deleted slide, ${before ? `after slide ${before}` : 'before slide 1'} of ${total}`);
   if (outline.hidden) return;
   films.forEach((film, n) => film.setAttribute('aria-current', String(n === on)));
-  if (on === 0) outline.scrollTop = 0;
+  if (on === 0) outlineList.scrollTop = 0;
   else if (on !== current) films[on]?.scrollIntoView({ block: 'nearest' });
   current = on;
 }
