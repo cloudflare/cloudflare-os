@@ -89,6 +89,23 @@ describe("git-backed collection sync", () => {
     expect((await stub.listAgentSkills()).map(entry => entry.skillName)).toEqual(["deploys"]);
   });
 
+  it("reads every file back into a collection emptied while its branch could not be found", async () => {
+    let fake = new FakeGitRepo();
+    let stub = await createGitCollection(fake);
+    let commit = await fake.push("main", { "a.md": "# A", "skills/deploys/SKILL.md": skill });
+    fake.branches.delete("main");
+    await stub.syncArtifactSource();
+    expect((await stub.getMetadata()).documentCount).toBe(0);
+
+    fake.resetBranch("main", commit);
+    await stub.syncArtifactSource();
+
+    expect((await stub.listContextDocuments()).map(doc => doc.path))
+      .toEqual(["a.md", "skills/deploys/SKILL.md"]);
+    expect((await stub.getMetadata()).documentCount).toBe(2);
+    expect((await stub.listAgentSkills()).map(entry => entry.skillName)).toEqual(["deploys"]);
+  });
+
   it("works out hashes for documents stored before they were kept", async () => {
     let fake = new FakeGitRepo();
     let stub = await createGitCollection(fake);
@@ -282,7 +299,7 @@ describe("git-backed collection sync", () => {
       makeStale(instance);
       await instance.listContextDocuments();
       await settle();
-      expect(fake.logRefs.at(-1)).toBe("refs/heads/next");
+      expect(fake.logRefs.at(-1)).toBe("next");
       expect((await instance.listContextDocuments()).map(doc => doc.path)).toEqual(["b.md"]);
     });
   });
