@@ -6,9 +6,9 @@ import { join, resolve } from "node:path";
 import { describe, it } from "node:test";
 import { pathToFileURL } from "node:url";
 
-import { parseWorkflow, stepsOf } from "../../risk-review-fixtures/workflow.ts";
+import { dig, parseWorkflow, stepsOf } from "../../risk-review-fixtures/workflow.ts";
 import { git } from "../git.ts";
-import { buildBonkVerdict, type BonkInputs } from "./bonk.ts";
+import { JOB_NAME, REVIEW_STEP, buildBonkVerdict, type BonkInputs } from "./bonk.ts";
 
 const MODEL = "cloudflare-ai-gateway/openai/gpt-6.1-sol";
 
@@ -68,12 +68,22 @@ describe("buildBonkVerdict", () => {
 });
 
 describe("bonk-pr.yml", () => {
+  const root = resolve(import.meta.dirname, "../../..");
+  const workflow = parseWorkflow(readFileSync(join(root, ".github/workflows/bonk-pr.yml"), "utf8"));
+
+  // A head counts as a round only when this job's review step succeeded on it. Under another
+  // name no head would count, and the round limit would never send a pull request to a person.
+  it("has the job and the step Bonk's rounds are counted from", () => {
+    const job = dig(workflow, "jobs", JOB_NAME);
+    assert.equal(dig(job, "name") ?? JOB_NAME, JOB_NAME);
+    const steps = dig(job, "steps");
+    assert.ok(Array.isArray(steps) && steps.some((step) => dig(step, "name") === REVIEW_STEP));
+  });
+
   // The job runs bonk.ts from a copy of the base commit's judge code, outside the checkout, so a
   // module the copy leaves out is missing only there.
   it("copies every module bonk.ts imports to where it runs it", () => {
-    const root = resolve(import.meta.dirname, "../../..");
-    const scripts = stepsOf(parseWorkflow(readFileSync(join(root, ".github/workflows/bonk-pr.yml"), "utf8")))
-      .flatMap(({ run }) => (typeof run === "string" ? [run] : []));
+    const scripts = stepsOf(workflow).flatMap(({ run }) => (typeof run === "string" ? [run] : []));
     const [copy, ...otherCopies] = scripts.filter((script) => script.includes("git archive"));
     const started = new Set(scripts.flatMap((script) => /^node (\$RUNNER_TEMP\/\S+)/.exec(script)?.[1] ?? []));
     assert.ok(copy !== undefined && otherCopies.length === 0 && started.size > 0, "one step copies the scripts, and later steps run them");
