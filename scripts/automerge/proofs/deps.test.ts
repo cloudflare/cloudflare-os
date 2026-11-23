@@ -21,7 +21,7 @@ import { parseDiff, type FileDiff, type Hunk } from "./diff.ts";
 // snapshot kept); the entries they leave out are the same on both sides.
 function fixture(name: string): DepsInput {
   const dir = new URL("./testdata/deps/", import.meta.url);
-  const data = asObject(parseJson(readFileSync(new URL(`${name}.json`, dir), "utf8")), name);
+  const data = asObject(parseJson(readFileSync(new URL(`${name}.json`, dir), "utf8"), name), name);
   const entries: PackageVersion[] = asArray(data.osv_queries, "osv_queries").map((key) => {
     const text = asString(key, "osv query");
     const at = text.lastIndexOf("@");
@@ -379,6 +379,13 @@ describe("advisoriesFromOsv", () => {
   it("throws on a response that does not answer every query with a whole advisory list", () => {
     for (const results of [[], [{}, {}], [{ error: { code: 429 } }], [{ vulns: "none" }], [{ vulns: [{}] }], [{ next_page_token: "t" }], ["none"]]) {
       assert.throws(() => advisoriesFromOsv(entries, { results }), JSON.stringify(results));
+    }
+  });
+
+  // The thrown message becomes the artifact's `details.error`, and a listed id one of its reasons.
+  it("throws without repeating a field name or an id that is not an advisory's", () => {
+    for (const results of [[{ "sk-live": 1 }], [{ vulns: [{ id: "see https://example.com/?sig=sk-live" }] }]]) {
+      assert.throws(() => advisoriesFromOsv(entries, { results }), (error: Error) => !error.message.includes("sk-live"));
     }
   });
 });

@@ -13,7 +13,6 @@ describe("preview-smoke", () => {
   it("holds when / serves HTML and /api/version names a version", () => {
     const outcome = evaluateSmoke(ORIGIN, html, version);
     assert.equal(outcome.holds, true, JSON.stringify(outcome.details));
-    assert.equal(outcome.details.backend_version, "118f3e9a-eb13-46b1-aee7-7f14bd326b9e");
   });
 
   it("fails when the backend is down behind the router", () => {
@@ -22,9 +21,9 @@ describe("preview-smoke", () => {
   });
 
   it("fails when /api/version answers without a version, or with one that is not a non-blank string", () => {
-    for (const body of ['{"ok":true}', '{"version":null}', '{"version":""}', '{"version":"  "}', '{"version":7}', '{"version":{"id":"x"}}', '"118f3e9a"', "[]"]) {
+    for (const body of ['{"ok":true}', '{"version":null}', '{"version":""}', '{"version":"  "}', '{"version":7}', '{"version":{"id":"x"}}', '"118f3e9a"', "[]", "Internal error"]) {
       const outcome = evaluateSmoke(ORIGIN, html, { ...version, body });
-      assert.deepEqual([outcome.status, outcome.holds, outcome.details.backend_version], ["ok", false, ""], body);
+      assert.deepEqual([outcome.status, outcome.holds], ["ok", false], body);
     }
   });
 
@@ -33,6 +32,17 @@ describe("preview-smoke", () => {
     assert.equal(evaluateSmoke(ORIGIN, { status: 302, contentType: "", body: "" }, version).holds, false);
     for (const body of ["", "Internal error", '{"error":"no assets"}']) {
       assert.equal(evaluateSmoke(ORIGIN, { ...html, body }, version).holds, false, body);
+    }
+  });
+
+  // The artifact's details are printed to the job log and anyone can download them.
+  it("records the status of each answer and none of its headers or body", () => {
+    for (const outcome of [
+      evaluateSmoke(ORIGIN, html, { ...version, body: '{"version":"sk-live"}' }),
+      evaluateSmoke(ORIGIN, { ...html, contentType: "sk-live" }, { ...version, body: "sk-live" }),
+      evaluateSmoke(ORIGIN, { ...html, body: "sk-live" }, { status: 500, contentType: "sk-live", body: "sk-live" }),
+    ]) {
+      assert.ok(!JSON.stringify(outcome).includes("sk-live"), JSON.stringify(outcome));
     }
   });
 });

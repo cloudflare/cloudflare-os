@@ -498,8 +498,8 @@ function versionMoveReasons(what: string, from: string, to: string): string[] {
 /** Every rule a package.json change breaks. */
 function manifestReasons(path: string, base: string | undefined, head: string | undefined): string[] {
   if (base === undefined || head === undefined) return [`${path}: added or deleted`];
-  const before = asObject(parseJson(base), `${path} at base`);
-  const after = asObject(parseJson(head), `${path} at head`);
+  const before = asObject(parseJson(base, `${path} at base`), `${path} at base`);
+  const after = asObject(parseJson(head, `${path} at head`), `${path} at head`);
   const reasons: string[] = [];
   const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
   for (const key of keys) {
@@ -619,7 +619,7 @@ async function fetchPublishTimes(entries: PackageVersion[]): Promise<Record<stri
   for (const name of new Set(entries.map((entry) => entry.name))) {
     const response = await fetch(`https://registry.npmjs.org/${name.replaceAll("/", "%2f")}`);
     if (!response.ok) throw new Error(`registry.npmjs.org answered ${response.status} for ${name}`);
-    const time = asObject(asObject(parseJson(await response.text()), name).time, `${name} time`);
+    const time = asObject(asObject(parseJson(await response.text(), `registry.npmjs.org's answer for ${name}`), name).time, `${name} time`);
     for (const entry of entries) {
       const at = entry.name === name ? time[entry.version] : undefined;
       if (typeof at === "string") times[versionKey(entry)] = at;
@@ -639,10 +639,17 @@ async function fetchAdvisories(entries: PackageVersion[]): Promise<Record<string
     }),
   });
   if (!response.ok) throw new Error(`api.osv.dev answered ${response.status}`);
-  return advisoriesFromOsv(entries, parseJson(await response.text()));
+  return advisoriesFromOsv(entries, parseJson(await response.text(), "api.osv.dev's answer"));
 }
 
-/** Maps an OSV `querybatch` response back onto the entries it was asked about, in order. */
+/** An advisory id as OSV writes one, such as `GHSA-9wv6-86v2-598j` or `CVE-2026-1234`. */
+const ADVISORY_ID = /^[A-Za-z0-9][\w.:-]*$/;
+
+/**
+ * Maps an OSV `querybatch` response back onto the entries it was asked about, in order. An error
+ * says what was wrong and repeats nothing of the response; of the advisories only their ids are
+ * kept, each checked to be one: both end up in the artifact's details.
+ */
 export function advisoriesFromOsv(entries: PackageVersion[], body: Json): Record<string, string[]> {
   const results = asArray(asObject(body, "OSV response").results, "OSV results");
   if (results.length !== entries.length) throw new Error("OSV returned a different number of results");
@@ -651,12 +658,13 @@ export function advisoriesFromOsv(entries: PackageVersion[], body: Json): Record
     const result = asObject(results[i], "OSV result");
     // A result holds `vulns` or nothing. Anything else, `next_page_token` for a list cut short
     // included, is not the whole list of advisories.
-    const unread = Object.keys(result).filter((key) => key !== "vulns");
-    if (unread.length > 0) throw new Error(`OSV answered ${versionKey(entry)} with ${unread.join(", ")}`);
+    if (Object.keys(result).some((key) => key !== "vulns")) {
+      throw new Error(`OSV answered ${versionKey(entry)} with more than a list of advisories`);
+    }
     const vulns = result.vulns === undefined ? [] : asArray(result.vulns, "OSV vulns");
     advisories[versionKey(entry)] = vulns.map((vuln) => {
       const id = asObject(vuln, "OSV vuln").id;
-      if (typeof id !== "string") throw new Error("OSV vuln without an id");
+      if (typeof id !== "string" || !ADVISORY_ID.test(id)) throw new Error("OSV vuln without an id");
       return id;
     });
   });

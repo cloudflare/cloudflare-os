@@ -289,7 +289,7 @@ export function sourceGraph(
   const problems: string[] = [];
   const seen = new Set<string>();
   const manifestText = read(join(packageDir, "package.json"));
-  const parsed = manifestText === undefined ? undefined : parseJson(manifestText);
+  const parsed = manifestText === undefined ? undefined : parseJson(manifestText, join(packageDir, "package.json"));
   const manifest: JsonObject = isObject(parsed) ? parsed : {};
   const name = typeof manifest.name === "string" ? manifest.name : undefined;
   const queue = [...roots];
@@ -364,7 +364,7 @@ function readFile(path: string): string | undefined {
 function workspacePackages(): Set<string> {
   const manifests = git(["ls-files", "--", "packages/*/package.json", "scripts/package.json"]).split("\n").filter((path) => path !== "");
   return new Set(manifests.flatMap((path) => {
-    const parsed = parseJson(readFileSync(path, "utf8"));
+    const parsed = parseJson(readFileSync(path, "utf8"), path);
     return isObject(parsed) && typeof parsed.name === "string" ? [parsed.name] : [];
   }));
 }
@@ -451,7 +451,7 @@ async function installRunner(packageDir: string, deadline: number): Promise<Runn
   await runBounded("pnpm", ["install", "--frozen-lockfile"], dir, deadline);
   const modules = join(process.cwd(), dir, "node_modules");
   const pluginDir = join(modules, "@stryker-mutator", "vitest-runner");
-  const manifest = asObject(parseJson(readFileSync(join(pluginDir, "package.json"), "utf8")), "the vitest runner's package.json");
+  const manifest = asObject(parseJson(readFileSync(join(pluginDir, "package.json"), "utf8"), "the vitest runner's package.json"), "the vitest runner's package.json");
   const plugin = selfImportPath(pluginDir, manifest, asString(manifest.name, "the vitest runner's name"));
   if (plugin === undefined) throw new Error("the vitest runner's package.json names no entry file");
   return { stryker: join(modules, ".bin", "stryker"), plugin };
@@ -464,7 +464,7 @@ async function configFor(packageDir: string, tests: string[], deadline: number):
   const matches: string[] = [];
   for (const config of configs) {
     const listed = parseJson(await runBounded("pnpm",
-      ["exec", "vitest", "list", "--filesOnly", "--json", "--config", relative(packageDir, config)], packageDir, deadline, true));
+      ["exec", "vitest", "list", "--filesOnly", "--json", "--config", relative(packageDir, config)], packageDir, deadline, true), "vitest list");
     const files = new Set(asArray(listed, "vitest list").map((entry) => relative(".", asString(asObject(entry, "entry").file, "file"))));
     if (tests.every((path) => files.has(path))) matches.push(config);
   }
@@ -515,7 +515,7 @@ async function runSide(
   }, null, 2));
   rmSync(join(pkg, reportPath(side)), { force: true });
   await runBounded(runner.stryker, ["run", STRYKER_CONFIG], pkg, deadline);
-  return asObject(parseJson(readFileSync(join(pkg, reportPath(side)), "utf8")), "Stryker report");
+  return asObject(parseJson(readFileSync(join(pkg, reportPath(side)), "utf8"), "Stryker report"), "Stryker report");
 }
 
 /** Runs both sides of the proof, base tests and head tests, against the same source. */

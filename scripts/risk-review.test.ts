@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
+import { inspect } from "node:util";
 
 import { assertNames } from "./automerge/assert-names.ts";
 import { PRODUCERS, artifactName } from "./automerge/producers.ts";
@@ -131,6 +132,8 @@ function verdicts(overrides: { bonk?: Record<string, Json | undefined>; opus?: R
 interface Calls {
   checks: { id: number; sha: string }[];
   updates: { id: number; conclusion: string; summary: string; title: string }[];
+  /** Each text written to the step summary. */
+  summaries: string[];
   approvals: string[];
   dismissals: number[];
   enqueued: { id: string | number | undefined; head: string | number | undefined }[];
@@ -139,6 +142,54 @@ interface Calls {
 function notFound(): Error {
   return Object.assign(new Error("Not Found"), { status: 404 });
 }
+
+/** What a server sent with a failed request, none of which the gate may publish. */
+const UPSTREAM = {
+  body: "Server failed to authenticate the request",
+  header: "req-5f1c9d02",
+  url: "https://results.example.net/artifacts/7/artifact.zip?sv=2025-01-05&sig=c2lnbmF0dXJl",
+};
+
+/**
+ * A failed request as Octokit throws it: the message is built from the response body, and the
+ * response rides along with its headers and the URL that answered, after any redirect.
+ */
+function requestError(status: number): Error {
+  return Object.assign(new Error(UPSTREAM.body), {
+    name: "HttpError",
+    status,
+    request: { method: "GET", url: "https://api.github.com/repos/cloudflare/cloudflare-os", headers: { authorization: "token [REDACTED]" } },
+    response: { status, url: UPSTREAM.url, headers: { "x-github-request-id": UPSTREAM.header }, data: { message: UPSTREAM.body } },
+  });
+}
+
+/** A refused GraphQL request as Octokit throws it: GitHub's own words, with the response headers. */
+function graphqlError(): Error {
+  return Object.assign(new Error(`Request failed due to following response errors:\n - ${UPSTREAM.body}`), {
+    name: "GraphqlResponseError",
+    headers: { "x-github-request-id": UPSTREAM.header },
+    errors: [{ type: "UNPROCESSABLE", message: UPSTREAM.body }],
+  });
+}
+
+/** The error a failed run rejects with, printed as actions/github-script logs it: every property, at any depth. */
+async function loggedRejection(gateRun: Promise<void>): Promise<string> {
+  try {
+    await gateRun;
+  } catch (error) {
+    return inspect(error, { depth: null, showHidden: true });
+  }
+  return assert.fail("the run did not fail");
+}
+
+function assertNothingUpstream(published: string): void {
+  for (const sent of [...Object.values(UPSTREAM), "sig="]) assert.ok(!published.includes(sent), published);
+}
+
+/** A request the fake client can be told to fail. */
+type GitHubCall =
+  | "pulls.get" | "pulls.listFiles" | "pulls.listReviews" | "pulls.createReview"
+  | "checks.create" | "checks.update" | "actions.downloadArtifact";
 
 function page<T>(items: T[], { page: number, per_page }: { page: number; per_page: number }): { data: T[] } {
   return { data: items.slice((number - 1) * per_page, number * per_page) };
@@ -152,8 +203,8 @@ interface HarnessOptions {
   comments?: Record<number, Comment[]>;
   reviewDecision?: Record<number, string | null>;
   runs?: ProducerRun[];
-  /** Makes reading reviews fail, as an API outage would. */
-  broken?: true;
+  /** Requests GitHub answers with a server error. */
+  failing?: GitHubCall[];
   /** Makes GitHub refuse the enqueue, as it does while required checks are running. */
   enqueueRefused?: true;
   /** The pull request already sits in the merge queue. */
@@ -214,12 +265,16 @@ function harness(options: HarnessOptions = {}) {
       return { id, name, size_in_bytes: text.length, expired: false, created_at: uploaded, workflow_run: { id: producerRun.id } };
     }));
   }
-  const calls: Calls = { checks: [], updates: [], approvals: [], dismissals: [], enqueued: [] };
+  const calls: Calls = { checks: [], updates: [], summaries: [], approvals: [], dismissals: [], enqueued: [] };
+  const refuse = (call: GitHubCall) => {
+    if (options.failing?.includes(call)) throw requestError(502);
+  };
 
   const github: GitHubClient = {
     rest: {
       pulls: {
         get: async ({ pull_number }) => {
+          refuse("pulls.get");
           const pull = pulls.get(pull_number);
           if (!pull) throw notFound();
           return { data: pull };
@@ -231,14 +286,18 @@ function harness(options: HarnessOptions = {}) {
           }
           return { data: [...pulls.values()].filter(() => head.endsWith(":kenton/topic") || head.endsWith(":chore/classify-changsets")) };
         },
-        listFiles: async (args) => page(options.files?.[args.pull_number] ?? [file("docs/automerge.md")], args),
+        listFiles: async (args) => {
+          refuse("pulls.listFiles");
+          return page(options.files?.[args.pull_number] ?? [file("docs/automerge.md")], args);
+        },
         listReviews: async (args) => {
-          if (options.broken) throw new Error("HTTP 502");
+          refuse("pulls.listReviews");
           return page(options.reviews?.[args.pull_number] ?? [], args);
         },
         listReviewComments: async (args) => page([], args),
         listCommits: async (args) => page(options.commits?.[args.pull_number] ?? [DEPENDABOT_COMMIT], args),
         createReview: async ({ commit_id }) => {
+          refuse("pulls.createReview");
           calls.approvals.push(commit_id);
           return {};
         },
@@ -272,11 +331,13 @@ function harness(options: HarnessOptions = {}) {
       },
       checks: {
         create: async ({ head_sha }) => {
+          refuse("checks.create");
           const id = ++ids;
           calls.checks.push({ id, sha: head_sha });
           return { data: { id } };
         },
         update: async ({ check_run_id, conclusion, output }) => {
+          refuse("checks.update");
           calls.updates.push({ id: check_run_id, conclusion, ...output });
           return {};
         },
@@ -304,6 +365,7 @@ function harness(options: HarnessOptions = {}) {
         listWorkflowRunArtifacts: async ({ run_id, name }) =>
           ({ data: { artifacts: (artifacts.get(run_id) ?? []).filter((a) => a.name === name) } }),
         downloadArtifact: async ({ artifact_id }) => {
+          refuse("actions.downloadArtifact");
           const bytes = zips.get(artifact_id);
           if (!bytes) throw notFound();
           return { data: bytes.slice().buffer };
@@ -327,7 +389,7 @@ function harness(options: HarnessOptions = {}) {
         };
       }
       if (query.includes("enqueuePullRequest")) {
-        if (options.enqueueRefused) throw new Error("Pull request is not mergeable: required status checks are pending");
+        if (options.enqueueRefused) throw graphqlError();
         calls.enqueued.push({ id: variables.id, head: variables.head });
         return { enqueuePullRequest: { mergeQueueEntry: { id: "MQE_1" } } };
       }
@@ -342,9 +404,12 @@ function harness(options: HarnessOptions = {}) {
   const core: ActionsCore = {
     notice: () => {},
     summary: {
-      addRaw: () => core.summary,
+      addRaw: (text) => {
+        calls.summaries.push(text);
+        return core.summary;
+      },
       write: async () => {
-        if (options.summaryFails) throw new Error("the step summary file is not writable");
+        if (options.summaryFails) throw requestError(507);
         return {};
       },
     },
@@ -1279,12 +1344,6 @@ describe("runRiskReview maintainer holds", () => {
 });
 
 describe("runRiskReview failure", () => {
-  it("keeps the published check when the step summary cannot be written", async () => {
-    const { calls, evaluate } = harness({ reviewDecision: { 7: "APPROVED" }, summaryFails: true });
-    await assert.rejects(evaluate("workflow_run", producerCompleted()), /not writable/);
-    assert.deepEqual(calls.updates.map(({ conclusion }) => conclusion), ["success"]);
-  });
-
   it("fails closed on a truncated tree, more check suites than one page, and more producer runs than one page", async () => {
     const skill = ".agents/skills/write-gatekeeper/SKILL.md";
     const truncated = harness({ files: { 7: [file(skill)] }, trees: { ...skillTrees(BASE, "100644"), ...skillTrees(HEAD, "100644") }, truncatedTrees: true });
@@ -1301,10 +1360,36 @@ describe("runRiskReview failure", () => {
     assert.equal(lastRecord(runs.calls).pulls[0]?.would.decision, "person");
   });
 
-  it("fails its check run, rather than leaving it in progress, when the API fails", async () => {
-    const { calls, evaluate } = harness({ broken: true });
-    await assert.rejects(evaluate("workflow_run", producerCompleted()), /HTTP 502/);
-    assert.deepEqual(calls.updates.map(({ conclusion }) => conclusion), ["failure"]);
+  // The job log and the check run are public. Octokit's error holds the response body, its headers
+  // and the URL that answered, which for an artifact download is a signed, temporary one.
+  it("fails its check run with what it was doing and the HTTP status, and publishes nothing the server sent", async () => {
+    for (const { failing, doing } of [
+      { failing: ["actions.downloadArtifact"], doing: "automerge-verdict-" },
+      { failing: ["pulls.listFiles"], doing: "#7" },
+      { failing: ["pulls.listReviews"], doing: "#7" },
+    ] satisfies { failing: GitHubCall[]; doing: string }[]) {
+      const { calls, evaluate } = harness({ failing, runs: verdicts() });
+      const logged = await loggedRejection(evaluate("workflow_run", producerCompleted()));
+      assert.deepEqual(calls.updates.map(({ conclusion }) => conclusion), ["failure"], doing);
+      const [check] = calls.updates;
+      for (const published of [logged, check.title, check.summary, ...calls.summaries]) assertNothingUpstream(published);
+      for (const text of [logged, check.summary]) assert.ok(text.includes(doing) && text.includes("502"), text);
+    }
+  });
+
+  it("rejects with nothing the server sent wherever else a request fails, and keeps a check run it had completed", async () => {
+    const enforce = { policy: { config: configJson("enforce", true, ["scored"]) }, runs: verdicts() };
+    for (const { options, completed } of [
+      { options: { failing: ["pulls.get"] }, completed: [] },
+      { options: { failing: ["checks.create"] }, completed: [] },
+      { options: { failing: ["pulls.listReviews", "checks.update"] }, completed: [] },
+      { options: { ...enforce, failing: ["pulls.createReview"] }, completed: ["success"] },
+      { options: { reviewDecision: { 7: "APPROVED" }, summaryFails: true }, completed: ["success"] },
+    ] satisfies { options: HarnessOptions; completed: string[] }[]) {
+      const { calls, evaluate } = harness(options);
+      assertNothingUpstream(await loggedRejection(evaluate("workflow_run", producerCompleted())));
+      assert.deepEqual(calls.updates.map(({ conclusion }) => conclusion), completed, JSON.stringify(options));
+    }
   });
 });
 
@@ -1438,7 +1523,9 @@ describe("runRiskReview in enforce mode", () => {
   it("keeps the published check when GitHub refuses the enqueue, and enqueues when a later run finds it admitted", async () => {
     const options: HarnessOptions = { policy: { config: configJson("enforce", true, ["scored"]) }, runs: verdicts(), enqueueRefused: true };
     const { calls, evaluate } = harness(options);
-    await assert.rejects(evaluate("workflow_run", producerCompleted()), /required status checks are pending/);
+    const logged = await loggedRejection(evaluate("workflow_run", producerCompleted()));
+    assertNothingUpstream(logged);
+    assert.ok(logged.includes("#7"), logged);
     assert.deepEqual(calls.updates.map(({ conclusion }) => conclusion), ["success"]);
     assert.deepEqual(calls.enqueued, []);
     // The required checks finish, CI's completion wakes the gate, and GitHub now admits the pull request.

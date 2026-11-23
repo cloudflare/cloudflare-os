@@ -43,7 +43,10 @@ export function planRound(headSha: string, reviewed: ReviewedHead[], canReviewSi
   return { round, reviewFromSha: canReviewSince(previous[0]) ? previous[0] : null };
 }
 
-/** One authenticated GitHub REST read. */
+/**
+ * One authenticated GitHub REST read. A failure names the request and the HTTP status and nothing
+ * GitHub sent: it becomes a verdict's `details.reason` and a line of the job log, both public.
+ */
 export async function githubJson(path: string, token: string): Promise<Json> {
   const response = await fetch(`https://api.github.com/${path}`, {
     headers: {
@@ -52,10 +55,8 @@ export async function githubJson(path: string, token: string): Promise<Json> {
       "User-Agent": "cloudflare-os-review-verdict",
     },
   });
-  if (!response.ok) {
-    throw new Error(`GitHub API GET ${path} failed with ${response.status}: ${(await response.text()).slice(0, 300)}`);
-  }
-  return parseJson(await response.text());
+  if (!response.ok) throw new Error(`GitHub API GET ${path} failed with ${response.status}`);
+  return parseJson(await response.text(), `GitHub's answer to GET ${path}`);
 }
 
 const PER_PAGE = 100;

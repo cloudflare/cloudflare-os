@@ -7,7 +7,7 @@ import { after, describe, it } from "node:test";
 import { dig, jobsOf, parseWorkflow, stepsOf } from "../../risk-review-fixtures/workflow.ts";
 import type { Json } from "../json.ts";
 import { createTestRepo } from "../test-repo.ts";
-import { fetchReviewedHeads, planRound, readyAt } from "./rounds.ts";
+import { fetchReviewedHeads, githubJson, planRound, readyAt } from "./rounds.ts";
 import { buildVerdict, canReviewSince, prepareInputs, readEvents } from "./verdict.ts";
 
 const always = () => true;
@@ -102,6 +102,19 @@ describe("fetchReviewedHeads", () => {
   });
 });
 
+describe("githubJson", () => {
+  // The message becomes a verdict's `details.reason` and a line of the job log.
+  it("fails with the request and the HTTP status, and nothing GitHub sent", async (t) => {
+    for (const { status, said } of [{ status: 401, said: "401" }, { status: 200, said: "not JSON" }]) {
+      const answer = new Response("sk-live", { status, headers: { "x-github-request-id": "req-sk-live" } });
+      t.mock.method(globalThis, "fetch", async () => answer);
+      const message = await githubJson("repos/cloudflare/cloudflare-os/pulls/7", "token").then(() => "", (error: Error) => error.message);
+      assert.ok(message.includes("repos/cloudflare/cloudflare-os/pulls/7") && message.includes(said), message);
+      assert.ok(!message.includes("sk-live"), message);
+    }
+  });
+});
+
 function change(event: string, at: string): Json {
   return { event, created_at: at };
 }
@@ -158,7 +171,7 @@ describe("readEvents", () => {
     assert.match(named, /APIError/);
     assert.match(named, /401/);
     for (const error of [named, errorOf(JSON.stringify({ type: "error", error: { name: "has spaces: sk-live-secret" } })),
-      errorOf(`body: sk-live-secret\n${events(GOOD_REVIEW)}`)]) {
+      errorOf(`body: sk-live-secret\n${events(GOOD_REVIEW)}`), errorOf(events(GOOD_REVIEW, "filtered: sk-live-secret"))]) {
       assert.notEqual(error, "");
       assert.doesNotMatch(error, /sk-live-secret|0123abcd/);
     }

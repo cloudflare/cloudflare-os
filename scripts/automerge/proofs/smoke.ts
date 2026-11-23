@@ -16,7 +16,7 @@
 
 import { spawn } from "node:child_process";
 import { decide, errored, runProducer, type Outcome } from "./artifact.ts";
-import { isObject, parseJson } from "../json.ts";
+import { maybeJson, maybeObject } from "../json.ts";
 import { isMain } from "../main.ts";
 
 /** One response, as much of it as the checks read. */
@@ -34,24 +34,24 @@ const REQUEST_TIMEOUT_MS = 60_000;
 /** How an HTML document starts, the frontend's `index.html` among them. */
 const HTML_DOCUMENT = /^\s*<(?:!doctype html|html)[\s>]/i;
 
-/** Judges the answers to `GET /` and `GET /api/version`. */
+/**
+ * Judges the answers to `GET /` and `GET /api/version`. The outcome records each status and no
+ * header or body: an artifact's details are public, and so is the job log they are printed to.
+ */
 export function evaluateSmoke(url: string, root: Answer, version: Answer): Outcome {
   const reasons: string[] = [];
-  if (root.status !== 200 || !root.contentType.startsWith("text/html")) {
-    reasons.push(`GET / answered ${root.status} ${root.contentType}`);
-  } else if (!HTML_DOCUMENT.test(root.body)) {
+  if (root.status !== 200) {
+    reasons.push(`GET / answered ${root.status}`);
+  } else if (!root.contentType.startsWith("text/html") || !HTML_DOCUMENT.test(root.body)) {
     reasons.push("GET / answered 200 without an HTML document");
   }
-  let backend = "";
-  if (version.status === 200) {
-    const body = parseJson(version.body);
-    const reported = isObject(body) ? body.version : undefined;
-    if (typeof reported === "string" && reported.trim() !== "") backend = reported;
-    else reasons.push("GET /api/version answered 200 without a version");
-  } else {
+  if (version.status !== 200) {
     reasons.push(`GET /api/version answered ${version.status}`);
+  } else {
+    const reported = maybeObject(maybeJson(version.body))?.version;
+    if (typeof reported !== "string" || reported.trim() === "") reasons.push("GET /api/version answered 200 without a version");
   }
-  return decide(reasons, { url, root_status: root.status, version_status: version.status, backend_version: backend });
+  return decide(reasons, { url, root_status: root.status, version_status: version.status });
 }
 
 /**
